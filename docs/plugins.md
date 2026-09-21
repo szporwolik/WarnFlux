@@ -135,6 +135,10 @@ For **outputs**:
 - Consecutive failures suspend the plugin; periodic recovery probes resume
   delivery after a success. Failures and probes are visible in the status
   snapshot.
+- Status heartbeat (`StatusPublisher`) health is **auxiliary**: status
+  failures are logged but never suspend the plugin or count against its
+  delivery-failure threshold, so a broken heartbeat cannot block hazard
+  event delivery.
 - A change is acknowledged only after `Handle` returns `nil` — delivery is
   at-least-once across restarts.
 

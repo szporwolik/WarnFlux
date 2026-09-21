@@ -41,7 +41,9 @@ type Config struct {
 	// exclusive with password.
 	PasswordFile string `yaml:"password_file"`
 	TopicPrefix  string `yaml:"topic_prefix"`
-	QoS          byte   `yaml:"qos"`
+	// QoS is a pointer so an omitted value defaults to 1 while an explicit
+	// 0 is rejected (QoS 0 would downgrade hazard delivery to best effort).
+	QoS *byte `yaml:"qos"`
 	// HeartbeatInterval publishes the retained status topic periodically.
 	// Zero disables the heartbeat.
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
@@ -51,6 +53,7 @@ type Config struct {
 // application status topic.
 type Output struct {
 	cfg Config
+	qos byte
 
 	mu        sync.Mutex
 	client    paho.Client
@@ -75,8 +78,15 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 	if cfg.TopicPrefix == "" {
 		cfg.TopicPrefix = "warnflux"
 	}
-	if cfg.QoS > 2 {
-		return nil, fmt.Errorf("qos must be 0, 1 or 2, got %d", cfg.QoS)
+	// QoS 0 is rejected: it would downgrade hazard event delivery to best
+	// effort, contradicting WarnFlux's at-least-once journal semantics.
+	// An omitted qos defaults to 1.
+	qos := byte(1)
+	if cfg.QoS != nil {
+		if *cfg.QoS == 0 || *cfg.QoS > 2 {
+			return nil, fmt.Errorf("qos must be 1 or 2 for at-least-once hazard delivery, got %d", *cfg.QoS)
+		}
+		qos = *cfg.QoS
 	}
 	if cfg.Password != "" && cfg.PasswordFile != "" {
 		return nil, fmt.Errorf("password and password_file are mutually exclusive")
@@ -108,7 +118,7 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 			opts.SetPassword(cfg.Password)
 		}
 	}
-	return &Output{cfg: cfg, client: paho.NewClient(opts)}, nil
+	return &Output{cfg: cfg, qos: qos, client: paho.NewClient(opts)}, nil
 }
 
 // Name returns the plugin type name.
@@ -132,7 +142,7 @@ func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 	}
 
 	topic := o.cfg.TopicPrefix + "/events"
-	token := o.client.Publish(topic, o.cfg.QoS, false, payload)
+	token := o.client.Publish(topic, o.qos, false, payload)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -151,14 +161,14 @@ func (o *Output) PublishStatus(ctx context.Context, status plugin.Status) error 
 	if err := o.ensureConnected(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	msg := toWireStatus(status)
+	msg := toWireStatus(status, time.Now())
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal status: %w", err)
 	}
 
 	topic := o.cfg.TopicPrefix + "/status"
-	token := o.client.Publish(topic, o.cfg.QoS, true, payload)
+	token := o.client.Publish(topic, o.qos, true, payload)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -240,6 +250,8 @@ type wireHazardEvent struct {
 type wireStatus struct {
 	SchemaVersion           int               `json:"schema_version"` // STABLE
 	Service                 string            `json:"service"`        // STABLE
+	State                   string            `json:"state"`          // STABLE: running
+	GeneratedAt             string            `json:"generated_at"`   // STABLE: RFC3339 UTC observation time
 	Version                 string            `json:"version"`
 	UptimeSeconds           int64             `json:"uptime_seconds"`
 	DatabaseHealthy         bool              `json:"database_healthy"`
@@ -288,10 +300,12 @@ func toWireEvent(change core.EventChange) wireEvent {
 	}
 }
 
-func toWireStatus(status plugin.Status) wireStatus {
+func toWireStatus(status plugin.Status, now time.Time) wireStatus {
 	out := wireStatus{
 		SchemaVersion:           wireSchemaVersion,
 		Service:                 "warnflux",
+		State:                   "running",
+		GeneratedAt:             now.UTC().Format(time.RFC3339),
 		Version:                 status.Version,
 		UptimeSeconds:           int64(status.Uptime.Seconds()),
 		DatabaseHealthy:         status.DatabaseHealthy,

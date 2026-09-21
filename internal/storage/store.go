@@ -94,6 +94,14 @@ type EventStore interface {
 	// change up to lastChangeID.
 	AckChanges(ctx context.Context, outputID string, lastChangeID int64) error
 
+	// SyncOutputs makes the output_cursors table match the set of enabled
+	// outputs exactly: missing cursors are created at 0 (a newly enabled
+	// output receives all changes still present in the retained journal)
+	// and cursors of outputs that are no longer enabled are removed (so
+	// they stop blocking cleanup). It is called once at application
+	// startup, before any runtime worker starts.
+	SyncOutputs(ctx context.Context, enabledOutputIDs []string) error
+
 	// CleanupChanges deletes journal rows older than olderThan that have
 	// been acknowledged by every output. Returns the number of deleted rows.
 	CleanupChanges(ctx context.Context, olderThan time.Time) (int64, error)

@@ -67,4 +67,4 @@ tests with the race detector and a vulnerability scan.
 ## License
 
 By contributing, you agree that your contributions are licensed under the
-[MIT](LICENSE) license of this project.
+[Apache-2.0](LICENSE) license of this project.

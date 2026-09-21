@@ -35,7 +35,7 @@ ARG COMMIT=unknown
 LABEL org.opencontainers.image.title="WarnFlux" \
       org.opencontainers.image.description="Hazard event aggregation, normalization and at-least-once delivery daemon" \
       org.opencontainers.image.source="https://github.com/szporwolik/WarnFlux" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
 

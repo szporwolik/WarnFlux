@@ -119,6 +119,60 @@ CREATE TABLE output_cursors (
 			return nil
 		},
 	},
+	{
+		// v3: immutable event snapshots in the change journal. From now on
+		// every change row carries the exact event state after its
+		// transition; PollChanges never joins against the mutable events
+		// table again.
+		SQL: `ALTER TABLE changes ADD COLUMN event_snapshot TEXT NOT NULL DEFAULT '';`,
+		// Pre-snapshot rows cannot be reconstructed historically with
+		// perfect accuracy: backfill them with the CURRENT event state.
+		// Databases created by the pre-release v2 schema therefore report
+		// the present state for all their old journal rows (documented
+		// limitation). Orphan rows (no matching event) are dropped: they
+		// carry no reconstructable state.
+		run: func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`
+				DELETE FROM changes
+				WHERE event_key NOT IN (SELECT event_key FROM events)`); err != nil {
+				return fmt.Errorf("drop orphan changes: %w", err)
+			}
+			rows, err := tx.Query("SELECT id, event_key FROM changes WHERE event_snapshot = ''")
+			if err != nil {
+				return fmt.Errorf("read unsnapshotted changes: %w", err)
+			}
+			defer rows.Close()
+			type row struct {
+				id  int64
+				key string
+			}
+			var batch []row
+			for rows.Next() {
+				var r row
+				if err := rows.Scan(&r.id, &r.key); err != nil {
+					return fmt.Errorf("scan change: %w", err)
+				}
+				batch = append(batch, r)
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate changes: %w", err)
+			}
+			for _, r := range batch {
+				event, err := loadEventTx(tx, r.key)
+				if err != nil {
+					return fmt.Errorf("backfill snapshot for change %d: %w", r.id, err)
+				}
+				data, err := json.Marshal(storage.SnapshotOf(event))
+				if err != nil {
+					return fmt.Errorf("marshal snapshot for change %d: %w", r.id, err)
+				}
+				if _, err := tx.Exec("UPDATE changes SET event_snapshot = ? WHERE id = ?", string(data), r.id); err != nil {
+					return fmt.Errorf("write snapshot for change %d: %w", r.id, err)
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -267,10 +321,9 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	defer tx.Rollback()
 
 	var storedFp, storedStatus, storedReceived, storedFirstSeen string
-	var storedExpiresMs sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		"SELECT fingerprint, status, received_at, first_seen_at, expires_at_ms FROM events WHERE event_key = ?", key,
-	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen, &storedExpiresMs)
+		"SELECT fingerprint, status, received_at, first_seen_at FROM events WHERE event_key = ?", key,
+	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen)
 
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -282,10 +335,15 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 			outcome = storage.OutcomeCancelled
 			changeType = core.ChangeCancelled
 		}
-		if _, err := tx.ExecContext(ctx, insertSQL, insertArgs(event, fingerprint, now, now, orNow(event.UpdatedAt, now), expiryMs(event))...); err != nil {
+		// Make the event carry exactly what is persisted before taking its
+		// snapshot for the journal.
+		event.UpdatedAt = orNow(event.UpdatedAt, now)
+		event.ReceivedAt = orNow(event.ReceivedAt, event.UpdatedAt)
+		snapshot := storage.SnapshotOf(event)
+		if _, err := tx.ExecContext(ctx, insertSQL, insertArgs(event, fingerprint, now, now, event.UpdatedAt, expiryMs(event))...); err != nil {
 			return 0, nil, fmt.Errorf("insert event %q: %w", key, err)
 		}
-		change, err := insertChange(tx, ctx, changeType, key, nowMs)
+		change, err := insertChange(tx, ctx, changeType, key, nowMs, snapshot)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -301,13 +359,31 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 
 	// Existing event: compare content fingerprint and lifecycle status.
 	contentSame := storedFp == fingerprint
-	statusSame := storedStatus == string(event.Status)
-	// An event whose expiry has lapsed is re-activated on re-ingestion
-	// (its expiry clock restarts), so it must be journaled again rather
-	// than treated as a duplicate.
-	storedExpired := storedExpiresMs.Valid && storedExpiresMs.Int64 <= nowMs
+	incomingCancelled := event.Status == core.StatusCancelled
+	// An incoming expiry is "live" when the provider removed it or moved
+	// it into the future; a lapsed expiry by itself is NOT a
+	// reactivation signal.
+	incomingLive := expiryLive(event, nowMs)
 
-	if contentSame && statusSame && !storedExpired {
+	// Duplicate: no journal record, only last_seen_at refreshes. A lapsed
+	// expiry never forces an update on its own — the maintenance worker
+	// performs the single active → expired transition, so re-ingesting the
+	// same stale provider event cannot create updated/expired flapping.
+	duplicate := false
+	switch {
+	case incomingCancelled:
+		duplicate = storedStatus == string(core.StatusCancelled) && contentSame
+	case storedStatus == string(core.StatusActive):
+		duplicate = contentSame
+	case storedStatus == string(core.StatusExpired):
+		// Keep the internal lifecycle expired unless the provider made the
+		// event live again (future/removed expiry) or changed its content.
+		duplicate = contentSame && !incomingLive
+	default: // stored cancelled, incoming active: always a re-activation.
+		duplicate = false
+	}
+
+	if duplicate {
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE events SET last_seen_at = ? WHERE event_key = ?", formatTime(now), key); err != nil {
 			return 0, nil, fmt.Errorf("touch event %q: %w", key, err)
@@ -325,19 +401,26 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 		return 0, nil, fmt.Errorf("event %q has invalid stored received_at: %w", key, err)
 	}
 	event.ReceivedAt = received
+	event.UpdatedAt = orNow(event.UpdatedAt, now)
 
 	var changeType core.ChangeType
 	switch {
 	case event.Status == core.StatusCancelled:
 		changeType = core.ChangeCancelled
+	case storedStatus == string(core.StatusExpired) && !incomingLive:
+		// The provider changed content while its expiry is still lapsed:
+		// persist the new content, keep the internal lifecycle expired.
+		event.Status = core.StatusExpired
+		changeType = core.ChangeUpdated
 	default:
 		changeType = core.ChangeUpdated
 	}
 
+	snapshot := storage.SnapshotOf(event)
 	if _, err := tx.ExecContext(ctx, updateSQL, updateArgs(event, fingerprint, now, expiryMs(event))...); err != nil {
 		return 0, nil, fmt.Errorf("update event %q: %w", key, err)
 	}
-	change, err := insertChange(tx, ctx, changeType, key, nowMs)
+	change, err := insertChange(tx, ctx, changeType, key, nowMs, snapshot)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -392,11 +475,11 @@ func (s *Store) Expire(ctx context.Context, now time.Time) ([]storage.Change, er
 			string(core.StatusExpired), formatTime(now), key); err != nil {
 			return nil, fmt.Errorf("expire event %q: %w", key, err)
 		}
-		change, err := insertChange(tx, ctx, core.ChangeExpired, key, nowMs)
+		event, err := loadEventTx(tx, key)
 		if err != nil {
 			return nil, err
 		}
-		event, err := loadEvent(ctx, tx, key)
+		change, err := insertChange(tx, ctx, core.ChangeExpired, key, nowMs, storage.SnapshotOf(event))
 		if err != nil {
 			return nil, err
 		}
@@ -410,7 +493,9 @@ func (s *Store) Expire(ctx context.Context, now time.Time) ([]storage.Change, er
 }
 
 // PollChanges returns unacknowledged journal changes for an output in
-// stable ID order.
+// stable ID order. Each change carries the immutable event snapshot taken
+// when the transition happened; the mutable events table is never joined
+// to reconstruct history.
 func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]storage.Change, error) {
 	cursor, err := s.cursor(ctx, outputID)
 	if err != nil {
@@ -421,11 +506,10 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id, c.change_type, `+eventColumnsWithPrefix("e")+`
-		FROM changes c
-		JOIN events e ON e.event_key = c.event_key
-		WHERE c.id > ?
-		ORDER BY c.id
+		SELECT id, change_type, event_snapshot
+		FROM changes
+		WHERE id > ?
+		ORDER BY id
 		LIMIT ?`, cursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("poll changes for %q: %w", outputID, err)
@@ -437,10 +521,14 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 		var (
 			change     storage.Change
 			changeType string
+			snapshot   string
 		)
-		event, err := scanEventRow(rows.Scan, nil, &change.ID, &changeType)
-		if err != nil {
+		if err := rows.Scan(&change.ID, &changeType, &snapshot); err != nil {
 			return nil, fmt.Errorf("scan change for %q: %w", outputID, err)
+		}
+		event, err := decodeSnapshot(snapshot)
+		if err != nil {
+			return nil, fmt.Errorf("decode snapshot for change %d: %w", change.ID, err)
 		}
 		change.ChangeType = core.ChangeType(changeType)
 		change.Event = event
@@ -450,6 +538,60 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 		return nil, fmt.Errorf("iterate changes for %q: %w", outputID, err)
 	}
 	return changes, nil
+}
+
+// SyncOutputs makes the output_cursors table match the set of enabled
+// outputs exactly (see storage.EventStore). Newly enabled outputs start at
+// cursor 0 and receive all changes still present in the retained journal;
+// outputs that are no longer enabled are removed so they stop blocking
+// cleanup.
+func (s *Store) SyncOutputs(ctx context.Context, enabledOutputIDs []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin output sync: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, id := range enabledOutputIDs {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO output_cursors (output_id, last_acked_id) VALUES (?, 0)
+			ON CONFLICT(output_id) DO NOTHING`, id); err != nil {
+			return fmt.Errorf("create cursor for %q: %w", id, err)
+		}
+	}
+
+	enabled := make(map[string]bool, len(enabledOutputIDs))
+	for _, id := range enabledOutputIDs {
+		enabled[id] = true
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT output_id FROM output_cursors")
+	if err != nil {
+		return fmt.Errorf("read cursors: %w", err)
+	}
+	var stale []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan cursor: %w", err)
+		}
+		if !enabled[id] {
+			stale = append(stale, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate cursors: %w", err)
+	}
+	for _, id := range stale {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM output_cursors WHERE output_id = ?", id); err != nil {
+			return fmt.Errorf("remove cursor for %q: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit output sync: %w", err)
+	}
+	return nil
 }
 
 // AckChanges records the highest change ID an output has delivered.
@@ -488,7 +630,10 @@ func (s *Store) CleanupChanges(ctx context.Context, olderThan time.Time) (int64,
 }
 
 // PendingStats reports undelivered change count and the age of the oldest
-// undelivered change.
+// undelivered change. It is consistent with CleanupChanges: both operate
+// against the set of enabled output cursors (synchronized by SyncOutputs),
+// and with no enabled outputs nothing is considered pending — retained
+// changes are history, cleaned up by age.
 func (s *Store) PendingStats(ctx context.Context) (int, time.Duration, error) {
 	var pending int
 	var oldestMs sql.NullInt64
@@ -497,7 +642,7 @@ func (s *Store) PendingStats(ctx context.Context) (int, time.Duration, error) {
 		FROM changes
 		WHERE id > COALESCE(
 			(SELECT MIN(last_acked_id) FROM output_cursors),
-
+			(SELECT MAX(id) FROM changes),
 			0
 		)`).Scan(&pending, &oldestMs)
 	if err != nil {
@@ -572,6 +717,17 @@ func expiryMs(event core.HazardEvent) int64 {
 	return event.ExpiresAt.UTC().UnixMilli()
 }
 
+// expiryLive reports whether the provider made the event live again: the
+// expiry is absent or in the future relative to nowMs. A lapsed expiry by
+// itself is NOT a reactivation signal — that would let a stale provider
+// event create updated/expired flapping on every poll.
+func expiryLive(event core.HazardEvent, nowMs int64) bool {
+	if event.ExpiresAt == nil {
+		return true
+	}
+	return event.ExpiresAt.UTC().UnixMilli() > nowMs
+}
+
 const updateSQL = `
 UPDATE events SET
 	source = ?, source_id = ?, fingerprint = ?, status = ?,
@@ -595,11 +751,16 @@ func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expir
 	}, event.Key())
 }
 
-// insertChange writes one journal record and returns its stable ID.
-func insertChange(tx *sql.Tx, ctx context.Context, changeType core.ChangeType, key string, nowMs int64) (*storage.Change, error) {
+// insertChange writes one journal record (with its immutable event
+// snapshot) and returns its stable ID.
+func insertChange(tx *sql.Tx, ctx context.Context, changeType core.ChangeType, key string, nowMs int64, snapshot storage.EventSnapshot) (*storage.Change, error) {
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, fmt.Errorf("marshal snapshot for %q: %w", key, err)
+	}
 	res, err := tx.ExecContext(ctx,
-		"INSERT INTO changes (change_type, event_key, created_at_ms) VALUES (?, ?, ?)",
-		string(changeType), key, nowMs)
+		"INSERT INTO changes (change_type, event_key, event_snapshot, created_at_ms) VALUES (?, ?, ?, ?)",
+		string(changeType), key, string(data), nowMs)
 	if err != nil {
 		return nil, fmt.Errorf("journal change for %q: %w", key, err)
 	}
@@ -623,27 +784,25 @@ func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {
 	return cursor, nil
 }
 
-// loadEvent reads a full event row from tx by key.
-func loadEvent(ctx context.Context, tx *sql.Tx, key string) (core.HazardEvent, error) {
-	row := tx.QueryRowContext(ctx, "SELECT "+eventColumns+" FROM events WHERE event_key = ?", key)
+// loadEventTx reads a full event row from tx by key.
+func loadEventTx(tx *sql.Tx, key string) (core.HazardEvent, error) {
+	row := tx.QueryRow("SELECT "+eventColumns+" FROM events WHERE event_key = ?", key)
 	return scanEventRow(row.Scan, nil)
 }
 
-// eventColumnsWithPrefix returns the event columns prefixed for a JOIN.
-func eventColumnsWithPrefix(prefix string) string {
-	return prefix + ".event_key, " + prefix + ".source, " + prefix + ".source_id, " + prefix + ".fingerprint, " + prefix + ".status, " +
-		prefix + ".category, " + prefix + ".event, " + prefix + ".severity, " + prefix + ".urgency, " + prefix + ".certainty, " +
-		prefix + ".headline, " + prefix + ".description, " + prefix + ".instruction, " +
-		prefix + ".effective_at, " + prefix + ".expires_at_ms, " + prefix + ".latitude, " + prefix + ".longitude, " +
-		prefix + ".areas, " + prefix + ".source_url, " + prefix + ".received_at, " + prefix + ".first_seen_at, " + prefix + ".last_seen_at, " + prefix + ".updated_at"
+// decodeSnapshot reconstructs the event state captured when a journal
+// change was written.
+func decodeSnapshot(data string) (core.HazardEvent, error) {
+	var snap storage.EventSnapshot
+	if err := json.Unmarshal([]byte(data), &snap); err != nil {
+		return core.HazardEvent{}, fmt.Errorf("parse event snapshot: %w", err)
+	}
+	return snap.ToEvent(), nil
 }
 
 // scanEventRow scans the canonical event column list (eventColumns) in
-// order. Any extra destinations in pre are scanned before the event
-// columns; this lets JOIN queries whose SELECT begins with change columns
-// reuse the same scanning logic in a single Scan call (drivers require an
-// exact destination count).
-func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent, pre ...any) (core.HazardEvent, error) {
+// order. When stored is non-nil it also receives the persistence metadata.
+func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (core.HazardEvent, error) {
 	var (
 		key, fingerprint, status string
 		effectiveAt              sql.NullString
@@ -662,7 +821,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent, pre
 		&areasJSON, &event.SourceURL,
 		&received, &first, &last, &updated,
 	}
-	if err := scan(append(pre, dests...)...); err != nil {
+	if err := scan(dests...); err != nil {
 		return event, err
 	}
 

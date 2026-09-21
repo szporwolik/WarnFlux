@@ -142,6 +142,20 @@ func run(configPath string) error {
 		return fmt.Errorf("configure plugins: %w", err)
 	}
 
+	// Cursor lifecycle: create a cursor for every enabled output before any
+	// worker starts (new outputs replay the retained journal from 0) and
+	// drop cursors of outputs that are no longer configured, so cleanup and
+	// pending stats always operate on the authoritative set of outputs.
+	var enabledOutputIDs []string
+	for _, o := range cfg.Outputs {
+		if o.Enabled {
+			enabledOutputIDs = append(enabledOutputIDs, o.ID)
+		}
+	}
+	if err := store.SyncOutputs(context.Background(), enabledOutputIDs); err != nil {
+		return fmt.Errorf("sync output cursors: %w", err)
+	}
+
 	// Phase 2 — runtime. From here on, provider failures are isolated by
 	// the plugin framework instead of terminating the process.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

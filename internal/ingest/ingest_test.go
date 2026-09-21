@@ -400,6 +400,7 @@ func (failingStore) PollChanges(context.Context, string, int) ([]storage.Change,
 	return nil, nil
 }
 func (failingStore) AckChanges(context.Context, string, int64) error { return nil }
+func (failingStore) SyncOutputs(context.Context, []string) error     { return nil }
 func (failingStore) CleanupChanges(context.Context, time.Time) (int64, error) {
 	return 0, nil
 }

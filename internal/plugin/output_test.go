@@ -67,6 +67,26 @@ func (m *memStore) AckChanges(_ context.Context, outputID string, lastChangeID i
 	return nil
 }
 
+func (m *memStore) SyncOutputs(_ context.Context, enabledOutputIDs []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	enabled := make(map[string]bool, len(enabledOutputIDs))
+	for _, id := range enabledOutputIDs {
+		enabled[id] = true
+	}
+	for id := range m.cursors {
+		if !enabled[id] {
+			delete(m.cursors, id)
+		}
+	}
+	for _, id := range enabledOutputIDs {
+		if _, ok := m.cursors[id]; !ok {
+			m.cursors[id] = 0
+		}
+	}
+	return nil
+}
+
 func (m *memStore) CleanupChanges(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
 func (m *memStore) Get(_ context.Context, key string) (*storage.StoredEvent, error) {
 	return nil, storage.ErrNotFound
@@ -459,5 +479,39 @@ func TestOutputWorkerPublishesStatus(t *testing.T) {
 	out.mu.Unlock()
 	if first.Version != "test" || first.PendingChanges != 7 {
 		t.Errorf("status = %+v", first)
+	}
+}
+
+// failingStatusOut always fails status publication but delivers events fine.
+type failingStatusOut struct {
+	statusOut
+	err error
+}
+
+func (o *failingStatusOut) PublishStatus(_ context.Context, _ Status) error { return o.err }
+
+// TestOutputWorkerStatusFailureDoesNotAffectDelivery pins the REVIEW
+// requirement: status heartbeat health is auxiliary. Constant status
+// failures must never suspend the plugin, reset its delivery counter or
+// otherwise block hazard event delivery.
+func TestOutputWorkerStatusFailureDoesNotAffectDelivery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := newMemStore()
+	store.addChange(core.ChangeNew, sampleChange().Event)
+
+	out := &failingStatusOut{err: errors.New("status broken")}
+	tracker := newStatusTracker("out", "test", KindOutput)
+	w := newOutputWorker(testOutputCfg("out", time.Second, 2), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
+	w.health = func() Status { return Status{Version: "test"} }
+	go w.run(ctx)
+
+	// The event must be delivered and acknowledged despite the heartbeat
+	// failing on every interval.
+	waitFor(t, 2*time.Second, func() bool { return store.cursor("out") == 1 })
+	if st := tracker.snapshot(); st.State != StateRunning || st.ConsecutiveFailures != 0 {
+		t.Errorf("status failures affected delivery health: %+v", st)
 	}
 }

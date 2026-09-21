@@ -34,6 +34,12 @@ func TestNewValidation(t *testing.T) {
 	if _, err := New(nil); err == nil {
 		t.Fatal("missing broker must be rejected")
 	}
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nqos: 0\n")); err == nil {
+		t.Fatal("qos 0 must be rejected (best effort contradicts at-least-once hazard delivery)")
+	}
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nqos: 2\n")); err != nil {
+		t.Fatalf("qos 2 must be accepted: %v", err)
+	}
 	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nqos: 7\n")); err == nil {
 		t.Fatal("qos > 2 must be rejected")
 	}
@@ -56,6 +62,9 @@ func TestConfigDefaults(t *testing.T) {
 	}
 	if out.cfg.TopicPrefix != "warnflux" {
 		t.Errorf("topic_prefix = %q, want default", out.cfg.TopicPrefix)
+	}
+	if out.qos != 1 {
+		t.Errorf("qos = %d, want default 1", out.qos)
 	}
 	if out.StatusInterval() != 0 {
 		t.Errorf("heartbeat default = %v, want disabled", out.StatusInterval())
@@ -164,12 +173,13 @@ func TestWireStatusGoldenJSON(t *testing.T) {
 		},
 	}
 
-	payload, err := json.Marshal(toWireStatus(status))
+	payload, err := json.Marshal(toWireStatus(status, time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	want := `{"schema_version":1,"service":"warnflux","version":"0.1.0",` +
+	want := `{"schema_version":1,"service":"warnflux","state":"running",` +
+		`"generated_at":"2026-09-22T12:00:00Z","version":"0.1.0",` +
 		`"uptime_seconds":90,"database_healthy":true,"pending_changes":3,` +
 		`"oldest_pending_age_seconds":25,` +
 		`"sources":[{"id":"demo","type":"demo","state":"running","consecutive_failures":0,"restart_count":1}],` +

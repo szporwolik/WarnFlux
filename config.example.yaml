@@ -70,7 +70,8 @@ outputs:
       # Event changes are published to <topic_prefix>/events; the status
       # snapshot (retained) goes to <topic_prefix>/status.
       topic_prefix: warnflux
-      # QoS for event messages: 0, 1 or 2.
+      # QoS for event messages: 1 or 2. QoS 0 is rejected because it would
+      # downgrade hazard delivery to best effort.
       qos: 1
       # Interval between retained status snapshots, e.g. 30s. Set to 0 to
       # disable periodic status publication.

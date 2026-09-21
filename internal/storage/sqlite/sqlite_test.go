@@ -223,7 +223,7 @@ func TestIngestTransitionMatrix(t *testing.T) {
 			wantFinal:    core.StatusActive,
 		},
 		{
-			name: "expired + same source event -> updated (re-activation)",
+			name: "lapsed expiry + identical re-ingest -> duplicate (no flapping)",
 			steps: func() []core.HazardEvent {
 				e := normEvent()
 				past := time.Now().Add(-time.Hour)
@@ -231,8 +231,8 @@ func TestIngestTransitionMatrix(t *testing.T) {
 				again := e.Clone()
 				return []core.HazardEvent{e, again}
 			}(),
-			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeUpdated},
-			wantTypes:    []core.ChangeType{core.ChangeNew, core.ChangeUpdated},
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeDuplicate},
+			wantTypes:    []core.ChangeType{core.ChangeNew},
 			wantFinal:    core.StatusActive,
 		},
 		{
@@ -402,11 +402,26 @@ func TestCleanupChanges(t *testing.T) {
 
 func TestPendingStats(t *testing.T) {
 	store := openTemp(t)
+	ctx := context.Background()
 
 	e := normEvent()
 	_, change := ingestOne(t, store, e)
 
-	pending, oldest, err := store.PendingStats(context.Background())
+	// No enabled outputs: nothing is pending. Retained changes are history,
+	// cleaned up by age, not an ever-growing backlog.
+	pending, _, err := store.PendingStats(ctx)
+	if err != nil {
+		t.Fatalf("PendingStats: %v", err)
+	}
+	if pending != 0 {
+		t.Errorf("pending = %d with zero outputs, want 0", pending)
+	}
+
+	// An enabled output with cursor 0 sees the retained change as pending.
+	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	pending, oldest, err := store.PendingStats(ctx)
 	if err != nil {
 		t.Fatalf("PendingStats: %v", err)
 	}
@@ -417,10 +432,10 @@ func TestPendingStats(t *testing.T) {
 		t.Errorf("oldest age = %v, want non-negative", oldest)
 	}
 
-	if err := store.AckChanges(context.Background(), "out-a", change.ID); err != nil {
+	if err := store.AckChanges(ctx, "out-a", change.ID); err != nil {
 		t.Fatalf("AckChanges: %v", err)
 	}
-	pending, _, err = store.PendingStats(context.Background())
+	pending, _, err = store.PendingStats(ctx)
 	if err != nil {
 		t.Fatalf("PendingStats: %v", err)
 	}
@@ -572,5 +587,398 @@ func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	_, err := store.Get(context.Background(), "nope:1")
 	if err != storage.ErrNotFound {
 		t.Errorf("Get missing = %v, want storage.ErrNotFound", err)
+	}
+}
+
+// ---- regression tests: immutable journal snapshots ----
+
+// TestJournalSnapshotsAreHistorical is the CRITICAL snapshot test: NEW
+// (moderate) → UPDATED (severe) → CANCELLED must replay each record with
+// the event state AT THE TIME of its transition, never the current state.
+func TestJournalSnapshotsAreHistorical(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	moderate := normEvent()
+	moderate.SourceID = "snap"
+	moderate.Severity = "moderate"
+	if outcome, _ := ingestOne(t, store, moderate); outcome != storage.OutcomeNew {
+		t.Fatalf("new = %v", outcome)
+	}
+	severe := moderate.Clone()
+	severe.Severity = "severe"
+	if outcome, _ := ingestOne(t, store, severe); outcome != storage.OutcomeUpdated {
+		t.Fatalf("updated = %v", outcome)
+	}
+	cancelled := severe.Clone()
+	cancelled.Status = core.StatusCancelled
+	if outcome, _ := ingestOne(t, store, cancelled); outcome != storage.OutcomeCancelled {
+		t.Fatalf("cancelled = %v", outcome)
+	}
+
+	polled, err := store.PollChanges(ctx, "out", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 3 {
+		t.Fatalf("polled %d changes, want 3", len(polled))
+	}
+	if polled[0].ChangeType != core.ChangeNew || polled[0].Event.Severity != "moderate" || polled[0].Event.Status != core.StatusActive {
+		t.Errorf("#1 = %+v, want new moderate active", polled[0])
+	}
+	if polled[1].ChangeType != core.ChangeUpdated || polled[1].Event.Severity != "severe" || polled[1].Event.Status != core.StatusActive {
+		t.Errorf("#2 = %+v, want updated severe active", polled[1])
+	}
+	if polled[2].ChangeType != core.ChangeCancelled || polled[2].Event.Severity != "severe" || polled[2].Event.Status != core.StatusCancelled {
+		t.Errorf("#3 = %+v, want cancelled severe", polled[2])
+	}
+}
+
+// TestJournalSnapshotsNewAndExpiredDistinct is mandatory: the NEW record
+// must keep status active in its snapshot while the EXPIRED record carries
+// the expired state.
+func TestJournalSnapshotsNewAndExpiredDistinct(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+
+	e := normEvent()
+	e.SourceID = "new-expire"
+	e.ExpiresAt = &past
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeNew {
+		t.Fatalf("new = %v", outcome)
+	}
+	if _, err := store.Expire(ctx, now); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+
+	polled, err := store.PollChanges(ctx, "out", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 2 {
+		t.Fatalf("polled %d changes, want 2", len(polled))
+	}
+	if polled[0].ChangeType != core.ChangeNew || polled[0].Event.Status != core.StatusActive {
+		t.Errorf("#1 = %+v, want new active snapshot", polled[0])
+	}
+	if polled[1].ChangeType != core.ChangeExpired || polled[1].Event.Status != core.StatusExpired {
+		t.Errorf("#2 = %+v, want expired snapshot", polled[1])
+	}
+}
+
+// TestJournalSnapshotsSurviveRestart verifies the immutable payloads
+// survive a database reopen exactly, and that ACKing the first change
+// leaves only the second pending after another restart.
+func TestJournalSnapshotsSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	ctx := context.Background()
+
+	store := openTempAt(t, path)
+	e := normEvent()
+	e.SourceID = "restart-snap"
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeNew {
+		t.Fatalf("new = %v", outcome)
+	}
+	u := e.Clone()
+	u.Severity = "severe"
+	if outcome, _ := ingestOne(t, store, u); outcome != storage.OutcomeUpdated {
+		t.Fatalf("updated = %v", outcome)
+	}
+	store.Close()
+
+	store2 := openTempAt(t, path)
+	polled, err := store2.PollChanges(ctx, "out", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 2 {
+		t.Fatalf("after restart polled %d changes, want 2", len(polled))
+	}
+	if polled[0].Event.Severity != "orange" || polled[0].Event.Status != core.StatusActive {
+		t.Errorf("#1 after restart = %+v", polled[0].Event)
+	}
+	if polled[1].Event.Severity != "severe" || polled[1].Event.Status != core.StatusActive {
+		t.Errorf("#2 after restart = %+v", polled[1].Event)
+	}
+
+	if err := store2.AckChanges(ctx, "out", polled[0].ID); err != nil {
+		t.Fatalf("AckChanges: %v", err)
+	}
+	secondID := polled[1].ID
+	store2.Close()
+
+	store3 := openTempAt(t, path)
+	polled, err = store3.PollChanges(ctx, "out", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 1 || polled[0].ID != secondID {
+		t.Fatalf("after ack+restart polled %+v, want only the second change (%d)", polled, secondID)
+	}
+	if polled[0].Event.Severity != "severe" {
+		t.Errorf("remaining snapshot = %+v, want severe", polled[0].Event)
+	}
+}
+
+// ---- regression tests: output cursor lifecycle ----
+
+// TestSyncOutputsNeverSuccessfulOutputBlocksCleanup covers the data-loss
+// window: an output that never ACKed must block cleanup, because its
+// cursor (created by SyncOutputs, before any delivery) stays at 0.
+func TestSyncOutputsNeverSuccessfulOutputBlocksCleanup(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	var cursors int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM output_cursors WHERE output_id = 'out-a' AND last_acked_id = 0").Scan(&cursors); err != nil {
+		t.Fatalf("read cursor: %v", err)
+	}
+	if cursors != 1 {
+		t.Fatalf("cursor not created before first ACK")
+	}
+
+	e := normEvent()
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeNew {
+		t.Fatalf("ingest = %v", outcome)
+	}
+
+	// The change is old enough for cleanup but was never acknowledged.
+	n, err := store.CleanupChanges(ctx, time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("CleanupChanges: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("cleaned %d changes, want 0 (unacked changes must remain)", n)
+	}
+	polled, err := store.PollChanges(ctx, "out-a", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 1 {
+		t.Fatalf("output polled %d changes, want the retained one", len(polled))
+	}
+}
+
+// TestSyncOutputsRemovedOutputStopsBlockingCleanup: a cursor belonging to
+// a removed output is dropped by SyncOutputs and no longer blocks cleanup.
+func TestSyncOutputsRemovedOutputStopsBlockingCleanup(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	if err := store.SyncOutputs(ctx, []string{"out-a", "out-b"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	e := normEvent()
+	_, change := ingestOne(t, store, e)
+	if err := store.AckChanges(ctx, "out-a", change.ID); err != nil {
+		t.Fatalf("AckChanges: %v", err)
+	}
+
+	// out-b never acks: cleanup is blocked while it exists.
+	n, err := store.CleanupChanges(ctx, time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("CleanupChanges: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("cleaned %d changes, want 0 while out-b exists", n)
+	}
+
+	// Remove out-b from the configured outputs.
+	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	n, err = store.CleanupChanges(ctx, time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("CleanupChanges: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("cleaned %d changes after removal, want 1", n)
+	}
+}
+
+// TestSyncOutputsNewOutputReceivesRetainedChanges: a newly enabled output
+// starts at cursor 0 and receives all changes still present in the journal.
+func TestSyncOutputsNewOutputReceivesRetainedChanges(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	e := normEvent()
+	_, change := ingestOne(t, store, e)
+	if err := store.AckChanges(ctx, "out-a", change.ID); err != nil {
+		t.Fatalf("AckChanges: %v", err)
+	}
+
+	// Add a new output after the change already exists.
+	if err := store.SyncOutputs(ctx, []string{"out-a", "out-c"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	polled, err := store.PollChanges(ctx, "out-c", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 1 || polled[0].ID != change.ID {
+		t.Fatalf("new output polled %+v, want the retained change %d", polled, change.ID)
+	}
+}
+
+// ---- regression tests: expired-event lifecycle ----
+
+// TestStaleExpiredEventDoesNotFlap is mandatory: re-ingesting the same
+// already-expired provider event many times produces exactly ONE expiration
+// transition and zero reactivation loops.
+func TestStaleExpiredEventDoesNotFlap(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+
+	e := normEvent()
+	e.SourceID = "stale"
+	e.ExpiresAt = &past
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeNew {
+		t.Fatalf("new = %v", outcome)
+	}
+
+	changes, err := store.Expire(ctx, now)
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if len(changes) != 1 || changes[0].ChangeType != core.ChangeExpired {
+		t.Fatalf("expiration produced %+v, want one expired change", changes)
+	}
+
+	for i := 0; i < 10; i++ {
+		if outcome, ch := ingestOne(t, store, e.Clone()); outcome != storage.OutcomeDuplicate || ch != nil {
+			t.Fatalf("ingest %d = %v %+v, want duplicate with no change", i, outcome, ch)
+		}
+	}
+
+	polled, err := store.PollChanges(ctx, "out", 50)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 2 {
+		t.Fatalf("journal has %d changes after 10 stale re-ingests, want 2 (new + expired)", len(polled))
+	}
+	if polled[0].ChangeType != core.ChangeNew || polled[1].ChangeType != core.ChangeExpired {
+		t.Fatalf("unexpected journal: %+v", polled)
+	}
+}
+
+// TestExpiredReactivationRequiresLiveExpiry: reactivation only happens when
+// the provider makes the event live again — a future expiry or none at all.
+func TestExpiredReactivationRequiresLiveExpiry(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	t.Run("expiry moved into the future", func(t *testing.T) {
+		store := openTemp(t)
+		e := normEvent()
+		e.SourceID = "reactivate-future"
+		e.ExpiresAt = &past
+		ingestOne(t, store, e)
+		if _, err := store.Expire(ctx, now); err != nil {
+			t.Fatalf("Expire: %v", err)
+		}
+		if outcome, _ := ingestOne(t, store, e.Clone()); outcome != storage.OutcomeDuplicate {
+			t.Fatalf("identical lapsed re-ingest = %v, want duplicate", outcome)
+		}
+		live := e.Clone()
+		live.ExpiresAt = &future
+		outcome, ch := ingestOne(t, store, live)
+		if outcome != storage.OutcomeUpdated || ch == nil || ch.ChangeType != core.ChangeUpdated {
+			t.Fatalf("re-activation = %v %+v, want updated", outcome, ch)
+		}
+		got, err := store.Get(ctx, e.Key())
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Event.Status != core.StatusActive {
+			t.Errorf("status after re-activation = %v, want active", got.Event.Status)
+		}
+	})
+
+	t.Run("expiry removed", func(t *testing.T) {
+		store := openTemp(t)
+		e := normEvent()
+		e.SourceID = "reactivate-nil"
+		e.ExpiresAt = &past
+		ingestOne(t, store, e)
+		if _, err := store.Expire(ctx, now); err != nil {
+			t.Fatalf("Expire: %v", err)
+		}
+		live := e.Clone()
+		live.ExpiresAt = nil
+		outcome, ch := ingestOne(t, store, live)
+		if outcome != storage.OutcomeUpdated || ch == nil || ch.ChangeType != core.ChangeUpdated {
+			t.Fatalf("re-activation = %v %+v, want updated", outcome, ch)
+		}
+		got, err := store.Get(ctx, e.Key())
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Event.Status != core.StatusActive || got.Event.ExpiresAt != nil {
+			t.Errorf("state after re-activation = %+v", got.Event)
+		}
+	})
+}
+
+// TestExpiredContentChangeKeepsExpiredStatus: content changes with a still-
+// lapsed expiry persist the new content but keep the lifecycle expired — no
+// active/expired flapping.
+func TestExpiredContentChangeKeepsExpiredStatus(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+
+	e := normEvent()
+	e.SourceID = "expired-content"
+	e.ExpiresAt = &past
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeNew {
+		t.Fatalf("new = %v", outcome)
+	}
+	if _, err := store.Expire(ctx, now); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+
+	changed := e.Clone()
+	changed.Severity = "extreme"
+	outcome, ch := ingestOne(t, store, changed)
+	if outcome != storage.OutcomeUpdated || ch == nil || ch.ChangeType != core.ChangeUpdated {
+		t.Fatalf("content change = %v %+v, want updated", outcome, ch)
+	}
+
+	got, err := store.Get(ctx, e.Key())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Event.Severity != "extreme" {
+		t.Errorf("severity = %q, want persisted content", got.Event.Severity)
+	}
+	if got.Event.Status != core.StatusExpired {
+		t.Errorf("status = %v, want still expired", got.Event.Status)
+	}
+
+	// The updated journal record's snapshot must carry the expired status.
+	polled, err := store.PollChanges(ctx, "out", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 3 { // new, expired, updated (content change, still expired)
+		t.Fatalf("journal has %d changes, want 3", len(polled))
+	}
+	if polled[2].ChangeType != core.ChangeUpdated || polled[2].Event.Status != core.StatusExpired || polled[2].Event.Severity != "extreme" {
+		t.Fatalf("unexpected updated snapshot: %+v", polled[2])
 	}
 }

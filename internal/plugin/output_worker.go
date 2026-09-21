@@ -220,18 +220,19 @@ func (w *outputWorker) publishStatus(ctx context.Context, publisher StatusPublis
 	select {
 	case err := <-result:
 		if err != nil {
-			w.onFailure(fmt.Errorf("publish status: %w", err))
-			return
+			// Status publication failures are auxiliary: they never
+			// suspend the plugin or reset its event-delivery failure
+			// counter. Hazard event delivery is critical; the heartbeat
+			// is not.
+			w.logger.Warn("output plugin status publish failed",
+				"plugin_id", w.id, "plugin_type", w.kind, "error", err)
 		}
-		w.onSuccess()
 	case <-callCtx.Done():
-		// Timed out. Count the failure, then wait for the stuck call so
+		// Timed out. Log it, then wait for the stuck call so
 		// PublishStatus never overlaps a later Handle invocation. On
-		// shutdown the wait is abandoned (the change journal, not the
-		// status snapshot, carries the delivery guarantee).
-		w.onFailure(fmt.Errorf("publish status timed out after %s", w.timeout))
+		// shutdown the wait is abandoned.
 		w.logger.Warn("output plugin status publish timed out",
-			"plugin_id", w.id, "plugin_type", w.kind)
+			"plugin_id", w.id, "plugin_type", w.kind, "timeout", w.timeout)
 		select {
 		case <-result:
 		case <-ctx.Done():

@@ -41,3 +41,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Compiled binary in the repository root (historical accident; build into build/ instead).
+/warnflux

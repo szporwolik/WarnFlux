@@ -47,10 +47,21 @@ they are the next step; the plugin contracts are designed for them.
   (`updated`) when a source reports it again.
 - **Change journal**: every meaningful transition is written atomically
   with the event update into a durable journal with monotonically
-  increasing IDs. Outputs poll and acknowledge their own cursor, giving
-  **at-least-once delivery** that survives restarts and crashes.
+  increasing IDs. Each journal record carries an **immutable JSON
+  snapshot** of the complete event state at the moment of that transition;
+  the `events` table is current state, the journal is history. Outputs poll
+  and acknowledge their own cursor, giving **at-least-once delivery** that
+  survives restarts and crashes.
+- **Output cursors**: at startup the store synchronizes one cursor row per
+  enabled output (created before any delivery, removed for outputs that no
+  longer exist). A newly enabled output starts at cursor 0 and receives all
+  changes still present in the retained journal. Cleanup, pending stats and
+  polling all operate on this same authoritative cursor set.
 - **Expiration**: a maintenance loop atomically marks active events with
   `expires_at <= now` as `expired`, journaling a change for each.
+  Re-ingesting the same already-expired provider event is a duplicate, not
+  a reactivation; an event becomes active again only when the provider
+  makes it live again (a future expiry or none).
 
 ## Build
 
@@ -119,7 +130,7 @@ outputs:
       password: ""        # mutually exclusive with password_file
       password_file: ""   # e.g. /run/secrets/mqtt-password
       topic_prefix: warnflux
-      qos: 1
+      qos: 1                # 1 or 2 (0 is rejected: best-effort transport)
       heartbeat_interval: 30s   # 0 disables periodic status publication
 ```
 
@@ -128,15 +139,30 @@ duplicate IDs and malformed plugin configuration are startup errors.
 
 ## MQTT output
 
-The MQTT output publishes to two topics under `topic_prefix`:
+The MQTT output publishes to two topics under `topic_prefix`
+(`warnflux` in the examples below):
 
-| Topic | Retained | Content |
-|-------|----------|---------|
-| `<prefix>/events` | no | one JSON message per event change (`new`, `updated`, `cancelled`, `expired`) |
-| `<prefix>/status` | yes | periodic application status snapshot (`heartbeat_interval`) |
+| Topic | Retained | QoS | Content |
+|-------|----------|-----|---------|
+| `warnflux/events` | no | `qos` from config (**1 or 2**; 0 is rejected) | one JSON message per meaningful event change |
+| `warnflux/status` | yes | `qos` from config | periodic application health snapshot (`heartbeat_interval`) |
 
-Event message example (fields use `lower_snake_case`; `schema_version`
-identifies the wire format):
+Messages are UTF-8 JSON. Field names use `lower_snake_case`; the
+`schema_version` field identifies the wire format (currently `1`).
+
+> **Delivery guarantee and QoS.** The durable journal provides
+> at-least-once delivery at the plugin boundary: a change is acknowledged
+> only after the plugin reports success, and unacknowledged changes are
+> re-delivered after a restart. MQTT QoS 0 would make the network hop
+> best-effort, so it is rejected at configuration time — `qos` must be `1`
+> or `2` (default `1`).
+
+### Event messages — `warnflux/events`
+
+Published whenever an event transitions: `new`, `updated`, `cancelled`
+(by a source) or `expired` (by the expiration worker). Duplicates are
+never published. After a restart, unacknowledged changes are re-published
+(at-least-once) — deduplicate on `change_id` if you need exactly-once.
 
 ```json
 {
@@ -149,30 +175,167 @@ identifies the wire format):
     "category": "met",
     "event": "Rain",
     "severity": "orange",
+    "urgency": "expected",
+    "certainty": "likely",
     "headline": "Heavy rain expected",
+    "description": "Heavy rain with local thunderstorms over North Rhine-Westphalia.",
+    "instruction": "Avoid low-lying areas and secure loose objects.",
     "effective_at": "2026-01-01T00:00:00Z",
     "expires_at": "2026-01-02T00:00:00Z",
+    "latitude": 51.23,
+    "longitude": 7.03,
     "areas": ["DE-NW", "DE-RP"],
-    "status": "active"
+    "status": "active",
+    "source_url": "https://example.org/alert/2.49.0.1.616.0.DEU",
+    "received_at": "2026-01-01T00:05:00Z",
+    "updated_at": "2026-01-01T00:05:00Z"
   }
 }
 ```
 
-The status snapshot reports version, uptime, database health, pending
-journal changes and per-plugin state.
+Top-level fields:
 
-### Verify with mosquitto_sub
+| Field | Type | Meaning |
+|-------|------|---------|
+| `schema_version` | int | wire format version (currently `1`); bump means breaking change |
+| `change_id` | int64 | durable journal ID, monotonically increasing per event transition — your dedup key |
+| `change_type` | string | `new`, `updated`, `cancelled` or `expired` |
+| `event` | object | full normalized event snapshot — see below |
+
+`event` fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `source` | string | normalized lowercase provider name (e.g. `meteoalarm`); with `source_id` forms the stable identity `source:source_id` |
+| `source_id` | string | provider-specific event identifier |
+| `category` | string | provider category code (e.g. `met`) |
+| `event` | string | event type (e.g. `Rain`) |
+| `severity` | string | provider-defined; CAP-style vocabulary: `Minor`, `Moderate`, `Severe`, `Extreme`, `Unknown` |
+| `urgency` | string | CAP-style: `Immediate`, `Expected`, `Future`, `Past`, `Unknown` |
+| `certainty` | string | CAP-style: `Observed`, `Likely`, `Possible`, `Unlikely`, `Unknown` |
+| `headline` | string | short human-readable headline |
+| `description` | string | full description |
+| `instruction` | string | recommended protective action |
+| `effective_at` | RFC3339 string, optional | when the alert takes effect; omitted when not provided |
+| `expires_at` | RFC3339 string, optional | when the alert expires; omitted = never expires |
+| `latitude` | float, optional | event location; always present together with `longitude` or both omitted |
+| `longitude` | float, optional | see `latitude` |
+| `areas` | array of strings | affected areas (trimmed, de-duplicated) |
+| `status` | string | lifecycle state: `active`, `cancelled` or `expired` (never `updated` — that is a change type, not a state) |
+| `source_url` | string | link to the original provider page |
+| `received_at` | RFC3339 string | when the source delivered the event (ingestion metadata) |
+| `updated_at` | RFC3339 string | when the persisted content last changed |
+
+Empty values are serialized as `""` (strings) or `[]` (areas); optional
+fields (`effective_at`, `expires_at`, `latitude`, `longitude`) are
+omitted entirely when absent. Severity/urgency/certainty are passed
+through as provided by the source adapter; built-in conventions follow
+the CAP vocabulary listed above.
+
+### Status snapshot — `warnflux/status`
+
+Published every `heartbeat_interval` (set it to `0` to disable) and
+**retained**: a new subscriber immediately receives the latest snapshot.
+This is the replacement for the old "ping" topic.
+
+```json
+{
+  "schema_version": 1,
+  "service": "warnflux",
+  "state": "running",
+  "generated_at": "2026-09-22T12:00:00Z",
+  "version": "0.1.0",
+  "uptime_seconds": 3600,
+  "database_healthy": true,
+  "pending_changes": 0,
+  "oldest_pending_age_seconds": 0,
+  "sources": [
+    {
+      "id": "demo",
+      "type": "demo",
+      "state": "running",
+      "consecutive_failures": 0,
+      "restart_count": 0
+    }
+  ],
+  "outputs": [
+    {
+      "id": "mqtt-local",
+      "type": "mqtt",
+      "state": "running",
+      "consecutive_failures": 0,
+      "restart_count": 0,
+      "last_error": ""
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `service` | always `warnflux` |
+| `state` | `running` while the process is alive |
+| `generated_at` | UTC observation time of the snapshot (RFC3339) — consumers should treat a retained snapshot as stale when it stops advancing |
+| `version` | build version (`dev` for development builds) |
+| `uptime_seconds` | seconds since the manager started |
+| `database_healthy` | whether the last database operation succeeded |
+| `pending_changes` | journal changes not yet acknowledged by every enabled output; **0 when no outputs are configured** (retained changes are history, not a backlog) |
+| `oldest_pending_age_seconds` | age of the oldest pending change |
+| `sources` / `outputs` | one entry per plugin instance: `id`, `type`, `state` (`starting`, `running`, `degraded`, `suspended`, `stopping`, `stopped`, `disabled`), `consecutive_failures`, `restart_count`, `last_error` |
+
+### How to subscribe
+
+All messages (topics are prefixed with the configured `topic_prefix`):
 
 ```bash
-mosquitto_sub -h localhost -t 'warnflux/#' -v
+mosquitto_sub -h localhost -p 1883 -t 'warnflux/#' -v
 ```
+
+Only event changes:
+
+```bash
+mosquitto_sub -h localhost -p 1883 -t 'warnflux/events' -v
+```
+
+Fetch the latest retained status snapshot once and exit:
+
+```bash
+mosquitto_sub -h localhost -p 1883 -t 'warnflux/status' -C 1 -v
+```
+
+With authentication:
+
+```bash
+mosquitto_sub -h broker.example.com -p 1883 \
+  -u warnflux -P '<password>' \
+  -t 'warnflux/#' -v
+```
+
+Capture the next 5 event messages and exit (`change_id` allows
+deduplication on the consumer side):
+
+```bash
+mosquitto_sub -h localhost -p 1883 -t 'warnflux/events' -C 5 -v
+```
+
+Without local mosquitto clients, subscribe from a container:
+
+```bash
+docker run --rm eclipse-mosquitto:2 mosquitto_sub \
+  -h broker.example.com -p 1883 -u warnflux -P '<password>' \
+  -t 'warnflux/#' -v
+```
+
 
 ## Delivery guarantee
 
 - Every event transition is committed to the journal **in the same SQLite
-  transaction** as the state change (`synchronous=FULL`, WAL).
-- Each output keeps an independent acknowledgment cursor; a change is
-  acknowledged only after the plugin reports success.
+  transaction** as the state change (`synchronous=FULL`, WAL), together
+  with the immutable event snapshot for that transition.
+- At startup the store creates one cursor per enabled output **before any
+  delivery**; a change is acknowledged only after the plugin reports
+  success, and an output that never succeeds keeps its cursor at 0 —
+  cleanup can never delete its undelivered changes.
 - After a restart, unacknowledged changes are re-polled and re-delivered:
   **at-least-once**. Consumers of the MQTT stream should deduplicate on
   `change_id` if exactly-once semantics are required.
@@ -192,6 +355,18 @@ refuses to touch a database created by a newer one.
 | `busy_timeout` | `5000` | wait for locks instead of failing immediately |
 | `foreign_keys` | `ON` | integrity checks if relations are added later |
 | connections | `1` | serialized access: no `SQLITE_BUSY` by design |
+
+Schema versions: **v1** events table → **v2** ms expiry + change journal +
+output cursors → **v3** immutable `event_snapshot` per journal row.
+Databases created by the pre-release v2 schema have their old journal rows
+backfilled with the CURRENT event state (documented limitation: pre-v3
+rows cannot be reconstructed historically). All changes written after v3
+carry exact historical snapshots.
+
+**Zero outputs:** when no outputs are enabled, retained changes are
+history, not pending deliveries — `PendingStats` reports 0 and cleanup
+removes changes once they are older than `change_retention`. Adding an
+output later replays only what is still retained.
 
 ## Docker
 
@@ -337,6 +512,6 @@ docs/                  plugin guide and project docs
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)
 
 ```

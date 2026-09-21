@@ -53,6 +53,166 @@ Outputs: EventChange → MQTT, ... (only the ping today)
   active until a source cancels them (or a future source-specific policy
   says otherwise).
 
+## Plugins
+
+### Philosophy
+
+WarnFlux plugins are **compiled-in integrations**: ordinary Go packages
+in this repository, selected and configured through the YAML configuration.
+They are not dynamic libraries, and no arbitrary code is loaded at runtime.
+A community contribution goes through code review and tests, is compiled
+into the binary, and is then enabled through YAML.
+
+### Categories
+
+- **Source plugins** obtain hazard information (CAP, GDACS, IMGW, …) and
+  emit normalized `HazardEvent` values through the `Emitter` interface.
+- **Output plugins** receive meaningful `EventChange` values from the core
+  (currently the built-in MQTT output).
+
+Plugins never bypass the core: validation, identity, fingerprinting,
+deduplication, persistence, lifecycle and routing are owned by WarnFlux.
+A source cannot access the database, and an output cannot access other
+plugins.
+
+### Configuration
+
+```yaml
+sources:
+  - id: demo
+    type: demo            # registered plugin type
+    enabled: false
+    runtime:              # framework-level supervision options
+      restart: true
+      startup_timeout: 15s
+      shutdown_timeout: 10s
+    config:               # plugin-specific, decoded by the plugin itself
+      interval: 30s
+
+outputs:
+  - id: mqtt-main
+    type: mqtt
+    enabled: true
+    runtime:
+      timeout: 10s
+      failure_threshold: 5
+    config:
+      broker: tcp://localhost:1883
+      client_id: warnflux-events
+      topic_prefix: warnflux
+      qos: 1
+```
+
+Every instance needs a unique `id` (shared namespace between sources and
+outputs) and a known `type`. Disabled plugins are never instantiated.
+Unknown types, duplicate IDs and malformed plugin configuration are startup
+errors: WarnFlux refuses to start.
+
+### Failure isolation
+
+- plugin panics are recovered, logged with a stack trace and isolated
+- every source runs under its own supervisor with bounded exponential
+  backoff (1s → 2s → … → max 1m, reset after a healthy run)
+- every output has its own bounded queue and worker with a per-call timeout
+- a broken MQTT server cannot block other outputs, and vice versa
+- repeated output failures suspend the plugin; periodic recovery probes
+  reset the failure counter on success
+- queues are bounded; a full queue applies backpressure and reports an
+  error instead of silently dropping hazard events
+- plugin failures are logged with `plugin_id`, `plugin_type` and the error;
+  secrets are never logged
+
+> Because built-in plugins execute inside the WarnFlux process, this is
+> fault isolation rather than a security sandbox. A malicious or severely
+> broken plugin can still call `os.Exit`, consume all memory, spawn
+> unmanaged goroutines or ignore context cancellation. Community plugins
+> must undergo code review.
+
+### Writing a plugin
+
+A source plugin implements two methods:
+
+```go
+package example
+
+type Source struct{ cfg Config }
+
+func (s *Source) Name() string { return "example" }
+
+func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
+    // provider-specific polling loop; return when ctx is cancelled
+    return nil
+}
+
+// New decodes and validates the plugin-specific YAML config.
+func New(node *yaml.Node) (plugin.SourcePlugin, error) {
+    var cfg Config
+    if err := plugin.DecodeConfig(node, &cfg); err != nil {
+        return nil, err
+    }
+    // validate cfg here
+    return &Source{cfg: cfg}, nil
+}
+
+func Register(reg *plugin.Registry) error {
+    return reg.RegisterSource("example", New)
+}
+```
+
+An output plugin is equally small:
+
+```go
+func (o *Output) Name() string { return "example" }
+
+func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
+    // deliver the change; ctx is bounded by runtime.timeout
+    return nil
+}
+
+func Register(reg *plugin.Registry) error {
+    return reg.RegisterOutput("example", New)
+}
+```
+
+Then add one line in `internal/plugins/plugins.go`:
+
+```go
+if err := example.Register(reg); err != nil {
+    return err
+}
+```
+
+Mandatory rules for plugin implementations:
+
+- respect context cancellation; do not block past it
+- do not panic intentionally; do not call `os.Exit`
+- do not create unmanaged permanent goroutines or unbounded channels
+- use request contexts and finite timeouts for network calls
+- do not access storage, ingestion internals or other plugins directly
+- do not bypass the emitter / change contract
+- do not log secrets; do not use global mutable state
+- validate the configuration before starting; return meaningful errors
+
+### Contribution requirements
+
+A plugin pull request must include:
+
+- a typed configuration struct decoded strictly from YAML
+- configuration validation
+- unit tests
+- README / configuration documentation
+- reasonable network timeouts and context cancellation support
+- no direct database access, no dependency on other plugins
+- no secrets in logs, no unbounded goroutines or channels
+- no process termination calls and no unnecessary large dependencies
+
+### HTTP client guidance
+
+Plugins calling APIs must use the request context, a finite connect/request
+timeout, a reasonable User-Agent, and bounded response body sizes where
+practical. A remote endpoint must not be able to hold a WarnFlux plugin
+connection forever.
+
 ## Project layout
 
 ```text
@@ -61,6 +221,8 @@ internal/config/     YAML configuration loading and validation
 internal/core/       normalized event model, identity, fingerprint
 internal/ingest/     dedup/update/cancel pipeline + expiration worker
 internal/storage/    EventStore interface + SQLite implementation
+internal/plugin/     plugin contracts, registry, supervision, status
+internal/plugins/    built-in source and output plugins
 internal/mqtt/       MQTT client and ping publisher
 config.example.yaml  example configuration
 .github/workflows/   Build and Publish workflow (release.yml)
@@ -114,6 +276,9 @@ All settings live in the YAML file. Defaults are applied for missing values:
 | `mqtt.topic_prefix`  | `warnflux`   | topic prefix for published messages                |
 | `mqtt.qos`           | `1`              | QoS for published messages: `0`, `1` or `2`        |
 | `mqtt.ping_interval` | `30s`            | interval between heartbeat pings (Go duration)     |
+
+Plugin instances are configured in the `sources:` and `outputs:` sections;
+see the [Plugins](#plugins) section.
 
 Credentials are never written to the logs.
 

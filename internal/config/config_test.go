@@ -282,3 +282,92 @@ func TestLoadInvalidLogRotation(t *testing.T) {
 		t.Fatal("expected error for negative log_max_backups, got nil")
 	}
 }
+
+const pluginConfig = `sources:
+  - id: demo
+    type: demo
+    enabled: false
+    runtime:
+      restart: true
+      startup_timeout: 15s
+      shutdown_timeout: 10s
+    config:
+      interval: 30s
+outputs:
+  - id: mqtt-main
+    type: mqtt
+    enabled: true
+    runtime:
+      timeout: 10s
+      failure_threshold: 5
+    config:
+      broker: tcp://localhost:1883
+`
+
+func TestLoadPluginConfig(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, pluginConfig))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Sources) != 1 || len(cfg.Outputs) != 1 {
+		t.Fatalf("sources=%d outputs=%d, want 1/1", len(cfg.Sources), len(cfg.Outputs))
+	}
+	src := cfg.Sources[0]
+	if src.ID != "demo" || src.Type != "demo" || src.Enabled {
+		t.Errorf("unexpected source: %+v", src)
+	}
+	if src.Runtime.Restart != true || src.Runtime.StartupTimeout != 15*time.Second || src.Runtime.ShutdownTimeout != 10*time.Second {
+		t.Errorf("unexpected source runtime: %+v", src.Runtime)
+	}
+	if src.Config == nil {
+		t.Error("source config node should be preserved")
+	}
+	out := cfg.Outputs[0]
+	if out.ID != "mqtt-main" || out.Type != "mqtt" || !out.Enabled {
+		t.Errorf("unexpected output: %+v", out)
+	}
+	if out.Runtime.Timeout != 10*time.Second || out.Runtime.FailureThreshold != 5 {
+		t.Errorf("unexpected output runtime: %+v", out.Runtime)
+	}
+	if out.Config == nil {
+		t.Error("output config node should be preserved")
+	}
+}
+
+func TestLoadPluginRuntimeDefaults(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, "sources:\n  - id: s\n    type: demo\n    enabled: true\noutputs:\n  - id: o\n    type: mqtt\n    enabled: true\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Sources[0].Runtime; got.Restart != true || got.StartupTimeout != 15*time.Second || got.ShutdownTimeout != 10*time.Second {
+		t.Errorf("source runtime defaults = %+v", got)
+	}
+	if got := cfg.Outputs[0].Runtime; got.Timeout != 10*time.Second || got.FailureThreshold != 5 {
+		t.Errorf("output runtime defaults = %+v", got)
+	}
+}
+
+func TestLoadPluginDuplicateIDRejected(t *testing.T) {
+	_, err := Load(writeTempConfig(t, "sources:\n  - id: x\n    type: demo\noutputs:\n  - id: x\n    type: mqtt\n"))
+	if err == nil || !strings.Contains(err.Error(), "duplicate plugin id") {
+		t.Errorf("error = %v, want duplicate plugin id", err)
+	}
+}
+
+func TestLoadPluginMissingTypeRejected(t *testing.T) {
+	if _, err := Load(writeTempConfig(t, "sources:\n  - id: x\n")); err == nil {
+		t.Fatal("expected error for missing type, got nil")
+	}
+	if _, err := Load(writeTempConfig(t, "sources:\n  - type: demo\n")); err == nil {
+		t.Fatal("expected error for missing id, got nil")
+	}
+}
+
+func TestLoadPluginInvalidRuntimeRejected(t *testing.T) {
+	if _, err := Load(writeTempConfig(t, "sources:\n  - id: x\n    type: demo\n    runtime:\n      startup_timeout: 0s\n")); err == nil {
+		t.Fatal("expected error for startup_timeout 0s, got nil")
+	}
+	if _, err := Load(writeTempConfig(t, "outputs:\n  - id: x\n    type: mqtt\n    runtime:\n      failure_threshold: 0\n")); err == nil {
+		t.Fatal("expected error for failure_threshold 0, got nil")
+	}
+}

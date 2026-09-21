@@ -23,6 +23,8 @@ import (
 	"warnflux/internal/config"
 	"warnflux/internal/ingest"
 	"warnflux/internal/mqtt"
+	"warnflux/internal/plugin"
+	"warnflux/internal/plugins"
 	"warnflux/internal/storage/sqlite"
 )
 
@@ -93,6 +95,18 @@ func run(configPath string) error {
 
 	ingester := ingest.NewIngester(store, logger)
 
+	// Build the plugin manager from the YAML plugin configuration. Unknown
+	// types, duplicate IDs and malformed plugin configs fail here, before
+	// any worker starts.
+	registry := plugin.NewRegistry()
+	if err := plugins.RegisterBuiltins(registry); err != nil {
+		return fmt.Errorf("register built-in plugins: %w", err)
+	}
+	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs, ingester.Ingest, logger)
+	if err != nil {
+		return fmt.Errorf("configure plugins: %w", err)
+	}
+
 	// ctx is cancelled on SIGINT or SIGTERM; all work is tied to it.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -101,6 +115,13 @@ func run(configPath string) error {
 		client *mqtt.Client
 		wg     sync.WaitGroup
 	)
+
+	// Plugin manager: source supervisors, ingestion workers and outputs.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		manager.Run(ctx)
+	}()
 
 	// Expiration worker: periodically marks stale active events as expired.
 	wg.Add(1)

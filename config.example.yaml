@@ -26,6 +26,41 @@ storage:
   # persistent volume, e.g. /data/warnflux.db.
   path: ./warnflux.db
 
+# Source plugins: ingest hazard information and emit normalized events.
+sources:
+  # The demo source is for development/testing only; disabled by default.
+  - id: demo
+    type: demo
+    enabled: false
+
+    runtime:
+      restart: true
+      startup_timeout: 15s
+      shutdown_timeout: 10s
+
+    config:
+      interval: 30s
+
+# Output plugins: receive meaningful event changes from the core.
+outputs:
+  # Publishes hazard event changes to MQTT. Separate from the status ping
+  # configured under mqtt: below.
+  - id: mqtt-main
+    type: mqtt
+    enabled: false
+
+    runtime:
+      timeout: 10s
+      failure_threshold: 5
+
+    config:
+      broker: tcp://localhost:1883
+      client_id: warnflux-events
+      username: ""
+      password: ""
+      topic_prefix: warnflux
+      qos: 1
+
 mqtt:
   # Set to false to run WarnFlux without an MQTT connection.
   enabled: true

@@ -12,8 +12,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"warnflux/internal/core"
-	"warnflux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
 // Type is the plugin type name used in the YAML configuration.

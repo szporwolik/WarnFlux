@@ -14,10 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
-	"warnflux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/core"
 )
 
 // Emitter is handed to a source plugin by WarnFlux. It is the only way
@@ -57,6 +58,27 @@ type OutputFactory func(config *yaml.Node) (OutputPlugin, error)
 // invokes it (with a timeout and panic recovery) after the plugin stops.
 type Closer interface {
 	Close() error
+}
+
+// Status is an application health snapshot that status-publishing outputs
+// (such as the retained MQTT status topic) may consume.
+type Status struct {
+	Version          string
+	Uptime           time.Duration
+	DatabaseHealthy  bool
+	PendingChanges   int
+	OldestPendingAge time.Duration
+	Sources          []PluginStatus
+	Outputs          []PluginStatus
+}
+
+// StatusPublisher is an optional output plugin interface: the worker calls
+// PublishStatus periodically (never concurrently with Handle) using the
+// interval reported by StatusInterval. Failures are counted like delivery
+// failures.
+type StatusPublisher interface {
+	PublishStatus(ctx context.Context, status Status) error
+	StatusInterval() time.Duration
 }
 
 // DecodeConfig decodes the raw plugin configuration node into a typed

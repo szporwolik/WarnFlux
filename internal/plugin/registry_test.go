@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"warnflux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/core"
 )
 
 func sourceFactoryFor(t *testing.T, p SourcePlugin) SourceFactory {

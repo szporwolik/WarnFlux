@@ -10,15 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"warnflux/internal/config"
-	"warnflux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/core"
 )
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// waitFor polls cond until it is true or the deadline passes.
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -37,7 +36,6 @@ func testSourceCfg(id string, restart bool) config.Source {
 		Enabled: true,
 		Runtime: config.SourceRuntime{
 			Restart:         restart,
-			StartupTimeout:  5 * time.Millisecond,
 			ShutdownTimeout: 50 * time.Millisecond,
 		},
 	}
@@ -46,8 +44,6 @@ func testSourceCfg(id string, restart bool) config.Source {
 func noopEmitter() Emitter {
 	return EmitterFunc(func(context.Context, core.HazardEvent) error { return nil })
 }
-
-// ---- test source plugins ----
 
 type blockingSource struct{}
 
@@ -249,9 +245,6 @@ func TestSupervisorBackoffResetsAfterHealthyRun(t *testing.T) {
 
 	go s.run(ctx)
 
-	// First run fails immediately; second run blocks healthily past the
-	// reset window. Release the gate; the restart delay must be the base
-	// delay again (backoff was reset), not 2x base.
 	waitFor(t, 2*time.Second, func() bool { return tracker.snapshot().State == StateRunning })
 	time.Sleep(25 * time.Millisecond) // let the reset timer fire
 	close(gate)
@@ -280,7 +273,6 @@ func TestSupervisorBackoffResetsAfterHealthyRun(t *testing.T) {
 }
 
 func TestSupervisorShutdownTimeoutIsBounded(t *testing.T) {
-	// A source that ignores its context must not freeze shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 
 	tracker := newStatusTracker("stuck", "test", KindSource)
@@ -319,5 +311,51 @@ func TestSupervisorNoRestartConfig(t *testing.T) {
 	case <-s.done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("supervisor did not stop")
+	}
+}
+
+// TestSupervisorNoRestartAfterCancellation verifies that cancelling during
+// the backoff does not schedule another restart (M17).
+func TestSupervisorNoRestartAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	tracker := newStatusTracker("src", "test", KindSource)
+	s := newSourceSupervisor(testSourceCfg("src", true), failingSource{}, noopEmitter(), testLogger(), tracker)
+	s.backoffBase = time.Millisecond
+
+	release := make(chan struct{})
+	waits := 0
+	var mu sync.Mutex
+	s.waitBackoffFn = func(_ context.Context, d time.Duration) bool {
+		mu.Lock()
+		waits++
+		mu.Unlock()
+		<-release // block inside the backoff until the test proceeds
+		return false
+	}
+
+	go s.run(ctx)
+
+	waitFor(t, 2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return waits == 1
+	})
+
+	cancel()
+	close(release)
+
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+
+	st := tracker.snapshot()
+	if st.State != StateStopped {
+		t.Errorf("state = %v, want stopped", st.State)
+	}
+	if st.RestartCount != 1 {
+		t.Errorf("restart count = %d, want 1 (no extra restart after cancel)", st.RestartCount)
 	}
 }

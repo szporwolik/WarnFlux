@@ -7,7 +7,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"warnflux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/config"
 )
 
 // Supervisor defaults; tests in this package replace them via fields.
@@ -56,7 +56,11 @@ func newSourceSupervisor(cfg config.Source, p SourcePlugin, emit Emitter, logger
 
 // run executes the plugin until ctx is cancelled. The plugin is always
 // invoked in its own goroutine under recover(), so a panic becomes a logged
-// failure of this plugin only.
+// failure of this plugin only. There is no readiness contract: once the
+// plugin goroutine has been launched, the source is considered running.
+// A Run that returns while the application is still running is treated as
+// an unexpected stop and restarted when restart=true (a polling source that
+// completes one pass legitimately should return nil — restarting re-runs it).
 func (s *sourceSupervisor) run(ctx context.Context) {
 	defer close(s.done)
 
@@ -71,29 +75,9 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 			runDone <- invokeSource(s.plugin, runCtx, s.emit)
 		}()
 
-		// Wait for either a stable startup, an early exit, or shutdown.
-		select {
-		case <-ctx.Done():
-			s.shutdown(cancel, runDone)
-			return
-		case <-time.After(s.runtime.StartupTimeout):
-			// The plugin survived the startup window: consider it running.
-			s.tracker.setState(StateRunning)
-			s.tracker.success(time.Now())
-		case result := <-runDone:
-			cancel()
-			s.recordExit(result)
-			if ctx.Err() != nil {
-				s.tracker.setState(StateStopped)
-				return
-			}
-			if !s.runtime.Restart {
-				s.tracker.setState(StateStopped)
-				return
-			}
-			attempt = s.restart(ctx, attempt)
-			continue
-		}
+		// No readiness contract exists: the plugin is running.
+		s.tracker.setState(StateRunning)
+		s.tracker.success(time.Now())
 
 		if !s.runtime.Restart {
 			// Wait for a natural exit without restarting.
@@ -111,11 +95,15 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 
 		// Restart enabled: wait for exit, reset backoff after a healthy
 		// stretch, and restart with bounded backoff afterwards.
-		exited, shutdown := s.waitForExit(ctx, cancel, runDone, &attempt)
+		_, shutdown := s.waitForExit(ctx, cancel, runDone, &attempt)
 		if shutdown {
 			return
 		}
-		_ = exited
+		// Never schedule another restart once the root context is cancelled.
+		if ctx.Err() != nil {
+			s.tracker.setState(StateStopped)
+			return
+		}
 		attempt = s.restart(ctx, attempt)
 	}
 }
@@ -144,8 +132,13 @@ func (s *sourceSupervisor) waitForExit(ctx context.Context, cancel context.Cance
 }
 
 // restart waits out the bounded backoff and reports the next attempt index.
-// It returns false when the application is shutting down.
+// It returns false when the application is shutting down, and never logs or
+// schedules a restart after the root context is cancelled.
 func (s *sourceSupervisor) restart(ctx context.Context, attempt int) int {
+	if ctx.Err() != nil {
+		s.tracker.setState(StateStopped)
+		return attempt
+	}
 	delay := s.backoffDelay(attempt)
 	next := attempt + 1
 	s.tracker.restart()

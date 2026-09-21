@@ -4,9 +4,9 @@
 package plugins
 
 import (
-	"warnflux/internal/plugin"
-	"warnflux/internal/plugins/outputs/mqtt"
-	"warnflux/internal/plugins/sources/demo"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/demo"
 )
 
 // RegisterBuiltins registers every built-in plugin type. Registration is

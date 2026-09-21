@@ -72,7 +72,6 @@ func TestFingerprintChangesOnContentChange(t *testing.T) {
 		{"severity", func(e *HazardEvent) { e.Severity = "red" }},
 		{"description", func(e *HazardEvent) { e.Description = "Changed text." }},
 		{"headline", func(e *HazardEvent) { e.Headline = "New headline" }},
-		{"status", func(e *HazardEvent) { e.Status = StatusCancelled }},
 		{"expiry", func(e *HazardEvent) { t := time.Now(); e.ExpiresAt = &t }},
 		{"location", func(e *HazardEvent) { v := 12.3; e.Latitude = &v }},
 		{"areas", func(e *HazardEvent) { e.Areas = []string{"PL-MA"} }},
@@ -86,6 +85,18 @@ func TestFingerprintChangesOnContentChange(t *testing.T) {
 				t.Errorf("fingerprint did not change when %s changed", tc.name)
 			}
 		})
+	}
+}
+
+func TestFingerprintIgnoresLifecycleStatus(t *testing.T) {
+	// The fingerprint represents provider content only; lifecycle state is
+	// handled separately so transitions (active -> cancelled) can be
+	// detected without corrupting content hashes.
+	base := Fingerprint(sampleEvent())
+	e := sampleEvent()
+	e.Status = StatusCancelled
+	if got := Fingerprint(e); got != base {
+		t.Error("lifecycle status must not affect the content fingerprint")
 	}
 }
 
@@ -117,5 +128,25 @@ func TestFingerprintZeroTimeEqualsNil(t *testing.T) {
 	b.ExpiresAt = &zero
 	if Fingerprint(a) != Fingerprint(b) {
 		t.Error("nil and zero ExpiresAt must produce the same fingerprint")
+	}
+}
+
+func TestFingerprintBoundaryCoordinatesStable(t *testing.T) {
+	// Validation rejects NaN/Inf; extreme-but-valid coordinates must
+	// fingerprint deterministically (marshal cannot fail).
+	for _, coords := range [][2]float64{
+		{-90, -180},
+		{90, 180},
+		{0, 0},
+		{49.999999, 19.123456},
+	} {
+		e := sampleEvent()
+		lat, lon := coords[0], coords[1]
+		e.Latitude, e.Longitude = &lat, &lon
+		a := Fingerprint(e)
+		b := Fingerprint(e)
+		if a != b {
+			t.Fatalf("fingerprint unstable for %v", coords)
+		}
 	}
 }

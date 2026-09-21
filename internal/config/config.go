@@ -20,21 +20,20 @@ const (
 	DefaultConfigPath = "config.yaml"
 
 	defaultLogLevel           = "info"
-	defaultClientID           = "warnflux"
-	defaultTopicPrefix        = "warnflux"
-	defaultQoS                = byte(1)
-	defaultPingInterval       = 30 * time.Second
 	defaultExpirationInterval = time.Minute
+	defaultChangeRetention    = 24 * time.Hour
 	defaultStorageDriver      = "sqlite"
-	defaultStoragePath        = "warnflux.db"
-	defaultLogFile            = ""
-	defaultLogMaxSizeMB       = 10
-	defaultLogMaxBackups      = 5
-	defaultRestart            = true
-	defaultStartupTimeout     = 15 * time.Second
-	defaultShutdownTimeout    = 10 * time.Second
-	defaultOutputTimeout      = 10 * time.Second
-	defaultFailureThreshold   = 5
+	// An empty default means "not provided"; the application resolves a
+	// dev/debug location next to the executable at startup, with a
+	// warning, instead of failing.
+	defaultStoragePath      = ""
+	defaultLogFile          = ""
+	defaultLogMaxSizeMB     = 10
+	defaultLogMaxBackups    = 5
+	defaultRestart          = true
+	defaultShutdownTimeout  = 10 * time.Second
+	defaultOutputTimeout    = 10 * time.Second
+	defaultFailureThreshold = 5
 )
 
 // validLogLevels are the accepted values for app.log_level.
@@ -43,10 +42,25 @@ var validLogLevels = []string{"debug", "info", "warn", "error"}
 // Config is the fully defaulted, validated application configuration.
 type Config struct {
 	App     App
-	MQTT    MQTT
 	Storage Storage
 	Sources []Source
 	Outputs []Output
+}
+
+// App holds general application settings.
+type App struct {
+	LogLevel           string
+	ExpirationInterval time.Duration
+	// ChangeRetention is how long acknowledged journal records are kept
+	// before cleanup deletes them.
+	ChangeRetention time.Duration
+
+	// LogFile is the optional rotating log file. Empty means stdout only.
+	LogFile string
+	// LogMaxSizeMB is the rotation threshold in megabytes.
+	LogMaxSizeMB int
+	// LogMaxBackups is how many rotated files are retained.
+	LogMaxBackups int
 }
 
 // Source is one configured source plugin instance.
@@ -61,9 +75,10 @@ type Source struct {
 }
 
 // SourceRuntime holds common supervision options for a source instance.
+// There is intentionally no "startup timeout": no readiness contract
+// exists, and a fake one would mislead operators.
 type SourceRuntime struct {
 	Restart         bool
-	StartupTimeout  time.Duration
 	ShutdownTimeout time.Duration
 }
 
@@ -84,45 +99,34 @@ type OutputRuntime struct {
 	FailureThreshold int
 }
 
-// App holds general application settings.
-type App struct {
-	LogLevel           string
-	ExpirationInterval time.Duration
-
-	// LogFile is the optional rotating log file. Empty means stdout only.
-	LogFile string
-	// LogMaxSizeMB is the rotation threshold in megabytes.
-	LogMaxSizeMB int
-	// LogMaxBackups is how many rotated files are retained.
-	LogMaxBackups int
-}
-
-// Storage holds persistence settings.
+// Storage holds persistence settings. Path may be left empty in the
+// configuration: the application then resolves a dev/debug location next
+// to the executable (with a warning) instead of failing startup.
 type Storage struct {
 	Driver string
 	Path   string
 }
 
-// MQTT holds broker connection and publishing settings.
-type MQTT struct {
-	Enabled      bool
-	Broker       string
-	ClientID     string
-	Username     string
-	Password     string
-	TopicPrefix  string
-	QoS          byte
-	PingInterval time.Duration
-}
-
-// fileConfig mirrors the YAML layout. The QoS pointer distinguishes
-// "not set" from an explicit 0 so defaults can be applied correctly.
+// fileConfig mirrors the YAML layout.
 type fileConfig struct {
 	App     fileApp      `yaml:"app"`
-	MQTT    fileMQTT     `yaml:"mqtt"`
 	Storage fileStorage  `yaml:"storage"`
 	Sources []fileSource `yaml:"sources"`
 	Outputs []fileOutput `yaml:"outputs"`
+}
+
+type fileApp struct {
+	LogLevel           string         `yaml:"log_level"`
+	ExpirationInterval *time.Duration `yaml:"expiration_interval"`
+	ChangeRetention    *time.Duration `yaml:"change_retention"`
+	LogFile            string         `yaml:"log_file"`
+	LogMaxSizeMB       *int           `yaml:"log_max_size_mb"`
+	LogMaxBackups      *int           `yaml:"log_max_backups"`
+}
+
+type fileStorage struct {
+	Driver string `yaml:"driver"`
+	Path   string `yaml:"path"`
 }
 
 type fileSource struct {
@@ -135,7 +139,6 @@ type fileSource struct {
 
 type fileSourceRuntime struct {
 	Restart         *bool          `yaml:"restart"`
-	StartupTimeout  *time.Duration `yaml:"startup_timeout"`
 	ShutdownTimeout *time.Duration `yaml:"shutdown_timeout"`
 }
 
@@ -174,31 +177,9 @@ func pluginConfigNode(raw *rawPluginConfig) *yaml.Node {
 	return &raw.node
 }
 
-type fileApp struct {
-	LogLevel           string         `yaml:"log_level"`
-	ExpirationInterval *time.Duration `yaml:"expiration_interval"`
-	LogFile            string         `yaml:"log_file"`
-	LogMaxSizeMB       *int           `yaml:"log_max_size_mb"`
-	LogMaxBackups      *int           `yaml:"log_max_backups"`
-}
-
-type fileStorage struct {
-	Driver string `yaml:"driver"`
-	Path   string `yaml:"path"`
-}
-
-type fileMQTT struct {
-	Enabled      bool           `yaml:"enabled"`
-	Broker       string         `yaml:"broker"`
-	ClientID     string         `yaml:"client_id"`
-	Username     string         `yaml:"username"`
-	Password     string         `yaml:"password"`
-	TopicPrefix  string         `yaml:"topic_prefix"`
-	QoS          *byte          `yaml:"qos"`
-	PingInterval *time.Duration `yaml:"ping_interval"`
-}
-
 // Load reads the YAML file at path, applies defaults and validates it.
+// Additional trailing YAML documents are rejected: a configuration file
+// must contain exactly one document.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -210,6 +191,14 @@ func Load(path string) (*Config, error) {
 
 	var file fileConfig
 	if err := dec.Decode(&file); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse config file %q: %w", path, err)
+	}
+
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("parse config file %q: multiple YAML documents are not allowed", path)
+		}
 		return nil, fmt.Errorf("parse config file %q: %w", path, err)
 	}
 
@@ -227,6 +216,7 @@ func (f fileConfig) toConfig() Config {
 		App: App{
 			LogLevel:           defaultLogLevel,
 			ExpirationInterval: defaultExpirationInterval,
+			ChangeRetention:    defaultChangeRetention,
 			LogFile:            defaultLogFile,
 			LogMaxSizeMB:       defaultLogMaxSizeMB,
 			LogMaxBackups:      defaultLogMaxBackups,
@@ -235,16 +225,6 @@ func (f fileConfig) toConfig() Config {
 			Driver: defaultStorageDriver,
 			Path:   defaultStoragePath,
 		},
-		MQTT: MQTT{
-			Enabled:      f.MQTT.Enabled,
-			Broker:       f.MQTT.Broker,
-			ClientID:     defaultClientID,
-			Username:     f.MQTT.Username,
-			Password:     f.MQTT.Password,
-			TopicPrefix:  defaultTopicPrefix,
-			QoS:          defaultQoS,
-			PingInterval: defaultPingInterval,
-		},
 	}
 
 	if level := strings.TrimSpace(f.App.LogLevel); level != "" {
@@ -252,6 +232,9 @@ func (f fileConfig) toConfig() Config {
 	}
 	if f.App.ExpirationInterval != nil {
 		cfg.App.ExpirationInterval = *f.App.ExpirationInterval
+	}
+	if f.App.ChangeRetention != nil {
+		cfg.App.ChangeRetention = *f.App.ChangeRetention
 	}
 	if file := strings.TrimSpace(f.App.LogFile); file != "" {
 		cfg.App.LogFile = file
@@ -268,18 +251,6 @@ func (f fileConfig) toConfig() Config {
 	if path := strings.TrimSpace(f.Storage.Path); path != "" {
 		cfg.Storage.Path = path
 	}
-	if id := strings.TrimSpace(f.MQTT.ClientID); id != "" {
-		cfg.MQTT.ClientID = id
-	}
-	if prefix := strings.TrimSpace(f.MQTT.TopicPrefix); prefix != "" {
-		cfg.MQTT.TopicPrefix = prefix
-	}
-	if f.MQTT.QoS != nil {
-		cfg.MQTT.QoS = *f.MQTT.QoS
-	}
-	if f.MQTT.PingInterval != nil {
-		cfg.MQTT.PingInterval = *f.MQTT.PingInterval
-	}
 
 	cfg.Sources = make([]Source, 0, len(f.Sources))
 	for _, s := range f.Sources {
@@ -290,16 +261,12 @@ func (f fileConfig) toConfig() Config {
 			Config:  pluginConfigNode(s.Config),
 			Runtime: SourceRuntime{
 				Restart:         defaultRestart,
-				StartupTimeout:  defaultStartupTimeout,
 				ShutdownTimeout: defaultShutdownTimeout,
 			},
 		}
 		if s.Runtime != nil {
 			if s.Runtime.Restart != nil {
 				inst.Runtime.Restart = *s.Runtime.Restart
-			}
-			if s.Runtime.StartupTimeout != nil {
-				inst.Runtime.StartupTimeout = *s.Runtime.StartupTimeout
 			}
 			if s.Runtime.ShutdownTimeout != nil {
 				inst.Runtime.ShutdownTimeout = *s.Runtime.ShutdownTimeout
@@ -339,14 +306,11 @@ func (c Config) Validate() error {
 		return fmt.Errorf("app.log_level must be one of %s, got %q",
 			strings.Join(validLogLevels, ", "), c.App.LogLevel)
 	}
-	if c.MQTT.QoS > 2 {
-		return fmt.Errorf("mqtt.qos must be 0, 1 or 2, got %d", c.MQTT.QoS)
-	}
-	if c.MQTT.PingInterval <= 0 {
-		return fmt.Errorf("mqtt.ping_interval must be greater than 0, got %s", c.MQTT.PingInterval)
-	}
 	if c.App.ExpirationInterval <= 0 {
 		return fmt.Errorf("app.expiration_interval must be greater than 0, got %s", c.App.ExpirationInterval)
+	}
+	if c.App.ChangeRetention <= 0 {
+		return fmt.Errorf("app.change_retention must be greater than 0, got %s", c.App.ChangeRetention)
 	}
 	if c.App.LogMaxSizeMB <= 0 {
 		return fmt.Errorf("app.log_max_size_mb must be greater than 0, got %d", c.App.LogMaxSizeMB)
@@ -357,23 +321,11 @@ func (c Config) Validate() error {
 	if c.Storage.Driver != "sqlite" {
 		return fmt.Errorf("storage.driver must be %q, got %q", "sqlite", c.Storage.Driver)
 	}
-	if strings.TrimSpace(c.Storage.Path) == "" {
-		return errors.New("storage.path must not be empty")
-	}
-	if c.MQTT.Enabled {
-		if strings.TrimSpace(c.MQTT.Broker) == "" {
-			return errors.New("mqtt.broker must be set when mqtt.enabled is true")
-		}
-		if strings.TrimSpace(c.MQTT.ClientID) == "" {
-			return errors.New("mqtt.client_id must not be empty")
-		}
-		if strings.TrimSpace(c.MQTT.TopicPrefix) == "" {
-			return errors.New("mqtt.topic_prefix must not be empty")
-		}
-	}
+	// An empty storage.path is valid here: the application resolves it at
+	// startup (dev/debug fallback next to the binary, with a warning).
 
-	// Plugin instances: every instance needs a unique ID and a type; a
-	// unique ID namespace is shared between sources and outputs.
+	// Plugin instances: every instance needs a unique ID and a type; the ID
+	// namespace is shared between sources and outputs.
 	seen := make(map[string]bool, len(c.Sources)+len(c.Outputs))
 	for i, s := range c.Sources {
 		if s.ID == "" {
@@ -386,9 +338,6 @@ func (c Config) Validate() error {
 			return fmt.Errorf("duplicate plugin id %q", s.ID)
 		}
 		seen[s.ID] = true
-		if s.Runtime.StartupTimeout <= 0 {
-			return fmt.Errorf("source %q: runtime.startup_timeout must be greater than 0", s.ID)
-		}
 		if s.Runtime.ShutdownTimeout <= 0 {
 			return fmt.Errorf("source %q: runtime.shutdown_timeout must be greater than 0", s.ID)
 		}

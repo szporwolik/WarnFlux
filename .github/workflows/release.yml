@@ -1,19 +1,17 @@
-name: Build and Publish
+name: Release
 
 on:
-  pull_request:
-    types: [closed]
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
   packages: write
-  pull-requests: read
 
 jobs:
-  build-and-publish:
-    name: Build and Publish
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
+  release:
+    name: Build, test, release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,72 +22,25 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Read version
+      - name: Derive version from tag
         id: version
-        run: echo "version=$(tr -d '[:space:]' < cmd/warnflux/version.txt)" >> "$GITHUB_OUTPUT"
-
-      - name: Verify version format
         run: |
-          if ! echo "${{ steps.version.outputs.version }}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::cmd/warnflux/version.txt must contain a semantic version such as 0.1.0"
+          tag="${{ github.ref_name }}"
+          version="${tag#v}"
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag $tag is not a semantic version like v0.1.0"
             exit 1
           fi
-
-      - name: Compute image name
-        id: image
-        run: echo "name=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/warnflux" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Vet and test
         run: go vet ./... && go test ./...
 
-      - name: Build Linux binary
-        run: |
-          mkdir -p dist
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-            -trimpath -ldflags="-s -w" \
-            -o dist/warnflux-linux-amd64 ./cmd/warnflux
+      - name: Set up QEMU (multi-arch builds)
+        uses: docker/setup-qemu-action@v3
 
-      - name: Build Windows binary
-        run: |
-          mkdir -p dist
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
-            -trimpath -ldflags="-s -w" \
-            -o dist/warnflux-windows-amd64.exe ./cmd/warnflux
-
-      - name: Prepare release notes
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          if [ -n "$PR_NUMBER" ]; then
-            # Release notes are crafted from the merged pull request.
-            gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-              --json title,body,url,author \
-              --template '## {{.title}}
-
-          {{.body}}
-
-          Pull request: [#'"$PR_NUMBER"']({{.url}}) by @{{.author.login}}
-          ' > release-notes.md
-          else
-            echo "Automated release of WarnFlux v${{ steps.version.outputs.version }} (manual dispatch)." > release-notes.md
-          fi
-          cat >> release-notes.md <<'MARKDOWN'
-
-          ## Artifacts
-
-          - `warnflux-linux-amd64` — Linux binary
-          - `warnflux-windows-amd64.exe` — Windows binary
-          - Docker image: `${{ steps.image.outputs.name }}:${{ steps.version.outputs.version }}` (also tagged `latest`)
-          MARKDOWN
-
-      - name: Draft release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          draft: true
-          body_path: release-notes.md
-          files: |
-            dist/warnflux-linux-amd64
-            dist/warnflux-windows-amd64.exe
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -98,11 +49,56 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/warnflux
+          tags: |
+            type=semver,pattern={{version}},value=v${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}},value=v${{ steps.version.outputs.version }}
+            type=raw,value=latest
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ steps.image.outputs.name }}:${{ steps.version.outputs.version }}
-            ${{ steps.image.outputs.name }}:latest
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ github.sha }}
+
+      - name: Build Linux binaries
+        run: |
+          mkdir -p dist
+          LDFLAGS="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ github.sha }}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-linux-amd64 ./cmd/warnflux
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-linux-arm64 ./cmd/warnflux
+
+      - name: Build Windows binary
+        run: |
+          mkdir -p dist
+          LDFLAGS="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ github.sha }}"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-windows-amd64.exe ./cmd/warnflux
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: WarnFlux v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          files: |
+            dist/warnflux-linux-amd64
+            dist/warnflux-linux-arm64
+            dist/warnflux-windows-amd64.exe
+            dist/SHA256SUMS
+

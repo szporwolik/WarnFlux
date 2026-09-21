@@ -1,43 +1,58 @@
 // Command warnflux is the WarnFlux entry point.
 //
-// It loads a YAML configuration, optionally connects to an MQTT broker and
-// publishes a periodic heartbeat ("ping") message.
+// It loads a YAML configuration, runs the plugin manager (sources, durable
+// ingestion and outputs) and shuts down cleanly on SIGINT/SIGTERM.
 package main
 
 import (
 	"context"
-	_ "embed"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 
-	"warnflux/internal/config"
-	"warnflux/internal/ingest"
-	"warnflux/internal/mqtt"
-	"warnflux/internal/plugin"
-	"warnflux/internal/plugins"
-	"warnflux/internal/storage/sqlite"
+	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/ingest"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/plugins"
+	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
 
-//go:embed version.txt
-var versionFile string
+// resolveStoragePath fills in a database location when the configuration
+// did not provide one: the database lands next to the executable, which
+// keeps dev/debug runs self-contained (e.g. build/warnflux.db after a
+// VS Code build task). An explicitly configured path is returned as-is.
+func resolveStoragePath(path string, logger *slog.Logger) string {
+	if strings.TrimSpace(path) != "" {
+		return path
+	}
+	if exe, err := os.Executable(); err == nil {
+		resolved := filepath.Join(filepath.Dir(exe), "warnflux.db")
+		logger.Warn("storage.path not configured; creating the database next to the binary (dev/debug)",
+			"storage_path", resolved)
+		return resolved
+	}
+	logger.Warn("storage.path not configured and the executable directory is unavailable; using ./warnflux.db")
+	return "warnflux.db"
+}
 
-const (
-	disconnectGracePeriod = 250 * time.Millisecond
+// version and commit are injected at build time via -ldflags:
+//
+//	-X main.version=vX.Y.Z -X main.commit=<sha>
+//
+// Development builds report "dev" / "unknown".
+var (
+	version = "dev"
+	commit  = "unknown"
 )
-
-// version is read from version.txt at build time. That file is the single
-// source of truth, also used by the release workflow.
-var version = strings.TrimSpace(versionFile)
 
 func main() {
 	// Developer demo of the core pipeline; not a stable public interface.
@@ -51,8 +66,15 @@ func main() {
 		return
 	}
 
-	configPath := flag.String("config", config.DefaultConfigPath, "path to YAML configuration file")
-	flag.Parse()
+	fs := flag.NewFlagSet("warnflux", flag.ExitOnError)
+	configPath := fs.String("config", config.DefaultConfigPath, "path to YAML configuration file")
+	showVersion := fs.Bool("version", false, "print version and exit")
+	fs.Parse(os.Args[1:])
+
+	if *showVersion {
+		fmt.Printf("warnflux %s (%s)\n", version, commit)
+		return
+	}
 
 	if err := run(*configPath); err != nil {
 		slog.Error("WarnFlux failed", "error", err)
@@ -61,6 +83,8 @@ func main() {
 }
 
 func run(configPath string) error {
+	// Phase 1 — static initialization. No background goroutines exist yet,
+	// so a failure here leaves nothing running behind.
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
@@ -73,10 +97,16 @@ func run(configPath string) error {
 	defer logCloser.Close()
 	slog.SetDefault(logger)
 
-	logger.Info("WarnFlux starting", "version", version)
+	logger.Info("WarnFlux starting", "version", version, "commit", commit)
+
+	// Dev/debug convenience: when the configuration does not provide a
+	// database path, warn and place the database next to the binary
+	// instead of failing startup. Production/Docker setups set
+	// storage.path explicitly.
+	cfg.Storage.Path = resolveStoragePath(cfg.Storage.Path, logger)
+
 	logger.Info("configuration loaded", "path", configPath,
 		"log_level", cfg.App.LogLevel, "log_file", cfg.App.LogFile,
-		"mqtt_enabled", cfg.MQTT.Enabled,
 		"storage_driver", cfg.Storage.Driver, "storage_path", cfg.Storage.Path)
 
 	// The database is created and migrated on first startup. Close it only
@@ -102,59 +132,35 @@ func run(configPath string) error {
 	if err := plugins.RegisterBuiltins(registry); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
 	}
-	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs, ingester.Ingest, logger)
+	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs,
+		ingester.Ingest, ingester.Expire, store, plugin.ManagerOptions{
+			ExpirationInterval: cfg.App.ExpirationInterval,
+			ChangeRetention:    cfg.App.ChangeRetention,
+			Version:            version,
+		}, logger)
 	if err != nil {
 		return fmt.Errorf("configure plugins: %w", err)
 	}
 
-	// ctx is cancelled on SIGINT or SIGTERM; all work is tied to it.
+	// Phase 2 — runtime. From here on, provider failures are isolated by
+	// the plugin framework instead of terminating the process.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var (
-		client *mqtt.Client
-		wg     sync.WaitGroup
-	)
-
-	// Plugin manager: source supervisors, ingestion workers and outputs.
+	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		manager.Run(ctx)
 	}()
 
-	// Expiration worker: periodically marks stale active events as expired.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		ingester.RunExpiration(ctx, cfg.App.ExpirationInterval)
-	}()
-
-	if cfg.MQTT.Enabled {
-		client = mqtt.New(cfg.MQTT, logger)
-		if err := client.Connect(ctx); err != nil {
-			return fmt.Errorf("connect to MQTT broker: %w", err)
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			client.PingLoop(ctx, cfg.MQTT.PingInterval, version)
-		}()
-	} else {
-		logger.Info("MQTT disabled, no connection will be made")
-	}
-
 	<-ctx.Done()
 	logger.Info("WarnFlux stopping")
 
-	// All workers (expiration, ping loop) exit once ctx is cancelled; wait
-	// for them before closing connections so no goroutine is left behind.
+	// The manager stops sources, drains ingestion and closes outputs with
+	// bounded timeouts. store.Close runs via defer afterwards.
 	wg.Wait()
-	if client != nil {
-		client.Disconnect(disconnectGracePeriod)
-	}
 
-	// store.Close runs via defer after workers have stopped.
 	logger.Info("WarnFlux stopped")
 	return nil
 }
@@ -162,7 +168,8 @@ func run(configPath string) error {
 // newLogger builds the application logger. Output always goes to stdout so
 // Docker and systemd keep working; when app.log_file is set, output is also
 // written to a rotating file of at most app.log_max_size_mb, keeping up to
-// app.log_max_backups rotated copies.
+// app.log_max_backups rotated copies. File logging exists for non-Docker /
+// non-systemd deployments; stdout remains the primary logging contract.
 func newLogger(app config.App) (*slog.Logger, io.Closer, error) {
 	level := app.SlogLevel()
 	if app.LogFile == "" {

@@ -7,8 +7,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"warnflux/internal/core"
-	"warnflux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
 func decodeConfig(t *testing.T, yamlText string) *yaml.Node {

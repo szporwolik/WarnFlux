@@ -12,20 +12,27 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"warnflux/internal/core"
-	"warnflux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
+
+// migration is one append-only schema evolution step. Steps already
+// released must never be edited.
+type migration struct {
+	// SQL is executed inside the migration transaction.
+	SQL string
+	// run is an optional Go migration step executed in the same transaction
+	// (used when plain SQL cannot convert existing data safely).
+	run func(tx *sql.Tx) error
+}
 
 // migrations holds the schema evolution steps in order. Slice index +1 is
 // the target schema version, persisted via SQLite's PRAGMA user_version.
-//
-// To evolve the schema: APPEND a new step — never edit or remove an entry
-// that has been released, or existing databases would drift. Each step runs
-// in its own transaction, so a failed step leaves the database untouched.
 // Existing databases are upgraded in place on startup, never recreated.
-var migrations = []string{
-	// v1: initial schema.
-	`
+var migrations = []migration{
+	{
+		// v1: initial event storage.
+		SQL: `
 CREATE TABLE events (
 	event_key     TEXT PRIMARY KEY,
 	source        TEXT NOT NULL,
@@ -57,13 +64,70 @@ CREATE INDEX idx_events_status ON events(status);
 CREATE INDEX idx_events_expires_at ON events(expires_at);
 CREATE INDEX idx_events_last_seen_at ON events(last_seen_at);
 `,
+	},
+	{
+		// v2: machine-sortable expiry timestamps + durable change journal.
+		SQL: `
+ALTER TABLE events ADD COLUMN expires_at_ms INTEGER;
+CREATE INDEX idx_events_expires_at_ms ON events(expires_at_ms);
+
+CREATE TABLE changes (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	change_type   TEXT NOT NULL,
+	event_key     TEXT NOT NULL,
+	created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX idx_changes_id ON changes(id);
+
+CREATE TABLE output_cursors (
+	output_id     TEXT PRIMARY KEY,
+	last_acked_id INTEGER NOT NULL DEFAULT 0
+);
+`,
+		// Backfill expires_at_ms from the RFC3339Nano text column, parsing
+		// each value explicitly instead of relying on string manipulation.
+		run: func(tx *sql.Tx) error {
+			rows, err := tx.Query("SELECT event_key, expires_at FROM events WHERE expires_at IS NOT NULL")
+			if err != nil {
+				return fmt.Errorf("read legacy expires_at: %w", err)
+			}
+			defer rows.Close()
+			type backfill struct {
+				key string
+				ms  int64
+			}
+			var batch []backfill
+			for rows.Next() {
+				var key, text string
+				if err := rows.Scan(&key, &text); err != nil {
+					return fmt.Errorf("scan legacy expires_at: %w", err)
+				}
+				parsed, err := time.Parse(time.RFC3339Nano, text)
+				if err != nil {
+					return fmt.Errorf("event %q has invalid legacy expires_at %q: %w", key, text, err)
+				}
+				batch = append(batch, backfill{key: key, ms: parsed.UnixMilli()})
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate legacy expires_at: %w", err)
+			}
+			for _, b := range batch {
+				if _, err := tx.Exec("UPDATE events SET expires_at_ms = ? WHERE event_key = ?", b.ms, b.key); err != nil {
+					return fmt.Errorf("backfill expires_at_ms for %q: %w", b.key, err)
+				}
+			}
+			return nil
+		},
+	},
 }
 
-// eventColumns is the canonical column list used for SELECT and RETURNING.
+// eventColumns is the canonical column list used for SELECT and JOINs.
+// expires_at_ms is the authoritative comparison value; expires_at remains
+// as a human-readable copy.
 const eventColumns = `event_key, source, source_id, fingerprint, status,
 category, event, severity, urgency, certainty,
 headline, description, instruction,
-effective_at, expires_at, latitude, longitude,
+effective_at, expires_at_ms, latitude, longitude,
 areas, source_url, received_at, first_seen_at, last_seen_at, updated_at`
 
 // Store is a SQLite-backed storage.EventStore.
@@ -85,10 +149,8 @@ func WithClock(now func() time.Time) Option {
 
 // MigrationInfo reports what happened to the schema version during Open.
 type MigrationInfo struct {
-	// From is the schema version found on disk.
 	From int
-	// To is the schema version after migration.
-	To int
+	To   int
 }
 
 // Open connects to the SQLite database at path, applies the configured
@@ -96,14 +158,13 @@ type MigrationInfo struct {
 //
 // SQLite settings chosen for a long-running, low-volume daemon:
 //   - journal_mode=WAL: readers do not block the writer; crash-safe journal.
-//   - synchronous=NORMAL: durable across process crashes; WAL checkpoints
-//     may lose the last committed transactions only on power loss. Warning
-//     data does not need synchronous=FULL.
+//   - synchronous=FULL: the change journal is the source of truth for
+//     output delivery; FULL keeps the durability/performance balance on
+//     the safe side for a low-volume daemon.
 //   - busy_timeout=5000: wait for the lock instead of failing immediately.
-//   - foreign_keys=ON: integrity checks active if FKs are added later.
-//   - a single database connection (MaxOpenConns=1): with one process and
-//     low volume this serializes access, keeps per-connection PRAGMAs
-//     stable and avoids SQLITE_BUSY entirely.
+//   - foreign_keys=ON: integrity checks active.
+//   - a single database connection (MaxOpenConns=1): serializes access,
+//     keeps per-connection PRAGMAs stable and avoids SQLITE_BUSY.
 func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -120,7 +181,7 @@ func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
+		"PRAGMA synchronous=FULL",
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA foreign_keys=ON",
 	} {
@@ -146,7 +207,7 @@ func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 // migrate applies pending schema steps, each in its own transaction.
 // Existing databases are never recreated or deleted; a failed step rolls
 // back and leaves the schema version unchanged.
-func migrate(db *sql.DB, steps []string) (MigrationInfo, error) {
+func migrate(db *sql.DB, steps []migration) (MigrationInfo, error) {
 	var current int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&current); err != nil {
 		return MigrationInfo{}, fmt.Errorf("read schema version: %w", err)
@@ -163,9 +224,15 @@ func migrate(db *sql.DB, steps []string) (MigrationInfo, error) {
 		if err != nil {
 			return info, fmt.Errorf("begin migration to version %d: %w", target, err)
 		}
-		if _, err := tx.Exec(steps[v]); err != nil {
+		if _, err := tx.Exec(steps[v].SQL); err != nil {
 			tx.Rollback()
 			return info, fmt.Errorf("apply migration to version %d: %w", target, err)
+		}
+		if steps[v].run != nil {
+			if err := steps[v].run(tx); err != nil {
+				tx.Rollback()
+				return info, fmt.Errorf("run migration step %d: %w", target, err)
+			}
 		}
 		// PRAGMA does not support bound parameters; the value is a
 		// validated integer from this package, so formatting is safe.
@@ -184,8 +251,284 @@ func migrate(db *sql.DB, steps []string) (MigrationInfo, error) {
 // Close closes the underlying database connection.
 func (s *Store) Close() error { return s.db.Close() }
 
-// Count returns the number of stored events. Useful for health checks and
-// tests.
+// Ingest atomically classifies and persists one normalized event. The event
+// state transition and its change journal record (when meaningful) are
+// written in a single transaction, so no other ingestion can observe the
+// event half-way through.
+func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint string) (storage.Outcome, *storage.Change, error) {
+	now := s.now().UTC()
+	nowMs := now.UnixMilli()
+	key := event.Key()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("begin ingest transaction for %q: %w", key, err)
+	}
+	defer tx.Rollback()
+
+	var storedFp, storedStatus, storedReceived, storedFirstSeen string
+	var storedExpiresMs sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		"SELECT fingerprint, status, received_at, first_seen_at, expires_at_ms FROM events WHERE event_key = ?", key,
+	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen, &storedExpiresMs)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// Previously unknown event. A first-seen cancellation is a
+		// cancellation, never "new".
+		outcome := storage.OutcomeNew
+		changeType := core.ChangeNew
+		if event.Status == core.StatusCancelled {
+			outcome = storage.OutcomeCancelled
+			changeType = core.ChangeCancelled
+		}
+		if _, err := tx.ExecContext(ctx, insertSQL, insertArgs(event, fingerprint, now, now, orNow(event.UpdatedAt, now), expiryMs(event))...); err != nil {
+			return 0, nil, fmt.Errorf("insert event %q: %w", key, err)
+		}
+		change, err := insertChange(tx, ctx, changeType, key, nowMs)
+		if err != nil {
+			return 0, nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, nil, fmt.Errorf("commit ingest of %q: %w", key, err)
+		}
+		change.Event = event
+		return outcome, change, nil
+
+	case err != nil:
+		return 0, nil, fmt.Errorf("get event %q: %w", key, err)
+	}
+
+	// Existing event: compare content fingerprint and lifecycle status.
+	contentSame := storedFp == fingerprint
+	statusSame := storedStatus == string(event.Status)
+	// An event whose expiry has lapsed is re-activated on re-ingestion
+	// (its expiry clock restarts), so it must be journaled again rather
+	// than treated as a duplicate.
+	storedExpired := storedExpiresMs.Valid && storedExpiresMs.Int64 <= nowMs
+
+	if contentSame && statusSame && !storedExpired {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE events SET last_seen_at = ? WHERE event_key = ?", formatTime(now), key); err != nil {
+			return 0, nil, fmt.Errorf("touch event %q: %w", key, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, nil, fmt.Errorf("commit duplicate of %q: %w", key, err)
+		}
+		return storage.OutcomeDuplicate, nil, nil
+	}
+
+	// Content and/or lifecycle changed. Preserve the original received_at
+	// and first_seen_at.
+	received, err := time.Parse(time.RFC3339Nano, storedReceived)
+	if err != nil {
+		return 0, nil, fmt.Errorf("event %q has invalid stored received_at: %w", key, err)
+	}
+	event.ReceivedAt = received
+
+	var changeType core.ChangeType
+	switch {
+	case event.Status == core.StatusCancelled:
+		changeType = core.ChangeCancelled
+	default:
+		changeType = core.ChangeUpdated
+	}
+
+	if _, err := tx.ExecContext(ctx, updateSQL, updateArgs(event, fingerprint, now, expiryMs(event))...); err != nil {
+		return 0, nil, fmt.Errorf("update event %q: %w", key, err)
+	}
+	change, err := insertChange(tx, ctx, changeType, key, nowMs)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, nil, fmt.Errorf("commit update of %q: %w", key, err)
+	}
+	change.Event = event
+
+	if changeType == core.ChangeCancelled {
+		return storage.OutcomeCancelled, change, nil
+	}
+	return storage.OutcomeUpdated, change, nil
+}
+
+// Expire atomically marks stale active events expired, creating a durable
+// ChangeExpired journal record for each. Events without an expiry are never
+// touched.
+func (s *Store) Expire(ctx context.Context, now time.Time) ([]storage.Change, error) {
+	now = now.UTC()
+	nowMs := now.UnixMilli()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin expiration transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		"SELECT event_key FROM events WHERE status = ? AND expires_at_ms IS NOT NULL AND expires_at_ms <= ?",
+		string(core.StatusActive), nowMs)
+	if err != nil {
+		return nil, fmt.Errorf("find expired events: %w", err)
+	}
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan expired event: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate expired events: %w", err)
+	}
+
+	changes := make([]storage.Change, 0, len(keys))
+	for _, key := range keys {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE events SET status = ?, updated_at = ? WHERE event_key = ?",
+			string(core.StatusExpired), formatTime(now), key); err != nil {
+			return nil, fmt.Errorf("expire event %q: %w", key, err)
+		}
+		change, err := insertChange(tx, ctx, core.ChangeExpired, key, nowMs)
+		if err != nil {
+			return nil, err
+		}
+		event, err := loadEvent(ctx, tx, key)
+		if err != nil {
+			return nil, err
+		}
+		change.Event = event
+		changes = append(changes, *change)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit expiration: %w", err)
+	}
+	return changes, nil
+}
+
+// PollChanges returns unacknowledged journal changes for an output in
+// stable ID order.
+func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]storage.Change, error) {
+	cursor, err := s.cursor(ctx, outputID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 256 {
+		limit = 256
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.id, c.change_type, `+eventColumnsWithPrefix("e")+`
+		FROM changes c
+		JOIN events e ON e.event_key = c.event_key
+		WHERE c.id > ?
+		ORDER BY c.id
+		LIMIT ?`, cursor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("poll changes for %q: %w", outputID, err)
+	}
+	defer rows.Close()
+
+	var changes []storage.Change
+	for rows.Next() {
+		var (
+			change     storage.Change
+			changeType string
+		)
+		event, err := scanEventRow(rows.Scan, nil, &change.ID, &changeType)
+		if err != nil {
+			return nil, fmt.Errorf("scan change for %q: %w", outputID, err)
+		}
+		change.ChangeType = core.ChangeType(changeType)
+		change.Event = event
+		changes = append(changes, change)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate changes for %q: %w", outputID, err)
+	}
+	return changes, nil
+}
+
+// AckChanges records the highest change ID an output has delivered.
+func (s *Store) AckChanges(ctx context.Context, outputID string, lastChangeID int64) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO output_cursors (output_id, last_acked_id) VALUES (?, ?)
+		ON CONFLICT(output_id) DO UPDATE SET
+			last_acked_id = MAX(last_acked_id, excluded.last_acked_id)`,
+		outputID, lastChangeID); err != nil {
+		return fmt.Errorf("ack changes for %q: %w", outputID, err)
+	}
+	return nil
+}
+
+// CleanupChanges deletes journal rows older than olderThan that every
+// output has acknowledged. When no outputs exist, all rows are considered
+// acknowledged (nothing relevant is waiting for them).
+func (s *Store) CleanupChanges(ctx context.Context, olderThan time.Time) (int64, error) {
+	cutoff := olderThan.UTC().UnixMilli()
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM changes
+		WHERE created_at_ms < ?
+		  AND id <= COALESCE(
+			(SELECT MIN(last_acked_id) FROM output_cursors),
+			(SELECT MAX(id) FROM changes),
+			0
+		  )`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup changes: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("cleanup changes: %w", err)
+	}
+	return n, nil
+}
+
+// PendingStats reports undelivered change count and the age of the oldest
+// undelivered change.
+func (s *Store) PendingStats(ctx context.Context) (int, time.Duration, error) {
+	var pending int
+	var oldestMs sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), MIN(created_at_ms)
+		FROM changes
+		WHERE id > COALESCE(
+			(SELECT MIN(last_acked_id) FROM output_cursors),
+
+			0
+		)`).Scan(&pending, &oldestMs)
+	if err != nil {
+		return 0, 0, fmt.Errorf("pending stats: %w", err)
+	}
+	oldest := time.Duration(0)
+	if oldestMs.Valid {
+		oldest = time.Since(time.UnixMilli(oldestMs.Int64))
+		if oldest < 0 {
+			oldest = 0
+		}
+	}
+	return pending, oldest, nil
+}
+
+// Get returns the stored event for key, or storage.ErrNotFound.
+func (s *Store) Get(ctx context.Context, key string) (*storage.StoredEvent, error) {
+	row := s.db.QueryRowContext(ctx, "SELECT "+eventColumns+" FROM events WHERE event_key = ?", key)
+	var stored storage.StoredEvent
+	event, err := scanEventRow(row.Scan, &stored)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, storage.ErrNotFound
+		}
+		return nil, fmt.Errorf("get event %q: %w", key, err)
+	}
+	stored.Event = event
+	return &stored, nil
+}
+
+// Count returns the number of stored events.
 func (s *Store) Count(ctx context.Context) (int, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM events").Scan(&n); err != nil {
@@ -194,218 +537,188 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// Get returns the stored event for key, or storage.ErrNotFound.
-func (s *Store) Get(ctx context.Context, key string) (*storage.StoredEvent, error) {
-	row := s.db.QueryRowContext(ctx, "SELECT "+eventColumns+" FROM events WHERE event_key = ?", key)
-	e, err := scanStoredEvent(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, storage.ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get event %q: %w", key, err)
-	}
-	return e, nil
-}
+// ---- internals ----
 
-// Insert stores a new event and reports whether the row was inserted. When
-// an event with the same key already exists it reports false without
-// error, so concurrent ingestion inserts exactly one row per event.
-func (s *Store) Insert(ctx context.Context, event core.HazardEvent, fingerprint string) (bool, error) {
-	now := s.now().UTC()
-	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO events (
-			event_key, source, source_id, fingerprint, status,
-			category, event, severity, urgency, certainty,
-			headline, description, instruction,
-			effective_at, expires_at, latitude, longitude,
-			areas, source_url, received_at, first_seen_at, last_seen_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(event_key) DO NOTHING`,
-		eventArgs(event.Key(), fingerprint, event, now, now, orNow(event.UpdatedAt, now))...,
-	)
-	if err != nil {
-		return false, fmt.Errorf("insert event %q: %w", event.Key(), err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("insert event %q: %w", event.Key(), err)
-	}
-	return n == 1, nil
-}
+const insertSQL = `
+INSERT INTO events (
+	event_key, source, source_id, fingerprint, status,
+	category, event, severity, urgency, certainty,
+	headline, description, instruction,
+	effective_at, expires_at, expires_at_ms, latitude, longitude,
+	areas, source_url, received_at, first_seen_at, last_seen_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(event_key) DO NOTHING`
 
-// Update replaces the content of an existing event. first_seen_at is left
-// untouched by omission; ReceivedAt must be provided by the caller (the
-// ingest service preserves the original value).
-func (s *Store) Update(ctx context.Context, event core.HazardEvent, fingerprint string) error {
-	now := s.now().UTC()
-	args := updateArgs(event, fingerprint, now)
-	args = append(args, event.Key())
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE events SET
-			source = ?, source_id = ?, fingerprint = ?, status = ?,
-			category = ?, event = ?, severity = ?, urgency = ?, certainty = ?,
-			headline = ?, description = ?, instruction = ?,
-			effective_at = ?, expires_at = ?, latitude = ?, longitude = ?,
-			areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, updated_at = ?
-		WHERE event_key = ?`,
-		args...,
-	)
-	if err != nil {
-		return fmt.Errorf("update event %q: %w", event.Key(), err)
-	}
-	return nil
-}
-
-// Touch refreshes only last_seen_at for an unchanged event.
-func (s *Store) Touch(ctx context.Context, key string) error {
-	now := s.now().UTC()
-	if _, err := s.db.ExecContext(ctx,
-		"UPDATE events SET last_seen_at = ? WHERE event_key = ?",
-		formatTime(now), key); err != nil {
-		return fmt.Errorf("touch event %q: %w", key, err)
-	}
-	return nil
-}
-
-// MarkExpired flips active events whose ExpiresAt is at or before now to
-// expired and returns them. The state change is persistent, not just an
-// in-memory flag.
-func (s *Store) MarkExpired(ctx context.Context, now time.Time) ([]core.HazardEvent, error) {
-	now = now.UTC()
-	rows, err := s.db.QueryContext(ctx, `
-		UPDATE events
-		SET status = ?, updated_at = ?
-		WHERE status = ? AND expires_at IS NOT NULL AND expires_at <= ?
-		RETURNING `+eventColumns,
-		string(core.StatusExpired), formatTime(now),
-		string(core.StatusActive), formatTime(now),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("mark expired events: %w", err)
-	}
-	defer rows.Close()
-
-	var expired []core.HazardEvent
-	for rows.Next() {
-		e, err := scanStoredEvent(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan expired event: %w", err)
-		}
-		expired = append(expired, e.Event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("mark expired events: %w", err)
-	}
-	return expired, nil
-}
-
-// eventArgs builds the argument slice shared by Insert. The timestamps
-// firstSeen, lastSeen and updated are supplied by the caller.
-func eventArgs(key, fingerprint string, event core.HazardEvent, firstSeen, lastSeen, updated time.Time) []any {
-	received := event.ReceivedAt
-	if received.IsZero() {
-		received = updated
-	}
+func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen, updated time.Time, expiresMs int64) []any {
+	received := orNow(event.ReceivedAt, updated)
 	areas, _ := json.Marshal(event.Areas)
 	return []any{
-		key, event.Source, event.SourceID, fingerprint, string(event.Status),
+		event.Key(), event.Source, event.SourceID, fingerprint, string(event.Status),
 		event.Category, event.Event, event.Severity, event.Urgency, event.Certainty,
 		event.Headline, event.Description, event.Instruction,
-		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt),
+		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt), nullableInt64(expiresMs),
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
 		formatTime(received), formatTime(firstSeen), formatTime(lastSeen), formatTime(updated),
 	}
 }
 
-// updateArgs builds the argument slice for Update. first_seen_at is absent
-// from the SET list so it is preserved across updates.
-func updateArgs(event core.HazardEvent, fingerprint string, now time.Time) []any {
-	received := event.ReceivedAt
-	if received.IsZero() {
-		received = now
+// expiryMs returns the event's expiry as epoch milliseconds, or 0 when the
+// event never expires.
+func expiryMs(event core.HazardEvent) int64 {
+	if event.ExpiresAt == nil {
+		return 0
 	}
+	return event.ExpiresAt.UTC().UnixMilli()
+}
+
+const updateSQL = `
+UPDATE events SET
+	source = ?, source_id = ?, fingerprint = ?, status = ?,
+	category = ?, event = ?, severity = ?, urgency = ?, certainty = ?,
+	headline = ?, description = ?, instruction = ?,
+	effective_at = ?, expires_at = ?, expires_at_ms = ?, latitude = ?, longitude = ?,
+	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, updated_at = ?
+	WHERE event_key = ?`
+
+func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expiresMs int64) []any {
+	received := orNow(event.ReceivedAt, now)
 	areas, _ := json.Marshal(event.Areas)
-	return []any{
+	return append([]any{
 		event.Source, event.SourceID, fingerprint, string(event.Status),
 		event.Category, event.Event, event.Severity, event.Urgency, event.Certainty,
 		event.Headline, event.Description, event.Instruction,
-		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt),
+		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt), nullableInt64(expiresMs),
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
 		formatTime(received), formatTime(now), formatTime(orNow(event.UpdatedAt, now)),
-	}
+	}, event.Key())
 }
 
-// orNow returns t when it is set, otherwise fallback.
-func orNow(t, fallback time.Time) time.Time {
-	if t.IsZero() {
-		return fallback
+// insertChange writes one journal record and returns its stable ID.
+func insertChange(tx *sql.Tx, ctx context.Context, changeType core.ChangeType, key string, nowMs int64) (*storage.Change, error) {
+	res, err := tx.ExecContext(ctx,
+		"INSERT INTO changes (change_type, event_key, created_at_ms) VALUES (?, ?, ?)",
+		string(changeType), key, nowMs)
+	if err != nil {
+		return nil, fmt.Errorf("journal change for %q: %w", key, err)
 	}
-	return t
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("journal change id for %q: %w", key, err)
+	}
+	return &storage.Change{ID: id, ChangeType: changeType}, nil
 }
 
-func scanStoredEvent(row interface{ Scan(dest ...any) error }) (*storage.StoredEvent, error) {
+func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {
+	var cursor int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT last_acked_id FROM output_cursors WHERE output_id = ?", outputID).Scan(&cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read cursor for %q: %w", outputID, err)
+	}
+	return cursor, nil
+}
+
+// loadEvent reads a full event row from tx by key.
+func loadEvent(ctx context.Context, tx *sql.Tx, key string) (core.HazardEvent, error) {
+	row := tx.QueryRowContext(ctx, "SELECT "+eventColumns+" FROM events WHERE event_key = ?", key)
+	return scanEventRow(row.Scan, nil)
+}
+
+// eventColumnsWithPrefix returns the event columns prefixed for a JOIN.
+func eventColumnsWithPrefix(prefix string) string {
+	return prefix + ".event_key, " + prefix + ".source, " + prefix + ".source_id, " + prefix + ".fingerprint, " + prefix + ".status, " +
+		prefix + ".category, " + prefix + ".event, " + prefix + ".severity, " + prefix + ".urgency, " + prefix + ".certainty, " +
+		prefix + ".headline, " + prefix + ".description, " + prefix + ".instruction, " +
+		prefix + ".effective_at, " + prefix + ".expires_at_ms, " + prefix + ".latitude, " + prefix + ".longitude, " +
+		prefix + ".areas, " + prefix + ".source_url, " + prefix + ".received_at, " + prefix + ".first_seen_at, " + prefix + ".last_seen_at, " + prefix + ".updated_at"
+}
+
+// scanEventRow scans the canonical event column list (eventColumns) in
+// order. Any extra destinations in pre are scanned before the event
+// columns; this lets JOIN queries whose SELECT begins with change columns
+// reuse the same scanning logic in a single Scan call (drivers require an
+// exact destination count).
+func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent, pre ...any) (core.HazardEvent, error) {
 	var (
-		e                          storage.StoredEvent
-		key, status                string
-		effectiveAt, expiresAt     sql.NullString
-		lat, lon                   sql.NullFloat64
-		areasJSON                  string
-		received, first, last, upd string
+		key, fingerprint, status string
+		effectiveAt              sql.NullString
+		expiresMs                sql.NullInt64
+		lat, lon                 sql.NullFloat64
+		areasJSON                string
+		received, first, last    string
+		updated                  string
 	)
-	if err := row.Scan(
-		&key, &e.Event.Source, &e.Event.SourceID, &e.Fingerprint, &status,
-		&e.Event.Category, &e.Event.Event, &e.Event.Severity, &e.Event.Urgency, &e.Event.Certainty,
-		&e.Event.Headline, &e.Event.Description, &e.Event.Instruction,
-		&effectiveAt, &expiresAt, &lat, &lon,
-		&areasJSON, &e.Event.SourceURL,
-		&received, &first, &last, &upd,
-	); err != nil {
-		return nil, err
+	var event core.HazardEvent
+	dests := []any{
+		&key, &event.Source, &event.SourceID, &fingerprint, &status,
+		&event.Category, &event.Event, &event.Severity, &event.Urgency, &event.Certainty,
+		&event.Headline, &event.Description, &event.Instruction,
+		&effectiveAt, &expiresMs, &lat, &lon,
+		&areasJSON, &event.SourceURL,
+		&received, &first, &last, &updated,
+	}
+	if err := scan(append(pre, dests...)...); err != nil {
+		return event, err
 	}
 
-	e.Event.Status = core.EventStatus(status)
+	event.Status = core.EventStatus(status)
 	if effectiveAt.Valid {
 		t, err := time.Parse(time.RFC3339Nano, effectiveAt.String)
 		if err != nil {
-			return nil, fmt.Errorf("parse effective_at: %w", err)
+			return event, fmt.Errorf("parse effective_at: %w", err)
 		}
-		e.Event.EffectiveAt = &t
+		event.EffectiveAt = &t
 	}
-	if expiresAt.Valid {
-		t, err := time.Parse(time.RFC3339Nano, expiresAt.String)
-		if err != nil {
-			return nil, fmt.Errorf("parse expires_at: %w", err)
-		}
-		e.Event.ExpiresAt = &t
+	if expiresMs.Valid {
+		t := time.UnixMilli(expiresMs.Int64).UTC()
+		event.ExpiresAt = &t
 	}
 	if lat.Valid {
-		e.Event.Latitude = &lat.Float64
+		event.Latitude = &lat.Float64
 	}
 	if lon.Valid {
-		e.Event.Longitude = &lon.Float64
+		event.Longitude = &lon.Float64
 	}
-	if err := json.Unmarshal([]byte(areasJSON), &e.Event.Areas); err != nil {
-		return nil, fmt.Errorf("decode areas: %w", err)
+	if err := json.Unmarshal([]byte(areasJSON), &event.Areas); err != nil {
+		return event, fmt.Errorf("decode areas: %w", err)
 	}
 	storedTimes := []struct {
 		dest *time.Time
 		src  string
 	}{
-		{&e.Event.ReceivedAt, received},
-		{&e.Event.UpdatedAt, upd},
-		{&e.FirstSeenAt, first},
-		{&e.LastSeenAt, last},
+		{&event.ReceivedAt, received},
+		{&event.UpdatedAt, updated},
 	}
 	for _, t := range storedTimes {
 		parsed, err := time.Parse(time.RFC3339Nano, t.src)
 		if err != nil {
-			return nil, fmt.Errorf("parse stored timestamp: %w", err)
+			return event, fmt.Errorf("parse stored timestamp: %w", err)
 		}
 		*t.dest = parsed
 	}
-	return &e, nil
+
+	if stored != nil {
+		stored.Fingerprint = fingerprint
+		for _, t := range []struct {
+			dest *time.Time
+			src  string
+		}{
+			{&stored.FirstSeenAt, first},
+			{&stored.LastSeenAt, last},
+		} {
+			parsed, err := time.Parse(time.RFC3339Nano, t.src)
+			if err != nil {
+				return event, fmt.Errorf("parse stored timestamp: %w", err)
+			}
+			*t.dest = parsed
+		}
+	}
+	return event, nil
 }
 
 func nullableTime(t *time.Time) any {
@@ -422,8 +735,23 @@ func nullableFloat(f *float64) any {
 	return *f
 }
 
-// formatTime renders timestamps in UTC RFC3339Nano so that the fixed-width
-// text representation also sorts chronologically.
+func nullableInt64(ms int64) any {
+	if ms == 0 {
+		return nil
+	}
+	return ms
+}
+
+// formatTime renders timestamps in UTC RFC3339Nano for human-readable
+// columns; SQL comparisons use the integer millisecond columns instead.
 func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// orNow returns t when it is set, otherwise fallback.
+func orNow(t, fallback time.Time) time.Time {
+	if t.IsZero() {
+		return fallback
+	}
+	return t
 }

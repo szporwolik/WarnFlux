@@ -18,12 +18,17 @@ app:
   # How often to check for and mark expired events, e.g. 1m, 30s.
   expiration_interval: 1m
 
+  # How long acknowledged journal records are kept before deletion,
+  # e.g. 24h. Must be >= 1m.
+  change_retention: 24h
+
 storage:
   # The only supported driver for now.
   driver: sqlite
 
-  # Local development. When running in Docker, point this at the mounted
-  # persistent volume, e.g. /data/warnflux.db.
+  # Local development. If path is omitted entirely, WarnFlux warns and
+  # creates warnflux.db next to the binary (dev/debug convenience).
+  # In Docker, always set it explicitly, e.g. /data/warnflux.db.
   path: ./warnflux.db
 
 # Source plugins: ingest hazard information and emit normalized events.
@@ -35,7 +40,6 @@ sources:
 
     runtime:
       restart: true
-      startup_timeout: 15s
       shutdown_timeout: 10s
 
     config:
@@ -43,8 +47,8 @@ sources:
 
 # Output plugins: receive meaningful event changes from the core.
 outputs:
-  # Publishes hazard event changes to MQTT. Separate from the status ping
-  # configured under mqtt: below.
+  # Publishes hazard event changes and an application status snapshot to
+  # MQTT. This is the only built-in output.
   - id: mqtt-main
     type: mqtt
     enabled: false
@@ -54,32 +58,20 @@ outputs:
       failure_threshold: 5
 
     config:
+      # Broker URL, e.g. tcp://localhost:1883 or ssl://broker.example.com:8883.
       broker: tcp://localhost:1883
-      client_id: warnflux-events
+      client_id: warnflux
       username: ""
+      # Plaintext password, mutually exclusive with password_file.
       password: ""
+      # Alternatively, read the password from a file (e.g. a Docker secret).
+      # Mutually exclusive with password.
+      password_file: ""
+      # Event changes are published to <topic_prefix>/events; the status
+      # snapshot (retained) goes to <topic_prefix>/status.
       topic_prefix: warnflux
+      # QoS for event messages: 0, 1 or 2.
       qos: 1
-
-mqtt:
-  # Set to false to run WarnFlux without an MQTT connection.
-  enabled: true
-
-  # MQTT broker URL, e.g. tcp://localhost:1883 or ssl://broker.example.com:8883.
-  broker: tcp://localhost:1883
-
-  # Client identifier used with the broker.
-  client_id: warnflux
-
-  # Credentials; leave empty for anonymous access.
-  username: ""
-  password: ""
-
-  # The ping is published to <topic_prefix>/status/ping.
-  topic_prefix: warnflux
-
-  # QoS for published messages: 0, 1 or 2.
-  qos: 1
-
-  # Interval between heartbeat messages, e.g. 30s, 1m.
-  ping_interval: 30s
+      # Interval between retained status snapshots, e.g. 30s. Set to 0 to
+      # disable periodic status publication.
+      heartbeat_interval: 30s

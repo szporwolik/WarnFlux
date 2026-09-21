@@ -1,5 +1,7 @@
-// Package mqtt implements the built-in MQTT output plugin: it publishes
-// meaningful EventChange values to the broker as JSON.
+// Package mqtt implements the single built-in MQTT output: it publishes
+// meaningful EventChange values (non-retained event stream) and an optional
+// retained application status topic (heartbeat). This replaces the legacy
+// top-level mqtt configuration and internal/mqtt package.
 package mqtt
 
 import (
@@ -7,33 +9,46 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 	"gopkg.in/yaml.v3"
 
-	"warnflux/internal/core"
-	"warnflux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
 // Type is the plugin type name used in the YAML configuration.
 const Type = "mqtt"
+
+// wireSchemaVersion is the version of the MQTT wire schema described below.
+const wireSchemaVersion = 1
 
 const connectTimeout = 10 * time.Second
 
 // Config is the plugin-specific configuration. Credentials are never
 // logged.
 type Config struct {
-	Broker      string `yaml:"broker"`
-	ClientID    string `yaml:"client_id"`
-	Username    string `yaml:"username"`
-	Password    string `yaml:"password"`
-	TopicPrefix string `yaml:"topic_prefix"`
-	QoS         byte   `yaml:"qos"`
+	Broker   string `yaml:"broker"`
+	ClientID string `yaml:"client_id"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	// PasswordFile, when set, reads the broker password from a Docker
+	// secret / mounted file (e.g. /run/secrets/mqtt_password). Mutually
+	// exclusive with password.
+	PasswordFile string `yaml:"password_file"`
+	TopicPrefix  string `yaml:"topic_prefix"`
+	QoS          byte   `yaml:"qos"`
+	// HeartbeatInterval publishes the retained status topic periodically.
+	// Zero disables the heartbeat.
+	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
 }
 
-// Output publishes EventChange values to MQTT.
+// Output publishes EventChange values to MQTT and, optionally, the retained
+// application status topic.
 type Output struct {
 	cfg Config
 
@@ -51,17 +66,30 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 	if err := plugin.DecodeConfig(node, &cfg); err != nil {
 		return nil, err
 	}
-	if cfg.Broker == "" {
+	if strings.TrimSpace(cfg.Broker) == "" {
 		return nil, fmt.Errorf("broker must not be empty")
 	}
 	if cfg.ClientID == "" {
-		cfg.ClientID = "warnflux-events"
+		cfg.ClientID = "warnflux"
 	}
 	if cfg.TopicPrefix == "" {
 		cfg.TopicPrefix = "warnflux"
 	}
 	if cfg.QoS > 2 {
 		return nil, fmt.Errorf("qos must be 0, 1 or 2, got %d", cfg.QoS)
+	}
+	if cfg.Password != "" && cfg.PasswordFile != "" {
+		return nil, fmt.Errorf("password and password_file are mutually exclusive")
+	}
+	if cfg.PasswordFile != "" {
+		data, err := os.ReadFile(cfg.PasswordFile)
+		if err != nil {
+			return nil, fmt.Errorf("read password_file: %w", err)
+		}
+		cfg.Password = strings.TrimRight(string(data), "\r\n")
+	}
+	if cfg.HeartbeatInterval < 0 {
+		return nil, fmt.Errorf("heartbeat_interval must not be negative, got %s", cfg.HeartbeatInterval)
 	}
 
 	routePahoLogs()
@@ -72,7 +100,7 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 		SetAutoReconnect(true).
 		SetConnectTimeout(connectTimeout).
 		SetConnectionLostHandler(func(_ paho.Client, err error) {
-			slog.Warn("mqtt output connection lost", "error", err)
+			slog.Warn("mqtt connection lost", "error", err)
 		})
 	if cfg.Username != "" {
 		opts.SetUsername(cfg.Username)
@@ -86,23 +114,51 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 // Name returns the plugin type name.
 func (o *Output) Name() string { return Type }
 
+// StatusInterval reports the heartbeat interval (zero disables it).
+func (o *Output) StatusInterval() time.Duration { return o.cfg.HeartbeatInterval }
+
 // Handle publishes the change as JSON to <topic_prefix>/events with
-// retain=false and the configured QoS. The context is bounded by the
-// framework's runtime timeout.
+// retain=false and the configured QoS. The wire schema is deliberately
+// explicit (see wireEvent): internal Go structs are never marshaled
+// directly.
 func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 	if err := o.ensureConnected(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	payload, err := json.Marshal(struct {
-		ChangeType core.ChangeType  `json:"change_type"`
-		Event      core.HazardEvent `json:"event"`
-	}{change.Type, change.Event})
+	msg := toWireEvent(change)
+	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal change: %w", err)
 	}
 
 	topic := o.cfg.TopicPrefix + "/events"
 	token := o.client.Publish(topic, o.cfg.QoS, false, payload)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-token.Done():
+	}
+	if err := token.Error(); err != nil {
+		return fmt.Errorf("publish to %s: %w", topic, err)
+	}
+	return nil
+}
+
+// PublishStatus publishes the retained application status topic
+// (<topic_prefix>/status). Retention means the latest known status is
+// available to new subscribers.
+func (o *Output) PublishStatus(ctx context.Context, status plugin.Status) error {
+	if err := o.ensureConnected(ctx); err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	msg := toWireStatus(status)
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal status: %w", err)
+	}
+
+	topic := o.cfg.TopicPrefix + "/status"
+	token := o.client.Publish(topic, o.cfg.QoS, true, payload)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -144,8 +200,142 @@ func (o *Output) ensureConnected(ctx context.Context) error {
 	return nil
 }
 
+// ---- wire schema ----
+//
+// The MQTT payloads below are the public contract. Fields marked STABLE are
+// guaranteed to remain present with the same meaning in future releases;
+// additional fields may be added at any time.
+
+// wireEvent is the event stream payload (<topic_prefix>/events).
+type wireEvent struct {
+	SchemaVersion int             `json:"schema_version"` // STABLE
+	ChangeID      int64           `json:"change_id"`      // STABLE: journal ID
+	ChangeType    string          `json:"change_type"`    // STABLE: new|updated|cancelled|expired
+	Event         wireHazardEvent `json:"event"`
+}
+
+type wireHazardEvent struct {
+	Source      string   `json:"source"`    // STABLE
+	SourceID    string   `json:"source_id"` // STABLE
+	Category    string   `json:"category"`
+	Event       string   `json:"event"` // STABLE
+	Severity    string   `json:"severity"`
+	Urgency     string   `json:"urgency"`
+	Certainty   string   `json:"certainty"`
+	Headline    string   `json:"headline"`
+	Description string   `json:"description"`
+	Instruction string   `json:"instruction"`
+	EffectiveAt *string  `json:"effective_at,omitempty"`
+	ExpiresAt   *string  `json:"expires_at,omitempty"`
+	Latitude    *float64 `json:"latitude,omitempty"`
+	Longitude   *float64 `json:"longitude,omitempty"`
+	Areas       []string `json:"areas"`
+	Status      string   `json:"status"` // STABLE: active|cancelled|expired
+	SourceURL   string   `json:"source_url"`
+	ReceivedAt  string   `json:"received_at"`
+	UpdatedAt   string   `json:"updated_at"`
+}
+
+// wireStatus is the retained status payload (<topic_prefix>/status).
+type wireStatus struct {
+	SchemaVersion           int               `json:"schema_version"` // STABLE
+	Service                 string            `json:"service"`        // STABLE
+	Version                 string            `json:"version"`
+	UptimeSeconds           int64             `json:"uptime_seconds"`
+	DatabaseHealthy         bool              `json:"database_healthy"`
+	PendingChanges          int               `json:"pending_changes"`
+	OldestPendingAgeSeconds int64             `json:"oldest_pending_age_seconds"`
+	Sources                 []wirePluginState `json:"sources"`
+	Outputs                 []wirePluginState `json:"outputs"`
+}
+
+type wirePluginState struct {
+	ID                  string `json:"id"`
+	Type                string `json:"type"`
+	State               string `json:"state"`
+	ConsecutiveFailures int    `json:"consecutive_failures"`
+	RestartCount        int    `json:"restart_count"`
+	LastError           string `json:"last_error,omitempty"`
+}
+
+func toWireEvent(change core.EventChange) wireEvent {
+	event := change.Event
+	return wireEvent{
+		SchemaVersion: wireSchemaVersion,
+		ChangeID:      change.ID,
+		ChangeType:    string(change.Type),
+		Event: wireHazardEvent{
+			Source:      event.Source,
+			SourceID:    event.SourceID,
+			Category:    event.Category,
+			Event:       event.Event,
+			Severity:    event.Severity,
+			Urgency:     event.Urgency,
+			Certainty:   event.Certainty,
+			Headline:    event.Headline,
+			Description: event.Description,
+			Instruction: event.Instruction,
+			EffectiveAt: wireTime(event.EffectiveAt),
+			ExpiresAt:   wireTime(event.ExpiresAt),
+			Latitude:    event.Latitude,
+			Longitude:   event.Longitude,
+			Areas:       event.Areas,
+			Status:      string(event.Status),
+			SourceURL:   event.SourceURL,
+			ReceivedAt:  formatWireTime(event.ReceivedAt),
+			UpdatedAt:   formatWireTime(event.UpdatedAt),
+		},
+	}
+}
+
+func toWireStatus(status plugin.Status) wireStatus {
+	out := wireStatus{
+		SchemaVersion:           wireSchemaVersion,
+		Service:                 "warnflux",
+		Version:                 status.Version,
+		UptimeSeconds:           int64(status.Uptime.Seconds()),
+		DatabaseHealthy:         status.DatabaseHealthy,
+		PendingChanges:          status.PendingChanges,
+		OldestPendingAgeSeconds: int64(status.OldestPendingAge.Seconds()),
+	}
+	for _, p := range status.Sources {
+		out.Sources = append(out.Sources, wirePluginState{
+			ID:                  p.ID,
+			Type:                p.Type,
+			State:               string(p.State),
+			ConsecutiveFailures: p.ConsecutiveFailures,
+			RestartCount:        p.RestartCount,
+			LastError:           p.LastError,
+		})
+	}
+	for _, p := range status.Outputs {
+		out.Outputs = append(out.Outputs, wirePluginState{
+			ID:                  p.ID,
+			Type:                p.Type,
+			State:               string(p.State),
+			ConsecutiveFailures: p.ConsecutiveFailures,
+			RestartCount:        p.RestartCount,
+			LastError:           p.LastError,
+		})
+	}
+	return out
+}
+
+func wireTime(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339Nano)
+	return &s
+}
+
+func formatWireTime(t time.Time) string {
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
 // routePahoLogs silences paho's verbose protocol debug output and routes
-// warnings and errors through slog.
+// warnings and errors through slog. This is the single MQTT logging
+// adapter in the repository.
 func routePahoLogs() {
 	paho.DEBUG = discardLogger{}
 	paho.WARN = slogAdapter{level: slog.LevelWarn}

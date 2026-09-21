@@ -21,6 +21,16 @@ func (t ChangeType) String() string { return string(t) }
 // EventChange is a meaningful state transition that outputs should receive.
 // Duplicates intentionally produce no EventChange.
 type EventChange struct {
+	// ID is the durable journal change ID (0 when the change does not come
+	// from the journal, e.g. in tests or demos).
+	ID int64
+
 	Type  ChangeType
 	Event HazardEvent
+}
+
+// Clone returns a deep copy of the change so outputs can never mutate data
+// shared with the core or with other outputs.
+func (c EventChange) Clone() EventChange {
+	return EventChange{ID: c.ID, Type: c.Type, Event: c.Event.Clone()}
 }

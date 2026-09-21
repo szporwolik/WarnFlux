@@ -39,14 +39,22 @@ func tableCount(t *testing.T, db *sql.DB, name string) int {
 	return n
 }
 
+func steps(sqls ...string) []migration {
+	out := make([]migration, len(sqls))
+	for i, s := range sqls {
+		out[i] = migration{SQL: s}
+	}
+	return out
+}
+
 func TestMigrateAppliesPendingSteps(t *testing.T) {
 	db := openRaw(t)
-	steps := []string{
+	migrations := steps(
 		"CREATE TABLE one (id INTEGER PRIMARY KEY);",
 		"CREATE TABLE two (id INTEGER PRIMARY KEY);",
-	}
+	)
 
-	info, err := migrate(db, steps)
+	info, err := migrate(db, migrations)
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -60,8 +68,7 @@ func TestMigrateAppliesPendingSteps(t *testing.T) {
 		t.Error("both tables should exist")
 	}
 
-	// A second run against the already-migrated database is a no-op.
-	info2, err := migrate(db, steps)
+	info2, err := migrate(db, migrations)
 	if err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
@@ -72,17 +79,14 @@ func TestMigrateAppliesPendingSteps(t *testing.T) {
 
 func TestMigrateRollsBackFailedStep(t *testing.T) {
 	db := openRaw(t)
-	steps := []string{
+	migrations := steps(
 		"CREATE TABLE one (id INTEGER PRIMARY KEY);",
 		"CREATE TABLE two (id INTEGER PRIMARY KEY);\nTHIS IS NOT SQL;",
-	}
+	)
 
-	if _, err := migrate(db, steps); err == nil {
+	if _, err := migrate(db, migrations); err == nil {
 		t.Fatal("expected migration error, got nil")
 	}
-
-	// The first step committed; the failed step must have rolled back
-	// entirely, leaving the schema version untouched.
 	if v := schemaVersion(t, db); v != 1 {
 		t.Errorf("user_version = %d, want 1", v)
 	}
@@ -94,21 +98,42 @@ func TestMigrateRollsBackFailedStep(t *testing.T) {
 	}
 }
 
+func TestMigrateGoStepRollsBackOnError(t *testing.T) {
+	db := openRaw(t)
+	boom := migration{
+		SQL: "CREATE TABLE one (id INTEGER PRIMARY KEY);",
+		run: func(tx *sql.Tx) error {
+			if _, err := tx.Exec("CREATE TABLE two (id INTEGER PRIMARY KEY);"); err != nil {
+				return err
+			}
+			return sql.ErrConnDone // simulate failure after partial work
+		},
+	}
+
+	if _, err := migrate(db, []migration{boom}); err == nil {
+		t.Fatal("expected migration error, got nil")
+	}
+	if v := schemaVersion(t, db); v != 0 {
+		t.Errorf("user_version = %d, want 0", v)
+	}
+	if tableCount(t, db, "one") != 0 || tableCount(t, db, "two") != 0 {
+		t.Error("Go step must roll back completely")
+	}
+}
+
 func TestMigrateResumesAfterFailure(t *testing.T) {
 	db := openRaw(t)
-
-	bad := []string{
+	bad := steps(
 		"CREATE TABLE one (id INTEGER PRIMARY KEY);",
 		"INVALID SQL;",
-	}
+	)
 	if _, err := migrate(db, bad); err == nil {
 		t.Fatal("expected error, got nil")
 	}
-
-	fixed := []string{
+	fixed := steps(
 		"CREATE TABLE one (id INTEGER PRIMARY KEY);",
 		"CREATE TABLE two (id INTEGER PRIMARY KEY);",
-	}
+	)
 	info, err := migrate(db, fixed)
 	if err != nil {
 		t.Fatalf("migrate after fix: %v", err)
@@ -123,16 +148,13 @@ func TestMigrateResumesAfterFailure(t *testing.T) {
 
 func TestMigrateRefusesNewerDatabase(t *testing.T) {
 	db := openRaw(t)
-	steps := []string{"CREATE TABLE one (id INTEGER PRIMARY KEY);"}
+	steps := steps("CREATE TABLE one (id INTEGER PRIMARY KEY);")
 	if _, err := migrate(db, steps); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-
-	// Simulate a database created by a newer WarnFlux binary.
 	if _, err := db.Exec("PRAGMA user_version = 5"); err != nil {
 		t.Fatalf("set user_version: %v", err)
 	}
-
 	if _, err := migrate(db, steps); err == nil {
 		t.Fatal("expected refusal to touch a newer database, got nil")
 	}

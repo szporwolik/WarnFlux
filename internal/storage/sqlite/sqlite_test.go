@@ -2,16 +2,22 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
-	"warnflux/internal/core"
-	"warnflux/internal/storage"
+	_ "modernc.org/sqlite"
+
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
-func openTemp(t *testing.T) *Store {
+func openTemp(t *testing.T, opts ...Option) *Store {
 	t.Helper()
-	store, _, err := Open(t.TempDir() + "/test.db")
+	store, _, err := Open(filepath.Join(t.TempDir(), "test.db"), opts...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -19,30 +25,35 @@ func openTemp(t *testing.T) *Store {
 	return store
 }
 
-func testEvent() core.HazardEvent {
+func normEvent() core.HazardEvent {
 	eff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	exp := eff.Add(24 * time.Hour)
+	exp := time.Date(2099, 1, 2, 0, 0, 0, 0, time.UTC)
 	lat, lon := 50.06, 19.94
-	return core.HazardEvent{
+	e := core.HazardEvent{
 		Source:      "meteoalarm",
 		SourceID:    "2.49.0.1.616.0.DEU",
 		Category:    "met",
 		Event:       "Rain",
 		Severity:    "orange",
-		Urgency:     "immediate",
-		Certainty:   "likely",
 		Headline:    "Heavy rain expected",
-		Description: "Widespread heavy rain.",
-		Instruction: "Avoid flooded areas.",
 		EffectiveAt: &eff,
 		ExpiresAt:   &exp,
 		Latitude:    &lat,
 		Longitude:   &lon,
 		Areas:       []string{"DE-NW", "DE-RP"},
 		Status:      core.StatusActive,
-		SourceURL:   "https://example.invalid/alert",
-		ReceivedAt:  time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 	}
+	e.Normalize()
+	return e
+}
+
+func ingestOne(t *testing.T, s *Store, e core.HazardEvent) (storage.Outcome, *storage.Change) {
+	t.Helper()
+	outcome, change, err := s.Ingest(context.Background(), e, core.Fingerprint(e))
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	return outcome, change
 }
 
 func TestOpenInitializesSchema(t *testing.T) {
@@ -57,14 +68,13 @@ func TestOpenInitializesSchema(t *testing.T) {
 }
 
 func TestOpenMigrationInfo(t *testing.T) {
-	path := t.TempDir() + "/test.db"
-
+	path := filepath.Join(t.TempDir(), "test.db")
 	store, info, err := Open(path)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	if info.From != 0 || info.To != 1 {
-		t.Errorf("fresh open info = %+v, want {From:0 To:1}", info)
+	if info.From != 0 || info.To != len(migrations) {
+		t.Errorf("fresh open info = %+v, want {From:0 To:%d}", info, len(migrations))
 	}
 	store.Close()
 
@@ -73,272 +83,487 @@ func TestOpenMigrationInfo(t *testing.T) {
 		t.Fatalf("second Open: %v", err)
 	}
 	store2.Close()
-	if info2.From != 1 || info2.To != 1 {
-		t.Errorf("reopen info = %+v, want {From:1 To:1} (no migration needed)", info2)
+	if info2.From != len(migrations) || info2.To != len(migrations) {
+		t.Errorf("reopen info = %+v, want no migration", info2)
 	}
 }
 
-func TestInsertAndGetRoundTrip(t *testing.T) {
-	store := openTemp(t)
-	ctx := context.Background()
-	fixed := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	store.now = func() time.Time { return fixed }
-
-	event := testEvent()
-	inserted, err := store.Insert(ctx, event, "fingerprint-1")
+// TestMigrationV2BackfillsLegacyExpiry creates a v1 database by hand,
+// inserts a row with a text expires_at, then opens it and verifies the
+// integer column is backfilled.
+func TestMigrationV2BackfillsLegacyExpiry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("Insert: %v", err)
+		t.Fatalf("open raw: %v", err)
 	}
-	if !inserted {
-		t.Fatal("first insert should report true")
+	if _, err := db.Exec(migrations[0].SQL); err != nil {
+		t.Fatalf("apply v1: %v", err)
 	}
-
-	got, err := store.Get(ctx, event.Key())
+	expiry := time.Date(2026, 6, 1, 12, 30, 45, 123456789, time.UTC)
+	_, err = db.Exec(fmt.Sprintf(`
+		INSERT INTO events (event_key, source, source_id, fingerprint, status, event, expires_at, received_at, first_seen_at, last_seen_at, updated_at)
+		VALUES ('src:1', 'src', '1', 'fp', 'active', 'E', '%s', '%s', '%s', '%s', '%s')`,
+		expiry.Format(time.RFC3339Nano),
+		expiry.Format(time.RFC3339Nano),
+		expiry.Format(time.RFC3339Nano),
+		expiry.Format(time.RFC3339Nano),
+		expiry.Format(time.RFC3339Nano)))
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("insert legacy row: %v", err)
 	}
-	if got.Fingerprint != "fingerprint-1" {
-		t.Errorf("fingerprint = %q", got.Fingerprint)
+	if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+		t.Fatalf("set version: %v", err)
 	}
-	if got.Event.Source != event.Source || got.Event.SourceID != event.SourceID {
-		t.Errorf("identity not preserved: %+v", got.Event)
+	db.Close()
+
+	store := openTempAt(t, path)
+	got, err := store.Get(context.Background(), "src:1")
+	if err != nil {
+		t.Fatalf("Get after migration: %v", err)
 	}
-	if got.Event.Event != "Rain" || got.Event.Severity != "orange" {
-		t.Errorf("content not preserved: %+v", got.Event)
-	}
-	if got.Event.Status != core.StatusActive {
-		t.Errorf("status = %q, want active", got.Event.Status)
-	}
-	if got.Event.EffectiveAt == nil || !got.Event.EffectiveAt.Equal(*event.EffectiveAt) {
-		t.Errorf("effective_at = %v, want %v", got.Event.EffectiveAt, *event.EffectiveAt)
-	}
-	if got.Event.ExpiresAt == nil || !got.Event.ExpiresAt.Equal(*event.ExpiresAt) {
-		t.Errorf("expires_at = %v, want %v", got.Event.ExpiresAt, *event.ExpiresAt)
-	}
-	if got.Event.Latitude == nil || *got.Event.Latitude != 50.06 {
-		t.Errorf("latitude = %v, want 50.06", got.Event.Latitude)
-	}
-	if len(got.Event.Areas) != 2 || got.Event.Areas[0] != "DE-NW" {
-		t.Errorf("areas = %v", got.Event.Areas)
-	}
-	if !got.Event.ReceivedAt.Equal(event.ReceivedAt) {
-		t.Errorf("received_at = %v, want %v", got.Event.ReceivedAt, event.ReceivedAt)
-	}
-	if !got.FirstSeenAt.Equal(fixed) || !got.LastSeenAt.Equal(fixed) {
-		t.Errorf("seen timestamps = %v/%v, want %v", got.FirstSeenAt, got.LastSeenAt, fixed)
-	}
-	if !got.Event.UpdatedAt.Equal(fixed) {
-		t.Errorf("updated_at = %v, want %v", got.Event.UpdatedAt, fixed)
+	if got.Event.ExpiresAt == nil || !got.Event.ExpiresAt.Equal(expiry.Truncate(time.Millisecond)) {
+		t.Errorf("expires_at after backfill = %v, want ~%v", got.Event.ExpiresAt, expiry)
 	}
 }
 
-func TestInsertDuplicateKeyReportsFalse(t *testing.T) {
-	store := openTemp(t)
-	ctx := context.Background()
-
-	event := testEvent()
-	if inserted, err := store.Insert(ctx, event, "fp"); err != nil || !inserted {
-		t.Fatalf("first Insert = %v, %v; want true", inserted, err)
-	}
-	inserted, err := store.Insert(ctx, event, "fp")
+func openTempAt(t *testing.T, path string) *Store {
+	t.Helper()
+	store, _, err := Open(path)
 	if err != nil {
-		t.Fatalf("second Insert: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
-	if inserted {
-		t.Error("second insert should report false")
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+// TestIngestTransitionMatrix covers the lifecycle semantics table-driven.
+func TestIngestTransitionMatrix(t *testing.T) {
+	cases := []struct {
+		name         string
+		steps        []core.HazardEvent
+		wantOutcomes []storage.Outcome
+		wantTypes    []core.ChangeType
+		wantFinal    core.EventStatus
+	}{
+		{
+			name:         "unknown active -> new",
+			steps:        []core.HazardEvent{normEvent()},
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew},
+			wantTypes:    []core.ChangeType{core.ChangeNew},
+			wantFinal:    core.StatusActive,
+		},
+		{
+			name: "unknown cancelled is cancelled, not new",
+			steps: func() []core.HazardEvent {
+				e := normEvent()
+				e.Status = core.StatusCancelled
+				return []core.HazardEvent{e}
+			}(),
+			wantOutcomes: []storage.Outcome{storage.OutcomeCancelled},
+			wantTypes:    []core.ChangeType{core.ChangeCancelled},
+			wantFinal:    core.StatusCancelled,
+		},
+		{
+			name: "identical active -> duplicate",
+			steps: func() []core.HazardEvent {
+				e := normEvent()
+				return []core.HazardEvent{e, e}
+			}(),
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeDuplicate},
+			wantTypes:    []core.ChangeType{core.ChangeNew},
+			wantFinal:    core.StatusActive,
+		},
+		{
+			name: "active -> updated",
+			steps: func() []core.HazardEvent {
+				e := normEvent()
+				e2 := e.Clone()
+				e2.Severity = "red"
+				return []core.HazardEvent{e, e2}
+			}(),
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeUpdated},
+			wantTypes:    []core.ChangeType{core.ChangeNew, core.ChangeUpdated},
+			wantFinal:    core.StatusActive,
+		},
+		{
+			name: "active -> cancelled",
+			steps: func() []core.HazardEvent {
+				e := normEvent()
+				e2 := e.Clone()
+				e2.Status = core.StatusCancelled
+				return []core.HazardEvent{e, e2}
+			}(),
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeCancelled},
+			wantTypes:    []core.ChangeType{core.ChangeNew, core.ChangeCancelled},
+			wantFinal:    core.StatusCancelled,
+		},
+		{
+			name: "repeated cancellation -> duplicate",
+			steps: func() []core.HazardEvent {
+				e := normEvent()
+				e2 := e.Clone()
+				e2.Status = core.StatusCancelled
+				return []core.HazardEvent{e, e2, e2.Clone()}
+			}(),
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeCancelled, storage.OutcomeDuplicate},
+			wantTypes:    []core.ChangeType{core.ChangeNew, core.ChangeCancelled},
+			wantFinal:    core.StatusCancelled,
+		},
+		{
+			name: "cancelled + active again -> updated (re-activation)",
+			steps: func() []core.HazardEvent {
+				e := normEvent()
+				cancelled := e.Clone()
+				cancelled.Status = core.StatusCancelled
+				return []core.HazardEvent{e, cancelled, e.Clone()}
+			}(),
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeCancelled, storage.OutcomeUpdated},
+			wantTypes:    []core.ChangeType{core.ChangeNew, core.ChangeCancelled, core.ChangeUpdated},
+			wantFinal:    core.StatusActive,
+		},
+		{
+			name: "expired + same source event -> updated (re-activation)",
+			steps: func() []core.HazardEvent {
+				e := normEvent()
+				past := time.Now().Add(-time.Hour)
+				e.ExpiresAt = &past
+				again := e.Clone()
+				return []core.HazardEvent{e, again}
+			}(),
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeUpdated},
+			wantTypes:    []core.ChangeType{core.ChangeNew, core.ChangeUpdated},
+			wantFinal:    core.StatusActive,
+		},
+		{
+			name: "expired + cancellation -> cancelled",
+			steps: func() []core.HazardEvent {
+				e := normEvent()
+				past := time.Now().Add(-time.Hour)
+				e.ExpiresAt = &past
+				cancelled := e.Clone()
+				cancelled.Status = core.StatusCancelled
+				return []core.HazardEvent{e, cancelled}
+			}(),
+			wantOutcomes: []storage.Outcome{storage.OutcomeNew, storage.OutcomeCancelled},
+			wantTypes:    []core.ChangeType{core.ChangeNew, core.ChangeCancelled},
+			wantFinal:    core.StatusCancelled,
+		},
 	}
-	if n, err := store.Count(ctx); err != nil || n != 1 {
-		t.Errorf("row count = %d, %v; want 1", n, err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := openTemp(t)
+			for i, step := range tc.steps {
+				outcome, change := ingestOne(t, store, step)
+				if outcome != tc.wantOutcomes[i] {
+					t.Fatalf("step %d: outcome = %v, want %v", i, outcome, tc.wantOutcomes[i])
+				}
+				if i < len(tc.wantTypes) {
+					if change == nil || change.ChangeType != tc.wantTypes[i] {
+						t.Fatalf("step %d: change = %+v, want type %v", i, change, tc.wantTypes[i])
+					}
+					if change.ID == 0 {
+						t.Fatalf("step %d: change has no journal ID", i)
+					}
+				} else if change != nil {
+					t.Fatalf("step %d: expected no change, got %+v", i, change)
+				}
+			}
+			got, err := store.Get(context.Background(), tc.steps[0].Key())
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Event.Status != tc.wantFinal {
+				t.Errorf("final status = %v, want %v", got.Event.Status, tc.wantFinal)
+			}
+		})
 	}
 }
 
-func TestUpdatePreservesFirstSeenAndReceived(t *testing.T) {
-	store := openTemp(t)
-	ctx := context.Background()
-
-	t0 := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	t1 := t0.Add(time.Minute)
-	store.now = func() time.Time { return t0 }
-
-	event := testEvent()
-	if _, err := store.Insert(ctx, event, "fp-old"); err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-
-	store.now = func() time.Time { return t1 }
-	updated := event
-	updated.Severity = "red"
-	updated.UpdatedAt = t1
-	if err := store.Update(ctx, updated, "fp-new"); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	got, err := store.Get(ctx, event.Key())
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !got.FirstSeenAt.Equal(t0) {
-		t.Errorf("first_seen_at = %v, want %v (must be preserved)", got.FirstSeenAt, t0)
-	}
-	if !got.Event.ReceivedAt.Equal(event.ReceivedAt) {
-		t.Errorf("received_at = %v, want %v", got.Event.ReceivedAt, event.ReceivedAt)
-	}
-	if !got.LastSeenAt.Equal(t1) {
-		t.Errorf("last_seen_at = %v, want %v", got.LastSeenAt, t1)
-	}
-	if !got.Event.UpdatedAt.Equal(t1) {
-		t.Errorf("updated_at = %v, want %v", got.Event.UpdatedAt, t1)
-	}
-	if got.Event.Severity != "red" || got.Fingerprint != "fp-new" {
-		t.Error("updated content not stored")
-	}
-}
-
-func TestTouchRefreshesOnlyLastSeen(t *testing.T) {
-	store := openTemp(t)
-	ctx := context.Background()
-
-	t0 := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	t1 := t0.Add(time.Minute)
-	store.now = func() time.Time { return t0 }
-
-	event := testEvent()
-	if _, err := store.Insert(ctx, event, "fp"); err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-
-	store.now = func() time.Time { return t1 }
-	if err := store.Touch(ctx, event.Key()); err != nil {
-		t.Fatalf("Touch: %v", err)
-	}
-
-	got, err := store.Get(ctx, event.Key())
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !got.FirstSeenAt.Equal(t0) {
-		t.Errorf("first_seen_at = %v, want %v", got.FirstSeenAt, t0)
-	}
-	if !got.LastSeenAt.Equal(t1) {
-		t.Errorf("last_seen_at = %v, want %v", got.LastSeenAt, t1)
-	}
-	if !got.Event.UpdatedAt.Equal(t0) {
-		t.Errorf("updated_at = %v, want %v (must not change)", got.Event.UpdatedAt, t0)
-	}
-	if got.Fingerprint != "fp" {
-		t.Error("fingerprint must not change on touch")
-	}
-}
-
-func TestMarkExpired(t *testing.T) {
-	store := openTemp(t)
-	ctx := context.Background()
+// TestExpireJournalsChanges verifies the durable path: expiration creates a
+// ChangeExpired record in the same transaction and a restart redelivers it.
+func TestExpireJournalsChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	store := openTempAt(t, path)
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Hour)
-	future := now.Add(time.Hour)
-
-	mk := func(id string, status core.EventStatus, expires *time.Time) {
-		e := core.HazardEvent{Source: "test", SourceID: id, Event: "E", Status: status, ExpiresAt: expires}
-		if _, err := store.Insert(ctx, e, "fp-"+id); err != nil {
-			t.Fatalf("Insert %s: %v", id, err)
-		}
+	e := normEvent()
+	e.SourceID = "expiring"
+	e.ExpiresAt = &past
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeNew {
+		t.Fatalf("outcome = %v", outcome)
 	}
 
-	mk("expired-soon", core.StatusActive, &past)
-	mk("active-future", core.StatusActive, &future)
-	mk("active-no-expiry", core.StatusActive, nil)
-	mk("cancelled-past", core.StatusCancelled, &past)
-
-	expired, err := store.MarkExpired(ctx, now)
+	changes, err := store.Expire(context.Background(), now)
 	if err != nil {
-		t.Fatalf("MarkExpired: %v", err)
+		t.Fatalf("Expire: %v", err)
 	}
-	if len(expired) != 1 {
-		t.Fatalf("expired count = %d, want 1", len(expired))
+	if len(changes) != 1 {
+		t.Fatalf("changes = %d, want 1", len(changes))
 	}
-	if expired[0].SourceID != "expired-soon" || expired[0].Status != core.StatusExpired {
-		t.Errorf("unexpected expired event: %+v", expired[0])
+	if changes[0].ChangeType != core.ChangeExpired || changes[0].ID == 0 {
+		t.Fatalf("unexpected change: %+v", changes[0])
 	}
 
-	// The state change must be persistent.
-	got, err := store.Get(ctx, core.EventKey("test", "expired-soon"))
+	// Events without expiry stay active.
+	noExpiry := normEvent()
+	noExpiry.SourceID = "no-expiry"
+	if outcome, _ := ingestOne(t, store, noExpiry); outcome != storage.OutcomeNew {
+		t.Fatalf("outcome = %v", outcome)
+	}
+
+	// Restart: the journaled change is still deliverable.
+	store.Close()
+	store2 := openTempAt(t, path)
+	polled, err := store2.PollChanges(context.Background(), "out-a", 10)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
+		t.Fatalf("PollChanges: %v", err)
 	}
-	if got.Event.Status != core.StatusExpired {
-		t.Errorf("persisted status = %q, want expired", got.Event.Status)
+	if len(polled) != 3 { // new (expiring), expired, new (no-expiry)
+		t.Fatalf("polled = %d, want 3", len(polled))
 	}
-
-	// The others must be untouched.
-	for id, want := range map[string]core.EventStatus{
-		"active-future":    core.StatusActive,
-		"active-no-expiry": core.StatusActive,
-		"cancelled-past":   core.StatusCancelled,
-	} {
-		got, err := store.Get(ctx, core.EventKey("test", id))
-		if err != nil {
-			t.Fatalf("Get %s: %v", id, err)
-		}
-		if got.Event.Status != want {
-			t.Errorf("event %s status = %q, want %q", id, got.Event.Status, want)
-		}
+	if polled[0].ChangeType != core.ChangeNew || polled[1].ChangeType != core.ChangeExpired || polled[2].ChangeType != core.ChangeNew {
+		t.Fatalf("unexpected poll order: %+v", polled)
+	}
+	if polled[1].Event.SourceID != "expiring" {
+		t.Fatalf("expired change carries wrong event: %+v", polled[1].Event)
 	}
 }
 
-func TestRestartPersistence(t *testing.T) {
-	ctx := context.Background()
-	path := t.TempDir() + "/test.db"
+func TestJournalCursorsIndependentAndAtLeastOnce(t *testing.T) {
+	store := openTemp(t)
 
-	store, _, err := Open(path)
-	if err != nil {
-		t.Fatalf("first Open: %v", err)
-	}
-	event := testEvent()
-	if _, err := store.Insert(ctx, event, "fp"); err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	e := normEvent()
+	outcome, change := ingestOne(t, store, e)
+	if outcome != storage.OutcomeNew || change == nil {
+		t.Fatalf("ingest = %v %+v", outcome, change)
 	}
 
-	store2, _, err := Open(path)
-	if err != nil {
-		t.Fatalf("second Open: %v", err)
+	// Output A acknowledges; output B does not.
+	if err := store.AckChanges(context.Background(), "out-a", change.ID); err != nil {
+		t.Fatalf("AckChanges: %v", err)
 	}
-	defer store2.Close()
 
-	got, err := store2.Get(ctx, event.Key())
+	// A: nothing left; B: still pending.
+	nextA, err := store.PollChanges(context.Background(), "out-a", 10)
 	if err != nil {
-		t.Fatalf("Get after reopen: %v", err)
+		t.Fatalf("PollChanges A: %v", err)
 	}
-	if got.Fingerprint != "fp" {
-		t.Errorf("fingerprint after reopen = %q, want %q", got.Fingerprint, "fp")
+	if len(nextA) != 0 {
+		t.Fatalf("A polled %d changes, want 0", len(nextA))
 	}
-	if got.Event.Severity != event.Severity {
-		t.Errorf("content after reopen = %+v", got.Event)
+	nextB, err := store.PollChanges(context.Background(), "out-b", 10)
+	if err != nil {
+		t.Fatalf("PollChanges B: %v", err)
+	}
+	if len(nextB) != 1 || nextB[0].ID != change.ID {
+		t.Fatalf("B polled %+v, want the unacked change", nextB)
+	}
+
+	// Ack is monotonic.
+	if err := store.AckChanges(context.Background(), "out-b", change.ID-1); err != nil {
+		t.Fatalf("AckChanges lower: %v", err)
+	}
+	nextB, _ = store.PollChanges(context.Background(), "out-b", 10)
+	if len(nextB) != 1 {
+		t.Fatalf("B polled %d after lower ack, want 1 (monotonic)", len(nextB))
 	}
 }
 
-func TestInsertUsesEventUpdatedAt(t *testing.T) {
+func TestCleanupChanges(t *testing.T) {
+	store := openTemp(t)
+
+	e := normEvent()
+	_, change := ingestOne(t, store, e)
+	if err := store.AckChanges(context.Background(), "out-a", change.ID); err != nil {
+		t.Fatalf("AckChanges: %v", err)
+	}
+
+	// Not old enough yet: nothing deleted.
+	n, err := store.CleanupChanges(context.Background(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("CleanupChanges: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("deleted %d rows, want 0 (too fresh)", n)
+	}
+
+	// Old enough: acknowledged rows are deleted.
+	n, err = store.CleanupChanges(context.Background(), time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("CleanupChanges: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted %d rows, want 1", n)
+	}
+}
+
+func TestPendingStats(t *testing.T) {
+	store := openTemp(t)
+
+	e := normEvent()
+	_, change := ingestOne(t, store, e)
+
+	pending, oldest, err := store.PendingStats(context.Background())
+	if err != nil {
+		t.Fatalf("PendingStats: %v", err)
+	}
+	if pending != 1 {
+		t.Errorf("pending = %d, want 1", pending)
+	}
+	if oldest < 0 {
+		t.Errorf("oldest age = %v, want non-negative", oldest)
+	}
+
+	if err := store.AckChanges(context.Background(), "out-a", change.ID); err != nil {
+		t.Fatalf("AckChanges: %v", err)
+	}
+	pending, _, err = store.PendingStats(context.Background())
+	if err != nil {
+		t.Fatalf("PendingStats: %v", err)
+	}
+	if pending != 0 {
+		t.Errorf("pending = %d, want 0 after ack", pending)
+	}
+}
+
+// TestTimestampsMs verifies millisecond precision expiry boundaries.
+func TestTimestampsMs(t *testing.T) {
 	store := openTemp(t)
 	ctx := context.Background()
 
-	fixed := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	store.now = func() time.Time { return fixed }
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
-	event := testEvent()
-	event.UpdatedAt = fixed.Add(time.Minute)
-	if _, err := store.Insert(ctx, event, "fp"); err != nil {
-		t.Fatalf("Insert: %v", err)
+	// Whole second.
+	e := normEvent()
+	e.SourceID = "whole-second"
+	e.ExpiresAt = &base
+	ingestOne(t, store, e)
+
+	// Millisecond precision.
+	e2 := normEvent()
+	e2.SourceID = "millisecond"
+	exp2 := base.Add(500 * time.Millisecond)
+	e2.ExpiresAt = &exp2
+	ingestOne(t, store, e2)
+
+	// Nanosecond precision (stored truncated to ms).
+	e3 := normEvent()
+	e3.SourceID = "nanosecond"
+	exp3 := base.Add(500*time.Millisecond + 999*time.Microsecond)
+	e3.ExpiresAt = &exp3
+	ingestOne(t, store, e3)
+
+	// No expiry.
+	e4 := normEvent()
+	e4.SourceID = "nil"
+	e4.ExpiresAt = nil
+	ingestOne(t, store, e4)
+
+	changes, err := store.Expire(ctx, base)
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Event.SourceID != "whole-second" {
+		t.Fatalf("expired at boundary = %+v, want only whole-second", changes)
 	}
 
-	got, err := store.Get(ctx, event.Key())
+	changes, err = store.Expire(ctx, base.Add(500*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	got := map[string]bool{}
+	for _, c := range changes {
+		got[c.Event.SourceID] = true
+	}
+	if !got["millisecond"] || !got["nanosecond"] {
+		t.Fatalf("expired at ms boundary = %+v", changes)
+	}
+	if got["nil"] {
+		t.Fatal("event without expiry was expired")
+	}
+
+	// Second expiry run is idempotent (nothing new to expire).
+	changes, err = store.Expire(ctx, base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("second expiration produced %d changes, want 0", len(changes))
+	}
+}
+
+func TestConcurrentIngestIdenticalNew(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	e := normEvent()
+	const workers = 20
+	outcomes := make([]storage.Outcome, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			outcomes[i], _, errs[i] = store.Ingest(ctx, e.Clone(), core.Fingerprint(e))
+		}(i)
+	}
+	wg.Wait()
+
+	newCount := 0
+	for i := 0; i < workers; i++ {
+		if errs[i] != nil {
+			t.Fatalf("worker %d: %v", i, errs[i])
+		}
+		switch outcomes[i] {
+		case storage.OutcomeNew:
+			newCount++
+		case storage.OutcomeDuplicate:
+		default:
+			t.Errorf("worker %d outcome = %v", i, outcomes[i])
+		}
+	}
+	if newCount != 1 {
+		t.Errorf("new outcomes = %d, want exactly 1", newCount)
+	}
+	if n, err := store.Count(ctx); err != nil || n != 1 {
+		t.Errorf("rows = %d, %v; want 1", n, err)
+	}
+}
+
+func TestConcurrentIngestUpdateRace(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	e := normEvent()
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeNew {
+		t.Fatalf("seed = %v", outcome)
+	}
+
+	updated := e.Clone()
+	updated.Severity = "red"
+	const workers = 10
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := store.Ingest(ctx, updated.Clone(), core.Fingerprint(updated)); err != nil {
+				t.Errorf("concurrent update: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	got, err := store.Get(ctx, e.Key())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !got.Event.UpdatedAt.Equal(event.UpdatedAt) {
-		t.Errorf("stored updated_at = %v, want event-provided %v", got.Event.UpdatedAt, event.UpdatedAt)
+	if got.Event.Severity != "red" || got.Event.Status != core.StatusActive {
+		t.Errorf("final state = %+v", got.Event)
 	}
 }
 

@@ -8,9 +8,80 @@ import (
 	"testing"
 	"time"
 
-	"warnflux/internal/config"
-	"warnflux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
+
+// memStore is an in-memory storage.EventStore used to drive output workers
+// deterministically in tests.
+type memStore struct {
+	mu      sync.Mutex
+	nextID  int64
+	changes []storage.Change
+	cursors map[string]int64
+	events  map[string]*storage.StoredEvent
+}
+
+func newMemStore() *memStore {
+	return &memStore{cursors: make(map[string]int64), events: make(map[string]*storage.StoredEvent)}
+}
+
+func (m *memStore) addChange(changeType core.ChangeType, event core.HazardEvent) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	id := m.nextID
+	m.changes = append(m.changes, storage.Change{ID: id, ChangeType: changeType, Event: event})
+	return id
+}
+
+func (m *memStore) Ingest(_ context.Context, event core.HazardEvent, _ string) (storage.Outcome, *storage.Change, error) {
+	id := m.addChange(core.ChangeNew, event.Clone())
+	return storage.OutcomeNew, &storage.Change{ID: id, ChangeType: core.ChangeNew, Event: event.Clone()}, nil
+}
+
+func (m *memStore) Expire(_ context.Context, _ time.Time) ([]storage.Change, error) {
+	return nil, nil
+}
+
+func (m *memStore) PollChanges(_ context.Context, outputID string, limit int) ([]storage.Change, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cursor := m.cursors[outputID]
+	var out []storage.Change
+	for _, c := range m.changes {
+		if c.ID > cursor && len(out) < limit {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) AckChanges(_ context.Context, outputID string, lastChangeID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lastChangeID > m.cursors[outputID] {
+		m.cursors[outputID] = lastChangeID
+	}
+	return nil
+}
+
+func (m *memStore) CleanupChanges(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
+func (m *memStore) Get(_ context.Context, key string) (*storage.StoredEvent, error) {
+	return nil, storage.ErrNotFound
+}
+func (m *memStore) Count(context.Context) (int, error) { return 0, nil }
+func (m *memStore) PendingStats(context.Context) (int, time.Duration, error) {
+	return 0, 0, nil
+}
+func (m *memStore) Close() error { return nil }
+
+func (m *memStore) cursor(outputID string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cursors[outputID]
+}
 
 // recOutput records delivered changes; behavior driven by fields.
 type recOutput struct {
@@ -19,19 +90,25 @@ type recOutput struct {
 	mu  sync.Mutex
 	got []core.EventChange
 
-	failFor int // first N deliveries return an error
+	// handle, when set, overrides the default behavior entirely.
+	handle func(ctx context.Context, change core.EventChange) error
+
+	failFor int // -1 fails every call, N>0 fails the next N calls
 	err     error
 	panic   bool
 	gate    chan struct{} // when non-nil, Handle blocks until closed (ignoring ctx)
 	closed  bool
+
+	invocations int
 }
 
 func (o *recOutput) Name() string { return o.name }
 
 func (o *recOutput) Handle(ctx context.Context, change core.EventChange) error {
 	o.mu.Lock()
+	o.invocations++
 	o.got = append(o.got, change)
-	// failFor: -1 fails every call, N>0 fails the next N calls, 0 never fails.
+	handler := o.handle
 	fail := o.failFor != 0
 	if fail && o.failFor > 0 {
 		o.failFor--
@@ -40,11 +117,14 @@ func (o *recOutput) Handle(ctx context.Context, change core.EventChange) error {
 	gate := o.gate
 	o.mu.Unlock()
 
+	if handler != nil {
+		return handler(ctx, change)
+	}
 	if panicMode {
 		panic("output boom")
 	}
 	if gate != nil {
-		<-gate
+		<-gate // intentionally ignores ctx
 		return nil
 	}
 	if fail {
@@ -66,6 +146,12 @@ func (o *recOutput) count() int {
 	return len(o.got)
 }
 
+func (o *recOutput) calls() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.invocations
+}
+
 func testOutputCfg(id string, timeout time.Duration, threshold int) config.Output {
 	return config.Output{
 		ID:      id,
@@ -78,27 +164,38 @@ func testOutputCfg(id string, timeout time.Duration, threshold int) config.Outpu
 	}
 }
 
-func change() core.EventChange {
+func sampleChange() core.EventChange {
+	eff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	lat, lon := 50.06, 19.94
 	return core.EventChange{
-		Type:  core.ChangeNew,
-		Event: core.HazardEvent{Source: "test", SourceID: "1", Event: "E"},
+		ID:   1,
+		Type: core.ChangeNew,
+		Event: core.HazardEvent{
+			Source: "test", SourceID: "1", Event: "E",
+			EffectiveAt: &eff, Latitude: &lat, Longitude: &lon,
+			Areas: []string{"DE-NW"}, Status: core.StatusActive,
+		},
 	}
 }
 
-func TestOutputWorkerDelivers(t *testing.T) {
+func TestOutputWorkerDeliversAndAcks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	store := newMemStore()
+	id := store.addChange(core.ChangeNew, sampleChange().Event)
 
 	out := &recOutput{name: "test"}
 	tracker := newStatusTracker("out", "test", KindOutput)
-	w := newOutputWorker(testOutputCfg("out", time.Second, 3), out, testLogger(), tracker)
+	w := newOutputWorker(testOutputCfg("out", time.Second, 3), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
 	go w.run(ctx)
 
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
 	waitFor(t, 2*time.Second, func() bool { return out.count() == 1 })
 	if got := tracker.snapshot().State; got != StateRunning {
 		t.Errorf("state = %v, want running", got)
+	}
+	if got := store.cursor("out"); got != id {
+		t.Errorf("cursor = %d, want %d (acked only after success)", got, id)
 	}
 
 	cancel()
@@ -116,18 +213,22 @@ func TestOutputWorkerPanicRecovered(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	store := newMemStore()
+	store.addChange(core.ChangeNew, sampleChange().Event)
+
 	out := &recOutput{name: "test", panic: true}
 	tracker := newStatusTracker("out", "test", KindOutput)
-	w := newOutputWorker(testOutputCfg("out", time.Second, 3), out, testLogger(), tracker)
+	w := newOutputWorker(testOutputCfg("out", time.Second, 3), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
 	go w.run(ctx)
 
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
 	waitFor(t, 2*time.Second, func() bool { return tracker.failures() >= 1 })
 	st := tracker.snapshot()
 	if !strings.Contains(st.LastError, "boom") {
 		t.Errorf("LastError = %q, want panic value", st.LastError)
+	}
+	if got := store.cursor("out"); got != 0 {
+		t.Errorf("cursor = %d, want 0 (nothing acked after panic)", got)
 	}
 }
 
@@ -135,29 +236,23 @@ func TestOutputWorkerSuspendsAfterThreshold(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	store := newMemStore()
+	store.addChange(core.ChangeNew, sampleChange().Event)
+	store.addChange(core.ChangeNew, sampleChange().Event)
+
 	out := &recOutput{name: "test", err: errors.New("destination down"), failFor: -1}
 	tracker := newStatusTracker("out", "test", KindOutput)
-	w := newOutputWorker(testOutputCfg("out", time.Second, 2), out, testLogger(), tracker)
+	w := newOutputWorker(testOutputCfg("out", time.Second, 2), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
 	w.recoveryInterval = time.Hour // no recovery probes in this test
 	go w.run(ctx)
 
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
 	waitFor(t, 2*time.Second, func() bool { return tracker.snapshot().State == StateSuspended })
 
-	// While suspended, further changes queue up but are not delivered.
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
+	// A new change must not be hammered while suspended.
+	store.addChange(core.ChangeNew, sampleChange().Event)
 	time.Sleep(30 * time.Millisecond)
-	if out.count() != 2 {
+	if out.count() > 2 {
 		t.Errorf("deliveries = %d, want 2 (no hammering while suspended)", out.count())
 	}
 }
@@ -166,25 +261,21 @@ func TestOutputWorkerRecoversAfterProbe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	store := newMemStore()
+	store.addChange(core.ChangeNew, sampleChange().Event)
+	store.addChange(core.ChangeNew, sampleChange().Event)
+
 	out := &recOutput{name: "test", err: errors.New("temporary"), failFor: 2}
 	tracker := newStatusTracker("out", "test", KindOutput)
-	w := newOutputWorker(testOutputCfg("out", time.Second, 2), out, testLogger(), tracker)
+	w := newOutputWorker(testOutputCfg("out", time.Second, 2), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
 	w.recoveryInterval = 5 * time.Millisecond
 	go w.run(ctx)
 
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
 	waitFor(t, 2*time.Second, func() bool { return tracker.snapshot().State == StateSuspended })
 
-	// A new change after suspension becomes the recovery probe; it
-	// succeeds and resets the failure counter.
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
-	}
+	// A third change becomes the recovery probe; success resets the counter.
+	store.addChange(core.ChangeNew, sampleChange().Event)
 	waitFor(t, 2*time.Second, func() bool {
 		st := tracker.snapshot()
 		return st.State == StateRunning && st.ConsecutiveFailures == 0
@@ -194,86 +285,179 @@ func TestOutputWorkerRecoversAfterProbe(t *testing.T) {
 	}
 }
 
-func TestOutputWorkerTimeoutSuspendsAndIsolates(t *testing.T) {
+// TestOutputWorkerWedgeSingleFlight verifies the M7 invariant: a handler
+// that ignores its context forever is never invoked again — at most ONE
+// contributor-code call is ever in flight.
+func TestOutputWorkerWedgeSingleFlight(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	slow := &recOutput{name: "slow", gate: make(chan struct{})}
-	slowTracker := newStatusTracker("slow", "test", KindOutput)
-	slowWorker := newOutputWorker(testOutputCfg("slow", 20*time.Millisecond, 1), slow, testLogger(), slowTracker)
-	go slowWorker.run(ctx)
+	store := newMemStore()
+	store.addChange(core.ChangeNew, sampleChange().Event)
 
-	fast := &recOutput{name: "fast"}
-	fastTracker := newStatusTracker("fast", "test", KindOutput)
-	fastWorker := newOutputWorker(testOutputCfg("fast", time.Second, 3), fast, testLogger(), fastTracker)
-	go fastWorker.run(ctx)
-
-	ch := change()
-	if err := slowWorker.submit(ctx, ch); err != nil {
-		t.Fatalf("slow submit: %v", err)
-	}
-	if err := fastWorker.submit(ctx, ch); err != nil {
-		t.Fatalf("fast submit: %v", err)
-	}
-
-	// The fast output is delivered immediately; the slow one times out and
-	// gets suspended without affecting the fast one.
-	waitFor(t, 2*time.Second, func() bool { return fast.count() == 1 })
-	if got := fastTracker.snapshot().State; got != StateRunning {
-		t.Errorf("fast state = %v, want running", got)
-	}
-	waitFor(t, 2*time.Second, func() bool { return slowTracker.snapshot().State == StateSuspended })
-
-	close(slow.gate) // release the stuck handler goroutine
-}
-
-func TestOutputQueueSaturationReturnsError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	out := &recOutput{name: "busy", gate: make(chan struct{})}
-	tracker := newStatusTracker("busy", "test", KindOutput)
-	w := newOutputWorker(testOutputCfg("busy", time.Second, 5), out, testLogger(), tracker)
-	w.queue = make(chan core.EventChange, 2)
-	w.queueWait = 20 * time.Millisecond
+	gate := make(chan struct{})
+	out := &recOutput{name: "wedged", gate: gate}
+	tracker := newStatusTracker("wedged", "test", KindOutput)
+	w := newOutputWorker(testOutputCfg("wedged", 20*time.Millisecond, 1), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
+	w.recoveryInterval = 5 * time.Millisecond
 	go w.run(ctx)
 
-	// First change is consumed and blocks in Handle; two more fill the
-	// queue; the fourth must fail with backpressure instead of dropping.
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit 1: %v", err)
+	waitFor(t, 2*time.Second, func() bool { return out.calls() == 1 })
+	waitFor(t, 2*time.Second, func() bool {
+		st := tracker.snapshot()
+		return st.ConsecutiveFailures >= 1 // timeout was counted
+	})
+
+	// More changes arrive; the wedged plugin must not be invoked again.
+	store.addChange(core.ChangeNew, sampleChange().Event)
+	store.addChange(core.ChangeNew, sampleChange().Event)
+	time.Sleep(50 * time.Millisecond) // several recovery intervals
+	if got := out.calls(); got != 1 {
+		t.Errorf("invocations = %d, want exactly 1 while the old call is stuck", got)
 	}
-	waitFor(t, time.Second, func() bool { return out.count() == 1 })
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit 2: %v", err)
-	}
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit 3: %v", err)
-	}
-	err := w.submit(ctx, change())
-	if err == nil {
-		t.Fatal("expected queue-full error, got nil")
-	}
-	if !strings.Contains(err.Error(), "queue full") {
-		t.Errorf("error = %v, want queue full", err)
-	}
-	close(out.gate)
+
+	// Once the stuck call returns (successfully), delivery resumes.
+	close(gate)
+	waitFor(t, 2*time.Second, func() bool { return out.calls() >= 2 })
 }
 
-func TestOutputWorkerSubmitRespectsContext(t *testing.T) {
+func TestOutputWorkerOneBrokenOneHealthy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	out := &recOutput{name: "test"}
-	tracker := newStatusTracker("out", "test", KindOutput)
-	w := newOutputWorker(testOutputCfg("out", time.Second, 3), out, testLogger(), tracker)
-	w.queue = make(chan core.EventChange, 1)
-	w.queueWait = time.Minute
+	store := newMemStore()
+	store.addChange(core.ChangeNew, sampleChange().Event)
+	store.addChange(core.ChangeNew, sampleChange().Event)
 
-	if err := w.submit(ctx, change()); err != nil {
-		t.Fatalf("submit: %v", err)
+	broken := &recOutput{name: "broken", err: errors.New("down"), failFor: -1}
+	brokenTracker := newStatusTracker("broken", "test", KindOutput)
+	brokenWorker := newOutputWorker(testOutputCfg("broken", time.Second, 10), broken, store, testLogger(), brokenTracker)
+	brokenWorker.pollInterval = 5 * time.Millisecond
+	go brokenWorker.run(ctx)
+
+	healthy := &recOutput{name: "healthy"}
+	healthyTracker := newStatusTracker("healthy", "test", KindOutput)
+	healthyWorker := newOutputWorker(testOutputCfg("healthy", time.Second, 3), healthy, store, testLogger(), healthyTracker)
+	healthyWorker.pollInterval = 5 * time.Millisecond
+	go healthyWorker.run(ctx)
+
+	waitFor(t, 2*time.Second, func() bool { return healthy.count() == 2 })
+	if got := store.cursor("healthy"); got != 2 {
+		t.Errorf("healthy cursor = %d, want 2", got)
 	}
-	cancel()
-	if err := w.submit(ctx, change()); !errors.Is(err, context.Canceled) {
-		t.Errorf("submit after cancel = %v, want context.Canceled", err)
+	if got := healthyTracker.snapshot().State; got != StateRunning {
+		t.Errorf("healthy state = %v", got)
+	}
+	if got := store.cursor("broken"); got != 0 {
+		t.Errorf("broken cursor = %d, want 0 (nothing acked)", got)
+	}
+}
+
+// TestOutputDeepCopyIsolation verifies M8/M26: mutations performed by one
+// output never affect what another output sees.
+func TestOutputDeepCopyIsolation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := newMemStore()
+	change := sampleChange()
+	store.addChange(change.Type, change.Event)
+
+	mutator := &recOutput{name: "mutator"}
+	mutator.handle = func(_ context.Context, c core.EventChange) error {
+		c.Event.Areas[0] = "PL-MA"
+		*c.Event.Latitude = 99
+		*c.Event.EffectiveAt = time.Now()
+		return nil
+	}
+
+	observer := &recOutput{name: "observer"}
+	observed := make(chan core.EventChange, 1)
+	observer.handle = func(_ context.Context, c core.EventChange) error {
+		select {
+		case observed <- c:
+		default:
+		}
+		return nil
+	}
+
+	trackerA := newStatusTracker("mutator", "test", KindOutput)
+	wA := newOutputWorker(testOutputCfg("mutator", time.Second, 3), mutator, store, testLogger(), trackerA)
+	wA.pollInterval = 5 * time.Millisecond
+	go wA.run(ctx)
+
+	trackerB := newStatusTracker("observer", "test", KindOutput)
+	wB := newOutputWorker(testOutputCfg("observer", time.Second, 3), observer, store, testLogger(), trackerB)
+	wB.pollInterval = 5 * time.Millisecond
+	go wB.run(ctx)
+
+	select {
+	case seen := <-observed:
+		if seen.Event.Areas[0] != "DE-NW" {
+			t.Errorf("observer saw mutated area %q", seen.Event.Areas[0])
+		}
+		if *seen.Event.Latitude != 50.06 {
+			t.Errorf("observer saw mutated latitude %v", *seen.Event.Latitude)
+		}
+		if !seen.Event.EffectiveAt.Equal(*change.Event.EffectiveAt) {
+			t.Errorf("observer saw mutated EffectiveAt %v", seen.Event.EffectiveAt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("observer never received the change")
+	}
+}
+
+// statusOut records PublishStatus calls.
+type statusOut struct {
+	mu     sync.Mutex
+	status []Status
+	handle func(ctx context.Context, c core.EventChange) error
+}
+
+func (s *statusOut) Name() string { return "status" }
+
+func (s *statusOut) Handle(ctx context.Context, c core.EventChange) error {
+	if s.handle != nil {
+		return s.handle(ctx, c)
+	}
+	return nil
+}
+
+func (s *statusOut) PublishStatus(_ context.Context, status Status) error {
+	s.mu.Lock()
+	s.status = append(s.status, status)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *statusOut) StatusInterval() time.Duration { return 20 * time.Millisecond }
+
+func (s *statusOut) statusCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.status)
+}
+
+func TestOutputWorkerPublishesStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := newMemStore()
+	out := &statusOut{}
+	tracker := newStatusTracker("status", "test", KindOutput)
+	w := newOutputWorker(testOutputCfg("status", time.Second, 3), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
+	w.health = func() Status {
+		return Status{Version: "test", PendingChanges: 7}
+	}
+	go w.run(ctx)
+
+	waitFor(t, 2*time.Second, func() bool { return out.statusCount() >= 1 })
+	out.mu.Lock()
+	first := out.status[0]
+	out.mu.Unlock()
+	if first.Version != "test" || first.PendingChanges != 7 {
+		t.Errorf("status = %+v", first)
 	}
 }

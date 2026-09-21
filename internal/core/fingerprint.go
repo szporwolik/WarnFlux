@@ -8,9 +8,11 @@ import (
 	"time"
 )
 
-// fingerprintPayload is the canonical serialization of the content fields of
-// a HazardEvent. The struct field order is fixed and no maps are involved,
-// so JSON marshaling is deterministic.
+// fingerprintPayload is the canonical serialization of the PROVIDER CONTENT
+// of a HazardEvent. Lifecycle state (Status) is deliberately excluded: the
+// stored fingerprint always corresponds to the content fields it claims to
+// represent. The struct field order is fixed and no maps are involved, so
+// JSON marshaling is deterministic.
 type fingerprintPayload struct {
 	Category    string   `json:"category"`
 	Event       string   `json:"event"`
@@ -25,7 +27,6 @@ type fingerprintPayload struct {
 	Latitude    *float64 `json:"latitude,omitempty"`
 	Longitude   *float64 `json:"longitude,omitempty"`
 	Areas       []string `json:"areas"`
-	Status      string   `json:"status"`
 	SourceURL   string   `json:"source_url"`
 }
 
@@ -53,7 +54,6 @@ func Fingerprint(e HazardEvent) string {
 		Latitude:    e.Latitude,
 		Longitude:   e.Longitude,
 		Areas:       areas,
-		Status:      string(e.Status),
 		SourceURL:   e.SourceURL,
 	}
 	if e.EffectiveAt != nil && !e.EffectiveAt.IsZero() {
@@ -63,7 +63,8 @@ func Fingerprint(e HazardEvent) string {
 		p.ExpiresAt = e.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
 
-	// Marshaling a flat struct of basic types cannot fail.
+	// Validation guarantees finite coordinates before fingerprinting, so
+	// marshaling this flat struct cannot fail (NaN/Inf are rejected).
 	data, _ := json.Marshal(p)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

@@ -1,6 +1,8 @@
-module warnflux
+module github.com/szporwolik/WarnFlux
 
 go 1.26
+
+toolchain go1.26.6
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1

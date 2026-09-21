@@ -1,6 +1,7 @@
 package core
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -122,5 +123,131 @@ func TestNormalizeZeroTimesBecomeNil(t *testing.T) {
 	e2.Normalize()
 	if e2.EffectiveAt == nil || !e2.EffectiveAt.Equal(eff) {
 		t.Error("non-zero EffectiveAt must be preserved")
+	}
+}
+
+func TestNormalizeCanonicalizesSourceAndAreas(t *testing.T) {
+	e := HazardEvent{
+		Source:   "  MeteoAlarm-EU ",
+		SourceID: "  abc ",
+		Event:    "E",
+		Areas:    []string{" DE-NW ", "", "de-nw", "DE-NW", "de-rp"},
+	}
+	e.Normalize()
+	if e.Source != "meteoalarm-eu" {
+		t.Errorf("source = %q, want %q", e.Source, "meteoalarm-eu")
+	}
+	if e.SourceID != "abc" {
+		t.Errorf("source id = %q, want %q", e.SourceID, "abc")
+	}
+	want := []string{"DE-NW", "de-nw", "de-rp"}
+	if len(e.Areas) != len(want) {
+		t.Fatalf("areas = %v, want %v", e.Areas, want)
+	}
+	for i := range want {
+		if e.Areas[i] != want[i] {
+			t.Errorf("areas = %v, want %v", e.Areas, want)
+		}
+	}
+}
+
+func TestValidateSourceCanonical(t *testing.T) {
+	valid := []string{"meteoalarm", "gdacs", "imgw-weather", "nws.office_x", "a", "trailing-"}
+	for _, s := range valid {
+		if err := ValidateSource(s); err != nil {
+			t.Errorf("source %q rejected: %v", s, err)
+		}
+	}
+	invalid := []string{"", "MeteoAlarm", "has space", "has:colon", "-leading"}
+	for _, s := range invalid {
+		if err := ValidateSource(s); err == nil {
+			t.Errorf("source %q should be rejected", s)
+		}
+	}
+}
+
+func TestValidateSourceIDBounds(t *testing.T) {
+	if err := ValidateSourceID("EQ-1456789"); err != nil {
+		t.Errorf("valid source id rejected: %v", err)
+	}
+	if err := ValidateSourceID("  "); err == nil {
+		t.Error("blank source id should be rejected")
+	}
+	if err := ValidateSourceID(strings.Repeat("x", maxSourceIDLength+1)); err == nil {
+		t.Error("oversized source id should be rejected")
+	}
+}
+
+func TestValidateCoordinates(t *testing.T) {
+	valid := []struct {
+		lat, lon float64
+	}{
+		{50.06, 19.94},
+		{-90, -180},
+		{90, 180},
+		{0, 0},
+	}
+	for _, c := range valid {
+		lat, lon := c.lat, c.lon
+		e := HazardEvent{Source: "s", SourceID: "1", Event: "E", Latitude: &lat, Longitude: &lon}
+		if err := e.Validate(); err != nil {
+			t.Errorf("valid coordinates %v rejected: %v", c, err)
+		}
+	}
+
+	nan := math.NaN()
+	inf := math.Inf(1)
+	lat91, lon181, latOne, lonOne := 91.0, 181.0, 10.0, 10.0
+	invalid := []HazardEvent{
+		{Source: "s", SourceID: "1", Event: "E", Latitude: &nan, Longitude: &lonOne},
+		{Source: "s", SourceID: "1", Event: "E", Latitude: &latOne, Longitude: &inf},
+		{Source: "s", SourceID: "1", Event: "E", Latitude: &lat91, Longitude: &lonOne},
+		{Source: "s", SourceID: "1", Event: "E", Latitude: &latOne, Longitude: &lon181},
+		{Source: "s", SourceID: "1", Event: "E", Latitude: &latOne}, // only one
+	}
+	for _, e := range invalid {
+		if err := e.Validate(); err == nil {
+			t.Errorf("invalid coordinates accepted: %+v", e)
+		}
+	}
+}
+
+func TestCloneIsDeep(t *testing.T) {
+	eff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	lat, lon := 50.0, 19.0
+	e := HazardEvent{
+		Source:      "s",
+		SourceID:    "1",
+		Event:       "E",
+		EffectiveAt: &eff,
+		Latitude:    &lat,
+		Longitude:   &lon,
+		Areas:       []string{"DE-NW"},
+	}
+
+	cp := e.Clone()
+	*cp.Latitude = 99
+	*cp.EffectiveAt = cp.EffectiveAt.Add(time.Hour)
+	cp.Areas[0] = "PL-MA"
+
+	if *e.Latitude != 50.0 {
+		t.Error("mutating clone changed the original latitude")
+	}
+	if !e.EffectiveAt.Equal(eff) {
+		t.Error("mutating clone changed the original EffectiveAt")
+	}
+	if e.Areas[0] != "DE-NW" {
+		t.Error("mutating clone changed the original areas")
+	}
+}
+
+func TestEventKeyDelimiterSafety(t *testing.T) {
+	// Sources can never contain ":", so the first colon in a key is
+	// always the source/sourceID boundary.
+	if EventKey("a-b", "c") == EventKey("a", "b-c") {
+		t.Error("delimiter collision")
+	}
+	if EventKey("x.y_z", "1") == EventKey("x.y", "z_1") {
+		t.Error("delimiter collision")
 	}
 }

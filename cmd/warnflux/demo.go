@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"warnflux/internal/core"
-	"warnflux/internal/ingest"
-	"warnflux/internal/storage/sqlite"
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/ingest"
+	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
 
 // runDemo exercises the core ingestion pipeline against a temporary SQLite

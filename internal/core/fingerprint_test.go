@@ -108,3 +108,14 @@ func TestFingerprintNilAndEmptyAreasEqual(t *testing.T) {
 		t.Error("nil and empty areas must produce the same fingerprint")
 	}
 }
+
+func TestFingerprintZeroTimeEqualsNil(t *testing.T) {
+	a := sampleEvent()
+	a.ExpiresAt = nil
+	b := sampleEvent()
+	zero := time.Time{}
+	b.ExpiresAt = &zero
+	if Fingerprint(a) != Fingerprint(b) {
+		t.Error("nil and zero ExpiresAt must produce the same fingerprint")
+	}
+}

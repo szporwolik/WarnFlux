@@ -75,10 +75,18 @@ func (e HazardEvent) Key() string {
 	return EventKey(e.Source, e.SourceID)
 }
 
-// Normalize fills in defaults so the event can be persisted.
+// Normalize fills in defaults so the event can be persisted. Zero-value
+// time pointers are treated as absent: a zero ExpiresAt must not cause an
+// event to expire immediately.
 func (e *HazardEvent) Normalize() {
 	if e.Status == "" {
 		e.Status = StatusActive
+	}
+	if e.EffectiveAt != nil && e.EffectiveAt.IsZero() {
+		e.EffectiveAt = nil
+	}
+	if e.ExpiresAt != nil && e.ExpiresAt.IsZero() {
+		e.ExpiresAt = nil
 	}
 }
 

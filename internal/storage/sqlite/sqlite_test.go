@@ -320,6 +320,28 @@ func TestRestartPersistence(t *testing.T) {
 	}
 }
 
+func TestInsertUsesEventUpdatedAt(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	fixed := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return fixed }
+
+	event := testEvent()
+	event.UpdatedAt = fixed.Add(time.Minute)
+	if _, err := store.Insert(ctx, event, "fp"); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	got, err := store.Get(ctx, event.Key())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.Event.UpdatedAt.Equal(event.UpdatedAt) {
+		t.Errorf("stored updated_at = %v, want event-provided %v", got.Event.UpdatedAt, event.UpdatedAt)
+	}
+}
+
 func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	store := openTemp(t)
 	_, err := store.Get(context.Background(), "nope:1")

@@ -214,6 +214,64 @@ func TestIngestInvalidEventNotPersisted(t *testing.T) {
 	}
 }
 
+func TestIngestZeroExpiryStaysActive(t *testing.T) {
+	// A zero-value ExpiresAt pointer must be treated as absent, not as an
+	// event that expires immediately.
+	ing, store := newTestIngester(t)
+	ctx := context.Background()
+
+	zero := time.Time{}
+	event := baseEvent()
+	event.SourceID = "zero-expiry"
+	event.ExpiresAt = &zero
+	if r, _, err := ing.Ingest(ctx, event); err != nil || r != ResultNew {
+		t.Fatalf("Ingest = %v, %v", r, err)
+	}
+
+	if _, err := ing.Expire(ctx, time.Now().UTC()); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+
+	got, err := store.Get(ctx, event.Key())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Event.Status != core.StatusActive {
+		t.Errorf("status = %q, want active (zero expiry must not expire)", got.Event.Status)
+	}
+}
+
+func TestIngestChangeCarriesPersistedTimestamps(t *testing.T) {
+	ctx := context.Background()
+
+	t0 := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	var current = t0
+	clock := func() time.Time { return current }
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"), sqlite.WithClock(clock))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ing := NewIngester(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ing.now = clock
+
+	event := baseEvent()
+	result, change, err := ing.Ingest(ctx, event)
+	if err != nil || result != ResultNew {
+		t.Fatalf("Ingest = %v, %v", result, err)
+	}
+	if change.Event.UpdatedAt.IsZero() {
+		t.Error("new event change must carry a non-zero UpdatedAt")
+	}
+	got, err := store.Get(ctx, event.Key())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !change.Event.UpdatedAt.Equal(got.Event.UpdatedAt) {
+		t.Errorf("change UpdatedAt %v != stored %v", change.Event.UpdatedAt, got.Event.UpdatedAt)
+	}
+}
+
 func TestExpire(t *testing.T) {
 	ing, store := newTestIngester(t)
 	ctx := context.Background()

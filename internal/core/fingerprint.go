@@ -56,10 +56,10 @@ func Fingerprint(e HazardEvent) string {
 		Status:      string(e.Status),
 		SourceURL:   e.SourceURL,
 	}
-	if e.EffectiveAt != nil {
+	if e.EffectiveAt != nil && !e.EffectiveAt.IsZero() {
 		p.EffectiveAt = e.EffectiveAt.UTC().Format(time.RFC3339Nano)
 	}
-	if e.ExpiresAt != nil {
+	if e.ExpiresAt != nil && !e.ExpiresAt.IsZero() {
 		p.ExpiresAt = e.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
 

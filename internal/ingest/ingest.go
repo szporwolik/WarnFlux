@@ -82,12 +82,14 @@ func (s *Ingester) Ingest(ctx context.Context, event core.HazardEvent) (Result, 
 	stored, err := s.store.Get(ctx, key)
 	switch {
 	case errors.Is(err, storage.ErrNotFound):
+		event.UpdatedAt = s.now().UTC()
 		inserted, err := s.store.Insert(ctx, event, fingerprint)
 		if err != nil {
 			return 0, core.EventChange{}, err
 		}
 		if inserted {
 			s.logger.Info("new hazard event",
+				"change_type", core.ChangeNew,
 				"source", event.Source, "source_id", event.SourceID,
 				"event_key", key, "event", event.Event, "severity", event.Severity)
 			return ResultNew, core.EventChange{Type: core.ChangeNew, Event: event}, nil
@@ -121,6 +123,7 @@ func (s *Ingester) Ingest(ctx context.Context, event core.HazardEvent) (Result, 
 			return 0, core.EventChange{}, err
 		}
 		s.logger.Info("hazard event cancelled",
+			"change_type", core.ChangeCancelled,
 			"source", event.Source, "source_id", event.SourceID,
 			"event_key", key, "event", event.Event)
 		return ResultCancelled, core.EventChange{Type: core.ChangeCancelled, Event: event}, nil
@@ -130,6 +133,7 @@ func (s *Ingester) Ingest(ctx context.Context, event core.HazardEvent) (Result, 
 		return 0, core.EventChange{}, err
 	}
 	s.logger.Info("hazard event updated",
+		"change_type", core.ChangeUpdated,
 		"source", event.Source, "source_id", event.SourceID,
 		"event_key", key, "event", event.Event, "severity", event.Severity)
 	return ResultUpdated, core.EventChange{Type: core.ChangeUpdated, Event: event}, nil
@@ -145,6 +149,7 @@ func (s *Ingester) Expire(ctx context.Context, now time.Time) ([]core.EventChang
 	changes := make([]core.EventChange, 0, len(expired))
 	for _, e := range expired {
 		s.logger.Info("hazard event expired",
+			"change_type", core.ChangeExpired,
 			"source", e.Source, "source_id", e.SourceID, "event_key", e.Key())
 		changes = append(changes, core.EventChange{Type: core.ChangeExpired, Event: e})
 	}

@@ -221,7 +221,7 @@ func (s *Store) Insert(ctx context.Context, event core.HazardEvent, fingerprint 
 			areas, source_url, received_at, first_seen_at, last_seen_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(event_key) DO NOTHING`,
-		eventArgs(event.Key(), fingerprint, event, now, now, now)...,
+		eventArgs(event.Key(), fingerprint, event, now, now, orNow(event.UpdatedAt, now))...,
 	)
 	if err != nil {
 		return false, fmt.Errorf("insert event %q: %w", event.Key(), err)
@@ -299,8 +299,8 @@ func (s *Store) MarkExpired(ctx context.Context, now time.Time) ([]core.HazardEv
 	return expired, nil
 }
 
-// eventArgs builds the argument slice shared by Insert and Update. The
-// timestamps firstSeen, lastSeen and updated are supplied by the caller.
+// eventArgs builds the argument slice shared by Insert. The timestamps
+// firstSeen, lastSeen and updated are supplied by the caller.
 func eventArgs(key, fingerprint string, event core.HazardEvent, firstSeen, lastSeen, updated time.Time) []any {
 	received := event.ReceivedAt
 	if received.IsZero() {
@@ -333,8 +333,16 @@ func updateArgs(event core.HazardEvent, fingerprint string, now time.Time) []any
 		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt),
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
-		formatTime(received), formatTime(now), formatTime(now),
+		formatTime(received), formatTime(now), formatTime(orNow(event.UpdatedAt, now)),
 	}
+}
+
+// orNow returns t when it is set, otherwise fallback.
+func orNow(t, fallback time.Time) time.Time {
+	if t.IsZero() {
+		return fallback
+	}
+	return t
 }
 
 func scanStoredEvent(row interface{ Scan(dest ...any) error }) (*storage.StoredEvent, error) {

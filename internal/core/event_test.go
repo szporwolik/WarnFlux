@@ -98,3 +98,29 @@ func TestEffectiveAndExpiryPointers(t *testing.T) {
 		t.Errorf("event with times rejected: %v", err)
 	}
 }
+
+func TestNormalizeZeroTimesBecomeNil(t *testing.T) {
+	zero := time.Time{}
+	e := HazardEvent{
+		Source:      "s",
+		SourceID:    "1",
+		Event:       "E",
+		EffectiveAt: &zero,
+		ExpiresAt:   &zero,
+	}
+	e.Normalize()
+	if e.EffectiveAt != nil {
+		t.Error("zero EffectiveAt should become nil")
+	}
+	if e.ExpiresAt != nil {
+		t.Error("zero ExpiresAt should become nil (must not cause instant expiration)")
+	}
+
+	// Real timestamps must be preserved.
+	eff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	e2 := HazardEvent{Source: "s", SourceID: "1", Event: "E", EffectiveAt: &eff}
+	e2.Normalize()
+	if e2.EffectiveAt == nil || !e2.EffectiveAt.Equal(eff) {
+		t.Error("non-zero EffectiveAt must be preserved")
+	}
+}

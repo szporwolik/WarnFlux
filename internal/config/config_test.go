@@ -83,6 +83,9 @@ func TestLoadFullConfig(t *testing.T) {
 	if cfg.App.ChangeRetention != 24*time.Hour {
 		t.Errorf("change_retention = %s", cfg.App.ChangeRetention)
 	}
+	if cfg.App.EventRetention != 30*24*time.Hour {
+		t.Errorf("event_retention = %s", cfg.App.EventRetention)
+	}
 	if cfg.Storage.Driver != "sqlite" || cfg.Storage.Path != "./warnflux.db" {
 		t.Errorf("storage = %+v", cfg.Storage)
 	}
@@ -124,6 +127,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.App.ChangeRetention != 24*time.Hour {
 		t.Errorf("change_retention = %s", cfg.App.ChangeRetention)
+	}
+	if cfg.App.EventRetention != 30*24*time.Hour {
+		t.Errorf("event_retention = %s", cfg.App.EventRetention)
 	}
 	if cfg.Storage.Driver != "sqlite" || cfg.Storage.Path != "" {
 		t.Errorf("storage defaults = %+v", cfg.Storage)

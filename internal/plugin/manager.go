@@ -38,7 +38,10 @@ type ExpireFunc func(ctx context.Context, now time.Time) ([]core.EventChange, er
 type ManagerOptions struct {
 	ExpirationInterval time.Duration
 	ChangeRetention    time.Duration
-	Version            string
+	// EventRetention is how long cancelled/expired current-state records
+	// are kept before cleanup; active events are never cleaned.
+	EventRetention time.Duration
+	Version        string
 }
 
 // Manager owns the plugin instances and the routing between sources, the
@@ -308,6 +311,15 @@ func (m *Manager) maintenance(ctx context.Context) {
 					}
 				} else if n > 0 {
 					m.logger.Info("journal cleanup", "deleted_changes", n)
+				}
+			}
+			if m.store != nil && m.opts.EventRetention > 0 {
+				if n, err := m.store.CleanupEvents(ctx, now.Add(-m.opts.EventRetention)); err != nil {
+					if ctx.Err() == nil {
+						m.logger.Warn("event cleanup failed", "error", err)
+					}
+				} else if n > 0 {
+					m.logger.Info("event cleanup", "deleted_events", n)
 				}
 			}
 		}

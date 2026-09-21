@@ -23,6 +23,7 @@ const (
 	defaultLogLevel           = "info"
 	defaultExpirationInterval = time.Minute
 	defaultChangeRetention    = 24 * time.Hour
+	defaultEventRetention     = 30 * 24 * time.Hour
 	defaultStorageDriver      = "sqlite"
 	// An empty default means "not provided"; the application resolves a
 	// dev/debug location next to the executable at startup, with a
@@ -61,6 +62,10 @@ type App struct {
 	// ChangeRetention is how long acknowledged journal records are kept
 	// before cleanup deletes them.
 	ChangeRetention time.Duration
+	// EventRetention is how long cancelled/expired current-state records
+	// are kept in the events table before cleanup deletes them. Active
+	// events are never cleaned up.
+	EventRetention time.Duration
 
 	// LogFile is the optional rotating log file. Empty means stdout only.
 	LogFile string
@@ -126,6 +131,7 @@ type fileApp struct {
 	LogLevel           string         `yaml:"log_level"`
 	ExpirationInterval *time.Duration `yaml:"expiration_interval"`
 	ChangeRetention    *time.Duration `yaml:"change_retention"`
+	EventRetention     *time.Duration `yaml:"event_retention"`
 	LogFile            string         `yaml:"log_file"`
 	LogMaxSizeMB       *int           `yaml:"log_max_size_mb"`
 	LogMaxBackups      *int           `yaml:"log_max_backups"`
@@ -224,6 +230,7 @@ func (f fileConfig) toConfig() Config {
 			LogLevel:           defaultLogLevel,
 			ExpirationInterval: defaultExpirationInterval,
 			ChangeRetention:    defaultChangeRetention,
+			EventRetention:     defaultEventRetention,
 			LogFile:            defaultLogFile,
 			LogMaxSizeMB:       defaultLogMaxSizeMB,
 			LogMaxBackups:      defaultLogMaxBackups,
@@ -242,6 +249,9 @@ func (f fileConfig) toConfig() Config {
 	}
 	if f.App.ChangeRetention != nil {
 		cfg.App.ChangeRetention = *f.App.ChangeRetention
+	}
+	if f.App.EventRetention != nil {
+		cfg.App.EventRetention = *f.App.EventRetention
 	}
 	if file := strings.TrimSpace(f.App.LogFile); file != "" {
 		cfg.App.LogFile = file
@@ -318,6 +328,9 @@ func (c Config) Validate() error {
 	}
 	if c.App.ChangeRetention <= 0 {
 		return fmt.Errorf("app.change_retention must be greater than 0, got %s", c.App.ChangeRetention)
+	}
+	if c.App.EventRetention <= 0 {
+		return fmt.Errorf("app.event_retention must be greater than 0, got %s", c.App.EventRetention)
 	}
 	if c.App.LogMaxSizeMB <= 0 {
 		return fmt.Errorf("app.log_max_size_mb must be greater than 0, got %d", c.App.LogMaxSizeMB)

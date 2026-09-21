@@ -404,7 +404,8 @@ func (failingStore) SyncOutputs(context.Context, []string) error     { return ni
 func (failingStore) CleanupChanges(context.Context, time.Time) (int64, error) {
 	return 0, nil
 }
-func (failingStore) Count(context.Context) (int, error) { return 0, nil }
+func (failingStore) CleanupEvents(context.Context, time.Time) (int64, error) { return 0, nil }
+func (failingStore) Count(context.Context) (int, error)                      { return 0, nil }
 func (failingStore) PendingStats(context.Context) (int, time.Duration, error) {
 	return 0, 0, nil
 }

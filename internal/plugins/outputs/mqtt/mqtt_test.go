@@ -128,6 +128,36 @@ func TestRegister(t *testing.T) {
 	}
 }
 
+// TestLastWillOfflineStatus pins the retained last will: when the process
+// disappears without disconnecting, the broker publishes a retained
+// "offline" status on <prefix>/status.
+func TestLastWillOfflineStatus(t *testing.T) {
+	p, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\nqos: 2\n"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := p.(*Output).client.OptionsReader()
+	if got := opts.WillTopic(); got != "warnflux/status" {
+		t.Errorf("will topic = %q, want warnflux/status", got)
+	}
+	if !opts.WillRetained() {
+		t.Error("will must be retained")
+	}
+	if got := opts.WillQos(); got != 2 {
+		t.Errorf("will qos = %d, want 2", got)
+	}
+	var will map[string]any
+	if err := json.Unmarshal(opts.WillPayload(), &will); err != nil {
+		t.Fatalf("will payload is not JSON: %v", err)
+	}
+	if will["schema_version"] != float64(1) || will["service"] != "warnflux" || will["state"] != "offline" {
+		t.Errorf("unexpected will payload: %v", will)
+	}
+	if _, ok := will["generated_at"].(string); !ok {
+		t.Errorf("will payload lacks generated_at: %v", will)
+	}
+}
+
 // TestWireEventGoldenJSON pins the explicit MQTT wire schema (M14).
 func TestWireEventGoldenJSON(t *testing.T) {
 	eff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

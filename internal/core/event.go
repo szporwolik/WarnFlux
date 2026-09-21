@@ -175,6 +175,18 @@ func (e HazardEvent) Clone() HazardEvent {
 // Validate checks the fields required for persistence. Optional CAP-like
 // fields may be empty. Coordinates must be finite, within range, and either
 // both or neither present.
+// Final-safety-net size caps. Providers are review-gated code, but a single
+// pathological adapter must not be able to inflate SQLite, the journal or
+// MQTT payloads without bound. These are generous upper bounds, not
+// content-policy limits.
+const (
+	maxShortFieldLen  = 256   // category, event, severity, urgency, certainty
+	maxHeadlineLen    = 2048  // headline
+	maxDescriptionLen = 32768 // description
+	maxInstructionLen = 8192  // instruction
+	maxSourceURLLen   = 2048  // source_url
+)
+
 func (e HazardEvent) Validate() error {
 	if err := ValidateSource(e.Source); err != nil {
 		return err
@@ -184,6 +196,25 @@ func (e HazardEvent) Validate() error {
 	}
 	if strings.TrimSpace(e.Event) == "" {
 		return errors.New("event type is required")
+	}
+	for _, f := range []struct {
+		name  string
+		value string
+		max   int
+	}{
+		{"category", e.Category, maxShortFieldLen},
+		{"event type", e.Event, maxShortFieldLen},
+		{"severity", e.Severity, maxShortFieldLen},
+		{"urgency", e.Urgency, maxShortFieldLen},
+		{"certainty", e.Certainty, maxShortFieldLen},
+		{"headline", e.Headline, maxHeadlineLen},
+		{"description", e.Description, maxDescriptionLen},
+		{"instruction", e.Instruction, maxInstructionLen},
+		{"source url", e.SourceURL, maxSourceURLLen},
+	} {
+		if len(f.value) > f.max {
+			return fmt.Errorf("event %s is %d bytes, maximum %d", f.name, len(f.value), f.max)
+		}
 	}
 	switch e.Status {
 	// The empty status is accepted: Normalize defaults it to active.

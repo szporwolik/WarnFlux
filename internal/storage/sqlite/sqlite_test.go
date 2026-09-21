@@ -582,6 +582,69 @@ func TestConcurrentIngestUpdateRace(t *testing.T) {
 	}
 }
 
+// TestCleanupEvents verifies current-state retention: cancelled/expired
+// records older than the cutoff are deleted, recent ones stay, and active
+// events are never touched.
+func TestCleanupEvents(t *testing.T) {
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	store := openTemp(t, WithClock(func() time.Time { return clock }))
+	ctx := context.Background()
+
+	// Active event ingested first: must survive any cleanup.
+	active := normEvent()
+	active.SourceID = "active-keep"
+	if outcome, _ := ingestOne(t, store, active); outcome != storage.OutcomeNew {
+		t.Fatalf("active = %v", outcome)
+	}
+
+	// Old cancelled event.
+	oldCancelled := normEvent()
+	oldCancelled.SourceID = "old-cancelled"
+	oldCancelled.Status = core.StatusCancelled
+	if outcome, _ := ingestOne(t, store, oldCancelled); outcome != storage.OutcomeCancelled {
+		t.Fatalf("old cancelled = %v", outcome)
+	}
+
+	// Old expired event (expired via maintenance).
+	oldExpired := normEvent()
+	oldExpired.SourceID = "old-expired"
+	oldExpired.ExpiresAt = &clock
+	if outcome, _ := ingestOne(t, store, oldExpired); outcome != storage.OutcomeNew {
+		t.Fatalf("old expired = %v", outcome)
+	}
+	if _, err := store.Expire(ctx, clock); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+
+	// Advance the clock: the old records age out, then create a recent one.
+	clock = clock.Add(48 * time.Hour)
+	recent := normEvent()
+	recent.SourceID = "recent-cancelled"
+	recent.Status = core.StatusCancelled
+	if outcome, _ := ingestOne(t, store, recent); outcome != storage.OutcomeCancelled {
+		t.Fatalf("recent = %v", outcome)
+	}
+
+	n, err := store.CleanupEvents(ctx, clock.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("CleanupEvents: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("deleted %d events, want 2 (old cancelled + old expired)", n)
+	}
+
+	for _, key := range []string{active.Key(), recent.Key()} {
+		if _, err := store.Get(ctx, key); err != nil {
+			t.Errorf("event %q should have survived: %v", key, err)
+		}
+	}
+	for _, key := range []string{oldCancelled.Key(), oldExpired.Key()} {
+		if _, err := store.Get(ctx, key); err != storage.ErrNotFound {
+			t.Errorf("event %q should have been deleted, got %v", key, err)
+		}
+	}
+}
+
 func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	store := openTemp(t)
 	_, err := store.Get(context.Background(), "nope:1")

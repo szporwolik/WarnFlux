@@ -136,6 +136,7 @@ func run(configPath string) error {
 		ingester.Ingest, ingester.Expire, store, plugin.ManagerOptions{
 			ExpirationInterval: cfg.App.ExpirationInterval,
 			ChangeRetention:    cfg.App.ChangeRetention,
+			EventRetention:     cfg.App.EventRetention,
 			Version:            version,
 		}, logger)
 	if err != nil {

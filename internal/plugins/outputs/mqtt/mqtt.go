@@ -116,6 +116,21 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 		SetConnectionLostHandler(func(_ paho.Client, err error) {
 			slog.Warn("mqtt connection lost", "error", err)
 		})
+	// Retained Last Will: if this process disappears without disconnecting,
+	// the broker publishes a retained "offline" status on <prefix>/status,
+	// so consumers can distinguish a dead instance from a stale heartbeat.
+	// The will's generated_at is the time the connection (and the will) was
+	// established; state=offline is authoritative regardless of timestamp.
+	willPayload, err := json.Marshal(wireStatus{
+		SchemaVersion: wireSchemaVersion,
+		Service:       "warnflux",
+		State:         "offline",
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal last will: %w", err)
+	}
+	opts.SetWill(cfg.TopicPrefix+"/status", string(willPayload), qos, true)
 	if cfg.Username != "" {
 		opts.SetUsername(cfg.Username)
 		if cfg.Password != "" {

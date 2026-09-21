@@ -88,6 +88,7 @@ func (m *memStore) SyncOutputs(_ context.Context, enabledOutputIDs []string) err
 }
 
 func (m *memStore) CleanupChanges(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
+func (m *memStore) CleanupEvents(_ context.Context, _ time.Time) (int64, error)  { return 0, nil }
 func (m *memStore) Get(_ context.Context, key string) (*storage.StoredEvent, error) {
 	return nil, storage.ErrNotFound
 }

@@ -629,6 +629,25 @@ func (s *Store) CleanupChanges(ctx context.Context, olderThan time.Time) (int64,
 	return n, nil
 }
 
+// CleanupEvents deletes cancelled/expired current-state records whose
+// updated_at is older than olderThan. Active events are never touched, and
+// the change journal is unaffected (it carries immutable snapshots).
+// updated_at stores UTC RFC3339Nano strings, which compare correctly as
+// plain text.
+func (s *Store) CleanupEvents(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM events WHERE status IN (?, ?) AND updated_at < ?",
+		string(core.StatusCancelled), string(core.StatusExpired), formatTime(olderThan))
+	if err != nil {
+		return 0, fmt.Errorf("cleanup events: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("cleanup events: %w", err)
+	}
+	return n, nil
+}
+
 // PendingStats reports undelivered change count and the age of the oldest
 // undelivered change. It is consistent with CleanupChanges: both operate
 // against the set of enabled output cursors (synchronized by SyncOutputs),

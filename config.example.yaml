@@ -22,6 +22,10 @@ app:
   # e.g. 24h. Must be > 0.
   change_retention: 24h
 
+  # How long cancelled/expired current-state records are kept in the
+  # events table, e.g. 720h (30 days). Active events are never cleaned.
+  event_retention: 720h
+
 storage:
   # The only supported driver for now.
   driver: sqlite

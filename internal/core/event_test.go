@@ -251,3 +251,38 @@ func TestEventKeyDelimiterSafety(t *testing.T) {
 		t.Error("delimiter collision")
 	}
 }
+
+// TestValidateSizeCaps pins the final safety net: one pathological provider
+// must not be able to inflate storage/journal/MQTT payloads without bound.
+func TestValidateSizeCaps(t *testing.T) {
+	base := HazardEvent{
+		Source:   "demo",
+		SourceID: "1",
+		Event:    "Drill",
+		Status:   StatusActive,
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("base event rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*HazardEvent){
+		"category":    func(e *HazardEvent) { e.Category = strings.Repeat("x", 257) },
+		"event type":  func(e *HazardEvent) { e.Event = strings.Repeat("x", 257) },
+		"severity":    func(e *HazardEvent) { e.Severity = strings.Repeat("x", 257) },
+		"headline":    func(e *HazardEvent) { e.Headline = strings.Repeat("x", 2049) },
+		"description": func(e *HazardEvent) { e.Description = strings.Repeat("x", 32769) },
+		"instruction": func(e *HazardEvent) { e.Instruction = strings.Repeat("x", 8193) },
+		"source url":  func(e *HazardEvent) { e.SourceURL = strings.Repeat("x", 2049) },
+	} {
+		e := base.Clone()
+		mutate(&e)
+		if err := e.Validate(); err == nil {
+			t.Errorf("%s over the cap was accepted", name)
+		}
+	}
+	// Boundary values are accepted.
+	ok := base.Clone()
+	ok.Description = strings.Repeat("x", 32768)
+	if err := ok.Validate(); err != nil {
+		t.Errorf("description at the cap rejected: %v", err)
+	}
+}

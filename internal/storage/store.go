@@ -106,6 +106,10 @@ type EventStore interface {
 	// been acknowledged by every output. Returns the number of deleted rows.
 	CleanupChanges(ctx context.Context, olderThan time.Time) (int64, error)
 
+	// CleanupEvents deletes cancelled/expired current-state records whose
+	// updated_at is older than olderThan. Active events are never touched.
+	CleanupEvents(ctx context.Context, olderThan time.Time) (int64, error)
+
 	// Get returns the stored event for key, or ErrNotFound.
 	Get(ctx context.Context, key string) (*StoredEvent, error)
 

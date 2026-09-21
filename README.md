@@ -101,6 +101,7 @@ All settings live in the YAML file; defaults are applied for missing values.
 | `app.log_max_backups` | `5` | how many rotated log files to keep |
 | `app.expiration_interval` | `1m` | how often expired events are checked (Go duration) |
 | `app.change_retention` | `24h` | how long acknowledged journal records are kept |
+| `app.event_retention` | `720h` | how long cancelled/expired current-state records are kept (active events are never cleaned) |
 | `storage.driver` | `sqlite` | only `sqlite` is supported for now |
 | `storage.path` | *(binary dir)* | SQLite database path. When omitted, WarnFlux **warns** and creates `warnflux.db` next to the binary (dev/debug convenience). Set it explicitly in Docker, e.g. `/data/warnflux.db`. |
 
@@ -249,6 +250,13 @@ Published every `heartbeat_interval` (set it to `0` to disable) and
 **retained**: a new subscriber immediately receives the latest snapshot.
 This is the replacement for the old "ping" topic.
 
+If the process disappears without disconnecting (crash, kill -9, network
+cut), the broker publishes a **retained last will** with
+`"state": "offline"` on the same topic, so consumers can distinguish a
+dead instance from a stale heartbeat. The will's `generated_at` is the
+time the connection was established; `state=offline` is authoritative
+regardless of the timestamp.
+
 ```json
 {
   "schema_version": 1,
@@ -379,6 +387,16 @@ carry exact historical snapshots.
 history, not pending deliveries — `PendingStats` reports 0 and cleanup
 removes changes once they are older than `change_retention`. Adding an
 output later replays only what is still retained.
+
+**Event retention:** cancelled/expired current-state records are deleted
+once they are older than `app.event_retention` (default 30 days); active
+events are never cleaned. The change journal (which carries immutable
+snapshots) is unaffected and stays bounded by `app.change_retention`.
+
+**Event-size caps:** as a final safety net, `HazardEvent.Validate` rejects
+pathological payloads (description > 32 KiB, headline/URL > 2 KiB,
+instruction > 8 KiB, short fields > 256 B). These are generous upper
+bounds, not content policy; providers are still reviewed code.
 
 ## Docker
 

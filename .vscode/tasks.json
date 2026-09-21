@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build",
+			"type": "shell",
+			"command": "mkdir -p build; if [ ! -f build/config.yaml ]; then cp config.example.yaml build/config.yaml; fi; go build -o build/warnflux ./cmd/warnflux",
+			"problemMatcher": [
+				"$go"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		}
+	]
+}

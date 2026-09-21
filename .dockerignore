@@ -1,0 +1,9 @@
+.git
+.kilo
+.github
+build
+config.yaml
+Dockerfile
+.dockerignore
+LICENSE
+README.md

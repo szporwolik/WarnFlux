@@ -193,3 +193,92 @@ func TestLoadInvalidPingInterval(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadStorageConfig(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, "app:\n  expiration_interval: 45s\nstorage:\n  driver: sqlite\n  path: /data/warnflux.db\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.App.ExpirationInterval != 45*time.Second {
+		t.Errorf("expiration_interval = %s, want 45s", cfg.App.ExpirationInterval)
+	}
+	if cfg.Storage.Driver != "sqlite" {
+		t.Errorf("storage driver = %q, want %q", cfg.Storage.Driver, "sqlite")
+	}
+	if cfg.Storage.Path != "/data/warnflux.db" {
+		t.Errorf("storage path = %q", cfg.Storage.Path)
+	}
+}
+
+func TestLoadStorageDefaults(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, ""))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.App.ExpirationInterval != time.Minute {
+		t.Errorf("expiration_interval = %s, want 1m", cfg.App.ExpirationInterval)
+	}
+	if cfg.Storage.Driver != "sqlite" {
+		t.Errorf("storage driver = %q, want %q", cfg.Storage.Driver, "sqlite")
+	}
+	if cfg.Storage.Path != "warnflux.db" {
+		t.Errorf("storage path = %q, want %q", cfg.Storage.Path, "warnflux.db")
+	}
+}
+
+func TestLoadInvalidStorageDriver(t *testing.T) {
+	_, err := Load(writeTempConfig(t, "storage:\n  driver: postgres\n"))
+	if err == nil {
+		t.Fatal("expected error for unsupported storage driver, got nil")
+	}
+	if !strings.Contains(err.Error(), "storage.driver") {
+		t.Errorf("error should mention storage.driver, got: %v", err)
+	}
+}
+
+func TestLoadInvalidExpirationInterval(t *testing.T) {
+	if _, err := Load(writeTempConfig(t, "app:\n  expiration_interval: 0s\n")); err == nil {
+		t.Fatal("expected error for expiration_interval 0s, got nil")
+	}
+}
+
+func TestLoadLogRotationDefaults(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, ""))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.App.LogFile != "" {
+		t.Errorf("log_file = %q, want empty (stdout only)", cfg.App.LogFile)
+	}
+	if cfg.App.LogMaxSizeMB != 10 {
+		t.Errorf("log_max_size_mb = %d, want 10", cfg.App.LogMaxSizeMB)
+	}
+	if cfg.App.LogMaxBackups != 5 {
+		t.Errorf("log_max_backups = %d, want 5", cfg.App.LogMaxBackups)
+	}
+}
+
+func TestLoadLogRotationConfig(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, "app:\n  log_file: /var/log/warnflux.log\n  log_max_size_mb: 25\n  log_max_backups: 3\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.App.LogFile != "/var/log/warnflux.log" {
+		t.Errorf("log_file = %q", cfg.App.LogFile)
+	}
+	if cfg.App.LogMaxSizeMB != 25 {
+		t.Errorf("log_max_size_mb = %d, want 25", cfg.App.LogMaxSizeMB)
+	}
+	if cfg.App.LogMaxBackups != 3 {
+		t.Errorf("log_max_backups = %d, want 3", cfg.App.LogMaxBackups)
+	}
+}
+
+func TestLoadInvalidLogRotation(t *testing.T) {
+	if _, err := Load(writeTempConfig(t, "app:\n  log_max_size_mb: 0\n")); err == nil {
+		t.Fatal("expected error for log_max_size_mb 0, got nil")
+	}
+	if _, err := Load(writeTempConfig(t, "app:\n  log_max_backups: -1\n")); err == nil {
+		t.Fatal("expected error for negative log_max_backups, got nil")
+	}
+}

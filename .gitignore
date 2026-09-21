@@ -33,6 +33,11 @@ go.work.sum
 # Local configuration (copy from config.example.yaml)
 /config.yaml
 
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+
 # Editor/IDE
 # .idea/
 # .vscode/

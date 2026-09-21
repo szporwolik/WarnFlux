@@ -3,6 +3,9 @@
 .github
 build
 config.yaml
+*.db
+*.db-wal
+*.db-shm
 Dockerfile
 .dockerignore
 LICENSE

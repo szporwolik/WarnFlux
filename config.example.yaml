@@ -5,6 +5,27 @@ app:
   # One of: debug, info, warn, error.
   log_level: info
 
+  # Optional rotating log file; empty means log to stdout only.
+  # In Docker, point this at the mounted volume, e.g. /logs/warnflux.log.
+  log_file: ""
+
+  # Rotate the log file once it grows beyond this size (megabytes).
+  log_max_size_mb: 10
+
+  # How many rotated log files to keep.
+  log_max_backups: 5
+
+  # How often to check for and mark expired events, e.g. 1m, 30s.
+  expiration_interval: 1m
+
+storage:
+  # The only supported driver for now.
+  driver: sqlite
+
+  # Local development. When running in Docker, point this at the mounted
+  # persistent volume, e.g. /data/warnflux.db.
+  path: ./warnflux.db
+
 mqtt:
   # Set to false to run WarnFlux without an MQTT connection.
   enabled: true

@@ -590,6 +590,108 @@ func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
+// ---- regression tests: cursor configuration semantics ----
+
+func cursorRow(t *testing.T, s *Store, outputID string) (exists bool, lastAcked int64) {
+	t.Helper()
+	var id int64
+	err := s.db.QueryRow("SELECT last_acked_id FROM output_cursors WHERE output_id = ?", outputID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return false, 0
+	}
+	if err != nil {
+		t.Fatalf("read cursor: %v", err)
+	}
+	return true, id
+}
+
+// TestCursorConfigurationSemantics pins: enabled → cursor exists; disabled
+// → cursor removed; re-enabled → cursor 0 (replays retained journal);
+// renamed → old cursor removed, new cursor 0; same ID (different type) →
+// cursor preserved — the ID, not the plugin type, is the durable consumer
+// identity.
+func TestCursorConfigurationSemantics(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	e := normEvent()
+	_, change := ingestOne(t, store, e)
+
+	// Enabled → cursor exists at 0.
+	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	if exists, acked := cursorRow(t, store, "out-a"); !exists || acked != 0 {
+		t.Fatalf("out-a cursor = %v/%d, want exists at 0", exists, acked)
+	}
+
+	// Disabled → cursor removed.
+	if err := store.SyncOutputs(ctx, nil); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	if exists, _ := cursorRow(t, store, "out-a"); exists {
+		t.Fatal("disabled output still has a cursor")
+	}
+
+	// Re-enabled → cursor 0 and it replays the retained journal.
+	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	polled, err := store.PollChanges(ctx, "out-a", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 1 || polled[0].ID != change.ID {
+		t.Fatalf("re-enabled output polled %+v, want the retained change", polled)
+	}
+
+	// Renamed → old cursor removed, new cursor 0.
+	if err := store.AckChanges(ctx, "out-a", change.ID); err != nil {
+		t.Fatalf("AckChanges: %v", err)
+	}
+	if err := store.SyncOutputs(ctx, []string{"out-b"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	if exists, _ := cursorRow(t, store, "out-a"); exists {
+		t.Fatal("renamed-away output still has a cursor")
+	}
+	if exists, acked := cursorRow(t, store, "out-b"); !exists || acked != 0 {
+		t.Fatalf("out-b cursor = %v/%d, want exists at 0", exists, acked)
+	}
+
+	// Same ID with a different plugin type: the ID defines the identity, so
+	// the cursor is preserved (SyncOutputs only matches IDs).
+	if err := store.AckChanges(ctx, "out-b", change.ID); err != nil {
+		t.Fatalf("AckChanges: %v", err)
+	}
+	if err := store.SyncOutputs(ctx, []string{"out-b"}); err != nil {
+		t.Fatalf("SyncOutputs: %v", err)
+	}
+	if exists, acked := cursorRow(t, store, "out-b"); !exists || acked != change.ID {
+		t.Fatalf("out-b cursor after type change = %v/%d, want preserved at %d", exists, acked, change.ID)
+	}
+}
+
+// TestPollChangesCorruptedSnapshotErrors: invalid snapshot JSON must be a
+// PollChanges error — no panic, no silent skip, no cursor advancement.
+func TestPollChangesCorruptedSnapshotErrors(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	e := normEvent()
+	_, change := ingestOne(t, store, e)
+	if _, err := store.db.Exec("UPDATE changes SET event_snapshot = 'not-json' WHERE id = ?", change.ID); err != nil {
+		t.Fatalf("corrupt snapshot: %v", err)
+	}
+
+	if _, err := store.PollChanges(ctx, "out", 10); err == nil {
+		t.Fatal("PollChanges with corrupted snapshot must return an error")
+	}
+	if exists, acked := cursorRow(t, store, "out"); exists && acked != 0 {
+		t.Fatalf("cursor advanced to %d after failed poll, want no advancement", acked)
+	}
+}
+
 // ---- regression tests: immutable journal snapshots ----
 
 // TestJournalSnapshotsAreHistorical is the CRITICAL snapshot test: NEW

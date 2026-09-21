@@ -544,3 +544,37 @@ func TestManagerUnknownPluginTypeEvenWhenDisabled(t *testing.T) {
 		t.Errorf("error = %v, want unknown type even for disabled instance", err)
 	}
 }
+
+// TestManagerEmitShutdownSemantics pins the shutdown contract: Emit never
+// returns nil ("accepted") once shutdown begins or when the caller's
+// context is cancelled — even when the queue is writable.
+func TestManagerEmitShutdownSemantics(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	m, err := NewManager(NewRegistry(), nil, nil, nil, nil, store, managerOpts(), testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// Not running: the accepting flag is false.
+	e := eventFor("shutdown")
+	if err := m.emit(context.Background(), e); err != errShuttingDown {
+		t.Fatalf("emit before Run = %v, want errShuttingDown", err)
+	}
+
+	// Accepting but caller context cancelled: cancellation wins over an
+	// empty, writable queue.
+	m.accepting.Store(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.emit(ctx, e); err != context.Canceled {
+		t.Fatalf("emit with cancelled ctx = %v, want context.Canceled", err)
+	}
+	if len(m.eventQueue) != 0 {
+		t.Errorf("queue has %d events, want 0 (nothing accepted)", len(m.eventQueue))
+	}
+}

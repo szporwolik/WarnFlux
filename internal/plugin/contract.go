@@ -73,13 +73,17 @@ type Status struct {
 }
 
 // StatusPublisher is an optional output plugin interface: the worker calls
-// PublishStatus periodically (never concurrently with Handle) using the
-// interval reported by StatusInterval.
+// PublishStatus periodically (never concurrently with Handle while it
+// behaves) using the interval reported by StatusInterval.
 //
-// Status publication health is AUXILIARY: failures are logged but never
-// suspend the output or count against its delivery-failure threshold, so a
-// broken heartbeat cannot prevent otherwise working hazard EventChange
-// delivery.
+// Status publication health is AUXILIARY:
+//   - a PublishStatus error is logged and never suspends the output or
+//     counts toward its delivery-failure threshold;
+//   - a PublishStatus call that ignores its timeout violates its context
+//     contract: status publishing is then DISABLED for that output
+//     instance for the rest of the process (hazard delivery continues),
+//     and the abandoned callback may overlap later Handle calls —
+//     implementers MUST respect ctx.
 type StatusPublisher interface {
 	PublishStatus(ctx context.Context, status Status) error
 	StatusInterval() time.Duration

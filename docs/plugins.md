@@ -135,12 +135,21 @@ For **outputs**:
 - Consecutive failures suspend the plugin; periodic recovery probes resume
   delivery after a success. Failures and probes are visible in the status
   snapshot.
-- Status heartbeat (`StatusPublisher`) health is **auxiliary**: status
-  failures are logged but never suspend the plugin or count against its
-  delivery-failure threshold, so a broken heartbeat cannot block hazard
-  event delivery.
+- Status heartbeat (`StatusPublisher`) health is **auxiliary** and is
+  accounted separately from hazard delivery:
+
+  | Behavior | Consequence |
+  |----------|-------------|
+  | `Handle` failure | counts toward the failure threshold → suspension + probes |
+  | `PublishStatus` failure | logged only, never counted, never suspends |
+  | `PublishStatus` ignores its timeout (context-contract violation) | status publishing is **disabled for that output instance** for the rest of the process; hazard delivery continues. The abandoned callback may overlap later `Handle` calls — implementers MUST respect `ctx`. |
 - A change is acknowledged only after `Handle` returns `nil` — delivery is
   at-least-once across restarts.
+- **Durable identity**: an output's configured `id` is its persisted journal
+  consumer identity (`^[a-z0-9][a-z0-9._-]{0,63}$`). Renaming the ID creates
+  a new consumer; disabling an output removes its cursor, and re-enabling it
+  replays journal entries that are still retained. The ID — not the plugin
+  type — defines the identity.
 
 ## Mandatory rules
 

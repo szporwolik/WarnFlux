@@ -49,6 +49,26 @@ func writeTempConfig(t *testing.T, content string) string {
 	return path
 }
 
+// TestPluginIDValidation pins the durable identity format: plugin IDs (and
+// especially output IDs, which are persisted journal consumer identities)
+// must be lowercase slugs. Uppercase is rejected, not silently lowercased.
+func TestPluginIDValidation(t *testing.T) {
+	for _, id := range []string{"mqtt-main", "demo", "a", "out_a.b-1", "trailing-"} {
+		if _, err := Load(writeTempConfig(t, "sources:\n  - id: "+id+"\n    type: demo\n")); err != nil {
+			t.Errorf("id %q rejected: %v", id, err)
+		}
+	}
+	for _, id := range []string{"", "Has Space", "-leading", "UPPER", "uni☃", strings.Repeat("x", 65)} {
+		if _, err := Load(writeTempConfig(t, "sources:\n  - id: "+id+"\n    type: demo\n")); err == nil {
+			t.Errorf("id %q accepted, want rejection", id)
+		}
+	}
+	// Outer whitespace is trimmed before validation.
+	if _, err := Load(writeTempConfig(t, "outputs:\n  - id: '  out-a  '\n    type: mqtt\n    enabled: false\n")); err != nil {
+		t.Errorf("trimmed id rejected: %v", err)
+	}
+}
+
 func TestLoadFullConfig(t *testing.T) {
 	cfg, err := Load(writeTempConfig(t, exampleConfig))
 	if err != nil {

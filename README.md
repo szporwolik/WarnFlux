@@ -43,8 +43,9 @@ they are the next step; the plugin contracts are designed for them.
   the same normalized event always hashes identically.
 - **Ingestion** compares fingerprints and yields `new`, `duplicate` (only
   `last_seen_at` refreshes), `updated` or `cancelled`. Duplicates never
-  reach outputs. An event whose expiry has lapsed is re-activated
-  (`updated`) when a source reports it again.
+  reach outputs. A stale provider event whose expiry has lapsed is a
+  duplicate that remains expired — an event is re-activated (`updated`)
+  only when the provider makes it live again (a future expiry or none).
 - **Change journal**: every meaningful transition is written atomically
   with the event update into a durable journal with monotonically
   increasing IDs. Each journal record carries an **immutable JSON
@@ -125,7 +126,7 @@ outputs:
       failure_threshold: 5
     config:
       broker: tcp://localhost:1883
-      client_id: warnflux
+      client_id: warnflux-home   # required: unique per WarnFlux instance
       username: ""
       password: ""        # mutually exclusive with password_file
       password_file: ""   # e.g. /run/secrets/mqtt-password
@@ -134,8 +135,15 @@ outputs:
       heartbeat_interval: 30s   # 0 disables periodic status publication
 ```
 
-Every instance needs a unique `id` and a known `type`. Unknown types,
-duplicate IDs and malformed plugin configuration are startup errors.
+Every instance needs a unique `id` and a known `type`. Unknown types and
+invalid or duplicate IDs are startup errors.
+
+> **Output IDs are durable consumer identities.** The journal cursor is
+> keyed by an output's `id` — renaming the ID creates a new consumer.
+> Disabling an output removes its cursor; re-enabling it later creates a
+> new cursor at 0, so it replays journal entries that are still retained
+> (entries already removed by retention cannot be replayed). The ID, not
+> the plugin type, defines the identity.
 
 ## MQTT output
 
@@ -162,13 +170,15 @@ Messages are UTF-8 JSON. Field names use `lower_snake_case`; the
 Published whenever an event transitions: `new`, `updated`, `cancelled`
 (by a source) or `expired` (by the expiration worker). Duplicates are
 never published. After a restart, unacknowledged changes are re-published
-(at-least-once) — deduplicate on `change_id` if you need exactly-once.
+(at-least-once) — if you need exactly-once, deduplicate on `change_id`
+**within one instance** (see the field table below for its scope).
 
 ```json
 {
   "schema_version": 1,
   "change_id": 42,
   "change_type": "new",
+  "event_key": "meteoalarm:2.49.0.1.616.0.DEU",
   "event": {
     "source": "meteoalarm",
     "source_id": "2.49.0.1.616.0.DEU",
@@ -198,8 +208,9 @@ Top-level fields:
 | Field | Type | Meaning |
 |-------|------|---------|
 | `schema_version` | int | wire format version (currently `1`); bump means breaking change |
-| `change_id` | int64 | durable journal ID, monotonically increasing per event transition — your dedup key |
+| `change_id` | int64 | journal ID, monotonic **within one WarnFlux SQLite database lifetime**; if the database is recreated, or two WarnFlux instances publish to the same topic, the same integer can appear again — deduplicate on `change_id` only together with your instance's `topic_prefix` |
 | `change_type` | string | `new`, `updated`, `cancelled` or `expired` |
+| `event_key` | string | `source:source_id` — the stable logical upstream event identity |
 | `event` | object | full normalized event snapshot — see below |
 
 `event` fields:
@@ -311,8 +322,9 @@ mosquitto_sub -h broker.example.com -p 1883 \
   -t 'warnflux/#' -v
 ```
 
-Capture the next 5 event messages and exit (`change_id` allows
-deduplication on the consumer side):
+Capture the next 5 event messages and exit (`change_id` is monotonic
+within one WarnFlux database and allows consumer-side deduplication
+per instance):
 
 ```bash
 mosquitto_sub -h localhost -p 1883 -t 'warnflux/events' -C 5 -v
@@ -466,8 +478,8 @@ version (`v0.1.0`) triggers the release workflow, which builds:
 - `warnflux-windows-amd64.exe`
 - `SHA256SUMS`
 - the Docker image (`linux/amd64`, `linux/arm64`) published to
-  `ghcr.io/<owner>/warnflux` with `v0.1.0`, `v0.1`, `v0` and `latest`
-  tags and OCI labels
+  `ghcr.io/<owner>/warnflux` with `v0.1.0`, `v0.1` and `latest` tags
+  (no floating `v0` major tag before 1.0) and OCI labels
 
 ## Demo
 

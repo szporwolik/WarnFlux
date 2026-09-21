@@ -104,7 +104,13 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 			s.tracker.setState(StateStopped)
 			return
 		}
-		attempt = s.restart(ctx, attempt)
+		next, ok := s.restart(ctx, attempt)
+		if !ok {
+			// The root context was cancelled during backoff: SourcePlugin.Run
+			// must never be invoked again.
+			return
+		}
+		attempt = next
 	}
 }
 
@@ -131,13 +137,15 @@ func (s *sourceSupervisor) waitForExit(ctx context.Context, cancel context.Cance
 	}
 }
 
-// restart waits out the bounded backoff and reports the next attempt index.
-// It returns false when the application is shutting down, and never logs or
-// schedules a restart after the root context is cancelled.
-func (s *sourceSupervisor) restart(ctx context.Context, attempt int) int {
+// restart waits out the bounded backoff and reports the next attempt index
+// together with whether the supervisor may continue. It returns false once
+// the root context is cancelled (including a cancellation that arrives
+// DURING the backoff wait): after that, SourcePlugin.Run must never be
+// invoked again.
+func (s *sourceSupervisor) restart(ctx context.Context, attempt int) (int, bool) {
 	if ctx.Err() != nil {
 		s.tracker.setState(StateStopped)
-		return attempt
+		return attempt, false
 	}
 	delay := s.backoffDelay(attempt)
 	next := attempt + 1
@@ -146,9 +154,9 @@ func (s *sourceSupervisor) restart(ctx context.Context, attempt int) int {
 		"plugin_id", s.id, "plugin_type", s.kind, "retry_in", delay)
 	if !s.waitBackoffFn(ctx, delay) {
 		s.tracker.setState(StateStopped)
-		return next
+		return next, false
 	}
-	return next
+	return next, true
 }
 
 func (s *sourceSupervisor) backoffDelay(attempt int) time.Duration {

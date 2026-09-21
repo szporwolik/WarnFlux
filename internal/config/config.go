@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -35,6 +36,12 @@ const (
 	defaultOutputTimeout    = 10 * time.Second
 	defaultFailureThreshold = 5
 )
+
+// Plugin instance IDs are durable identities (output cursors are keyed by
+// output ID), so they use one canonical lowercase slug format. Only outer
+// whitespace is trimmed by the loader; uppercase is rejected rather than
+// silently lowercased, because IDs are persisted.
+var pluginIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // validLogLevels are the accepted values for app.log_level.
 var validLogLevels = []string{"debug", "info", "warn", "error"}
@@ -328,8 +335,8 @@ func (c Config) Validate() error {
 	// namespace is shared between sources and outputs.
 	seen := make(map[string]bool, len(c.Sources)+len(c.Outputs))
 	for i, s := range c.Sources {
-		if s.ID == "" {
-			return fmt.Errorf("sources[%d].id must not be empty", i)
+		if !pluginIDPattern.MatchString(s.ID) {
+			return fmt.Errorf("sources[%d].id %q must match %s (lowercase slug; plugin IDs are durable identities)", i, s.ID, pluginIDPattern)
 		}
 		if s.Type == "" {
 			return fmt.Errorf("source %q: type must not be empty", s.ID)
@@ -343,8 +350,8 @@ func (c Config) Validate() error {
 		}
 	}
 	for i, o := range c.Outputs {
-		if o.ID == "" {
-			return fmt.Errorf("outputs[%d].id must not be empty", i)
+		if !pluginIDPattern.MatchString(o.ID) {
+			return fmt.Errorf("outputs[%d].id %q must match %s (lowercase slug; the output id is its durable consumer identity)", i, o.ID, pluginIDPattern)
 		}
 		if o.Type == "" {
 			return fmt.Errorf("output %q: type must not be empty", o.ID)

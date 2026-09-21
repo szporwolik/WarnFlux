@@ -19,7 +19,7 @@ app:
   expiration_interval: 1m
 
   # How long acknowledged journal records are kept before deletion,
-  # e.g. 24h. Must be >= 1m.
+  # e.g. 24h. Must be > 0.
   change_retention: 24h
 
 storage:
@@ -60,7 +60,9 @@ outputs:
     config:
       # Broker URL, e.g. tcp://localhost:1883 or ssl://broker.example.com:8883.
       broker: tcp://localhost:1883
-      client_id: warnflux
+      # Required: every WarnFlux instance needs its own client ID
+      # (two instances sharing one will kick each other off the broker).
+      client_id: warnflux-home
       username: ""
       # Plaintext password, mutually exclusive with password_file.
       password: ""

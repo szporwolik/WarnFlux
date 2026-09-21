@@ -50,14 +50,15 @@ type Config struct {
 }
 
 // Output publishes EventChange values to MQTT and, optionally, the retained
-// application status topic.
+// application status topic. Paho owns the authoritative connection state
+// (IsConnectionOpen distinguishes an active connection from reconnect mode);
+// no parallel boolean is maintained here.
 type Output struct {
 	cfg Config
 	qos byte
 
-	mu        sync.Mutex
-	client    paho.Client
-	connected bool
+	mu     sync.Mutex
+	client paho.Client
 }
 
 // New decodes and validates the plugin-specific configuration. The broker
@@ -72,12 +73,15 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 	if strings.TrimSpace(cfg.Broker) == "" {
 		return nil, fmt.Errorf("broker must not be empty")
 	}
-	if cfg.ClientID == "" {
-		cfg.ClientID = "warnflux"
+	if strings.TrimSpace(cfg.ClientID) == "" {
+		return nil, fmt.Errorf("client_id is required: every WarnFlux instance needs its own MQTT client ID (two instances sharing one ID will kick each other off the broker)")
 	}
-	if cfg.TopicPrefix == "" {
-		cfg.TopicPrefix = "warnflux"
+	// Normalize the prefix and reject values that would corrupt topics.
+	prefix, err := normalizeTopicPrefix(cfg.TopicPrefix)
+	if err != nil {
+		return nil, err
 	}
+	cfg.TopicPrefix = prefix
 	// QoS 0 is rejected: it would downgrade hazard event delivery to best
 	// effort, contradicting WarnFlux's at-least-once journal semantics.
 	// An omitted qos defaults to 1.
@@ -180,21 +184,25 @@ func (o *Output) PublishStatus(ctx context.Context, status plugin.Status) error 
 	return nil
 }
 
-// Close releases the broker connection cleanly on shutdown.
+// Close disconnects from the broker on shutdown. Paho tolerates Disconnect
+// in any state.
 func (o *Output) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.connected {
-		o.client.Disconnect(250)
-		o.connected = false
-	}
+	o.client.Disconnect(250)
 	return nil
 }
 
+// ensureConnected waits until an active broker connection exists (or ctx
+// expires). Paho's own state is authoritative: with AutoReconnect enabled
+// it returns to reconnect mode on loss and re-establishes by itself; a
+// Connect() call during reconnect mode completes immediately as a no-op.
+// The durable journal provides delivery retry, so MQTT does not need
+// offline persistence of its own.
 func (o *Output) ensureConnected(ctx context.Context) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.connected {
+	if o.client.IsConnectionOpen() {
 		return nil
 	}
 	token := o.client.Connect()
@@ -206,7 +214,6 @@ func (o *Output) ensureConnected(ctx context.Context) error {
 	if err := token.Error(); err != nil {
 		return err
 	}
-	o.connected = true
 	return nil
 }
 
@@ -219,8 +226,9 @@ func (o *Output) ensureConnected(ctx context.Context) error {
 // wireEvent is the event stream payload (<topic_prefix>/events).
 type wireEvent struct {
 	SchemaVersion int             `json:"schema_version"` // STABLE
-	ChangeID      int64           `json:"change_id"`      // STABLE: journal ID
+	ChangeID      int64           `json:"change_id"`      // STABLE: journal ID (unique within ONE WarnFlux database)
 	ChangeType    string          `json:"change_type"`    // STABLE: new|updated|cancelled|expired
+	EventKey      string          `json:"event_key"`      // STABLE: source:source_id — the logical upstream event
 	Event         wireHazardEvent `json:"event"`
 }
 
@@ -276,6 +284,7 @@ func toWireEvent(change core.EventChange) wireEvent {
 		SchemaVersion: wireSchemaVersion,
 		ChangeID:      change.ID,
 		ChangeType:    string(change.Type),
+		EventKey:      event.Key(),
 		Event: wireHazardEvent{
 			Source:      event.Source,
 			SourceID:    event.SourceID,
@@ -345,6 +354,21 @@ func wireTime(t *time.Time) *string {
 
 func formatWireTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// normalizeTopicPrefix trims whitespace and trailing slashes (so
+// "warnflux/" does not become "warnflux//events"), defaults an
+// empty prefix to "warnflux", and rejects values that would corrupt
+// the topics WarnFlux publishes to.
+func normalizeTopicPrefix(raw string) (string, error) {
+	prefix := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if prefix == "" {
+		return "warnflux", nil
+	}
+	if strings.ContainsAny(prefix, "+#") || strings.ContainsRune(prefix, 0) {
+		return "", fmt.Errorf("topic_prefix must not contain '+', '#' or NUL characters")
+	}
+	return prefix, nil
 }
 
 // routePahoLogs silences paho's verbose protocol debug output and routes

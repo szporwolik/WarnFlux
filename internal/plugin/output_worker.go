@@ -40,11 +40,8 @@ type outputWorker struct {
 	// plugins.
 	health func() Status
 
-	// inFlight tracks whether a Handle call is currently running. The
-	// invariant is: at most ONE contributor-code Handle call per plugin
-	// instance at any time.
-	mu       chan struct{}
-	inFlight bool
+	// mu serializes the small worker state below (channel semaphore).
+	mu chan struct{}
 
 	// suspended stops delivery attempts (except periodic recovery probes).
 	suspended bool
@@ -53,6 +50,13 @@ type outputWorker struct {
 	// worker, so probes happen at recoveryInterval granularity rather than
 	// on every poll tick.
 	nextProbeAt time.Time
+
+	// statusDisabled is set permanently once the plugin's status callback
+	// violates its timeout. The heartbeat is auxiliary, so it is disabled
+	// for the lifetime of this worker instead of being allowed to block
+	// hazard delivery. At most ONE abandoned status goroutine can exist
+	// per output because no new one is ever started afterwards.
+	statusDisabled bool
 }
 
 func newOutputWorker(cfg config.Output, p OutputPlugin, store storage.EventStore, logger *slog.Logger, tracker *statusTracker) *outputWorker {
@@ -98,8 +102,9 @@ func (w *outputWorker) run(ctx context.Context) {
 		}
 
 		// One status publication per interval, never concurrent with
-		// Handle, bounded by the same timeout/failure accounting.
-		if isPublisher && !nextStatusAt.IsZero() && time.Now().After(nextStatusAt) {
+		// Handle. Status publishing stops permanently for this output once
+		// the callback violates its timeout (see publishStatus).
+		if isPublisher && w.statusEnabled() && !nextStatusAt.IsZero() && time.Now().After(nextStatusAt) {
 			nextStatusAt = time.Now().Add(publisher.StatusInterval())
 			w.publishStatus(ctx, publisher)
 			continue
@@ -140,13 +145,11 @@ func (w *outputWorker) pollDeliveries(ctx context.Context) {
 }
 
 // deliver invokes the plugin for one change and acknowledges it only after
-// a successful delivery. The single-flight lock guarantees that at most one
-// Handle call is running per plugin instance: a handler that ignores its
-// context blocks this worker (never the application) and no further calls
-// are made to the plugin until the stuck call returns.
+// a successful delivery. The worker is serial, so at most one Handle call
+// is ever in flight per plugin instance: a handler that ignores its context
+// blocks this worker (never the application) and no further calls are made
+// to the plugin until the stuck call returns or shutdown abandons it.
 func (w *outputWorker) deliver(ctx context.Context, change storage.Change) bool {
-	w.setInFlight(true)
-
 	eventChange := core.EventChange{ID: change.ID, Type: change.ChangeType, Event: change.Event.Clone()}
 
 	callCtx, cancel := context.WithTimeout(ctx, w.timeout)
@@ -178,12 +181,10 @@ func (w *outputWorker) deliver(ctx context.Context, change storage.Change) bool 
 			w.logger.Warn("abandoning stuck output call during shutdown",
 				"plugin_id", w.id, "plugin_type", w.kind)
 			cancel()
-			w.setInFlight(false)
 			return false
 		}
 	}
 	cancel()
-	w.setInFlight(false)
 
 	if err != nil {
 		// A late failure after a timeout is counted as the next failure;
@@ -203,8 +204,13 @@ func (w *outputWorker) deliver(ctx context.Context, change storage.Change) bool 
 	return true
 }
 
-// publishStatus publishes one application status snapshot, recovered and
-// bounded like a delivery.
+// publishStatus publishes one application status snapshot. Status health is
+// auxiliary: failures are logged only and never count toward the
+// delivery-failure threshold. A callback that ignores its timeout violates
+// its context contract — status publishing is then disabled for this output
+// instance permanently, and hazard delivery continues. The abandoned
+// callback may still overlap later Handle calls; the StatusPublisher
+// contract documents this.
 func (w *outputWorker) publishStatus(ctx context.Context, publisher StatusPublisher) {
 	if w.health == nil {
 		return
@@ -220,23 +226,19 @@ func (w *outputWorker) publishStatus(ctx context.Context, publisher StatusPublis
 	select {
 	case err := <-result:
 		if err != nil {
-			// Status publication failures are auxiliary: they never
-			// suspend the plugin or reset its event-delivery failure
-			// counter. Hazard event delivery is critical; the heartbeat
-			// is not.
+			// Auxiliary: logged, never counted toward suspension.
 			w.logger.Warn("output plugin status publish failed",
 				"plugin_id", w.id, "plugin_type", w.kind, "error", err)
 		}
 	case <-callCtx.Done():
-		// Timed out. Log it, then wait for the stuck call so
-		// PublishStatus never overlaps a later Handle invocation. On
-		// shutdown the wait is abandoned.
-		w.logger.Warn("output plugin status publish timed out",
+		// The callback violated its context contract. Disable status
+		// publishing for this output instance and move on: hazard event
+		// delivery must never be blocked by a broken heartbeat. The
+		// abandoned goroutine is bounded — no further status call is ever
+		// started for this worker.
+		w.disableStatus()
+		w.logger.Error("output plugin status publish violated its timeout; status publishing disabled for this output",
 			"plugin_id", w.id, "plugin_type", w.kind, "timeout", w.timeout)
-		select {
-		case <-result:
-		case <-ctx.Done():
-		}
 	}
 }
 
@@ -288,18 +290,24 @@ func (w *outputWorker) stop() {
 	w.tracker.setState(StateStopped)
 }
 
-func (w *outputWorker) setInFlight(v bool) {
-	w.mu <- struct{}{}
-	w.inFlight = v
-	<-w.mu
-}
-
 func (w *outputWorker) setSuspended(v bool) {
 	w.mu <- struct{}{}
 	w.suspended = v
 	if v {
 		w.nextProbeAt = time.Now().Add(w.recoveryInterval)
 	}
+	<-w.mu
+}
+
+func (w *outputWorker) statusEnabled() bool {
+	w.mu <- struct{}{}
+	defer func() { <-w.mu }()
+	return !w.statusDisabled
+}
+
+func (w *outputWorker) disableStatus() {
+	w.mu <- struct{}{}
+	w.statusDisabled = true
 	<-w.mu
 }
 

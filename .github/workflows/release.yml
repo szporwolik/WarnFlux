@@ -54,10 +54,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/warnflux
+          # Note: docker/metadata-action's semver {{version}} strips the
+          # leading 'v'; the explicit v-prefix in the pattern keeps it.
+          # No floating major tag before 1.0: 'v0' would silently cross
+          # breaking minor releases.
           tags: |
-            type=semver,pattern={{version}},value=v${{ steps.version.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.version }}
-            type=semver,pattern={{major}},value=v${{ steps.version.outputs.version }}
+            type=semver,pattern=v{{version}},value=v${{ steps.version.outputs.version }}
+            type=semver,pattern=v{{major}}.{{minor}},value=v${{ steps.version.outputs.version }}
             type=raw,value=latest
 
       - name: Build and push Docker image

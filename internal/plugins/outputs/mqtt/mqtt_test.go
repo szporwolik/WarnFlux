@@ -23,7 +23,7 @@ func decodeConfig(t *testing.T, yamlText string) *yaml.Node {
 }
 
 func TestNewValidation(t *testing.T) {
-	p, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nqos: 1\n"))
+	p, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: test-a\nqos: 1\n"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -34,32 +34,61 @@ func TestNewValidation(t *testing.T) {
 	if _, err := New(nil); err == nil {
 		t.Fatal("missing broker must be rejected")
 	}
-	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nqos: 0\n")); err == nil {
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nqos: 1\n")); err == nil {
+		t.Fatal("missing client_id must be rejected (two instances would collide)")
+	}
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\nqos: 0\n")); err == nil {
 		t.Fatal("qos 0 must be rejected (best effort contradicts at-least-once hazard delivery)")
 	}
-	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nqos: 2\n")); err != nil {
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\nqos: 2\n")); err != nil {
 		t.Fatalf("qos 2 must be accepted: %v", err)
 	}
-	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nqos: 7\n")); err == nil {
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\nqos: 7\n")); err == nil {
 		t.Fatal("qos > 2 must be rejected")
 	}
-	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nbogus: 1\n")); err == nil {
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\nbogus: 1\n")); err == nil {
 		t.Fatal("unknown config key must be rejected")
 	}
-	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\npassword: x\npassword_file: /tmp/x\n")); err == nil {
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\npassword: x\npassword_file: /tmp/x\n")); err == nil {
 		t.Fatal("password and password_file together must be rejected")
 	}
 }
 
+func TestTopicPrefixValidation(t *testing.T) {
+	// Trailing slashes are normalized away (no warnflux//events).
+	p, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\ntopic_prefix: warnflux/\n"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := p.(*Output).cfg.TopicPrefix; got != "warnflux" {
+		t.Errorf("topic_prefix = %q, want trailing / removed", got)
+	}
+
+	// The helper rejects values that would corrupt published topics.
+	for _, bad := range []string{"a+b", "a#b", "a\x00b"} {
+		if _, err := normalizeTopicPrefix(bad); err == nil {
+			t.Errorf("topic_prefix %q must be rejected", bad)
+		}
+	}
+	// Empty (or only-slashes) normalizes to the default prefix.
+	if got, err := normalizeTopicPrefix(""); err != nil || got != "warnflux" {
+		t.Errorf("empty prefix = %q/%v, want default warnflux", got, err)
+	}
+	if got, err := normalizeTopicPrefix("/"); err != nil || got != "warnflux" {
+		t.Errorf("\"/\" prefix = %q/%v, want default warnflux", got, err)
+	}
+}
+
 func TestConfigDefaults(t *testing.T) {
-	p, err := New(decodeConfig(t, "broker: tcp://localhost:1883\n"))
+	// client_id is required; everything else has defaults.
+	if _, err := New(decodeConfig(t, "broker: tcp://localhost:1883\n")); err == nil {
+		t.Fatal("missing client_id must be rejected")
+	}
+	p, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\n"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	out := p.(*Output)
-	if out.cfg.ClientID != "warnflux" {
-		t.Errorf("client_id = %q, want default", out.cfg.ClientID)
-	}
 	if out.cfg.TopicPrefix != "warnflux" {
 		t.Errorf("topic_prefix = %q, want default", out.cfg.TopicPrefix)
 	}
@@ -76,7 +105,7 @@ func TestPasswordFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("s3cret\n"), 0o600); err != nil {
 		t.Fatalf("write secret: %v", err)
 	}
-	p, err := New(decodeConfig(t, "broker: tcp://localhost:1883\npassword_file: "+path+"\n"))
+	p, err := New(decodeConfig(t, "broker: tcp://localhost:1883\nclient_id: x\npassword_file: "+path+"\n"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -131,7 +160,9 @@ func TestWireEventGoldenJSON(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	want := `{"schema_version":1,"change_id":42,"change_type":"updated","event":{` +
+	want := `{"schema_version":1,"change_id":42,"change_type":"updated",` +
+		`"event_key":"meteoalarm:2.49.0.1",` +
+		`"event":{` +
 		`"source":"meteoalarm","source_id":"2.49.0.1","category":"met","event":"Rain",` +
 		`"severity":"orange","urgency":"","certainty":"","headline":"Heavy rain",` +
 		`"description":"","instruction":"","effective_at":"2026-01-01T00:00:00Z",` +

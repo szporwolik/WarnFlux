@@ -2,9 +2,11 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
@@ -12,6 +14,11 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
+
+// errShuttingDown is returned by Emit once the manager has started its
+// shutdown sequence: the event was not accepted and the source may retry or
+// drop it, but Emit's contract (nil = accepted) is preserved.
+var errShuttingDown = errors.New("warnflux is shutting down; event not accepted")
 
 const (
 	defaultEventQueueSize = 256
@@ -56,12 +63,17 @@ type Manager struct {
 	sources   []*sourceSupervisor
 	outputs   []*outputWorker
 	startedAt time.Time
+
+	// accepting is false once shutdown begins: Emit then rejects events
+	// instead of accepting ownership it can no longer honor.
+	accepting atomic.Bool
 }
 
 // NewManager builds the plugin instances from the configuration. Unknown
-// types, duplicate IDs and malformed plugin configs are startup errors —
-// detected even for disabled instances, so typos cannot stay hidden. No
-// goroutines are started here.
+// plugin types and duplicate IDs are startup errors, detected even for
+// disabled instances. Plugin-specific configuration is decoded and
+// validated only when the plugin is enabled (factories may read secret
+// files or initialize local resources). No goroutines are started here.
 func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.Output, ingestFn IngestFunc, expireFn ExpireFunc, store storage.EventStore, opts ManagerOptions, logger *slog.Logger) (*Manager, error) {
 	m := &Manager{
 		logger:     logger,
@@ -127,6 +139,7 @@ func (m *Manager) Statuses() []PluginStatus { return m.statuses.Snapshot() }
 // Run must be called exactly once per Manager.
 func (m *Manager) Run(ctx context.Context) {
 	m.startedAt = time.Now()
+	m.accepting.Store(true)
 
 	ingestCtl, cancelIngest := context.WithCancel(context.Background())
 	procCtx, cancelProc := context.WithCancel(context.Background())
@@ -168,6 +181,11 @@ func (m *Manager) Run(ctx context.Context) {
 	<-ctx.Done()
 	m.logger.Info("plugin manager stopping", "sources", len(m.sources), "outputs", len(m.outputs))
 
+	// Stop accepting new events BEFORE stopping the sources: an Emit that
+	// races with shutdown returns errShuttingDown instead of silently
+	// taking ownership of an event the drain may no longer process.
+	m.accepting.Store(false)
+
 	// 1. Stop the sources so no new events enter the queue. Each source is
 	// already bounded by its own shutdown timeout inside the supervisor.
 	m.stopGroup(&wgSources, "sources", groupShutdownGrace)
@@ -197,8 +215,21 @@ func (f EmitterFunc) Emit(ctx context.Context, event core.HazardEvent) error { r
 // emit deep-copies the event (ownership transfers to the core) and queues
 // it. The queue is bounded: when full, the emitter applies backpressure
 // with a bounded wait instead of silently dropping hazard events.
+//
+// A nil return means the event was accepted. During shutdown this is
+// guaranteed not to happen: a cancelled context or the accepting flag makes
+// Emit fail instead, so a source can never hand over an event that the
+// ingest worker might no longer process.
 func (m *Manager) emit(ctx context.Context, event core.HazardEvent) error {
 	event = event.Clone()
+	if !m.accepting.Load() {
+		return errShuttingDown
+	}
+	// Check cancellation BEFORE selecting on the queue: when ctx is already
+	// done, sending must never win over cancellation.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case m.eventQueue <- event:
 		return nil

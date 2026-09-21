@@ -70,6 +70,67 @@ func (panicSource) Run(context.Context, Emitter) error {
 	panic("boom")
 }
 
+// countingFailingSource fails immediately and counts invocations.
+type countingFailingSource struct {
+	mu          sync.Mutex
+	invocations int
+}
+
+func (c *countingFailingSource) Name() string { return "counting" }
+
+func (c *countingFailingSource) Run(context.Context, Emitter) error {
+	c.mu.Lock()
+	c.invocations++
+	c.mu.Unlock()
+	return errors.New("fail")
+}
+
+func (c *countingFailingSource) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.invocations
+}
+
+// TestSupervisorNoInvocationAfterCancelDuringBackoff is the HIGH
+// regression test: once the root context is cancelled during the restart
+// backoff, SourcePlugin.Run must never be invoked again.
+func TestSupervisorNoInvocationAfterCancelDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	src := &countingFailingSource{}
+	tracker := newStatusTracker("src", "test", KindSource)
+	s := newSourceSupervisor(testSourceCfg("src", true), src, noopEmitter(), testLogger(), tracker)
+	s.backoffBase = time.Millisecond
+
+	entered := make(chan struct{})
+	var once sync.Once
+	release := make(chan struct{})
+	s.waitBackoffFn = func(_ context.Context, _ time.Duration) bool {
+		once.Do(func() { close(entered) })
+		<-release // block inside the backoff until the test proceeds
+		return false
+	}
+
+	go s.run(ctx)
+
+	<-entered // the supervisor is now waiting in backoff
+	cancel()
+	close(release)
+
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+
+	if got := src.count(); got != 1 {
+		t.Errorf("source invoked %d times, want exactly 1 (no restart after cancel)", got)
+	}
+	if st := tracker.snapshot(); st.State != StateStopped {
+		t.Errorf("state = %v, want stopped", st.State)
+	}
+}
+
 // gateSource fails the first fails runs, then blocks until gate is closed.
 type gateSource struct {
 	fails int

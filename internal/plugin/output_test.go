@@ -515,3 +515,61 @@ func TestOutputWorkerStatusFailureDoesNotAffectDelivery(t *testing.T) {
 		t.Errorf("status failures affected delivery health: %+v", st)
 	}
 }
+
+// gateStatusOut blocks PublishStatus until its gate is closed, ignoring
+// ctx entirely — a context-contract violation.
+type gateStatusOut struct {
+	statusOut
+	gate        chan struct{}
+	invocations int
+}
+
+func (o *gateStatusOut) PublishStatus(_ context.Context, _ Status) error {
+	o.mu.Lock()
+	o.invocations++
+	o.mu.Unlock()
+	<-o.gate
+	return nil
+}
+
+func (o *gateStatusOut) statusInvocations() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.invocations
+}
+
+// TestOutputWorkerStatusHangDisablesStatus pins the HIGH requirement: a
+// StatusPublisher that ignores its timeout has status publishing disabled
+// for the instance lifetime, hazard delivery continues, exactly one stuck
+// status invocation exists and no new one is ever started.
+func TestOutputWorkerStatusHangDisablesStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := newMemStore()
+	out := &gateStatusOut{gate: make(chan struct{})}
+	tracker := newStatusTracker("out", "test", KindOutput)
+	w := newOutputWorker(testOutputCfg("out", 50*time.Millisecond, 3), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
+	w.health = func() Status { return Status{Version: "test"} }
+	go w.run(ctx)
+
+	// The stuck callback violates its timeout → status publishing disabled.
+	waitFor(t, 2*time.Second, func() bool { return !w.statusEnabled() })
+
+	// Hazard delivery must continue: the change is delivered and acked.
+	store.addChange(core.ChangeNew, sampleChange().Event)
+	waitFor(t, 2*time.Second, func() bool { return store.cursor("out") == 1 })
+
+	// Exactly one stuck status invocation; no repeated goroutine leak and
+	// no delivery suspension.
+	if got := out.statusInvocations(); got != 1 {
+		t.Errorf("status invocations = %d, want exactly 1", got)
+	}
+	if st := tracker.snapshot(); st.State != StateRunning {
+		t.Errorf("state = %v, want running (status hang must not suspend delivery)", st.State)
+	}
+
+	// Release the abandoned goroutine for a clean test exit.
+	close(out.gate)
+}

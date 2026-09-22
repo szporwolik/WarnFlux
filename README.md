@@ -563,9 +563,12 @@ The publisher and a receiver connecting to the same broker MUST use
 - **ActionPlugin** — explicitly invoked by the group routing rule engine
   through `Manager.Submit`. Examples: SMS, email, Discord, CAT.
   Built-in actions: `logger` (proof of concept) and `smtp` (one email per
-  routed dispatch event; STARTTLS + AUTH PLAIN supported, password via
-  `password` or a `password_file` secret). ActionPlugins never
-  automatically receive MQTT events.
+  routed dispatch event; STARTTLS or implicit TLS/SMTPS, AUTH PLAIN,
+  password via `password` or a `password_file` secret). The matched
+  group's member emails are delivered as hidden Bcc copies (one SMTP
+  transaction per unique address), paced by a per-action rate limit
+  (`rate_limit_per_minute`, evenly spaced, default 30). ActionPlugins
+  never automatically receive MQTT events.
 
 ### Group routing rule engine
 

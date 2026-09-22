@@ -17,6 +17,7 @@ import (
 type fakeStore struct {
 	mu    sync.Mutex
 	rules []storage.GroupRouting
+	bcc   map[int64][]string
 	err   error
 }
 
@@ -24,6 +25,12 @@ func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]storage.GroupRouting(nil), f.rules...), f.err
+}
+
+func (f *fakeStore) GroupRecipientEmails(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.bcc[groupID]...), f.err
 }
 
 // setMinSeverity mutates one cached rule under the store lock.
@@ -39,9 +46,10 @@ func (f *fakeStore) setMinSeverity(groupID int64, severity string) {
 }
 
 type fakeActions struct {
-	mu  sync.Mutex
-	got map[string][]string // actionID -> event keys
-	err error
+	mu   sync.Mutex
+	got  map[string][]string // actionID -> event keys
+	bccs [][]string          // one Bcc list per submission, in order
+	err  error
 }
 
 func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
@@ -51,6 +59,7 @@ func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
 		f.got = map[string][]string{}
 	}
 	f.got[id] = append(f.got[id], req.Event.Hazard.Key)
+	f.bccs = append(f.bccs, append([]string(nil), req.Bcc...))
 	return f.err
 }
 
@@ -212,6 +221,44 @@ func TestEngineUnrankedSeverityMatchesOnlyPermissive(t *testing.T) {
 		defer acts.mu.Unlock()
 		return len(acts.got["log"]) == 1
 	}, "permissive action fired once")
+}
+
+func TestEnginePassesGroupRecipientsAsBcc(t *testing.T) {
+	store := &fakeStore{
+		rules: []storage.GroupRouting{
+			{GroupID: 1, Name: "spok", MinSeverity: "unknown", Actions: []string{"smtp"}},
+			{GroupID: 2, Name: "rsp", MinSeverity: "unknown", Actions: []string{"smtp"}},
+		},
+		bcc: map[int64][]string{
+			1: {"a@example.com", "b@example.com"},
+			2: {},
+		},
+	}
+	acts := &fakeActions{}
+	_, feed := startEngine(t, store, acts, &fakeOutputs{})
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["smtp"]) == 2
+	}, "both groups' actions fired")
+
+	acts.mu.Lock()
+	bccs := make([][]string, len(acts.bccs))
+	for i := range acts.bccs {
+		bccs[i] = append([]string(nil), acts.bccs[i]...)
+	}
+	acts.mu.Unlock()
+
+	var memberEmails []string
+	for _, b := range bccs {
+		memberEmails = append(memberEmails, b...)
+	}
+	if len(memberEmails) != 2 || memberEmails[0] != "a@example.com" || memberEmails[1] != "b@example.com" {
+		t.Errorf("Bcc across submissions = %v, want [a@example.com b@example.com]", memberEmails)
+	}
 }
 
 func TestEngineRuleReload(t *testing.T) {

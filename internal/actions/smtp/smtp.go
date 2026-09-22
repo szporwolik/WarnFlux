@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"mime"
@@ -23,6 +24,7 @@ import (
 	"net/smtp"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -76,14 +78,67 @@ type Config struct {
 	CAFile string `yaml:"ca_file"`
 	// SubjectPrefix is prepended to every subject line.
 	SubjectPrefix string `yaml:"subject_prefix"`
+	// RateLimitPerMinute bounds how many emails this action sends per
+	// minute (evenly spaced). 0 falls back to the default (30); a
+	// negative value disables the limit entirely.
+	RateLimitPerMinute int `yaml:"rate_limit_per_minute"`
 }
+
+// defaultRateLimitPerMinute protects against provider blocking when the
+// configuration omits the limit.
+const defaultRateLimitPerMinute = 30
 
 type emailAction struct {
 	id       string
 	cfg      Config
 	password string
 	roots    *x509.CertPool
+	limiter  *rateLimiter
 	logger   *slog.Logger
+}
+
+// rateLimiter spaces sends evenly: at most limit emails per minute, one
+// slot at a time. It is deliberately primitive — a token bucket or a
+// sliding window is not needed for a single sequential worker.
+type rateLimiter struct {
+	mu       sync.Mutex
+	next     time.Time
+	interval time.Duration
+}
+
+func newRateLimiter(perMinute int) *rateLimiter {
+	if perMinute <= 0 {
+		return nil
+	}
+	return &rateLimiter{interval: time.Minute / time.Duration(perMinute)}
+}
+
+// wait claims the next send slot. It blocks until the slot's time has
+// arrived or ctx is cancelled; a cancelled ctx returns ctx.Err() so the
+// action worker counts a failure instead of silently sending anyway.
+func (l *rateLimiter) wait(ctx context.Context) error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	now := time.Now()
+	start := l.next
+	if start.Before(now) {
+		start = now
+	}
+	l.next = start.Add(l.interval)
+	l.mu.Unlock()
+
+	delay := time.Until(start)
+	if delay <= 0 {
+		return nil
+	}
+	select {
+	case <-time.After(delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // New builds an SMTP action instance from its raw YAML configuration.
@@ -159,17 +214,30 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		p.roots = roots
 	}
 
+	if cfg.RateLimitPerMinute == 0 {
+		cfg.RateLimitPerMinute = defaultRateLimitPerMinute
+	}
+	p.limiter = newRateLimiter(cfg.RateLimitPerMinute)
+
 	return p, nil
 }
 
 func (p *emailAction) Name() string { return p.id }
 
-// Execute sends one email for the routed event. A fresh SMTP connection is
-// used per call: the action holds no persistent network resources, so
-// there is no reconnect state to corrupt. The connection is closed by the
-// context's AfterFunc when ctx is cancelled before the deadline, which
-// unblocks any in-flight protocol operation.
+// Execute sends one email for the routed event, one SMTP transaction per
+// unique recipient (config.to plus the matched group's member addresses
+// carried in request.Bcc). A fresh SMTP connection is used per call: the
+// action holds no persistent network resources, so there is no reconnect
+// state to corrupt. The connection is closed by the context's AfterFunc
+// when ctx is cancelled before the deadline, which unblocks any in-flight
+// protocol operation. Each email claims a rate-limit slot before it is
+// sent, so bursts drain as a paced queue instead of hammering the server.
 func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) error {
+	recipients := dedupeRecipients(p.cfg.To, req.Bcc)
+	if len(recipients) == 0 {
+		return fmt.Errorf("smtp: no recipients (config.to and request.bcc are empty)")
+	}
+
 	deadline := time.Now().Add(defaultDeadline)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -230,29 +298,82 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 		}
 	}
 
+	msg := buildMessage(p.cfg, req, time.Now())
+	var errs []error
+	for _, rcpt := range recipients {
+		// One rate slot per email; a cancelled wait fails the remaining
+		// sends instead of bypassing the limit.
+		if err := p.limiter.wait(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("rate limit: %w", err))
+			break
+		}
+		if err := p.sendOne(client, rcpt, msg); err != nil {
+			errs = append(errs, err)
+			// A transport-level failure leaves the connection unusable;
+			// give up on the rest of the batch.
+			if !isProtocolError(err) {
+				break
+			}
+		}
+	}
+	if err := client.Quit(); err != nil && len(errs) == 0 {
+		errs = append(errs, fmt.Errorf("smtp: quit: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+// sendOne runs one SMTP transaction (MAIL/RCPT/DATA) for a single
+// envelope recipient on the shared connection.
+func (p *emailAction) sendOne(client *smtp.Client, rcpt string, msg []byte) error {
 	if err := client.Mail(p.cfg.From); err != nil {
 		return fmt.Errorf("smtp: mail from: %w", err)
 	}
-	for _, rcpt := range p.cfg.To {
-		if err := client.Rcpt(rcpt); err != nil {
-			return fmt.Errorf("smtp: rcpt %q: %w", rcpt, err)
-		}
+	if err := client.Rcpt(rcpt); err != nil {
+		return fmt.Errorf("smtp: rcpt %q: %w", rcpt, err)
 	}
 	w, err := client.Data()
 	if err != nil {
 		return fmt.Errorf("smtp: data: %w", err)
 	}
-	msg := buildMessage(p.cfg, req, time.Now())
 	if _, err := w.Write(msg); err != nil {
 		return fmt.Errorf("smtp: write message: %w", err)
 	}
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("smtp: end message: %w", err)
 	}
-	if err := client.Quit(); err != nil {
-		return fmt.Errorf("smtp: quit: %w", err)
-	}
 	return nil
+}
+
+// isProtocolError reports whether the error happened after the server
+// accepted the transaction (rejected RCPT, rejected DATA...), i.e. the
+// connection is still usable for the next recipient.
+func isProtocolError(err error) bool {
+	msg := err.Error()
+	return strings.HasPrefix(msg, "smtp: rcpt ") ||
+		strings.HasPrefix(msg, "smtp: data") ||
+		strings.HasPrefix(msg, "smtp: end message")
+}
+
+// dedupeRecipients merges the configured To list with the request Bcc,
+// preserving order and dropping duplicates (case-insensitive).
+func dedupeRecipients(to, bcc []string) []string {
+	seen := make(map[string]struct{}, len(to)+len(bcc))
+	out := make([]string, 0, len(to)+len(bcc))
+	for _, list := range [][]string{to, bcc} {
+		for _, r := range list {
+			r = strings.TrimSpace(r)
+			if r == "" {
+				continue
+			}
+			key := strings.ToLower(r)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // Close releases plugin-owned resources. This action is stateless between

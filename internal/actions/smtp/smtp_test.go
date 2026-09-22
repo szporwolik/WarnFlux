@@ -35,6 +35,7 @@ type received struct {
 	authUser string
 	authPass string
 	data     string
+	at       time.Time
 }
 
 // smtpServer is a minimal SMTP server good enough for the net/smtp client:
@@ -202,6 +203,7 @@ func (s *smtpServer) serve(conn net.Conn) {
 			if cur != nil {
 				cur.data = body.String()
 				cur.authUser, cur.authPass = authUser, authPass
+				cur.at = time.Now()
 				s.mu.Lock()
 				s.received = append(s.received, *cur)
 				s.mu.Unlock()
@@ -321,6 +323,7 @@ to: [ops@example.com, duty@example.com]
 username: warnflux
 password: secret-pw
 starttls: false
+rate_limit_per_minute: -1
 subject_prefix: "[SPOK]"
 `, port)))
 	if err != nil {
@@ -336,16 +339,20 @@ subject_prefix: "[SPOK]"
 		t.Fatalf("Close: %v", err)
 	}
 
+	// One SMTP transaction per recipient.
 	got := srv.snapshot()
-	if len(got) != 1 {
-		t.Fatalf("received %d mails, want 1", len(got))
+	if len(got) != 2 {
+		t.Fatalf("received %d mails, want 2 (one per recipient)", len(got))
 	}
 	m := got[0]
 	if m.from != "warnflux@example.com" {
 		t.Errorf("from = %q", m.from)
 	}
-	if len(m.rcpts) != 2 || m.rcpts[0] != "ops@example.com" || m.rcpts[1] != "duty@example.com" {
-		t.Errorf("rcpts = %v", m.rcpts)
+	if len(m.rcpts) != 1 || m.rcpts[0] != "ops@example.com" {
+		t.Errorf("first rcpts = %v, want [ops@example.com]", m.rcpts)
+	}
+	if len(got[1].rcpts) != 1 || got[1].rcpts[0] != "duty@example.com" {
+		t.Errorf("second rcpts = %v, want [duty@example.com]", got[1].rcpts)
 	}
 	if m.authUser != "warnflux" || m.authPass != "secret-pw" {
 		t.Errorf("auth = %q/%q", m.authUser, m.authPass)
@@ -369,11 +376,11 @@ subject_prefix: "[SPOK]"
 		t.Fatalf("Execute non-ASCII: %v", err)
 	}
 	mails := srv.snapshot()
-	if len(mails) != 2 {
-		t.Fatalf("received %d mails, want 2", len(mails))
+	if len(mails) != 4 {
+		t.Fatalf("received %d mails after two events, want 4 (2 recipients each)", len(mails))
 	}
-	if !strings.Contains(mails[1].data, "Subject: =?utf-8?q?") || !strings.Contains(mails[1].data, "=C5=9B") {
-		t.Errorf("non-ASCII subject not q-encoded:\n%s", mails[1].data)
+	if !strings.Contains(mails[3].data, "Subject: =?utf-8?q?") || !strings.Contains(mails[3].data, "=C5=9B") {
+		t.Errorf("non-ASCII subject not q-encoded:\n%s", mails[3].data)
 	}
 }
 
@@ -516,5 +523,135 @@ starttls: false
 	got := srv.snapshot()
 	if len(got) != 1 || got[0].authPass != "file-secret" {
 		t.Fatalf("auth pass = %+v, want file-secret", got)
+	}
+}
+
+func TestBccRecipients(t *testing.T) {
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [visible@example.com]
+starttls: false
+rate_limit_per_minute: -1
+`, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := hazardReq()
+	req.Bcc = []string{"member1@example.com", "member2@example.com", "visible@example.com"}
+	if err := p.Execute(context.Background(), req); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got := srv.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("received %d mails, want 3 (visible + 2 members, deduped)", len(got))
+	}
+	wantEnvelope := []string{"visible@example.com", "member1@example.com", "member2@example.com"}
+	for i, m := range got {
+		if len(m.rcpts) != 1 || m.rcpts[0] != wantEnvelope[i] {
+			t.Errorf("mail %d envelope = %v, want [%s]", i, m.rcpts, wantEnvelope[i])
+		}
+		if !strings.Contains(m.data, "To: visible@example.com") {
+			t.Errorf("mail %d missing visible To header:\n%s", i, m.data)
+		}
+		if strings.Contains(m.data, "Bcc:") || strings.Contains(m.data, "member1@example.com") && !strings.Contains(m.data, "To:") {
+			t.Errorf("mail %d leaks Bcc addresses:\n%s", i, m.data)
+		}
+	}
+}
+
+func TestBccEmptyRecipientsIsAnError(t *testing.T) {
+	// An empty config.to list is rejected at construction; the runtime
+	// guard (config.to + request.bcc both empty) can therefore only fire
+	// on internal misuse and is exercised via validation here.
+	if _, err := smtp.New(cfgNode(t, "host: 127.0.0.1\nfrom: a@b.c\nto: []\n")); err == nil {
+		t.Fatal("factory must reject an empty recipient list")
+	}
+}
+
+func TestRateLimiterPacesSends(t *testing.T) {
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	// 600/min -> ~100ms between emails; the two config.to recipients are
+	// sent as two transactions and must be spaced accordingly.
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: a@b.c
+to: [x@y.z, y@y.z]
+starttls: false
+rate_limit_per_minute: 600
+`, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	if err := p.Execute(context.Background(), hazardReq()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 90*time.Millisecond {
+		t.Errorf("two paced sends took %v, want >= ~100ms total", elapsed)
+	}
+
+	got := srv.snapshot()
+	if len(got) != 2 {
+		t.Fatalf("received %d mails, want 2", len(got))
+	}
+	if gap := got[1].at.Sub(got[0].at); gap < 80*time.Millisecond {
+		t.Errorf("send spacing = %v, want >= ~100ms", gap)
+	}
+}
+
+func TestRateLimitDisabledByNegative(t *testing.T) {
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: a@b.c
+to: [x@y.z, y@y.z]
+starttls: false
+rate_limit_per_minute: -1
+`, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Execute(context.Background(), hazardReq()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := srv.snapshot(); len(got) != 2 {
+		t.Fatalf("received %d mails, want 2", len(got))
+	}
+}
+
+func TestRateLimitDisabledByDefaultConfigZero(t *testing.T) {
+	// 0 in the config falls back to the protective default (30/min), so
+	// a misconfigured instance can never flood a provider.
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: a@b.c
+to: [x@y.z]
+starttls: false
+rate_limit_per_minute: 0
+`, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Execute(context.Background(), hazardReq()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := srv.snapshot(); len(got) != 1 {
+		t.Fatalf("received %d mails, want 1", len(got))
 	}
 }

@@ -31,6 +31,10 @@ type ActionRequest struct {
 	CreatedAt time.Time
 	// Event is the canonical dispatch event that triggered the action.
 	Event dispatch.Event
+	// Bcc carries the matched group's member addresses (e.g. emails). It
+	// is populated by the rule engine when the matched group has members
+	// with contact data; actions treat it as read-only.
+	Bcc []string
 }
 
 // Plugin is the minimal contract every action implements.

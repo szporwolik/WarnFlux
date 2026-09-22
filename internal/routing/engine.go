@@ -43,6 +43,9 @@ type RuleOutputRouter interface {
 // the SQLite directory store.
 type RuleStore interface {
 	ListGroupRoutings() ([]storage.GroupRouting, error)
+	// GroupRecipientEmails returns the group members' contact addresses
+	// (empty list when the group has none).
+	GroupRecipientEmails(groupID int64) ([]string, error)
 }
 
 const (
@@ -66,6 +69,10 @@ type Engine struct {
 
 	mu    sync.RWMutex
 	rules []storage.GroupRouting
+	// bcc caches each group's member contact addresses (groupID -> emails),
+	// loaded alongside the rules; only groups with assigned actions are
+	// queried.
+	bcc map[int64][]string
 
 	// Stats counters (atomic).
 	eventsSeen     atomic.Int64
@@ -118,8 +125,22 @@ func (e *Engine) refresh() {
 		e.logger.Warn("routing: rule reload failed", "error", err)
 		return
 	}
+	bcc := make(map[int64][]string)
+	for _, rule := range rules {
+		if len(rule.Actions) == 0 {
+			continue
+		}
+		emails, err := e.store.GroupRecipientEmails(rule.GroupID)
+		if err != nil {
+			e.logger.Warn("routing: recipient load failed",
+				"group", rule.Name, "error", err)
+			continue
+		}
+		bcc[rule.GroupID] = emails
+	}
 	e.mu.Lock()
 	e.rules = rules
+	e.bcc = bcc
 	e.mu.Unlock()
 }
 
@@ -140,6 +161,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 
 	e.mu.RLock()
 	rules := e.rules
+	bcc := e.bcc
 	e.mu.RUnlock()
 
 	for _, rule := range rules {
@@ -160,6 +182,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 				ID:        fmt.Sprintf("%s/%s", ev.Hazard.Key, actionID),
 				CreatedAt: time.Now(),
 				Event:     ev,
+				Bcc:       append([]string(nil), bcc[rule.GroupID]...),
 			}
 			if err := e.actions.Submit(actionID, req); err != nil {
 				e.actionsFailed.Add(1)

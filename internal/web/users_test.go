@@ -365,6 +365,28 @@ func (f *fakeUsers) ListGroupRoutings() ([]storage.GroupRouting, error) {
 	return out, nil
 }
 
+func (f *fakeUsers) GroupRecipientEmails(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	emails := map[string]bool{}
+	for userID, set := range f.membership {
+		if !set[groupID] {
+			continue
+		}
+		for _, u := range f.rows {
+			if u.ID == userID && strings.TrimSpace(u.Email) != "" {
+				emails[strings.ToLower(strings.TrimSpace(u.Email))] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(emails))
+	for e := range emails {
+		out = append(out, e)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func userBefore(a, b storage.User) bool {
 	if a.IsAdmin != b.IsAdmin {
 		return a.IsAdmin

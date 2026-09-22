@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -132,6 +133,37 @@ func (s *Store) ListGroupRoutings() ([]storage.GroupRouting, error) {
 		out[i].Outputs = dedupeIDs(out[i].Outputs)
 	}
 	return out, nil
+}
+
+// GroupRecipientEmails returns the distinct (case-insensitive), non-empty
+// email addresses of the group's members, sorted. Missing groups yield an
+// empty list (the membership table simply has no rows for them).
+func (s *Store) GroupRecipientEmails(groupID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT u.email
+		FROM users u
+		JOIN user_groups ug ON ug.user_id = u.id
+		WHERE ug.group_id = ? AND u.email <> ''
+		ORDER BY u.email COLLATE NOCASE ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d recipients: %w", groupID, err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	var out []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, fmt.Errorf("scan group %d recipient: %w", groupID, err)
+		}
+		key := strings.ToLower(email)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, email)
+	}
+	return out, rows.Err()
 }
 
 // groupActionIDs reads the assigned action IDs for a group, sorted.

@@ -257,7 +257,7 @@ actions:
   #
   #   runtime:
   #     queue_size: 128
-  #     call_timeout: 30s
+  #     call_timeout: 5m
   #     shutdown_timeout: 10s
   #
   #   config:
@@ -272,3 +272,7 @@ actions:
   #     starttls: true
   #     ca_file: ""
   #     subject_prefix: "[WarnFlux]"
+  #     # Emails per minute, evenly spaced (0 = default 30, negative =
+  #     # unlimited). Group members receive Bcc copies: one SMTP
+  #     # transaction per unique address.
+  #     rate_limit_per_minute: 20

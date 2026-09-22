@@ -104,6 +104,10 @@ type GroupStore interface {
 	// ListGroupRoutings returns the routing of every group (the rule
 	// engine's authoritative source), ordered by group name.
 	ListGroupRoutings() ([]GroupRouting, error)
+	// GroupRecipientEmails returns the distinct non-empty email addresses
+	// of the group's members, sorted. The rule engine hands them to
+	// contact actions (e.g. smtp Bcc).
+	GroupRecipientEmails(groupID int64) ([]string, error)
 }
 
 // DirectoryStore combines the user and group administration stores; the

@@ -145,3 +145,49 @@ func TestListGroupRoutings(t *testing.T) {
 		t.Fatalf("routings after delete = %+v, want only bravo", all)
 	}
 }
+
+func TestGroupRecipientEmails(t *testing.T) {
+	store := newRoutingStore(t)
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	// An empty group has no recipients (and a missing group is equally
+	// empty, never an error).
+	got, err := store.GroupRecipientEmails(g.ID)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty group recipients = %v, %v", got, err)
+	}
+	got, err = store.GroupRecipientEmails(999)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("missing group recipients = %v, %v", got, err)
+	}
+
+	// Four users: one without email, one duplicate address (different
+	// case), all in the group.
+	users := []struct{ name, email string }{
+		{"ada", "ada@example.com"},
+		{"bea", ""},
+		{"cya", "cya@example.com"},
+		{"dea", "ADA@example.com"},
+	}
+	for _, u := range users {
+		u2, err := store.CreateUser(u.name, "", u.email, "")
+		if err != nil {
+			t.Fatalf("CreateUser %s: %v", u.name, err)
+		}
+		if err := store.SetUserGroups(u2.ID, []int64{g.ID}); err != nil {
+			t.Fatalf("SetUserGroups %s: %v", u.name, err)
+		}
+	}
+
+	got, err = store.GroupRecipientEmails(g.ID)
+	if err != nil {
+		t.Fatalf("recipients: %v", err)
+	}
+	// Sorted, distinct, non-empty: ada + cya only.
+	if len(got) != 2 || got[0] != "ada@example.com" || got[1] != "cya@example.com" {
+		t.Fatalf("recipients = %v, want [ada@example.com cya@example.com]", got)
+	}
+}

@@ -191,8 +191,13 @@ type ReceiverSubscription struct {
 type Web struct {
 	Enabled bool
 	Listen  string
-	Title   string
-	Auth    WebAuth
+	// Title is the application name: browser title and footer.
+	Title string
+	// Name is the human-readable system name shown next to the logo on
+	// the login page and in the sidebar header. Empty falls back to the
+	// title.
+	Name string
+	Auth WebAuth
 }
 
 // WebAuth holds the single admin account for the web UI. Password and
@@ -272,6 +277,7 @@ type fileWeb struct {
 	Enabled bool         `yaml:"enabled"`
 	Listen  string       `yaml:"listen"`
 	Title   string       `yaml:"title"`
+	Name    string       `yaml:"name"`
 	Auth    *fileWebAuth `yaml:"auth"`
 }
 
@@ -546,6 +552,7 @@ func (f fileConfig) toConfig() Config {
 		Enabled: f.Web != nil && f.Web.Enabled,
 		Listen:  defaultWebListen,
 		Title:   defaultWebTitle,
+		Name:    defaultWebTitle,
 	}
 	if f.Web != nil {
 		if l := strings.TrimSpace(f.Web.Listen); l != "" {
@@ -553,6 +560,11 @@ func (f fileConfig) toConfig() Config {
 		}
 		if t := strings.TrimSpace(f.Web.Title); t != "" {
 			cfg.Web.Title = t
+		}
+		if n := strings.TrimSpace(f.Web.Name); n != "" {
+			cfg.Web.Name = n
+		} else {
+			cfg.Web.Name = cfg.Web.Title
 		}
 		if f.Web.Auth != nil {
 			cfg.Web.Auth = WebAuth{

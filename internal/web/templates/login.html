@@ -11,7 +11,7 @@
 <body class="login-page">
   <main class="login-card">
     <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
-    <h1>{{.AppTitle}}</h1>
+    <h1 class="login-name">{{.Name}}</h1>
     <p class="login-tagline">Alerts in. Action out.</p>
     <p class="muted" style="text-align:center">Admin sign in</p>
     {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}

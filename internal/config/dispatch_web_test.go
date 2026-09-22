@@ -43,6 +43,7 @@ web:
   enabled: true
   listen: ":8080"
   title: "WarnFlux"
+  name: "WarnFlux Ops"
   auth:
     username: admin
     password: change-me
@@ -90,7 +91,7 @@ func TestLoadDispatchWebActions(t *testing.T) {
 	if remote.Enabled || remote.WF.Enabled {
 		t.Errorf("remote receiver unexpectedly enabled: %+v", remote)
 	}
-	if !cfg.Web.Enabled || cfg.Web.Listen != ":8080" || cfg.Web.Title != "WarnFlux" {
+	if !cfg.Web.Enabled || cfg.Web.Listen != ":8080" || cfg.Web.Title != "WarnFlux" || cfg.Web.Name != "WarnFlux Ops" {
 		t.Errorf("web = %+v", cfg.Web)
 	}
 	if cfg.Web.Auth.Username != "admin" || cfg.Web.Auth.Password != "change-me" {

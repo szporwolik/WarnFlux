@@ -407,6 +407,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if !strings.Contains(loginHTML, "WarnFlux Test · test-version (") {
 		t.Errorf("login footer missing version line: %s", loginHTML)
 	}
+	if !strings.Contains(loginHTML, `<h1 class="login-name">WarnFlux Test</h1>`) {
+		t.Errorf("login page missing system name: %s", loginHTML)
+	}
 	if !strings.Contains(loginHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
 		t.Errorf("login footer missing commit link: %s", loginHTML)
 	}
@@ -424,6 +427,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	}
 	if !strings.Contains(dashHTML, "github.com/szporwolik/WarnFlux") {
 		t.Errorf("dashboard footer missing repo link: %s", dashHTML)
+	}
+	if !strings.Contains(dashHTML, `<span class="brand-name">WarnFlux Test</span>`) {
+		t.Errorf("dashboard sidebar missing system name: %s", dashHTML)
 	}
 }
 

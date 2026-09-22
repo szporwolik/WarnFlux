@@ -220,7 +220,12 @@ web:
   enabled: true
   listen: ":8080"
 
+  # Application name: browser title and footer.
   title: "WarnFlux"
+
+  # System name shown next to the logo on the login page and in the
+  # sidebar header. Defaults to the title.
+  name: "WarnFlux"
 
   auth:
     username: admin

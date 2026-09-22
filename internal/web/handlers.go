@@ -153,6 +153,7 @@ type actionsView struct {
 
 type pageView struct {
 	AppTitle string
+	Name     string
 	RepoURL  string
 	Status   statusView
 	MQTT     mqttView
@@ -378,6 +379,16 @@ func (s *Server) buildActionsView() actionsView {
 
 // ---- handlers ------------------------------------------------------------
 
+// displayName is the system name shown next to the logo; an empty name
+// falls back to the title (the config loader applies the same fallback;
+// this keeps directly constructed configs safe too).
+func (s *Server) displayName() string {
+	if s.cfg.Name != "" {
+		return s.cfg.Name
+	}
+	return s.cfg.Title
+}
+
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	// Already authenticated: go straight to the dashboard.
 	if s.sessions.currentSession(r) != nil {
@@ -393,6 +404,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "login", map[string]any{
 		"AppTitle": s.cfg.Title,
+		"Name":     s.displayName(),
 		"Version":  s.version,
 		"Commit":   s.commit,
 		"RepoURL":  repoURL,
@@ -424,6 +436,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		s.render(w, "login", map[string]any{
 			"AppTitle": s.cfg.Title,
+			"Name":     s.displayName(),
 			"Version":  s.version,
 			"Commit":   s.commit,
 			"RepoURL":  repoURL,
@@ -471,6 +484,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "page", pageView{
 		AppTitle: s.cfg.Title,
+		Name:     s.displayName(),
 		RepoURL:  repoURL,
 		Status:   s.buildStatusView(),
 		MQTT:     s.buildMQTTView(snap),

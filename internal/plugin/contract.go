@@ -32,6 +32,15 @@ import (
 // Emit returns an error instead of accepting ownership it cannot honor.
 type Emitter interface {
 	Emit(ctx context.Context, event core.HazardEvent) error
+
+	// EmitInformation forwards a non-hazard informational message
+	// (latest-state data such as a weather snapshot) to
+	// information-capable outputs. It is auxiliary best-effort delivery:
+	// unlike Emit there is no durable journal, no cursor and no
+	// at-least-once guarantee. A non-nil error means the message was not
+	// published (or no information-capable output exists); the source may
+	// simply retry on its next poll.
+	EmitInformation(ctx context.Context, message core.InformationMessage) error
 }
 
 // SourcePlugin obtains hazard information and emits normalized HazardEvent
@@ -53,6 +62,16 @@ type SourceFactory func(config *yaml.Node) (SourcePlugin, error)
 type OutputPlugin interface {
 	Name() string
 	Handle(ctx context.Context, change core.EventChange) error
+}
+
+// InformationPublisher is an OPTIONAL output capability: outputs that
+// implement it additionally receive non-hazard informational messages from
+// sources. Outputs that do not implement it simply never see information.
+// Information publishing must never affect hazard delivery: failures are
+// logged, not counted toward the hazard failure threshold, and must not
+// suspend or advance anything hazard-related.
+type InformationPublisher interface {
+	PublishInformation(ctx context.Context, message core.InformationMessage) error
 }
 
 // OutputFactory builds an OutputPlugin from its raw plugin-specific

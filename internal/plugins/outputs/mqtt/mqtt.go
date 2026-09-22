@@ -231,6 +231,42 @@ func (o *Output) PublishStatus(ctx context.Context, status plugin.Status) error 
 	return nil
 }
 
+// informationTopic maps an information message to its retained MQTT topic:
+// <topic_prefix>/info/<source>/<key>/<kind>. The source/key/kind segments
+// are validated safe slugs, so the topic can never collide with MQTT
+// wildcards or the hazard /events and /status topics.
+func (o *Output) informationTopic(message core.InformationMessage) string {
+	return o.cfg.TopicPrefix + "/info/" + message.Source + "/" + message.Key + "/" + message.Kind
+}
+
+// PublishInformation publishes a non-hazard informational snapshot as a
+// RETAINED message on the information topic with the configured QoS. It is
+// auxiliary latest-state delivery: failures are returned to the manager,
+// logged, and never touch the hazard journal, cursors or failure counters.
+// The payload is the message's complete wire document (the plugin already
+// normalized it); nothing is wrapped or re-marshaled here.
+func (o *Output) PublishInformation(ctx context.Context, message core.InformationMessage) error {
+	if err := message.Validate(); err != nil {
+		return fmt.Errorf("invalid information message: %w", err)
+	}
+	if err := o.ensureConnected(ctx); err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	topic := o.informationTopic(message)
+	// Paho accepts string/[]byte/bytes.Buffer payloads only; convert the
+	// RawMessage explicitly.
+	token := o.client.Publish(topic, o.qos, true, []byte(message.Payload))
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-token.Done():
+	}
+	if err := token.Error(); err != nil {
+		return fmt.Errorf("publish to %s: %w", topic, err)
+	}
+	return nil
+}
+
 // Close publishes a retained offline status (bounded wait) and disconnects
 // cleanly. A graceful DISCONNECT also cancels the broker-side last will, so
 // the offline state is published exactly once. Failure to publish must not

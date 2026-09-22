@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +26,19 @@ const (
 	emitWaitTimeout       = 5 * time.Second
 	drainTimeout          = 5 * time.Second
 	groupShutdownGrace    = 5 * time.Second
+	// maxInfoPublishTimeout bounds a single information publish call even
+	// for unusual output configurations: information is auxiliary and must
+	// never hold the emitting source (or shutdown) indefinitely.
+	maxInfoPublishTimeout = 30 * time.Second
 )
+
+// infoTarget couples one information-capable output with its bounded
+// publish timeout.
+type infoTarget struct {
+	id      string
+	timeout time.Duration
+	pub     InformationPublisher
+}
 
 // IngestFunc is the core ingestion entry point injected by the application.
 type IngestFunc func(ctx context.Context, event core.HazardEvent) (ingest.Result, core.EventChange, error)
@@ -61,10 +74,16 @@ type Manager struct {
 	opts     ManagerOptions
 
 	eventQueue chan *queuedEvent
-	emitWait   time.Duration
+	// queueMu serializes enqueue against the shutdown drain's final sweep:
+	// an Emit that passed the accepting check can otherwise send into the
+	// queue after the drain has swept it empty, leaving the event
+	// unanswered and the source blocked forever on its completion.
+	queueMu  sync.Mutex
+	emitWait time.Duration
 
 	sources   []*sourceSupervisor
 	outputs   []*outputWorker
+	infoOuts  []infoTarget
 	startedAt time.Time
 
 	// accepting is false once shutdown begins: Emit then rejects events
@@ -105,7 +124,10 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		if err != nil {
 			return nil, fmt.Errorf("source %q (type %q): invalid configuration: %w", cfg.ID, cfg.Type, err)
 		}
-		m.sources = append(m.sources, newSourceSupervisor(cfg, p, EmitterFunc(m.emit), logger, tracker))
+		m.sources = append(m.sources, newSourceSupervisor(cfg, p, EmitterFunc{
+			EmitFn:            m.emit,
+			EmitInformationFn: m.emitInformation,
+		}, logger, tracker))
 	}
 
 	for _, cfg := range outputCfgs {
@@ -125,6 +147,16 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		w := newOutputWorker(cfg, p, store, logger, tracker)
 		w.health = m.health
 		m.outputs = append(m.outputs, w)
+		if ip, ok := p.(InformationPublisher); ok {
+			timeout := cfg.Runtime.Timeout
+			if timeout <= 0 {
+				timeout = emitWaitTimeout
+			}
+			if timeout > maxInfoPublishTimeout {
+				timeout = maxInfoPublishTimeout
+			}
+			m.infoOuts = append(m.infoOuts, infoTarget{id: cfg.ID, timeout: timeout, pub: ip})
+		}
 	}
 	return m, nil
 }
@@ -209,11 +241,27 @@ func (m *Manager) Run(ctx context.Context) {
 	m.logger.Info("plugin manager stopped")
 }
 
-// EmitterFunc adapts a function to the Emitter interface.
-type EmitterFunc func(ctx context.Context, event core.HazardEvent) error
+// EmitterFunc adapts two functions to the Emitter interface.
+type EmitterFunc struct {
+	EmitFn            func(ctx context.Context, event core.HazardEvent) error
+	EmitInformationFn func(ctx context.Context, message core.InformationMessage) error
+}
 
 // Emit implements Emitter.
-func (f EmitterFunc) Emit(ctx context.Context, event core.HazardEvent) error { return f(ctx, event) }
+func (f EmitterFunc) Emit(ctx context.Context, event core.HazardEvent) error {
+	if f.EmitFn == nil {
+		return fmt.Errorf("hazard emission is not available in this context")
+	}
+	return f.EmitFn(ctx, event)
+}
+
+// EmitInformation implements Emitter.
+func (f EmitterFunc) EmitInformation(ctx context.Context, message core.InformationMessage) error {
+	if f.EmitInformationFn == nil {
+		return fmt.Errorf("information publishing is not available in this context")
+	}
+	return f.EmitInformationFn(ctx, message)
+}
 
 // queuedEvent couples a normalized event with the channel that completes
 // once ingestion has durably classified it.
@@ -233,22 +281,34 @@ type queuedEvent struct {
 // returns errShuttingDown instead of accepting ownership it cannot honor.
 func (m *Manager) emit(ctx context.Context, event core.HazardEvent) error {
 	event = event.Clone()
-	if !m.accepting.Load() {
-		return errShuttingDown
-	}
-	// Check cancellation BEFORE selecting on the queue: when ctx is already
+	// Check cancellation BEFORE attempting to enqueue: when ctx is already
 	// done, sending must never win over cancellation.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	qe := &queuedEvent{event: event, done: make(chan error, 1)}
+
+	// The accepting check and the send happen under queueMu: the shutdown
+	// drain's final sweep holds the same lock, so either the event is seen
+	// and completed by the drain, or the accepting flag has already been
+	// cleared and the event is rejected here. No event can ever be left
+	// in the queue without a completion.
+	m.queueMu.Lock()
+	if !m.accepting.Load() {
+		m.queueMu.Unlock()
+		return errShuttingDown
+	}
 	select {
 	case m.eventQueue <- qe:
 	case <-ctx.Done():
+		m.queueMu.Unlock()
 		return ctx.Err()
 	case <-time.After(m.emitWait):
+		m.queueMu.Unlock()
 		return fmt.Errorf("ingestion queue full (capacity %d)", cap(m.eventQueue))
 	}
+	m.queueMu.Unlock()
+
 	// The core owns the event now. Caller cancellation after enqueue must
 	// not create ambiguous ownership: wait for the durable ingest outcome.
 	// Ingest is bounded by SQLite's busy_timeout, and shutdown completes
@@ -266,19 +326,56 @@ func (m *Manager) ingestLoop(ctlCtx, procCtx context.Context) {
 		case qe := <-m.eventQueue:
 			m.processEvent(procCtx, qe)
 		case <-ctlCtx.Done():
-			timer := time.NewTimer(drainTimeout)
-			defer timer.Stop()
-			for len(m.eventQueue) > 0 {
+			m.drainQueue(procCtx)
+			return
+		}
+	}
+}
+
+// drainQueue processes queued events for a bounded time during shutdown,
+// then performs a final sweep UNDER queueMu: because emitters serialize
+// with this sweep, every event that reached the queue is either processed
+// or completed with errShuttingDown, and every emitter that lands after
+// the sweep observes accepting=false and is rejected.
+func (m *Manager) drainQueue(procCtx context.Context) {
+	// Fast path: nothing queued (checked under queueMu so the check cannot
+	// race with an enqueue — accepting is already false, so no new event
+	// can enter once the lock is released either).
+	m.queueMu.Lock()
+	if len(m.eventQueue) == 0 {
+		m.queueMu.Unlock()
+		return
+	}
+	m.queueMu.Unlock()
+
+	timer := time.NewTimer(drainTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case qe := <-m.eventQueue:
+			m.processEvent(procCtx, qe)
+			// Empty under the lock? Complete immediately instead of
+			// waiting out the drain timeout.
+			m.queueMu.Lock()
+			empty := len(m.eventQueue) == 0
+			m.queueMu.Unlock()
+			if empty {
+				return
+			}
+		case <-timer.C:
+			// Final bounded sweep: anything still queued is completed with
+			// errShuttingDown so no emitter waits forever.
+			m.queueMu.Lock()
+			for {
 				select {
 				case qe := <-m.eventQueue:
 					m.processEvent(procCtx, qe)
-				case <-timer.C:
+				default:
 					m.failQueued()
+					m.queueMu.Unlock()
 					return
 				}
 			}
-			m.failQueued() // no-op when the queue is already empty
-			return
 		}
 	}
 }
@@ -304,6 +401,66 @@ func (m *Manager) failQueued() {
 			return
 		}
 	}
+}
+
+// emitInformation validates, deep-copies and synchronously forwards an
+// informational message to every information-capable output with a bounded
+// per-output timeout and panic recovery. This path is auxiliary: it never
+// touches the hazard journal, cursors or failure accounting, and a failure
+// here only means the source retries on its next poll.
+func (m *Manager) emitInformation(ctx context.Context, message core.InformationMessage) error {
+	if !m.accepting.Load() {
+		return errShuttingDown
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	message = message.Clone()
+	if err := message.Validate(); err != nil {
+		return fmt.Errorf("invalid information message: %w", err)
+	}
+	if len(m.infoOuts) == 0 {
+		return fmt.Errorf("no information-capable outputs configured")
+	}
+
+	var (
+		mu       sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	for _, t := range m.infoOuts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			callCtx, cancel := context.WithTimeout(ctx, t.timeout)
+			defer cancel()
+			if err := invokeInformation(t.pub, callCtx, message); err != nil {
+				m.logger.Warn("information publish failed",
+					"output_id", t.id,
+					"source", message.Source, "key", message.Key, "kind", message.Kind,
+					"error", err)
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return firstErr
+}
+
+// invokeInformation runs an information publish under recover(), converting
+// panics into errors with a stack trace — the same fault isolation the
+// hazard path uses.
+func invokeInformation(p InformationPublisher, ctx context.Context, message core.InformationMessage) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("plugin panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return p.PublishInformation(ctx, message)
 }
 
 // maintenance expires stale events and conservatively cleans the journal.

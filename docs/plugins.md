@@ -1,5 +1,13 @@
 # Writing WarnFlux plugins
 
+> **Convention:** every built-in plugin must contain a `README.md` in its own
+> package directory (`internal/plugins/sources/<name>/README.md` or
+> `internal/plugins/outputs/<name>/README.md`). The local README is the
+> authoritative documentation for provider-specific configuration, behavior
+> and limitations; this guide covers only framework contracts. See
+> [`internal/plugins/sources/openmeteo/README.md`](../internal/plugins/sources/openmeteo/README.md)
+> for the informational source plugin reference.
+
 WarnFlux plugins are **compiled-in integrations**: ordinary Go packages
 in this repository, registered in `internal/plugins/plugins.go` and selected
 through the YAML configuration. They are not dynamic libraries, and no

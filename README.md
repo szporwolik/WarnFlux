@@ -23,9 +23,11 @@ MQTT (<prefix>/events stream + retained <prefix>/status snapshot)
 
 The core pipeline, plugin framework, durable journal and the MQTT output are
 implemented and covered by unit, integration, fuzz and race-detector tests.
-The built-in `demo` source exists for development. **Real hazard providers
-(CAP, MeteoAlarm, GDACS, IMGW, …) are intentionally not implemented yet** —
-they are the next step; the plugin contracts are designed for them.
+The built-in `demo` source exists for development. The `openmeteo` source
+publishes ordinary weather snapshots to retained MQTT information topics —
+**it does NOT generate HazardEvents**. **Real hazard providers (CAP,
+MeteoAlarm, GDACS, IMGW, …) are intentionally not implemented yet** — they
+are the next step; the plugin contracts are designed for them.
 
 ## Requirements
 
@@ -505,6 +507,14 @@ WarnFlux plugins are **compiled-in integrations**: ordinary Go packages
 registered in `internal/plugins/plugins.go` and selected through YAML.
 They are not dynamic libraries. Details, mandatory implementation rules and
 contribution requirements: see [docs/plugins.md](docs/plugins.md).
+
+Built-in plugins:
+
+| Plugin | Kind | Purpose |
+|--------|------|---------|
+| `demo` | source | synthetic development events |
+| `openmeteo` | source | periodically publishes current weather + forecast for configured coordinates to retained MQTT information topics (see its [README](internal/plugins/sources/openmeteo/README.md)) — **does NOT generate HazardEvents** |
+| `mqtt` | output | hazard event stream, retained status, retained information topics |
 
 ### Failure isolation
 

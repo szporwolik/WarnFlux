@@ -47,10 +47,10 @@ func TestRunEmitsSyntheticEvents(t *testing.T) {
 	defer cancel()
 
 	var events []core.HazardEvent
-	emit := plugin.EmitterFunc(func(_ context.Context, event core.HazardEvent) error {
+	emit := plugin.EmitterFunc{EmitFn: func(_ context.Context, event core.HazardEvent) error {
 		events = append(events, event)
 		return nil
-	})
+	}}
 
 	if err := p.Run(ctx, emit); err != nil {
 		t.Fatalf("Run: %v", err)

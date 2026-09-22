@@ -49,6 +49,34 @@ sources:
     config:
       interval: 30s
 
+  # Open-Meteo INFORMATIONAL weather source: publishes ordinary weather
+  # snapshots to retained MQTT information topics. It does NOT generate
+  # HazardEvents. See internal/plugins/sources/openmeteo/README.md.
+  - id: weather-home
+    type: openmeteo
+    enabled: false
+
+    runtime:
+      restart: true
+      shutdown_timeout: 10s
+
+    config:
+      poll_interval: 15m
+      request_timeout: 10s
+
+      forecast_hours: 48
+      forecast_days: 7
+
+      # Free Open-Meteo API:
+      api_key: ""
+      api_key_file: ""
+
+      locations:
+        - id: home
+          name: Home
+          latitude: 50.0000
+          longitude: 20.0000
+
 # Output plugins: receive meaningful event changes from the core.
 outputs:
   # Publishes hazard event changes and an application status snapshot to

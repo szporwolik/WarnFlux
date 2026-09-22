@@ -7,12 +7,16 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/demo"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
 )
 
 // RegisterBuiltins registers every built-in plugin type. Registration is
 // explicit so it is easy to audit, test and search.
 func RegisterBuiltins(reg *plugin.Registry) error {
 	if err := demo.Register(reg); err != nil {
+		return err
+	}
+	if err := openmeteo.Register(reg); err != nil {
 		return err
 	}
 	if err := mqtt.Register(reg); err != nil {

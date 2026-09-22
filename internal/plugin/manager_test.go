@@ -765,3 +765,186 @@ func TestManagerEmitShutdownRaceStress(t *testing.T) {
 		}
 	}
 }
+
+// infoOutput is a fake output implementing both hazard delivery and
+// information publishing. failWith, when set, makes information publishes
+// fail (hazard delivery stays unaffected).
+type infoOutput struct {
+	mu       sync.Mutex
+	messages []core.InformationMessage
+	failWith error
+}
+
+func (o *infoOutput) Name() string { return "info" }
+
+func (o *infoOutput) Handle(context.Context, core.EventChange) error { return nil }
+
+func (o *infoOutput) PublishInformation(_ context.Context, m core.InformationMessage) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.messages = append(o.messages, m)
+	return o.failWith
+}
+
+func (o *infoOutput) infoCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.messages)
+}
+
+func infoMessage(key string) core.InformationMessage {
+	return core.InformationMessage{
+		Source:      "openmeteo",
+		Key:         key,
+		Kind:        "weather",
+		GeneratedAt: time.Now(),
+		Payload:     []byte(`{"schema_version":1}`),
+	}
+}
+
+func infoManager(t *testing.T, out OutputPlugin, ingestFn IngestFunc) *Manager {
+	t.Helper()
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	reg := NewRegistry()
+	if err := reg.RegisterOutput("info-out", func(_ *yaml.Node) (OutputPlugin, error) {
+		return out, nil
+	}); err != nil {
+		t.Fatalf("register output: %v", err)
+	}
+	m, err := NewManager(reg, nil, []config.Output{{
+		ID: "info", Type: "info-out", Enabled: true,
+		Runtime: config.OutputRuntime{Timeout: 5 * time.Second, FailureThreshold: 5},
+	}}, ingestFn, nil, store, managerOpts(), testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	return m
+}
+
+// TestManagerEmitInformationForwards verifies the auxiliary information
+// path: messages reach information-capable outputs and never touch the
+// hazard failure accounting.
+func TestManagerEmitInformationForwards(t *testing.T) {
+	out := &infoOutput{}
+	m := infoManager(t, out, func(_ context.Context, _ core.HazardEvent) (ingest.Result, core.EventChange, error) {
+		return ingest.ResultNew, core.EventChange{}, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	if err := m.emitInformation(context.Background(), infoMessage("home")); err != nil {
+		t.Fatalf("emitInformation: %v", err)
+	}
+	if got := out.infoCount(); got != 1 {
+		t.Fatalf("information messages received = %d, want 1", got)
+	}
+
+	// The hazard failure counter stays untouched by information traffic.
+	statuses := m.Statuses()
+	if len(statuses) != 1 || statuses[0].ConsecutiveFailures != 0 {
+		t.Errorf("output status = %+v, want zero failures", statuses)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitInformationNoCapableOutput: without an information-capable
+// output the source gets a clear error so misconfiguration is visible.
+func TestManagerEmitInformationNoCapableOutput(t *testing.T) {
+	out := &listOutput{}
+	m := infoManager(t, out, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	err := m.emitInformation(context.Background(), infoMessage("home"))
+	if err == nil || !strings.Contains(err.Error(), "no information-capable outputs") {
+		t.Fatalf("emitInformation = %v, want no-capable-outputs error", err)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitInformationIsolation: an information publish failure is
+// reported to the source but must not suspend hazard delivery or increment
+// the hazard failure counter.
+func TestManagerEmitInformationIsolation(t *testing.T) {
+	failing := &infoOutput{failWith: errors.New("broker unavailable")}
+	m := infoManager(t, failing, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	if err := m.emitInformation(context.Background(), infoMessage("home")); err == nil {
+		t.Fatal("emitInformation must surface the publish failure")
+	}
+	if got := failing.infoCount(); got != 1 {
+		t.Errorf("publish calls = %d, want 1", got)
+	}
+	statuses := m.Statuses()
+	if len(statuses) != 1 || statuses[0].ConsecutiveFailures != 0 {
+		t.Errorf("information failure leaked into hazard accounting: %+v", statuses)
+	}
+	if statuses[0].State == StateSuspended {
+		t.Error("information failure suspended hazard delivery")
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitInformationValidationAndShutdown: invalid messages and
+// shutdown are rejected before any output is called.
+func TestManagerEmitInformationValidationAndShutdown(t *testing.T) {
+	out := &infoOutput{}
+	m := infoManager(t, out, nil)
+
+	// Before Run: shutdown rejection.
+	if err := m.emitInformation(context.Background(), infoMessage("home")); err != errShuttingDown {
+		t.Fatalf("emitInformation before Run = %v, want errShuttingDown", err)
+	}
+
+	m.accepting.Store(true)
+	invalid := infoMessage("home")
+	invalid.Payload = []byte(`{`)
+	if err := m.emitInformation(context.Background(), invalid); err == nil || !strings.Contains(err.Error(), "invalid information message") {
+		t.Fatalf("emitInformation invalid = %v, want validation error", err)
+	}
+	if got := out.infoCount(); got != 0 {
+		t.Errorf("invalid message reached the output (%d calls)", got)
+	}
+}

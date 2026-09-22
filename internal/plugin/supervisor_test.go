@@ -42,7 +42,10 @@ func testSourceCfg(id string, restart bool) config.Source {
 }
 
 func noopEmitter() Emitter {
-	return EmitterFunc(func(context.Context, core.HazardEvent) error { return nil })
+	return EmitterFunc{
+		EmitFn:            func(context.Context, core.HazardEvent) error { return nil },
+		EmitInformationFn: func(context.Context, core.InformationMessage) error { return nil },
+	}
 }
 
 type blockingSource struct{}

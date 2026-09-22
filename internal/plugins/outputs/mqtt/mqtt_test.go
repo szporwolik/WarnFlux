@@ -249,3 +249,13 @@ func TestWireStatusGoldenJSON(t *testing.T) {
 		t.Errorf("wire status mismatch:\n got %s\nwant %s", payload, want)
 	}
 }
+
+// TestInformationTopicMapping pins the retained information topic layout:
+// <prefix>/info/<source>/<key>/<kind>.
+func TestInformationTopicMapping(t *testing.T) {
+	o := &Output{cfg: Config{TopicPrefix: "warnflux"}}
+	msg := core.InformationMessage{Source: "openmeteo", Key: "home", Kind: "weather"}
+	if got := o.informationTopic(msg); got != "warnflux/info/openmeteo/home/weather" {
+		t.Errorf("topic = %q, want warnflux/info/openmeteo/home/weather", got)
+	}
+}

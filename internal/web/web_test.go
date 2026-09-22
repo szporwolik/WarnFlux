@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -416,6 +417,55 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	}
 	if !strings.Contains(dashHTML, "github.com/szporwolik/WarnFlux") {
 		t.Errorf("dashboard footer missing repo link: %s", dashHTML)
+	}
+}
+
+func TestWarningsPagination(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	// 45 warnings → 3 pages of 20. Topics are zero-padded so the
+	// lexicographic tiebreaker keeps numeric order.
+	for i := 1; i <= 45; i++ {
+		env.state.AddOrUpdateActive("local", fmt.Sprintf("warnflux/active/imgw-meteo/%02d", i), state.Hazard{
+			EventKey: fmt.Sprintf("imgw-meteo:%d", i),
+			Source:   "imgw-meteo",
+			Severity: "moderate",
+			Headline: fmt.Sprintf("Warning %d", i),
+			Status:   "active",
+		})
+	}
+
+	_, page1 := env.get("/partials/warnings")
+	if !strings.Contains(page1, "Warning 1") || strings.Contains(page1, "Warning 21") {
+		t.Errorf("page 1 wrong: %s", page1)
+	}
+	if !strings.Contains(page1, "1–20 of 45") || !strings.Contains(page1, "Next") {
+		t.Errorf("pager missing on page 1: %s", page1)
+	}
+
+	_, page3 := env.get("/partials/warnings?page=3")
+	if !strings.Contains(page3, "Warning 45") || strings.Contains(page3, "Warning 20") {
+		t.Errorf("page 3 wrong: %s", page3)
+	}
+	if !strings.Contains(page3, "41–45 of 45") {
+		t.Errorf("page 3 range wrong: %s", page3)
+	}
+
+	// Out-of-range and garbage page params clamp safely.
+	_, clamped := env.get("/partials/warnings?page=999")
+	if !strings.Contains(clamped, "41–45 of 45") {
+		t.Errorf("page=999 should clamp to the last page: %s", clamped)
+	}
+	_, garbage := env.get("/partials/warnings?page=abc")
+	if !strings.Contains(garbage, "1–20 of 45") {
+		t.Errorf("page=abc should clamp to page 1: %s", garbage)
+	}
+
+	// Full-page navigation uses ?wpage= (the pager links).
+	_, dash2 := env.get("/dashboard?wpage=2")
+	if !strings.Contains(dash2, `data-wpage="2"`) || !strings.Contains(dash2, "21–40 of 45") {
+		t.Errorf("dashboard wpage=2 wrong: %s", dash2)
 	}
 }
 

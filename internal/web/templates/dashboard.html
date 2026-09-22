@@ -113,7 +113,7 @@
 </section>
 {{end}}
 
-{{define "warnings"}}<section class="card" id="warnings-section">
+{{define "warnings"}}<section class="card" id="warnings-section" data-wpage="{{.Page}}">
   <h2>Active warnings <span class="count">{{.Count}}</span></h2>
   {{if .Hazards}}
   <div class="warnings">
@@ -136,6 +136,13 @@
     </article>
     {{end}}
   </div>
+  {{if gt .Pages 1}}
+  <div class="pager">
+    {{if .HasPrev}}<a class="page-link" href="/dashboard?wpage={{add .Page -1}}">Previous</a>{{else}}<span class="page-link disabled">Previous</span>{{end}}
+    <span class="page-info">{{.From}}–{{.To}} of {{.Count}}</span>
+    {{if .HasNext}}<a class="page-link" href="/dashboard?wpage={{add .Page 1}}">Next</a>{{else}}<span class="page-link disabled">Next</span>{{end}}
+  </div>
+  {{end}}
   {{else}}
   <p class="empty">No active warnings</p>
   {{end}}

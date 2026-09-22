@@ -320,5 +320,6 @@ func templateFuncs() template.FuncMap {
 			}
 			return fmt.Sprintf("%.0f", *v)
 		},
+		"add": func(a, b int) int { return a + b },
 	}
 }

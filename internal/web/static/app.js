@@ -15,8 +15,20 @@
 
   var POLL_MS = 5000;
 
+  function sectionPath(section) {
+    // Preserve the user's warnings page across the periodic refreshes.
+    if (section.id === "warnings-section") {
+      var el = document.getElementById(section.id);
+      var page = el ? el.getAttribute("data-wpage") : "";
+      if (page && page !== "1") {
+        return section.path + "?page=" + page;
+      }
+    }
+    return section.path;
+  }
+
   function refresh(section) {
-    fetch(section.path, {
+    fetch(sectionPath(section), {
       headers: { "Accept": "text/html" },
       credentials: "same-origin",
       cache: "no-store"

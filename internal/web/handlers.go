@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +82,11 @@ type weatherView struct {
 
 // ---- warnings view -------------------------------------------------------
 
+// warningsPerPage bounds the Active warnings panel: the dashboard must
+// stay a single compact viewport with no internal scrollbars, so the
+// (potentially hundreds of) warnings are paginated server-side.
+const warningsPerPage = 20
+
 type hazardView struct {
 	Severity    string
 	Headline    string
@@ -98,6 +104,12 @@ type hazardView struct {
 type warningsView struct {
 	Hazards []hazardView
 	Count   int
+	Page    int
+	Pages   int
+	From    int
+	To      int
+	HasPrev bool
+	HasNext bool
 }
 
 // ---- router plugins view (sources + outputs) -----------------------------
@@ -246,9 +258,41 @@ func buildWeatherView(snap state.Snapshot) weatherView {
 	return v
 }
 
-func buildWarningsView(snap state.Snapshot) warningsView {
-	v := warningsView{Hazards: make([]hazardView, 0, len(snap.Hazards))}
-	for _, h := range snap.Hazards {
+func buildWarningsView(snap state.Snapshot, page int) warningsView {
+	total := len(snap.Hazards)
+	pages := 1
+	if total > warningsPerPage {
+		pages = (total + warningsPerPage - 1) / warningsPerPage
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > pages {
+		page = pages
+	}
+	from := 0
+	to := total
+	if total > 0 {
+		from = (page - 1) * warningsPerPage
+		to = from + warningsPerPage
+		if to > total {
+			to = total
+		}
+	}
+	v := warningsView{
+		Count:   total,
+		Page:    page,
+		Pages:   pages,
+		From:    from + 1,
+		To:      to,
+		HasPrev: page > 1,
+		HasNext: page < pages,
+	}
+	if total == 0 {
+		v.From, v.To = 0, 0
+	}
+	v.Hazards = make([]hazardView, 0, to-from)
+	for _, h := range snap.Hazards[from:to] {
 		hv := hazardView{
 			Severity:    h.Severity,
 			Headline:    h.Headline,
@@ -270,8 +314,22 @@ func buildWarningsView(snap state.Snapshot) warningsView {
 		}
 		v.Hazards = append(v.Hazards, hv)
 	}
-	v.Count = len(v.Hazards)
 	return v
+}
+
+// pageParam extracts a 1-based page number from the given query parameter;
+// unparseable or non-positive values yield page 1. The dashboard uses
+// "wpage" (full-page links), the partial uses "page" (poller fetch).
+func pageParam(r *http.Request, key string) int {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
 }
 
 func (s *Server) buildPluginsView() pluginsView {
@@ -417,7 +475,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Status:   s.buildStatusView(),
 		MQTT:     s.buildMQTTView(snap),
 		Weather:  buildWeatherView(snap),
-		Warnings: buildWarningsView(snap),
+		Warnings: buildWarningsView(snap, pageParam(r, "wpage")),
 		Plugins:  s.buildPluginsView(),
 		Actions:  s.buildActionsView(),
 		CSRF:     sess.csrf,
@@ -441,7 +499,7 @@ func (s *Server) handlePartialWeather(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePartialWarnings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "warnings", buildWarningsView(s.st.Snapshot()))
+	s.render(w, "warnings", buildWarningsView(s.st.Snapshot(), pageParam(r, "page")))
 }
 
 func (s *Server) handlePartialPlugins(w http.ResponseWriter, r *http.Request) {

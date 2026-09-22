@@ -72,13 +72,14 @@ var validLogLevels = []string{"debug", "info", "warn", "error"}
 
 // Config is the fully defaulted, validated application configuration.
 type Config struct {
-	App      App
-	Storage  Storage
-	Sources  []Source
-	Outputs  []Output
-	Dispatch Dispatch
-	Web      Web
-	Actions  []Action
+	App        App
+	Storage    Storage
+	Sources    []Source
+	Outputs    []Output
+	Dispatch   Dispatch
+	Web        Web
+	Actions    []Action
+	IngestHTTP []IngestHTTP
 }
 
 // App holds general application settings.
@@ -148,6 +149,25 @@ type OutputRuntime struct {
 type Storage struct {
 	Driver string
 	Path   string
+}
+
+// IngestHTTP is one configured public HTTP ingest endpoint: an API-key
+// protected POST handler that accepts hazard messages (the MQTT /events
+// wire format or a simplified builder form) and publishes them to the
+// configured MQTT broker, where the regular receiver/routing flow picks
+// them up like any other upstream message. Every instance ID doubles as
+// the event source slug stamped on builder-mode events.
+type IngestHTTP struct {
+	ID           string
+	Enabled      bool
+	APIKey       string
+	APIKeyFile   string
+	Broker       string
+	ClientID     string
+	Username     string
+	Password     string
+	PasswordFile string
+	TopicPrefix  string
 }
 
 // Dispatch holds the canonical dispatch ingress and the MQTT receiver
@@ -256,13 +276,27 @@ type ActionRuntime struct {
 
 // fileConfig mirrors the YAML layout.
 type fileConfig struct {
-	App      fileApp       `yaml:"app"`
-	Storage  fileStorage   `yaml:"storage"`
-	Sources  []fileSource  `yaml:"sources"`
-	Outputs  []fileOutput  `yaml:"outputs"`
-	Dispatch *fileDispatch `yaml:"dispatch"`
-	Web      *fileWeb      `yaml:"web"`
-	Actions  []fileAction  `yaml:"actions"`
+	App        fileApp          `yaml:"app"`
+	Storage    fileStorage      `yaml:"storage"`
+	Sources    []fileSource     `yaml:"sources"`
+	Outputs    []fileOutput     `yaml:"outputs"`
+	Dispatch   *fileDispatch    `yaml:"dispatch"`
+	Web        *fileWeb         `yaml:"web"`
+	Actions    []fileAction     `yaml:"actions"`
+	IngestHTTP []fileIngestHTTP `yaml:"ingest_http"`
+}
+
+type fileIngestHTTP struct {
+	ID           string `yaml:"id"`
+	Enabled      bool   `yaml:"enabled"`
+	APIKey       string `yaml:"api_key"`
+	APIKeyFile   string `yaml:"api_key_file"`
+	Broker       string `yaml:"broker"`
+	ClientID     string `yaml:"client_id"`
+	Username     string `yaml:"username"`
+	Password     string `yaml:"password"`
+	PasswordFile string `yaml:"password_file"`
+	TopicPrefix  string `yaml:"topic_prefix"`
 }
 
 type fileDispatch struct {
@@ -642,6 +676,26 @@ func (f fileConfig) toConfig() Config {
 		}
 		cfg.Actions = append(cfg.Actions, inst)
 	}
+
+	cfg.IngestHTTP = make([]IngestHTTP, 0, len(f.IngestHTTP))
+	for _, ing := range f.IngestHTTP {
+		inst := IngestHTTP{
+			ID:           strings.TrimSpace(ing.ID),
+			Enabled:      ing.Enabled,
+			APIKey:       strings.TrimSpace(ing.APIKey),
+			APIKeyFile:   strings.TrimSpace(ing.APIKeyFile),
+			Broker:       strings.TrimSpace(ing.Broker),
+			ClientID:     strings.TrimSpace(ing.ClientID),
+			Username:     strings.TrimSpace(ing.Username),
+			Password:     ing.Password,
+			PasswordFile: strings.TrimSpace(ing.PasswordFile),
+			TopicPrefix:  defaultWFPrefix,
+		}
+		if p := strings.TrimSpace(ing.TopicPrefix); p != "" {
+			inst.TopicPrefix = p
+		}
+		cfg.IngestHTTP = append(cfg.IngestHTTP, inst)
+	}
 	return cfg
 }
 
@@ -803,6 +857,57 @@ func (c Config) Validate() error {
 		}
 		if a.Runtime.ShutdownTimeout <= 0 || a.Runtime.ShutdownTimeout > maxRuntimeTimeout {
 			return fmt.Errorf("action %q: runtime.shutdown_timeout must be >0 and at most %s, got %s", a.ID, maxRuntimeTimeout, a.Runtime.ShutdownTimeout)
+		}
+	}
+	ingestSeen := make(map[string]bool, len(c.IngestHTTP))
+	for i, ing := range c.IngestHTTP {
+		field := fmt.Sprintf("ingest_http[%d]", i)
+		if !pluginIDPattern.MatchString(ing.ID) {
+			return fmt.Errorf("%s.id %q must match %s (lowercase slug; the id is also the builder-mode event source)", field, ing.ID, pluginIDPattern)
+		}
+		if ingestSeen[ing.ID] {
+			return fmt.Errorf("ingest_http: duplicate instance id %q", ing.ID)
+		}
+		ingestSeen[ing.ID] = true
+		if seen[ing.ID] {
+			return fmt.Errorf("duplicate plugin id %q (ingest_http ids share one namespace with sources, outputs and actions)", ing.ID)
+		}
+		if ing.APIKey != "" && ing.APIKeyFile != "" {
+			return fmt.Errorf("%s: api_key and api_key_file are mutually exclusive", field)
+		}
+		if ing.Password != "" && ing.PasswordFile != "" {
+			return fmt.Errorf("%s: password and password_file are mutually exclusive", field)
+		}
+		p := ing.TopicPrefix
+		if strings.TrimSpace(p) == "" || strings.ContainsAny(p, "+#") {
+			return fmt.Errorf("%s.topic_prefix must be a non-empty MQTT topic segment without '+' or '#'", field)
+		}
+		if p != strings.Trim(p, "/") {
+			return fmt.Errorf("%s.topic_prefix must not start or end with '/'", field)
+		}
+		if len(p) > maxTopicPrefixBytes {
+			return fmt.Errorf("%s.topic_prefix is %d bytes, maximum %d", field, len(p), maxTopicPrefixBytes)
+		}
+		if !ing.Enabled {
+			continue
+		}
+		if ing.APIKey == "" && ing.APIKeyFile == "" {
+			return fmt.Errorf("%s.api_key or %s.api_key_file is required for an enabled endpoint", field, field)
+		}
+		if ing.APIKey != "" && len(ing.APIKey) < 16 {
+			return fmt.Errorf("%s.api_key must be at least 16 characters", field)
+		}
+		if ing.Broker == "" {
+			return fmt.Errorf("%s.broker is required for an enabled endpoint", field)
+		}
+		if strings.ContainsAny(ing.Broker, " \t\n") {
+			return fmt.Errorf("%s.broker must not contain whitespace, got %q", field, ing.Broker)
+		}
+		if ing.ClientID == "" {
+			return fmt.Errorf("%s.client_id is required for an enabled endpoint", field)
+		}
+		if len(ing.ClientID) > maxMQTTClientIDBytes {
+			return fmt.Errorf("%s.client_id is %d bytes, maximum %d", field, len(ing.ClientID), maxMQTTClientIDBytes)
 		}
 	}
 	return nil

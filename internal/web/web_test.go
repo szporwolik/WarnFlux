@@ -48,6 +48,10 @@ type testEnv struct {
 }
 
 func newTestEnv(t *testing.T) *testEnv {
+	return newTestEnvWithIngest(t, nil)
+}
+
+func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv {
 	t.Helper()
 
 	cfg := config.Web{
@@ -107,7 +111,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 
-	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users)
+	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +133,57 @@ type nopAction struct{}
 func (nopAction) Name() string                                        { return "logger" }
 func (nopAction) Execute(context.Context, action.ActionRequest) error { return nil }
 func (nopAction) Close(context.Context) error                         { return nil }
+
+// TestIngestEndpointRouting pins the public ingest route: requests are
+// delegated to the matching instance handler without session auth, unknown
+// ids 404, and the ingest id appears as a routing-matrix source row.
+func TestIngestEndpointRouting(t *testing.T) {
+	var hits int
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"accepted":true}`))
+	})
+	env := newTestEnvWithIngest(t, map[string]http.Handler{"news": stub})
+
+	// The stub is called without any session cookie.
+	req, _ := http.NewRequest(http.MethodPost, env.srv.URL+"/api/v1/ingest/news", strings.NewReader("{}"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted || hits != 1 || !strings.Contains(string(body), "accepted") {
+		t.Fatalf("ingest post = %d %q hits=%d, want 202 accepted and one delegation", resp.StatusCode, body, hits)
+	}
+
+	// Unknown endpoint id is a 404.
+	req, _ = http.NewRequest(http.MethodPost, env.srv.URL+"/api/v1/ingest/bogus", strings.NewReader("{}"))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown ingest id = %d, want 404", resp.StatusCode)
+	}
+
+	// The groups routing popover offers the ingest id as a matrix source.
+	env.login()
+	if _, err := env.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+	_, html := env.get("/groups")
+	for _, want := range []string{
+		`name="cell:news|logger-action"`,
+		"news (ingest)",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("groups page missing ingest source %q: %s", want, html)
+		}
+	}
+}
 
 func (e *testEnv) get(path string) (*http.Response, string) {
 	e.t.Helper()

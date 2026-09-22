@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,16 +41,35 @@ type sourceOption struct {
 	Label string
 }
 
-// routingSources lists the known hazard event source slugs offered as
-// matrix rows. "" is the any-source fallback. Sources of events received
-// through the MQTT receiver are the upstream producers' slugs, so they
-// match "any" (or their own row when it exists here).
-var routingSources = []sourceOption{
+// baseRoutingSources lists the built-in hazard event source slugs offered
+// as matrix rows. "" is the any-source fallback. Sources of events
+// received through the MQTT receiver are the upstream producers' slugs,
+// so they match "any" (or their own row when it exists here).
+var baseRoutingSources = []sourceOption{
 	{Value: "", Label: "any source"},
 	{Value: "imgw-meteo", Label: "IMGW meteo"},
 	{Value: "imgw-hydro", Label: "IMGW hydro"},
 	{Value: "rso", Label: "RSO"},
 	{Value: "test-signal", Label: "test signal"},
+}
+
+// routingSources returns the full matrix row set: the built-in sources
+// plus one row per configured public ingest endpoint (its id is the event
+// source stamped on builder-mode alerts).
+func (s *Server) routingSources() []sourceOption {
+	if len(s.ingest) == 0 {
+		return baseRoutingSources
+	}
+	ids := make([]string, 0, len(s.ingest))
+	for id := range s.ingest {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := append([]sourceOption(nil), baseRoutingSources...)
+	for _, id := range ids {
+		out = append(out, sourceOption{Value: id, Label: id + " (ingest)"})
+	}
+	return out
 }
 
 // matrixCell is one severity select of the popover grid.
@@ -222,7 +242,7 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actions, err := parseMatrixCells(r, routingSources, s.availableActions())
+	actions, err := parseMatrixCells(r, s.routingSources(), s.availableActions())
 	if err != nil {
 		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, err.Error())
 		return
@@ -290,13 +310,13 @@ func (s *Server) availableActions() []channelOption {
 // buildMatrix lays out the popover grid: one row per known source, one
 // severity select per action, prefilled with the saved severity ("" when
 // the cell is unassigned).
-func buildMatrix(assignments []storage.ChannelAssignment, actions []channelOption) []matrixSourceRow {
+func buildMatrix(assignments []storage.ChannelAssignment, actions []channelOption, sources []sourceOption) []matrixSourceRow {
 	saved := make(map[string]string, len(assignments))
 	for _, a := range assignments {
 		saved[cellKey(a.Source, a.ID)] = a.MinSeverity
 	}
-	rows := make([]matrixSourceRow, 0, len(routingSources))
-	for _, src := range routingSources {
+	rows := make([]matrixSourceRow, 0, len(sources))
+	for _, src := range sources {
 		row := matrixSourceRow{Label: src.Label, Cells: make([]matrixCell, 0, len(actions))}
 		for _, act := range actions {
 			row.Cells = append(row.Cells, matrixCell{
@@ -380,7 +400,7 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		}
 		if routing, err := s.users.GroupRouting(g.ID); err == nil {
 			row.Assignments = routing.Actions
-			row.Matrix = buildMatrix(routing.Actions, actions)
+			row.Matrix = buildMatrix(routing.Actions, actions, s.routingSources())
 		} else {
 			s.logger.Warn("web: group routing unavailable", "group", g.ID, "error", err)
 		}

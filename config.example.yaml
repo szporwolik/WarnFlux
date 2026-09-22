@@ -320,3 +320,36 @@ actions:
   #     # unlimited). Group members receive Bcc copies: one SMTP
   #     # transaction per unique address.
   #     rate_limit_per_minute: 20
+
+# Public HTTP ingest endpoints: POST /api/v1/ingest/<id>, protected by an
+# API key. Accepts hazard messages in two shapes:
+#   1. the canonical WarnFlux MQTT /events wire payload (as published on
+#      <prefix>/events), or
+#   2. a simplified builder form:
+#        {"severity":"severe","headline":"...","event":"Pożar",
+#         "urgency":"immediate","certainty":"observed","areas":["..."],
+#         "description":"...","source_id":"..."}
+# Accepted messages are published to <topic_prefix>/events on the broker;
+# the regular receiver -> routing matrix -> actions flow then handles them
+# like any upstream WarnFlux message. The instance id is the event source
+# stamped on builder-mode alerts (it shows up as a matrix source row in
+# the Groups page).
+ingest_http:
+
+  - id: news
+    enabled: false
+
+    # API key from api_key OR api_key_file (Docker secrets), never both.
+    # At least 16 characters; presented as "Authorization: Bearer <key>".
+    api_key: "changeme-secret-key-000000"
+    api_key_file: ""
+
+    # Broker to publish accepted messages to.
+    broker: tcp://localhost:1883
+    # Unique per instance: never reuse the output or receiver client ids.
+    client_id: warnflux-ingest-news
+    username: ""
+    password: ""
+    password_file: ""
+    # Published topic prefix; defaults to warnflux.
+    topic_prefix: warnflux

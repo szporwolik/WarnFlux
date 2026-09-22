@@ -646,6 +646,65 @@ contract through the receivers — it never reads active hazards straight
 from SQLite — so local and remote WarnFlux instances appear on the
 same path. Web credentials support `password` or `password_file`.
 
+### Public HTTP ingest endpoints
+
+`ingest_http` configures zero or more public, API-key-protected ingest
+endpoints, one per instance. A remote scraper POSTs a hazard message; the
+endpoint publishes it to `warnflux/events` on the configured broker, and
+the regular receiver → routing matrix → actions flow handles it exactly
+like a message from an upstream WarnFlux instance (other consumers on the
+broker see it too).
+
+Each instance has its own `api_key` (at least 16 characters, presented as
+`Authorization: Bearer <key>`) and its own broker connection. The instance
+`id` is the event source stamped on builder-mode alerts and appears as a
+source row in the Groups routing matrix, so alerts from a scraper can be
+routed at their own severity thresholds.
+
+Two accepted payload shapes on `POST /api/v1/ingest/<id>`:
+
+1. **Wire mode** — the canonical `/events` payload, exactly as published on
+   the MQTT topic:
+
+   ```json
+   {
+     "schema_version": 1,
+     "change_id": 42,
+     "change_type": "new",
+     "event_key": "imgw-meteo:123",
+     "event": {
+       "source": "imgw-meteo", "source_id": "123",
+       "event": "Strong wind", "severity": "severe",
+       "headline": "Strong wind warning",
+       "areas": ["powiat wielicki"],
+       "status": "active",
+       "received_at": "2026-09-23T10:00:00Z",
+       "updated_at": "2026-09-23T10:00:00Z"
+     }
+   }
+   ```
+
+2. **Builder mode** — a simplified alert; the endpoint assembles the wire
+   payload (source = instance id, timestamps = now, status = active):
+
+   ```bash
+   curl -X POST https://example.com/api/v1/ingest/news \
+     -H "Authorization: Bearer <key>" \
+     -H "Content-Type: application/json" \
+     -d '{"severity":"severe","event":"Pożar","headline":"Pożar w lesie",
+          "areas":["gmina Niepołomice"],"source_id":"scraper-7"}'
+   ```
+
+   Builder fields: `severity` (required, canonical), `event` or `headline`
+   (at least one required), optional `transition` (`new` default, `updated`,
+   `cancelled`, `expired`), `source_id` (when omitted, a hash of the body —
+   identical re-posts produce the same `event_key`), plus `urgency`,
+   `certainty`, `description`, `instruction`, `areas`, `effective_at`,
+   `expires_at`, `latitude`, `longitude`, `category`, `source_url`.
+
+Responses: `202` accepted, `400` invalid payload, `401` bad key, `413`
+oversized (> 1 MiB), `503` broker unavailable.
+
 ## Plugins
 
 WarnFlux plugins are **compiled-in integrations**: ordinary Go packages

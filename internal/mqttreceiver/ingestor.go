@@ -143,7 +143,7 @@ func (in *Ingestor) handleActive(pt ParsedTopic, topic string, payload []byte) {
 		return
 	}
 
-	var wh wireActiveHazard
+	var wh ActivePayload
 	if err := json.Unmarshal(payload, &wh); err != nil {
 		in.reject(topic, "active: invalid JSON", err)
 		return
@@ -264,17 +264,9 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 	if len(payload) == 0 {
 		return
 	}
-	var we wireEvent
-	if err := json.Unmarshal(payload, &we); err != nil {
-		in.reject(topic, "events: invalid JSON", err)
-		return
-	}
-	if we.SchemaVersion != WireSchemaVersion {
-		in.reject(topic, "events", errSchemaVersion)
-		return
-	}
-	if we.EventKey == "" {
-		in.reject(topic, "events", errEmptyKey)
+	we, err := ParseEventPayload(payload)
+	if err != nil {
+		in.reject(topic, "events", err)
 		return
 	}
 
@@ -288,9 +280,6 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 		typ = dispatch.TransitionCancelled
 	case ChangeExpired:
 		typ = dispatch.TransitionExpired
-	default:
-		in.reject(topic, "events", errBadChangeType)
-		return
 	}
 
 	ts := parseTime(we.Event.UpdatedAt)
@@ -379,7 +368,7 @@ func toWeather(ww *wireWeather) *state.Weather {
 }
 
 // validateActive checks the mandatory envelope fields of an active payload.
-func validateActive(wh *wireActiveHazard) error {
+func validateActive(wh *ActivePayload) error {
 	if wh.SchemaVersion != WireSchemaVersion {
 		return fmt.Errorf("%w: got %d", errSchemaVersion, wh.SchemaVersion)
 	}

@@ -55,6 +55,10 @@ type Server struct {
 	logger    *slog.Logger
 	sessions  *sessionStore
 
+	// ingest maps each configured public ingest endpoint id to its
+	// API-key-protected handler (may be empty).
+	ingest map[string]http.Handler
+
 	version string
 	commit  string
 
@@ -74,10 +78,12 @@ const maxPasswordFileBytes = 64 * 1024
 // dashboard; the shared constant lives in internal/appinfo.
 const repoURL = appinfo.RepoURL
 
-// New builds the web server (no listener created yet).
+// New builds the web server (no listener created yet). ingest maps public
+// ingest endpoint ids to their handlers; empty ids are ignored.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	router RouterStatuses, actions *action.Manager, ingress *dispatch.Ingress,
-	logger *slog.Logger, version, commit string, users storage.DirectoryStore) (*Server, error) {
+	logger *slog.Logger, version, commit string, users storage.DirectoryStore,
+	ingest map[string]http.Handler) (*Server, error) {
 
 	// Read the admin password file at construction: a missing secret is a
 	// startup error, never a runtime surprise. Secrets are never logged.
@@ -106,14 +112,15 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		router:    router,
 		actions:   actions,
 		ingress:   ingress,
+		users:     users,
 		logger:    logger,
 		sessions:  newSessionStore(cfg.Auth.SecureCookie),
 		version:   version,
 		commit:    commit,
-		users:     users,
 		startedAt: time.Now(),
 		tmpl:      tmpl,
 		mux:       http.NewServeMux(),
+		ingest:    ingest,
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -135,6 +142,11 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+	// Public ingest endpoints: authenticated per instance with the
+	// configured API key, never with a UI session.
+	if len(s.ingest) > 0 {
+		s.mux.HandleFunc("POST /api/v1/ingest/{id}", s.handleIngest)
+	}
 	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
 	s.mux.Handle("GET /test", s.requirePage(s.handleTestPage))
 	s.mux.Handle("POST /test", s.requirePage(s.handleTestEmit))
@@ -216,6 +228,17 @@ func (s *Server) requirePartial(next http.HandlerFunc) http.Handler {
 		}
 		next(w, r)
 	})
+}
+
+// handleIngest dispatches a public ingest request to the configured
+// endpoint instance (API key auth happens inside the instance handler).
+func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
+	h, ok := s.ingest[r.PathValue("id")]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 func (s *Server) render(w http.ResponseWriter, name string, data any) {

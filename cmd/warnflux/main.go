@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
+	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
@@ -218,6 +220,34 @@ func run(configPath string) error {
 		return fmt.Errorf("configure mqtt receivers: %w", err)
 	}
 
+	// Public HTTP ingest endpoints: API-key-protected publishers. Each
+	// enabled instance accepts hazard messages and publishes them to its
+	// broker, where the receiver/routing flow picks them up. A failed
+	// initial broker connect is non-fatal: the endpoint answers 503 until
+	// paho's background reconnects succeed.
+	var ingestInstances []*ingesthttp.Instance
+	ingestHandlers := make(map[string]http.Handler)
+	for _, ing := range cfg.IngestHTTP {
+		if !ing.Enabled {
+			continue
+		}
+		inst, err := ingesthttp.New(ing, logger)
+		if err != nil {
+			return fmt.Errorf("configure ingest_http %q: %w", ing.ID, err)
+		}
+		if err := inst.Start(); err != nil {
+			logger.Warn("ingest_http: initial broker connect failed (endpoint will answer 503 until connected)",
+				"instance", ing.ID, "error", err)
+		}
+		ingestInstances = append(ingestInstances, inst)
+		ingestHandlers[ing.ID] = inst
+	}
+	defer func() {
+		for _, inst := range ingestInstances {
+			inst.Close()
+		}
+	}()
+
 	// Authenticated web UI. The listening socket is created before the
 	// application declares readiness (bind failure is startup-critical).
 	var webSrv *web.Server
@@ -227,7 +257,7 @@ func run(configPath string) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
@@ -318,7 +348,8 @@ func run(configPath string) error {
 	logger.Info("ready",
 		"web_enabled", cfg.Web.Enabled,
 		"receivers", len(cfg.Dispatch.Receivers),
-		"actions", len(cfg.Actions))
+		"actions", len(cfg.Actions),
+		"ingest_http", len(ingestHandlers))
 
 	<-ctx.Done()
 	logger.Info("WarnFlux stopping")

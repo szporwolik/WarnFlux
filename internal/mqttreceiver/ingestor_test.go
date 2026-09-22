@@ -76,11 +76,11 @@ func expectNoEvent(t *testing.T, g *dispatch.Ingress) {
 
 func mustActivePayload(t *testing.T, eventKey, source, sourceID, severity string) []byte {
 	t.Helper()
-	b, err := json.Marshal(wireActiveHazard{
+	b, err := json.Marshal(ActivePayload{
 		SchemaVersion: 1,
 		Type:          "active_hazard",
 		EventKey:      eventKey,
-		Event: wireHazardEvent{
+		Event: HazardPayload{
 			Source:     source,
 			SourceID:   sourceID,
 			Event:      "Strong wind",

@@ -9,6 +9,7 @@
 package mqttreceiver
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -50,11 +51,12 @@ var (
 	errBadChangeType = errors.New("unknown change_type")
 	errBadState      = errors.New("unknown status state")
 	errService       = errors.New("unexpected service")
+	errInvalidJSON   = errors.New("invalid JSON")
 )
 
-// wireHazardEvent is the shared hazard block used by /events and /active.
+// HazardPayload is the shared hazard block used by /events and /active.
 // It matches WarnFlux's public wire schema exactly (snake_case).
-type wireHazardEvent struct {
+type HazardPayload struct {
 	Source      string   `json:"source"`
 	SourceID    string   `json:"source_id"`
 	Category    string   `json:"category"`
@@ -76,21 +78,47 @@ type wireHazardEvent struct {
 	UpdatedAt   string   `json:"updated_at"`
 }
 
-// wireActiveHazard is the retained payload on <prefix>/active/<source>/<hash>.
-type wireActiveHazard struct {
-	SchemaVersion int             `json:"schema_version"`
-	Type          string          `json:"type"`
-	EventKey      string          `json:"event_key"`
-	Event         wireHazardEvent `json:"event"`
+// ActivePayload is the retained payload on <prefix>/active/<source>/<hash>.
+type ActivePayload struct {
+	SchemaVersion int           `json:"schema_version"`
+	Type          string        `json:"type"`
+	EventKey      string        `json:"event_key"`
+	Event         HazardPayload `json:"event"`
 }
 
-// wireEvent is the non-retained payload on <prefix>/events.
-type wireEvent struct {
-	SchemaVersion int             `json:"schema_version"`
-	ChangeID      int64           `json:"change_id"`
-	ChangeType    string          `json:"change_type"`
-	EventKey      string          `json:"event_key"`
-	Event         wireHazardEvent `json:"event"`
+// EventPayload is the non-retained payload on <prefix>/events.
+type EventPayload struct {
+	SchemaVersion int           `json:"schema_version"`
+	ChangeID      int64         `json:"change_id"`
+	ChangeType    string        `json:"change_type"`
+	EventKey      string        `json:"event_key"`
+	Event         HazardPayload `json:"event"`
+}
+
+// ParseEventPayload validates one /events wire payload: JSON shape,
+// schema version, event key and change type. It returns the parsed
+// payload so callers can inspect or re-publish it (the HTTP ingest
+// endpoint re-publishes the canonical form).
+func ParseEventPayload(payload []byte) (*EventPayload, error) {
+	if len(payload) == 0 {
+		return nil, errEmptyKey
+	}
+	var we EventPayload
+	if err := json.Unmarshal(payload, &we); err != nil {
+		return nil, errInvalidJSON
+	}
+	if we.SchemaVersion != WireSchemaVersion {
+		return nil, errSchemaVersion
+	}
+	if we.EventKey == "" {
+		return nil, errEmptyKey
+	}
+	switch we.ChangeType {
+	case ChangeNew, ChangeUpdated, ChangeCancelled, ChangeExpired:
+	default:
+		return nil, errBadChangeType
+	}
+	return &we, nil
 }
 
 // wirePluginState is one source/output entry inside the status payload.

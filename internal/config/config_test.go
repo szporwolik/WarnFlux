@@ -285,3 +285,63 @@ func TestLoadLogRotation(t *testing.T) {
 		t.Fatal("expected error for log_max_size_mb 0, got nil")
 	}
 }
+
+func TestLoadIngestHTTP(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, `
+ingest_http:
+  - id: news
+    enabled: true
+    api_key: "supersecret-key-123"
+    broker: tcp://localhost:1883
+    client_id: warnflux-ingest-news
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.IngestHTTP) != 1 {
+		t.Fatalf("ingest_http = %+v", cfg.IngestHTTP)
+	}
+	got := cfg.IngestHTTP[0]
+	if got.ID != "news" || !got.Enabled || got.APIKey != "supersecret-key-123" ||
+		got.Broker != "tcp://localhost:1883" || got.ClientID != "warnflux-ingest-news" {
+		t.Errorf("instance = %+v", got)
+	}
+	if got.TopicPrefix != "warnflux" {
+		t.Errorf("topic_prefix default = %q, want warnflux", got.TopicPrefix)
+	}
+}
+
+func TestLoadIngestHTTPValidation(t *testing.T) {
+	valid := "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n    client_id: c\n"
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"missing key", "ingest_http:\n  - id: news\n    enabled: true\n    broker: tcp://b:1883\n    client_id: c\n", "api_key"},
+		{"short key", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: short\n    broker: tcp://b:1883\n    client_id: c\n", "16 characters"},
+		{"key and file", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    api_key_file: /tmp/k\n    broker: tcp://b:1883\n    client_id: c\n", "mutually exclusive"},
+		{"missing broker", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    client_id: c\n", "broker"},
+		{"missing client id", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n", "client_id"},
+		{"bad id", "ingest_http:\n  - id: Bad ID!\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n    client_id: c\n", "lowercase slug"},
+		{"duplicate id", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n    client_id: c\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-456\"\n    broker: tcp://b:1883\n    client_id: c2\n", "duplicate instance"},
+		{"bad prefix", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n    client_id: c\n    topic_prefix: \"warn/flux/#\"\n", "topic_prefix"},
+	}
+	for _, c := range cases {
+		if _, err := Load(writeTempConfig(t, c.yaml)); err == nil {
+			t.Errorf("%s: accepted, want rejection mentioning %q", c.name, c.want)
+		} else if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: error = %v, want mention of %q", c.name, err, c.want)
+		}
+	}
+
+	// A disabled instance needs no key and no broker.
+	if _, err := Load(writeTempConfig(t, "ingest_http:\n  - id: news\n    enabled: false\n")); err != nil {
+		t.Errorf("disabled instance rejected: %v", err)
+	}
+
+	// The ingest id shares one namespace with source plugin ids.
+	if _, err := Load(writeTempConfig(t, "sources:\n  - id: news\n    type: imgw\n" + valid)); err == nil {
+		t.Error("ingest id colliding with a source id accepted")
+	}
+}

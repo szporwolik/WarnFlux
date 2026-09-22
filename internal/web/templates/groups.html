@@ -46,7 +46,8 @@
                 {{else}}<span class="muted">none</span>{{end}}
               </td>
               <td class="muted">{{timeShort .UpdatedAt}}</td>
-              <td class="row-actions">
+              <td>
+                <div class="row-actions">
                 <details class="group-picker">
                   <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Routing</summary>
                   <form method="post" action="/groups/{{.ID}}/routing" class="group-form routing-form">
@@ -81,6 +82,7 @@
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
                   <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>Delete</button>
                 </form>
+                </div>
               </td>
             </tr>
             {{end}}

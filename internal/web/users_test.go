@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -12,14 +13,19 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
-// fakeUsers is an in-memory storage.UserStore for handler tests.
+// fakeUsers is an in-memory storage.DirectoryStore for handler tests.
 type fakeUsers struct {
-	mu     sync.Mutex
-	nextID int64
-	rows   []storage.User
+	mu          sync.Mutex
+	nextID      int64
+	nextGroupID int64
+	rows        []storage.User
+	groups      []storage.Group
+	membership  map[int64]map[int64]bool // userID -> groupID set
 }
 
-func newFakeUsers() *fakeUsers { return &fakeUsers{nextID: 1} }
+func newFakeUsers() *fakeUsers {
+	return &fakeUsers{nextID: 1, nextGroupID: 1, membership: make(map[int64]map[int64]bool)}
+}
 
 func (f *fakeUsers) EnsureAdminUser(username string) error {
 	f.mu.Lock()
@@ -143,6 +149,152 @@ func sortUsers(rows []storage.User) {
 			rows[j], rows[j-1] = rows[j-1], rows[j]
 		}
 	}
+}
+
+// ---- GroupStore (in-memory) ----
+
+func (f *fakeUsers) memberCount(groupID int64) int64 {
+	n := 0
+	for _, set := range f.membership {
+		if set[groupID] {
+			n++
+		}
+	}
+	return int64(n)
+}
+
+func (f *fakeUsers) ListGroups(page, perPage int) ([]storage.Group, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	gs := append([]storage.Group(nil), f.groups...)
+	sort.Slice(gs, func(i, j int) bool { return strings.ToLower(gs[i].Name) < strings.ToLower(gs[j].Name) })
+	total := len(gs)
+	pages := (total + perPage - 1) / perPage
+	if pages < 1 {
+		pages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > pages {
+		page = pages
+	}
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+	out := append([]storage.Group(nil), gs[start:end]...)
+	for i := range out {
+		out[i].Members = f.memberCount(out[i].ID)
+	}
+	return out, total, nil
+}
+
+func (f *fakeUsers) ListAllGroups() ([]storage.Group, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	gs := append([]storage.Group(nil), f.groups...)
+	sort.Slice(gs, func(i, j int) bool { return strings.ToLower(gs[i].Name) < strings.ToLower(gs[j].Name) })
+	for i := range gs {
+		gs[i].Members = f.memberCount(gs[i].ID)
+	}
+	return gs, nil
+}
+
+func (f *fakeUsers) GetGroup(id int64) (storage.Group, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, g := range f.groups {
+		if g.ID == id {
+			g.Members = f.memberCount(id)
+			return g, nil
+		}
+	}
+	return storage.Group{}, storage.ErrGroupNotFound
+}
+
+func (f *fakeUsers) CreateGroup(name string) (storage.Group, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, g := range f.groups {
+		if strings.EqualFold(g.Name, name) {
+			return storage.Group{}, storage.ErrGroupNameTaken
+		}
+	}
+	now := time.Now()
+	g := storage.Group{
+		ID:        f.nextGroupID,
+		Name:      name,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	f.nextGroupID++
+	f.groups = append(f.groups, g)
+	return g, nil
+}
+
+func (f *fakeUsers) UpdateGroup(id int64, name string) (storage.Group, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, g := range f.groups {
+		if g.ID != id && strings.EqualFold(g.Name, name) {
+			return storage.Group{}, storage.ErrGroupNameTaken
+		}
+	}
+	for i := range f.groups {
+		if f.groups[i].ID == id {
+			f.groups[i].Name = name
+			f.groups[i].UpdatedAt = time.Now()
+			return f.groups[i], nil
+		}
+	}
+	return storage.Group{}, storage.ErrGroupNotFound
+}
+
+func (f *fakeUsers) DeleteGroup(id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, g := range f.groups {
+		if g.ID == id {
+			f.groups = append(f.groups[:i], f.groups[i+1:]...)
+			for _, set := range f.membership {
+				delete(set, id)
+			}
+			return nil
+		}
+	}
+	return storage.ErrGroupNotFound
+}
+
+func (f *fakeUsers) GroupIDsForUser(userID int64) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	set := f.membership[userID]
+	out := make([]int64, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
+func (f *fakeUsers) SetUserGroups(userID int64, groupIDs []int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	set := make(map[int64]bool, len(groupIDs))
+	for _, id := range groupIDs {
+		set[id] = true
+	}
+	if len(set) == 0 {
+		delete(f.membership, userID)
+		return nil
+	}
+	f.membership[userID] = set
+	return nil
 }
 
 func userBefore(a, b storage.User) bool {

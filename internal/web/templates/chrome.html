@@ -1,6 +1,6 @@
 {{define "topbar"}}  <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>
-    <span class="topbar-title">{{if .NavUsers}}Users{{else}}Dashboard{{end}}</span>
+    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else}}Dashboard{{end}}</span>
     <span class="topbar-spacer"></span>
     <span class="avatar" title="{{.Username}}">{{initials .Username}}</span>
     <form method="post" action="/logout" class="logout">
@@ -21,6 +21,7 @@
     <nav class="sidenav">
       <a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>
       <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">Users</span></a>
+      <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">Groups</span></a>
     </nav>
     <span class="sidebar-spacer"></span>
   </aside>

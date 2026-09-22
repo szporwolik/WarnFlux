@@ -1,0 +1,65 @@
+{{define "groups"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Groups · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>Groups</h2>
+      {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+      <form method="post" action="/groups" class="user-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="edit_id" value="{{.EditID}}">
+        <input type="text" name="name" placeholder="group name" value="{{.Form.Name}}" required maxlength="64">
+        <button type="submit" class="btn-primary btn-add">
+          {{if .EditID}}<svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Save{{else}}<svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>Add group{{end}}
+        </button>
+        {{if .EditID}}<a class="btn-ghost btn-small" href="/groups">Cancel</a>{{end}}
+      </form>
+      {{if .Groups}}
+      <div class="table-wrap">
+        <table class="plugins">
+          <thead>
+            <tr><th>Group</th><th>Members</th><th>Updated</th><th></th></tr>
+          </thead>
+          <tbody>
+            {{range .Groups}}
+            <tr>
+              <td><strong>{{.Name}}</strong></td>
+              <td><span class="count">{{.Members}}</span></td>
+              <td class="muted">{{timeShort .UpdatedAt}}</td>
+              <td class="row-actions">
+                <a class="btn-ghost btn-small" href="/groups?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Edit</a>
+                <form method="post" action="/groups/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('Delete group {{.Name}}?');">
+                  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                  <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>Delete</button>
+                </form>
+              </td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span class="page-info">{{.From}}–{{.To}} of {{.Total}}</span>
+        {{if .HasPrev}}<a class="page-link" href="/groups?page={{add .Page -1}}">Prev</a>{{else}}<span class="page-link disabled">Prev</span>{{end}}
+        <span class="page-info">Page {{.Page}} / {{.Pages}}</span>
+        {{if .HasNext}}<a class="page-link" href="/groups?page={{add .Page 1}}">Next</a>{{else}}<span class="page-link disabled">Next</span>{{end}}
+      </div>
+      {{else}}
+      <p class="empty">No groups yet</p>
+      {{end}}
+    </section>
+  </main>
+  {{template "footer" .}}
+</body>
+</html>
+{{end}}

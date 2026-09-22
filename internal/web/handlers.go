@@ -170,6 +170,7 @@ type pageView struct {
 
 	NavDashboard bool
 	NavUsers     bool
+	NavGroups    bool
 }
 
 // ---- view builders -------------------------------------------------------

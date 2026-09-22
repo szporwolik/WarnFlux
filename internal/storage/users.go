@@ -20,6 +20,15 @@ var (
 	ErrUsernameTaken = errors.New("username already exists")
 )
 
+// Group errors surfaced to the web layer.
+var (
+	// ErrGroupNotFound is returned when no group matches the given ID.
+	ErrGroupNotFound = errors.New("group not found")
+	// ErrGroupNameTaken is returned when a group name is already used by
+	// another group (case-insensitive).
+	ErrGroupNameTaken = errors.New("group name already exists")
+)
+
 // User is one alert-recipient record. The admin user (the web auth
 // account) is seeded from configuration and is read-only.
 type User struct {
@@ -31,6 +40,50 @@ type User struct {
 	IsAdmin   bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// Group is one notification recipient group. Members is the number of
+// users assigned to it (populated by ListGroups/ListAllGroups/GetGroup;
+// zero when not requested).
+type Group struct {
+	ID        int64
+	Name      string
+	Members   int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// GroupStore persists notification groups and the many-to-many user
+// membership.
+type GroupStore interface {
+	// ListGroups returns the groups on the given 1-based page plus the
+	// total count, each with its member count. Pages beyond the last
+	// valid one are clamped.
+	ListGroups(page, perPage int) ([]Group, int, error)
+	// ListAllGroups returns every group with its member count, ordered
+	// by name.
+	ListAllGroups() ([]Group, error)
+	// GetGroup returns one group with its member count.
+	GetGroup(id int64) (Group, error)
+	// CreateGroup inserts a new group. A duplicate name reports
+	// storage.ErrGroupNameTaken.
+	CreateGroup(name string) (Group, error)
+	// UpdateGroup renames a group. A duplicate name reports
+	// storage.ErrGroupNameTaken.
+	UpdateGroup(id int64, name string) (Group, error)
+	// DeleteGroup removes a group and its membership rows.
+	DeleteGroup(id int64) error
+	// GroupIDsForUser returns the IDs of the groups the user belongs to.
+	GroupIDsForUser(userID int64) ([]int64, error)
+	// SetUserGroups replaces the user's group membership with groupIDs.
+	SetUserGroups(userID int64, groupIDs []int64) error
+}
+
+// DirectoryStore combines the user and group administration stores; the
+// web UI needs both from one backend.
+type DirectoryStore interface {
+	UserStore
+	GroupStore
 }
 
 // UserStore persists alert recipients. Page numbering is 1-based; a page

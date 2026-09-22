@@ -31,15 +31,31 @@
       <div class="table-wrap">
         <table class="plugins">
           <thead>
-            <tr><th>Username</th><th>Phone</th><th>Email</th><th>Discord</th><th>Role</th><th>Updated</th><th></th></tr>
+            <tr><th>Username</th><th>Phone</th><th>Email</th><th>Discord</th><th>Groups</th><th>Role</th><th>Updated</th><th></th></tr>
           </thead>
           <tbody>
             {{range .Users}}
+            {{$u := .}}
             <tr>
               <td><strong>{{.Username}}</strong></td>
               <td>{{if .Phone}}{{.Phone}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td>{{if .Discord}}{{.Discord}}{{else}}<span class="muted">—</span>{{end}}</td>
+              <td class="groups-cell">
+                {{range $u.GroupNames}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}
+                <details class="group-picker">
+                  <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Groups</summary>
+                  <form method="post" action="/users/{{$u.ID}}/groups?page={{$.Page}}" class="group-form">
+                    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                    {{range $.Groups}}
+                    <label class="group-opt"><input type="checkbox" name="groups" value="{{.ID}}"{{if index $u.GroupSet .ID}} checked{{end}}> {{.Name}}</label>
+                    {{else}}
+                    <p class="muted">No groups defined yet — create them on the Groups page.</p>
+                    {{end}}
+                    <button type="submit" class="btn-primary btn-small">Save</button>
+                  </form>
+                </details>
+              </td>
               <td>{{if .IsAdmin}}<span class="badge ok">admin</span>{{else}}<span class="badge muted">member</span>{{end}}</td>
               <td class="muted">{{timeShort .UpdatedAt}}</td>
               <td class="row-actions">

@@ -20,13 +20,15 @@ var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // userRow is one users-table row for the template.
 type userRow struct {
-	ID        int64
-	Username  string
-	Phone     string
-	Email     string
-	Discord   string
-	IsAdmin   bool
-	UpdatedAt time.Time
+	ID         int64
+	Username   string
+	Phone      string
+	Email      string
+	Discord    string
+	IsAdmin    bool
+	GroupNames []string
+	GroupSet   map[int64]bool
+	UpdatedAt  time.Time
 }
 
 // userForm carries the add/edit form values (also used to re-render the
@@ -51,6 +53,7 @@ type usersView struct {
 	Username string
 
 	Users  []userRow
+	Groups []storage.Group
 	Form   userForm
 	EditID int64
 	Error  string
@@ -60,6 +63,7 @@ type usersView struct {
 
 	NavDashboard bool
 	NavUsers     bool
+	NavGroups    bool
 }
 
 // handleUsersPage renders the user administration page. ?edit=<id>
@@ -145,6 +149,41 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/users", http.StatusSeeOther)
 }
 
+// handleUserGroups replaces one user's group membership from the checkboxes
+// on the users page. Empty selection clears all groups.
+func (s *Server) handleUserGroups(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	userID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid user id", http.StatusBadRequest)
+		return
+	}
+	var groupIDs []int64
+	for _, raw := range r.PostForm["groups"] {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id < 1 {
+			http.Error(w, "invalid group id", http.StatusBadRequest)
+			return
+		}
+		groupIDs = append(groupIDs, id)
+	}
+	if err := s.users.SetUserGroups(userID, groupIDs); err != nil {
+		s.logger.Error("web: set user groups failed", "user", userID, "error", err)
+		http.Error(w, "could not update group membership", http.StatusInternalServerError)
+		return
+	}
+	// Return to the same users page.
+	page := r.URL.Query().Get("page")
+	if page == "" {
+		page = "1"
+	}
+	http.Redirect(w, r, "/users?page="+page, http.StatusSeeOther)
+}
+
 // buildUsersView assembles the page model from the store.
 func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, errMsg string) usersView {
 	page := pageParam(r, "page")
@@ -170,15 +209,37 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 		}
 	}
 	rows := make([]userRow, 0, len(users))
+	groups, gerr := s.users.ListAllGroups()
+	if gerr != nil {
+		s.logger.Error("web: list all groups failed", "error", gerr)
+		groups = nil
+	}
 	for _, u := range users {
+		ids, err := s.users.GroupIDsForUser(u.ID)
+		if err != nil {
+			s.logger.Error("web: user groups failed", "user", u.ID, "error", err)
+			ids = nil
+		}
+		set := make(map[int64]bool, len(ids))
+		for _, id := range ids {
+			set[id] = true
+		}
+		names := make([]string, 0, len(ids))
+		for _, g := range groups {
+			if set[g.ID] {
+				names = append(names, g.Name)
+			}
+		}
 		rows = append(rows, userRow{
-			ID:        u.ID,
-			Username:  u.Username,
-			Phone:     u.Phone,
-			Email:     u.Email,
-			Discord:   u.Discord,
-			IsAdmin:   u.IsAdmin,
-			UpdatedAt: u.UpdatedAt,
+			ID:         u.ID,
+			Username:   u.Username,
+			Phone:      u.Phone,
+			Email:      u.Email,
+			Discord:    u.Discord,
+			IsAdmin:    u.IsAdmin,
+			GroupNames: names,
+			GroupSet:   set,
+			UpdatedAt:  u.UpdatedAt,
 		})
 	}
 	return usersView{
@@ -190,6 +251,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 		Commit:   s.commit,
 		RepoURL:  repoURL,
 		Users:    rows,
+		Groups:   groups,
 		Form:     form,
 		EditID:   editID,
 		Error:    errMsg,

@@ -50,7 +50,7 @@ type Server struct {
 	router    RouterStatuses
 	actions   *action.Manager
 	ingress   *dispatch.Ingress
-	users     storage.UserStore
+	users     storage.DirectoryStore
 	logger    *slog.Logger
 	sessions  *sessionStore
 
@@ -76,7 +76,7 @@ const repoURL = "https://github.com/szporwolik/WarnFlux"
 // New builds the web server (no listener created yet).
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	router RouterStatuses, actions *action.Manager, ingress *dispatch.Ingress,
-	logger *slog.Logger, version, commit string, users storage.UserStore) (*Server, error) {
+	logger *slog.Logger, version, commit string, users storage.DirectoryStore) (*Server, error) {
 
 	// Read the admin password file at construction: a missing secret is a
 	// startup error, never a runtime surprise. Secrets are never logged.
@@ -138,6 +138,10 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /users", s.requirePage(s.handleUsersPage))
 	s.mux.Handle("POST /users", s.requirePage(s.handleUserSave))
 	s.mux.Handle("POST /users/{id}/delete", s.requirePage(s.handleUserDelete))
+	s.mux.Handle("POST /users/{id}/groups", s.requirePage(s.handleUserGroups))
+	s.mux.Handle("GET /groups", s.requirePage(s.handleGroupsPage))
+	s.mux.Handle("POST /groups", s.requirePage(s.handleGroupSave))
+	s.mux.Handle("POST /groups/{id}/delete", s.requirePage(s.handleGroupDelete))
 	s.mux.Handle("GET /partials/status", s.requirePartial(s.handlePartialStatus))
 	s.mux.Handle("GET /partials/mqtt", s.requirePartial(s.handlePartialMQTT))
 	s.mux.Handle("GET /partials/weather", s.requirePartial(s.handlePartialWeather))

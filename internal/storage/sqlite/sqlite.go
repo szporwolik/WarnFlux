@@ -245,6 +245,24 @@ CREATE TABLE users (
 );
 `,
 	},
+	{
+		// v6: notification groups and the many-to-many user membership.
+		// Foreign keys cascade membership rows away with either side.
+		SQL: `
+CREATE TABLE groups (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	name          TEXT NOT NULL COLLATE NOCASE UNIQUE,
+	created_at_ms INTEGER NOT NULL,
+	updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE user_groups (
+	user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+	PRIMARY KEY (user_id, group_id)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

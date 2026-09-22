@@ -693,9 +693,8 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 
 /* ---- groups table: routing assignment ---- */
 .routing-count { white-space: nowrap; }
-.routing-form { width: 360px; max-width: calc(100vw - 2rem); }
+.routing-form { width: 420px; max-width: calc(100vw - 2rem); }
 .routing-hint { font-size: 0.78rem; color: var(--muted); margin: 0 0 0.25rem; }
-.routing-label { display: grid; gap: 0.3rem; font-size: 0.85rem; font-weight: 500; color: var(--text); }
 .routing-form select {
   background: var(--canvas);
   border: 1px solid var(--border-hi);
@@ -705,21 +704,6 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   font-size: 0.9rem;
 }
 .routing-form select:focus { outline: none; border-color: var(--link); }
-.routing-set {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.5rem 0.6rem;
-  margin: 0.35rem 0 0;
-  min-width: 0; /* override the fieldset UA min-content sizing */
-}
-.routing-set legend {
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  padding: 0 0.3rem;
-}
 .checklist { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 .check-item {
   display: inline-flex;
@@ -737,29 +721,29 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .check-item input { accent-color: var(--link); margin: 0; }
 .routing-empty { margin: 0.75rem 0 0; }
 
-/* Routing matrix: one severity select per assigned channel. */
-.matrix-list { display: flex; flex-direction: column; gap: 0.4rem; }
-.matrix-row {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  font-size: 0.82rem;
-  cursor: pointer;
-  background: var(--surface-hi);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.35rem 0.55rem;
-}
-.matrix-row:hover { border-color: var(--muted); }
-.matrix-row input { accent-color: var(--link); margin: 0; flex: none; }
-.matrix-id {
-  flex: 1;
-  min-width: 0;
+/* Routing matrix: a grid of severity selects, one per source × action
+   cell. Column count is set inline from the action list. */
+.matrix-grid { display: grid; gap: 0.3rem; align-items: center; }
+.matrix-head {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-align: center;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 500;
 }
+.matrix-corner { text-align: left; }
+.matrix-src {
+  font-size: 0.78rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.matrix-grid .matrix-sev { width: 100%; max-width: 100%; }
 .matrix-sev {
   background: var(--canvas);
   border: 1px solid var(--border-hi);
@@ -767,12 +751,8 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   color: var(--text);
   padding: 0.25rem 0.4rem;
   font-size: 0.8rem;
-  flex: 0 1 auto;
-  width: auto;
-  max-width: 100%;
 }
 .matrix-sev:focus { outline: none; border-color: var(--link); }
-.matrix-sev:disabled { opacity: 0.45; }
 
 /* Compact per-channel chips in the groups table. */
 .routing-matrix { display: flex; flex-wrap: wrap; gap: 0.3rem; }
@@ -789,3 +769,9 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   white-space: nowrap;
 }
 .matrix-chip .sev { font-size: 0.62rem; padding: 0.1rem 0.45rem; }
+.matrix-chip .matrix-src {
+  opacity: 0.75;
+  border-right: 1px solid var(--border);
+  padding-right: 0.4rem;
+  margin-right: 0.1rem;
+}

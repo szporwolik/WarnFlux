@@ -70,9 +70,14 @@ func (f *fakeStore) setActionSeverity(groupID int64, actionID, severity string) 
 	}
 }
 
-// asn builds one matrix assignment (action ID + threshold).
+// asn builds one matrix cell (any source, action ID + threshold).
 func asn(id, severity string) storage.ChannelAssignment {
 	return storage.ChannelAssignment{ID: id, MinSeverity: severity}
+}
+
+// asnSrc builds one matrix cell with an explicit source (input plugin).
+func asnSrc(source, id, severity string) storage.ChannelAssignment {
+	return storage.ChannelAssignment{Source: source, ID: id, MinSeverity: severity}
 }
 
 type fakeActions struct {
@@ -99,15 +104,21 @@ func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
 var eventSeq atomic.Int64
 
 func hazardEvent(severity string, typ dispatch.TransitionType) dispatch.Event {
+	return hazardEventFrom("imgw", severity, typ)
+}
+
+// hazardEventFrom builds one synthetic hazard transition from the given
+// input plugin (source) at the given severity.
+func hazardEventFrom(source, severity string, typ dispatch.TransitionType) dispatch.Event {
 	return dispatch.Event{
 		Kind: dispatch.EventHazardTransition,
 		Hazard: &dispatch.HazardTransition{
 			Type:     typ,
-			Key:      "imgw:1",
+			Key:      source + ":1",
 			ChangeID: eventSeq.Add(1),
 			Hazard: dispatch.Hazard{
-				EventKey: "imgw:1",
-				Source:   "imgw",
+				EventKey: source + ":1",
+				Source:   source,
 				SourceID: "1",
 				Event:    "Storm",
 				Severity: severity,
@@ -230,6 +241,77 @@ func TestEngineRoutingMatrix(t *testing.T) {
 
 	if s := e.Stats(); s.EventsSeen != 2 || s.ActionsFired != 3 {
 		t.Errorf("stats = %+v, want 2 seen, 3 actions", s)
+	}
+}
+
+// TestEngineRoutingMatrixSource pins the per-cell matrix semantics: a
+// cell routes only events from its own input plugin, the empty-source
+// cell is the any-source fallback, and a source-specific cell shadows the
+// fallback for the same action.
+func TestEngineRoutingMatrixSource(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok",
+			Actions: []storage.ChannelAssignment{
+				asn("log", "severe"),                    // any source, severe
+				asnSrc("imgw-meteo", "log", "moderate"), // imgw-meteo specific: shadows the fallback
+				asnSrc("rso", "sms", "moderate"),        // rso only
+			}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+
+	// imgw-meteo moderate: only the specific log cell fires; the
+	// any-source log cell (severe) is shadowed and sms (rso) must not.
+	feed <- hazardEventFrom("imgw-meteo", "moderate", dispatch.TransitionNew)
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["log"]) == 1
+	}, "imgw-meteo cell fired log")
+	acts.mu.Lock()
+	logCalls := len(acts.got["log"])
+	smsCalls := len(acts.got["sms"])
+	acts.mu.Unlock()
+	if smsCalls != 0 {
+		t.Fatalf("imgw-meteo event fired sms %d times, want 0", smsCalls)
+	}
+	if logCalls != 1 {
+		t.Fatalf("imgw-meteo event fired log %d times, want 1", logCalls)
+	}
+
+	// rso severe: sms fires from its rso cell; log has no rso cell, so
+	// the any-source fallback (severe) applies.
+	feed <- hazardEventFrom("rso", "severe", dispatch.TransitionNew)
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["sms"]) == 1
+	}, "rso cell fired sms")
+	acts.mu.Lock()
+	logCalls = len(acts.got["log"])
+	smsCalls = len(acts.got["sms"])
+	acts.mu.Unlock()
+	if logCalls != 2 {
+		t.Errorf("rso severe event: log fired %d times, want 2 (fallback)", logCalls)
+	}
+	if smsCalls != 1 {
+		t.Errorf("rso severe event: sms fired %d times, want 1", smsCalls)
+	}
+
+	// imgw-hydro minor: no specific cell and the fallback needs severe,
+	// so nothing may fire.
+	feed <- hazardEventFrom("imgw-hydro", "minor", dispatch.TransitionNew)
+	time.Sleep(60 * time.Millisecond)
+	acts.mu.Lock()
+	logCalls = len(acts.got["log"])
+	smsCalls = len(acts.got["sms"])
+	acts.mu.Unlock()
+	if logCalls != 2 || smsCalls != 1 {
+		t.Errorf("imgw-hydro minor event fired (log %d, sms %d), want no new firings", logCalls, smsCalls)
+	}
+
+	if s := e.Stats(); s.EventsSeen != 3 || s.ActionsFired != 3 || s.RulesMatched != 2 {
+		t.Errorf("stats = %+v, want 3 seen, 3 fired, 2 matched", s)
 	}
 }
 

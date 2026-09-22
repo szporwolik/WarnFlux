@@ -39,8 +39,9 @@ func TestGroupRoutingRoundTrip(t *testing.T) {
 	err = store.SetGroupRouting(g.ID,
 		[]storage.ChannelAssignment{
 			{ID: "log-alerts", MinSeverity: "severe"},
-			{ID: "log-alerts", MinSeverity: "minor"}, // duplicate: kept once
-			{ID: "sms", MinSeverity: "moderate"},
+			{Source: "imgw-meteo", ID: "log-alerts", MinSeverity: "minor"},    // same ID, other source: kept
+			{Source: "imgw-meteo", ID: "log-alerts", MinSeverity: "moderate"}, // duplicate cell: first kept
+			{Source: "rso", ID: "sms", MinSeverity: "moderate"},
 		})
 	if err != nil {
 		t.Fatalf("SetGroupRouting: %v", err)
@@ -52,10 +53,11 @@ func TestGroupRoutingRoundTrip(t *testing.T) {
 	}
 	wantActions := []storage.ChannelAssignment{
 		{ID: "log-alerts", MinSeverity: "severe"},
-		{ID: "sms", MinSeverity: "moderate"},
+		{Source: "imgw-meteo", ID: "log-alerts", MinSeverity: "minor"},
+		{Source: "rso", ID: "sms", MinSeverity: "moderate"},
 	}
 	if !reflect.DeepEqual(r.Actions, wantActions) {
-		t.Errorf("Actions = %+v, want %+v (deduplicated, first severity kept)", r.Actions, wantActions)
+		t.Errorf("Actions = %+v, want %+v (deduplicated per source+ID, first severity kept, sorted)", r.Actions, wantActions)
 	}
 
 	// Empty assignment clears the matrix but keeps the group.

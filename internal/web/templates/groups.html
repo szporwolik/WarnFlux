@@ -32,15 +32,14 @@
           </thead>
           <tbody>
             {{range .Groups}}
-            {{$asev := .ActionSev}}
             <tr>
               <td><strong>{{.Name}}</strong></td>
               <td><span class="count">{{.Members}}</span></td>
               <td>
-                {{if .ActionSev}}
+                {{if .Assignments}}
                 <span class="routing-matrix">
-                  {{range $id, $sev := .ActionSev}}
-                  <span class="matrix-chip">{{$id}} <span class="sev sev-{{sevClass $sev}}">≥ {{$sev}}</span></span>
+                  {{range .Assignments}}
+                  <span class="matrix-chip"><span class="matrix-src">{{if .Source}}{{.Source}}{{else}}any{{end}}</span>{{.ID}} <span class="sev sev-{{sevClass .MinSeverity}}">≥ {{.MinSeverity}}</span></span>
                   {{end}}
                 </span>
                 {{else}}<span class="muted">none</span>{{end}}
@@ -52,25 +51,21 @@
                   <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Routing</summary>
                   <form method="post" action="/groups/{{.ID}}/routing" class="group-form routing-form">
                     <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                    <p class="routing-hint">Tick an action and pick the minimum severity that fires it.</p>
+                    <p class="routing-hint">Pick the minimum severity that fires each action, per input plugin. "any source" is the fallback when no specific row matches. "—" leaves the cell off.</p>
                     {{if $.Actions}}
-                    <fieldset class="routing-set">
-                      <legend>Actions</legend>
-                      <div class="matrix-list">
-                        {{range $.Actions}}
-                        <label class="matrix-row">
-                          <input type="checkbox" name="actions" value="{{.ID}}" {{if index $asev .ID}}checked{{end}}>
-                          <span class="matrix-id">{{.ID}}</span>
-                          <select name="action_sev:{{.ID}}" class="matrix-sev" {{if not (index $asev .ID)}}disabled{{end}}>
-                            {{$cur := index $asev .ID}}
-                            {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $cur}}selected{{end}}>{{.Label}}</option>{{end}}
-                          </select>
-                        </label>
-                        {{end}}
-                      </div>
-                    </fieldset>
-                    {{end}}
-                    {{if $.Actions}}
+                    <div class="matrix-grid" style="grid-template-columns:max-content repeat({{len $.Actions}}, minmax(0, 1fr))">
+                      <span class="matrix-head matrix-corner">source \ action</span>
+                      {{range $.Actions}}<span class="matrix-head" title="{{.ID}}">{{.ID}}</span>{{end}}
+                      {{range .Matrix}}
+                      <span class="matrix-src">{{.Label}}</span>
+                      {{range .Cells}}{{$cell := .}}
+                      <select name="cell:{{$cell.Source}}|{{$cell.Action}}" class="matrix-sev" title="{{$cell.Action}} via {{if $cell.Source}}{{$cell.Source}}{{else}}any source{{end}}">
+                        <option value="" {{if eq $cell.Sev ""}}selected{{end}}>—</option>
+                        {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $cell.Sev}}selected{{end}}>{{.Label}}</option>{{end}}
+                      </select>
+                      {{end}}
+                      {{end}}
+                    </div>
                     <button type="submit" class="btn-primary btn-add">Save routing</button>
                     {{else}}
                     <p class="muted routing-empty">No actions are configured in this instance.</p>

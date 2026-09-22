@@ -57,17 +57,21 @@ type Group struct {
 }
 
 // ChannelAssignment is one cell of a group's routing matrix: a configured
-// action or output instance ID together with the minimum severity that
-// fires it ("unknown" = deliver everything).
+// action or output instance ID, the hazard event source (input plugin) it
+// applies to, and the minimum severity that fires it ("unknown" =
+// deliver everything). An empty Source matches every source: it is the
+// fallback cell used when no source-specific cell for the action matches.
 type ChannelAssignment struct {
+	Source      string
 	ID          string
 	MinSeverity string
 }
 
 // GroupRouting is the full notification routing matrix of one group:
-// every assigned action carries its own severity threshold. Output
-// plugins are intentionally absent: they already receive every journal
-// change by default, so a per-group output assignment would be redundant.
+// every assigned cell reads "events from Source at severity ≥ threshold
+// fire action ID". Output plugins are intentionally absent: they already
+// receive every journal change by default, so a per-group output
+// assignment would be redundant.
 type GroupRouting struct {
 	GroupID int64
 	Name    string
@@ -102,9 +106,9 @@ type GroupStore interface {
 	// group reports storage.ErrGroupNotFound.
 	GroupRouting(groupID int64) (GroupRouting, error)
 	// SetGroupRouting replaces the group's routing matrix: each assigned
-	// action carries its own minimum severity. An invalid severity reports
-	// storage.ErrInvalidSeverity; a missing group reports
-	// storage.ErrGroupNotFound.
+	// cell carries its own source and minimum severity. An invalid
+	// severity reports storage.ErrInvalidSeverity; a missing group
+	// reports storage.ErrGroupNotFound.
 	SetGroupRouting(groupID int64, actions []ChannelAssignment) error
 	// ListGroupRoutings returns the routing of every group (the rule
 	// engine's authoritative source), ordered by group name.

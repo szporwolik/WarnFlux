@@ -2,10 +2,13 @@
 // consumer of the canonical dispatch ingress.
 //
 //	receiver callback -> canonical Event -> ingress queue
-//	    -> rule engine: per-action severity matrix -> assigned actions
+//	    -> rule engine: per-cell (source × action) severity matrix
+//	       -> assigned actions
 //
 // Every group is a notification channel: a routing matrix in which every
-// assigned action instance carries its own minimum severity. Output
+// cell reads "events from input plugin S at severity ≥ T fire action A".
+// A cell without a source (empty) matches every source and acts as the
+// fallback when no source-specific cell for that action matches. Output
 // plugins need no routing here — they receive every journal change by
 // default. Rules are reloaded from storage on an interval, so edits made
 // in the web UI take effect without a restart.
@@ -151,6 +154,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		// the permissive "unknown" threshold (deliver everything) matches.
 		rank = 0
 	}
+	src := strings.ToLower(strings.TrimSpace(ev.Hazard.Hazard.Source))
 
 	e.mu.RLock()
 	rules := e.rules
@@ -162,10 +166,24 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			continue
 		}
 
-		// Routing matrix: every assigned action carries its own minimum
-		// severity, so one event can fire a subset of the actions.
-		var fired int
+		// Routing matrix: every cell reads (source, action, threshold).
+		// For each action pick the most specific matching cell — a
+		// source-specific cell wins over the empty "any source" cell, so
+		// the fallback only applies where no specific cell exists.
+		best := make(map[string]storage.ChannelAssignment, len(rule.Actions))
 		for _, a := range rule.Actions {
+			if a.Source != "" && a.Source != src {
+				continue
+			}
+			cur, ok := best[a.ID]
+			if !ok || len(a.Source) > len(cur.Source) {
+				best[a.ID] = a
+			}
+		}
+
+		// One event can fire a subset of the actions.
+		var fired int
+		for _, a := range best {
 			if !meetsThreshold(rank, a.MinSeverity) {
 				continue
 			}

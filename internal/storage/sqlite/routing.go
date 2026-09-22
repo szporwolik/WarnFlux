@@ -11,7 +11,8 @@ import (
 )
 
 // GroupRouting returns the full routing matrix of one group: every
-// assigned action carries its own severity threshold, sorted by ID.
+// assigned cell carries its own source and severity threshold, sorted by
+// source then action ID.
 func (s *Store) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 	var r storage.GroupRouting
 	err := s.db.QueryRow(`SELECT id, name FROM groups WHERE id = ?`, groupID).
@@ -32,9 +33,9 @@ func (s *Store) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 }
 
 // SetGroupRouting replaces the group's routing matrix in one transaction.
-// Every assigned action carries its own canonical severity threshold;
-// IDs reference the configuration (not database rows) and are stored
-// as-is, deduplicated.
+// Every assigned cell carries its own source and canonical severity
+// threshold; IDs reference the configuration (not database rows) and are
+// stored as-is, deduplicated per (source, ID).
 func (s *Store) SetGroupRouting(groupID int64, actions []storage.ChannelAssignment) error {
 	for _, a := range actions {
 		if !storage.ValidSeverity(a.MinSeverity) {
@@ -67,9 +68,9 @@ func (s *Store) SetGroupRouting(groupID int64, actions []storage.ChannelAssignme
 	}
 	for _, a := range actions {
 		if _, err := tx.Exec(`
-			INSERT INTO group_actions (group_id, action_id, min_severity)
-			VALUES (?, ?, ?)`, groupID, a.ID, a.MinSeverity); err != nil {
-			return fmt.Errorf("assign action %q to group %d: %w", a.ID, groupID, err)
+			INSERT INTO group_actions (group_id, source, action_id, min_severity)
+			VALUES (?, ?, ?, ?)`, groupID, a.Source, a.ID, a.MinSeverity); err != nil {
+			return fmt.Errorf("assign action %q (source %q) to group %d: %w", a.ID, a.Source, groupID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -108,11 +109,11 @@ func (s *Store) ListGroupRoutings() ([]storage.GroupRouting, error) {
 	return out, nil
 }
 
-// groupActions reads the assigned actions with their thresholds, sorted.
+// groupActions reads the assigned cells with their thresholds, sorted.
 func (s *Store) groupActions(groupID int64) ([]storage.ChannelAssignment, error) {
 	rows, err := s.db.Query(`
-		SELECT action_id, min_severity FROM group_actions
-		WHERE group_id = ? ORDER BY action_id ASC`, groupID)
+		SELECT source, action_id, min_severity FROM group_actions
+		WHERE group_id = ? ORDER BY source ASC, action_id ASC`, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("list group %d actions: %w", groupID, err)
 	}
@@ -126,12 +127,12 @@ type assignmentScanner interface {
 	Err() error
 }
 
-// scanAssignments reads (id, min_severity) rows into assignments.
+// scanAssignments reads (source, id, min_severity) rows into assignments.
 func scanAssignments(rows assignmentScanner, what string) ([]storage.ChannelAssignment, error) {
 	var out []storage.ChannelAssignment
 	for rows.Next() {
 		var a storage.ChannelAssignment
-		if err := rows.Scan(&a.ID, &a.MinSeverity); err != nil {
+		if err := rows.Scan(&a.Source, &a.ID, &a.MinSeverity); err != nil {
 			return nil, fmt.Errorf("%s: %w", what, err)
 		}
 		out = append(out, a)
@@ -139,7 +140,8 @@ func scanAssignments(rows assignmentScanner, what string) ([]storage.ChannelAssi
 	return out, rows.Err()
 }
 
-// dedupeAssignments removes duplicates (by ID) while preserving order.
+// dedupeAssignments removes duplicates (by source + ID) while preserving
+// order.
 func dedupeAssignments(list []storage.ChannelAssignment) []storage.ChannelAssignment {
 	seen := make(map[string]struct{}, len(list))
 	out := list[:0]
@@ -147,10 +149,11 @@ func dedupeAssignments(list []storage.ChannelAssignment) []storage.ChannelAssign
 		if a.ID == "" {
 			continue
 		}
-		if _, ok := seen[a.ID]; ok {
+		key := a.Source + "\x00" + a.ID
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[a.ID] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, a)
 	}
 	return out

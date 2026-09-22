@@ -333,6 +333,28 @@ CREATE TABLE action_fires (
 CREATE INDEX idx_action_fires_age ON action_fires(fired_at_ms);
 `,
 	},
+	{
+		// v11: the routing matrix gains the input-plugin (event source)
+		// dimension. A cell now reads "events from source S at severity ≥
+		// T fire action A". The primary key must include the source, so
+		// the table is rebuilt; existing assignments become source-
+		// agnostic ('') and behave exactly as before.
+		SQL: `
+CREATE TABLE group_actions_new (
+	group_id     INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+	source       TEXT NOT NULL DEFAULT '',
+	action_id    TEXT NOT NULL,
+	min_severity TEXT NOT NULL DEFAULT 'unknown',
+	PRIMARY KEY (group_id, source, action_id)
+);
+
+INSERT INTO group_actions_new (group_id, source, action_id, min_severity)
+	SELECT group_id, '', action_id, min_severity FROM group_actions;
+
+DROP TABLE group_actions;
+ALTER TABLE group_actions_new RENAME TO group_actions;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

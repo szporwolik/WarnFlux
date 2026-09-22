@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 func TestGroupsCRUDFlow(t *testing.T) {
@@ -117,34 +119,41 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	}
 	csrf := env.csrfFromPage("/groups")
 
-	// Unknown channel ID rejected (never silently stored).
-	resp, _ := env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "actions": {"nope"}})
+	// Unknown action ID rejected (never silently stored).
+	resp, _ := env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "cell:|nope": {"severe"}})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown action = %d, want 422", resp.StatusCode)
 	}
 
+	// Unknown source rejected.
+	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "cell:bogus|logger-action": {"severe"}})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown source = %d, want 422", resp.StatusCode)
+	}
+
 	// Disabled actions are not assignable.
-	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "actions": {"logger-off"}})
+	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "cell:|logger-off": {"severe"}})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("disabled action = %d, want 422", resp.StatusCode)
 	}
 
-	// Invalid per-channel severity rejected.
+	// Invalid per-cell severity rejected.
 	resp, html := env.postForm("/groups/1/routing", url.Values{
-		"csrf":                     {csrf},
-		"actions":                  {"logger-action"},
-		"action_sev:logger-action": {"orange"},
+		"csrf":                   {csrf},
+		"cell:|logger-action":    {"orange"},
+		"cell:rso|logger-action": {"severe"},
 	})
 	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "invalid severity") {
 		t.Fatalf("invalid channel severity = %d %s", resp.StatusCode, html)
 	}
 
-	// Valid matrix: logger at severe; a missing per-channel severity
-	// defaults to 'unknown'.
+	// Valid matrix: any-source fallback at severe, rso-specific at
+	// moderate, an off cell ("") skipped.
 	resp, _ = env.postForm("/groups/1/routing", url.Values{
-		"csrf":                     {csrf},
-		"actions":                  {"logger-action"},
-		"action_sev:logger-action": {"severe"},
+		"csrf":                          {csrf},
+		"cell:|logger-action":           {"severe"},
+		"cell:rso|logger-action":        {"moderate"},
+		"cell:imgw-meteo|logger-action": {""},
 	})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/groups" {
 		t.Fatalf("routing save = %d %q, want redirect to /groups", resp.StatusCode, resp.Header.Get("Location"))
@@ -154,23 +163,41 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GroupRouting: %v", err)
 	}
-	if len(r.Actions) != 1 || r.Actions[0].ID != "logger-action" || r.Actions[0].MinSeverity != "severe" {
-		t.Fatalf("actions = %+v", r.Actions)
+	got := map[storage.ChannelAssignment]bool{}
+	for _, a := range r.Actions {
+		got[a] = true
 	}
-
-	// The page renders per-channel chips and the popover prefills.
-	_, html = env.get("/groups")
-	for _, want := range []string{
-		"logger-action",
-		`name="action_sev:logger-action"`,
-		"severe or higher",
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("groups page missing %q: %s", want, html)
+	want := []storage.ChannelAssignment{
+		{ID: "logger-action", MinSeverity: "severe"},
+		{Source: "rso", ID: "logger-action", MinSeverity: "moderate"},
+	}
+	if len(r.Actions) != len(want) {
+		t.Fatalf("actions = %+v, want %+v", r.Actions, want)
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Fatalf("actions = %+v, missing %+v", r.Actions, w)
 		}
 	}
 
-	// Unchecking everything clears the matrix.
+	// The page renders the chips with the source badge and the popover
+	// grid prefills.
+	_, html = env.get("/groups")
+	for _, wantStr := range []string{
+		"logger-action",
+		"any",
+		"rso",
+		`name="cell:|logger-action"`,
+		`name="cell:rso|logger-action"`,
+		"severe or higher",
+		"moderate or higher",
+	} {
+		if !strings.Contains(html, wantStr) {
+			t.Errorf("groups page missing %q: %s", wantStr, html)
+		}
+	}
+
+	// Clearing the grid (no cell posted) empties the matrix.
 	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("clear routing = %d, want redirect", resp.StatusCode)

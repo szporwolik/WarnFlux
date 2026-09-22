@@ -14,21 +14,60 @@ import (
 // groupsPerPage bounds the groups table to a compact, paginated view.
 const groupsPerPage = 10
 
-// groupRow is one groups-table row for the template. ActionSev maps each
-// assigned action ID to its own minimum severity.
+// groupRow is one groups-table row for the template. Assignments holds the
+// saved routing cells; Matrix is the full source × action grid with the
+// current severity prefilled (for the popover form).
 type groupRow struct {
-	ID        int64
-	Name      string
-	Members   int64
-	ActionSev map[string]string
-	UpdatedAt time.Time
+	ID          int64
+	Name        string
+	Members     int64
+	Assignments []storage.ChannelAssignment
+	Matrix      []matrixSourceRow
+	UpdatedAt   time.Time
 }
 
-// channelOption is one assignable action or output instance shown as a
-// checkbox in the routing form.
+// channelOption is one assignable action instance offered in the routing
+// matrix.
 type channelOption struct {
 	ID   string
 	Type string
+}
+
+// sourceOption is one input-plugin (hazard event source) row of the
+// routing matrix. An empty Value is the "any source" fallback row.
+type sourceOption struct {
+	Value string
+	Label string
+}
+
+// routingSources lists the known hazard event source slugs offered as
+// matrix rows. "" is the any-source fallback. Sources of events received
+// through the MQTT receiver are the upstream producers' slugs, so they
+// match "any" (or their own row when it exists here).
+var routingSources = []sourceOption{
+	{Value: "", Label: "any source"},
+	{Value: "imgw-meteo", Label: "IMGW meteo"},
+	{Value: "imgw-hydro", Label: "IMGW hydro"},
+	{Value: "rso", Label: "RSO"},
+	{Value: "test-signal", Label: "test signal"},
+}
+
+// matrixCell is one severity select of the popover grid.
+type matrixCell struct {
+	Source string // "" = any source
+	Action string // action instance ID
+	Sev    string // current severity, "" = cell off
+}
+
+// matrixSourceRow is one source row of the popover grid.
+type matrixSourceRow struct {
+	Label string
+	Cells []matrixCell
+}
+
+// cellKey identifies one popover cell.
+func cellKey(source, actionID string) string {
+	return source + "|" + actionID
 }
 
 // severityChoice is one routing threshold option.
@@ -168,9 +207,9 @@ func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleGroupRouting saves one group's notification routing matrix: every
-// assigned action/output carries its own minimum severity. Only IDs that
-// exist in the current configuration are accepted, so stale form values
-// can never land in the database.
+// posted cell carries its own source and minimum severity. Only source
+// slugs and action IDs that exist in the current configuration are
+// accepted, so stale form values can never land in the database.
 func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
@@ -183,7 +222,7 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actions, err := parseMatrixAssignments(r, r.PostForm["actions"], "action_sev:", s.availableActions())
+	actions, err := parseMatrixCells(r, routingSources, s.availableActions())
 	if err != nil {
 		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, err.Error())
 		return
@@ -196,34 +235,42 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/groups", http.StatusSeeOther)
 }
 
-// parseMatrixAssignments builds the checked channel assignments from the
-// posted checkbox list: each checked ID gets its threshold from the
-// matching <prefix><id> field. Unknown IDs or invalid severities are
-// rejected.
-func parseMatrixAssignments(r *http.Request, posted []string, prefix string, allowed []channelOption) ([]storage.ChannelAssignment, error) {
-	known := make(map[string]bool, len(allowed))
-	for _, o := range allowed {
-		known[o.ID] = true
+// parseMatrixCells reads the posted routing grid. Form field names are
+// "cell:<source>|<action>" and values are canonical severities; an empty
+// value means the cell is off and is skipped. Unknown sources, unknown
+// action IDs or invalid severities are rejected.
+func parseMatrixCells(r *http.Request, sources []sourceOption, allowed []channelOption) ([]storage.ChannelAssignment, error) {
+	knownSrc := make(map[string]bool, len(sources))
+	for _, o := range sources {
+		knownSrc[o.Value] = true
 	}
-	seen := make(map[string]bool, len(posted))
-	out := make([]storage.ChannelAssignment, 0, len(posted))
-	for _, id := range posted {
-		id = strings.TrimSpace(id)
-		if id == "" || seen[id] {
+	knownAct := make(map[string]bool, len(allowed))
+	for _, o := range allowed {
+		knownAct[o.ID] = true
+	}
+	out := make([]storage.ChannelAssignment, 0, len(r.PostForm))
+	for key, values := range r.PostForm {
+		if !strings.HasPrefix(key, "cell:") {
 			continue
 		}
-		if !known[id] {
+		src, id, ok := strings.Cut(strings.TrimPrefix(key, "cell:"), "|")
+		if !ok {
+			return nil, fmt.Errorf("malformed routing cell %q in routing form", key)
+		}
+		if !knownSrc[src] {
+			return nil, fmt.Errorf("unknown source %q in routing form", src)
+		}
+		if !knownAct[id] {
 			return nil, fmt.Errorf("unknown action or output id %q in routing form", id)
 		}
-		seen[id] = true
-		sev := strings.ToLower(strings.TrimSpace(r.PostFormValue(prefix + id)))
+		sev := strings.ToLower(strings.TrimSpace(values[len(values)-1]))
 		if sev == "" {
-			sev = "unknown"
+			continue // cell left on "—": not assigned
 		}
 		if !storage.ValidSeverity(sev) {
-			return nil, fmt.Errorf("invalid severity for channel %q", id)
+			return nil, fmt.Errorf("invalid severity for cell %q", key)
 		}
-		out = append(out, storage.ChannelAssignment{ID: id, MinSeverity: sev})
+		out = append(out, storage.ChannelAssignment{Source: src, ID: id, MinSeverity: sev})
 	}
 	return out, nil
 }
@@ -238,6 +285,29 @@ func (s *Server) availableActions() []channelOption {
 		out = append(out, channelOption{ID: st.ID, Type: st.Type})
 	}
 	return out
+}
+
+// buildMatrix lays out the popover grid: one row per known source, one
+// severity select per action, prefilled with the saved severity ("" when
+// the cell is unassigned).
+func buildMatrix(assignments []storage.ChannelAssignment, actions []channelOption) []matrixSourceRow {
+	saved := make(map[string]string, len(assignments))
+	for _, a := range assignments {
+		saved[cellKey(a.Source, a.ID)] = a.MinSeverity
+	}
+	rows := make([]matrixSourceRow, 0, len(routingSources))
+	for _, src := range routingSources {
+		row := matrixSourceRow{Label: src.Label, Cells: make([]matrixCell, 0, len(actions))}
+		for _, act := range actions {
+			row.Cells = append(row.Cells, matrixCell{
+				Source: src.Value,
+				Action: act.ID,
+				Sev:    saved[cellKey(src.Value, act.ID)],
+			})
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 // validateGroupForm returns a user-facing message for invalid input.
@@ -300,18 +370,17 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		}
 	}
 	rows := make([]groupRow, 0, len(groups))
+	actions := s.availableActions()
 	for _, g := range groups {
 		row := groupRow{
 			ID:        g.ID,
 			Name:      g.Name,
 			Members:   g.Members,
-			ActionSev: map[string]string{},
 			UpdatedAt: g.UpdatedAt,
 		}
 		if routing, err := s.users.GroupRouting(g.ID); err == nil {
-			for _, a := range routing.Actions {
-				row.ActionSev[a.ID] = a.MinSeverity
-			}
+			row.Assignments = routing.Actions
+			row.Matrix = buildMatrix(routing.Actions, actions)
 		} else {
 			s.logger.Warn("web: group routing unavailable", "group", g.ID, "error", err)
 		}
@@ -331,7 +400,7 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		EditID:     editID,
 		Error:      errMsg,
 		Severities: severityChoices,
-		Actions:    s.availableActions(),
+		Actions:    actions,
 		Page:       page,
 		Pages:      pages,
 		From:       from,

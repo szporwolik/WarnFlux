@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -223,16 +224,16 @@ func TestMigrationV8RoutingMatrixBackfill(t *testing.T) {
 		t.Fatalf("Open of v7 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 7 || info.To != 10 {
-		t.Fatalf("migration = %+v, want {From:7 To:10}", info)
+	if info.From != 7 || info.To != len(migrations) {
+		t.Fatalf("migration = %+v, want {From:7 To:%d}", info, len(migrations))
 	}
 
 	r, err := store.GroupRouting(1)
 	if err != nil {
 		t.Fatalf("GroupRouting: %v", err)
 	}
-	if len(r.Actions) != 1 || r.Actions[0].MinSeverity != "severe" {
-		t.Errorf("backfilled action = %+v, want severe", r.Actions)
+	if len(r.Actions) != 1 || r.Actions[0].MinSeverity != "severe" || r.Actions[0].Source != "" {
+		t.Errorf("backfilled action = %+v, want severe, any source", r.Actions)
 	}
 
 	// The obsolete column and table must be gone.
@@ -260,6 +261,71 @@ func TestMigrationV8RoutingMatrixBackfill(t *testing.T) {
 	}
 }
 
+// TestMigrationV11SourceBackfill builds a v10 database with routing rows
+// and verifies the v11 table rebuild keeps them with the empty
+// any-source marker and the new primary key shape.
+func TestMigrationV11SourceBackfill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v10.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := migrate(db, migrations[:10]); err != nil {
+		db.Close()
+		t.Fatalf("migrate to v10: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO groups (name, created_at_ms, updated_at_ms) VALUES ('spok', 1, 1)`); err != nil {
+		db.Close()
+		t.Fatalf("insert group: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO group_actions (group_id, action_id, min_severity)
+		VALUES (1, 'log', 'severe'), (1, 'sms', 'minor')`); err != nil {
+		db.Close()
+		t.Fatalf("insert actions: %v", err)
+	}
+	db.Close()
+
+	store, info, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open of v10 database: %v", err)
+	}
+	defer store.Close()
+	if info.From != 10 || info.To != len(migrations) {
+		t.Fatalf("migration = %+v, want {From:10 To:%d}", info, len(migrations))
+	}
+
+	r, err := store.GroupRouting(1)
+	if err != nil {
+		t.Fatalf("GroupRouting: %v", err)
+	}
+	want := []storage.ChannelAssignment{
+		{ID: "log", MinSeverity: "severe"},
+		{ID: "sms", MinSeverity: "minor"},
+	}
+	if !reflect.DeepEqual(r.Actions, want) {
+		t.Errorf("Actions = %+v, want %+v (rows kept, source backfilled to '') ", r.Actions, want)
+	}
+
+	// The rebuilt table must accept a source-specific cell and keep the
+	// any-source fallback next to it.
+	if err := store.SetGroupRouting(1, []storage.ChannelAssignment{
+		{Source: "imgw-meteo", ID: "log", MinSeverity: "moderate"},
+		{ID: "log", MinSeverity: "severe"},
+	}); err != nil {
+		t.Fatalf("SetGroupRouting with source: %v", err)
+	}
+	r, err = store.GroupRouting(1)
+	if err != nil {
+		t.Fatalf("GroupRouting after set: %v", err)
+	}
+	if len(r.Actions) != 2 || r.Actions[0].Source != "" || r.Actions[1].Source != "imgw-meteo" {
+		t.Errorf("Actions after set = %+v, want fallback + imgw-meteo cells", r.Actions)
+	}
+}
+
 // TestMigrationV4BackfillsLastSeen builds a v3 database with a legacy text
 // last_seen_at and verifies the v4 step backfills last_seen_at_ms.
 func TestMigrationV4BackfillsLastSeen(t *testing.T) {
@@ -283,8 +349,8 @@ func TestMigrationV4BackfillsLastSeen(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if info.To != 10 {
-		t.Fatalf("migrated to %d, want 10", info.To)
+	if info.To != len(migrations) {
+		t.Fatalf("migrated to %d, want %d", info.To, len(migrations))
 	}
 	var ms int64
 	if err := store.db.QueryRow("SELECT last_seen_at_ms FROM events WHERE event_key = 'src:1'").Scan(&ms); err != nil {
@@ -397,16 +463,16 @@ func TestMigrationV2WithJournalReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of real v2 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 2 || info.To != 10 {
-		t.Fatalf("migration = %+v, want {From:2 To:10}", info)
+	if info.From != 2 || info.To != len(migrations) {
+		t.Fatalf("migration = %+v, want {From:2 To:%d}", info, len(migrations))
 	}
 
 	var v int
 	if err := store.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if v != 10 {
-		t.Errorf("user_version = %d, want 10", v)
+	if v != len(migrations) {
+		t.Errorf("user_version = %d, want %d", v, len(migrations))
 	}
 
 	// The event row survives with a correct machine-time last_seen.
@@ -460,8 +526,8 @@ func TestMigrationV2EventsWithoutJournalReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of v2 database: %v", err)
 	}
 	defer store.Close()
-	if info.To != 10 {
-		t.Fatalf("migrated to %d, want 10", info.To)
+	if info.To != len(migrations) {
+		t.Fatalf("migrated to %d, want %d", info.To, len(migrations))
 	}
 	if _, err := store.Get(context.Background(), "v2src:1"); err != nil {
 		t.Fatalf("Get after migration: %v", err)
@@ -498,8 +564,8 @@ func TestMigrationV1WithRowsReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of real v1 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 1 || info.To != 10 {
-		t.Fatalf("migration = %+v, want {From:1 To:10}", info)
+	if info.From != 1 || info.To != len(migrations) {
+		t.Fatalf("migration = %+v, want {From:1 To:%d}", info, len(migrations))
 	}
 	var expMs, seenMs int64
 	if err := store.db.QueryRow("SELECT expires_at_ms, last_seen_at_ms FROM events WHERE event_key = 'v1src:1'").Scan(&expMs, &seenMs); err != nil {
@@ -572,8 +638,8 @@ func TestMigrationLegacyCursorWithoutTypeResetsOnSync(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if info.To != 10 {
-		t.Fatalf("migrated to %d, want 10", info.To)
+	if info.To != len(migrations) {
+		t.Fatalf("migrated to %d, want %d", info.To, len(migrations))
 	}
 
 	ctx := context.Background()

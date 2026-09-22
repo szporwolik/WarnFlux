@@ -647,9 +647,22 @@ Built-in plugins:
 
 ## Releases
 
-CI (`pull_request` and pushes to `main`) runs format checks, `go vet`, the
-test suite with the race detector and `govulncheck`. Tagging a semantic
-version (`v0.1.0`) triggers the release workflow, which builds:
+The canonical version source of truth is the **`VERSION` file at the
+repository root** (one line, plain semantic version, e.g. `0.1.0`).
+Release builds inject it into the binary via ldflags; dev builds fall back
+to reading a `VERSION` file next to the binary or in the working
+directory, so `go run ./cmd/warnflux --version` from the repo root
+reports the real version.
+
+To release: bump `VERSION`, push, then tag `v<version>` — the release
+workflow cross-checks the tag against `VERSION` and fails when they
+mismatch, so a release can never publish a version that was not bumped
+intentionally.
+
+CI (`pull_request` and pushes to `main`) runs format checks (including a
+`VERSION` format validation), `go vet`, the test suite with the race
+detector and `govulncheck`. Tagging a semantic version (`v0.1.0`) triggers
+the release workflow, which builds:
 
 - `warnflux-linux-amd64` and `warnflux-linux-arm64`
 - `warnflux-windows-amd64.exe`

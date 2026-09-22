@@ -3,7 +3,9 @@
 # ---- Build stage -----------------------------------------------------------
 FROM golang:1.26-alpine AS build
 
-# Version metadata, injected by CI (or defaults for local builds).
+# Version metadata, injected by CI (or defaults for local builds). The
+# canonical version source of truth is the VERSION file at the repository
+# root; the release workflow passes it here as a build arg.
 ARG VERSION=dev
 ARG COMMIT=unknown
 

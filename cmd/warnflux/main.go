@@ -56,11 +56,39 @@ func resolveStoragePath(path string, logger *slog.Logger) string {
 //
 //	-X main.version=vX.Y.Z -X main.commit=<sha>
 //
-// Development builds report "dev" / "unknown".
+// Development builds report "dev" / "unknown". The canonical version
+// source of truth is the VERSION file at the repository root: release
+// builds inject it via ldflags, and resolveVersion lets dev builds pick it
+// up from next to the binary or from the working directory (cqops-style).
 var (
 	version = "dev"
 	commit  = "unknown"
 )
+
+// resolveVersion upgrades a "dev" build to the version from a VERSION file
+// when one is present next to the executable or in the working directory.
+// Injected (non-dev) versions are returned unchanged; the file is trimmed
+// so editors that add a trailing newline cannot corrupt it.
+func resolveVersion(v string) string {
+	if v != "dev" {
+		return v
+	}
+	var candidates []string
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "VERSION"))
+	}
+	candidates = append(candidates, "VERSION")
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
+			return trimmed
+		}
+	}
+	return v
+}
 
 // Shutdown bounds for the dispatch/action/web subsystems.
 const (
@@ -87,7 +115,7 @@ func main() {
 	fs.Parse(os.Args[1:])
 
 	if *showVersion {
-		fmt.Printf("warnflux %s (%s)\n", version, commit)
+		fmt.Printf("warnflux %s (%s)\n", resolveVersion(version), commit)
 		return
 	}
 
@@ -98,6 +126,10 @@ func main() {
 }
 
 func run(configPath string) error {
+	// Resolve the reported version once (dev builds may pick it up from
+	// the repository VERSION file; release builds have it injected).
+	resolvedVersion := resolveVersion(version)
+
 	// Phase 1 — static initialization. No background goroutines exist yet,
 	// so a failure here leaves nothing running behind.
 	cfg, err := config.Load(configPath)
@@ -112,7 +144,7 @@ func run(configPath string) error {
 	defer logCloser.Close()
 	slog.SetDefault(logger)
 
-	logger.Info("WarnFlux starting", "version", version, "commit", commit)
+	logger.Info("WarnFlux starting", "version", resolvedVersion, "commit", commit)
 
 	// Dev/debug convenience: when the configuration does not provide a
 	// database path, warn and place the database next to the binary
@@ -152,7 +184,7 @@ func run(configPath string) error {
 			ExpirationInterval: cfg.App.ExpirationInterval,
 			ChangeRetention:    cfg.App.ChangeRetention,
 			EventRetention:     cfg.App.EventRetention,
-			Version:            version,
+			Version:            resolvedVersion,
 		}, logger)
 	if err != nil {
 		return fmt.Errorf("configure plugins: %w", err)
@@ -199,7 +231,7 @@ func run(configPath string) error {
 	// application declares readiness (bind failure is startup-critical).
 	var webSrv *web.Server
 	if cfg.Web.Enabled {
-		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, version, commit)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}

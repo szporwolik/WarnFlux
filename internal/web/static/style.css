@@ -355,7 +355,7 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   padding: 0.1rem 0.55rem;
   border-radius: 999px;
   font-size: 0.7rem;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   border: 1px solid transparent;

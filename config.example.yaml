@@ -192,29 +192,6 @@ dispatch:
         - topic: "home/#"
           qos: 1
 
-    # Remote receiver: an external broker feeding the same dispatch ingress.
-    - id: remote-club
-      enabled: false
-
-      broker: tcp://10.10.10.10:1883
-      client_id: warnflux-dispatch-club
-
-      username: ""
-      password: ""
-      # Alternatively, read the password from a file (e.g. a Docker secret).
-      # Mutually exclusive with password.
-      password_file: ""
-
-      connect_timeout: 10s
-      keep_alive: 30s
-
-      warnflux:
-        enabled: false
-
-      subscriptions:
-        - topic: "club/#"
-          qos: 1
-
 # Authenticated admin web UI (server-rendered, embedded assets, no CDN).
 web:
   enabled: true

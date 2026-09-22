@@ -4,7 +4,7 @@
 		{
 			"label": "build",
 			"type": "shell",
-			"command": "mkdir -p build; if [ ! -f build/config.yaml ]; then cp config.example.yaml build/config.yaml; fi; go build -o build/warnflux ./cmd/warnflux",
+			"command": "mkdir -p build; if [ ! -f build/config.yaml ]; then cp config.example.yaml build/config.yaml; fi; V=$(tr -d '[:space:]' < VERSION); C=$(git rev-parse --short HEAD); go build -ldflags \"-X main.version=$V -X main.commit=$C\" -o build/warnflux ./cmd/warnflux",
 			"problemMatcher": [
 				"$go"
 			],

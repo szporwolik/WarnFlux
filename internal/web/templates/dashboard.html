@@ -16,12 +16,6 @@
     </a>
     <nav class="sidenav">
       <a class="nav-item active" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>
-      <a class="nav-item" href="#status-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-speedometer2"></use></svg><span class="nav-label">System</span></a>
-      <a class="nav-item" href="#mqtt-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">MQTT connections</span></a>
-      <a class="nav-item" href="#weather-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-sun"></use></svg><span class="nav-label">Weather</span></a>
-      <a class="nav-item" href="#warnings-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span class="nav-label">Active warnings</span></a>
-      <a class="nav-item" href="#plugins-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-puzzle"></use></svg><span class="nav-label">Sources &amp; outputs</span></a>
-      <a class="nav-item" href="#actions-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg><span class="nav-label">Actions</span></a>
     </nav>
     <span class="sidebar-spacer"></span>
     <form method="post" action="/logout" class="logout">
@@ -58,7 +52,7 @@
     <div class="kv"><span class="k">Version</span><span class="v">{{.Version}} ({{.Commit}})</span></div>
     <div class="kv"><span class="k">Uptime</span><span class="v">{{dur .Uptime}}</span></div>
     <div class="kv"><span class="k">Receivers</span><span class="v">{{.Connected}} / {{.Receivers}} connected</span></div>
-    <div class="kv"><span class="k">Router status docs</span><span class="v">{{.RouterDocs}}</span></div>
+    <div class="kv"><span class="k">Router status snapshots</span><span class="v">{{.RouterDocs}}</span></div>
     <div class="kv"><span class="k">Dispatch queue</span><span class="v">{{.QueueDepth}} / {{.QueueCap}} ({{.DroppedFull}} dropped)</span></div>
     <div class="kv"><span class="k">Messages</span><span class="v">{{.Messages}} ({{.Malformed}} malformed, {{.Oversized}} oversized)</span></div>
     <div class="kv"><span class="k">Database</span><span class="v"><span class="badge ok">ready</span></span></div>
@@ -177,7 +171,7 @@
         <tr>
           <td><strong>{{.ID}}</strong></td>
           <td>{{.Type}}</td>
-          <td><span class="badge badge-{{pluginClass .State}}">{{.State}}</span></td>
+          <td><span class="badge {{pluginClass .State}}">{{.State}}</span></td>
           <td>{{.RestartCount}}</td>
           <td>{{.ConsecutiveFailures}}</td>
           <td>{{timeShort (derefTime .LastSuccessAt)}}</td>
@@ -200,7 +194,7 @@
         <tr>
           <td><strong>{{.ID}}</strong></td>
           <td>{{.Type}}</td>
-          <td><span class="badge badge-{{pluginClass .State}}">{{.State}}</span></td>
+          <td><span class="badge {{pluginClass .State}}">{{.State}}</span></td>
           <td>{{.RestartCount}}</td>
           <td>{{.ConsecutiveFailures}}</td>
           <td>{{timeShort (derefTime .LastSuccessAt)}}</td>
@@ -230,7 +224,7 @@
         <tr>
           <td><strong>{{.ID}}</strong></td>
           <td>{{.Type}}</td>
-          <td><span class="badge badge-{{actionClass .State}}">{{.State}}</span>{{if .Reason}}<div class="reason">{{.Reason}}</div>{{end}}</td>
+          <td><span class="badge {{actionClass .State}}">{{.State}}</span>{{if .Reason}}<div class="reason">{{.Reason}}</div>{{end}}</td>
           <td>{{.QueueDepth}} / {{.QueueCapacity}}</td>
           <td>{{.Handled}}</td>
           <td>{{.Failures}}</td>

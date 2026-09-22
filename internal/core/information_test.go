@@ -9,6 +9,7 @@ import (
 func validInformationMessage() InformationMessage {
 	return InformationMessage{
 		Source:      "openmeteo",
+		ProducerID:  "weather-home",
 		Key:         "home",
 		Kind:        "weather",
 		GeneratedAt: time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC),
@@ -34,6 +35,9 @@ func TestInformationMessageValidateRejects(t *testing.T) {
 		mut  func(*InformationMessage)
 	}{
 		{"empty source", func(m *InformationMessage) { m.Source = "" }},
+		{"empty producer", func(m *InformationMessage) { m.ProducerID = "" }},
+		{"uppercase producer", func(m *InformationMessage) { m.ProducerID = "Weather-Home" }},
+		{"producer with wildcard", func(m *InformationMessage) { m.ProducerID = "weather+" }},
 		{"uppercase source", func(m *InformationMessage) { m.Source = "OpenMeteo" }},
 		{"source with slash", func(m *InformationMessage) { m.Source = "open/meteo" }},
 		{"source with wildcard", func(m *InformationMessage) { m.Source = "openmeteo+" }},
@@ -49,6 +53,10 @@ func TestInformationMessageValidateRejects(t *testing.T) {
 			m.Payload = []byte(`"` + strings.Repeat("x", MaxInformationPayloadBytes) + `"`)
 		}},
 		{"oversized slug", func(m *InformationMessage) { m.Key = strings.Repeat("a", 65) }},
+		{"valid_until before generated", func(m *InformationMessage) {
+			t := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)
+			m.ValidUntil = &t
+		}},
 	}
 	for _, c := range cases {
 		m := validInformationMessage()

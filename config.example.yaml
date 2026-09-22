@@ -50,8 +50,10 @@ sources:
       interval: 30s
 
   # Open-Meteo INFORMATIONAL weather source: publishes ordinary weather
-  # snapshots to retained MQTT information topics. It does NOT generate
-  # HazardEvents. See internal/plugins/sources/openmeteo/README.md.
+  # snapshots to retained MQTT information topics
+  # (<topic_prefix>/info/openmeteo/<producer_id>/<location_id>/weather).
+  # It does NOT generate HazardEvents. See
+  # internal/plugins/sources/openmeteo/README.md and docs/weather-schema.md.
   - id: weather-home
     type: openmeteo
     enabled: false

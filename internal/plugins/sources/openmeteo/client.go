@@ -111,25 +111,6 @@ func retryAfter(err error) (time.Duration, bool) {
 	return re.after, true
 }
 
-// waitRetryAfter honors a Retry-After delay from a rate-limited response,
-// clamped so the poll loop is never stalled indefinitely. Cancellation is
-// respected.
-func waitRetryAfter(ctx context.Context, err error) {
-	after, ok := retryAfter(err)
-	if !ok {
-		return
-	}
-	if after > maxRetryAfter {
-		after = maxRetryAfter
-	}
-	timer := time.NewTimer(after)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
-}
-
 // Fetch performs one bounded forecast request and decodes the response.
 func (c *Client) Fetch(ctx context.Context, loc Location, forecastHours, forecastDays int) (*ProviderResponse, error) {
 	u, err := url.Parse(c.baseURL)

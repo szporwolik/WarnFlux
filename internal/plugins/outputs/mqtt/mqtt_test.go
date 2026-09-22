@@ -251,11 +251,11 @@ func TestWireStatusGoldenJSON(t *testing.T) {
 }
 
 // TestInformationTopicMapping pins the retained information topic layout:
-// <prefix>/info/<source>/<key>/<kind>.
+// <prefix>/info/<source>/<producer_id>/<key>/<kind>.
 func TestInformationTopicMapping(t *testing.T) {
 	o := &Output{cfg: Config{TopicPrefix: "warnflux"}}
-	msg := core.InformationMessage{Source: "openmeteo", Key: "home", Kind: "weather"}
-	if got := o.informationTopic(msg); got != "warnflux/info/openmeteo/home/weather" {
-		t.Errorf("topic = %q, want warnflux/info/openmeteo/home/weather", got)
+	msg := core.InformationMessage{Source: "openmeteo", ProducerID: "weather-home", Key: "home", Kind: "weather"}
+	if got := o.informationTopic(msg); got != "warnflux/info/openmeteo/weather-home/home/weather" {
+		t.Errorf("topic = %q, want warnflux/info/openmeteo/weather-home/home/weather", got)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,19 +25,7 @@ const (
 	emitWaitTimeout       = 5 * time.Second
 	drainTimeout          = 5 * time.Second
 	groupShutdownGrace    = 5 * time.Second
-	// maxInfoPublishTimeout bounds a single information publish call even
-	// for unusual output configurations: information is auxiliary and must
-	// never hold the emitting source (or shutdown) indefinitely.
-	maxInfoPublishTimeout = 30 * time.Second
 )
-
-// infoTarget couples one information-capable output with its bounded
-// publish timeout.
-type infoTarget struct {
-	id      string
-	timeout time.Duration
-	pub     InformationPublisher
-}
 
 // IngestFunc is the core ingestion entry point injected by the application.
 type IngestFunc func(ctx context.Context, event core.HazardEvent) (ingest.Result, core.EventChange, error)
@@ -83,7 +70,7 @@ type Manager struct {
 
 	sources   []*sourceSupervisor
 	outputs   []*outputWorker
-	infoOuts  []infoTarget
+	infoOuts  []*outputWorker
 	startedAt time.Time
 
 	// accepting is false once shutdown begins: Emit then rejects events
@@ -124,10 +111,21 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		if err != nil {
 			return nil, fmt.Errorf("source %q (type %q): invalid configuration: %w", cfg.ID, cfg.Type, err)
 		}
-		m.sources = append(m.sources, newSourceSupervisor(cfg, p, EmitterFunc{
-			EmitFn:            m.emit,
-			EmitInformationFn: m.emitInformation,
-		}, logger, tracker))
+		// Per-source emitter: the ProducerID stamped on information
+		// messages is the configured source instance ID, never a value the
+		// plugin chooses. The same wrapper reports operational source
+		// health into this source's status tracker.
+		srcID := cfg.ID
+		emit := &sourceEmitter{
+			EmitterFunc: EmitterFunc{
+				EmitFn: m.emit,
+				EmitInformationFn: func(ctx context.Context, message core.InformationMessage) error {
+					return m.emitInformation(ctx, srcID, message)
+				},
+			},
+			tracker: tracker,
+		}
+		m.sources = append(m.sources, newSourceSupervisor(cfg, p, emit, logger, tracker))
 	}
 
 	for _, cfg := range outputCfgs {
@@ -147,18 +145,44 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		w := newOutputWorker(cfg, p, store, logger, tracker)
 		w.health = m.health
 		m.outputs = append(m.outputs, w)
-		if ip, ok := p.(InformationPublisher); ok {
-			timeout := cfg.Runtime.Timeout
-			if timeout <= 0 {
-				timeout = emitWaitTimeout
-			}
-			if timeout > maxInfoPublishTimeout {
-				timeout = maxInfoPublishTimeout
-			}
-			m.infoOuts = append(m.infoOuts, infoTarget{id: cfg.ID, timeout: timeout, pub: ip})
+		if w.infoCapable() {
+			m.infoOuts = append(m.infoOuts, w)
 		}
 	}
 	return m, nil
+}
+
+// sourceEmitter is the per-source Emitter handed to one source plugin. It
+// stamps the ProducerID from the configured source ID and reports
+// operational health into the source's own status tracker (the supervisor
+// still owns lifecycle states).
+type sourceEmitter struct {
+	EmitterFunc
+	tracker *statusTracker
+}
+
+// ReportSourceHealthy implements the optional SourceHealthReporter
+// capability.
+func (e *sourceEmitter) ReportSourceHealthy() {
+	e.tracker.success(time.Now())
+}
+
+// ReportSourceDegraded implements the optional SourceHealthReporter
+// capability.
+func (e *sourceEmitter) ReportSourceDegraded(err error) {
+	e.tracker.failure(err, 0, time.Now())
+}
+
+// maxSourceShutdownTimeout returns the largest configured source shutdown
+// timeout, or zero when there are no sources.
+func maxSourceShutdownTimeout(sources []*sourceSupervisor) time.Duration {
+	var max time.Duration
+	for _, s := range sources {
+		if s.runtime.ShutdownTimeout > max {
+			max = s.runtime.ShutdownTimeout
+		}
+	}
+	return max
 }
 
 // Statuses returns a snapshot of every configured plugin instance.
@@ -222,8 +246,10 @@ func (m *Manager) Run(ctx context.Context) {
 	m.accepting.Store(false)
 
 	// 1. Stop the sources so no new events enter the queue. Each source is
-	// already bounded by its own shutdown timeout inside the supervisor.
-	m.stopGroup(&wgSources, "sources", groupShutdownGrace)
+	// already bounded by its own shutdown timeout inside the supervisor;
+	// the group wait must not tear the manager down while a source is
+	// still legitimately inside its configured window.
+	m.stopGroup(&wgSources, "sources", maxSourceShutdownTimeout(m.sources)+groupShutdownGrace)
 
 	// 2. Stop ingestion after a bounded drain of already-queued events.
 	cancelIngest()
@@ -363,19 +389,14 @@ func (m *Manager) drainQueue(procCtx context.Context) {
 				return
 			}
 		case <-timer.C:
-			// Final bounded sweep: anything still queued is completed with
-			// errShuttingDown so no emitter waits forever.
+			// Drain deadline reached: do NOT keep processing queued events
+			// indefinitely. Complete every remaining queued event with
+			// errShuttingDown (never nil) and return — Emit callers get a
+			// non-nil error for anything not durably processed.
 			m.queueMu.Lock()
-			for {
-				select {
-				case qe := <-m.eventQueue:
-					m.processEvent(procCtx, qe)
-				default:
-					m.failQueued()
-					m.queueMu.Unlock()
-					return
-				}
-			}
+			m.failQueued()
+			m.queueMu.Unlock()
+			return
 		}
 	}
 }
@@ -403,18 +424,21 @@ func (m *Manager) failQueued() {
 	}
 }
 
-// emitInformation validates, deep-copies and synchronously forwards an
-// informational message to every information-capable output with a bounded
-// per-output timeout and panic recovery. This path is auxiliary: it never
-// touches the hazard journal, cursors or failure accounting, and a failure
-// here only means the source retries on its next poll.
-func (m *Manager) emitInformation(ctx context.Context, message core.InformationMessage) error {
+// emitInformation stamps the ProducerID (the configured source instance ID
+// — plugins cannot choose it), validates and deep-copies the message, and
+// enqueues it into the bounded latest-state queues owned by the
+// information-capable output workers. This path is auxiliary: it never
+// touches the hazard journal, cursors or failure accounting. Enqueueing is
+// non-blocking; actual plugin invocation, timeouts and failure isolation
+// happen inside each output worker.
+func (m *Manager) emitInformation(ctx context.Context, producerID string, message core.InformationMessage) error {
 	if !m.accepting.Load() {
 		return errShuttingDown
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	message.ProducerID = producerID
 	message = message.Clone()
 	if err := message.Validate(); err != nil {
 		return fmt.Errorf("invalid information message: %w", err)
@@ -423,44 +447,13 @@ func (m *Manager) emitInformation(ctx context.Context, message core.InformationM
 		return fmt.Errorf("no information-capable outputs configured")
 	}
 
-	var (
-		mu       sync.Mutex
-		firstErr error
-		wg       sync.WaitGroup
-	)
-	for _, t := range m.infoOuts {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			callCtx, cancel := context.WithTimeout(ctx, t.timeout)
-			defer cancel()
-			if err := invokeInformation(t.pub, callCtx, message); err != nil {
-				m.logger.Warn("information publish failed",
-					"output_id", t.id,
-					"source", message.Source, "key", message.Key, "kind", message.Kind,
-					"error", err)
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	return firstErr
-}
-
-// invokeInformation runs an information publish under recover(), converting
-// panics into errors with a stack trace — the same fault isolation the
-// hazard path uses.
-func invokeInformation(p InformationPublisher, ctx context.Context, message core.InformationMessage) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("plugin panic: %v\n%s", r, debug.Stack())
+	var firstErr error
+	for _, w := range m.infoOuts {
+		if err := w.enqueueInfo(message); err != nil && firstErr == nil {
+			firstErr = err
 		}
-	}()
-	return p.PublishInformation(ctx, message)
+	}
+	return firstErr
 }
 
 // maintenance expires stale events and conservatively cleans the journal.

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -169,6 +170,12 @@ func newSource(cfg Config) (*Source, error) {
 			baseURL = defaultBaseURL
 		}
 	}
+	// base_url is permanent configuration: a malformed value must fail
+	// startup instead of producing a warning every poll forever.
+	u, err := url.Parse(baseURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("base_url must be a valid http(s) URL with a host, got %q", cfg.BaseURL)
+	}
 
 	return &Source{
 		cfg:    cfg,
@@ -181,63 +188,105 @@ func newSource(cfg Config) (*Source, error) {
 // Name returns the plugin type name.
 func (s *Source) Name() string { return Type }
 
-// Run fetches weather immediately and then every poll_interval until ctx is
-// cancelled. Transient provider errors are logged and never terminate the
-// run: the next scheduled poll retries naturally.
+// Run fetches weather immediately and then schedules every poll via a
+// timer (not a fixed ticker), so a provider Retry-After can lengthen the
+// next poll without blocking other locations. Transient provider errors
+// are logged and never terminate the run.
 func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
+	reporter, _ := emit.(plugin.SourceHealthReporter)
 	slog.Info("openmeteo plugin started",
 		"poll_interval", s.cfg.PollInterval, "locations", len(s.cfg.Locations))
 
-	s.poll(ctx, emit) // immediate fetch on startup
-
-	ticker := time.NewTicker(s.cfg.PollInterval)
-	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil {
+			break
+		}
+		next := s.pollOnce(ctx, emit, reporter)
+		timer := time.NewTimer(next)
 		select {
 		case <-ctx.Done():
-			slog.Info("openmeteo plugin stopping")
-			return nil
-		case <-ticker.C:
-			s.poll(ctx, emit)
+			timer.Stop()
+		case <-timer.C:
 		}
 	}
+	slog.Info("openmeteo plugin stopping")
+	return nil
 }
 
-// poll fetches and publishes every configured location. One failing
-// location never suppresses the others: each result is handled
-// independently.
-func (s *Source) poll(ctx context.Context, emit plugin.Emitter) {
+// pollOnce fetches and publishes every configured location once and
+// returns the delay until the next poll: the configured poll interval,
+// extended by any provider Retry-After (clamped). One failing location
+// never suppresses the others.
+func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plugin.SourceHealthReporter) time.Duration {
+	next := s.cfg.PollInterval
+	succeeded := 0
+	var firstErr error
+
 	for _, loc := range s.cfg.Locations {
 		if ctx.Err() != nil {
-			return
+			break
 		}
 		message, err := s.fetchLocation(ctx, loc)
 		if err != nil {
 			if ctx.Err() != nil {
 				// Shutting down: the cancellation is not a provider
 				// failure and needs no warning.
-				continue
+				break
 			}
 			slog.Warn("location fetch failed", "location", loc.ID, "error", err)
-			waitRetryAfter(ctx, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			// A rate-limited location lengthens the NEXT whole poll; the
+			// remaining locations still run in this poll.
+			if after, ok := retryAfter(err); ok && after > next {
+				if after > maxRetryAfter {
+					after = maxRetryAfter
+				}
+				next = after
+			}
 			continue
 		}
+		succeeded++
 		if err := emit.EmitInformation(ctx, message); err != nil {
 			slog.Warn("weather publish failed", "location", loc.ID, "error", err)
 			continue
 		}
 		slog.Info("weather snapshot published", "location", loc.ID)
 	}
+
+	if reporter != nil {
+		if succeeded == 0 && firstErr != nil {
+			// Every location failed: the provider is not reachable.
+			reporter.ReportSourceDegraded(firstErr)
+		} else if succeeded > 0 {
+			// At least one location succeeded: the source is operational;
+			// individual failures are already logged above.
+			reporter.ReportSourceHealthy()
+		}
+	}
+	return next
 }
 
-// fetchLocation performs one provider request and builds the normalized
-// information message for the location.
+// fetchLocation performs one provider request and builds the canonical
+// weather information message for the location. valid_until is application
+// freshness metadata (generated_at + 2×poll_interval), NOT a provider
+// forecast validity guarantee.
 func (s *Source) fetchLocation(ctx context.Context, loc Location) (core.InformationMessage, error) {
 	resp, err := s.client.Fetch(ctx, loc, s.cfg.ForecastHours, s.cfg.ForecastDays)
 	if err != nil {
 		return core.InformationMessage{}, err
 	}
-	return buildWeatherMessage(loc, resp, s.now().UTC())
+	generated := s.now().UTC()
+	validUntil := generated.Add(2 * s.cfg.PollInterval)
+	snapshot, err := Normalize(loc, resp, generated)
+	if err != nil {
+		return core.InformationMessage{}, err
+	}
+	snapshot.ValidUntil = &validUntil
+	// ProducerID is stamped by the manager from the configured source ID;
+	// the plugin cannot know or choose it.
+	return core.NewWeatherInformation("", snapshot)
 }
 
 // Register registers the openmeteo source plugin type.

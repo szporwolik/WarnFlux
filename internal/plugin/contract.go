@@ -51,6 +51,17 @@ type SourcePlugin interface {
 	Run(ctx context.Context, emit Emitter) error
 }
 
+// SourceHealthReporter is an OPTIONAL capability implemented by the
+// emitter handed to a source plugin: sources that detect provider-level
+// health can report operational state. The supervisor still owns the
+// lifecycle states (starting/running/stopping/stopped); this interface
+// only reports provider operational health (healthy / degraded), which
+// surfaces in the source's plugin status.
+type SourceHealthReporter interface {
+	ReportSourceHealthy()
+	ReportSourceDegraded(err error)
+}
+
 // SourceFactory builds a SourcePlugin from its raw plugin-specific
 // configuration. The factory decodes and validates the configuration itself;
 // the core knows nothing about provider-specific fields.

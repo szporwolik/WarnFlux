@@ -25,15 +25,22 @@ var informationSlugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // the output cursors: a lost information snapshot is acceptable, a lost
 // committed HazardEvent is not.
 type InformationMessage struct {
-	// Source names the producing integration, e.g. "openmeteo".
+	// Source names the producing integration type, e.g. "openmeteo".
 	Source string
+	// ProducerID is the configured source plugin INSTANCE ID (e.g.
+	// "weather-home"). It is stamped by the manager when the message
+	// leaves the source boundary; plugins must not choose it.
+	ProducerID string
 	// Key is the stable identity of the information object within the
-	// source, e.g. the configured location ID.
+	// producer, e.g. the configured location ID.
 	Key string
 	// Kind names the information type, e.g. "weather".
 	Kind string
 	// GeneratedAt is when WarnFlux generated this snapshot.
 	GeneratedAt time.Time
+	// ValidUntil optionally bounds freshness (application metadata, not a
+	// provider guarantee); consumers use it to reject stale retained data.
+	ValidUntil *time.Time
 	// Payload is provider-normalized information JSON (the complete wire
 	// document), owned by the message.
 	Payload json.RawMessage
@@ -43,6 +50,10 @@ type InformationMessage struct {
 // without aliasing the payload.
 func (m InformationMessage) Clone() InformationMessage {
 	m.Payload = append(json.RawMessage(nil), m.Payload...)
+	if m.ValidUntil != nil {
+		t := *m.ValidUntil
+		m.ValidUntil = &t
+	}
 	return m
 }
 
@@ -53,6 +64,9 @@ func (m InformationMessage) Validate() error {
 	if !informationSlugRE.MatchString(m.Source) {
 		return fmt.Errorf("source must be a lowercase slug matching %s, got %q", informationSlugRE, m.Source)
 	}
+	if !informationSlugRE.MatchString(m.ProducerID) {
+		return fmt.Errorf("producer_id must be a lowercase slug matching %s, got %q", informationSlugRE, m.ProducerID)
+	}
 	if !informationSlugRE.MatchString(m.Key) {
 		return fmt.Errorf("key must be a lowercase slug matching %s, got %q", informationSlugRE, m.Key)
 	}
@@ -61,6 +75,9 @@ func (m InformationMessage) Validate() error {
 	}
 	if m.GeneratedAt.IsZero() {
 		return fmt.Errorf("generated_at must be non-zero")
+	}
+	if m.ValidUntil != nil && (!m.ValidUntil.After(m.GeneratedAt) || m.ValidUntil.IsZero()) {
+		return fmt.Errorf("valid_until must be after generated_at")
 	}
 	if len(m.Payload) > MaxInformationPayloadBytes {
 		return fmt.Errorf("payload is %d bytes, maximum %d", len(m.Payload), MaxInformationPayloadBytes)

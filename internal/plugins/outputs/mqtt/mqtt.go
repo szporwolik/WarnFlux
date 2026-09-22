@@ -232,19 +232,21 @@ func (o *Output) PublishStatus(ctx context.Context, status plugin.Status) error 
 }
 
 // informationTopic maps an information message to its retained MQTT topic:
-// <topic_prefix>/info/<source>/<key>/<kind>. The source/key/kind segments
-// are validated safe slugs, so the topic can never collide with MQTT
+// <topic_prefix>/info/<source>/<producer_id>/<key>/<kind>. The producer
+// segment (configured source instance ID) prevents collisions between two
+// instances of the same plugin with the same location. All segments are
+// validated safe slugs, so the topic can never collide with MQTT
 // wildcards or the hazard /events and /status topics.
 func (o *Output) informationTopic(message core.InformationMessage) string {
-	return o.cfg.TopicPrefix + "/info/" + message.Source + "/" + message.Key + "/" + message.Kind
+	return o.cfg.TopicPrefix + "/info/" + message.Source + "/" + message.ProducerID + "/" + message.Key + "/" + message.Kind
 }
 
 // PublishInformation publishes a non-hazard informational snapshot as a
 // RETAINED message on the information topic with the configured QoS. It is
-// auxiliary latest-state delivery: failures are returned to the manager,
-// logged, and never touch the hazard journal, cursors or failure counters.
-// The payload is the message's complete wire document (the plugin already
-// normalized it); nothing is wrapped or re-marshaled here.
+// auxiliary latest-state delivery: failures are returned to the output
+// worker, logged, and never touch the hazard journal, cursors or failure
+// counters. The payload is the message's complete wire document (already
+// normalized by the producer); nothing is wrapped or re-marshaled here.
 func (o *Output) PublishInformation(ctx context.Context, message core.InformationMessage) error {
 	if err := message.Validate(); err != nil {
 		return fmt.Errorf("invalid information message: %w", err)

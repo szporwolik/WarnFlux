@@ -87,94 +87,30 @@ sources:
 One retained topic per configured location:
 
 ```text
-<topic_prefix>/info/openmeteo/<location_id>/weather
+<topic_prefix>/info/openmeteo/<producer_id>/<location_id>/weather
 ```
 
-Example: `warnflux/info/openmeteo/home/weather`.
+Example: `warnflux/info/openmeteo/weather-home/home/weather` (with the
+source configured as `id: weather-home`).
 
 Every successful poll **replaces** the retained message for that location.
 The message is published with the MQTT output's configured QoS and
 `retain=true`. Weather is never published to `<prefix>/events`.
 
-## MQTT example JSON
+## MQTT payload
 
-```json
-{
-  "schema_version": 1,
-  "type": "weather",
-  "source": "openmeteo",
-  "generated_at": "2026-09-22T12:00:00Z",
+The published JSON is the **canonical, provider-neutral weather schema v1**
+documented in [`docs/weather-schema.md`](../../../../docs/weather-schema.md)
+— units, condition enum, timestamp semantics, optional fields and the
+compatibility policy all live there. Open-Meteo WMO weather codes are
+mapped to the canonical condition enum by this plugin's adapter
+(`adapter.go`); the raw code is preserved as
+`provider_condition_code`.
 
-  "location": {
-    "id": "home",
-    "name": "Home",
-    "latitude": 50.0000,
-    "longitude": 20.0000,
-    "timezone": "Europe/Warsaw",
-    "elevation_m": 250
-  },
-
-  "current": {
-    "time": "2026-09-22T14:00:00+02:00",
-    "temperature_c": 18.2,
-    "apparent_temperature_c": 17.5,
-    "relative_humidity_pct": 71,
-    "precipitation_mm": 0.0,
-    "rain_mm": 0.0,
-    "showers_mm": 0.0,
-    "snowfall_cm": 0.0,
-    "weather_code": 2,
-    "cloud_cover_pct": 42,
-    "pressure_msl_hpa": 1017.4,
-    "surface_pressure_hpa": 986.2,
-    "wind_speed_kmh": 12.1,
-    "wind_direction_deg": 245,
-    "wind_gusts_kmh": 21.0,
-    "is_day": true
-  },
-
-  "hourly": [
-    {
-      "time": "2026-09-22T15:00:00+02:00",
-      "temperature_c": 18.5,
-      "apparent_temperature_c": 17.9,
-      "relative_humidity_pct": 68,
-      "precipitation_probability_pct": 10,
-      "precipitation_mm": 0.0,
-      "weather_code": 2,
-      "cloud_cover_pct": 38,
-      "pressure_msl_hpa": 1017.1,
-      "wind_speed_kmh": 11.6,
-      "wind_direction_deg": 248,
-      "wind_gusts_kmh": 20.4
-    }
-  ],
-
-  "daily": [
-    {
-      "date": "2026-09-22",
-      "weather_code": 2,
-      "temperature_max_c": 20.4,
-      "temperature_min_c": 10.2,
-      "apparent_temperature_max_c": 19.8,
-      "apparent_temperature_min_c": 9.1,
-      "precipitation_probability_max_pct": 20,
-      "precipitation_sum_mm": 0.3,
-      "wind_speed_max_kmh": 21.0,
-      "wind_gusts_max_kmh": 35.0,
-      "wind_direction_dominant_deg": 240,
-      "sunrise": "2026-09-22T06:24:00+02:00",
-      "sunset": "2026-09-22T18:37:00+02:00"
-    }
-  ],
-
-  "attribution": "Weather data by Open-Meteo"
-}
-```
-
-`generated_at` is the WarnFlux processing time; `current.time`,
-`hourly[].time`, `daily[].date`, `sunrise` and `sunset` are provider forecast
-times (offset-aware RFC3339 except the `YYYY-MM-DD` daily date).
+`generated_at` is the WarnFlux processing time and `valid_until` is
+`generated_at + 2 × poll_interval`; provider forecast timestamps
+(`current.time`, `hourly[].time`, `daily[].date`, `sunrise`, `sunset`) come
+from the provider, resolved in the provider-reported timezone.
 
 ## Current fields
 

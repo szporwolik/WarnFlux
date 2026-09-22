@@ -581,7 +581,7 @@ internal/core/         normalized event model, identity, fingerprint
 internal/ingest/       dedup/update/cancel pipeline
 internal/storage/      EventStore contract + SQLite implementation
 internal/plugin/       plugin contracts, registry, supervision, workers
-internal/plugins/      built-in plugins (demo source, MQTT output)
+internal/plugins/      compiled-in source/output integrations (each with its own README.md)
 config.example.yaml    example configuration
 .github/workflows/     ci.yml + release.yml
 docs/                  plugin guide and project docs

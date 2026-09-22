@@ -767,12 +767,17 @@ func TestManagerEmitShutdownRaceStress(t *testing.T) {
 }
 
 // infoOutput is a fake output implementing both hazard delivery and
-// information publishing. failWith, when set, makes information publishes
-// fail (hazard delivery stays unaffected).
+// information publishing. failWith makes information publishes fail (hazard
+// delivery stays unaffected); block, when set, blocks publishes until
+// closed; mutate corrupts the received payload before storing it (to prove
+// per-output payload isolation).
 type infoOutput struct {
 	mu       sync.Mutex
 	messages []core.InformationMessage
+	calls    int
 	failWith error
+	block    chan struct{}
+	mutate   bool
 }
 
 func (o *infoOutput) Name() string { return "info" }
@@ -781,15 +786,46 @@ func (o *infoOutput) Handle(context.Context, core.EventChange) error { return ni
 
 func (o *infoOutput) PublishInformation(_ context.Context, m core.InformationMessage) error {
 	o.mu.Lock()
-	defer o.mu.Unlock()
+	o.calls++ // the invocation has started
+	if o.block != nil {
+		ch := o.block
+		o.mu.Unlock()
+		<-ch
+		o.mu.Lock()
+	}
+	m = m.Clone()
+	if o.mutate {
+		m.Payload = append(m.Payload, 'x')
+	}
 	o.messages = append(o.messages, m)
-	return o.failWith
+	err := o.failWith
+	o.mu.Unlock()
+	return err
 }
 
 func (o *infoOutput) infoCount() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return len(o.messages)
+	return o.calls
+}
+
+func (o *infoOutput) lastPayload() []byte {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.messages) == 0 {
+		return nil
+	}
+	return o.messages[len(o.messages)-1].Payload
+}
+
+func (o *infoOutput) receivedProducers() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var out []string
+	for _, m := range o.messages {
+		out = append(out, m.ProducerID)
+	}
+	return out
 }
 
 func infoMessage(key string) core.InformationMessage {
@@ -803,6 +839,10 @@ func infoMessage(key string) core.InformationMessage {
 }
 
 func infoManager(t *testing.T, out OutputPlugin, ingestFn IngestFunc) *Manager {
+	return infoManagerWithTimeout(t, out, ingestFn, 5*time.Second)
+}
+
+func infoManagerWithTimeout(t *testing.T, out OutputPlugin, ingestFn IngestFunc, timeout time.Duration) *Manager {
 	t.Helper()
 	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
@@ -817,7 +857,7 @@ func infoManager(t *testing.T, out OutputPlugin, ingestFn IngestFunc) *Manager {
 	}
 	m, err := NewManager(reg, nil, []config.Output{{
 		ID: "info", Type: "info-out", Enabled: true,
-		Runtime: config.OutputRuntime{Timeout: 5 * time.Second, FailureThreshold: 5},
+		Runtime: config.OutputRuntime{Timeout: timeout, FailureThreshold: 5},
 	}}, ingestFn, nil, store, managerOpts(), testLogger())
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -826,8 +866,8 @@ func infoManager(t *testing.T, out OutputPlugin, ingestFn IngestFunc) *Manager {
 }
 
 // TestManagerEmitInformationForwards verifies the auxiliary information
-// path: messages reach information-capable outputs and never touch the
-// hazard failure accounting.
+// path: messages reach information-capable outputs with the ProducerID
+// stamped by the manager, and never touch the hazard failure accounting.
 func TestManagerEmitInformationForwards(t *testing.T) {
 	out := &infoOutput{}
 	m := infoManager(t, out, func(_ context.Context, _ core.HazardEvent) (ingest.Result, core.EventChange, error) {
@@ -842,11 +882,13 @@ func TestManagerEmitInformationForwards(t *testing.T) {
 	}()
 	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
 
-	if err := m.emitInformation(context.Background(), infoMessage("home")); err != nil {
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("home")); err != nil {
 		t.Fatalf("emitInformation: %v", err)
 	}
-	if got := out.infoCount(); got != 1 {
-		t.Fatalf("information messages received = %d, want 1", got)
+	// Delivery is asynchronous (the output worker owns the callbacks).
+	waitFor(t, 2*time.Second, func() bool { return out.infoCount() == 1 })
+	if got := out.receivedProducers(); len(got) != 1 || got[0] != "weather-home" {
+		t.Errorf("received producers = %v, want [weather-home]", got)
 	}
 
 	// The hazard failure counter stays untouched by information traffic.
@@ -877,7 +919,7 @@ func TestManagerEmitInformationNoCapableOutput(t *testing.T) {
 	}()
 	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
 
-	err := m.emitInformation(context.Background(), infoMessage("home"))
+	err := m.emitInformation(context.Background(), "weather-home", infoMessage("home"))
 	if err == nil || !strings.Contains(err.Error(), "no information-capable outputs") {
 		t.Fatalf("emitInformation = %v, want no-capable-outputs error", err)
 	}
@@ -891,7 +933,7 @@ func TestManagerEmitInformationNoCapableOutput(t *testing.T) {
 }
 
 // TestManagerEmitInformationIsolation: an information publish failure is
-// reported to the source but must not suspend hazard delivery or increment
+// logged asynchronously and must not suspend hazard delivery or increment
 // the hazard failure counter.
 func TestManagerEmitInformationIsolation(t *testing.T) {
 	failing := &infoOutput{failWith: errors.New("broker unavailable")}
@@ -905,18 +947,204 @@ func TestManagerEmitInformationIsolation(t *testing.T) {
 	}()
 	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
 
-	if err := m.emitInformation(context.Background(), infoMessage("home")); err == nil {
-		t.Fatal("emitInformation must surface the publish failure")
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("home")); err != nil {
+		t.Fatalf("emitInformation enqueue: %v", err)
 	}
-	if got := failing.infoCount(); got != 1 {
-		t.Errorf("publish calls = %d, want 1", got)
-	}
+	waitFor(t, 2*time.Second, func() bool { return failing.infoCount() == 1 })
 	statuses := m.Statuses()
 	if len(statuses) != 1 || statuses[0].ConsecutiveFailures != 0 {
 		t.Errorf("information failure leaked into hazard accounting: %+v", statuses)
 	}
 	if statuses[0].State == StateSuspended {
 		t.Error("information failure suspended hazard delivery")
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitInformationPayloadIsolation: two information outputs must
+// each receive their own deep copy — mutating one payload cannot corrupt
+// the other output's message.
+func TestManagerEmitInformationPayloadIsolation(t *testing.T) {
+	mutator := &infoOutput{mutate: true}
+	observer := &infoOutput{}
+	reg := NewRegistry()
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	for id, out := range map[string]OutputPlugin{"a": mutator, "b": observer} {
+		if err := reg.RegisterOutput("iso-"+id, func(_ *yaml.Node) (OutputPlugin, error) {
+			return out, nil
+		}); err != nil {
+			t.Fatalf("register output: %v", err)
+		}
+	}
+	m, err := NewManager(reg, nil, []config.Output{
+		{ID: "a", Type: "iso-a", Enabled: true, Runtime: config.OutputRuntime{Timeout: 5 * time.Second, FailureThreshold: 5}},
+		{ID: "b", Type: "iso-b", Enabled: true, Runtime: config.OutputRuntime{Timeout: 5 * time.Second, FailureThreshold: 5}},
+	}, nil, nil, store, managerOpts(), testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	msg := infoMessage("home")
+	original := string(msg.Payload)
+	if err := m.emitInformation(context.Background(), "weather-home", msg); err != nil {
+		t.Fatalf("emitInformation: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return mutator.infoCount() == 1 && observer.infoCount() == 1 })
+	if got := string(observer.lastPayload()); got != original {
+		t.Errorf("observer payload was corrupted by the mutator output: %q", got)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitInformationCoalescesLatest: repeated snapshots for the
+// same source+producer+key+kind replace the pending one — only the newest
+// value is delivered.
+func TestManagerEmitInformationCoalescesLatest(t *testing.T) {
+	out := &infoOutput{}
+	m := infoManagerWithTimeout(t, out, nil, 5*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	// Block the worker inside the first delivery, then overwrite the
+	// pending value twice.
+	release := make(chan struct{})
+	out.mu.Lock()
+	out.block = release
+	out.mu.Unlock()
+
+	v1 := infoMessage("home")
+	if err := m.emitInformation(context.Background(), "weather-home", v1); err != nil {
+		t.Fatalf("emit v1: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		out.mu.Lock()
+		defer out.mu.Unlock()
+		return out.calls == 1
+	}) // first delivery is now blocked inside the plugin
+
+	v2 := infoMessage("home")
+	v2.Payload = []byte(`{"schema_version":1,"v":2}`)
+	v3 := infoMessage("home")
+	v3.Payload = []byte(`{"schema_version":1,"v":3}`)
+	if err := m.emitInformation(context.Background(), "weather-home", v2); err != nil {
+		t.Fatalf("emit v2: %v", err)
+	}
+	if err := m.emitInformation(context.Background(), "weather-home", v3); err != nil {
+		t.Fatalf("emit v3: %v", err)
+	}
+	close(release)
+
+	// The worker delivers v3 (the coalesced latest), never v2.
+	waitFor(t, 3*time.Second, func() bool { return out.infoCount() == 2 })
+	if got := string(out.lastPayload()); got != `{"schema_version":1,"v":3}` {
+		t.Errorf("delivered payload = %s, want the coalesced latest (v3)", got)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitInformationTimeoutDisables: a plugin callback that
+// ignores its context permanently disables information publishing for that
+// output — EmitInformation returns bounded and no further calls happen.
+func TestManagerEmitInformationTimeoutDisables(t *testing.T) {
+	out := &infoOutput{block: make(chan struct{})} // never released
+	m := infoManagerWithTimeout(t, out, nil, 50*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("home")); err != nil {
+		t.Fatalf("emitInformation: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return out.infoCount() == 1 })
+	// Give the worker time to hit the timeout and disable the capability.
+	waitFor(t, 2*time.Second, func() bool {
+		w := m.infoOuts[0]
+		w.mu <- struct{}{}
+		defer func() { <-w.mu }()
+		return w.infoDisabled
+	})
+	// A later message is rejected — no second stuck goroutine is spawned.
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("home")); err == nil {
+		t.Fatal("emitInformation must fail after the capability was disabled")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if out.infoCount() != 1 {
+		t.Errorf("publish calls = %d, want exactly 1 (no repeated stuck calls)", out.infoCount())
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitInformationProducerSeparation: identical keys from
+// different producer instances must not collide in the coalescing queue.
+func TestManagerEmitInformationProducerSeparation(t *testing.T) {
+	out := &infoOutput{}
+	m := infoManager(t, out, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	if err := m.emitInformation(context.Background(), "weather-home-a", infoMessage("home")); err != nil {
+		t.Fatalf("emit a: %v", err)
+	}
+	if err := m.emitInformation(context.Background(), "weather-home-b", infoMessage("home")); err != nil {
+		t.Fatalf("emit b: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return out.infoCount() == 2 })
+	producers := out.receivedProducers()
+	if len(producers) != 2 || producers[0] == producers[1] {
+		t.Errorf("producers = %v, want two distinct producer IDs", producers)
 	}
 
 	cancel()
@@ -934,14 +1162,14 @@ func TestManagerEmitInformationValidationAndShutdown(t *testing.T) {
 	m := infoManager(t, out, nil)
 
 	// Before Run: shutdown rejection.
-	if err := m.emitInformation(context.Background(), infoMessage("home")); err != errShuttingDown {
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("home")); err != errShuttingDown {
 		t.Fatalf("emitInformation before Run = %v, want errShuttingDown", err)
 	}
 
 	m.accepting.Store(true)
 	invalid := infoMessage("home")
 	invalid.Payload = []byte(`{`)
-	if err := m.emitInformation(context.Background(), invalid); err == nil || !strings.Contains(err.Error(), "invalid information message") {
+	if err := m.emitInformation(context.Background(), "weather-home", invalid); err == nil || !strings.Contains(err.Error(), "invalid information message") {
 		t.Fatalf("emitInformation invalid = %v, want validation error", err)
 	}
 	if got := out.infoCount(); got != 0 {

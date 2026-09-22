@@ -16,6 +16,9 @@ const (
 	defaultPollInterval     = time.Second
 	defaultRecoveryInterval = 30 * time.Second
 	pollBatchSize           = 32
+	// maxInfoPending bounds the latest-state information queue per output
+	// worker (coalesced by source+producer+key+kind).
+	maxInfoPending = 64
 )
 
 // outputWorker delivers journaled changes to one output plugin with
@@ -58,10 +61,18 @@ type outputWorker struct {
 	// hazard delivery. At most ONE abandoned status goroutine can exist
 	// per output because no new one is ever started afterwards.
 	statusDisabled bool
+
+	// Information state (only when the plugin implements
+	// InformationPublisher): a bounded latest-value queue coalesced by
+	// source+producer+key+kind, owned exclusively by this worker so every
+	// callback into the plugin has exactly one runtime owner.
+	infoPending  map[string]core.InformationMessage
+	infoNotify   chan struct{}
+	infoDisabled bool // permanently true after a contract-violating callback
 }
 
 func newOutputWorker(cfg config.Output, p OutputPlugin, store storage.EventStore, logger *slog.Logger, tracker *statusTracker) *outputWorker {
-	return &outputWorker{
+	w := &outputWorker{
 		id:               cfg.ID,
 		kind:             cfg.Type,
 		plugin:           p,
@@ -75,6 +86,50 @@ func newOutputWorker(cfg config.Output, p OutputPlugin, store storage.EventStore
 		recoveryInterval: defaultRecoveryInterval,
 		mu:               make(chan struct{}, 1),
 	}
+	if _, ok := p.(InformationPublisher); ok {
+		w.infoPending = make(map[string]core.InformationMessage)
+		w.infoNotify = make(chan struct{}, 1)
+	}
+	return w
+}
+
+// infoCapable reports whether this worker owns an information queue.
+func (w *outputWorker) infoCapable() bool {
+	return w.infoNotify != nil
+}
+
+// enqueueInfo coalesces a latest-state information message into the
+// worker's bounded queue: a newer snapshot with the same
+// source+producer+key+kind replaces the pending one. The message is
+// deep-copied here so every output owns its payload independently.
+func (w *outputWorker) enqueueInfo(message core.InformationMessage) error {
+	if !w.infoCapable() {
+		return fmt.Errorf("output %q does not support information messages", w.id)
+	}
+	message = message.Clone()
+	key := infoKey(message)
+	w.mu <- struct{}{}
+	if w.infoDisabled {
+		<-w.mu
+		return fmt.Errorf("information capability of output %q is disabled (callback violated its timeout)", w.id)
+	}
+	if _, exists := w.infoPending[key]; !exists && len(w.infoPending) >= maxInfoPending {
+		<-w.mu
+		return fmt.Errorf("information queue of output %q is full (%d pending keys)", w.id, maxInfoPending)
+	}
+	w.infoPending[key] = message
+	<-w.mu
+
+	// Wake the worker; the notification is coalesced (never blocking).
+	select {
+	case w.infoNotify <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func infoKey(m core.InformationMessage) string {
+	return m.Source + "\x00" + m.ProducerID + "\x00" + m.Key + "\x00" + m.Kind
 }
 
 // run polls the durable journal until ctx is cancelled. The worker is
@@ -93,12 +148,16 @@ func (w *outputWorker) run(ctx context.Context) {
 	}
 
 	for {
+		// Hazard journal delivery has strict priority over information
+		// snapshots: a pending poll tick is handled before any queued
+		// information message.
 		select {
 		case <-ctx.Done():
 			w.stop()
 			return
 		case <-poll.C:
 			w.pollDeliveries(ctx)
+			continue
 		default:
 		}
 
@@ -111,15 +170,93 @@ func (w *outputWorker) run(ctx context.Context) {
 			continue
 		}
 
-		// Wait for the next tick (or shutdown) instead of hot spinning.
+		// Wait for the next tick, an information snapshot or shutdown.
 		select {
 		case <-ctx.Done():
 			w.stop()
 			return
 		case <-poll.C:
 			w.pollDeliveries(ctx)
+		case <-w.infoNotify:
+			w.deliverPendingInfo(ctx)
 		}
 	}
+}
+
+// deliverPendingInfo pops ONE pending information message (latest state,
+// coalesced) and invokes the plugin with a bounded per-call timeout and
+// panic recovery. A callback that violates its timeout permanently
+// disables this output's information capability — at most one abandoned
+// information goroutine can ever exist per output. Information failures
+// are logged only: they never touch hazard failure accounting.
+func (w *outputWorker) deliverPendingInfo(ctx context.Context) {
+	w.mu <- struct{}{}
+	if w.infoDisabled {
+		<-w.mu
+		return
+	}
+	var message core.InformationMessage
+	var found bool
+	for key, m := range w.infoPending {
+		message, found = m, true
+		delete(w.infoPending, key)
+		break
+	}
+	<-w.mu
+	if !found {
+		return
+	}
+
+	pub, ok := w.plugin.(InformationPublisher)
+	if !ok {
+		return
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, w.timeout)
+	result := make(chan error, 1)
+	go func() {
+		result <- invokeInformation(pub, callCtx, message)
+	}()
+
+	select {
+	case err := <-result:
+		cancel()
+		if err != nil {
+			w.logger.Warn("information publish failed",
+				"output_id", w.id,
+				"source", message.Source, "producer_id", message.ProducerID,
+				"key", message.Key, "kind", message.Kind, "error", err)
+		}
+	case <-callCtx.Done():
+		// Context-contract violation: disable information publishing for
+		// this output's lifetime. The abandoned goroutine is bounded — no
+		// new information call is ever started.
+		w.mu <- struct{}{}
+		w.infoDisabled = true
+		<-w.mu
+		w.logger.Warn("information publish violated its timeout; information capability disabled for this output",
+			"output_id", w.id, "timeout", w.timeout)
+		select {
+		case late := <-result:
+			if late != nil {
+				w.logger.Warn("information publish returned an error after its timeout",
+					"output_id", w.id, "error", late)
+			}
+		case <-ctx.Done():
+		}
+		cancel()
+	}
+}
+
+// invokeInformation runs an information publish under recover(), converting
+// panics into errors with a stack trace.
+func invokeInformation(p InformationPublisher, ctx context.Context, message core.InformationMessage) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("plugin panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return p.PublishInformation(ctx, message)
 }
 
 // pollDeliveries fetches unacknowledged changes and delivers them serially

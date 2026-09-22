@@ -28,7 +28,7 @@
   </main>
   <footer class="footer">
     <span>{{.AppTitle}} · {{.Version}} ({{if ne .Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{else}}{{.Commit}}{{end}})</span>
-    <a class="footer-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer">{{template "github-icon"}}github.com/szporwolik/WarnFlux</a>
+    <a class="footer-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>github.com/szporwolik/WarnFlux</a>
   </footer>
 </body>
 </html>

@@ -1,5 +1,3 @@
-{{define "github-icon"}}<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>{{end}}
-
 {{define "page"}}<!doctype html>
 <html lang="en">
 <head>
@@ -10,21 +8,27 @@
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
 </head>
-<body>
-  <header class="topbar">
+<body class="app">
+  <aside class="sidebar">
     <a class="brand" href="/dashboard">
       <img class="brand-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
-      <span>{{.AppTitle}}</span>
+      <span class="brand-name">{{.AppTitle}}</span>
     </a>
-    <nav class="topnav">
-      <a class="nav-item active" href="/dashboard">Dashboard</a>
+    <nav class="sidenav">
+      <a class="nav-item active" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>
+      <a class="nav-item" href="#status-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-speedometer2"></use></svg><span class="nav-label">System</span></a>
+      <a class="nav-item" href="#mqtt-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">MQTT connections</span></a>
+      <a class="nav-item" href="#weather-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-sun"></use></svg><span class="nav-label">Weather</span></a>
+      <a class="nav-item" href="#warnings-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span class="nav-label">Active warnings</span></a>
+      <a class="nav-item" href="#plugins-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-puzzle"></use></svg><span class="nav-label">Sources &amp; outputs</span></a>
+      <a class="nav-item" href="#actions-section"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg><span class="nav-label">Actions</span></a>
     </nav>
-    <span class="topbar-spacer"></span>
+    <span class="sidebar-spacer"></span>
     <form method="post" action="/logout" class="logout">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <button type="submit" class="btn-ghost">Sign out</button>
+      <button type="submit" class="btn-ghost"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-box-arrow-right"></use></svg><span class="nav-label">Sign out</span></button>
     </form>
-  </header>
+  </aside>
   <main class="grid">
     {{template "status" .Status}}
     {{template "mqtt" .MQTT}}
@@ -35,7 +39,7 @@
   </main>
   <footer class="footer">
     <span>{{.AppTitle}} · {{.Status.Version}} ({{if ne .Status.Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Status.Commit}}" target="_blank" rel="noopener noreferrer">{{.Status.Commit}}</a>{{else}}{{.Status.Commit}}{{end}})</span>
-    <a class="footer-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer">{{template "github-icon"}}github.com/szporwolik/WarnFlux</a>
+    <a class="footer-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>github.com/szporwolik/WarnFlux</a>
   </footer>
   <script src="/static/app.js" defer></script>
 </body>
@@ -43,7 +47,7 @@
 {{end}}
 
 {{define "status"}}<section class="card" id="status-section">
-  <h2>System</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-speedometer2"></use></svg>System</h2>
   <div class="kv-grid">
     <div class="kv"><span class="k">Version</span><span class="v">{{.Version}} ({{.Commit}})</span></div>
     <div class="kv"><span class="k">Uptime</span><span class="v">{{dur .Uptime}}</span></div>
@@ -57,7 +61,7 @@
 {{end}}
 
 {{define "mqtt"}}<section class="card" id="mqtt-section">
-  <h2>MQTT connections</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>MQTT connections</h2>
   {{if .Receivers}}
   <div class="table-wrap">
     <table class="plugins">
@@ -94,7 +98,7 @@
 {{end}}
 
 {{define "weather"}}<section class="card" id="weather-section">
-  <h2>Weather</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-sun"></use></svg>Weather</h2>
   {{if .Entries}}
   <div class="weather-grid">
     {{range .Entries}}
@@ -118,7 +122,7 @@
 {{end}}
 
 {{define "warnings"}}<section class="card" id="warnings-section" data-wpage="{{.Page}}">
-  <h2>Active warnings <span class="count">{{.Count}}</span></h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg>Active warnings <span class="count">{{.Count}}</span></h2>
   {{if .Hazards}}
   <div class="warnings">
     {{range .Hazards}}
@@ -154,7 +158,7 @@
 {{end}}
 
 {{define "plugins"}}<section class="card" id="plugins-section">
-  <h2>Sources &amp; outputs</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-puzzle"></use></svg>Sources &amp; outputs</h2>
   {{if .Sources}}
   <h3>Sources</h3>
   <div class="table-wrap">
@@ -208,7 +212,7 @@
 {{end}}
 
 {{define "actions"}}<section class="card" id="actions-section">
-  <h2>Actions</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg>Actions</h2>
   {{if .Actions}}
   <div class="table-wrap">
     <table class="plugins">

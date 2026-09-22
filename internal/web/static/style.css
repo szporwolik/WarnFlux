@@ -20,6 +20,7 @@
   --btn-primary-hi: #2ea043;
   --header: #010409;
   --tab-active: #f78166;
+  --sidebar-w: 220px;
   --radius: 6px;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
 }
@@ -46,21 +47,27 @@ a:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
 .mono, .reason { font-family: var(--mono); font-size: 0.8rem; }
 
-/* ---- GitHub-style top bar ---- */
-.topbar {
+.icon { width: 16px; height: 16px; fill: currentColor; flex: none; }
+
+/* ---- left sidebar ---- */
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar-w);
   display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0 1.25rem;
-  height: 48px;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 0.5rem;
   background: var(--header);
-  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  z-index: 20;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  padding: 0.35rem 0.6rem 0.85rem;
   font-weight: 600;
   font-size: 0.95rem;
   color: var(--text);
@@ -77,28 +84,37 @@ a:hover { text-decoration: underline; }
   flex: none;
 }
 
-.topnav {
+.sidenav {
   display: flex;
-  align-items: stretch;
-  align-self: stretch;
-  gap: 0.25rem;
+  flex-direction: column;
+  gap: 0.15rem;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  padding: 0 0.75rem;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius);
   color: var(--muted);
   font-size: 0.9rem;
   text-decoration: none;
-  border-bottom: 2px solid transparent;
 }
-.nav-item:hover { color: var(--text); text-decoration: none; }
-.nav-item.active { color: var(--text); font-weight: 600; border-bottom-color: var(--tab-active); }
+.nav-item:hover { background: var(--surface-hi); color: var(--text); text-decoration: none; }
+.nav-item.active { background: var(--surface-hi); color: var(--text); font-weight: 600; }
+.nav-item .icon { flex: none; }
 
-.topbar-spacer { flex: 1; }
+.sidebar-spacer { flex: 1; }
 
 .logout { margin: 0; display: flex; }
+.logout .btn-ghost {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: var(--radius);
+}
 
 /* ---- buttons ---- */
 .btn-ghost {
@@ -136,6 +152,9 @@ a:hover { text-decoration: underline; }
   margin: 0 auto;
 }
 
+/* Dashboard layout: content and footer sit to the right of the sidebar. */
+.app .grid, .app .footer { margin-left: var(--sidebar-w); }
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -143,6 +162,9 @@ a:hover { text-decoration: underline; }
   padding: 1rem 1.1rem;
   min-width: 0;
 }
+
+.card h2 { display: flex; align-items: center; gap: 0.45rem; }
+.card h2 .icon { color: var(--muted); }
 
 .card:nth-child(3), .card:nth-child(4) { grid-column: 1 / -1; }
 
@@ -364,4 +386,14 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   padding: 0.5rem 0.75rem;
   font-size: 0.85rem;
   margin-top: 1rem;
+}
+
+/* ---- narrow screens: icon-only sidebar ---- */
+@media (max-width: 860px) {
+  :root { --sidebar-w: 56px; }
+  .sidebar { padding: 0.75rem 0.4rem; }
+  .brand { justify-content: center; padding: 0.35rem 0 0.85rem; }
+  .brand-name, .nav-label { display: none; }
+  .nav-item { justify-content: center; padding: 0.45rem 0; }
+  .logout .btn-ghost { justify-content: center; padding: 0.3rem 0; }
 }

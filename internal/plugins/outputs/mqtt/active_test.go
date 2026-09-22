@@ -754,3 +754,224 @@ func TestHandleDeleteFailurePreservesAckSafety(t *testing.T) {
 		t.Error("pending delete must be cleared after the successful retry")
 	}
 }
+
+// TestStaleDeleteSnapshotSelfInvalidates: a pending-delete snapshot taken
+// BEFORE a reactivation must not publish any DELETE once the event is
+// ACTIVE again. The old operation validates against the current desired
+// state and skips the network publish entirely.
+func TestStaleDeleteSnapshotSelfInvalidates(t *testing.T) {
+	fc := &fakeClient{}
+	o := newTestOutput(fc)
+	ev := activeEvent()
+
+	// A cancelled hazard with a FAILING normal delete leaves the pending
+	// registration behind.
+	if err := o.Handle(context.Background(), core.EventChange{ID: 1, Type: core.ChangeNew, Event: ev}); err != nil {
+		t.Fatalf("Handle active: %v", err)
+	}
+	fc.setPublishErr(func(topic string) error {
+		if strings.HasPrefix(topic, "warnflux/active/") {
+			return errors.New("delete failed")
+		}
+		return nil
+	})
+	cancelled := ev
+	cancelled.Status = core.StatusCancelled
+	if err := o.Handle(context.Background(), core.EventChange{ID: 2, Type: core.ChangeUpdated, Event: cancelled}); err == nil {
+		t.Fatal("Handle(cancel) = nil, want an error while the DELETE fails")
+	}
+	snapshot := o.pendingDeleteSnapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("pending delete snapshot = %d entries, want 1", len(snapshot))
+	}
+	stale := snapshot[0]
+
+	// The event is reactivated: ACTIVE wins, the pending delete is removed,
+	// and the retained ACTIVE publish succeeds.
+	fc.setPublishErr(nil)
+	reactivated := ev
+	reactivated.Headline = "reactivated"
+	if err := o.Handle(context.Background(), core.EventChange{ID: 3, Type: core.ChangeUpdated, Event: reactivated}); err != nil {
+		t.Fatalf("Handle reactivation: %v", err)
+	}
+
+	// The OLD rehydrate snapshot resumes and tries its stale delete: it
+	// must self-invalidate without touching the network.
+	before := fc.count()
+	o.attemptDelete(stale.key, stale.topic, stale.seq)
+	if got := fc.count(); got != before {
+		t.Fatalf("stale delete published to MQTT (count %d → %d), want no network publish", before, got)
+	}
+	// The final desired state is ACTIVE and no delete remains registered.
+	o.activeMu.Lock()
+	_, inCache := o.activeCache[ev.Key()]
+	_, pending := o.pendingDeletes[ev.Key()]
+	o.activeMu.Unlock()
+	if !inCache || pending {
+		t.Fatalf("final state: inCache=%v pending=%v, want active + no pending delete", inCache, pending)
+	}
+}
+
+// TestRegisterPendingDeleteIfAbsentVsReactivation: the corrective
+// registration must never recreate a tombstone after a reactivation, and
+// must reuse an existing pending delete instead of churning generations.
+func TestRegisterPendingDeleteIfAbsentVsReactivation(t *testing.T) {
+	o := newTestOutput(&fakeClient{})
+	key := "demo:reactivate"
+	topic := "warnflux/active/demo/x"
+
+	// ACTIVE is the desired state: no tombstone may be created.
+	o.activeMu.Lock()
+	o.activeSeq++
+	o.activeCache[key] = activeCacheEntry{key: key, topic: topic, payload: []byte("{}"), seq: o.activeSeq}
+	o.activeMu.Unlock()
+	if d, ok := o.registerPendingDeleteIfAbsent(key, topic); ok {
+		t.Fatalf("created a pending delete while ACTIVE is desired: %+v", d)
+	}
+
+	// Desired ABSENT: the registration is created exactly once.
+	o.activeMu.Lock()
+	delete(o.activeCache, key)
+	firstSeq := o.activeSeq
+	o.activeMu.Unlock()
+	d1, ok1 := o.registerPendingDeleteIfAbsent(key, topic)
+	if !ok1 {
+		t.Fatal("pending delete not created for a desired-absent topic")
+	}
+	o.activeMu.Lock()
+	afterFirst := o.activeSeq
+	o.activeMu.Unlock()
+	if afterFirst != firstSeq+1 {
+		t.Errorf("activeSeq advanced %d → %d, want exactly one increment", firstSeq, afterFirst)
+	}
+
+	// A second registration (next rehydrate pass) reuses the entry.
+	d2, ok2 := o.registerPendingDeleteIfAbsent(key, topic)
+	if !ok2 || d2.seq != d1.seq {
+		t.Errorf("reused entry = %+v (ok=%v), want the same generation %d", d2, ok2, d1.seq)
+	}
+	o.activeMu.Lock()
+	afterReuse := o.activeSeq
+	o.activeMu.Unlock()
+	if afterReuse != afterFirst {
+		t.Errorf("activeSeq churned on reuse: %d → %d", afterFirst, afterReuse)
+	}
+}
+
+// TestReactivationDuringInFlightDeleteConvergesToActive: a DELETE that is
+// already in flight when the event is reactivated may land afterwards, but
+// the same rehydrate pass detects the new ACTIVE state and republishes it
+// — the final broker-equivalent state is ACTIVE.
+func TestReactivationDuringInFlightDeleteConvergesToActive(t *testing.T) {
+	fc := &fakeClient{}
+	o := newTestOutput(fc)
+	ev := activeEvent()
+
+	// Cancel with a failing delete → pending registration persists.
+	if err := o.Handle(context.Background(), core.EventChange{ID: 1, Type: core.ChangeNew, Event: ev}); err != nil {
+		t.Fatalf("Handle active: %v", err)
+	}
+	fc.setPublishErr(func(topic string) error {
+		if strings.HasPrefix(topic, "warnflux/active/") {
+			return errors.New("delete failed")
+		}
+		return nil
+	})
+	cancelled := ev
+	cancelled.Status = core.StatusCancelled
+	if err := o.Handle(context.Background(), core.EventChange{ID: 2, Type: core.ChangeUpdated, Event: cancelled}); err == nil {
+		t.Fatal("Handle(cancel) = nil, want an error while the DELETE fails")
+	}
+	fc.setPublishErr(nil)
+
+	// Start a rehydrate pass and gate its DELETE publish in flight.
+	gate := &fakeToken{done: make(chan struct{})}
+	fc.gateNext(gate)
+	o.rehydrateOnConnect()
+	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 5 }) // delete is in flight (gated)
+
+	// Reactivation while the old DELETE is still in flight: ACTIVE wins.
+	reactivated := ev
+	reactivated.Headline = "reactivated"
+	if err := o.Handle(context.Background(), core.EventChange{ID: 3, Type: core.ChangeUpdated, Event: reactivated}); err != nil {
+		t.Fatalf("Handle reactivation: %v", err)
+	}
+	close(gate.done)
+
+	// The pass notices the reactivation and republishes ACTIVE; the final
+	// publish for the topic must be the ACTIVE payload, never a delete.
+	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 7 })
+	pubs := fc.snapshot()
+	lastForTopic := fakePublish{}
+	for _, p := range pubs {
+		if p.topic == o.activeTopic(ev.Source, ev.Key()) {
+			lastForTopic = p
+		}
+	}
+	if !lastForTopic.retained || len(lastForTopic.payload) == 0 {
+		t.Fatalf("final publish for A = %+v, want the retained ACTIVE payload", lastForTopic)
+	}
+	var w wireActiveHazard
+	if err := json.Unmarshal(lastForTopic.payload, &w); err != nil {
+		t.Fatal(err)
+	}
+	if w.Event.Headline != "reactivated" {
+		t.Errorf("final headline = %q, want the reactivated value", w.Event.Headline)
+	}
+}
+
+// TestOldDeleteGenerationCannotClearNewerDelete: an older delete operation
+// must not publish (stale generation) and must never clear a newer pending
+// delete registration after a successful publish.
+func TestOldDeleteGenerationCannotClearNewerDelete(t *testing.T) {
+	fc := &fakeClient{}
+	o := newTestOutput(fc)
+	key := "demo:deletegen"
+	topic := "warnflux/active/demo/x"
+
+	// A NEWER pending delete (seq from two mutations) is the desired state.
+	o.activeMu.Lock()
+	o.activeSeq++
+	o.activeSeq++
+	newer := activeDeleteEntry{key: key, topic: topic, seq: o.activeSeq}
+	o.pendingDeletes[key] = newer
+	o.activeMu.Unlock()
+
+	// An older operation (seq-1) must self-invalidate without publishing.
+	before := fc.count()
+	o.attemptDelete(key, topic, newer.seq-1)
+	if got := fc.count(); got != before {
+		t.Fatalf("stale-generation delete published (count %d → %d)", before, got)
+	}
+
+	// The matching generation publishes, and cleanup never removes a
+	// newer registration: simulate replacement during the in-flight
+	// publish with a gated token.
+	gate := &fakeToken{done: make(chan struct{})}
+	fc.gateNext(gate)
+	go o.attemptDelete(key, topic, newer.seq)
+	waitFor(t, 2*time.Second, func() bool { return fc.count() == before+1 }) // in flight
+	o.activeMu.Lock()
+	o.activeSeq++
+	replacement := activeDeleteEntry{key: key, topic: topic, seq: o.activeSeq}
+	o.pendingDeletes[key] = replacement
+	o.activeMu.Unlock()
+	close(gate.done)
+	// Give the cleanup a moment: it must NOT remove the newer generation.
+	time.Sleep(20 * time.Millisecond)
+	o.activeMu.Lock()
+	cur, ok := o.pendingDeletes[key]
+	o.activeMu.Unlock()
+	if !ok || cur.seq != replacement.seq {
+		t.Fatalf("pending delete after old publish = %+v (ok=%v), want the newer generation %d", cur, ok, replacement.seq)
+	}
+
+	// The newer generation can still be confirmed normally.
+	o.attemptDelete(key, topic, replacement.seq)
+	o.activeMu.Lock()
+	_, ok = o.pendingDeletes[key]
+	o.activeMu.Unlock()
+	if ok {
+		t.Error("matching-generation delete did not clear the registration")
+	}
+}

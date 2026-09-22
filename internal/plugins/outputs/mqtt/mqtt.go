@@ -466,11 +466,13 @@ func (o *Output) rehydrateActive() {
 			case !ok:
 				// Desired state became ABSENT while the stale snapshot
 				// publish was in flight (cancel/expire): ensure a pending
-				// delete exists and delete the retained topic AFTER the
-				// stale publish. A failed corrective delete stays
-				// registered and is retried on the next pass/reconnect.
-				d := o.registerPendingDelete(e.key, e.topic)
-				o.attemptDelete(d.key, d.topic, d.seq)
+				// delete exists (unless the event was already reactivated)
+				// and delete the retained topic AFTER the stale publish. A
+				// failed corrective delete stays registered and is retried
+				// on the next pass/reconnect.
+				if d, registered := o.registerPendingDeleteIfAbsent(e.key, e.topic); registered {
+					o.attemptDelete(d.key, d.topic, d.seq)
+				}
 				dirty = true
 			case current.seq != e.seq:
 				dirty = true
@@ -494,24 +496,47 @@ func (o *Output) rehydrateActive() {
 	slog.Warn("active state rehydration did not converge within the iteration bound; a later update or reconnect republishes", "passes", maxRehydratePasses)
 }
 
-// registerPendingDelete records that a retained topic must NOT exist. It is
-// called whenever a desired-absent topic is discovered (cancel/expire, or a
-// corrective delete during rehydration), so a failed DELETE is never
-// forgotten.
-func (o *Output) registerPendingDelete(key, topic string) activeDeleteEntry {
+// registerPendingDeleteIfAbsent records that a retained topic must NOT
+// exist, UNLESS the current desired state is already ACTIVE (a
+// reactivation that raced the check) — the whole decision happens in one
+// activeMu critical section so a stale tombstone can never be recreated
+// after a reactivation. An existing pending delete is reused (no
+// generation churn). It returns the authoritative entry and whether a
+// delete may be attempted.
+func (o *Output) registerPendingDeleteIfAbsent(key, topic string) (activeDeleteEntry, bool) {
 	o.activeMu.Lock()
 	defer o.activeMu.Unlock()
+	if _, active := o.activeCache[key]; active {
+		return activeDeleteEntry{}, false
+	}
+	if existing, ok := o.pendingDeletes[key]; ok {
+		return existing, true
+	}
 	o.activeSeq++
 	d := activeDeleteEntry{key: key, topic: topic, seq: o.activeSeq}
 	o.pendingDeletes[key] = d
-	return d
+	return d, true
 }
 
-// attemptDelete publishes one retained zero-length delete and, on success,
-// drops the pending-delete registration if it still carries the same
-// generation (a newer mutation may have replaced or removed it). On failure
-// the registration stays so a later reconnect retries it.
+// attemptDelete publishes one retained zero-length delete — but ONLY if the
+// delete still represents the newest desired state at publication time: the
+// pending registration must exist with the SAME generation and no newer
+// ACTIVE entry may exist. A stale delete (invalidated by a reactivation or
+// replaced by a newer deletion) is skipped entirely: it must never mutate
+// MQTT after being invalidated. On success the registration is dropped
+// only if it still carries the same generation; on failure it stays so a
+// later reconnect retries it.
 func (o *Output) attemptDelete(key, topic string, seq uint64) {
+	o.activeMu.Lock()
+	current, pending := o.pendingDeletes[key]
+	_, active := o.activeCache[key]
+	valid := pending && current.seq == seq && !active
+	o.activeMu.Unlock()
+	if !valid {
+		// Stale delete: newer ACTIVE state or a newer deletion exists.
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), activeRehydrateTimeout)
 	err := o.publishActive(ctx, topic, []byte{})
 	cancel()

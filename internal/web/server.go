@@ -67,6 +67,10 @@ type Server struct {
 // maxPasswordFileBytes bounds the admin password file read.
 const maxPasswordFileBytes = 64 * 1024
 
+// repoURL is linked from the bottom bar of both the login page and the
+// dashboard.
+const repoURL = "https://github.com/szporwolik/WarnFlux"
+
 // New builds the web server (no listener created yet).
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	router RouterStatuses, actions *action.Manager, ingress *dispatch.Ingress,

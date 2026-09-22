@@ -29,7 +29,10 @@
     {{template "plugins" .Plugins}}
     {{template "actions" .Actions}}
   </main>
-  <footer class="footer muted">{{.AppTitle}} · {{.Status.Version}} ({{.Status.Commit}})</footer>
+  <footer class="footer">
+    <span>{{.AppTitle}} · {{.Status.Version}} ({{.Status.Commit}})</span>
+    <a class="footer-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer">github.com/szporwolik/WarnFlux</a>
+  </footer>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

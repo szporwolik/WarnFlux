@@ -141,6 +141,7 @@ type actionsView struct {
 
 type pageView struct {
 	AppTitle string
+	RepoURL  string
 	Status   statusView
 	MQTT     mqttView
 	Weather  weatherView
@@ -334,6 +335,9 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "login", map[string]any{
 		"AppTitle": s.cfg.Title,
+		"Version":  s.version,
+		"Commit":   s.commit,
+		"RepoURL":  repoURL,
 		"CSRF":     csrf,
 		"Error":    "",
 	})
@@ -362,6 +366,9 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		s.render(w, "login", map[string]any{
 			"AppTitle": s.cfg.Title,
+			"Version":  s.version,
+			"Commit":   s.commit,
+			"RepoURL":  repoURL,
 			"CSRF":     cookie.Value,
 			"Error":    "Invalid username or password",
 		})
@@ -406,6 +413,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "page", pageView{
 		AppTitle: s.cfg.Title,
+		RepoURL:  repoURL,
 		Status:   s.buildStatusView(),
 		MQTT:     s.buildMQTTView(snap),
 		Weather:  buildWeatherView(snap),

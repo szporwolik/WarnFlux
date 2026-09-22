@@ -397,6 +397,28 @@ func TestDashboardActionsStatus(t *testing.T) {
 	}
 }
 
+func TestFooterVersionAndRepoLink(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Login page bottom bar: app title, version (commit) and the repo link.
+	_, loginHTML := env.get("/login")
+	if !strings.Contains(loginHTML, "WarnFlux Test · test-version (abc1234)") {
+		t.Errorf("login footer missing version line: %s", loginHTML)
+	}
+	if !strings.Contains(loginHTML, "github.com/szporwolik/WarnFlux") {
+		t.Errorf("login footer missing repo link: %s", loginHTML)
+	}
+
+	env.login()
+	_, dashHTML := env.get("/dashboard")
+	if !strings.Contains(dashHTML, "WarnFlux Test · test-version (abc1234)") {
+		t.Errorf("dashboard footer missing version line: %s", dashHTML)
+	}
+	if !strings.Contains(dashHTML, "github.com/szporwolik/WarnFlux") {
+		t.Errorf("dashboard footer missing repo link: %s", dashHTML)
+	}
+}
+
 func TestDashboardSystemShowsDispatchQueue(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()

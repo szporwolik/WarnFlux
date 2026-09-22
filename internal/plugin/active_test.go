@@ -238,9 +238,9 @@ func TestActiveStateStartupSyncPaginated(t *testing.T) {
 		m.Run(runCtx)
 	}()
 	waitFor(t, 10*time.Second, func() bool { return out.syncedCount() == total })
-	if got := out.rehydrateCount(); got < 1 {
-		t.Errorf("rehydration triggered %d times, want at least one background pass", got)
-	}
+	// The rehydration pass starts after seeding completes; it is a separate
+	// background step, so it needs its own wait (especially under -race).
+	waitFor(t, 10*time.Second, func() bool { return out.rehydrateCount() >= 1 })
 
 	keys := out.syncedKeys()
 	if len(keys) != total {

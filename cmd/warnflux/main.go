@@ -98,17 +98,6 @@ const (
 )
 
 func main() {
-	// Developer demo of the core pipeline; not a stable public interface.
-	if len(os.Args) >= 2 && os.Args[1] == "demo" {
-		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		slog.SetDefault(logger)
-		if err := runDemo(logger); err != nil {
-			slog.Error("WarnFlux demo failed", "error", err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	fs := flag.NewFlagSet("warnflux", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultConfigPath, "path to YAML configuration file")
 	showVersion := fs.Bool("version", false, "print version and exit")

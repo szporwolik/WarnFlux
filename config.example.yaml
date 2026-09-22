@@ -37,18 +37,6 @@ storage:
 
 # Source plugins: ingest hazard information and emit normalized events.
 sources:
-  # The demo source is for development/testing only; disabled by default.
-  - id: demo
-    type: demo
-    enabled: false
-
-    runtime:
-      restart: true
-      shutdown_timeout: 10s
-
-    config:
-      interval: 30s
-
   # Open-Meteo INFORMATIONAL weather source: publishes ordinary weather
   # snapshots to retained MQTT information topics
   # (<topic_prefix>/info/openmeteo/<producer_id>/<location_id>/weather).

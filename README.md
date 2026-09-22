@@ -37,7 +37,7 @@ non-retained) and a retained current-active hazard view (`/active/#`,
 materialized from SQLite) so late-joining clients immediately discover all
 active hazards — see
 [`internal/plugins/outputs/mqtt/README.md`](internal/plugins/outputs/mqtt/README.md).
-The built-in `demo` source exists for development. The `openmeteo` source
+The `openmeteo` source
 publishes ordinary weather snapshots to retained MQTT information topics —
 **it does NOT generate HazardEvents**. Real hazard sources:
 
@@ -142,14 +142,15 @@ Plugin instances are configured in the `sources:` and `outputs:` sections:
 
 ```yaml
 sources:
-  - id: demo
-    type: demo            # registered plugin type
-    enabled: false
-    runtime:              # framework-level supervision options
+  - id: imgw-warnings
+    type: imgw           # registered plugin type
+    enabled: true
+    runtime:             # framework-level supervision options
       restart: true
       shutdown_timeout: 10s
-    config:               # plugin-specific, decoded strictly by the plugin
-      interval: 30s
+    config:              # plugin-specific, decoded strictly by the plugin
+      poll_interval: 5m
+      request_timeout: 10s
 
 outputs:
   - id: mqtt-main
@@ -309,8 +310,8 @@ of the timestamp.
   "oldest_pending_age_seconds": 0,
   "sources": [
     {
-      "id": "demo",
-      "type": "demo",
+      "id": "imgw-warnings",
+      "type": "imgw",
       "state": "running",
       "consecutive_failures": 0,
       "restart_count": 0
@@ -624,7 +625,8 @@ Built-in plugins:
 
 | Plugin | Kind | Purpose |
 |--------|------|---------|
-| `demo` | source | synthetic development events |
+| `imgw` | source | real HAZARD source: IMGW-PIB `warningsmeteo`/`warningshydro` with snapshot reconciliation (see its [README](internal/plugins/sources/imgw/README.md)) |
+| `rso` | source | real HAZARD source: RSO public XML with upstream voivodeship filtering (see its [README](internal/plugins/sources/rso/README.md)) |
 | `openmeteo` | source | periodically publishes current weather + forecast for configured coordinates to retained MQTT information topics (see its [README](internal/plugins/sources/openmeteo/README.md)) — **does NOT generate HazardEvents** |
 | `mqtt` | output | hazard event stream, retained status, retained information topics |
 
@@ -671,24 +673,6 @@ the release workflow, which builds:
   `ghcr.io/<owner>/warnflux` with `v0.1.0`, `v0.1` and `latest` tags
   (no floating `v0` major tag before 1.0) and OCI labels
 
-## Demo
-
-```bash
-go run ./cmd/warnflux demo
-```
-
-The demo exercises the pipeline against a temporary database:
-
-```text
-first event            → new
-same event again       → duplicate
-changed severity       → updated
-cancelled event        → cancelled
-repeated cancellation  → duplicate
-expiration check       → expired
-event without expiry   → stays active
-```
-
 ## Tests
 
 ```bash
@@ -700,7 +684,7 @@ go test -fuzz=FuzzNormalizeValidate -fuzztime=30s ./internal/core/
 ## Project layout
 
 ```text
-cmd/warnflux/      application entry point, --version, demo command
+cmd/warnflux/      application entry point, --version
 internal/config/       YAML configuration loading and validation
 internal/core/         normalized event model, identity, fingerprint
 internal/ingest/       dedup/update/cancel pipeline

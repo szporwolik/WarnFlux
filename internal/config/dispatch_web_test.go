@@ -271,7 +271,7 @@ func TestActionValidation(t *testing.T) {
 	body := "app:\n  log_level: info\nstorage:\n  driver: sqlite\n" + `
 sources:
   - id: logger-action
-    type: demo
+    type: imgw
 actions:
   - id: logger-action
     type: logger

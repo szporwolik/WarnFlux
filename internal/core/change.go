@@ -98,7 +98,7 @@ func ValidateJournalChange(ct ChangeType, event HazardEvent) error {
 // Duplicates intentionally produce no EventChange.
 type EventChange struct {
 	// ID is the durable journal change ID (0 when the change does not come
-	// from the journal, e.g. in tests or demos).
+	// from the journal, e.g. in tests).
 	ID int64
 
 	Type  ChangeType

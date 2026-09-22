@@ -18,14 +18,15 @@ storage:
   path: ./warnflux.db
 
 sources:
-  - id: demo
-    type: demo
-    enabled: false
+  - id: imgw-warnings
+    type: imgw
+    enabled: true
     runtime:
       restart: true
       shutdown_timeout: 10s
     config:
-      interval: 30s
+      poll_interval: 5m
+      request_timeout: 10s
 
 outputs:
   - id: mqtt-main
@@ -53,13 +54,13 @@ func writeTempConfig(t *testing.T, content string) string {
 // especially output IDs, which are persisted journal consumer identities)
 // must be lowercase slugs. Uppercase is rejected, not silently lowercased.
 func TestPluginIDValidation(t *testing.T) {
-	for _, id := range []string{"mqtt-main", "demo", "a", "out_a.b-1", "trailing-"} {
-		if _, err := Load(writeTempConfig(t, "sources:\n  - id: "+id+"\n    type: demo\n")); err != nil {
+	for _, id := range []string{"mqtt-main", "imgw-warnings", "a", "out_a.b-1", "trailing-"} {
+		if _, err := Load(writeTempConfig(t, "sources:\n  - id: "+id+"\n    type: imgw\n")); err != nil {
 			t.Errorf("id %q rejected: %v", id, err)
 		}
 	}
 	for _, id := range []string{"", "Has Space", "-leading", "UPPER", "uni☃", strings.Repeat("x", 65)} {
-		if _, err := Load(writeTempConfig(t, "sources:\n  - id: "+id+"\n    type: demo\n")); err == nil {
+		if _, err := Load(writeTempConfig(t, "sources:\n  - id: "+id+"\n    type: imgw\n")); err == nil {
 			t.Errorf("id %q accepted, want rejection", id)
 		}
 	}
@@ -93,7 +94,7 @@ func TestLoadFullConfig(t *testing.T) {
 		t.Fatalf("sources=%d outputs=%d", len(cfg.Sources), len(cfg.Outputs))
 	}
 	src := cfg.Sources[0]
-	if src.ID != "demo" || src.Type != "demo" || src.Enabled {
+	if src.ID != "imgw-warnings" || src.Type != "imgw" || !src.Enabled {
 		t.Errorf("unexpected source: %+v", src)
 	}
 	if src.Runtime.Restart != true || src.Runtime.ShutdownTimeout != 10*time.Second {
@@ -137,7 +138,7 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadPluginRuntimeDefaults(t *testing.T) {
-	cfg, err := Load(writeTempConfig(t, "sources:\n  - id: s\n    type: demo\n    enabled: true\noutputs:\n  - id: o\n    type: mqtt\n    enabled: true\n"))
+	cfg, err := Load(writeTempConfig(t, "sources:\n  - id: s\n    type: imgw\n    enabled: true\noutputs:\n  - id: o\n    type: mqtt\n    enabled: true\n"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestLoadPluginRuntimeDefaults(t *testing.T) {
 }
 
 func TestLoadPluginDuplicateIDRejected(t *testing.T) {
-	_, err := Load(writeTempConfig(t, "sources:\n  - id: x\n    type: demo\noutputs:\n  - id: x\n    type: mqtt\n"))
+	_, err := Load(writeTempConfig(t, "sources:\n  - id: x\n    type: imgw\noutputs:\n  - id: x\n    type: mqtt\n"))
 	if err == nil || !strings.Contains(err.Error(), "duplicate plugin id") {
 		t.Errorf("error = %v, want duplicate plugin id", err)
 	}
@@ -160,13 +161,13 @@ func TestLoadPluginMissingTypeRejected(t *testing.T) {
 	if _, err := Load(writeTempConfig(t, "sources:\n  - id: x\n")); err == nil {
 		t.Fatal("expected error for missing type, got nil")
 	}
-	if _, err := Load(writeTempConfig(t, "sources:\n  - type: demo\n")); err == nil {
+	if _, err := Load(writeTempConfig(t, "sources:\n  - type: imgw\n")); err == nil {
 		t.Fatal("expected error for missing id, got nil")
 	}
 }
 
 func TestLoadPluginInvalidRuntimeRejected(t *testing.T) {
-	if _, err := Load(writeTempConfig(t, "sources:\n  - id: x\n    type: demo\n    runtime:\n      shutdown_timeout: 0s\n")); err == nil {
+	if _, err := Load(writeTempConfig(t, "sources:\n  - id: x\n    type: imgw\n    runtime:\n      shutdown_timeout: 0s\n")); err == nil {
 		t.Fatal("expected error for shutdown_timeout 0s, got nil")
 	}
 	if _, err := Load(writeTempConfig(t, "outputs:\n  - id: x\n    type: mqtt\n    runtime:\n      failure_threshold: 0\n")); err == nil {

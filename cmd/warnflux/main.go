@@ -16,15 +16,22 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 
+	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/actions"
 	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
+	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
+	"github.com/szporwolik/WarnFlux/internal/web"
 )
 
 // resolveStoragePath fills in a database location when the configuration
@@ -53,6 +60,13 @@ func resolveStoragePath(path string, logger *slog.Logger) string {
 var (
 	version = "dev"
 	commit  = "unknown"
+)
+
+// Shutdown bounds for the dispatch/action/web subsystems.
+const (
+	httpShutdownWait  = 5 * time.Second
+	dispatchDrainWait = 5 * time.Second
+	actionShutdownMax = 30 * time.Second
 )
 
 func main() {
@@ -158,10 +172,50 @@ func run(configPath string) error {
 		return fmt.Errorf("sync output cursors: %w", err)
 	}
 
+	// Dispatch subsystem: one canonical bounded ingress plus the mirrored
+	// retained MQTT state (per receiver, never persisted).
+	ingress := dispatch.NewIngress(cfg.Dispatch.QueueSize)
+	mirror := state.New()
+
+	// ActionPlugins: explicit routing only. Unknown types fail here, before
+	// any worker starts (even for disabled entries).
+	actionRegistry := action.NewRegistry()
+	if err := actions.RegisterAll(actionRegistry); err != nil {
+		return fmt.Errorf("register built-in actions: %w", err)
+	}
+	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger)
+	if err != nil {
+		return fmt.Errorf("configure actions: %w", err)
+	}
+
+	// MQTT receivers: independent input clients (never the publisher).
+	// Construction failures are fatal; connection failures are not.
+	receivers, err := mqttreceiver.NewManager(cfg.Dispatch.Receivers, mirror, ingress, logger)
+	if err != nil {
+		return fmt.Errorf("configure mqtt receivers: %w", err)
+	}
+
+	// Authenticated web UI. The listening socket is created before the
+	// application declares readiness (bind failure is startup-critical).
+	var webSrv *web.Server
+	if cfg.Web.Enabled {
+		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, version, commit)
+		if err != nil {
+			return fmt.Errorf("configure web: %w", err)
+		}
+		if err := webSrv.Bind(); err != nil {
+			return err
+		}
+	}
+
 	// Phase 2 — runtime. From here on, provider failures are isolated by
 	// the plugin framework instead of terminating the process.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Startup order: action workers → receivers → Router core → HTTP.
+	actionsMgr.Start(ctx)
+	receivers.StartAll()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -170,12 +224,57 @@ func run(configPath string) error {
 		manager.Run(ctx)
 	}()
 
+	if webSrv != nil {
+		serveErr := make(chan error, 1)
+		go webSrv.Serve(serveErr)
+		go func() {
+			select {
+			case err := <-serveErr:
+				logger.Error("http server failed", "error", err)
+				stop()
+			case <-ctx.Done():
+			}
+		}()
+		webSrv.MarkReady()
+	}
+	logger.Info("ready",
+		"web_enabled", cfg.Web.Enabled,
+		"receivers", len(cfg.Dispatch.Receivers),
+		"actions", len(cfg.Actions))
+
 	<-ctx.Done()
 	logger.Info("WarnFlux stopping")
 
+	// Shutdown order: stop HTTP state-changing work → stop receiver intake
+	// → stop Router core (sources, ingestion, outputs, existing semantics)
+	// → drain dispatch ingress → drain/close actions → disconnect receiver
+	// clients. SQLite closes last via defer.
+	if webSrv != nil {
+		httpCtx, cancelHTTP := context.WithTimeout(context.Background(), httpShutdownWait)
+		if err := webSrv.Shutdown(httpCtx); err != nil {
+			logger.Warn("http shutdown", "error", err)
+		}
+		cancelHTTP()
+	}
+
+	receivers.StopIntakeAll()
+
 	// The manager stops sources, drains ingestion and closes outputs with
-	// bounded timeouts. store.Close runs via defer afterwards.
+	// bounded timeouts.
 	wg.Wait()
+
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), dispatchDrainWait)
+	_ = ingress.Drain(drainCtx)
+	cancelDrain()
+	ingress.StopIntake()
+
+	actionCtx, cancelActions := context.WithTimeout(context.Background(), actionShutdownMax)
+	if err := actionsMgr.Shutdown(actionCtx); err != nil {
+		logger.Error("action shutdown incomplete", "error", err)
+	}
+	cancelActions()
+
+	receivers.DisconnectAll()
 
 	logger.Info("WarnFlux stopped")
 	return nil

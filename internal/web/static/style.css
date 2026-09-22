@@ -1,0 +1,263 @@
+/* HazardDispatcher admin UI — small embedded stylesheet. No external assets. */
+
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --text: #1e293b;
+  --muted: #64748b;
+  --accent: #0f766e;
+  --ok: #16a34a;
+  --ok-bg: #dcfce7;
+  --warn: #d97706;
+  --warn-bg: #fef3c7;
+  --bad: #dc2626;
+  --bad-bg: #fee2e2;
+  --muted-bg: #e2e8f0;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: 1.05rem; margin: 0 0 0.75rem; color: var(--text); }
+h3 { font-size: 1rem; margin: 0; }
+
+.muted { color: var(--muted); }
+
+/* ---- top bar ---- */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.logout { margin: 0; }
+
+.btn-ghost {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.9rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  color: var(--text);
+}
+.btn-ghost:hover { background: var(--bg); }
+
+/* ---- layout ---- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 1rem;
+  padding: 1rem 1.25rem 2rem;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  min-width: 0;
+}
+
+.card:nth-child(3), .card:nth-child(4) { grid-column: 1 / -1; }
+
+.footer {
+  text-align: center;
+  padding: 0 1rem 1.5rem;
+  font-size: 0.85rem;
+}
+
+/* ---- key/value system panel ---- */
+.kv-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 1rem;
+  font-size: 0.92rem;
+}
+.kv { display: contents; }
+.kv .k { color: var(--muted); }
+.kv .v { font-variant-numeric: tabular-nums; }
+
+/* ---- badges ---- */
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: lowercase;
+}
+.badge.ok { background: var(--ok-bg); color: var(--ok); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.bad { background: var(--bad-bg); color: var(--bad); }
+.badge.muted { background: var(--muted-bg); color: var(--muted); }
+.badge.healthy { background: var(--ok-bg); color: var(--ok); }
+.badge.degraded { background: var(--warn-bg); color: var(--warn); }
+.badge.disabled { background: var(--bad-bg); color: var(--bad); }
+
+.count {
+  background: var(--muted-bg);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 0.05rem 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* ---- weather ---- */
+.weather-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.75rem;
+}
+.weather-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+}
+.wc-temp { font-size: 1.6rem; font-weight: 650; }
+.wc-cond { color: var(--muted); margin-bottom: 0.4rem; }
+.wc-meta { display: flex; flex-wrap: wrap; gap: 0.15rem 0.8rem; font-size: 0.85rem; }
+.wc-time { margin-top: 0.4rem; font-size: 0.8rem; }
+
+/* ---- warnings ---- */
+.warnings { display: flex; flex-direction: column; gap: 0.7rem; }
+.warning {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted-bg);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+}
+.warning:has(.sev-extreme) { border-left-color: #7f1d1d; }
+.warning:has(.sev-severe) { border-left-color: var(--bad); }
+.warning:has(.sev-moderate) { border-left-color: var(--warn); }
+
+.w-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.sev {
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.sev-extreme { background: #7f1d1d; color: #fecaca; }
+.sev-severe { background: var(--bad-bg); color: var(--bad); }
+.sev-moderate { background: var(--warn-bg); color: var(--warn); }
+.sev-minor { background: var(--muted-bg); color: var(--muted); }
+.sev-unknown { background: var(--muted-bg); color: var(--muted); }
+
+.w-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 0.35rem;
+}
+.w-areas { font-size: 0.88rem; margin-top: 0.4rem; }
+.warning details { margin-top: 0.4rem; }
+.warning summary { cursor: pointer; font-size: 0.88rem; color: var(--accent); }
+.warning details p { font-size: 0.88rem; white-space: pre-wrap; }
+
+/* ---- plugins table ---- */
+.table-wrap { overflow-x: auto; }
+table.plugins {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+table.plugins th, table.plugins td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: top;
+}
+table.plugins th { color: var(--muted); font-weight: 600; }
+.reason { color: var(--bad); font-size: 0.78rem; white-space: normal; }
+
+/* ---- empty states ---- */
+.empty { color: var(--muted); font-style: italic; margin: 0.25rem 0; }
+
+/* ---- login ---- */
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+.login-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.75rem;
+  width: 100%;
+  max-width: 360px;
+}
+.login-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.login-card input {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+}
+.login-card input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.login-card button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.6rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.login-card button:hover { filter: brightness(1.08); }
+.login-error {
+  background: var(--bad-bg);
+  color: var(--bad);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+  font-size: 0.9rem;
+  margin: 0.75rem 0 0;
+}
+
+@media (max-width: 640px) {
+  .grid { grid-template-columns: 1fr; padding: 0.75rem; }
+  .kv-grid { grid-template-columns: 1fr; gap: 0.15rem; }
+  .kv .v { margin-bottom: 0.4rem; }
+}
+
+.mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 0.85em; }

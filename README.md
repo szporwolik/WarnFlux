@@ -18,6 +18,14 @@ durable change journal → independent per-output workers
     ↓
 MQTT (<prefix>/events stream + retained <prefix>/active/# current-active
 view + retained <prefix>/status snapshot)
+    ↓
+MQTT broker(s)
+    ↓
+MQTT receivers (one or more independent input clients)
+    ↓
+canonical dispatch ingress (hazard_transition + mqtt_message)
+    ↓
+Rules [future] → selected ActionPlugins (SMS / email / Discord / …)
 ```
 
 ## Status
@@ -463,14 +471,19 @@ docker run --rm \
 ```
 
 The image is a multi-stage `distroless/static-debian12:nonroot` build that
-runs as a non-root user (UID 65532), exposes no ports, and pre-creates
-writable `/data` and `/logs` directories.
+runs as a non-root user (UID 65532), exposes port 8080 for the web UI, and
+pre-creates writable `/data` and `/logs` directories plus the `/config`
+convention directory.
 
 | Mount | Purpose | Optional? |
 |-------|---------|-----------|
-| `/config.yaml` | configuration | required (read-only) |
+| `/config/config.yaml` | configuration | required (read-only) |
 | `/data` | SQLite database (`storage.path`) | recommended — otherwise the database is lost on recreation |
 | `/logs` | rotating log files (`app.log_file`) | optional |
+
+The container entrypoint runs `warnflux --config /config/config.yaml`;
+set `storage.path: /data/warnflux.db` and `web.listen: ":8080"` inside
+the container configuration.
 
 With **bind mounts**, host directories must be writable by UID 65532
 (e.g. `sudo chown 65532:65532 ./data ./logs`). Named volumes initialize
@@ -515,6 +528,90 @@ docker run -d \
 
 Prefer a specific version tag (e.g. `ghcr.io/<owner>/warnflux:v0.1.0`)
 for reproducible deployments.
+
+## Integrated Dispatcher (one application)
+
+WarnFlux now includes the Dispatcher and the authenticated Web UI in
+**one binary, one Docker container and one SQLite database**
+(`/data/warnflux.db` — there is no second database).
+
+### Two MQTT clients is intentional
+
+Using two MQTT client connections to the same broker is intentional:
+
+| Role | Config | Direction | Semantics |
+|------|--------|-----------|-----------|
+| MQTT **OutputPlugin** | `outputs[].type=mqtt` | publishes | durable Router output: hazard transitions, retained active view, status |
+| MQTT **Receiver** | `dispatch.mqtt_receivers[]` | subscribes | dispatch INPUT: consumes frames for the canonical dispatch ingress |
+
+The publisher and a receiver connecting to the same broker MUST use
+**different MQTT client IDs**.
+
+### OutputPlugin vs ActionPlugin
+
+- **OutputPlugin** — automatic durable delivery of Router changes.
+  Example: MQTT.
+- **ActionPlugin** — explicitly invoked by future dispatch rules through
+  `Manager.Submit`. Examples: SMS, email, Discord, CAT. ActionPlugins
+  never automatically receive MQTT events. The only built-in action today
+  is `logger` (proof of concept, disabled by default).
+
+There is **no rule engine yet**: received MQTT events are normalized into
+canonical dispatch events and enter one bounded ingress queue. Rules will
+connect `dispatch.Event` → selected action IDs later.
+
+### Canonical dispatch events
+
+Every receiver feeds the same bounded ingress with one of two kinds:
+
+- `hazard_transition` — strictly parsed WarnFlux `/events` messages
+  (`new`/`updated`/`cancelled`/`expired`); retained `/active/#`, `/info/#`
+  and `/status` messages update mirrored state but never become transitions.
+- `mqtt_message` — raw generic frames from additional subscriptions, with
+  an opaque byte payload (no JSON/UTF-8 assumptions).
+
+Events carry the receiver ID so future rules can select by origin, and
+state is namespaced by receiver: two brokers publishing identical topics
+never overwrite each other. Retained-state bounds: 10 000 active hazards,
+10 000 info entries, 1 MiB MQTT payload. Generic frames are not republished
+(no implicit MQTT bridge — loop safety) and not stored as history.
+
+### Multi-broker receivers
+
+```yaml
+dispatch:
+  mqtt_receivers:
+    - id: local
+      broker: tcp://mosquitto:1883
+      client_id: warnflux-dispatch-local
+      warnflux:
+        enabled: true
+        topic_prefix: warnflux
+
+    - id: remote
+      broker: tcp://10.10.10.10:1883
+      client_id: warnflux-dispatch-remote
+      subscriptions:
+        - topic: "remote/#"
+          qos: 1
+```
+
+Each receiver owns its connection, client ID, credentials, subscriptions,
+reconnect state and health; one receiver failing never stops another, the
+Router core or the Web UI. `warnflux.enabled` automatically subscribes
+`<prefix>/events`, `<prefix>/active/#`, `<prefix>/info/#`, `<prefix>/status`
+with strict protocol parsing.
+
+### Web UI
+
+The authenticated admin UI (`web.enabled: true`) is server-rendered with
+embedded assets (no CDN), session login, CSRF protection, `/healthz` and
+`/readyz`, and 5-second partial polling. Dashboard sections: System, MQTT
+connections, Weather, Active warnings, Sources/Outputs (from the Router
+plugin manager) and Actions. The dashboard consumes the MQTT-facing
+contract through the receivers — it never reads active hazards straight
+from SQLite — so local and remote WarnFlux instances appear on the
+same path. Web credentials support `password` or `password_file`.
 
 ## Plugins
 

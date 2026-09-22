@@ -36,6 +36,27 @@ const (
 	defaultShutdownTimeout  = 10 * time.Second
 	defaultOutputTimeout    = 10 * time.Second
 	defaultFailureThreshold = 5
+
+	defaultDispatchQueueSize = 1024
+
+	defaultReceiverConnectTimeout = 10 * time.Second
+	defaultReceiverKeepAlive      = 30 * time.Second
+	defaultHRPrefix               = "warnflux"
+	defaultSubscriptionQoS        = 1
+
+	defaultWebListen = ":8080"
+	defaultWebTitle  = "WarnFlux"
+
+	defaultActionQueueSize       = 128
+	defaultActionCallTimeout     = 10 * time.Second
+	defaultActionShutdownTimeout = 10 * time.Second
+
+	// Bounds against absurd runtime values.
+	maxPluginQueueSize   = 100_000
+	maxRuntimeTimeout    = 24 * time.Hour
+	maxMQTTClientIDBytes = 256
+	maxTopicPrefixBytes  = 256
+	maxSubTopicBytes     = 1024
 )
 
 // Plugin instance IDs are durable identities (output cursors are keyed by
@@ -49,10 +70,13 @@ var validLogLevels = []string{"debug", "info", "warn", "error"}
 
 // Config is the fully defaulted, validated application configuration.
 type Config struct {
-	App     App
-	Storage Storage
-	Sources []Source
-	Outputs []Output
+	App      App
+	Storage  Storage
+	Sources  []Source
+	Outputs  []Output
+	Dispatch Dispatch
+	Web      Web
+	Actions  []Action
 }
 
 // App holds general application settings.
@@ -119,12 +143,157 @@ type Storage struct {
 	Path   string
 }
 
+// Dispatch holds the canonical dispatch ingress and the MQTT receiver
+// subsystem configuration. Receivers are INPUT clients: they consume MQTT
+// frames for dispatch. They are deliberately independent from
+// outputs[].type=mqtt (the Router publisher).
+type Dispatch struct {
+	// QueueSize is the bounded canonical dispatch intake queue capacity.
+	QueueSize int
+	// Receivers are the independent MQTT receiver connections.
+	Receivers []Receiver
+}
+
+// Receiver is one independent MQTT receiver connection.
+type Receiver struct {
+	ID           string
+	Enabled      bool
+	Broker       string
+	ClientID     string
+	Username     string
+	Password     string
+	PasswordFile string
+
+	ConnectTimeout time.Duration
+	KeepAlive      time.Duration
+
+	// WarnFlux mode subscribes the strict WarnFlux protocol topics.
+	WarnFlux ReceiverWarnFlux
+	// Subscriptions are additional generic MQTT topic filters.
+	Subscriptions []ReceiverSubscription
+}
+
+// ReceiverWarnFlux configures the WarnFlux protocol mode of one
+// receiver.
+type ReceiverWarnFlux struct {
+	Enabled     bool
+	TopicPrefix string
+}
+
+// ReceiverSubscription is one generic MQTT topic filter with standard MQTT
+// wildcard semantics.
+type ReceiverSubscription struct {
+	Topic string
+	QoS   int
+}
+
+// Web holds the authenticated admin UI configuration.
+type Web struct {
+	Enabled bool
+	Listen  string
+	Title   string
+	Auth    WebAuth
+}
+
+// WebAuth holds the single admin account for the web UI. Password and
+// PasswordFile are mutually exclusive.
+type WebAuth struct {
+	Username string
+	Password string
+	// PasswordFile, when set, reads the admin password from a Docker
+	// secret / mounted file. Mutually exclusive with password.
+	PasswordFile string
+	// SecureCookie marks session cookies Secure (for TLS-terminated
+	// deployments).
+	SecureCookie bool
+}
+
+// Action is one configured ActionPlugin instance. ActionPlugins are
+// explicitly invoked by future dispatch rules; they never automatically
+// receive MQTT events.
+type Action struct {
+	ID      string
+	Type    string
+	Enabled bool
+	Runtime ActionRuntime
+	// Config is the raw action-specific configuration; the action factory
+	// decodes it into its own typed struct.
+	Config *yaml.Node
+}
+
+// ActionRuntime holds common supervision options for an action instance.
+type ActionRuntime struct {
+	QueueSize       int
+	CallTimeout     time.Duration
+	ShutdownTimeout time.Duration
+}
+
 // fileConfig mirrors the YAML layout.
 type fileConfig struct {
-	App     fileApp      `yaml:"app"`
-	Storage fileStorage  `yaml:"storage"`
-	Sources []fileSource `yaml:"sources"`
-	Outputs []fileOutput `yaml:"outputs"`
+	App      fileApp       `yaml:"app"`
+	Storage  fileStorage   `yaml:"storage"`
+	Sources  []fileSource  `yaml:"sources"`
+	Outputs  []fileOutput  `yaml:"outputs"`
+	Dispatch *fileDispatch `yaml:"dispatch"`
+	Web      *fileWeb      `yaml:"web"`
+	Actions  []fileAction  `yaml:"actions"`
+}
+
+type fileDispatch struct {
+	QueueSize *int           `yaml:"queue_size"`
+	Receivers []fileReceiver `yaml:"mqtt_receivers"`
+}
+
+type fileReceiver struct {
+	ID             string                     `yaml:"id"`
+	Enabled        bool                       `yaml:"enabled"`
+	Broker         string                     `yaml:"broker"`
+	ClientID       string                     `yaml:"client_id"`
+	Username       string                     `yaml:"username"`
+	Password       string                     `yaml:"password"`
+	PasswordFile   string                     `yaml:"password_file"`
+	ConnectTimeout *time.Duration             `yaml:"connect_timeout"`
+	KeepAlive      *time.Duration             `yaml:"keep_alive"`
+	WarnFlux   *fileReceiverHR            `yaml:"warnflux"`
+	Subscriptions  []fileReceiverSubscription `yaml:"subscriptions"`
+}
+
+type fileReceiverHR struct {
+	Enabled     *bool  `yaml:"enabled"`
+	TopicPrefix string `yaml:"topic_prefix"`
+}
+
+type fileReceiverSubscription struct {
+	Topic string `yaml:"topic"`
+	QoS   *int   `yaml:"qos"`
+}
+
+type fileWeb struct {
+	Enabled bool         `yaml:"enabled"`
+	Listen  string       `yaml:"listen"`
+	Title   string       `yaml:"title"`
+	Auth    *fileWebAuth `yaml:"auth"`
+}
+
+type fileWebAuth struct {
+	Username     string `yaml:"username"`
+	Password     string `yaml:"password"`
+	PasswordFile string `yaml:"password_file"`
+	SecureCookie bool   `yaml:"secure_cookie"`
+}
+
+type fileAction struct {
+	ID      string             `yaml:"id"`
+	Type    string             `yaml:"type"`
+	Enabled bool               `yaml:"enabled"`
+	Runtime *fileActionRuntime `yaml:"runtime"`
+	Config  *rawPluginConfig   `yaml:"config"`
+}
+
+type fileActionRuntime struct {
+	QueueSize       *int           `yaml:"queue_size"`
+	CallTimeout     *time.Duration `yaml:"call_timeout"`
+	ShutdownTimeout *time.Duration `yaml:"shutdown_timeout"`
 }
 
 type fileApp struct {
@@ -327,6 +496,100 @@ func (f fileConfig) toConfig() Config {
 		}
 		cfg.Outputs = append(cfg.Outputs, inst)
 	}
+
+	cfg.Dispatch = Dispatch{QueueSize: defaultDispatchQueueSize}
+	if f.Dispatch != nil {
+		if f.Dispatch.QueueSize != nil {
+			cfg.Dispatch.QueueSize = *f.Dispatch.QueueSize
+		}
+		for _, r := range f.Dispatch.Receivers {
+			inst := Receiver{
+				ID:             strings.TrimSpace(r.ID),
+				Enabled:        r.Enabled,
+				Broker:         strings.TrimSpace(r.Broker),
+				ClientID:       strings.TrimSpace(r.ClientID),
+				Username:       strings.TrimSpace(r.Username),
+				Password:       r.Password,
+				PasswordFile:   strings.TrimSpace(r.PasswordFile),
+				ConnectTimeout: defaultReceiverConnectTimeout,
+				KeepAlive:      defaultReceiverKeepAlive,
+			}
+			if r.ConnectTimeout != nil {
+				inst.ConnectTimeout = *r.ConnectTimeout
+			}
+			if r.KeepAlive != nil {
+				inst.KeepAlive = *r.KeepAlive
+			}
+			if r.WarnFlux != nil {
+				inst.WarnFlux = ReceiverWarnFlux{
+					Enabled:     r.WarnFlux.Enabled == nil || *r.WarnFlux.Enabled,
+					TopicPrefix: defaultHRPrefix,
+				}
+				if p := strings.TrimSpace(r.WarnFlux.TopicPrefix); p != "" {
+					inst.WarnFlux.TopicPrefix = p
+				}
+			}
+			for _, s := range r.Subscriptions {
+				inst.Subscriptions = append(inst.Subscriptions, ReceiverSubscription{
+					Topic: s.Topic,
+					QoS:   defaultSubscriptionQoS,
+				})
+				if s.QoS != nil {
+					inst.Subscriptions[len(inst.Subscriptions)-1].QoS = *s.QoS
+				}
+			}
+			cfg.Dispatch.Receivers = append(cfg.Dispatch.Receivers, inst)
+		}
+	}
+
+	cfg.Web = Web{
+		Enabled: f.Web != nil && f.Web.Enabled,
+		Listen:  defaultWebListen,
+		Title:   defaultWebTitle,
+	}
+	if f.Web != nil {
+		if l := strings.TrimSpace(f.Web.Listen); l != "" {
+			cfg.Web.Listen = l
+		}
+		if t := strings.TrimSpace(f.Web.Title); t != "" {
+			cfg.Web.Title = t
+		}
+		if f.Web.Auth != nil {
+			cfg.Web.Auth = WebAuth{
+				Username:     f.Web.Auth.Username,
+				Password:     f.Web.Auth.Password,
+				PasswordFile: strings.TrimSpace(f.Web.Auth.PasswordFile),
+				SecureCookie: f.Web.Auth.SecureCookie,
+			}
+		}
+	}
+
+	cfg.Actions = make([]Action, 0, len(f.Actions))
+	for _, a := range f.Actions {
+		inst := Action{
+			ID:      strings.TrimSpace(a.ID),
+			Type:    strings.TrimSpace(a.Type),
+			Enabled: a.Enabled,
+			Config:  pluginConfigNode(a.Config),
+			Runtime: ActionRuntime{
+				QueueSize:       defaultActionQueueSize,
+				CallTimeout:     defaultActionCallTimeout,
+				ShutdownTimeout: defaultActionShutdownTimeout,
+			},
+		}
+		if a.Runtime != nil {
+			if a.Runtime.QueueSize != nil {
+				inst.Runtime.QueueSize = *a.Runtime.QueueSize
+			}
+			if a.Runtime.CallTimeout != nil {
+				inst.Runtime.CallTimeout = *a.Runtime.CallTimeout
+			}
+			if a.Runtime.ShutdownTimeout != nil {
+				inst.Runtime.ShutdownTimeout = *a.Runtime.ShutdownTimeout
+			}
+		}
+		cfg.Actions = append(cfg.Actions, inst)
+	}
 	return cfg
 }
 
@@ -391,6 +654,129 @@ func (c Config) Validate() error {
 		}
 		if o.Runtime.FailureThreshold <= 0 {
 			return fmt.Errorf("output %q: runtime.failure_threshold must be greater than 0", o.ID)
+		}
+	}
+	if c.Dispatch.QueueSize < 1 || c.Dispatch.QueueSize > maxPluginQueueSize {
+		return fmt.Errorf("dispatch.queue_size must be between 1 and %d, got %d", maxPluginQueueSize, c.Dispatch.QueueSize)
+	}
+	receiverSeen := make(map[string]bool, len(c.Dispatch.Receivers))
+	for i, r := range c.Dispatch.Receivers {
+		field := fmt.Sprintf("dispatch.mqtt_receivers[%d]", i)
+		if !pluginIDPattern.MatchString(r.ID) {
+			return fmt.Errorf("%s.id %q must match %s (lowercase slug)", field, r.ID, pluginIDPattern)
+		}
+		if receiverSeen[r.ID] {
+			return fmt.Errorf("dispatch.mqtt_receivers: duplicate receiver id %q", r.ID)
+		}
+		receiverSeen[r.ID] = true
+		if r.ConnectTimeout <= 0 || r.ConnectTimeout > maxRuntimeTimeout {
+			return fmt.Errorf("%s.connect_timeout must be >0 and at most %s, got %s", field, maxRuntimeTimeout, r.ConnectTimeout)
+		}
+		if r.KeepAlive <= 0 || r.KeepAlive > maxRuntimeTimeout {
+			return fmt.Errorf("%s.keep_alive must be >0 and at most %s, got %s", field, maxRuntimeTimeout, r.KeepAlive)
+		}
+		if r.Password != "" && r.PasswordFile != "" {
+			return fmt.Errorf("%s: password and password_file are mutually exclusive", field)
+		}
+		if r.WarnFlux.Enabled {
+			p := r.WarnFlux.TopicPrefix
+			if strings.TrimSpace(p) == "" || strings.ContainsAny(p, "+#") {
+				return fmt.Errorf("%s.warnflux.topic_prefix must be a non-empty MQTT topic segment without '+' or '#'", field)
+			}
+			if p != strings.Trim(p, "/") {
+				return fmt.Errorf("%s.warnflux.topic_prefix must not start or end with '/'", field)
+			}
+			if len(p) > maxTopicPrefixBytes {
+				return fmt.Errorf("%s.warnflux.topic_prefix is %d bytes, maximum %d", field, len(p), maxTopicPrefixBytes)
+			}
+		}
+		for j, s := range r.Subscriptions {
+			sub := fmt.Sprintf("%s.subscriptions[%d]", field, j)
+			if err := validateTopicFilter(s.Topic); err != nil {
+				return fmt.Errorf("%s.topic: %w", sub, err)
+			}
+			if s.QoS < 0 || s.QoS > 2 {
+				return fmt.Errorf("%s.qos must be 0, 1 or 2, got %d", sub, s.QoS)
+			}
+		}
+		if !r.Enabled {
+			continue
+		}
+		if r.Broker == "" {
+			return fmt.Errorf("%s.broker is required for an enabled receiver", field)
+		}
+		if strings.ContainsAny(r.Broker, " \t\n") {
+			return fmt.Errorf("%s.broker must not contain whitespace, got %q", field, r.Broker)
+		}
+		if r.ClientID == "" {
+			return fmt.Errorf("%s.client_id is required: the receiver client ID must differ from the MQTT output client_id when both connect to the same broker", field)
+		}
+		if len(r.ClientID) > maxMQTTClientIDBytes {
+			return fmt.Errorf("%s.client_id is %d bytes, maximum %d", field, len(r.ClientID), maxMQTTClientIDBytes)
+		}
+		if !r.WarnFlux.Enabled && len(r.Subscriptions) == 0 {
+			return fmt.Errorf("%s: enabled receiver needs warnflux mode or at least one subscription", field)
+		}
+	}
+	if c.Web.Enabled {
+		if c.Web.Listen == "" {
+			return fmt.Errorf("web.listen must not be empty when the web UI is enabled")
+		}
+		if strings.TrimSpace(c.Web.Auth.Username) == "" {
+			return fmt.Errorf("web.auth.username is required when the web UI is enabled")
+		}
+		if c.Web.Auth.Password == "" && c.Web.Auth.PasswordFile == "" {
+			return fmt.Errorf("web.auth.password or web.auth.password_file is required when the web UI is enabled")
+		}
+		if c.Web.Auth.Password != "" && c.Web.Auth.PasswordFile != "" {
+			return fmt.Errorf("web.auth.password and web.auth.password_file are mutually exclusive")
+		}
+	}
+	for i, a := range c.Actions {
+		if !pluginIDPattern.MatchString(a.ID) {
+			return fmt.Errorf("actions[%d].id %q must match %s (lowercase slug; plugin IDs are durable identities)", i, a.ID, pluginIDPattern)
+		}
+		if a.Type == "" {
+			return fmt.Errorf("action %q: type must not be empty", a.ID)
+		}
+		if seen[a.ID] {
+			return fmt.Errorf("duplicate plugin id %q (one ID namespace across sources, outputs and actions)", a.ID)
+		}
+		seen[a.ID] = true
+		if a.Runtime.QueueSize < 1 || a.Runtime.QueueSize > maxPluginQueueSize {
+			return fmt.Errorf("action %q: runtime.queue_size must be between 1 and %d, got %d", a.ID, maxPluginQueueSize, a.Runtime.QueueSize)
+		}
+		if a.Runtime.CallTimeout <= 0 || a.Runtime.CallTimeout > maxRuntimeTimeout {
+			return fmt.Errorf("action %q: runtime.call_timeout must be >0 and at most %s, got %s", a.ID, maxRuntimeTimeout, a.Runtime.CallTimeout)
+		}
+		if a.Runtime.ShutdownTimeout <= 0 || a.Runtime.ShutdownTimeout > maxRuntimeTimeout {
+			return fmt.Errorf("action %q: runtime.shutdown_timeout must be >0 and at most %s, got %s", a.ID, maxRuntimeTimeout, a.Runtime.ShutdownTimeout)
+		}
+	}
+	return nil
+}
+
+// validateTopicFilter checks a generic MQTT subscription filter: non-empty,
+// bounded, no control characters, '#' only as the last segment.
+func validateTopicFilter(topic string) error {
+	if topic == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if len(topic) > maxSubTopicBytes {
+		return fmt.Errorf("is %d bytes, maximum %d", len(topic), maxSubTopicBytes)
+	}
+	for _, r := range topic {
+		if r < 0x20 {
+			return fmt.Errorf("must not contain control characters")
+		}
+	}
+	segs := strings.Split(topic, "/")
+	for i, seg := range segs {
+		if strings.Contains(seg, "#") && seg != "#" {
+			return fmt.Errorf("'#' wildcard must occupy an entire level")
+		}
+		if seg == "#" && i != len(segs)-1 {
+			return fmt.Errorf("'#' must be the last level")
 		}
 	}
 	return nil

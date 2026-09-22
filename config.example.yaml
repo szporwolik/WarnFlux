@@ -161,3 +161,95 @@ outputs:
       # Interval between retained status snapshots, e.g. 30s. Set to 0 to
       # disable periodic status publication.
       heartbeat_interval: 30s
+
+# Dispatch subsystem: one canonical bounded ingress plus independent MQTT
+# receiver clients (INPUT). The receiver clients are deliberately separate
+# from outputs[].type=mqtt (the Router publisher): the publisher delivers
+# Router state/events to a broker, receivers consume MQTT frames for
+# dispatch. They MAY connect to the same broker but MUST use different
+# client IDs.
+dispatch:
+  # Bounded canonical dispatch intake queue; a full queue drops events
+  # (counted and logged) until the durable rule engine exists.
+  queue_size: 1024
+
+  mqtt_receivers:
+
+    # Local receiver: consumes the local WarnFlux MQTT contract and
+    # arbitrary local topics through the same canonical ingress.
+    - id: local
+      enabled: true
+
+      broker: tcp://mosquitto:1883
+      client_id: warnflux-dispatch-local
+
+      username: ""
+      password: ""
+      # password_file: /run/secrets/mqtt_local_password
+
+      connect_timeout: 10s
+      keep_alive: 30s
+
+      # WarnFlux protocol mode: automatically subscribes
+      # <prefix>/events, <prefix>/active/#, <prefix>/info/#, <prefix>/status
+      # and parses them with the strict wire protocol.
+      warnflux:
+        enabled: true
+        topic_prefix: warnflux
+
+      # Generic MQTT subscriptions (standard MQTT wildcard semantics).
+      subscriptions:
+        - topic: "home/#"
+          qos: 1
+
+    # Remote receiver: an external broker feeding the same dispatch ingress.
+    - id: remote-club
+      enabled: false
+
+      broker: tcp://10.10.10.10:1883
+      client_id: warnflux-dispatch-club
+
+      username: ""
+      password: ""
+
+      connect_timeout: 10s
+      keep_alive: 30s
+
+      warnflux:
+        enabled: false
+
+      subscriptions:
+        - topic: "club/#"
+          qos: 1
+
+# Authenticated admin web UI (server-rendered, embedded assets, no CDN).
+web:
+  enabled: true
+  listen: ":8080"
+
+  title: "WarnFlux"
+
+  auth:
+    username: admin
+    password: change-me
+    # password_file: /run/secrets/warnflux_web_password
+
+    # Set to true when serving behind TLS (session cookie becomes Secure).
+    secure_cookie: false
+
+# ActionPlugins: explicitly invoked by future dispatch rules. They never
+# automatically receive MQTT events. Only the logger proof-of-concept
+# action exists today.
+actions:
+
+  - id: logger-action
+    type: logger
+    enabled: false
+
+    runtime:
+      queue_size: 128
+      call_timeout: 10s
+      shutdown_timeout: 10s
+
+    config:
+      level: info

@@ -1,0 +1,217 @@
+{{define "page"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>{{.AppTitle}}</h1>
+    <form method="post" action="/logout" class="logout">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="btn-ghost">Sign out</button>
+    </form>
+  </header>
+  <main class="grid">
+    {{template "status" .Status}}
+    {{template "mqtt" .MQTT}}
+    {{template "weather" .Weather}}
+    {{template "warnings" .Warnings}}
+    {{template "plugins" .Plugins}}
+    {{template "actions" .Actions}}
+  </main>
+  <footer class="footer muted">{{.AppTitle}} · {{.Status.Version}} ({{.Status.Commit}})</footer>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+{{end}}
+
+{{define "status"}}<section class="card" id="status-section">
+  <h2>System</h2>
+  <div class="kv-grid">
+    <div class="kv"><span class="k">Version</span><span class="v">{{.Version}} ({{.Commit}})</span></div>
+    <div class="kv"><span class="k">Uptime</span><span class="v">{{.Uptime}}</span></div>
+    <div class="kv"><span class="k">Receivers</span><span class="v">{{.Connected}} / {{.Receivers}} connected</span></div>
+    <div class="kv"><span class="k">Router status docs</span><span class="v">{{.RouterDocs}}</span></div>
+    <div class="kv"><span class="k">Dispatch queue</span><span class="v">{{.QueueDepth}} / {{.QueueCap}} ({{.DroppedFull}} dropped)</span></div>
+    <div class="kv"><span class="k">Messages</span><span class="v">{{.Messages}} ({{.Malformed}} malformed, {{.Oversized}} oversized)</span></div>
+    <div class="kv"><span class="k">Database</span><span class="v"><span class="badge ok">ready</span></span></div>
+  </div>
+</section>
+{{end}}
+
+{{define "mqtt"}}<section class="card" id="mqtt-section">
+  <h2>MQTT connections</h2>
+  {{if .Receivers}}
+  <div class="table-wrap">
+    <table class="plugins">
+      <thead>
+        <tr><th>Receiver</th><th>Broker</th><th>State</th><th>HR mode</th><th>Last message</th><th>Messages</th><th>Errors</th></tr>
+      </thead>
+      <tbody>
+        {{range .Receivers}}
+        <tr>
+          <td><strong>{{.ID}}</strong></td>
+          <td class="mono">{{.Broker}}</td>
+          <td>
+            <span class="badge {{if .Connected}}ok{{else}}bad{{end}}">{{if .Connected}}connected{{else}}disconnected{{end}}</span>
+            {{if .HREnabled}}
+              {{if eq .Heartbeat "fresh"}}<span class="badge ok">heartbeat fresh</span>
+              {{else if eq .Heartbeat "stale"}}<span class="badge warn">heartbeat stale</span>
+              {{else}}<span class="badge muted">no heartbeat</span>{{end}}
+            {{end}}
+            {{if .LastError}}<div class="reason">{{.LastError}}</div>{{end}}
+          </td>
+          <td>{{if .HREnabled}}{{.HRPrefix}}{{else}}—{{end}}</td>
+          <td>{{timeFull .LastMessage}}{{if not .LastMessage.IsZero}} <span class="muted">({{age .LastMessage}})</span>{{end}}</td>
+          <td>{{.Messages}}</td>
+          <td>{{.Malformed}} malformed · {{.Oversized}} oversized · {{.Dropped}} dropped</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="empty">No MQTT receivers configured</p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "weather"}}<section class="card" id="weather-section">
+  <h2>Weather</h2>
+  {{if .Entries}}
+  <div class="weather-grid">
+    {{range .Entries}}
+    <div class="weather-card">
+      <div class="wc-head"><strong>{{if .Location}}{{.Location}}{{else}}{{.Key}}{{end}}</strong> <span class="muted">{{.ProviderName}}</span></div>
+      <div class="wc-temp">{{if .Temperature}}{{float1 .Temperature}}°C{{else}}—{{end}}</div>
+      <div class="wc-cond">{{if .Condition}}{{.Condition}}{{end}}</div>
+      <div class="wc-meta">
+        {{if .Humidity}}<span>Humidity {{int0 .Humidity}}%</span>{{end}}
+        {{if .WindSpeed}}<span>Wind {{float1 .WindSpeed}} km/h{{if .WindDir}} @ {{int0 .WindDir}}°{{end}}{{if .WindGusts}} · gusts {{float1 .WindGusts}} km/h{{end}}</span>{{end}}
+        {{if .Pressure}}<span>Pressure {{int0 .Pressure}} hPa</span>{{end}}
+      </div>
+      <div class="wc-time muted">via <strong>{{.Receiver}}</strong> · updated {{timeFull .GeneratedAt}}</div>
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty">No weather data received yet</p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "warnings"}}<section class="card" id="warnings-section">
+  <h2>Active warnings <span class="count">{{.Count}}</span></h2>
+  {{if .Hazards}}
+  <div class="warnings">
+    {{range .Hazards}}
+    <article class="warning">
+      <div class="w-head">
+        <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
+        <h3>{{.Headline}}</h3>
+      </div>
+      <div class="w-meta">
+        <span>Source: <strong>{{.Source}}</strong></span>
+        <span>via <strong>{{.Receiver}}</strong></span>
+        {{if .EffectiveAt}}<span>Effective: {{timeFull .EffectiveAt}}</span>{{end}}
+        {{if .ExpiresAt}}<span>Expires: {{timeFull .ExpiresAt}}</span>{{end}}
+        <span>Updated: {{timeFull .UpdatedAt}}</span>
+        {{if .Status}}<span>Status: {{.Status}}</span>{{end}}
+      </div>
+      {{if .Areas}}<div class="w-areas">Areas: {{.Areas}}</div>{{end}}
+      {{if .Description}}<details><summary>Description</summary><p>{{.Description}}</p></details>{{end}}
+    </article>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty">No active warnings</p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "plugins"}}<section class="card" id="plugins-section">
+  <h2>Sources &amp; outputs</h2>
+  {{if .Sources}}
+  <h3>Sources</h3>
+  <div class="table-wrap">
+    <table class="plugins">
+      <thead>
+        <tr><th>Source</th><th>Type</th><th>Status</th><th>Restarts</th><th>Failures</th><th>Last success</th><th>Last error</th></tr>
+      </thead>
+      <tbody>
+        {{range .Sources}}
+        <tr>
+          <td><strong>{{.ID}}</strong></td>
+          <td>{{.Type}}</td>
+          <td><span class="badge badge-{{pluginClass .State}}">{{.State}}</span></td>
+          <td>{{.RestartCount}}</td>
+          <td>{{.ConsecutiveFailures}}</td>
+          <td>{{timeShort (derefTime .LastSuccessAt)}}</td>
+          <td>{{timeShort (derefTime .LastErrorAt)}}{{if .LastError}}<div class="reason">{{.LastError}}</div>{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{if .Outputs}}
+  <h3>Outputs</h3>
+  <div class="table-wrap">
+    <table class="plugins">
+      <thead>
+        <tr><th>Output</th><th>Type</th><th>Status</th><th>Restarts</th><th>Failures</th><th>Last success</th><th>Last error</th></tr>
+      </thead>
+      <tbody>
+        {{range .Outputs}}
+        <tr>
+          <td><strong>{{.ID}}</strong></td>
+          <td>{{.Type}}</td>
+          <td><span class="badge badge-{{pluginClass .State}}">{{.State}}</span></td>
+          <td>{{.RestartCount}}</td>
+          <td>{{.ConsecutiveFailures}}</td>
+          <td>{{timeShort (derefTime .LastSuccessAt)}}</td>
+          <td>{{timeShort (derefTime .LastErrorAt)}}{{if .LastError}}<div class="reason">{{.LastError}}</div>{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{if not (or .Sources .Outputs)}}
+  <p class="empty">No plugins configured</p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "actions"}}<section class="card" id="actions-section">
+  <h2>Actions</h2>
+  {{if .Actions}}
+  <div class="table-wrap">
+    <table class="plugins">
+      <thead>
+        <tr><th>Action</th><th>Type</th><th>Status</th><th>Queue</th><th>Handled</th><th>Failures</th><th>Last success</th><th>Last error</th></tr>
+      </thead>
+      <tbody>
+        {{range .Actions}}
+        <tr>
+          <td><strong>{{.ID}}</strong></td>
+          <td>{{.Type}}</td>
+          <td><span class="badge badge-{{actionClass .State}}">{{.State}}</span>{{if .Reason}}<div class="reason">{{.Reason}}</div>{{end}}</td>
+          <td>{{.QueueDepth}} / {{.QueueCapacity}}</td>
+          <td>{{.Handled}}</td>
+          <td>{{.Failures}}</td>
+          <td>{{timeShort .LastSuccess}}</td>
+          <td>{{timeShort .LastError}}{{if .LastErrorText}}<div class="reason">{{.LastErrorText}}</div>{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="empty">No actions configured</p>
+  {{end}}
+</section>
+{{end}}

@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Prepare empty /data (SQLite) and /logs (optional log files) owned by
 # the runtime user so mounted volumes inherit writable permissions for
 # the non-root container.
-RUN mkdir -p /out/data /out/logs && chown 65532:65532 /out/data /out/logs
+RUN mkdir -p /out/data /out/logs /out/config && chown 65532:65532 /out/data /out/logs /out/config
 
 # ---- Runtime stage ---------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -42,9 +42,16 @@ LABEL org.opencontainers.image.title="WarnFlux" \
 COPY --from=build /out/warnflux /warnflux
 COPY --from=build --chown=65532:65532 /out/data /data
 COPY --from=build --chown=65532:65532 /out/logs /logs
+COPY --from=build --chown=65532:65532 /out/config /config
 
 # The base image already provides a non-root user.
 USER nonroot:nonroot
 
-# WarnFlux acts only as an MQTT client, so no ports are exposed.
+# WarnFlux is an MQTT client plus an authenticated web UI: the UI
+# listens on 8080 inside the container.
+EXPOSE 8080
+
+# /config convention: mount ./config.yaml:/config/config.yaml:ro and
+# ./data:/data; the SQLite database path is then /data/warnflux.db.
 ENTRYPOINT ["/warnflux"]
+CMD ["--config", "/config/config.yaml"]

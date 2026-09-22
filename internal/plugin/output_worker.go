@@ -145,15 +145,18 @@ func (w *outputWorker) run(ctx context.Context) {
 	defer close(w.done)
 	w.tracker.setState(StateRunning)
 
-	// Startup active-state synchronization: outputs with the optional
-	// ActiveStatePublisher capability reconstruct their materialized
-	// active view from the authoritative SQLite current state (bounded
-	// pages), so the view survives a process restart even when the
-	// journal is fully acknowledged. Failures are logged and never block
-	// normal hazard delivery below.
-	if pub, ok := w.plugin.(ActiveStatePublisher); ok {
+	// Startup active-state reconstruction: seed the output's desired
+	// active cache from the authoritative SQLite current state (LOCAL
+	// registration only — no per-event network waits), then trigger one
+	// background rehydration pass and enter normal journal delivery
+	// immediately. A slow or unavailable broker can therefore never add
+	// an N × timeout delay before durable hazard delivery starts.
+	if seeder, ok := w.plugin.(ActiveStateSeeder); ok {
 		if lister, ok := w.store.(storage.ActiveEventLister); ok {
-			w.syncActiveState(ctx, pub, lister)
+			w.seedActiveState(ctx, seeder, lister)
+		}
+		if rehydrater, ok := w.plugin.(ActiveStateRehydrater); ok {
+			rehydrater.RehydrateActiveState()
 		}
 	}
 
@@ -293,14 +296,16 @@ func invokeInformation(p InformationPublisher, ctx context.Context, message core
 	return p.PublishInformation(ctx, message)
 }
 
-// syncActiveState reconstructs the materialized active view of an
-// ActiveStatePublisher output from the authoritative current-state table,
-// page by page. This is STARTUP reconciliation only: a per-event failure is
-// logged and the remaining events still run, a callback that violates its
-// timeout is abandoned (bounded by the page size), and normal journal
-// delivery starts afterwards no matter what happened here.
-func (w *outputWorker) syncActiveState(ctx context.Context, pub ActiveStatePublisher, lister storage.ActiveEventLister) {
+// seedActiveState reconstructs the desired active view of an output from
+// the authoritative current-state table, page by page. Seeding is LOCAL
+// desired-state registration (the ActiveStateSeeder contract forbids
+// network I/O), so it cannot serialize on a slow broker. A callback that
+// violates its timeout disables the seeding capability for the rest of
+// this startup pass (at most ONE abandoned goroutine can ever exist per
+// output) and normal journal delivery starts regardless.
+func (w *outputWorker) seedActiveState(ctx context.Context, seeder ActiveStateSeeder, lister storage.ActiveEventLister) {
 	after := ""
+	disabled := false
 	for {
 		if ctx.Err() != nil {
 			return
@@ -308,7 +313,7 @@ func (w *outputWorker) syncActiveState(ctx context.Context, pub ActiveStatePubli
 		events, err := lister.ListActiveEvents(ctx, after, activeSyncPageSize)
 		if err != nil {
 			if ctx.Err() == nil {
-				w.logger.Warn("active-state synchronization query failed", "output_id", w.id, "error", err)
+				w.logger.Warn("active-state seeding query failed", "output_id", w.id, "error", err)
 			}
 			return
 		}
@@ -316,25 +321,28 @@ func (w *outputWorker) syncActiveState(ctx context.Context, pub ActiveStatePubli
 			if ctx.Err() != nil {
 				return
 			}
+			if disabled {
+				return
+			}
 			callCtx, cancel := context.WithTimeout(ctx, w.timeout)
 			result := make(chan error, 1)
 			go func(ev core.HazardEvent) {
-				result <- invokeActiveState(pub, callCtx, ev)
+				result <- invokeSeeder(seeder, ev)
 			}(events[i])
 			select {
 			case err := <-result:
 				cancel()
 				if err != nil {
-					w.logger.Warn("active-state publish failed", "output_id", w.id,
+					w.logger.Warn("active-state seed failed", "output_id", w.id,
 						"source", events[i].Source, "event_key", events[i].Key(), "error", err)
 				}
 			case <-callCtx.Done():
 				// The callback violated its context contract: abandon it
-				// (the buffered channel absorbs the late result) and
-				// continue with the remaining events — active-state
-				// synchronization must never block hazard delivery.
+				// (the buffered channel absorbs the late result) and stop
+				// seeding — at most one abandoned goroutine exists.
 				cancel()
-				w.logger.Warn("active-state publish violated its timeout; continuing with the next event",
+				disabled = true
+				w.logger.Warn("active-state seed violated its timeout; seeding disabled for this startup pass",
 					"output_id", w.id, "event_key", events[i].Key(), "timeout", w.timeout)
 			}
 		}
@@ -345,14 +353,15 @@ func (w *outputWorker) syncActiveState(ctx context.Context, pub ActiveStatePubli
 	}
 }
 
-// invokeActiveState runs PublishActiveState under recover().
-func invokeActiveState(p ActiveStatePublisher, ctx context.Context, event core.HazardEvent) (err error) {
+// invokeSeeder runs SeedActiveState under recover(). The call is bounded
+// by the per-call context held by the caller (seedActiveState).
+func invokeSeeder(s ActiveStateSeeder, event core.HazardEvent) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("plugin panic: %v\n%s", r, debug.Stack())
 		}
 	}()
-	return p.PublishActiveState(ctx, event)
+	return s.SeedActiveState(event)
 }
 
 // pollDeliveries fetches unacknowledged changes and delivers them serially

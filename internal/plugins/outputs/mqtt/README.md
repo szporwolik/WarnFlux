@@ -41,7 +41,15 @@ WarnFlux restart with an empty broker.
   active view.
 - The desired active cache is in-memory only (currently active hazards,
   never history) and exists solely to republish after reconnects; there is
-  no MQTT-state database.
+  no MQTT-state database. **SQLite events are the authoritative state, the
+  in-memory cache is the desired runtime state, and the retained MQTT
+  topics are the materialized state.**
+- At startup the view is reconstructed in two steps: the SQLite current
+  state is seeded into the desired cache LOCALLY (no network waits), then
+  ONE background rehydration pass publishes it — durable `/events`
+  delivery starts immediately and is never delayed by active-state
+  startup synchronization, even with hundreds of active events and an
+  unreachable broker.
 - On graceful shutdown the active retained topics are NOT deleted: they
   describe provider hazard state, not process liveness. Consumers combine
   them with `<prefix>/status` (`state: offline`) and `expires_at`.

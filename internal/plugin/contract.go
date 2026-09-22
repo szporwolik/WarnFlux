@@ -85,17 +85,25 @@ type InformationPublisher interface {
 	PublishInformation(ctx context.Context, message core.InformationMessage) error
 }
 
-// ActiveStatePublisher is an OPTIONAL output capability for retained
-// current-active hazard views (e.g. the MQTT /active/# retained topics).
-// The output worker uses it once at startup to synchronize the currently
-// active events from SQLite (the authoritative current state) so the
-// materialized view can be rebuilt after a process restart even when the
-// durable journal is fully acknowledged. It is never called for cancelled
-// or expired events, and it must never affect hazard delivery: a failure
-// is logged and initialization continues; the desired state should remain
-// populated so a later reconnect can restore it.
-type ActiveStatePublisher interface {
-	PublishActiveState(ctx context.Context, event core.HazardEvent) error
+// ActiveStateSeeder is an OPTIONAL output capability for retained
+// current-active hazard views (e.g. the MQTT /active/# topics). At startup
+// the output worker seeds the CURRENT active events from SQLite (the
+// authoritative state) so the view can be rebuilt after a process restart
+// even when the durable journal is fully acknowledged. SeedActiveState MUST
+// be a LOCAL, non-blocking desired-state registration (no network I/O): the
+// publication is the output's own concern via ActiveStateRehydrater. A
+// non-nil error is logged and never affects hazard delivery.
+type ActiveStateSeeder interface {
+	SeedActiveState(event core.HazardEvent) error
+}
+
+// ActiveStateRehydrater is an OPTIONAL output capability: the output
+// republishes its desired active state in ONE bounded background pass. The
+// worker triggers it once after startup seeding; implementations must
+// return immediately (the pass itself runs asynchronously) so journal
+// delivery never waits on the network.
+type ActiveStateRehydrater interface {
+	RehydrateActiveState()
 }
 
 // OutputFactory builds an OutputPlugin from its raw plugin-specific

@@ -384,24 +384,57 @@ func TestHandleActivePublishFailureReturnsError(t *testing.T) {
 	}
 }
 
-// TestPublishActiveStatePopulatesCacheWhenDisconnected: startup sync keeps
-// the desired state even when the broker is unreachable, so a later
-// reconnect can restore it.
-func TestPublishActiveStatePopulatesCacheWhenDisconnected(t *testing.T) {
+// TestSeedActiveStateIsLocalAndPopulatesCache: startup seeding registers
+// the desired state LOCALLY — no network publish happens, so seeding can
+// never serialize on a slow broker. The cache entry survives for the later
+// rehydration pass.
+func TestSeedActiveStateIsLocalAndPopulatesCache(t *testing.T) {
 	fc := &fakeClient{}
-	fc.mu.Lock()
-	fc.connectErr = errors.New("broker unreachable")
-	fc.mu.Unlock()
 	o := newTestOutput(fc)
 	ev := activeEvent()
-	if err := o.PublishActiveState(context.Background(), ev); err == nil {
-		t.Fatal("PublishActiveState = nil, want a network error while disconnected")
+	if err := o.SeedActiveState(ev); err != nil {
+		t.Fatalf("SeedActiveState: %v", err)
+	}
+	if got := fc.count(); got != 0 {
+		t.Fatalf("seeding performed %d network publishes, want 0 (local registration only)", got)
 	}
 	o.activeMu.Lock()
 	entry, ok := o.activeCache[ev.Key()]
 	o.activeMu.Unlock()
 	if !ok || entry.topic != o.activeTopic(ev.Source, ev.Key()) || len(entry.payload) == 0 {
-		t.Errorf("desired cache entry = %+v (ok=%v), want a populated entry despite the network error", entry, ok)
+		t.Errorf("desired cache entry = %+v (ok=%v), want a populated entry without any network I/O", entry, ok)
+	}
+
+	// Non-active events are ignored (startup seeding is active-only).
+	ev.Status = core.StatusCancelled
+	if err := o.SeedActiveState(ev); err != nil {
+		t.Errorf("seeding a cancelled event: %v", err)
+	}
+}
+
+// TestClientOptionsCarryOnConnectHandler pins the paho registration order:
+// paho.NewClient copies the ClientOptions struct by value (c.options = *o),
+// so the on-connect hook MUST already be set when the options leave
+// newClientOptions. Simulate the copy and verify the hook survives it.
+func TestClientOptionsCarryOnConnectHandler(t *testing.T) {
+	called := make(chan struct{}, 1)
+	opts := newClientOptions(
+		Config{Broker: "tcp://localhost:1883", ClientID: "test", TopicPrefix: "warnflux"},
+		1,
+		[]byte(`{}`),
+		func(paho.Client) { called <- struct{}{} },
+	)
+	// What paho.NewClient does: c.options = *o (struct COPY). The handler
+	// must already be present before that copy.
+	copied := *opts
+	if copied.OnConnect == nil {
+		t.Fatal("on-connect handler missing BEFORE the paho options copy — reconnect rehydration would be silently lost")
+	}
+	copied.OnConnect(nil)
+	select {
+	case <-called:
+	default:
+		t.Fatal("installed on-connect handler was not invoked")
 	}
 }
 
@@ -476,4 +509,67 @@ func TestRehydrateConvergesAfterConcurrentUpdate(t *testing.T) {
 	if w.Event.Headline != "Newer headline" {
 		t.Errorf("final retained headline = %q, want the newer value", w.Event.Headline)
 	}
+}
+
+// rehydrateDeleteRace runs the deterministic race for a lifecycle deletion
+// (cancelled or expired) happening while a rehydration pass is blocked
+// inside the stale ACTIVE publish. The final broker-equivalent state for
+// the topic must be ABSENT (last publish: retained, zero-length payload).
+func rehydrateDeleteRace(t *testing.T, status core.EventStatus) {
+	t.Helper()
+	fc := &fakeClient{}
+	o := newTestOutput(fc)
+	ev := activeEvent()
+
+	// Seed the desired cache with the ACTIVE payload directly (no publish).
+	if err := o.SeedActiveState(ev); err != nil {
+		t.Fatal(err)
+	}
+
+	// Gate the FIRST rehydration publish (the stale ACTIVE publish).
+	gate := &fakeToken{done: make(chan struct{})}
+	fc.gateNext(gate)
+	o.rehydrateOnConnect()
+	waitFor(t, 2*time.Second, func() bool { return fc.count() == 1 }) // stale ACTIVE publish is in flight
+
+	// While the stale publish is blocked, the event is cancelled/expired:
+	// cache removes it and the retained DELETE succeeds.
+	ev.Status = status
+	if err := o.updateActiveState(context.Background(), ev); err != nil {
+		t.Fatalf("updateActiveState(%s): %v", status, err)
+	}
+	if got := fc.count(); got != 2 {
+		t.Fatalf("publishes after deletion = %d, want 2 (stale ACTIVE blocked + DELETE)", got)
+	}
+
+	// Release the stale ACTIVE publish; the rehydration pass notices the
+	// entry is GONE and publishes the retained DELETE again.
+	close(gate.done)
+	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 3 })
+
+	pubs := fc.snapshot()
+	last := pubs[len(pubs)-1]
+	if !last.retained || !strings.HasPrefix(last.topic, "warnflux/active/") {
+		t.Fatalf("last publish = %+v, want the retained DELETE on the active topic", last)
+	}
+	if len(last.payload) != 0 {
+		t.Errorf("final retained payload = %d bytes, want zero (hazard must not be resurrected)", len(last.payload))
+	}
+	o.activeMu.Lock()
+	_, ok := o.activeCache[ev.Key()]
+	o.activeMu.Unlock()
+	if ok {
+		t.Errorf("%s hazard still in the desired cache", status)
+	}
+}
+
+// TestRehydrateCancelDuringPublish: a cancel racing a stale rehydration
+// publish must end with the retained topic DELETED, never resurrected.
+func TestRehydrateCancelDuringPublish(t *testing.T) {
+	rehydrateDeleteRace(t, core.StatusCancelled)
+}
+
+// TestRehydrateExpireDuringPublish: same race for expiry.
+func TestRehydrateExpireDuringPublish(t *testing.T) {
+	rehydrateDeleteRace(t, core.StatusExpired)
 }

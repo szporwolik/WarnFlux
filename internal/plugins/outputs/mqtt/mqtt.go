@@ -185,16 +185,6 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 	}
 
 	routePahoLogs()
-	opts := paho.NewClientOptions().
-		AddBroker(cfg.Broker).
-		SetClientID(cfg.ClientID).
-		SetCleanSession(true).
-		SetAutoReconnect(true).
-		SetConnectTimeout(connectTimeout).
-		SetMaxReconnectInterval(maxReconnectInterval).
-		SetConnectionLostHandler(func(_ paho.Client, err error) {
-			slog.Warn("mqtt connection lost", "error", err)
-		})
 	// Retained Last Will: if this process disappears without disconnecting,
 	// the broker publishes a retained "offline" status on <prefix>/status,
 	// so consumers can distinguish a dead instance from a stale heartbeat.
@@ -206,19 +196,42 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal last will: %w", err)
 	}
+
+	out := &Output{cfg: cfg, qos: qos, activeCache: make(map[string]activeCacheEntry)}
+	// The on-connect hook MUST be installed in the options BEFORE
+	// paho.NewClient: paho copies the ClientOptions struct by value
+	// (c.options = *o), so mutating the options afterwards never reaches
+	// the production client and reconnect rehydration is silently lost.
+	out.client = paho.NewClient(newClientOptions(cfg, qos, willPayload, func(paho.Client) {
+		out.rehydrateOnConnect()
+	}))
+	return out, nil
+}
+
+// newClientOptions builds the complete paho client options for this
+// plugin, including the on-connect hook. The hook is installed here —
+// before paho.NewClient copies the options — and every caller of this
+// helper is guaranteed to receive it (see the regression test).
+func newClientOptions(cfg Config, qos byte, willPayload []byte, onConnect func(paho.Client)) *paho.ClientOptions {
+	opts := paho.NewClientOptions().
+		AddBroker(cfg.Broker).
+		SetClientID(cfg.ClientID).
+		SetCleanSession(true).
+		SetAutoReconnect(true).
+		SetConnectTimeout(connectTimeout).
+		SetMaxReconnectInterval(maxReconnectInterval).
+		SetConnectionLostHandler(func(_ paho.Client, err error) {
+			slog.Warn("mqtt connection lost", "error", err)
+		})
 	opts.SetWill(cfg.TopicPrefix+"/status", string(willPayload), qos, true)
+	opts.SetOnConnectHandler(onConnect)
 	if cfg.Username != "" {
 		opts.SetUsername(cfg.Username)
 		if cfg.Password != "" {
 			opts.SetPassword(cfg.Password)
 		}
 	}
-	out := &Output{cfg: cfg, qos: qos, client: paho.NewClient(opts), activeCache: make(map[string]activeCacheEntry)}
-	// Rehydrate the retained active view on every (re)connect. The handler
-	// is attached after NewClient on purpose: it needs the constructed
-	// Output, and paho reads the options at connect time.
-	opts.SetOnConnectHandler(func(paho.Client) { out.rehydrateOnConnect() })
-	return out, nil
+	return opts
 }
 
 // Name returns the plugin type name.
@@ -297,12 +310,13 @@ func (o *Output) updateActiveState(ctx context.Context, event core.HazardEvent) 
 	}
 }
 
-// PublishActiveState implements plugin.ActiveStatePublisher for startup
-// synchronization: it records the desired retained payload in the cache
-// (so a later reconnect restores it even if this publish fails) and
-// publishes it when a connection exists. The network error is returned for
-// visibility; the desired cache entry survives regardless.
-func (o *Output) PublishActiveState(ctx context.Context, event core.HazardEvent) error {
+// SeedActiveState implements plugin.ActiveStateSeeder for startup
+// reconstruction: it registers one desired active payload in the in-memory
+// cache ONLY — no network I/O, no blocking — so the SQLite-backed startup
+// seeding cannot serialize on a slow broker. The actual publication happens
+// later in one bounded rehydration pass (see RehydrateActiveState) or on
+// the next (re)connect.
+func (o *Output) SeedActiveState(event core.HazardEvent) error {
 	if event.Status != core.StatusActive {
 		return nil
 	}
@@ -315,7 +329,15 @@ func (o *Output) PublishActiveState(ctx context.Context, event core.HazardEvent)
 	o.activeSeq++
 	o.activeCache[event.Key()] = activeCacheEntry{key: event.Key(), topic: topic, payload: payload, seq: o.activeSeq}
 	o.activeMu.Unlock()
-	return o.publishActive(ctx, topic, payload)
+	return nil
+}
+
+// RehydrateActiveState implements plugin.ActiveStateRehydrater: it
+// triggers one bounded background rehydration pass and returns
+// immediately, so the output worker enters normal journal delivery without
+// waiting for the network.
+func (o *Output) RehydrateActiveState() {
+	o.rehydrateOnConnect()
 }
 
 // activeTopic maps an event to its retained active topic:
@@ -376,10 +398,12 @@ func (o *Output) rehydrateOnConnect() {
 // rehydrateActive republishes the whole desired active cache as retained
 // topics, e.g. after a broker restart lost its retained state. At most one
 // pass set runs at a time; the active-state mutex is never held during
-// network waits (the snapshot is copied first). A concurrent Handle update
-// that changed an entry's generation while it was being republished makes
-// the pass repeat with the newer value, so the final retained state always
-// converges to the newest desired state.
+// network waits (the snapshot is copied first). After every republish the
+// pass re-checks the desired state: a changed generation republishes the
+// newer value, and an entry that DISAPPEARED (cancelled/expired during the
+// stale publish) is deleted with a retained zero-length publish — a
+// cancelled hazard can never be resurrected by a stale snapshot. The final
+// retained state converges to the desired cache.
 func (o *Output) rehydrateActive() {
 	o.rehydrateMu.Lock()
 	defer o.rehydrateMu.Unlock()
@@ -399,7 +423,20 @@ func (o *Output) rehydrateActive() {
 			o.activeMu.Lock()
 			current, ok := o.activeCache[e.key]
 			o.activeMu.Unlock()
-			if ok && current.seq != e.seq {
+			switch {
+			case !ok:
+				// Desired state became ABSENT while the stale snapshot
+				// publish was in flight (cancel/expire): delete the
+				// retained topic AFTER the stale publish so the final
+				// broker state matches the desired cache.
+				ctx, cancel := context.WithTimeout(context.Background(), activeRehydrateTimeout)
+				derr := o.publishActive(ctx, e.topic, []byte{})
+				cancel()
+				if derr != nil {
+					slog.Warn("active state rehydration delete failed", "topic", e.topic, "error", derr)
+				}
+				dirty = true
+			case current.seq != e.seq:
 				dirty = true
 			}
 		}

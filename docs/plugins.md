@@ -157,13 +157,18 @@ For **outputs**:
   | `PublishInformation` failure | logged only, never counted, never suspends; information is best-effort latest-state |
   | `PublishInformation` ignores its timeout (context-contract violation) | information publishing is **disabled for that output instance** for the rest of the process; the worker returns to its main loop immediately without waiting for the late result, so a hung information callback can never block hazard delivery. At most ONE abandoned information goroutine can ever exist per output. |
 
-- **Active-state synchronization** (`ActiveStatePublisher`): outputs with
-  this optional capability receive the CURRENT active events once at
-  startup, paged from the authoritative SQLite state (never by replaying
-  the journal), so a materialized retained view can be rebuilt after a
-  process restart even when the journal is fully acknowledged. Failures
-  are logged and never block journal delivery; the capability is never
-  called for cancelled or expired events.
+- **Active-state reconstruction** (`ActiveStateSeeder` +
+  `ActiveStateRehydrater`): outputs with these optional capabilities
+  rebuild their materialized retained active view at startup. The worker
+  seeds the CURRENT active events paged from the authoritative SQLite
+  state (never by replaying the journal) via `SeedActiveState`, which
+  MUST be a LOCAL, non-blocking desired-state registration (no network
+  I/O) — so startup reconstruction can never serialize on a slow broker
+  or delay journal delivery. Afterwards the worker triggers
+  `RehydrateActiveState` ONCE; implementations must return immediately
+  (the pass itself runs in the background). A seeding callback that
+  violates its timeout disables seeding for the rest of that startup
+  pass (at most one abandoned goroutine per output).
 
 - **Single owner**: one output worker owns all callbacks into a plugin
   instance (`Handle`, `PublishStatus`, `PublishInformation`, `Close`). The

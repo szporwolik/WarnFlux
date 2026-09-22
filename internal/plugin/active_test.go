@@ -17,14 +17,17 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
 
-// activeOutput is a fake output implementing the optional
-// ActiveStatePublisher capability plus normal hazard delivery.
+// activeOutput is a fake output implementing the optional active-state
+// capabilities (ActiveStateSeeder + ActiveStateRehydrater) plus normal
+// hazard delivery.
 type activeOutput struct {
-	mu       sync.Mutex
-	synced   []core.HazardEvent
-	syncErr  error
-	hangOnce bool // the next PublishActiveState hangs forever (ignores ctx)
-	handles  int
+	mu         sync.Mutex
+	synced     []core.HazardEvent
+	seedCalls  int
+	rehydrates int
+	seedErr    error
+	hangOnce   bool // the next SeedActiveState hangs forever
+	handles    int
 }
 
 func (o *activeOutput) Name() string { return "active" }
@@ -36,17 +39,24 @@ func (o *activeOutput) Handle(context.Context, core.EventChange) error {
 	return nil
 }
 
-func (o *activeOutput) PublishActiveState(_ context.Context, ev core.HazardEvent) error {
+func (o *activeOutput) SeedActiveState(ev core.HazardEvent) error {
 	o.mu.Lock()
+	o.seedCalls++
 	if o.hangOnce {
 		o.hangOnce = false
 		o.mu.Unlock()
 		select {} // never returns, never records
 	}
 	o.synced = append(o.synced, ev)
-	err := o.syncErr
+	err := o.seedErr
 	o.mu.Unlock()
 	return err
+}
+
+func (o *activeOutput) RehydrateActiveState() {
+	o.mu.Lock()
+	o.rehydrates++
+	o.mu.Unlock()
 }
 
 func (o *activeOutput) syncedKeys() []string {
@@ -63,6 +73,18 @@ func (o *activeOutput) syncedCount() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return len(o.synced)
+}
+
+func (o *activeOutput) seedCallCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.seedCalls
+}
+
+func (o *activeOutput) rehydrateCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.rehydrates
 }
 
 func (o *activeOutput) handleCount() int {
@@ -164,6 +186,8 @@ func TestActiveStateStartupSyncFromSQLite(t *testing.T) {
 		m.Run(runCtx)
 	}()
 	waitFor(t, 3*time.Second, func() bool { return out.syncedCount() == 2 })
+	// Exactly one background rehydration pass is triggered after seeding.
+	waitFor(t, 3*time.Second, func() bool { return out.rehydrateCount() >= 1 })
 
 	keys := out.syncedKeys()
 	if len(keys) != 2 {
@@ -214,6 +238,9 @@ func TestActiveStateStartupSyncPaginated(t *testing.T) {
 		m.Run(runCtx)
 	}()
 	waitFor(t, 10*time.Second, func() bool { return out.syncedCount() == total })
+	if got := out.rehydrateCount(); got < 1 {
+		t.Errorf("rehydration triggered %d times, want at least one background pass", got)
+	}
 
 	keys := out.syncedKeys()
 	if len(keys) != total {
@@ -235,11 +262,11 @@ func TestActiveStateStartupSyncPaginated(t *testing.T) {
 	}
 }
 
-// TestActiveStateSyncFailureDoesNotBlockHazards: every sync publish fails
-// (broker down) — all active events are still attempted, hazard delivery
-// then proceeds normally, and nothing is suspended or counted.
+// TestActiveStateSyncFailureDoesNotBlockHazards: every seed fails (broken
+// output) — all active events are still attempted, hazard delivery then
+// proceeds normally, and nothing is suspended or counted.
 func TestActiveStateSyncFailureDoesNotBlockHazards(t *testing.T) {
-	out := &activeOutput{syncErr: errors.New("broker unavailable")}
+	out := &activeOutput{seedErr: errors.New("broker unavailable")}
 	m, _, ing := activeManager(t, out, time.Second)
 	ctx := context.Background()
 
@@ -281,9 +308,11 @@ func TestActiveStateSyncFailureDoesNotBlockHazards(t *testing.T) {
 	}
 }
 
-// TestActiveStateSyncHangDoesNotBlockHazards: a PublishActiveState that
-// ignores its context forever is abandoned after its timeout; the remaining
-// events still synchronize and hazard delivery still runs.
+// TestActiveStateSyncHangDoesNotBlockHazards: a SeedActiveState that
+// ignores its context forever is abandoned after its timeout, the seeding
+// capability is disabled for the rest of the startup pass (exactly ONE
+// seed invocation ever happens — no per-event goroutine leak), and hazard
+// delivery still runs.
 func TestActiveStateSyncHangDoesNotBlockHazards(t *testing.T) {
 	out := &activeOutput{hangOnce: true}
 	m, _, ing := activeManager(t, out, 50*time.Millisecond)
@@ -308,17 +337,72 @@ func TestActiveStateSyncHangDoesNotBlockHazards(t *testing.T) {
 		defer close(runDone)
 		m.Run(runCtx)
 	}()
-	// The hung call is abandoned; the remaining two active events (b and
-	// the still-pending hazard) still synchronize.
-	waitFor(t, 3*time.Second, func() bool { return out.syncedCount() == 2 })
+	// The hung seed is abandoned and the capability disabled: exactly one
+	// invocation ever starts, no further events are seeded.
+	waitFor(t, 3*time.Second, func() bool { return out.seedCallCount() == 1 })
 	// Hazard delivery proceeds regardless.
 	waitFor(t, 3*time.Second, func() bool { return out.handleCount() >= 1 })
+	time.Sleep(100 * time.Millisecond)
+	if got := out.seedCallCount(); got != 1 {
+		t.Errorf("seed invocations = %d, want exactly 1 (capability disabled after the timeout)", got)
+	}
+	if got := out.syncedCount(); got != 0 {
+		t.Errorf("seeded events = %d, want 0 (the hung invocation never recorded)", got)
+	}
 
 	cancel()
 	select {
 	case <-runDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("manager did not stop with an abandoned active-state goroutine")
+	}
+}
+
+// TestActiveStateSeedingDoesNotDelayHazards: hundreds of active events with
+// an unreachable broker must NOT produce a per-event serial network wait
+// before the durable journal worker becomes operational — the seed is local
+// and the rehydration is one background pass.
+func TestActiveStateSeedingDoesNotDelayHazards(t *testing.T) {
+	out := &activeOutput{}
+	m, _, ing := activeManager(t, out, 10*time.Second)
+	ctx := context.Background()
+
+	const total = 600
+	for i := 0; i < total; i++ {
+		if _, _, err := ing.Ingest(ctx, eventFor(fmt.Sprintf("fast-%04d", i))); err != nil {
+			t.Fatalf("ingest %d: %v", i, err)
+		}
+	}
+	// One hazard change stays pending so the journal has work to do.
+	if _, _, err := ing.Ingest(ctx, eventFor("fast-hazard")); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	runCtx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(runCtx)
+	}()
+	// Strict bound: the journal worker becomes operational far below the
+	// 600 × 10s serial-wait worst case.
+	waitFor(t, 2*time.Second, func() bool { return out.handleCount() >= 1 })
+	if elapsed := time.Since(start); elapsed >= 2*time.Second {
+		t.Errorf("hazard delivery took %v, startup active seeding must not delay it", elapsed)
+	}
+	// The still-pending hazard is also active current state, so seeding
+	// covers total+1 events.
+	waitFor(t, 3*time.Second, func() bool { return out.syncedCount() == total+1 })
+	if got := out.rehydrateCount(); got < 1 {
+		t.Errorf("rehydration triggered %d times, want at least one background pass", got)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
 	}
 }
 

@@ -47,7 +47,16 @@ a:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
 .mono, .reason { font-family: var(--mono); font-size: 0.8rem; }
 
-.icon { width: 16px; height: 16px; fill: currentColor; flex: none; }
+/* Icons: local SVG sprite via <use>; block display avoids inline-baseline
+   offsets, 18px keeps them optically balanced with the 0.9rem UI text. */
+.icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  flex: none;
+  shape-rendering: geometricPrecision;
+}
 
 /* ---- left sidebar ---- */
 .sidebar {
@@ -93,16 +102,16 @@ a:hover { text-decoration: underline; }
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.65rem;
   padding: 0.45rem 0.6rem;
   border-radius: var(--radius);
   color: var(--muted);
   font-size: 0.9rem;
+  line-height: 1;
   text-decoration: none;
 }
 .nav-item:hover { background: var(--surface-hi); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--surface-hi); color: var(--text); font-weight: 600; }
-.nav-item .icon { flex: none; }
 
 .sidebar-spacer { flex: 1; }
 
@@ -110,10 +119,11 @@ a:hover { text-decoration: underline; }
 .logout .btn-ghost {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.65rem;
   width: 100%;
   justify-content: flex-start;
   border-radius: var(--radius);
+  line-height: 1;
 }
 
 /* ---- buttons ---- */
@@ -172,7 +182,7 @@ a:hover { text-decoration: underline; }
   min-width: 0;
 }
 
-.card h2 { display: flex; align-items: center; gap: 0.45rem; }
+.card h2 { display: flex; align-items: center; gap: 0.45rem; line-height: 1; }
 .card h2 .icon { color: var(--muted); }
 
 .card:nth-child(3), .card:nth-child(4) { grid-column: 1 / -1; }
@@ -203,12 +213,13 @@ a:hover { text-decoration: underline; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: var(--radius);
   color: var(--muted);
 }
 .gh-link:hover { color: var(--text); background: var(--surface-hi); text-decoration: none; }
+.gh-link .icon { width: 18px; height: 18px; }
 
 /* ---- key/value system panel ---- */
 .kv-grid {

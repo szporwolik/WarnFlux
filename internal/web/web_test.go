@@ -430,8 +430,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if !strings.Contains(dashHTML, `<span class="brand-name">WarnFlux Test</span>`) {
 		t.Errorf("dashboard sidebar missing system name: %s", dashHTML)
 	}
-	if !strings.Contains(dashHTML, `class="brand-sub">Test platform</span>`) {
-		t.Errorf("dashboard sidebar missing header2 subtitle: %s", dashHTML)
+	// header2 is a login-page subtitle only; it never appears in the drawer.
+	if strings.Contains(dashHTML, "brand-sub") {
+		t.Errorf("dashboard sidebar must not render header2: %s", dashHTML)
 	}
 }
 

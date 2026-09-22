@@ -98,17 +98,21 @@ a:hover { text-decoration: underline; }
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  padding: 0.75rem 0.5rem;
+  padding: 0 0.5rem 0.75rem;
   background: var(--header);
   border-right: 1px solid var(--border);
   z-index: 20;
 }
 
+/* The brand row is exactly as tall as the top bar: together they form one
+   continuous header band across the top of the app shell. */
 .brand {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.35rem 0.6rem 0.85rem;
+  height: 48px;
+  flex: none;
+  padding: 0 0.6rem;
   font-weight: 600;
   font-size: 0.95rem;
   color: var(--text);
@@ -136,19 +140,12 @@ a:hover { text-decoration: underline; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.brand-sub {
-  font-size: 0.66rem;
-  font-weight: 400;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 .sidenav {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
+  margin-top: 0.25rem;
 }
 
 .nav-item {
@@ -522,9 +519,8 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 
 /* ---- collapsed desktop drawer: icon-only rail ---- */
 .app.drawer-collapsed { --sidebar-w: 56px; }
-.app.drawer-collapsed .brand { justify-content: center; padding: 0.35rem 0 0.85rem; }
-.app.drawer-collapsed .brand-name,
-.app.drawer-collapsed .brand-sub,
+.app.drawer-collapsed .brand { justify-content: center; padding: 0; }
+.app.drawer-collapsed .brand-text,
 .app.drawer-collapsed .nav-label { display: none; }
 .app.drawer-collapsed .nav-item { justify-content: center; padding: 0.45rem 0; }
 

@@ -228,6 +228,23 @@ ALTER TABLE output_cursors ADD COLUMN output_type TEXT NOT NULL DEFAULT '';
 			return nil
 		},
 	},
+	{
+		// v5: alert recipients (users) for the notification layer. The
+		// admin row is seeded from the web auth username at startup and is
+		// read-only at the API level (is_admin = 1).
+		SQL: `
+CREATE TABLE users (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+	phone         TEXT NOT NULL DEFAULT '',
+	email         TEXT NOT NULL DEFAULT '',
+	discord       TEXT NOT NULL DEFAULT '',
+	is_admin      INTEGER NOT NULL DEFAULT 0,
+	created_at_ms INTEGER NOT NULL,
+	updated_at_ms INTEGER NOT NULL
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

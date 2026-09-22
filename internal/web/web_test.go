@@ -44,6 +44,7 @@ type testEnv struct {
 	actions  *action.Manager
 	client   *http.Client
 	receiver *mqttreceiver.Manager
+	users    *fakeUsers
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -99,7 +100,12 @@ func newTestEnv(t *testing.T) *testEnv {
 		{ID: "mqtt-main", Type: "mqtt", Kind: plugin.KindOutput, State: plugin.StateDegraded, LastError: "broker down"},
 	}}
 
-	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234")
+	users := newFakeUsers()
+	if err := users.EnsureAdminUser(testUsername); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +119,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		return http.ErrUseLastResponse // observe redirects instead of following
 	}}
 
-	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers}
+	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users}
 }
 
 type nopAction struct{}

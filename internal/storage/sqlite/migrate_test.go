@@ -322,8 +322,8 @@ func TestMigrationV2WithJournalReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of real v2 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 2 || info.To != 4 {
-		t.Fatalf("migration = %+v, want {From:2 To:4}", info)
+	if info.From != 2 || info.To != 5 {
+		t.Fatalf("migration = %+v, want {From:2 To:5}", info)
 	}
 
 	var v int
@@ -423,8 +423,8 @@ func TestMigrationV1WithRowsReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of real v1 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 1 || info.To != 4 {
-		t.Fatalf("migration = %+v, want {From:1 To:4}", info)
+	if info.From != 1 || info.To != 5 {
+		t.Fatalf("migration = %+v, want {From:1 To:5}", info)
 	}
 	var expMs, seenMs int64
 	if err := store.db.QueryRow("SELECT expires_at_ms, last_seen_at_ms FROM events WHERE event_key = 'v1src:1'").Scan(&expMs, &seenMs); err != nil {

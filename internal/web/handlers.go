@@ -154,6 +154,8 @@ type actionsView struct {
 type pageView struct {
 	AppTitle string
 	Name     string
+	Version  string
+	Commit   string
 	RepoURL  string
 	Status   statusView
 	MQTT     mqttView
@@ -162,6 +164,8 @@ type pageView struct {
 	Plugins  pluginsView
 	Actions  actionsView
 	CSRF     string
+
+	NavDashboard bool
 }
 
 // ---- view builders -------------------------------------------------------
@@ -483,16 +487,19 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	snap := s.st.Snapshot()
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "page", pageView{
-		AppTitle: s.cfg.Title,
-		Name:     s.displayName(),
-		RepoURL:  repoURL,
-		Status:   s.buildStatusView(),
-		MQTT:     s.buildMQTTView(snap),
-		Weather:  buildWeatherView(snap),
-		Warnings: buildWarningsView(snap, pageParam(r, "wpage")),
-		Plugins:  s.buildPluginsView(),
-		Actions:  s.buildActionsView(),
-		CSRF:     sess.csrf,
+		AppTitle:     s.cfg.Title,
+		Name:         s.displayName(),
+		Version:      s.version,
+		Commit:       s.commit,
+		RepoURL:      repoURL,
+		Status:       s.buildStatusView(),
+		MQTT:         s.buildMQTTView(snap),
+		Weather:      buildWeatherView(snap),
+		Warnings:     buildWarningsView(snap, pageParam(r, "wpage")),
+		Plugins:      s.buildPluginsView(),
+		Actions:      s.buildActionsView(),
+		CSRF:         sess.csrf,
+		NavDashboard: true,
 	})
 }
 

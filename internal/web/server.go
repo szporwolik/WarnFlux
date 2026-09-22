@@ -27,6 +27,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 //go:embed templates/*.html
@@ -49,6 +50,7 @@ type Server struct {
 	router    RouterStatuses
 	actions   *action.Manager
 	ingress   *dispatch.Ingress
+	users     storage.UserStore
 	logger    *slog.Logger
 	sessions  *sessionStore
 
@@ -74,7 +76,7 @@ const repoURL = "https://github.com/szporwolik/WarnFlux"
 // New builds the web server (no listener created yet).
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	router RouterStatuses, actions *action.Manager, ingress *dispatch.Ingress,
-	logger *slog.Logger, version, commit string) (*Server, error) {
+	logger *slog.Logger, version, commit string, users storage.UserStore) (*Server, error) {
 
 	// Read the admin password file at construction: a missing secret is a
 	// startup error, never a runtime surprise. Secrets are never logged.
@@ -107,6 +109,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		sessions:  newSessionStore(cfg.Auth.SecureCookie),
 		version:   version,
 		commit:    commit,
+		users:     users,
 		startedAt: time.Now(),
 		tmpl:      tmpl,
 		mux:       http.NewServeMux(),
@@ -132,6 +135,9 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
+	s.mux.Handle("GET /users", s.requirePage(s.handleUsersPage))
+	s.mux.Handle("POST /users", s.requirePage(s.handleUserSave))
+	s.mux.Handle("POST /users/{id}/delete", s.requirePage(s.handleUserDelete))
 	s.mux.Handle("GET /partials/status", s.requirePartial(s.handlePartialStatus))
 	s.mux.Handle("GET /partials/mqtt", s.requirePartial(s.handlePartialMQTT))
 	s.mux.Handle("GET /partials/weather", s.requirePartial(s.handlePartialWeather))

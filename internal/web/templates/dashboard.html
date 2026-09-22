@@ -9,20 +9,7 @@
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
 </head>
 <body class="app">
-  <aside class="sidebar">
-    <a class="brand" href="/dashboard">
-      <img class="brand-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
-      <span class="brand-name">{{.Name}}</span>
-    </a>
-    <nav class="sidenav">
-      <a class="nav-item active" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>
-    </nav>
-    <span class="sidebar-spacer"></span>
-    <form method="post" action="/logout" class="logout">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <button type="submit" class="btn-ghost"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-box-arrow-right"></use></svg><span class="nav-label">Sign out</span></button>
-    </form>
-  </aside>
+  {{template "sidebar" .}}
   <main class="grid">
     {{template "status" .Status}}
     {{template "mqtt" .MQTT}}
@@ -31,16 +18,7 @@
     {{template "plugins" .Plugins}}
     {{template "actions" .Actions}}
   </main>
-  <footer class="footer">
-    <span class="footer-meta">
-      <span class="footer-name">{{.AppTitle}}</span>
-      <span class="sep">·</span>
-      <span>{{.Status.Version}}</span>
-      <span class="sep">·</span>
-      {{if ne .Status.Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Status.Commit}}" target="_blank" rel="noopener noreferrer">{{.Status.Commit}}</a>{{else}}{{.Status.Commit}}{{end}}
-    </span>
-    <a class="gh-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer" aria-label="Open the WarnFlux repository on GitHub"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg></a>
-  </footer>
+  {{template "footer" .}}
   <script src="/static/app.js" defer></script>
 </body>
 </html>

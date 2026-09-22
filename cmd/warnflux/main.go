@@ -220,7 +220,12 @@ func run(configPath string) error {
 	// application declares readiness (bind failure is startup-critical).
 	var webSrv *web.Server
 	if cfg.Web.Enabled {
-		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit)
+		// The admin user is the web auth account: it exists in the users
+		// table as the read-only first row.
+		if err := store.EnsureAdminUser(cfg.Web.Auth.Username); err != nil {
+			logger.Warn("web: ensure admin user failed", "error", err)
+		}
+		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}

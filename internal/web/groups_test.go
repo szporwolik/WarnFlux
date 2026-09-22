@@ -139,14 +139,12 @@ func TestGroupRoutingMatrix(t *testing.T) {
 		t.Fatalf("invalid channel severity = %d %s", resp.StatusCode, html)
 	}
 
-	// Valid matrix: logger at severe, mqtt at moderate; a missing
-	// per-channel severity defaults to 'unknown'.
+	// Valid matrix: logger at severe; a missing per-channel severity
+	// defaults to 'unknown'.
 	resp, _ = env.postForm("/groups/1/routing", url.Values{
 		"csrf":                     {csrf},
 		"actions":                  {"logger-action"},
 		"action_sev:logger-action": {"severe"},
-		"outputs":                  {"mqtt-main"},
-		"output_sev:mqtt-main":     {"moderate"},
 	})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/groups" {
 		t.Fatalf("routing save = %d %q, want redirect to /groups", resp.StatusCode, resp.Header.Get("Location"))
@@ -159,17 +157,13 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	if len(r.Actions) != 1 || r.Actions[0].ID != "logger-action" || r.Actions[0].MinSeverity != "severe" {
 		t.Fatalf("actions = %+v", r.Actions)
 	}
-	if len(r.Outputs) != 1 || r.Outputs[0].ID != "mqtt-main" || r.Outputs[0].MinSeverity != "moderate" {
-		t.Fatalf("outputs = %+v", r.Outputs)
-	}
 
 	// The page renders per-channel chips and the popover prefills.
 	_, html = env.get("/groups")
 	for _, want := range []string{
-		"logger-action", "mqtt-main",
+		"logger-action",
 		`name="action_sev:logger-action"`,
-		`name="output_sev:mqtt-main"`,
-		"severe or higher", "moderate or higher",
+		"severe or higher",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("groups page missing %q: %s", want, html)
@@ -185,7 +179,7 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GroupRouting after clear: %v", err)
 	}
-	if len(r.Actions) != 0 || len(r.Outputs) != 0 {
+	if len(r.Actions) != 0 {
 		t.Fatalf("routing after clear = %+v", r)
 	}
 }

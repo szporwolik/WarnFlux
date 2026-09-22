@@ -8,21 +8,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // groupsPerPage bounds the groups table to a compact, paginated view.
 const groupsPerPage = 10
 
-// groupRow is one groups-table row for the template. ActionSev/OutputSev
-// map each assigned channel ID to its own minimum severity.
+// groupRow is one groups-table row for the template. ActionSev maps each
+// assigned action ID to its own minimum severity.
 type groupRow struct {
 	ID        int64
 	Name      string
 	Members   int64
 	ActionSev map[string]string
-	OutputSev map[string]string
 	UpdatedAt time.Time
 }
 
@@ -74,7 +72,6 @@ type groupsView struct {
 	// Routing options offered by the per-group routing form.
 	Severities []severityChoice
 	Actions    []channelOption
-	Outputs    []channelOption
 
 	Page, Pages, From, To, Total int
 	HasPrev, HasNext             bool
@@ -184,13 +181,8 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, err.Error())
 		return
 	}
-	outputs, err := parseMatrixAssignments(r, r.PostForm["outputs"], "output_sev:", s.availableOutputs())
-	if err != nil {
-		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, err.Error())
-		return
-	}
 
-	if err := s.users.SetGroupRouting(id, actions, outputs); err != nil {
+	if err := s.users.SetGroupRouting(id, actions); err != nil {
 		s.renderGroupsError(w, r, groupErrorStatus(err), groupForm{}, 0, groupErrorMessage(err))
 		return
 	}
@@ -234,18 +226,6 @@ func (s *Server) availableActions() []channelOption {
 	var out []channelOption
 	for _, st := range s.actions.Statuses() {
 		if !st.Enabled {
-			continue
-		}
-		out = append(out, channelOption{ID: st.ID, Type: st.Type})
-	}
-	return out
-}
-
-// availableOutputs lists the enabled configured output plugin instances.
-func (s *Server) availableOutputs() []channelOption {
-	var out []channelOption
-	for _, st := range s.router.Statuses() {
-		if st.Kind != plugin.KindOutput || st.State == plugin.StateDisabled {
 			continue
 		}
 		out = append(out, channelOption{ID: st.ID, Type: st.Type})
@@ -319,15 +299,11 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 			Name:      g.Name,
 			Members:   g.Members,
 			ActionSev: map[string]string{},
-			OutputSev: map[string]string{},
 			UpdatedAt: g.UpdatedAt,
 		}
 		if routing, err := s.users.GroupRouting(g.ID); err == nil {
 			for _, a := range routing.Actions {
 				row.ActionSev[a.ID] = a.MinSeverity
-			}
-			for _, o := range routing.Outputs {
-				row.OutputSev[o.ID] = o.MinSeverity
 			}
 		} else {
 			s.logger.Warn("web: group routing unavailable", "group", g.ID, "error", err)
@@ -348,7 +324,6 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		Error:      errMsg,
 		Severities: severityChoices,
 		Actions:    s.availableActions(),
-		Outputs:    s.availableOutputs(),
 		Page:       page,
 		Pages:      pages,
 		From:       from,

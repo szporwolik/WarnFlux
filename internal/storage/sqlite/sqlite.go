@@ -307,6 +307,13 @@ SET min_severity = COALESCE(
 ALTER TABLE groups DROP COLUMN min_severity;
 `,
 	},
+	{
+		// v9: outputs leave the routing matrix. Output plugins receive
+		// every journal change by default (at-least-once delivery), so a
+		// per-group output assignment was redundant surface: the group
+		// matrix now routes actions only.
+		SQL: `DROP TABLE group_outputs;`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

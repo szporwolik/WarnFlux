@@ -31,8 +31,8 @@ func TestGroupRoutingRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GroupRouting: %v", err)
 	}
-	if len(r.Actions) != 0 || len(r.Outputs) != 0 {
-		t.Fatalf("default routing = %+v, want no channels", r)
+	if len(r.Actions) != 0 {
+		t.Fatalf("default routing = %+v, want no actions", r)
 	}
 
 	err = store.SetGroupRouting(g.ID,
@@ -40,10 +40,6 @@ func TestGroupRoutingRoundTrip(t *testing.T) {
 			{ID: "log-alerts", MinSeverity: "severe"},
 			{ID: "log-alerts", MinSeverity: "minor"}, // duplicate: kept once
 			{ID: "sms", MinSeverity: "moderate"},
-		},
-		[]storage.ChannelAssignment{
-			{ID: "mqtt-spok", MinSeverity: "extreme"},
-			{ID: "mqtt-spok", MinSeverity: "unknown"}, // duplicate: kept once
 		})
 	if err != nil {
 		t.Fatalf("SetGroupRouting: %v", err)
@@ -60,22 +56,16 @@ func TestGroupRoutingRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(r.Actions, wantActions) {
 		t.Errorf("Actions = %+v, want %+v (deduplicated, first severity kept)", r.Actions, wantActions)
 	}
-	wantOutputs := []storage.ChannelAssignment{
-		{ID: "mqtt-spok", MinSeverity: "extreme"},
-	}
-	if !reflect.DeepEqual(r.Outputs, wantOutputs) {
-		t.Errorf("Outputs = %+v, want %+v", r.Outputs, wantOutputs)
-	}
 
 	// Empty assignment clears the matrix but keeps the group.
-	if err := store.SetGroupRouting(g.ID, nil, nil); err != nil {
+	if err := store.SetGroupRouting(g.ID, nil); err != nil {
 		t.Fatalf("SetGroupRouting clear: %v", err)
 	}
 	r, err = store.GroupRouting(g.ID)
 	if err != nil {
 		t.Fatalf("GroupRouting after clear: %v", err)
 	}
-	if len(r.Actions) != 0 || len(r.Outputs) != 0 {
+	if len(r.Actions) != 0 {
 		t.Fatalf("routing after clear = %+v, want empty", r)
 	}
 }
@@ -83,7 +73,7 @@ func TestGroupRoutingRoundTrip(t *testing.T) {
 func TestGroupRoutingErrors(t *testing.T) {
 	store := newRoutingStore(t)
 
-	if err := store.SetGroupRouting(999, nil, nil); !errors.Is(err, storage.ErrGroupNotFound) {
+	if err := store.SetGroupRouting(999, nil); !errors.Is(err, storage.ErrGroupNotFound) {
 		t.Fatalf("missing group error = %v, want ErrGroupNotFound", err)
 	}
 	if _, err := store.GroupRouting(999); !errors.Is(err, storage.ErrGroupNotFound) {
@@ -94,11 +84,11 @@ func TestGroupRoutingErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateGroup: %v", err)
 	}
-	if err := store.SetGroupRouting(g.ID, []storage.ChannelAssignment{{ID: "a", MinSeverity: "orange"}}, nil); !errors.Is(err, storage.ErrInvalidSeverity) {
+	if err := store.SetGroupRouting(g.ID, []storage.ChannelAssignment{{ID: "a", MinSeverity: "orange"}}); !errors.Is(err, storage.ErrInvalidSeverity) {
 		t.Fatalf("invalid action severity error = %v, want ErrInvalidSeverity", err)
 	}
-	if err := store.SetGroupRouting(g.ID, nil, []storage.ChannelAssignment{{ID: "o", MinSeverity: "EXTREME"}}); !errors.Is(err, storage.ErrInvalidSeverity) {
-		t.Fatalf("invalid output severity error = %v, want ErrInvalidSeverity", err)
+	if err := store.SetGroupRouting(g.ID, []storage.ChannelAssignment{{ID: "a", MinSeverity: "EXTREME"}}); !errors.Is(err, storage.ErrInvalidSeverity) {
+		t.Fatalf("non-canonical severity error = %v, want ErrInvalidSeverity", err)
 	}
 }
 
@@ -114,11 +104,10 @@ func TestListGroupRoutings(t *testing.T) {
 		t.Fatalf("CreateGroup bravo: %v", err)
 	}
 	if err := store.SetGroupRouting(a.ID,
-		[]storage.ChannelAssignment{{ID: "log", MinSeverity: "moderate"}},
-		[]storage.ChannelAssignment{{ID: "mqtt", MinSeverity: "severe"}}); err != nil {
+		[]storage.ChannelAssignment{{ID: "log", MinSeverity: "moderate"}}); err != nil {
 		t.Fatalf("route alpha: %v", err)
 	}
-	// bravo stays untouched: no channels.
+	// bravo stays untouched: no actions.
 
 	all, err := store.ListGroupRoutings()
 	if err != nil {
@@ -128,11 +117,10 @@ func TestListGroupRoutings(t *testing.T) {
 		t.Fatalf("ListGroupRoutings returned %d rules, want 2", len(all))
 	}
 	if all[0].Name != "alpha" ||
-		!reflect.DeepEqual(all[0].Actions, []storage.ChannelAssignment{{ID: "log", MinSeverity: "moderate"}}) ||
-		!reflect.DeepEqual(all[0].Outputs, []storage.ChannelAssignment{{ID: "mqtt", MinSeverity: "severe"}}) {
+		!reflect.DeepEqual(all[0].Actions, []storage.ChannelAssignment{{ID: "log", MinSeverity: "moderate"}}) {
 		t.Errorf("alpha rule = %+v", all[0])
 	}
-	if all[1].Name != "bravo" || len(all[1].Actions) != 0 || len(all[1].Outputs) != 0 {
+	if all[1].Name != "bravo" || len(all[1].Actions) != 0 {
 		t.Errorf("bravo rule = %+v", all[1])
 	}
 

@@ -573,14 +573,14 @@ The publisher and a receiver connecting to the same broker MUST use
 ### Group routing rule engine
 
 Every group is a notification channel with a routing matrix: each assigned
-action and output instance carries its own minimum severity
+**action** instance carries its own minimum severity
 (`unknown` < `minor` < `moderate` < `severe` < `extreme`). Received
 `hazard_transition` events are evaluated against the cached group rules
-(reloaded every 10 s): an event fires exactly the channels whose threshold
-it satisfies — actions via `Manager.Submit`, outputs via their `RuleFeed`
-capability (the MQTT output publishes those to
-`<topic_prefix>/groups/<group>/events`). The matrix is edited in the web
-UI under **Groups → Routing** (per-channel severity selects).
+(reloaded every 10 s): an event fires exactly the actions whose threshold
+it satisfies. Output plugins are deliberately NOT part of the matrix —
+they already receive every journal change by default, so a per-group
+output assignment would be redundant. The matrix is edited in the web UI
+under **Groups → Routing** (per-action severity selects).
 
 ### Canonical dispatch events
 

@@ -33,18 +33,14 @@
           <tbody>
             {{range .Groups}}
             {{$asev := .ActionSev}}
-            {{$osev := .OutputSev}}
             <tr>
               <td><strong>{{.Name}}</strong></td>
               <td><span class="count">{{.Members}}</span></td>
               <td>
-                {{if or .ActionSev .OutputSev}}
+                {{if .ActionSev}}
                 <span class="routing-matrix">
                   {{range $id, $sev := .ActionSev}}
-                  <span class="matrix-chip" title="action">{{$id}} <span class="sev sev-{{sevClass $sev}}">≥ {{$sev}}</span></span>
-                  {{end}}
-                  {{range $id, $sev := .OutputSev}}
-                  <span class="matrix-chip" title="output">{{$id}} <span class="sev sev-{{sevClass $sev}}">≥ {{$sev}}</span></span>
+                  <span class="matrix-chip">{{$id}} <span class="sev sev-{{sevClass $sev}}">≥ {{$sev}}</span></span>
                   {{end}}
                 </span>
                 {{else}}<span class="muted">none</span>{{end}}
@@ -55,7 +51,7 @@
                   <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Routing</summary>
                   <form method="post" action="/groups/{{.ID}}/routing" class="group-form routing-form">
                     <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                    <p class="routing-hint">Tick a channel and pick the minimum severity that fires it.</p>
+                    <p class="routing-hint">Tick an action and pick the minimum severity that fires it.</p>
                     {{if $.Actions}}
                     <fieldset class="routing-set">
                       <legend>Actions</legend>
@@ -73,27 +69,10 @@
                       </div>
                     </fieldset>
                     {{end}}
-                    {{if $.Outputs}}
-                    <fieldset class="routing-set">
-                      <legend>Outputs</legend>
-                      <div class="matrix-list">
-                        {{range $.Outputs}}
-                        <label class="matrix-row">
-                          <input type="checkbox" name="outputs" value="{{.ID}}" {{if index $osev .ID}}checked{{end}}>
-                          <span class="matrix-id">{{.ID}}</span>
-                          <select name="output_sev:{{.ID}}" class="matrix-sev" {{if not (index $osev .ID)}}disabled{{end}}>
-                            {{$cur := index $osev .ID}}
-                            {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $cur}}selected{{end}}>{{.Label}}</option>{{end}}
-                          </select>
-                        </label>
-                        {{end}}
-                      </div>
-                    </fieldset>
-                    {{end}}
-                    {{if or $.Actions $.Outputs}}
+                    {{if $.Actions}}
                     <button type="submit" class="btn-primary btn-add">Save routing</button>
                     {{else}}
-                    <p class="muted routing-empty">No actions or outputs are configured in this instance.</p>
+                    <p class="muted routing-empty">No actions are configured in this instance.</p>
                     {{end}}
                   </form>
                 </details>

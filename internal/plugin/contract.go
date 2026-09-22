@@ -122,28 +122,6 @@ type ActiveStateRehydrater interface {
 // configuration.
 type OutputFactory func(config *yaml.Node) (OutputPlugin, error)
 
-// RuleRef identifies the group a rule-routed delivery targets. Outputs that
-// implement RuleFeed use it to publish under a group-scoped topic.
-type RuleRef struct {
-	GroupID     int64
-	GroupName   string
-	MinSeverity string
-}
-
-// RuleFeed is an OPTIONAL output capability: outputs implementing it
-// additionally receive severity-filtered, group-routed deliveries from the
-// rule engine, in ADDITION to the global journal stream. Rule-routed
-// delivery is best-effort: HandleRule failures are logged by the caller
-// and never affect journal cursors or hazard delivery.
-//
-// Ownership contract: HandleRule may be called CONCURRENTLY with Handle
-// (and with other HandleRule calls) from different goroutines, so the
-// implementation must synchronize its own shared state. The context is
-// bounded by the caller.
-type RuleFeed interface {
-	HandleRule(ctx context.Context, change core.EventChange, ref RuleRef) error
-}
-
 // Closer is an optional interface for plugins that hold resources which
 // should be released cleanly when the application shuts down. The worker
 // invokes it (with a timeout and panic recovery) after the plugin stops.

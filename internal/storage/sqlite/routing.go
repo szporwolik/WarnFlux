@@ -10,8 +10,7 @@ import (
 )
 
 // GroupRouting returns the full routing matrix of one group: every
-// assigned action and output carries its own severity threshold, sorted
-// by ID.
+// assigned action carries its own severity threshold, sorted by ID.
 func (s *Store) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 	var r storage.GroupRouting
 	err := s.db.QueryRow(`SELECT id, name FROM groups WHERE id = ?`, groupID).
@@ -27,32 +26,21 @@ func (s *Store) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 	if err != nil {
 		return storage.GroupRouting{}, err
 	}
-	outputs, err := s.groupOutputs(groupID)
-	if err != nil {
-		return storage.GroupRouting{}, err
-	}
 	r.Actions = actions
-	r.Outputs = outputs
 	return r, nil
 }
 
 // SetGroupRouting replaces the group's routing matrix in one transaction.
-// Every assigned channel carries its own canonical severity threshold;
+// Every assigned action carries its own canonical severity threshold;
 // IDs reference the configuration (not database rows) and are stored
 // as-is, deduplicated.
-func (s *Store) SetGroupRouting(groupID int64, actions, outputs []storage.ChannelAssignment) error {
+func (s *Store) SetGroupRouting(groupID int64, actions []storage.ChannelAssignment) error {
 	for _, a := range actions {
 		if !storage.ValidSeverity(a.MinSeverity) {
 			return storage.ErrInvalidSeverity
 		}
 	}
-	for _, o := range outputs {
-		if !storage.ValidSeverity(o.MinSeverity) {
-			return storage.ErrInvalidSeverity
-		}
-	}
 	actions = dedupeAssignments(actions)
-	outputs = dedupeAssignments(outputs)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -76,21 +64,11 @@ func (s *Store) SetGroupRouting(groupID int64, actions, outputs []storage.Channe
 	if _, err := tx.Exec(`DELETE FROM group_actions WHERE group_id = ?`, groupID); err != nil {
 		return fmt.Errorf("clear group %d actions: %w", groupID, err)
 	}
-	if _, err := tx.Exec(`DELETE FROM group_outputs WHERE group_id = ?`, groupID); err != nil {
-		return fmt.Errorf("clear group %d outputs: %w", groupID, err)
-	}
 	for _, a := range actions {
 		if _, err := tx.Exec(`
 			INSERT INTO group_actions (group_id, action_id, min_severity)
 			VALUES (?, ?, ?)`, groupID, a.ID, a.MinSeverity); err != nil {
 			return fmt.Errorf("assign action %q to group %d: %w", a.ID, groupID, err)
-		}
-	}
-	for _, o := range outputs {
-		if _, err := tx.Exec(`
-			INSERT INTO group_outputs (group_id, output_id, min_severity)
-			VALUES (?, ?, ?)`, groupID, o.ID, o.MinSeverity); err != nil {
-			return fmt.Errorf("assign output %q to group %d: %w", o.ID, groupID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -100,7 +78,7 @@ func (s *Store) SetGroupRouting(groupID int64, actions, outputs []storage.Channe
 }
 
 // ListGroupRoutings returns the routing matrix of every group ordered by
-// name. Groups without any assigned channel yield empty slices.
+// name. Groups without any assigned action yield empty slices.
 func (s *Store) ListGroupRoutings() ([]storage.GroupRouting, error) {
 	rows, err := s.db.Query(`SELECT id, name FROM groups ORDER BY name COLLATE NOCASE ASC`)
 	if err != nil {
@@ -124,12 +102,7 @@ func (s *Store) ListGroupRoutings() ([]storage.GroupRouting, error) {
 		if err != nil {
 			return nil, err
 		}
-		outputs, err := s.groupOutputs(out[i].GroupID)
-		if err != nil {
-			return nil, err
-		}
 		out[i].Actions = actions
-		out[i].Outputs = outputs
 	}
 	return out, nil
 }
@@ -144,18 +117,6 @@ func (s *Store) groupActions(groupID int64) ([]storage.ChannelAssignment, error)
 	}
 	defer rows.Close()
 	return scanAssignments(rows, fmt.Sprintf("scan group %d action", groupID))
-}
-
-// groupOutputs reads the assigned outputs with their thresholds, sorted.
-func (s *Store) groupOutputs(groupID int64) ([]storage.ChannelAssignment, error) {
-	rows, err := s.db.Query(`
-		SELECT output_id, min_severity FROM group_outputs
-		WHERE group_id = ? ORDER BY output_id ASC`, groupID)
-	if err != nil {
-		return nil, fmt.Errorf("list group %d outputs: %w", groupID, err)
-	}
-	defer rows.Close()
-	return scanAssignments(rows, fmt.Sprintf("scan group %d output", groupID))
 }
 
 type assignmentScanner interface {

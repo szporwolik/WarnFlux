@@ -317,16 +317,11 @@ func (f *fakeUsers) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 	return storage.GroupRouting{}, storage.ErrGroupNotFound
 }
 
-func (f *fakeUsers) SetGroupRouting(groupID int64, actions, outputs []storage.ChannelAssignment) error {
+func (f *fakeUsers) SetGroupRouting(groupID int64, actions []storage.ChannelAssignment) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, a := range actions {
 		if !storage.ValidSeverity(a.MinSeverity) {
-			return storage.ErrInvalidSeverity
-		}
-	}
-	for _, o := range outputs {
-		if !storage.ValidSeverity(o.MinSeverity) {
 			return storage.ErrInvalidSeverity
 		}
 	}
@@ -343,7 +338,6 @@ func (f *fakeUsers) SetGroupRouting(groupID int64, actions, outputs []storage.Ch
 	f.routing[groupID] = storage.GroupRouting{
 		GroupID: groupID,
 		Actions: append([]storage.ChannelAssignment(nil), actions...),
-		Outputs: append([]storage.ChannelAssignment(nil), outputs...),
 	}
 	return nil
 }

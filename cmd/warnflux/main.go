@@ -250,7 +250,7 @@ func run(configPath string) error {
 	// threshold + assigned actions/outputs) with periodic rule reloads.
 	routingCtx, cancelRouting := context.WithCancel(ctx)
 	defer cancelRouting()
-	ruleEngine := routing.New(store, actionsMgr, manager, logger, action.AppInfo{
+	ruleEngine := routing.New(store, actionsMgr, logger, action.AppInfo{
 		Version: resolvedVersion,
 		Header1: cfg.Web.Header1,
 		Domain:  cfg.Web.Domain,

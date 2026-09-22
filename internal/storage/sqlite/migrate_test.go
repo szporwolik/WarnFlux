@@ -187,7 +187,8 @@ func buildV3DB(t *testing.T) string {
 
 // TestMigrationV8RoutingMatrixBackfill builds a v7 database with the
 // group-wide threshold and verifies the v8 step moves it onto every
-// existing assignment and drops the obsolete column.
+// existing assignment and drops the obsolete column; v9 then removes the
+// redundant group_outputs table entirely.
 func TestMigrationV8RoutingMatrixBackfill(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v7.db")
 	db, err := sql.Open("sqlite", path)
@@ -222,8 +223,8 @@ func TestMigrationV8RoutingMatrixBackfill(t *testing.T) {
 		t.Fatalf("Open of v7 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 7 || info.To != 8 {
-		t.Fatalf("migration = %+v, want {From:7 To:8}", info)
+	if info.From != 7 || info.To != 9 {
+		t.Fatalf("migration = %+v, want {From:7 To:9}", info)
 	}
 
 	r, err := store.GroupRouting(1)
@@ -233,11 +234,8 @@ func TestMigrationV8RoutingMatrixBackfill(t *testing.T) {
 	if len(r.Actions) != 1 || r.Actions[0].MinSeverity != "severe" {
 		t.Errorf("backfilled action = %+v, want severe", r.Actions)
 	}
-	if len(r.Outputs) != 1 || r.Outputs[0].MinSeverity != "severe" {
-		t.Errorf("backfilled output = %+v, want severe", r.Outputs)
-	}
 
-	// The obsolete column must be gone.
+	// The obsolete column and table must be gone.
 	var n int
 	if err := store.db.QueryRow(`
 		SELECT COUNT(*) FROM pragma_table_info('groups') WHERE name = 'min_severity'`).Scan(&n); err != nil {
@@ -245,6 +243,13 @@ func TestMigrationV8RoutingMatrixBackfill(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("groups.min_severity still present after v8")
+	}
+	if err := store.db.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_outputs'`).Scan(&n); err != nil {
+		t.Fatalf("table check: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("group_outputs still present after v9")
 	}
 }
 
@@ -271,8 +276,8 @@ func TestMigrationV4BackfillsLastSeen(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if info.To != 8 {
-		t.Fatalf("migrated to %d, want 8", info.To)
+	if info.To != 9 {
+		t.Fatalf("migrated to %d, want 9", info.To)
 	}
 	var ms int64
 	if err := store.db.QueryRow("SELECT last_seen_at_ms FROM events WHERE event_key = 'src:1'").Scan(&ms); err != nil {
@@ -385,16 +390,16 @@ func TestMigrationV2WithJournalReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of real v2 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 2 || info.To != 8 {
-		t.Fatalf("migration = %+v, want {From:2 To:8}", info)
+	if info.From != 2 || info.To != 9 {
+		t.Fatalf("migration = %+v, want {From:2 To:9}", info)
 	}
 
 	var v int
 	if err := store.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if v != 8 {
-		t.Errorf("user_version = %d, want 8", v)
+	if v != 9 {
+		t.Errorf("user_version = %d, want 9", v)
 	}
 
 	// The event row survives with a correct machine-time last_seen.
@@ -448,8 +453,8 @@ func TestMigrationV2EventsWithoutJournalReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of v2 database: %v", err)
 	}
 	defer store.Close()
-	if info.To != 8 {
-		t.Fatalf("migrated to %d, want 8", info.To)
+	if info.To != 9 {
+		t.Fatalf("migrated to %d, want 9", info.To)
 	}
 	if _, err := store.Get(context.Background(), "v2src:1"); err != nil {
 		t.Fatalf("Get after migration: %v", err)
@@ -486,8 +491,8 @@ func TestMigrationV1WithRowsReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of real v1 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 1 || info.To != 8 {
-		t.Fatalf("migration = %+v, want {From:1 To:8}", info)
+	if info.From != 1 || info.To != 9 {
+		t.Fatalf("migration = %+v, want {From:1 To:9}", info)
 	}
 	var expMs, seenMs int64
 	if err := store.db.QueryRow("SELECT expires_at_ms, last_seen_at_ms FROM events WHERE event_key = 'v1src:1'").Scan(&expMs, &seenMs); err != nil {
@@ -560,8 +565,8 @@ func TestMigrationLegacyCursorWithoutTypeResetsOnSync(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if info.To != 8 {
-		t.Fatalf("migrated to %d, want 8", info.To)
+	if info.To != 9 {
+		t.Fatalf("migrated to %d, want 9", info.To)
 	}
 
 	ctx := context.Background()

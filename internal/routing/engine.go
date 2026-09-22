@@ -2,13 +2,13 @@
 // consumer of the canonical dispatch ingress.
 //
 //	receiver callback -> canonical Event -> ingress queue
-//	    -> rule engine: severity threshold -> assigned actions + outputs
+//	    -> rule engine: per-action severity matrix -> assigned actions
 //
-// Every group is a notification channel: a minimum severity threshold plus
-// a set of assigned action instances (invoked via action.Manager.Submit)
-// and output instances (invoked via their optional RuleFeed capability).
-// Rules are reloaded from storage on an interval, so edits made in the web
-// UI take effect without a restart.
+// Every group is a notification channel: a routing matrix in which every
+// assigned action instance carries its own minimum severity. Output
+// plugins need no routing here — they receive every journal change by
+// default. Rules are reloaded from storage on an interval, so edits made
+// in the web UI take effect without a restart.
 package routing
 
 import (
@@ -21,9 +21,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
-	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
-	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -31,12 +29,6 @@ import (
 // by *action.Manager.
 type ActionSubmitter interface {
 	Submit(id string, req action.ActionRequest) error
-}
-
-// RuleOutputRouter delivers one group-routed change to output instances.
-// It is satisfied by *plugin.Manager.
-type RuleOutputRouter interface {
-	SubmitRule(ctx context.Context, outputIDs []string, change core.EventChange, ref plugin.RuleRef) error
 }
 
 // RuleStore supplies the authoritative group routings. It is satisfied by
@@ -48,13 +40,8 @@ type RuleStore interface {
 	GroupRecipientEmails(groupID int64) ([]string, error)
 }
 
-const (
-	// defaultRefreshInterval is how often rules are reloaded from storage.
-	defaultRefreshInterval = 10 * time.Second
-	// outputRoundTimeout bounds one SubmitRule round (all outputs of one
-	// matched group) so a slow output can never stall the ingress consumer.
-	outputRoundTimeout = 5 * time.Second
-)
+// defaultRefreshInterval is how often rules are reloaded from storage.
+const defaultRefreshInterval = 10 * time.Second
 
 // Engine evaluates group notification rules for every canonical hazard
 // transition drained from the dispatch ingress. It never blocks the
@@ -62,7 +49,6 @@ const (
 type Engine struct {
 	store   RuleStore
 	actions ActionSubmitter
-	outputs RuleOutputRouter
 	logger  *slog.Logger
 
 	// app is stamped onto every action request (footers, links).
@@ -82,17 +68,14 @@ type Engine struct {
 	rulesMatched   atomic.Int64
 	actionsFired   atomic.Int64
 	actionsFailed  atomic.Int64
-	outputRounds   atomic.Int64
-	outputErrors   atomic.Int64
 	ruleLoadErrors atomic.Int64
 }
 
 // New builds an engine with the default refresh interval.
-func New(store RuleStore, actions ActionSubmitter, outputs RuleOutputRouter, logger *slog.Logger, app action.AppInfo) *Engine {
+func New(store RuleStore, actions ActionSubmitter, logger *slog.Logger, app action.AppInfo) *Engine {
 	return &Engine{
 		store:           store,
 		actions:         actions,
-		outputs:         outputs,
 		logger:          logger,
 		app:             app,
 		refreshInterval: defaultRefreshInterval,
@@ -169,13 +152,13 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	e.mu.RUnlock()
 
 	for _, rule := range rules {
-		if len(rule.Actions) == 0 && len(rule.Outputs) == 0 {
+		if len(rule.Actions) == 0 {
 			continue
 		}
 
-		// Routing matrix: every assigned channel carries its own minimum
-		// severity, so one event can fire a subset of the channels.
-		var firedActions int
+		// Routing matrix: every assigned action carries its own minimum
+		// severity, so one event can fire a subset of the actions.
+		var fired int
 		for _, a := range rule.Actions {
 			if !meetsThreshold(rank, a.MinSeverity) {
 				continue
@@ -193,35 +176,12 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 					"group", rule.Name, "action", a.ID, "error", err)
 			} else {
 				e.actionsFired.Add(1)
-				firedActions++
+				fired++
 			}
 		}
 
-		var eligibleOutputs []string
-		for _, o := range rule.Outputs {
-			if meetsThreshold(rank, o.MinSeverity) {
-				eligibleOutputs = append(eligibleOutputs, o.ID)
-			}
-		}
-
-		if firedActions > 0 || len(eligibleOutputs) > 0 {
+		if fired > 0 {
 			e.rulesMatched.Add(1)
-		}
-
-		if len(eligibleOutputs) > 0 {
-			e.outputRounds.Add(1)
-			ref := plugin.RuleRef{
-				GroupID:   rule.GroupID,
-				GroupName: rule.Name,
-			}
-			roundCtx, cancel := context.WithTimeout(ctx, outputRoundTimeout)
-			err := e.outputs.SubmitRule(roundCtx, eligibleOutputs, changeOf(ev), ref)
-			cancel()
-			if err != nil {
-				e.outputErrors.Add(1)
-				e.logger.Warn("routing: output delivery failed",
-					"group", rule.Name, "error", err)
-			}
 		}
 	}
 }
@@ -236,44 +196,6 @@ func meetsThreshold(rank int, minSeverity string) bool {
 	return rank >= threshold
 }
 
-// changeOf maps a canonical hazard transition to the EventChange shape
-// outputs understand. Transitions carry the compact hazard block, so the
-// change is a best-effort projection (fields absent from the wire stay
-// zero-valued).
-func changeOf(ev dispatch.Event) core.EventChange {
-	h := ev.Hazard
-	ct := core.ChangeNew
-	status := core.StatusActive
-	switch h.Type {
-	case dispatch.TransitionUpdated:
-		ct = core.ChangeUpdated
-	case dispatch.TransitionCancelled:
-		ct = core.ChangeCancelled
-		status = core.StatusCancelled
-	case dispatch.TransitionExpired:
-		ct = core.ChangeExpired
-		status = core.StatusExpired
-	}
-	return core.EventChange{
-		Type: ct,
-		Event: core.HazardEvent{
-			Source:      h.Hazard.Source,
-			SourceID:    h.Hazard.SourceID,
-			Event:       h.Hazard.Event,
-			Severity:    h.Hazard.Severity,
-			Urgency:     h.Hazard.Urgency,
-			Certainty:   h.Hazard.Certainty,
-			Headline:    h.Hazard.Headline,
-			Areas:       h.Hazard.Areas,
-			EffectiveAt: h.Hazard.EffectiveAt,
-			ExpiresAt:   h.Hazard.ExpiresAt,
-			ReceivedAt:  h.Hazard.ReceivedAt,
-			UpdatedAt:   h.Hazard.UpdatedAt,
-			Status:      status,
-		},
-	}
-}
-
 // Stats returns a snapshot of the engine counters (monitoring/tests).
 func (e *Engine) Stats() EngineStats {
 	return EngineStats{
@@ -281,8 +203,6 @@ func (e *Engine) Stats() EngineStats {
 		RulesMatched:   e.rulesMatched.Load(),
 		ActionsFired:   e.actionsFired.Load(),
 		ActionsFailed:  e.actionsFailed.Load(),
-		OutputRounds:   e.outputRounds.Load(),
-		OutputErrors:   e.outputErrors.Load(),
 		RuleLoadErrors: e.ruleLoadErrors.Load(),
 	}
 }
@@ -293,7 +213,5 @@ type EngineStats struct {
 	RulesMatched   int64
 	ActionsFired   int64
 	ActionsFailed  int64
-	OutputRounds   int64
-	OutputErrors   int64
 	RuleLoadErrors int64
 }

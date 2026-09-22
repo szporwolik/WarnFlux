@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -697,5 +698,70 @@ func TestManagerEmitShutdownSemantics(t *testing.T) {
 	}
 	if len(m.eventQueue) != 0 {
 		t.Errorf("queue has %d events, want 0 (nothing accepted)", len(m.eventQueue))
+	}
+}
+
+// TestManagerEmitShutdownRaceStress is the adversarial durable-Emit
+// shutdown race: many concurrent emitters race the shutdown drain. The
+// invariants are: every Emit returns, and the number of nil results equals
+// the number of events the ingest worker actually processed — no nil
+// without persistence and no silent loss after claimed durable success.
+// Run under -race in CI.
+func TestManagerEmitShutdownRaceStress(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		var persisted atomic.Int32
+		ingestFn := func(_ context.Context, _ core.HazardEvent) (ingest.Result, core.EventChange, error) {
+			persisted.Add(1)
+			return ingest.ResultNew, core.EventChange{}, nil
+		}
+		m, err := NewManager(NewRegistry(), nil, nil, ingestFn, nil, nil, managerOpts(), testLogger())
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		runDone := make(chan struct{})
+		go func() {
+			defer close(runDone)
+			m.Run(ctx)
+		}()
+		waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+		var nilEmits atomic.Int32
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for w := 0; w < 4; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				for n := 0; ; n++ {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if err := m.emit(context.Background(), eventFor(fmt.Sprintf("race-%d-%d", w, n))); err == nil {
+						nilEmits.Add(1)
+					}
+				}
+			}(w)
+		}
+
+		// Let a few events flow, then shut down while emits are in flight.
+		waitFor(t, 2*time.Second, func() bool { return persisted.Load() > 0 })
+		cancel()
+		close(stop)
+		wg.Wait()
+		select {
+		case <-runDone:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("round %d: manager did not stop", round)
+		}
+
+		// The durable contract: nil Emit ⇔ ingest processed the event.
+		// Events failed by the shutdown drain complete with an error, so
+		// they can never appear as nil.
+		if got, want := nilEmits.Load(), persisted.Load(); got != want {
+			t.Fatalf("round %d: nil Emits = %d, persisted events = %d — durable acknowledgment contract violated", round, got, want)
+		}
 	}
 }

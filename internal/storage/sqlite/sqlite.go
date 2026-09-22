@@ -29,6 +29,15 @@ type migration struct {
 // migrations holds the schema evolution steps in order. Slice index +1 is
 // the target schema version, persisted via SQLite's PRAGMA user_version.
 // Existing databases are upgraded in place on startup, never recreated.
+//
+// Migration steps are immutable historical code.
+//
+// A migration must never call a helper whose query depends on schema
+// introduced by a LATER migration. In particular the v3 snapshot backfill
+// must read events through a frozen v2/v3 column list (v3EventColumns),
+// never through the current-schema eventColumns / loadEventTx.
+// Migration-specific readers must remain compatible with the schema
+// available at that version.
 var migrations = []migration{
 	{
 		// v1: initial event storage.
@@ -158,7 +167,7 @@ CREATE TABLE output_cursors (
 				return fmt.Errorf("iterate changes: %w", err)
 			}
 			for _, r := range batch {
-				event, err := loadEventTx(tx, r.key)
+				event, err := loadEventForV3Migration(tx, r.key)
 				if err != nil {
 					return fmt.Errorf("backfill snapshot for change %d: %w", r.id, err)
 				}
@@ -589,6 +598,11 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 		if event.Key() != key {
 			return nil, fmt.Errorf("change %d snapshot key %q does not match journal event_key %q", change.ID, event.Key(), key)
 		}
+		// Semantic sanity check: structurally valid but impossible
+		// snapshots must never reach outputs.
+		if err := core.ValidateJournalChange(ct, event); err != nil {
+			return nil, fmt.Errorf("change %d snapshot is semantically invalid: %w", change.ID, err)
+		}
 		change.ChangeType = ct
 		change.Event = event
 		changes = append(changes, change)
@@ -894,6 +908,88 @@ func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {
 func loadEventTx(tx *sql.Tx, key string) (core.HazardEvent, error) {
 	row := tx.QueryRow("SELECT "+eventColumns+" FROM events WHERE event_key = ?", key)
 	return scanEventRow(row.Scan, nil)
+}
+
+// v3EventColumns is the events column list exactly as it exists while
+// migration v3 runs (schema v2 + v3's own changes-column addition).
+// It must NEVER be extended with columns added by later migrations: the
+// v3 snapshot backfill executes before v4 creates last_seen_at_ms.
+const v3EventColumns = `event_key, source, source_id, fingerprint, status,
+category, event, severity, urgency, certainty,
+headline, description, instruction,
+effective_at, expires_at_ms, latitude, longitude,
+areas, source_url, received_at, first_seen_at, last_seen_at, updated_at`
+
+// loadEventForV3Migration reads an event using only the schema available
+// to migration v3. It deliberately does not share SQL or scanning with the
+// current-schema loaders: migration code is immutable history and must
+// stay compatible with real v2 databases forever.
+func loadEventForV3Migration(tx *sql.Tx, key string) (core.HazardEvent, error) {
+	row := tx.QueryRow("SELECT "+v3EventColumns+" FROM events WHERE event_key = ?", key)
+	return scanV3MigrationEvent(row.Scan)
+}
+
+// scanV3MigrationEvent scans the frozen v3EventColumns list in order. It
+// is a self-contained copy of the current-schema scan minus
+// last_seen_at_ms, and must not be refactored to depend on current schema.
+func scanV3MigrationEvent(scan func(dest ...any) error) (core.HazardEvent, error) {
+	var (
+		key, fingerprint, status string
+		effectiveAt              sql.NullString
+		expiresMs                sql.NullInt64
+		lat, lon                 sql.NullFloat64
+		areasJSON                string
+		received, first, last    string
+		updated                  string
+	)
+	var event core.HazardEvent
+	dests := []any{
+		&key, &event.Source, &event.SourceID, &fingerprint, &status,
+		&event.Category, &event.Event, &event.Severity, &event.Urgency, &event.Certainty,
+		&event.Headline, &event.Description, &event.Instruction,
+		&effectiveAt, &expiresMs, &lat, &lon,
+		&areasJSON, &event.SourceURL,
+		&received, &first, &last, &updated,
+	}
+	if err := scan(dests...); err != nil {
+		return event, err
+	}
+
+	event.Status = core.EventStatus(status)
+	if effectiveAt.Valid {
+		t, err := time.Parse(time.RFC3339Nano, effectiveAt.String)
+		if err != nil {
+			return event, fmt.Errorf("parse effective_at: %w", err)
+		}
+		event.EffectiveAt = &t
+	}
+	if expiresMs.Valid {
+		t := time.UnixMilli(expiresMs.Int64).UTC()
+		event.ExpiresAt = &t
+	}
+	if lat.Valid {
+		event.Latitude = &lat.Float64
+	}
+	if lon.Valid {
+		event.Longitude = &lon.Float64
+	}
+	if err := json.Unmarshal([]byte(areasJSON), &event.Areas); err != nil {
+		return event, fmt.Errorf("decode areas: %w", err)
+	}
+	for _, t := range []struct {
+		dest *time.Time
+		src  string
+	}{
+		{&event.ReceivedAt, received},
+		{&event.UpdatedAt, updated},
+	} {
+		parsed, err := time.Parse(time.RFC3339Nano, t.src)
+		if err != nil {
+			return event, fmt.Errorf("parse stored timestamp: %w", err)
+		}
+		*t.dest = parsed
+	}
+	return event, nil
 }
 
 // decodeSnapshot reconstructs the event state captured when a journal

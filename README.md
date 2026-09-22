@@ -95,6 +95,10 @@ If `--config` is omitted, `./config.yaml` in the current directory is used.
 
 ## Configuration
 
+WarnFlux is configured with a single YAML file (default `config.yaml`).
+The file is capped at 1 MiB — far beyond any realistic configuration, but
+enough to keep accidental pathological input from being read into memory.
+
 All settings live in the YAML file; defaults are applied for missing values.
 
 | Key | Default | Description |
@@ -310,7 +314,7 @@ of the timestamp.
 | `database_healthy` | whether the **last status database query succeeded** (not a full integrity check) |
 | `pending_changes` | journal changes not yet acknowledged by every enabled output; **0 when no outputs are configured** (retained changes are history, not a backlog) |
 | `oldest_pending_age_seconds` | age of the oldest pending change |
-| `sources` / `outputs` | one entry per plugin instance: `id`, `type`, `state` (`starting`, `running`, `degraded`, `suspended`, `stopping`, `stopped`, `disabled`), `consecutive_failures`, `restart_count`, `last_error` |
+| `sources` / `outputs` | one entry per plugin instance: `id`, `type`, `state` (`starting`, `running`, `degraded`, `suspended`, `stopping`, `stopped`, `disabled`), `consecutive_failures`, `restart_count`, `last_error` (truncated to 2048 bytes with an explicit marker) |
 
 ### How to subscribe
 

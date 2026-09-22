@@ -247,6 +247,11 @@ func (o *Output) Close() error {
 			token := o.client.Publish(topic, o.qos, true, payload)
 			select {
 			case <-token.Done():
+				// The publish completed; report transport errors instead
+				// of leaving the retained status stale silently.
+				if err := token.Error(); err != nil {
+					slog.Warn("graceful offline status publish failed", "topic", topic, "error", err)
+				}
 			case <-time.After(offlinePublishTimeout):
 				slog.Warn("graceful offline status publish timed out", "topic", topic)
 			}

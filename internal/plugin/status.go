@@ -3,6 +3,7 @@ package plugin
 import (
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // PluginKind distinguishes source plugins from output plugins.
@@ -74,6 +75,28 @@ func (t *statusTracker) success(now time.Time) {
 	t.s.State = StateRunning
 }
 
+// maxStatusErrorBytes bounds PluginStatus.LastError. Plugin errors can
+// embed arbitrary remote content, and LastError is exported through the
+// retained MQTT status topic: the entire internal status model must stay
+// bounded. The bound is applied where the error is recorded (not only at
+// serialization), so no intermediate representation grows without limit.
+const maxStatusErrorBytes = 2048
+
+// truncateStatusError bounds an error string to maxStatusErrorBytes while
+// preserving valid UTF-8 and making the truncation explicit.
+func truncateStatusError(s string) string {
+	if len(s) <= maxStatusErrorBytes {
+		return s
+	}
+	const marker = " [... truncated]"
+	limit := maxStatusErrorBytes - len(marker)
+	// Never cut in the middle of a multi-byte rune.
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit] + marker
+}
+
 // failure records a failure and reports whether the failure threshold was
 // reached.
 func (t *statusTracker) failure(err error, threshold int, now time.Time) bool {
@@ -82,7 +105,7 @@ func (t *statusTracker) failure(err error, threshold int, now time.Time) bool {
 	t.s.ConsecutiveFailures++
 	ts := now
 	t.s.LastErrorAt = &ts
-	t.s.LastError = err.Error()
+	t.s.LastError = truncateStatusError(err.Error())
 	if threshold > 0 && t.s.ConsecutiveFailures >= threshold {
 		t.s.State = StateSuspended
 		return true

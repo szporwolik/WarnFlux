@@ -190,6 +190,37 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+// TestLoadConfigSizeLimit pins the 1 MiB configuration file bound: a local
+// administrator controls the file, but os.ReadFile must not accept
+// arbitrary sizes by accident.
+func TestLoadConfigSizeLimit(t *testing.T) {
+	if _, err := Load(writeTempConfig(t, exampleConfig)); err != nil {
+		t.Fatalf("small config rejected: %v", err)
+	}
+
+	// Exactly at the limit: the example config padded with YAML comments.
+	pad := maxConfigFileBytes - len(exampleConfig) - 1
+	if pad < 0 {
+		t.Fatalf("example config already exceeds the limit (%d > %d)", len(exampleConfig), maxConfigFileBytes)
+	}
+	exact := exampleConfig + "\n" + strings.Repeat("#", pad)
+	if len(exact) != maxConfigFileBytes {
+		t.Fatalf("test setup: exact config is %d bytes, want %d", len(exact), maxConfigFileBytes)
+	}
+	if _, err := Load(writeTempConfig(t, exact)); err != nil {
+		t.Fatalf("exact-limit config rejected: %v", err)
+	}
+
+	// One byte over: rejected with a clear error.
+	_, err := Load(writeTempConfig(t, exact+"\n"))
+	if err == nil {
+		t.Fatal("config over the size limit must be rejected")
+	}
+	if !strings.Contains(err.Error(), "exceeds the maximum") {
+		t.Errorf("error %q must explain the size limit", err)
+	}
+}
+
 func TestLoadInvalidYAML(t *testing.T) {
 	if _, err := Load(writeTempConfig(t, "app: [unclosed\n")); err == nil {
 		t.Fatal("expected error for invalid YAML, got nil")

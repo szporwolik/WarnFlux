@@ -190,10 +190,23 @@ func pluginConfigNode(raw *rawPluginConfig) *yaml.Node {
 	return &raw.node
 }
 
+// maxConfigFileBytes bounds the configuration file read at startup.
+// The file is local-trust input (an administrator controls it), but
+// os.ReadFile would otherwise accept arbitrary sizes; 1 MiB is far beyond
+// any realistic WarnFlux configuration.
+const maxConfigFileBytes = 1 << 20
+
 // Load reads the YAML file at path, applies defaults and validates it.
 // Additional trailing YAML documents are rejected: a configuration file
 // must contain exactly one document.
 func Load(path string) (*Config, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config file %q: %w", path, err)
+	}
+	if info.Size() > maxConfigFileBytes {
+		return nil, fmt.Errorf("read config file %q: size %d bytes exceeds the maximum of %d bytes", path, info.Size(), maxConfigFileBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config file %q: %w", path, err)

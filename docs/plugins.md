@@ -148,11 +148,14 @@ For **outputs**:
   | `PublishStatus` ignores its timeout (context-contract violation) | status publishing is **disabled for that output instance** for the rest of the process; hazard delivery continues. The abandoned callback may overlap later `Handle` calls — implementers MUST respect `ctx`. |
 - A change is acknowledged only after `Handle` returns `nil` — delivery is
   at-least-once across restarts.
-- **Durable identity**: an output's configured `id` is its persisted journal
-  consumer identity (`^[a-z0-9][a-z0-9._-]{0,63}$`). Renaming the ID creates
-  a new consumer; disabling an output removes its cursor, and re-enabling it
-  replays journal entries that are still retained. The ID — not the plugin
-  type — defines the identity.
+- **Durable identity**: an output's configured `id` **and plugin `type`**
+  pair is its persisted journal consumer identity. Renaming the ID or
+  changing the type creates a new consumer whose cursor starts at 0
+  (replaying retained journal history); disabling an output removes its
+  cursor. Legacy cursors written before the durable type identity existed
+  (schema < v4) carry an empty type and are treated as new consumers after
+  the upgrade — a conservative one-time replay with possible duplicate
+  delivery, never silent loss.
 
 ## Mandatory rules
 

@@ -1,5 +1,10 @@
 package core
 
+import (
+	"fmt"
+	"math"
+)
+
 // ChangeType describes what changed about an event so outputs can act on
 // meaningful transitions only.
 type ChangeType string
@@ -34,6 +39,59 @@ func ChangeTypeOf(s string) (ChangeType, bool) {
 	default:
 		return "", false
 	}
+}
+
+// ValidateJournalChange is the STABLE, minimal semantic validator for
+// journal snapshots read back from storage. It detects corruption only:
+// structurally impossible states must never reach outputs. It must not
+// re-apply provider policy, and it must stay frozen so historical journal
+// data remains readable even if future business rules become stricter.
+func ValidateJournalChange(ct ChangeType, event HazardEvent) error {
+	switch ct {
+	case ChangeNew, ChangeUpdated, ChangeCancelled, ChangeExpired:
+	default:
+		return fmt.Errorf("unknown change type %q", ct)
+	}
+	if event.Source == "" {
+		return fmt.Errorf("empty source")
+	}
+	if event.SourceID == "" {
+		return fmt.Errorf("empty source_id")
+	}
+	if event.Event == "" {
+		return fmt.Errorf("empty event")
+	}
+	switch event.Status {
+	case StatusActive, StatusCancelled, StatusExpired:
+	default:
+		return fmt.Errorf("invalid status %q", event.Status)
+	}
+	hasLat, hasLon := event.Latitude != nil, event.Longitude != nil
+	if hasLat != hasLon {
+		return fmt.Errorf("coordinates must be both present or both absent")
+	}
+	if hasLat {
+		if math.IsNaN(*event.Latitude) || math.IsInf(*event.Latitude, 0) ||
+			*event.Latitude < -90 || *event.Latitude > 90 {
+			return fmt.Errorf("latitude out of range")
+		}
+		if math.IsNaN(*event.Longitude) || math.IsInf(*event.Longitude, 0) ||
+			*event.Longitude < -180 || *event.Longitude > 180 {
+			return fmt.Errorf("longitude out of range")
+		}
+	}
+	// Change-type vs snapshot-state consistency.
+	switch ct {
+	case ChangeCancelled:
+		if event.Status != StatusCancelled {
+			return fmt.Errorf("cancelled change carries status %q", event.Status)
+		}
+	case ChangeExpired:
+		if event.Status != StatusExpired {
+			return fmt.Errorf("expired change carries status %q", event.Status)
+		}
+	}
+	return nil
 }
 
 // EventChange is a meaningful state transition that outputs should receive.

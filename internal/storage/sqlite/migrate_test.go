@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -160,5 +161,104 @@ func TestMigrateRefusesNewerDatabase(t *testing.T) {
 	}
 	if v := schemaVersion(t, db); v != 5 {
 		t.Errorf("user_version = %d, want 5 (untouched)", v)
+	}
+}
+
+// buildV3DB creates a database at exactly schema version 3 (v1+v2+v3
+// applied), so v4 upgrade behavior can be tested deterministically.
+func buildV3DB(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "v3.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := migrate(db, migrations[:3]); err != nil {
+		db.Close()
+		t.Fatalf("migrate to v3: %v", err)
+	}
+	db.Close()
+	return path
+}
+
+// TestMigrationV4BackfillsLastSeen builds a v3 database with a legacy text
+// last_seen_at and verifies the v4 step backfills last_seen_at_ms.
+func TestMigrationV4BackfillsLastSeen(t *testing.T) {
+	path := buildV3DB(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	seen := "2026-06-01T12:30:45.123456789Z"
+	if _, err := db.Exec(`
+		INSERT INTO events (event_key, source, source_id, fingerprint, status, event,
+			received_at, first_seen_at, last_seen_at, updated_at)
+		VALUES ('src:1', 'src', '1', 'fp', 'active', 'E', ?, ?, ?, ?)`,
+		seen, seen, seen, seen); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	db.Close()
+
+	store, info, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if info.To != 4 {
+		t.Fatalf("migrated to %d, want 4", info.To)
+	}
+	var ms int64
+	if err := store.db.QueryRow("SELECT last_seen_at_ms FROM events WHERE event_key = 'src:1'").Scan(&ms); err != nil {
+		t.Fatalf("read last_seen_at_ms: %v", err)
+	}
+	want, _ := time.Parse(time.RFC3339Nano, seen)
+	if ms != want.UnixMilli() {
+		t.Errorf("last_seen_at_ms = %d, want %d", ms, want.UnixMilli())
+	}
+}
+
+// TestMigrationV4InvalidLastSeenFails: a legacy row with unparsable
+// last_seen_at must fail the v4 step and leave the schema at v3.
+func TestMigrationV4InvalidLastSeenFails(t *testing.T) {
+	path := buildV3DB(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO events (event_key, source, source_id, fingerprint, status, event,
+			received_at, first_seen_at, last_seen_at, updated_at)
+		VALUES ('bad:1', 'bad', '1', 'fp', 'active', 'E', 'garbage', 'garbage', 'garbage', 'garbage')`); err != nil {
+		t.Fatalf("insert invalid row: %v", err)
+	}
+	db.Close()
+
+	if _, _, err := Open(path); err == nil {
+		t.Fatal("Open must fail on invalid legacy last_seen_at")
+	}
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if got := schemaVersion(t, db); got != 3 {
+		t.Errorf("schema version = %d after failed v4, want 3 (rolled back)", got)
+	}
+}
+
+// TestOpenRefusesNewerSchema pins the forward-compatibility guard.
+func TestOpenRefusesNewerSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "newer.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 99"); err != nil {
+		t.Fatalf("set version: %v", err)
+	}
+	db.Close()
+	if _, _, err := Open(path); err == nil {
+		t.Fatal("Open must refuse a database newer than this binary supports")
 	}
 }

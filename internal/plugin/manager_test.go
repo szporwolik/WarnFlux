@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -528,6 +529,126 @@ func TestManagerEmitterDeepCopy(t *testing.T) {
 	}
 
 	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitAcknowledgesDurablePersistence pins the durable Emit
+// contract: Emit returns nil only after the event is durably persisted.
+func TestManagerEmitAcknowledgesDurablePersistence(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ing := ingest.NewIngester(store, testLogger())
+	m, err := NewManager(NewRegistry(), nil, nil, ing.Ingest, ing.Expire, store, managerOpts(), testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	e := eventFor("durable")
+	if err := m.emit(context.Background(), e); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	// nil Emit ⇒ the event is in SQLite, not merely in the RAM queue.
+	got, err := store.Get(context.Background(), e.Key())
+	if err != nil {
+		t.Fatalf("Get after Emit nil: %v", err)
+	}
+	if got.Event.Status != core.StatusActive {
+		t.Errorf("stored status = %v, want active", got.Event.Status)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitPropagatesIngestFailure: an ingest error is returned to
+// the source — the source can never believe an event was persisted when it
+// was not.
+func TestManagerEmitPropagatesIngestFailure(t *testing.T) {
+	boom := errors.New("boom")
+	ingestFn := func(context.Context, core.HazardEvent) (ingest.Result, core.EventChange, error) {
+		return 0, core.EventChange{}, boom
+	}
+	m, err := NewManager(NewRegistry(), nil, nil, ingestFn, nil, nil, managerOpts(), testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	if err := m.emit(context.Background(), eventFor("fails")); !errors.Is(err, boom) {
+		t.Fatalf("emit = %v, want the ingest error", err)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerEmitDrainedOnShutdown: an event accepted into the queue before
+// shutdown is always completed — the source gets the ingest outcome even
+// when shutdown races the drain.
+func TestManagerEmitDrainedOnShutdown(t *testing.T) {
+	var called atomic.Int32
+	release := make(chan struct{})
+	ingestFn := func(context.Context, core.HazardEvent) (ingest.Result, core.EventChange, error) {
+		called.Add(1)
+		<-release
+		return ingest.ResultNew, core.EventChange{}, nil
+	}
+	m, err := NewManager(NewRegistry(), nil, nil, ingestFn, nil, nil, managerOpts(), testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	done := make(chan error, 1)
+	go func() { done <- m.emit(context.Background(), eventFor("drain")) }()
+	waitFor(t, 2*time.Second, func() bool { return called.Load() == 1 })
+
+	// Shutdown while the ingest is mid-flight: the event must still be
+	// completed with its outcome.
+	cancel()
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("emit during shutdown = %v, want nil (drained and persisted)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("emit never completed during shutdown drain")
+	}
 	select {
 	case <-runDone:
 	case <-time.After(5 * time.Second):

@@ -34,7 +34,19 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Vet and test
-        run: go vet ./... && go test ./...
+        run: go vet ./... && go test -count=1 ./...
+
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: '1.26'
+          go-package: ./...
 
       - name: Set up QEMU (multi-arch builds)
         uses: docker/setup-qemu-action@v3

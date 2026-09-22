@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // FuzzNormalizeValidate checks that normalization and validation never
 // panic and leave the event in a consistent state.
@@ -72,5 +75,26 @@ func FuzzFingerprint(f *testing.F) {
 		if Fingerprint(cancelled) != fp1 {
 			t.Fatalf("fingerprint must ignore lifecycle status")
 		}
+	})
+}
+
+// FuzzAreasBounds checks that pathological area collections are rejected by
+// validation without panic or unbounded allocation. Construction is capped
+// in the harness itself so the fuzzer cannot OOM before rejection.
+func FuzzAreasBounds(f *testing.F) {
+	f.Add(1, 1, "a")
+	f.Add(512, 2048, "x")
+	f.Add(513, 1, "y")
+	f.Add(1, 2049, "z")
+	f.Fuzz(func(t *testing.T, count, areaLen int, fill string) {
+		if count < 0 || areaLen < 0 || count > maxAreas+100 || areaLen > maxAreaLen+100 {
+			t.Skip()
+		}
+		e := HazardEvent{Source: "demo", SourceID: "1", Event: "Drill", Status: StatusActive}
+		for i := 0; i < count; i++ {
+			e.Areas = append(e.Areas, strings.Repeat(fill, areaLen))
+		}
+		e.Normalize() // must not allocate unboundedly; may pass through
+		_ = e.Validate()
 	})
 }

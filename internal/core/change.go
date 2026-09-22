@@ -18,6 +18,24 @@ const (
 // String returns the change type as its wire name.
 func (t ChangeType) String() string { return string(t) }
 
+// ChangeTypeOf returns the ChangeType for a wire value and whether it is a
+// known enum member. Unknown values are corruption and must be rejected by
+// storage before reaching outputs.
+func ChangeTypeOf(s string) (ChangeType, bool) {
+	switch s {
+	case "new":
+		return ChangeNew, true
+	case "updated":
+		return ChangeUpdated, true
+	case "cancelled":
+		return ChangeCancelled, true
+	case "expired":
+		return ChangeExpired, true
+	default:
+		return "", false
+	}
+}
+
 // EventChange is a meaningful state transition that outputs should receive.
 // Duplicates intentionally produce no EventChange.
 type EventChange struct {

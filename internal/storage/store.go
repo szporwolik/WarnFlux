@@ -15,6 +15,15 @@ import (
 // ErrNotFound is returned by EventStore.Get when no event matches the key.
 var ErrNotFound = errors.New("event not found")
 
+// OutputRef identifies one enabled output instance. The durable journal
+// consumer identity is the (ID, Type) pair: changing the plugin type under
+// the same ID resets the cursor — a new consumer that replays retained
+// history.
+type OutputRef struct {
+	ID   string
+	Type string
+}
+
 // Outcome describes the result of an atomic ingestion transaction.
 type Outcome int
 
@@ -96,11 +105,12 @@ type EventStore interface {
 
 	// SyncOutputs makes the output_cursors table match the set of enabled
 	// outputs exactly: missing cursors are created at 0 (a newly enabled
-	// output receives all changes still present in the retained journal)
-	// and cursors of outputs that are no longer enabled are removed (so
-	// they stop blocking cleanup). It is called once at application
-	// startup, before any runtime worker starts.
-	SyncOutputs(ctx context.Context, enabledOutputIDs []string) error
+	// output receives all changes still present in the retained journal),
+	// cursors of outputs that are no longer enabled are removed (so they
+	// stop blocking cleanup), and a cursor whose plugin type changed is
+	// reset to 0 (a new durable consumer). It is called once at
+	// application startup, before any runtime worker starts.
+	SyncOutputs(ctx context.Context, enabled []OutputRef) error
 
 	// CleanupChanges deletes journal rows older than olderThan that have
 	// been acknowledged by every output. Returns the number of deleted rows.

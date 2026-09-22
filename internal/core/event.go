@@ -58,11 +58,12 @@ type HazardEvent struct {
 
 	SourceURL string
 
-	// ReceivedAt is when the source delivered this event. It is ingestion
-	// metadata and is not part of the content fingerprint.
+	// ReceivedAt / UpdatedAt are CORE-owned ingestion metadata: the store
+	// assigns them (first receipt time / persistence transition time).
+	// Source plugins must not set them; provider-origin timestamps would
+	// need dedicated fields.
 	ReceivedAt time.Time
-	// UpdatedAt is when the persisted content last changed. It is ingestion
-	// metadata and is not part of the content fingerprint.
+	// UpdatedAt is when the persisted content/lifecycle last changed.
 	UpdatedAt time.Time
 }
 
@@ -131,9 +132,16 @@ func (e *HazardEvent) Normalize() {
 
 // normalizeAreas trims, drops empty entries and collapses duplicates into a
 // fresh slice, so callers never share the original backing array.
+// normalizeAreas trims and de-duplicates the affected-area list. The
+// allocation is guarded: a collection already over the cap is returned
+// untouched, so validation (not normalization) rejects it without first
+// forcing a large allocation.
 func normalizeAreas(areas []string) []string {
 	if len(areas) == 0 {
 		return nil
+	}
+	if len(areas) > maxAreas {
+		return areas
 	}
 	seen := make(map[string]bool, len(areas))
 	out := make([]string, 0, len(areas))
@@ -177,14 +185,16 @@ func (e HazardEvent) Clone() HazardEvent {
 // both or neither present.
 // Final-safety-net size caps. Providers are review-gated code, but a single
 // pathological adapter must not be able to inflate SQLite, the journal or
-// MQTT payloads without bound. These are generous upper bounds, not
-// content-policy limits.
+// MQTT payloads without bound. These are generous upper bounds (bytes),
+// not content-policy limits.
 const (
 	maxShortFieldLen  = 256   // category, event, severity, urgency, certainty
 	maxHeadlineLen    = 2048  // headline
 	maxDescriptionLen = 32768 // description
 	maxInstructionLen = 8192  // instruction
 	maxSourceURLLen   = 2048  // source_url
+	maxAreas          = 512   // affected areas per event
+	maxAreaLen        = 2048  // bytes per area label
 )
 
 func (e HazardEvent) Validate() error {
@@ -214,6 +224,14 @@ func (e HazardEvent) Validate() error {
 	} {
 		if len(f.value) > f.max {
 			return fmt.Errorf("event %s is %d bytes, maximum %d", f.name, len(f.value), f.max)
+		}
+	}
+	if len(e.Areas) > maxAreas {
+		return fmt.Errorf("event has %d areas, maximum %d", len(e.Areas), maxAreas)
+	}
+	for i, a := range e.Areas {
+		if len(a) > maxAreaLen {
+			return fmt.Errorf("event area %d is %d bytes, maximum %d", i, len(a), maxAreaLen)
 		}
 	}
 	switch e.Status {

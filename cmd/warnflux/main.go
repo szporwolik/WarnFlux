@@ -23,6 +23,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
 
@@ -147,13 +148,13 @@ func run(configPath string) error {
 	// worker starts (new outputs replay the retained journal from 0) and
 	// drop cursors of outputs that are no longer configured, so cleanup and
 	// pending stats always operate on the authoritative set of outputs.
-	var enabledOutputIDs []string
+	var enabledOutputs []storage.OutputRef
 	for _, o := range cfg.Outputs {
 		if o.Enabled {
-			enabledOutputIDs = append(enabledOutputIDs, o.ID)
+			enabledOutputs = append(enabledOutputs, storage.OutputRef{ID: o.ID, Type: o.Type})
 		}
 	}
-	if err := store.SyncOutputs(context.Background(), enabledOutputIDs); err != nil {
+	if err := store.SyncOutputs(context.Background(), enabledOutputs); err != nil {
 		return fmt.Errorf("sync output cursors: %w", err)
 	}
 

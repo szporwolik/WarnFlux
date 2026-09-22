@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -54,6 +55,16 @@ func ingestOne(t *testing.T, s *Store, e core.HazardEvent) (storage.Outcome, *st
 		t.Fatalf("Ingest: %v", err)
 	}
 	return outcome, change
+}
+
+// refs builds OutputRef entries (each with a distinct type) for the given
+// output IDs, mirroring how main computes the enabled output set.
+func refs(ids ...string) []storage.OutputRef {
+	out := make([]storage.OutputRef, len(ids))
+	for i, id := range ids {
+		out[i] = storage.OutputRef{ID: id, Type: "type-" + id}
+	}
+	return out
 }
 
 func TestOpenInitializesSchema(t *testing.T) {
@@ -127,9 +138,9 @@ func TestMigrationV2BackfillsLegacyExpiry(t *testing.T) {
 	}
 }
 
-func openTempAt(t *testing.T, path string) *Store {
+func openTempAt(t *testing.T, path string, opts ...Option) *Store {
 	t.Helper()
-	store, _, err := Open(path)
+	store, _, err := Open(path, opts...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -362,13 +373,26 @@ func TestJournalCursorsIndependentAndAtLeastOnce(t *testing.T) {
 		t.Fatalf("B polled %+v, want the unacked change", nextB)
 	}
 
-	// Ack is monotonic.
-	if err := store.AckChanges(context.Background(), "out-b", change.ID-1); err != nil {
+	// Ack is monotonic: acking below the current cursor cannot rewind it.
+	// (AckChanges also rejects non-positive and beyond-max IDs.)
+	e2 := e.Clone()
+	e2.Severity = "severe"
+	_, change2 := ingestOne(t, store, e2)
+	if err := store.AckChanges(context.Background(), "out-b", change2.ID); err != nil {
+		t.Fatalf("AckChanges higher: %v", err)
+	}
+	if err := store.AckChanges(context.Background(), "out-b", change.ID); err != nil {
 		t.Fatalf("AckChanges lower: %v", err)
 	}
 	nextB, _ = store.PollChanges(context.Background(), "out-b", 10)
-	if len(nextB) != 1 {
-		t.Fatalf("B polled %d after lower ack, want 1 (monotonic)", len(nextB))
+	if len(nextB) != 0 {
+		t.Fatalf("B polled %d after full ack, want 0", len(nextB))
+	}
+	if err := store.AckChanges(context.Background(), "out-b", 0); err == nil {
+		t.Fatal("AckChanges with 0 must be rejected")
+	}
+	if err := store.AckChanges(context.Background(), "out-b", change2.ID+1000); err == nil {
+		t.Fatal("AckChanges beyond the journal must be rejected")
 	}
 }
 
@@ -418,7 +442,7 @@ func TestPendingStats(t *testing.T) {
 	}
 
 	// An enabled output with cursor 0 sees the retained change as pending.
-	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-a")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	pending, oldest, err := store.PendingStats(ctx)
@@ -582,9 +606,10 @@ func TestConcurrentIngestUpdateRace(t *testing.T) {
 	}
 }
 
-// TestCleanupEvents verifies current-state retention: cancelled/expired
-// records older than the cutoff are deleted, recent ones stay, and active
-// events are never touched.
+// TestCleanupEvents verifies current-state retention semantics: cancelled/
+// expired records are deleted only when the provider has NOT been observed
+// (last_seen_at_ms) for event_retention — updated_at is irrelevant here.
+// A provider that keeps repeating a stale event keeps it retained.
 func TestCleanupEvents(t *testing.T) {
 	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	store := openTemp(t, WithClock(func() time.Time { return clock }))
@@ -608,7 +633,8 @@ func TestCleanupEvents(t *testing.T) {
 	// Old expired event (expired via maintenance).
 	oldExpired := normEvent()
 	oldExpired.SourceID = "old-expired"
-	oldExpired.ExpiresAt = &clock
+	exp := clock
+	oldExpired.ExpiresAt = &exp
 	if outcome, _ := ingestOne(t, store, oldExpired); outcome != storage.OutcomeNew {
 		t.Fatalf("old expired = %v", outcome)
 	}
@@ -616,32 +642,118 @@ func TestCleanupEvents(t *testing.T) {
 		t.Fatalf("Expire: %v", err)
 	}
 
-	// Advance the clock: the old records age out, then create a recent one.
-	clock = clock.Add(48 * time.Hour)
-	recent := normEvent()
-	recent.SourceID = "recent-cancelled"
-	recent.Status = core.StatusCancelled
-	if outcome, _ := ingestOne(t, store, recent); outcome != storage.OutcomeCancelled {
-		t.Fatalf("recent = %v", outcome)
+	// 29 days later the provider repeats the identical stale events:
+	// last_seen advances; retention (30d) must keep them.
+	clock = clock.Add(29 * 24 * time.Hour)
+	if outcome, _ := ingestOne(t, store, oldCancelled.Clone()); outcome != storage.OutcomeDuplicate {
+		t.Fatalf("repeat cancelled = %v, want duplicate", outcome)
+	}
+	if outcome, _ := ingestOne(t, store, oldExpired.Clone()); outcome != storage.OutcomeDuplicate {
+		t.Fatalf("repeat expired = %v, want duplicate", outcome)
 	}
 
-	n, err := store.CleanupEvents(ctx, clock.Add(-24*time.Hour))
+	// 31 days after the original observation (2 days after the repeats):
+	// cleanup with 30d retention must keep them (last_seen is recent).
+	clock = clock.Add(2 * 24 * time.Hour)
+	n, err := store.CleanupEvents(ctx, clock.Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("CleanupEvents: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("deleted %d events while provider still repeats them, want 0", n)
+	}
+
+	// Provider disappears: advance >30d past the last observation.
+	clock = clock.Add(31 * 24 * time.Hour)
+	n, err = store.CleanupEvents(ctx, clock.Add(-30*24*time.Hour))
 	if err != nil {
 		t.Fatalf("CleanupEvents: %v", err)
 	}
 	if n != 2 {
-		t.Fatalf("deleted %d events, want 2 (old cancelled + old expired)", n)
-	}
-
-	for _, key := range []string{active.Key(), recent.Key()} {
-		if _, err := store.Get(ctx, key); err != nil {
-			t.Errorf("event %q should have survived: %v", key, err)
-		}
+		t.Fatalf("deleted %d events, want 2 (cancelled + expired)", n)
 	}
 	for _, key := range []string{oldCancelled.Key(), oldExpired.Key()} {
 		if _, err := store.Get(ctx, key); err != storage.ErrNotFound {
 			t.Errorf("event %q should have been deleted, got %v", key, err)
 		}
+	}
+	if _, err := store.Get(ctx, active.Key()); err != nil {
+		t.Errorf("active event should never be deleted: %v", err)
+	}
+}
+
+// TestCleanupEventsBoundary pins the cutoff comparison: last_seen_at_ms equal
+// to the cutoff is RETAINED (only strictly older is deleted).
+func TestCleanupEventsBoundary(t *testing.T) {
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	store := openTemp(t, WithClock(func() time.Time { return clock }))
+	ctx := context.Background()
+
+	old := normEvent()
+	old.SourceID = "older-than-cutoff"
+	old.Status = core.StatusCancelled
+	if outcome, _ := ingestOne(t, store, old); outcome != storage.OutcomeCancelled {
+		t.Fatalf("ingest = %v", outcome)
+	}
+	// Ingest the boundary event exactly 24h later.
+	clock = clock.Add(24 * time.Hour)
+	atBoundary := normEvent()
+	atBoundary.SourceID = "at-cutoff"
+	atBoundary.Status = core.StatusCancelled
+	if outcome, _ := ingestOne(t, store, atBoundary); outcome != storage.OutcomeCancelled {
+		t.Fatalf("ingest = %v", outcome)
+	}
+	// 1h later: cutoff = 24h ago = the boundary event's exact last_seen.
+	clock = clock.Add(time.Hour)
+	n, err := store.CleanupEvents(ctx, clock.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("CleanupEvents: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted %d events, want 1 (only the strictly-older one)", n)
+	}
+	if _, err := store.Get(ctx, old.Key()); err != storage.ErrNotFound {
+		t.Errorf("event older than the cutoff must be deleted: %v", err)
+	}
+	if _, err := store.Get(ctx, atBoundary.Key()); err != nil {
+		t.Errorf("event exactly at the cutoff should be retained: %v", err)
+	}
+}
+
+// TestCleanupEventsLastSeenSurvivesRestart verifies last_seen_at_ms survives a
+// database reopen and retention behavior remains correct afterwards.
+func TestCleanupEventsLastSeenSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	store := openTempAt(t, path, WithClock(func() time.Time { return clock }))
+	ctx := context.Background()
+
+	e := normEvent()
+	e.SourceID = "restart-retention"
+	e.Status = core.StatusCancelled
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeCancelled {
+		t.Fatalf("ingest = %v", outcome)
+	}
+	clock = clock.Add(30 * 24 * time.Hour)
+	store.Close()
+
+	// Reopen (migrations idempotent at v4) and cleanup: not yet old enough.
+	store2 := openTempAt(t, path, WithClock(func() time.Time { return clock }))
+	n, err := store2.CleanupEvents(ctx, clock.Add(-31*24*time.Hour))
+	if err != nil {
+		t.Fatalf("CleanupEvents: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("deleted %d events, want 0 (30d < 31d cutoff)", n)
+	}
+
+	// Past the cutoff after restart: deleted.
+	n, err = store2.CleanupEvents(ctx, clock.Add(-29*24*time.Hour))
+	if err != nil {
+		t.Fatalf("CleanupEvents: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted %d events, want 1", n)
 	}
 }
 
@@ -681,7 +793,7 @@ func TestCursorConfigurationSemantics(t *testing.T) {
 	_, change := ingestOne(t, store, e)
 
 	// Enabled → cursor exists at 0.
-	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-a")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	if exists, acked := cursorRow(t, store, "out-a"); !exists || acked != 0 {
@@ -697,7 +809,7 @@ func TestCursorConfigurationSemantics(t *testing.T) {
 	}
 
 	// Re-enabled → cursor 0 and it replays the retained journal.
-	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-a")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	polled, err := store.PollChanges(ctx, "out-a", 10)
@@ -712,7 +824,7 @@ func TestCursorConfigurationSemantics(t *testing.T) {
 	if err := store.AckChanges(ctx, "out-a", change.ID); err != nil {
 		t.Fatalf("AckChanges: %v", err)
 	}
-	if err := store.SyncOutputs(ctx, []string{"out-b"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-b")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	if exists, _ := cursorRow(t, store, "out-a"); exists {
@@ -722,16 +834,24 @@ func TestCursorConfigurationSemantics(t *testing.T) {
 		t.Fatalf("out-b cursor = %v/%d, want exists at 0", exists, acked)
 	}
 
-	// Same ID with a different plugin type: the ID defines the identity, so
-	// the cursor is preserved (SyncOutputs only matches IDs).
+	// Same ID with a DIFFERENT plugin type: a new durable consumer. The
+	// cursor is reset to 0 so the new destination replays retained history
+	// instead of inheriting another destination's progress.
 	if err := store.AckChanges(ctx, "out-b", change.ID); err != nil {
 		t.Fatalf("AckChanges: %v", err)
 	}
-	if err := store.SyncOutputs(ctx, []string{"out-b"}); err != nil {
+	if err := store.SyncOutputs(ctx, []storage.OutputRef{{ID: "out-b", Type: "webhook"}}); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
-	if exists, acked := cursorRow(t, store, "out-b"); !exists || acked != change.ID {
-		t.Fatalf("out-b cursor after type change = %v/%d, want preserved at %d", exists, acked, change.ID)
+	if exists, acked := cursorRow(t, store, "out-b"); !exists || acked != 0 {
+		t.Fatalf("out-b cursor after type change = %v/%d, want reset to 0", exists, acked)
+	}
+	polled, err = store.PollChanges(ctx, "out-b", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 1 || polled[0].ID != change.ID {
+		t.Fatalf("type-changed output polled %+v, want the retained change", polled)
 	}
 }
 
@@ -752,6 +872,90 @@ func TestPollChangesCorruptedSnapshotErrors(t *testing.T) {
 	}
 	if exists, acked := cursorRow(t, store, "out"); exists && acked != 0 {
 		t.Fatalf("cursor advanced to %d after failed poll, want no advancement", acked)
+	}
+}
+
+// TestPollChangesUnknownChangeTypeRejected: a garbage change_type must not
+// be silently emitted as an invalid public wire value.
+func TestPollChangesUnknownChangeTypeRejected(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	e := normEvent()
+	_, change := ingestOne(t, store, e)
+	if _, err := store.db.Exec("UPDATE changes SET change_type = 'bogus' WHERE id = ?", change.ID); err != nil {
+		t.Fatalf("corrupt change_type: %v", err)
+	}
+	if _, err := store.PollChanges(ctx, "out", 10); err == nil {
+		t.Fatal("PollChanges with unknown change_type must return an error")
+	}
+	if exists, acked := cursorRow(t, store, "out"); exists && acked != 0 {
+		t.Fatalf("cursor advanced to %d after failed poll, want no advancement", acked)
+	}
+}
+
+// TestPollChangesSnapshotKeyMismatchRejected: a snapshot whose
+// source:source_id does not match the journal event_key is corruption and
+// must not be delivered silently.
+func TestPollChangesSnapshotKeyMismatchRejected(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	e := normEvent()
+	_, change := ingestOne(t, store, e)
+	other := normEvent()
+	other.SourceID = "different-id"
+	data, err := json.Marshal(storage.SnapshotOf(other))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := store.db.Exec("UPDATE changes SET event_snapshot = ? WHERE id = ?", string(data), change.ID); err != nil {
+		t.Fatalf("corrupt snapshot key: %v", err)
+	}
+	if _, err := store.PollChanges(ctx, "out", 10); err == nil {
+		t.Fatal("PollChanges with mismatched snapshot key must return an error")
+	}
+}
+
+// TestJournalSnapshotsIndependentOfEvents: deleting the current-state event
+// never damages historical journal delivery (immutable snapshots).
+func TestJournalSnapshotsIndependentOfEvents(t *testing.T) {
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	store := openTemp(t, WithClock(func() time.Time { return clock }))
+	ctx := context.Background()
+
+	e := normEvent()
+	e.SourceID = "snap-independent"
+	exp := clock
+	e.ExpiresAt = &exp
+	if outcome, _ := ingestOne(t, store, e); outcome != storage.OutcomeNew {
+		t.Fatalf("new = %v", outcome)
+	}
+	if _, err := store.Expire(ctx, clock); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+
+	// Age out the current-state record; the journal remains unacked.
+	clock = clock.Add(31 * 24 * time.Hour)
+	if n, err := store.CleanupEvents(ctx, clock.Add(-30*24*time.Hour)); err != nil || n != 1 {
+		t.Fatalf("CleanupEvents = %d, %v; want 1 deletion", n, err)
+	}
+	if _, err := store.Get(ctx, e.Key()); err != storage.ErrNotFound {
+		t.Fatalf("current-state event should be gone: %v", err)
+	}
+
+	polled, err := store.PollChanges(ctx, "out", 10)
+	if err != nil {
+		t.Fatalf("PollChanges: %v", err)
+	}
+	if len(polled) != 2 {
+		t.Fatalf("polled %d changes after event deletion, want 2 snapshots", len(polled))
+	}
+	if polled[0].ChangeType != core.ChangeNew || polled[0].Event.Status != core.StatusActive {
+		t.Errorf("new snapshot damaged: %+v", polled[0])
+	}
+	if polled[1].ChangeType != core.ChangeExpired || polled[1].Event.Status != core.StatusExpired {
+		t.Errorf("expired snapshot damaged: %+v", polled[1])
 	}
 }
 
@@ -896,7 +1100,7 @@ func TestSyncOutputsNeverSuccessfulOutputBlocksCleanup(t *testing.T) {
 	store := openTemp(t)
 	ctx := context.Background()
 
-	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-a")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	var cursors int
@@ -935,7 +1139,7 @@ func TestSyncOutputsRemovedOutputStopsBlockingCleanup(t *testing.T) {
 	store := openTemp(t)
 	ctx := context.Background()
 
-	if err := store.SyncOutputs(ctx, []string{"out-a", "out-b"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-a", "out-b")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	e := normEvent()
@@ -954,7 +1158,7 @@ func TestSyncOutputsRemovedOutputStopsBlockingCleanup(t *testing.T) {
 	}
 
 	// Remove out-b from the configured outputs.
-	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-a")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	n, err = store.CleanupChanges(ctx, time.Now().Add(time.Second))
@@ -972,7 +1176,7 @@ func TestSyncOutputsNewOutputReceivesRetainedChanges(t *testing.T) {
 	store := openTemp(t)
 	ctx := context.Background()
 
-	if err := store.SyncOutputs(ctx, []string{"out-a"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-a")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	e := normEvent()
@@ -982,7 +1186,7 @@ func TestSyncOutputsNewOutputReceivesRetainedChanges(t *testing.T) {
 	}
 
 	// Add a new output after the change already exists.
-	if err := store.SyncOutputs(ctx, []string{"out-a", "out-c"}); err != nil {
+	if err := store.SyncOutputs(ctx, refs("out-a", "out-c")); err != nil {
 		t.Fatalf("SyncOutputs: %v", err)
 	}
 	polled, err := store.PollChanges(ctx, "out-c", 10)

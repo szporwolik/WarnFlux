@@ -165,9 +165,12 @@ func (s *sourceSupervisor) backoffDelay(attempt int) time.Duration {
 	}
 	delay := s.backoffBase
 	for i := 0; i < attempt && delay < s.backoffMax; i++ {
-		delay *= 2
-		if delay > s.backoffMax {
+		// Saturate before multiplying: no overflow can produce a negative
+		// or zero delay, even for absurd attempt values.
+		if delay > s.backoffMax/2 {
 			delay = s.backoffMax
+		} else {
+			delay *= 2
 		}
 	}
 	return delay

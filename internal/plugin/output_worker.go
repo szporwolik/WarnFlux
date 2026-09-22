@@ -37,8 +37,9 @@ type outputWorker struct {
 	recoveryInterval time.Duration
 
 	// health optionally provides application status for StatusPublisher
-	// plugins.
-	health func() Status
+	// plugins. It receives the bounded status context so database queries
+	// inside status generation can never block hazard delivery indefinitely.
+	health func(ctx context.Context) Status
 
 	// mu serializes the small worker state below (channel semaphore).
 	mu chan struct{}
@@ -163,16 +164,23 @@ func (w *outputWorker) deliver(ctx context.Context, change storage.Change) bool 
 	select {
 	case err = <-result:
 	case <-callCtx.Done():
-		// Timed out. Mark the plugin wedged/suspended, then DO NOT invoke
-		// the plugin again while the old call is still running: block here
-		// until it returns (Go cannot kill goroutines). The plugin stays
-		// isolated and the change stays pending in the journal.
+		// ONE failure is recorded for this invocation. The late result is
+		// absorbed: a late success is NOT trusted as timely delivery (no
+		// ACK — the change stays pending for at-least-once redelivery)
+		// and a late error is not counted a second time.
 		timedOut = true
+		w.onFailure(fmt.Errorf("timed out after %s", w.timeout))
 		w.logger.Warn("output plugin timed out; waiting for the stuck call",
 			"plugin_id", w.id, "plugin_type", w.kind, "timeout", w.timeout)
-		w.onFailure(fmt.Errorf("timed out after %s", w.timeout))
 		select {
-		case err = <-result:
+		case late := <-result:
+			if late != nil {
+				w.logger.Warn("output plugin returned an error after its timeout (already counted as one failure)",
+					"plugin_id", w.id, "plugin_type", w.kind, "error", late)
+			} else {
+				w.logger.Warn("output plugin returned success after its timeout; not trusted as timely delivery, change stays pending",
+					"plugin_id", w.id, "plugin_type", w.kind)
+			}
 		case <-ctx.Done():
 			// Shutdown while the plugin is wedged: abandon the stuck
 			// call. The goroutine is unkillable, but shutdown must not
@@ -180,21 +188,17 @@ func (w *outputWorker) deliver(ctx context.Context, change storage.Change) bool 
 			// process.
 			w.logger.Warn("abandoning stuck output call during shutdown",
 				"plugin_id", w.id, "plugin_type", w.kind)
-			cancel()
-			return false
 		}
 	}
 	cancel()
 
-	if err != nil {
-		// A late failure after a timeout is counted as the next failure;
-		// the timeout itself was already counted.
-		w.onFailure(err)
+	if timedOut {
+		// Already accounted: exactly one failure for one invocation.
 		return false
 	}
-	if timedOut {
-		// The stuck call eventually returned successfully: recover.
-		w.onSuccess()
+	if err != nil {
+		w.onFailure(err)
+		return false
 	}
 	if err := w.store.AckChanges(ctx, w.id, change.ID); err != nil {
 		w.onFailure(fmt.Errorf("ack change %d: %w", change.ID, err))
@@ -215,10 +219,13 @@ func (w *outputWorker) publishStatus(ctx context.Context, publisher StatusPublis
 	if w.health == nil {
 		return
 	}
-	status := w.health()
 
 	callCtx, cancel := context.WithTimeout(ctx, w.timeout)
 	defer cancel()
+	// Status generation (including its database queries) shares the same
+	// bounded context as the callback: a stalled database can make the
+	// snapshot degraded, never hang hazard delivery.
+	status := w.health(callCtx)
 	result := make(chan error, 1)
 	go func() {
 		result <- invokeStatus(publisher, callCtx, status)

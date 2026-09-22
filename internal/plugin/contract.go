@@ -24,6 +24,12 @@ import (
 // Emitter is handed to a source plugin by WarnFlux. It is the only way
 // for a source to hand normalized events to the core pipeline; sources must
 // not access storage or other core internals directly.
+//
+// Emit deep-copies the event and returns nil ONLY after the core has
+// durably persisted and classified it (SQLite transaction committed). A
+// non-nil error means the event was NOT persisted; the source may retry —
+// event identity and fingerprint dedup make retries safe. During shutdown
+// Emit returns an error instead of accepting ownership it cannot honor.
 type Emitter interface {
 	Emit(ctx context.Context, event core.HazardEvent) error
 }

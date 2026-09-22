@@ -119,8 +119,11 @@ For **sources**:
 - Panics are recovered and logged with a stack trace.
 - A failing source is restarted with bounded backoff, unless the manager is
   shutting down (never restarted after cancellation).
-- `Emit` deep-copies the event, so mutating the event after `Emit` returns
-  cannot corrupt stored state.
+- `Emit` deep-copies the event and returns **nil only after the event has
+  been durably persisted** (SQLite transaction committed). A non-nil error
+  means the event was not persisted — check the error and retry on a later
+  poll; identity/fingerprint dedup make retries safe. During shutdown Emit
+  returns an error instead of accepting ownership it cannot honor.
 - `Emit` applies bounded backpressure when the ingestion queue is full —
   it returns an error instead of silently dropping hazard events.
 
@@ -154,6 +157,9 @@ For **outputs**:
 ## Mandatory rules
 
 - Respect context cancellation; do not block past it.
+- **Check every `Emit` error.** `Emit` returning nil is the durable-
+  persistence acknowledgment; a retry after an error is deduplicated
+  safely.
 - Do not panic intentionally; do not call `os.Exit`.
 - Do not create unmanaged permanent goroutines or unbounded channels.
 - Use request contexts and finite timeouts for network calls.
@@ -162,6 +168,24 @@ For **outputs**:
 - Do not log secrets; do not use global mutable state.
 - Validate the configuration before starting; return meaningful errors.
 - Treat incoming `core.EventChange` values as read-only.
+- Do not set `received_at` / `updated_at` / `first_seen_at` /
+  `last_seen_at`: these are core-owned ingestion metadata.
+
+## Provider identity and lifecycle guidance
+
+- **`SourceID` must be the stable upstream alert identity.** Never derive
+  it from the fetch timestamp, a per-run random value, or a hash of mutable
+  content. If the upstream protocol genuinely lacks identity, derive a
+  stable identifier from immutable protocol fields and document it — dedup
+  depends on it.
+- **Cancellation is explicit:** a provider cancelling an event must emit
+  `StatusCancelled`. An event merely missing from one poll is NOT an
+  automatic cancellation unless the provider protocol explicitly defines
+  disappearance as termination.
+- **Bounded inputs:** every HTTP adapter must enforce a finite response
+  size limit, a connect/request timeout and context-aware I/O. The core's
+  size caps are a last-resort safety net, not a substitute for provider
+  bounds.
 
 ## HTTP client guidance
 

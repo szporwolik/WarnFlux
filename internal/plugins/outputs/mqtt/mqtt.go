@@ -29,6 +29,22 @@ const wireSchemaVersion = 1
 
 const connectTimeout = 10 * time.Second
 
+// maxReconnectInterval caps paho's automatic reconnection backoff (default
+// would be 10 minutes). Hazard delivery must recover promptly after the
+// broker returns: without this cap, an extended outage makes the next
+// reconnect attempt minutes away and the durable journal stays undelivered
+// that much longer.
+const maxReconnectInterval = 30 * time.Second
+
+// Input bounds: sane high caps so configuration cannot force pathological
+// memory/network behavior, not tiny policy limits.
+const (
+	maxClientIDBytes      = 256
+	maxTopicPrefixBytes   = 256
+	maxPasswordFileBytes  = 64 * 1024
+	offlinePublishTimeout = time.Second
+)
+
 // Config is the plugin-specific configuration. Credentials are never
 // logged.
 type Config struct {
@@ -70,16 +86,29 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 	if err := plugin.DecodeConfig(node, &cfg); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.Broker) == "" {
+	broker := strings.TrimSpace(cfg.Broker)
+	if broker == "" {
 		return nil, fmt.Errorf("broker must not be empty")
 	}
-	if strings.TrimSpace(cfg.ClientID) == "" {
+	if strings.ContainsAny(broker, " \t\n") {
+		return nil, fmt.Errorf("broker must not contain whitespace, got %q", cfg.Broker)
+	}
+	cfg.Broker = broker
+	clientID := strings.TrimSpace(cfg.ClientID)
+	if clientID == "" {
 		return nil, fmt.Errorf("client_id is required: every WarnFlux instance needs its own MQTT client ID (two instances sharing one ID will kick each other off the broker)")
 	}
+	if len(clientID) > maxClientIDBytes {
+		return nil, fmt.Errorf("client_id is %d bytes, maximum %d", len(clientID), maxClientIDBytes)
+	}
+	cfg.ClientID = clientID
 	// Normalize the prefix and reject values that would corrupt topics.
 	prefix, err := normalizeTopicPrefix(cfg.TopicPrefix)
 	if err != nil {
 		return nil, err
+	}
+	if len(prefix) > maxTopicPrefixBytes {
+		return nil, fmt.Errorf("topic_prefix is %d bytes, maximum %d", len(prefix), maxTopicPrefixBytes)
 	}
 	cfg.TopicPrefix = prefix
 	// QoS 0 is rejected: it would downgrade hazard event delivery to best
@@ -96,6 +125,11 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 		return nil, fmt.Errorf("password and password_file are mutually exclusive")
 	}
 	if cfg.PasswordFile != "" {
+		if info, err := os.Stat(cfg.PasswordFile); err != nil {
+			return nil, fmt.Errorf("stat password_file: %w", err)
+		} else if info.Size() > maxPasswordFileBytes {
+			return nil, fmt.Errorf("password_file is %d bytes, maximum %d", info.Size(), maxPasswordFileBytes)
+		}
 		data, err := os.ReadFile(cfg.PasswordFile)
 		if err != nil {
 			return nil, fmt.Errorf("read password_file: %w", err)
@@ -113,20 +147,18 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 		SetCleanSession(true).
 		SetAutoReconnect(true).
 		SetConnectTimeout(connectTimeout).
+		SetMaxReconnectInterval(maxReconnectInterval).
 		SetConnectionLostHandler(func(_ paho.Client, err error) {
 			slog.Warn("mqtt connection lost", "error", err)
 		})
 	// Retained Last Will: if this process disappears without disconnecting,
 	// the broker publishes a retained "offline" status on <prefix>/status,
 	// so consumers can distinguish a dead instance from a stale heartbeat.
-	// The will's generated_at is the time the connection (and the will) was
-	// established; state=offline is authoritative regardless of timestamp.
-	willPayload, err := json.Marshal(wireStatus{
-		SchemaVersion: wireSchemaVersion,
-		Service:       "warnflux",
-		State:         "offline",
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
-	})
+	// The will payload is fixed at plugin construction; its generated_at
+	// therefore reflects when the MQTT output instance configured its will,
+	// not each reconnect. state=offline is authoritative regardless of the
+	// timestamp.
+	willPayload, err := json.Marshal(offlineWireStatus(time.Now()))
 	if err != nil {
 		return nil, fmt.Errorf("marshal last will: %w", err)
 	}
@@ -199,11 +231,27 @@ func (o *Output) PublishStatus(ctx context.Context, status plugin.Status) error 
 	return nil
 }
 
-// Close disconnects from the broker on shutdown. Paho tolerates Disconnect
-// in any state.
+// Close publishes a retained offline status (bounded wait) and disconnects
+// cleanly. A graceful DISCONNECT also cancels the broker-side last will, so
+// the offline state is published exactly once. Failure to publish must not
+// hang shutdown.
 func (o *Output) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.client.IsConnectionOpen() {
+		topic := o.cfg.TopicPrefix + "/status"
+		payload, err := json.Marshal(offlineWireStatus(time.Now()))
+		if err != nil {
+			slog.Warn("marshal graceful offline status failed", "error", err)
+		} else {
+			token := o.client.Publish(topic, o.qos, true, payload)
+			select {
+			case <-token.Done():
+			case <-time.After(offlinePublishTimeout):
+				slog.Warn("graceful offline status publish timed out", "topic", topic)
+			}
+		}
+	}
 	o.client.Disconnect(250)
 	return nil
 }
@@ -384,6 +432,18 @@ func normalizeTopicPrefix(raw string) (string, error) {
 		return "", fmt.Errorf("topic_prefix must not contain '+', '#' or NUL characters")
 	}
 	return prefix, nil
+}
+
+// offlineWireStatus builds the wire payload for the offline state. It is
+// shared by the retained last will and the graceful shutdown publication,
+// so both use exactly the same core wire semantics.
+func offlineWireStatus(now time.Time) wireStatus {
+	return wireStatus{
+		SchemaVersion: wireSchemaVersion,
+		Service:       "warnflux",
+		State:         "offline",
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+	}
 }
 
 // routePahoLogs silences paho's verbose protocol debug output and routes

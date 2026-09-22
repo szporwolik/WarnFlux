@@ -173,6 +173,52 @@ CREATE TABLE output_cursors (
 			return nil
 		},
 	},
+	{
+		// v4: machine-sortable last_seen (event retention must order by
+		// the last provider observation, never by text); durable output
+		// consumer identity includes the plugin type next to the cursor.
+		SQL: `
+ALTER TABLE events ADD COLUMN last_seen_at_ms INTEGER;
+DROP INDEX idx_events_last_seen_at;
+CREATE INDEX idx_events_retention ON events(status, last_seen_at_ms);
+ALTER TABLE output_cursors ADD COLUMN output_type TEXT NOT NULL DEFAULT '';
+`,
+		// Backfill last_seen_at_ms from the RFC3339Nano text column by
+		// parsing each value explicitly; invalid legacy values fail the
+		// migration (rolled back atomically with the schema change).
+		run: func(tx *sql.Tx) error {
+			rows, err := tx.Query("SELECT event_key, last_seen_at FROM events WHERE last_seen_at_ms IS NULL")
+			if err != nil {
+				return fmt.Errorf("read legacy last_seen_at: %w", err)
+			}
+			defer rows.Close()
+			type backfill struct {
+				key string
+				ms  int64
+			}
+			var batch []backfill
+			for rows.Next() {
+				var key, text string
+				if err := rows.Scan(&key, &text); err != nil {
+					return fmt.Errorf("scan legacy last_seen_at: %w", err)
+				}
+				parsed, err := time.Parse(time.RFC3339Nano, text)
+				if err != nil {
+					return fmt.Errorf("event %q has invalid legacy last_seen_at %q: %w", key, text, err)
+				}
+				batch = append(batch, backfill{key: key, ms: parsed.UnixMilli()})
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate legacy last_seen_at: %w", err)
+			}
+			for _, b := range batch {
+				if _, err := tx.Exec("UPDATE events SET last_seen_at_ms = ? WHERE event_key = ?", b.ms, b.key); err != nil {
+					return fmt.Errorf("backfill last_seen_at_ms for %q: %w", b.key, err)
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -182,7 +228,7 @@ const eventColumns = `event_key, source, source_id, fingerprint, status,
 category, event, severity, urgency, certainty,
 headline, description, instruction,
 effective_at, expires_at_ms, latitude, longitude,
-areas, source_url, received_at, first_seen_at, last_seen_at, updated_at`
+areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at`
 
 // Store is a SQLite-backed storage.EventStore.
 type Store struct {
@@ -335,10 +381,10 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 			outcome = storage.OutcomeCancelled
 			changeType = core.ChangeCancelled
 		}
-		// Make the event carry exactly what is persisted before taking its
-		// snapshot for the journal.
-		event.UpdatedAt = orNow(event.UpdatedAt, now)
-		event.ReceivedAt = orNow(event.ReceivedAt, event.UpdatedAt)
+		// ReceivedAt / UpdatedAt are CORE-owned ingestion metadata: the
+		// store assigns them, never the provider.
+		event.ReceivedAt = now
+		event.UpdatedAt = now
 		snapshot := storage.SnapshotOf(event)
 		if _, err := tx.ExecContext(ctx, insertSQL, insertArgs(event, fingerprint, now, now, event.UpdatedAt, expiryMs(event))...); err != nil {
 			return 0, nil, fmt.Errorf("insert event %q: %w", key, err)
@@ -385,7 +431,7 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 
 	if duplicate {
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE events SET last_seen_at = ? WHERE event_key = ?", formatTime(now), key); err != nil {
+			"UPDATE events SET last_seen_at = ?, last_seen_at_ms = ? WHERE event_key = ?", formatTime(now), nowMs, key); err != nil {
 			return 0, nil, fmt.Errorf("touch event %q: %w", key, err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -395,13 +441,13 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	}
 
 	// Content and/or lifecycle changed. Preserve the original received_at
-	// and first_seen_at.
+	// and first_seen_at; updated_at is the persistence transition time.
 	received, err := time.Parse(time.RFC3339Nano, storedReceived)
 	if err != nil {
 		return 0, nil, fmt.Errorf("event %q has invalid stored received_at: %w", key, err)
 	}
 	event.ReceivedAt = received
-	event.UpdatedAt = orNow(event.UpdatedAt, now)
+	event.UpdatedAt = now
 
 	var changeType core.ChangeType
 	switch {
@@ -496,6 +542,11 @@ func (s *Store) Expire(ctx context.Context, now time.Time) ([]storage.Change, er
 // stable ID order. Each change carries the immutable event snapshot taken
 // when the transition happened; the mutable events table is never joined
 // to reconstruct history.
+//
+// Corrupted journal rows (unknown change_type, unparsable snapshot, or a
+// snapshot whose source:source_id does not match the journal event_key)
+// are a hard error: the cursor is NOT advanced and nothing is silently
+// skipped.
 func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]storage.Change, error) {
 	cursor, err := s.cursor(ctx, outputID)
 	if err != nil {
@@ -506,7 +557,7 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, change_type, event_snapshot
+		SELECT id, change_type, event_key, event_snapshot
 		FROM changes
 		WHERE id > ?
 		ORDER BY id
@@ -521,16 +572,24 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 		var (
 			change     storage.Change
 			changeType string
+			key        string
 			snapshot   string
 		)
-		if err := rows.Scan(&change.ID, &changeType, &snapshot); err != nil {
+		if err := rows.Scan(&change.ID, &changeType, &key, &snapshot); err != nil {
 			return nil, fmt.Errorf("scan change for %q: %w", outputID, err)
+		}
+		ct, ok := core.ChangeTypeOf(changeType)
+		if !ok {
+			return nil, fmt.Errorf("change %d has unknown change_type %q", change.ID, changeType)
 		}
 		event, err := decodeSnapshot(snapshot)
 		if err != nil {
 			return nil, fmt.Errorf("decode snapshot for change %d: %w", change.ID, err)
 		}
-		change.ChangeType = core.ChangeType(changeType)
+		if event.Key() != key {
+			return nil, fmt.Errorf("change %d snapshot key %q does not match journal event_key %q", change.ID, event.Key(), key)
+		}
+		change.ChangeType = ct
 		change.Event = event
 		changes = append(changes, change)
 	}
@@ -541,28 +600,37 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 }
 
 // SyncOutputs makes the output_cursors table match the set of enabled
-// outputs exactly (see storage.EventStore). Newly enabled outputs start at
-// cursor 0 and receive all changes still present in the retained journal;
-// outputs that are no longer enabled are removed so they stop blocking
-// cleanup.
-func (s *Store) SyncOutputs(ctx context.Context, enabledOutputIDs []string) error {
+// outputs exactly (see storage.EventStore). The durable consumer identity
+// is the (id, type) pair: same id + same type preserves the cursor, same
+// id + different type resets the cursor to 0 (a new consumer that replays
+// the retained journal), and outputs that are no longer enabled are
+// removed so they stop blocking cleanup.
+func (s *Store) SyncOutputs(ctx context.Context, enabled []storage.OutputRef) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin output sync: %w", err)
 	}
 	defer tx.Rollback()
 
-	for _, id := range enabledOutputIDs {
+	for _, out := range enabled {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO output_cursors (output_id, last_acked_id) VALUES (?, 0)
-			ON CONFLICT(output_id) DO NOTHING`, id); err != nil {
-			return fmt.Errorf("create cursor for %q: %w", id, err)
+			INSERT INTO output_cursors (output_id, output_type, last_acked_id) VALUES (?, ?, 0)
+			ON CONFLICT(output_id) DO NOTHING`, out.ID, out.Type); err != nil {
+			return fmt.Errorf("create cursor for %q: %w", out.ID, err)
+		}
+		// Same ID with a different plugin type: a new durable consumer.
+		// Reset its cursor so it replays retained history instead of
+		// inheriting another destination's progress.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE output_cursors SET output_type = ?, last_acked_id = 0
+			WHERE output_id = ? AND output_type != ?`, out.Type, out.ID, out.Type); err != nil {
+			return fmt.Errorf("reset cursor for %q: %w", out.ID, err)
 		}
 	}
 
-	enabled := make(map[string]bool, len(enabledOutputIDs))
-	for _, id := range enabledOutputIDs {
-		enabled[id] = true
+	enabledIDs := make(map[string]bool, len(enabled))
+	for _, out := range enabled {
+		enabledIDs[out.ID] = true
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT output_id FROM output_cursors")
 	if err != nil {
@@ -575,7 +643,7 @@ func (s *Store) SyncOutputs(ctx context.Context, enabledOutputIDs []string) erro
 			rows.Close()
 			return fmt.Errorf("scan cursor: %w", err)
 		}
-		if !enabled[id] {
+		if !enabledIDs[id] {
 			stale = append(stale, id)
 		}
 	}
@@ -595,9 +663,22 @@ func (s *Store) SyncOutputs(ctx context.Context, enabledOutputIDs []string) erro
 }
 
 // AckChanges records the highest change ID an output has delivered.
+// AckChanges trusts the caller to have delivered every change up to
+// lastChangeID (only ordered output workers may call it), but rejects
+// nonsense values: non-positive IDs and IDs beyond the existing journal.
 func (s *Store) AckChanges(ctx context.Context, outputID string, lastChangeID int64) error {
+	if lastChangeID <= 0 {
+		return fmt.Errorf("ack changes for %q: lastChangeID must be > 0, got %d", outputID, lastChangeID)
+	}
+	var maxID int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) FROM changes").Scan(&maxID); err != nil {
+		return fmt.Errorf("ack changes for %q: %w", outputID, err)
+	}
+	if lastChangeID > maxID {
+		return fmt.Errorf("ack changes for %q: lastChangeID %d beyond the highest journal id %d", outputID, lastChangeID, maxID)
+	}
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO output_cursors (output_id, last_acked_id) VALUES (?, ?)
+		INSERT INTO output_cursors (output_id, output_type, last_acked_id) VALUES (?, '', ?)
 		ON CONFLICT(output_id) DO UPDATE SET
 			last_acked_id = MAX(last_acked_id, excluded.last_acked_id)`,
 		outputID, lastChangeID); err != nil {
@@ -629,15 +710,16 @@ func (s *Store) CleanupChanges(ctx context.Context, olderThan time.Time) (int64,
 	return n, nil
 }
 
-// CleanupEvents deletes cancelled/expired current-state records whose
-// updated_at is older than olderThan. Active events are never touched, and
-// the change journal is unaffected (it carries immutable snapshots).
-// updated_at stores UTC RFC3339Nano strings, which compare correctly as
-// plain text.
+// CleanupEvents deletes cancelled/expired current-state records that have
+// not been observed from the provider for olderThan. Observation is
+// tracked by last_seen_at_ms (machine time, not the human-readable text),
+// so a provider that keeps repeating a stale event keeps it retained.
+// Active events are never touched, and the change journal is unaffected
+// (it carries immutable snapshots).
 func (s *Store) CleanupEvents(ctx context.Context, olderThan time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		"DELETE FROM events WHERE status IN (?, ?) AND updated_at < ?",
-		string(core.StatusCancelled), string(core.StatusExpired), formatTime(olderThan))
+		"DELETE FROM events WHERE status IN (?, ?) AND last_seen_at_ms < ?",
+		string(core.StatusCancelled), string(core.StatusExpired), olderThan.UTC().UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("cleanup events: %w", err)
 	}
@@ -709,8 +791,8 @@ INSERT INTO events (
 	category, event, severity, urgency, certainty,
 	headline, description, instruction,
 	effective_at, expires_at, expires_at_ms, latitude, longitude,
-	areas, source_url, received_at, first_seen_at, last_seen_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(event_key) DO NOTHING`
 
 func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen, updated time.Time, expiresMs int64) []any {
@@ -723,7 +805,7 @@ func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen,
 		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt), nullableInt64(expiresMs),
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
-		formatTime(received), formatTime(firstSeen), formatTime(lastSeen), formatTime(updated),
+		formatTime(received), formatTime(firstSeen), formatTime(lastSeen), lastSeen.UTC().UnixMilli(), formatTime(updated),
 	}
 }
 
@@ -753,7 +835,7 @@ UPDATE events SET
 	category = ?, event = ?, severity = ?, urgency = ?, certainty = ?,
 	headline = ?, description = ?, instruction = ?,
 	effective_at = ?, expires_at = ?, expires_at_ms = ?, latitude = ?, longitude = ?,
-	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, updated_at = ?
+	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, last_seen_at_ms = ?, updated_at = ?
 	WHERE event_key = ?`
 
 func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expiresMs int64) []any {
@@ -766,7 +848,7 @@ func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expir
 		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt), nullableInt64(expiresMs),
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
-		formatTime(received), formatTime(now), formatTime(orNow(event.UpdatedAt, now)),
+		formatTime(received), formatTime(now), now.UTC().UnixMilli(), formatTime(orNow(event.UpdatedAt, now)),
 	}, event.Key())
 }
 
@@ -800,6 +882,11 @@ func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("read cursor for %q: %w", outputID, err)
 	}
+	if cursor < 0 {
+		// A negative cursor is never legitimate. Clamp to 0: replay-from-
+		// the-beginning is the safe at-least-once behavior.
+		return 0, nil
+	}
 	return cursor, nil
 }
 
@@ -829,6 +916,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (co
 		lat, lon                 sql.NullFloat64
 		areasJSON                string
 		received, first, last    string
+		lastSeenMs               sql.NullInt64
 		updated                  string
 	)
 	var event core.HazardEvent
@@ -838,7 +926,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (co
 		&event.Headline, &event.Description, &event.Instruction,
 		&effectiveAt, &expiresMs, &lat, &lon,
 		&areasJSON, &event.SourceURL,
-		&received, &first, &last, &updated,
+		&received, &first, &last, &lastSeenMs, &updated,
 	}
 	if err := scan(dests...); err != nil {
 		return event, err

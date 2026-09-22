@@ -67,21 +67,21 @@ func (m *memStore) AckChanges(_ context.Context, outputID string, lastChangeID i
 	return nil
 }
 
-func (m *memStore) SyncOutputs(_ context.Context, enabledOutputIDs []string) error {
+func (m *memStore) SyncOutputs(_ context.Context, enabled []storage.OutputRef) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	enabled := make(map[string]bool, len(enabledOutputIDs))
-	for _, id := range enabledOutputIDs {
-		enabled[id] = true
+	enabledIDs := make(map[string]bool, len(enabled))
+	for _, o := range enabled {
+		enabledIDs[o.ID] = true
 	}
 	for id := range m.cursors {
-		if !enabled[id] {
+		if !enabledIDs[id] {
 			delete(m.cursors, id)
 		}
 	}
-	for _, id := range enabledOutputIDs {
-		if _, ok := m.cursors[id]; !ok {
-			m.cursors[id] = 0
+	for _, o := range enabled {
+		if _, ok := m.cursors[o.ID]; !ok {
+			m.cursors[o.ID] = 0
 		}
 	}
 	return nil
@@ -469,7 +469,7 @@ func TestOutputWorkerPublishesStatus(t *testing.T) {
 	tracker := newStatusTracker("status", "test", KindOutput)
 	w := newOutputWorker(testOutputCfg("status", time.Second, 3), out, store, testLogger(), tracker)
 	w.pollInterval = 5 * time.Millisecond
-	w.health = func() Status {
+	w.health = func(context.Context) Status {
 		return Status{Version: "test", PendingChanges: 7}
 	}
 	go w.run(ctx)
@@ -506,7 +506,7 @@ func TestOutputWorkerStatusFailureDoesNotAffectDelivery(t *testing.T) {
 	tracker := newStatusTracker("out", "test", KindOutput)
 	w := newOutputWorker(testOutputCfg("out", time.Second, 2), out, store, testLogger(), tracker)
 	w.pollInterval = 5 * time.Millisecond
-	w.health = func() Status { return Status{Version: "test"} }
+	w.health = func(context.Context) Status { return Status{Version: "test"} }
 	go w.run(ctx)
 
 	// The event must be delivered and acknowledged despite the heartbeat
@@ -539,6 +539,70 @@ func (o *gateStatusOut) statusInvocations() int {
 	return o.invocations
 }
 
+// TestOutputWorkerStatusGenerationBounded pins that status GENERATION (the
+// health snapshot, including its database queries) runs under the same
+// bounded context as the callback: a stalled database can degrade the
+// snapshot but can never hang hazard delivery.
+func TestOutputWorkerStatusGenerationBounded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := newMemStore()
+	out := &statusOut{}
+	tracker := newStatusTracker("out", "test", KindOutput)
+	w := newOutputWorker(testOutputCfg("out", 50*time.Millisecond, 3), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
+	// Generation blocks until its bounded context expires — simulating a
+	// stalled database inside health().
+	w.health = func(ctx context.Context) Status {
+		<-ctx.Done()
+		return Status{Version: "test"}
+	}
+	go w.run(ctx)
+
+	// Hazard delivery must continue while status generation stalls on
+	// every heartbeat.
+	store.addChange(core.ChangeNew, sampleChange().Event)
+	waitFor(t, 2*time.Second, func() bool { return store.cursor("out") == 1 })
+	if st := tracker.snapshot(); st.State != StateRunning {
+		t.Errorf("state = %v, want running", st.State)
+	}
+}
+
+// TestOutputWorkerOneFailurePerInvocation pins the accounting invariant:
+// one Handle invocation counts as exactly ONE delivery failure, even when
+// it times out and later returns an error.
+func TestOutputWorkerOneFailurePerInvocation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := newMemStore()
+	store.addChange(core.ChangeNew, sampleChange().Event)
+
+	// Every invocation sleeps past the timeout and returns an error.
+	out := &recOutput{name: "slow"}
+	out.handle = func(context.Context, core.EventChange) error {
+		time.Sleep(100 * time.Millisecond)
+		return errors.New("late failure")
+	}
+	tracker := newStatusTracker("out", "test", KindOutput)
+	w := newOutputWorker(testOutputCfg("out", 30*time.Millisecond, 5), out, store, testLogger(), tracker)
+	w.pollInterval = 5 * time.Millisecond
+	go w.run(ctx)
+
+	// Let at least two attempts happen; each must count exactly one
+	// failure (timeout) and never ACK.
+	waitFor(t, 2*time.Second, func() bool { return out.calls() >= 2 })
+	waitFor(t, 2*time.Second, func() bool { return tracker.snapshot().ConsecutiveFailures == out.calls() })
+	st := tracker.snapshot()
+	if got := st.ConsecutiveFailures; got != out.calls() {
+		t.Errorf("failures = %d for %d invocations, want exactly one per invocation", got, out.calls())
+	}
+	if got := store.cursor("out"); got != 0 {
+		t.Errorf("cursor = %d, want 0 (no ACK for timed-out delivery)", got)
+	}
+}
+
 // TestOutputWorkerStatusHangDisablesStatus pins the HIGH requirement: a
 // StatusPublisher that ignores its timeout has status publishing disabled
 // for the instance lifetime, hazard delivery continues, exactly one stuck
@@ -552,7 +616,7 @@ func TestOutputWorkerStatusHangDisablesStatus(t *testing.T) {
 	tracker := newStatusTracker("out", "test", KindOutput)
 	w := newOutputWorker(testOutputCfg("out", 50*time.Millisecond, 3), out, store, testLogger(), tracker)
 	w.pollInterval = 5 * time.Millisecond
-	w.health = func() Status { return Status{Version: "test"} }
+	w.health = func(context.Context) Status { return Status{Version: "test"} }
 	go w.run(ctx)
 
 	// The stuck callback violates its timeout → status publishing disabled.

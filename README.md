@@ -46,6 +46,10 @@ they are the next step; the plugin contracts are designed for them.
   reach outputs. A stale provider event whose expiry has lapsed is a
   duplicate that remains expired — an event is re-activated (`updated`)
   only when the provider makes it live again (a future expiry or none).
+- **Emit is durable**: a source's `Emit` call returns nil only AFTER the
+  event has been committed to SQLite and classified. A non-nil error means
+  the event was not persisted and the source may retry (identity +
+  fingerprint dedup make retries safe).
 - **Change journal**: every meaningful transition is written atomically
   with the event update into a durable journal with monotonically
   increasing IDs. Each journal record carries an **immutable JSON
@@ -164,7 +168,10 @@ Messages are UTF-8 JSON. Field names use `lower_snake_case`; the
 > only after the plugin reports success, and unacknowledged changes are
 > re-delivered after a restart. MQTT QoS 0 would make the network hop
 > best-effort, so it is rejected at configuration time — `qos` must be `1`
-> or `2` (default `1`).
+> or `2` (default `1`). While the broker is unreachable, publishes fail
+> and the changes stay pending; paho's automatic reconnection backoff is
+> capped (30 s) so pending hazards are flushed promptly once the broker
+> returns.
 
 ### Event messages — `warnflux/events`
 
@@ -253,9 +260,12 @@ This is the replacement for the old "ping" topic.
 If the process disappears without disconnecting (crash, kill -9, network
 cut), the broker publishes a **retained last will** with
 `"state": "offline"` on the same topic, so consumers can distinguish a
-dead instance from a stale heartbeat. The will's `generated_at` is the
-time the connection was established; `state=offline` is authoritative
-regardless of the timestamp.
+dead instance from a stale heartbeat. On graceful shutdown WarnFlux
+publishes the same retained offline status before disconnecting (a clean
+DISCONNECT also cancels the broker-side will). The will payload is fixed at
+plugin construction: its `generated_at` reflects when the MQTT output
+instance configured its will; `state=offline` is authoritative regardless
+of the timestamp.
 
 ```json
 {
@@ -297,7 +307,7 @@ regardless of the timestamp.
 | `generated_at` | UTC observation time of the snapshot (RFC3339) — consumers should treat a retained snapshot as stale when it stops advancing |
 | `version` | build version (`dev` for development builds) |
 | `uptime_seconds` | seconds since the manager started |
-| `database_healthy` | whether the last database operation succeeded |
+| `database_healthy` | whether the **last status database query succeeded** (not a full integrity check) |
 | `pending_changes` | journal changes not yet acknowledged by every enabled output; **0 when no outputs are configured** (retained changes are history, not a backlog) |
 | `oldest_pending_age_seconds` | age of the oldest pending change |
 | `sources` / `outputs` | one entry per plugin instance: `id`, `type`, `state` (`starting`, `running`, `degraded`, `suspended`, `stopping`, `stopped`, `disabled`), `consecutive_failures`, `restart_count`, `last_error` |
@@ -389,14 +399,37 @@ removes changes once they are older than `change_retention`. Adding an
 output later replays only what is still retained.
 
 **Event retention:** cancelled/expired current-state records are deleted
-once they are older than `app.event_retention` (default 30 days); active
-events are never cleaned. The change journal (which carries immutable
-snapshots) is unaffected and stays bounded by `app.change_retention`.
+once the provider has NOT been observed for `app.event_retention` (default
+30 days) — observation is tracked by machine-time `last_seen_at_ms`, so a
+provider that keeps repeating a stale event keeps it retained. Active
+events are never cleaned. After an event ages out, WarnFlux has
+intentionally forgotten its lifecycle: if the provider later reports the
+same event again it may become `new` once more — `event_retention` defines
+how long lifecycle memory is preserved after provider disappearance. The
+change journal (which carries immutable snapshots) is unaffected and stays
+bounded by `app.change_retention`.
 
 **Event-size caps:** as a final safety net, `HazardEvent.Validate` rejects
 pathological payloads (description > 32 KiB, headline/URL > 2 KiB,
-instruction > 8 KiB, short fields > 256 B). These are generous upper
-bounds, not content policy; providers are still reviewed code.
+instruction > 8 KiB, short fields > 256 B, more than 512 areas or an area
+label longer than 2 KiB). Caps are byte-based and intentionally generous —
+they bound SQLite, journal and MQTT payload sizes, not legitimate hazard
+content.
+
+### Timestamp model
+
+| Field | Meaning | Set by |
+|-------|---------|--------|
+| `effective_at` | provider event effective time | provider |
+| `expires_at` | provider event expiry | provider |
+| `first_seen_at` | first time WarnFlux observed the logical event | core |
+| `last_seen_at` / `last_seen_at_ms` | most recent provider observation (retention key) | core |
+| `received_at` | first receipt time; attached to the immutable output snapshot | core |
+| `updated_at` | time the persisted content/lifecycle last changed | core |
+
+Provider plugins must not set `received_at` / `updated_at` / `first_seen_at`
+/ `last_seen_at`; provider-origin timestamps belong in dedicated fields
+(`effective_at`, `expires_at`, or future provider-specific ones).
 
 ## Docker
 
@@ -459,7 +492,7 @@ docker run -d \
   --config /config.yaml
 ```
 
-Prefer a specific version tag (e.g. `ghcr.io/<owner>/warnflux:0.1.0`)
+Prefer a specific version tag (e.g. `ghcr.io/<owner>/warnflux:v0.1.0`)
 for reproducible deployments.
 
 ## Plugins

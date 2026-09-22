@@ -60,7 +60,7 @@ type Manager struct {
 	store    storage.EventStore
 	opts     ManagerOptions
 
-	eventQueue chan core.HazardEvent
+	eventQueue chan *queuedEvent
 	emitWait   time.Duration
 
 	sources   []*sourceSupervisor
@@ -85,7 +85,7 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		expireFn:   expireFn,
 		store:      store,
 		opts:       opts,
-		eventQueue: make(chan core.HazardEvent, defaultEventQueueSize),
+		eventQueue: make(chan *queuedEvent, defaultEventQueueSize),
 		emitWait:   emitWaitTimeout,
 	}
 
@@ -215,14 +215,22 @@ type EmitterFunc func(ctx context.Context, event core.HazardEvent) error
 // Emit implements Emitter.
 func (f EmitterFunc) Emit(ctx context.Context, event core.HazardEvent) error { return f(ctx, event) }
 
+// queuedEvent couples a normalized event with the channel that completes
+// once ingestion has durably classified it.
+type queuedEvent struct {
+	event core.HazardEvent
+	done  chan error // buffered 1; the ingest worker always completes it
+}
+
 // emit deep-copies the event (ownership transfers to the core) and queues
-// it. The queue is bounded: when full, the emitter applies backpressure
-// with a bounded wait instead of silently dropping hazard events.
+// it with bounded backpressure. It returns nil ONLY after the ingest worker
+// has durably persisted and classified the event (durable Emit
+// acknowledgment): a source that sees nil can rely on the event being in
+// SQLite and the journal.
 //
-// A nil return means the event was accepted. During shutdown this is
-// guaranteed not to happen: a cancelled context or the accepting flag makes
-// Emit fail instead, so a source can never hand over an event that the
-// ingest worker might no longer process.
+// A non-nil error means the event was NOT persisted; the source may retry
+// (identity + fingerprint dedup make retries safe). During shutdown Emit
+// returns errShuttingDown instead of accepting ownership it cannot honor.
 func (m *Manager) emit(ctx context.Context, event core.HazardEvent) error {
 	event = event.Clone()
 	if !m.accepting.Load() {
@@ -233,55 +241,69 @@ func (m *Manager) emit(ctx context.Context, event core.HazardEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	qe := &queuedEvent{event: event, done: make(chan error, 1)}
 	select {
-	case m.eventQueue <- event:
-		return nil
+	case m.eventQueue <- qe:
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(m.emitWait):
 		return fmt.Errorf("ingestion queue full (capacity %d)", cap(m.eventQueue))
 	}
+	// The core owns the event now. Caller cancellation after enqueue must
+	// not create ambiguous ownership: wait for the durable ingest outcome.
+	// Ingest is bounded by SQLite's busy_timeout, and shutdown completes
+	// the drain with an error, so this cannot hang forever.
+	return <-qe.done
 }
 
 // ingestLoop forwards queued events to the core. A single worker keeps
 // same-event transitions strictly ordered. On shutdown it drains the queue
-// for a bounded time.
+// for a bounded time; anything left over is completed with errShuttingDown
+// so no source ever waits on an unanswered Emit.
 func (m *Manager) ingestLoop(ctlCtx, procCtx context.Context) {
 	for {
 		select {
-		case event := <-m.eventQueue:
-			m.process(procCtx, event)
+		case qe := <-m.eventQueue:
+			m.processEvent(procCtx, qe)
 		case <-ctlCtx.Done():
 			timer := time.NewTimer(drainTimeout)
 			defer timer.Stop()
-			for {
+			for len(m.eventQueue) > 0 {
 				select {
-				case event := <-m.eventQueue:
-					m.process(procCtx, event)
+				case qe := <-m.eventQueue:
+					m.processEvent(procCtx, qe)
 				case <-timer.C:
-					return
-				default:
+					m.failQueued()
 					return
 				}
 			}
+			m.failQueued() // no-op when the queue is already empty
+			return
 		}
 	}
 }
 
-// process runs one event through the core. Outputs poll the durable journal
-// independently; the manager only logs failures here.
-func (m *Manager) process(ctx context.Context, event core.HazardEvent) {
-	result, _, err := m.ingestFn(ctx, event)
+// processEvent runs one event through the core and completes its durable
+// acknowledgment. Outputs poll the durable journal independently.
+func (m *Manager) processEvent(ctx context.Context, qe *queuedEvent) {
+	_, _, err := m.ingestFn(ctx, qe.event)
 	if err != nil {
 		m.logger.Error("ingest failed",
-			"source", event.Source, "source_id", event.SourceID, "error", err)
-		return
+			"source", qe.event.Source, "source_id", qe.event.SourceID, "error", err)
 	}
-	if result == ingest.ResultDuplicate {
-		return
+	qe.done <- err // buffered: never blocks
+}
+
+// failQueued completes every still-queued event with errShuttingDown.
+func (m *Manager) failQueued() {
+	for {
+		select {
+		case qe := <-m.eventQueue:
+			qe.done <- errShuttingDown
+		default:
+			return
+		}
 	}
-	// The journal now holds the change; outputs pick it up on their next
-	// poll. No in-memory fanout happens here.
 }
 
 // maintenance expires stale events and conservatively cleans the journal.
@@ -327,8 +349,9 @@ func (m *Manager) maintenance(ctx context.Context) {
 }
 
 // health builds the application health snapshot for status-publishing
-// outputs.
-func (m *Manager) health() Status {
+// outputs. The context bounds the database queries: status generation is
+// auxiliary and must never block hazard delivery indefinitely.
+func (m *Manager) health(ctx context.Context) Status {
 	status := Status{
 		Version: m.opts.Version,
 		Uptime:  time.Since(m.startedAt),
@@ -342,8 +365,10 @@ func (m *Manager) health() Status {
 		}
 	}
 	if m.store != nil {
-		pending, oldest, err := m.store.PendingStats(context.Background())
+		pending, oldest, err := m.store.PendingStats(ctx)
 		if err != nil {
+			// database_healthy means "the last status DB query succeeded",
+			// not a full integrity check.
 			status.DatabaseHealthy = false
 			m.logger.Warn("pending stats unavailable", "error", err)
 		} else {

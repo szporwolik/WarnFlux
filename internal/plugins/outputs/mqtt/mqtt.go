@@ -96,6 +96,15 @@ type Output struct {
 	activeSeq   uint64
 	activeCache map[string]activeCacheEntry
 
+	// pendingDeletes are retained topics that MUST NOT exist: cancelled
+	// or expired hazards whose retained DELETE has not yet been confirmed
+	// by the broker (transient failures). Memory scales with currently
+	// unresolved deletes only — never event history, never persisted. A
+	// later rehydrate pass or reconnect retries every entry until the
+	// broker confirms the deletion. A key is never authoritative in both
+	// sets: reactivation removes its pending delete.
+	pendingDeletes map[string]activeDeleteEntry
+
 	// rehydrateMu serializes active-state rehydration passes (at most one
 	// runs at a time per output).
 	rehydrateMu sync.Mutex
@@ -108,6 +117,14 @@ type activeCacheEntry struct {
 	topic   string
 	payload []byte
 	seq     uint64
+}
+
+// activeDeleteEntry is one unresolved retained-topic deletion plus the
+// generation it was registered with.
+type activeDeleteEntry struct {
+	key   string
+	topic string
+	seq   uint64
 }
 
 // mqttClient is the minimal paho client surface used by this plugin. It is
@@ -197,7 +214,7 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 		return nil, fmt.Errorf("marshal last will: %w", err)
 	}
 
-	out := &Output{cfg: cfg, qos: qos, activeCache: make(map[string]activeCacheEntry)}
+	out := &Output{cfg: cfg, qos: qos, activeCache: make(map[string]activeCacheEntry), pendingDeletes: make(map[string]activeDeleteEntry)}
 	// The on-connect hook MUST be installed in the options BEFORE
 	// paho.NewClient: paho copies the ClientOptions struct by value
 	// (c.options = *o), so mutating the options afterwards never reaches
@@ -294,15 +311,33 @@ func (o *Output) updateActiveState(ctx context.Context, event core.HazardEvent) 
 		o.activeMu.Lock()
 		o.activeSeq++
 		o.activeCache[event.Key()] = activeCacheEntry{key: event.Key(), topic: topic, payload: payload, seq: o.activeSeq}
+		// Reactivation: any older pending delete for this key is stale.
+		delete(o.pendingDeletes, event.Key())
 		o.activeMu.Unlock()
 		return o.publishActive(ctx, topic, payload)
 	case core.StatusCancelled, core.StatusExpired:
+		// Register the desired ABSENCE before the network publish: if the
+		// DELETE fails, a later reconnect rehydrates from pendingDeletes
+		// and the deletion is never forgotten.
 		o.activeMu.Lock()
 		delete(o.activeCache, event.Key())
+		o.activeSeq++
+		delSeq := o.activeSeq
+		o.pendingDeletes[event.Key()] = activeDeleteEntry{key: event.Key(), topic: topic, seq: delSeq}
 		o.activeMu.Unlock()
 		// A zero-length retained payload deletes the retained topic, so
 		// late subscribers never see this hazard under /active/# again.
-		return o.publishActive(ctx, topic, []byte{})
+		if err := o.publishActive(ctx, topic, []byte{}); err != nil {
+			// The pending delete stays registered for later recovery; the
+			// error keeps the journal change unacknowledged upstream.
+			return err
+		}
+		o.activeMu.Lock()
+		if cur, ok := o.pendingDeletes[event.Key()]; ok && cur.seq == delSeq {
+			delete(o.pendingDeletes, event.Key())
+		}
+		o.activeMu.Unlock()
+		return nil
 	default:
 		// Unknown lifecycle state: /events already carried the
 		// transition; the active view only models the three known states.
@@ -328,6 +363,8 @@ func (o *Output) SeedActiveState(event core.HazardEvent) error {
 	o.activeMu.Lock()
 	o.activeSeq++
 	o.activeCache[event.Key()] = activeCacheEntry{key: event.Key(), topic: topic, payload: payload, seq: o.activeSeq}
+	// Reactivation: any older pending delete for this key is stale.
+	delete(o.pendingDeletes, event.Key())
 	o.activeMu.Unlock()
 	return nil
 }
@@ -396,24 +433,26 @@ func (o *Output) rehydrateOnConnect() {
 }
 
 // rehydrateActive republishes the whole desired active cache as retained
-// topics, e.g. after a broker restart lost its retained state. At most one
-// pass set runs at a time; the active-state mutex is never held during
-// network waits (the snapshot is copied first). After every republish the
-// pass re-checks the desired state: a changed generation republishes the
-// newer value, and an entry that DISAPPEARED (cancelled/expired during the
-// stale publish) is deleted with a retained zero-length publish — a
-// cancelled hazard can never be resurrected by a stale snapshot. The final
-// retained state converges to the desired cache.
+// topics and retries every pending retained deletion, e.g. after a broker
+// restart lost its retained state or after a transient DELETE failure. At
+// most one pass set runs at a time; the active-state mutex is never held
+// during network waits (snapshots are copied first). After every republish
+// the pass re-checks the desired state: a changed generation republishes
+// the newer value, and an entry that DISAPPEARED (cancelled/expired during
+// the stale publish) is registered as a pending delete and deleted after
+// the stale publish — a cancelled hazard can never be resurrected by a
+// stale snapshot, and a failed delete is never forgotten.
 func (o *Output) rehydrateActive() {
 	o.rehydrateMu.Lock()
 	defer o.rehydrateMu.Unlock()
 	for pass := 0; pass < maxRehydratePasses; pass++ {
-		snapshot := o.activeSnapshot()
-		if len(snapshot) == 0 {
+		activeSnapshot := o.activeSnapshot()
+		deleteSnapshot := o.pendingDeleteSnapshot()
+		if len(activeSnapshot) == 0 && len(deleteSnapshot) == 0 {
 			return
 		}
 		dirty := false
-		for _, e := range snapshot {
+		for _, e := range activeSnapshot {
 			ctx, cancel := context.WithTimeout(context.Background(), activeRehydrateTimeout)
 			err := o.publishActive(ctx, e.topic, e.payload)
 			cancel()
@@ -426,17 +465,25 @@ func (o *Output) rehydrateActive() {
 			switch {
 			case !ok:
 				// Desired state became ABSENT while the stale snapshot
-				// publish was in flight (cancel/expire): delete the
-				// retained topic AFTER the stale publish so the final
-				// broker state matches the desired cache.
-				ctx, cancel := context.WithTimeout(context.Background(), activeRehydrateTimeout)
-				derr := o.publishActive(ctx, e.topic, []byte{})
-				cancel()
-				if derr != nil {
-					slog.Warn("active state rehydration delete failed", "topic", e.topic, "error", derr)
-				}
+				// publish was in flight (cancel/expire): ensure a pending
+				// delete exists and delete the retained topic AFTER the
+				// stale publish. A failed corrective delete stays
+				// registered and is retried on the next pass/reconnect.
+				d := o.registerPendingDelete(e.key, e.topic)
+				o.attemptDelete(d.key, d.topic, d.seq)
 				dirty = true
 			case current.seq != e.seq:
+				dirty = true
+			}
+		}
+		for _, d := range deleteSnapshot {
+			o.attemptDelete(d.key, d.topic, d.seq)
+			o.activeMu.Lock()
+			_, activeNow := o.activeCache[d.key]
+			o.activeMu.Unlock()
+			if activeNow {
+				// Reactivation raced the delete publish: the active value
+				// must win — repeat the pass so it is republished.
 				dirty = true
 			}
 		}
@@ -445,6 +492,50 @@ func (o *Output) rehydrateActive() {
 		}
 	}
 	slog.Warn("active state rehydration did not converge within the iteration bound; a later update or reconnect republishes", "passes", maxRehydratePasses)
+}
+
+// registerPendingDelete records that a retained topic must NOT exist. It is
+// called whenever a desired-absent topic is discovered (cancel/expire, or a
+// corrective delete during rehydration), so a failed DELETE is never
+// forgotten.
+func (o *Output) registerPendingDelete(key, topic string) activeDeleteEntry {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	o.activeSeq++
+	d := activeDeleteEntry{key: key, topic: topic, seq: o.activeSeq}
+	o.pendingDeletes[key] = d
+	return d
+}
+
+// attemptDelete publishes one retained zero-length delete and, on success,
+// drops the pending-delete registration if it still carries the same
+// generation (a newer mutation may have replaced or removed it). On failure
+// the registration stays so a later reconnect retries it.
+func (o *Output) attemptDelete(key, topic string, seq uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), activeRehydrateTimeout)
+	err := o.publishActive(ctx, topic, []byte{})
+	cancel()
+	if err != nil {
+		slog.Warn("active state delete failed; retried on the next reconnect", "topic", topic, "error", err)
+		return
+	}
+	o.activeMu.Lock()
+	if cur, ok := o.pendingDeletes[key]; ok && cur.seq == seq {
+		delete(o.pendingDeletes, key)
+	}
+	o.activeMu.Unlock()
+}
+
+// pendingDeleteSnapshot copies the unresolved deletions without holding the
+// active-state mutex during any network operation.
+func (o *Output) pendingDeleteSnapshot() []activeDeleteEntry {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	out := make([]activeDeleteEntry, 0, len(o.pendingDeletes))
+	for _, d := range o.pendingDeletes {
+		out = append(out, d)
+	}
+	return out
 }
 
 // activeSnapshot copies the desired active cache without holding the

@@ -140,10 +140,11 @@ func (c *fakeClient) gateNext(g *fakeToken) {
 
 func newTestOutput(fc *fakeClient) *Output {
 	return &Output{
-		cfg:         Config{TopicPrefix: "warnflux"},
-		qos:         1,
-		client:      fc,
-		activeCache: make(map[string]activeCacheEntry),
+		cfg:            Config{TopicPrefix: "warnflux"},
+		qos:            1,
+		client:         fc,
+		activeCache:    make(map[string]activeCacheEntry),
+		pendingDeletes: make(map[string]activeDeleteEntry),
 	}
 }
 
@@ -572,4 +573,184 @@ func TestRehydrateCancelDuringPublish(t *testing.T) {
 // TestRehydrateExpireDuringPublish: same race for expiry.
 func TestRehydrateExpireDuringPublish(t *testing.T) {
 	rehydrateDeleteRace(t, core.StatusExpired)
+}
+
+// TestRehydrateCorrectiveDeleteFailurePersistsAndRetries covers the exact
+// remaining edge-case: the corrective retained DELETE triggered by a stale
+// rehydrate publish FAILS. The pending deletion must be remembered, and a
+// later reconnect must retry it until the broker confirms the topic is
+// gone.
+func TestRehydrateCorrectiveDeleteFailurePersistsAndRetries(t *testing.T) {
+	for name, status := range map[string]core.EventStatus{
+		"cancelled": core.StatusCancelled,
+		"expired":   core.StatusExpired,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fc := &fakeClient{}
+			o := newTestOutput(fc)
+			ev := activeEvent()
+			if err := o.SeedActiveState(ev); err != nil {
+				t.Fatal(err)
+			}
+
+			// Gate the first rehydrate publish (the stale ACTIVE).
+			gate := &fakeToken{done: make(chan struct{})}
+			fc.gateNext(gate)
+			o.rehydrateOnConnect()
+			waitFor(t, 2*time.Second, func() bool { return fc.count() == 1 })
+
+			// The event is cancelled/expired while the stale publish is
+			// blocked: the NORMAL retained DELETE succeeds and clears the
+			// pending registration immediately.
+			ev.Status = status
+			if err := o.updateActiveState(context.Background(), ev); err != nil {
+				t.Fatalf("updateActiveState(%s): %v", name, err)
+			}
+			if got := fc.count(); got != 2 {
+				t.Fatalf("publishes = %d, want 2 (stale ACTIVE blocked + successful DELETE)", got)
+			}
+			o.activeMu.Lock()
+			_, pending := o.pendingDeletes[ev.Key()]
+			o.activeMu.Unlock()
+			if pending {
+				t.Fatal("pending delete must be cleared after a successful normal DELETE")
+			}
+
+			// Force the CORRECTIVE delete (triggered by releasing the
+			// stale publish) to FAIL.
+			fc.setPublishErr(func(topic string) error {
+				if strings.HasPrefix(topic, "warnflux/active/") {
+					return errors.New("delete failed")
+				}
+				return nil
+			})
+			close(gate.done)
+			// The corrective delete is attempted and fails: the pending
+			// registration persists for later recovery.
+			waitFor(t, 2*time.Second, func() bool {
+				o.activeMu.Lock()
+				_, ok := o.pendingDeletes[ev.Key()]
+				o.activeMu.Unlock()
+				return ok && fc.count() >= 3
+			})
+
+			// A later reconnect with working MQTT retries the delete and
+			// clears the registration.
+			fc.setPublishErr(nil)
+			o.rehydrateOnConnect()
+			waitFor(t, 2*time.Second, func() bool {
+				o.activeMu.Lock()
+				_, ok := o.pendingDeletes[ev.Key()]
+				o.activeMu.Unlock()
+				return !ok
+			})
+			pubs := fc.snapshot()
+			last := pubs[len(pubs)-1]
+			if !last.retained || len(last.payload) != 0 || last.topic != o.activeTopic(ev.Source, ev.Key()) {
+				t.Errorf("final publish = %+v, want the retained zero-length delete on the active topic", last)
+			}
+		})
+	}
+}
+
+// TestReactivationInvalidatesPendingDelete: a legitimate reactivation after
+// a failed cancel must remove the stale pending delete and win the final
+// retained state — a later rehydrate must never delete the reactivated
+// hazard.
+func TestReactivationInvalidatesPendingDelete(t *testing.T) {
+	fc := &fakeClient{}
+	o := newTestOutput(fc)
+	ev := activeEvent()
+	if err := o.Handle(context.Background(), core.EventChange{ID: 1, Type: core.ChangeNew, Event: ev}); err != nil {
+		t.Fatalf("Handle active: %v", err)
+	}
+
+	// Cancel with a failing DELETE: Handle errors, the pending delete
+	// stays registered.
+	fc.setPublishErr(func(topic string) error {
+		if strings.HasPrefix(topic, "warnflux/active/") {
+			return errors.New("delete failed")
+		}
+		return nil
+	})
+	cancelled := ev
+	cancelled.Status = core.StatusCancelled
+	if err := o.Handle(context.Background(), core.EventChange{ID: 2, Type: core.ChangeUpdated, Event: cancelled}); err == nil {
+		t.Fatal("Handle(cancel) = nil, want an error while the DELETE fails")
+	}
+	o.activeMu.Lock()
+	_, inCache := o.activeCache[ev.Key()]
+	_, pending := o.pendingDeletes[ev.Key()]
+	o.activeMu.Unlock()
+	if inCache || !pending {
+		t.Fatalf("after failed cancel: inCache=%v pending=%v, want absent + pending", inCache, pending)
+	}
+
+	// Reactivation removes the pending delete and publishes ACTIVE.
+	fc.setPublishErr(nil)
+	reactivated := ev
+	reactivated.Headline = "reactivated"
+	if err := o.Handle(context.Background(), core.EventChange{ID: 3, Type: core.ChangeUpdated, Event: reactivated}); err != nil {
+		t.Fatalf("Handle reactivation: %v", err)
+	}
+	o.activeMu.Lock()
+	_, inCache = o.activeCache[ev.Key()]
+	_, pending = o.pendingDeletes[ev.Key()]
+	o.activeMu.Unlock()
+	if !inCache || pending {
+		t.Fatalf("after reactivation: inCache=%v pending=%v, want active + no pending delete", inCache, pending)
+	}
+
+	// A later rehydrate must republish ACTIVE, never delete it.
+	before := fc.count()
+	o.rehydrateOnConnect()
+	waitFor(t, 2*time.Second, func() bool { return fc.count() >= before+1 })
+	for _, p := range fc.snapshot()[before:] {
+		if p.topic == o.activeTopic(ev.Source, ev.Key()) && len(p.payload) == 0 {
+			t.Error("rehydration deleted a reactivated hazard")
+		}
+	}
+}
+
+// TestHandleDeleteFailurePreservesAckSafety: a failed retained DELETE on
+// the normal cancel path keeps Handle failing (journal stays unacknowledged
+// upstream) while the pending delete remains registered for later recovery.
+func TestHandleDeleteFailurePreservesAckSafety(t *testing.T) {
+	fc := &fakeClient{}
+	o := newTestOutput(fc)
+	ev := activeEvent()
+	if err := o.Handle(context.Background(), core.EventChange{ID: 1, Type: core.ChangeNew, Event: ev}); err != nil {
+		t.Fatalf("Handle active: %v", err)
+	}
+
+	fc.setPublishErr(func(topic string) error {
+		if strings.HasPrefix(topic, "warnflux/active/") {
+			return errors.New("delete failed")
+		}
+		return nil
+	})
+	cancelled := ev
+	cancelled.Status = core.StatusCancelled
+	if err := o.Handle(context.Background(), core.EventChange{ID: 2, Type: core.ChangeUpdated, Event: cancelled}); err == nil {
+		t.Fatal("Handle(cancel) = nil, want an error (journal must stay unacked)")
+	}
+	o.activeMu.Lock()
+	_, pending := o.pendingDeletes[ev.Key()]
+	o.activeMu.Unlock()
+	if !pending {
+		t.Fatal("pending delete must persist after the failed DELETE")
+	}
+
+	// Journal redelivery retry: /events may duplicate (at-least-once),
+	// the DELETE now succeeds and clears the registration.
+	fc.setPublishErr(nil)
+	if err := o.Handle(context.Background(), core.EventChange{ID: 3, Type: core.ChangeUpdated, Event: cancelled}); err != nil {
+		t.Fatalf("retry Handle(cancel): %v", err)
+	}
+	o.activeMu.Lock()
+	_, pending = o.pendingDeletes[ev.Key()]
+	o.activeMu.Unlock()
+	if pending {
+		t.Error("pending delete must be cleared after the successful retry")
+	}
 }

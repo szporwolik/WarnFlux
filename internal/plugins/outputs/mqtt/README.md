@@ -44,6 +44,18 @@ WarnFlux restart with an empty broker.
   no MQTT-state database. **SQLite events are the authoritative state, the
   in-memory cache is the desired runtime state, and the retained MQTT
   topics are the materialized state.**
+- A failed retained DELETE is never forgotten: cancelled/expired hazards
+  register a transient pending-delete entry (bounded by unresolved
+  deletes only, one per key, never persisted) that every reconnect
+  rehydration retries until the broker confirms the deletion, so a stale
+  ACTIVE payload cannot survive a transient MQTT failure. Reactivation
+  removes the pending delete and the active value wins.
+- **Process restart limitation**: pending deletes are transient runtime
+  reconciliation state. After a process restart only the CURRENT active
+  events are reconstructed from SQLite; a stale retained topic left by a
+  crashed process is not inventoried (no MQTT retained-topic
+  persistence) and is corrected when that event transitions again or is
+  reactivated.
 - At startup the view is reconstructed in two steps: the SQLite current
   state is seeded into the desired cache LOCALLY (no network waits), then
   ONE background rehydration pass publishes it — durable `/events`

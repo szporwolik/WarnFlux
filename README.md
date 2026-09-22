@@ -16,13 +16,19 @@ normalized HazardEvent → key + fingerprint + lifecycle (SQLite)
     ↓
 durable change journal → independent per-output workers
     ↓
-MQTT (<prefix>/events stream + retained <prefix>/status snapshot)
+MQTT (<prefix>/events stream + retained <prefix>/active/# current-active
+view + retained <prefix>/status snapshot)
 ```
 
 ## Status
 
 The core pipeline, plugin framework, durable journal and the MQTT output are
 implemented and covered by unit, integration, fuzz and race-detector tests.
+WarnFlux publishes both a realtime hazard change stream (`/events`,
+non-retained) and a retained current-active hazard view (`/active/#`,
+materialized from SQLite) so late-joining clients immediately discover all
+active hazards — see
+[`internal/plugins/outputs/mqtt/README.md`](internal/plugins/outputs/mqtt/README.md).
 The built-in `demo` source exists for development. The `openmeteo` source
 publishes ordinary weather snapshots to retained MQTT information topics —
 **it does NOT generate HazardEvents**. **Real hazard providers (CAP,

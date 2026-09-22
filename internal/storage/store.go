@@ -133,3 +133,17 @@ type EventStore interface {
 	// Close releases the underlying resources.
 	Close() error
 }
+
+// ActiveEventLister is an OPTIONAL EventStore capability: enumerating the
+// CURRENT active events directly from the authoritative current-state
+// table (NOT by replaying the historical change journal). It exists for
+// materialized active-state views (e.g. retained MQTT topics) that must be
+// reconstructed after a process restart even when every journal change is
+// already acknowledged.
+type ActiveEventLister interface {
+	// ListActiveEvents returns current-state events whose status is
+	// active, in stable event_key order. afterKey is exclusive ("" for
+	// the first page) and limit bounds the page size, so callers page
+	// through large datasets in bounded batches.
+	ListActiveEvents(ctx context.Context, afterKey string, limit int) ([]core.HazardEvent, error)
+}

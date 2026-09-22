@@ -23,6 +23,9 @@ const (
 	// output is maxInfoPending × 256 KiB payloads (32 MiB at 128), and
 	// updates to existing keys are free.
 	maxInfoPending = 128
+	// activeSyncPageSize bounds one SQLite query batch during startup
+	// active-state synchronization (materialized active views).
+	activeSyncPageSize = 256
 )
 
 // outputWorker delivers journaled changes to one output plugin with
@@ -141,6 +144,18 @@ func infoKey(m core.InformationMessage) string {
 func (w *outputWorker) run(ctx context.Context) {
 	defer close(w.done)
 	w.tracker.setState(StateRunning)
+
+	// Startup active-state synchronization: outputs with the optional
+	// ActiveStatePublisher capability reconstruct their materialized
+	// active view from the authoritative SQLite current state (bounded
+	// pages), so the view survives a process restart even when the
+	// journal is fully acknowledged. Failures are logged and never block
+	// normal hazard delivery below.
+	if pub, ok := w.plugin.(ActiveStatePublisher); ok {
+		if lister, ok := w.store.(storage.ActiveEventLister); ok {
+			w.syncActiveState(ctx, pub, lister)
+		}
+	}
 
 	poll := time.NewTicker(w.pollInterval)
 	defer poll.Stop()
@@ -276,6 +291,68 @@ func invokeInformation(p InformationPublisher, ctx context.Context, message core
 		}
 	}()
 	return p.PublishInformation(ctx, message)
+}
+
+// syncActiveState reconstructs the materialized active view of an
+// ActiveStatePublisher output from the authoritative current-state table,
+// page by page. This is STARTUP reconciliation only: a per-event failure is
+// logged and the remaining events still run, a callback that violates its
+// timeout is abandoned (bounded by the page size), and normal journal
+// delivery starts afterwards no matter what happened here.
+func (w *outputWorker) syncActiveState(ctx context.Context, pub ActiveStatePublisher, lister storage.ActiveEventLister) {
+	after := ""
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		events, err := lister.ListActiveEvents(ctx, after, activeSyncPageSize)
+		if err != nil {
+			if ctx.Err() == nil {
+				w.logger.Warn("active-state synchronization query failed", "output_id", w.id, "error", err)
+			}
+			return
+		}
+		for i := range events {
+			if ctx.Err() != nil {
+				return
+			}
+			callCtx, cancel := context.WithTimeout(ctx, w.timeout)
+			result := make(chan error, 1)
+			go func(ev core.HazardEvent) {
+				result <- invokeActiveState(pub, callCtx, ev)
+			}(events[i])
+			select {
+			case err := <-result:
+				cancel()
+				if err != nil {
+					w.logger.Warn("active-state publish failed", "output_id", w.id,
+						"source", events[i].Source, "event_key", events[i].Key(), "error", err)
+				}
+			case <-callCtx.Done():
+				// The callback violated its context contract: abandon it
+				// (the buffered channel absorbs the late result) and
+				// continue with the remaining events — active-state
+				// synchronization must never block hazard delivery.
+				cancel()
+				w.logger.Warn("active-state publish violated its timeout; continuing with the next event",
+					"output_id", w.id, "event_key", events[i].Key(), "timeout", w.timeout)
+			}
+		}
+		if len(events) < activeSyncPageSize {
+			return
+		}
+		after = events[len(events)-1].Key()
+	}
+}
+
+// invokeActiveState runs PublishActiveState under recover().
+func invokeActiveState(p ActiveStatePublisher, ctx context.Context, event core.HazardEvent) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("plugin panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return p.PublishActiveState(ctx, event)
 }
 
 // pollDeliveries fetches unacknowledged changes and delivers them serially

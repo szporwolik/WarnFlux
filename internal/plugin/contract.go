@@ -85,6 +85,19 @@ type InformationPublisher interface {
 	PublishInformation(ctx context.Context, message core.InformationMessage) error
 }
 
+// ActiveStatePublisher is an OPTIONAL output capability for retained
+// current-active hazard views (e.g. the MQTT /active/# retained topics).
+// The output worker uses it once at startup to synchronize the currently
+// active events from SQLite (the authoritative current state) so the
+// materialized view can be rebuilt after a process restart even when the
+// durable journal is fully acknowledged. It is never called for cancelled
+// or expired events, and it must never affect hazard delivery: a failure
+// is logged and initialization continues; the desired state should remain
+// populated so a later reconnect can restore it.
+type ActiveStatePublisher interface {
+	PublishActiveState(ctx context.Context, event core.HazardEvent) error
+}
+
 // OutputFactory builds an OutputPlugin from its raw plugin-specific
 // configuration.
 type OutputFactory func(config *yaml.Node) (OutputPlugin, error)

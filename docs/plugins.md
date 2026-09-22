@@ -157,6 +157,14 @@ For **outputs**:
   | `PublishInformation` failure | logged only, never counted, never suspends; information is best-effort latest-state |
   | `PublishInformation` ignores its timeout (context-contract violation) | information publishing is **disabled for that output instance** for the rest of the process; the worker returns to its main loop immediately without waiting for the late result, so a hung information callback can never block hazard delivery. At most ONE abandoned information goroutine can ever exist per output. |
 
+- **Active-state synchronization** (`ActiveStatePublisher`): outputs with
+  this optional capability receive the CURRENT active events once at
+  startup, paged from the authoritative SQLite state (never by replaying
+  the journal), so a materialized retained view can be rebuilt after a
+  process restart even when the journal is fully acknowledged. Failures
+  are logged and never block journal delivery; the capability is never
+  called for cancelled or expired events.
+
 - **Single owner**: one output worker owns all callbacks into a plugin
   instance (`Handle`, `PublishStatus`, `PublishInformation`, `Close`). The
   only exception is a callback that violated its timeout and was

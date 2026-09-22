@@ -9,11 +9,54 @@ other plugin creates its own MQTT client.
 | Topic | Retained | QoS | Content |
 |-------|----------|-----|---------|
 | `<prefix>/events` | no | configured `qos` (1 or 2; 0 rejected) | one JSON message per durable hazard change |
+| `<prefix>/active/<source>/<sha256(event_key)>` | yes | configured `qos` | CURRENT active hazards (materialized view of SQLite state) |
 | `<prefix>/status` | yes | configured `qos` | application health snapshot |
 | `<prefix>/info/<source>/<producer_id>/<key>/<kind>` | yes | configured `qos` | latest-state informational messages |
 
 The `<prefix>/events` topic is HazardEvent-only; information is never
 published there.
+
+## Active hazards (`/active/#`)
+
+The retained `/active/...` view is the materialized MQTT copy of the
+**authoritative SQLite current hazard state**: a new client subscribing to
+`warnflux/active/#` immediately receives every currently active
+hazard, no provider update required. It is reconstructed at output startup
+from SQLite and republished automatically after every broker (re)connect,
+so it survives both a broker restart with lost retained state and a
+WarnFlux restart with an empty broker.
+
+- The final topic level is the lowercase hex SHA-256 of the logical
+  `event_key` (64 characters) — raw keys are never placed in topics. The
+  full key stays inside the payload.
+- Active events are published with the canonical `active_hazard` payload
+  (schema version 1, type `active_hazard`, the same hazard event wire
+  block as `/events`).
+- Cancelled/expired events delete the retained topic (zero-length retained
+  payload), so late subscribers never see them as active; the transition
+  remains available on `/events`.
+- Delivery ordering per journal change: `/events` first, then the active
+  view; the journal is acknowledged only after BOTH succeed. A retry may
+  duplicate `/events` (at-least-once) but never silently diverge the
+  active view.
+- The desired active cache is in-memory only (currently active hazards,
+  never history) and exists solely to republish after reconnects; there is
+  no MQTT-state database.
+- On graceful shutdown the active retained topics are NOT deleted: they
+  describe provider hazard state, not process liveness. Consumers combine
+  them with `<prefix>/status` (`state: offline`) and `expires_at`.
+
+## Client usage
+
+```text
+Realtime hazard transitions:   SUB warnflux/events
+Current active hazards:        SUB warnflux/active/#
+Weather / information state:   SUB warnflux/info/#
+Service status:                SUB warnflux/status
+```
+
+`/events` is the ordered change stream (new/updated/cancelled/expired);
+`/active/#` is the current active hazard set.
 
 ## Delivery semantics
 

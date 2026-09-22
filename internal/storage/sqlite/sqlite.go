@@ -904,6 +904,36 @@ func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {
 	return cursor, nil
 }
 
+// ListActiveEvents implements storage.ActiveEventLister: it pages through
+// the CURRENT active events (status = active) in stable event_key order.
+// This reads the authoritative current-state table directly — the
+// historical change journal is never replayed to reconstruct active state.
+func (s *Store) ListActiveEvents(ctx context.Context, afterKey string, limit int) ([]core.HazardEvent, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive, got %d", limit)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT "+eventColumns+" FROM events WHERE status = ? AND event_key > ? ORDER BY event_key LIMIT ?",
+		string(core.StatusActive), afterKey, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query active events: %w", err)
+	}
+	defer rows.Close()
+
+	var out []core.HazardEvent
+	for rows.Next() {
+		event, err := scanEventRow(rows.Scan, nil)
+		if err != nil {
+			return nil, fmt.Errorf("scan active event: %w", err)
+		}
+		out = append(out, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active events: %w", err)
+	}
+	return out, nil
+}
+
 // loadEventTx reads a full event row from tx by key.
 func loadEventTx(tx *sql.Tx, key string) (core.HazardEvent, error) {
 	row := tx.QueryRow("SELECT "+eventColumns+" FROM events WHERE event_key = ?", key)

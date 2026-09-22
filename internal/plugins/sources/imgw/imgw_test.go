@@ -446,3 +446,66 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 	}
 	t.Fatal("condition not met in time")
 }
+
+// TestHTTP200TopLevelShapeSafety: a successful HTTP response whose
+// top-level JSON value is not an array must NOT trigger cancellation.
+func TestHTTP200TopLevelShapeSafety(t *testing.T) {
+	for _, body := range []string{"null", "{}", "false", "123", `"foo"`} {
+		t.Run(body, func(t *testing.T) {
+			future := time.Now().Add(time.Hour)
+			em := &fakeEmitter{active: []core.HazardEvent{
+				meteoEvent("A", &future), meteoEvent("B", &future), meteoEvent("C", &future),
+			}}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, body)
+			}))
+			defer srv.Close()
+
+			s := testSource(t, srv.URL, feedMeteo)
+			s.pollOnce(context.Background(), em, em)
+			if got := em.cancelledKeys(); len(got) != 0 {
+				t.Fatalf("top-level %q caused cancellations: %v", body, got)
+			}
+			if h, d := em.health(); h != 0 || d != 1 {
+				t.Errorf("health = (%d, %d), want degraded", h, d)
+			}
+		})
+	}
+}
+
+// TestDuplicateIdentityNotEmitted: an ambiguous duplicate identity is never
+// arbitrarily emitted (neither occurrence), unique records beside it are
+// emitted, and no disappearance reconciliation runs.
+func TestDuplicateIdentityNotEmitted(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	em := &fakeEmitter{active: []core.HazardEvent{meteoEvent("Ghost", &future)}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[
+			{"id":"Dup","nazwa_zdarzenia":"Burze","stopien":"2","obowiazuje_od":"2026-09-21 18:00:00","obowiazuje_do":"2026-09-22 06:00:00","teryt":["1217"],"tresc":"x","prawdopodobienstwo":"70"},
+			{"id":"Dup","nazwa_zdarzenia":"Burze","stopien":"3","obowiazuje_od":"2026-09-21 18:00:00","obowiazuje_do":"2026-09-22 06:00:00","teryt":["1217"],"tresc":"x","prawdopodobienstwo":"90"},
+			{"id":"Good","nazwa_zdarzenia":"Upał","stopien":"1","obowiazuje_od":"2026-09-21 18:00:00","obowiazuje_do":"2026-09-22 06:00:00","teryt":["1261"],"tresc":"x"}
+		]`)
+	}))
+	defer srv.Close()
+
+	s := testSource(t, srv.URL, feedMeteo)
+	s.pollOnce(context.Background(), em, em)
+
+	em.mu.Lock()
+	var emittedIDs []string
+	for _, ev := range em.emitted {
+		if ev.Status == core.StatusActive {
+			emittedIDs = append(emittedIDs, ev.SourceID)
+		}
+	}
+	em.mu.Unlock()
+	if len(emittedIDs) != 1 || emittedIDs[0] != "Good" {
+		t.Fatalf("emitted IDs = %v, want only Good (neither duplicate emitted)", emittedIDs)
+	}
+	if got := em.cancelledKeys(); len(got) != 0 {
+		t.Fatalf("duplicate snapshot cancelled warnings: %v", got)
+	}
+	if h, d := em.health(); h != 0 || d != 1 {
+		t.Errorf("health = (%d, %d), want degraded", h, d)
+	}
+}

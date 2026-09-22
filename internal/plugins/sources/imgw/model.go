@@ -47,8 +47,9 @@ type hydroArea struct {
 }
 
 // providerStatus is the documented empty-warning payload shape used by
-// both endpoints.
+// both endpoints. Status is a pointer so a MISSING status field is
+// distinguishable from an explicit false.
 type providerStatus struct {
-	Status  bool   `json:"status"`
+	Status  *bool  `json:"status"`
 	Message string `json:"message"`
 }

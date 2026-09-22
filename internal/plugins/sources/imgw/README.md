@@ -15,6 +15,9 @@ API. The plugin consumes exactly two documented endpoints:
 
 > Źródłem pochodzenia danych jest Instytut Meteorologii i Gospodarki
 > Wodnej – Państwowy Instytut Badawczy.
+>
+> Dane Instytutu Meteorologii i Gospodarki Wodnej – Państwowego Instytutu
+> Badawczego zostały przetworzone.
 
 WarnFlux normalizes and processes the source data; IMGW requires
 processed data to be attributed accordingly. Do not remove or obscure the

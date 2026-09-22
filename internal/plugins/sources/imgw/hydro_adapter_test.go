@@ -192,3 +192,26 @@ func TestHydroIdentityRequiresFields(t *testing.T) {
 		}
 	}
 }
+
+// TestHydroAreaOpisStartingWithVoivodeship: when the provider opis already
+// starts with the voivodeship, the obszar label must not duplicate it.
+func TestHydroAreaOpisStartingWithVoivodeship(t *testing.T) {
+	item := hydroItems(t, hydroDroughtFixture)[0]
+	item.Obszary[0].Opis = "wielkopolskie, Kanał Mosiński"
+	ev, err := normalizeHydro(item, "u")
+	if err != nil {
+		t.Fatalf("normalizeHydro: %v", err)
+	}
+	found := false
+	for _, a := range ev.Areas {
+		if a == "obszar:wielkopolskie, Kanał Mosiński" {
+			found = true
+		}
+		if a == "obszar:wielkopolskie, wielkopolskie, Kanał Mosiński" {
+			t.Errorf("duplicated voivodeship in area label: %q", a)
+		}
+	}
+	if !found {
+		t.Errorf("areas = %v, want the deduplicated obszar label", ev.Areas)
+	}
+}

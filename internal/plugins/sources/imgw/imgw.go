@@ -199,44 +199,59 @@ func (s *Source) pollFeed(ctx context.Context, emit plugin.Emitter, feed string,
 
 // processMeteo decodes and ingests the meteorological snapshot.
 func (s *Source) processMeteo(ctx context.Context, emit plugin.Emitter, body []byte) (map[string]bool, bool) {
+	if err := requireJSONArray(body); err != nil {
+		slog.Warn("IMGW meteo feed has an invalid top-level shape", "error", err)
+		return nil, false
+	}
 	var items []meteoWarning
 	if err := json.Unmarshal(body, &items); err != nil {
 		slog.Warn("IMGW meteo feed is not valid JSON", "error", err)
 		return nil, false
 	}
-	return s.ingestSnapshot(ctx, emit, sourceMeteo, "/warningsmeteo", len(items), func(i int) (core.HazardEvent, error) {
+	return s.ingestSnapshot(ctx, emit, sourceMeteo, len(items), func(i int) (core.HazardEvent, error) {
 		return normalizeMeteo(items[i], s.cfg.BaseURL+"/warningsmeteo")
 	})
 }
 
 // processHydro decodes and ingests the hydrological snapshot.
 func (s *Source) processHydro(ctx context.Context, emit plugin.Emitter, body []byte) (map[string]bool, bool) {
+	if err := requireJSONArray(body); err != nil {
+		slog.Warn("IMGW hydro feed has an invalid top-level shape", "error", err)
+		return nil, false
+	}
 	var items []hydroWarning
 	if err := json.Unmarshal(body, &items); err != nil {
 		slog.Warn("IMGW hydro feed is not valid JSON", "error", err)
 		return nil, false
 	}
-	return s.ingestSnapshot(ctx, emit, sourceHydro, "/warningshydro", len(items), func(i int) (core.HazardEvent, error) {
+	return s.ingestSnapshot(ctx, emit, sourceHydro, len(items), func(i int) (core.HazardEvent, error) {
 		return normalizeHydro(items[i], s.cfg.BaseURL+"/warningshydro")
 	})
 }
 
-// ingestSnapshot normalizes and emits one feed snapshot. It returns the set
-// of provider identities present in the snapshot and whether the snapshot
-// is reconciliation-safe (COMPLETE): every item structurally identified,
-// no duplicate identities, bounded count. Emit failures do NOT make the
-// snapshot incomplete (the provider was still understood); they are logged
-// and retried on the next poll.
-func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source, endpoint string, count int, normalize func(i int) (core.HazardEvent, error)) (map[string]bool, bool) {
+// ingestSnapshot ingests one feed snapshot in TWO PHASES. Phase 1
+// normalizes every item and counts identities (malformed items mark the
+// snapshot incomplete but never block valid records; a duplicate identity
+// marks it incomplete too). Phase 2 emits ONLY identities that occurred
+// exactly once — an ambiguous duplicate is never arbitrarily emitted, so a
+// corrupt snapshot cannot modify SQLite before being declared incomplete.
+// Emit failures do NOT make the snapshot incomplete (the provider was still
+// understood); they are logged and retried on the next poll.
+func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source string, count int, normalize func(i int) (core.HazardEvent, error)) (map[string]bool, bool) {
 	if count > maxWarningsPerFeed {
 		slog.Warn("IMGW feed exceeds the warning-count bound", "source", source, "count", count, "maximum", maxWarningsPerFeed)
 		return nil, false
 	}
-	keys := make(map[string]bool, count)
+
+	type pending struct {
+		ev    core.HazardEvent
+		count int
+	}
+	seen := make(map[string]*pending, count)
 	complete := true
 	for i := 0; i < count; i++ {
 		if ctx.Err() != nil {
-			return keys, false
+			return nil, false
 		}
 		ev, err := normalize(i)
 		if err != nil {
@@ -244,17 +259,29 @@ func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source
 			complete = false
 			continue
 		}
-		if keys[ev.Key()] {
-			slog.Warn("IMGW feed contains a duplicate identity; snapshot marked incomplete", "source", source, "event_key", ev.Key())
+		if p, ok := seen[ev.Key()]; ok {
+			p.count++
 			complete = false
+			slog.Warn("IMGW feed contains a duplicate identity; snapshot marked incomplete", "source", source, "event_key", ev.Key())
 			continue
 		}
-		keys[ev.Key()] = true
-		if err := emit.Emit(ctx, ev); err != nil {
+		seen[ev.Key()] = &pending{ev: ev, count: 1}
+	}
+
+	keys := make(map[string]bool, len(seen))
+	for key, p := range seen {
+		if ctx.Err() != nil {
+			return keys, false
+		}
+		if p.count != 1 {
+			continue // ambiguous identity: never emitted
+		}
+		keys[key] = true
+		if err := emit.Emit(ctx, p.ev); err != nil {
 			if ctx.Err() != nil {
 				return keys, false
 			}
-			slog.Warn("emit failed; retrying on the next poll", "event_key", ev.Key(), "error", err)
+			slog.Warn("emit failed; retrying on the next poll", "event_key", key, "error", err)
 			continue
 		}
 	}

@@ -109,3 +109,56 @@ func TestFetchRespectsContext(t *testing.T) {
 		t.Fatal("cancelled context must fail the request")
 	}
 }
+
+// TestFetch404StrictRecognition: ONLY the exact documented payload
+// {"status":false,"message":"No products were found"} is a successful
+// empty snapshot; every other 404 is a provider failure.
+func TestFetch404StrictRecognition(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"status":false,"message":"No products were found"}`)
+	}))
+	body, err := NewClient(ok.URL, time.Second).Fetch(context.Background(), feedMeteo)
+	ok.Close()
+	if err != nil || string(body) != "[]" {
+		t.Fatalf("exact no-products payload: body=%s err=%v", body, err)
+	}
+
+	reject := []string{
+		`{}`,
+		`{"status":false}`,
+		`{"message":"No products were found"}`,
+		`{"status":false,"message":"Database unavailable"}`,
+		`{"status":true,"message":"No products were found"}`,
+		`{"status":false,"message":"  "}`,
+		`not json`,
+	}
+	for _, payload := range reject {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, payload)
+		}))
+		client := NewClient(srv.URL, time.Second)
+		_, err := client.Fetch(context.Background(), feedHydro)
+		srv.Close()
+		if err == nil {
+			t.Errorf("404 payload %s must be a provider failure", payload)
+		}
+	}
+}
+
+// TestRequireJSONArray: HTTP 200 with a non-array top-level value must be
+// incomplete — json.Unmarshal(null, &slice) silently yields an empty slice
+// in Go, which must never look like an empty warning set.
+func TestRequireJSONArray(t *testing.T) {
+	for _, good := range []string{`[]`, `[{"id":"x"}]`, ` [ ] `} {
+		if err := requireJSONArray([]byte(good)); err != nil {
+			t.Errorf("array %q rejected: %v", good, err)
+		}
+	}
+	for _, bad := range []string{`null`, `{}`, `false`, `123`, `"foo"`, ``, `[`} {
+		if err := requireJSONArray([]byte(bad)); err == nil {
+			t.Errorf("non-array %q accepted", bad)
+		}
+	}
+}

@@ -165,7 +165,20 @@ func hydroAreas(obszary []hydroArea) []string {
 			}
 		}
 		opis := normalizeText(a.Opis)
-		combo := strings.TrimSpace(strings.Join([]string{woj, opis}, ", "))
+		// Avoid duplicating the voivodeship when opis already starts with
+		// it ("wielkopolskie, Kanał Mosiński" + wojewodztwo wielkopolskie).
+		var combo string
+		switch {
+		case woj == "":
+			combo = opis
+		case opis == "":
+			combo = woj
+		case strings.HasPrefix(strings.ToLower(opis), strings.ToLower(woj)):
+			combo = opis
+		default:
+			combo = woj + ", " + opis
+		}
+		combo = strings.TrimSpace(combo)
 		if combo != "" {
 			areas = append(areas, "obszar:"+combo)
 		}

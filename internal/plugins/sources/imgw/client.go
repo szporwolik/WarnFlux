@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -73,15 +74,35 @@ func (c *Client) Fetch(ctx context.Context, feed string) ([]byte, error) {
 	case http.StatusOK:
 		return body, nil
 	case http.StatusNotFound:
-		// IMGW reports "no warnings currently" as HTTP 404 with a status
-		// payload. ONLY that exact condition is an empty successful
-		// snapshot; any other 404 is a provider failure.
+		// IMGW reports "no warnings currently" as HTTP 404 with the EXACT
+		// payload {"status":false,"message":"No products were found"}.
+		// ONLY that exact condition is an empty successful snapshot; any
+		// other 404 (missing status, wrong message, status true, malformed
+		// JSON) is a provider failure — a provider error must never look
+		// like an empty warning set.
 		var st providerStatus
-		if json.Unmarshal(body, &st) == nil && !st.Status {
+		if err := json.Unmarshal(body, &st); err == nil &&
+			st.Status != nil && !*st.Status &&
+			strings.TrimSpace(st.Message) == "No products were found" {
 			return []byte("[]"), nil
 		}
 		return nil, fmt.Errorf("provider returned HTTP 404 without the documented no-products payload")
 	default:
 		return nil, fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
 	}
+}
+
+// requireJSONArray ensures the response body's top-level JSON value is an
+// ARRAY. json.Unmarshal([]byte("null"), &slice) silently succeeds in Go,
+// so a provider returning null/object/scalar with HTTP 200 could otherwise
+// look like an empty warning set and trigger mass cancellation.
+func requireJSONArray(body []byte) error {
+	var raw json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return fmt.Errorf("response is not valid JSON: %w", err)
+	}
+	if len(raw) == 0 || raw[0] != '[' {
+		return fmt.Errorf("response top-level value is not a JSON array")
+	}
+	return nil
 }

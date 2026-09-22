@@ -312,24 +312,27 @@ func (f *fakeUsers) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 		r := f.routing[groupID]
 		r.GroupID = g.ID
 		r.Name = g.Name
-		if r.MinSeverity == "" {
-			r.MinSeverity = "unknown"
-		}
 		return r, nil
 	}
 	return storage.GroupRouting{}, storage.ErrGroupNotFound
 }
 
-func (f *fakeUsers) SetGroupRouting(groupID int64, minSeverity string, actions, outputs []string) error {
+func (f *fakeUsers) SetGroupRouting(groupID int64, actions, outputs []storage.ChannelAssignment) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !storage.ValidSeverity(minSeverity) {
-		return storage.ErrInvalidSeverity
+	for _, a := range actions {
+		if !storage.ValidSeverity(a.MinSeverity) {
+			return storage.ErrInvalidSeverity
+		}
+	}
+	for _, o := range outputs {
+		if !storage.ValidSeverity(o.MinSeverity) {
+			return storage.ErrInvalidSeverity
+		}
 	}
 	found := false
 	for i := range f.groups {
 		if f.groups[i].ID == groupID {
-			f.groups[i].MinSeverity = minSeverity
 			f.groups[i].UpdatedAt = time.Now()
 			found = true
 		}
@@ -338,9 +341,9 @@ func (f *fakeUsers) SetGroupRouting(groupID int64, minSeverity string, actions, 
 		return storage.ErrGroupNotFound
 	}
 	f.routing[groupID] = storage.GroupRouting{
-		GroupID: groupID, MinSeverity: minSeverity,
-		Actions: append([]string(nil), actions...),
-		Outputs: append([]string(nil), outputs...),
+		GroupID: groupID,
+		Actions: append([]storage.ChannelAssignment(nil), actions...),
+		Outputs: append([]storage.ChannelAssignment(nil), outputs...),
 	}
 	return nil
 }
@@ -353,12 +356,6 @@ func (f *fakeUsers) ListGroupRoutings() ([]storage.GroupRouting, error) {
 		r := f.routing[g.ID]
 		r.GroupID = g.ID
 		r.Name = g.Name
-		if r.MinSeverity == "" {
-			r.MinSeverity = g.MinSeverity
-		}
-		if r.MinSeverity == "" {
-			r.MinSeverity = "unknown"
-		}
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })

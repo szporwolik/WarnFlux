@@ -33,16 +33,26 @@ func (f *fakeStore) GroupRecipientEmails(groupID int64) ([]string, error) {
 	return append([]string(nil), f.bcc[groupID]...), f.err
 }
 
-// setMinSeverity mutates one cached rule under the store lock.
-func (f *fakeStore) setMinSeverity(groupID int64, severity string) {
+// setActionSeverity mutates one cached rule's action threshold.
+func (f *fakeStore) setActionSeverity(groupID int64, actionID, severity string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.rules {
-		if f.rules[i].GroupID == groupID {
-			f.rules[i].MinSeverity = severity
-			return
+		if f.rules[i].GroupID != groupID {
+			continue
+		}
+		for j := range f.rules[i].Actions {
+			if f.rules[i].Actions[j].ID == actionID {
+				f.rules[i].Actions[j].MinSeverity = severity
+				return
+			}
 		}
 	}
+}
+
+// asn builds one matrix assignment (channel ID + threshold).
+func asn(id, severity string) storage.ChannelAssignment {
+	return storage.ChannelAssignment{ID: id, MinSeverity: severity}
 }
 
 type fakeActions struct {
@@ -119,9 +129,9 @@ func startEngine(t *testing.T, store RuleStore, acts ActionSubmitter, outs RuleO
 
 func TestEngineSeverityThresholdAndFanOut(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
-		{GroupID: 1, Name: "spok", MinSeverity: "severe", Actions: []string{"log"}, Outputs: []string{"mqtt"}},
-		{GroupID: 2, Name: "rsp", MinSeverity: "unknown", Actions: []string{"log"}},
-		{GroupID: 3, Name: "silent", MinSeverity: "unknown"},
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "severe")}, Outputs: []storage.ChannelAssignment{asn("mqtt", "severe")}},
+		{GroupID: 2, Name: "rsp", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+		{GroupID: 3, Name: "silent"},
 	}}
 	acts := &fakeActions{}
 	outs := &fakeOutputs{}
@@ -157,9 +167,67 @@ func TestEngineSeverityThresholdAndFanOut(t *testing.T) {
 	}
 }
 
+// TestEngineRoutingMatrix pins the per-channel matrix semantics: one event
+// fires only the channels whose own threshold it satisfies.
+func TestEngineRoutingMatrix(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok",
+			Actions: []storage.ChannelAssignment{
+				asn("log", "moderate"),
+				asn("sms", "severe"),
+			},
+			Outputs: []storage.ChannelAssignment{
+				asn("mqtt", "severe"),
+			}},
+	}}
+	acts := &fakeActions{}
+	outs := &fakeOutputs{}
+	e, feed := startEngine(t, store, acts, outs)
+
+	feed <- hazardEvent("moderate", dispatch.TransitionNew)
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["log"]) == 1
+	}, "log action fired once")
+
+	// moderate satisfies only log: no sms action, no mqtt round.
+	acts.mu.Lock()
+	smsCalls := len(acts.got["sms"])
+	acts.mu.Unlock()
+	outs.mu.Lock()
+	rounds := len(outs.got)
+	outs.mu.Unlock()
+	if smsCalls != 0 || rounds != 0 {
+		t.Fatalf("moderate fired sms %d times and %d output rounds, want 0/0", smsCalls, rounds)
+	}
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["sms"]) == 1
+	}, "sms action fired once")
+	waitFor(t, func() bool {
+		outs.mu.Lock()
+		defer outs.mu.Unlock()
+		return len(outs.got) == 1
+	}, "one output round")
+
+	outs.mu.Lock()
+	ids := append([]string(nil), outs.got[0].ids...)
+	outs.mu.Unlock()
+	if len(ids) != 1 || ids[0] != "mqtt" {
+		t.Errorf("output round ids = %v, want [mqtt]", ids)
+	}
+	if s := e.Stats(); s.EventsSeen != 2 {
+		t.Errorf("EventsSeen = %d, want 2", s.EventsSeen)
+	}
+}
+
 func TestEngineChangeTypeProjection(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
-		{GroupID: 1, Name: "spok", MinSeverity: "unknown", Outputs: []string{"mqtt"}},
+		{GroupID: 1, Name: "spok", Outputs: []storage.ChannelAssignment{asn("mqtt", "unknown")}},
 	}}
 	outs := &fakeOutputs{}
 	e, feed := startEngine(t, store, &fakeActions{}, outs)
@@ -185,7 +253,7 @@ func TestEngineChangeTypeProjection(t *testing.T) {
 
 func TestEngineNonHazardSkipped(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
-		{GroupID: 1, Name: "spok", MinSeverity: "unknown", Actions: []string{"log"}},
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
 	}}
 	acts := &fakeActions{}
 	e, feed := startEngine(t, store, acts, &fakeOutputs{})
@@ -206,8 +274,8 @@ func TestEngineNonHazardSkipped(t *testing.T) {
 
 func TestEngineUnrankedSeverityMatchesOnlyPermissive(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
-		{GroupID: 1, Name: "strict", MinSeverity: "minor", Actions: []string{"log"}},
-		{GroupID: 2, Name: "permissive", MinSeverity: "unknown", Actions: []string{"log"}},
+		{GroupID: 1, Name: "strict", Actions: []storage.ChannelAssignment{asn("log", "minor")}},
+		{GroupID: 2, Name: "permissive", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
 	}}
 	acts := &fakeActions{}
 	_, feed := startEngine(t, store, acts, &fakeOutputs{})
@@ -226,8 +294,8 @@ func TestEngineUnrankedSeverityMatchesOnlyPermissive(t *testing.T) {
 func TestEnginePassesGroupRecipientsAsBcc(t *testing.T) {
 	store := &fakeStore{
 		rules: []storage.GroupRouting{
-			{GroupID: 1, Name: "spok", MinSeverity: "unknown", Actions: []string{"smtp"}},
-			{GroupID: 2, Name: "rsp", MinSeverity: "unknown", Actions: []string{"smtp"}},
+			{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("smtp", "unknown")}},
+			{GroupID: 2, Name: "rsp", Actions: []storage.ChannelAssignment{asn("smtp", "unknown")}},
 		},
 		bcc: map[int64][]string{
 			1: {"a@example.com", "b@example.com"},
@@ -263,7 +331,7 @@ func TestEnginePassesGroupRecipientsAsBcc(t *testing.T) {
 
 func TestEngineRuleReload(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
-		{GroupID: 1, Name: "spok", MinSeverity: "severe", Actions: []string{"log"}},
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "severe")}},
 	}}
 	acts := &fakeActions{}
 	e, feed := startEngine(t, store, acts, &fakeOutputs{})
@@ -271,8 +339,8 @@ func TestEngineRuleReload(t *testing.T) {
 	feed <- hazardEvent("unknown", dispatch.TransitionNew)
 	time.Sleep(50 * time.Millisecond)
 
-	// Lower the threshold; an explicit reload must pick it up.
-	store.setMinSeverity(1, "unknown")
+	// Lower the action's threshold; an explicit reload must pick it up.
+	store.setActionSeverity(1, "log", "unknown")
 	e.refresh()
 	feed <- hazardEvent("unknown", dispatch.TransitionNew)
 

@@ -12,7 +12,7 @@ import (
 
 // groupColumns is the canonical group column list for SELECTs. Member
 // counts are aggregated separately so the base list stays simple.
-const groupColumns = `g.id, g.name, g.min_severity, g.created_at_ms, g.updated_at_ms`
+const groupColumns = `g.id, g.name, g.created_at_ms, g.updated_at_ms`
 
 // groupBaseSQL selects groups with their member counts; callers append
 // WHERE/GROUP BY/ORDER BY/LIMIT clauses.
@@ -239,8 +239,7 @@ func (s *Store) groupNameTaken(name string, excludeID int64) (bool, error) {
 	return true, nil
 }
 
-// scanGroup reads one group row (id, name, min_severity, timestamps,
-// member count).
+// scanGroup reads one group row (id, name, timestamps, member count).
 type groupScanner interface {
 	Scan(dest ...any) error
 }
@@ -248,7 +247,7 @@ type groupScanner interface {
 func scanGroup(sc groupScanner) (storage.Group, error) {
 	var g storage.Group
 	var created, updated int64
-	if err := sc.Scan(&g.ID, &g.Name, &g.MinSeverity, &created, &updated, &g.Members); err != nil {
+	if err := sc.Scan(&g.ID, &g.Name, &created, &updated, &g.Members); err != nil {
 		return storage.Group{}, err
 	}
 	g.CreatedAt = time.UnixMilli(created)

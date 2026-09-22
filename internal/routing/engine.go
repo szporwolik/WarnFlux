@@ -169,44 +169,53 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	e.mu.RUnlock()
 
 	for _, rule := range rules {
-		threshold, ok := storage.SeverityRank(rule.MinSeverity)
-		if !ok {
-			threshold = 0
-		}
-		if rank < threshold {
-			continue
-		}
 		if len(rule.Actions) == 0 && len(rule.Outputs) == 0 {
 			continue
 		}
-		e.rulesMatched.Add(1)
 
-		for _, actionID := range rule.Actions {
+		// Routing matrix: every assigned channel carries its own minimum
+		// severity, so one event can fire a subset of the channels.
+		var firedActions int
+		for _, a := range rule.Actions {
+			if !meetsThreshold(rank, a.MinSeverity) {
+				continue
+			}
 			req := action.ActionRequest{
-				ID:        fmt.Sprintf("%s/%s", ev.Hazard.Key, actionID),
+				ID:        fmt.Sprintf("%s/%s", ev.Hazard.Key, a.ID),
 				CreatedAt: time.Now(),
 				Event:     ev,
 				Bcc:       append([]string(nil), bcc[rule.GroupID]...),
 				App:       e.app,
 			}
-			if err := e.actions.Submit(actionID, req); err != nil {
+			if err := e.actions.Submit(a.ID, req); err != nil {
 				e.actionsFailed.Add(1)
 				e.logger.Warn("routing: action submission failed",
-					"group", rule.Name, "action", actionID, "error", err)
+					"group", rule.Name, "action", a.ID, "error", err)
 			} else {
 				e.actionsFired.Add(1)
+				firedActions++
 			}
 		}
 
-		if len(rule.Outputs) > 0 {
+		var eligibleOutputs []string
+		for _, o := range rule.Outputs {
+			if meetsThreshold(rank, o.MinSeverity) {
+				eligibleOutputs = append(eligibleOutputs, o.ID)
+			}
+		}
+
+		if firedActions > 0 || len(eligibleOutputs) > 0 {
+			e.rulesMatched.Add(1)
+		}
+
+		if len(eligibleOutputs) > 0 {
 			e.outputRounds.Add(1)
 			ref := plugin.RuleRef{
-				GroupID:     rule.GroupID,
-				GroupName:   rule.Name,
-				MinSeverity: rule.MinSeverity,
+				GroupID:   rule.GroupID,
+				GroupName: rule.Name,
 			}
 			roundCtx, cancel := context.WithTimeout(ctx, outputRoundTimeout)
-			err := e.outputs.SubmitRule(roundCtx, rule.Outputs, changeOf(ev), ref)
+			err := e.outputs.SubmitRule(roundCtx, eligibleOutputs, changeOf(ev), ref)
 			cancel()
 			if err != nil {
 				e.outputErrors.Add(1)
@@ -215,6 +224,16 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			}
 		}
 	}
+}
+
+// meetsThreshold reports whether an event rank satisfies a channel's
+// minimum severity.
+func meetsThreshold(rank int, minSeverity string) bool {
+	threshold, ok := storage.SeverityRank(minSeverity)
+	if !ok {
+		threshold = 0
+	}
+	return rank >= threshold
 }
 
 // changeOf maps a canonical hazard transition to the EventChange shape

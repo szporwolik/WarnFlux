@@ -109,7 +109,7 @@ func TestGroupsPageRequiresLogin(t *testing.T) {
 	}
 }
 
-func TestGroupRoutingAssignment(t *testing.T) {
+func TestGroupRoutingMatrix(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()
 	if _, err := env.users.CreateGroup("ops"); err != nil {
@@ -117,30 +117,36 @@ func TestGroupRoutingAssignment(t *testing.T) {
 	}
 	csrf := env.csrfFromPage("/groups")
 
-	// Invalid severity rejected.
-	resp, html := env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "min_severity": {"orange"}})
-	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "invalid minimum severity") {
-		t.Fatalf("invalid severity = %d %s", resp.StatusCode, html)
-	}
-
 	// Unknown channel ID rejected (never silently stored).
-	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "min_severity": {"severe"}, "actions": {"nope"}})
+	resp, _ := env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "actions": {"nope"}})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("unknown action = %d, want 422", resp.StatusCode)
 	}
 
 	// Disabled actions are not assignable.
-	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "min_severity": {"severe"}, "actions": {"logger-off"}})
+	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "actions": {"logger-off"}})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("disabled action = %d, want 422", resp.StatusCode)
 	}
 
-	// Valid assignment with one action and one output.
+	// Invalid per-channel severity rejected.
+	resp, html := env.postForm("/groups/1/routing", url.Values{
+		"csrf":                     {csrf},
+		"actions":                  {"logger-action"},
+		"action_sev:logger-action": {"orange"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "invalid severity") {
+		t.Fatalf("invalid channel severity = %d %s", resp.StatusCode, html)
+	}
+
+	// Valid matrix: logger at severe, mqtt at moderate; a missing
+	// per-channel severity defaults to 'unknown'.
 	resp, _ = env.postForm("/groups/1/routing", url.Values{
-		"csrf":         {csrf},
-		"min_severity": {"severe"},
-		"actions":      {"logger-action"},
-		"outputs":      {"mqtt-main"},
+		"csrf":                     {csrf},
+		"actions":                  {"logger-action"},
+		"action_sev:logger-action": {"severe"},
+		"outputs":                  {"mqtt-main"},
+		"output_sev:mqtt-main":     {"moderate"},
 	})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/groups" {
 		t.Fatalf("routing save = %d %q, want redirect to /groups", resp.StatusCode, resp.Header.Get("Location"))
@@ -150,22 +156,28 @@ func TestGroupRoutingAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GroupRouting: %v", err)
 	}
-	if r.MinSeverity != "severe" || len(r.Actions) != 1 || r.Actions[0] != "logger-action" ||
-		len(r.Outputs) != 1 || r.Outputs[0] != "mqtt-main" {
-		t.Fatalf("routing = %+v", r)
+	if len(r.Actions) != 1 || r.Actions[0].ID != "logger-action" || r.Actions[0].MinSeverity != "severe" {
+		t.Fatalf("actions = %+v", r.Actions)
+	}
+	if len(r.Outputs) != 1 || r.Outputs[0].ID != "mqtt-main" || r.Outputs[0].MinSeverity != "moderate" {
+		t.Fatalf("outputs = %+v", r.Outputs)
 	}
 
-	// The page renders the threshold and channel counts, and the popover
-	// prefills the saved selection.
+	// The page renders per-channel chips and the popover prefills.
 	_, html = env.get("/groups")
-	for _, want := range []string{"severe", "1 actions · 1 outputs", `value="logger-action"`, `name="min_severity"`} {
+	for _, want := range []string{
+		"logger-action", "mqtt-main",
+		`name="action_sev:logger-action"`,
+		`name="output_sev:mqtt-main"`,
+		"severe or higher", "moderate or higher",
+	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("groups page missing %q: %s", want, html)
 		}
 	}
 
-	// Clearing everything resets the threshold to permissive.
-	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "min_severity": {"unknown"}})
+	// Unchecking everything clears the matrix.
+	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("clear routing = %d, want redirect", resp.StatusCode)
 	}
@@ -173,7 +185,7 @@ func TestGroupRoutingAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GroupRouting after clear: %v", err)
 	}
-	if r.MinSeverity != "unknown" || len(r.Actions) != 0 || len(r.Outputs) != 0 {
+	if len(r.Actions) != 0 || len(r.Outputs) != 0 {
 		t.Fatalf("routing after clear = %+v", r)
 	}
 }

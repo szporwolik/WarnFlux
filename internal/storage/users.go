@@ -47,26 +47,30 @@ type User struct {
 
 // Group is one notification recipient group. Members is the number of
 // users assigned to it (populated by ListGroups/ListAllGroups/GetGroup;
-// zero when not requested). MinSeverity is the routing threshold: events
-// ranked below it are never delivered to this group.
+// zero when not requested).
 type Group struct {
-	ID          int64
-	Name        string
-	MinSeverity string
-	Members     int64
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID        int64
+	Name      string
+	Members   int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
-// GroupRouting is the full notification routing of one group: the minimum
-// severity threshold plus the configured action and output instance IDs
-// assigned to it.
-type GroupRouting struct {
-	GroupID     int64
-	Name        string
+// ChannelAssignment is one cell of a group's routing matrix: a configured
+// action or output instance ID together with the minimum severity that
+// fires it ("unknown" = deliver everything).
+type ChannelAssignment struct {
+	ID          string
 	MinSeverity string
-	Actions     []string
-	Outputs     []string
+}
+
+// GroupRouting is the full notification routing matrix of one group:
+// every assigned action and output carries its own severity threshold.
+type GroupRouting struct {
+	GroupID int64
+	Name    string
+	Actions []ChannelAssignment
+	Outputs []ChannelAssignment
 }
 
 // GroupStore persists notification groups and the many-to-many user
@@ -93,14 +97,14 @@ type GroupStore interface {
 	GroupIDsForUser(userID int64) ([]int64, error)
 	// SetUserGroups replaces the user's group membership with groupIDs.
 	SetUserGroups(userID int64, groupIDs []int64) error
-	// GroupRouting returns the full routing of one group. A missing group
-	// reports storage.ErrGroupNotFound.
+	// GroupRouting returns the full routing matrix of one group. A missing
+	// group reports storage.ErrGroupNotFound.
 	GroupRouting(groupID int64) (GroupRouting, error)
-	// SetGroupRouting replaces the group's routing: severity threshold and
-	// assigned action/output instance IDs. An invalid severity reports
-	// storage.ErrInvalidSeverity; a missing group reports
+	// SetGroupRouting replaces the group's routing matrix: each assigned
+	// action/output carries its own minimum severity. An invalid severity
+	// reports storage.ErrInvalidSeverity; a missing group reports
 	// storage.ErrGroupNotFound.
-	SetGroupRouting(groupID int64, minSeverity string, actions, outputs []string) error
+	SetGroupRouting(groupID int64, actions, outputs []ChannelAssignment) error
 	// ListGroupRoutings returns the routing of every group (the rule
 	// engine's authoritative source), ordered by group name.
 	ListGroupRoutings() ([]GroupRouting, error)

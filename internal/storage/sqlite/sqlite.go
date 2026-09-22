@@ -285,6 +285,28 @@ CREATE TABLE group_outputs (
 );
 `,
 	},
+	{
+		// v8: per-channel severity routing matrix. The single group-wide
+		// threshold is replaced by one threshold per assigned action and
+		// per assigned output; existing assignments inherit the group's
+		// current threshold during the migration.
+		SQL: `
+ALTER TABLE group_actions ADD COLUMN min_severity TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE group_outputs ADD COLUMN min_severity TEXT NOT NULL DEFAULT 'unknown';
+
+UPDATE group_actions
+SET min_severity = COALESCE(
+	(SELECT g.min_severity FROM groups g WHERE g.id = group_actions.group_id),
+	'unknown');
+
+UPDATE group_outputs
+SET min_severity = COALESCE(
+	(SELECT g.min_severity FROM groups g WHERE g.id = group_outputs.group_id),
+	'unknown');
+
+ALTER TABLE groups DROP COLUMN min_severity;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

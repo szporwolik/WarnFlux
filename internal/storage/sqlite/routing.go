@@ -9,13 +9,13 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
-// GroupRouting returns the full routing of one group: severity threshold
-// and the assigned action/output instance IDs, each sorted by ID.
+// GroupRouting returns the full routing matrix of one group: every
+// assigned action and output carries its own severity threshold, sorted
+// by ID.
 func (s *Store) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 	var r storage.GroupRouting
-	err := s.db.QueryRow(`
-		SELECT id, name, min_severity FROM groups WHERE id = ?`, groupID).
-		Scan(&r.GroupID, &r.Name, &r.MinSeverity)
+	err := s.db.QueryRow(`SELECT id, name FROM groups WHERE id = ?`, groupID).
+		Scan(&r.GroupID, &r.Name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.GroupRouting{}, storage.ErrGroupNotFound
 	}
@@ -23,11 +23,11 @@ func (s *Store) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 		return storage.GroupRouting{}, fmt.Errorf("group %d routing: %w", groupID, err)
 	}
 
-	actions, err := s.groupActionIDs(groupID)
+	actions, err := s.groupActions(groupID)
 	if err != nil {
 		return storage.GroupRouting{}, err
 	}
-	outputs, err := s.groupOutputIDs(groupID)
+	outputs, err := s.groupOutputs(groupID)
 	if err != nil {
 		return storage.GroupRouting{}, err
 	}
@@ -36,15 +36,23 @@ func (s *Store) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 	return r, nil
 }
 
-// SetGroupRouting replaces the group's routing in one transaction. The
-// severity threshold must be canonical; action/output IDs reference the
-// configuration (not database rows) and are stored as-is, deduplicated.
-func (s *Store) SetGroupRouting(groupID int64, minSeverity string, actions, outputs []string) error {
-	if !storage.ValidSeverity(minSeverity) {
-		return storage.ErrInvalidSeverity
+// SetGroupRouting replaces the group's routing matrix in one transaction.
+// Every assigned channel carries its own canonical severity threshold;
+// IDs reference the configuration (not database rows) and are stored
+// as-is, deduplicated.
+func (s *Store) SetGroupRouting(groupID int64, actions, outputs []storage.ChannelAssignment) error {
+	for _, a := range actions {
+		if !storage.ValidSeverity(a.MinSeverity) {
+			return storage.ErrInvalidSeverity
+		}
 	}
-	actions = dedupeIDs(actions)
-	outputs = dedupeIDs(outputs)
+	for _, o := range outputs {
+		if !storage.ValidSeverity(o.MinSeverity) {
+			return storage.ErrInvalidSeverity
+		}
+	}
+	actions = dedupeAssignments(actions)
+	outputs = dedupeAssignments(outputs)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -53,15 +61,13 @@ func (s *Store) SetGroupRouting(groupID int64, minSeverity string, actions, outp
 	defer tx.Rollback()
 
 	now := s.now().UnixMilli()
-	res, err := tx.Exec(`
-		UPDATE groups SET min_severity = ?, updated_at_ms = ? WHERE id = ?`,
-		minSeverity, now, groupID)
+	res, err := tx.Exec(`UPDATE groups SET updated_at_ms = ? WHERE id = ?`, now, groupID)
 	if err != nil {
-		return fmt.Errorf("update group %d severity: %w", groupID, err)
+		return fmt.Errorf("touch group %d: %w", groupID, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("update group %d severity: %w", groupID, err)
+		return fmt.Errorf("touch group %d: %w", groupID, err)
 	}
 	if n == 0 {
 		return storage.ErrGroupNotFound
@@ -73,14 +79,18 @@ func (s *Store) SetGroupRouting(groupID int64, minSeverity string, actions, outp
 	if _, err := tx.Exec(`DELETE FROM group_outputs WHERE group_id = ?`, groupID); err != nil {
 		return fmt.Errorf("clear group %d outputs: %w", groupID, err)
 	}
-	for _, id := range actions {
-		if _, err := tx.Exec(`INSERT INTO group_actions (group_id, action_id) VALUES (?, ?)`, groupID, id); err != nil {
-			return fmt.Errorf("assign action %q to group %d: %w", id, groupID, err)
+	for _, a := range actions {
+		if _, err := tx.Exec(`
+			INSERT INTO group_actions (group_id, action_id, min_severity)
+			VALUES (?, ?, ?)`, groupID, a.ID, a.MinSeverity); err != nil {
+			return fmt.Errorf("assign action %q to group %d: %w", a.ID, groupID, err)
 		}
 	}
-	for _, id := range outputs {
-		if _, err := tx.Exec(`INSERT INTO group_outputs (group_id, output_id) VALUES (?, ?)`, groupID, id); err != nil {
-			return fmt.Errorf("assign output %q to group %d: %w", id, groupID, err)
+	for _, o := range outputs {
+		if _, err := tx.Exec(`
+			INSERT INTO group_outputs (group_id, output_id, min_severity)
+			VALUES (?, ?, ?)`, groupID, o.ID, o.MinSeverity); err != nil {
+			return fmt.Errorf("assign output %q to group %d: %w", o.ID, groupID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -89,50 +99,99 @@ func (s *Store) SetGroupRouting(groupID int64, minSeverity string, actions, outp
 	return nil
 }
 
-// ListGroupRoutings returns the routing of every group ordered by name.
-// Groups without any assigned channel yield empty slices.
+// ListGroupRoutings returns the routing matrix of every group ordered by
+// name. Groups without any assigned channel yield empty slices.
 func (s *Store) ListGroupRoutings() ([]storage.GroupRouting, error) {
-	rows, err := s.db.Query(`
-		SELECT g.id, g.name, g.min_severity, ga.action_id, go.output_id
-		FROM groups g
-		LEFT JOIN group_actions ga ON ga.group_id = g.id
-		LEFT JOIN group_outputs go ON go.group_id = g.id
-		ORDER BY g.name COLLATE NOCASE ASC, ga.action_id ASC, go.output_id ASC`)
+	rows, err := s.db.Query(`SELECT id, name FROM groups ORDER BY name COLLATE NOCASE ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list group routings: %w", err)
 	}
 	defer rows.Close()
 
-	index := map[int64]int{}
 	var out []storage.GroupRouting
 	for rows.Next() {
-		var gid int64
-		var name, severity string
-		var actionID, outputID sql.NullString
-		if err := rows.Scan(&gid, &name, &severity, &actionID, &outputID); err != nil {
+		var r storage.GroupRouting
+		if err := rows.Scan(&r.GroupID, &r.Name); err != nil {
 			return nil, fmt.Errorf("scan group routing: %w", err)
 		}
-		i, ok := index[gid]
-		if !ok {
-			out = append(out, storage.GroupRouting{GroupID: gid, Name: name, MinSeverity: severity})
-			i = len(out) - 1
-			index[gid] = i
-		}
-		if actionID.Valid {
-			out[i].Actions = append(out[i].Actions, actionID.String)
-		}
-		if outputID.Valid {
-			out[i].Outputs = append(out[i].Outputs, outputID.String)
-		}
+		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate group routings: %w", err)
 	}
 	for i := range out {
-		out[i].Actions = dedupeIDs(out[i].Actions)
-		out[i].Outputs = dedupeIDs(out[i].Outputs)
+		actions, err := s.groupActions(out[i].GroupID)
+		if err != nil {
+			return nil, err
+		}
+		outputs, err := s.groupOutputs(out[i].GroupID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Actions = actions
+		out[i].Outputs = outputs
 	}
 	return out, nil
+}
+
+// groupActions reads the assigned actions with their thresholds, sorted.
+func (s *Store) groupActions(groupID int64) ([]storage.ChannelAssignment, error) {
+	rows, err := s.db.Query(`
+		SELECT action_id, min_severity FROM group_actions
+		WHERE group_id = ? ORDER BY action_id ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d actions: %w", groupID, err)
+	}
+	defer rows.Close()
+	return scanAssignments(rows, fmt.Sprintf("scan group %d action", groupID))
+}
+
+// groupOutputs reads the assigned outputs with their thresholds, sorted.
+func (s *Store) groupOutputs(groupID int64) ([]storage.ChannelAssignment, error) {
+	rows, err := s.db.Query(`
+		SELECT output_id, min_severity FROM group_outputs
+		WHERE group_id = ? ORDER BY output_id ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d outputs: %w", groupID, err)
+	}
+	defer rows.Close()
+	return scanAssignments(rows, fmt.Sprintf("scan group %d output", groupID))
+}
+
+type assignmentScanner interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+// scanAssignments reads (id, min_severity) rows into assignments.
+func scanAssignments(rows assignmentScanner, what string) ([]storage.ChannelAssignment, error) {
+	var out []storage.ChannelAssignment
+	for rows.Next() {
+		var a storage.ChannelAssignment
+		if err := rows.Scan(&a.ID, &a.MinSeverity); err != nil {
+			return nil, fmt.Errorf("%s: %w", what, err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// dedupeAssignments removes duplicates (by ID) while preserving order.
+func dedupeAssignments(list []storage.ChannelAssignment) []storage.ChannelAssignment {
+	seen := make(map[string]struct{}, len(list))
+	out := list[:0]
+	for _, a := range list {
+		if a.ID == "" {
+			continue
+		}
+		if _, ok := seen[a.ID]; ok {
+			continue
+		}
+		seen[a.ID] = struct{}{}
+		out = append(out, a)
+	}
+	return out
 }
 
 // GroupRecipientEmails returns the distinct (case-insensitive), non-empty
@@ -164,59 +223,4 @@ func (s *Store) GroupRecipientEmails(groupID int64) ([]string, error) {
 		out = append(out, email)
 	}
 	return out, rows.Err()
-}
-
-// groupActionIDs reads the assigned action IDs for a group, sorted.
-func (s *Store) groupActionIDs(groupID int64) ([]string, error) {
-	rows, err := s.db.Query(`
-		SELECT action_id FROM group_actions WHERE group_id = ? ORDER BY action_id ASC`, groupID)
-	if err != nil {
-		return nil, fmt.Errorf("list group %d actions: %w", groupID, err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan group %d action: %w", groupID, err)
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
-}
-
-// groupOutputIDs reads the assigned output IDs for a group, sorted.
-func (s *Store) groupOutputIDs(groupID int64) ([]string, error) {
-	rows, err := s.db.Query(`
-		SELECT output_id FROM group_outputs WHERE group_id = ? ORDER BY output_id ASC`, groupID)
-	if err != nil {
-		return nil, fmt.Errorf("list group %d outputs: %w", groupID, err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan group %d output: %w", groupID, err)
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
-}
-
-// dedupeIDs removes duplicates while preserving order.
-func dedupeIDs(ids []string) []string {
-	seen := make(map[string]struct{}, len(ids))
-	out := ids[:0]
-	for _, id := range ids {
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out
 }

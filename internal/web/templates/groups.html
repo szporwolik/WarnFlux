@@ -28,21 +28,26 @@
       <div class="table-wrap">
         <table class="plugins">
           <thead>
-            <tr><th>Group</th><th>Members</th><th>Min severity</th><th>Channels</th><th>Updated</th><th></th></tr>
+            <tr><th>Group</th><th>Members</th><th>Channels</th><th>Updated</th><th></th></tr>
           </thead>
           <tbody>
             {{range .Groups}}
-            {{$min := .MinSeverity}}
-            {{$acts := .Actions}}
-            {{$outs := .Outputs}}
+            {{$asev := .ActionSev}}
+            {{$osev := .OutputSev}}
             <tr>
               <td><strong>{{.Name}}</strong></td>
               <td><span class="count">{{.Members}}</span></td>
-              <td><span class="sev sev-{{sevClass .MinSeverity}}">{{.MinSeverity}}</span></td>
-              <td class="muted">
-                {{if or .Actions .Outputs}}
-                <span class="routing-count">{{len .Actions}} actions · {{len .Outputs}} outputs</span>
-                {{else}}none{{end}}
+              <td>
+                {{if or .ActionSev .OutputSev}}
+                <span class="routing-matrix">
+                  {{range $id, $sev := .ActionSev}}
+                  <span class="matrix-chip" title="action">{{$id}} <span class="sev sev-{{sevClass $sev}}">≥ {{$sev}}</span></span>
+                  {{end}}
+                  {{range $id, $sev := .OutputSev}}
+                  <span class="matrix-chip" title="output">{{$id}} <span class="sev sev-{{sevClass $sev}}">≥ {{$sev}}</span></span>
+                  {{end}}
+                </span>
+                {{else}}<span class="muted">none</span>{{end}}
               </td>
               <td class="muted">{{timeShort .UpdatedAt}}</td>
               <td class="row-actions">
@@ -50,19 +55,19 @@
                   <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Routing</summary>
                   <form method="post" action="/groups/{{.ID}}/routing" class="group-form routing-form">
                     <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                    <label class="routing-label">Minimum severity
-                      <select name="min_severity">
-                        {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $min}}selected{{end}}>{{.Label}}</option>{{end}}
-                      </select>
-                    </label>
+                    <p class="routing-hint">Tick a channel and pick the minimum severity that fires it.</p>
                     {{if $.Actions}}
                     <fieldset class="routing-set">
                       <legend>Actions</legend>
-                      <div class="checklist">
+                      <div class="matrix-list">
                         {{range $.Actions}}
-                        <label class="check-item">
-                          <input type="checkbox" name="actions" value="{{.ID}}" {{if contains $acts .ID}}checked{{end}}>
-                          <span>{{.ID}}</span>
+                        <label class="matrix-row">
+                          <input type="checkbox" name="actions" value="{{.ID}}" {{if index $asev .ID}}checked{{end}}>
+                          <span class="matrix-id">{{.ID}}</span>
+                          <select name="action_sev:{{.ID}}" class="matrix-sev" {{if not (index $asev .ID)}}disabled{{end}}>
+                            {{$cur := index $asev .ID}}
+                            {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $cur}}selected{{end}}>{{.Label}}</option>{{end}}
+                          </select>
                         </label>
                         {{end}}
                       </div>
@@ -71,11 +76,15 @@
                     {{if $.Outputs}}
                     <fieldset class="routing-set">
                       <legend>Outputs</legend>
-                      <div class="checklist">
+                      <div class="matrix-list">
                         {{range $.Outputs}}
-                        <label class="check-item">
-                          <input type="checkbox" name="outputs" value="{{.ID}}" {{if contains $outs .ID}}checked{{end}}>
-                          <span>{{.ID}}</span>
+                        <label class="matrix-row">
+                          <input type="checkbox" name="outputs" value="{{.ID}}" {{if index $osev .ID}}checked{{end}}>
+                          <span class="matrix-id">{{.ID}}</span>
+                          <select name="output_sev:{{.ID}}" class="matrix-sev" {{if not (index $osev .ID)}}disabled{{end}}>
+                            {{$cur := index $osev .ID}}
+                            {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $cur}}selected{{end}}>{{.Label}}</option>{{end}}
+                          </select>
                         </label>
                         {{end}}
                       </div>

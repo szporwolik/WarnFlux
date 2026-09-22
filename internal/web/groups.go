@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,15 +15,15 @@ import (
 // groupsPerPage bounds the groups table to a compact, paginated view.
 const groupsPerPage = 10
 
-// groupRow is one groups-table row for the template.
+// groupRow is one groups-table row for the template. ActionSev/OutputSev
+// map each assigned channel ID to its own minimum severity.
 type groupRow struct {
-	ID          int64
-	Name        string
-	Members     int64
-	MinSeverity string
-	Actions     []string
-	Outputs     []string
-	UpdatedAt   time.Time
+	ID        int64
+	Name      string
+	Members   int64
+	ActionSev map[string]string
+	OutputSev map[string]string
+	UpdatedAt time.Time
 }
 
 // channelOption is one assignable action or output instance shown as a
@@ -162,10 +163,10 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/groups", http.StatusSeeOther)
 }
 
-// handleGroupRouting saves one group's notification routing: severity
-// threshold plus assigned action/output instance IDs. Only IDs that exist
-// in the current configuration are accepted, so stale form values can
-// never land in the database.
+// handleGroupRouting saves one group's notification routing matrix: every
+// assigned action/output carries its own minimum severity. Only IDs that
+// exist in the current configuration are accepted, so stale form values
+// can never land in the database.
 func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
@@ -178,54 +179,54 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	minSeverity := strings.ToLower(strings.TrimSpace(r.PostFormValue("min_severity")))
-	if minSeverity == "" {
-		minSeverity = "unknown"
+	actions, err := parseMatrixAssignments(r, r.PostForm["actions"], "action_sev:", s.availableActions())
+	if err != nil {
+		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, err.Error())
+		return
 	}
-	if !storage.ValidSeverity(minSeverity) {
-		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, "invalid minimum severity")
+	outputs, err := parseMatrixAssignments(r, r.PostForm["outputs"], "output_sev:", s.availableOutputs())
+	if err != nil {
+		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, err.Error())
 		return
 	}
 
-	actions, okActions := s.filterChannelIDs(r.PostForm["actions"], s.availableActions())
-	outputs, okOutputs := s.filterChannelIDs(r.PostForm["outputs"], s.availableOutputs())
-	if !okActions || !okOutputs {
-		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, "unknown action or output id in routing form")
-		return
-	}
-
-	if err := s.users.SetGroupRouting(id, minSeverity, actions, outputs); err != nil {
+	if err := s.users.SetGroupRouting(id, actions, outputs); err != nil {
 		s.renderGroupsError(w, r, groupErrorStatus(err), groupForm{}, 0, groupErrorMessage(err))
 		return
 	}
 	http.Redirect(w, r, "/groups", http.StatusSeeOther)
 }
 
-// filterChannelIDs keeps only posted IDs that exist in the allowed set and
-// reports whether any posted ID was unknown.
-func (s *Server) filterChannelIDs(posted []string, allowed []channelOption) ([]string, bool) {
+// parseMatrixAssignments builds the checked channel assignments from the
+// posted checkbox list: each checked ID gets its threshold from the
+// matching <prefix><id> field. Unknown IDs or invalid severities are
+// rejected.
+func parseMatrixAssignments(r *http.Request, posted []string, prefix string, allowed []channelOption) ([]storage.ChannelAssignment, error) {
 	known := make(map[string]bool, len(allowed))
 	for _, o := range allowed {
 		known[o.ID] = true
 	}
 	seen := make(map[string]bool, len(posted))
-	out := make([]string, 0, len(posted))
-	ok := true
+	out := make([]storage.ChannelAssignment, 0, len(posted))
 	for _, id := range posted {
 		id = strings.TrimSpace(id)
-		if id == "" {
+		if id == "" || seen[id] {
 			continue
 		}
 		if !known[id] {
-			ok = false
-			continue
+			return nil, fmt.Errorf("unknown action or output id %q in routing form", id)
 		}
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, id)
+		seen[id] = true
+		sev := strings.ToLower(strings.TrimSpace(r.PostFormValue(prefix + id)))
+		if sev == "" {
+			sev = "unknown"
 		}
+		if !storage.ValidSeverity(sev) {
+			return nil, fmt.Errorf("invalid severity for channel %q", id)
+		}
+		out = append(out, storage.ChannelAssignment{ID: id, MinSeverity: sev})
 	}
-	return out, ok
+	return out, nil
 }
 
 // availableActions lists the enabled configured action instances.
@@ -314,16 +315,20 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 	rows := make([]groupRow, 0, len(groups))
 	for _, g := range groups {
 		row := groupRow{
-			ID:          g.ID,
-			Name:        g.Name,
-			Members:     g.Members,
-			MinSeverity: g.MinSeverity,
-			UpdatedAt:   g.UpdatedAt,
+			ID:        g.ID,
+			Name:      g.Name,
+			Members:   g.Members,
+			ActionSev: map[string]string{},
+			OutputSev: map[string]string{},
+			UpdatedAt: g.UpdatedAt,
 		}
 		if routing, err := s.users.GroupRouting(g.ID); err == nil {
-			row.MinSeverity = routing.MinSeverity
-			row.Actions = routing.Actions
-			row.Outputs = routing.Outputs
+			for _, a := range routing.Actions {
+				row.ActionSev[a.ID] = a.MinSeverity
+			}
+			for _, o := range routing.Outputs {
+				row.OutputSev[o.ID] = o.MinSeverity
+			}
 		} else {
 			s.logger.Warn("web: group routing unavailable", "group", g.ID, "error", err)
 		}

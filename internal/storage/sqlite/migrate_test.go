@@ -185,6 +185,69 @@ func buildV3DB(t *testing.T) string {
 	return path
 }
 
+// TestMigrationV8RoutingMatrixBackfill builds a v7 database with the
+// group-wide threshold and verifies the v8 step moves it onto every
+// existing assignment and drops the obsolete column.
+func TestMigrationV8RoutingMatrixBackfill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v7.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := migrate(db, migrations[:7]); err != nil {
+		db.Close()
+		t.Fatalf("migrate to v7: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO groups (name, min_severity, created_at_ms, updated_at_ms)
+		VALUES ('spok', 'severe', 1, 1)`); err != nil {
+		db.Close()
+		t.Fatalf("insert group: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO group_actions (group_id, action_id) VALUES (1, 'log')`); err != nil {
+		db.Close()
+		t.Fatalf("insert action: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO group_outputs (group_id, output_id) VALUES (1, 'mqtt')`); err != nil {
+		db.Close()
+		t.Fatalf("insert output: %v", err)
+	}
+	db.Close()
+
+	store, info, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open of v7 database: %v", err)
+	}
+	defer store.Close()
+	if info.From != 7 || info.To != 8 {
+		t.Fatalf("migration = %+v, want {From:7 To:8}", info)
+	}
+
+	r, err := store.GroupRouting(1)
+	if err != nil {
+		t.Fatalf("GroupRouting: %v", err)
+	}
+	if len(r.Actions) != 1 || r.Actions[0].MinSeverity != "severe" {
+		t.Errorf("backfilled action = %+v, want severe", r.Actions)
+	}
+	if len(r.Outputs) != 1 || r.Outputs[0].MinSeverity != "severe" {
+		t.Errorf("backfilled output = %+v, want severe", r.Outputs)
+	}
+
+	// The obsolete column must be gone.
+	var n int
+	if err := store.db.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info('groups') WHERE name = 'min_severity'`).Scan(&n); err != nil {
+		t.Fatalf("column check: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("groups.min_severity still present after v8")
+	}
+}
+
 // TestMigrationV4BackfillsLastSeen builds a v3 database with a legacy text
 // last_seen_at and verifies the v4 step backfills last_seen_at_ms.
 func TestMigrationV4BackfillsLastSeen(t *testing.T) {
@@ -208,8 +271,8 @@ func TestMigrationV4BackfillsLastSeen(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if info.To != 7 {
-		t.Fatalf("migrated to %d, want 7", info.To)
+	if info.To != 8 {
+		t.Fatalf("migrated to %d, want 8", info.To)
 	}
 	var ms int64
 	if err := store.db.QueryRow("SELECT last_seen_at_ms FROM events WHERE event_key = 'src:1'").Scan(&ms); err != nil {
@@ -322,16 +385,16 @@ func TestMigrationV2WithJournalReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of real v2 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 2 || info.To != 7 {
-		t.Fatalf("migration = %+v, want {From:2 To:7}", info)
+	if info.From != 2 || info.To != 8 {
+		t.Fatalf("migration = %+v, want {From:2 To:8}", info)
 	}
 
 	var v int
 	if err := store.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if v != 7 {
-		t.Errorf("user_version = %d, want 7", v)
+	if v != 8 {
+		t.Errorf("user_version = %d, want 8", v)
 	}
 
 	// The event row survives with a correct machine-time last_seen.
@@ -385,8 +448,8 @@ func TestMigrationV2EventsWithoutJournalReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of v2 database: %v", err)
 	}
 	defer store.Close()
-	if info.To != 7 {
-		t.Fatalf("migrated to %d, want 7", info.To)
+	if info.To != 8 {
+		t.Fatalf("migrated to %d, want 8", info.To)
 	}
 	if _, err := store.Get(context.Background(), "v2src:1"); err != nil {
 		t.Fatalf("Get after migration: %v", err)
@@ -423,8 +486,8 @@ func TestMigrationV1WithRowsReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of real v1 database: %v", err)
 	}
 	defer store.Close()
-	if info.From != 1 || info.To != 7 {
-		t.Fatalf("migration = %+v, want {From:1 To:7}", info)
+	if info.From != 1 || info.To != 8 {
+		t.Fatalf("migration = %+v, want {From:1 To:8}", info)
 	}
 	var expMs, seenMs int64
 	if err := store.db.QueryRow("SELECT expires_at_ms, last_seen_at_ms FROM events WHERE event_key = 'v1src:1'").Scan(&expMs, &seenMs); err != nil {
@@ -497,8 +560,8 @@ func TestMigrationLegacyCursorWithoutTypeResetsOnSync(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if info.To != 7 {
-		t.Fatalf("migrated to %d, want 7", info.To)
+	if info.To != 8 {
+		t.Fatalf("migrated to %d, want 8", info.To)
 	}
 
 	ctx := context.Background()

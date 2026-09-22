@@ -245,11 +245,12 @@ actions:
       level: info
 
   # SMTP email action: sends one plain-text email per routed dispatch
-  # event. Requires host, from and at least one recipient. STARTTLS is
-  # attempted automatically (disable with starttls: false); AUTH PLAIN is
-  # used when username is set. The password comes from password OR
-  # password_file (Docker secrets), never both. ca_file appends a PEM CA
-  # bundle for private servers with their own certificate authority.
+  # event. Requires host, from and at least one recipient. Two TLS modes:
+  # STARTTLS (port 587, default) or implicit TLS/SMTPS (port 465, set
+  # implicit_tls: true). AUTH PLAIN is used when username is set. The
+  # password comes from password OR password_file (Docker secrets), never
+  # both. ca_file appends a PEM CA bundle for private servers with their
+  # own certificate authority.
   # - id: smtp-alerts
   #   type: smtp
   #   enabled: false
@@ -267,6 +268,7 @@ actions:
   #     username: ""
   #     password: ""
   #     password_file: ""
+  #     implicit_tls: false
   #     starttls: true
   #     ca_file: ""
   #     subject_prefix: "[WarnFlux]"

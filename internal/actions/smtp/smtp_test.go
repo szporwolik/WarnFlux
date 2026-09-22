@@ -45,6 +45,9 @@ type smtpServer struct {
 	tlsCfg   *tls.Config
 	listener net.Listener
 	done     chan struct{}
+	// implicitTLS wraps the connection in TLS before the SMTP greeting
+	// (SMTPS on port 465 style).
+	implicitTLS bool
 }
 
 func (s *smtpServer) addr() string { return s.listener.Addr().String() }
@@ -72,6 +75,14 @@ func newSMTPServer(t *testing.T, tlsCfg *tls.Config) *smtpServer {
 	return s
 }
 
+// newImplicitSMTPServer is an SMTPS-style server: TLS from the first byte.
+func newImplicitSMTPServer(t *testing.T, tlsCfg *tls.Config) *smtpServer {
+	t.Helper()
+	s := newSMTPServer(t, tlsCfg)
+	s.implicitTLS = true
+	return s
+}
+
 func (s *smtpServer) acceptLoop() {
 	defer close(s.done)
 	for {
@@ -86,6 +97,13 @@ func (s *smtpServer) acceptLoop() {
 func (s *smtpServer) serve(conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if s.implicitTLS {
+		tlsConn := tls.Server(conn, s.tlsCfg)
+		if err := tlsConn.Handshake(); err != nil {
+			return
+		}
+		conn = tlsConn
+	}
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
 	write := func(line string) error {
@@ -356,6 +374,43 @@ subject_prefix: "[SPOK]"
 	}
 	if !strings.Contains(mails[1].data, "Subject: =?utf-8?q?") || !strings.Contains(mails[1].data, "=C5=9B") {
 		t.Errorf("non-ASCII subject not q-encoded:\n%s", mails[1].data)
+	}
+}
+
+func TestSendImplicitTLSWithCAFile(t *testing.T) {
+	tlsCfg, certPEM := selfSignedCert(t)
+	srv := newImplicitSMTPServer(t, tlsCfg)
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [ops@example.com]
+implicit_tls: true
+ca_file: %s
+`, port, caPath)))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.Execute(ctx, hazardReq()); err != nil {
+		t.Fatalf("Execute over SMTPS: %v", err)
+	}
+
+	got := srv.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("received %d mails, want 1", len(got))
+	}
+	if !strings.Contains(got[0].data, "Severity: severe") {
+		t.Errorf("mail body:\n%s", got[0].data)
 	}
 }
 

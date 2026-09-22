@@ -65,8 +65,12 @@ type Config struct {
 	// To lists the static recipients. Required (at least one).
 	To []string `yaml:"to"`
 	// StartTLS enables the SMTP STARTTLS upgrade when the server offers
-	// it. Defaults to true when omitted.
+	// it. Defaults to true when omitted; ignored when ImplicitTLS is set.
 	StartTLS *bool `yaml:"starttls"`
+	// ImplicitTLS encrypts the connection from the first byte (SMTPS,
+	// typically port 465) instead of upgrading via STARTTLS. Defaults to
+	// false when omitted.
+	ImplicitTLS *bool `yaml:"implicit_tls"`
 	// CAFile optionally appends a PEM CA bundle to the system roots, for
 	// private SMTP servers with their own certificate authority.
 	CAFile string `yaml:"ca_file"`
@@ -117,6 +121,10 @@ func New(node *yaml.Node) (action.Plugin, error) {
 	if cfg.StartTLS == nil {
 		tls := true
 		cfg.StartTLS = &tls
+	}
+	if cfg.ImplicitTLS == nil {
+		no := false
+		cfg.ImplicitTLS = &no
 	}
 
 	p := &emailAction{id: Type, cfg: cfg, logger: slog.Default()}
@@ -169,9 +177,27 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 
 	addr := net.JoinHostPort(p.cfg.Host, fmt.Sprintf("%d", p.cfg.Port))
 	dialer := net.Dialer{Deadline: deadline}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return fmt.Errorf("smtp: connect to %s: %w", addr, err)
+
+	var conn net.Conn
+	if *p.cfg.ImplicitTLS {
+		// SMTPS: TLS from the first byte (typically port 465); STARTTLS
+		// is never attempted on an already-encrypted connection.
+		tlsCfg := &tls.Config{
+			ServerName: p.cfg.Host,
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    p.roots,
+		}
+		tlsConn, err := tls.DialWithDialer(&dialer, "tcp", addr, tlsCfg)
+		if err != nil {
+			return fmt.Errorf("smtp: tls connect to %s: %w", addr, err)
+		}
+		conn = tlsConn
+	} else {
+		c, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return fmt.Errorf("smtp: connect to %s: %w", addr, err)
+		}
+		conn = c
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(deadline)
@@ -184,7 +210,7 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 	}
 	defer client.Close()
 
-	if *p.cfg.StartTLS {
+	if *p.cfg.StartTLS && !*p.cfg.ImplicitTLS {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			tlsCfg := &tls.Config{
 				ServerName: p.cfg.Host,

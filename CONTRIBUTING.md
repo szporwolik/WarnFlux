@@ -39,8 +39,12 @@ go test -fuzz=FuzzNormalizeValidate -fuzztime=30s ./internal/core/
 go test -fuzz=FuzzLoad -fuzztime=30s ./internal/config/
 ```
 
-Open a pull request against `main`. CI runs format checks, `go vet`, the
-tests with the race detector and a vulnerability scan.
+Branching model: create a feature branch and open a pull request against
+`dev` (protected; requires one approving review and rejects force pushes).
+Once `dev` is green, open a pull request from `dev` into `main` (also
+protected, force pushes rejected). CI runs format checks, `go vet`, the
+tests with the race detector and a vulnerability scan on every push and
+pull request to `main` and `dev`.
 
 ## Conventions
 
@@ -58,7 +62,9 @@ tests with the race detector and a vulnerability scan.
 
 ## Release process
 
-- CI validates every pull request and every push to `main`.
+- CI validates every pull request and every push to `main` and `dev`.
+- Releases build from `main` only: the release workflow refuses tags that
+  do not point at a commit on `main`.
 - Tagging `v<semver>` (e.g. `v0.1.0`) triggers the release workflow:
   binaries for linux/amd64, linux/arm64 and windows/amd64, a `SHA256SUMS`
   file, a GitHub release and a multi-arch Docker image on

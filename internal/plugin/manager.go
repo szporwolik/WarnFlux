@@ -225,6 +225,49 @@ func maxSourceShutdownTimeout(sources []*sourceSupervisor) time.Duration {
 // Statuses returns a snapshot of every configured plugin instance.
 func (m *Manager) Statuses() []PluginStatus { return m.statuses.Snapshot() }
 
+// SubmitRule delivers one group-routed change to the requested output
+// instances. It is the output half of the group routing rule engine.
+//
+// Semantics:
+//   - unknown, not-enabled or non-RuleFeed outputs are skipped silently
+//     (a group's assignment may legitimately reference a stale config ID);
+//   - each RuleFeed callback runs under ctx with panic recovery, so one
+//     broken output can never take down the rule engine;
+//   - failures are aggregated into the returned error (nil when every
+//     delivery succeeded or was skipped); they never affect journal
+//     cursors or global hazard delivery.
+func (m *Manager) SubmitRule(ctx context.Context, outputIDs []string, change core.EventChange, ref RuleRef) error {
+	if len(outputIDs) == 0 {
+		return nil
+	}
+	byID := make(map[string]*outputWorker, len(m.outputs))
+	for _, w := range m.outputs {
+		byID[w.id] = w
+	}
+	var errs []error
+	for _, id := range outputIDs {
+		w, ok := byID[id]
+		if !ok {
+			continue
+		}
+		feed, ok := w.plugin.(RuleFeed)
+		if !ok {
+			continue
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					errs = append(errs, fmt.Errorf("output %q rule callback panicked: %v", id, r))
+				}
+			}()
+			if err := feed.HandleRule(ctx, change, ref); err != nil {
+				errs = append(errs, fmt.Errorf("output %q rule delivery: %w", id, err))
+			}
+		}()
+	}
+	return errors.Join(errs...)
+}
+
 // Run starts all workers and blocks until ctx is cancelled, then shuts
 // everything down with bounded timeouts:
 //

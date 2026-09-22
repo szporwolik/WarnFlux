@@ -296,6 +296,65 @@ func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 	return nil
 }
 
+// HandleRule implements the optional plugin.RuleFeed capability: it
+// publishes a group-routed change to the group-scoped event topic
+// <topic_prefix>/groups/<sanitized-group-name>/events (non-retained, same
+// wire schema as the global /events stream). Rule delivery is best-effort:
+// failures never affect the global journal stream or cursors.
+func (o *Output) HandleRule(ctx context.Context, change core.EventChange, ref plugin.RuleRef) error {
+	if err := o.ensureConnected(ctx); err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	msg := toWireEvent(change)
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal change: %w", err)
+	}
+
+	topic := o.cfg.TopicPrefix + "/groups/" + groupTopicPart(ref) + "/events"
+	token := o.client.Publish(topic, o.qos, false, payload)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-token.Done():
+	}
+	if err := token.Error(); err != nil {
+		return fmt.Errorf("publish to %s: %w", topic, err)
+	}
+	return nil
+}
+
+// groupTopicPart maps a group identity to a safe single MQTT topic level:
+// lowercase alphanumeric plus '.', '_' and '-', other characters collapse
+// to a dash. Names that sanitize to nothing (or grow past 48 characters)
+// fall back to "group-<id>" so a group is always addressable.
+func groupTopicPart(ref plugin.RuleRef) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(ref.GroupName)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_':
+			b.WriteRune(r)
+			lastDash = false
+		case r == '-':
+			if !lastDash && b.Len() > 0 {
+				b.WriteRune('-')
+				lastDash = true
+			}
+		default:
+			if !lastDash && b.Len() > 0 {
+				b.WriteRune('-')
+				lastDash = true
+			}
+		}
+	}
+	part := strings.Trim(b.String(), "-")
+	if part == "" || len(part) > 48 {
+		return fmt.Sprintf("group-%d", ref.GroupID)
+	}
+	return part
+}
+
 // updateActiveState materializes one event's active-view state. It runs
 // only after the /events publish succeeded. The desired cache is updated
 // BEFORE the network publish so a reconnect in the middle of the operation

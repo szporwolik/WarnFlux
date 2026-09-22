@@ -142,6 +142,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /groups", s.requirePage(s.handleGroupsPage))
 	s.mux.Handle("POST /groups", s.requirePage(s.handleGroupSave))
 	s.mux.Handle("POST /groups/{id}/delete", s.requirePage(s.handleGroupDelete))
+	s.mux.Handle("POST /groups/{id}/routing", s.requirePage(s.handleGroupRouting))
 	s.mux.Handle("GET /partials/status", s.requirePartial(s.handlePartialStatus))
 	s.mux.Handle("GET /partials/mqtt", s.requirePartial(s.handlePartialMQTT))
 	s.mux.Handle("GET /partials/weather", s.requirePartial(s.handlePartialWeather))
@@ -294,6 +295,14 @@ func templateFuncs() template.FuncMap {
 			default:
 				return "unknown"
 			}
+		},
+		"contains": func(list []string, s string) bool {
+			for _, v := range list {
+				if v == s {
+					return true
+				}
+			}
+			return false
 		},
 		"pluginClass": func(st plugin.PluginState) string {
 			switch st {

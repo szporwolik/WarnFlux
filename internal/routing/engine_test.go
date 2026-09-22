@@ -1,0 +1,249 @@
+package routing
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/storage"
+)
+
+type fakeStore struct {
+	mu    sync.Mutex
+	rules []storage.GroupRouting
+	err   error
+}
+
+func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]storage.GroupRouting(nil), f.rules...), f.err
+}
+
+// setMinSeverity mutates one cached rule under the store lock.
+func (f *fakeStore) setMinSeverity(groupID int64, severity string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rules {
+		if f.rules[i].GroupID == groupID {
+			f.rules[i].MinSeverity = severity
+			return
+		}
+	}
+}
+
+type fakeActions struct {
+	mu  sync.Mutex
+	got map[string][]string // actionID -> event keys
+	err error
+}
+
+func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.got == nil {
+		f.got = map[string][]string{}
+	}
+	f.got[id] = append(f.got[id], req.Event.Hazard.Key)
+	return f.err
+}
+
+type fakeOutputs struct {
+	mu  sync.Mutex
+	got []outCall
+}
+
+type outCall struct {
+	group string
+	ids   []string
+	sev   string
+}
+
+func (f *fakeOutputs) SubmitRule(_ context.Context, outputIDs []string, change core.EventChange, ref plugin.RuleRef) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.got = append(f.got, outCall{group: ref.GroupName, ids: outputIDs, sev: change.Event.Severity})
+	return nil
+}
+
+func hazardEvent(severity string, typ dispatch.TransitionType) dispatch.Event {
+	return dispatch.Event{
+		Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Type: typ,
+			Key:  "imgw:1",
+			Hazard: dispatch.Hazard{
+				EventKey: "imgw:1",
+				Source:   "imgw",
+				SourceID: "1",
+				Event:    "Storm",
+				Severity: severity,
+			},
+		},
+	}
+}
+
+// startEngine runs the engine against a test channel and returns the feed
+// plus the engine for stats assertions.
+func startEngine(t *testing.T, store RuleStore, acts ActionSubmitter, outs RuleOutputRouter) (*Engine, chan<- dispatch.Event) {
+	t.Helper()
+	e := New(store, acts, outs, slog.New(slog.DiscardHandler))
+	events := make(chan dispatch.Event, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.Run(ctx, events)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return e, events
+}
+
+func TestEngineSeverityThresholdAndFanOut(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", MinSeverity: "severe", Actions: []string{"log"}, Outputs: []string{"mqtt"}},
+		{GroupID: 2, Name: "rsp", MinSeverity: "unknown", Actions: []string{"log"}},
+		{GroupID: 3, Name: "silent", MinSeverity: "unknown"},
+	}}
+	acts := &fakeActions{}
+	outs := &fakeOutputs{}
+	e, feed := startEngine(t, store, acts, outs)
+
+	// severe matches spok (both channels) + rsp (action only); moderate
+	// matches rsp only; unknown matches rsp only: 2+1+1 action firings.
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	feed <- hazardEvent("moderate", dispatch.TransitionNew)
+	feed <- hazardEvent("unknown", dispatch.TransitionNew)
+
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["log"]) == 4
+	}, "log action fired 4 times")
+
+	outs.mu.Lock()
+	var severeGroups []string
+	for _, c := range outs.got {
+		if c.sev == "severe" {
+			severeGroups = append(severeGroups, c.group)
+		}
+	}
+	outs.mu.Unlock()
+	if len(severeGroups) != 1 || severeGroups[0] != "spok" {
+		t.Errorf("output deliveries for severe = %v, want exactly [spok]", severeGroups)
+	}
+
+	stats := e.Stats()
+	if stats.EventsSeen != 3 || stats.RulesMatched != 4 || stats.ActionsFired != 4 || stats.OutputRounds != 1 {
+		t.Errorf("stats = %+v, want 3 seen, 4 matched, 4 actions, 1 output round", stats)
+	}
+}
+
+func TestEngineChangeTypeProjection(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", MinSeverity: "unknown", Outputs: []string{"mqtt"}},
+	}}
+	outs := &fakeOutputs{}
+	e, feed := startEngine(t, store, &fakeActions{}, outs)
+
+	feed <- hazardEvent("extreme", dispatch.TransitionCancelled)
+
+	waitFor(t, func() bool {
+		outs.mu.Lock()
+		defer outs.mu.Unlock()
+		return len(outs.got) == 1
+	}, "one output round")
+
+	outs.mu.Lock()
+	got := outs.got[0]
+	outs.mu.Unlock()
+	if got.sev != "extreme" {
+		t.Errorf("delivered severity = %q, want extreme", got.sev)
+	}
+	if e.Stats().EventsSeen != 1 {
+		t.Errorf("EventsSeen = %d, want 1", e.Stats().EventsSeen)
+	}
+}
+
+func TestEngineNonHazardSkipped(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", MinSeverity: "unknown", Actions: []string{"log"}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts, &fakeOutputs{})
+
+	feed <- dispatch.Event{Kind: dispatch.EventMQTTMessage, MQTT: &dispatch.MQTTMessage{Topic: "x"}}
+	time.Sleep(50 * time.Millisecond)
+
+	if s := e.Stats(); s.EventsSeen != 0 {
+		t.Errorf("EventsSeen = %d, want 0 (mqtt_message is not routed)", s.EventsSeen)
+	}
+	acts.mu.Lock()
+	n := len(acts.got)
+	acts.mu.Unlock()
+	if n != 0 {
+		t.Errorf("actions fired %d times for a raw MQTT message", n)
+	}
+}
+
+func TestEngineUnrankedSeverityMatchesOnlyPermissive(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "strict", MinSeverity: "minor", Actions: []string{"log"}},
+		{GroupID: 2, Name: "permissive", MinSeverity: "unknown", Actions: []string{"log"}},
+	}}
+	acts := &fakeActions{}
+	_, feed := startEngine(t, store, acts, &fakeOutputs{})
+
+	// "orange" is not a canonical severity: only the permissive group may
+	// receive it.
+	feed <- hazardEvent("orange", dispatch.TransitionNew)
+
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["log"]) == 1
+	}, "permissive action fired once")
+}
+
+func TestEngineRuleReload(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", MinSeverity: "severe", Actions: []string{"log"}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts, &fakeOutputs{})
+
+	feed <- hazardEvent("unknown", dispatch.TransitionNew)
+	time.Sleep(50 * time.Millisecond)
+
+	// Lower the threshold; an explicit reload must pick it up.
+	store.setMinSeverity(1, "unknown")
+	e.refresh()
+	feed <- hazardEvent("unknown", dispatch.TransitionNew)
+
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["log"]) == 1
+	}, "action fired after reload")
+}
+
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}

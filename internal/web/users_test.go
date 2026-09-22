@@ -20,11 +20,16 @@ type fakeUsers struct {
 	nextGroupID int64
 	rows        []storage.User
 	groups      []storage.Group
-	membership  map[int64]map[int64]bool // userID -> groupID set
+	membership  map[int64]map[int64]bool       // userID -> groupID set
+	routing     map[int64]storage.GroupRouting // groupID -> routing
 }
 
 func newFakeUsers() *fakeUsers {
-	return &fakeUsers{nextID: 1, nextGroupID: 1, membership: make(map[int64]map[int64]bool)}
+	return &fakeUsers{
+		nextID: 1, nextGroupID: 1,
+		membership: make(map[int64]map[int64]bool),
+		routing:    make(map[int64]storage.GroupRouting),
+	}
 }
 
 func (f *fakeUsers) EnsureAdminUser(username string) error {
@@ -295,6 +300,69 @@ func (f *fakeUsers) SetUserGroups(userID int64, groupIDs []int64) error {
 	}
 	f.membership[userID] = set
 	return nil
+}
+
+func (f *fakeUsers) GroupRouting(groupID int64) (storage.GroupRouting, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, g := range f.groups {
+		if g.ID != groupID {
+			continue
+		}
+		r := f.routing[groupID]
+		r.GroupID = g.ID
+		r.Name = g.Name
+		if r.MinSeverity == "" {
+			r.MinSeverity = "unknown"
+		}
+		return r, nil
+	}
+	return storage.GroupRouting{}, storage.ErrGroupNotFound
+}
+
+func (f *fakeUsers) SetGroupRouting(groupID int64, minSeverity string, actions, outputs []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !storage.ValidSeverity(minSeverity) {
+		return storage.ErrInvalidSeverity
+	}
+	found := false
+	for i := range f.groups {
+		if f.groups[i].ID == groupID {
+			f.groups[i].MinSeverity = minSeverity
+			f.groups[i].UpdatedAt = time.Now()
+			found = true
+		}
+	}
+	if !found {
+		return storage.ErrGroupNotFound
+	}
+	f.routing[groupID] = storage.GroupRouting{
+		GroupID: groupID, MinSeverity: minSeverity,
+		Actions: append([]string(nil), actions...),
+		Outputs: append([]string(nil), outputs...),
+	}
+	return nil
+}
+
+func (f *fakeUsers) ListGroupRoutings() ([]storage.GroupRouting, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]storage.GroupRouting, 0, len(f.groups))
+	for _, g := range f.groups {
+		r := f.routing[g.ID]
+		r.GroupID = g.ID
+		r.Name = g.Name
+		if r.MinSeverity == "" {
+			r.MinSeverity = g.MinSeverity
+		}
+		if r.MinSeverity == "" {
+			r.MinSeverity = "unknown"
+		}
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
+	return out, nil
 }
 
 func userBefore(a, b storage.User) bool {

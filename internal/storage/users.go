@@ -27,6 +27,9 @@ var (
 	// ErrGroupNameTaken is returned when a group name is already used by
 	// another group (case-insensitive).
 	ErrGroupNameTaken = errors.New("group name already exists")
+	// ErrInvalidSeverity is returned when a routing severity threshold is
+	// not a canonical severity value.
+	ErrInvalidSeverity = errors.New("invalid severity")
 )
 
 // User is one alert-recipient record. The admin user (the web auth
@@ -44,13 +47,26 @@ type User struct {
 
 // Group is one notification recipient group. Members is the number of
 // users assigned to it (populated by ListGroups/ListAllGroups/GetGroup;
-// zero when not requested).
+// zero when not requested). MinSeverity is the routing threshold: events
+// ranked below it are never delivered to this group.
 type Group struct {
-	ID        int64
-	Name      string
-	Members   int64
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          int64
+	Name        string
+	MinSeverity string
+	Members     int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// GroupRouting is the full notification routing of one group: the minimum
+// severity threshold plus the configured action and output instance IDs
+// assigned to it.
+type GroupRouting struct {
+	GroupID     int64
+	Name        string
+	MinSeverity string
+	Actions     []string
+	Outputs     []string
 }
 
 // GroupStore persists notification groups and the many-to-many user
@@ -77,6 +93,17 @@ type GroupStore interface {
 	GroupIDsForUser(userID int64) ([]int64, error)
 	// SetUserGroups replaces the user's group membership with groupIDs.
 	SetUserGroups(userID int64, groupIDs []int64) error
+	// GroupRouting returns the full routing of one group. A missing group
+	// reports storage.ErrGroupNotFound.
+	GroupRouting(groupID int64) (GroupRouting, error)
+	// SetGroupRouting replaces the group's routing: severity threshold and
+	// assigned action/output instance IDs. An invalid severity reports
+	// storage.ErrInvalidSeverity; a missing group reports
+	// storage.ErrGroupNotFound.
+	SetGroupRouting(groupID int64, minSeverity string, actions, outputs []string) error
+	// ListGroupRoutings returns the routing of every group (the rule
+	// engine's authoritative source), ordered by group name.
+	ListGroupRoutings() ([]GroupRouting, error)
 }
 
 // DirectoryStore combines the user and group administration stores; the

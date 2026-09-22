@@ -170,12 +170,22 @@ For **outputs**:
   violates its timeout disables seeding for the rest of that startup
   pass (at most one abandoned goroutine per output).
 
-- **Single owner**: one output worker owns all callbacks into a plugin
-  instance (`Handle`, `PublishStatus`, `PublishInformation`, `Close`). The
-  only exception is a callback that violated its timeout and was
-  deliberately abandoned — Go cannot forcibly kill a goroutine, so an
+- **Single owner**: one output worker owns all journal-driven callbacks
+  into a plugin instance (`Handle`, `PublishStatus`, `PublishInformation`,
+  `Close`). The only exception is a callback that violated its timeout and
+  was deliberately abandoned — Go cannot forcibly kill a goroutine, so an
   abandoned auxiliary callback may overlap later `Handle` calls.
   Implementers MUST respect `ctx`.
+- **Rule-routed delivery** (`RuleFeed`): outputs with this optional
+  capability additionally receive group-routed, severity-filtered changes
+  from the rule engine (`SubmitRule` on the plugin manager). Unlike the
+  journal stream, rule delivery is **best-effort**: `HandleRule` failures
+  are logged and never affect cursors, suspension or hazard delivery.
+  `HandleRule` MAY be called concurrently with `Handle` and with other
+  `HandleRule` calls (the rule engine and the output worker are different
+  owners), so implementations must synchronize their own shared state.
+  The built-in MQTT output publishes rule deliveries to
+  `<topic_prefix>/groups/<group>/events` (non-retained).
 - **Information queue semantics**: information messages are coalesced by
   source+producer+key+kind in a bounded latest-value queue per output
   (128 unique pending identities; updates to an already-pending key never

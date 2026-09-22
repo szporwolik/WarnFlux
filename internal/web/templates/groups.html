@@ -28,15 +28,66 @@
       <div class="table-wrap">
         <table class="plugins">
           <thead>
-            <tr><th>Group</th><th>Members</th><th>Updated</th><th></th></tr>
+            <tr><th>Group</th><th>Members</th><th>Min severity</th><th>Channels</th><th>Updated</th><th></th></tr>
           </thead>
           <tbody>
             {{range .Groups}}
+            {{$min := .MinSeverity}}
+            {{$acts := .Actions}}
+            {{$outs := .Outputs}}
             <tr>
               <td><strong>{{.Name}}</strong></td>
               <td><span class="count">{{.Members}}</span></td>
+              <td><span class="sev sev-{{sevClass .MinSeverity}}">{{.MinSeverity}}</span></td>
+              <td class="muted">
+                {{if or .Actions .Outputs}}
+                <span class="routing-count">{{len .Actions}} actions · {{len .Outputs}} outputs</span>
+                {{else}}none{{end}}
+              </td>
               <td class="muted">{{timeShort .UpdatedAt}}</td>
               <td class="row-actions">
+                <details class="group-picker">
+                  <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Routing</summary>
+                  <form method="post" action="/groups/{{.ID}}/routing" class="group-form routing-form">
+                    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                    <label class="routing-label">Minimum severity
+                      <select name="min_severity">
+                        {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $min}}selected{{end}}>{{.Label}}</option>{{end}}
+                      </select>
+                    </label>
+                    {{if $.Actions}}
+                    <fieldset class="routing-set">
+                      <legend>Actions</legend>
+                      <div class="checklist">
+                        {{range $.Actions}}
+                        <label class="check-item">
+                          <input type="checkbox" name="actions" value="{{.ID}}" {{if contains $acts .ID}}checked{{end}}>
+                          <span>{{.ID}}</span>
+                        </label>
+                        {{end}}
+                      </div>
+                    </fieldset>
+                    {{end}}
+                    {{if $.Outputs}}
+                    <fieldset class="routing-set">
+                      <legend>Outputs</legend>
+                      <div class="checklist">
+                        {{range $.Outputs}}
+                        <label class="check-item">
+                          <input type="checkbox" name="outputs" value="{{.ID}}" {{if contains $outs .ID}}checked{{end}}>
+                          <span>{{.ID}}</span>
+                        </label>
+                        {{end}}
+                      </div>
+                    </fieldset>
+                    {{end}}
+                    {{if or $.Actions $.Outputs}}
+                    <button type="submit" class="btn-primary btn-add">Save routing</button>
+                    {{else}}
+                    <p class="muted routing-empty">No actions or outputs are configured in this instance.</p>
+                    {{end}}
+                  </form>
+                </details>
                 <a class="btn-ghost btn-small" href="/groups?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Edit</a>
                 <form method="post" action="/groups/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('Delete group {{.Name}}?');">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">

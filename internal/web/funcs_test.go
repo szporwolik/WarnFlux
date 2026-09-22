@@ -26,3 +26,17 @@ func TestDurFormatting(t *testing.T) {
 		}
 	}
 }
+
+func TestContainsFunc(t *testing.T) {
+	contains := templateFuncs()["contains"].(func([]string, string) bool)
+	list := []string{"log-alerts", "mqtt-spok"}
+	if !contains(list, "log-alerts") {
+		t.Error("contains(list, present) = false, want true")
+	}
+	if contains(list, "sms") {
+		t.Error("contains(list, absent) = true, want false")
+	}
+	if contains(nil, "anything") {
+		t.Error("contains(nil, s) = true, want false")
+	}
+}

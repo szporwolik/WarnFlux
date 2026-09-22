@@ -29,6 +29,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
+	"github.com/szporwolik/WarnFlux/internal/routing"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 	"github.com/szporwolik/WarnFlux/internal/web"
@@ -243,6 +244,19 @@ func run(configPath string) error {
 	actionsMgr.Start(ctx)
 	receivers.StartAll()
 
+	// Group routing rule engine: the consumer of the dispatch ingress. It
+	// evaluates every hazard transition against the group rules (severity
+	// threshold + assigned actions/outputs) with periodic rule reloads.
+	routingCtx, cancelRouting := context.WithCancel(ctx)
+	defer cancelRouting()
+	ruleEngine := routing.New(store, actionsMgr, manager, logger)
+	var routingWG sync.WaitGroup
+	routingWG.Add(1)
+	go func() {
+		defer routingWG.Done()
+		ruleEngine.Run(routingCtx, ingress.Events())
+	}()
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -284,6 +298,12 @@ func run(configPath string) error {
 	}
 
 	receivers.StopIntakeAll()
+
+	// Stop the rule engine before the ingress is drained/closed: it is the
+	// ingress consumer, and no action may be submitted after the action
+	// manager starts shutting down below.
+	cancelRouting()
+	routingWG.Wait()
 
 	// The manager stops sources, drains ingestion and closes outputs with
 	// bounded timeouts.

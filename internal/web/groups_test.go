@@ -108,3 +108,72 @@ func TestGroupsPageRequiresLogin(t *testing.T) {
 		t.Fatalf("GET /groups unauthenticated = %d %q, want redirect to /login", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }
+
+func TestGroupRoutingAssignment(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	if _, err := env.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+	csrf := env.csrfFromPage("/groups")
+
+	// Invalid severity rejected.
+	resp, html := env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "min_severity": {"orange"}})
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "invalid minimum severity") {
+		t.Fatalf("invalid severity = %d %s", resp.StatusCode, html)
+	}
+
+	// Unknown channel ID rejected (never silently stored).
+	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "min_severity": {"severe"}, "actions": {"nope"}})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown action = %d, want 422", resp.StatusCode)
+	}
+
+	// Disabled actions are not assignable.
+	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "min_severity": {"severe"}, "actions": {"logger-off"}})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("disabled action = %d, want 422", resp.StatusCode)
+	}
+
+	// Valid assignment with one action and one output.
+	resp, _ = env.postForm("/groups/1/routing", url.Values{
+		"csrf":         {csrf},
+		"min_severity": {"severe"},
+		"actions":      {"logger-action"},
+		"outputs":      {"mqtt-main"},
+	})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/groups" {
+		t.Fatalf("routing save = %d %q, want redirect to /groups", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	r, err := env.users.GroupRouting(1)
+	if err != nil {
+		t.Fatalf("GroupRouting: %v", err)
+	}
+	if r.MinSeverity != "severe" || len(r.Actions) != 1 || r.Actions[0] != "logger-action" ||
+		len(r.Outputs) != 1 || r.Outputs[0] != "mqtt-main" {
+		t.Fatalf("routing = %+v", r)
+	}
+
+	// The page renders the threshold and channel counts, and the popover
+	// prefills the saved selection.
+	_, html = env.get("/groups")
+	for _, want := range []string{"severe", "1 actions · 1 outputs", `value="logger-action"`, `name="min_severity"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("groups page missing %q: %s", want, html)
+		}
+	}
+
+	// Clearing everything resets the threshold to permissive.
+	resp, _ = env.postForm("/groups/1/routing", url.Values{"csrf": {csrf}, "min_severity": {"unknown"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("clear routing = %d, want redirect", resp.StatusCode)
+	}
+	r, err = env.users.GroupRouting(1)
+	if err != nil {
+		t.Fatalf("GroupRouting after clear: %v", err)
+	}
+	if r.MinSeverity != "unknown" || len(r.Actions) != 0 || len(r.Outputs) != 0 {
+		t.Fatalf("routing after clear = %+v", r)
+	}
+}

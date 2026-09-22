@@ -263,6 +263,28 @@ CREATE TABLE user_groups (
 );
 `,
 	},
+	{
+		// v7: group notification routing. Every group carries a minimum
+		// severity threshold ('unknown' delivers everything) plus the
+		// configured action/output instance IDs assigned to it. The IDs
+		// reference the configuration, not database rows: stale IDs after
+		// a config change are skipped at delivery time.
+		SQL: `
+ALTER TABLE groups ADD COLUMN min_severity TEXT NOT NULL DEFAULT 'unknown';
+
+CREATE TABLE group_actions (
+	group_id  INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+	action_id TEXT NOT NULL,
+	PRIMARY KEY (group_id, action_id)
+);
+
+CREATE TABLE group_outputs (
+	group_id  INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+	output_id TEXT NOT NULL,
+	PRIMARY KEY (group_id, output_id)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

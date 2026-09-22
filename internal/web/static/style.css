@@ -703,7 +703,6 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   color: var(--text);
   padding: 0.4rem 0.6rem;
   font-size: 0.9rem;
-  width: 100%;
 }
 .routing-form select:focus { outline: none; border-color: var(--link); }
 .routing-set {
@@ -711,6 +710,7 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   border-radius: var(--radius);
   padding: 0.5rem 0.6rem;
   margin: 0.35rem 0 0;
+  min-width: 0; /* override the fieldset UA min-content sizing */
 }
 .routing-set legend {
   font-size: 0.7rem;
@@ -767,7 +767,9 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   color: var(--text);
   padding: 0.25rem 0.4rem;
   font-size: 0.8rem;
-  flex: none;
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 100%;
 }
 .matrix-sev:focus { outline: none; border-color: var(--link); }
 .matrix-sev:disabled { opacity: 0.45; }

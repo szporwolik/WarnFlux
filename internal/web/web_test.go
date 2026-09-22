@@ -441,6 +441,17 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if strings.Contains(dashHTML, "brand-sub") {
 		t.Errorf("dashboard sidebar must not render header2: %s", dashHTML)
 	}
+
+	// The users page renders the same shared footer (regression guard:
+	// its view must carry the tagline too).
+	_, usersHTML := env.get("/users")
+	if !strings.Contains(usersHTML, `class="footer-tagline">Test tagline</span>`) {
+		t.Errorf("users footer missing tagline: %s", usersHTML)
+	}
+	_, groupsHTML := env.get("/groups")
+	if !strings.Contains(groupsHTML, `class="footer-tagline">Test tagline</span>`) {
+		t.Errorf("groups footer missing tagline: %s", groupsHTML)
+	}
 }
 
 func TestWarningsPagination(t *testing.T) {

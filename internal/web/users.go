@@ -46,6 +46,7 @@ type usersView struct {
 	Name     string
 	Header1  string
 	Header2  string
+	Tagline  string
 	Version  string
 	Commit   string
 	RepoURL  string
@@ -248,6 +249,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 		Name:     s.displayName(),
 		Header1:  s.displayHeader1(),
 		Header2:  s.cfg.Header2,
+		Tagline:  s.cfg.Tagline,
 		Version:  s.version,
 		Commit:   s.commit,
 		RepoURL:  repoURL,

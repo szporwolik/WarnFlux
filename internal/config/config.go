@@ -41,7 +41,7 @@ const (
 
 	defaultReceiverConnectTimeout = 10 * time.Second
 	defaultReceiverKeepAlive      = 30 * time.Second
-	defaultHRPrefix               = "warnflux"
+	defaultHRPrefix               = "warnflux" // frozen WarnFlux MQTT protocol namespace
 	defaultSubscriptionQoS        = 1
 
 	defaultWebListen = ":8080"
@@ -168,14 +168,14 @@ type Receiver struct {
 	KeepAlive      time.Duration
 
 	// WarnFlux mode subscribes the strict WarnFlux protocol topics.
-	WarnFlux ReceiverWarnFlux
+	HR ReceiverHR
 	// Subscriptions are additional generic MQTT topic filters.
 	Subscriptions []ReceiverSubscription
 }
 
-// ReceiverWarnFlux configures the WarnFlux protocol mode of one
+// ReceiverHR configures the WarnFlux MQTT protocol mode of one
 // receiver.
-type ReceiverWarnFlux struct {
+type ReceiverHR struct {
 	Enabled     bool
 	TopicPrefix string
 }
@@ -254,7 +254,7 @@ type fileReceiver struct {
 	PasswordFile   string                     `yaml:"password_file"`
 	ConnectTimeout *time.Duration             `yaml:"connect_timeout"`
 	KeepAlive      *time.Duration             `yaml:"keep_alive"`
-	WarnFlux   *fileReceiverHR            `yaml:"warnflux"`
+	HR             *fileReceiverHR            `yaml:"warnflux"`
 	Subscriptions  []fileReceiverSubscription `yaml:"subscriptions"`
 }
 
@@ -520,13 +520,13 @@ func (f fileConfig) toConfig() Config {
 			if r.KeepAlive != nil {
 				inst.KeepAlive = *r.KeepAlive
 			}
-			if r.WarnFlux != nil {
-				inst.WarnFlux = ReceiverWarnFlux{
-					Enabled:     r.WarnFlux.Enabled == nil || *r.WarnFlux.Enabled,
+			if r.HR != nil {
+				inst.HR = ReceiverHR{
+					Enabled:     r.HR.Enabled == nil || *r.HR.Enabled,
 					TopicPrefix: defaultHRPrefix,
 				}
-				if p := strings.TrimSpace(r.WarnFlux.TopicPrefix); p != "" {
-					inst.WarnFlux.TopicPrefix = p
+				if p := strings.TrimSpace(r.HR.TopicPrefix); p != "" {
+					inst.HR.TopicPrefix = p
 				}
 			}
 			for _, s := range r.Subscriptions {
@@ -678,8 +678,8 @@ func (c Config) Validate() error {
 		if r.Password != "" && r.PasswordFile != "" {
 			return fmt.Errorf("%s: password and password_file are mutually exclusive", field)
 		}
-		if r.WarnFlux.Enabled {
-			p := r.WarnFlux.TopicPrefix
+		if r.HR.Enabled {
+			p := r.HR.TopicPrefix
 			if strings.TrimSpace(p) == "" || strings.ContainsAny(p, "+#") {
 				return fmt.Errorf("%s.warnflux.topic_prefix must be a non-empty MQTT topic segment without '+' or '#'", field)
 			}
@@ -714,7 +714,7 @@ func (c Config) Validate() error {
 		if len(r.ClientID) > maxMQTTClientIDBytes {
 			return fmt.Errorf("%s.client_id is %d bytes, maximum %d", field, len(r.ClientID), maxMQTTClientIDBytes)
 		}
-		if !r.WarnFlux.Enabled && len(r.Subscriptions) == 0 {
+		if !r.HR.Enabled && len(r.Subscriptions) == 0 {
 			return fmt.Errorf("%s: enabled receiver needs warnflux mode or at least one subscription", field)
 		}
 	}

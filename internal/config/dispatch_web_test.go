@@ -80,14 +80,14 @@ func TestLoadDispatchWebActions(t *testing.T) {
 	if r.ConnectTimeout != 5*time.Second || r.KeepAlive != 45*time.Second {
 		t.Errorf("timeouts = %s %s", r.ConnectTimeout, r.KeepAlive)
 	}
-	if !r.WarnFlux.Enabled || r.WarnFlux.TopicPrefix != "warnflux" {
-		t.Errorf("warnflux mode = %+v", r.WarnFlux)
+	if !r.HR.Enabled || r.HR.TopicPrefix != "warnflux" {
+		t.Errorf("warnflux mode = %+v", r.HR)
 	}
 	if len(r.Subscriptions) != 2 || r.Subscriptions[0].QoS != 2 || r.Subscriptions[1].QoS != 1 {
 		t.Errorf("subscriptions = %+v", r.Subscriptions)
 	}
 	remote := cfg.Dispatch.Receivers[1]
-	if remote.Enabled || remote.WarnFlux.Enabled {
+	if remote.Enabled || remote.HR.Enabled {
 		t.Errorf("remote receiver unexpectedly enabled: %+v", remote)
 	}
 	if !cfg.Web.Enabled || cfg.Web.Listen != ":8080" || cfg.Web.Title != "WarnFlux" {
@@ -135,8 +135,8 @@ dispatch:
 	if r.ConnectTimeout != 10*time.Second || r.KeepAlive != 30*time.Second {
 		t.Errorf("default receiver timeouts = %s %s", r.ConnectTimeout, r.KeepAlive)
 	}
-	if !r.WarnFlux.Enabled || r.WarnFlux.TopicPrefix != "warnflux" {
-		t.Errorf("default warnflux mode = %+v", r.WarnFlux)
+	if !r.HR.Enabled || r.HR.TopicPrefix != "warnflux" {
+		t.Errorf("default warnflux mode = %+v", r.HR)
 	}
 }
 

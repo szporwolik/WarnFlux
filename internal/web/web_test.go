@@ -65,7 +65,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			ID: "local", Enabled: true,
 			Broker: "tcp://broker:1883", ClientID: "hr-dispatch-local",
 			ConnectTimeout: time.Second, KeepAlive: 30 * time.Second,
-			WarnFlux: config.ReceiverWarnFlux{Enabled: true, TopicPrefix: "warnflux"},
+			HR: config.ReceiverHR{Enabled: true, TopicPrefix: "warnflux"},
 		},
 		{
 			ID: "remote-club", Enabled: false,
@@ -192,7 +192,7 @@ func mustURL(t *testing.T, raw string) *url.URL {
 func TestLoginSuccess(t *testing.T) {
 	env := newTestEnv(t)
 	raw := env.login()
-	if !strings.Contains(raw, "hr_session=") {
+	if !strings.Contains(raw, "wf_session=") {
 		t.Fatalf("session cookie missing: %q", raw)
 	}
 	if !strings.Contains(raw, "HttpOnly") {
@@ -214,7 +214,7 @@ func TestWrongPasswordRejected(t *testing.T) {
 		t.Fatalf("POST /login = %d, want 401", resp.StatusCode)
 	}
 	for _, c := range env.client.Jar.Cookies(mustURL(t, env.srv.URL)) {
-		if c.Name == "hr_session" {
+		if c.Name == "wf_session" {
 			t.Fatal("session cookie issued after failed login")
 		}
 	}

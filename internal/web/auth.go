@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	sessionCookie = "hr_session"
-	csrfCookie    = "hr_csrf"
+	sessionCookie = "wf_session"
+	csrfCookie    = "wf_csrf"
 	sessionTTL    = 24 * time.Hour
 	maxSessions   = 4096
 )

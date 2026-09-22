@@ -40,13 +40,13 @@ func TestReceiverIndependence(t *testing.T) {
 			ID: "bad", Enabled: true,
 			Broker: "tcp://127.0.0.1:1", ClientID: "warnflux-test-bad",
 			ConnectTimeout: 300 * time.Millisecond, KeepAlive: 30 * time.Second,
-			WarnFlux: config.ReceiverWarnFlux{Enabled: true, TopicPrefix: "warnflux"},
+			HR: config.ReceiverHR{Enabled: true, TopicPrefix: "warnflux"},
 		},
 		{
 			ID: "good", Enabled: true,
 			Broker: "tcp://127.0.0.1:1", ClientID: "warnflux-test-good",
 			ConnectTimeout: 300 * time.Millisecond, KeepAlive: 30 * time.Second,
-			WarnFlux: config.ReceiverWarnFlux{Enabled: true, TopicPrefix: "warnflux"},
+			HR: config.ReceiverHR{Enabled: true, TopicPrefix: "warnflux"},
 		},
 	})
 	m.StartAll()

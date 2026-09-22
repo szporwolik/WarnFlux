@@ -89,8 +89,8 @@ func NewReceiver(cfg config.Receiver, st *state.State, ingress *dispatch.Ingress
 	}
 
 	var filters []string
-	if cfg.WarnFlux.Enabled {
-		filters = Subscriptions(cfg.WarnFlux.TopicPrefix)
+	if cfg.HR.Enabled {
+		filters = Subscriptions(cfg.HR.TopicPrefix)
 	}
 	for _, sub := range cfg.Subscriptions {
 		filters = append(filters, sub.Topic)
@@ -105,12 +105,12 @@ func NewReceiver(cfg config.Receiver, st *state.State, ingress *dispatch.Ingress
 			ID:            cfg.ID,
 			Enabled:       cfg.Enabled,
 			Broker:        sanitizeBroker(cfg.Broker),
-			HREnabled:     cfg.WarnFlux.Enabled,
-			HRPrefix:      cfg.WarnFlux.TopicPrefix,
+			HREnabled:     cfg.HR.Enabled,
+			HRPrefix:      cfg.HR.TopicPrefix,
 			Subscriptions: len(uniqueTopics(filters)),
 		},
 	}
-	r.ingestor = NewIngestor(cfg.ID, cfg.WarnFlux.Enabled, cfg.WarnFlux.TopicPrefix,
+	r.ingestor = NewIngestor(cfg.ID, cfg.HR.Enabled, cfg.HR.TopicPrefix,
 		subscriptionFilters(cfg), st, ingress, stats, logger)
 	return r, nil
 }
@@ -205,8 +205,8 @@ func (r *Receiver) setConnected(connected bool, lastErr string) {
 // protocol topics at QoS 1 plus the configured generic subscriptions).
 func (r *Receiver) subscribe() error {
 	topics := make(map[string]byte)
-	if r.cfg.WarnFlux.Enabled {
-		for _, t := range Subscriptions(r.cfg.WarnFlux.TopicPrefix) {
+	if r.cfg.HR.Enabled {
+		for _, t := range Subscriptions(r.cfg.HR.TopicPrefix) {
 			topics[t] = 1
 		}
 	}
@@ -260,8 +260,8 @@ func (r *Receiver) Status() Status {
 
 func allTopics(cfg config.Receiver) []string {
 	out := make([]string, 0, 4+len(cfg.Subscriptions))
-	if cfg.WarnFlux.Enabled {
-		out = append(out, Subscriptions(cfg.WarnFlux.TopicPrefix)...)
+	if cfg.HR.Enabled {
+		out = append(out, Subscriptions(cfg.HR.TopicPrefix)...)
 	}
 	for _, s := range cfg.Subscriptions {
 		out = append(out, s.Topic)

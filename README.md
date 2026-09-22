@@ -684,7 +684,7 @@ go test -fuzz=FuzzNormalizeValidate -fuzztime=30s ./internal/core/
 ## Project layout
 
 ```text
-cmd/warnflux/      application entry point, --version
+cmd/warnflux/          application entry point, --version
 internal/config/       YAML configuration loading and validation
 internal/core/         normalized event model, identity, fingerprint
 internal/ingest/       dedup/update/cancel pipeline

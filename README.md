@@ -1,5 +1,7 @@
 # WarnFlux
 
+> **Alerts in. Action out.**
+
 WarnFlux aggregates hazard and emergency information from pluggable
 sources, normalizes it into a common event model, deduplicates and tracks
 each event's lifecycle in SQLite, and delivers every meaningful change to

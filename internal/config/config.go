@@ -24,7 +24,9 @@ const (
 	defaultExpirationInterval = time.Minute
 	defaultChangeRetention    = 24 * time.Hour
 	defaultEventRetention     = 30 * 24 * time.Hour
-	defaultStorageDriver      = "sqlite"
+	// Bounds the action-fire dedup ledger; negative disables pruning.
+	defaultNotificationRetention = 30 * 24 * time.Hour
+	defaultStorageDriver         = "sqlite"
 	// An empty default means "not provided"; the application resolves a
 	// dev/debug location next to the executable at startup, with a
 	// warning, instead of failing.
@@ -90,6 +92,11 @@ type App struct {
 	// are kept in the events table before cleanup deletes them. Active
 	// events are never cleaned up.
 	EventRetention time.Duration
+	// NotificationRetention is how long action-fire ledger rows are kept
+	// before they are pruned. It bounds the deduplication window: once a
+	// row expires, a replayed event may fire again. Negative disables
+	// pruning entirely.
+	NotificationRetention time.Duration
 
 	// LogFile is the optional rotating log file. Empty means stdout only.
 	LogFile string
@@ -321,13 +328,14 @@ type fileActionRuntime struct {
 }
 
 type fileApp struct {
-	LogLevel           string         `yaml:"log_level"`
-	ExpirationInterval *time.Duration `yaml:"expiration_interval"`
-	ChangeRetention    *time.Duration `yaml:"change_retention"`
-	EventRetention     *time.Duration `yaml:"event_retention"`
-	LogFile            string         `yaml:"log_file"`
-	LogMaxSizeMB       *int           `yaml:"log_max_size_mb"`
-	LogMaxBackups      *int           `yaml:"log_max_backups"`
+	LogLevel              string         `yaml:"log_level"`
+	ExpirationInterval    *time.Duration `yaml:"expiration_interval"`
+	ChangeRetention       *time.Duration `yaml:"change_retention"`
+	EventRetention        *time.Duration `yaml:"event_retention"`
+	NotificationRetention *time.Duration `yaml:"notification_retention"`
+	LogFile               string         `yaml:"log_file"`
+	LogMaxSizeMB          *int           `yaml:"log_max_size_mb"`
+	LogMaxBackups         *int           `yaml:"log_max_backups"`
 }
 
 type fileStorage struct {
@@ -433,13 +441,14 @@ func Load(path string) (*Config, error) {
 func (f fileConfig) toConfig() Config {
 	cfg := Config{
 		App: App{
-			LogLevel:           defaultLogLevel,
-			ExpirationInterval: defaultExpirationInterval,
-			ChangeRetention:    defaultChangeRetention,
-			EventRetention:     defaultEventRetention,
-			LogFile:            defaultLogFile,
-			LogMaxSizeMB:       defaultLogMaxSizeMB,
-			LogMaxBackups:      defaultLogMaxBackups,
+			LogLevel:              defaultLogLevel,
+			ExpirationInterval:    defaultExpirationInterval,
+			ChangeRetention:       defaultChangeRetention,
+			EventRetention:        defaultEventRetention,
+			NotificationRetention: defaultNotificationRetention,
+			LogFile:               defaultLogFile,
+			LogMaxSizeMB:          defaultLogMaxSizeMB,
+			LogMaxBackups:         defaultLogMaxBackups,
 		},
 		Storage: Storage{
 			Driver: defaultStorageDriver,
@@ -458,6 +467,10 @@ func (f fileConfig) toConfig() Config {
 	}
 	if f.App.EventRetention != nil {
 		cfg.App.EventRetention = *f.App.EventRetention
+	}
+	// 0 means "use the default"; negative means "never prune".
+	if f.App.NotificationRetention != nil && *f.App.NotificationRetention != 0 {
+		cfg.App.NotificationRetention = *f.App.NotificationRetention
 	}
 	if file := strings.TrimSpace(f.App.LogFile); file != "" {
 		cfg.App.LogFile = file

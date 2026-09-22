@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -153,6 +154,35 @@ func dedupeAssignments(list []storage.ChannelAssignment) []storage.ChannelAssign
 		out = append(out, a)
 	}
 	return out
+}
+
+// ClaimActionFire records that (group, action) has delivered the event
+// identified by dedupKey. It returns true when the row is newly inserted
+// (the caller should fire the action) and false when that delivery was
+// already recorded (duplicate, skip).
+func (s *Store) ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error) {
+	res, err := s.db.Exec(`
+		INSERT OR IGNORE INTO action_fires
+			(group_id, action_id, event_key, dedup_key, fired_at_ms)
+		VALUES (?, ?, ?, ?, ?)`, groupID, actionID, eventKey, dedupKey, at.UnixMilli())
+	if err != nil {
+		return false, fmt.Errorf("claim action %q fire for group %d: %w", actionID, groupID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim action %q fire for group %d: %w", actionID, groupID, err)
+	}
+	return n == 1, nil
+}
+
+// PruneActionFires deletes ledger rows older than the cutoff and returns
+// how many rows were removed.
+func (s *Store) PruneActionFires(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM action_fires WHERE fired_at_ms < ?`, cutoff.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("prune action fires: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // GroupRecipientEmails returns the distinct (case-insensitive), non-empty

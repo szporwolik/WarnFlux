@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -89,6 +90,67 @@ func TestGroupRoutingErrors(t *testing.T) {
 	}
 	if err := store.SetGroupRouting(g.ID, []storage.ChannelAssignment{{ID: "a", MinSeverity: "EXTREME"}}); !errors.Is(err, storage.ErrInvalidSeverity) {
 		t.Fatalf("non-canonical severity error = %v, want ErrInvalidSeverity", err)
+	}
+}
+
+// TestClaimActionFire pins the durable delivery ledger: a (group, action,
+// event) claim succeeds exactly once and PruneActionFires removes rows by
+// age only.
+func TestClaimActionFire(t *testing.T) {
+	store := newRoutingStore(t)
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	first, err := store.ClaimActionFire(g.ID, "log", "imgw:1", "c:imgw:imgw:1:7", at)
+	if err != nil || !first {
+		t.Fatalf("first claim = (%v, %v), want (true, nil)", first, err)
+	}
+	second, err := store.ClaimActionFire(g.ID, "log", "imgw:1", "c:imgw:imgw:1:7", at.Add(time.Second))
+	if err != nil || second {
+		t.Fatalf("second claim = (%v, %v), want (false, nil)", second, err)
+	}
+	// Same dedup key but a different action or group is a new claim.
+	otherAction, err := store.ClaimActionFire(g.ID, "sms", "imgw:1", "c:imgw:imgw:1:7", at)
+	if err != nil || !otherAction {
+		t.Fatalf("other action claim = (%v, %v), want (true, nil)", otherAction, err)
+	}
+	h, err := store.CreateGroup("rsp")
+	if err != nil {
+		t.Fatalf("CreateGroup rsp: %v", err)
+	}
+	otherGroup, err := store.ClaimActionFire(h.ID, "log", "imgw:1", "c:imgw:imgw:1:7", at)
+	if err != nil || !otherGroup {
+		t.Fatalf("other group claim = (%v, %v), want (true, nil)", otherGroup, err)
+	}
+
+	// Prune with a cutoff before every row: nothing removed.
+	n, err := store.PruneActionFires(at.Add(-time.Minute))
+	if err != nil || n != 0 {
+		t.Fatalf("young prune = (%d, %v), want (0, nil)", n, err)
+	}
+	// A later change from the same event key is a fresh claim.
+	fresh, err := store.ClaimActionFire(g.ID, "log", "imgw:1", "c:imgw:imgw:1:8", at.Add(time.Hour))
+	if err != nil || !fresh {
+		t.Fatalf("fresh change claim = (%v, %v), want (true, nil)", fresh, err)
+	}
+	// Cutoff after the first three rows but before the fresh change:
+	// exactly the old rows go.
+	n, err = store.PruneActionFires(at.Add(30 * time.Minute))
+	if err != nil || n != 3 {
+		t.Fatalf("partial prune = (%d, %v), want (3, nil)", n, err)
+	}
+	// Pruning everything: the ledger is empty and dedup resets.
+	n, err = store.PruneActionFires(at.Add(2 * time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("full prune = (%d, %v), want (1, nil)", n, err)
+	}
+	again, err := store.ClaimActionFire(g.ID, "log", "imgw:1", "c:imgw:imgw:1:7", at)
+	if err != nil || !again {
+		t.Fatalf("claim after prune = (%v, %v), want (true, nil)", again, err)
 	}
 }
 

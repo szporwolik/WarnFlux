@@ -26,6 +26,11 @@ app:
   # events table, e.g. 720h (30 days). Active events are never cleaned.
   event_retention: 720h
 
+  # How long action-fire ledger rows are kept before pruning. They bound
+  # the dedup window: a replayed event can fire again only after its row
+  # expires. Negative = never prune (ledger grows forever).
+  notification_retention: 720h
+
 storage:
   # The only supported driver for now.
   driver: sqlite

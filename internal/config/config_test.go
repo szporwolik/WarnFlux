@@ -12,6 +12,7 @@ const exampleConfig = `app:
   log_level: info
   expiration_interval: 1m
   change_retention: 24h
+  notification_retention: 168h
 
 storage:
   driver: sqlite
@@ -87,6 +88,9 @@ func TestLoadFullConfig(t *testing.T) {
 	if cfg.App.EventRetention != 30*24*time.Hour {
 		t.Errorf("event_retention = %s", cfg.App.EventRetention)
 	}
+	if cfg.App.NotificationRetention != 168*time.Hour {
+		t.Errorf("notification_retention = %s", cfg.App.NotificationRetention)
+	}
 	if cfg.Storage.Driver != "sqlite" || cfg.Storage.Path != "./warnflux.db" {
 		t.Errorf("storage = %+v", cfg.Storage)
 	}
@@ -134,6 +138,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.App.EventRetention != 30*24*time.Hour {
 		t.Errorf("event_retention = %s", cfg.App.EventRetention)
+	}
+	if cfg.App.NotificationRetention != 30*24*time.Hour {
+		t.Errorf("notification_retention default = %s", cfg.App.NotificationRetention)
 	}
 	if cfg.Storage.Driver != "sqlite" || cfg.Storage.Path != "" {
 		t.Errorf("storage defaults = %+v", cfg.Storage)

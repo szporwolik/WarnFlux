@@ -13,6 +13,8 @@ package routing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -38,6 +40,9 @@ type RuleStore interface {
 	// GroupRecipientEmails returns the group members' contact addresses
 	// (empty list when the group has none).
 	GroupRecipientEmails(groupID int64) ([]string, error)
+	// ClaimActionFire records a delivery claim for (group, action, event)
+	// and reports whether it is new (true) or already recorded (false).
+	ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error)
 }
 
 // defaultRefreshInterval is how often rules are reloaded from storage.
@@ -68,6 +73,7 @@ type Engine struct {
 	rulesMatched   atomic.Int64
 	actionsFired   atomic.Int64
 	actionsFailed  atomic.Int64
+	actionsDeduped atomic.Int64
 	ruleLoadErrors atomic.Int64
 }
 
@@ -163,6 +169,19 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			if !meetsThreshold(rank, a.MinSeverity) {
 				continue
 			}
+			// Durable deduplication: claim the delivery in the ledger
+			// before submitting. A retained/replayed transition with the
+			// same identity never re-fires the same (group, action) pair.
+			claimed, err := e.store.ClaimActionFire(rule.GroupID, a.ID, ev.Hazard.Key, fireDedupKey(ev), time.Now())
+			if err != nil {
+				// A ledger failure must never suppress an alert: log and
+				// deliver anyway (best-effort deduplication).
+				e.logger.Warn("routing: fire claim failed",
+					"group", rule.Name, "action", a.ID, "error", err)
+			} else if !claimed {
+				e.actionsDeduped.Add(1)
+				continue
+			}
 			req := action.ActionRequest{
 				ID:        fmt.Sprintf("%s/%s", ev.Hazard.Key, a.ID),
 				CreatedAt: time.Now(),
@@ -203,6 +222,7 @@ func (e *Engine) Stats() EngineStats {
 		RulesMatched:   e.rulesMatched.Load(),
 		ActionsFired:   e.actionsFired.Load(),
 		ActionsFailed:  e.actionsFailed.Load(),
+		ActionsDeduped: e.actionsDeduped.Load(),
 		RuleLoadErrors: e.ruleLoadErrors.Load(),
 	}
 }
@@ -213,5 +233,23 @@ type EngineStats struct {
 	RulesMatched   int64
 	ActionsFired   int64
 	ActionsFailed  int64
+	ActionsDeduped int64
 	RuleLoadErrors int64
+}
+
+// fireDedupKey builds the stable deduplication identity of one hazard
+// transition. The publisher's journal ChangeID is the canonical identity;
+// when it is absent (synthetic or foreign events) a content hash of the
+// canonical fields stands in.
+func fireDedupKey(ev dispatch.Event) string {
+	h := ev.Hazard
+	if h.ChangeID != 0 {
+		return fmt.Sprintf("c:%s:%s:%d", h.Source, h.Key, h.ChangeID)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s|%s|%s|%d|%s|%s|%s|%s|%s",
+		h.Type, h.Key, h.Source, h.Timestamp.UnixNano(),
+		h.Hazard.EventKey, h.Hazard.Severity, h.Hazard.Urgency, h.Hazard.Certainty, h.Hazard.Headline)
+	sum := sha256.Sum256([]byte(b.String()))
+	return "h:" + hex.EncodeToString(sum[:16])
 }

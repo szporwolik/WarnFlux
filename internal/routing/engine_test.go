@@ -2,8 +2,10 @@ package routing
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,10 +15,11 @@ import (
 )
 
 type fakeStore struct {
-	mu    sync.Mutex
-	rules []storage.GroupRouting
-	bcc   map[int64][]string
-	err   error
+	mu      sync.Mutex
+	rules   []storage.GroupRouting
+	bcc     map[int64][]string
+	claimed map[string]bool // group|action|dedupKey -> already delivered
+	err     error
 }
 
 func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
@@ -34,6 +37,20 @@ func (f *fakeStore) GroupRecipientEmails(groupID int64) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.bcc[groupID]...), f.err
+}
+
+func (f *fakeStore) ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claimed == nil {
+		f.claimed = map[string]bool{}
+	}
+	key := fmt.Sprintf("%d|%s|%s", groupID, actionID, dedupKey)
+	if f.claimed[key] {
+		return false, f.err
+	}
+	f.claimed[key] = true
+	return true, f.err
 }
 
 // setActionSeverity mutates one cached rule's action threshold.
@@ -76,12 +93,18 @@ func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
 	return f.err
 }
 
+// eventSeq gives every synthetic event a unique journal ChangeID, so the
+// engine's delivery ledger sees them as distinct transitions (real
+// publishers stamp each /events message with a unique change_id).
+var eventSeq atomic.Int64
+
 func hazardEvent(severity string, typ dispatch.TransitionType) dispatch.Event {
 	return dispatch.Event{
 		Kind: dispatch.EventHazardTransition,
 		Hazard: &dispatch.HazardTransition{
-			Type: typ,
-			Key:  "imgw:1",
+			Type:     typ,
+			Key:      "imgw:1",
+			ChangeID: eventSeq.Add(1),
 			Hazard: dispatch.Hazard{
 				EventKey: "imgw:1",
 				Source:   "imgw",
@@ -136,6 +159,37 @@ func TestEngineSeverityThresholdAndFanOut(t *testing.T) {
 	stats := e.Stats()
 	if stats.EventsSeen != 3 || stats.RulesMatched != 4 || stats.ActionsFired != 4 {
 		t.Errorf("stats = %+v, want 3 seen, 4 matched, 4 actions", stats)
+	}
+}
+
+// TestEngineDuplicateDeliveryFiresOnce pins the durable deduplication: the
+// same transition (e.g. a retained message replayed after a restart) must
+// fire each (group, action) exactly once.
+func TestEngineDuplicateDeliveryFiresOnce(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+		{GroupID: 2, Name: "rsp", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+
+	ev := hazardEvent("severe", dispatch.TransitionNew)
+	feed <- ev
+	feed <- ev // identical replay
+
+	waitFor(t, func() bool {
+		s := e.Stats()
+		return s.EventsSeen == 2 && s.ActionsDeduped == 2
+	}, "two groups claimed once, two replays deduplicated")
+
+	acts.mu.Lock()
+	defer acts.mu.Unlock()
+	if got := len(acts.got["log"]); got != 2 {
+		t.Errorf("log fired %d times, want 2 (one per group, no replay)", got)
+	}
+	stats := e.Stats()
+	if stats.ActionsFired != 2 || stats.RulesMatched != 2 {
+		t.Errorf("stats = %+v, want 2 fired, 2 matched", stats)
 	}
 }
 

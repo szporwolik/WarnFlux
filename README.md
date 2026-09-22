@@ -141,6 +141,7 @@ All settings live in the YAML file; defaults are applied for missing values.
 | `app.expiration_interval` | `1m` | how often expired events are checked (Go duration) |
 | `app.change_retention` | `24h` | how long acknowledged journal records are kept |
 | `app.event_retention` | `720h` | how long cancelled/expired current-state records are kept (active events are never cleaned) |
+| `app.notification_retention` | `720h` | how long action-fire ledger rows are kept; bounds the dedup window (negative = never prune) |
 | `storage.driver` | `sqlite` | only `sqlite` is supported for now |
 | `storage.path` | *(binary dir)* | SQLite database path. When omitted, WarnFlux **warns** and creates `warnflux.db` next to the binary (dev/debug convenience). Set it explicitly in Docker, e.g. `/data/warnflux.db`. |
 
@@ -444,6 +445,16 @@ same event again it may become `new` once more — `event_retention` defines
 how long lifecycle memory is preserved after provider disappearance. The
 change journal (which carries immutable snapshots) is unaffected and stays
 bounded by `app.change_retention`.
+
+**Notification dedup:** every action firing is claimed in a durable
+ledger keyed by `(group, action, event identity)` before the action is
+submitted. The `/events` MQTT stream is at-least-once, so a retained or
+replayed transition (for example everything re-delivered after a restart)
+cannot re-fire the same notification — the ledger survives restarts in
+SQLite. Each new journal `change_id` is a fresh identity, so real updates
+still notify. Ledger rows are pruned by age: `app.notification_retention`
+(30 days by default) bounds both the table size and the dedup window; a
+negative value disables pruning entirely.
 
 **Event-size caps:** as a final safety net, `HazardEvent.Validate` rejects
 pathological payloads (description > 32 KiB, headline/URL > 2 KiB,

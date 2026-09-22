@@ -270,6 +270,38 @@ func run(configPath string) error {
 		manager.Run(ctx)
 	}()
 
+	// Durable action-fire ledger maintenance: rows older than the
+	// configured retention are pruned at startup and then hourly.
+	// A negative retention disables pruning entirely.
+	if cfg.App.NotificationRetention > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prune := func() {
+				cutoff := time.Now().Add(-cfg.App.NotificationRetention)
+				n, err := store.PruneActionFires(cutoff)
+				if err != nil {
+					logger.Warn("routing: fire ledger prune failed", "error", err)
+					return
+				}
+				if n > 0 {
+					logger.Debug("routing: fire ledger pruned", "removed", n)
+				}
+			}
+			prune()
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					prune()
+				}
+			}
+		}()
+	}
+
 	if webSrv != nil {
 		serveErr := make(chan error, 1)
 		go webSrv.Serve(serveErr)

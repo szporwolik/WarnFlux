@@ -314,6 +314,25 @@ ALTER TABLE groups DROP COLUMN min_severity;
 		// matrix now routes actions only.
 		SQL: `DROP TABLE group_outputs;`,
 	},
+	{
+		// v10: durable action-fire ledger. Every (group, action, event)
+		// delivery is claimed exactly once, so retained or replayed
+		// transition messages never re-fire notifications across
+		// restarts. Rows are pruned by age via PruneActionFires
+		// (app.notification_retention).
+		SQL: `
+CREATE TABLE action_fires (
+	group_id    INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+	action_id   TEXT NOT NULL,
+	event_key   TEXT NOT NULL,
+	dedup_key   TEXT NOT NULL,
+	fired_at_ms INTEGER NOT NULL,
+	PRIMARY KEY (group_id, action_id, dedup_key)
+);
+
+CREATE INDEX idx_action_fires_age ON action_fires(fired_at_ms);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

@@ -38,8 +38,14 @@
     {{template "actions" .Actions}}
   </main>
   <footer class="footer">
-    <span>{{.AppTitle}} · {{.Status.Version}} ({{if ne .Status.Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Status.Commit}}" target="_blank" rel="noopener noreferrer">{{.Status.Commit}}</a>{{else}}{{.Status.Commit}}{{end}})</span>
-    <a class="footer-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>github.com/szporwolik/WarnFlux</a>
+    <span class="footer-meta">
+      <span class="footer-name">{{.AppTitle}}</span>
+      <span class="sep">·</span>
+      <span>{{.Status.Version}}</span>
+      <span class="sep">·</span>
+      {{if ne .Status.Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Status.Commit}}" target="_blank" rel="noopener noreferrer">{{.Status.Commit}}</a>{{else}}{{.Status.Commit}}{{end}}
+    </span>
+    <a class="gh-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer" aria-label="Open the WarnFlux repository on GitHub"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg></a>
   </footer>
   <script src="/static/app.js" defer></script>
 </body>

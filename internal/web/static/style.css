@@ -180,29 +180,35 @@ a:hover { text-decoration: underline; }
 .footer {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 0.4rem 1rem;
-  flex-wrap: wrap;
-  padding: 0.6rem 1.25rem;
-  border-top: 1px solid var(--border);
-  background: var(--header);
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
 }
 
-.footer-link {
+.footer-meta {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  color: var(--muted);
   font-family: var(--mono);
-  font-size: 0.75rem;
 }
-.footer-link:hover { color: var(--link); text-decoration: underline; }
-.footer-link svg { flex: none; }
+.footer .sep { color: var(--border-hi); margin: 0 0.4rem; }
+.footer-name { color: var(--text); font-weight: 600; }
 
-.commit-link { color: var(--muted); font-family: var(--mono); }
+.commit-link { color: var(--muted); }
 .commit-link:hover { color: var(--link); }
+
+.gh-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+.gh-link:hover { color: var(--text); background: var(--surface-hi); text-decoration: none; }
 
 /* ---- key/value system panel ---- */
 .kv-grid {

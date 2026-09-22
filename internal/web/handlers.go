@@ -41,8 +41,8 @@ type receiverRow struct {
 	Enabled       bool
 	Broker        string
 	Connected     bool
-	HREnabled     bool
-	HRPrefix      string
+	WFEnabled     bool
+	WFPrefix      string
 	Subscriptions int
 	LastConnect   time.Time
 	LastMessage   time.Time
@@ -198,8 +198,8 @@ func (s *Server) buildMQTTView(snap state.Snapshot) mqttView {
 			Enabled:       r.Enabled,
 			Broker:        r.Broker,
 			Connected:     r.Connected,
-			HREnabled:     r.HREnabled,
-			HRPrefix:      r.HRPrefix,
+			WFEnabled:     r.WFEnabled,
+			WFPrefix:      r.WFPrefix,
 			Subscriptions: r.Subscriptions,
 			LastConnect:   r.LastConnect,
 			LastMessage:   r.LastMessage,

@@ -11,8 +11,8 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
-// TestScaleSanity runs only when HAZARDROUTER_SCALE=1 is set. It ingests a
-// configurable number of unique events (HAZARDROUTER_SCALE_TOTAL, default
+// TestScaleSanity runs only when WARNFLUX_SCALE=1 is set. It ingests a
+// configurable number of unique events (WARNFLUX_SCALE_TOTAL, default
 // 2000), updates a subset, delivers and ACKs the journal, then cleans it
 // up — reporting rough durations and the database size. It is intentionally
 // not a benchmark suite.
@@ -21,14 +21,14 @@ import (
 // totals take minutes on non-tmpfs disks. Run with -timeout 30m for the
 // default target of 10k events.
 func TestScaleSanity(t *testing.T) {
-	if os.Getenv("HAZARDROUTER_SCALE") == "" {
-		t.Skip("set HAZARDROUTER_SCALE=1 to run the scale sanity check")
+	if os.Getenv("WARNFLUX_SCALE") == "" {
+		t.Skip("set WARNFLUX_SCALE=1 to run the scale sanity check")
 	}
 	total := 2000
-	if v := os.Getenv("HAZARDROUTER_SCALE_TOTAL"); v != "" {
+	if v := os.Getenv("WARNFLUX_SCALE_TOTAL"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
-			t.Fatalf("HAZARDROUTER_SCALE_TOTAL must be a positive integer, got %q", v)
+			t.Fatalf("WARNFLUX_SCALE_TOTAL must be a positive integer, got %q", v)
 		}
 		total = n
 	}

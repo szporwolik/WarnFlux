@@ -58,7 +58,7 @@
   <div class="table-wrap">
     <table class="plugins">
       <thead>
-        <tr><th>Receiver</th><th>Broker</th><th>State</th><th>HR mode</th><th>Last message</th><th>Messages</th><th>Errors</th></tr>
+        <tr><th>Receiver</th><th>Broker</th><th>State</th><th>WF mode</th><th>Last message</th><th>Messages</th><th>Errors</th></tr>
       </thead>
       <tbody>
         {{range .Receivers}}
@@ -67,14 +67,14 @@
           <td class="mono">{{.Broker}}</td>
           <td>
             <span class="badge {{if .Connected}}ok{{else}}bad{{end}}">{{if .Connected}}connected{{else}}disconnected{{end}}</span>
-            {{if .HREnabled}}
+            {{if .WFEnabled}}
               {{if eq .Heartbeat "fresh"}}<span class="badge ok">heartbeat fresh</span>
               {{else if eq .Heartbeat "stale"}}<span class="badge warn">heartbeat stale</span>
               {{else}}<span class="badge muted">no heartbeat</span>{{end}}
             {{end}}
             {{if .LastError}}<div class="reason">{{.LastError}}</div>{{end}}
           </td>
-          <td>{{if .HREnabled}}{{.HRPrefix}}{{else}}—{{end}}</td>
+          <td>{{if .WFEnabled}}{{.WFPrefix}}{{else}}—{{end}}</td>
           <td>{{timeFull .LastMessage}}{{if not .LastMessage.IsZero}} <span class="muted">({{age .LastMessage}})</span>{{end}}</td>
           <td>{{.Messages}}</td>
           <td>{{.Malformed}} malformed · {{.Oversized}} oversized · {{.Dropped}} dropped</td>

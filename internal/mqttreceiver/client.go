@@ -44,8 +44,8 @@ type Status struct {
 	ID            string
 	Enabled       bool
 	Broker        string
-	HREnabled     bool
-	HRPrefix      string
+	WFEnabled     bool
+	WFPrefix      string
 	Subscriptions int
 	Connected     bool
 	LastConnect   time.Time
@@ -89,8 +89,8 @@ func NewReceiver(cfg config.Receiver, st *state.State, ingress *dispatch.Ingress
 	}
 
 	var filters []string
-	if cfg.HR.Enabled {
-		filters = Subscriptions(cfg.HR.TopicPrefix)
+	if cfg.WF.Enabled {
+		filters = Subscriptions(cfg.WF.TopicPrefix)
 	}
 	for _, sub := range cfg.Subscriptions {
 		filters = append(filters, sub.Topic)
@@ -105,12 +105,12 @@ func NewReceiver(cfg config.Receiver, st *state.State, ingress *dispatch.Ingress
 			ID:            cfg.ID,
 			Enabled:       cfg.Enabled,
 			Broker:        sanitizeBroker(cfg.Broker),
-			HREnabled:     cfg.HR.Enabled,
-			HRPrefix:      cfg.HR.TopicPrefix,
+			WFEnabled:     cfg.WF.Enabled,
+			WFPrefix:      cfg.WF.TopicPrefix,
 			Subscriptions: len(uniqueTopics(filters)),
 		},
 	}
-	r.ingestor = NewIngestor(cfg.ID, cfg.HR.Enabled, cfg.HR.TopicPrefix,
+	r.ingestor = NewIngestor(cfg.ID, cfg.WF.Enabled, cfg.WF.TopicPrefix,
 		subscriptionFilters(cfg), st, ingress, stats, logger)
 	return r, nil
 }
@@ -205,8 +205,8 @@ func (r *Receiver) setConnected(connected bool, lastErr string) {
 // protocol topics at QoS 1 plus the configured generic subscriptions).
 func (r *Receiver) subscribe() error {
 	topics := make(map[string]byte)
-	if r.cfg.HR.Enabled {
-		for _, t := range Subscriptions(r.cfg.HR.TopicPrefix) {
+	if r.cfg.WF.Enabled {
+		for _, t := range Subscriptions(r.cfg.WF.TopicPrefix) {
 			topics[t] = 1
 		}
 	}
@@ -260,8 +260,8 @@ func (r *Receiver) Status() Status {
 
 func allTopics(cfg config.Receiver) []string {
 	out := make([]string, 0, 4+len(cfg.Subscriptions))
-	if cfg.HR.Enabled {
-		out = append(out, Subscriptions(cfg.HR.TopicPrefix)...)
+	if cfg.WF.Enabled {
+		out = append(out, Subscriptions(cfg.WF.TopicPrefix)...)
 	}
 	for _, s := range cfg.Subscriptions {
 		out = append(out, s.Topic)

@@ -63,9 +63,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	receivers, err := mqttreceiver.NewManager([]config.Receiver{
 		{
 			ID: "local", Enabled: true,
-			Broker: "tcp://broker:1883", ClientID: "hr-dispatch-local",
+			Broker: "tcp://broker:1883", ClientID: "warnflux-dispatch-local",
 			ConnectTimeout: time.Second, KeepAlive: 30 * time.Second,
-			HR: config.ReceiverHR{Enabled: true, TopicPrefix: "warnflux"},
+			WF: config.ReceiverWF{Enabled: true, TopicPrefix: "warnflux"},
 		},
 		{
 			ID: "remote-club", Enabled: false,

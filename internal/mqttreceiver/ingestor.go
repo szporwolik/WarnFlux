@@ -25,7 +25,7 @@ import (
 type Ingestor struct {
 	receiverID string
 	prefix     string
-	hrEnabled  bool
+	wfEnabled  bool
 	filters    []string
 
 	state   *state.State
@@ -35,12 +35,12 @@ type Ingestor struct {
 }
 
 // NewIngestor builds the message ingestor for one receiver.
-func NewIngestor(receiverID string, hrEnabled bool, prefix string, filters []string,
+func NewIngestor(receiverID string, wfEnabled bool, prefix string, filters []string,
 	st *state.State, ingress *dispatch.Ingress, stats *Stats, logger *slog.Logger) *Ingestor {
 	return &Ingestor{
 		receiverID: receiverID,
 		prefix:     prefix,
-		hrEnabled:  hrEnabled,
+		wfEnabled:  wfEnabled,
 		filters:    filters,
 		state:      st,
 		ingress:    ingress,
@@ -73,7 +73,7 @@ func (in *Ingestor) HandleMessage(_ mqtt.Client, msg mqtt.Message) {
 		return
 	}
 
-	if in.hrEnabled && strings.HasPrefix(topic, in.prefix+"/") {
+	if in.wfEnabled && strings.HasPrefix(topic, in.prefix+"/") {
 		parsed := ParseTopic(in.prefix, topic)
 		switch parsed.Kind {
 		case TopicActive:

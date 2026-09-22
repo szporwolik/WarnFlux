@@ -21,7 +21,7 @@ const WireSchemaVersion = 1
 const (
 	TypeActiveHazard = "active_hazard"
 	TypeWeather      = "weather"
-	ServiceName      = "warnflux" // frozen public MQTT wire identifier
+	ServiceName      = "warnflux" // public MQTT wire identifier
 )
 
 // Status states published by WarnFlux.

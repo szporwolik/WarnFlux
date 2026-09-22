@@ -39,13 +39,13 @@ type ingestorEnv struct {
 	stats    *Stats
 }
 
-func newIngestorEnv(t *testing.T, receiverID string, hrEnabled bool, filters []string) *ingestorEnv {
+func newIngestorEnv(t *testing.T, receiverID string, wfEnabled bool, filters []string) *ingestorEnv {
 	t.Helper()
 	st := state.New()
 	g := dispatch.NewIngress(64)
 	stats := &Stats{}
 	env := &ingestorEnv{
-		ingestor: NewIngestor(receiverID, hrEnabled, "warnflux", filters, st, g, stats, testLogger()),
+		ingestor: NewIngestor(receiverID, wfEnabled, "warnflux", filters, st, g, stats, testLogger()),
 		state:    st,
 		ingress:  g,
 		stats:    stats,
@@ -264,10 +264,10 @@ func TestPayloadOwnership(t *testing.T) {
 	}
 }
 
-// TestHRNamespacePrecedence: a malformed frame inside the WarnFlux
+// TestWFNamespacePrecedence: a malformed frame inside the WarnFlux
 // prefix is rejected, never reclassified as a raw generic event even when
 // generic subscriptions overlap.
-func TestHRNamespacePrecedence(t *testing.T) {
+func TestWFNamespacePrecedence(t *testing.T) {
 	env := newIngestorEnv(t, "local", true, []string{"warnflux/#"})
 	env.ingestor.HandleMessage(nil, &testMessage{topic: "warnflux/events", payload: []byte(`{"schema_version":1,"change_type":"bogus","event_key":"x:y"}`)})
 	expectNoEvent(t, env.ingress)
@@ -314,7 +314,7 @@ func TestOversizedMessageIgnored(t *testing.T) {
 	}
 }
 
-func TestHRDisabledTreatsPrefixAsGeneric(t *testing.T) {
+func TestWFDisabledTreatsPrefixAsGeneric(t *testing.T) {
 	env := newIngestorEnv(t, "remote", false, []string{"warnflux/#"})
 	env.ingestor.HandleMessage(nil, &testMessage{topic: "warnflux/events", payload: []byte("raw-bytes")})
 	ev := recv(t, env.ingress)

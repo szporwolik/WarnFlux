@@ -315,6 +315,12 @@ func bodyOf(req action.ActionRequest, now time.Time) string {
 		fmt.Fprintf(&b, "Event key: %s\n", h.Key)
 		fmt.Fprintf(&b, "Event: %s\n", h.Hazard.Event)
 		fmt.Fprintf(&b, "Severity: %s\n", h.Hazard.Severity)
+		if h.Hazard.Urgency != "" {
+			fmt.Fprintf(&b, "Urgency: %s\n", h.Hazard.Urgency)
+		}
+		if h.Hazard.Certainty != "" {
+			fmt.Fprintf(&b, "Certainty: %s\n", h.Hazard.Certainty)
+		}
 		if h.Hazard.Headline != "" {
 			fmt.Fprintf(&b, "Headline: %s\n", h.Hazard.Headline)
 		}

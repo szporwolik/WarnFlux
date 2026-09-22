@@ -135,6 +135,8 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
+	s.mux.Handle("GET /test", s.requirePage(s.handleTestPage))
+	s.mux.Handle("POST /test", s.requirePage(s.handleTestEmit))
 	s.mux.Handle("GET /users", s.requirePage(s.handleUsersPage))
 	s.mux.Handle("POST /users", s.requirePage(s.handleUserSave))
 	s.mux.Handle("POST /users/{id}/delete", s.requirePage(s.handleUserDelete))

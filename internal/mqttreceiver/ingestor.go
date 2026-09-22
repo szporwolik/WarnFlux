@@ -317,6 +317,8 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 				SourceID:    we.Event.SourceID,
 				Event:       we.Event.Event,
 				Severity:    we.Event.Severity,
+				Urgency:     we.Event.Urgency,
+				Certainty:   we.Event.Certainty,
 				Headline:    we.Event.Headline,
 				Areas:       append([]string(nil), we.Event.Areas...),
 				EffectiveAt: optTime(we.Event.EffectiveAt),

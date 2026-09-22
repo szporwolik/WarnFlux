@@ -74,7 +74,8 @@ func (p *loggerAction) Execute(ctx context.Context, req action.ActionRequest) er
 	case dispatch.EventHazardTransition:
 		if ev.Hazard != nil {
 			attrs = append(attrs, "type", ev.Hazard.Type, "source", ev.Hazard.Source,
-				"event_key", ev.Hazard.Key, "severity", ev.Hazard.Hazard.Severity)
+				"event_key", ev.Hazard.Key, "severity", ev.Hazard.Hazard.Severity,
+				"urgency", ev.Hazard.Hazard.Urgency, "certainty", ev.Hazard.Hazard.Certainty)
 		}
 	case dispatch.EventMQTTMessage:
 		if ev.MQTT != nil {

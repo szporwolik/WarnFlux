@@ -196,6 +196,9 @@ dispatch:
 web:
   enabled: true
   listen: ":8080"
+  # The web UI includes a built-in /test page: any logged-in user can
+  # emit a synthetic hazard transition (severity/urgency/certainty) into
+  # the dispatch ingress to exercise the group routing paths.
 
   # Application name: browser title and footer.
   title: "WarnFlux"

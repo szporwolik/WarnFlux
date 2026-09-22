@@ -81,6 +81,7 @@ type groupsView struct {
 	NavDashboard bool
 	NavUsers     bool
 	NavGroups    bool
+	NavTest      bool
 }
 
 // handleGroupsPage renders the group administration page. ?edit=<id>

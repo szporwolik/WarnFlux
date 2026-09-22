@@ -214,6 +214,8 @@ func changeOf(ev dispatch.Event) core.EventChange {
 			SourceID:    h.Hazard.SourceID,
 			Event:       h.Hazard.Event,
 			Severity:    h.Hazard.Severity,
+			Urgency:     h.Hazard.Urgency,
+			Certainty:   h.Hazard.Certainty,
 			Headline:    h.Hazard.Headline,
 			Areas:       h.Hazard.Areas,
 			EffectiveAt: h.Hazard.EffectiveAt,

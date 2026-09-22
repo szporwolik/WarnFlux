@@ -544,12 +544,25 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 }
 
 /* ---- users administration ---- */
+/* The administration pages stretch to the full available width and height;
+   the table area scrolls inside the card so the footer stays at the bottom. */
 .users-main {
   flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   margin-left: var(--sidebar-w);
-  padding: 1.5rem 1.25rem 2rem;
-  max-width: 1180px;
+  padding: 1.5rem 1.25rem 1.5rem;
 }
+.users-main .card {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.users-main .user-form,
+.users-main .pager { flex: 0 0 auto; }
+.users-main .table-wrap { overflow: visible; }
 .user-form {
   display: flex;
   flex-wrap: wrap;
@@ -581,7 +594,6 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .btn-danger:hover { border-color: var(--bad); color: var(--bad); }
 .row-actions { display: flex; gap: 0.4rem; justify-content: flex-end; align-items: center; white-space: nowrap; }
 .inline-form { margin: 0; display: inline-flex; }
-.users-main .card { max-width: none; }
 .users-main .pager { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; }
 
 /* ---- users table: group assignment ---- */

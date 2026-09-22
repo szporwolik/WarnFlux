@@ -560,14 +560,22 @@ The publisher and a receiver connecting to the same broker MUST use
 
 - **OutputPlugin** — automatic durable delivery of Router changes.
   Example: MQTT.
-- **ActionPlugin** — explicitly invoked by future dispatch rules through
-  `Manager.Submit`. Examples: SMS, email, Discord, CAT. ActionPlugins
-  never automatically receive MQTT events. The only built-in action today
-  is `logger` (proof of concept, disabled by default).
+- **ActionPlugin** — explicitly invoked by the group routing rule engine
+  through `Manager.Submit`. Examples: SMS, email, Discord, CAT.
+  Built-in actions: `logger` (proof of concept) and `smtp` (one email per
+  routed dispatch event; STARTTLS + AUTH PLAIN supported, password via
+  `password` or a `password_file` secret). ActionPlugins never
+  automatically receive MQTT events.
 
-There is **no rule engine yet**: received MQTT events are normalized into
-canonical dispatch events and enter one bounded ingress queue. Rules will
-connect `dispatch.Event` → selected action IDs later.
+### Group routing rule engine
+
+Every group is a notification channel: a minimum severity threshold
+(`unknown` < `minor` < `moderate` < `severe` < `extreme`) plus assigned
+action and output instances. Received `hazard_transition` events are
+evaluated against the cached group rules (reloaded every 10 s): matching
+groups fire their actions and route the change to their outputs (the MQTT
+output publishes those to `<topic_prefix>/groups/<group>/events`). Rules
+are edited in the web UI under **Groups → Routing**.
 
 ### Canonical dispatch events
 

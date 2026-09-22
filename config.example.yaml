@@ -224,9 +224,9 @@ web:
     # Set to true when serving behind TLS (session cookie becomes Secure).
     secure_cookie: false
 
-# ActionPlugins: explicitly invoked by future dispatch rules. They never
-# automatically receive MQTT events. Only the logger proof-of-concept
-# action exists today.
+# ActionPlugins: explicitly invoked by the group routing rule engine
+# (Groups page in the web UI). They never automatically receive MQTT
+# events. Built-in types: logger (proof of concept), smtp (email).
 actions:
 
   - id: logger-action
@@ -240,3 +240,30 @@ actions:
 
     config:
       level: info
+
+  # SMTP email action: sends one plain-text email per routed dispatch
+  # event. Requires host, from and at least one recipient. STARTTLS is
+  # attempted automatically (disable with starttls: false); AUTH PLAIN is
+  # used when username is set. The password comes from password OR
+  # password_file (Docker secrets), never both. ca_file appends a PEM CA
+  # bundle for private servers with their own certificate authority.
+  # - id: smtp-alerts
+  #   type: smtp
+  #   enabled: false
+  #
+  #   runtime:
+  #     queue_size: 128
+  #     call_timeout: 30s
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     host: smtp.example.com
+  #     port: 587
+  #     from: warnflux@example.com
+  #     to: ["ops@example.com"]
+  #     username: ""
+  #     password: ""
+  #     password_file: ""
+  #     starttls: true
+  #     ca_file: ""
+  #     subject_prefix: "[WarnFlux]"

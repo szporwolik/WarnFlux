@@ -156,6 +156,7 @@ type pageView struct {
 	Name     string
 	Header1  string
 	Header2  string
+	Tagline  string
 	Version  string
 	Commit   string
 	RepoURL  string
@@ -426,6 +427,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		"Name":     s.displayName(),
 		"Header1":  s.displayHeader1(),
 		"Header2":  s.cfg.Header2,
+		"Tagline":  s.cfg.Tagline,
 		"Version":  s.version,
 		"Commit":   s.commit,
 		"RepoURL":  repoURL,
@@ -460,6 +462,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 			"Name":     s.displayName(),
 			"Header1":  s.displayHeader1(),
 			"Header2":  s.cfg.Header2,
+			"Tagline":  s.cfg.Tagline,
 			"Version":  s.version,
 			"Commit":   s.commit,
 			"RepoURL":  repoURL,
@@ -510,6 +513,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Name:         s.displayName(),
 		Header1:      s.displayHeader1(),
 		Header2:      s.cfg.Header2,
+		Tagline:      s.cfg.Tagline,
 		Version:      s.version,
 		Commit:       s.commit,
 		RepoURL:      repoURL,

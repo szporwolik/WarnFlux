@@ -55,6 +55,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Listen:  ":0",
 		Title:   "WarnFlux Test",
 		Header2: "Test platform",
+		Tagline: "Test tagline",
 		Auth:    config.WebAuth{Username: testUsername, Password: testPassword},
 	}
 
@@ -409,6 +410,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if !strings.Contains(loginHTML, `class="login-sub">Test platform</p>`) {
 		t.Errorf("login page missing header2 subtitle: %s", loginHTML)
 	}
+	if !strings.Contains(loginHTML, `class="footer-tagline">Test tagline</span>`) {
+		t.Errorf("login footer missing tagline: %s", loginHTML)
+	}
 	if !strings.Contains(loginHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
 		t.Errorf("login footer missing commit link: %s", loginHTML)
 	}
@@ -420,6 +424,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	_, dashHTML := env.get("/dashboard")
 	if !strings.Contains(dashHTML, "WarnFlux Test") {
 		t.Errorf("dashboard footer missing version line: %s", dashHTML)
+	}
+	if !strings.Contains(dashHTML, `class="footer-tagline">Test tagline</span>`) {
+		t.Errorf("dashboard footer missing tagline: %s", dashHTML)
 	}
 	if !strings.Contains(dashHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
 		t.Errorf("dashboard footer missing commit link: %s", dashHTML)

@@ -30,6 +30,8 @@
 {{define "footer"}}  <footer class="footer">
     <span class="footer-meta">
       <span class="footer-name">{{.AppTitle}}</span>
+      {{if .Tagline}}<span class="sep">·</span>
+      <span class="footer-tagline">{{.Tagline}}</span>{{end}}
       <span class="sep">·</span>
       <span>{{.Version}}</span>
       <span class="sep">·</span>

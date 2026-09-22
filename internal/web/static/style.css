@@ -308,6 +308,7 @@ a:hover { text-decoration: underline; }
 }
 .footer .sep { color: var(--border-hi); margin: 0 0.4rem; }
 .footer-name { color: var(--text); font-weight: 600; }
+.footer-tagline { color: var(--muted); }
 
 .commit-link { color: var(--muted); }
 .commit-link:hover { color: var(--link); }

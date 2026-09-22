@@ -58,6 +58,7 @@ type groupsView struct {
 	Name     string
 	Header1  string
 	Header2  string
+	Tagline  string
 	Version  string
 	Commit   string
 	RepoURL  string
@@ -315,6 +316,7 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		Name:       s.displayName(),
 		Header1:    s.displayHeader1(),
 		Header2:    s.cfg.Header2,
+		Tagline:    s.cfg.Tagline,
 		Version:    s.version,
 		Commit:     s.commit,
 		RepoURL:    repoURL,

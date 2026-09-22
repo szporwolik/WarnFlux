@@ -201,21 +201,24 @@ web:
   # the dispatch ingress to exercise the group routing paths.
 
   # Application name: browser title and footer.
-  title: "WarnFlux"
+  title: "SOSNA"
 
   # System name shown next to the logo on the login page and in the
   # sidebar header. Defaults to the title.
-  name: "WarnFlux"
+  name: "SOSNA"
 
-  # Two-line branding shown next to the logo (sidebar) and on the login
-  # page. header1 defaults to the name; header2 is an optional subtitle.
-  header1: "SPOK"
-  header2: "Społeczna Platforma Ostrzegania i Komunikacji"
+  # Branding shown next to the logo (sidebar) and on the login page.
+  # header1 defaults to the name; header2 is an optional subtitle.
+  header1: "SOSNA"
+  header2: "Społeczny Otwarty System Notyfikacji i Alertów"
+
+  # Optional one-line motto rendered in the footer on every page.
+  tagline: "od społeczności • dla mieszkańców • we współpracy z gminą"
 
   # Public domain this instance is served under (host, optional port).
   # Reserved for future absolute-link features; no scheme, no path.
   # Empty disables them.
-  domain: "spok.example.com"
+  domain: "sosna.sp9moa.pl"
 
   auth:
     username: admin

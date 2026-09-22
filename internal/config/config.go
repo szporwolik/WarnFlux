@@ -203,6 +203,9 @@ type Web struct {
 	// Header2 is an optional subtitle shown under Header1 in the sidebar
 	// and on the login page. Empty hides it.
 	Header2 string
+	// Tagline is an optional one-line motto rendered in the page footer
+	// on every page. Empty hides it.
+	Tagline string
 	// Domain is the public host (and optional port) this instance is
 	// served under, e.g. "spok.example.com". It is reserved for future
 	// features that generate absolute links (cookies, notifications);
@@ -291,6 +294,7 @@ type fileWeb struct {
 	Name    string       `yaml:"name"`
 	Header1 string       `yaml:"header1"`
 	Header2 string       `yaml:"header2"`
+	Tagline string       `yaml:"tagline"`
 	Domain  string       `yaml:"domain"`
 	Auth    *fileWebAuth `yaml:"auth"`
 }
@@ -587,6 +591,7 @@ func (f fileConfig) toConfig() Config {
 			cfg.Web.Header1 = cfg.Web.Name
 		}
 		cfg.Web.Header2 = strings.TrimSpace(f.Web.Header2)
+		cfg.Web.Tagline = strings.TrimSpace(f.Web.Tagline)
 		cfg.Web.Domain = strings.TrimSuffix(strings.TrimSpace(f.Web.Domain), "/")
 		if f.Web.Auth != nil {
 			cfg.Web.Auth = WebAuth{

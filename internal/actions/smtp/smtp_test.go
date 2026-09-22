@@ -385,7 +385,7 @@ rate_limit_per_minute: -1
 		"border-top:3px solid #ff7b43",
 		`<span style="color:#ff7b43;font-weight:600;">severe</span>`,
 		// Branded footer: version, normalized domain, repository link.
-		"Sent by <strong style=\"color:#c9d1d9;\">WarnFlux</strong> v0.1.0",
+		"Sent by <strong style=\"color:#c9d1d9;\">SPOK</strong> v0.1.0",
 		"spok.sp9moa.pl",
 		`href="https://github.com/szporwolik/WarnFlux"`,
 	} {

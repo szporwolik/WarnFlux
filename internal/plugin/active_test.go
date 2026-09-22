@@ -407,3 +407,116 @@ func TestActiveStateSeedingDoesNotDelayHazards(t *testing.T) {
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
+
+// captureSource records the emitter it receives (to exercise the emitter
+// capabilities outside a source plugin's normal flow).
+type captureSource struct {
+	mu   sync.Mutex
+	emit Emitter
+}
+
+func (s *captureSource) Name() string { return "capture" }
+
+func (s *captureSource) Run(ctx context.Context, emit Emitter) error {
+	s.mu.Lock()
+	s.emit = emit
+	s.mu.Unlock()
+	<-ctx.Done()
+	return nil
+}
+
+func (s *captureSource) emitter() Emitter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.emit
+}
+
+// TestSourceEmitterListSourceActiveEvents proves the optional
+// SourceActiveEventReader capability end to end: the per-source emitter
+// pages the authoritative SQLite active state and filters by source.
+func TestSourceEmitterListSourceActiveEvents(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ing := ingest.NewIngester(store, testLogger())
+
+	capture := &captureSource{}
+	reg := NewRegistry()
+	if err := reg.RegisterSource("capture", func(_ *yaml.Node) (SourcePlugin, error) {
+		return capture, nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	m, err := NewManager(reg, []config.Source{{
+		ID: "src", Type: "capture", Enabled: true,
+		Runtime: config.SourceRuntime{Restart: true, ShutdownTimeout: 50 * time.Millisecond},
+	}}, nil, ing.Ingest, ing.Expire, store, managerOpts(), testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 3*time.Second, func() bool { return capture.emitter() != nil })
+
+	one := eventFor("cap-one")
+	two := eventFor("cap-two")
+	other := eventFor("cap-other")
+	other.Source = "other-src"
+	other.SourceID = "x"
+	if _, _, err := ing.Ingest(ctx, one); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ing.Ingest(ctx, two); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ing.Ingest(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := eventFor("cap-cancelled")
+	if _, _, err := ing.Ingest(ctx, cancelled); err != nil {
+		t.Fatal(err)
+	}
+	cancelled.Status = core.StatusCancelled
+	if _, _, err := ing.Ingest(ctx, cancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, ok := capture.emitter().(SourceActiveEventReader)
+	if !ok {
+		t.Fatal("emitter does not implement SourceActiveEventReader")
+	}
+	got, err := reader.ListSourceActiveEvents(ctx, "demo")
+	if err != nil {
+		t.Fatalf("ListSourceActiveEvents: %v", err)
+	}
+	keys := map[string]bool{}
+	for _, ev := range got {
+		keys[ev.Key()] = true
+		if ev.Source != "demo" {
+			t.Errorf("event %q leaked from another source", ev.Key())
+		}
+	}
+	if !keys[one.Key()] || !keys[two.Key()] {
+		t.Errorf("keys = %v, want %q and %q", keys, one.Key(), two.Key())
+	}
+	if keys[cancelled.Key()] {
+		t.Errorf("cancelled event %q listed as active", cancelled.Key())
+	}
+	if keys[other.Key()] {
+		t.Errorf("event %q from another source leaked in", other.Key())
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}

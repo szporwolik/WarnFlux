@@ -7,6 +7,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/demo"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/imgw"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
 )
 
@@ -17,6 +18,9 @@ func RegisterBuiltins(reg *plugin.Registry) error {
 		return err
 	}
 	if err := openmeteo.Register(reg); err != nil {
+		return err
+	}
+	if err := imgw.Register(reg); err != nil {
 		return err
 	}
 	if err := mqtt.Register(reg); err != nil {

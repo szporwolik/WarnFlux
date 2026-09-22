@@ -25,6 +25,9 @@ const (
 	emitWaitTimeout       = 5 * time.Second
 	drainTimeout          = 5 * time.Second
 	groupShutdownGrace    = 5 * time.Second
+	// activeReadPageSize bounds one page of current active events read
+	// for snapshot-source reconciliation.
+	activeReadPageSize = 256
 )
 
 // IngestFunc is the core ingestion entry point injected by the application.
@@ -124,6 +127,7 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 				},
 			},
 			tracker: tracker,
+			store:   store,
 		}
 		m.sources = append(m.sources, newSourceSupervisor(cfg, p, emit, logger, tracker))
 	}
@@ -159,6 +163,7 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 type sourceEmitter struct {
 	EmitterFunc
 	tracker *statusTracker
+	store   storage.EventStore
 }
 
 // ReportSourceHealthy implements the optional SourceHealthReporter
@@ -171,6 +176,38 @@ func (e *sourceEmitter) ReportSourceHealthy() {
 // capability.
 func (e *sourceEmitter) ReportSourceDegraded(err error) {
 	e.tracker.failure(err, 0, time.Now())
+}
+
+// ListSourceActiveEvents implements the optional SourceActiveEventReader
+// capability: it pages through the authoritative current active events
+// (storage.ActiveEventLister, bounded pages) and returns only the events
+// of the requested source. This is the minimal read-only surface a
+// snapshot source gets — never arbitrary database access.
+func (e *sourceEmitter) ListSourceActiveEvents(ctx context.Context, source string) ([]core.HazardEvent, error) {
+	if err := core.ValidateSource(source); err != nil {
+		return nil, err
+	}
+	lister, ok := e.store.(storage.ActiveEventLister)
+	if !ok {
+		return nil, fmt.Errorf("storage driver does not support listing active events")
+	}
+	var out []core.HazardEvent
+	after := ""
+	for {
+		page, err := lister.ListActiveEvents(ctx, after, activeReadPageSize)
+		if err != nil {
+			return nil, err
+		}
+		for _, ev := range page {
+			if ev.Source == source {
+				out = append(out, ev)
+			}
+		}
+		if len(page) < activeReadPageSize {
+			return out, nil
+		}
+		after = page[len(page)-1].Key()
+	}
 }
 
 // maxSourceShutdownTimeout returns the largest configured source shutdown

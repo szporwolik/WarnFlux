@@ -79,6 +79,31 @@ sources:
           latitude: 50.0000
           longitude: 20.0000
 
+  # IMGW-PIB public warnings: a real HAZARD source consuming the official
+  # warningsmeteo and warningshydro feeds with full-snapshot disappearance
+  # reconciliation (see internal/plugins/sources/imgw/README.md).
+  # Data source: Instytut Meteorologii i Gospodarki Wodnej – Państwowy
+  # Instytut Badawczy (IMGW-PIB); https://danepubliczne.imgw.pl/apiinfo.
+  - id: imgw-warnings
+    type: imgw
+    enabled: true
+
+    runtime:
+      restart: true
+      shutdown_timeout: 10s
+
+    config:
+      poll_interval: 5m
+      request_timeout: 10s
+
+      # Optional: override the data API base (testing/custom deployments).
+      # base_url: https://danepubliczne.imgw.pl/api/data
+
+      # Feeds to consume: meteo, hydro, or both. Omitted → both.
+      feeds:
+        - meteo
+        - hydro
+
 # Output plugins: receive meaningful event changes from the core.
 outputs:
   # Publishes hazard event changes and an application status snapshot to

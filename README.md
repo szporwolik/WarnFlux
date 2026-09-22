@@ -31,9 +31,13 @@ active hazards — see
 [`internal/plugins/outputs/mqtt/README.md`](internal/plugins/outputs/mqtt/README.md).
 The built-in `demo` source exists for development. The `openmeteo` source
 publishes ordinary weather snapshots to retained MQTT information topics —
-**it does NOT generate HazardEvents**. **Real hazard providers (CAP,
-MeteoAlarm, GDACS, IMGW, …) are intentionally not implemented yet** — they
-are the next step; the plugin contracts are designed for them.
+**it does NOT generate HazardEvents**. The first real hazard source is
+**IMGW-PIB warnings** (meteorological `warningsmeteo` and hydrological
+`warningshydro`, with snapshot-based disappearance reconciliation) — see
+[`internal/plugins/sources/imgw/README.md`](internal/plugins/sources/imgw/README.md).
+**Other real hazard providers (CAP, MeteoAlarm, GDACS, …) are intentionally
+not implemented yet** — they are the next step; the plugin contracts are
+designed for them.
 
 ## Requirements
 

@@ -62,6 +62,18 @@ type SourceHealthReporter interface {
 	ReportSourceDegraded(err error)
 }
 
+// SourceActiveEventReader is an OPTIONAL capability implemented by the
+// emitter handed to a source plugin: it returns the CURRENT active events
+// of one source from the authoritative SQLite current-state table
+// (read-only, paged internally — no direct database access). Full-snapshot
+// sources need it to reconcile provider disappearances (cancellations)
+// across process restarts. A source whose correctness depends on this
+// capability should fail clearly when it is absent instead of silently
+// running without reconciliation.
+type SourceActiveEventReader interface {
+	ListSourceActiveEvents(ctx context.Context, source string) ([]core.HazardEvent, error)
+}
+
 // SourceFactory builds a SourcePlugin from its raw plugin-specific
 // configuration. The factory decodes and validates the configuration itself;
 // the core knows nothing about provider-specific fields.

@@ -22,6 +22,22 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 )
 
+// AppInfo carries minimal application identity for contact actions: it
+// lets an action brand its outbound messages (footer, links) without
+// depending on the web layer or on configuration duplication.
+type AppInfo struct {
+	// Version is the resolved application version (ldflags).
+	Version string
+	// Header1 is the primary system header (e.g. "SPOK"); it brands the
+	// subject line as [Header1].
+	Header1 string
+	// Domain is the public domain this instance is served under, e.g.
+	// "spok.example.com". May include a scheme; actions normalize it.
+	Domain string
+	// RepoURL is the public repository link.
+	RepoURL string
+}
+
 // ActionRequest is the minimal execution request handed to one action.
 // No rule/template/retry complexity is modeled yet.
 type ActionRequest struct {
@@ -35,6 +51,9 @@ type ActionRequest struct {
 	// is populated by the rule engine when the matched group has members
 	// with contact data; actions treat it as read-only.
 	Bcc []string
+	// App identifies the running application (version, domain, repo);
+	// populated by the rule engine.
+	App AppInfo
 }
 
 // Plugin is the minimal contract every action implements.

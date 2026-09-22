@@ -22,6 +22,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/actions"
+	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
@@ -249,7 +250,12 @@ func run(configPath string) error {
 	// threshold + assigned actions/outputs) with periodic rule reloads.
 	routingCtx, cancelRouting := context.WithCancel(ctx)
 	defer cancelRouting()
-	ruleEngine := routing.New(store, actionsMgr, manager, logger)
+	ruleEngine := routing.New(store, actionsMgr, manager, logger, action.AppInfo{
+		Version: resolvedVersion,
+		Header1: cfg.Web.Header1,
+		Domain:  cfg.Web.Domain,
+		RepoURL: appinfo.RepoURL,
+	})
 	var routingWG sync.WaitGroup
 	routingWG.Add(1)
 	go func() {

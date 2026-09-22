@@ -65,6 +65,9 @@ type Engine struct {
 	outputs RuleOutputRouter
 	logger  *slog.Logger
 
+	// app is stamped onto every action request (footers, links).
+	app action.AppInfo
+
 	refreshInterval time.Duration
 
 	mu    sync.RWMutex
@@ -85,12 +88,13 @@ type Engine struct {
 }
 
 // New builds an engine with the default refresh interval.
-func New(store RuleStore, actions ActionSubmitter, outputs RuleOutputRouter, logger *slog.Logger) *Engine {
+func New(store RuleStore, actions ActionSubmitter, outputs RuleOutputRouter, logger *slog.Logger, app action.AppInfo) *Engine {
 	return &Engine{
 		store:           store,
 		actions:         actions,
 		outputs:         outputs,
 		logger:          logger,
+		app:             app,
 		refreshInterval: defaultRefreshInterval,
 	}
 }
@@ -183,6 +187,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 				CreatedAt: time.Now(),
 				Event:     ev,
 				Bcc:       append([]string(nil), bcc[rule.GroupID]...),
+				App:       e.app,
 			}
 			if err := e.actions.Submit(actionID, req); err != nil {
 				e.actionsFailed.Add(1)

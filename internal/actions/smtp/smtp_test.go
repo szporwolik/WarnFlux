@@ -324,7 +324,6 @@ username: warnflux
 password: secret-pw
 starttls: false
 rate_limit_per_minute: -1
-subject_prefix: "[SPOK]"
 `, port)))
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -332,7 +331,14 @@ subject_prefix: "[SPOK]"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := p.Execute(ctx, hazardReq()); err != nil {
+	req := hazardReq()
+	req.App = action.AppInfo{
+		Version: "0.1.0",
+		Header1: "SPOK",
+		Domain:  "https://spok.sp9moa.pl",
+		RepoURL: "https://github.com/szporwolik/WarnFlux",
+	}
+	if err := p.Execute(ctx, req); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := p.Close(context.Background()); err != nil {
@@ -358,11 +364,20 @@ subject_prefix: "[SPOK]"
 		t.Errorf("auth = %q/%q", m.authUser, m.authPass)
 	}
 	for _, want := range []string{
+		// The subject carries [Header1] from the application identity.
 		"Subject: [SPOK] SEVERE: Silny wiatr",
 		"Transition: hazard_new",
 		"Source: imgw-meteo",
 		"Severity: severe",
 		"Areas: małopolskie",
+		// Multipart/alternative with the human-first HTML part.
+		"Content-Type: multipart/alternative",
+		"Content-Type: text/html; charset=utf-8",
+		"Technical details",
+		// Branded footer: version, normalized domain, repository link.
+		"Sent by <strong style=\"color:#c9d1d9;\">WarnFlux</strong> v0.1.0",
+		"spok.sp9moa.pl",
+		`href="https://github.com/szporwolik/WarnFlux"`,
 	} {
 		if !strings.Contains(m.data, want) {
 			t.Errorf("mail body missing %q:\n%s", want, m.data)
@@ -370,9 +385,10 @@ subject_prefix: "[SPOK]"
 	}
 
 	// A non-ASCII subject must be MIME word-encoded (UTF-8 bytes).
-	req := hazardReq()
-	req.Event.Hazard.Hazard.Headline = "Intensywne opady śniegu"
-	if err := p.Execute(ctx, req); err != nil {
+	req2 := hazardReq()
+	req2.App = req.App
+	req2.Event.Hazard.Hazard.Headline = "Intensywne opady śniegu"
+	if err := p.Execute(ctx, req2); err != nil {
 		t.Fatalf("Execute non-ASCII: %v", err)
 	}
 	mails := srv.snapshot()

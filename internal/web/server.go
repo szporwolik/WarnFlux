@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
@@ -70,8 +71,8 @@ type Server struct {
 const maxPasswordFileBytes = 64 * 1024
 
 // repoURL is linked from the bottom bar of both the login page and the
-// dashboard.
-const repoURL = "https://github.com/szporwolik/WarnFlux"
+// dashboard; the shared constant lives in internal/appinfo.
+const repoURL = appinfo.RepoURL
 
 // New builds the web server (no listener created yet).
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,

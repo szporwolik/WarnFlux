@@ -271,6 +271,11 @@ actions:
   #     implicit_tls: false
   #     starttls: true
   #     ca_file: ""
+  #     # The subject bracket comes from web.header1 (e.g. "[SPOK]");
+  #     # subject_prefix is only a fallback when the application identity
+  #     # is not populated. The mail body is HTML (human-first summary,
+  #     # technical table) with a plain-text alternative and a branded
+  #     # footer (version, domain, repository link).
   #     subject_prefix: "[WarnFlux]"
   #     # Emails per minute, evenly spaced (0 = default 30, negative =
   #     # unlimited). Group members receive Bcc copies: one SMTP

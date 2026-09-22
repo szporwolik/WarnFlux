@@ -18,6 +18,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"mime"
 	"net"
@@ -388,26 +389,44 @@ func (p *emailAction) Close(ctx context.Context) error {
 	return nil
 }
 
-// buildMessage assembles the RFC 5322 message for one routed event. The
-// subject line is MIME word-encoded so non-ASCII (e.g. Polish) text stays
-// intact.
+// buildMessage assembles the RFC 5322 message for one routed event as
+// multipart/alternative: a plain-text fallback plus a styled HTML part.
+// The subject line is MIME word-encoded so non-ASCII (e.g. Polish) text
+// stays intact. All dynamic values are HTML-escaped in the HTML part.
 func buildMessage(cfg Config, req action.ActionRequest, now time.Time) []byte {
 	subject := subjectOf(cfg, req)
-	body := bodyOf(req, now)
+	boundary := fmt.Sprintf("warnflux-%d", now.UnixNano())
+	plain := bodyOfPlain(req, now)
+	html := bodyOfHTML(req, now)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", cfg.From)
 	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(cfg.To, ", "))
 	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	b.WriteString("Content-Transfer-Encoding: 8bit\r\n")
+	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary)
 	b.WriteString("\r\n")
-	b.WriteString(body)
+
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+	b.WriteString(plain)
+	b.WriteString("\r\n")
+
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+	b.WriteString(html)
+	b.WriteString("\r\n")
+
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
 	return []byte(b.String())
 }
 
-// subjectOf builds a concise, severity-first subject line.
+// subjectOf builds a concise, severity-first subject line. The bracket
+// prefix is the application's header1 from the web configuration (e.g.
+// "[SPOK]"); the action-level subject_prefix is only a fallback when the
+// application identity is not populated.
 func subjectOf(cfg Config, req action.ActionRequest) string {
 	var base string
 	switch req.Event.Kind {
@@ -431,15 +450,18 @@ func subjectOf(cfg Config, req action.ActionRequest) string {
 	default:
 		base = "dispatch event"
 	}
+	if h := strings.TrimSpace(req.App.Header1); h != "" {
+		return fmt.Sprintf("[%s] %s", h, base)
+	}
 	if cfg.SubjectPrefix != "" {
 		return cfg.SubjectPrefix + " " + base
 	}
 	return base
 }
 
-// bodyOf renders the canonical event metadata as plain text. It never
+// bodyOfPlain renders the canonical event metadata as plain text. It never
 // includes raw payloads.
-func bodyOf(req action.ActionRequest, now time.Time) string {
+func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 	var b strings.Builder
 	b.WriteString("WarnFlux notification\n")
 	fmt.Fprintf(&b, "Time: %s\n\n", now.Format(time.RFC3339))
@@ -488,5 +510,208 @@ func bodyOf(req action.ActionRequest, now time.Time) string {
 			fmt.Fprintf(&b, "Payload bytes: %d\n", len(m.Payload))
 		}
 	}
+	b.WriteString("\n--\n")
+	b.WriteString(footerText(req))
 	return b.String()
+}
+
+// severityColor maps a canonical severity to the UI palette used by the
+// web dashboard, so outbound mails match the application branding.
+func severityColor(severity string) (bg, fg string) {
+	switch strings.ToLower(severity) {
+	case "extreme":
+		return "rgba(248,81,73,0.18)", "#f85149"
+	case "severe":
+		return "rgba(255,123,67,0.18)", "#ff7b43"
+	case "moderate":
+		return "rgba(210,153,34,0.18)", "#d29922"
+	case "minor":
+		return "rgba(88,166,255,0.18)", "#58a6ff"
+	default:
+		return "rgba(139,148,158,0.18)", "#8b949e"
+	}
+}
+
+// bodyOfHTML renders a styled, human-first HTML version of the event: a
+// focused summary for the reader on top, the technical metadata in a table
+// below, and a branded footer.
+func bodyOfHTML(req action.ActionRequest, now time.Time) string {
+	var b strings.Builder
+	b.WriteString(`<div style="background:#0d1117;padding:24px;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;border:1px solid #30363d;border-radius:8px;background:#161b22;color:#c9d1d9;font-size:14px;">
+<tr><td style="padding:24px 28px;">`)
+	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8b949e;">WarnFlux hazard alert</div>`)
+
+	ev := req.Event
+	switch ev.Kind {
+	case dispatch.EventHazardTransition:
+		b.WriteString(hazardHTML(ev))
+	case dispatch.EventMQTTMessage:
+		m := ev.MQTT
+		if m != nil {
+			fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:14px;">%s</div>`,
+				htmlEscaper("MQTT message on "+m.Topic))
+		}
+	default:
+		b.WriteString(`<div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:14px;">Dispatch event</div>`)
+	}
+
+	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #30363d;padding-top:16px;">
+<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8b949e;margin-bottom:8px;">Technical details</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">`)
+	b.WriteString(technicalRows(req, now))
+	b.WriteString(`</table></div>`)
+
+	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #30363d;padding-top:14px;font-size:12px;color:#8b949e;">`)
+	b.WriteString(footerHTML(req))
+	b.WriteString(`</div>`)
+
+	b.WriteString(`</td></tr></table></div>`)
+	return b.String()
+}
+
+// hazardHTML renders the focused, human-readable summary block.
+func hazardHTML(ev dispatch.Event) string {
+	h := ev.Hazard
+	if h == nil {
+		return `<div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:14px;">Hazard transition</div>`
+	}
+	var b strings.Builder
+	bg, fg := severityColor(h.Hazard.Severity)
+	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="background:%s;color:%s;padding:4px 14px;border-radius:999px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span> <span style="color:#8b949e;font-size:12px;margin-left:8px;">%s</span></div>`,
+		bg, fg, htmlEscaper(strings.ToUpper(h.Hazard.Severity)), htmlEscaper(string(h.Type)))
+
+	headline := strings.TrimSpace(h.Hazard.Headline)
+	if headline == "" {
+		headline = h.Hazard.Event
+	}
+	fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:14px;">%s</div>`, htmlEscaper(headline))
+	if headline != h.Hazard.Event {
+		fmt.Fprintf(&b, `<div style="color:#8b949e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
+	}
+
+	if len(h.Hazard.Areas) > 0 {
+		b.WriteString(`<div style="margin-top:14px;color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Areas</div>`)
+		var chips strings.Builder
+		for _, a := range h.Hazard.Areas {
+			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#21262d;border:1px solid #30363d;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#c9d1d9;">%s</span>`, htmlEscaper(a))
+		}
+		b.WriteString(chips.String())
+	}
+	if h.Hazard.EffectiveAt != nil {
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#8b949e;font-size:13px;">Effective: <span style="color:#c9d1d9;">%s</span></div>`, h.Hazard.EffectiveAt.Format(time.RFC3339))
+	}
+	if h.Hazard.ExpiresAt != nil {
+		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#8b949e;font-size:13px;">Expires: <span style="color:#c9d1d9;">%s</span></div>`, h.Hazard.ExpiresAt.Format(time.RFC3339))
+	}
+	return b.String()
+}
+
+// technicalRows renders the metadata table rows for any event kind.
+func technicalRows(req action.ActionRequest, now time.Time) string {
+	row := func(k, v string) string {
+		if v == "" {
+			return ""
+		}
+		return fmt.Sprintf(`<tr><td style="padding:5px 8px;color:#8b949e;white-space:nowrap;vertical-align:top;">%s</td><td style="padding:5px 8px;color:#c9d1d9;">%s</td></tr>`,
+			htmlEscaper(k), htmlEscaper(v))
+	}
+	var b strings.Builder
+	ev := req.Event
+	b.WriteString(row("Time", now.Format(time.RFC3339)))
+	b.WriteString(row("Kind", string(ev.Kind)))
+	if ev.Origin.ReceiverID != "" {
+		b.WriteString(row("Receiver", ev.Origin.ReceiverID))
+	}
+	switch ev.Kind {
+	case dispatch.EventHazardTransition:
+		h := ev.Hazard
+		if h == nil {
+			break
+		}
+		b.WriteString(row("Transition", string(h.Type)))
+		b.WriteString(row("Source", h.Source))
+		b.WriteString(row("Event key", h.Key))
+		b.WriteString(row("Event", h.Hazard.Event))
+		b.WriteString(row("Severity", h.Hazard.Severity))
+		b.WriteString(row("Urgency", h.Hazard.Urgency))
+		b.WriteString(row("Certainty", h.Hazard.Certainty))
+		b.WriteString(row("Headline", h.Hazard.Headline))
+		if len(h.Hazard.Areas) > 0 {
+			b.WriteString(row("Areas", strings.Join(h.Hazard.Areas, ", ")))
+		}
+		if h.Hazard.EffectiveAt != nil {
+			b.WriteString(row("Effective", h.Hazard.EffectiveAt.Format(time.RFC3339)))
+		}
+		if h.Hazard.ExpiresAt != nil {
+			b.WriteString(row("Expires", h.Hazard.ExpiresAt.Format(time.RFC3339)))
+		}
+	case dispatch.EventMQTTMessage:
+		m := ev.MQTT
+		if m != nil {
+			b.WriteString(row("Topic", m.Topic))
+			b.WriteString(row("QoS", fmt.Sprintf("%d", m.QoS)))
+			b.WriteString(row("Payload bytes", fmt.Sprintf("%d", len(m.Payload))))
+		}
+	}
+	return b.String()
+}
+
+// normalizeDomain reduces the configured public domain to a display form:
+// scheme and path removed, trailing slash trimmed.
+func normalizeDomain(d string) string {
+	d = strings.TrimSpace(d)
+	if i := strings.Index(d, "://"); i >= 0 {
+		d = d[i+3:]
+	}
+	if i := strings.IndexByte(d, '/'); i >= 0 {
+		d = d[:i]
+	}
+	return strings.TrimSuffix(d, "/")
+}
+
+// footerParts returns the version and domain as presentable pieces.
+func footerParts(req action.ActionRequest) (version, domain string) {
+	version = strings.TrimSpace(req.App.Version)
+	domain = normalizeDomain(req.App.Domain)
+	return version, domain
+}
+
+func footerText(req action.ActionRequest) string {
+	version, domain := footerParts(req)
+	var b strings.Builder
+	b.WriteString("Sent by WarnFlux")
+	if version != "" {
+		fmt.Fprintf(&b, " v%s", version)
+	}
+	if domain != "" {
+		fmt.Fprintf(&b, " · %s", domain)
+	}
+	if req.App.RepoURL != "" {
+		fmt.Fprintf(&b, " · %s", req.App.RepoURL)
+	}
+	return b.String()
+}
+
+func footerHTML(req action.ActionRequest) string {
+	version, domain := footerParts(req)
+	var b strings.Builder
+	b.WriteString("Sent by ")
+	fmt.Fprintf(&b, "<strong style=\"color:#c9d1d9;\">WarnFlux</strong>")
+	if version != "" {
+		fmt.Fprintf(&b, " v%s", htmlEscaper(version))
+	}
+	if domain != "" {
+		fmt.Fprintf(&b, " · %s", htmlEscaper(domain))
+	}
+	if req.App.RepoURL != "" {
+		fmt.Fprintf(&b, ` · <a href="%s" style="color:#58a6ff;text-decoration:none;">%s</a>`,
+			htmlEscaper(req.App.RepoURL), htmlEscaper(req.App.RepoURL))
+	}
+	return b.String()
+}
+
+// htmlEscaper escapes a value for safe embedding in the HTML part.
+func htmlEscaper(s string) string {
+	return html.EscapeString(s)
 }

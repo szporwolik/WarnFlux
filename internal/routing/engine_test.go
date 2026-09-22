@@ -102,7 +102,7 @@ func hazardEvent(severity string, typ dispatch.TransitionType) dispatch.Event {
 // plus the engine for stats assertions.
 func startEngine(t *testing.T, store RuleStore, acts ActionSubmitter, outs RuleOutputRouter) (*Engine, chan<- dispatch.Event) {
 	t.Helper()
-	e := New(store, acts, outs, slog.New(slog.DiscardHandler))
+	e := New(store, acts, outs, slog.New(slog.DiscardHandler), action.AppInfo{})
 	events := make(chan dispatch.Event, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

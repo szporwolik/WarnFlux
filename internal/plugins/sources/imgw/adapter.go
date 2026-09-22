@@ -11,29 +11,12 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/snapshotutil"
 )
-
-// IMGW publishes naive Polish local timestamps ("2006-01-02 15:04:05") in
-// Europe/Warsaw (CET/CEST). They are parsed in that location — never as
-// UTC — so DST is handled by the IANA database.
-var warsawLocation = func() *time.Location {
-	loc, err := time.LoadLocation("Europe/Warsaw")
-	if err != nil {
-		// The embedded zoneinfo always carries Europe/Warsaw; this fallback
-		// exists only for exotic stripped runtimes and intentionally stays
-		// fixed-zone (never UTC-misparsed).
-		return time.FixedZone("CET", 3600)
-	}
-	return loc
-}()
 
 // parseLocalTime parses an IMGW local timestamp in Europe/Warsaw.
 func parseLocalTime(s string) (time.Time, error) {
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", strings.TrimSpace(s), warsawLocation)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("malformed IMGW timestamp %q", s)
-	}
-	return t, nil
+	return snapshotutil.ParseWarsawLocal(s)
 }
 
 // normalizeText trims and collapses internal whitespace deterministically.

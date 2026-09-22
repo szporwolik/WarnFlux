@@ -9,6 +9,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/demo"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/imgw"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/rso"
 )
 
 // RegisterBuiltins registers every built-in plugin type. Registration is
@@ -21,6 +22,9 @@ func RegisterBuiltins(reg *plugin.Registry) error {
 		return err
 	}
 	if err := imgw.Register(reg); err != nil {
+		return err
+	}
+	if err := rso.Register(reg); err != nil {
 		return err
 	}
 	if err := mqtt.Register(reg); err != nil {

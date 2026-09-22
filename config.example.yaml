@@ -104,6 +104,30 @@ sources:
         - meteo
         - hydro
 
+  # Regionalny System Ostrzegania (RSO) public XML communications:
+  # a HAZARD source with upstream voivodeship filtering via the official
+  # endpoint (see internal/plugins/sources/rso/README.md).
+  # Source: RSO / TVP, https://www.komunikaty.tvp.pl/Info/Integration.
+  - id: rso-malopolskie
+    type: rso
+    enabled: true
+
+    runtime:
+      restart: true
+      shutdown_timeout: 10s
+
+    config:
+      poll_interval: 5m
+      request_timeout: 10s
+
+      # Optional: override the portal base (testing/custom deployments).
+      # base_url: https://komunikaty.tvp.pl
+
+      # One or more official RSO voivodeship slugs; omitted → [wszystkie].
+      # "wszystkie" is exclusive (cannot be combined with regional slugs).
+      voivodeships:
+        - malopolskie
+
 # Output plugins: receive meaningful event changes from the core.
 outputs:
   # Publishes hazard event changes and an application status snapshot to

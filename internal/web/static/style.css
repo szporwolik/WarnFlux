@@ -152,8 +152,17 @@ a:hover { text-decoration: underline; }
   margin: 0 auto;
 }
 
-/* Dashboard layout: content and footer sit to the right of the sidebar. */
+/* Dashboard layout: a column flex keeps the footer mounted to the bottom of
+   the viewport even when the content is short; content and footer sit to
+   the right of the fixed sidebar. */
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.app .grid { flex: 1 0 auto; }
 .app .grid, .app .footer { margin-left: var(--sidebar-w); }
+.app .footer { flex: 0 0 auto; }
 
 .card {
   background: var(--surface);

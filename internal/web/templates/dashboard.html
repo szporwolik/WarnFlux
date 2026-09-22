@@ -53,12 +53,14 @@
           <td><strong>{{.ID}}</strong></td>
           <td class="mono">{{.Broker}}</td>
           <td>
-            <span class="badge {{if .Connected}}ok{{else}}bad{{end}}">{{if .Connected}}connected{{else}}disconnected{{end}}</span>
-            {{if .WFEnabled}}
-              {{if eq .Heartbeat "fresh"}}<span class="badge ok">heartbeat fresh</span>
-              {{else if eq .Heartbeat "stale"}}<span class="badge warn">heartbeat stale</span>
-              {{else}}<span class="badge muted">no heartbeat</span>{{end}}
-            {{end}}
+            <span class="badge-row">
+              <span class="badge {{if .Connected}}ok{{else}}bad{{end}}">{{if .Connected}}connected{{else}}disconnected{{end}}</span>
+              {{if .WFEnabled}}
+                {{if eq .Heartbeat "fresh"}}<span class="badge ok">heartbeat fresh</span>
+                {{else if eq .Heartbeat "stale"}}<span class="badge warn">heartbeat stale</span>
+                {{else}}<span class="badge muted">no heartbeat</span>{{end}}
+              {{end}}
+            </span>
             {{if .LastError}}<div class="reason">{{.LastError}}</div>{{end}}
           </td>
           <td>{{if .WFEnabled}}{{.WFPrefix}}{{else}}—{{end}}</td>

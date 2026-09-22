@@ -171,11 +171,54 @@ a:hover { text-decoration: underline; }
 .logout .btn-ghost {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  width: 100%;
-  justify-content: flex-start;
+  gap: 0.6rem;
   border-radius: var(--radius);
-  line-height: 1;
+}
+
+/* ---- screen-wide top bar (drawer toggle, title, user, sign out) ---- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 48px;
+  padding: 0 1rem;
+  margin-left: var(--sidebar-w);
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-title { font-weight: 600; font-size: 0.95rem; color: var(--text); }
+.topbar-spacer { flex: 1; }
+
+.menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.menu-btn:hover { color: var(--text); background: var(--surface-hi); }
+
+.avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-hi);
+  border: 1px solid var(--border-hi);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
 }
 
 /* ---- buttons ---- */
@@ -477,14 +520,27 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   margin-top: 1rem;
 }
 
-/* ---- narrow screens: icon-only sidebar ---- */
+/* ---- collapsed desktop drawer: icon-only rail ---- */
+.app.drawer-collapsed { --sidebar-w: 56px; }
+.app.drawer-collapsed .brand { justify-content: center; padding: 0.35rem 0 0.85rem; }
+.app.drawer-collapsed .brand-name,
+.app.drawer-collapsed .brand-sub,
+.app.drawer-collapsed .nav-label { display: none; }
+.app.drawer-collapsed .nav-item { justify-content: center; padding: 0.45rem 0; }
+
+/* ---- narrow screens: drawer overlays the content ---- */
 @media (max-width: 860px) {
-  :root { --sidebar-w: 56px; }
-  .sidebar { padding: 0.75rem 0.4rem; }
-  .brand { justify-content: center; padding: 0.35rem 0 0.85rem; }
-  .brand-name, .nav-label { display: none; }
-  .nav-item { justify-content: center; padding: 0.45rem 0; }
-  .logout .btn-ghost { justify-content: center; padding: 0.3rem 0; }
+  .app .sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+    box-shadow: none;
+  }
+  .app.drawer-open .sidebar {
+    transform: none;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+  }
+  .app .topbar, .app .grid, .app .footer { margin-left: 0; }
+  .logout-label { display: none; }
 }
 
 /* ---- users administration ---- */

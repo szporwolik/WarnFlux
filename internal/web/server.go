@@ -231,6 +231,13 @@ func templateFuncs() template.FuncMap {
 			}
 			return *t
 		},
+		"initials": func(s string) string {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return "?"
+			}
+			return strings.ToUpper(string([]rune(s)[0]))
+		},
 		"timeShort": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"

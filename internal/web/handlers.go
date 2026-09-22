@@ -159,6 +159,7 @@ type pageView struct {
 	Version  string
 	Commit   string
 	RepoURL  string
+	Username string
 	Status   statusView
 	MQTT     mqttView
 	Weather  weatherView
@@ -510,6 +511,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Version:      s.version,
 		Commit:       s.commit,
 		RepoURL:      repoURL,
+		Username:     sess.username,
 		Status:       s.buildStatusView(),
 		MQTT:         s.buildMQTTView(snap),
 		Weather:      buildWeatherView(snap),

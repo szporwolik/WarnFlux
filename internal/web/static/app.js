@@ -61,3 +61,31 @@
     SECTIONS.forEach(refresh);
   }, POLL_MS);
 })();
+
+// Application drawer: collapses to an icon rail on desktop (persisted),
+// overlays the content on narrow screens.
+(function () {
+  "use strict";
+
+  var toggle = document.getElementById("drawer-toggle");
+  if (!toggle) {
+    return;
+  }
+  var body = document.body;
+
+  if (localStorage.getItem("wf-drawer") === "collapsed") {
+    body.classList.add("drawer-collapsed");
+  }
+
+  toggle.addEventListener("click", function () {
+    if (window.innerWidth <= 860) {
+      body.classList.toggle("drawer-open");
+      return;
+    }
+    body.classList.toggle("drawer-collapsed");
+    localStorage.setItem(
+      "wf-drawer",
+      body.classList.contains("drawer-collapsed") ? "collapsed" : "open"
+    );
+  });
+})();

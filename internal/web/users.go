@@ -48,6 +48,7 @@ type usersView struct {
 	Commit   string
 	RepoURL  string
 	CSRF     string
+	Username string
 
 	Users  []userRow
 	Form   userForm
@@ -67,6 +68,7 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	view := s.buildUsersView(r, userForm{}, 0, "")
 	view.CSRF = sess.csrf
+	view.Username = sess.username
 
 	if raw := r.URL.Query().Get("edit"); raw != "" {
 		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
@@ -208,6 +210,7 @@ func (s *Server) renderUsersError(w http.ResponseWriter, r *http.Request, status
 	sess := s.sessions.currentSession(r)
 	view := s.buildUsersView(r, form, editID, msg)
 	view.CSRF = sess.csrf
+	view.Username = sess.username
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	s.render(w, "users", view)

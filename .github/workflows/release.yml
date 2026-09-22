@@ -1,9 +1,14 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -17,11 +22,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify the tag points at a commit on main
+      - name: Verify the commit is on main
         run: |
           git fetch origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::release tag ${{ github.ref_name }} does not point at a commit on main"
+            echo "::error::refusing to release: ${{ github.ref }} is not on main"
             exit 1
           fi
 
@@ -30,21 +35,27 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Derive version from tag and cross-check VERSION file
+      - name: Derive version (tag or VERSION file) and cross-check
         id: version
         run: |
-          tag="${{ github.ref_name }}"
-          version="${tag#v}"
-          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::tag $tag is not a semantic version like v0.1.0"
-            exit 1
+          version=""
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            tag="${{ github.ref_name }}"
+            version="${tag#v}"
+            # The VERSION file at the repository root is the canonical source
+            # of truth: the tag must match it, so releases can never publish
+            # a version that was not bumped intentionally.
+            file_version="$(tr -d '[:space:]' < VERSION)"
+            if [ "$file_version" != "$version" ]; then
+              echo "::error::tag $tag != VERSION file '$file_version' (update the VERSION file at the repo root first)"
+              exit 1
+            fi
+          else
+            # Manual run: the version is the VERSION file, as-is.
+            version="$(tr -d '[:space:]' < VERSION)"
           fi
-          # The VERSION file at the repository root is the canonical source
-          # of truth: the tag must match it, so releases can never publish
-          # a version that was not bumped intentionally.
-          file_version="$(tr -d '[:space:]' < VERSION)"
-          if [ "$file_version" != "$version" ]; then
-            echo "::error::tag $tag != VERSION file '$file_version' (update the VERSION file at the repo root first)"
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version '$version' is not a semantic version like 0.1.0"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"

@@ -185,7 +185,9 @@ dispatch:
 
       username: ""
       password: ""
-      # password_file: /run/secrets/mqtt_local_password
+      # Alternatively, read the password from a file (e.g. a Docker secret).
+      # Mutually exclusive with password.
+      password_file: ""
 
       connect_timeout: 10s
       keep_alive: 30s
@@ -211,6 +213,9 @@ dispatch:
 
       username: ""
       password: ""
+      # Alternatively, read the password from a file (e.g. a Docker secret).
+      # Mutually exclusive with password.
+      password_file: ""
 
       connect_timeout: 10s
       keep_alive: 30s
@@ -232,7 +237,9 @@ web:
   auth:
     username: admin
     password: change-me
-    # password_file: /run/secrets/warnflux_web_password
+    # Alternatively, read the password from a file (e.g. a Docker secret).
+    # Mutually exclusive with password.
+    password_file: ""
 
     # Set to true when serving behind TLS (session cookie becomes Secure).
     secure_cookie: false

@@ -197,7 +197,13 @@ type Web struct {
 	// the login page and in the sidebar header. Empty falls back to the
 	// title.
 	Name string
-	Auth WebAuth
+	// Header1 is the primary header line shown next to the logo (sidebar)
+	// and as the login title. Empty falls back to the name.
+	Header1 string
+	// Header2 is an optional subtitle shown under Header1 in the sidebar
+	// and on the login page. Empty hides it.
+	Header2 string
+	Auth    WebAuth
 }
 
 // WebAuth holds the single admin account for the web UI. Password and
@@ -278,6 +284,8 @@ type fileWeb struct {
 	Listen  string       `yaml:"listen"`
 	Title   string       `yaml:"title"`
 	Name    string       `yaml:"name"`
+	Header1 string       `yaml:"header1"`
+	Header2 string       `yaml:"header2"`
 	Auth    *fileWebAuth `yaml:"auth"`
 }
 
@@ -553,6 +561,7 @@ func (f fileConfig) toConfig() Config {
 		Listen:  defaultWebListen,
 		Title:   defaultWebTitle,
 		Name:    defaultWebTitle,
+		Header1: defaultWebTitle,
 	}
 	if f.Web != nil {
 		if l := strings.TrimSpace(f.Web.Listen); l != "" {
@@ -566,6 +575,12 @@ func (f fileConfig) toConfig() Config {
 		} else {
 			cfg.Web.Name = cfg.Web.Title
 		}
+		if h := strings.TrimSpace(f.Web.Header1); h != "" {
+			cfg.Web.Header1 = h
+		} else {
+			cfg.Web.Header1 = cfg.Web.Name
+		}
+		cfg.Web.Header2 = strings.TrimSpace(f.Web.Header2)
 		if f.Web.Auth != nil {
 			cfg.Web.Auth = WebAuth{
 				Username:     f.Web.Auth.Username,

@@ -125,6 +125,26 @@ a:hover { text-decoration: underline; }
   flex: none;
 }
 
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.brand-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brand-sub {
+  font-size: 0.66rem;
+  font-weight: 400;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sidenav {
   display: flex;
   flex-direction: column;
@@ -421,6 +441,13 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   text-align: center;
   color: var(--muted);
   font-style: italic;
+}
+.login-sub {
+  margin: 0.3rem 0 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.35;
 }
 .login-name {
   font-size: 1.15rem;

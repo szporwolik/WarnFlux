@@ -154,6 +154,8 @@ type actionsView struct {
 type pageView struct {
 	AppTitle string
 	Name     string
+	Header1  string
+	Header2  string
 	Version  string
 	Commit   string
 	RepoURL  string
@@ -166,6 +168,7 @@ type pageView struct {
 	CSRF     string
 
 	NavDashboard bool
+	NavUsers     bool
 }
 
 // ---- view builders -------------------------------------------------------
@@ -393,6 +396,15 @@ func (s *Server) displayName() string {
 	return s.cfg.Title
 }
 
+// displayHeader1 returns the primary header line (web.header1), falling
+// back to the system name when it is not configured.
+func (s *Server) displayHeader1() string {
+	if s.cfg.Header1 != "" {
+		return s.cfg.Header1
+	}
+	return s.displayName()
+}
+
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	// Already authenticated: go straight to the dashboard.
 	if s.sessions.currentSession(r) != nil {
@@ -409,6 +421,8 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "login", map[string]any{
 		"AppTitle": s.cfg.Title,
 		"Name":     s.displayName(),
+		"Header1":  s.displayHeader1(),
+		"Header2":  s.cfg.Header2,
 		"Version":  s.version,
 		"Commit":   s.commit,
 		"RepoURL":  repoURL,
@@ -441,6 +455,8 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "login", map[string]any{
 			"AppTitle": s.cfg.Title,
 			"Name":     s.displayName(),
+			"Header1":  s.displayHeader1(),
+			"Header2":  s.cfg.Header2,
 			"Version":  s.version,
 			"Commit":   s.commit,
 			"RepoURL":  repoURL,
@@ -489,6 +505,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "page", pageView{
 		AppTitle:     s.cfg.Title,
 		Name:         s.displayName(),
+		Header1:      s.displayHeader1(),
+		Header2:      s.cfg.Header2,
 		Version:      s.version,
 		Commit:       s.commit,
 		RepoURL:      repoURL,

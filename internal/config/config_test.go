@@ -90,6 +90,9 @@ func TestLoadFullConfig(t *testing.T) {
 	if cfg.Storage.Driver != "sqlite" || cfg.Storage.Path != "./warnflux.db" {
 		t.Errorf("storage = %+v", cfg.Storage)
 	}
+	if cfg.Web.Header1 != "WarnFlux" || cfg.Web.Header2 != "" {
+		t.Errorf("web headers defaults = %q / %q, want WarnFlux / empty", cfg.Web.Header1, cfg.Web.Header2)
+	}
 	if len(cfg.Sources) != 1 || len(cfg.Outputs) != 1 {
 		t.Fatalf("sources=%d outputs=%d", len(cfg.Sources), len(cfg.Outputs))
 	}

@@ -42,6 +42,8 @@ type userForm struct {
 type usersView struct {
 	AppTitle string
 	Name     string
+	Header1  string
+	Header2  string
 	Version  string
 	Commit   string
 	RepoURL  string
@@ -55,7 +57,8 @@ type usersView struct {
 	Page, Pages, From, To, Total int
 	HasPrev, HasNext             bool
 
-	NavUsers bool
+	NavDashboard bool
+	NavUsers     bool
 }
 
 // handleUsersPage renders the user administration page. ?edit=<id>
@@ -179,6 +182,8 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 	return usersView{
 		AppTitle: s.cfg.Title,
 		Name:     s.displayName(),
+		Header1:  s.displayHeader1(),
+		Header2:  s.cfg.Header2,
 		Version:  s.version,
 		Commit:   s.commit,
 		RepoURL:  repoURL,

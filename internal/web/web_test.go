@@ -54,6 +54,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Enabled: true,
 		Listen:  ":0",
 		Title:   "WarnFlux Test",
+		Header2: "Test platform",
 		Auth:    config.WebAuth{Username: testUsername, Password: testPassword},
 	}
 
@@ -139,17 +140,6 @@ func (e *testEnv) get(path string) (*http.Response, string) {
 	return resp, string(body)
 }
 
-func (e *testEnv) postForm(path string, form url.Values) *http.Response {
-	e.t.Helper()
-	resp, err := e.client.PostForm(e.srv.URL+path, form)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	return resp
-}
-
 var csrfRe = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
 
 func extractCSRF(t *testing.T, html string) string {
@@ -215,7 +205,7 @@ func TestWrongPasswordRejected(t *testing.T) {
 	csrf := extractCSRF(t, html)
 
 	form := url.Values{"csrf": {csrf}, "username": {testUsername}, "password": {"wrong-password"}}
-	resp := env.postForm("/login", form)
+	resp, _ := env.postForm("/login", form)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("POST /login = %d, want 401", resp.StatusCode)
 	}
@@ -229,7 +219,7 @@ func TestWrongPasswordRejected(t *testing.T) {
 func TestCSRFRequiredForLogin(t *testing.T) {
 	env := newTestEnv(t)
 	form := url.Values{"username": {testUsername}, "password": {testPassword}}
-	resp := env.postForm("/login", form)
+	resp, _ := env.postForm("/login", form)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST /login without csrf = %d, want 403", resp.StatusCode)
 	}
@@ -264,7 +254,7 @@ func TestLogoutInvalidatesSession(t *testing.T) {
 
 	_, dash := env.get("/dashboard")
 	csrf := extractCSRF(t, dash)
-	resp := env.postForm("/logout", url.Values{"csrf": {csrf}})
+	resp, _ := env.postForm("/logout", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST /logout = %d", resp.StatusCode)
 	}
@@ -278,7 +268,7 @@ func TestLogoutInvalidatesSession(t *testing.T) {
 func TestLogoutRequiresSessionCSRF(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()
-	resp := env.postForm("/logout", url.Values{"csrf": {"bogus"}})
+	resp, _ := env.postForm("/logout", url.Values{"csrf": {"bogus"}})
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST /logout with bogus csrf = %d, want 403", resp.StatusCode)
 	}
@@ -416,6 +406,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if !strings.Contains(loginHTML, `<h1 class="login-name">WarnFlux Test</h1>`) {
 		t.Errorf("login page missing system name: %s", loginHTML)
 	}
+	if !strings.Contains(loginHTML, `class="login-sub">Test platform</p>`) {
+		t.Errorf("login page missing header2 subtitle: %s", loginHTML)
+	}
 	if !strings.Contains(loginHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
 		t.Errorf("login footer missing commit link: %s", loginHTML)
 	}
@@ -436,6 +429,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	}
 	if !strings.Contains(dashHTML, `<span class="brand-name">WarnFlux Test</span>`) {
 		t.Errorf("dashboard sidebar missing system name: %s", dashHTML)
+	}
+	if !strings.Contains(dashHTML, `class="brand-sub">Test platform</span>`) {
+		t.Errorf("dashboard sidebar missing header2 subtitle: %s", dashHTML)
 	}
 }
 

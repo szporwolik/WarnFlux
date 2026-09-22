@@ -44,6 +44,8 @@ web:
   listen: ":8080"
   title: "WarnFlux"
   name: "WarnFlux Ops"
+  header1: "SPOK"
+  header2: "Społeczna Platforma Ostrzegania i Komunikacji"
   auth:
     username: admin
     password: change-me
@@ -93,6 +95,9 @@ func TestLoadDispatchWebActions(t *testing.T) {
 	}
 	if !cfg.Web.Enabled || cfg.Web.Listen != ":8080" || cfg.Web.Title != "WarnFlux" || cfg.Web.Name != "WarnFlux Ops" {
 		t.Errorf("web = %+v", cfg.Web)
+	}
+	if cfg.Web.Header1 != "SPOK" || cfg.Web.Header2 != "Społeczna Platforma Ostrzegania i Komunikacji" {
+		t.Errorf("web headers = %q / %q", cfg.Web.Header1, cfg.Web.Header2)
 	}
 	if cfg.Web.Auth.Username != "admin" || cfg.Web.Auth.Password != "change-me" {
 		t.Errorf("web auth = %+v", cfg.Web.Auth)

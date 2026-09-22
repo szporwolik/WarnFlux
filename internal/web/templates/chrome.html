@@ -1,7 +1,10 @@
 {{define "sidebar"}}  <aside class="sidebar">
     <a class="brand" href="/dashboard">
       <img class="brand-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
-      <span class="brand-name">{{.Name}}</span>
+      <span class="brand-text">
+        <span class="brand-name">{{.Header1}}</span>
+        {{if .Header2}}<span class="brand-sub">{{.Header2}}</span>{{end}}
+      </span>
     </a>
     <nav class="sidenav">
       <a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>

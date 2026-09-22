@@ -234,7 +234,7 @@ func TestUsersCRUDFlow(t *testing.T) {
 		t.Fatalf("update = %d, want redirect", resp.StatusCode)
 	}
 	_, html = env.get("/users")
-	if !strings.Contains(html, "+48 600 999 999") {
+	if !strings.Contains(html, "&#43;48 600 999 999") {
 		t.Fatalf("updated phone not listed: %s", html)
 	}
 

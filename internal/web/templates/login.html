@@ -11,8 +11,8 @@
 <body class="login-page">
   <main class="login-card">
     <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
-    <h1 class="login-name">{{.Name}}</h1>
-    <p class="login-tagline">Alerts in. Action out.</p>
+    <h1 class="login-name">{{.Header1}}</h1>
+    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">Alerts in. Action out.</p>{{end}}
     {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
     <form method="post" action="/login">
       <input type="hidden" name="csrf" value="{{.CSRF}}">

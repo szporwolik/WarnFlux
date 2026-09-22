@@ -208,8 +208,8 @@ func TestMigrationV4BackfillsLastSeen(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if info.To != 4 {
-		t.Fatalf("migrated to %d, want 4", info.To)
+	if info.To != 5 {
+		t.Fatalf("migrated to %d, want 5", info.To)
 	}
 	var ms int64
 	if err := store.db.QueryRow("SELECT last_seen_at_ms FROM events WHERE event_key = 'src:1'").Scan(&ms); err != nil {
@@ -330,8 +330,8 @@ func TestMigrationV2WithJournalReachesCurrent(t *testing.T) {
 	if err := store.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if v != 4 {
-		t.Errorf("user_version = %d, want 4", v)
+	if v != 5 {
+		t.Errorf("user_version = %d, want 5", v)
 	}
 
 	// The event row survives with a correct machine-time last_seen.
@@ -385,8 +385,8 @@ func TestMigrationV2EventsWithoutJournalReachesCurrent(t *testing.T) {
 		t.Fatalf("Open of v2 database: %v", err)
 	}
 	defer store.Close()
-	if info.To != 4 {
-		t.Fatalf("migrated to %d, want 4", info.To)
+	if info.To != 5 {
+		t.Fatalf("migrated to %d, want 5", info.To)
 	}
 	if _, err := store.Get(context.Background(), "v2src:1"); err != nil {
 		t.Fatalf("Get after migration: %v", err)
@@ -497,8 +497,8 @@ func TestMigrationLegacyCursorWithoutTypeResetsOnSync(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if info.To != 4 {
-		t.Fatalf("migrated to %d, want 4", info.To)
+	if info.To != 5 {
+		t.Fatalf("migrated to %d, want 5", info.To)
 	}
 
 	ctx := context.Background()

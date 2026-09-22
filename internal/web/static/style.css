@@ -485,11 +485,11 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 
 .login-card {
   width: 100%;
-  max-width: 340px;
+  max-width: 400px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1.5rem;
+  padding: 1.75rem;
   margin: auto 1rem;
 }
 .login-logo {

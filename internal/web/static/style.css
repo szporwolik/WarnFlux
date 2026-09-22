@@ -245,28 +245,27 @@ a:hover { text-decoration: underline; }
 .btn-primary:hover { background: var(--btn-primary-hi); }
 
 /* ---- layout ---- */
+/* The dashboard grid stretches to the full width of the window (minus the
+   drawer) so panels use all the space that is available. Mobile-first: one
+   column below 900px, then the two-column placement. */
 .grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 1rem;
   padding: 1.5rem 1.25rem 2rem;
-  max-width: 1280px;
-  margin: 0 auto;
 }
 
 /* Dashboard placement: System (1) and the extended MQTT card (2) form the
    top row; Weather (3) sits under System, so the two top cards end on the
    same line as the Weather card. Warnings (4) spans the full width. */
-.grid > .card:nth-child(1) { grid-column: 1; grid-row: 1; }
-.grid > .card:nth-child(2) { grid-column: 2; grid-row: 1 / span 2; }
-.grid > .card:nth-child(3) { grid-column: 1; grid-row: 2; }
-.grid > .card:nth-child(4) { grid-column: 1 / -1; }
-.grid > .card:nth-child(5) { grid-column: 1; }
-.grid > .card:nth-child(6) { grid-column: 2; }
-
-@media (max-width: 900px) {
-  .grid { grid-template-columns: 1fr; }
-  .grid > .card { grid-column: auto; grid-row: auto; }
+@media (min-width: 900px) {
+  .grid { grid-template-columns: 1fr 1fr; }
+  .grid > .card:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .grid > .card:nth-child(2) { grid-column: 2; grid-row: 1 / span 2; }
+  .grid > .card:nth-child(3) { grid-column: 1; grid-row: 2; }
+  .grid > .card:nth-child(4) { grid-column: 1 / -1; }
+  .grid > .card:nth-child(5) { grid-column: 1; }
+  .grid > .card:nth-child(6) { grid-column: 2; }
 }
 
 /* Dashboard layout: a column flex keeps the footer mounted to the bottom of

@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
@@ -31,6 +32,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 )
 
@@ -389,38 +391,71 @@ func (p *emailAction) Close(ctx context.Context) error {
 	return nil
 }
 
+// logoCID identifies the inline logo part referenced from the HTML part.
+const logoCID = "warnflux-logo"
+
 // buildMessage assembles the RFC 5322 message for one routed event as
-// multipart/alternative: a plain-text fallback plus a styled HTML part.
+// multipart/related: the root carries a multipart/alternative body
+// (plain-text fallback + styled HTML) plus the application logo as an
+// inline CID image, so the brand renders without any external hosting.
 // The subject line is MIME word-encoded so non-ASCII (e.g. Polish) text
 // stays intact. All dynamic values are HTML-escaped in the HTML part.
 func buildMessage(cfg Config, req action.ActionRequest, now time.Time) []byte {
 	subject := subjectOf(cfg, req)
-	boundary := fmt.Sprintf("warnflux-%d", now.UnixNano())
+	relatedBoundary := fmt.Sprintf("warnflux-rel-%d", now.UnixNano())
+	altBoundary := fmt.Sprintf("warnflux-alt-%d", now.UnixNano())
 	plain := bodyOfPlain(req, now)
-	html := bodyOfHTML(req, now)
+	htmlBody := bodyOfHTML(req, now)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", cfg.From)
 	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(cfg.To, ", "))
 	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
 	b.WriteString("MIME-Version: 1.0\r\n")
-	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary)
+	fmt.Fprintf(&b, "Content-Type: multipart/related; boundary=\"%s\"\r\n", relatedBoundary)
 	b.WriteString("\r\n")
 
-	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	// Alternative body: plain text first, HTML second.
+	fmt.Fprintf(&b, "--%s\r\n", relatedBoundary)
+	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=\"%s\"\r\n\r\n", altBoundary)
+
+	fmt.Fprintf(&b, "--%s\r\n", altBoundary)
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
 	b.WriteString(plain)
 	b.WriteString("\r\n")
 
-	fmt.Fprintf(&b, "--%s\r\n", boundary)
+	fmt.Fprintf(&b, "--%s\r\n", altBoundary)
 	b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
-	b.WriteString(html)
+	b.WriteString(htmlBody)
 	b.WriteString("\r\n")
+	fmt.Fprintf(&b, "--%s--\r\n", altBoundary)
 
-	fmt.Fprintf(&b, "--%s--\r\n", boundary)
+	// Inline logo.
+	fmt.Fprintf(&b, "--%s\r\n", relatedBoundary)
+	b.WriteString("Content-Type: image/png; name=\"logo.png\"\r\n")
+	fmt.Fprintf(&b, "Content-ID: <%s>\r\n", logoCID)
+	b.WriteString("Content-Disposition: inline; filename=\"logo.png\"\r\n")
+	b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+	b.WriteString(wrapBase64(appinfo.LogoPNG()))
+	b.WriteString("\r\n")
+	fmt.Fprintf(&b, "--%s--\r\n", relatedBoundary)
 	return []byte(b.String())
+}
+
+// wrapBase64 line-wraps a base64 encoding at 76 columns (RFC 2045).
+func wrapBase64(data []byte) string {
+	enc := base64.StdEncoding.EncodeToString(data)
+	const width = 76
+	var b strings.Builder
+	for len(enc) > width {
+		b.WriteString(enc[:width])
+		b.WriteString("\r\n")
+		enc = enc[width:]
+	}
+	b.WriteString(enc)
+	return b.String()
 }
 
 // subjectOf builds a concise, severity-first subject line. The bracket
@@ -549,6 +584,18 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 	fmt.Fprintf(&b, `<div style="background:#0d1117;padding:24px;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
 <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;border:1px solid #30363d;border-top:3px solid %s;border-radius:8px;background:#161b22;color:#c9d1d9;font-size:14px;">
 <tr><td style="padding:24px 28px;">`, accent)
+
+	// Brand row: the embedded logo next to the system header (header1).
+	brand := strings.TrimSpace(req.App.Header1)
+	if brand == "" {
+		brand = "WarnFlux"
+	}
+	fmt.Fprintf(&b, `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:16px;"><tr>
+<td style="padding-right:10px;"><img src="cid:%s" width="36" height="36" alt="%s" style="width:36px;height:36px;border-radius:10px;display:block;border:0;"></td>
+<td style="vertical-align:middle;font-size:16px;font-weight:700;color:#e6edf3;letter-spacing:.02em;">%s</td>
+</tr></table>`,
+		logoCID, htmlEscaper(brand), htmlEscaper(brand))
+
 	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8b949e;">WarnFlux hazard alert</div>`)
 
 	ev := req.Event

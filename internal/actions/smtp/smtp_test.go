@@ -371,9 +371,15 @@ rate_limit_per_minute: -1
 		"Severity: severe",
 		"Areas: małopolskie",
 		// Multipart/alternative with the human-first HTML part.
+		"Content-Type: multipart/related",
 		"Content-Type: multipart/alternative",
 		"Content-Type: text/html; charset=utf-8",
 		"Technical details",
+		// Embedded logo: inline CID image referenced from the HTML brand row.
+		"Content-Type: image/png; name=\"logo.png\"",
+		"Content-ID: <warnflux-logo>",
+		"cid:warnflux-logo",
+		">SPOK</td>",
 		// The severity is colored with the application palette: a card
 		// accent and a tinted Severity table row (severe -> orange).
 		"border-top:3px solid #ff7b43",

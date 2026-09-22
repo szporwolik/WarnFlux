@@ -769,24 +769,42 @@ func TestManagerEmitShutdownRaceStress(t *testing.T) {
 // infoOutput is a fake output implementing both hazard delivery and
 // information publishing. failWith makes information publishes fail (hazard
 // delivery stays unaffected); block, when set, blocks publishes until
-// closed; mutate corrupts the received payload before storing it (to prove
-// per-output payload isolation).
+// closed; hang makes PublishInformation ignore its context forever
+// (select{}); mutate corrupts the received payload before storing it (to
+// prove per-output payload isolation). Handle records every hazard change.
 type infoOutput struct {
 	mu       sync.Mutex
 	messages []core.InformationMessage
 	calls    int
+	handles  int
+	handled  []core.EventChange
+	events   []string // ordered "info:<key>" / "handle:<source-id>" log
 	failWith error
 	block    chan struct{}
+	hang     bool
 	mutate   bool
 }
 
 func (o *infoOutput) Name() string { return "info" }
 
-func (o *infoOutput) Handle(context.Context, core.EventChange) error { return nil }
+func (o *infoOutput) Handle(_ context.Context, change core.EventChange) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.handles++
+	o.handled = append(o.handled, change)
+	o.events = append(o.events, "handle:"+change.Event.SourceID)
+	return nil
+}
 
 func (o *infoOutput) PublishInformation(_ context.Context, m core.InformationMessage) error {
 	o.mu.Lock()
 	o.calls++ // the invocation has started
+	o.events = append(o.events, "info:"+m.Key)
+	if o.hang {
+		// Completely ignore cancellation: never return.
+		o.mu.Unlock()
+		select {}
+	}
 	if o.block != nil {
 		ch := o.block
 		o.mu.Unlock()
@@ -807,6 +825,31 @@ func (o *infoOutput) infoCount() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.calls
+}
+
+func (o *infoOutput) handleCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.handles
+}
+
+// payloadsByKey returns the delivered payloads grouped by information key,
+// in delivery order.
+func (o *infoOutput) payloadsByKey() map[string][]string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make(map[string][]string)
+	for _, m := range o.messages {
+		out[m.Key] = append(out[m.Key], string(m.Payload))
+	}
+	return out
+}
+
+// eventsSnapshot returns the ordered invocation log.
+func (o *infoOutput) eventsSnapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.events...)
 }
 
 func (o *infoOutput) lastPayload() []byte {
@@ -863,6 +906,37 @@ func infoManagerWithTimeout(t *testing.T, out OutputPlugin, ingestFn IngestFunc,
 		t.Fatalf("NewManager: %v", err)
 	}
 	return m
+}
+
+// infoManagerFull is infoManagerWithTimeout with a real durable ingester
+// and fast worker poll intervals, for tests where hazard changes must flow
+// through the journal while information is being delivered.
+func infoManagerFull(t *testing.T, out OutputPlugin, timeout time.Duration) (*Manager, *sqlite.Store, *ingest.Ingester) {
+	t.Helper()
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ing := ingest.NewIngester(store, testLogger())
+	reg := NewRegistry()
+	if err := reg.RegisterOutput("info-out", func(_ *yaml.Node) (OutputPlugin, error) {
+		return out, nil
+	}); err != nil {
+		t.Fatalf("register output: %v", err)
+	}
+	m, err := NewManager(reg, nil, []config.Output{{
+		ID: "info", Type: "info-out", Enabled: true,
+		Runtime: config.OutputRuntime{Timeout: timeout, FailureThreshold: 5},
+	}}, ing.Ingest, ing.Expire, store, managerOpts(), testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	for _, w := range m.outputs {
+		w.pollInterval = 5 * time.Millisecond
+		w.recoveryInterval = 10 * time.Millisecond
+	}
+	return m, store, ing
 }
 
 // TestManagerEmitInformationForwards verifies the auxiliary information
@@ -1174,5 +1248,289 @@ func TestManagerEmitInformationValidationAndShutdown(t *testing.T) {
 	}
 	if got := out.infoCount(); got != 0 {
 		t.Errorf("invalid message reached the output (%d calls)", got)
+	}
+}
+
+// TestInfoTimeoutDoesNotBlockHazardDelivery is the adversarial hang case:
+// PublishInformation ignores ctx forever (select{}). The information
+// capability must disable on timeout, the worker must return to its main
+// loop immediately, a durable hazard change must still be delivered and
+// acknowledged, no second information call may ever start, and shutdown
+// must stay bounded.
+func TestInfoTimeoutDoesNotBlockHazardDelivery(t *testing.T) {
+	out := &infoOutput{hang: true}
+	m, store, ing := infoManagerFull(t, out, 50*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("home")); err != nil {
+		t.Fatalf("emitInformation: %v", err)
+	}
+	// The hung information callback has started...
+	waitFor(t, 2*time.Second, func() bool { return out.infoCount() == 1 })
+	// ...and the timeout has permanently disabled the capability.
+	waitFor(t, 2*time.Second, func() bool {
+		w := m.infoOuts[0]
+		w.mu <- struct{}{}
+		defer func() { <-w.mu }()
+		return w.infoDisabled
+	})
+
+	// A durable hazard change is delivered and acknowledged while the
+	// information goroutine is still hung: information must never block
+	// hazard delivery.
+	if _, _, err := ing.Ingest(ctx, eventFor("hang-hazard")); err != nil {
+		t.Fatalf("ingest hazard: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return out.handleCount() >= 1 })
+	// The SQLite cursor advanced past the delivered change (durable ACK).
+	waitFor(t, 2*time.Second, func() bool {
+		changes, err := store.PollChanges(ctx, "info", 8)
+		return err == nil && len(changes) == 0
+	})
+
+	// Exactly one information invocation ever started; later messages are
+	// rejected instead of starting a second stuck goroutine.
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("home")); err == nil {
+		t.Fatal("emitInformation must fail after the capability was disabled")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := out.infoCount(); got != 1 {
+		t.Errorf("information invocations = %d, want exactly 1", got)
+	}
+
+	// Shutdown stays bounded even with the abandoned goroutine alive.
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop with an abandoned information goroutine")
+	}
+}
+
+// TestInfoMultiKeyWakeupAllDelivered: three distinct information keys
+// enqueued before the worker handles the first notification must all be
+// delivered (no stranded pending state), and coalescing during the
+// delivery must deliver only the latest value of each key.
+func TestInfoMultiKeyWakeupAllDelivered(t *testing.T) {
+	out := &infoOutput{}
+	m := infoManagerWithTimeout(t, out, nil, 5*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	// Block the first delivery inside the plugin to force coalescing.
+	release := make(chan struct{})
+	out.mu.Lock()
+	out.block = release
+	out.mu.Unlock()
+
+	homeV1 := infoMessage("home")
+	homeV1.Payload = []byte(`{"schema_version":1,"v":1}`)
+	if err := m.emitInformation(context.Background(), "weather-home", homeV1); err != nil {
+		t.Fatalf("emit home v1: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return out.infoCount() == 1 })
+
+	cabinV1 := infoMessage("cabin")
+	cabinV1.Payload = []byte(`{"schema_version":1,"key":"cabin","v":1}`)
+	officeV1 := infoMessage("office")
+	officeV1.Payload = []byte(`{"schema_version":1,"key":"office","v":1}`)
+	homeV2 := infoMessage("home")
+	homeV2.Payload = []byte(`{"schema_version":1,"v":2}`)
+	homeV3 := infoMessage("home")
+	homeV3.Payload = []byte(`{"schema_version":1,"v":3}`)
+	for _, msg := range []core.InformationMessage{cabinV1, officeV1, homeV2, homeV3} {
+		if err := m.emitInformation(context.Background(), "weather-home", msg); err != nil {
+			t.Fatalf("emit %q: %v", msg.Key, err)
+		}
+	}
+	close(release)
+
+	// All three keys are eventually delivered: the in-flight home v1 plus
+	// cabin, office and the coalesced home v3.
+	waitFor(t, 3*time.Second, func() bool { return out.infoCount() == 4 })
+	// The pending queue drains completely — nothing is stranded.
+	waitFor(t, 2*time.Second, func() bool {
+		w := m.infoOuts[0]
+		w.mu <- struct{}{}
+		n := len(w.infoPending)
+		<-w.mu
+		return n == 0
+	})
+	byKey := out.payloadsByKey()
+	home := byKey["home"]
+	if len(home) != 2 {
+		t.Errorf("home delivered %d times, want 2 (in-flight v1 + coalesced latest)", len(home))
+	}
+	if home[len(home)-1] != `{"schema_version":1,"v":3}` {
+		t.Errorf("latest home payload = %s, want v3", home[len(home)-1])
+	}
+	for _, p := range home {
+		if p == `{"schema_version":1,"v":2}` {
+			t.Error("home v2 was delivered; latest state must win")
+		}
+	}
+	if got := byKey["cabin"]; len(got) != 1 || got[0] != `{"schema_version":1,"key":"cabin","v":1}` {
+		t.Errorf("cabin payloads = %v, want exactly one v1", got)
+	}
+	if got := byKey["office"]; len(got) != 1 || got[0] != `{"schema_version":1,"key":"office","v":1}` {
+		t.Errorf("office payloads = %v, want exactly one v1", got)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestInfoBacklogDoesNotStarveHazards: a pending information backlog must
+// never postpone durable hazard delivery — the worker handles the hazard
+// while information calls are still blocked.
+func TestInfoBacklogDoesNotStarveHazards(t *testing.T) {
+	out := &infoOutput{}
+	m, _, ing := infoManagerFull(t, out, 5*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	release := make(chan struct{})
+	out.mu.Lock()
+	out.block = release
+	out.mu.Unlock()
+
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("home")); err != nil {
+		t.Fatalf("emit home: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return out.infoCount() == 1 })
+
+	// A backlog of further information messages sits pending behind the
+	// blocked delivery.
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("office")); err != nil {
+		t.Fatalf("emit office: %v", err)
+	}
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("cabin")); err != nil {
+		t.Fatalf("emit cabin: %v", err)
+	}
+	// Hold the block for several poll intervals so a poll tick is
+	// guaranteed to be pending when the in-flight call is released.
+	time.Sleep(50 * time.Millisecond)
+
+	// The hazard is ingested while the information backlog is blocked
+	// behind the in-flight delivery.
+	if _, _, err := ing.Ingest(ctx, eventFor("prio-hazard")); err != nil {
+		t.Fatalf("ingest hazard: %v", err)
+	}
+
+	// Release the in-flight information call. The worker loop re-checks
+	// the hazard journal BEFORE any further backlog item, so the hazard
+	// is delivered while the two backlog messages are still pending.
+	close(release)
+	waitFor(t, 2*time.Second, func() bool { return out.handleCount() >= 1 })
+
+	// The remaining backlog still drains completely afterwards.
+	waitFor(t, 3*time.Second, func() bool { return out.infoCount() == 3 })
+
+	// Deterministic sequencing: the hazard was handled before the
+	// information backlog fully drained (never starved to the end).
+	ev := out.eventsSnapshot()
+	hazardIdx := -1
+	for i, e := range ev {
+		if e == "handle:prio-hazard" {
+			hazardIdx = i
+			break
+		}
+	}
+	if hazardIdx == -1 {
+		t.Fatalf("hazard was never handled (events: %v)", ev)
+	}
+	if hazardIdx == len(ev)-1 {
+		t.Errorf("hazard was handled only after the entire information backlog drained (events: %v)", ev)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+}
+
+// TestInfoQueueFullBehavior: the queue bound counts UNIQUE pending keys.
+// A new key at capacity is rejected with an error, while updating an
+// already-pending key (latest-state replacement) always succeeds.
+func TestInfoQueueFullBehavior(t *testing.T) {
+	out := &infoOutput{}
+	m := infoManagerWithTimeout(t, out, nil, 5*time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(ctx)
+	}()
+	waitFor(t, 2*time.Second, func() bool { return m.accepting.Load() })
+
+	release := make(chan struct{})
+	out.mu.Lock()
+	out.block = release
+	out.mu.Unlock()
+
+	// The first key is popped into the blocked delivery; the queue then
+	// holds up to maxInfoPending additional keys.
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("k0")); err != nil {
+		t.Fatalf("emit k0: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return out.infoCount() == 1 })
+	for i := 1; i <= maxInfoPending; i++ {
+		if err := m.emitInformation(context.Background(), "weather-home", infoMessage(fmt.Sprintf("k%d", i))); err != nil {
+			t.Fatalf("emit k%d (queue not yet full): %v", i, err)
+		}
+	}
+
+	// A NEW key at capacity is rejected...
+	if err := m.emitInformation(context.Background(), "weather-home", infoMessage("overflow")); err == nil || !strings.Contains(err.Error(), "full") {
+		t.Fatalf("new key at capacity = %v, want a full-queue error", err)
+	}
+	// ...while an update of an already-pending key succeeds.
+	updated := infoMessage("k1")
+	updated.Payload = []byte(`{"schema_version":1,"updated":true}`)
+	if err := m.emitInformation(context.Background(), "weather-home", updated); err != nil {
+		t.Fatalf("replacing an existing pending key at capacity: %v", err)
+	}
+
+	close(release)
+	waitFor(t, 10*time.Second, func() bool { return out.infoCount() == maxInfoPending+1 })
+	byKey := out.payloadsByKey()
+	if _, ok := byKey["overflow"]; ok {
+		t.Error("the rejected overflow key was delivered")
+	}
+	if got := byKey["k1"]; len(got) != 1 || got[0] != `{"schema_version":1,"updated":true}` {
+		t.Errorf("k1 payloads = %v, want exactly the updated latest value", got)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
 	}
 }

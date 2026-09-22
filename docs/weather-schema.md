@@ -50,9 +50,12 @@ all weather providers identically.
 | direction | degrees (0..360) |
 | timestamps | RFC3339 |
 
-`generated_at` and `valid_until` are UTC; provider forecast timestamps
-(`current.time`, `hourly[].time`, `sunrise`, `sunset`) are offset-aware
-RFC3339 in the location's timezone; `daily[].date` is `YYYY-MM-DD`.
+`generated_at` and `valid_until` are always UTC on the wire: the canonical
+serializer normalizes any input time zone to UTC, so adapters may pass any
+`time.Time` zone. Provider forecast timestamps (`current.time`,
+`hourly[].time`, `sunrise`, `sunset`) are offset-aware RFC3339 and keep
+their location offset (they are NOT converted to UTC); `daily[].date` is
+`YYYY-MM-DD`.
 
 ## Freshness
 
@@ -88,9 +91,11 @@ unknown
 ```
 
 Providers map their native codes (e.g. Open-Meteo WMO codes) into this
-enum inside their adapter. The raw provider code is retained as optional
-metadata in `provider_condition_code` (a string) — consumers must not need
-it.
+enum inside their adapter; a provider that cannot classify a condition
+uses `unknown` (consumers never need provider-specific handling). The raw
+provider code is retained as optional metadata in
+`provider_condition_code` — absent (`null`) when the provider has no raw
+code, and never an empty string.
 
 ## Payload structure
 
@@ -166,14 +171,39 @@ it.
 - `location.latitude` / `location.longitude` are the **configured**
   requested coordinates (the identity of the location), not
   provider-adjusted coordinates.
-- `location.timezone` is the provider-resolved IANA timezone.
-- `location.elevation_m` is the provider-reported elevation.
+- `location.timezone` is the provider-resolved IANA timezone; canonical
+  validation rejects values that are not loadable timezones.
+- `location.elevation_m` is the provider-reported elevation (the
+  coordinates are the configured ones; the elevation is provider data).
 - `provider.attribution` is the provider's required attribution text; it
   is data provenance, not WarnFlux branding.
 - `hourly` is strictly ascending by time; `daily` strictly ascending by
-  date; duplicate timestamps are rejected.
+  real calendar date (`time.Parse("2006-01-02")` — `2026-02-30` or
+  `banana` are rejected); duplicates are rejected.
 - A snapshot must contain at least one of `current`, `hourly` or `daily`
   (observation-only and forecast-only providers are supported).
+
+## Canonical bounds
+
+The canonical model is bounded **before** serialization, so a buggy
+adapter cannot build a giant snapshot (the 256 KiB information payload cap
+is the last resort, not the only gate). Canonical validation rejects:
+
+| Limit | Value |
+|-------|-------|
+| `hourly` entries | max 1000 |
+| `daily` entries | max 366 |
+| `provider.name` | max 256 bytes |
+| `provider.attribution` | max 2048 bytes |
+| `location.name` | max 512 bytes |
+| `location.timezone` | max 128 bytes |
+| `provider_condition_code` | max 128 bytes |
+
+These limits are deliberately far above normal operational use
+(Open-Meteo normalizes 48 hourly / 7 daily entries) so future providers
+are not artificially restricted. All public-model text must be valid
+UTF-8; oversized values are **rejected, never truncated** — canonical
+provider data is not silently modified.
 
 ## Stability of the pipeline
 

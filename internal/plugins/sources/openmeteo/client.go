@@ -81,6 +81,10 @@ type Client struct {
 	baseURL string
 	apiKey  string // never logged
 	client  *http.Client
+	// now is the clock used to interpret HTTP-date Retry-After headers;
+	// injectable in tests so scheduling assertions never depend on real
+	// wall-clock timing.
+	now func() time.Time
 }
 
 // NewClient builds a client for the given endpoint. The API key is only
@@ -90,6 +94,7 @@ func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		client:  &http.Client{Timeout: timeout},
+		now:     time.Now,
 	}
 }
 
@@ -153,7 +158,7 @@ func (c *Client) Fetch(ctx context.Context, loc Location, forecastHours, forecas
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
-		return nil, rateLimited(resp)
+		return nil, c.rateLimited(resp)
 	default:
 		return nil, fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
 	}
@@ -186,8 +191,9 @@ func redactKey(s, key string) string {
 }
 
 // rateLimited builds a retryAfterError from a 429/503 response, honoring a
-// Retry-After header in seconds or HTTP-date form when present.
-func rateLimited(resp *http.Response) error {
+// Retry-After header in seconds or HTTP-date form when present. HTTP-date
+// values are interpreted against the client's injectable clock.
+func (c *Client) rateLimited(resp *http.Response) error {
 	status := resp.StatusCode
 	msg := fmt.Sprintf("provider rate limited: HTTP %d", status)
 	if v := resp.Header.Get("Retry-After"); v != "" {
@@ -195,7 +201,7 @@ func rateLimited(resp *http.Response) error {
 			return &retryAfterError{after: time.Duration(secs) * time.Second, msg: fmt.Sprintf("%s (Retry-After %ss)", msg, v)}
 		}
 		if t, err := http.ParseTime(v); err == nil {
-			after := time.Until(t)
+			after := t.Sub(c.now())
 			return &retryAfterError{after: after, msg: fmt.Sprintf("%s (Retry-After %s)", msg, v)}
 		}
 	}

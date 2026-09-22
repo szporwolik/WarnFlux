@@ -154,6 +154,22 @@ For **outputs**:
   | `Handle` failure | counts toward the failure threshold → suspension + probes |
   | `PublishStatus` failure | logged only, never counted, never suspends |
   | `PublishStatus` ignores its timeout (context-contract violation) | status publishing is **disabled for that output instance** for the rest of the process; hazard delivery continues. The abandoned callback may overlap later `Handle` calls — implementers MUST respect `ctx`. |
+  | `PublishInformation` failure | logged only, never counted, never suspends; information is best-effort latest-state |
+  | `PublishInformation` ignores its timeout (context-contract violation) | information publishing is **disabled for that output instance** for the rest of the process; the worker returns to its main loop immediately without waiting for the late result, so a hung information callback can never block hazard delivery. At most ONE abandoned information goroutine can ever exist per output. |
+
+- **Single owner**: one output worker owns all callbacks into a plugin
+  instance (`Handle`, `PublishStatus`, `PublishInformation`, `Close`). The
+  only exception is a callback that violated its timeout and was
+  deliberately abandoned — Go cannot forcibly kill a goroutine, so an
+  abandoned auxiliary callback may overlap later `Handle` calls.
+  Implementers MUST respect `ctx`.
+- **Information queue semantics**: information messages are coalesced by
+  source+producer+key+kind in a bounded latest-value queue per output
+  (128 unique pending identities; updates to an already-pending key never
+  consume an extra slot). A new key when the queue is full returns an
+  error to the source; replacing an existing key always succeeds. The
+  queue is intentionally NOT a delivery log: only the newest snapshot per
+  identity matters, and a lost information snapshot is acceptable.
 - A change is acknowledged only after `Handle` returns `nil` — delivery is
   at-least-once across restarts.
 - **Durable identity**: an output's configured `id` **and plugin `type`**

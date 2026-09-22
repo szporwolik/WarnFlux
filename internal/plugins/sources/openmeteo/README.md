@@ -97,6 +97,11 @@ Every successful poll **replaces** the retained message for that location.
 The message is published with the MQTT output's configured QoS and
 `retain=true`. Weather is never published to `<prefix>/events`.
 
+**Stale retained data:** a location removed from configuration leaves its
+last retained message on the broker (there is no automatic retained-topic
+cleanup). Consumers must check `valid_until` and treat expired retained
+weather as stale.
+
 ## MQTT payload
 
 The published JSON is the **canonical, provider-neutral weather schema v1**
@@ -146,9 +151,21 @@ before indexing, and non-finite numeric values are rejected.
 Transient failures (network errors, DNS failures, HTTP 429/500/503,
 malformed responses) are logged and skipped: the plugin keeps running and
 retries on the next scheduled poll. The source supervisor is NOT restarted
-for ordinary provider errors. `Retry-After` on 429/503 is honored, clamped
-to at most 5 minutes. Configuration errors (invalid locations, bad slugs,
-invalid ranges) fail at startup.
+for ordinary provider errors. `Retry-After` on 429/503 is honored (delta
+seconds or HTTP-date), clamped to at most 5 minutes, and lengthens only the
+next whole poll — remaining locations in the current poll still run. A
+plain 500 does not change the schedule (no hot loop). Configuration errors
+(invalid locations, bad slugs, invalid ranges) fail at startup.
+
+## Source health
+
+Source health reports **provider health**, not delivery health: a location
+counts as succeeded once its provider fetch and normalization succeed, even
+if the subsequent information publish to an output fails (e.g. MQTT is
+unavailable) — that failure belongs to the output/information pipeline and
+is logged there. At least one succeeded location → source healthy; all
+locations failed the provider fetch → source degraded. Individual location
+failures are always logged.
 
 ## Information vs HazardEvent semantics
 

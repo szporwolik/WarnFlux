@@ -15,7 +15,7 @@ func FuzzWeatherSnapshotValidation(f *testing.F) {
 		var elev float64
 		_ = elev
 		s := WeatherSnapshot{
-			SchemaVersion: 1,
+			SchemaVersion: WeatherSchemaVersion,
 			GeneratedAt:   time.Now().UTC(),
 			Provider: WeatherProvider{
 				ID:          provider,
@@ -48,5 +48,32 @@ func FuzzWeatherSnapshotValidation(f *testing.F) {
 				t.Fatal("empty payload")
 			}
 		}
+	})
+}
+
+// FuzzWeatherDailyDateTimezone drives arbitrary date strings, timezone
+// names and public text (which may contain invalid UTF-8) into the
+// canonical validator: it must never panic. Inputs stay bounded (a single
+// daily entry, no giant arrays).
+func FuzzWeatherDailyDateTimezone(f *testing.F) {
+	f.Add("2026-09-22", "Europe/Warsaw", "Open-Meteo", "clear")
+	f.Fuzz(func(t *testing.T, date, tz, providerName, cond string) {
+		s := WeatherSnapshot{
+			SchemaVersion: WeatherSchemaVersion,
+			GeneratedAt:   time.Now().UTC(),
+			Provider: WeatherProvider{
+				ID:          "p",
+				Name:        providerName,
+				Attribution: "attribution",
+			},
+			Location: WeatherLocation{
+				ID:        "l",
+				Latitude:  0,
+				Longitude: 0,
+				Timezone:  tz,
+			},
+			Daily: []WeatherDaily{{Date: date, Condition: cond}},
+		}
+		_ = s.Validate()
 	})
 }

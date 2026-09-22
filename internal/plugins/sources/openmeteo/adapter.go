@@ -84,7 +84,7 @@ func Normalize(loc Location, resp *ProviderResponse, generatedAt time.Time) (cor
 	}
 
 	snapshot := core.WeatherSnapshot{
-		SchemaVersion: 1,
+		SchemaVersion: core.WeatherSchemaVersion,
 		GeneratedAt:   generatedAt,
 		Provider: core.WeatherProvider{
 			ID:          Type,

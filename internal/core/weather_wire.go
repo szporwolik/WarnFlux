@@ -118,7 +118,7 @@ func MarshalWeatherSnapshot(s WeatherSnapshot) ([]byte, error) {
 	}
 
 	out := wireWeather{
-		SchemaVersion: weatherSchemaVersion,
+		SchemaVersion: WeatherSchemaVersion,
 		Type:          "weather",
 		GeneratedAt:   s.GeneratedAt.UTC().Format(time.RFC3339),
 		Provider: wireProvider{

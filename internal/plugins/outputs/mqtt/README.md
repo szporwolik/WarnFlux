@@ -25,7 +25,14 @@ published there.
 - **Information**: auxiliary latest-state best-effort. Failures are logged
   and never affect hazard delivery, failure accounting or cursors. A
   contract-violating information callback is disabled for the output's
-  lifetime.
+  lifetime; the worker returns to hazard delivery immediately (the
+  abandoned call can never block hazards).
+- **Stale retained information**: information topics are retained so late
+  subscribers receive the latest snapshot, but there is no automatic
+  retained-topic cleanup. If a source stops publishing (removed
+  configuration, outage), the last retained value stays on the broker —
+  consumers should check `valid_until` and treat expired retained values
+  as stale.
 
 ## Configuration
 

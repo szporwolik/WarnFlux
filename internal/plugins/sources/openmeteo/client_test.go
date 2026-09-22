@@ -148,3 +148,53 @@ func TestFetchMalformedJSON(t *testing.T) {
 		t.Fatal("malformed provider JSON must be rejected")
 	}
 }
+
+// TestRateLimitedHTTPDateUsesInjectedClock: HTTP-date Retry-After values
+// are interpreted against the client's injectable clock, so scheduling
+// tests never depend on real wall-clock timing.
+func TestRateLimitedHTTPDateUsesInjectedClock(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	c := NewClient("https://example.invalid", "", time.Second)
+	c.now = func() time.Time { return now }
+
+	// Future HTTP-date → a positive bounded delay.
+	future := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+	}
+	future.Header.Set("Retry-After", now.Add(90*time.Second).Format(http.TimeFormat))
+	if after, ok := retryAfter(c.rateLimited(future)); !ok || after != 90*time.Second {
+		t.Errorf("future HTTP-date delay = %v (%v), want exactly 90s", after, ok)
+	}
+
+	// Past HTTP-date → no positive delay (a stale header must not create
+	// backoff).
+	past := &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Header:     http.Header{},
+	}
+	past.Header.Set("Retry-After", now.Add(-10*time.Second).Format(http.TimeFormat))
+	if after, ok := retryAfter(c.rateLimited(past)); ok || after > 0 {
+		t.Errorf("past HTTP-date produced delay %v, want none", after)
+	}
+
+	// Delta-seconds form stays primary and is unaffected by the clock.
+	delta := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+	}
+	delta.Header.Set("Retry-After", "120")
+	if after, ok := retryAfter(c.rateLimited(delta)); !ok || after != 2*time.Minute {
+		t.Errorf("delta-seconds delay = %v (%v), want exactly 2m", after, ok)
+	}
+
+	// Garbage Retry-After header → error without a delay (no hot loop).
+	garbage := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+	}
+	garbage.Header.Set("Retry-After", "not-a-date")
+	if after, ok := retryAfter(c.rateLimited(garbage)); ok || after != 0 {
+		t.Errorf("garbage Retry-After produced delay %v, want none", after)
+	}
+}

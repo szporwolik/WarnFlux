@@ -17,8 +17,12 @@ const (
 	defaultRecoveryInterval = 30 * time.Second
 	pollBatchSize           = 32
 	// maxInfoPending bounds the latest-state information queue per output
-	// worker (coalesced by source+producer+key+kind).
-	maxInfoPending = 64
+	// worker (coalesced by source+producer+key+kind). It counts UNIQUE
+	// pending information identities, not updates: replacing an already
+	// pending key never consumes an extra slot. Worst-case memory per
+	// output is maxInfoPending × 256 KiB payloads (32 MiB at 128), and
+	// updates to existing keys are free.
+	maxInfoPending = 128
 )
 
 // outputWorker delivers journaled changes to one output plugin with
@@ -186,7 +190,9 @@ func (w *outputWorker) run(ctx context.Context) {
 // deliverPendingInfo pops ONE pending information message (latest state,
 // coalesced) and invokes the plugin with a bounded per-call timeout and
 // panic recovery. A callback that violates its timeout permanently
-// disables this output's information capability — at most one abandoned
+// disables this output's information capability and is immediately
+// abandoned (the late result is never waited for, so a plugin that ignores
+// ctx forever cannot block hazard delivery); at most one abandoned
 // information goroutine can ever exist per output. Information failures
 // are logged only: they never touch hazard failure accounting.
 func (w *outputWorker) deliverPendingInfo(ctx context.Context) {
@@ -228,23 +234,36 @@ func (w *outputWorker) deliverPendingInfo(ctx context.Context) {
 				"key", message.Key, "kind", message.Kind, "error", err)
 		}
 	case <-callCtx.Done():
-		// Context-contract violation: disable information publishing for
-		// this output's lifetime. The abandoned goroutine is bounded — no
-		// new information call is ever started.
+		// Context-contract violation: cancel, disable information
+		// publishing for this output's lifetime and RETURN TO THE WORKER
+		// LOOP IMMEDIATELY. The late result is deliberately NOT waited
+		// for: a plugin that ignores ctx forever must never block
+		// durable hazard delivery. The abandoned goroutine sends into a
+		// buffered channel (it cannot leak into any wait), and at most
+		// ONE can ever exist per output because no new information call
+		// is started after the disable.
+		cancel()
 		w.mu <- struct{}{}
 		w.infoDisabled = true
 		<-w.mu
 		w.logger.Warn("information publish violated its timeout; information capability disabled for this output",
 			"output_id", w.id, "timeout", w.timeout)
+		return
+	}
+
+	// Re-arm the notification if more pending messages remain: the worker
+	// loop then re-checks hazard journal priority before the next
+	// information delivery, so an information backlog can never starve
+	// hazard delivery. The re-arm is non-blocking (the wakeup is
+	// coalesced), and the loop still pops ONE message per pass.
+	w.mu <- struct{}{}
+	more := len(w.infoPending) > 0
+	<-w.mu
+	if more {
 		select {
-		case late := <-result:
-			if late != nil {
-				w.logger.Warn("information publish returned an error after its timeout",
-					"output_id", w.id, "error", late)
-			}
-		case <-ctx.Done():
+		case w.infoNotify <- struct{}{}:
+		default:
 		}
-		cancel()
 	}
 }
 

@@ -32,7 +32,7 @@
   <h2>System</h2>
   <div class="kv-grid">
     <div class="kv"><span class="k">Version</span><span class="v">{{.Version}} ({{.Commit}})</span></div>
-    <div class="kv"><span class="k">Uptime</span><span class="v">{{.Uptime}}</span></div>
+    <div class="kv"><span class="k">Uptime</span><span class="v">{{dur .Uptime}}</span></div>
     <div class="kv"><span class="k">Receivers</span><span class="v">{{.Connected}} / {{.Receivers}} connected</span></div>
     <div class="kv"><span class="k">Router status docs</span><span class="v">{{.RouterDocs}}</span></div>
     <div class="kv"><span class="k">Dispatch queue</span><span class="v">{{.QueueDepth}} / {{.QueueCap}} ({{.DroppedFull}} dropped)</span></div>

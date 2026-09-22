@@ -227,6 +227,24 @@ func templateFuncs() template.FuncMap {
 			}
 			return t.Local().Format("15:04:05")
 		},
+		"dur": func(d time.Duration) string {
+			if d < 0 {
+				d = 0
+			}
+			day := 24 * time.Hour
+			switch {
+			case d < time.Second:
+				return fmt.Sprintf("%dms", d.Milliseconds())
+			case d < time.Minute:
+				return fmt.Sprintf("%ds", int(d.Seconds()))
+			case d < time.Hour:
+				return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+			case d < day:
+				return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+			default:
+				return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+			}
+		},
 		"age": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"

@@ -8,8 +8,8 @@
 </head>
 <body class="login-page">
   <main class="login-card">
-    <h1>{{.AppTitle}}</h1>
-    <p class="muted">Admin sign in</p>
+    <h1><span class="brand-mark" aria-hidden="true"></span> {{.AppTitle}}</h1>
+    <p class="muted" style="text-align:center">Admin sign in</p>
     {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
     <form method="post" action="/login">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -19,7 +19,7 @@
       <label>Password
         <input type="password" name="password" autocomplete="current-password" required>
       </label>
-      <button type="submit">Sign in</button>
+      <button type="submit" class="btn-primary">Sign in</button>
     </form>
   </main>
 </body>

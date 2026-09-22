@@ -8,7 +8,14 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>{{.AppTitle}}</h1>
+    <a class="brand" href="/dashboard">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>{{.AppTitle}}</span>
+    </a>
+    <nav class="topnav">
+      <a class="nav-item active" href="/dashboard">Dashboard</a>
+    </nav>
+    <span class="topbar-spacer"></span>
     <form method="post" action="/logout" class="logout">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <button type="submit" class="btn-ghost">Sign out</button>

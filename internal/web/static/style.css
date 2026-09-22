@@ -560,7 +560,7 @@ table.plugins tr:hover td { background: var(--surface-hi); }
     transform: none;
     box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
   }
-  .app .topbar, .app .grid, .app .footer { margin-left: 0; }
+  .app .topbar, .app .grid, .app .footer, .app .users-main { margin-left: 0; }
   .logout-label { display: none; }
 }
 
@@ -655,7 +655,7 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   border-radius: var(--radius);
 }
 .btn-danger:hover { border-color: var(--bad); color: var(--bad); }
-.row-actions { display: flex; gap: 0.4rem; justify-content: flex-end; align-items: center; white-space: nowrap; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: flex-end; align-items: center; }
 .inline-form { margin: 0; display: inline-flex; }
 .users-main .pager { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; }
 

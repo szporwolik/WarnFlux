@@ -145,6 +145,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /groups", s.requirePage(s.handleGroupsPage))
 	s.mux.Handle("POST /groups", s.requirePage(s.handleGroupSave))
 	s.mux.Handle("POST /groups/{id}/delete", s.requirePage(s.handleGroupDelete))
+	s.mux.Handle("GET /groups/{id}/routing", s.requirePage(s.handleGroupRoutingPage))
 	s.mux.Handle("POST /groups/{id}/routing", s.requirePage(s.handleGroupRouting))
 	s.mux.Handle("GET /partials/status", s.requirePartial(s.handlePartialStatus))
 	s.mux.Handle("GET /partials/mqtt", s.requirePartial(s.handlePartialMQTT))

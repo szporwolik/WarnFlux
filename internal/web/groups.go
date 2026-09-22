@@ -161,6 +161,12 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/groups", http.StatusSeeOther)
 }
 
+// handleGroupRoutingPage serves GET /groups/{id}/routing (e.g. an
+// address-bar revisit after saving): just go back to the groups list.
+func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/groups", http.StatusSeeOther)
+}
+
 // handleGroupRouting saves one group's notification routing matrix: every
 // assigned action/output carries its own minimum severity. Only IDs that
 // exist in the current configuration are accepted, so stale form values

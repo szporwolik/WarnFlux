@@ -209,6 +209,11 @@ web:
   header1: "SPOK"
   header2: "Społeczna Platforma Ostrzegania i Komunikacji"
 
+  # Public domain this instance is served under (host, optional port).
+  # Reserved for future absolute-link features; no scheme, no path.
+  # Empty disables them.
+  domain: "spok.example.com"
+
   auth:
     username: admin
     password: change-me

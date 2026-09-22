@@ -46,6 +46,7 @@ web:
   name: "WarnFlux Ops"
   header1: "SPOK"
   header2: "Społeczna Platforma Ostrzegania i Komunikacji"
+  domain: "spok.example.com"
   auth:
     username: admin
     password: change-me
@@ -98,6 +99,9 @@ func TestLoadDispatchWebActions(t *testing.T) {
 	}
 	if cfg.Web.Header1 != "SPOK" || cfg.Web.Header2 != "Społeczna Platforma Ostrzegania i Komunikacji" {
 		t.Errorf("web headers = %q / %q", cfg.Web.Header1, cfg.Web.Header2)
+	}
+	if cfg.Web.Domain != "spok.example.com" {
+		t.Errorf("web domain = %q, want spok.example.com", cfg.Web.Domain)
 	}
 	if cfg.Web.Auth.Username != "admin" || cfg.Web.Auth.Password != "change-me" {
 		t.Errorf("web auth = %+v", cfg.Web.Auth)

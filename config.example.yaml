@@ -97,6 +97,20 @@ sources:
         - meteo
         - hydro
 
+      # Optional geographic filtering: only warnings whose TERYT areas
+      # intersect the configured target units are emitted (hierarchical
+      # matching). Filtered warnings never make the provider snapshot
+      # incomplete; a warning whose areas stop intersecting the target is
+      # reconciled/cancelled by the next complete snapshot. Unknown
+      # configured names fail startup.
+      geography:
+        enabled: true
+        include:
+          - gmina:niepolomice
+          - miasto:krakow
+          - powiat:wielicki
+          - powiat:bochenski
+
   # Regionalny System Ostrzegania (RSO) public XML communications:
   # a HAZARD source with upstream voivodeship filtering via the official
   # endpoint (see internal/plugins/sources/rso/README.md).
@@ -120,6 +134,23 @@ sources:
       # "wszystkie" is exclusive (cannot be combined with regional slugs).
       voivodeships:
         - malopolskie
+
+      # Optional high-signal policy: suppress RCB and air-quality
+      # communications, collapse plain IMGW duplicates, classify severity
+      # from explicit wording (never from rso_alarm) and apply the
+      # Niepołomice-area / A4 Balice–Tarnów geographic thresholds.
+      # Filtered items never make the provider snapshot incomplete.
+      filter:
+        high_signal_only: true
+        exclude_rcb: true
+        exclude_air_quality: true
+        suppress_imgw_duplicates: true
+        local_min_severity: moderate
+        regional_min_severity: severe
+        a4_corridor:
+          enabled: true
+          km_from: 400
+          km_to: 503
 
 # Output plugins: receive meaningful event changes from the core.
 outputs:

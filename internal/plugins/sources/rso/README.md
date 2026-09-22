@@ -57,9 +57,44 @@ wielkopolskie zachodniopomorskie  wszystkie
 Official Polish display names (`małopolskie`, `śląskie`, …) are also
 accepted and canonicalize to the slugs. A typo fails configuration.
 
+### High-signal filter (recommended for local installations)
+
+The optional `filter` block turns RSO from a mirror of the regional feed
+into a HIGH-SIGNAL local source. All policy decisions run in-process, are
+deterministic and never touch the network:
+
+```yaml
+    config:
+      voivodeships:
+        - malopolskie
+
+      filter:
+        high_signal_only: true
+        exclude_rcb: true
+        exclude_air_quality: true
+        suppress_imgw_duplicates: true
+        local_min_severity: moderate
+        regional_min_severity: severe
+        a4_corridor:
+          enabled: true
+          km_from: 400
+          km_to: 503
+```
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `high_signal_only` | `false` | apply the severity/geographic thresholds (exclusions below still apply) |
+| `exclude_rcb` | `true` | discard RCB communications unconditionally (they are handled by a dedicated path; a serious RCB message is still not emitted — intentional deduplication) |
+| `exclude_air_quality` | `true` | discard air-quality / smog / PM10 / PM2.5 notices (a dedicated source covers them; toxic smoke from a fire or a chemical release is civil protection and is NOT discarded) |
+| `suppress_imgw_duplicates` | `false` | discard plain RSO copies of IMGW meteo/hydro warnings; a communication adding a distinct civil-protection consequence (evacuation, road closure, water trouble, infrastructure failure) is kept |
+| `local_min_severity` | `moderate` | minimum severity for the Niepołomice core, Kraków/Wieliczka/Bochnia and the A4 corridor |
+| `regional_min_severity` | `severe` | minimum severity for the whole voivodeship without a local match |
+| `a4_corridor` | `400..503` | A4 kilometre window treated as the Balice–Tarnów corridor |
+
 ## Endpoint and filtering
 
-Filtering happens UPSTREAM: each configured voivodeship is one request to
+Filtering happens in two layers. UPSTREAM: each configured voivodeship is
+one request to
 
 ```text
 /komunikatyxml/<slug>/wszystkie/0?_format=xml
@@ -103,6 +138,74 @@ items are expired or withdrawn, not archived). Therefore:
   URL currently returns 404, so the list URL is the reliable public
   reference).
 - `ReceivedAt`/`UpdatedAt` are core-owned and never set by the plugin.
+
+With the `filter` block enabled the mapping is enriched:
+
+- **`rso_alarm` is NOT severity.** The provider does not document
+  `rso_alarm` as a severity scale; it is never consulted. Severity is
+  inferred only from explicit semantics in `title` / `shortcut` /
+  `content`.
+- Explicit Polish warning degrees map deterministically:
+  `1 → moderate`, `2 → severe`, `3 → extreme` (forms like
+  `ostrzeżenie pierwszego stopnia`, `ostrzeżenie 1 stopnia`,
+  `stopień: 2`, `stopień zagrożenia: 3`). Unrelated numbers are never
+  treated as degrees.
+- Semantic severity rules cover water-supply incidents (unfit water,
+  microbiological contamination, boil orders → `severe`; conditional
+  fitness → `moderate`), roads (target-road complete closure → `severe`,
+  one lane/alternating traffic → `moderate`, routine works → `minor`
+  unless a complete closure is announced), hydrology (`stan alarmowy` →
+  `severe`, `stan ostrzegawczy` → `moderate`) and civil protection
+  (evacuation, explosion, gas/chemical release, major fire → `severe`).
+- **No hard blacklist of local information:** `test syren`, `ćwiczenia`,
+  `szczepienie lisów`, `uwaga hałas` etc. are classified normally (usually
+  `minor`/`unknown`) and fall under the threshold — they are never
+  hard-rejected just for containing those words.
+- `Category` is set only when confident: `road`, `water`, `hydrology`,
+  `weather` or `civil-protection`.
+- `Areas` are enriched with normalized tokens when confident:
+  `gmina:niepolomice`, `powiat:wielicki`, `miasto:krakow`,
+  `miasto:wieliczka`, `miasto:bochnia`, `droga:a4`, `droga:dk75`,
+  `droga:dw964`, `corridor:a4-balice-tarnow`. Nothing is invented from
+  weak textual evidence.
+
+### Geographic relevance
+
+Classification and geography are separate concepts: an event is first
+classified, then geographically scoped, then emitted or suppressed.
+
+- **Core area:** Niepołomice and gmina Niepołomice (Podłęże, Staniątki,
+  Wola Batorska, Wola Zabierzowska, Zabierzów Bocheński, Chobot,
+  Ochmanów, Słomiróg, Suchoraba, Zagórze, Zakrzów, Zakrzowiec) plus
+  `powiat wielicki` → `moderate`+ is emitted.
+- **Cities:** Kraków, Wieliczka, Bochnia → `moderate`+.
+- **A4 Balice–Tarnów corridor:** A4 kilometre references in the configured
+  window (tolerant of `435 km`, `435,6 km`, `435.6 km`, `435+600`,
+  `km 435+600`) or corridor location names (Balice, Kraków, Bieżanów,
+  Wieliczka, Podłęże, Niepołomice, Targowisko, Szarów, Kłaj, Bochnia,
+  Brzesko, Wierzchosławice, Tarnów) → `moderate`+.
+- **Other roads** (DK75, DK94, DW964, also DW965/966/967, S7): relevant
+  only with a direct local place match or an explicitly relevant section —
+  a road number alone never makes an event local.
+- An **A4 event outside the corridor and without a local place is never
+  accepted** just because it contains `A4` (`A4 zablokowana, 97 km,
+  kierunek Wrocław` → rejected).
+- **Whole voivodeship** without a local match: only `severe`/`extreme`
+  passes (a generic first-degree voivodeship-wide warning is normally NOT
+  emitted).
+
+### Filtering and snapshot correctness
+
+Policy filtering is intentional, not provider failure:
+
+- a filtered item does NOT mark the combined snapshot incomplete,
+- a filtered item does NOT degrade source health,
+- the reconciliation key set contains only accepted items: an event that
+  was relevant before and stops satisfying the policy (or disappears
+  upstream) is cancelled by the next complete snapshot,
+- provider failures (fetch, malformed XML, wrong root, pagination
+  mismatch, identity conflicts) keep their existing incomplete-snapshot
+  semantics and still disable reconciliation.
 
 ## Multi-region merge
 

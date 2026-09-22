@@ -8,6 +8,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
@@ -314,7 +315,7 @@ func buildWarningsView(snap state.Snapshot, page int) warningsView {
 			Status:      h.Status,
 			EffectiveAt: h.EffectiveAt,
 			ExpiresAt:   h.ExpiresAt,
-			Areas:       strings.Join(h.Areas, ", "),
+			Areas:       strings.Join(geo.DisplayAreas(h.Areas), ", "),
 			Description: h.Description,
 			UpdatedAt:   h.UpdatedAt,
 		}

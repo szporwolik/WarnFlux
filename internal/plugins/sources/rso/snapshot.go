@@ -127,6 +127,21 @@ func (s *Source) ingestCombined(ctx context.Context, emit plugin.Emitter, result
 				complete = false
 				continue
 			}
+			// High-signal policy: suppression never marks the snapshot
+			// incomplete — the filtered key set IS this source's logical
+			// snapshot.
+			if s.policy != nil {
+				d := s.policy.decide(item)
+				if !d.emit {
+					slog.Debug("RSO item filtered out", "id", strings.TrimSpace(item.ID), "reason", d.reason)
+					continue
+				}
+				ev.Severity = d.severity
+				if d.category != "" {
+					ev.Category = d.category
+				}
+				ev.Areas = sortedUnique(append(ev.Areas, d.areas...))
+			}
 			sig := contentSignature(item)
 			if c, ok := candidates[ev.Key()]; ok {
 				if c.signature != sig {

@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // Type is the plugin type name used in the YAML configuration.
@@ -86,6 +87,24 @@ type Config struct {
 	// Voivodeships filters UPSTREAM via the official endpoint; default
 	// [wszystkie]. "wszystkie" is exclusive (not combinable with regions).
 	Voivodeships []string `yaml:"voivodeships"`
+	// Filter is the optional high-signal policy (see filter.go).
+	Filter *FileFilterConfig `yaml:"filter"`
+}
+
+// FileFilterConfig is the decoded filter block; defaults are applied and
+// validated in New.
+type FileFilterConfig struct {
+	HighSignalOnly      *bool  `yaml:"high_signal_only"`
+	ExcludeRCB          *bool  `yaml:"exclude_rcb"`
+	ExcludeAirQuality   *bool  `yaml:"exclude_air_quality"`
+	SuppressIMGWDupes   *bool  `yaml:"suppress_imgw_duplicates"`
+	LocalMinSeverity    string `yaml:"local_min_severity"`
+	RegionalMinSeverity string `yaml:"regional_min_severity"`
+	A4Corridor          *struct {
+		Enabled *bool `yaml:"enabled"`
+		KMFrom  *int  `yaml:"km_from"`
+		KMTo    *int  `yaml:"km_to"`
+	} `yaml:"a4_corridor"`
 }
 
 // Source polls the public RSO XML and ingests the current communication
@@ -95,6 +114,8 @@ type Config struct {
 type Source struct {
 	cfg    Config
 	client *Client
+	// policy is the runtime-ready filter (nil = pass-through).
+	policy *filterConfig
 }
 
 // New decodes and validates the plugin-specific configuration.
@@ -146,7 +167,66 @@ func New(node *yaml.Node) (plugin.SourcePlugin, error) {
 	}
 	cfg.Voivodeships = canonical
 
-	return &Source{cfg: cfg, client: NewClient(cfg.BaseURL, cfg.RequestTimeout)}, nil
+	policy, err := buildFilterConfig(cfg.Filter)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Source{cfg: cfg, client: NewClient(cfg.BaseURL, cfg.RequestTimeout), policy: policy}, nil
+}
+
+// buildFilterConfig validates and defaults the filter block. A nil block
+// disables the policy entirely (pass-through, historic behaviour).
+func buildFilterConfig(f *FileFilterConfig) (*filterConfig, error) {
+	if f == nil {
+		return nil, nil
+	}
+	p := &filterConfig{
+		highSignalOnly:      boolDefault(f.HighSignalOnly, false),
+		excludeRCB:          boolDefault(f.ExcludeRCB, true),
+		excludeAirQuality:   boolDefault(f.ExcludeAirQuality, true),
+		suppressIMGWDupes:   boolDefault(f.SuppressIMGWDupes, false),
+		localMinSeverity:    "moderate",
+		regionalMinSeverity: "severe",
+		corridor:            corridorConfig{enabled: true, kmFrom: 400, kmTo: 503},
+	}
+	if s := strings.TrimSpace(f.LocalMinSeverity); s != "" {
+		p.localMinSeverity = s
+	}
+	if s := strings.TrimSpace(f.RegionalMinSeverity); s != "" {
+		p.regionalMinSeverity = s
+	}
+	if !storage.ValidSeverity(p.localMinSeverity) {
+		return nil, fmt.Errorf("filter.local_min_severity must be a canonical severity, got %q", p.localMinSeverity)
+	}
+	if !storage.ValidSeverity(p.regionalMinSeverity) {
+		return nil, fmt.Errorf("filter.regional_min_severity must be a canonical severity, got %q", p.regionalMinSeverity)
+	}
+	if p.corridor.kmFrom <= 0 || p.corridor.kmTo <= p.corridor.kmFrom {
+		return nil, fmt.Errorf("filter.a4_corridor requires 0 < km_from < km_to")
+	}
+	if f.A4Corridor != nil {
+		if f.A4Corridor.Enabled != nil {
+			p.corridor.enabled = *f.A4Corridor.Enabled
+		}
+		if f.A4Corridor.KMFrom != nil {
+			p.corridor.kmFrom = *f.A4Corridor.KMFrom
+		}
+		if f.A4Corridor.KMTo != nil {
+			p.corridor.kmTo = *f.A4Corridor.KMTo
+		}
+		if p.corridor.kmFrom <= 0 || p.corridor.kmTo <= p.corridor.kmFrom {
+			return nil, fmt.Errorf("filter.a4_corridor requires 0 < km_from < km_to, got %d..%d", p.corridor.kmFrom, p.corridor.kmTo)
+		}
+	}
+	return p, nil
+}
+
+func boolDefault(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // canonicalVoivodeship maps an official slug or display name (any case) to

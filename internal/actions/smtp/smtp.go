@@ -34,6 +34,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/geo"
 )
 
 // Type is the action type name used in the YAML configuration.
@@ -529,7 +530,7 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 			fmt.Fprintf(&b, "Headline: %s\n", h.Hazard.Headline)
 		}
 		if len(h.Hazard.Areas) > 0 {
-			fmt.Fprintf(&b, "Areas: %s\n", strings.Join(h.Hazard.Areas, ", "))
+			fmt.Fprintf(&b, "Areas: %s\n", strings.Join(geo.DisplayAreas(h.Hazard.Areas), ", "))
 		}
 		if h.Hazard.EffectiveAt != nil {
 			fmt.Fprintf(&b, "Effective: %s\n", h.Hazard.EffectiveAt.Format(time.RFC3339))
@@ -649,7 +650,7 @@ func hazardHTML(ev dispatch.Event) string {
 	if len(h.Hazard.Areas) > 0 {
 		b.WriteString(`<div style="margin-top:14px;color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Areas</div>`)
 		var chips strings.Builder
-		for _, a := range h.Hazard.Areas {
+		for _, a := range geo.DisplayAreas(h.Hazard.Areas) {
 			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#21262d;border:1px solid #30363d;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#c9d1d9;">%s</span>`, htmlEscaper(a))
 		}
 		b.WriteString(chips.String())

@@ -52,6 +52,8 @@ type Config struct {
 	// tests override it with an httptest server.
 	BaseURL string   `yaml:"base_url"`
 	Feeds   []string `yaml:"feeds"`
+	// Geography is the optional local-area filter (see geography.go).
+	Geography *GeographyConfig `yaml:"geography"`
 }
 
 // Source polls the IMGW warning endpoints and ingests the current warning
@@ -61,6 +63,8 @@ type Config struct {
 type Source struct {
 	cfg    Config
 	client *Client
+	// geo is the runtime-ready geographic policy (nil-safe when disabled).
+	geo *geography
 }
 
 // New decodes and validates the plugin-specific configuration.
@@ -106,7 +110,12 @@ func New(node *yaml.Node) (plugin.SourcePlugin, error) {
 		seen[f] = true
 	}
 
-	return &Source{cfg: cfg, client: NewClient(cfg.BaseURL, cfg.RequestTimeout)}, nil
+	g, err := buildGeography(cfg.Geography)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Source{cfg: cfg, client: NewClient(cfg.BaseURL, cfg.RequestTimeout), geo: g}, nil
 }
 
 // Name returns the plugin type name.
@@ -209,7 +218,19 @@ func (s *Source) processMeteo(ctx context.Context, emit plugin.Emitter, body []b
 		return nil, false
 	}
 	return s.ingestSnapshot(ctx, emit, sourceMeteo, len(items), func(i int) (core.HazardEvent, error) {
-		return normalizeMeteo(items[i], s.cfg.BaseURL+"/warningsmeteo")
+		ev, err := normalizeMeteo(items[i], s.cfg.BaseURL+"/warningsmeteo")
+		if err != nil {
+			return ev, err
+		}
+		match, areas, err := s.geo.matchesMeteo(items[i].Teryt)
+		if err != nil {
+			return ev, err
+		}
+		ev.Areas = areas
+		if !match {
+			return ev, errGeographicallyFiltered
+		}
+		return ev, nil
 	})
 }
 
@@ -225,7 +246,14 @@ func (s *Source) processHydro(ctx context.Context, emit plugin.Emitter, body []b
 		return nil, false
 	}
 	return s.ingestSnapshot(ctx, emit, sourceHydro, len(items), func(i int) (core.HazardEvent, error) {
-		return normalizeHydro(items[i], s.cfg.BaseURL+"/warningshydro")
+		ev, err := normalizeHydro(items[i], s.cfg.BaseURL+"/warningshydro")
+		if err != nil {
+			return ev, err
+		}
+		if !s.geo.matchesHydro(ev.Areas) {
+			return ev, errGeographicallyFiltered
+		}
+		return ev, nil
 	})
 }
 
@@ -255,6 +283,12 @@ func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source
 		}
 		ev, err := normalize(i)
 		if err != nil {
+			if errors.Is(err, errGeographicallyFiltered) {
+				// Intentional policy filtering: the logical snapshot of THIS
+				// source configuration excludes the event, but the provider
+				// snapshot remains complete.
+				continue
+			}
 			slog.Warn("IMGW item skipped; snapshot marked incomplete", "source", source, "item", i, "error", err)
 			complete = false
 			continue

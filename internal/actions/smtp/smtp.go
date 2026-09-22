@@ -534,12 +534,21 @@ func severityColor(severity string) (bg, fg string) {
 
 // bodyOfHTML renders a styled, human-first HTML version of the event: a
 // focused summary for the reader on top, the technical metadata in a table
-// below, and a branded footer.
+// below, and a branded footer. The card carries a severity-colored accent
+// (the same palette as the web dashboard), so the alert level is visible
+// at a glance.
 func bodyOfHTML(req action.ActionRequest, now time.Time) string {
+	accent := "#30363d"
+	sevFG := ""
+	if ev := req.Event; ev.Kind == dispatch.EventHazardTransition && ev.Hazard != nil {
+		_, sevFG = severityColor(ev.Hazard.Hazard.Severity)
+		accent = sevFG
+	}
+
 	var b strings.Builder
-	b.WriteString(`<div style="background:#0d1117;padding:24px;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;border:1px solid #30363d;border-radius:8px;background:#161b22;color:#c9d1d9;font-size:14px;">
-<tr><td style="padding:24px 28px;">`)
+	fmt.Fprintf(&b, `<div style="background:#0d1117;padding:24px;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
+<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;border:1px solid #30363d;border-top:3px solid %s;border-radius:8px;background:#161b22;color:#c9d1d9;font-size:14px;">
+<tr><td style="padding:24px 28px;">`, accent)
 	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8b949e;">WarnFlux hazard alert</div>`)
 
 	ev := req.Event
@@ -559,7 +568,7 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #30363d;padding-top:16px;">
 <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8b949e;margin-bottom:8px;">Technical details</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">`)
-	b.WriteString(technicalRows(req, now))
+	b.WriteString(technicalRows(req, now, sevFG))
 	b.WriteString(`</table></div>`)
 
 	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #30363d;padding-top:14px;font-size:12px;color:#8b949e;">`)
@@ -607,8 +616,9 @@ func hazardHTML(ev dispatch.Event) string {
 	return b.String()
 }
 
-// technicalRows renders the metadata table rows for any event kind.
-func technicalRows(req action.ActionRequest, now time.Time) string {
+// technicalRows renders the metadata table rows for any event kind. The
+// severity value is tinted with the application's severity palette.
+func technicalRows(req action.ActionRequest, now time.Time, sevFG string) string {
 	row := func(k, v string) string {
 		if v == "" {
 			return ""
@@ -633,7 +643,12 @@ func technicalRows(req action.ActionRequest, now time.Time) string {
 		b.WriteString(row("Source", h.Source))
 		b.WriteString(row("Event key", h.Key))
 		b.WriteString(row("Event", h.Hazard.Event))
-		b.WriteString(row("Severity", h.Hazard.Severity))
+		if sevFG != "" {
+			fmt.Fprintf(&b, `<tr><td style="padding:5px 8px;color:#8b949e;white-space:nowrap;vertical-align:top;">Severity</td><td style="padding:5px 8px;"><span style="color:%s;font-weight:600;">%s</span></td></tr>`,
+				sevFG, htmlEscaper(h.Hazard.Severity))
+		} else {
+			b.WriteString(row("Severity", h.Hazard.Severity))
+		}
 		b.WriteString(row("Urgency", h.Hazard.Urgency))
 		b.WriteString(row("Certainty", h.Hazard.Certainty))
 		b.WriteString(row("Headline", h.Hazard.Headline))

@@ -69,11 +69,10 @@ a:hover { text-decoration: underline; }
 }
 .brand:hover { text-decoration: none; color: #fff; }
 
-.brand-mark {
+.brand-logo {
   width: 24px;
   height: 24px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, var(--link), #1f6feb 70%);
+  border-radius: 6px;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
   flex: none;
 }
@@ -161,11 +160,18 @@ a:hover { text-decoration: underline; }
 }
 
 .footer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   color: var(--muted);
   font-family: var(--mono);
   font-size: 0.75rem;
 }
 .footer-link:hover { color: var(--link); text-decoration: underline; }
+.footer-link svg { flex: none; }
+
+.commit-link { color: var(--muted); font-family: var(--mono); }
+.commit-link:hover { color: var(--link); }
 
 /* ---- key/value system panel ---- */
 .kv-grid {
@@ -322,6 +328,20 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   border-radius: var(--radius);
   padding: 1.5rem;
   margin: auto 1rem;
+}
+.login-logo {
+  display: block;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 0.75rem;
+  border-radius: 14px;
+  box-shadow: 0 0 24px rgba(88, 166, 255, 0.25);
+}
+.login-tagline {
+  margin: 0.25rem 0 0;
+  text-align: center;
+  color: var(--muted);
+  font-style: italic;
 }
 .login-card h1 { display: flex; align-items: center; gap: 0.5rem; justify-content: center; font-size: 1.1rem; }
 .login-card form { display: grid; gap: 0.85rem; margin-top: 1rem; }

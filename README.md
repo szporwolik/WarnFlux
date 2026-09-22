@@ -2,6 +2,10 @@
 
 > **Alerts in. Action out.**
 
+<p align="center">
+  <img src="assets/logo.png" alt="WarnFlux logo" width="144">
+</p>
+
 WarnFlux aggregates hazard and emergency information from pluggable
 sources, normalizes it into a common event model, deduplicates and tracks
 each event's lifecycle in SQLite, and delivers every meaningful change to
@@ -486,7 +490,9 @@ convention directory.
 
 The container entrypoint runs `warnflux --config /config/config.yaml`;
 set `storage.path: /data/warnflux.db` and `web.listen: ":8080"` inside
-the container configuration.
+the container configuration. Build args `VERSION` and `COMMIT` inject the
+version and commit shown in the UI footer (the release workflow sets both
+automatically).
 
 With **bind mounts**, host directories must be writable by UID 65532
 (e.g. `sudo chown 65532:65532 ./data ./logs`). Named volumes initialize

@@ -401,10 +401,14 @@ func TestDashboardActionsStatus(t *testing.T) {
 func TestFooterVersionAndRepoLink(t *testing.T) {
 	env := newTestEnv(t)
 
-	// Login page bottom bar: app title, version (commit) and the repo link.
+	// Login page bottom bar: app title, version (commit link) and the repo
+	// link with the GitHub mark.
 	_, loginHTML := env.get("/login")
-	if !strings.Contains(loginHTML, "WarnFlux Test · test-version (abc1234)") {
+	if !strings.Contains(loginHTML, "WarnFlux Test · test-version (") {
 		t.Errorf("login footer missing version line: %s", loginHTML)
+	}
+	if !strings.Contains(loginHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
+		t.Errorf("login footer missing commit link: %s", loginHTML)
 	}
 	if !strings.Contains(loginHTML, "github.com/szporwolik/WarnFlux") {
 		t.Errorf("login footer missing repo link: %s", loginHTML)
@@ -412,8 +416,11 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 
 	env.login()
 	_, dashHTML := env.get("/dashboard")
-	if !strings.Contains(dashHTML, "WarnFlux Test · test-version (abc1234)") {
+	if !strings.Contains(dashHTML, "WarnFlux Test · test-version (") {
 		t.Errorf("dashboard footer missing version line: %s", dashHTML)
+	}
+	if !strings.Contains(dashHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
+		t.Errorf("dashboard footer missing commit link: %s", dashHTML)
 	}
 	if !strings.Contains(dashHTML, "github.com/szporwolik/WarnFlux") {
 		t.Errorf("dashboard footer missing repo link: %s", dashHTML)

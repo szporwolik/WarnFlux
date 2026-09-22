@@ -5,10 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
 </head>
 <body class="login-page">
   <main class="login-card">
-    <h1><span class="brand-mark" aria-hidden="true"></span> {{.AppTitle}}</h1>
+    <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
+    <h1>{{.AppTitle}}</h1>
+    <p class="login-tagline">Alerts in. Action out.</p>
     <p class="muted" style="text-align:center">Admin sign in</p>
     {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
     <form method="post" action="/login">
@@ -23,8 +27,8 @@
     </form>
   </main>
   <footer class="footer">
-    <span>{{.AppTitle}} · {{.Version}} ({{.Commit}})</span>
-    <a class="footer-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer">github.com/szporwolik/WarnFlux</a>
+    <span>{{.AppTitle}} · {{.Version}} ({{if ne .Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{else}}{{.Commit}}{{end}})</span>
+    <a class="footer-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer">{{template "github-icon"}}github.com/szporwolik/WarnFlux</a>
   </footer>
 </body>
 </html>

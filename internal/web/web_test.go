@@ -571,6 +571,9 @@ func TestComposeFlow(t *testing.T) {
 	if !strings.Contains(html, "Issued communications") {
 		t.Errorf("compose page missing issued list: %s", html)
 	}
+	if !strings.Contains(html, `id="compose-debug-fill"`) {
+		t.Errorf("compose page missing debug fill button: %s", html)
+	}
 	csrf := extractCSRF(t, html)
 
 	// CSRF is enforced on both mutations.

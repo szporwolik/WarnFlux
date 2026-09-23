@@ -496,6 +496,60 @@
   }
 })();
 
+// Compose page: fill the form with debug values for quick testing.
+(function () {
+  "use strict";
+
+  function pad(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function localDT(d) {
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+      "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  function initDebugFill() {
+    var btn = document.getElementById("compose-debug-fill");
+    if (!btn) {
+      return;
+    }
+    btn.addEventListener("click", function () {
+      var form = btn.closest("form");
+      if (!form) {
+        return;
+      }
+      var now = new Date();
+      var later = new Date(now.getTime() + 6 * 3600 * 1000);
+      var vals = {
+        event: "Storm",
+        headline: "Debug: strong wind warning",
+        severity: "severe",
+        urgency: "immediate",
+        certainty: "likely",
+        status: "active",
+        areas: "niepolomice, wieliczka",
+        description: "Debug fill: strong wind gusts expected this evening.",
+        instruction: "Secure loose objects and avoid forest areas.",
+        effective_at: localDT(now),
+        expires_at: localDT(later)
+      };
+      Object.keys(vals).forEach(function (name) {
+        var el = form.querySelector('[name="' + name + '"]');
+        if (el) {
+          el.value = vals[name];
+        }
+      });
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initDebugFill);
+  } else {
+    initDebugFill();
+  }
+})();
+
 // Application drawer: collapses to an icon rail on desktop (persisted),
 // overlays the content on narrow screens.
 (function () {

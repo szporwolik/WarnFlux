@@ -42,7 +42,7 @@ func TestNormalizeDefaultsStatus(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	valid := HazardEvent{Source: "meteoalarm", SourceID: "2.49", Event: "Rain"}
+	valid := HazardEvent{Source: "meteoalarm", SourceID: "2.49", Event: "Rain", Severity: "unknown"}
 	if err := valid.Validate(); err != nil {
 		t.Errorf("minimal valid event rejected: %v", err)
 	}
@@ -52,10 +52,11 @@ func TestValidate(t *testing.T) {
 		event HazardEvent
 		want  string
 	}{
-		{"missing source", HazardEvent{SourceID: "2.49", Event: "Rain"}, "source"},
-		{"missing source id", HazardEvent{Source: "meteoalarm", Event: "Rain"}, "source_id"},
-		{"missing event", HazardEvent{Source: "meteoalarm", SourceID: "2.49"}, "event"},
-		{"invalid status", HazardEvent{Source: "meteoalarm", SourceID: "2.49", Event: "Rain", Status: "gone"}, "status"},
+		{"missing source", HazardEvent{SourceID: "2.49", Event: "Rain", Severity: "unknown"}, "source"},
+		{"missing source id", HazardEvent{Source: "meteoalarm", Event: "Rain", Severity: "unknown"}, "source_id"},
+		{"missing event", HazardEvent{Source: "meteoalarm", SourceID: "2.49", Severity: "unknown"}, "event"},
+		{"invalid status", HazardEvent{Source: "meteoalarm", SourceID: "2.49", Event: "Rain", Severity: "unknown", Status: "gone"}, "status"},
+		{"non-canonical severity", HazardEvent{Source: "meteoalarm", SourceID: "2.49", Event: "Rain", Severity: "orange"}, "canonical"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,7 +73,7 @@ func TestValidate(t *testing.T) {
 
 func TestValidateOptionalFieldsMayBeAbsent(t *testing.T) {
 	// Optional CAP-like fields must not be required.
-	e := HazardEvent{Source: "imgw", SourceID: "123", Event: "Storm"}
+	e := HazardEvent{Source: "imgw", SourceID: "123", Event: "Storm", Severity: "unknown"}
 	if err := e.Validate(); err != nil {
 		t.Errorf("event without optional fields rejected: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestChangeTypeString(t *testing.T) {
 func TestEffectiveAndExpiryPointers(t *testing.T) {
 	eff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	exp := eff.Add(time.Hour)
-	e := HazardEvent{Source: "s", SourceID: "1", Event: "E", EffectiveAt: &eff, ExpiresAt: &exp}
+	e := HazardEvent{Source: "s", SourceID: "1", Event: "E", Severity: "unknown", EffectiveAt: &eff, ExpiresAt: &exp}
 	if err := e.Validate(); err != nil {
 		t.Errorf("event with times rejected: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestValidateCoordinates(t *testing.T) {
 	}
 	for _, c := range valid {
 		lat, lon := c.lat, c.lon
-		e := HazardEvent{Source: "s", SourceID: "1", Event: "E", Latitude: &lat, Longitude: &lon}
+		e := HazardEvent{Source: "s", SourceID: "1", Event: "E", Severity: "unknown", Latitude: &lat, Longitude: &lon}
 		if err := e.Validate(); err != nil {
 			t.Errorf("valid coordinates %v rejected: %v", c, err)
 		}
@@ -199,11 +200,11 @@ func TestValidateCoordinates(t *testing.T) {
 	inf := math.Inf(1)
 	lat91, lon181, latOne, lonOne := 91.0, 181.0, 10.0, 10.0
 	invalid := []HazardEvent{
-		{Source: "s", SourceID: "1", Event: "E", Latitude: &nan, Longitude: &lonOne},
-		{Source: "s", SourceID: "1", Event: "E", Latitude: &latOne, Longitude: &inf},
-		{Source: "s", SourceID: "1", Event: "E", Latitude: &lat91, Longitude: &lonOne},
-		{Source: "s", SourceID: "1", Event: "E", Latitude: &latOne, Longitude: &lon181},
-		{Source: "s", SourceID: "1", Event: "E", Latitude: &latOne}, // only one
+		{Source: "s", SourceID: "1", Event: "E", Severity: "unknown", Latitude: &nan, Longitude: &lonOne},
+		{Source: "s", SourceID: "1", Event: "E", Severity: "unknown", Latitude: &latOne, Longitude: &inf},
+		{Source: "s", SourceID: "1", Event: "E", Severity: "unknown", Latitude: &lat91, Longitude: &lonOne},
+		{Source: "s", SourceID: "1", Event: "E", Severity: "unknown", Latitude: &latOne, Longitude: &lon181},
+		{Source: "s", SourceID: "1", Event: "E", Severity: "unknown", Latitude: &latOne}, // only one
 	}
 	for _, e := range invalid {
 		if err := e.Validate(); err == nil {
@@ -259,6 +260,7 @@ func TestValidateSizeCaps(t *testing.T) {
 		Source:   "demo",
 		SourceID: "1",
 		Event:    "Drill",
+		Severity: "unknown",
 		Status:   StatusActive,
 	}
 	if err := base.Validate(); err != nil {

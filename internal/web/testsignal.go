@@ -13,7 +13,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
-	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
 // option is one select option for the test signal form.
@@ -170,7 +170,7 @@ func validateTestForm(form testSignalForm) string {
 	if len(form.Source) > 64 {
 		return "source is too long (maximum 64 characters)"
 	}
-	if !storage.ValidSeverity(form.Severity) {
+	if !severity.Valid(form.Severity) {
 		return "invalid severity"
 	}
 	if form.Urgency != "" && !oneOf(form.Urgency, testUrgencies) {

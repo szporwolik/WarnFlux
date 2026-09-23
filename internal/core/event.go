@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
 // EventStatus is the lifecycle state of an event as persisted by WarnFlux.
@@ -36,11 +38,18 @@ type HazardEvent struct {
 	// with Source it forms the stable event identity.
 	SourceID string
 
-	Category  string
-	Event     string
-	Severity  string
-	Urgency   string
-	Certainty string
+	Category string
+	Event    string
+	// Severity is the canonical WarnFlux severity (unknown/minor/moderate/
+	// severe/extreme). It is the ONLY severity the routing engine sees;
+	// adapters map provider scales onto it.
+	Severity string
+	// ProviderSeverity keeps the raw provider-scale value for diagnostics
+	// (e.g. IMGW degree "2"). It never participates in routing or in the
+	// event fingerprint.
+	ProviderSeverity string
+	Urgency          string
+	Certainty        string
 
 	Headline    string
 	Description string
@@ -118,6 +127,7 @@ func ValidateSourceID(sourceID string) error {
 func (e *HazardEvent) Normalize() {
 	e.Source = strings.ToLower(strings.TrimSpace(e.Source))
 	e.SourceID = strings.TrimSpace(e.SourceID)
+	e.Severity = strings.ToLower(strings.TrimSpace(e.Severity))
 	if e.Status == "" {
 		e.Status = StatusActive
 	}
@@ -215,6 +225,7 @@ func (e HazardEvent) Validate() error {
 		{"category", e.Category, maxShortFieldLen},
 		{"event type", e.Event, maxShortFieldLen},
 		{"severity", e.Severity, maxShortFieldLen},
+		{"provider severity", e.ProviderSeverity, maxShortFieldLen},
 		{"urgency", e.Urgency, maxShortFieldLen},
 		{"certainty", e.Certainty, maxShortFieldLen},
 		{"headline", e.Headline, maxHeadlineLen},
@@ -225,6 +236,12 @@ func (e HazardEvent) Validate() error {
 		if len(f.value) > f.max {
 			return fmt.Errorf("event %s is %d bytes, maximum %d", f.name, len(f.value), f.max)
 		}
+	}
+	// The model is closed: routing decisions are made exclusively on the
+	// canonical severity scale. Provider vocabularies must be mapped by
+	// the source adapter; raw provider text never reaches the engine.
+	if !severity.Valid(e.Severity) {
+		return fmt.Errorf("event severity %q is not a canonical WarnFlux severity (unknown, minor, moderate, severe or extreme)", e.Severity)
 	}
 	if len(e.Areas) > maxAreas {
 		return fmt.Errorf("event has %d areas, maximum %d", len(e.Areas), maxAreas)

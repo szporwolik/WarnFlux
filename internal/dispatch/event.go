@@ -46,15 +46,17 @@ const (
 
 // Hazard is the compact hazard block of one transition.
 type Hazard struct {
-	EventKey  string
-	Source    string
-	SourceID  string
-	Event     string
-	Severity  string
-	Urgency   string
-	Certainty string
-	Headline  string
-	Areas     []string
+	EventKey string
+	Source   string
+	SourceID string
+	Event    string
+	Severity string
+	// ProviderSeverity is the raw provider-scale value (diagnostics only).
+	ProviderSeverity string
+	Urgency          string
+	Certainty        string
+	Headline         string
+	Areas            []string
 
 	EffectiveAt *time.Time
 	ExpiresAt   *time.Time

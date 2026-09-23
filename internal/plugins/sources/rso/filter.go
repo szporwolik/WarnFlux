@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
 // filterConfig is the RSO-specific policy. Defaults are applied by New
@@ -412,7 +412,7 @@ func (p filterConfig) shouldEmit(sev string, geo geoMatch) bool {
 	if !p.highSignalOnly {
 		return true
 	}
-	rank, _ := storage.SeverityRank(sev)
+	rank, _ := severity.Rank(sev)
 	if rank == 0 {
 		// unknown/unranked never passes the high-signal filter.
 		return false
@@ -429,10 +429,10 @@ func (p filterConfig) shouldEmit(sev string, geo geoMatch) bool {
 	}
 
 	if local {
-		threshold, _ := storage.SeverityRank(p.localMinSeverity)
+		threshold, _ := severity.Rank(p.localMinSeverity)
 		return rank >= threshold
 	}
-	threshold, _ := storage.SeverityRank(p.regionalMinSeverity)
+	threshold, _ := severity.Rank(p.regionalMinSeverity)
 	return rank >= threshold
 }
 

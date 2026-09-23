@@ -294,6 +294,23 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 		return
 	}
 
+	ev := EventFromWire(we, in.receiverID, now)
+
+	// Non-blocking offer: a full dispatch queue drops the event instead of
+	// slowing down MQTT ingestion.
+	if !in.ingress.Enqueue(ev) {
+		if in.stats != nil {
+			in.stats.Dropped.Add(1)
+		}
+		in.logger.Warn("receiver: dispatch intake full, transition dropped",
+			"receiver", in.receiverID, "type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
+	}
+}
+
+// EventFromWire converts one validated /events wire payload into the
+// canonical dispatch event. It is exported so tests and tooling can feed
+// the same strict conversion the receivers use.
+func EventFromWire(we *EventPayload, receiverID string, now time.Time) dispatch.Event {
 	var typ dispatch.TransitionType
 	switch we.ChangeType {
 	case ChangeNew:
@@ -314,10 +331,10 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 		ts = now
 	}
 
-	ev := dispatch.Event{
+	return dispatch.Event{
 		Kind:       dispatch.EventHazardTransition,
 		ReceivedAt: now,
-		Origin:     dispatch.Origin{Type: "mqtt", ReceiverID: in.receiverID},
+		Origin:     dispatch.Origin{Type: "mqtt", ReceiverID: receiverID},
 		Hazard: &dispatch.HazardTransition{
 			Type:      typ,
 			Key:       we.EventKey,
@@ -325,31 +342,22 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 			ChangeID:  we.ChangeID,
 			Timestamp: ts,
 			Hazard: dispatch.Hazard{
-				EventKey:    we.EventKey,
-				Source:      we.Event.Source,
-				SourceID:    we.Event.SourceID,
-				Event:       we.Event.Event,
-				Severity:    we.Event.Severity,
-				Urgency:     we.Event.Urgency,
-				Certainty:   we.Event.Certainty,
-				Headline:    we.Event.Headline,
-				Areas:       append([]string(nil), we.Event.Areas...),
-				EffectiveAt: optTime(we.Event.EffectiveAt),
-				ExpiresAt:   optTime(we.Event.ExpiresAt),
-				ReceivedAt:  parseTime(we.Event.ReceivedAt),
-				UpdatedAt:   parseTime(we.Event.UpdatedAt),
+				EventKey:         we.EventKey,
+				Source:           we.Event.Source,
+				SourceID:         we.Event.SourceID,
+				Event:            we.Event.Event,
+				Severity:         we.Event.Severity,
+				ProviderSeverity: we.Event.ProviderSeverity,
+				Urgency:          we.Event.Urgency,
+				Certainty:        we.Event.Certainty,
+				Headline:         we.Event.Headline,
+				Areas:            append([]string(nil), we.Event.Areas...),
+				EffectiveAt:      optTime(we.Event.EffectiveAt),
+				ExpiresAt:        optTime(we.Event.ExpiresAt),
+				ReceivedAt:       parseTime(we.Event.ReceivedAt),
+				UpdatedAt:        parseTime(we.Event.UpdatedAt),
 			},
 		},
-	}
-
-	// Non-blocking offer: a full dispatch queue drops the event instead of
-	// slowing down MQTT ingestion.
-	if !in.ingress.Enqueue(ev) {
-		if in.stats != nil {
-			in.stats.Dropped.Add(1)
-		}
-		in.logger.Warn("receiver: dispatch intake full, transition dropped",
-			"receiver", in.receiverID, "type", typ, "event_key", we.EventKey)
 	}
 }
 

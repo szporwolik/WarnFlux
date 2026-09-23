@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
 // WireSchemaVersion is the schema version published by WarnFlux for
@@ -52,30 +54,34 @@ var (
 	errBadState      = errors.New("unknown status state")
 	errService       = errors.New("unexpected service")
 	errInvalidJSON   = errors.New("invalid JSON")
+	errBadSeverity   = errors.New("severity is not a canonical WarnFlux severity")
 )
 
 // HazardPayload is the shared hazard block used by /events and /active.
 // It matches WarnFlux's public wire schema exactly (snake_case).
 type HazardPayload struct {
-	Source      string   `json:"source"`
-	SourceID    string   `json:"source_id"`
-	Category    string   `json:"category"`
-	Event       string   `json:"event"`
-	Severity    string   `json:"severity"`
-	Urgency     string   `json:"urgency"`
-	Certainty   string   `json:"certainty"`
-	Headline    string   `json:"headline"`
-	Description string   `json:"description"`
-	Instruction string   `json:"instruction"`
-	EffectiveAt *string  `json:"effective_at,omitempty"`
-	ExpiresAt   *string  `json:"expires_at,omitempty"`
-	Latitude    *float64 `json:"latitude,omitempty"`
-	Longitude   *float64 `json:"longitude,omitempty"`
-	Areas       []string `json:"areas"`
-	Status      string   `json:"status"`
-	SourceURL   string   `json:"source_url"`
-	ReceivedAt  string   `json:"received_at"`
-	UpdatedAt   string   `json:"updated_at"`
+	Source   string `json:"source"`
+	SourceID string `json:"source_id"`
+	Category string `json:"category"`
+	Event    string `json:"event"`
+	Severity string `json:"severity"`
+	// ProviderSeverity is the raw provider-scale value carried for
+	// diagnostics (optional, never used for routing).
+	ProviderSeverity string   `json:"provider_severity,omitempty"`
+	Urgency          string   `json:"urgency"`
+	Certainty        string   `json:"certainty"`
+	Headline         string   `json:"headline"`
+	Description      string   `json:"description"`
+	Instruction      string   `json:"instruction"`
+	EffectiveAt      *string  `json:"effective_at,omitempty"`
+	ExpiresAt        *string  `json:"expires_at,omitempty"`
+	Latitude         *float64 `json:"latitude,omitempty"`
+	Longitude        *float64 `json:"longitude,omitempty"`
+	Areas            []string `json:"areas"`
+	Status           string   `json:"status"`
+	SourceURL        string   `json:"source_url"`
+	ReceivedAt       string   `json:"received_at"`
+	UpdatedAt        string   `json:"updated_at"`
 }
 
 // ActivePayload is the retained payload on <prefix>/active/<source>/<hash>.
@@ -117,6 +123,14 @@ func ParseEventPayload(payload []byte) (*EventPayload, error) {
 	case ChangeNew, ChangeUpdated, ChangeCancelled, ChangeExpired:
 	default:
 		return nil, errBadChangeType
+	}
+	// The severity model is closed at the wire boundary: the published
+	// value is normalized onto the canonical scale (case/space lenient)
+	// and anything outside the vocabulary is rejected as malformed.
+	if norm, ok := severity.Normalize(we.Event.Severity); ok {
+		we.Event.Severity = norm
+	} else {
+		return nil, errBadSeverity
 	}
 	return &we, nil
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -291,7 +292,7 @@ func parseMatrixCells(r *http.Request, sources []sourceOption, allowed []channel
 		if sev == "" {
 			continue // cell left on "—": not assigned
 		}
-		if !storage.ValidSeverity(sev) {
+		if !severity.Valid(sev) {
 			return nil, fmt.Errorf("invalid severity for cell %q", key)
 		}
 		out = append(out, storage.ChannelAssignment{Source: src, ID: id, MinSeverity: sev})

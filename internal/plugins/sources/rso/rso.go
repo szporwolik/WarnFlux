@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/plugin"
-	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
 // Type is the plugin type name used in the YAML configuration.
@@ -196,10 +196,10 @@ func buildFilterConfig(f *FileFilterConfig) (*filterConfig, error) {
 	if s := strings.TrimSpace(f.RegionalMinSeverity); s != "" {
 		p.regionalMinSeverity = s
 	}
-	if !storage.ValidSeverity(p.localMinSeverity) {
+	if !severity.Valid(p.localMinSeverity) {
 		return nil, fmt.Errorf("filter.local_min_severity must be a canonical severity, got %q", p.localMinSeverity)
 	}
-	if !storage.ValidSeverity(p.regionalMinSeverity) {
+	if !severity.Valid(p.regionalMinSeverity) {
 		return nil, fmt.Errorf("filter.regional_min_severity must be a canonical severity, got %q", p.regionalMinSeverity)
 	}
 	if p.corridor.kmFrom <= 0 || p.corridor.kmTo <= p.corridor.kmFrom {

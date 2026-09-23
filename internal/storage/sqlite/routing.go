@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -38,7 +39,7 @@ func (s *Store) GroupRouting(groupID int64) (storage.GroupRouting, error) {
 // stored as-is, deduplicated per (source, ID).
 func (s *Store) SetGroupRouting(groupID int64, actions []storage.ChannelAssignment) error {
 	for _, a := range actions {
-		if !storage.ValidSeverity(a.MinSeverity) {
+		if !severity.Valid(a.MinSeverity) {
 			return storage.ErrInvalidSeverity
 		}
 	}

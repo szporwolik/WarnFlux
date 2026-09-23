@@ -355,13 +355,20 @@ DROP TABLE group_actions;
 ALTER TABLE group_actions_new RENAME TO group_actions;
 `,
 	},
+	{
+		// v12: the canonical severity model closes. Events keep the raw
+		// provider-scale value in provider_severity for diagnostics; the
+		// severity column itself holds ONLY the canonical WarnFlux scale
+		// (unknown/minor/moderate/severe/extreme) that routing uses.
+		SQL: `ALTER TABLE events ADD COLUMN provider_severity TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
 // expires_at_ms is the authoritative comparison value; expires_at remains
 // as a human-readable copy.
 const eventColumns = `event_key, source, source_id, fingerprint, status,
-category, event, severity, urgency, certainty,
+category, event, severity, provider_severity, urgency, certainty,
 headline, description, instruction,
 effective_at, expires_at_ms, latitude, longitude,
 areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at`
@@ -943,11 +950,11 @@ func (s *Store) CountActive(ctx context.Context) (int, error) {
 const insertSQL = `
 INSERT INTO events (
 	event_key, source, source_id, fingerprint, status,
-	category, event, severity, urgency, certainty,
+	category, event, severity, provider_severity, urgency, certainty,
 	headline, description, instruction,
 	effective_at, expires_at, expires_at_ms, latitude, longitude,
 	areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(event_key) DO NOTHING`
 
 func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen, updated time.Time, expiresMs int64) []any {
@@ -955,7 +962,7 @@ func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen,
 	areas, _ := json.Marshal(event.Areas)
 	return []any{
 		event.Key(), event.Source, event.SourceID, fingerprint, string(event.Status),
-		event.Category, event.Event, event.Severity, event.Urgency, event.Certainty,
+		event.Category, event.Event, event.Severity, event.ProviderSeverity, event.Urgency, event.Certainty,
 		event.Headline, event.Description, event.Instruction,
 		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt), nullableInt64(expiresMs),
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
@@ -987,7 +994,7 @@ func expiryLive(event core.HazardEvent, nowMs int64) bool {
 const updateSQL = `
 UPDATE events SET
 	source = ?, source_id = ?, fingerprint = ?, status = ?,
-	category = ?, event = ?, severity = ?, urgency = ?, certainty = ?,
+	category = ?, event = ?, severity = ?, provider_severity = ?, urgency = ?, certainty = ?,
 	headline = ?, description = ?, instruction = ?,
 	effective_at = ?, expires_at = ?, expires_at_ms = ?, latitude = ?, longitude = ?,
 	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, last_seen_at_ms = ?, updated_at = ?
@@ -998,7 +1005,7 @@ func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expir
 	areas, _ := json.Marshal(event.Areas)
 	return append([]any{
 		event.Source, event.SourceID, fingerprint, string(event.Status),
-		event.Category, event.Event, event.Severity, event.Urgency, event.Certainty,
+		event.Category, event.Event, event.Severity, event.ProviderSeverity, event.Urgency, event.Certainty,
 		event.Headline, event.Description, event.Instruction,
 		nullableTime(event.EffectiveAt), nullableTime(event.ExpiresAt), nullableInt64(expiresMs),
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
@@ -1189,7 +1196,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (co
 	var event core.HazardEvent
 	dests := []any{
 		&key, &event.Source, &event.SourceID, &fingerprint, &status,
-		&event.Category, &event.Event, &event.Severity, &event.Urgency, &event.Certainty,
+		&event.Category, &event.Event, &event.Severity, &event.ProviderSeverity, &event.Urgency, &event.Certainty,
 		&event.Headline, &event.Description, &event.Instruction,
 		&effectiveAt, &expiresMs, &lat, &lon,
 		&areasJSON, &event.SourceURL,

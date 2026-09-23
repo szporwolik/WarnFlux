@@ -35,7 +35,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
-	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
 const (
@@ -484,7 +484,7 @@ func validateBuilder(b *builderPayload) error {
 	}
 
 	sev := strings.ToLower(strings.TrimSpace(b.Severity))
-	if !storage.ValidSeverity(sev) {
+	if !severity.Valid(sev) {
 		return fmt.Errorf("severity is required and must be one of unknown, minor, moderate, severe, extreme")
 	}
 	b.Severity = sev

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -333,7 +334,7 @@ func (f *fakeUsers) SetGroupRouting(groupID int64, actions []storage.ChannelAssi
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, a := range actions {
-		if !storage.ValidSeverity(a.MinSeverity) {
+		if !severity.Valid(a.MinSeverity) {
 			return storage.ErrInvalidSeverity
 		}
 	}

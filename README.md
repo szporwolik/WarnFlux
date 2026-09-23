@@ -229,7 +229,8 @@ never published. After a restart, unacknowledged changes are re-published
     "source_id": "2.49.0.1.616.0.DEU",
     "category": "met",
     "event": "Rain",
-    "severity": "orange",
+    "severity": "severe",
+    "provider_severity": "orange",
     "urgency": "expected",
     "certainty": "likely",
     "headline": "Heavy rain expected",
@@ -266,7 +267,8 @@ Top-level fields:
 | `source_id` | string | provider-specific event identifier |
 | `category` | string | provider category code (e.g. `met`) |
 | `event` | string | event type (e.g. `Rain`) |
-| `severity` | string | provider-defined; CAP-style vocabulary: `Minor`, `Moderate`, `Severe`, `Extreme`, `Unknown` |
+| `severity` | string | **canonical WarnFlux severity only**: `unknown`, `minor`, `moderate`, `severe` or `extreme` (the single scale routing works on) |
+| `provider_severity` | string, optional | the raw provider-scale value mapped by the source adapter (e.g. IMGW degree `2`); diagnostics only, never used for routing |
 | `urgency` | string | CAP-style: `Immediate`, `Expected`, `Future`, `Past`, `Unknown` |
 | `certainty` | string | CAP-style: `Observed`, `Likely`, `Possible`, `Unlikely`, `Unknown` |
 | `headline` | string | short human-readable headline |
@@ -284,9 +286,15 @@ Top-level fields:
 
 Empty values are serialized as `""` (strings) or `[]` (areas); optional
 fields (`effective_at`, `expires_at`, `latitude`, `longitude`) are
-omitted entirely when absent. Severity/urgency/certainty are passed
-through as provided by the source adapter; built-in conventions follow
-the CAP vocabulary listed above.
+omitted entirely when absent. The severity model is **closed**: source
+adapters map provider vocabularies onto the canonical scale (`unknown <
+minor < moderate < severe < extreme`; IMGW degree 1 → `moderate`, 2 →
+`severe`, 3 → `extreme`) and the routing matrix only ever compares
+canonical values. Anything outside the vocabulary is rejected at the
+wire boundary — provider text can never leak into a routing decision.
+`provider_severity` (when present) keeps the raw value for diagnostics.
+Urgency/certainty are passed through as provided by the source adapter;
+built-in conventions follow the CAP vocabulary listed above.
 
 ### Status snapshot — `warnflux/status`
 

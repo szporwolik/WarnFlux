@@ -31,7 +31,7 @@ func baseEvent() core.HazardEvent {
 		Source:   "meteoalarm",
 		SourceID: "2.49.0.1",
 		Event:    "Rain",
-		Severity: "yellow",
+		Severity: "severe",
 		Headline: "Rain expected",
 		Areas:    []string{"DE-NW"},
 	}
@@ -60,12 +60,12 @@ func TestIngestLifecycle(t *testing.T) {
 	}
 
 	updated := event.Clone()
-	updated.Severity = "orange"
+	updated.Severity = "moderate"
 	result, change, err = ing.Ingest(ctx, updated)
 	if err != nil || result != ResultUpdated {
 		t.Fatalf("update Ingest = %v, %v", result, err)
 	}
-	if change.Type != core.ChangeUpdated || change.Event.Severity != "orange" {
+	if change.Type != core.ChangeUpdated || change.Event.Severity != "moderate" {
 		t.Errorf("change = %+v, want updated", change)
 	}
 
@@ -165,7 +165,7 @@ func TestIngestUpdatePreservesIdentityAndFirstSeen(t *testing.T) {
 
 	current = t1
 	updated := event.Clone()
-	updated.Severity = "red"
+	updated.Severity = "minor"
 	result, change, err := ing.Ingest(ctx, updated)
 	if err != nil || result != ResultUpdated {
 		t.Fatalf("update Ingest = %v, %v", result, err)
@@ -187,7 +187,7 @@ func TestIngestUpdatePreservesIdentityAndFirstSeen(t *testing.T) {
 	if !got.Event.UpdatedAt.Equal(t1) {
 		t.Errorf("updated_at = %v, want %v", got.Event.UpdatedAt, t1)
 	}
-	if change.Event.Severity != "red" {
+	if change.Event.Severity != "minor" {
 		t.Errorf("change carries stale content: %+v", change.Event)
 	}
 }

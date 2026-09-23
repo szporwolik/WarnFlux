@@ -30,6 +30,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
@@ -181,7 +182,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 
 	key := ev.Hazard.Key
 	sev := strings.ToLower(strings.TrimSpace(ev.Hazard.Hazard.Severity))
-	rank, ok := storage.SeverityRank(sev)
+	rank, ok := severity.Rank(sev)
 	if !ok {
 		// Unranked provider vocabularies count as the lowest rank: only
 		// the permissive "unknown" threshold (deliver everything) matches.
@@ -314,7 +315,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 // meetsThreshold reports whether an event rank satisfies a channel's
 // minimum severity.
 func meetsThreshold(rank int, minSeverity string) bool {
-	threshold, ok := storage.SeverityRank(minSeverity)
+	threshold, ok := severity.Rank(minSeverity)
 	if !ok {
 		threshold = 0
 	}

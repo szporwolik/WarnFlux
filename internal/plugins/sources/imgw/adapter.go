@@ -218,18 +218,19 @@ func normalizeMeteo(w meteoWarning, sourceURL string) (core.HazardEvent, error) 
 	}
 
 	ev := core.HazardEvent{
-		Source:      sourceMeteo,
-		SourceID:    id,
-		Category:    "met",
-		Event:       event,
-		Severity:    severity,
-		Headline:    event,
-		Description: buildDescription(w.Tresc, w.Komentarz, probability, hasProbability),
-		EffectiveAt: &effective,
-		ExpiresAt:   expires,
-		Areas:       areas,
-		Status:      core.StatusActive,
-		SourceURL:   sourceURL,
+		Source:           sourceMeteo,
+		SourceID:         id,
+		Category:         "met",
+		Event:            event,
+		Severity:         severity,
+		ProviderSeverity: strings.TrimSpace(w.Stopien),
+		Headline:         event,
+		Description:      buildDescription(w.Tresc, w.Komentarz, probability, hasProbability),
+		EffectiveAt:      &effective,
+		ExpiresAt:        expires,
+		Areas:            areas,
+		Status:           core.StatusActive,
+		SourceURL:        sourceURL,
 	}
 	if err := ev.Validate(); err != nil {
 		return core.HazardEvent{}, fmt.Errorf("meteo warning %q is oversized/invalid: %w", id, err)
@@ -269,18 +270,19 @@ func normalizeHydro(w hydroWarning, sourceURL string) (core.HazardEvent, error) 
 	}
 
 	ev := core.HazardEvent{
-		Source:      sourceHydro,
-		SourceID:    id,
-		Category:    "met",
-		Event:       event,
-		Severity:    severity,
-		Headline:    event,
-		Description: buildDescription(w.Przebieg, w.Komentarz, probability, hasProbability),
-		EffectiveAt: &effective,
-		ExpiresAt:   expires,
-		Areas:       hydroAreas(w.Obszary),
-		Status:      core.StatusActive,
-		SourceURL:   sourceURL,
+		Source:           sourceHydro,
+		SourceID:         id,
+		Category:         "met",
+		Event:            event,
+		Severity:         severity,
+		ProviderSeverity: strings.TrimSpace(w.Stopien),
+		Headline:         event,
+		Description:      buildDescription(w.Przebieg, w.Komentarz, probability, hasProbability),
+		EffectiveAt:      &effective,
+		ExpiresAt:        expires,
+		Areas:            hydroAreas(w.Obszary),
+		Status:           core.StatusActive,
+		SourceURL:        sourceURL,
 	}
 	if err := ev.Validate(); err != nil {
 		return core.HazardEvent{}, fmt.Errorf("hydro warning %q is oversized/invalid: %w", id, err)

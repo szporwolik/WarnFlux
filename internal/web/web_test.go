@@ -533,6 +533,17 @@ func TestPublicHomePage(t *testing.T) {
 		t.Errorf("GET /dashboard unauthenticated = %d %q, want redirect to /login",
 			resp.StatusCode, resp.Header.Get("Location"))
 	}
+
+	// A logged-in operator sees a Dashboard entry (avatar + label) in the
+	// home header instead of the sign-in icon.
+	env.login()
+	_, html = env.get("/")
+	if !strings.Contains(html, `href="/dashboard"`) || !strings.Contains(html, "Dashboard") {
+		t.Errorf("home header missing dashboard entry when logged in: %s", html)
+	}
+	if strings.Contains(html, `href="/login"`) {
+		t.Errorf("home header must drop the sign-in icon when logged in: %s", html)
+	}
 }
 
 // TestComposeFlow pins the officer-facing communication module: the form

@@ -23,9 +23,16 @@
         <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
         <svg class="icon ico-moon" aria-hidden="true"><use href="/static/icons.svg#i-moon"></use></svg>
       </button>
+      {{if .LoggedIn}}
+      <a class="home-dash" href="/dashboard" title="Dashboard">
+        <span class="avatar" title="{{.Username}}">{{initials .Username}}</span>
+        <span class="home-dash-label">Dashboard</span>
+      </a>
+      {{else}}
       <a class="home-login" href="/login" title="Sign in" aria-label="Sign in">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>
       </a>
+      {{end}}
     </div>
   </header>
 

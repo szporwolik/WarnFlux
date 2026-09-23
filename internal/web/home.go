@@ -33,20 +33,28 @@ type homeView struct {
 	// About is operator-authored content (config file): rendered with
 	// line breaks preserved and a deliberately small HTML surface so
 	// links work.
-	About   template.HTML
-	Version string
-	Commit  string
-	RepoURL string
+	About    template.HTML
+	Version  string
+	Commit   string
+	RepoURL  string
+	LoggedIn bool
+	Username string
 
 	ActiveCount int
 	Hazards     []publicHazardView
 }
 
 // handleHome renders the public landing page: header1/header2 plus the
-// current active hazards. No session is required.
+// current active hazards. No session is required; a logged-in operator
+// sees a Dashboard entry in the header instead of the sign-in icon.
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	v := s.buildHomeView()
+	if sess := s.sessions.currentSession(r); sess != nil {
+		v.LoggedIn = true
+		v.Username = sess.username
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "home", s.buildHomeView())
+	s.render(w, "home", v)
 }
 
 // handlePartialHome serves the public auto-refresh fragment of the active

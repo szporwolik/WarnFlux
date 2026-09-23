@@ -20,6 +20,9 @@ func TestAPRSDefaults(t *testing.T) {
 	if cfg.APRS.StationTTL != 30*time.Minute {
 		t.Errorf("station_ttl default = %s, want 30m", cfg.APRS.StationTTL)
 	}
+	if !cfg.APRS.ExcludeInfrastructure {
+		t.Error("exclude_infrastructure must default to true")
+	}
 }
 
 func TestAPRSConfigAccepted(t *testing.T) {
@@ -31,6 +34,7 @@ aprs:
   gridsquare: jo90ww
   radius_km: 25
   station_ttl: 15m
+  exclude_infrastructure: false
 `))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -41,6 +45,9 @@ aprs:
 	}
 	if a.GridSquare != "JO90WW" || a.RadiusKM != 25 || a.StationTTL != 15*time.Minute {
 		t.Errorf("aprs = %+v", a)
+	}
+	if a.ExcludeInfrastructure {
+		t.Error("explicit exclude_infrastructure: false must be honoured")
 	}
 }
 

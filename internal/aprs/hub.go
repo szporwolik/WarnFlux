@@ -272,6 +272,13 @@ func (h *Hub) apply(op hubOp) {
 	}
 	h.accepted.Add(1)
 
+	// Infrastructure filter: objects, digipeaters, gateways and similar
+	// never become station state (they are not ham operators).
+	if h.cfg.ExcludeInfrastructure && IsInfrastructure(p) {
+		h.filtered.Add(1)
+		return
+	}
+
 	// Defense in depth: the APRS-IS filter already limits the feed to the
 	// configured radius; position-bearing packets outside it are dropped.
 	if p.Position != nil {

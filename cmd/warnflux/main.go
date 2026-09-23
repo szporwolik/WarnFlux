@@ -197,13 +197,14 @@ func run(configPath string) error {
 	// later) into one station state; plugins and actions receive it at
 	// registration time.
 	hub, err := aprs.NewHub(aprs.HubConfig{
-		Enabled:    cfg.APRS.Enabled,
-		Callsign:   cfg.APRS.Callsign,
-		Icon:       cfg.APRS.Icon,
-		GridSquare: cfg.APRS.GridSquare,
-		RadiusKM:   cfg.APRS.RadiusKM,
-		StationTTL: cfg.APRS.StationTTL,
-		Version:    resolvedVersion,
+		Enabled:               cfg.APRS.Enabled,
+		Callsign:              cfg.APRS.Callsign,
+		Icon:                  cfg.APRS.Icon,
+		GridSquare:            cfg.APRS.GridSquare,
+		RadiusKM:              cfg.APRS.RadiusKM,
+		StationTTL:            cfg.APRS.StationTTL,
+		ExcludeInfrastructure: cfg.APRS.ExcludeInfrastructure,
+		Version:               resolvedVersion,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure aprs hub: %w", err)

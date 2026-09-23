@@ -280,6 +280,57 @@ func TestHubStationsSnapshot(t *testing.T) {
 	}
 }
 
+func TestHubInfrastructureFilter(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:               true,
+		Callsign:              "SP9MOA-10",
+		GridSquare:            "JO90WW",
+		RadiusKM:              DefaultRadiusKM,
+		StationTTL:            30 * time.Minute,
+		ExcludeInfrastructure: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// A real ham (house symbol) is kept.
+	hub.Observe(testPacket("SP9OK>APRS:!5056.25N/01952.50E-"), "aprs-inet")
+	// A digipeater (primary # symbol) is dropped.
+	hub.Observe(testPacket("SR9NR>APRS:!5056.25N/01952.50E#"), "aprs-inet")
+	// An igate (primary I) is dropped.
+	hub.Observe(testPacket("SR9IG>APRS:!5056.25N/01952.50EI"), "aprs-inet")
+	// An object (repeater announcement) is dropped.
+	hub.Observe(testPacket("SP9MOA>APRS:;SR9NR  *111111z5056.25N/01952.50ErT145.550"), "aprs-inet")
+
+	waitFor(t, func() bool { return len(sink.payloads(StationsTopicPrefix+"SP9OK")) >= 1 })
+	if got := len(sink.payloads(StationsTopicPrefix + "SR9NR")); got != 0 {
+		t.Errorf("digipeater published %d times, want 0", got)
+	}
+	if got := len(sink.payloads(StationsTopicPrefix + "SR9IG")); got != 0 {
+		t.Errorf("igate published %d times, want 0", got)
+	}
+	if got := hub.Stats().Filtered; got != 3 {
+		t.Errorf("filtered = %d, want 3", got)
+	}
+}
+
+func TestHubInfrastructureFilterDisabled(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// Without the filter the digipeater stays on the map.
+	hub.Observe(testPacket("SR9NR>APRS:!5056.25N/01952.50E#"), "aprs-inet")
+	waitFor(t, func() bool { return len(sink.payloads(StationsTopicPrefix+"SR9NR")) >= 1 })
+}
+
 func TestNewHubValidation(t *testing.T) {
 	if _, err := NewHub(HubConfig{Enabled: true, Callsign: "BAD!CALL", GridSquare: "JO90WW"}, nil); err == nil {
 		t.Error("invalid callsign accepted")

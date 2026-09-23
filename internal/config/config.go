@@ -133,6 +133,10 @@ type APRSConfig struct {
 	// StationTTL is how long a station stays in the retained MQTT state
 	// after its last packet.
 	StationTTL time.Duration
+	// ExcludeInfrastructure drops APRS objects, digipeaters, gateways and
+	// similar infrastructure from the station state, so the neighbourhood
+	// map shows actual ham stations only.
+	ExcludeInfrastructure bool
 }
 
 // Source is one configured source plugin instance.
@@ -339,12 +343,13 @@ type fileConfig struct {
 }
 
 type fileAPRS struct {
-	Enabled    bool           `yaml:"enabled"`
-	Callsign   string         `yaml:"callsign"`
-	Icon       string         `yaml:"icon"`
-	GridSquare string         `yaml:"gridsquare"`
-	RadiusKM   *float64       `yaml:"radius_km"`
-	StationTTL *time.Duration `yaml:"station_ttl"`
+	Enabled               bool           `yaml:"enabled"`
+	Callsign              string         `yaml:"callsign"`
+	Icon                  string         `yaml:"icon"`
+	GridSquare            string         `yaml:"gridsquare"`
+	RadiusKM              *float64       `yaml:"radius_km"`
+	StationTTL            *time.Duration `yaml:"station_ttl"`
+	ExcludeInfrastructure *bool          `yaml:"exclude_infrastructure"`
 }
 
 type fileIngestHTTP struct {
@@ -775,7 +780,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.IngestHTTP = append(cfg.IngestHTTP, inst)
 	}
 
-	cfg.APRS = APRSConfig{RadiusKM: 60, StationTTL: 30 * time.Minute}
+	cfg.APRS = APRSConfig{RadiusKM: 60, StationTTL: 30 * time.Minute, ExcludeInfrastructure: true}
 	if f.APRS != nil {
 		cfg.APRS.Enabled = f.APRS.Enabled
 		cfg.APRS.Callsign = strings.ToUpper(strings.TrimSpace(f.APRS.Callsign))
@@ -786,6 +791,9 @@ func (f fileConfig) toConfig() Config {
 		}
 		if f.APRS.StationTTL != nil {
 			cfg.APRS.StationTTL = *f.APRS.StationTTL
+		}
+		if f.APRS.ExcludeInfrastructure != nil {
+			cfg.APRS.ExcludeInfrastructure = *f.APRS.ExcludeInfrastructure
 		}
 	}
 	return cfg

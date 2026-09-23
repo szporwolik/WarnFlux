@@ -479,3 +479,8 @@ aprs:
   # How long a station stays in the retained MQTT state after its last
   # packet before the topic is deleted (empty retained payload).
   station_ttl: 30m
+
+  # Drop APRS infrastructure from the station state: objects/items,
+  # digipeaters, igates/gateways, internet-only nodes and repeaters.
+  # The neighbourhood map then shows actual ham stations only.
+  exclude_infrastructure: true

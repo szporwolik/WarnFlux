@@ -52,6 +52,10 @@ type HubConfig struct {
 	// StationTTL is how long a station remains in the retained MQTT
 	// state after its last packet.
 	StationTTL time.Duration
+	// ExcludeInfrastructure drops APRS objects, digipeaters, gateways
+	// and similar infrastructure from the station state so the map shows
+	// actual ham stations only.
+	ExcludeInfrastructure bool
 	// Version is the WarnFlux version (used in the APRS-IS login).
 	Version string
 

@@ -556,6 +556,15 @@
     return d.innerHTML;
   }
 
+  // fmtTime renders an RFC 3339 timestamp compactly (UTC, minutes).
+  function fmtTime(v) {
+    if (!v) {
+      return "";
+    }
+    var s = String(v).replace("T", " ");
+    return s.length > 16 ? s.slice(0, 16) + "Z" : s;
+  }
+
   function loadScript(src, ok, fail) {
     var s = document.createElement("script");
     s.src = src;
@@ -704,11 +713,21 @@
           if (s.comment) {
             popup += "<br>" + esc(s.comment);
           }
+          // When the frame was transmitted (packet timestamp) or, when
+          // the packet carried none, when we last heard the station.
+          if (s.last_packet_at) {
+            popup += "<br>Sent: " + esc(fmtTime(s.last_packet_at));
+          }
+          popup += "<br>Heard: " + esc(fmtTime(s.last_heard_at));
           if (s.distance_km) {
             popup += "<br>" + Number(s.distance_km).toFixed(1) + " km";
           }
-          if (s.last_heard_at) {
-            popup += "<br>" + esc(String(s.last_heard_at).replace("T", " ").slice(0, 16)) + "Z";
+          // How the frame reached us: over the radio via an i-gate, or
+          // injected directly from the internet.
+          if (s.origin === "rf") {
+            popup += "<br>Via: radio (APRS)";
+          } else if (s.origin === "internet") {
+            popup += "<br>Via: internet (APRS-IS)";
           }
           var marker = L.circleMarker([s.position.latitude, s.position.longitude], {
             radius: 7, color: tilesForTheme().marker.color, weight: 2,

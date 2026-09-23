@@ -331,6 +331,38 @@ func TestHubInfrastructureFilterDisabled(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.payloads(StationsTopicPrefix+"SR9NR")) >= 1 })
 }
 
+func TestHubStationOrigin(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// Heard over the radio by an i-gate (qAR path).
+	hub.Observe(testPacket("SP9RF>APRS,WIDE1-1,SR9NR*,qAR,SR9NR:!5056.25N/01952.50E-"), "aprs-inet")
+	// Injected directly from the internet (TCPIP* path).
+	hub.Observe(testPacket("SP9NET>APRS,TCPIP*,qAC,T2POLAND:!5056.25N/01952.50E-"), "aprs-inet")
+	waitFor(t, func() bool {
+		return len(sink.payloads(StationsTopicPrefix+"SP9RF")) >= 1 && len(sink.payloads(StationsTopicPrefix+"SP9NET")) >= 1
+	})
+
+	origin := make(map[string]string)
+	for _, doc := range hub.Stations() {
+		origin[doc.Callsign] = doc.Origin
+	}
+	if origin["SP9RF"] != "rf" {
+		t.Errorf("SP9RF origin = %q, want rf", origin["SP9RF"])
+	}
+	if origin["SP9NET"] != "internet" {
+		t.Errorf("SP9NET origin = %q, want internet", origin["SP9NET"])
+	}
+}
+
 func TestNewHubValidation(t *testing.T) {
 	if _, err := NewHub(HubConfig{Enabled: true, Callsign: "BAD!CALL", GridSquare: "JO90WW"}, nil); err == nil {
 		t.Error("invalid callsign accepted")

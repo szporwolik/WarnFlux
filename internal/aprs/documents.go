@@ -30,7 +30,10 @@ type StationDocument struct {
 	Status         string        `json:"status,omitempty"`
 	MessageCapable bool          `json:"message_capable"`
 	// DistanceKM is the distance from our configured position.
-	DistanceKM   float64  `json:"distance_km,omitempty"`
+	DistanceKM float64 `json:"distance_km,omitempty"`
+	// Origin reports how the latest packet reached APRS-IS: "rf" (heard
+	// over the radio by an i-gate) or "internet" (injected directly).
+	Origin       string   `json:"origin,omitempty"`
 	LastHeardAt  string   `json:"last_heard_at"`
 	LastPacketAt string   `json:"last_packet_at,omitempty"`
 	ReceivedVia  []string `json:"received_via"`

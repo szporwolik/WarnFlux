@@ -51,6 +51,7 @@ type stationState struct {
 	comment        string
 	status         string
 	messageCapable bool
+	origin         Origin
 	lastHeard      int64
 	via            map[string]bool
 	packets        int
@@ -345,6 +346,9 @@ func (r *stationRecord) merge(p *Packet, via string, now int64) {
 	if p.Status != "" {
 		st.status = p.Status
 	}
+	if o := OriginFromPath(p.Path); o != OriginUnknown {
+		st.origin = o
+	}
 	if p.MessageCapable {
 		st.messageCapable = true
 	}
@@ -394,6 +398,7 @@ func (h *Hub) buildStationDoc(rec *stationRecord) StationDocument {
 	doc.AltitudeM = st.altitudeM
 	doc.Comment = st.comment
 	doc.Status = st.status
+	doc.Origin = string(st.origin)
 	if rec.lastPacketAt != 0 {
 		doc.LastPacketAt = formatTime(rec.lastPacketAt)
 	}

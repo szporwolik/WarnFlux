@@ -124,6 +124,10 @@ func run(configPath string) error {
 	// the repository VERSION file; release builds have it injected).
 	resolvedVersion := resolveVersion(version)
 
+	// In-memory log ring buffer: everything the process logs also lands
+	// here and is served by the web UI's /logs viewer.
+	logs := web.NewLogBuffer(web.DefaultLogLines)
+
 	// Phase 1 — static initialization. No background goroutines exist yet,
 	// so a failure here leaves nothing running behind.
 	cfg, err := config.Load(configPath)
@@ -131,7 +135,7 @@ func run(configPath string) error {
 		return fmt.Errorf("load configuration: %w", err)
 	}
 
-	logger, logCloser, err := newLogger(cfg.App)
+	logger, logCloser, err := newLogger(cfg.App, logs)
 	if err != nil {
 		return fmt.Errorf("configure logging: %w", err)
 	}
@@ -285,7 +289,7 @@ func run(configPath string) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
@@ -426,12 +430,12 @@ func run(configPath string) error {
 // newLogger builds the application logger. Output always goes to stdout so
 // Docker and systemd keep working; when app.log_file is set, output is also
 // written to a rotating file of at most app.log_max_size_mb, keeping up to
-// app.log_max_backups rotated copies. File logging exists for non-Docker /
-// non-systemd deployments; stdout remains the primary logging contract.
-func newLogger(app config.App) (*slog.Logger, io.Closer, error) {
+// app.log_max_backups rotated copies. capture additionally receives every
+// line (the in-memory ring buffer behind the /logs viewer).
+func newLogger(app config.App, capture io.Writer) (*slog.Logger, io.Closer, error) {
 	level := app.SlogLevel()
 	if app.LogFile == "" {
-		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+		logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, capture), &slog.HandlerOptions{Level: level}))
 		return logger, nopCloser{}, nil
 	}
 
@@ -441,7 +445,7 @@ func newLogger(app config.App) (*slog.Logger, io.Closer, error) {
 		MaxBackups: app.LogMaxBackups,
 		LocalTime:  true,
 	}
-	logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, rotator), &slog.HandlerOptions{
+	logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, rotator, capture), &slog.HandlerOptions{
 		Level: level,
 	}))
 	return logger, rotator, nil

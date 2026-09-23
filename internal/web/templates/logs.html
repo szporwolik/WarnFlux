@@ -1,0 +1,25 @@
+{{define "logs"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logs · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card log-card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>Logs</h2>
+      <p class="muted log-hint">Live view of this instance's log output (last 1000 lines). Refreshes automatically.</p>
+      <div id="log-viewer" class="log-viewer" data-after="0"></div>
+    </section>
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+{{end}}

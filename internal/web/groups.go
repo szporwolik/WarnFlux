@@ -140,6 +140,7 @@ type groupsView struct {
 	NavUsers     bool
 	NavGroups    bool
 	NavTest      bool
+	NavLogs      bool
 }
 
 // handleGroupsPage renders the group administration page. ?edit=<id>

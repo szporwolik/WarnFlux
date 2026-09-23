@@ -94,6 +94,7 @@ type testView struct {
 	NavUsers     bool
 	NavGroups    bool
 	NavTest      bool
+	NavLogs      bool
 }
 
 // handleTestPage renders the test signal form.

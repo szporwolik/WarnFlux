@@ -62,6 +62,80 @@
   }, POLL_MS);
 })();
 
+// Logs page: incremental tail with level coloring. Fetches only the lines
+// after the last known cursor and auto-scrolls when the viewer is already
+// at the bottom (so reading old lines is never interrupted).
+(function () {
+  "use strict";
+
+  var LOGS_POLL_MS = 2000;
+  var MAX_LOG_NODES = 1000;
+
+  function initLogs() {
+    var viewer = document.getElementById("log-viewer");
+    if (!viewer) {
+      return;
+    }
+    var after = parseInt(viewer.getAttribute("data-after"), 10) || 0;
+
+    function atBottom() {
+      return viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40;
+    }
+
+    function poll() {
+      fetch("/partials/logs?after=" + after, {
+        headers: { "Accept": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store"
+      })
+        .then(function (res) {
+          if (res.status === 401) {
+            window.location.href = "/login";
+            return null;
+          }
+          if (!res.ok) {
+            return null;
+          }
+          return res.json();
+        })
+        .then(function (data) {
+          if (!data || !data.lines || data.lines.length === 0) {
+            return;
+          }
+          var stick = atBottom();
+          var frag = document.createDocumentFragment();
+          data.lines.forEach(function (line) {
+            var div = document.createElement("div");
+            div.className = "log-line log-" + (line.level || "plain");
+            div.textContent = line.text;
+            frag.appendChild(div);
+            after = line.seq;
+          });
+          viewer.appendChild(frag);
+          viewer.setAttribute("data-after", after);
+          while (viewer.children.length > MAX_LOG_NODES) {
+            viewer.removeChild(viewer.firstChild);
+          }
+          if (stick) {
+            viewer.scrollTop = viewer.scrollHeight;
+          }
+        })
+        .catch(function () {
+          // Network hiccup: keep the last rendered lines and try again.
+        });
+    }
+
+    poll();
+    setInterval(poll, LOGS_POLL_MS);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initLogs);
+  } else {
+    initLogs();
+  }
+})();
+
 // Application drawer: collapses to an icon rail on desktop (persisted),
 // overlays the content on narrow screens.
 (function () {

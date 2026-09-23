@@ -754,6 +754,32 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 }
 .matrix-sev:focus { outline: none; border-color: var(--link); }
 
+/* ---- logs viewer ---- */
+.log-card { display: flex; flex-direction: column; gap: 0.5rem; }
+.log-hint { margin: 0; }
+.log-viewer {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  height: 65vh;
+  overflow-y: auto;
+  background: #0b0e14;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.65rem;
+  color: var(--text);
+}
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 0.02rem 0;
+}
+.log-error { color: #ff8a8a; }
+.log-warn { color: #ffd166; }
+.log-debug { color: var(--muted); }
+.log-info { color: var(--text); }
+.log-plain { color: var(--muted); }
+
 /* Compact per-channel chips in the groups table. */
 .routing-matrix { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 .matrix-chip {

@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +47,7 @@ type testEnv struct {
 	client   *http.Client
 	receiver *mqttreceiver.Manager
 	users    *fakeUsers
+	logs     *web.LogBuffer
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -66,6 +69,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st := state.New()
 	ingress := dispatch.NewIngress(64)
+	logs := web.NewLogBuffer(web.DefaultLogLines)
 
 	receivers, err := mqttreceiver.NewManager([]config.Receiver{
 		{
@@ -111,7 +115,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		t.Fatal(err)
 	}
 
-	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest)
+	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +129,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		return http.ErrUseLastResponse // observe redirects instead of following
 	}}
 
-	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users}
+	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users, logs: logs}
 }
 
 type nopAction struct{}
@@ -133,6 +137,62 @@ type nopAction struct{}
 func (nopAction) Name() string                                        { return "logger" }
 func (nopAction) Execute(context.Context, action.ActionRequest) error { return nil }
 func (nopAction) Close(context.Context) error                         { return nil }
+
+// TestLogsViewerFlow pins the /logs page and the incremental feed: the
+// page requires login, the first poll returns the whole buffer and a
+// cursor-restricted poll returns only the newer lines.
+func TestLogsViewerFlow(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Unauthenticated: redirect to the login page.
+	resp, _ := env.get("/logs")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("GET /logs unauthenticated = %d %q, want redirect", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	_, _ = env.logs.Write([]byte("time=1 level=ERROR msg=\"boom\"\n"))
+	_, _ = env.logs.Write([]byte("time=2 level=INFO msg=hello\n"))
+
+	env.login()
+	_, html := env.get("/logs")
+	if !strings.Contains(html, `id="log-viewer"`) {
+		t.Errorf("logs page missing viewer: %s", html)
+	}
+	if !strings.Contains(html, `<span class="nav-label">Logs</span>`) {
+		t.Errorf("logs page missing sidebar entry: %s", html)
+	}
+
+	// Full buffer poll.
+	resp, body := env.get("/partials/logs?after=0")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial poll = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, `"level":"error"`) || !strings.Contains(body, `"level":"info"`) ||
+		!strings.Contains(body, "boom") || !strings.Contains(body, "hello") {
+		t.Fatalf("log feed = %s", body)
+	}
+	var feed struct {
+		Lines []struct {
+			Seq   int64  `json:"seq"`
+			Level string `json:"level"`
+			Text  string `json:"text"`
+		} `json:"lines"`
+	}
+	if err := json.Unmarshal([]byte(body), &feed); err != nil {
+		t.Fatalf("feed is not valid JSON: %v", err)
+	}
+	if len(feed.Lines) != 2 {
+		t.Fatalf("feed lines = %d, want 2", len(feed.Lines))
+	}
+	cursor := feed.Lines[1].Seq
+
+	// Incremental poll: only the line after the cursor.
+	_, _ = env.logs.Write([]byte("time=3 level=WARN msg=careful\n"))
+	_, body = env.get("/partials/logs?after=" + strconv.FormatInt(cursor, 10))
+	if !strings.Contains(body, "careful") || strings.Contains(body, "hello") {
+		t.Errorf("incremental feed = %s, want only the new line", body)
+	}
+}
 
 // TestIngestEndpointRouting pins the public ingest route: requests are
 // delegated to the matching instance handler without session auth, unknown

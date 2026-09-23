@@ -11,7 +11,9 @@
     { path: "/partials/warnings", id: "warnings-section" },
     { path: "/partials/plugins", id: "plugins-section" },
     { path: "/partials/actions", id: "actions-section" },
-    { path: "/partials/health", id: "health-section" }
+    { path: "/partials/health", id: "health-section" },
+    // Public home page: the active-hazard list fragment.
+    { path: "/partials/home", id: "home-alerts" }
   ];
 
   var POLL_MS = 5000;
@@ -29,6 +31,9 @@
   }
 
   function refresh(section) {
+    if (!document.getElementById(section.id)) {
+      return; // section not on this page (e.g. /partials/home off-site)
+    }
     fetch(sectionPath(section), {
       headers: { "Accept": "text/html" },
       credentials: "same-origin",
@@ -387,6 +392,38 @@
     document.addEventListener("DOMContentLoaded", initNotifications);
   } else {
     initNotifications();
+  }
+})();
+
+// Public home page: tab switching between the alert list and the
+// placeholder section. The alert fragment itself is polled above.
+(function () {
+  "use strict";
+
+  function initHomeTabs() {
+    var tabs = document.querySelectorAll(".home-tab");
+    if (tabs.length === 0) {
+      return;
+    }
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        tabs.forEach(function (t) {
+          var active = t === tab;
+          t.classList.toggle("active", active);
+          t.setAttribute("aria-selected", active ? "true" : "false");
+          var panel = document.getElementById("panel-" + t.dataset.tab);
+          if (panel) {
+            panel.hidden = !active;
+          }
+        });
+      });
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initHomeTabs);
+  } else {
+    initHomeTabs();
   }
 })();
 

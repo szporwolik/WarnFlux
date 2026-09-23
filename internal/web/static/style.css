@@ -856,6 +856,114 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .health-name { min-width: 9rem; }
 .health-detail { color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
 
+/* ---- public home page ---- */
+.home {
+  max-width: 62rem;
+  margin: 0 auto;
+  padding: 1.25rem 1.25rem 2rem;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.home-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.home-brand { display: flex; align-items: center; gap: 0.9rem; min-width: 0; }
+.home-logo { width: 3rem; height: 3rem; border-radius: var(--radius); }
+.home-brand-text h1 { margin: 0; font-size: 1.45rem; letter-spacing: 0.02em; }
+.home-sub { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.85rem; }
+.home-login {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--surface-hi);
+}
+.home-login:hover { border-color: var(--link); color: var(--link); }
+.home-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin: 1rem 0 0;
+  border-bottom: 1px solid var(--border);
+}
+.home-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.home-tab:hover { color: var(--text); }
+.home-tab.active { color: var(--text); border-bottom-color: var(--link); }
+.home-main { flex: 1; padding: 1rem 0 0; }
+.home-alerts-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  margin: 0 0 0.9rem;
+}
+.home-alerts { display: flex; flex-direction: column; gap: 0.6rem; }
+.hazard {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: var(--radius);
+  background: var(--surface-hi);
+  padding: 0.7rem 0.85rem;
+}
+.sev-bd-unknown { border-left-color: var(--muted); }
+.sev-bd-minor { border-left-color: #ffd166; }
+.sev-bd-moderate { border-left-color: #ffb347; }
+.sev-bd-severe { border-left-color: #ff8a8a; }
+.sev-bd-extreme { border-left-color: #e05a5a; }
+.hazard-head { display: flex; align-items: baseline; gap: 0.6rem; }
+.hazard-head h3 { margin: 0; font-size: 1.02rem; }
+.hazard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.hazard-meta strong { color: var(--text); }
+.home-empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 2.2rem 1rem;
+  text-align: center;
+  color: var(--text);
+}
+.home-empty p { margin: 0.2rem 0; }
+.home-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  align-items: center;
+  margin-top: 2rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+@media (max-width: 860px) {
+  .home-brand-text h1 { font-size: 1.15rem; }
+  .home-logo { width: 2.4rem; height: 2.4rem; }
+}
+
 /* Compact per-channel chips in the groups table. */
 .routing-matrix { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 .matrix-chip {

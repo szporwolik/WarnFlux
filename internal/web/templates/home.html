@@ -1,0 +1,80 @@
+{{define "home"}}<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Header1}} · {{.Header2}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="home">
+  <header class="home-top">
+    <div class="home-brand">
+      <img class="home-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
+      <div class="home-brand-text">
+        <h1>{{.Header1}}</h1>
+        {{if .Header2}}<p class="home-sub">{{.Header2}}</p>{{end}}
+      </div>
+    </div>
+    <a class="home-login" href="/login" title="Zaloguj się" aria-label="Zaloguj się">
+      <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>
+    </a>
+  </header>
+
+  <nav class="home-tabs" role="tablist" aria-label="Sekcje">
+    <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Aktualne zagrożenia</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab2">Tab 2</button>
+  </nav>
+
+  <main class="home-main">
+    <section class="home-panel" id="panel-tab-alerts" data-panel="tab-alerts">
+      {{template "home_alerts_section" .}}
+    </section>
+    <section class="home-panel" id="panel-tab2" data-panel="tab2" hidden>
+      <div class="home-empty">
+        <p>Ta sekcja jest w przygotowaniu.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="home-foot">
+    <span>{{.AppTitle}}</span>
+    {{if .Tagline}}<span class="sep">·</span><span>{{.Tagline}}</span>{{end}}
+    <span class="sep">·</span>
+    <span>{{.Version}}</span>
+    {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{end}}
+  </footer>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+{{end}}
+
+{{define "home_alerts_section"}}<section class="home-alerts-wrap" id="home-alerts">
+  <h2 class="home-alerts-head">Aktywne komunikaty <span class="count">{{.ActiveCount}}</span></h2>
+  {{if .Hazards}}
+  <div class="home-alerts">
+    {{range .Hazards}}
+    <article class="hazard sev-bd-{{sevClass .Severity}}">
+      <div class="hazard-head">
+        <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
+        <h3>{{.Headline}}</h3>
+      </div>
+      <div class="hazard-meta">
+        <span>Źródło: <strong>{{.Source}}</strong></span>
+        {{if .Event}}<span>{{.Event}}</span>{{end}}
+        {{if .Areas}}<span>Obszar: {{.Areas}}</span>{{end}}
+        <span>aktualizacja: {{timeShort .UpdatedAt}}</span>
+        {{if .ExpiresAt}}<span>ważne do: {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
+      </div>
+    </article>
+    {{end}}
+  </div>
+  {{else}}
+  <div class="home-empty">
+    <p>Brak aktywnych zagrożeń.</p>
+    <p class="muted">Ta strona odświeża się automatycznie.</p>
+  </div>
+  {{end}}
+</section>
+{{end}}

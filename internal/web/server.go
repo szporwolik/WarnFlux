@@ -157,6 +157,10 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
+	// Public landing page: header1/header2 + the current active hazards.
+	// The login form lives behind the top-right icon button (/login).
+	s.mux.HandleFunc("GET /{$}", s.handleHome)
+	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.Handle("GET /logs", s.requirePage(s.handleLogsPage))
@@ -193,9 +197,6 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/warnings", s.requirePartial(s.handlePartialWarnings))
 	s.mux.Handle("GET /partials/plugins", s.requirePartial(s.handlePartialPlugins))
 	s.mux.Handle("GET /partials/actions", s.requirePartial(s.handlePartialActions))
-	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
-	})
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})

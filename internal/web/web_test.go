@@ -426,6 +426,82 @@ func TestHealthIngestRow(t *testing.T) {
 	}
 }
 
+// TestPublicHomePage pins the public landing page: header1/header2 and the
+// active-hazard list without any session; the login form lives behind the
+// icon button at /login. The partial is public too (auto-refresh).
+func TestPublicHomePage(t *testing.T) {
+	env := newTestEnv(t)
+
+	now := time.Now()
+	if err := env.state.AddOrUpdateActive("local", "warnflux/active/imgw-meteo/aaaa", state.Hazard{
+		EventKey:  "imgw-meteo:1",
+		Source:    "imgw-meteo",
+		Event:     "Burze",
+		Severity:  "moderate",
+		Headline:  "Umiarkowane burze",
+		Areas:     []string{"powiat wielicki"},
+		Status:    "active",
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.state.AddOrUpdateActive("local", "warnflux/active/imgw-meteo/bbbb", state.Hazard{
+		EventKey:  "imgw-meteo:2",
+		Source:    "imgw-meteo",
+		Event:     "Wiatr",
+		Severity:  "extreme",
+		Headline:  "Ekstremalny wiatr",
+		Areas:     []string{"powiat bocheński"},
+		Status:    "active",
+		UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unauthenticated: the home page is public.
+	resp, html := env.get("/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200 without login", resp.StatusCode)
+	}
+	for _, want := range []string{
+		"WarnFlux Test",     // header1
+		"Test platform",     // header2
+		"Ekstremalny wiatr", // most severe first
+		`href="/login"`,     // sign-in behind the icon button
+		"Aktualne zagrożenia",
+		"Tab 2",
+		`id="home-alerts"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("home page missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `name="csrf"`) {
+		t.Error("home page must not carry login form state (login is behind the icon button)")
+	}
+	extremeAt := strings.Index(html, "Ekstremalny wiatr")
+	moderateAt := strings.Index(html, "Umiarkowane burze")
+	if extremeAt < 0 || moderateAt < 0 || extremeAt > moderateAt {
+		t.Errorf("hazards not ordered by severity: extreme@%d moderate@%d", extremeAt, moderateAt)
+	}
+
+	// The auto-refresh fragment is public as well.
+	resp, body := env.get("/partials/home")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /partials/home = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body, `id="home-alerts"`) || !strings.Contains(body, "Ekstremalny wiatr") {
+		t.Errorf("home partial = %s", body)
+	}
+
+	// The admin area still requires login.
+	resp, _ = env.get("/dashboard")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Errorf("GET /dashboard unauthenticated = %d %q, want redirect to /login",
+			resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
 // TestMetricsEndpoint pins the Prometheus exposition: unauthenticated,
 // text format, live gauges and the registry-held counters.
 func TestMetricsEndpoint(t *testing.T) {

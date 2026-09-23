@@ -574,6 +574,9 @@ func TestComposeFlow(t *testing.T) {
 	if !strings.Contains(html, `id="compose-debug-fill"`) {
 		t.Errorf("compose page missing debug fill button: %s", html)
 	}
+	if !strings.Contains(html, `/static/app.js`) {
+		t.Errorf("compose page missing app.js (debug fill and theme toggle need it): %s", html)
+	}
 	csrf := extractCSRF(t, html)
 
 	// CSRF is enforced on both mutations.
@@ -1068,6 +1071,12 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	}
 	if !strings.Contains(loginHTML, `class="footer-h2">Test platform</h2>`) {
 		t.Errorf("login footer missing header2 lead: %s", loginHTML)
+	}
+	if !strings.Contains(loginHTML, "Account creation is disabled.") {
+		t.Errorf("login page missing account creation note: %s", loginHTML)
+	}
+	if !strings.Contains(loginHTML, "Back to the public page") || !strings.Contains(loginHTML, `href="/"`) {
+		t.Errorf("login page missing back link to the public page: %s", loginHTML)
 	}
 	if !strings.Contains(loginHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
 		t.Errorf("login footer missing commit link: %s", loginHTML)

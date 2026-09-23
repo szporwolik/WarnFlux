@@ -716,6 +716,17 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.85rem;
   margin-top: 1rem;
 }
+.login-note {
+  margin: 0.9rem 0 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.login-back {
+  margin: 0.4rem 0 0;
+  text-align: center;
+  font-size: 0.85rem;
+}
 
 /* ---- collapsed desktop drawer: icon-only rail ---- */
 .app.drawer-collapsed { --sidebar-w: 56px; }

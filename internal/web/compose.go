@@ -15,13 +15,14 @@ import (
 
 // composeSource is the fixed source id stamped on every communication
 // issued through the compose module. The "issued communications" list
-// filters the mirrored active state by this source.
-const composeSource = "sosna-ops"
+// filters the mirrored active state by this source. It is generic and
+// installation-agnostic on purpose.
+const composeSource = "compose"
 
 // composeEventKeyRe validates module-generated event keys
-// ("sosna-ops:<id>"). Keys from the form are always module-generated;
+// ("compose:<id>"). Keys from the form are always module-generated;
 // this is a defensive check at the HTTP boundary.
-var composeEventKeyRe = regexp.MustCompile(`^sosna-ops:[a-z0-9.-]{1,64}$`)
+var composeEventKeyRe = regexp.MustCompile(`^compose:[a-z0-9.-]{1,64}$`)
 
 // Compose form bounds (generous, like the wire).
 const (

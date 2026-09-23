@@ -601,7 +601,7 @@ func TestComposeFlow(t *testing.T) {
 		t.Fatalf("publisher saw %d publishes, want 1", len(env.pub.published))
 	}
 	h := env.pub.published[0]
-	if h.Source != "sosna-ops" || !strings.HasPrefix(h.EventKey, "sosna-ops:") {
+	if h.Source != "compose" || !strings.HasPrefix(h.EventKey, "compose:") {
 		t.Errorf("published hazard identity = %q / %q", h.Source, h.EventKey)
 	}
 	if h.Severity != "severe" || h.Headline != "Flood warning for the Raba river" || len(h.Areas) != 2 {
@@ -617,7 +617,7 @@ func TestComposeFlow(t *testing.T) {
 	}
 
 	// Simulate the broker loopback: the ingestor mirrors the document.
-	if err := env.state.AddOrUpdateActive("local", "warnflux/active/sosna-ops/aaaa", h); err != nil {
+	if err := env.state.AddOrUpdateActive("local", "warnflux/active/compose/aaaa", h); err != nil {
 		t.Fatal(err)
 	}
 
@@ -627,7 +627,7 @@ func TestComposeFlow(t *testing.T) {
 	if !strings.Contains(html, "Flood warning for the Raba river") {
 		t.Errorf("issued list missing headline: %s", html)
 	}
-	if !strings.Contains(html, "/compose?edit=sosna-ops") {
+	if !strings.Contains(html, "/compose?edit=compose") {
 		t.Errorf("issued list missing edit link: %s", html)
 	}
 
@@ -674,7 +674,7 @@ func TestComposeFlow(t *testing.T) {
 	}
 
 	// Unknown keys cannot be expired.
-	resp, _ = env.postForm("/compose/expire", url.Values{"csrf": {csrf}, "event_key": {"sosna-ops:nope"}})
+	resp, _ = env.postForm("/compose/expire", url.Values{"csrf": {csrf}, "event_key": {"compose:nope"}})
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("POST /compose/expire unknown key = %d, want 404", resp.StatusCode)
 	}

@@ -148,12 +148,12 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	}
 
 	// Valid matrix: any-source fallback at severe, rso-specific at
-	// moderate, compose (sosna-ops) at minor, an off cell ("") skipped.
+	// moderate, compose at minor, an off cell ("") skipped.
 	resp, _ = env.postForm("/groups/1/routing", url.Values{
 		"csrf":                          {csrf},
 		"cell:|logger-action":           {"severe"},
 		"cell:rso|logger-action":        {"moderate"},
-		"cell:sosna-ops|logger-action":  {"minor"},
+		"cell:compose|logger-action":    {"minor"},
 		"cell:imgw-meteo|logger-action": {""},
 	})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/groups" {
@@ -171,7 +171,7 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	want := []storage.ChannelAssignment{
 		{ID: "logger-action", MinSeverity: "severe"},
 		{Source: "rso", ID: "logger-action", MinSeverity: "moderate"},
-		{Source: "sosna-ops", ID: "logger-action", MinSeverity: "minor"},
+		{Source: "compose", ID: "logger-action", MinSeverity: "minor"},
 	}
 	if len(r.Actions) != len(want) {
 		t.Fatalf("actions = %+v, want %+v", r.Actions, want)
@@ -189,10 +189,10 @@ func TestGroupRoutingMatrix(t *testing.T) {
 		"logger-action",
 		"any",
 		"rso",
-		"sosna-ops",
+		"compose",
 		`name="cell:|logger-action"`,
 		`name="cell:rso|logger-action"`,
-		`name="cell:sosna-ops|logger-action"`,
+		`name="cell:compose|logger-action"`,
 		"severe or higher",
 		"moderate or higher",
 		"minor or higher",

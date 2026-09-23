@@ -765,7 +765,6 @@ detector and `govulncheck`. Tagging a semantic version (`v0.1.0`) triggers
 the release workflow, which builds:
 
 - `warnflux-linux-amd64` and `warnflux-linux-arm64`
-- `warnflux-windows-amd64.exe`
 - `SHA256SUMS`
 - the Docker image (`linux/amd64`, `linux/arm64`) published to
   `ghcr.io/<owner>/warnflux` with `v0.1.0`, `v0.1` and `latest` tags

@@ -123,12 +123,6 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-linux-amd64 ./cmd/warnflux
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-linux-arm64 ./cmd/warnflux
 
-      - name: Build Windows binary
-        run: |
-          mkdir -p dist
-          LDFLAGS="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ github.sha }}"
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-windows-amd64.exe ./cmd/warnflux
-
       - name: Generate checksums
         run: |
           cd dist
@@ -143,6 +137,5 @@ jobs:
           files: |
             dist/warnflux-linux-amd64
             dist/warnflux-linux-arm64
-            dist/warnflux-windows-amd64.exe
             dist/SHA256SUMS
 

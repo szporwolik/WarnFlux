@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -333,5 +334,163 @@ func TestResolve(t *testing.T) {
 	}
 	if got.Username != fallback.Username || got.Password != fallback.Password {
 		t.Errorf("credentials should still inherit: %+v", got)
+	}
+}
+
+// TestKeyRotation pins the two-key window: the current and the previous
+// key both authenticate; anything else fails and counts as auth_failed.
+func TestKeyRotation(t *testing.T) {
+	pub := &fakePublisher{connected: true}
+	inst := testInstance(t, pub)
+	inst.previousKey = "previous-key-1234567890abc"
+
+	for _, key := range []string{"test-key-1234567890abcdef", "previous-key-1234567890abc"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/news", strings.NewReader(`{"severity":"severe","headline":"x"}`))
+		req.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		inst.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Errorf("key %q = %d, want 202", key, rec.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/news", strings.NewReader(`{"severity":"severe","headline":"x"}`))
+	req.Header.Set("Authorization", "Bearer neither-of-them")
+	rec := httptest.NewRecorder()
+	inst.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("unknown key = %d, want 401", rec.Code)
+	}
+	if c := inst.Counters(); c.AuthFailed != 1 || c.Accepted != 2 {
+		t.Errorf("counters = %+v, want accepted=2 auth_failed=1", c)
+	}
+}
+
+// TestAllowedCIDRs pins the optional source allowlist: matching sources
+// pass, others get 403 with the forbidden counter.
+func TestAllowedCIDRs(t *testing.T) {
+	pub := &fakePublisher{connected: true}
+	inst := testInstance(t, pub)
+	inst.cfg.AllowedCIDRs = []string{"192.0.2.0/24", "2001:db8::1"}
+	inst.ensureInit()
+
+	allowed := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/news", strings.NewReader(`{"severity":"severe","headline":"x"}`))
+	allowed.RemoteAddr = "192.0.2.7:5555"
+	allowed.Header.Set("Authorization", "Bearer test-key-1234567890abcdef")
+	rec := httptest.NewRecorder()
+	inst.ServeHTTP(rec, allowed)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("allowed source = %d, want 202", rec.Code)
+	}
+
+	blocked := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/news", strings.NewReader(`{"severity":"severe","headline":"x"}`))
+	blocked.RemoteAddr = "198.51.100.9:5555"
+	blocked.Header.Set("Authorization", "Bearer test-key-1234567890abcdef")
+	rec = httptest.NewRecorder()
+	inst.ServeHTTP(rec, blocked)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("blocked source = %d, want 403", rec.Code)
+	}
+	if c := inst.Counters(); c.Forbidden != 1 {
+		t.Errorf("counters = %+v, want forbidden=1", c)
+	}
+}
+
+// TestRateLimit pins the token bucket: the third request inside the
+// window is rejected with 429 + Retry-After and counted.
+func TestRateLimit(t *testing.T) {
+	pub := &fakePublisher{connected: true}
+	inst := testInstance(t, pub)
+	inst.cfg.RateLimitPerMinute = 2
+	inst.ensureInit()
+
+	for i := 0; i < 2; i++ {
+		if rec := post(t, inst, `{"severity":"severe","headline":"x"}`); rec.Code != http.StatusAccepted {
+			t.Fatalf("request %d = %d, want 202", i+1, rec.Code)
+		}
+	}
+	rec := post(t, inst, `{"severity":"severe","headline":"x"}`)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("third request = %d, want 429", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("429 response missing Retry-After header")
+	}
+	if c := inst.Counters(); c.Accepted != 2 || c.RateLimited != 1 {
+		t.Errorf("counters = %+v, want accepted=2 rate_limited=1", c)
+	}
+}
+
+// TestRateLimitUnlimited pins the negative-rate escape hatch.
+func TestRateLimitUnlimited(t *testing.T) {
+	pub := &fakePublisher{connected: true}
+	inst := testInstance(t, pub)
+	inst.cfg.RateLimitPerMinute = -1
+	inst.ensureInit()
+	for i := 0; i < 200; i++ {
+		if rec := post(t, inst, `{"severity":"severe","headline":"x"}`); rec.Code != http.StatusAccepted {
+			t.Fatalf("request %d = %d, want 202 with limiting disabled", i+1, rec.Code)
+		}
+	}
+}
+
+// TestRequestID pins the audit/response request id: generated when absent,
+// echoed when the client supplies one.
+func TestRequestID(t *testing.T) {
+	pub := &fakePublisher{connected: true}
+	inst := testInstance(t, pub)
+
+	rec := post(t, inst, `{"severity":"severe","headline":"x"}`)
+	if rec.Header().Get("X-Request-ID") == "" {
+		t.Error("response missing generated X-Request-ID")
+	}
+	if !strings.Contains(rec.Body.String(), "request_id") {
+		t.Errorf("accepted body missing request id: %s", rec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/news", strings.NewReader(`{"severity":"severe","headline":"x"}`))
+	req.Header.Set("Authorization", "Bearer test-key-1234567890abcdef")
+	req.Header.Set("X-Request-ID", "scraper-run-42")
+	rec = httptest.NewRecorder()
+	inst.ServeHTTP(rec, req)
+	if got := rec.Header().Get("X-Request-ID"); got != "scraper-run-42" {
+		t.Errorf("X-Request-ID = %q, want echoed client value", got)
+	}
+}
+
+// TestInvalidCIDRRejectedAtNew pins the fail-at-startup contract.
+func TestInvalidCIDRRejectedAtNew(t *testing.T) {
+	_, err := New(config.IngestHTTP{
+		ID: "news", APIKey: "supersecret-key-123",
+		AllowedCIDRs: []string{"not-a-cidr"},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "not-a-cidr") {
+		t.Fatalf("New with bad CIDR = %v, want rejection", err)
+	}
+}
+
+// TestPreviousKeyFile pins the file-based rotation key.
+func TestPreviousKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/prev.key"
+	if err := os.WriteFile(path, []byte("previous-key-1234567890abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inst, err := New(config.IngestHTTP{
+		ID: "news", APIKey: "current-key-1234567890ab",
+		PreviousKeyFile: path,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.client = &fakePublisher{connected: true}
+	inst.started.Store(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/news", strings.NewReader(`{"severity":"severe","headline":"x"}`))
+	req.Header.Set("Authorization", "Bearer previous-key-1234567890abc")
+	rec := httptest.NewRecorder()
+	inst.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("previous key from file = %d, want 202", rec.Code)
 	}
 }

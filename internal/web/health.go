@@ -4,12 +4,23 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
+
+// ingestProbe is the optional surface a public ingest endpoint exposes to
+// the health page (satisfied by *ingesthttp.Instance).
+type ingestProbe interface {
+	ID() string
+	Counters() ingesthttp.Counters
+	Connected() bool
+	Started() bool
+}
 
 // dbPinger is the optional storage surface the health page needs for the
 // DB row (satisfied by *sqlite.Store; fakes may skip it).
@@ -44,6 +55,7 @@ type healthView struct {
 	Sources []healthRow
 	MQTT    []healthRow
 	Actions []healthRow
+	Ingest  []healthRow
 	DB      healthRow
 	Queue   healthRow
 	Pending healthRow
@@ -166,6 +178,33 @@ func (s *Server) buildHealthView() healthView {
 			row.Detail = as.Reason
 		}
 		v.Actions = append(v.Actions, row)
+	}
+
+	// Public HTTP ingest endpoints.
+	var ingestIDs []string
+	for id := range s.ingest {
+		ingestIDs = append(ingestIDs, id)
+	}
+	sort.Strings(ingestIDs)
+	for _, id := range ingestIDs {
+		probe, ok := s.ingest[id].(ingestProbe)
+		if !ok {
+			continue
+		}
+		row := healthRow{Name: id + " (ingest)"}
+		c := probe.Counters()
+		row.Detail = fmt.Sprintf("accepted=%d rejected=%d auth_failed=%d rate_limited=%d forbidden=%d",
+			c.Accepted, c.Rejected, c.AuthFailed, c.RateLimited, c.Forbidden)
+		switch {
+		case probe.Connected():
+			row.BadgeClass, row.BadgeText = "ok", "OK"
+		case probe.Started():
+			row.BadgeClass, row.BadgeText = "bad", "NO BROKER"
+			bad = true
+		default:
+			row.BadgeClass, row.BadgeText = "muted", "not started"
+		}
+		v.Ingest = append(v.Ingest, row)
 	}
 
 	// Database.

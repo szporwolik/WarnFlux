@@ -326,6 +326,28 @@ ingest_http:
 	if got.Broker != "" || got.TopicPrefix != "" || got.ClientID != "warnflux-ingest-news" {
 		t.Errorf("minimal instance = %+v, want empty broker/prefix and default client id", got)
 	}
+
+	// Hardening options map through unchanged.
+	cfg, err = Load(writeTempConfig(t, `
+ingest_http:
+  - id: news
+    enabled: true
+    api_key: "supersecret-key-123"
+    previous_key: "old-key-123"
+    allowed_cidrs: ["192.0.2.0/24", "2001:db8::1"]
+    rate_limit_per_minute: 30
+`))
+	if err != nil {
+		t.Fatalf("Load hardened: %v", err)
+	}
+	got = cfg.IngestHTTP[0]
+	if got.PreviousKey != "old-key-123" || got.RateLimitPerMinute != 30 ||
+		len(got.AllowedCIDRs) != 2 || got.AllowedCIDRs[0] != "192.0.2.0/24" {
+		t.Errorf("hardened instance = %+v", got)
+	}
+	if got.RateLimitPerMinute != 30 {
+		t.Errorf("rate limit = %d, want 30", got.RateLimitPerMinute)
+	}
 }
 
 func TestLoadIngestHTTPValidation(t *testing.T) {

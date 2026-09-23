@@ -163,16 +163,26 @@ type Storage struct {
 // output (the first enabled outputs[].type=mqtt), so all plugins push to
 // one main broker by default. ClientID defaults to warnflux-ingest-<id>.
 type IngestHTTP struct {
-	ID           string
-	Enabled      bool
-	APIKey       string
-	APIKeyFile   string
-	Broker       string
-	ClientID     string
-	Username     string
-	Password     string
-	PasswordFile string
-	TopicPrefix  string
+	ID         string
+	Enabled    bool
+	APIKey     string
+	APIKeyFile string
+	// PreviousKey is the outgoing key during rotation: both keys are
+	// accepted until the previous one is removed from the configuration.
+	PreviousKey     string
+	PreviousKeyFile string
+	// AllowedCIDRs optionally restricts the endpoint to specific source
+	// networks (CIDR or single IP). Empty = open to any address.
+	AllowedCIDRs []string
+	// RateLimitPerMinute bounds accepted requests per endpoint; 0 falls
+	// back to the default, a negative value disables the limit.
+	RateLimitPerMinute int
+	Broker             string
+	ClientID           string
+	Username           string
+	Password           string
+	PasswordFile       string
+	TopicPrefix        string
 }
 
 // Dispatch holds the canonical dispatch ingress and the MQTT receiver
@@ -295,16 +305,20 @@ type fileConfig struct {
 }
 
 type fileIngestHTTP struct {
-	ID           string `yaml:"id"`
-	Enabled      bool   `yaml:"enabled"`
-	APIKey       string `yaml:"api_key"`
-	APIKeyFile   string `yaml:"api_key_file"`
-	Broker       string `yaml:"broker"`
-	ClientID     string `yaml:"client_id"`
-	Username     string `yaml:"username"`
-	Password     string `yaml:"password"`
-	PasswordFile string `yaml:"password_file"`
-	TopicPrefix  string `yaml:"topic_prefix"`
+	ID                 string   `yaml:"id"`
+	Enabled            bool     `yaml:"enabled"`
+	APIKey             string   `yaml:"api_key"`
+	APIKeyFile         string   `yaml:"api_key_file"`
+	PreviousKey        string   `yaml:"previous_key"`
+	PreviousKeyFile    string   `yaml:"previous_key_file"`
+	AllowedCIDRs       []string `yaml:"allowed_cidrs"`
+	RateLimitPerMinute *int     `yaml:"rate_limit_per_minute"`
+	Broker             string   `yaml:"broker"`
+	ClientID           string   `yaml:"client_id"`
+	Username           string   `yaml:"username"`
+	Password           string   `yaml:"password"`
+	PasswordFile       string   `yaml:"password_file"`
+	TopicPrefix        string   `yaml:"topic_prefix"`
 }
 
 type fileDispatch struct {
@@ -692,16 +706,23 @@ func (f fileConfig) toConfig() Config {
 	cfg.IngestHTTP = make([]IngestHTTP, 0, len(f.IngestHTTP))
 	for _, ing := range f.IngestHTTP {
 		inst := IngestHTTP{
-			ID:           strings.TrimSpace(ing.ID),
-			Enabled:      ing.Enabled,
-			APIKey:       strings.TrimSpace(ing.APIKey),
-			APIKeyFile:   strings.TrimSpace(ing.APIKeyFile),
-			Broker:       strings.TrimSpace(ing.Broker),
-			ClientID:     strings.TrimSpace(ing.ClientID),
-			Username:     strings.TrimSpace(ing.Username),
-			Password:     ing.Password,
-			PasswordFile: strings.TrimSpace(ing.PasswordFile),
-			TopicPrefix:  strings.TrimSpace(ing.TopicPrefix),
+			ID:                 strings.TrimSpace(ing.ID),
+			Enabled:            ing.Enabled,
+			APIKey:             strings.TrimSpace(ing.APIKey),
+			APIKeyFile:         strings.TrimSpace(ing.APIKeyFile),
+			PreviousKey:        strings.TrimSpace(ing.PreviousKey),
+			PreviousKeyFile:    strings.TrimSpace(ing.PreviousKeyFile),
+			AllowedCIDRs:       append([]string(nil), ing.AllowedCIDRs...),
+			RateLimitPerMinute: 0,
+			Broker:             strings.TrimSpace(ing.Broker),
+			ClientID:           strings.TrimSpace(ing.ClientID),
+			Username:           strings.TrimSpace(ing.Username),
+			Password:           ing.Password,
+			PasswordFile:       strings.TrimSpace(ing.PasswordFile),
+			TopicPrefix:        strings.TrimSpace(ing.TopicPrefix),
+		}
+		if ing.RateLimitPerMinute != nil {
+			inst.RateLimitPerMinute = *ing.RateLimitPerMinute
 		}
 		if inst.ClientID == "" {
 			inst.ClientID = "warnflux-ingest-" + inst.ID

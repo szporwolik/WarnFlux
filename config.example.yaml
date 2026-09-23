@@ -336,6 +336,20 @@ ingest_http:
     api_key: "changeme-secret-key-000000"
     api_key_file: ""
 
+    # Key rotation: previous_key is accepted alongside api_key until it
+    # is removed from the configuration (scrapers can be migrated to the
+    # new key first). Same file alternative: previous_key_file.
+    previous_key: ""
+    previous_key_file: ""
+
+    # Optional source allowlist: CIDR blocks or single IPs. Empty = any
+    # source address. Requests from other addresses get 403.
+    allowed_cidrs: []
+
+    # Requests per minute per endpoint (token bucket, one minute burst).
+    # 0 = default (60); negative = unlimited. 429 carries a Retry-After.
+    rate_limit_per_minute: 0
+
     # Broker settings are OPTIONAL: when empty, the endpoint inherits the
     # broker, credentials and topic prefix of the primary MQTT output
     # (the first enabled output with type: mqtt) — all plugins push to

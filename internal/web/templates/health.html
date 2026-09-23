@@ -53,6 +53,17 @@
     </div>{{else}}<p class="empty">No actions configured</p>{{end}}
   </div>
 
+  {{if .Ingest}}
+  <div class="health-group">
+    <h3>Ingest HTTP</h3>
+    {{range .Ingest}}<div class="health-row">
+      <span class="health-name"><strong>{{.Name}}</strong></span>
+      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
+      <span class="health-detail">{{.Detail}}</span>
+    </div>{{end}}
+  </div>
+  {{end}}
+
   <div class="health-group">
     <h3>Infrastructure</h3>
     <div class="health-row">

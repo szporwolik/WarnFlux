@@ -22,6 +22,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/trail"
@@ -384,6 +385,41 @@ func TestHealthFlow(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="health-section"`) || !strings.Contains(body, "Dispatch queue") {
 		t.Errorf("health partial = %s", body)
+	}
+}
+
+// fakeIngestProbe implements the ingestProbe surface for the health page.
+type fakeIngestProbe struct {
+	id        string
+	connected bool
+	started   bool
+	counters  ingesthttp.Counters
+}
+
+func (f *fakeIngestProbe) ID() string                                       { return f.id }
+func (f *fakeIngestProbe) Connected() bool                                  { return f.connected }
+func (f *fakeIngestProbe) Started() bool                                    { return f.started }
+func (f *fakeIngestProbe) Counters() ingesthttp.Counters                    { return f.counters }
+func (f *fakeIngestProbe) ServeHTTP(w http.ResponseWriter, r *http.Request) {}
+
+// TestHealthIngestRow pins the ingest endpoint metrics line.
+func TestHealthIngestRow(t *testing.T) {
+	probe := &fakeIngestProbe{
+		id: "news", connected: true, started: true,
+		counters: ingesthttp.Counters{Accepted: 7, Rejected: 2, AuthFailed: 1, RateLimited: 0},
+	}
+	env := newTestEnvWithIngest(t, map[string]http.Handler{"news": probe})
+
+	env.login()
+	_, html := env.get("/health")
+	for _, want := range []string{
+		">news (ingest)</strong>",
+		">OK</span>",
+		"accepted=7 rejected=2 auth_failed=1 rate_limited=0 forbidden=0",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("health page missing ingest row %q: %s", want, html)
+		}
 	}
 }
 

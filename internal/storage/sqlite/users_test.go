@@ -139,6 +139,81 @@ func TestUserAuthenticate(t *testing.T) {
 	}
 }
 
+// TestUserAPRSCallsigns pins the per-user APRS callsign registry: store,
+// normalize/dedupe, replace, protect and group-recipient collection.
+func TestUserAPRSCallsigns(t *testing.T) {
+	store := newUsersStore(t)
+	if err := store.EnsureAdminUser("admin"); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.CreateUser("alice", "", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Store, normalize and dedupe.
+	if err := store.SetUserAPRS(alice.ID, []string{"sp9moa-16", "SR9KR", " sp9moa-16 "}); err != nil {
+		t.Fatalf("SetUserAPRS: %v", err)
+	}
+	got, err := store.GetUser(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.APRSCallsigns) != 2 || got.APRSCallsigns[0] != "SP9MOA-16" || got.APRSCallsigns[1] != "SR9KR" {
+		t.Fatalf("callsigns = %v, want [SP9MOA-16 SR9KR]", got.APRSCallsigns)
+	}
+
+	// Visible through ListUsers too.
+	users, _, err := store.ListUsers(1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, u := range users {
+		if u.ID == alice.ID {
+			found = len(u.APRSCallsigns) == 2
+		}
+	}
+	if !found {
+		t.Fatalf("ListUsers missing callsigns: %+v", users)
+	}
+
+	// Replace.
+	if err := store.SetUserAPRS(alice.ID, []string{"SP9ABC"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.GetUser(alice.ID)
+	if len(got.APRSCallsigns) != 1 || got.APRSCallsigns[0] != "SP9ABC" {
+		t.Fatalf("after replace = %v", got.APRSCallsigns)
+	}
+
+	// Group recipients collect the member callsigns.
+	if err := store.SetUserGroups(alice.ID, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := store.GroupRecipientAPRS(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0] != "SP9ABC" {
+		t.Fatalf("group aprs recipients = %v", calls)
+	}
+	if calls, err := store.GroupRecipientAPRS(999); err != nil || len(calls) != 0 {
+		t.Fatalf("unknown group = %v, %v", calls, err)
+	}
+
+	// Protected and missing users.
+	if err := store.SetUserAPRS(1, []string{"SP9MOA-16"}); !errors.Is(err, storage.ErrUserProtected) {
+		t.Fatalf("admin SetUserAPRS = %v, want ErrUserProtected", err)
+	}
+	if err := store.SetUserAPRS(999, []string{"SP9MOA-16"}); !errors.Is(err, storage.ErrUserNotFound) {
+		t.Fatalf("missing SetUserAPRS = %v, want ErrUserNotFound", err)
+	}
+}
+
 func TestUsersPagination(t *testing.T) {
 	clock := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	store, _, err := Open(filepath.Join(t.TempDir(), "users.db"), WithClock(func() time.Time { return clock }))

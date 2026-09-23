@@ -81,6 +81,10 @@ func (s *Store) ListUsers(page, perPage int) ([]storage.User, int, error) {
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("iterate users: %w", err)
 	}
+	out, err = s.attachAPRS(out)
+	if err != nil {
+		return nil, 0, err
+	}
 	return out, total, nil
 }
 
@@ -316,6 +320,88 @@ func (s *Store) usernameTaken(username string, excludeID int64) (bool, error) {
 	return true, nil
 }
 
+// SetUserAPRS replaces the user's registered APRS callsigns (uppercase,
+// de-duplicated). The admin row reports storage.ErrUserProtected.
+func (s *Store) SetUserAPRS(userID int64, callsigns []string) error {
+	var isAdmin int
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	if isAdmin != 0 {
+		return storage.ErrUserProtected
+	}
+	seen := make(map[string]bool, len(callsigns))
+	var clean []string
+	for _, c := range callsigns {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		clean = append(clean, c)
+	}
+	now := s.now().UnixMilli()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin aprs update: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM user_aprs WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("clear user %d aprs callsigns: %w", userID, err)
+	}
+	for _, c := range clean {
+		if _, err := tx.Exec(`INSERT INTO user_aprs (user_id, callsign, created_at_ms) VALUES (?, ?, ?)`,
+			userID, c, now); err != nil {
+			return fmt.Errorf("insert user %d aprs callsign %q: %w", userID, c, err)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE users SET updated_at_ms = ? WHERE id = ?`, now, userID); err != nil {
+		return fmt.Errorf("touch user %d: %w", userID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit aprs update: %w", err)
+	}
+	return nil
+}
+
+// attachAPRS fills APRSCallsigns on the given users with one grouped query
+// and returns the updated slice (the input elements are copies).
+func (s *Store) attachAPRS(users []storage.User) ([]storage.User, error) {
+	if len(users) == 0 {
+		return users, nil
+	}
+	ids := make([]any, 0, len(users))
+	byID := make(map[int64]int, len(users))
+	for i, u := range users {
+		ids = append(ids, u.ID)
+		byID[u.ID] = i
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	rows, err := s.db.Query(`SELECT user_id, callsign FROM user_aprs WHERE user_id IN (`+ph+`) ORDER BY callsign COLLATE NOCASE ASC`, ids...)
+	if err != nil {
+		return nil, fmt.Errorf("list user aprs callsigns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userID int64
+		var callsign string
+		if err := rows.Scan(&userID, &callsign); err != nil {
+			return nil, fmt.Errorf("scan user aprs callsign: %w", err)
+		}
+		if i, ok := byID[userID]; ok {
+			users[i].APRSCallsigns = append(users[i].APRSCallsigns, callsign)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 // userByID loads one user by ID (used after inserts/updates).
 func (s *Store) userByID(id int64) (storage.User, error) {
 	row := s.db.QueryRow(`SELECT `+userColumns+` FROM users WHERE id = ?`, id)
@@ -323,7 +409,11 @@ func (s *Store) userByID(id int64) (storage.User, error) {
 	if err != nil {
 		return storage.User{}, err
 	}
-	return u, nil
+	users, err := s.attachAPRS([]storage.User{u})
+	if err != nil {
+		return storage.User{}, err
+	}
+	return users[0], nil
 }
 
 // scanUser reads one row via the given scanner (Row or Rows).

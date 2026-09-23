@@ -74,14 +74,17 @@ func (a *aprsAction) Name() string { return Type }
 
 func (a *aprsAction) Close(context.Context) error { return nil }
 
-// Execute sends one APRS message per configured recipient. The hub routes
-// through the first ready transmitter; failures are reported per-recipient
-// and the first error is returned.
+// Execute sends one APRS message per recipient: the configured callsigns
+// plus the matched group's members' registered APRS callsigns (from the
+// rule engine, de-duplicated). The hub routes through the first ready
+// transmitter; failures are reported per-recipient and the first error is
+// returned.
 func (a *aprsAction) Execute(ctx context.Context, req action.ActionRequest) error {
 	text := a.messageText(req)
+	recipients := a.recipients(req)
 	var firstErr error
 	failed := 0
-	for _, callsign := range a.cfg.Callsigns {
+	for _, callsign := range recipients {
 		if err := a.hub.SendMessage(ctx, callsign, text); err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -90,9 +93,32 @@ func (a *aprsAction) Execute(ctx context.Context, req action.ActionRequest) erro
 		}
 	}
 	if firstErr != nil {
-		return fmt.Errorf("aprs: %d of %d messages failed (first: %w)", failed, len(a.cfg.Callsigns), firstErr)
+		return fmt.Errorf("aprs: %d of %d messages failed (first: %w)", failed, len(recipients), firstErr)
 	}
 	return nil
+}
+
+// recipients merges the configured callsigns with the group members'
+// registered callsigns (normalized, de-duplicated, bounded).
+func (a *aprsAction) recipients(req action.ActionRequest) []string {
+	seen := make(map[string]bool, len(a.cfg.Callsigns)+len(req.APRSCallsigns))
+	var out []string
+	add := func(callsign string) bool {
+		callsign = aprs.NormalizeCallsign(callsign)
+		if callsign == "" || seen[callsign] {
+			return false
+		}
+		seen[callsign] = true
+		out = append(out, callsign)
+		return true
+	}
+	for _, cs := range a.cfg.Callsigns {
+		add(cs)
+	}
+	for _, cs := range req.APRSCallsigns {
+		add(cs)
+	}
+	return out
 }
 
 // messageText renders the notification from the canonical event metadata.

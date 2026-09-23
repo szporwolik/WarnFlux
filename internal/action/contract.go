@@ -51,6 +51,10 @@ type ActionRequest struct {
 	// is populated by the rule engine when the matched group has members
 	// with contact data; actions treat it as read-only.
 	Bcc []string
+	// APRSCallsigns carries the matched group's members' registered APRS
+	// callsigns (with -SSID). It is populated by the rule engine and is
+	// used by APRS-capable actions to address outbound messages.
+	APRSCallsigns []string
 	// App identifies the running application (version, domain, repo);
 	// populated by the rule engine.
 	App AppInfo

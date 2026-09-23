@@ -187,6 +187,58 @@ func (f *fakeUsers) DeleteUser(id int64) error {
 	return storage.ErrUserNotFound
 }
 
+// SetUserAPRS replaces the user's registered APRS callsigns (uppercase,
+// de-duplicated, sorted).
+func (f *fakeUsers) SetUserAPRS(userID int64, callsigns []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := make(map[string]bool, len(callsigns))
+	var clean []string
+	for _, c := range callsigns {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		clean = append(clean, c)
+	}
+	sort.Strings(clean)
+	for i := range f.rows {
+		if f.rows[i].ID != userID {
+			continue
+		}
+		if f.rows[i].IsAdmin {
+			return storage.ErrUserProtected
+		}
+		f.rows[i].APRSCallsigns = clean
+		f.rows[i].UpdatedAt = time.Now()
+		return nil
+	}
+	return storage.ErrUserNotFound
+}
+
+// GroupRecipientAPRS returns the distinct APRS callsigns of the group's
+// members, sorted.
+func (f *fakeUsers) GroupRecipientAPRS(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := make(map[string]bool)
+	var out []string
+	for _, u := range f.rows {
+		if !f.membership[u.ID][groupID] {
+			continue
+		}
+		for _, c := range u.APRSCallsigns {
+			if !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func sortUsers(rows []storage.User) {
 	for i := 1; i < len(rows); i++ {
 		for j := i; j > 0 && userBefore(rows[j], rows[j-1]); j-- {
@@ -448,6 +500,30 @@ func bodyString(resp *http.Response) string {
 	return string(b)
 }
 
+func TestUsersAPRSCallsignValidation(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	csrf := env.csrfFromPage("/users")
+
+	// Malformed callsign rejected.
+	resp, html := env.postForm("/users", url.Values{
+		"csrf": {csrf}, "username": {"bad-cs"},
+		"aprs_callsigns": {"SP9MOA-16 not-a-call"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "not a valid APRS callsign") {
+		t.Fatalf("invalid callsign = %d %q", resp.StatusCode, html)
+	}
+
+	// Too many callsigns rejected.
+	resp, _ = env.postForm("/users", url.Values{
+		"csrf": {csrf}, "username": {"too-many"},
+		"aprs_callsigns": {"SP1AAA SP1BBB SP1CCC SP1DDD SP1EEE SP1FFF SP1GGG SP1HHH SP1III"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("too many callsigns = %d, want 422", resp.StatusCode)
+	}
+}
+
 func TestUsersPageListsAdminReadOnly(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()
@@ -476,6 +552,7 @@ func TestUsersCRUDFlow(t *testing.T) {
 	resp, _ := env.postForm("/users", url.Values{
 		"csrf": {csrf}, "username": {"alice"}, "phone": {"+48 600 100 200"},
 		"email": {"alice@example.com"}, "discord": {"alice#1234"},
+		"aprs_callsigns": {"sp9moa-16, SR9KR"},
 	})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/users" {
 		t.Fatalf("create = %d %q, want redirect to /users", resp.StatusCode, resp.Header.Get("Location"))
@@ -483,6 +560,17 @@ func TestUsersCRUDFlow(t *testing.T) {
 	_, html := env.get("/users")
 	if !strings.Contains(html, "alice") || !strings.Contains(html, "alice@example.com") {
 		t.Fatalf("created user not listed: %s", html)
+	}
+	for _, want := range []string{"SP9MOA-16", "SR9KR"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("APRS callsign %s not listed for the user: %s", want, html)
+		}
+	}
+
+	// Edit prefill carries the callsigns back into the form.
+	_, html = env.get("/users?edit=2")
+	if !strings.Contains(html, `value="SP9MOA-16 SR9KR"`) {
+		t.Errorf("edit prefill missing callsigns: %s", html)
 	}
 
 	// Duplicate username rejected.

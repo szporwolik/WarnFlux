@@ -21,6 +21,7 @@ type fakeStore struct {
 	mu      sync.Mutex
 	rules   []storage.GroupRouting
 	bcc     map[int64][]string
+	aprsBcc map[int64][]string
 	claimed map[string]bool // group|action|dedupKey -> already delivered
 	err     error
 }
@@ -40,6 +41,12 @@ func (f *fakeStore) GroupRecipientEmails(groupID int64) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.bcc[groupID]...), f.err
+}
+
+func (f *fakeStore) GroupRecipientAPRS(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.aprsBcc[groupID]...), f.err
 }
 
 func (f *fakeStore) ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error) {
@@ -84,10 +91,11 @@ func asnSrc(source, id, severity string) storage.ChannelAssignment {
 }
 
 type fakeActions struct {
-	mu   sync.Mutex
-	got  map[string][]string // actionID -> event keys
-	bccs [][]string          // one Bcc list per submission, in order
-	err  error
+	mu    sync.Mutex
+	got   map[string][]string // actionID -> event keys
+	bccs  [][]string          // one Bcc list per submission, in order
+	aprss [][]string          // one APRSCallsigns list per submission, in order
+	err   error
 }
 
 func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
@@ -98,6 +106,7 @@ func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
 	}
 	f.got[id] = append(f.got[id], req.Event.Hazard.Key)
 	f.bccs = append(f.bccs, append([]string(nil), req.Bcc...))
+	f.aprss = append(f.aprss, append([]string(nil), req.APRSCallsigns...))
 	return f.err
 }
 
@@ -420,6 +429,34 @@ func TestEnginePassesGroupRecipientsAsBcc(t *testing.T) {
 	}
 	if len(memberEmails) != 2 || memberEmails[0] != "a@example.com" || memberEmails[1] != "b@example.com" {
 		t.Errorf("Bcc across submissions = %v, want [a@example.com b@example.com]", memberEmails)
+	}
+}
+
+func TestEnginePassesGroupAPRSCallsigns(t *testing.T) {
+	store := &fakeStore{
+		rules: []storage.GroupRouting{
+			{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("aprs", "unknown")}},
+		},
+		aprsBcc: map[int64][]string{
+			1: {"SP9MOA-16", "SR9KR"},
+		},
+	}
+	acts := &fakeActions{}
+	_, feed := startEngine(t, store, acts)
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.aprss) == 1
+	}, "aprs action fired")
+
+	acts.mu.Lock()
+	callsigns := append([]string(nil), acts.aprss[0]...)
+	acts.mu.Unlock()
+	if len(callsigns) != 2 || callsigns[0] != "SP9MOA-16" || callsigns[1] != "SR9KR" {
+		t.Errorf("APRSCallsigns = %v, want [SP9MOA-16 SR9KR]", callsigns)
 	}
 }
 

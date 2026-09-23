@@ -26,6 +26,7 @@
           <option value="" {{if eq .Form.Role ""}}selected{{end}}>member (no sign-in)</option>
           <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose only)</option>
         </select>
+        <input type="text" name="aprs_callsigns" placeholder="APRS callsigns (e.g. SP9MOA-16 SR9KR)" value="{{.Form.APRSCallsigns}}" maxlength="256">
         <input type="password" name="password" placeholder="{{if .EditID}}new password (optional){{else}}password (required for emcom){{end}}" maxlength="72" autocomplete="new-password">
         <button type="submit" class="btn-primary btn-add">
           {{if .EditID}}<svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Save{{else}}<svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>Add user{{end}}
@@ -36,7 +37,7 @@
       <div class="table-wrap">
         <table class="plugins">
           <thead>
-            <tr><th>Username</th><th>Phone</th><th>Email</th><th>Discord</th><th>Groups</th><th>Role</th><th>Updated</th><th></th></tr>
+            <tr><th>Username</th><th>Phone</th><th>Email</th><th>Discord</th><th>APRS</th><th>Groups</th><th>Role</th><th>Updated</th><th></th></tr>
           </thead>
           <tbody>
             {{range .Users}}
@@ -46,6 +47,7 @@
               <td>{{if .Phone}}{{.Phone}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td>{{if .Discord}}{{.Discord}}{{else}}<span class="muted">—</span>{{end}}</td>
+              <td>{{range .APRSCallsigns}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
               <td>
                 <div class="groups-cell">
                 {{range $u.GroupNames}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}

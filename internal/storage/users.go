@@ -43,15 +43,20 @@ var (
 // a non-empty role (and a password set) can sign in; the admin tier
 // always uses the configured auth account.
 type User struct {
-	ID        int64
-	Username  string
-	Phone     string
-	Email     string
-	Discord   string
-	IsAdmin   bool
-	Role      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID       int64
+	Username string
+	Phone    string
+	Email    string
+	Discord  string
+	IsAdmin  bool
+	Role     string
+	// APRSCallsigns are the ham radio callsigns (with optional -SSID)
+	// registered for this user, normalized uppercase, sorted. The routing
+	// engine hands them to APRS-capable actions so notifications reach
+	// the right operators.
+	APRSCallsigns []string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // Group is one notification recipient group. Members is the number of
@@ -126,6 +131,10 @@ type GroupStore interface {
 	// of the group's members, sorted. The rule engine hands them to
 	// contact actions (e.g. smtp Bcc).
 	GroupRecipientEmails(groupID int64) ([]string, error)
+	// GroupRecipientAPRS returns the distinct non-empty APRS callsigns
+	// registered for the group's members, sorted. The rule engine hands
+	// them to APRS-capable actions.
+	GroupRecipientAPRS(groupID int64) ([]string, error)
 }
 
 // DirectoryStore combines the user and group administration stores; the
@@ -157,6 +166,10 @@ type UserStore interface {
 	UpdateUser(id int64, username, phone, email, discord, role, password string) (User, error)
 	// DeleteUser removes a regular user.
 	DeleteUser(id int64) error
+	// SetUserAPRS replaces the user's registered APRS callsigns (with
+	// optional -SSID). The store normalizes (uppercase) and de-duplicates
+	// them; a missing or protected user reports the usual errors.
+	SetUserAPRS(userID int64, callsigns []string) error
 	// Authenticate verifies a directory user's credentials and returns
 	// the user. Unknown usernames, users without a password and wrong
 	// passwords all report storage.ErrBadCredentials.

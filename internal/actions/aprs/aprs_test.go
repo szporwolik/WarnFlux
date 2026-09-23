@@ -123,6 +123,40 @@ func TestExecuteSendsToAllRecipients(t *testing.T) {
 	}
 }
 
+func TestExecuteSendsToGroupMemberCallsigns(t *testing.T) {
+	hub := testHub(t)
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+
+	p, err := New(configNode(t, map[string]any{
+		"callsigns": []string{"SR9KR"},
+	}), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A member callsign duplicates the configured one and must be deduped.
+	req := action.ActionRequest{
+		Event: dispatch.Event{
+			Kind: dispatch.EventHazardTransition,
+			Hazard: &dispatch.HazardTransition{
+				Hazard: dispatch.Hazard{Severity: "severe", Event: "Burza", Headline: "x"},
+			},
+		},
+		APRSCallsigns: []string{"sp9moa-16", "SR9KR"},
+	}
+	if err := p.Execute(context.Background(), req); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(tx.sent) != 2 {
+		t.Fatalf("sent = %d messages, want 2 (dedup of SR9KR)", len(tx.sent))
+	}
+	to := []string{tx.sent[0][0], tx.sent[1][0]}
+	if to[0] != "SR9KR" || to[1] != "SP9MOA-16" {
+		t.Errorf("recipients = %v, want [SR9KR SP9MOA-16]", to)
+	}
+}
+
 func TestExecuteNoTransmitter(t *testing.T) {
 	hub := testHub(t)
 	p, err := New(configNode(t, map[string]any{

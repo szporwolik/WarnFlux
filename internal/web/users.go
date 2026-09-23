@@ -2,12 +2,14 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -20,16 +22,17 @@ var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // userRow is one users-table row for the template.
 type userRow struct {
-	ID         int64
-	Username   string
-	Phone      string
-	Email      string
-	Discord    string
-	IsAdmin    bool
-	Role       string
-	GroupNames []string
-	GroupSet   map[int64]bool
-	UpdatedAt  time.Time
+	ID            int64
+	Username      string
+	Phone         string
+	Email         string
+	Discord       string
+	IsAdmin       bool
+	Role          string
+	GroupNames    []string
+	GroupSet      map[int64]bool
+	APRSCallsigns []string
+	UpdatedAt     time.Time
 }
 
 // userForm carries the add/edit form values (also used to re-render the
@@ -41,6 +44,9 @@ type userForm struct {
 	Discord  string
 	Role     string
 	Password string
+	// APRSCallsigns is the free-text APRS callsign list (space or comma
+	// separated, each with optional -SSID).
+	APRSCallsigns string
 }
 
 // usersView is the full /users page model.
@@ -90,7 +96,14 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
 			if u, err := s.users.GetUser(id); err == nil {
 				view.EditID = u.ID
-				view.Form = userForm{Username: u.Username, Phone: u.Phone, Email: u.Email, Discord: u.Discord, Role: u.Role}
+				view.Form = userForm{
+					Username:      u.Username,
+					Phone:         u.Phone,
+					Email:         u.Email,
+					Discord:       u.Discord,
+					Role:          u.Role,
+					APRSCallsigns: strings.Join(u.APRSCallsigns, " "),
+				}
 			}
 		}
 	}
@@ -108,12 +121,13 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	form := userForm{
-		Username: strings.TrimSpace(r.PostFormValue("username")),
-		Phone:    strings.TrimSpace(r.PostFormValue("phone")),
-		Email:    strings.TrimSpace(r.PostFormValue("email")),
-		Discord:  strings.TrimSpace(r.PostFormValue("discord")),
-		Role:     strings.ToLower(strings.TrimSpace(r.PostFormValue("role"))),
-		Password: r.PostFormValue("password"),
+		Username:      strings.TrimSpace(r.PostFormValue("username")),
+		Phone:         strings.TrimSpace(r.PostFormValue("phone")),
+		Email:         strings.TrimSpace(r.PostFormValue("email")),
+		Discord:       strings.TrimSpace(r.PostFormValue("discord")),
+		Role:          strings.ToLower(strings.TrimSpace(r.PostFormValue("role"))),
+		Password:      r.PostFormValue("password"),
+		APRSCallsigns: strings.TrimSpace(r.PostFormValue("aprs_callsigns")),
 	}
 	editID := int64(0)
 	if raw := strings.TrimSpace(r.PostFormValue("edit_id")); raw != "" {
@@ -131,12 +145,22 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if editID == 0 {
-		if _, err := s.users.CreateUser(form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password); err != nil {
+		u, err := s.users.CreateUser(form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password)
+		if err != nil {
+			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
+			return
+		}
+		if err := s.users.SetUserAPRS(u.ID, parseAPRSCallsigns(form.APRSCallsigns)); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
 			return
 		}
 	} else {
-		if _, err := s.users.UpdateUser(editID, form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password); err != nil {
+		u, err := s.users.UpdateUser(editID, form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password)
+		if err != nil {
+			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
+			return
+		}
+		if err := s.users.SetUserAPRS(u.ID, parseAPRSCallsigns(form.APRSCallsigns)); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
 			return
 		}
@@ -245,16 +269,17 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 			}
 		}
 		rows = append(rows, userRow{
-			ID:         u.ID,
-			Username:   u.Username,
-			Phone:      u.Phone,
-			Email:      u.Email,
-			Discord:    u.Discord,
-			IsAdmin:    u.IsAdmin,
-			Role:       u.Role,
-			GroupNames: names,
-			GroupSet:   set,
-			UpdatedAt:  u.UpdatedAt,
+			ID:            u.ID,
+			Username:      u.Username,
+			Phone:         u.Phone,
+			Email:         u.Email,
+			Discord:       u.Discord,
+			IsAdmin:       u.IsAdmin,
+			Role:          u.Role,
+			GroupNames:    names,
+			GroupSet:      set,
+			APRSCallsigns: u.APRSCallsigns,
+			UpdatedAt:     u.UpdatedAt,
 		})
 	}
 	return usersView{
@@ -321,7 +346,47 @@ func validateUserForm(f userForm) string {
 	if len(f.Discord) > 128 || strings.ContainsAny(f.Discord, "\r\n") {
 		return "discord must be at most 128 characters"
 	}
+	if callsigns, msg := validateAPRSCallsigns(f.APRSCallsigns); msg != "" {
+		_ = callsigns
+		return msg
+	}
 	return ""
+}
+
+// maxAPRSCallsignsPerUser bounds the registered callsign list per user.
+const maxAPRSCallsignsPerUser = 8
+
+// parseAPRSCallsigns normalizes the free-text list (space/comma
+// separated) into uppercase de-duplicated callsigns.
+func parseAPRSCallsigns(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ',' || r == ';' || r == '\n'
+	})
+	seen := make(map[string]bool, len(fields))
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		c := aprs.NormalizeCallsign(f)
+		if c != "" && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// validateAPRSCallsigns returns a user-facing problem when the raw list
+// contains too many or malformed callsigns.
+func validateAPRSCallsigns(raw string) ([]string, string) {
+	callsigns := parseAPRSCallsigns(raw)
+	if len(callsigns) > maxAPRSCallsignsPerUser {
+		return callsigns, fmt.Sprintf("at most %d APRS callsigns per user", maxAPRSCallsignsPerUser)
+	}
+	for _, c := range callsigns {
+		if !aprs.ValidCallsign(c) {
+			return callsigns, fmt.Sprintf("%q is not a valid APRS callsign (e.g. SP9MOA or SP9MOA-16)", c)
+		}
+	}
+	return callsigns, ""
 }
 
 // userErrorStatus maps storage errors to HTTP statuses.

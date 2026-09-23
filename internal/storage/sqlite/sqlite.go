@@ -373,6 +373,21 @@ ALTER TABLE users ADD COLUMN password_salt TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v14: per-user APRS callsigns (ham radio operators): one
+		// recipient may own several callsigns/SSIDs so routing can
+		// address messages to the right station. Rows cascade away
+		// with the user.
+		SQL: `
+CREATE TABLE user_aprs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        callsign      TEXT NOT NULL COLLATE NOCASE,
+        created_at_ms INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX idx_user_aprs_unique ON user_aprs(user_id, callsign COLLATE NOCASE);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

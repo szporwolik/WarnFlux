@@ -48,6 +48,9 @@ type RuleStore interface {
 	// GroupRecipientEmails returns the group members' contact addresses
 	// (empty list when the group has none).
 	GroupRecipientEmails(groupID int64) ([]string, error)
+	// GroupRecipientAPRS returns the group members' registered APRS
+	// callsigns (empty list when the group has none).
+	GroupRecipientAPRS(groupID int64) ([]string, error)
 	// ClaimActionFire records a delivery claim for (group, action, event)
 	// and reports whether it is new (true) or already recorded (false).
 	ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error)
@@ -81,6 +84,9 @@ type Engine struct {
 	// loaded alongside the rules; only groups with assigned actions are
 	// queried.
 	bcc map[int64][]string
+	// aprsBcc caches each group's members' registered APRS callsigns
+	// (groupID -> callsigns).
+	aprsBcc map[int64][]string
 
 	// Stats counters (atomic).
 	eventsSeen         atomic.Int64
@@ -155,6 +161,7 @@ func (e *Engine) refresh() {
 		return
 	}
 	bcc := make(map[int64][]string)
+	aprsBcc := make(map[int64][]string)
 	for _, rule := range rules {
 		if len(rule.Actions) == 0 {
 			continue
@@ -165,11 +172,19 @@ func (e *Engine) refresh() {
 				"group", rule.Name, "error", err)
 			continue
 		}
+		callsigns, err := e.store.GroupRecipientAPRS(rule.GroupID)
+		if err != nil {
+			e.logger.Warn("routing: aprs recipient load failed",
+				"group", rule.Name, "error", err)
+			continue
+		}
 		bcc[rule.GroupID] = emails
+		aprsBcc[rule.GroupID] = callsigns
 	}
 	e.mu.Lock()
 	e.rules = rules
 	e.bcc = bcc
+	e.aprsBcc = aprsBcc
 	e.mu.Unlock()
 }
 
@@ -214,6 +229,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	e.mu.RLock()
 	rules := e.rules
 	bcc := e.bcc
+	aprsBcc := e.aprsBcc
 	e.mu.RUnlock()
 
 	anyCell := false
@@ -278,11 +294,12 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			e.trail.Add(key, trail.StepRoute,
 				fmt.Sprintf("%s → %s ≥ %s", routeSrc, a.ID, a.MinSeverity), time.Now())
 			req := action.ActionRequest{
-				ID:        fmt.Sprintf("%s/%s", ev.Hazard.Key, a.ID),
-				CreatedAt: time.Now(),
-				Event:     ev,
-				Bcc:       append([]string(nil), bcc[rule.GroupID]...),
-				App:       e.app,
+				ID:            fmt.Sprintf("%s/%s", ev.Hazard.Key, a.ID),
+				CreatedAt:     time.Now(),
+				Event:         ev,
+				Bcc:           append([]string(nil), bcc[rule.GroupID]...),
+				APRSCallsigns: append([]string(nil), aprsBcc[rule.GroupID]...),
+				App:           e.app,
 			}
 			if err := e.actions.Submit(a.ID, req); err != nil {
 				e.actionsFailed.Add(1)

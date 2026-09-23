@@ -1071,6 +1071,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if !strings.Contains(dashHTML, `class="theme-toggle"`) {
 		t.Errorf("dashboard topbar missing theme toggle: %s", dashHTML)
 	}
+	if !strings.Contains(dashHTML, `class="topbar-home"`) || !strings.Contains(dashHTML, `href="/"`) {
+		t.Errorf("dashboard topbar missing public page link: %s", dashHTML)
+	}
 	if !strings.Contains(dashHTML, `<span class="brand-name">WarnFlux Test</span>`) {
 		t.Errorf("dashboard sidebar missing system name: %s", dashHTML)
 	}

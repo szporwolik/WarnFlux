@@ -362,7 +362,8 @@ a:hover { text-decoration: underline; }
 .menu-btn:hover { color: var(--text); background: var(--surface-hi); }
 
 /* ---- theme toggle (sun in dark, moon in light) ---- */
-.theme-toggle {
+.theme-toggle,
+.topbar-home {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -375,7 +376,8 @@ a:hover { text-decoration: underline; }
   cursor: pointer;
   flex: none;
 }
-.theme-toggle:hover { color: var(--text); border-color: var(--focus); }
+.theme-toggle:hover,
+.topbar-home:hover { color: var(--text); border-color: var(--focus); text-decoration: none; }
 .theme-toggle .ico-moon { display: none; }
 html[data-theme="light"] .theme-toggle .ico-sun { display: none; }
 html[data-theme="light"] .theme-toggle .ico-moon { display: block; }

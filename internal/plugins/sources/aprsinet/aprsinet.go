@@ -230,8 +230,9 @@ func (s *Source) session(ctx context.Context) error {
 
 	// Login (APRS-IS handshake): the filter limits the server-side feed
 	// to the configured range; messages addressed to our callsign are
-	// delivered regardless of the filter.
-	login := fmt.Sprintf("user %s pass %s vers WarnFlux-%s filter %s\r\n",
+	// delivered regardless of the filter. aprsc requires the version to
+	// be a separate token after the software name.
+	login := fmt.Sprintf("user %s pass %s vers WarnFlux %s filter %s\r\n",
 		s.login, s.pass, s.hub.Version(), s.filter)
 	if err := writeAll(conn, login, writeTimeout); err != nil {
 		conn.Close()

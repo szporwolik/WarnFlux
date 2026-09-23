@@ -195,7 +195,7 @@ func TestSessionFlow(t *testing.T) {
 	case login := <-serverCh:
 		for _, want := range []string{
 			"user SP9MOA-10 pass 12345",
-			"vers WarnFlux-0.2.1",
+			"vers WarnFlux 0.2.1",
 			"filter r/50.9375/19.8750/60",
 		} {
 			if !strings.Contains(login, want) {

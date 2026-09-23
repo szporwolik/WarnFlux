@@ -874,8 +874,8 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if !strings.Contains(loginHTML, `class="login-sub">Test platform</p>`) {
 		t.Errorf("login page missing header2 subtitle: %s", loginHTML)
 	}
-	if !strings.Contains(loginHTML, `class="footer-tagline">Test tagline</span>`) {
-		t.Errorf("login footer missing tagline: %s", loginHTML)
+	if !strings.Contains(loginHTML, `class="footer-h2">Test platform</h2>`) {
+		t.Errorf("login footer missing header2 lead: %s", loginHTML)
 	}
 	if !strings.Contains(loginHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
 		t.Errorf("login footer missing commit link: %s", loginHTML)
@@ -889,8 +889,11 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if !strings.Contains(dashHTML, "WarnFlux Test") {
 		t.Errorf("dashboard footer missing version line: %s", dashHTML)
 	}
-	if !strings.Contains(dashHTML, `class="footer-tagline">Test tagline</span>`) {
-		t.Errorf("dashboard footer missing tagline: %s", dashHTML)
+	if !strings.Contains(dashHTML, `class="footer-h2">Test platform</h2>`) {
+		t.Errorf("dashboard footer missing header2 lead: %s", dashHTML)
+	}
+	if !strings.Contains(dashHTML, `<span class="footer-warnflux">WarnFlux</span>`) {
+		t.Errorf("dashboard footer missing WarnFlux item: %s", dashHTML)
 	}
 	if !strings.Contains(dashHTML, `href="https://github.com/szporwolik/WarnFlux/commit/abc1234"`) {
 		t.Errorf("dashboard footer missing commit link: %s", dashHTML)
@@ -909,18 +912,18 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	// The users page renders the same shared footer (regression guard:
 	// its view must carry the tagline too).
 	_, usersHTML := env.get("/users")
-	if !strings.Contains(usersHTML, `class="footer-tagline">Test tagline</span>`) {
-		t.Errorf("users footer missing tagline: %s", usersHTML)
+	if !strings.Contains(usersHTML, `class="footer-h2">Test platform</h2>`) {
+		t.Errorf("users footer missing header2 lead: %s", usersHTML)
 	}
 	_, groupsHTML := env.get("/groups")
-	if !strings.Contains(groupsHTML, `class="footer-tagline">Test tagline</span>`) {
-		t.Errorf("groups footer missing tagline: %s", groupsHTML)
+	if !strings.Contains(groupsHTML, `class="footer-h2">Test platform</h2>`) {
+		t.Errorf("groups footer missing header2 lead: %s", groupsHTML)
 	}
 	// The test-signal page renders the same shared footer (regression
 	// guard: the footer tagline crashed this page before).
 	_, testHTML := env.get("/test")
-	if !strings.Contains(testHTML, `class="footer-tagline">Test tagline</span>`) {
-		t.Errorf("test footer missing tagline: %s", testHTML)
+	if !strings.Contains(testHTML, `class="footer-h2">Test platform</h2>`) {
+		t.Errorf("test footer missing header2 lead: %s", testHTML)
 	}
 }
 

@@ -32,15 +32,17 @@
 {{end}}
 
 {{define "footer"}}  <footer class="footer">
-    <span class="footer-meta">
-      <span class="footer-name">{{.AppTitle}}</span>
-      {{if .Tagline}}<span class="sep">·</span>
-      <span class="footer-tagline">{{.Tagline}}</span>{{end}}
-      <span class="sep">·</span>
-      <span>{{.Version}}</span>
-      <span class="sep">·</span>
-      {{if ne .Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{else}}{{.Commit}}{{end}}
-    </span>
+    <span class="footer-name">{{.AppTitle}}</span>
+    {{if .Header2}}<span class="sep">·</span>
+    <h2 class="footer-h2">{{.Header2}}</h2>
+    {{else if .Tagline}}<span class="sep">·</span>
+    <span class="footer-tagline">{{.Tagline}}</span>{{end}}
+    {{if ne .AppTitle "WarnFlux"}}<span class="sep">·</span>
+    <span class="footer-warnflux">WarnFlux</span>{{end}}
+    <span class="sep">·</span>
+    <span>{{.Version}}</span>
+    <span class="sep">·</span>
+    {{if ne .Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{else}}{{.Commit}}{{end}}
     <a class="gh-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer" aria-label="Open the WarnFlux repository on GitHub"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg></a>
   </footer>
 {{end}}

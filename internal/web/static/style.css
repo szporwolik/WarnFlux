@@ -294,18 +294,15 @@ a:hover { text-decoration: underline; }
 .footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
   padding: 0.75rem 1.25rem;
   color: var(--muted);
   font-size: 0.75rem;
 }
 
-.footer-meta {
-  display: inline-flex;
-  align-items: center;
-  font-family: var(--font-mono);
-}
+.footer-h2 { margin: 0; font-size: 0.78rem; font-weight: 600; color: var(--text); }
+.footer-warnflux { color: var(--muted); }
 .footer .sep { color: var(--border-hi); margin: 0 0.4rem; }
 .footer-name { color: var(--text); font-weight: 600; }
 .footer-tagline { color: var(--muted); }
@@ -316,14 +313,11 @@ a:hover { text-decoration: underline; }
 .gh-link {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius);
   color: var(--muted);
+  margin-left: 0.1rem;
 }
-.gh-link:hover { color: var(--text); background: var(--surface-hi); text-decoration: none; }
-.gh-link .icon { width: 18px; height: 18px; }
+.gh-link:hover { color: var(--text); text-decoration: none; }
+.gh-link .icon { width: 15px; height: 15px; }
 
 /* ---- key/value system panel ---- */
 .kv-grid {

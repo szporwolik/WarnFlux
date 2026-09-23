@@ -41,6 +41,7 @@
   <footer class="home-foot">
     <span>{{.AppTitle}}</span>
     {{if .Tagline}}<span class="sep">·</span><span>{{.Tagline}}</span>{{end}}
+    {{if ne .AppTitle "WarnFlux"}}<span class="sep">·</span><span>WarnFlux</span>{{end}}
     <span class="sep">·</span>
     <span>{{.Version}}</span>
     {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{end}}

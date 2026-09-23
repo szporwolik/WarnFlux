@@ -268,20 +268,8 @@ web:
 
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI). They never automatically receive MQTT
-# events. Built-in types: logger (proof of concept), smtp (email).
+# events. Built-in types: smtp (email).
 actions:
-
-  - id: logger-action
-    type: logger
-    enabled: false
-
-    runtime:
-      queue_size: 128
-      call_timeout: 10s
-      shutdown_timeout: 10s
-
-    config:
-      level: info
 
   # SMTP email action: sends one plain-text email per routed dispatch
   # event. Requires host, from and at least one recipient. Two TLS modes:

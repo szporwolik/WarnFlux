@@ -906,3 +906,132 @@
     );
   });
 })();
+
+// Admin pages with a tab strip (e.g. /traffic): switch panels.
+(function () {
+  "use strict";
+
+  function initPageTabs() {
+    var tabs = document.querySelectorAll(".page-tab[data-tab]");
+    if (tabs.length === 0) {
+      return;
+    }
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        tabs.forEach(function (t) {
+          var active = t === tab;
+          t.classList.toggle("active", active);
+          t.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        document.querySelectorAll(".page-panel[data-panel]").forEach(function (p) {
+          p.hidden = p.getAttribute("data-panel") !== tab.getAttribute("data-tab");
+        });
+      });
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initPageTabs);
+  } else {
+    initPageTabs();
+  }
+})();
+
+// MQTT browser (second tab of /traffic): temporary subscription on one
+// receiver, collected messages rendered as a table.
+(function () {
+  "use strict";
+
+  var PAYLOAD_PREVIEW = 300;
+
+  function initMQTTBrowse() {
+    var form = document.getElementById("browse-form");
+    if (!form) {
+      return;
+    }
+    var statusEl = document.getElementById("browse-status");
+    var results = document.getElementById("browse-results");
+    var rows = document.getElementById("browse-rows");
+
+    function cell(text, cls) {
+      var td = document.createElement("td");
+      td.textContent = text;
+      if (cls) {
+        td.className = cls;
+      }
+      return td;
+    }
+
+    function payloadCell(payload) {
+      var td = document.createElement("td");
+      td.className = "browse-payload";
+      var pre = document.createElement("pre");
+      pre.textContent = payload.length > PAYLOAD_PREVIEW
+        ? payload.slice(0, PAYLOAD_PREVIEW) + "…"
+        : payload;
+      if (payload) {
+        pre.title = payload;
+      }
+      td.appendChild(pre);
+      return td;
+    }
+
+    function render(data) {
+      if (!data) {
+        statusEl.textContent = "Browse failed (empty response).";
+        return;
+      }
+      if (data.error) {
+        statusEl.textContent = "Error: " + data.error;
+        return;
+      }
+      var entries = data.entries || [];
+      rows.textContent = "";
+      entries.forEach(function (e) {
+        var tr = document.createElement("tr");
+        tr.appendChild(cell(e.topic, "mono"));
+        tr.appendChild(cell(String(e.qos)));
+        tr.appendChild(cell(e.retained ? "yes" : "no", e.retained ? "browse-ret" : ""));
+        tr.appendChild(cell(e.size + " B"));
+        tr.appendChild(payloadCell(e.payload || ""));
+        rows.appendChild(tr);
+      });
+      results.hidden = false;
+      statusEl.textContent = entries.length + " message(s) · " +
+        new Date().toLocaleTimeString();
+    }
+
+    form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var receiver = document.getElementById("browse-receiver").value;
+      var topic = document.getElementById("browse-topic").value.trim();
+      var windowSecs = document.getElementById("browse-window").value;
+      if (!topic) {
+        return;
+      }
+      statusEl.hidden = false;
+      statusEl.textContent = "Subscribing to " + topic + "… (" + windowSecs + " s)";
+      var url = "/api/mqtt/browse?topic=" + encodeURIComponent(topic) +
+        "&window=" + encodeURIComponent(windowSecs) +
+        "&receiver=" + encodeURIComponent(receiver);
+      fetch(url, {
+        headers: { "Accept": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store"
+      })
+        .then(function (res) {
+          return res.json().catch(function () { return null; });
+        })
+        .then(render)
+        .catch(function () {
+          statusEl.textContent = "Browse failed.";
+        });
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initMQTTBrowse);
+  } else {
+    initMQTTBrowse();
+  }
+})();

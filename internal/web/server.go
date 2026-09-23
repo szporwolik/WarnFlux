@@ -173,6 +173,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/logs", s.requireAdminPartial(s.handlePartialLogs))
 	s.mux.Handle("GET /traffic", s.requireAdmin(s.handleTrafficPage))
 	s.mux.Handle("GET /partials/traffic", s.requireAdminPartial(s.handlePartialTraffic))
+	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))
 	s.mux.Handle("GET /notifications", s.requireAdmin(s.handleNotificationsPage))
 	s.mux.Handle("GET /partials/notifications", s.requireAdminPartial(s.handlePartialNotifications))
 	s.mux.Handle("GET /health", s.requireAdmin(s.handleHealthPage))

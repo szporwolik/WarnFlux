@@ -1,13 +1,22 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 )
+
+// receiverChoice is one option of the MQTT browser receiver select.
+type receiverChoice struct {
+	ID        string
+	Label     string
+	Connected bool
+}
 
 // trafficView is the full /traffic page model.
 type trafficView struct {
@@ -34,6 +43,7 @@ type trafficView struct {
 	NavHealth  bool
 	NavCompose bool
 	MaxEntries int
+	Receivers  []receiverChoice
 }
 
 // handleTrafficPage renders the self-refreshing MQTT traffic viewer.
@@ -62,6 +72,17 @@ func (s *Server) baseTrafficView() trafficView {
 	if s.traffic != nil {
 		v.MaxEntries = s.traffic.Max()
 	}
+	for _, st := range s.receivers.Statuses() {
+		label := st.ID
+		if st.Broker != "" {
+			label += " · " + st.Broker
+		}
+		v.Receivers = append(v.Receivers, receiverChoice{
+			ID:        st.ID,
+			Label:     label,
+			Connected: st.Connected,
+		})
+	}
 	return v
 }
 
@@ -84,5 +105,38 @@ func (s *Server) handlePartialTraffic(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{"entries": entries})
+}
+
+// handleMQTTBrowse runs a temporary MQTT subscription on one receiver and
+// returns the collected messages (retained state included).
+// GET /api/mqtt/browse?receiver=&topic=&window=
+func (s *Server) handleMQTTBrowse(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	topic := strings.TrimSpace(q.Get("topic"))
+	if topic == "" {
+		http.Error(w, "topic is required", http.StatusBadRequest)
+		return
+	}
+	window := mqttreceiver.BrowseDefaultWindow
+	if raw := strings.TrimSpace(q.Get("window")); raw != "" {
+		secs, err := strconv.ParseFloat(raw, 64)
+		if err != nil || secs <= 0 || secs > mqttreceiver.BrowseMaxWindow.Seconds() {
+			http.Error(w, "invalid window", http.StatusBadRequest)
+			return
+		}
+		window = time.Duration(secs * float64(time.Second))
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), window+3*time.Second)
+	defer cancel()
+	entries, err := s.receivers.Browse(ctx, q.Get("receiver"), topic, window, mqttreceiver.BrowseMaxEntries)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "entries": []mqttreceiver.BrowseEntry{}})
+		return
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"entries": entries})
 }

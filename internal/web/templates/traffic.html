@@ -12,10 +12,51 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    <section class="card log-card">
+    <div class="page-tabs" role="tablist">
+      <button type="button" class="page-tab active" role="tab" aria-selected="true" data-tab="panel-traffic">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Traffic
+      </button>
+      <button type="button" class="page-tab" role="tab" aria-selected="false" data-tab="panel-browser">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>Browser
+      </button>
+    </div>
+    <section class="card log-card page-panel" id="panel-traffic" data-panel="panel-traffic">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>MQTT traffic</h2>
       <p class="muted log-hint">Last {{.MaxEntries}} inbound MQTT frames received by this instance. Refreshes automatically.</p>
       <div id="traffic-viewer" class="log-viewer traffic-viewer" data-after="0"></div>
+    </section>
+    <section class="card log-card page-panel" id="panel-browser" data-panel="panel-browser" hidden>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>MQTT browser</h2>
+      <p class="muted log-hint">Opens a temporary subscription on one receiver and collects messages for a few seconds — retained state and broker status (<span class="mono">$SYS/#</span>) included. Nothing is published.</p>
+      <form id="browse-form" class="browse-form">
+        <label class="browse-field">Receiver
+          <select id="browse-receiver">
+            {{range .Receivers}}<option value="{{.ID}}">{{if .Connected}}● {{end}}{{.Label}}</option>{{end}}
+          </select>
+        </label>
+        <label class="browse-field">Topic
+          <input id="browse-topic" class="mono" value="#" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="browse-field">Window
+          <select id="browse-window">
+            <option value="1">1 s</option>
+            <option value="2" selected>2 s</option>
+            <option value="3">3 s</option>
+            <option value="5">5 s</option>
+            <option value="10">10 s</option>
+          </select>
+        </label>
+        <button type="submit" class="btn-primary">Browse</button>
+      </form>
+      <div id="browse-status" class="browse-status" hidden></div>
+      <div id="browse-results" class="table-wrap" hidden>
+        <table class="browse-table">
+          <thead>
+            <tr><th>Topic</th><th>QoS</th><th>Retained</th><th>Size</th><th>Payload</th></tr>
+          </thead>
+          <tbody id="browse-rows"></tbody>
+        </table>
+      </div>
     </section>
   </main>
   {{template "footer" .}}

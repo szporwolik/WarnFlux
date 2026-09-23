@@ -70,6 +70,10 @@ type Receiver struct {
 
 	mu     sync.Mutex
 	status Status
+
+	// browseMu serializes the temporary browse subscriptions the web UI
+	// opens (one at a time per receiver).
+	browseMu sync.Mutex
 }
 
 // NewReceiver builds the receiver and its paho client without connecting.

@@ -257,11 +257,14 @@ func TestTrafficViewerFlow(t *testing.T) {
 	if !strings.Contains(html, `id="traffic-viewer"`) {
 		t.Errorf("traffic page missing viewer: %s", html)
 	}
-	if !strings.Contains(html, `<span class="nav-label">MQTT traffic</span>`) {
+	if !strings.Contains(html, `<span class="nav-label">MQTT</span>`) {
 		t.Errorf("traffic page missing sidebar entry: %s", html)
 	}
 	if !strings.Contains(html, "Last 100 inbound MQTT frames") {
 		t.Errorf("traffic page missing buffer hint: %s", html)
+	}
+	if !strings.Contains(html, `id="browse-form"`) {
+		t.Errorf("traffic page missing MQTT browser: %s", html)
 	}
 
 	// Full buffer poll.
@@ -307,6 +310,20 @@ func TestTrafficViewerFlow(t *testing.T) {
 	resp, _ = env.get("/partials/traffic?after=banana")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad cursor = %d, want 400", resp.StatusCode)
+	}
+
+	// MQTT browser API: missing topic is rejected; a browse against the
+	// never-connected test receiver reports the error as JSON.
+	resp, _ = env.get("/api/mqtt/browse")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("browse without topic = %d, want 400", resp.StatusCode)
+	}
+	resp, body = env.get("/api/mqtt/browse?topic=%23&window=1")
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("browse on disconnected receiver = %d, want 502", resp.StatusCode)
+	}
+	if !strings.Contains(body, `"error"`) {
+		t.Errorf("browse error body = %s, want JSON error", body)
 	}
 }
 

@@ -1149,6 +1149,81 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .home-tab:hover { color: var(--text); }
 .home-tab.active { color: var(--text); border-bottom-color: var(--brand); }
 .home-main { flex: 1; padding: 1rem 0 0; }
+/* Tab strip on admin pages (e.g. the MQTT page). */
+.page-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0 0 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.page-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.page-tab:hover { color: var(--text); }
+.page-tab.active { color: var(--text); border-bottom-color: var(--brand); }
+.page-panel[hidden] { display: none; }
+
+/* MQTT browser (second tab of /traffic). */
+.browse-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin: 0.9rem 0;
+}
+.browse-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.browse-field select,
+.browse-field input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  min-width: 12rem;
+}
+.browse-status {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.browse-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.browse-table th,
+.browse-table td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.browse-table th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.browse-table td.mono { word-break: break-all; }
+.browse-ret { color: var(--ok); font-weight: 600; }
+.browse-payload pre {
+  margin: 0;
+  font-family: inherit;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 8rem;
+  overflow: auto;
+}
+
 .home-about {
   max-width: 46rem;
   margin: 1rem 0 0.5rem;

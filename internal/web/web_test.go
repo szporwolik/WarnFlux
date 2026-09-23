@@ -69,6 +69,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		Title:   "WarnFlux Test",
 		Header2: "Test platform",
 		Tagline: "Test tagline",
+		About:   "Test info text.",
 		Auth:    config.WebAuth{Username: testUsername, Password: testPassword},
 	}
 
@@ -466,6 +467,7 @@ func TestPublicHomePage(t *testing.T) {
 	for _, want := range []string{
 		"WarnFlux Test",     // header1
 		"Test platform",     // header2
+		"Test info text.",   // configurable about text
 		"Ekstremalny wiatr", // most severe first
 		`href="/login"`,     // sign-in behind the icon button
 		"Aktualne zagrożenia",
@@ -475,6 +477,12 @@ func TestPublicHomePage(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Errorf("home page missing %q: %s", want, html)
 		}
+	}
+	// The about text must sit above the hazard list.
+	aboutAt := strings.Index(html, "Test info text.")
+	alertsAt := strings.Index(html, `id="home-alerts"`)
+	if aboutAt < 0 || alertsAt < 0 || aboutAt > alertsAt {
+		t.Errorf("about text not above the alerts list: about@%d alerts@%d", aboutAt, alertsAt)
 	}
 	if strings.Contains(html, `name="csrf"`) {
 		t.Error("home page must not carry login form state (login is behind the icon button)")

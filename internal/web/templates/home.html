@@ -29,6 +29,7 @@
 
   <main class="home-main">
     <section class="home-panel" id="panel-tab-alerts" data-panel="tab-alerts">
+      {{if .About}}<div class="home-about">{{.About}}</div>{{end}}
       {{template "home_alerts_section" .}}
     </section>
     <section class="home-panel" id="panel-tab2" data-panel="tab2" hidden>

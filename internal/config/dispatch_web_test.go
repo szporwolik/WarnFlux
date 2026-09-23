@@ -47,6 +47,9 @@ web:
   header1: "SPOK"
   header2: "Społeczna Platforma Ostrzegania i Komunikacji"
   tagline: "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo"
+  about: |
+    System ostrzegania o zagrożeniach.
+    Zakres działania: powiat wielicki i okolice.
   domain: "spok.example.com"
   auth:
     username: admin
@@ -103,6 +106,9 @@ func TestLoadDispatchWebActions(t *testing.T) {
 	}
 	if cfg.Web.Tagline != "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo" {
 		t.Errorf("web tagline = %q", cfg.Web.Tagline)
+	}
+	if cfg.Web.About != "System ostrzegania o zagrożeniach.\nZakres działania: powiat wielicki i okolice." {
+		t.Errorf("web about = %q", cfg.Web.About)
 	}
 	if cfg.Web.Domain != "spok.example.com" {
 		t.Errorf("web domain = %q, want spok.example.com", cfg.Web.Domain)

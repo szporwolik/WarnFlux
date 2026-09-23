@@ -29,6 +29,7 @@ type homeView struct {
 	Header1  string
 	Header2  string
 	Tagline  string
+	About    string
 	Version  string
 	Commit   string
 	RepoURL  string
@@ -59,6 +60,7 @@ func (s *Server) buildHomeView() homeView {
 		Header1:  s.displayHeader1(),
 		Header2:  s.cfg.Header2,
 		Tagline:  s.cfg.Tagline,
+		About:    s.cfg.About,
 		Version:  s.version,
 		Commit:   s.commit,
 		RepoURL:  repoURL,

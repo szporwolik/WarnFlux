@@ -911,6 +911,14 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .home-tab:hover { color: var(--text); }
 .home-tab.active { color: var(--text); border-bottom-color: var(--link); }
 .home-main { flex: 1; padding: 1rem 0 0; }
+.home-about {
+  white-space: pre-line;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--text);
+  max-width: 46rem;
+  margin: 0.25rem 0 1.1rem;
+}
 .home-alerts-head {
   display: flex;
   align-items: center;

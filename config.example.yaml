@@ -251,6 +251,13 @@ web:
   # Optional one-line motto rendered in the footer on every page.
   tagline: "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo"
 
+  # Optional longer text shown on the public home page above the active
+  # hazard list — a short intro about the system and its scope of
+  # operation. Line breaks are preserved; leave empty to hide.
+  about: |
+    Krótka informacja o systemie: czym jest, jaki jest zakres
+    działania, skąd pochodzą komunikaty i jak je interpretować.
+
   # Public domain this instance is served under (host, optional port).
   # Reserved for future absolute-link features; no scheme, no path.
   # Empty disables them.

@@ -453,26 +453,79 @@
   var radarLayer = null;
   var baseLayer = null;
 
-  // Theme-aware base tiles, like the CQOps dashboard: the bright
-  // OpenStreetMap style for the light theme, CARTO dark for the default
-  // dark theme.
+  // Theme-aware base map, the same free provider the CQOps dashboard
+  // uses: OpenFreeMap vector styles via MapLibre GL — no API keys, no
+  // usage limits. Fiord for the dark theme, bright for the light one.
+  // When WebGL or the GL glue is unavailable (headless browsers, offline
+  // fallback), keyless RASTER tiles take over: OpenStreetMap for the
+  // light theme, Esri World Dark Gray for the dark theme.
   function tilesForTheme() {
     var theme = document.documentElement.getAttribute("data-theme");
+    var glLabel = '<a href="https://openfreemap.org" target="_blank" rel="noopener noreferrer">OpenFreeMap</a> · <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener noreferrer">OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>';
     if (theme === "light") {
       return {
-        url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        label: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+        style: "https://tiles.openfreemap.org/styles/bright",
+        raster: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        glLabel: glLabel,
+        rasterLabel: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
         marker: { color: "#0d47a1", fillColor: "#1976d2" }
       };
     }
     return {
-      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-      label: '<a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+      style: "https://tiles.openfreemap.org/styles/fiord",
+      raster: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+      glLabel: glLabel,
+      rasterLabel: '<a href="https://www.esri.com/" target="_blank" rel="noopener noreferrer">Esri</a> World Dark Gray',
       marker: { color: "#1565c0", fillColor: "#64b5f6" }
     };
   }
 
-  // syncBaseLayer swaps the base tiles and the attribution line to match
+  // webglAvailable probes WebGL synchronously: MapLibre GL throws
+  // asynchronously when the context cannot be created, so the availability
+  // check must happen BEFORE the layer is constructed.
+  function webglAvailable() {
+    try {
+      var c = document.createElement("canvas");
+      return !!(window.WebGLRenderingContext && (c.getContext("webgl2") || c.getContext("webgl")));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // buildBaseLayer renders the base map on its own pane (below radar and
+  // markers). It returns the layer plus the attribution mode that was
+  // actually used: "gl" (OpenFreeMap vectors) or "raster".
+  function buildBaseLayer() {
+    var t = tilesForTheme();
+    var mode = "raster";
+    var layer = null;
+    if (typeof L.maplibreGL === "function" && webglAvailable()) {
+      try {
+        var gl = L.maplibreGL({ style: t.style, attributionControl: false, pane: "aprsBase" });
+        var m = gl.getMaplibreMap && gl.getMaplibreMap();
+        if (m && m.on) {
+          m.on("styleimagemissing", function (e) {
+            m.addImage(e.id, { width: 1, height: 1, data: new Uint8ClampedArray([0, 0, 0, 0]) });
+          });
+        }
+        gl.addTo(map);
+        layer = gl;
+        mode = "gl";
+      } catch (e) {
+        layer = null; // use the raster fallback below
+        if (el) {
+          el.querySelectorAll("canvas").forEach(function (c) { c.remove(); });
+        }
+      }
+    }
+    if (!layer) {
+      layer = L.tileLayer(t.raster, { maxZoom: 18, pane: "aprsBase" }).addTo(map);
+      mode = "raster";
+    }
+    return { layer: layer, mode: mode };
+  }
+
+  // syncBaseLayer swaps the base map and the attribution line to match
   // the current theme.
   function syncBaseLayer() {
     if (!map) {
@@ -482,10 +535,11 @@
     if (baseLayer) {
       map.removeLayer(baseLayer);
     }
-    baseLayer = L.tileLayer(t.url, { maxZoom: 18 }).addTo(map);
+    var built = buildBaseLayer();
+    baseLayer = built.layer;
     var attrib = document.getElementById("aprs-tiles-attrib");
     if (attrib) {
-      attrib.innerHTML = t.label;
+      attrib.innerHTML = built.mode === "gl" ? t.glLabel : t.rasterLabel;
     }
     if (stationLayer) {
       stationLayer.eachLayer(function (m) {
@@ -502,7 +556,22 @@
     return d.innerHTML;
   }
 
-  function loadLeaflet(cb) {
+  function loadScript(src, ok, fail) {
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = ok;
+    s.onerror = fail;
+    document.body.appendChild(s);
+  }
+
+  function mapLoadError() {
+    el.innerHTML = "<p class=\"muted\">Map library failed to load (offline?).</p>";
+  }
+
+  // Leaflet → MapLibre GL → the MapLibre Leaflet glue. Each step falls
+  // back gracefully: without the glue the raster OpenStreetMap layer is
+  // used instead.
+  function loadLibraries(cb) {
     if (window.L) {
       cb();
       return;
@@ -511,13 +580,27 @@
     css.rel = "stylesheet";
     css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
     document.head.appendChild(css);
-    var script = document.createElement("script");
-    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    script.onload = cb;
-    script.onerror = function () {
-      el.innerHTML = "<p class=\"muted\">Map library failed to load (offline?).</p>";
-    };
-    document.body.appendChild(script);
+    loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js", cb, mapLoadError);
+  }
+
+  function loadMapLibre(cb) {
+    var css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css";
+    document.head.appendChild(css);
+    if (window.maplibregl) {
+      cb();
+      return;
+    }
+    loadScript("https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js", cb, function () { cb(); });
+  }
+
+  function loadMapLibreGlue(cb) {
+    if (window.L && typeof L.maplibreGL === "function") {
+      cb();
+      return;
+    }
+    loadScript("https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js", cb, function () { cb(); });
   }
 
   function initMap() {
@@ -525,6 +608,11 @@
       return;
     }
     map = L.map(el, { attributionControl: false }).setView([lat, lon], 11);
+    map.createPane("aprsBase");
+    map.getPane("aprsBase").style.zIndex = 200;
+    map.createPane("aprsRadar");
+    map.getPane("aprsRadar").style.zIndex = 350;
+    map.getPane("aprsRadar").style.pointerEvents = "none";
     baseLayer = null;
     syncBaseLayer();
     stationLayer = L.layerGroup().addTo(map);
@@ -587,7 +675,7 @@
       return;
     }
     var layer = L.tileLayer(url, {
-      opacity: 0.55, maxNativeZoom: 7, maxZoom: 12
+      pane: "aprsRadar", opacity: 0.55, maxNativeZoom: 7, maxZoom: 12
     });
     if (radarLayer) {
       map.removeLayer(radarLayer);
@@ -635,7 +723,11 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
-  loadLeaflet(initMap);
+  loadLibraries(function () {
+    loadMapLibre(function () {
+      loadMapLibreGlue(initMap);
+    });
+  });
 })();
 
 // Theme switch (dark by default, light on request): one icon button per

@@ -250,7 +250,8 @@ type Web struct {
 	Tagline string
 	// About is an optional longer text shown on the public home page
 	// above the active hazard list (system intro, scope of operation).
-	// Line breaks are preserved. Empty hides it.
+	// Line breaks are preserved; limited HTML (links) is allowed.
+	// Empty hides it.
 	About string
 	// Domain is the public host (and optional port) this instance is
 	// served under, e.g. "spok.example.com". It is reserved for future

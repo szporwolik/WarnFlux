@@ -1,6 +1,7 @@
 package web
 
 import (
+	"html/template"
 	"net/http"
 	"sort"
 	"strings"
@@ -29,10 +30,13 @@ type homeView struct {
 	Header1  string
 	Header2  string
 	Tagline  string
-	About    string
-	Version  string
-	Commit   string
-	RepoURL  string
+	// About is operator-authored content (config file): rendered with
+	// line breaks preserved and a deliberately small HTML surface so
+	// links work.
+	About   template.HTML
+	Version string
+	Commit  string
+	RepoURL string
 
 	ActiveCount int
 	Hazards     []publicHazardView
@@ -60,7 +64,7 @@ func (s *Server) buildHomeView() homeView {
 		Header1:  s.displayHeader1(),
 		Header2:  s.cfg.Header2,
 		Tagline:  s.cfg.Tagline,
-		About:    s.cfg.About,
+		About:    template.HTML(s.cfg.About),
 		Version:  s.version,
 		Commit:   s.commit,
 		RepoURL:  repoURL,

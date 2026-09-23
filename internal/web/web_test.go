@@ -69,7 +69,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		Title:   "WarnFlux Test",
 		Header2: "Test platform",
 		Tagline: "Test tagline",
-		About:   "Test info text.",
+		About:   "Test info text. <a href=\"https://sp9moa.pl\">sp9moa.pl</a>",
 		Auth:    config.WebAuth{Username: testUsername, Password: testPassword},
 	}
 
@@ -465,11 +465,12 @@ func TestPublicHomePage(t *testing.T) {
 		t.Fatalf("GET / = %d, want 200 without login", resp.StatusCode)
 	}
 	for _, want := range []string{
-		"WarnFlux Test",     // header1
-		"Test platform",     // header2
-		"Test info text.",   // configurable about text
-		"Ekstremalny wiatr", // most severe first
-		`href="/login"`,     // sign-in behind the icon button
+		"WarnFlux Test",            // header1
+		"Test platform",            // header2
+		"Test info text.",          // configurable about text
+		`href="https://sp9moa.pl"`, // HTML links are allowed in the about text
+		"Ekstremalny wiatr",        // most severe first
+		`href="/login"`,            // sign-in behind the icon button
 		"Aktualne zagrożenia",
 		"Tab 2",
 		`id="home-alerts"`,

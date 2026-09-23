@@ -253,10 +253,12 @@ web:
 
   # Optional longer text shown on the public home page above the active
   # hazard list — a short intro about the system and its scope of
-  # operation. Line breaks are preserved; leave empty to hide.
+  # operation. Line breaks are preserved; limited HTML is allowed
+  # (links). Leave empty to hide.
   about: |
     Krótka informacja o systemie: czym jest, jaki jest zakres
     działania, skąd pochodzą komunikaty i jak je interpretować.
+    Więcej: <a href="https://sp9moa.pl">sp9moa.pl</a>
 
   # Public domain this instance is served under (host, optional port).
   # Reserved for future absolute-link features; no scheme, no path.

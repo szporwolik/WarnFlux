@@ -73,6 +73,7 @@ type testView struct {
 	Name     string
 	Header1  string
 	Header2  string
+	Tagline  string
 	Version  string
 	Commit   string
 	RepoURL  string
@@ -253,6 +254,7 @@ func (s *Server) buildTestView(form testSignalForm) testView {
 		Name:        s.displayName(),
 		Header1:     s.displayHeader1(),
 		Header2:     s.cfg.Header2,
+		Tagline:     s.cfg.Tagline,
 		Version:     s.version,
 		Commit:      s.commit,
 		RepoURL:     repoURL,

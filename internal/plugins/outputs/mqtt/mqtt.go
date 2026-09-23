@@ -892,14 +892,37 @@ type discardLogger struct{}
 func (discardLogger) Println(_ ...any)          {}
 func (discardLogger) Printf(_ string, _ ...any) {}
 
+// benignPahoPatterns are routine disconnect/reconnect/store messages that
+// paho reports at ERROR/WARN. They are expected during broker reconnects
+// and graceful shutdown (paho tears the socket down before its comms
+// goroutine notices), so they are logged at debug instead of alarming
+// operators with error-level noise on production.
+var benignPahoPatterns = []string{
+	"Connect comms goroutine - error triggered",
+	"internalConnLost",
+	"memorystore",
+}
+
 type slogAdapter struct{ level slog.Level }
 
+func (a slogAdapter) log(v ...any) {
+	msg := fmt.Sprint(v...)
+	level := a.level
+	for _, p := range benignPahoPatterns {
+		if strings.Contains(msg, p) {
+			level = slog.LevelDebug
+			break
+		}
+	}
+	slog.Log(context.Background(), level, msg)
+}
+
 func (a slogAdapter) Println(v ...any) {
-	slog.Log(context.Background(), a.level, fmt.Sprint(v...))
+	a.log(v...)
 }
 
 func (a slogAdapter) Printf(format string, v ...any) {
-	slog.Log(context.Background(), a.level, fmt.Sprintf(format, v...))
+	a.log(fmt.Sprintf(format, v...))
 }
 
 // Register registers the MQTT output plugin type.

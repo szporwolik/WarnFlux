@@ -507,6 +507,12 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	if !strings.Contains(groupsHTML, `class="footer-tagline">Test tagline</span>`) {
 		t.Errorf("groups footer missing tagline: %s", groupsHTML)
 	}
+	// The test-signal page renders the same shared footer (regression
+	// guard: the footer tagline crashed this page before).
+	_, testHTML := env.get("/test")
+	if !strings.Contains(testHTML, `class="footer-tagline">Test tagline</span>`) {
+		t.Errorf("test footer missing tagline: %s", testHTML)
+	}
 }
 
 func TestWarningsPagination(t *testing.T) {

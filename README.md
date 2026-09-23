@@ -764,9 +764,11 @@ CI (`pull_request` and pushes to `main`) runs format checks (including a
 detector and `govulncheck`. Tagging a semantic version (`v0.1.0`) triggers
 the release workflow, which builds:
 
-- `warnflux-linux-amd64` and `warnflux-linux-arm64`
+- `warnflux-linux-amd64`, `warnflux-linux-arm64` and
+  `warnflux-linux-armv7` (32-bit Raspberry Pi OS)
 - `SHA256SUMS`
-- the Docker image (`linux/amd64`, `linux/arm64`) published to
+- the Docker image (`linux/amd64`, `linux/arm64`, `linux/arm/v7`)
+  published to
   `ghcr.io/<owner>/warnflux` with `v0.1.0`, `v0.1` and `latest` tags
   (no floating `v0` major tag before 1.0) and OCI labels
 

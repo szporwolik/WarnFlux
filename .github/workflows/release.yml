@@ -109,7 +109,9 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          # arm/v7 covers 32-bit Raspberry Pi OS; arm64 covers modern
+          # 64-bit Pi OS and ARM servers.
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -126,6 +128,7 @@ jobs:
           LDFLAGS="-s -w -X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ github.sha }}"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-linux-amd64 ./cmd/warnflux
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-linux-arm64 ./cmd/warnflux
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="$LDFLAGS" -o dist/warnflux-linux-armv7 ./cmd/warnflux
 
       - name: Generate checksums
         run: |
@@ -142,6 +145,7 @@ jobs:
           gh release create "v${{ steps.version.outputs.version }}" \
             dist/warnflux-linux-amd64 \
             dist/warnflux-linux-arm64 \
+            dist/warnflux-linux-armv7 \
             dist/SHA256SUMS \
             --title "WarnFlux v${{ steps.version.outputs.version }}" \
             --generate-notes

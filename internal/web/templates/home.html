@@ -67,7 +67,7 @@
 {{end}}
 
 {{define "home_alerts_section"}}<section class="home-alerts-wrap" id="home-alerts">
-  <h2 class="home-alerts-head">Active communications <span class="count">{{.ActiveCount}}</span></h2>
+  <h2 class="home-alerts-head">Active communications <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span></h2>
   {{if .Hazards}}
   <div class="home-alerts">
     {{range .Hazards}}

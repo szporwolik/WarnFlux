@@ -767,6 +767,26 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .test-form .field-wide { grid-column: 1 / -1; }
 .test-actions { grid-column: 1 / -1; display: flex; gap: 0.6rem; margin-top: 0.4rem; }
 .test-actions .btn-primary { width: auto; }
+.compose-actions { grid-column: 1 / -1; display: flex; gap: 0.6rem; align-items: center; margin-top: 0.4rem; }
+.compose-actions .btn-primary { width: auto; }
+.compose-area {
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.9rem;
+  font-family: var(--font-sans);
+  resize: vertical;
+  min-height: 4.5rem;
+}
+.compose-area:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
+.test-form input:disabled {
+  background: var(--surface-muted);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
 .test-ok {
   display: flex;
   align-items: center;

@@ -50,6 +50,7 @@ type Server struct {
 	cfg       config.Web
 	st        *state.State
 	receivers *mqttreceiver.Manager
+	pub       composePublisher
 	router    RouterStatuses
 	actions   *action.Manager
 	ingress   *dispatch.Ingress
@@ -92,10 +93,10 @@ const repoURL = appinfo.RepoURL
 // /notifications; metricsReg is the optional Prometheus registry served
 // by /metrics.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
-	router RouterStatuses, actions *action.Manager, ingress *dispatch.Ingress,
-	logger *slog.Logger, version, commit string, users storage.DirectoryStore,
-	ingest map[string]http.Handler, logs *LogBuffer,
-	traffic *mqttreceiver.TrafficBuffer,
+	pub composePublisher, router RouterStatuses, actions *action.Manager,
+	ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
+	users storage.DirectoryStore, ingest map[string]http.Handler,
+	logs *LogBuffer, traffic *mqttreceiver.TrafficBuffer,
 	trails *trail.Recorder, metricsReg *metrics.Registry) (*Server, error) {
 
 	// Read the admin password file at construction: a missing secret is a
@@ -122,6 +123,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		cfg:       cfg,
 		st:        st,
 		receivers: receivers,
+		pub:       pub,
 		router:    router,
 		actions:   actions,
 		ingress:   ingress,
@@ -182,6 +184,10 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
 	s.mux.Handle("GET /test", s.requirePage(s.handleTestPage))
 	s.mux.Handle("POST /test", s.requirePage(s.handleTestEmit))
+	// Compose: issue/update/expire community communications on the broker.
+	s.mux.Handle("GET /compose", s.requirePage(s.handleComposePage))
+	s.mux.Handle("POST /compose", s.requirePage(s.handleComposeSave))
+	s.mux.Handle("POST /compose/expire", s.requirePage(s.handleComposeExpire))
 	s.mux.Handle("GET /users", s.requirePage(s.handleUsersPage))
 	s.mux.Handle("POST /users", s.requirePage(s.handleUserSave))
 	s.mux.Handle("POST /users/{id}/delete", s.requirePage(s.handleUserDelete))

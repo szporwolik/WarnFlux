@@ -49,11 +49,30 @@ type testEnv struct {
 	actions  *action.Manager
 	client   *http.Client
 	receiver *mqttreceiver.Manager
+	pub      *fakeComposePublisher
 	users    *fakeUsers
 	logs     *web.LogBuffer
 	traffic  *mqttreceiver.TrafficBuffer
 	trails   *trail.Recorder
 	metrics  *metrics.Registry
+}
+
+// fakeComposePublisher records the communications the compose module
+// publishes; the test drives the state mirror itself to simulate the
+// broker loopback.
+type fakeComposePublisher struct {
+	published []state.Hazard
+	expired   []string
+}
+
+func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) error {
+	f.published = append(f.published, h)
+	return nil
+}
+
+func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
+	f.expired = append(f.expired, eventKey)
+	return nil
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -125,7 +144,9 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		t.Fatal(err)
 	}
 
-	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic, trails, met)
+	pub := &fakeComposePublisher{}
+
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +160,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		return http.ErrUseLastResponse // observe redirects instead of following
 	}}
 
-	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users, logs: logs, traffic: traffic, trails: trails, metrics: met}
+	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, pub: pub, users: users, logs: logs, traffic: traffic, trails: trails, metrics: met}
 }
 
 type nopAction struct{}
@@ -511,6 +532,129 @@ func TestPublicHomePage(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
 		t.Errorf("GET /dashboard unauthenticated = %d %q, want redirect to /login",
 			resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// TestComposeFlow pins the officer-facing communication module: the form
+// publishes onto the broker (fake here), the issued list renders the
+// module's communications, edits update the same event key and expire
+// removes it.
+func TestComposeFlow(t *testing.T) {
+	env := newTestEnv(t)
+
+	// The page requires a session like every admin page.
+	resp, _ := env.get("/compose")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("GET /compose unauthenticated = %d %q, want redirect to /login",
+			resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	env.login()
+	_, html := env.get("/compose")
+	if !strings.Contains(html, "Compose communication") {
+		t.Errorf("compose page missing form heading: %s", html)
+	}
+	if !strings.Contains(html, `<span class="nav-label">Compose</span>`) {
+		t.Errorf("compose page missing sidebar entry: %s", html)
+	}
+	if !strings.Contains(html, "Issued communications") {
+		t.Errorf("compose page missing issued list: %s", html)
+	}
+	csrf := extractCSRF(t, html)
+
+	// CSRF is enforced on both mutations.
+	resp, _ = env.postForm("/compose", url.Values{"event": {"Flood"}, "headline": {"x"}, "severity": {"severe"}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /compose without csrf = %d, want 403", resp.StatusCode)
+	}
+
+	// Publish a new communication.
+	resp, _ = env.postForm("/compose", url.Values{
+		"csrf":         {csrf},
+		"event":        {"Flood"},
+		"headline":     {"Flood warning for the Raba river"},
+		"severity":     {"severe"},
+		"urgency":      {"immediate"},
+		"certainty":    {"observed"},
+		"status":       {"active"},
+		"areas":        {"wieliczka, niepolomice"},
+		"effective_at": {"2026-09-24T08:00"},
+		"expires_at":   {"2026-09-25T08:00"},
+		"description":  {"Heavy rain may cause local flooding."},
+		"instruction":  {"Avoid the river bank."},
+	})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose?msg=published" {
+		t.Fatalf("POST /compose = %d %q, want redirect to flash", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if len(env.pub.published) != 1 {
+		t.Fatalf("publisher saw %d publishes, want 1", len(env.pub.published))
+	}
+	h := env.pub.published[0]
+	if h.Source != "sosna-ops" || !strings.HasPrefix(h.EventKey, "sosna-ops:") {
+		t.Errorf("published hazard identity = %q / %q", h.Source, h.EventKey)
+	}
+	if h.Severity != "severe" || h.Headline != "Flood warning for the Raba river" || len(h.Areas) != 2 {
+		t.Errorf("published hazard = %+v", h)
+	}
+	if h.EffectiveAt == nil || h.EffectiveAt.Format("2006-01-02T15:04") != "2026-09-24T08:00" {
+		t.Errorf("effective_at = %v", h.EffectiveAt)
+	}
+
+	// Simulate the broker loopback: the ingestor mirrors the document.
+	if err := env.state.AddOrUpdateActive("local", "warnflux/active/sosna-ops/aaaa", h); err != nil {
+		t.Fatal(err)
+	}
+
+	// The issued list renders it with an edit link (html/template
+	// URL-escapes the colon; the query decodes it back server-side).
+	_, html = env.get("/compose")
+	if !strings.Contains(html, "Flood warning for the Raba river") {
+		t.Errorf("issued list missing headline: %s", html)
+	}
+	if !strings.Contains(html, "/compose?edit=sosna-ops") {
+		t.Errorf("issued list missing edit link: %s", html)
+	}
+
+	// Edit prefills the form.
+	_, html = env.get("/compose?edit=" + h.EventKey)
+	if !strings.Contains(html, `value="Flood warning for the Raba river"`) {
+		t.Errorf("edit page missing prefilled headline: %s", html)
+	}
+	if !strings.Contains(html, `name="event_key" value="`+h.EventKey+`"`) {
+		t.Errorf("edit page missing hidden event key: %s", html)
+	}
+
+	// Update keeps the event key.
+	csrf = extractCSRF(t, html)
+	resp, _ = env.postForm("/compose", url.Values{
+		"csrf":      {csrf},
+		"event_key": {h.EventKey},
+		"event":     {"Flood"},
+		"headline":  {"Flood warning updated: level rising"},
+		"severity":  {"extreme"},
+		"status":    {"active"},
+	})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose?msg=updated" {
+		t.Fatalf("POST /compose update = %d %q, want updated flash", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if len(env.pub.published) != 2 || env.pub.published[1].EventKey != h.EventKey {
+		t.Errorf("update did not reuse the event key: %+v", env.pub.published)
+	}
+
+	// Expire removes it.
+	csrf = extractCSRF(t, html)
+	resp, _ = env.postForm("/compose/expire", url.Values{"csrf": {csrf}, "event_key": {h.EventKey}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose?msg=expired" {
+		t.Fatalf("POST /compose/expire = %d %q, want expired flash", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if len(env.pub.expired) != 1 || env.pub.expired[0] != h.EventKey {
+		t.Errorf("expire did not target the event key: %v", env.pub.expired)
+	}
+
+	// Unknown keys cannot be expired.
+	resp, _ = env.postForm("/compose/expire", url.Values{"csrf": {csrf}, "event_key": {"sosna-ops:nope"}})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("POST /compose/expire unknown key = %d, want 404", resp.StatusCode)
 	}
 }
 

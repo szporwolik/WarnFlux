@@ -179,6 +179,7 @@ type pageView struct {
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
+	NavCompose       bool
 }
 
 // ---- view builders -------------------------------------------------------

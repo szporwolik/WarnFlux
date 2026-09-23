@@ -304,7 +304,7 @@ func run(configPath string) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic, trails, met)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic, trails, met)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}

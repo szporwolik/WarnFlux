@@ -68,6 +68,7 @@ type healthView struct {
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
+	NavCompose       bool
 }
 
 // handleHealthPage renders the system health dashboard.

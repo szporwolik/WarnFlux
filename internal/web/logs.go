@@ -109,6 +109,7 @@ type logsView struct {
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
+	NavCompose       bool
 }
 
 // handleLogsPage renders the self-refreshing log viewer.

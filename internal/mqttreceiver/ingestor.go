@@ -181,6 +181,16 @@ func (in *Ingestor) handleActive(pt ParsedTopic, topic string, payload []byte) {
 		return
 	}
 
+	// An expired or cancelled document is no longer active: drop the
+	// mirror entry (the retained document on the broker is the
+	// publisher's business; empty payloads are the other delete path).
+	if wh.Event.Status == "expired" || wh.Event.Status == "cancelled" {
+		in.state.DeleteActive(in.receiverID, topic)
+		in.logger.Debug("receiver: active hazard removed (expired status)",
+			"receiver", in.receiverID, "topic", topic, "status", wh.Event.Status)
+		return
+	}
+
 	h := state.Hazard{
 		EventKey:    wh.EventKey,
 		Source:      wh.Event.Source,

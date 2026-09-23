@@ -35,6 +35,7 @@ type mqttClient interface {
 	Disconnect(quiesce uint)
 	Subscribe(topic string, qos byte, callback mqtt.MessageHandler) mqtt.Token
 	Unsubscribe(topics ...string) mqtt.Token
+	Publish(topic string, qos byte, retained bool, payload interface{}) mqtt.Token
 	IsConnected() bool
 }
 

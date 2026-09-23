@@ -1,7 +1,7 @@
 {{define "topbar"}}<script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>
-    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavTest}}Test signal{{else if .NavLogs}}Logs{{else if .NavTraffic}}MQTT traffic{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
+    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavTest}}Test signal{{else if .NavCompose}}Compose{{else if .NavLogs}}Logs{{else if .NavTraffic}}MQTT traffic{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
     <span class="topbar-spacer"></span>
     <button type="button" class="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
@@ -28,6 +28,7 @@
       <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">Users</span></a>
       <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">Groups</span></a>
       <a class="nav-item{{if .NavTest}} active{{end}}" href="/test"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg><span class="nav-label">Test signal</span></a>
+      <a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">Compose</span></a>
       <a class="nav-item{{if .NavLogs}} active{{end}}" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg><span class="nav-label">Logs</span></a>
       <a class="nav-item{{if .NavTraffic}} active{{end}}" href="/traffic"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">MQTT traffic</span></a>
       <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">Notifications</span></a>

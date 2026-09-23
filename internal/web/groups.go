@@ -52,6 +52,7 @@ var baseRoutingSources = []sourceOption{
 	{Value: "imgw-hydro", Label: "IMGW hydro"},
 	{Value: "rso", Label: "RSO"},
 	{Value: "test-signal", Label: "test signal"},
+	{Value: "sosna-ops", Label: "Compose (sosna-ops)"},
 }
 
 // routingSources returns the full matrix row set: the built-in sources

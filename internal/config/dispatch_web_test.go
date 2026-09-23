@@ -46,7 +46,7 @@ web:
   name: "WarnFlux Ops"
   header1: "SPOK"
   header2: "Społeczna Platforma Ostrzegania i Komunikacji"
-  tagline: "od społeczności • dla mieszkańców • we współpracy z gminą"
+  tagline: "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo"
   domain: "spok.example.com"
   auth:
     username: admin
@@ -101,7 +101,7 @@ func TestLoadDispatchWebActions(t *testing.T) {
 	if cfg.Web.Header1 != "SPOK" || cfg.Web.Header2 != "Społeczna Platforma Ostrzegania i Komunikacji" {
 		t.Errorf("web headers = %q / %q", cfg.Web.Header1, cfg.Web.Header2)
 	}
-	if cfg.Web.Tagline != "od społeczności • dla mieszkańców • we współpracy z gminą" {
+	if cfg.Web.Tagline != "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo" {
 		t.Errorf("web tagline = %q", cfg.Web.Tagline)
 	}
 	if cfg.Web.Domain != "spok.example.com" {

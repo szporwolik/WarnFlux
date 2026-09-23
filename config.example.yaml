@@ -249,7 +249,7 @@ web:
   header2: "Społeczny Otwarty System Notyfikacji i Alertów"
 
   # Optional one-line motto rendered in the footer on every page.
-  tagline: "od społeczności • dla mieszkańców • we współpracy z gminą"
+  tagline: "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo"
 
   # Public domain this instance is served under (host, optional port).
   # Reserved for future absolute-link features; no scheme, no path.

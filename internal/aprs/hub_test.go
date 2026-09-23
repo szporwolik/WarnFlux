@@ -65,6 +65,37 @@ func testHub(t *testing.T, cfg HubConfig) (*Hub, *fakeSink) {
 	return hub, sink
 }
 
+func TestHubSelfPublishAfterStartupDelay(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		Icon:       "/j",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub.selfDelay = 250 * time.Millisecond
+	hub.Start(ctx)
+
+	// The self document must not race the (still connecting) MQTT sink at
+	// startup; it arrives after selfDelay.
+	if got := len(sink.payloads(StationsTopicPrefix + "SP9MOA-10")); got != 0 {
+		t.Fatalf("self station published immediately (%d), want after selfDelay", got)
+	}
+	waitFor(t, func() bool {
+		return len(sink.payloads(StationsTopicPrefix+"SP9MOA-10")) >= 1
+	})
+	var doc StationDocument
+	if err := json.Unmarshal(sink.payloads(StationsTopicPrefix + "SP9MOA-10")[0], &doc); err != nil {
+		t.Fatalf("unmarshal self doc: %v", err)
+	}
+	if !doc.Self {
+		t.Error("self document has self=false")
+	}
+}
+
 func testPacket(line string) Packet {
 	return ParseFeedLine(line, time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC))
 }
@@ -231,8 +262,9 @@ func TestHubSelfDocument(t *testing.T) {
 		StationTTL: 30 * time.Minute,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	hub.Start(ctx)
 	defer cancel()
+	hub.selfDelay = 10 * time.Millisecond
+	hub.Start(ctx)
 
 	waitFor(t, func() bool {
 		return len(sink.payloads(StationsTopicPrefix+"SP9MOA-10")) >= 1

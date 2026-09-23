@@ -15,11 +15,14 @@ import (
 
 // Hub runtime bounds.
 const (
-	opsQueueSize       = 1024
-	publishTimeout     = 5 * time.Second
-	tickInterval       = 30 * time.Second
-	packetDigestWindow = 10 * time.Minute
-	recentMessagesCap  = 64
+	opsQueueSize   = 1024
+	publishTimeout = 5 * time.Second
+	tickInterval   = 30 * time.Second
+	// startupPublishDelay postpones the first self-station publish so the
+	// MQTT sink has time to connect (see run).
+	startupPublishDelay = 2 * time.Second
+	packetDigestWindow  = 10 * time.Minute
+	recentMessagesCap   = 64
 )
 
 // hubOp is one queued observation from a backend.
@@ -78,12 +81,15 @@ type Hub struct {
 	seenDigests  map[string]int64 // digest -> last seen unix
 	recent       []MessageDocument
 
-	ops      chan hubOp
-	tick     time.Duration
-	accepted atomic.Int64
-	dropped  atomic.Int64
-	filtered atomic.Int64
-	expired  atomic.Int64
+	ops  chan hubOp
+	tick time.Duration
+	// selfDelay postpones the first self-station publish after Start (the
+	// MQTT sink needs a moment to connect). Overridable in tests.
+	selfDelay time.Duration
+	accepted  atomic.Int64
+	dropped   atomic.Int64
+	filtered  atomic.Int64
+	expired   atomic.Int64
 }
 
 // NewHub validates the hub identity and returns the hub. The hub is
@@ -132,6 +138,7 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 		seenDigests:  make(map[string]int64),
 		ops:          make(chan hubOp, opsQueueSize),
 		tick:         tickInterval,
+		selfDelay:    startupPublishDelay,
 	}, nil
 }
 
@@ -249,13 +256,21 @@ func (h *Hub) Start(ctx context.Context) {
 }
 
 func (h *Hub) run(ctx context.Context) {
-	h.publishSelf()
+	// The MQTT sink needs a moment after startup: publishing while the
+	// receiver's connection is still coming up stalls for the whole
+	// publish timeout and logs a misleading warning. The first self
+	// publish therefore goes out shortly after start; anything still
+	// failing is retried by the maintenance tick.
+	selfTimer := time.NewTimer(h.selfDelay)
+	defer selfTimer.Stop()
 	ticker := time.NewTicker(h.tick)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-selfTimer.C:
+			h.publishSelf()
 		case op := <-h.ops:
 			h.apply(op)
 		case <-ticker.C:

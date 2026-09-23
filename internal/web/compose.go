@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 )
@@ -192,6 +193,20 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("compose: communication published",
 		"event_key", h.EventKey, "severity", h.Severity, "status", h.Status)
 
+	// The communication also flows through the canonical dispatch ingress
+	// so the router's per-group rules (severity thresholds + assigned
+	// actions) fire exactly like for any other source.
+	typ := dispatch.TransitionNew
+	if form.EventKey != "" {
+		typ = dispatch.TransitionUpdated
+	}
+	if form.Status == "expired" {
+		typ = dispatch.TransitionExpired
+	}
+	if !s.ingress.Enqueue(composeTransition(h, typ)) {
+		s.logger.Warn("compose: dispatch queue full, transition dropped", "event_key", h.EventKey)
+	}
+
 	flash := "published"
 	if form.EventKey != "" {
 		flash = "updated"
@@ -211,7 +226,8 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimSpace(r.PostFormValue("event_key"))
-	if _, ok := s.composeHazard(key); !ok {
+	h, ok := s.composeHazard(key)
+	if !ok {
 		http.Error(w, "unknown communication", http.StatusNotFound)
 		return
 	}
@@ -226,7 +242,45 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("compose: communication expired", "event_key", key)
+
+	// Group routing sees the expiry too (like the sources' cancelled /
+	// expired transitions on the /events stream).
+	if !s.ingress.Enqueue(composeTransition(h, dispatch.TransitionExpired)) {
+		s.logger.Warn("compose: dispatch queue full, expiry transition dropped", "event_key", key)
+	}
 	http.Redirect(w, r, "/compose?msg=expired", http.StatusSeeOther)
+}
+
+// composeTransition builds the canonical ingress event for one compose
+// action (new / updated / expired).
+func composeTransition(h state.Hazard, typ dispatch.TransitionType) dispatch.Event {
+	now := time.Now()
+	return dispatch.Event{
+		Kind:       dispatch.EventHazardTransition,
+		ReceivedAt: now,
+		Origin:     dispatch.Origin{Type: "web", ReceiverID: "compose"},
+		Hazard: &dispatch.HazardTransition{
+			Type:      typ,
+			Key:       h.EventKey,
+			Source:    composeSource,
+			Timestamp: now,
+			Hazard: dispatch.Hazard{
+				EventKey:    h.EventKey,
+				Source:      h.Source,
+				SourceID:    h.SourceID,
+				Event:       h.Event,
+				Severity:    h.Severity,
+				Urgency:     h.Urgency,
+				Certainty:   h.Certainty,
+				Headline:    h.Headline,
+				Areas:       h.Areas,
+				EffectiveAt: h.EffectiveAt,
+				ExpiresAt:   h.ExpiresAt,
+				ReceivedAt:  h.ReceivedAt,
+				UpdatedAt:   h.UpdatedAt,
+			},
+		},
+	}
 }
 
 // validateComposeForm returns a user-facing message for invalid input.

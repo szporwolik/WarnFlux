@@ -16,8 +16,9 @@
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Compose communication</h2>
       <p class="page-info">
         Issue a community communication straight onto the WarnFlux broker: it becomes an
-        active hazard for every subscriber and appears on the public home page. Expiring
-        removes it everywhere.
+        active hazard for every subscriber and appears on the public home page. The same
+        transition flows through the group routing rules, so groups receive it through
+        their assigned actions. Expiring removes it everywhere.
       </p>
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}

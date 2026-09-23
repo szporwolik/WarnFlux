@@ -611,6 +611,11 @@ func TestComposeFlow(t *testing.T) {
 		t.Errorf("effective_at = %v", h.EffectiveAt)
 	}
 
+	// The publish also feeds the canonical ingress so group routing fires.
+	if ev := drainIngress(env); ev == nil || ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionNew || ev.Hazard.Key != h.EventKey {
+		t.Fatalf("compose publish did not enqueue a new transition: %+v", ev)
+	}
+
 	// Simulate the broker loopback: the ingestor mirrors the document.
 	if err := env.state.AddOrUpdateActive("local", "warnflux/active/sosna-ops/aaaa", h); err != nil {
 		t.Fatal(err)
@@ -651,6 +656,9 @@ func TestComposeFlow(t *testing.T) {
 	if len(env.pub.published) != 2 || env.pub.published[1].EventKey != h.EventKey {
 		t.Errorf("update did not reuse the event key: %+v", env.pub.published)
 	}
+	if ev := drainIngress(env); ev == nil || ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionUpdated {
+		t.Fatalf("compose update did not enqueue an updated transition: %+v", ev)
+	}
 
 	// Expire removes it.
 	csrf = extractCSRF(t, html)
@@ -661,11 +669,25 @@ func TestComposeFlow(t *testing.T) {
 	if len(env.pub.expired) != 1 || env.pub.expired[0] != h.EventKey {
 		t.Errorf("expire did not target the event key: %v", env.pub.expired)
 	}
+	if ev := drainIngress(env); ev == nil || ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionExpired {
+		t.Fatalf("compose expire did not enqueue an expired transition: %+v", ev)
+	}
 
 	// Unknown keys cannot be expired.
 	resp, _ = env.postForm("/compose/expire", url.Values{"csrf": {csrf}, "event_key": {"sosna-ops:nope"}})
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("POST /compose/expire unknown key = %d, want 404", resp.StatusCode)
+	}
+}
+
+// drainIngress non-blockingly reads one event from the test env's
+// dispatch ingress (nil when empty).
+func drainIngress(env *testEnv) *dispatch.Event {
+	select {
+	case e := <-env.ingress.Events():
+		return &e
+	default:
+		return nil
 	}
 }
 

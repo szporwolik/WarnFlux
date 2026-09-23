@@ -55,6 +55,7 @@ type Server struct {
 	logger    *slog.Logger
 	sessions  *sessionStore
 	logs      *LogBuffer
+	traffic   *mqttreceiver.TrafficBuffer
 
 	// ingest maps each configured public ingest endpoint id to its
 	// API-key-protected handler (may be empty).
@@ -81,11 +82,13 @@ const repoURL = appinfo.RepoURL
 
 // New builds the web server (no listener created yet). ingest maps public
 // ingest endpoint ids to their handlers; empty ids are ignored. logs is
-// the optional in-memory log ring buffer served by the /logs viewer.
+// the optional in-memory log ring buffer served by the /logs viewer;
+// traffic is the optional MQTT traffic ring buffer served by /traffic.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	router RouterStatuses, actions *action.Manager, ingress *dispatch.Ingress,
 	logger *slog.Logger, version, commit string, users storage.DirectoryStore,
-	ingest map[string]http.Handler, logs *LogBuffer) (*Server, error) {
+	ingest map[string]http.Handler, logs *LogBuffer,
+	traffic *mqttreceiver.TrafficBuffer) (*Server, error) {
 
 	// Read the admin password file at construction: a missing secret is a
 	// startup error, never a runtime surprise. Secrets are never logged.
@@ -118,6 +121,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		logger:    logger,
 		sessions:  newSessionStore(cfg.Auth.SecureCookie),
 		logs:      logs,
+		traffic:   traffic,
 		version:   version,
 		commit:    commit,
 		startedAt: time.Now(),
@@ -147,6 +151,8 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.Handle("GET /logs", s.requirePage(s.handleLogsPage))
 	s.mux.Handle("GET /partials/logs", s.requirePartial(s.handlePartialLogs))
+	s.mux.Handle("GET /traffic", s.requirePage(s.handleTrafficPage))
+	s.mux.Handle("GET /partials/traffic", s.requirePartial(s.handlePartialTraffic))
 	// Public ingest endpoints: authenticated per instance with the
 	// configured API key, never with a UI session.
 	if len(s.ingest) > 0 {

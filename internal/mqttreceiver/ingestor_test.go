@@ -45,7 +45,7 @@ func newIngestorEnv(t *testing.T, receiverID string, wfEnabled bool, filters []s
 	g := dispatch.NewIngress(64)
 	stats := &Stats{}
 	env := &ingestorEnv{
-		ingestor: NewIngestor(receiverID, wfEnabled, "warnflux", filters, st, g, stats, testLogger()),
+		ingestor: NewIngestor(receiverID, wfEnabled, "warnflux", filters, st, g, stats, testLogger(), nil),
 		state:    st,
 		ingress:  g,
 		stats:    stats,

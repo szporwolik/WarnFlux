@@ -32,11 +32,13 @@ type Ingestor struct {
 	ingress *dispatch.Ingress
 	stats   *Stats
 	logger  *slog.Logger
+	traffic *TrafficBuffer
 }
 
-// NewIngestor builds the message ingestor for one receiver.
+// NewIngestor builds the message ingestor for one receiver. traffic is the
+// optional MQTT traffic ring buffer (may be nil).
 func NewIngestor(receiverID string, wfEnabled bool, prefix string, filters []string,
-	st *state.State, ingress *dispatch.Ingress, stats *Stats, logger *slog.Logger) *Ingestor {
+	st *state.State, ingress *dispatch.Ingress, stats *Stats, logger *slog.Logger, traffic *TrafficBuffer) *Ingestor {
 	return &Ingestor{
 		receiverID: receiverID,
 		prefix:     prefix,
@@ -46,6 +48,7 @@ func NewIngestor(receiverID string, wfEnabled bool, prefix string, filters []str
 		ingress:    ingress,
 		stats:      stats,
 		logger:     logger,
+		traffic:    traffic,
 	}
 }
 
@@ -63,6 +66,27 @@ func (in *Ingestor) HandleMessage(_ mqtt.Client, msg mqtt.Message) {
 
 	topic := msg.Topic()
 	payload := msg.Payload()
+
+	// Record the raw frame in the traffic buffer BEFORE any validation:
+	// malformed and oversized frames are traffic too.
+	if in.traffic != nil {
+		kind := "generic"
+		if in.wfEnabled {
+			if parsed := ParseTopic(in.prefix, topic); parsed.Kind != TopicUnknown {
+				switch parsed.Kind {
+				case TopicEvents:
+					kind = "events"
+				case TopicActive:
+					kind = "active"
+				case TopicInfo:
+					kind = "info"
+				case TopicStatus:
+					kind = "status"
+				}
+			}
+		}
+		in.traffic.Add(in.receiverID, kind, topic, msg.Qos(), msg.Retained(), len(payload))
+	}
 
 	if len(payload) > MaxPayload {
 		if in.stats != nil {

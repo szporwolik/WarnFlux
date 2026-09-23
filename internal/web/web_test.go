@@ -48,6 +48,7 @@ type testEnv struct {
 	receiver *mqttreceiver.Manager
 	users    *fakeUsers
 	logs     *web.LogBuffer
+	traffic  *mqttreceiver.TrafficBuffer
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -70,6 +71,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 	st := state.New()
 	ingress := dispatch.NewIngress(64)
 	logs := web.NewLogBuffer(web.DefaultLogLines)
+	traffic := mqttreceiver.NewTrafficBuffer(mqttreceiver.DefaultTrafficEntries)
 
 	receivers, err := mqttreceiver.NewManager([]config.Receiver{
 		{
@@ -82,7 +84,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 			ID: "remote-club", Enabled: false,
 			Broker: "tcp://user:secret@10.10.10.10:1883",
 		},
-	}, st, ingress, logger)
+	}, st, ingress, logger, traffic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +117,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		t.Fatal(err)
 	}
 
-	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs)
+	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +131,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		return http.ErrUseLastResponse // observe redirects instead of following
 	}}
 
-	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users, logs: logs}
+	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users, logs: logs, traffic: traffic}
 }
 
 type nopAction struct{}
@@ -191,6 +193,79 @@ func TestLogsViewerFlow(t *testing.T) {
 	_, body = env.get("/partials/logs?after=" + strconv.FormatInt(cursor, 10))
 	if !strings.Contains(body, "careful") || strings.Contains(body, "hello") {
 		t.Errorf("incremental feed = %s, want only the new line", body)
+	}
+}
+
+// TestTrafficViewerFlow pins the /traffic page and the incremental feed:
+// the page requires login, the first poll returns the whole buffer and a
+// cursor-restricted poll returns only the newer entries.
+func TestTrafficViewerFlow(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Unauthenticated: redirect to the login page.
+	resp, _ := env.get("/traffic")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("GET /traffic unauthenticated = %d %q, want redirect", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	env.traffic.Add("local", "events", "warnflux/events/123", 1, false, 412)
+	env.traffic.Add("local", "active", "warnflux/active", 0, true, 88)
+
+	env.login()
+	_, html := env.get("/traffic")
+	if !strings.Contains(html, `id="traffic-viewer"`) {
+		t.Errorf("traffic page missing viewer: %s", html)
+	}
+	if !strings.Contains(html, `<span class="nav-label">MQTT traffic</span>`) {
+		t.Errorf("traffic page missing sidebar entry: %s", html)
+	}
+	if !strings.Contains(html, "Last 100 inbound MQTT frames") {
+		t.Errorf("traffic page missing buffer hint: %s", html)
+	}
+
+	// Full buffer poll.
+	resp, body := env.get("/partials/traffic?after=0")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial poll = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, `"kind":"events"`) || !strings.Contains(body, `"kind":"active"`) ||
+		!strings.Contains(body, "warnflux/events/123") {
+		t.Fatalf("traffic feed = %s", body)
+	}
+	var feed struct {
+		Entries []struct {
+			Seq      int64  `json:"seq"`
+			Kind     string `json:"kind"`
+			Topic    string `json:"topic"`
+			QoS      byte   `json:"qos"`
+			Retained bool   `json:"retained"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal([]byte(body), &feed); err != nil {
+		t.Fatalf("feed is not valid JSON: %v", err)
+	}
+	if len(feed.Entries) != 2 {
+		t.Fatalf("feed entries = %d, want 2", len(feed.Entries))
+	}
+	if feed.Entries[0].QoS != 1 || feed.Entries[0].Retained {
+		t.Errorf("entry 0 fields = %+v", feed.Entries[0])
+	}
+	if feed.Entries[1].QoS != 0 || !feed.Entries[1].Retained {
+		t.Errorf("entry 1 fields = %+v", feed.Entries[1])
+	}
+	cursor := feed.Entries[1].Seq
+
+	// Incremental poll: only the entry after the cursor.
+	env.traffic.Add("local", "status", "warnflux/status", 0, false, 64)
+	_, body = env.get("/partials/traffic?after=" + strconv.FormatInt(cursor, 10))
+	if !strings.Contains(body, "warnflux/status") || strings.Contains(body, "warnflux/active") {
+		t.Errorf("incremental feed = %s, want only the new entry", body)
+	}
+
+	// Bad cursor: rejected.
+	resp, _ = env.get("/partials/traffic?after=banana")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad cursor = %d, want 400", resp.StatusCode)
 	}
 }
 

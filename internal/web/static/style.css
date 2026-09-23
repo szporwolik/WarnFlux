@@ -780,6 +780,14 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .log-info { color: var(--text); }
 .log-plain { color: var(--muted); }
 
+/* ---- MQTT traffic viewer ---- */
+.traffic-viewer { height: 70vh; }
+.tr-events { color: #ff8a8a; }
+.tr-active { color: #7ee0a3; }
+.tr-info { color: #7fb8ff; }
+.tr-status { color: #ffd166; }
+.tr-generic { color: var(--muted); }
+
 /* Compact per-channel chips in the groups table. */
 .routing-matrix { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 .matrix-chip {

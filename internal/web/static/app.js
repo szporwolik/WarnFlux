@@ -136,6 +136,96 @@
   }
 })();
 
+// MQTT traffic page: same incremental tail as the logs viewer, one row per
+// inbound frame. Rows are colored by topic kind (events/active/info/status).
+(function () {
+  "use strict";
+
+  var TRAFFIC_POLL_MS = 2000;
+  var MAX_TRAFFIC_NODES = 200;
+
+  function pad2(n) {
+    return n < 10 ? "0" + n : "" + n;
+  }
+
+  function lineFor(entry) {
+    var t = new Date(entry.at);
+    var when = isNaN(t.getTime())
+      ? entry.at
+      : pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + ":" + pad2(t.getSeconds());
+    var cls = "tr-" + entry.kind;
+    var text = when + "  [" + entry.kind + "] " + entry.receiver + "  " + entry.topic +
+      "  qos=" + entry.qos + (entry.retained ? "  retained" : "") +
+      "  " + entry.size + "B";
+    return { cls: cls, text: text };
+  }
+
+  function initTraffic() {
+    var viewer = document.getElementById("traffic-viewer");
+    if (!viewer) {
+      return;
+    }
+    var after = parseInt(viewer.getAttribute("data-after"), 10) || 0;
+
+    function atBottom() {
+      return viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40;
+    }
+
+    function poll() {
+      fetch("/partials/traffic?after=" + after, {
+        headers: { "Accept": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store"
+      })
+        .then(function (res) {
+          if (res.status === 401) {
+            window.location.href = "/login";
+            return null;
+          }
+          if (!res.ok) {
+            return null;
+          }
+          return res.json();
+        })
+        .then(function (data) {
+          if (!data || !data.entries || data.entries.length === 0) {
+            return;
+          }
+          var stick = atBottom();
+          var frag = document.createDocumentFragment();
+          data.entries.forEach(function (entry) {
+            var line = lineFor(entry);
+            var div = document.createElement("div");
+            div.className = "log-line " + line.cls;
+            div.textContent = line.text;
+            frag.appendChild(div);
+            after = entry.seq;
+          });
+          viewer.appendChild(frag);
+          viewer.setAttribute("data-after", after);
+          while (viewer.children.length > MAX_TRAFFIC_NODES) {
+            viewer.removeChild(viewer.firstChild);
+          }
+          if (stick) {
+            viewer.scrollTop = viewer.scrollHeight;
+          }
+        })
+        .catch(function () {
+          // Network hiccup: keep the last rendered rows and try again.
+        });
+    }
+
+    poll();
+    setInterval(poll, TRAFFIC_POLL_MS);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initTraffic);
+  } else {
+    initTraffic();
+  }
+})();
+
 // Application drawer: collapses to an icon rail on desktop (persisted),
 // overlays the content on narrow screens.
 (function () {

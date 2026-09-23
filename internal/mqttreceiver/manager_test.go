@@ -14,7 +14,7 @@ import (
 func mgrEnv(t *testing.T, receivers []config.Receiver) *Manager {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	m, err := NewManager(receivers, state.New(), dispatch.NewIngress(64), logger)
+	m, err := NewManager(receivers, state.New(), dispatch.NewIngress(64), logger, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

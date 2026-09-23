@@ -207,6 +207,10 @@ func run(configPath string) error {
 	ingress := dispatch.NewIngress(cfg.Dispatch.QueueSize)
 	mirror := state.New()
 
+	// Inbound MQTT traffic ring buffer: every frame the receivers ingest
+	// lands here and is served by the web UI's /traffic viewer.
+	traffic := mqttreceiver.NewTrafficBuffer(mqttreceiver.DefaultTrafficEntries)
+
 	// ActionPlugins: explicit routing only. Unknown types fail here, before
 	// any worker starts (even for disabled entries).
 	actionRegistry := action.NewRegistry()
@@ -220,7 +224,7 @@ func run(configPath string) error {
 
 	// MQTT receivers: independent input clients (never the publisher).
 	// Construction failures are fatal; connection failures are not.
-	receivers, err := mqttreceiver.NewManager(cfg.Dispatch.Receivers, mirror, ingress, logger)
+	receivers, err := mqttreceiver.NewManager(cfg.Dispatch.Receivers, mirror, ingress, logger, traffic)
 	if err != nil {
 		return fmt.Errorf("configure mqtt receivers: %w", err)
 	}
@@ -289,7 +293,7 @@ func run(configPath string) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}

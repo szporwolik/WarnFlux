@@ -67,6 +67,7 @@ type usersView struct {
 	NavGroups    bool
 	NavTest      bool
 	NavLogs      bool
+	NavTraffic   bool
 }
 
 // handleUsersPage renders the user administration page. ?edit=<id>

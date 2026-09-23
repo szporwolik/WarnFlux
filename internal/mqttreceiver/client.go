@@ -74,7 +74,7 @@ type Receiver struct {
 // NewReceiver builds the receiver and its paho client without connecting.
 // Password files are read here (like the MQTT output) so a missing secret
 // fails receiver construction, never runtime delivery.
-func NewReceiver(cfg config.Receiver, st *state.State, ingress *dispatch.Ingress, logger *slog.Logger) (*Receiver, error) {
+func NewReceiver(cfg config.Receiver, st *state.State, ingress *dispatch.Ingress, logger *slog.Logger, traffic *TrafficBuffer) (*Receiver, error) {
 	if cfg.PasswordFile != "" {
 		if info, err := os.Stat(cfg.PasswordFile); err != nil {
 			return nil, fmt.Errorf("receiver %q: stat password_file: %w", cfg.ID, err)
@@ -111,7 +111,7 @@ func NewReceiver(cfg config.Receiver, st *state.State, ingress *dispatch.Ingress
 		},
 	}
 	r.ingestor = NewIngestor(cfg.ID, cfg.WF.Enabled, cfg.WF.TopicPrefix,
-		subscriptionFilters(cfg), st, ingress, stats, logger)
+		subscriptionFilters(cfg), st, ingress, stats, logger, traffic)
 	return r, nil
 }
 

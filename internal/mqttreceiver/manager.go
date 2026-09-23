@@ -26,7 +26,7 @@ type Manager struct {
 // NewManager builds one receiver per configured entry. Construction
 // failures (e.g. unreadable password_file) are fatal before any runtime
 // component starts; connection failures are not.
-func NewManager(cfgs []config.Receiver, st *state.State, ingress *dispatch.Ingress, logger *slog.Logger) (*Manager, error) {
+func NewManager(cfgs []config.Receiver, st *state.State, ingress *dispatch.Ingress, logger *slog.Logger, traffic *TrafficBuffer) (*Manager, error) {
 	m := &Manager{logger: logger}
 	for _, cfg := range cfgs {
 		if !cfg.Enabled {
@@ -37,7 +37,7 @@ func NewManager(cfgs []config.Receiver, st *state.State, ingress *dispatch.Ingre
 			}})
 			continue
 		}
-		r, err := NewReceiver(cfg, st, ingress, logger)
+		r, err := NewReceiver(cfg, st, ingress, logger, traffic)
 		if err != nil {
 			return nil, err
 		}

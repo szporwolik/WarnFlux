@@ -106,6 +106,7 @@ type logsView struct {
 	NavGroups    bool
 	NavTest      bool
 	NavLogs      bool
+	NavTraffic   bool
 }
 
 // handleLogsPage renders the self-refreshing log viewer.

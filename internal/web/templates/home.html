@@ -29,6 +29,11 @@
     </div>
   </header>
 
+  {{if .About}}<div class="home-about" id="home-about">
+    <div class="home-about-text">{{.About}}</div>
+    <button type="button" class="home-about-toggle" aria-expanded="false">Więcej</button>
+  </div>{{end}}
+
   <nav class="home-tabs" role="tablist" aria-label="Sekcje">
     <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Aktualne zagrożenia</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab2">Tab 2</button>
@@ -36,7 +41,6 @@
 
   <main class="home-main">
     <section class="home-panel" id="panel-tab-alerts" data-panel="tab-alerts">
-      {{if .About}}<div class="home-about">{{.About}}</div>{{end}}
       {{template "home_alerts_section" .}}
     </section>
     <section class="home-panel" id="panel-tab2" data-panel="tab2" hidden>

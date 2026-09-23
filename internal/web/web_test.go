@@ -469,6 +469,7 @@ func TestPublicHomePage(t *testing.T) {
 		"Test platform",            // header2
 		"Test info text.",          // configurable about text
 		`href="https://sp9moa.pl"`, // HTML links are allowed in the about text
+		`class="home-about-toggle"`, // Więcej/Zwiń expand button
 		"Ekstremalny wiatr",        // most severe first
 		`href="/login"`,            // sign-in behind the icon button
 		"Aktualne zagrożenia",
@@ -480,11 +481,12 @@ func TestPublicHomePage(t *testing.T) {
 			t.Errorf("home page missing %q: %s", want, html)
 		}
 	}
-	// The about text must sit above the hazard list.
+	// The about text must sit above the tabs and the hazard list.
 	aboutAt := strings.Index(html, "Test info text.")
+	tabsAt := strings.Index(html, `class="home-tabs"`)
 	alertsAt := strings.Index(html, `id="home-alerts"`)
-	if aboutAt < 0 || alertsAt < 0 || aboutAt > alertsAt {
-		t.Errorf("about text not above the alerts list: about@%d alerts@%d", aboutAt, alertsAt)
+	if aboutAt < 0 || tabsAt < 0 || alertsAt < 0 || aboutAt > tabsAt || tabsAt > alertsAt {
+		t.Errorf("about text not above tabs and alerts list: about@%d tabs@%d alerts@%d", aboutAt, tabsAt, alertsAt)
 	}
 	if strings.Contains(html, `name="csrf"`) {
 		t.Error("home page must not carry login form state (login is behind the icon button)")

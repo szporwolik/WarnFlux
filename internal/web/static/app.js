@@ -463,6 +463,39 @@
   }
 })();
 
+// Public home page: collapse the about intro to three lines with a
+// Więcej/Zwiń toggle (button hidden when the text already fits).
+(function () {
+  "use strict";
+
+  function initAbout() {
+    var box = document.getElementById("home-about");
+    if (!box) {
+      return;
+    }
+    var text = box.querySelector(".home-about-text");
+    var btn = box.querySelector(".home-about-toggle");
+    if (!text || !btn) {
+      return;
+    }
+    if (text.scrollHeight <= text.clientHeight + 2) {
+      btn.hidden = true; // short enough — nothing to expand
+      return;
+    }
+    btn.addEventListener("click", function () {
+      var expanded = box.classList.toggle("expanded");
+      btn.textContent = expanded ? "Zwiń" : "Więcej";
+      btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initAbout);
+  } else {
+    initAbout();
+  }
+})();
+
 // Application drawer: collapses to an icon rail on desktop (persisted),
 // overlays the content on narrow screens.
 (function () {

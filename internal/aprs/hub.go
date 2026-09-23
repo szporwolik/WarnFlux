@@ -36,6 +36,9 @@ const (
 // from it count as rf-received (no q-construct in KISS).
 const BackendRadio = "aprs-radio"
 
+// BackendInternet is the via label of the APRS-IS backend.
+const BackendInternet = "aprs-inet"
+
 // ErrNoAck reports that the addressee did not acknowledge a message
 // within the wait window.
 var ErrNoAck = errors.New("aprs: no ack received")
@@ -565,7 +568,7 @@ func (h *Hub) SendMessage(ctx context.Context, to, text string) error {
 		return fmt.Errorf("aprs: message text must not be empty")
 	}
 
-	tx := h.readyTransmitter()
+	tx := h.readyTransmitterFor(to)
 	if tx == nil {
 		return ErrNoTransmitter
 	}
@@ -604,7 +607,7 @@ func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout t
 		h.mu.Unlock()
 	}()
 
-	tx := h.readyTransmitter()
+	tx := h.readyTransmitterFor(to)
 	if tx == nil {
 		return false, ErrNoTransmitter
 	}
@@ -632,18 +635,47 @@ func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout t
 	}
 }
 
-// readyTransmitter returns the first ready outbound backend (sorted by
-// name for determinism), or nil when none is connected.
-func (h *Hub) readyTransmitter() Transmitter {
+// readyTransmitterFor picks the outbound backend for one addressee. The
+// radio reaches stations heard over RF, the internet backend reaches
+// internet-injected stations; when the addressee's origin is unknown the
+// radio is preferred (it keeps working without internet). Ready backends
+// of the other kind are the fallback, so both paths work in parallel and
+// complement each other.
+func (h *Hub) readyTransmitterFor(to string) Transmitter {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	var radio, internet, other Transmitter
 	names := make([]string, 0, len(h.transmitters))
 	for name := range h.transmitters {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if t := h.transmitters[name]; t.Ready() {
+		t := h.transmitters[name]
+		if !t.Ready() {
+			continue
+		}
+		switch name {
+		case BackendRadio:
+			radio = t
+		case BackendInternet:
+			internet = t
+		default:
+			if other == nil {
+				other = t
+			}
+		}
+	}
+	origin := OriginUnknown
+	if rec := h.stations[to]; rec != nil {
+		origin = rec.state.origin
+	}
+	order := []Transmitter{radio, internet, other}
+	if origin == OriginInternet {
+		order = []Transmitter{internet, radio, other}
+	}
+	for _, t := range order {
+		if t != nil {
 			return t
 		}
 	}

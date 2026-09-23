@@ -34,6 +34,17 @@ sources:
 
 Requires `aprs.enabled: true`.
 
+## Parallel operation
+
+`aprs-inet` and `aprs-radio` run side by side and complement each other:
+
+- both feed the hub at the same time — RF-heard packets enrich the
+  APRS-IS view (and vice versa), stations heard on RF are marked `rf`;
+- outbound messages prefer the radio for RF-heard stations (reaching hams
+  without any internet hop) and fall back to APRS-IS for internet-only
+  stations or when the TNC is down — so in a crisis with no network the
+  radio becomes the primary path automatically.
+
 ## Message acks
 
 Outbound messages sent with ack tracking (the `aprs-out` action) carry a

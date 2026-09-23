@@ -193,6 +193,10 @@ sources:
   # (Direwolf, aprsd, a hardware TNC bridge...) and feeds every decoded
   # frame into the shared APRS hub; while connected it also acts as the
   # outbound transmitter for APRS messages. Requires aprs.enabled: true.
+  # Both backends run in parallel and complement each other: RF-heard
+  # packets enrich the APRS-IS view, and outbound messages prefer the
+  # radio for radio-heard stations (falling back to APRS-IS when the TNC
+  # is down or the station is internet-only).
   # See internal/plugins/sources/aprsradio/README.md.
   #
   # - id: aprs-radio-main

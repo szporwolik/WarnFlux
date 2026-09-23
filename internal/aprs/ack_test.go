@@ -135,3 +135,74 @@ func TestSendMessageWaitAckNoTransmitter(t *testing.T) {
 		t.Fatalf("no transmitter wait = %v, want ErrNoTransmitter", err)
 	}
 }
+
+// TestTransmitterPreferenceByOrigin pins the parallel-backend policy: the
+// radio carries messages to rf-heard stations, the internet backend to
+// internet-injected ones, and unknown stations prefer the radio. The other
+// backend is always the fallback.
+func TestTransmitterPreferenceByOrigin(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		Icon:       "/j",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	radio := &fakeTransmitter{name: BackendRadio, ready: true}
+	inet := &fakeTransmitter{name: BackendInternet, ready: true}
+	hub.AddTransmitter(BackendRadio, radio)
+	hub.AddTransmitter(BackendInternet, inet)
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hasStation := func(callsign string) bool {
+		for _, s := range hub.Stations() {
+			if s.Callsign == callsign {
+				return true
+			}
+		}
+		return false
+	}
+
+	// RF-heard station → radio.
+	hub.Observe(testPacket("SP9AAA-1>APRS,SR9NR*,qAR,SR9NR:!5056.25N/01952.50E-"), BackendInternet)
+	waitFor(t, func() bool { return hasStation("SP9AAA-1") })
+	if err := hub.SendMessage(ctx, "SP9AAA-1", "hi"); err != nil {
+		t.Fatalf("SendMessage rf: %v", err)
+	}
+	if got := len(radio.sends()); got != 1 {
+		t.Errorf("radio sends = %d, want 1 (rf station)", got)
+	}
+	if got := len(inet.sends()); got != 0 {
+		t.Errorf("inet sends = %d, want 0 (rf station)", got)
+	}
+
+	// Internet-injected station → APRS-IS.
+	hub.Observe(testPacket("SP9BBB-2>APRS,TCPIP*:!5056.25N/01952.50E-"), BackendInternet)
+	waitFor(t, func() bool { return hasStation("SP9BBB-2") })
+	if err := hub.SendMessage(ctx, "SP9BBB-2", "hi"); err != nil {
+		t.Fatalf("SendMessage inet: %v", err)
+	}
+	if got := len(inet.sends()); got != 1 {
+		t.Errorf("inet sends = %d, want 1 (internet station)", got)
+	}
+
+	// Unknown station → radio preferred (works without internet).
+	if err := hub.SendMessage(ctx, "SP9CCC-3", "hi"); err != nil {
+		t.Fatalf("SendMessage unknown: %v", err)
+	}
+	if got := len(radio.sends()); got != 2 {
+		t.Errorf("radio sends = %d, want 2 (unknown station)", got)
+	}
+
+	// Radio down → the internet backend takes over for any station.
+	hub.AddTransmitter(BackendRadio, &fakeTransmitter{name: BackendRadio, ready: false})
+	if err := hub.SendMessage(ctx, "SP9AAA-1", "hi"); err != nil {
+		t.Fatalf("SendMessage fallback: %v", err)
+	}
+	if got := len(inet.sends()); got != 2 {
+		t.Errorf("inet sends = %d, want 2 (radio down fallback)", got)
+	}
+}

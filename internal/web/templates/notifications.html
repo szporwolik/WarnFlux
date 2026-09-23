@@ -1,0 +1,41 @@
+{{define "notifications"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notifications · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card nt-card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Notifications · delivery history</h2>
+      <p class="muted log-hint">Why each alert was or was not delivered: routing decisions, thresholds, deduplication and action attempts. Refreshes automatically.</p>
+      <div id="notif-list" class="notif-list">
+        {{range .Trails}}{{template "notif-item" .}}{{else}}<p class="empty">No notifications processed yet</p>{{end}}
+      </div>
+    </section>
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+{{end}}
+
+{{define "notif-item"}}<article class="notif{{if eq .Outcome "failed"}} notif-failed{{end}}" id="notif-{{.Key}}" data-key="{{.Key}}">
+  <div class="notif-head">
+    <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
+    <strong>{{.Source}} alert</strong>
+    {{if .Headline}}<span class="nt-title">{{.Headline}}</span>{{end}}
+    <span class="muted nt-time">{{timeFullStr .ReceivedAt}}</span>
+    <span class="badge nt-outcome nt-outcome-{{.Outcome}}">{{.Outcome}}</span>
+  </div>
+  <ol class="nt-steps">
+    {{range .Steps}}<li class="nt-step nt-{{.Kind}}"><span class="nt-at">{{timeHMS .At}}</span><span class="nt-text">{{.Text}}</span></li>{{end}}
+  </ol>
+</article>
+{{end}}

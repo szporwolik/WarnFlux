@@ -122,6 +122,7 @@
       </div>
       {{if .Areas}}<div class="w-areas">Areas: {{.Areas}}</div>{{end}}
       {{if .Description}}<details><summary>Description</summary><p>{{.Description}}</p></details>{{end}}
+      {{if .Key}}<a class="w-trail" href="/notifications?key={{.Key}}">delivery trail</a>{{end}}
     </article>
     {{end}}
   </div>

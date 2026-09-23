@@ -286,6 +286,10 @@ actions:
   #     queue_size: 128
   #     call_timeout: 5m
   #     shutdown_timeout: 10s
+  #     # Extra delivery attempts after the first failure (fixed 5s
+  #     # backoff). Every attempt lands in the /notifications audit
+  #     # trail. 0 = deliver once, no retry.
+  #     retries: 2
   #
   #   config:
   #     host: smtp.example.com

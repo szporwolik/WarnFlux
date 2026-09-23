@@ -226,6 +226,169 @@
   }
 })();
 
+// Notifications page: full snapshot poll. The list is re-rendered only
+// when the data changed, so scrolling and text selection survive polls.
+(function () {
+  "use strict";
+
+  var NOTIF_POLL_MS = 2500;
+
+  function stepLine(step) {
+    var li = document.createElement("li");
+    li.className = "nt-step nt-" + step.kind;
+    var at = document.createElement("span");
+    at.className = "nt-at";
+    at.textContent = hhmmss(step.at);
+    var tx = document.createElement("span");
+    tx.className = "nt-text";
+    tx.textContent = step.text;
+    li.appendChild(at);
+    li.appendChild(tx);
+    return li;
+  }
+
+  function hhmmss(rfc3339) {
+    var t = new Date(rfc3339);
+    if (isNaN(t.getTime())) {
+      return rfc3339;
+    }
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+    return pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + ":" + pad2(t.getSeconds());
+  }
+
+  function itemFor(trail) {
+    var art = document.createElement("article");
+    art.className = "notif";
+    art.id = "notif-" + trail.key;
+    art.dataset.key = trail.key;
+
+    var head = document.createElement("div");
+    head.className = "notif-head";
+
+    var sev = document.createElement("span");
+    sev.className = "sev sev-" + (trail.severity || "unknown").toLowerCase();
+    sev.textContent = trail.severity || "unknown";
+    head.appendChild(sev);
+
+    var src = document.createElement("strong");
+    src.textContent = (trail.source || "?") + " alert";
+    head.appendChild(src);
+
+    if (trail.headline) {
+      var title = document.createElement("span");
+      title.className = "nt-title";
+      title.textContent = trail.headline;
+      head.appendChild(title);
+    }
+
+    var when = document.createElement("span");
+    when.className = "muted nt-time";
+    when.textContent = fullTime(trail.received_at);
+    head.appendChild(when);
+
+    var badge = document.createElement("span");
+    badge.className = "badge nt-outcome nt-outcome-" + (trail.outcome || "skipped");
+    badge.textContent = trail.outcome || "skipped";
+    head.appendChild(badge);
+
+    if (trail.outcome === "failed") {
+      art.classList.add("notif-failed");
+    }
+    art.appendChild(head);
+
+    var steps = document.createElement("ol");
+    steps.className = "nt-steps";
+    (trail.steps || []).forEach(function (s) {
+      steps.appendChild(stepLine(s));
+    });
+    art.appendChild(steps);
+    return art;
+  }
+
+  function fullTime(rfc3339) {
+    var t = new Date(rfc3339);
+    if (isNaN(t.getTime())) {
+      return rfc3339;
+    }
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+    return t.getFullYear() + "-" + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) +
+      " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + ":" + pad2(t.getSeconds());
+  }
+
+  function focusKey() {
+    var m = /[?&]key=([^&]+)/.exec(window.location.search);
+    return m ? decodeURIComponent(m[1]) : "";
+  }
+
+  function initNotifications() {
+    var list = document.getElementById("notif-list");
+    if (!list) {
+      return;
+    }
+    var lastJSON = "";
+
+    function render(trails) {
+      var frag = document.createDocumentFragment();
+      var fk = focusKey();
+      (trails || []).forEach(function (t) {
+        var item = itemFor(t);
+        if (fk && t.key === fk) {
+          item.classList.add("notif-focus");
+        }
+        frag.appendChild(item);
+      });
+      list.replaceChildren(frag);
+      if (!trails || trails.length === 0) {
+        var p = document.createElement("p");
+        p.className = "empty";
+        p.textContent = "No notifications processed yet";
+        list.appendChild(p);
+      }
+    }
+
+    function poll() {
+      fetch("/partials/notifications", {
+        headers: { "Accept": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store"
+      })
+        .then(function (res) {
+          if (res.status === 401) {
+            window.location.href = "/login";
+            return null;
+          }
+          if (!res.ok) {
+            return null;
+          }
+          return res.json();
+        })
+        .then(function (data) {
+          if (!data || !data.trails) {
+            return;
+          }
+          var cur = JSON.stringify(data.trails);
+          if (cur === lastJSON) {
+            return;
+          }
+          lastJSON = cur;
+          render(data.trails);
+        })
+        .catch(function () {
+          // Network hiccup: keep the last rendered list and try again.
+        });
+    }
+
+    poll();
+    setInterval(poll, NOTIF_POLL_MS);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initNotifications);
+  } else {
+    initNotifications();
+  }
+})();
+
 // Application drawer: collapses to an icon rail on desktop (persisted),
 // overlays the content on narrow screens.
 (function () {

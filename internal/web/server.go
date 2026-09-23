@@ -29,6 +29,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 //go:embed templates/*.html
@@ -56,6 +57,7 @@ type Server struct {
 	sessions  *sessionStore
 	logs      *LogBuffer
 	traffic   *mqttreceiver.TrafficBuffer
+	trails    *trail.Recorder
 
 	// ingest maps each configured public ingest endpoint id to its
 	// API-key-protected handler (may be empty).
@@ -83,12 +85,15 @@ const repoURL = appinfo.RepoURL
 // New builds the web server (no listener created yet). ingest maps public
 // ingest endpoint ids to their handlers; empty ids are ignored. logs is
 // the optional in-memory log ring buffer served by the /logs viewer;
-// traffic is the optional MQTT traffic ring buffer served by /traffic.
+// traffic is the optional MQTT traffic ring buffer served by /traffic;
+// trails is the optional notification audit recorder served by
+// /notifications.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	router RouterStatuses, actions *action.Manager, ingress *dispatch.Ingress,
 	logger *slog.Logger, version, commit string, users storage.DirectoryStore,
 	ingest map[string]http.Handler, logs *LogBuffer,
-	traffic *mqttreceiver.TrafficBuffer) (*Server, error) {
+	traffic *mqttreceiver.TrafficBuffer,
+	trails *trail.Recorder) (*Server, error) {
 
 	// Read the admin password file at construction: a missing secret is a
 	// startup error, never a runtime surprise. Secrets are never logged.
@@ -122,6 +127,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		sessions:  newSessionStore(cfg.Auth.SecureCookie),
 		logs:      logs,
 		traffic:   traffic,
+		trails:    trails,
 		version:   version,
 		commit:    commit,
 		startedAt: time.Now(),
@@ -153,6 +159,8 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/logs", s.requirePartial(s.handlePartialLogs))
 	s.mux.Handle("GET /traffic", s.requirePage(s.handleTrafficPage))
 	s.mux.Handle("GET /partials/traffic", s.requirePartial(s.handlePartialTraffic))
+	s.mux.Handle("GET /notifications", s.requirePage(s.handleNotificationsPage))
+	s.mux.Handle("GET /partials/notifications", s.requirePartial(s.handlePartialNotifications))
 	// Public ingest endpoints: authenticated per instance with the
 	// configured API key, never with a UI session.
 	if len(s.ingest) > 0 {
@@ -286,6 +294,22 @@ func templateFuncs() template.FuncMap {
 				return "—"
 			}
 			return t.Local().Format("15:04:05")
+		},
+		// Trail steps carry RFC3339 timestamps as strings (JSON shape);
+		// these two helpers render them for the notifications page.
+		"timeHMS": func(s string) string {
+			t, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				return s
+			}
+			return t.Local().Format("15:04:05")
+		},
+		"timeFullStr": func(s string) string {
+			t, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				return s
+			}
+			return t.Local().Format("2006-01-02 15:04:05")
 		},
 		"dur": func(d time.Duration) string {
 			if d < 0 {

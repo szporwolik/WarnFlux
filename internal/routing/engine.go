@@ -30,6 +30,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 // ActionSubmitter is the action half of rule evaluation. It is satisfied
@@ -60,6 +61,7 @@ type Engine struct {
 	store   RuleStore
 	actions ActionSubmitter
 	logger  *slog.Logger
+	trail   *trail.Recorder
 
 	// app is stamped onto every action request (footers, links).
 	app action.AppInfo
@@ -83,12 +85,14 @@ type Engine struct {
 	ruleLoadErrors     atomic.Int64
 }
 
-// New builds an engine with the default refresh interval.
-func New(store RuleStore, actions ActionSubmitter, logger *slog.Logger, app action.AppInfo) *Engine {
+// New builds an engine with the default refresh interval. trail is the
+// optional per-alert audit recorder (may be nil).
+func New(store RuleStore, actions ActionSubmitter, logger *slog.Logger, app action.AppInfo, trail *trail.Recorder) *Engine {
 	return &Engine{
 		store:           store,
 		actions:         actions,
 		logger:          logger,
+		trail:           trail,
 		app:             app,
 		refreshInterval: defaultRefreshInterval,
 	}
@@ -150,18 +154,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	}
 	e.eventsSeen.Add(1)
 
-	// Cancellations and expirations only retire the active view (the
-	// dashboard hides the hazard); starting the notification machine for
-	// them makes no sense, so only new and updated transitions are
-	// routed to actions.
-	switch ev.Hazard.Type {
-	case dispatch.TransitionCancelled, dispatch.TransitionExpired:
-		e.transitionsSkipped.Add(1)
-		e.logger.Debug("routing: terminal transition skipped",
-			"type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
-		return
-	}
-
+	key := ev.Hazard.Key
 	sev := strings.ToLower(strings.TrimSpace(ev.Hazard.Hazard.Severity))
 	rank, ok := storage.SeverityRank(sev)
 	if !ok {
@@ -171,11 +164,33 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	}
 	src := strings.ToLower(strings.TrimSpace(ev.Hazard.Hazard.Source))
 
+	// Audit trail: open the per-alert trail for every transition, even
+	// ones that end up skipped — "why was this alert not sent?" is the
+	// question the trail exists to answer.
+	e.trail.Receive(key, src, sev, ev.Hazard.Hazard.Event, ev.Hazard.Hazard.Headline, ev.Hazard.Timestamp)
+
+	// Cancellations and expirations only retire the active view (the
+	// dashboard hides the hazard); starting the notification machine for
+	// them makes no sense, so only new and updated transitions are
+	// routed to actions.
+	switch ev.Hazard.Type {
+	case dispatch.TransitionCancelled, dispatch.TransitionExpired:
+		e.transitionsSkipped.Add(1)
+		e.logger.Debug("routing: terminal transition skipped",
+			"type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
+		e.trail.Add(key, trail.StepSkipped,
+			"skipped: "+string(ev.Hazard.Type)+" transition — notifications are never started for cancelled/expired hazards",
+			time.Now())
+		e.trail.SetOutcome(key, trail.OutcomeSkipped)
+		return
+	}
+
 	e.mu.RLock()
 	rules := e.rules
 	bcc := e.bcc
 	e.mu.RUnlock()
 
+	anyCell := false
 	for _, rule := range rules {
 		if len(rule.Actions) == 0 {
 			continue
@@ -195,11 +210,20 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 				best[a.ID] = a
 			}
 		}
+		if len(best) == 0 {
+			e.trail.Add(key, trail.StepSkipped,
+				"skipped: no matching route in group "+rule.Name, time.Now())
+			continue
+		}
+		anyCell = true
 
 		// One event can fire a subset of the actions.
 		var fired int
 		for _, a := range best {
 			if !meetsThreshold(rank, a.MinSeverity) {
+				e.trail.Add(key, trail.StepSkipped,
+					fmt.Sprintf("skipped: severity below threshold — group %s action %s needs ≥ %s",
+						rule.Name, a.ID, a.MinSeverity), time.Now())
 				continue
 			}
 			// Durable deduplication: claim the delivery in the ledger
@@ -213,8 +237,18 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 					"group", rule.Name, "action", a.ID, "error", err)
 			} else if !claimed {
 				e.actionsDeduped.Add(1)
+				e.trail.Add(key, trail.StepSkipped,
+					fmt.Sprintf("skipped: already delivered — group %s action %s (duplicate)",
+						rule.Name, a.ID), time.Now())
 				continue
 			}
+			e.trail.Add(key, trail.StepMatched, "matched group "+rule.Name, time.Now())
+			routeSrc := a.Source
+			if routeSrc == "" {
+				routeSrc = "any"
+			}
+			e.trail.Add(key, trail.StepRoute,
+				fmt.Sprintf("%s → %s ≥ %s", routeSrc, a.ID, a.MinSeverity), time.Now())
 			req := action.ActionRequest{
 				ID:        fmt.Sprintf("%s/%s", ev.Hazard.Key, a.ID),
 				CreatedAt: time.Now(),
@@ -224,17 +258,28 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			}
 			if err := e.actions.Submit(a.ID, req); err != nil {
 				e.actionsFailed.Add(1)
+				e.trail.Add(key, trail.StepFailed,
+					fmt.Sprintf("%s failed to start: %v", a.ID, err), time.Now())
+				e.trail.SetOutcome(key, trail.OutcomeFailed)
 				e.logger.Warn("routing: action submission failed",
 					"group", rule.Name, "action", a.ID, "error", err)
 			} else {
 				e.actionsFired.Add(1)
 				fired++
+				e.trail.Add(key, trail.StepSubmitted,
+					fmt.Sprintf("%s action started (group %s)", a.ID, rule.Name), time.Now())
+				e.trail.SetOutcome(key, trail.OutcomeSubmitted)
 			}
 		}
 
 		if fired > 0 {
 			e.rulesMatched.Add(1)
 		}
+	}
+
+	if !anyCell {
+		e.trail.Add(key, trail.StepSkipped,
+			"skipped: no group has a matching route for this alert", time.Now())
 	}
 }
 

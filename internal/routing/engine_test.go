@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 type fakeStore struct {
@@ -131,7 +133,7 @@ func hazardEventFrom(source, severity string, typ dispatch.TransitionType) dispa
 // plus the engine for stats assertions.
 func startEngine(t *testing.T, store RuleStore, acts ActionSubmitter) (*Engine, chan<- dispatch.Event) {
 	t.Helper()
-	e := New(store, acts, slog.New(slog.DiscardHandler), action.AppInfo{})
+	e := New(store, acts, slog.New(slog.DiscardHandler), action.AppInfo{}, nil)
 	events := make(chan dispatch.Event, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -452,4 +454,105 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// TestEngineTrailRecording pins the audit trail: delivery, threshold
+// skip, terminal skip and duplicate dedup all leave visible steps.
+func TestEngineTrailRecording(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok",
+			Actions: []storage.ChannelAssignment{
+				asnSrc("imgw", "smtp-alerts", "moderate"),
+				asn("log", "severe"),
+			}},
+	}}
+	acts := &fakeActions{}
+	rec := trail.NewRecorder(10)
+	e := New(store, acts, slog.New(slog.DiscardHandler), action.AppInfo{}, rec)
+	events := make(chan dispatch.Event, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.Run(ctx, events)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	// moderate from imgw: smtp-alerts fires (≥ moderate), log skipped
+	// (needs severe).
+	first := hazardEvent("moderate", dispatch.TransitionNew)
+	events <- first
+	waitFor(t, func() bool {
+		tr, _ := rec.Get("imgw:1")
+		for _, s := range tr.Steps {
+			if s.Kind == trail.StepSubmitted {
+				return true
+			}
+		}
+		return false
+	}, "submitted step")
+
+	tr, _ := rec.Get("imgw:1")
+	var kinds []string
+	for _, s := range tr.Steps {
+		kinds = append(kinds, string(s.Kind))
+	}
+	joined := strings.Join(kinds, ",")
+	if !strings.Contains(joined, "matched,route,submitted") {
+		t.Fatalf("trail kinds = %v, want matched/route/submitted present", kinds)
+	}
+	if !strings.Contains(joined, "skipped") {
+		t.Fatalf("trail kinds = %v, want a below-threshold skip for action log", kinds)
+	}
+	if tr.Outcome != trail.OutcomeSubmitted {
+		t.Errorf("outcome = %q, want submitted", tr.Outcome)
+	}
+
+	// Duplicate replay of the same key: dedup skip on the same trail.
+	events <- first
+	waitFor(t, func() bool {
+		tr, _ := rec.Get("imgw:1")
+		for _, s := range tr.Steps {
+			if s.Kind == trail.StepSkipped && strings.Contains(s.Text, "already delivered") {
+				return true
+			}
+		}
+		return false
+	}, "duplicate skip step")
+
+	// Terminal transition: cancelled hazards record a skip and never
+	// start the notification machine.
+	cancelled := hazardEvent("severe", dispatch.TransitionCancelled)
+	cancelled.Hazard.Key = "imgw:2"
+	cancelled.Hazard.ChangeID++
+	events <- cancelled
+	waitFor(t, func() bool {
+		tr, ok := rec.Get("imgw:2")
+		return ok && tr.Outcome == trail.OutcomeSkipped
+	}, "cancelled trail skipped")
+	tr2, _ := rec.Get("imgw:2")
+	if !strings.Contains(tr2.Steps[len(tr2.Steps)-1].Text, "cancelled") {
+		t.Errorf("cancelled trail steps = %+v", tr2.Steps)
+	}
+
+	// Below-threshold everywhere: skipped outcome with a threshold step.
+	moderate := hazardEvent("minor", dispatch.TransitionNew)
+	moderate.Hazard.Key = "imgw:3"
+	moderate.Hazard.ChangeID += 2
+	events <- moderate
+	waitFor(t, func() bool {
+		tr, ok := rec.Get("imgw:3")
+		if !ok {
+			return false
+		}
+		for _, s := range tr.Steps {
+			if s.Kind == trail.StepSkipped {
+				return true
+			}
+		}
+		return false
+	}, "minor skip step")
 }

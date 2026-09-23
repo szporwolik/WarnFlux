@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 // Manager owns all configured action instances: construction, workers,
@@ -25,6 +26,7 @@ type Manager struct {
 	byID map[string]*Instance
 
 	logger *slog.Logger
+	trail  *trail.Recorder
 
 	wg       sync.WaitGroup
 	cancel   context.CancelFunc
@@ -36,8 +38,9 @@ type Manager struct {
 // fail at startup); factories are invoked only for enabled instances.
 // Programmatic constructions with zero runtime values fall back to the
 // configuration defaults (config.Load already applies them for YAML).
-func NewManager(cfgs []config.Action, reg *Registry, logger *slog.Logger) (*Manager, error) {
-	m := &Manager{logger: logger, byID: make(map[string]*Instance)}
+// trail is the optional per-alert audit recorder (may be nil).
+func NewManager(cfgs []config.Action, reg *Registry, logger *slog.Logger, trail *trail.Recorder) (*Manager, error) {
+	m := &Manager{logger: logger, trail: trail, byID: make(map[string]*Instance)}
 	for _, cfg := range cfgs {
 		if !reg.Known(cfg.Type) {
 			return nil, fmt.Errorf("action %q: type %q is not registered", cfg.ID, cfg.Type)
@@ -60,7 +63,8 @@ func NewManager(cfgs []config.Action, reg *Registry, logger *slog.Logger) (*Mana
 			return nil, fmt.Errorf("action %q (%s): %w", cfg.ID, cfg.Type, err)
 		}
 		inst := NewInstance(cfg.ID, cfg.Type, p, cfg.Runtime.QueueSize,
-			cfg.Runtime.CallTimeout, cfg.Runtime.ShutdownTimeout, logger)
+			cfg.Runtime.CallTimeout, cfg.Runtime.ShutdownTimeout, logger,
+			m.trail, cfg.Runtime.Retries)
 		m.instances = append(m.instances, inst)
 		m.byID[cfg.ID] = inst
 	}

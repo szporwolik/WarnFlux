@@ -90,12 +90,13 @@ type testView struct {
 	Summary string
 	Error   string
 
-	NavDashboard bool
-	NavUsers     bool
-	NavGroups    bool
-	NavTest      bool
-	NavLogs      bool
-	NavTraffic   bool
+	NavDashboard     bool
+	NavUsers         bool
+	NavGroups        bool
+	NavTest          bool
+	NavLogs          bool
+	NavTraffic       bool
+	NavNotifications bool
 }
 
 // handleTestPage renders the test signal form.

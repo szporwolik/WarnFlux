@@ -428,6 +428,7 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .w-head { display: flex; align-items: center; gap: 0.6rem; }
 .w-head h3 { margin: 0; font-size: 0.95rem; }
 .w-meta { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; color: var(--muted); font-size: 0.78rem; margin-top: 0.35rem; }
+.w-trail { display: inline-block; margin-top: 0.4rem; font-size: 0.76rem; color: var(--link); }
 .w-areas { color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem; }
 .warning details { margin-top: 0.4rem; }
 .warning summary { cursor: pointer; color: var(--link); font-size: 0.8rem; }
@@ -787,6 +788,49 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .tr-info { color: #7fb8ff; }
 .tr-status { color: #ffd166; }
 .tr-generic { color: var(--muted); }
+
+/* ---- notifications / delivery history ---- */
+.nt-card { display: flex; flex-direction: column; gap: 0.75rem; }
+.notif-list { display: flex; flex-direction: column; gap: 0.75rem; }
+.notif {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: var(--radius);
+  background: var(--surface-hi);
+  padding: 0.6rem 0.75rem;
+}
+.notif-focus { border-left-color: var(--link); box-shadow: 0 0 0 1px var(--link); }
+.notif-failed { border-left-color: #ff8a8a; }
+.notif-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.nt-title { color: var(--text); }
+.nt-time { margin-left: auto; font-size: 0.78rem; }
+.nt-outcome { text-transform: none; }
+.nt-outcome-delivered { background: rgba(126, 224, 163, .15); color: #7ee0a3; }
+.nt-outcome-failed { background: rgba(255, 138, 138, .15); color: #ff8a8a; }
+.nt-outcome-skipped { background: rgba(255, 209, 102, .15); color: #ffd166; }
+.nt-outcome-submitted { background: rgba(127, 184, 255, .15); color: #7fb8ff; }
+.nt-steps {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0.4rem 0.6rem;
+  background: #0b0e14;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+.nt-step { display: flex; gap: 0.6rem; }
+.nt-at { color: var(--muted); flex-shrink: 0; }
+.nt-text { white-space: pre-wrap; word-break: break-word; }
+.nt-received { color: var(--text); }
+.nt-matched { color: #7ee0a3; }
+.nt-route { color: #7fb8ff; }
+.nt-submitted { color: #c9b6ff; }
+.nt-delivered { color: #7ee0a3; font-weight: 600; }
+.nt-failed { color: #ff8a8a; font-weight: 600; }
+.nt-retry { color: #ffd166; }
+.nt-skipped { color: var(--muted); }
 
 /* Compact per-channel chips in the groups table. */
 .routing-matrix { display: flex; flex-wrap: wrap; gap: 0.3rem; }

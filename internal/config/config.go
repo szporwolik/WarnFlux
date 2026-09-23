@@ -277,6 +277,9 @@ type ActionRuntime struct {
 	QueueSize       int
 	CallTimeout     time.Duration
 	ShutdownTimeout time.Duration
+	// Retries is the number of extra delivery attempts after the first
+	// failure (0 = no retry). The audit trail records every attempt.
+	Retries int
 }
 
 // fileConfig mirrors the YAML layout.
@@ -364,6 +367,7 @@ type fileActionRuntime struct {
 	QueueSize       *int           `yaml:"queue_size"`
 	CallTimeout     *time.Duration `yaml:"call_timeout"`
 	ShutdownTimeout *time.Duration `yaml:"shutdown_timeout"`
+	Retries         *int           `yaml:"retries"`
 }
 
 type fileApp struct {
@@ -677,6 +681,9 @@ func (f fileConfig) toConfig() Config {
 			}
 			if a.Runtime.ShutdownTimeout != nil {
 				inst.Runtime.ShutdownTimeout = *a.Runtime.ShutdownTimeout
+			}
+			if a.Runtime.Retries != nil && *a.Runtime.Retries >= 0 {
+				inst.Runtime.Retries = *a.Runtime.Retries
 			}
 		}
 		cfg.Actions = append(cfg.Actions, inst)

@@ -136,12 +136,13 @@ type groupsView struct {
 	Page, Pages, From, To, Total int
 	HasPrev, HasNext             bool
 
-	NavDashboard bool
-	NavUsers     bool
-	NavGroups    bool
-	NavTest      bool
-	NavLogs      bool
-	NavTraffic   bool
+	NavDashboard     bool
+	NavUsers         bool
+	NavGroups        bool
+	NavTest          bool
+	NavLogs          bool
+	NavTraffic       bool
+	NavNotifications bool
 }
 
 // handleGroupsPage renders the group administration page. ?edit=<id>

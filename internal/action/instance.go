@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 // InstanceState is the health state of an action instance.
@@ -22,6 +24,12 @@ const (
 // deadline for a plugin to return before declaring it hung. Plugins that
 // respect context return essentially immediately after cancellation.
 const graceAfterTimeout = 1 * time.Second
+
+// RetryBackoff is the fixed delay between failed attempts and the next
+// one. It is deliberately simple: action traffic is low-volume and a
+// sequential worker needs no exponential scheduler. Exported only so
+// tests can shorten it; production code never mutates it.
+var RetryBackoff = 5 * time.Second
 
 // Status is a point-in-time view of one action instance.
 type Status struct {
@@ -60,6 +68,11 @@ type Instance struct {
 	closeTO time.Duration
 	logger  *slog.Logger
 
+	// trail is the optional per-alert audit recorder; retries is the
+	// number of extra delivery attempts after the first failure.
+	trail   *trail.Recorder
+	retries int
+
 	mu     sync.Mutex
 	status Status
 
@@ -72,8 +85,11 @@ type Instance struct {
 }
 
 // NewInstance creates an action instance with its bounded queue. The
-// worker is not started until Start is called.
-func NewInstance(id, typ string, p Plugin, queueSize int, callTimeout, shutdownTimeout time.Duration, logger *slog.Logger) *Instance {
+// worker is not started until Start is called. trail may be nil.
+func NewInstance(id, typ string, p Plugin, queueSize int, callTimeout, shutdownTimeout time.Duration, logger *slog.Logger, trail *trail.Recorder, retries int) *Instance {
+	if retries < 0 {
+		retries = 0
+	}
 	return &Instance{
 		id:      id,
 		typ:     typ,
@@ -82,6 +98,8 @@ func NewInstance(id, typ string, p Plugin, queueSize int, callTimeout, shutdownT
 		callTO:  callTimeout,
 		closeTO: shutdownTimeout,
 		logger:  logger,
+		trail:   trail,
+		retries: retries,
 		status: Status{
 			ID:            id,
 			Type:          typ,
@@ -165,9 +183,61 @@ drain:
 
 // handle invokes one plugin call under the per-call timeout and a panic
 // guard (a panicking plugin degrades the instance, never the process).
+// Failed calls are retried up to the configured retry count with a fixed
+// backoff; every attempt and its result land in the audit trail.
 func (i *Instance) handle(req ActionRequest) {
 	i.handled.Add(1)
 
+	// Audit trail anchor: only hazard transitions have an event key.
+	key := ""
+	if req.Event.Hazard != nil {
+		key = req.Event.Hazard.Key
+	}
+
+	total := i.retries + 1
+	for attempt := 0; ; attempt++ {
+		err := i.executeOnce(req)
+		if err == nil {
+			if attempt > 0 {
+				i.trail.Add(key, trail.StepDelivered,
+					fmt.Sprintf("delivered after %d retr%s", attempt, plural(attempt)), time.Now())
+			} else {
+				i.trail.Add(key, trail.StepDelivered, "delivered", time.Now())
+			}
+			i.trail.SetOutcome(key, trail.OutcomeDelivered)
+			return
+		}
+
+		i.trail.Add(key, trail.StepFailed,
+			fmt.Sprintf("attempt %d/%d failed: %v", attempt+1, total, err), time.Now())
+		if i.disabled.Load() {
+			// A hung plugin was disabled mid-attempt: never re-invoke it.
+			i.trail.SetOutcome(key, trail.OutcomeFailed)
+			return
+		}
+		if attempt < i.retries {
+			i.trail.Add(key, trail.StepRetry,
+				fmt.Sprintf("retrying in %s", RetryBackoff), time.Now())
+			time.Sleep(RetryBackoff)
+			continue
+		}
+		i.trail.SetOutcome(key, trail.OutcomeFailed)
+		return
+	}
+}
+
+// plural returns "y" for 1 and "ies" otherwise ("1 retry", "2 retries").
+func plural(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
+// executeOnce runs a single plugin call under the per-call timeout and
+// panic guard, updating the instance health status. It returns the
+// plugin's error (or a timeout wrapper).
+func (i *Instance) executeOnce(req ActionRequest) error {
 	callCtx, cancel := context.WithTimeout(context.Background(), i.callTO)
 	defer cancel()
 
@@ -184,6 +254,7 @@ func (i *Instance) handle(req ActionRequest) {
 	select {
 	case err := <-done:
 		i.recordResult(err)
+		return err
 	case <-callCtx.Done():
 		// Deadline hit. Give a context-respecting plugin a short grace
 		// period to return; if it does not, it ignored cancellation and
@@ -191,9 +262,12 @@ func (i *Instance) handle(req ActionRequest) {
 		// in-flight goroutine.
 		select {
 		case err := <-done:
-			i.recordResult(fmt.Errorf("callback exceeded %s: %w", i.callTO, err))
+			err = fmt.Errorf("callback exceeded %s: %w", i.callTO, err)
+			i.recordResult(err)
+			return err
 		case <-time.After(graceAfterTimeout):
 			i.disable(fmt.Sprintf("callback exceeded %s and ignored cancellation", i.callTO))
+			return fmt.Errorf("callback exceeded %s and ignored cancellation", i.callTO)
 		}
 	}
 }

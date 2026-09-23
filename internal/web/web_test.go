@@ -24,6 +24,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 	"github.com/szporwolik/WarnFlux/internal/web"
 )
 
@@ -49,6 +50,7 @@ type testEnv struct {
 	users    *fakeUsers
 	logs     *web.LogBuffer
 	traffic  *mqttreceiver.TrafficBuffer
+	trails   *trail.Recorder
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -72,6 +74,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 	ingress := dispatch.NewIngress(64)
 	logs := web.NewLogBuffer(web.DefaultLogLines)
 	traffic := mqttreceiver.NewTrafficBuffer(mqttreceiver.DefaultTrafficEntries)
+	trails := trail.NewRecorder(trail.DefaultMaxTrails)
 
 	receivers, err := mqttreceiver.NewManager([]config.Receiver{
 		{
@@ -96,7 +99,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 	actions, err := action.NewManager([]config.Action{
 		{ID: "logger-action", Type: "logger", Enabled: true},
 		{ID: "logger-off", Type: "logger", Enabled: false},
-	}, reg, logger)
+	}, reg, logger, trails)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +120,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		t.Fatal(err)
 	}
 
-	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic)
+	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic, trails)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +134,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		return http.ErrUseLastResponse // observe redirects instead of following
 	}}
 
-	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users, logs: logs, traffic: traffic}
+	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users, logs: logs, traffic: traffic, trails: trails}
 }
 
 type nopAction struct{}
@@ -266,6 +269,79 @@ func TestTrafficViewerFlow(t *testing.T) {
 	resp, _ = env.get("/partials/traffic?after=banana")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad cursor = %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestNotificationsFlow pins the delivery-history page: login required,
+// the trail list renders and the JSON feed carries the audit steps.
+func TestNotificationsFlow(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Unauthenticated: redirect to the login page.
+	resp, _ := env.get("/notifications")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("GET /notifications unauthenticated = %d %q, want redirect", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	now := time.Now()
+	env.trails.Receive("imgw:1", "imgw", "severe", "Storm", "Gale warning", now)
+	env.trails.Add("imgw:1", trail.StepMatched, "matched group Niepołomice", now)
+	env.trails.Add("imgw:1", trail.StepRoute, "imgw → smtp-alerts ≥ Moderate", now)
+	env.trails.Add("imgw:1", trail.StepSubmitted, "smtp-alerts action started", now)
+	env.trails.Add("imgw:1", trail.StepDelivered, "delivered", now.Add(time.Second))
+	env.trails.SetOutcome("imgw:1", trail.OutcomeDelivered)
+
+	env.login()
+	_, html := env.get("/notifications")
+	if !strings.Contains(html, `id="notif-list"`) {
+		t.Errorf("notifications page missing list: %s", html)
+	}
+	if !strings.Contains(html, `<span class="nav-label">Notifications</span>`) {
+		t.Errorf("notifications page missing sidebar entry: %s", html)
+	}
+	if !strings.Contains(html, "matched group Niepołomice") ||
+		!strings.Contains(html, "imgw → smtp-alerts ≥ Moderate") ||
+		!strings.Contains(html, "delivered") {
+		t.Errorf("notifications page missing trail steps: %s", html)
+	}
+	if !strings.Contains(html, "Gale warning") || !strings.Contains(html, `id="notif-imgw:1"`) {
+		t.Errorf("notifications page missing trail header: %s", html)
+	}
+
+	// JSON feed for the poller.
+	resp, body := env.get("/partials/notifications")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial poll = %d", resp.StatusCode)
+	}
+	var feed struct {
+		Trails []struct {
+			Key     string `json:"key"`
+			Outcome string `json:"outcome"`
+			Steps   []struct {
+				Kind string `json:"kind"`
+				Text string `json:"text"`
+			} `json:"steps"`
+		} `json:"trails"`
+	}
+	if err := json.Unmarshal([]byte(body), &feed); err != nil {
+		t.Fatalf("feed is not valid JSON: %v", err)
+	}
+	if len(feed.Trails) != 1 || feed.Trails[0].Key != "imgw:1" ||
+		feed.Trails[0].Outcome != "delivered" || len(feed.Trails[0].Steps) != 5 {
+		t.Fatalf("feed = %s", body)
+	}
+	kinds := ""
+	for _, s := range feed.Trails[0].Steps {
+		kinds += s.Kind + ","
+	}
+	if kinds != "received,matched,route,submitted,delivered," {
+		t.Errorf("feed step kinds = %q", kinds)
+	}
+
+	// Focus deep link (?key=…) renders the same trail.
+	_, html = env.get("/notifications?key=imgw:1")
+	if !strings.Contains(html, `id="notif-imgw:1"`) {
+		t.Errorf("focused page missing trail: %s", html)
 	}
 }
 

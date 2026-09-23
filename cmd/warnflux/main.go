@@ -36,6 +36,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/routing"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 	"github.com/szporwolik/WarnFlux/internal/web"
 )
 
@@ -211,13 +212,18 @@ func run(configPath string) error {
 	// lands here and is served by the web UI's /traffic viewer.
 	traffic := mqttreceiver.NewTrafficBuffer(mqttreceiver.DefaultTrafficEntries)
 
+	// Per-alert notification audit trail: the routing engine and the
+	// action workers record why each alert was or was not delivered;
+	// the web UI serves it on /notifications.
+	trails := trail.NewRecorder(trail.DefaultMaxTrails)
+
 	// ActionPlugins: explicit routing only. Unknown types fail here, before
 	// any worker starts (even for disabled entries).
 	actionRegistry := action.NewRegistry()
 	if err := actions.RegisterAll(actionRegistry); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
-	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger)
+	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails)
 	if err != nil {
 		return fmt.Errorf("configure actions: %w", err)
 	}
@@ -293,7 +299,7 @@ func run(configPath string) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic, trails)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
@@ -321,7 +327,7 @@ func run(configPath string) error {
 		Header1: cfg.Web.Header1,
 		Domain:  cfg.Web.Domain,
 		RepoURL: appinfo.RepoURL,
-	})
+	}, trails)
 	var routingWG sync.WaitGroup
 	routingWG.Add(1)
 	go func() {

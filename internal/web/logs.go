@@ -101,12 +101,13 @@ type logsView struct {
 	CSRF     string
 	Username string
 
-	NavDashboard bool
-	NavUsers     bool
-	NavGroups    bool
-	NavTest      bool
-	NavLogs      bool
-	NavTraffic   bool
+	NavDashboard     bool
+	NavUsers         bool
+	NavGroups        bool
+	NavTest          bool
+	NavLogs          bool
+	NavTraffic       bool
+	NavNotifications bool
 }
 
 // handleLogsPage renders the self-refreshing log viewer.

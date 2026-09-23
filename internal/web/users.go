@@ -62,12 +62,13 @@ type usersView struct {
 	Page, Pages, From, To, Total int
 	HasPrev, HasNext             bool
 
-	NavDashboard bool
-	NavUsers     bool
-	NavGroups    bool
-	NavTest      bool
-	NavLogs      bool
-	NavTraffic   bool
+	NavDashboard     bool
+	NavUsers         bool
+	NavGroups        bool
+	NavTest          bool
+	NavLogs          bool
+	NavTraffic       bool
+	NavNotifications bool
 }
 
 // handleUsersPage renders the user administration page. ?edit=<id>

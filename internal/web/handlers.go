@@ -89,6 +89,7 @@ type weatherView struct {
 const warningsPerPage = 20
 
 type hazardView struct {
+	Key         string
 	Severity    string
 	Headline    string
 	Event       string
@@ -170,12 +171,13 @@ type pageView struct {
 	Actions  actionsView
 	CSRF     string
 
-	NavDashboard bool
-	NavUsers     bool
-	NavGroups    bool
-	NavTest      bool
-	NavLogs      bool
-	NavTraffic   bool
+	NavDashboard     bool
+	NavUsers         bool
+	NavGroups        bool
+	NavTest          bool
+	NavLogs          bool
+	NavTraffic       bool
+	NavNotifications bool
 }
 
 // ---- view builders -------------------------------------------------------
@@ -309,6 +311,7 @@ func buildWarningsView(snap state.Snapshot, page int) warningsView {
 	v.Hazards = make([]hazardView, 0, to-from)
 	for _, h := range snap.Hazards[from:to] {
 		hv := hazardView{
+			Key:         h.EventKey,
 			Severity:    h.Severity,
 			Headline:    h.Headline,
 			Event:       h.Event,

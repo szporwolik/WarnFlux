@@ -43,22 +43,22 @@
 
   <nav class="home-tabs" role="tablist" aria-label="Sections">
     <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Active hazards</button>
-    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-aprs">APRS</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-radio">Radio stations</button>
   </nav>
 
   <main class="home-main">
     <section class="home-panel" id="panel-tab-alerts" data-panel="tab-alerts">
       {{template "home_alerts_section" .}}
     </section>
-    <section class="home-panel" id="panel-tab-aprs" data-panel="tab-aprs" hidden>
+    <section class="home-panel" id="panel-tab-radio" data-panel="tab-radio" hidden>
       {{if .AprsEnabled}}
       <div class="aprs-map-wrap">
         <div id="aprs-map" data-lat="{{.AprsCenterLat}}" data-lon="{{.AprsCenterLon}}" data-radius="{{.AprsRadiusKM}}" data-callsign="{{.AprsCallsign}}"></div>
-        <p class="aprs-map-attrib">Map: <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a> · Tiles: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> · Weather radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> · Stations: WarnFlux APRS (MQTT)</p>
+        <p class="aprs-map-attrib">Map: <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a> · Tiles: <span id="aprs-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · Weather radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> · Stations: WarnFlux (MQTT)</p>
       </div>
       {{else}}
       <div class="home-empty">
-        <p>APRS is not enabled. Set <code>aprs.enabled: true</code> in the configuration to show the neighbourhood map.</p>
+        <p>Radio stations are not enabled. Set <code>aprs.enabled: true</code> in the configuration to show the neighbourhood map.</p>
       </div>
       {{end}}
     </section>

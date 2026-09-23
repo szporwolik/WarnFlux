@@ -451,6 +451,50 @@
   var map = null;
   var stationLayer = null;
   var radarLayer = null;
+  var baseLayer = null;
+
+  // Theme-aware base tiles, like the CQOps dashboard: the bright
+  // OpenStreetMap style for the light theme, CARTO dark for the default
+  // dark theme.
+  function tilesForTheme() {
+    var theme = document.documentElement.getAttribute("data-theme");
+    if (theme === "light") {
+      return {
+        url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        label: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+        marker: { color: "#0d47a1", fillColor: "#1976d2" }
+      };
+    }
+    return {
+      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      label: '<a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+      marker: { color: "#1565c0", fillColor: "#64b5f6" }
+    };
+  }
+
+  // syncBaseLayer swaps the base tiles and the attribution line to match
+  // the current theme.
+  function syncBaseLayer() {
+    if (!map) {
+      return;
+    }
+    var t = tilesForTheme();
+    if (baseLayer) {
+      map.removeLayer(baseLayer);
+    }
+    baseLayer = L.tileLayer(t.url, { maxZoom: 18 }).addTo(map);
+    var attrib = document.getElementById("aprs-tiles-attrib");
+    if (attrib) {
+      attrib.innerHTML = t.label;
+    }
+    if (stationLayer) {
+      stationLayer.eachLayer(function (m) {
+        if (m._aprsMarker) {
+          m.setStyle({ color: t.marker.color, fillColor: t.marker.fillColor });
+        }
+      });
+    }
+  }
 
   function esc(s) {
     var d = document.createElement("div");
@@ -481,9 +525,8 @@
       return;
     }
     map = L.map(el, { attributionControl: false }).setView([lat, lon], 11);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 18
-    }).addTo(map);
+    baseLayer = null;
+    syncBaseLayer();
     stationLayer = L.layerGroup().addTo(map);
 
     // Our station marker + collection-radius circle.
@@ -504,8 +547,16 @@
     window.setInterval(refreshStations, STATION_POLL_MS);
     window.setInterval(refreshRadar, RADAR_REFRESH_MS);
 
+    // Follow theme switches (the theme toggle rewrites data-theme on
+    // <html>): swap tiles + attribution + marker colors in place.
+    if (window.MutationObserver) {
+      new MutationObserver(syncBaseLayer).observe(document.documentElement, {
+        attributes: true, attributeFilter: ["data-theme"]
+      });
+    }
+
     // The tab is hidden until activated: fix the size once visible.
-    var tab = document.querySelector('.home-tab[data-tab="tab-aprs"]');
+    var tab = document.querySelector('.home-tab[data-tab="tab-radio"]');
     if (tab) {
       tab.addEventListener("click", function () {
         window.setTimeout(function () { if (map) { map.invalidateSize(); } }, 60);
@@ -572,9 +623,10 @@
             popup += "<br>" + esc(String(s.last_heard_at).replace("T", " ").slice(0, 16)) + "Z";
           }
           var marker = L.circleMarker([s.position.latitude, s.position.longitude], {
-            radius: 7, color: "#0d47a1", weight: 2,
-            fillColor: "#42a5f5", fillOpacity: 0.9
+            radius: 7, color: tilesForTheme().marker.color, weight: 2,
+            fillColor: tilesForTheme().marker.fillColor, fillOpacity: 0.9
           });
+          marker._aprsMarker = true;
           marker.bindTooltip(esc(s.callsign), { direction: "top" });
           marker.bindPopup(popup);
           stationLayer.addLayer(marker);

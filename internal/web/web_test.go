@@ -506,7 +506,7 @@ func TestPublicHomePage(t *testing.T) {
 		"Ekstremalny wiatr",         // most severe first
 		`href="/login"`,             // sign-in behind the icon button
 		"Active hazards",
-		"APRS",
+		"Radio stations",
 		`id="home-alerts"`,
 		`class="theme-toggle"`, // light/dark switch
 	} {
@@ -529,8 +529,8 @@ func TestPublicHomePage(t *testing.T) {
 	if strings.Contains(html, `id="aprs-map"`) {
 		t.Error("home page must not render the APRS map when the hub is disabled")
 	}
-	if !strings.Contains(html, "APRS is not enabled") {
-		t.Error("home page should explain that APRS is disabled: " + html)
+	if !strings.Contains(html, "Radio stations are not enabled") {
+		t.Error("home page should explain that radio stations are disabled: " + html)
 	}
 	extremeAt := strings.Index(html, "Ekstremalny wiatr")
 	moderateAt := strings.Index(html, "Umiarkowane burze")

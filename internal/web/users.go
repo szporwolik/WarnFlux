@@ -32,6 +32,7 @@ type userRow struct {
 	GroupNames    []string
 	GroupSet      map[int64]bool
 	APRSCallsigns []string
+	APRSJoin      string
 	UpdatedAt     time.Time
 }
 
@@ -139,7 +140,7 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 		editID = id
 	}
 
-	if msg := validateUserForm(form); msg != "" {
+	if msg := validateUserForm(form, editID == 0); msg != "" {
 		s.renderUsersError(w, r, http.StatusUnprocessableEntity, form, editID, msg)
 		return
 	}
@@ -279,6 +280,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 			GroupNames:    names,
 			GroupSet:      set,
 			APRSCallsigns: u.APRSCallsigns,
+			APRSJoin:      strings.Join(u.APRSCallsigns, " "),
 			UpdatedAt:     u.UpdatedAt,
 		})
 	}
@@ -320,15 +322,17 @@ func (s *Server) renderUsersError(w http.ResponseWriter, r *http.Request, status
 	s.render(w, "users", view)
 }
 
-// validateUserForm returns a human-readable problem or "".
-func validateUserForm(f userForm) string {
+// validateUserForm returns a human-readable problem or "". requirePassword
+// applies to new users only: editing a user leaves the password untouched
+// when the field is empty.
+func validateUserForm(f userForm, requirePassword bool) string {
 	if !usernamePattern.MatchString(f.Username) {
 		return "username must be 1-64 lowercase letters, digits, dots, dashes or underscores"
 	}
 	if f.Role != "" && f.Role != "emcom" {
 		return "role must be empty or emcom"
 	}
-	if f.Role != "" && f.Password == "" {
+	if requirePassword && f.Role != "" && f.Password == "" {
 		return "a password is required for users with a role (they sign in with it)"
 	}
 	if f.Password != "" && (len(f.Password) < 8 || len(f.Password) > 72) {

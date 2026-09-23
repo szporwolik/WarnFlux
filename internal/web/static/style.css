@@ -861,6 +861,54 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .user-form input[name="phone"], .user-form input[name="discord"] { width: 150px; }
 .user-form input[name="email"] { flex: 1 1 220px; }
 .btn-add { width: auto; display: inline-flex; align-items: center; gap: 0.4rem; }
+/* Modal dialogs (users page edit form). */
+.modal {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  color: var(--text);
+  padding: 1.25rem;
+  max-width: 32rem;
+  width: calc(100vw - 2rem);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+.modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+.modal h3 {
+  margin: 0 0 0.8rem;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.modal-form { display: flex; flex-direction: column; gap: 0.7rem; }
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.modal-field input,
+.modal-field select {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.9rem;
+}
+.modal-field input:focus,
+.modal-field select:focus {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
 .btn-small {
   display: inline-flex;
   align-items: center;

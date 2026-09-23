@@ -13,7 +13,7 @@
     <div class="home-brand">
       <img class="home-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
       <div class="home-brand-text">
-        <h1>{{.Header1}}</h1>
+        <h1>{{.Header1}}{{if ne .Header1 "WarnFlux"}} <span class="home-codename">WarnFlux</span>{{end}}</h1>
         {{if .Header2}}<p class="home-sub">{{.Header2}}</p>{{end}}
       </div>
     </div>
@@ -44,6 +44,9 @@
     <span class="sep">·</span>
     <span>{{.Version}}</span>
     {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{end}}
+    <a class="home-git" href="https://github.com/szporwolik/WarnFlux" target="_blank" rel="noopener noreferrer" title="Kod źródłowy" aria-label="Kod źródłowy (GitHub)">
+      <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
+    </a>
   </footer>
   <script src="/static/app.js" defer></script>
 </body>

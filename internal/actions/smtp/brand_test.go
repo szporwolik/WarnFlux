@@ -8,7 +8,8 @@ import (
 )
 
 // TestFooterBrand verifies the mail footer is branded by the configured
-// header1 and falls back to the project name when it is not populated.
+// header1 alongside the project name, and falls back to the project name
+// alone when header1 is not populated.
 func TestFooterBrand(t *testing.T) {
 	req := action.ActionRequest{} // zero App: no header1
 	if txt := footerText(req); !strings.Contains(txt, "Sent by WarnFlux") {
@@ -19,10 +20,16 @@ func TestFooterBrand(t *testing.T) {
 	}
 
 	req.App.Header1 = "SOSNA"
-	if txt := footerText(req); !strings.Contains(txt, "Sent by SOSNA") {
-		t.Errorf("footerText = %q, want SOSNA brand", txt)
+	if txt := footerText(req); !strings.Contains(txt, "Sent by SOSNA · WarnFlux") {
+		t.Errorf("footerText = %q, want SOSNA + WarnFlux brand", txt)
 	}
-	if html := footerHTML(req); !strings.Contains(html, ">SOSNA</strong>") {
-		t.Errorf("footerHTML = %q, want SOSNA brand", html)
+	if html := footerHTML(req); !strings.Contains(html, ">SOSNA · WarnFlux</strong>") {
+		t.Errorf("footerHTML = %q, want SOSNA + WarnFlux brand", html)
+	}
+
+	// A header1 equal to the project name must not duplicate it.
+	req.App.Header1 = "WarnFlux"
+	if txt := footerText(req); strings.Contains(txt, "WarnFlux · WarnFlux") {
+		t.Errorf("footerText = %q, want no duplicated brand", txt)
 	}
 }

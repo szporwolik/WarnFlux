@@ -876,6 +876,14 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .home-brand { display: flex; align-items: center; gap: 0.9rem; min-width: 0; }
 .home-logo { width: 3rem; height: 3rem; border-radius: var(--radius); }
 .home-brand-text h1 { margin: 0; font-size: 1.45rem; letter-spacing: 0.02em; }
+.home-codename {
+  font-size: 0.58em;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-left: 0.35rem;
+}
 .home-sub { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.85rem; }
 .home-login {
   flex-shrink: 0;
@@ -959,6 +967,14 @@ table.plugins tr:hover td { background: var(--surface-hi); }
   color: var(--muted);
   font-size: 0.75rem;
 }
+.home-git {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  margin-left: 0.1rem;
+}
+.home-git:hover { color: var(--link); }
+.home-git .icon { width: 15px; height: 15px; }
 @media (max-width: 860px) {
   .home-brand-text h1 { font-size: 1.15rem; }
   .home-logo { width: 2.4rem; height: 2.4rem; }

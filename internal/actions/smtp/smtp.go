@@ -740,13 +740,15 @@ func footerParts(req action.ActionRequest) (version, domain string) {
 	return version, domain
 }
 
-// brandName returns the configured header1 (e.g. "SOSNA") that brands
-// the footer, falling back to the project name when it is not populated.
+// brandName returns the configured header1 plus the project name (e.g.
+// "SOSNA · WarnFlux") that brands the footer, falling back to the project
+// name alone when header1 is not populated.
 func brandName(req action.ActionRequest) string {
-	if h := strings.TrimSpace(req.App.Header1); h != "" {
-		return h
+	h := strings.TrimSpace(req.App.Header1)
+	if h == "" || h == "WarnFlux" {
+		return "WarnFlux"
 	}
-	return "WarnFlux"
+	return h + " · WarnFlux"
 }
 
 func footerText(req action.ActionRequest) string {

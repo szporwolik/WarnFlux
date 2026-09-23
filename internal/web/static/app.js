@@ -461,7 +461,9 @@
   // light theme, Esri World Dark Gray for the dark theme.
   function tilesForTheme() {
     var theme = document.documentElement.getAttribute("data-theme");
-    var glLabel = '<a href="https://openfreemap.org" target="_blank" rel="noopener noreferrer">OpenFreeMap</a> · <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener noreferrer">OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>';
+    // One tile server (OpenFreeMap); OpenMapTiles/OpenStreetMap are data
+    // attributions, not additional tile sources.
+    var glLabel = '<a href="https://openfreemap.org" target="_blank" rel="noopener noreferrer">OpenFreeMap</a> (data: <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener noreferrer">OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>)';
     if (theme === "light") {
       return {
         style: "https://tiles.openfreemap.org/styles/bright",

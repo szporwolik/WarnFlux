@@ -344,12 +344,13 @@ ingest_http:
     api_key: "changeme-secret-key-000000"
     api_key_file: ""
 
-    # Broker to publish accepted messages to.
-    broker: tcp://localhost:1883
-    # Unique per instance: never reuse the output or receiver client ids.
-    client_id: warnflux-ingest-news
+    # Broker settings are OPTIONAL: when empty, the endpoint inherits the
+    # broker, credentials and topic prefix of the primary MQTT output
+    # (the first enabled output with type: mqtt) — all plugins push to
+    # the one main broker. Fill them in only to override per instance.
+    broker: ""
+    client_id: ""          # defaults to warnflux-ingest-news
     username: ""
     password: ""
     password_file: ""
-    # Published topic prefix; defaults to warnflux.
-    topic_prefix: warnflux
+    topic_prefix: ""       # defaults to the mqtt output's prefix

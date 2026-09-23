@@ -32,6 +32,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
+	mqttout "github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
 	"github.com/szporwolik/WarnFlux/internal/routing"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
@@ -221,15 +222,42 @@ func run(configPath string) error {
 	}
 
 	// Public HTTP ingest endpoints: API-key-protected publishers. Each
-	// enabled instance accepts hazard messages and publishes them to its
-	// broker, where the receiver/routing flow picks them up. A failed
-	// initial broker connect is non-fatal: the endpoint answers 503 until
-	// paho's background reconnects succeed.
+	// enabled instance accepts hazard messages and publishes them to the
+	// main broker (inherited from the first enabled mqtt output unless
+	// the instance overrides it), where the receiver/routing flow picks
+	// them up. A failed initial broker connect is non-fatal: the endpoint
+	// answers 503 until paho's background reconnects succeed.
+	var mainBroker config.IngestHTTP
+	for _, o := range cfg.Outputs {
+		if o.Enabled && o.Type == "mqtt" && o.Config != nil {
+			var mc mqttout.Config
+			if err := o.Config.Decode(&mc); err == nil {
+				mainBroker = config.IngestHTTP{
+					Broker:       mc.Broker,
+					ClientID:     mc.ClientID,
+					Username:     mc.Username,
+					Password:     mc.Password,
+					PasswordFile: mc.PasswordFile,
+					TopicPrefix:  mc.TopicPrefix,
+				}
+			}
+			break
+		}
+	}
+
 	var ingestInstances []*ingesthttp.Instance
 	ingestHandlers := make(map[string]http.Handler)
 	for _, ing := range cfg.IngestHTTP {
 		if !ing.Enabled {
 			continue
+		}
+		ing = ingesthttp.Resolve(ing, mainBroker)
+		if ing.Broker == "" {
+			return fmt.Errorf("configure ingest_http %q: no broker configured and no enabled mqtt output to inherit one from", ing.ID)
+		}
+		if ing.ClientID == mainBroker.ClientID {
+			logger.Warn("ingest_http: client_id equals the mqtt output client_id; the two connections will kick each other off the broker",
+				"instance", ing.ID)
 		}
 		inst, err := ingesthttp.New(ing, logger)
 		if err != nil {

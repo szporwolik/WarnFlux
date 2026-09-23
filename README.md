@@ -656,10 +656,17 @@ like a message from an upstream WarnFlux instance (other consumers on the
 broker see it too).
 
 Each instance has its own `api_key` (at least 16 characters, presented as
-`Authorization: Bearer <key>`) and its own broker connection. The instance
-`id` is the event source stamped on builder-mode alerts and appears as a
-source row in the Groups routing matrix, so alerts from a scraper can be
-routed at their own severity thresholds.
+`Authorization: Bearer <key>`). The instance `id` is the event source
+stamped on builder-mode alerts and appears as a source row in the Groups
+routing matrix, so alerts from a scraper can be routed at their own
+severity thresholds.
+
+Broker settings are optional: an instance without `broker` inherits the
+broker, credentials and topic prefix of the **primary MQTT output** (the
+first enabled output with `type: mqtt`) — all plugins push to the one main
+broker. `client_id` defaults to `warnflux-ingest-<id>`. Fill the fields in
+per instance only to publish elsewhere (additional brokers remain sources
+via `dispatch.mqtt_receivers`).
 
 Two accepted payload shapes on `POST /api/v1/ingest/<id>`:
 

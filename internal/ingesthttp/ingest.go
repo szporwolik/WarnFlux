@@ -100,6 +100,34 @@ func readSecret(path, what string) (string, error) {
 	return strings.TrimRight(string(data), "\r\n"), nil
 }
 
+// Resolve merges the instance's empty broker settings with the fallback
+// (the primary MQTT output's settings) and applies the final defaults.
+// Explicit per-instance values always win, so an endpoint can still be
+// pointed at another broker as an override.
+func Resolve(cfg config.IngestHTTP, fallback config.IngestHTTP) config.IngestHTTP {
+	if cfg.Broker == "" {
+		cfg.Broker = fallback.Broker
+	}
+	if cfg.Username == "" {
+		cfg.Username = fallback.Username
+	}
+	if cfg.Password == "" && cfg.PasswordFile == "" {
+		cfg.Password = fallback.Password
+		cfg.PasswordFile = fallback.PasswordFile
+	}
+	if cfg.TopicPrefix == "" {
+		if fallback.TopicPrefix != "" {
+			cfg.TopicPrefix = fallback.TopicPrefix
+		} else {
+			cfg.TopicPrefix = "warnflux"
+		}
+	}
+	if cfg.ClientID == "" {
+		cfg.ClientID = "warnflux-ingest-" + cfg.ID
+	}
+	return cfg
+}
+
 // Start connects to the broker (bounded by connectTimeout). A failed
 // initial attempt is a non-fatal error: paho keeps retrying in the
 // background and the endpoint answers 503 until the connection is up.

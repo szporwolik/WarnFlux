@@ -306,8 +306,25 @@ ingest_http:
 		got.Broker != "tcp://localhost:1883" || got.ClientID != "warnflux-ingest-news" {
 		t.Errorf("instance = %+v", got)
 	}
-	if got.TopicPrefix != "warnflux" {
-		t.Errorf("topic_prefix default = %q, want warnflux", got.TopicPrefix)
+	if got.TopicPrefix != "" {
+		t.Errorf("topic_prefix = %q, want empty (inherited from the mqtt output at startup)", got.TopicPrefix)
+	}
+
+	// Minimal brokerless instance: broker settings stay empty (the
+	// primary mqtt output provides them at startup) and the client id
+	// gets its default.
+	cfg, err = Load(writeTempConfig(t, `
+ingest_http:
+  - id: news
+    enabled: true
+    api_key: "supersecret-key-123"
+`))
+	if err != nil {
+		t.Fatalf("Load minimal: %v", err)
+	}
+	got = cfg.IngestHTTP[0]
+	if got.Broker != "" || got.TopicPrefix != "" || got.ClientID != "warnflux-ingest-news" {
+		t.Errorf("minimal instance = %+v, want empty broker/prefix and default client id", got)
 	}
 }
 
@@ -321,11 +338,10 @@ func TestLoadIngestHTTPValidation(t *testing.T) {
 		{"missing key", "ingest_http:\n  - id: news\n    enabled: true\n    broker: tcp://b:1883\n    client_id: c\n", "api_key"},
 		{"short key", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: short\n    broker: tcp://b:1883\n    client_id: c\n", "16 characters"},
 		{"key and file", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    api_key_file: /tmp/k\n    broker: tcp://b:1883\n    client_id: c\n", "mutually exclusive"},
-		{"missing broker", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    client_id: c\n", "broker"},
-		{"missing client id", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n", "client_id"},
 		{"bad id", "ingest_http:\n  - id: Bad ID!\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n    client_id: c\n", "lowercase slug"},
 		{"duplicate id", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n    client_id: c\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-456\"\n    broker: tcp://b:1883\n    client_id: c2\n", "duplicate instance"},
 		{"bad prefix", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: tcp://b:1883\n    client_id: c\n    topic_prefix: \"warn/flux/#\"\n", "topic_prefix"},
+		{"whitespace broker", "ingest_http:\n  - id: news\n    enabled: true\n    api_key: \"supersecret-key-123\"\n    broker: \"tcp://b :1883\"\n    client_id: c\n", "whitespace"},
 	}
 	for _, c := range cases {
 		if _, err := Load(writeTempConfig(t, c.yaml)); err == nil {
@@ -341,7 +357,7 @@ func TestLoadIngestHTTPValidation(t *testing.T) {
 	}
 
 	// The ingest id shares one namespace with source plugin ids.
-	if _, err := Load(writeTempConfig(t, "sources:\n  - id: news\n    type: imgw\n" + valid)); err == nil {
+	if _, err := Load(writeTempConfig(t, "sources:\n  - id: news\n    type: imgw\n"+valid)); err == nil {
 		t.Error("ingest id colliding with a source id accepted")
 	}
 }

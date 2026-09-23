@@ -157,6 +157,11 @@ type Storage struct {
 // configured MQTT broker, where the regular receiver/routing flow picks
 // them up like any other upstream message. Every instance ID doubles as
 // the event source slug stamped on builder-mode events.
+//
+// Broker, Username, Password, PasswordFile and TopicPrefix are OPTIONAL:
+// when left empty they are inherited at startup from the primary MQTT
+// output (the first enabled outputs[].type=mqtt), so all plugins push to
+// one main broker by default. ClientID defaults to warnflux-ingest-<id>.
 type IngestHTTP struct {
 	ID           string
 	Enabled      bool
@@ -689,10 +694,10 @@ func (f fileConfig) toConfig() Config {
 			Username:     strings.TrimSpace(ing.Username),
 			Password:     ing.Password,
 			PasswordFile: strings.TrimSpace(ing.PasswordFile),
-			TopicPrefix:  defaultWFPrefix,
+			TopicPrefix:  strings.TrimSpace(ing.TopicPrefix),
 		}
-		if p := strings.TrimSpace(ing.TopicPrefix); p != "" {
-			inst.TopicPrefix = p
+		if inst.ClientID == "" {
+			inst.ClientID = "warnflux-ingest-" + inst.ID
 		}
 		cfg.IngestHTTP = append(cfg.IngestHTTP, inst)
 	}
@@ -878,15 +883,16 @@ func (c Config) Validate() error {
 		if ing.Password != "" && ing.PasswordFile != "" {
 			return fmt.Errorf("%s: password and password_file are mutually exclusive", field)
 		}
-		p := ing.TopicPrefix
-		if strings.TrimSpace(p) == "" || strings.ContainsAny(p, "+#") {
-			return fmt.Errorf("%s.topic_prefix must be a non-empty MQTT topic segment without '+' or '#'", field)
-		}
-		if p != strings.Trim(p, "/") {
-			return fmt.Errorf("%s.topic_prefix must not start or end with '/'", field)
-		}
-		if len(p) > maxTopicPrefixBytes {
-			return fmt.Errorf("%s.topic_prefix is %d bytes, maximum %d", field, len(p), maxTopicPrefixBytes)
+		if p := ing.TopicPrefix; p != "" {
+			if strings.ContainsAny(p, "+#") {
+				return fmt.Errorf("%s.topic_prefix must be a non-empty MQTT topic segment without '+' or '#'", field)
+			}
+			if p != strings.Trim(p, "/") {
+				return fmt.Errorf("%s.topic_prefix must not start or end with '/'", field)
+			}
+			if len(p) > maxTopicPrefixBytes {
+				return fmt.Errorf("%s.topic_prefix is %d bytes, maximum %d", field, len(p), maxTopicPrefixBytes)
+			}
 		}
 		if !ing.Enabled {
 			continue
@@ -897,14 +903,10 @@ func (c Config) Validate() error {
 		if ing.APIKey != "" && len(ing.APIKey) < 16 {
 			return fmt.Errorf("%s.api_key must be at least 16 characters", field)
 		}
-		if ing.Broker == "" {
-			return fmt.Errorf("%s.broker is required for an enabled endpoint", field)
-		}
-		if strings.ContainsAny(ing.Broker, " \t\n") {
+		// Broker settings may be empty: they are inherited at startup from
+		// the primary MQTT output (validated there).
+		if ing.Broker != "" && strings.ContainsAny(ing.Broker, " \t\n") {
 			return fmt.Errorf("%s.broker must not contain whitespace, got %q", field, ing.Broker)
-		}
-		if ing.ClientID == "" {
-			return fmt.Errorf("%s.client_id is required for an enabled endpoint", field)
 		}
 		if len(ing.ClientID) > maxMQTTClientIDBytes {
 			return fmt.Errorf("%s.client_id is %d bytes, maximum %d", field, len(ing.ClientID), maxMQTTClientIDBytes)

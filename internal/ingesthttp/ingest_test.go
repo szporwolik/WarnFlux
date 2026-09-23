@@ -300,3 +300,38 @@ func TestOversizedBody(t *testing.T) {
 		t.Fatalf("oversized = %d, want 413", rec.Code)
 	}
 }
+
+// TestResolve pins the broker inheritance: empty instance settings come
+// from the primary mqtt output; explicit values always win.
+func TestResolve(t *testing.T) {
+	fallback := config.IngestHTTP{
+		Broker:       "tcp://main:1883",
+		ClientID:     "warnflux-main-out",
+		Username:     "main-user",
+		Password:     "main-pass",
+		TopicPrefix:  "warnflux",
+		PasswordFile: "",
+	}
+
+	got := Resolve(config.IngestHTTP{ID: "news"}, fallback)
+	if got.Broker != fallback.Broker || got.Username != fallback.Username ||
+		got.Password != fallback.Password || got.TopicPrefix != fallback.TopicPrefix {
+		t.Errorf("inherited = %+v, want fallback values", got)
+	}
+	if got.ClientID != "warnflux-ingest-news" {
+		t.Errorf("client_id = %q, want default warnflux-ingest-news", got.ClientID)
+	}
+
+	override := config.IngestHTTP{
+		ID:          "news",
+		Broker:      "tcp://other:1883",
+		TopicPrefix: "e2etest",
+	}
+	got = Resolve(override, fallback)
+	if got.Broker != "tcp://other:1883" || got.TopicPrefix != "e2etest" {
+		t.Errorf("overrides lost: %+v", got)
+	}
+	if got.Username != fallback.Username || got.Password != fallback.Password {
+		t.Errorf("credentials should still inherit: %+v", got)
+	}
+}

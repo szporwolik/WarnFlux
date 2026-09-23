@@ -70,6 +70,13 @@ var pluginIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // validLogLevels are the accepted values for app.log_level.
 var validLogLevels = []string{"debug", "info", "warn", "error"}
 
+// validAPRSCallsign is the accepted APRS callsign shape (1-6 alphanumeric
+// characters plus an optional -SSID).
+var validAPRSCallsign = regexp.MustCompile(`^[A-Z0-9]{1,6}(-[0-9]{1,2})?$`)
+
+// validGridSquare accepts 2-, 4-, 6- and 8-character Maidenhead locators.
+var validGridSquare = regexp.MustCompile(`^[A-Ra-r]{2}[0-9]{2}(?:[A-Xa-x]{2}(?:[0-9]{2})?)?$`)
+
 // Config is the fully defaulted, validated application configuration.
 type Config struct {
 	App        App
@@ -80,6 +87,7 @@ type Config struct {
 	Web        Web
 	Actions    []Action
 	IngestHTTP []IngestHTTP
+	APRS       APRSConfig
 }
 
 // App holds general application settings.
@@ -105,6 +113,26 @@ type App struct {
 	LogMaxSizeMB int
 	// LogMaxBackups is how many rotated files are retained.
 	LogMaxBackups int
+}
+
+// APRSConfig holds the shared APRS hub settings (top-level "aprs:"). The
+// hub is the merge point for every APRS backend (aprs-inet now, aprs-radio
+// later): one retained station-state document per nearby station, shared
+// rx/tx messaging.
+type APRSConfig struct {
+	// Enabled switches the hub on; APRS plugins require it.
+	Enabled bool
+	// Callsign is our identity (with optional SSID).
+	Callsign string
+	// Icon is the 1- or 2-character APRS symbol of our own station.
+	Icon string
+	// GridSquare is our position as a Maidenhead locator.
+	GridSquare string
+	// RadiusKM is the "nearby" radius around our position.
+	RadiusKM float64
+	// StationTTL is how long a station stays in the retained MQTT state
+	// after its last packet.
+	StationTTL time.Duration
 }
 
 // Source is one configured source plugin instance.
@@ -307,6 +335,16 @@ type fileConfig struct {
 	Web        *fileWeb         `yaml:"web"`
 	Actions    []fileAction     `yaml:"actions"`
 	IngestHTTP []fileIngestHTTP `yaml:"ingest_http"`
+	APRS       *fileAPRS        `yaml:"aprs"`
+}
+
+type fileAPRS struct {
+	Enabled    bool           `yaml:"enabled"`
+	Callsign   string         `yaml:"callsign"`
+	Icon       string         `yaml:"icon"`
+	GridSquare string         `yaml:"gridsquare"`
+	RadiusKM   *float64       `yaml:"radius_km"`
+	StationTTL *time.Duration `yaml:"station_ttl"`
 }
 
 type fileIngestHTTP struct {
@@ -736,6 +774,20 @@ func (f fileConfig) toConfig() Config {
 		}
 		cfg.IngestHTTP = append(cfg.IngestHTTP, inst)
 	}
+
+	cfg.APRS = APRSConfig{RadiusKM: 60, StationTTL: 30 * time.Minute}
+	if f.APRS != nil {
+		cfg.APRS.Enabled = f.APRS.Enabled
+		cfg.APRS.Callsign = strings.ToUpper(strings.TrimSpace(f.APRS.Callsign))
+		cfg.APRS.Icon = strings.TrimSpace(f.APRS.Icon)
+		cfg.APRS.GridSquare = strings.ToUpper(strings.TrimSpace(f.APRS.GridSquare))
+		if f.APRS.RadiusKM != nil {
+			cfg.APRS.RadiusKM = *f.APRS.RadiusKM
+		}
+		if f.APRS.StationTTL != nil {
+			cfg.APRS.StationTTL = *f.APRS.StationTTL
+		}
+	}
 	return cfg
 }
 
@@ -945,6 +997,23 @@ func (c Config) Validate() error {
 		}
 		if len(ing.ClientID) > maxMQTTClientIDBytes {
 			return fmt.Errorf("%s.client_id is %d bytes, maximum %d", field, len(ing.ClientID), maxMQTTClientIDBytes)
+		}
+	}
+	if c.APRS.Enabled {
+		if !validAPRSCallsign.MatchString(c.APRS.Callsign) {
+			return fmt.Errorf("aprs.callsign %q must match %s", c.APRS.Callsign, validAPRSCallsign)
+		}
+		if !validGridSquare.MatchString(c.APRS.GridSquare) {
+			return fmt.Errorf("aprs.gridsquare %q must be a 2, 4, 6 or 8 character Maidenhead locator", c.APRS.GridSquare)
+		}
+		if c.APRS.RadiusKM < 1 || c.APRS.RadiusKM > 1000 {
+			return fmt.Errorf("aprs.radius_km must be between 1 and 1000, got %v", c.APRS.RadiusKM)
+		}
+		if c.APRS.StationTTL < time.Minute || c.APRS.StationTTL > 24*time.Hour {
+			return fmt.Errorf("aprs.station_ttl must be between 1m and 24h, got %s", c.APRS.StationTTL)
+		}
+		if len(c.APRS.Icon) > 2 {
+			return fmt.Errorf("aprs.icon %q must be one or two characters (<code> or <table><code>)", c.APRS.Icon)
 		}
 	}
 	return nil

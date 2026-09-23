@@ -1,0 +1,623 @@
+package aprs
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// Hub runtime bounds.
+const (
+	opsQueueSize       = 1024
+	publishTimeout     = 5 * time.Second
+	tickInterval       = 30 * time.Second
+	packetDigestWindow = 10 * time.Minute
+	recentMessagesCap  = 64
+)
+
+// hubOp is one queued observation from a backend.
+type hubOp struct {
+	p   Packet
+	via string
+}
+
+// stationRecord is the merged runtime state of one nearby station. It is
+// owned by the single hub worker goroutine (no locking needed).
+type stationRecord struct {
+	callsign     string
+	self         bool
+	lastDigest   string
+	lastPacketAt int64
+	dirty        bool
+	state        stationState
+}
+
+// stationState is the merged last-known state of a station.
+type stationState struct {
+	position       *Position
+	symbolTable    byte
+	symbol         byte
+	courseDeg      int
+	speedKMH       float64
+	altitudeM      *float64
+	name           string
+	comment        string
+	status         string
+	messageCapable bool
+	lastHeard      int64
+	via            map[string]bool
+	packets        int
+}
+
+// Hub is the shared APRS merge point. Every backend (aprs-inet today,
+// aprs-radio later) feeds parsed packets via Observe and may register as a
+// Transmitter. The hub owns:
+//
+//   - the merged per-station state (one retained MQTT document per
+//     station, no duplicate topics between backends),
+//   - the non-retained packet and message feeds,
+//   - station expiry (empty retained payload = topic deletion),
+//   - outbound APRS message routing to the first ready transmitter.
+type Hub struct {
+	cfg    HubConfig
+	logger *slog.Logger
+	now    func() time.Time
+
+	mu           sync.Mutex
+	sink         Sink
+	stations     map[string]*stationRecord
+	transmitters map[string]Transmitter
+	seenDigests  map[string]int64 // digest -> last seen unix
+	recent       []MessageDocument
+
+	ops      chan hubOp
+	tick     time.Duration
+	accepted atomic.Int64
+	dropped  atomic.Int64
+	filtered atomic.Int64
+	expired  atomic.Int64
+}
+
+// NewHub validates the hub identity and returns the hub. The hub is
+// constructed even when disabled (plugins then fail fast on startup).
+func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
+	if cfg.RadiusKM == 0 {
+		cfg.RadiusKM = DefaultRadiusKM
+	}
+	if cfg.StationTTL == 0 {
+		cfg.StationTTL = DefaultStationTTL
+	}
+	cfg.Callsign = NormalizeCallsign(cfg.Callsign)
+
+	if cfg.Enabled {
+		if !ValidCallsign(cfg.Callsign) {
+			return nil, fmt.Errorf("aprs: callsign %q is not a valid APRS callsign", cfg.Callsign)
+		}
+		lat, lon, ok := ParseGridSquare(cfg.GridSquare)
+		if !ok {
+			return nil, fmt.Errorf("aprs: gridsquare %q is not a valid Maidenhead locator", cfg.GridSquare)
+		}
+		cfg.CenterLat, cfg.CenterLon = lat, lon
+		if cfg.RadiusKM < 1 || cfg.RadiusKM > 1000 {
+			return nil, fmt.Errorf("aprs: radius_km must be between 1 and 1000, got %v", cfg.RadiusKM)
+		}
+		if cfg.StationTTL < time.Minute || cfg.StationTTL > 24*time.Hour {
+			return nil, fmt.Errorf("aprs: station_ttl must be between 1m and 24h, got %s", cfg.StationTTL)
+		}
+		switch len(cfg.Icon) {
+		case 0:
+		case 1:
+			cfg.SymbolTable, cfg.Symbol = '/', cfg.Icon[0]
+		case 2:
+			cfg.SymbolTable, cfg.Symbol = cfg.Icon[0], cfg.Icon[1]
+		default:
+			return nil, fmt.Errorf("aprs: icon %q must be one or two characters (<code> or <table><code>)", cfg.Icon)
+		}
+	}
+
+	return &Hub{
+		cfg:          cfg,
+		logger:       logger,
+		now:          time.Now,
+		stations:     make(map[string]*stationRecord),
+		transmitters: make(map[string]Transmitter),
+		seenDigests:  make(map[string]int64),
+		ops:          make(chan hubOp, opsQueueSize),
+		tick:         tickInterval,
+	}, nil
+}
+
+// Enabled reports whether the hub is switched on.
+func (h *Hub) Enabled() bool { return h.cfg.Enabled }
+
+// Callsign returns our normalized APRS identity.
+func (h *Hub) Callsign() string { return h.cfg.Callsign }
+
+// GridSquare returns our configured Maidenhead locator.
+func (h *Hub) GridSquare() string { return h.cfg.GridSquare }
+
+// CenterLat/CenterLon return the center of our configured gridsquare.
+func (h *Hub) CenterLat() float64 { return h.cfg.CenterLat }
+func (h *Hub) CenterLon() float64 { return h.cfg.CenterLon }
+
+// RadiusKM returns the configured nearby radius.
+func (h *Hub) RadiusKM() float64 { return h.cfg.RadiusKM }
+
+// Version returns the WarnFlux version for APRS-IS login strings.
+func (h *Hub) Version() string { return h.cfg.Version }
+
+// SetSink attaches the MQTT sink. It is set after construction (the
+// receiver manager is built later in startup); publications before that
+// simply stay dirty and are retried.
+func (h *Hub) SetSink(s Sink) {
+	h.mu.Lock()
+	h.sink = s
+	h.mu.Unlock()
+}
+
+// Observe queues one parsed packet from a backend. The call never blocks:
+// when the queue is full the packet is dropped and counted.
+func (h *Hub) Observe(p Packet, via string) {
+	select {
+	case h.ops <- hubOp{p: p, via: via}:
+	default:
+		h.dropped.Add(1)
+	}
+}
+
+// AddTransmitter registers (or replaces) an outbound backend.
+func (h *Hub) AddTransmitter(name string, t Transmitter) {
+	h.mu.Lock()
+	h.transmitters[name] = t
+	h.mu.Unlock()
+}
+
+// RemoveTransmitter unregisters an outbound backend.
+func (h *Hub) RemoveTransmitter(name string) {
+	h.mu.Lock()
+	delete(h.transmitters, name)
+	h.mu.Unlock()
+}
+
+// Stats is a snapshot of hub counters for the web health page.
+type Stats struct {
+	Stations int
+	Accepted int64
+	Dropped  int64
+	Filtered int64
+	Expired  int64
+}
+
+// Stats returns a consistent counter snapshot.
+func (h *Hub) Stats() Stats {
+	h.mu.Lock()
+	stations := len(h.stations)
+	h.mu.Unlock()
+	return Stats{
+		Stations: stations,
+		Accepted: h.accepted.Load(),
+		Dropped:  h.dropped.Load(),
+		Filtered: h.filtered.Load(),
+		Expired:  h.expired.Load(),
+	}
+}
+
+// RecentMessages returns a copy of the latest received APRS messages
+// (newest last).
+func (h *Hub) RecentMessages() []MessageDocument {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]MessageDocument, len(h.recent))
+	copy(out, h.recent)
+	return out
+}
+
+// Start launches the hub worker: it publishes our own station document and
+// then applies observations and maintenance until ctx is cancelled.
+func (h *Hub) Start(ctx context.Context) {
+	go h.run(ctx)
+}
+
+func (h *Hub) run(ctx context.Context) {
+	h.publishSelf()
+	ticker := time.NewTicker(h.tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case op := <-h.ops:
+			h.apply(op)
+		case <-ticker.C:
+			h.maintenance()
+		}
+	}
+}
+
+// apply merges one packet into the station registry and publishes the
+// resulting documents.
+func (h *Hub) apply(op hubOp) {
+	p := op.p
+	if p.Src == "" || !ValidCallsign(p.Src) {
+		return
+	}
+	h.accepted.Add(1)
+
+	// Defense in depth: the APRS-IS filter already limits the feed to the
+	// configured radius; position-bearing packets outside it are dropped.
+	if p.Position != nil {
+		d := DistanceKM(h.cfg.CenterLat, h.cfg.CenterLon, p.Position.Latitude, p.Position.Longitude)
+		if d > h.cfg.RadiusKM {
+			h.filtered.Add(1)
+			return
+		}
+	}
+
+	now := h.now().Unix()
+	h.mu.Lock()
+	rec := h.stations[p.Src]
+	if rec == nil {
+		rec = &stationRecord{callsign: p.Src, state: stationState{via: make(map[string]bool)}}
+		h.stations[p.Src] = rec
+	}
+	// Duplicate observation (same content, same receiver): skip.
+	digest := packetDigest(p)
+	if digest == rec.lastDigest && rec.state.via[op.via] {
+		h.mu.Unlock()
+		return
+	}
+	rec.lastDigest = digest
+	if p.Timestamp != nil && *p.Timestamp > rec.lastPacketAt {
+		rec.lastPacketAt = *p.Timestamp
+	}
+	rec.merge(&p, op.via, now)
+	firstSeen := h.seenDigests[digest] == 0
+	h.seenDigests[digest] = now
+	h.mu.Unlock()
+
+	h.publishStation(rec)
+	if firstSeen {
+		h.publishPacket(p, op.via)
+	}
+	if p.Message != nil && p.Message.To == h.cfg.Callsign {
+		h.receiveMessage(p, op.via)
+	}
+}
+
+// merge folds one packet into the station state. The caller has already
+// excluded exact duplicates.
+func (r *stationRecord) merge(p *Packet, via string, now int64) {
+	st := &r.state
+	if p.Position != nil && (st.position == nil || st.position.Latitude != p.Position.Latitude || st.position.Longitude != p.Position.Longitude) {
+		st.position = p.Position
+	}
+	if p.Symbol != 0 {
+		st.symbol, st.symbolTable = p.Symbol, p.SymbolTable
+	}
+	if p.Kind == KindPosition {
+		st.courseDeg, st.speedKMH = p.CourseDeg, p.SpeedKMH
+		if p.AltitudeM != nil {
+			st.altitudeM = p.AltitudeM
+		}
+	}
+	if p.Name != "" {
+		st.name = p.Name
+	}
+	if p.Comment != "" {
+		st.comment = p.Comment
+	}
+	if p.Status != "" {
+		st.status = p.Status
+	}
+	if p.MessageCapable {
+		st.messageCapable = true
+	}
+	st.via[via] = true
+	st.packets++
+	st.lastHeard = now
+}
+
+// publishStation marshals and publishes one retained station document.
+func (h *Hub) publishStation(rec *stationRecord) {
+	payload, err := json.Marshal(h.buildStationDoc(rec))
+	if err != nil {
+		return
+	}
+	if err := h.publishWithTimeout(StationsTopicPrefix+rec.callsign, true, payload); err != nil {
+		rec.dirty = true
+		h.logger.Warn("aprs: station state publish failed", "callsign", rec.callsign, "error", err)
+		return
+	}
+	rec.dirty = false
+}
+
+// buildStationDoc renders the retained wire document of one station.
+func (h *Hub) buildStationDoc(rec *stationRecord) StationDocument {
+	st := &rec.state
+	doc := StationDocument{
+		SchemaVersion:  SchemaVersion,
+		Callsign:       rec.callsign,
+		Self:           rec.self,
+		Name:           st.name,
+		MessageCapable: st.messageCapable,
+		LastHeardAt:    formatTime(st.lastHeard),
+		PacketCount:    st.packets,
+	}
+	if st.position != nil {
+		doc.Position = &PositionWire{Latitude: st.position.Latitude, Longitude: st.position.Longitude}
+		if !rec.self {
+			doc.DistanceKM = DistanceKM(h.cfg.CenterLat, h.cfg.CenterLon, st.position.Latitude, st.position.Longitude)
+		}
+	}
+	if st.symbol != 0 {
+		doc.SymbolTable = string(st.symbolTable)
+		doc.Symbol = string(st.symbol)
+	}
+	doc.CourseDeg = st.courseDeg
+	doc.SpeedKMH = st.speedKMH
+	doc.AltitudeM = st.altitudeM
+	doc.Comment = st.comment
+	doc.Status = st.status
+	if rec.lastPacketAt != 0 {
+		doc.LastPacketAt = formatTime(rec.lastPacketAt)
+	}
+	via := make([]string, 0, len(st.via))
+	for name := range st.via {
+		via = append(via, name)
+	}
+	sort.Strings(via)
+	doc.ReceivedVia = via
+	return doc
+}
+
+// publishPacket publishes one non-retained packet document. Failures are
+// best-effort (logged at debug level; the feed has no retention).
+func (h *Hub) publishPacket(p Packet, via string) {
+	doc := PacketDocument{
+		SchemaVersion:  SchemaVersion,
+		Kind:           string(p.Kind),
+		Src:            p.Src,
+		Dst:            p.Dst,
+		Path:           p.Path,
+		Timestamp:      formatTime(timeValue(p.Timestamp)),
+		SymbolTable:    byteStr(p.SymbolTable),
+		Symbol:         byteStr(p.Symbol),
+		CourseDeg:      p.CourseDeg,
+		SpeedKMH:       p.SpeedKMH,
+		AltitudeM:      p.AltitudeM,
+		Name:           p.Name,
+		Comment:        p.Comment,
+		Status:         p.Status,
+		MessageCapable: p.MessageCapable,
+		ReceivedAt:     formatTime(p.ReceivedAt),
+		Via:            via,
+	}
+	if p.Position != nil {
+		doc.Position = &PositionWire{Latitude: p.Position.Latitude, Longitude: p.Position.Longitude}
+	}
+	if p.Message != nil {
+		doc.Message = &MessageWire{To: p.Message.To, Text: p.Message.Text, ID: p.Message.ID}
+	}
+	payload, err := json.Marshal(doc)
+	if err != nil {
+		return
+	}
+	if err := h.publishWithTimeout(PacketsTopic, false, payload); err != nil {
+		h.logger.Debug("aprs: packet feed publish failed", "error", err)
+	}
+}
+
+// receiveMessage publishes one received APRS message and keeps it in the
+// recent-message ring.
+func (h *Hub) receiveMessage(p Packet, via string) {
+	doc := MessageDocument{
+		SchemaVersion: SchemaVersion,
+		Direction:     "rx",
+		From:          p.Src,
+		To:            p.Message.To,
+		Text:          p.Message.Text,
+		ID:            p.Message.ID,
+		ReceivedAt:    formatTime(p.ReceivedAt),
+		Via:           via,
+	}
+	h.mu.Lock()
+	h.recent = append(h.recent, doc)
+	if len(h.recent) > recentMessagesCap {
+		h.recent = h.recent[len(h.recent)-recentMessagesCap:]
+	}
+	h.mu.Unlock()
+
+	payload, err := json.Marshal(doc)
+	if err != nil {
+		return
+	}
+	if err := h.publishWithTimeout(MessagesTopic, false, payload); err != nil {
+		h.logger.Warn("aprs: message feed publish failed", "error", err)
+	}
+}
+
+// SendMessage routes one outbound APRS message to the first ready
+// transmitter and publishes the tx confirmation on the message feed.
+func (h *Hub) SendMessage(ctx context.Context, to, text string) error {
+	to = NormalizeCallsign(to)
+	if !ValidCallsign(to) {
+		return fmt.Errorf("aprs: invalid addressee callsign %q", to)
+	}
+	text = TrimMessageText(text)
+	if text == "" {
+		return fmt.Errorf("aprs: message text must not be empty")
+	}
+
+	h.mu.Lock()
+	names := make([]string, 0, len(h.transmitters))
+	for name := range h.transmitters {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var tx Transmitter
+	for _, name := range names {
+		if t := h.transmitters[name]; t.Ready() {
+			tx = t
+			break
+		}
+	}
+	h.mu.Unlock()
+	if tx == nil {
+		return ErrNoTransmitter
+	}
+
+	if err := tx.Send(ctx, to, text); err != nil {
+		return fmt.Errorf("aprs: transmitter %s: %w", tx.Name(), err)
+	}
+
+	doc := MessageDocument{
+		SchemaVersion: SchemaVersion,
+		Direction:     "tx",
+		From:          h.cfg.Callsign,
+		To:            to,
+		Text:          text,
+		ReceivedAt:    formatTime(h.now().Unix()),
+		Via:           tx.Name(),
+	}
+	payload, err := json.Marshal(doc)
+	if err == nil {
+		if err := h.publishWithTimeout(MessagesTopic, false, payload); err != nil {
+			h.logger.Debug("aprs: tx message feed publish failed", "error", err)
+		}
+	}
+	return nil
+}
+
+// publishSelf publishes our own station document once at startup.
+func (h *Hub) publishSelf() {
+	if h.cfg.Callsign == "" {
+		return
+	}
+	h.mu.Lock()
+	rec := h.stations[h.cfg.Callsign]
+	if rec == nil {
+		rec = &stationRecord{
+			callsign: h.cfg.Callsign,
+			self:     true,
+			state: stationState{
+				via:         make(map[string]bool),
+				position:    &Position{Latitude: h.cfg.CenterLat, Longitude: h.cfg.CenterLon},
+				symbolTable: h.cfg.SymbolTable,
+				symbol:      h.cfg.Symbol,
+				lastHeard:   h.now().Unix(),
+			},
+		}
+		h.stations[h.cfg.Callsign] = rec
+	}
+	h.mu.Unlock()
+	h.publishStation(rec)
+}
+
+// maintenance expires stale stations (empty retained payload deletes the
+// topic), retries dirty publishes and prunes the packet digest window.
+func (h *Hub) maintenance() {
+	now := h.now()
+	staleCutoff := now.Add(-h.cfg.StationTTL).Unix()
+	windowCutoff := now.Add(-packetDigestWindow).Unix()
+
+	h.mu.Lock()
+	var stale []*stationRecord
+	for callsign, rec := range h.stations {
+		if rec.self {
+			continue
+		}
+		if rec.state.lastHeard < staleCutoff {
+			stale = append(stale, rec)
+			delete(h.stations, callsign)
+		}
+	}
+	for digest, at := range h.seenDigests {
+		if at < windowCutoff {
+			delete(h.seenDigests, digest)
+		}
+	}
+	dirty := make([]*stationRecord, 0, len(h.stations))
+	for _, rec := range h.stations {
+		if rec.dirty {
+			dirty = append(dirty, rec)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, rec := range stale {
+		if err := h.publishWithTimeout(StationsTopicPrefix+rec.callsign, true, nil); err != nil {
+			h.logger.Warn("aprs: station state delete failed", "callsign", rec.callsign, "error", err)
+			continue
+		}
+		h.expired.Add(1)
+	}
+	for _, rec := range dirty {
+		h.publishStation(rec)
+	}
+}
+
+// publishWithTimeout publishes one document through the sink with a bounded
+// timeout. A nil sink is silently ignored (tests without a sink).
+func (h *Hub) publishWithTimeout(suffix string, retained bool, payload []byte) error {
+	h.mu.Lock()
+	sink := h.sink
+	h.mu.Unlock()
+	if sink == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- sink.PublishRaw(suffix, retained, payload) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// packetDigest is the stable content fingerprint used to deduplicate the
+// same packet heard by two backends (aprs-inet + aprs-radio).
+func packetDigest(p Packet) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s|%s|", p.Kind, p.Src)
+	if p.Timestamp != nil {
+		fmt.Fprintf(h, "t%d|", *p.Timestamp)
+	}
+	if p.Position != nil {
+		fmt.Fprintf(h, "%.4f,%.4f|", p.Position.Latitude, p.Position.Longitude)
+	}
+	fmt.Fprintf(h, "%c%c|%d|%.1f|", p.SymbolTable, p.Symbol, p.CourseDeg, p.SpeedKMH)
+	if p.AltitudeM != nil {
+		fmt.Fprintf(h, "a%.0f|", *p.AltitudeM)
+	}
+	fmt.Fprintf(h, "%s|%s|%s|", p.Name, p.Comment, p.Status)
+	if p.Message != nil {
+		fmt.Fprintf(h, "m%s:%s:%s|", p.Message.To, p.Message.ID, p.Message.Text)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// timeValue converts an optional unix timestamp to a time.Time.
+func timeValue(unix *int64) int64 {
+	if unix == nil {
+		return 0
+	}
+	return *unix
+}
+
+// byteStr renders an optional APRS symbol byte.
+func byteStr(b byte) string {
+	if b == 0 {
+		return ""
+	}
+	return string(b)
+}

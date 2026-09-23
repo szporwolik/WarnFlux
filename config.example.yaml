@@ -152,6 +152,43 @@ sources:
           km_from: 400
           km_to: 503
 
+  # APRS-IS source: connects to an APRS-IS server, subscribes to packets
+  # around the configured position (aprs.gridsquare + aprs.radius_km) and
+  # feeds them into the shared APRS hub, which publishes the merged
+  # station state, the packet feed and messages addressed to our callsign
+  # on MQTT. Requires aprs.enabled: true.
+  #
+  # The plugin also TRANSMITS: the aprs action below (and future rule
+  # wiring) sends APRS text messages to hams through this connection.
+  # See internal/plugins/sources/aprsinet/README.md.
+  #
+  # - id: aprs-inet-main
+  #   type: aprs-inet
+  #   enabled: false
+  #
+  #   runtime:
+  #     restart: true
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     # Login callsign. Defaults to aprs.callsign; must be validated
+  #     # with the passcode on the APRS-IS server.
+  #     callsign: "SP9MOA-10"
+  #
+  #     # APRS-IS validation code: passcode OR passcode_file.
+  #     passcode: "12345"
+  #     passcode_file: ""
+  #
+  #     # APRS-IS server (host:port). Tier-2 rotate default.
+  #     server: "rotate.aprs2.net:14580"
+  #
+  #     # Optional filter override; the default is the automatic range
+  #     # filter r/<lat>/<lon>/<radius_km> built from the aprs section.
+  #     filter: ""
+  #
+  #     connect_timeout: 15s
+  #     read_timeout: 10m
+
 # Output plugins: receive meaningful event changes from the core.
 outputs:
   # Publishes hazard event changes and an application status snapshot to
@@ -277,7 +314,7 @@ web:
 
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI). They never automatically receive MQTT
-# events. Built-in types: smtp (email).
+# events. Built-in types: smtp (email), http_webhook, aprs.
 actions:
 
   # SMTP email action: sends one plain-text email per routed dispatch
@@ -321,6 +358,25 @@ actions:
   #     # unlimited). Group members receive Bcc copies: one SMTP
   #     # transaction per unique address.
   #     rate_limit_per_minute: 20
+  #
+  # APRS message action: sends one APRS text message per routed dispatch
+  # event to the listed ham callsigns, through the shared APRS hub (the
+  # first ready transmitter: aprs-inet today, aprs-radio later). Messages
+  # are single APRS lines (max 67 characters): "<prefix> <SEVERITY>
+  # <event> <headline>". Requires aprs.enabled: true.
+  # - id: aprs-hams
+  #   type: aprs
+  #   enabled: false
+  #
+  #   runtime:
+  #     queue_size: 128
+  #     call_timeout: 15s
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     callsigns: ["SP9XYZ-7", "SR9KR"]
+  #     # Prefix of every message; defaults to web.header1.
+  #     prefix: "WarnFlux"
   #
   # Generic HTTP webhook action: one JSON POST per routed notification.
   # Covers Discord, Slack-compatible gateways, ntfy, Gotify bridges,
@@ -397,3 +453,29 @@ ingest_http:
     password: ""
     password_file: ""
     topic_prefix: ""       # defaults to the mqtt output's prefix
+
+# APRS hub: the shared merge point for every APRS backend (aprs-inet now,
+# aprs-radio later). It maintains ONE retained station-state document per
+# nearby station on MQTT (<topic_prefix>/aprs/stations/<CALLSIGN>), the
+# non-retained packet feed (aprs/packets) and the rx/tx message feed
+# (aprs/messages). APRS plugins require aprs.enabled.
+aprs:
+  enabled: false
+
+  # Our identity: the callsign (with optional -SSID) messages are
+  # addressed to and transmitted from.
+  callsign: "SP9MOA-10"
+
+  # Our APRS icon: one symbol code (e.g. "j") or table+code (e.g. "/j").
+  icon: "/j"
+
+  # Our position as a Maidenhead locator (2, 4, 6 or 8 characters). The
+  # aprs-inet filter and the nearby-station radius both use its center.
+  gridsquare: "JO90WW"
+
+  # "Nearby" radius around our position in kilometers.
+  radius_km: 60
+
+  # How long a station stays in the retained MQTT state after its last
+  # packet before the topic is deleted (empty retained payload).
+  station_ttl: 30m

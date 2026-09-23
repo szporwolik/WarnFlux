@@ -24,6 +24,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/actions"
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
+	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
@@ -57,6 +58,17 @@ func resolveStoragePath(path string, logger *slog.Logger) string {
 	}
 	logger.Warn("storage.path not configured and the executable directory is unavailable; using ./warnflux.db")
 	return "warnflux.db"
+}
+
+// aprsManagerSink adapts the MQTT receiver manager to the APRS hub's
+// publishing surface: hub topics go out under the first connected
+// WarnFlux receiver's topic prefix.
+type aprsManagerSink struct {
+	mgmt *mqttreceiver.Manager
+}
+
+func (s *aprsManagerSink) PublishRaw(suffix string, retained bool, payload []byte) error {
+	return s.mgmt.PublishRaw(suffix, retained, payload)
 }
 
 // version and commit are injected at build time via -ldflags:
@@ -180,7 +192,24 @@ func run(configPath string) error {
 	// types, duplicate IDs and malformed plugin configs fail here, before
 	// any worker starts.
 	registry := plugin.NewRegistry()
-	if err := plugins.RegisterBuiltins(registry); err != nil {
+
+	// The APRS hub merges every APRS backend (aprs-inet now, aprs-radio
+	// later) into one station state; plugins and actions receive it at
+	// registration time.
+	hub, err := aprs.NewHub(aprs.HubConfig{
+		Enabled:    cfg.APRS.Enabled,
+		Callsign:   cfg.APRS.Callsign,
+		Icon:       cfg.APRS.Icon,
+		GridSquare: cfg.APRS.GridSquare,
+		RadiusKM:   cfg.APRS.RadiusKM,
+		StationTTL: cfg.APRS.StationTTL,
+		Version:    resolvedVersion,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("configure aprs hub: %w", err)
+	}
+
+	if err := plugins.RegisterBuiltins(registry, hub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
 	}
 	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs,
@@ -225,7 +254,7 @@ func run(configPath string) error {
 	// ActionPlugins: explicit routing only. Unknown types fail here, before
 	// any worker starts (even for disabled entries).
 	actionRegistry := action.NewRegistry()
-	if err := actions.RegisterAll(actionRegistry); err != nil {
+	if err := actions.RegisterAll(actionRegistry, hub); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
 	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)
@@ -239,6 +268,10 @@ func run(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("configure mqtt receivers: %w", err)
 	}
+
+	// The APRS hub publishes its station/packet/message feeds through the
+	// first connected WarnFlux receiver (same broker, same topic prefix).
+	hub.SetSink(&aprsManagerSink{mgmt: receivers})
 
 	// Public HTTP ingest endpoints: API-key-protected publishers. Each
 	// enabled instance accepts hazard messages and publishes them to the
@@ -321,6 +354,9 @@ func run(configPath string) error {
 	// Startup order: action workers → receivers → Router core → HTTP.
 	actionsMgr.Start(ctx)
 	receivers.StartAll()
+	if hub.Enabled() {
+		hub.Start(ctx)
+	}
 
 	// Group routing rule engine: the consumer of the dispatch ingress. It
 	// evaluates every hazard transition against the group rules (severity

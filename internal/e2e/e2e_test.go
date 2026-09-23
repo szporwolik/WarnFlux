@@ -146,7 +146,7 @@ func TestProviderToActionE2E(t *testing.T) {
 
 	// Real plugin manager with the real IMGW source.
 	reg := plugin.NewRegistry()
-	if err := plugins.RegisterBuiltins(reg); err != nil {
+	if err := plugins.RegisterBuiltins(reg, nil); err != nil {
 		t.Fatal(err)
 	}
 	mgr, err := plugin.NewManager(reg, []config.Source{{
@@ -203,7 +203,7 @@ func TestProviderToActionE2E(t *testing.T) {
 	}
 
 	areg := action.NewRegistry()
-	if err := actions.RegisterAll(areg); err != nil {
+	if err := actions.RegisterAll(areg, nil); err != nil {
 		t.Fatal(err)
 	}
 	actionsMgr, err := action.NewManager([]config.Action{{
@@ -364,7 +364,7 @@ func TestProviderToWebhookE2E(t *testing.T) {
 	met := metrics.New()
 	rec := trail.NewRecorder(trail.DefaultMaxTrails)
 	areg := action.NewRegistry()
-	if err := actions.RegisterAll(areg); err != nil {
+	if err := actions.RegisterAll(areg, nil); err != nil {
 		t.Fatal(err)
 	}
 	actionsMgr, err := action.NewManager([]config.Action{{

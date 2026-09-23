@@ -4,16 +4,19 @@
 package plugins
 
 import (
+	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/aprsinet"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/imgw"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/rso"
 )
 
 // RegisterBuiltins registers every built-in plugin type. Registration is
-// explicit so it is easy to audit, test and search.
-func RegisterBuiltins(reg *plugin.Registry) error {
+// explicit so it is easy to audit, test and search. hub is the shared APRS
+// hub (may be nil when the hub is disabled; APRS plugins then fail fast).
+func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub) error {
 	if err := openmeteo.Register(reg); err != nil {
 		return err
 	}
@@ -21,6 +24,9 @@ func RegisterBuiltins(reg *plugin.Registry) error {
 		return err
 	}
 	if err := rso.Register(reg); err != nil {
+		return err
+	}
+	if err := aprsinet.Register(reg, hub); err != nil {
 		return err
 	}
 	if err := mqtt.Register(reg); err != nil {

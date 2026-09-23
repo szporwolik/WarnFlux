@@ -76,6 +76,19 @@ func activeTopic(prefix, source, eventKey string) string {
 	return prefix + "/active/" + source + "/" + TopicHash(eventKey)
 }
 
+// PublishRaw publishes one arbitrary document under the WarnFlux topic
+// prefix of the first connected receiver: <prefix>/<suffix>, QoS 1. A nil
+// payload with retained=true is the retained-topic delete. The suffix must
+// be a plain topic path (no wildcards); callers build their own layout —
+// the APRS hub publishes its station/packet/message feeds through it.
+func (m *Manager) PublishRaw(suffix string, retained bool, payload []byte) error {
+	r, err := m.publishReceiver()
+	if err != nil {
+		return err
+	}
+	return r.publish(r.cfg.WF.TopicPrefix+"/"+suffix, 1, retained, payload)
+}
+
 // wireTimePtr renders an optional time as an RFC 3339 wire string.
 func wireTimePtr(t *time.Time) *string {
 	if t == nil {

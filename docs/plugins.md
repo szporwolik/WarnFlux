@@ -194,6 +194,39 @@ For **outputs**:
   the upgrade — a conservative one-time replay with possible duplicate
   delivery, never silent loss.
 
+## APRS backends and the shared hub
+
+APRS integrations (the `aprs-inet` source today, the `aprs-radio` KISS
+source later) do NOT publish their own MQTT topics. They feed parsed
+packets into the shared **APRS hub** (`internal/aprs`), constructed once
+from the top-level `aprs:` configuration and handed to plugin factories at
+registration:
+
+```go
+hub, _ := aprs.NewHub(aprs.HubConfig{...}, logger)
+if err := plugins.RegisterBuiltins(reg, hub); err != nil { ... }
+```
+
+The hub owns the topic layout and merges every backend, which guarantees
+the two design invariants:
+
+1. **No duplicate topics** — every nearby station has exactly ONE retained
+   state document (`<prefix>/aprs/stations/<CALLSIGN>`), regardless of how
+   many backends heard it. Identical packets observed twice are merged
+   (the document's `received_via` list records the backends) and the
+   non-retained packet feed publishes each unique content digest once.
+2. **Permanent state on the broker** — station documents are retained and
+   expire only after `aprs.station_ttl` (deleted with an empty retained
+   payload). Our own station document is published at startup.
+
+The hub also routes outbound APRS messages (rx/tx messaging): a backend
+implementing `aprs.Transmitter` registers while connected, and
+`Hub.SendMessage` picks the first ready transmitter. The built-in `aprs`
+action uses this to notify ham callsigns from routed hazard events. A new
+backend therefore only needs to (a) parse frames into `aprs.Packet` and
+call `hub.Observe`, and (b) optionally implement `aprs.Transmitter` — the
+hub, the MQTT topics and the action wiring stay untouched.
+
 ## Mandatory rules
 
 - Respect context cancellation; do not block past it.

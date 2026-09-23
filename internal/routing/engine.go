@@ -8,10 +8,12 @@
 // Every group is a notification channel: a routing matrix in which every
 // cell reads "events from input plugin S at severity ≥ T fire action A".
 // A cell without a source (empty) matches every source and acts as the
-// fallback when no source-specific cell for that action matches. Output
-// plugins need no routing here — they receive every journal change by
-// default. Rules are reloaded from storage on an interval, so edits made
-// in the web UI take effect without a restart.
+// fallback when no source-specific cell for that action matches. Only
+// NEW and UPDATED transitions notify: cancelled/expired transitions
+// retire the dashboard view and never start the notification machine.
+// Output plugins need no routing here — they receive every journal change
+// by default. Rules are reloaded from storage on an interval, so edits
+// made in the web UI take effect without a restart.
 package routing
 
 import (
@@ -72,12 +74,13 @@ type Engine struct {
 	bcc map[int64][]string
 
 	// Stats counters (atomic).
-	eventsSeen     atomic.Int64
-	rulesMatched   atomic.Int64
-	actionsFired   atomic.Int64
-	actionsFailed  atomic.Int64
-	actionsDeduped atomic.Int64
-	ruleLoadErrors atomic.Int64
+	eventsSeen         atomic.Int64
+	transitionsSkipped atomic.Int64
+	rulesMatched       atomic.Int64
+	actionsFired       atomic.Int64
+	actionsFailed      atomic.Int64
+	actionsDeduped     atomic.Int64
+	ruleLoadErrors     atomic.Int64
 }
 
 // New builds an engine with the default refresh interval.
@@ -146,6 +149,18 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		return
 	}
 	e.eventsSeen.Add(1)
+
+	// Cancellations and expirations only retire the active view (the
+	// dashboard hides the hazard); starting the notification machine for
+	// them makes no sense, so only new and updated transitions are
+	// routed to actions.
+	switch ev.Hazard.Type {
+	case dispatch.TransitionCancelled, dispatch.TransitionExpired:
+		e.transitionsSkipped.Add(1)
+		e.logger.Debug("routing: terminal transition skipped",
+			"type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
+		return
+	}
 
 	sev := strings.ToLower(strings.TrimSpace(ev.Hazard.Hazard.Severity))
 	rank, ok := storage.SeverityRank(sev)
@@ -236,23 +251,25 @@ func meetsThreshold(rank int, minSeverity string) bool {
 // Stats returns a snapshot of the engine counters (monitoring/tests).
 func (e *Engine) Stats() EngineStats {
 	return EngineStats{
-		EventsSeen:     e.eventsSeen.Load(),
-		RulesMatched:   e.rulesMatched.Load(),
-		ActionsFired:   e.actionsFired.Load(),
-		ActionsFailed:  e.actionsFailed.Load(),
-		ActionsDeduped: e.actionsDeduped.Load(),
-		RuleLoadErrors: e.ruleLoadErrors.Load(),
+		EventsSeen:         e.eventsSeen.Load(),
+		TransitionsSkipped: e.transitionsSkipped.Load(),
+		RulesMatched:       e.rulesMatched.Load(),
+		ActionsFired:       e.actionsFired.Load(),
+		ActionsFailed:      e.actionsFailed.Load(),
+		ActionsDeduped:     e.actionsDeduped.Load(),
+		RuleLoadErrors:     e.ruleLoadErrors.Load(),
 	}
 }
 
 // EngineStats is a point-in-time snapshot of the engine counters.
 type EngineStats struct {
-	EventsSeen     int64
-	RulesMatched   int64
-	ActionsFired   int64
-	ActionsFailed  int64
-	ActionsDeduped int64
-	RuleLoadErrors int64
+	EventsSeen         int64
+	TransitionsSkipped int64 // cancelled/expired: dashboard-only, never notify
+	RulesMatched       int64
+	ActionsFired       int64
+	ActionsFailed      int64
+	ActionsDeduped     int64
+	RuleLoadErrors     int64
 }
 
 // fireDedupKey builds the stable deduplication identity of one hazard

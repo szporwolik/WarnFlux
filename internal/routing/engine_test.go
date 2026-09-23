@@ -336,6 +336,33 @@ func TestEngineNonHazardSkipped(t *testing.T) {
 	}
 }
 
+// TestEngineTerminalTransitionsDoNotFire pins the notification semantics:
+// cancelled and expired transitions only retire the dashboard view — they
+// must never fire actions, even with a permissive threshold. Updated (and
+// new) transitions still notify.
+func TestEngineTerminalTransitionsDoNotFire(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+
+	feed <- hazardEventFrom("imgw", "severe", dispatch.TransitionCancelled)
+	feed <- hazardEventFrom("imgw", "severe", dispatch.TransitionExpired)
+	feed <- hazardEventFrom("imgw", "severe", dispatch.TransitionUpdated)
+
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["log"]) == 1
+	}, "only the updated transition fired")
+
+	s := e.Stats()
+	if s.EventsSeen != 3 || s.TransitionsSkipped != 2 || s.ActionsFired != 1 {
+		t.Errorf("stats = %+v, want 3 seen, 2 skipped, 1 fired", s)
+	}
+}
+
 func TestEngineUnrankedSeverityMatchesOnlyPermissive(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
 		{GroupID: 1, Name: "strict", Actions: []storage.ChannelAssignment{asn("log", "minor")}},

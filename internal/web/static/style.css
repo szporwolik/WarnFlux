@@ -1237,12 +1237,14 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 #aprs-map {
   /* Fill to a square when the viewport allows it; on short screens the
-  height caps so the attribution line stays visible. */
+  height caps so the attribution line and the footer stay visible and the
+  page does not scroll (~25rem covers header, tabs, attribution, footer). */
   width: 100%;
   height: auto;
   aspect-ratio: 1 / 1;
-  min-height: 420px;
-  max-height: calc(100vh - 13rem);
+  min-height: min(420px, calc(100dvh - 25.5rem));
+  max-height: calc(100vh - 25.5rem);
+  max-height: calc(100dvh - 25.5rem);
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
   background: var(--surface);

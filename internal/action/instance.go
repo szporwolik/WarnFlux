@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
@@ -73,6 +74,11 @@ type Instance struct {
 	trail   *trail.Recorder
 	retries int
 
+	// metric cells (optional, nil-safe).
+	metricDelivered func(int64)
+	metricFailed    func(int64)
+	metricRetry     func(int64)
+
 	mu     sync.Mutex
 	status Status
 
@@ -85,21 +91,24 @@ type Instance struct {
 }
 
 // NewInstance creates an action instance with its bounded queue. The
-// worker is not started until Start is called. trail may be nil.
-func NewInstance(id, typ string, p Plugin, queueSize int, callTimeout, shutdownTimeout time.Duration, logger *slog.Logger, trail *trail.Recorder, retries int) *Instance {
+// worker is not started until Start is called. trail and reg may be nil.
+func NewInstance(id, typ string, p Plugin, queueSize int, callTimeout, shutdownTimeout time.Duration, logger *slog.Logger, trail *trail.Recorder, retries int, reg *metrics.Registry) *Instance {
 	if retries < 0 {
 		retries = 0
 	}
-	return &Instance{
-		id:      id,
-		typ:     typ,
-		plugin:  p,
-		queue:   make(chan ActionRequest, queueSize),
-		callTO:  callTimeout,
-		closeTO: shutdownTimeout,
-		logger:  logger,
-		trail:   trail,
-		retries: retries,
+	inst := &Instance{
+		id:              id,
+		typ:             typ,
+		plugin:          p,
+		queue:           make(chan ActionRequest, queueSize),
+		callTO:          callTimeout,
+		closeTO:         shutdownTimeout,
+		logger:          logger,
+		trail:           trail,
+		retries:         retries,
+		metricDelivered: func(int64) {},
+		metricFailed:    func(int64) {},
+		metricRetry:     func(int64) {},
 		status: Status{
 			ID:            id,
 			Type:          typ,
@@ -108,6 +117,15 @@ func NewInstance(id, typ string, p Plugin, queueSize int, callTimeout, shutdownT
 			QueueCapacity: queueSize,
 		},
 	}
+	if reg != nil {
+		inst.metricDelivered = reg.Counter("warnflux_notifications_total",
+			"Notification outcomes per action.", "action", id, "result", "delivered")
+		inst.metricFailed = reg.Counter("warnflux_notifications_total",
+			"Notification outcomes per action.", "action", id, "result", "failed")
+		inst.metricRetry = reg.Counter("warnflux_notification_retry_total",
+			"Delivery retry attempts per action.", "action", id)
+	}
+	return inst
 }
 
 // Start launches the single worker goroutine. It is idempotent.
@@ -198,6 +216,7 @@ func (i *Instance) handle(req ActionRequest) {
 	for attempt := 0; ; attempt++ {
 		err := i.executeOnce(req)
 		if err == nil {
+			i.metricDelivered(1)
 			if attempt > 0 {
 				i.trail.Add(key, trail.StepDelivered,
 					fmt.Sprintf("delivered after %d retr%s", attempt, plural(attempt)), time.Now())
@@ -208,6 +227,7 @@ func (i *Instance) handle(req ActionRequest) {
 			return
 		}
 
+		i.metricFailed(1)
 		i.trail.Add(key, trail.StepFailed,
 			fmt.Sprintf("attempt %d/%d failed: %v", attempt+1, total, err), time.Now())
 		if i.disabled.Load() {
@@ -216,6 +236,7 @@ func (i *Instance) handle(req ActionRequest) {
 			return
 		}
 		if attempt < i.retries {
+			i.metricRetry(1)
 			i.trail.Add(key, trail.StepRetry,
 				fmt.Sprintf("retrying in %s", RetryBackoff), time.Now())
 			time.Sleep(RetryBackoff)

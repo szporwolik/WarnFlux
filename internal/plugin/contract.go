@@ -71,6 +71,14 @@ type SourceStatsReporter interface {
 	ReportSourceStats(summary string)
 }
 
+// SourceFilterReporter is an OPTIONAL capability implemented by the
+// emitter handed to a source plugin: sources report how many events of
+// the latest poll were filtered out (geography, severity, duplicates of
+// other providers). The count feeds warnflux_events_filtered_total.
+type SourceFilterReporter interface {
+	ReportSourceFiltered(n int)
+}
+
 // SourceActiveEventReader is an OPTIONAL capability implemented by the
 // emitter handed to a source plugin: it returns the CURRENT active events
 // of one source from the authoritative SQLite current-state table

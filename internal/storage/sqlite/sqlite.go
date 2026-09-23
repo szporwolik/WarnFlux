@@ -927,6 +927,17 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// CountActive returns the number of currently active events (the
+// warnflux_events_active gauge).
+func (s *Store) CountActive(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM events WHERE status = ?", string(core.StatusActive)).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count active events: %w", err)
+	}
+	return n, nil
+}
+
 // ---- internals ----
 
 const insertSQL = `

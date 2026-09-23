@@ -76,7 +76,7 @@ func nodeCfg(t *testing.T, level string) *yaml.Node {
 
 func newManager(t *testing.T, reg *action.Registry, cfgs []config.Action) *action.Manager {
 	t.Helper()
-	m, err := action.NewManager(cfgs, reg, testLogger(), nil)
+	m, err := action.NewManager(cfgs, reg, testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -139,11 +139,11 @@ func TestSubmitDisabledActionFails(t *testing.T) {
 
 func TestSubmitUnknownTypeFailsConstruction(t *testing.T) {
 	reg := action.NewRegistry()
-	if _, err := action.NewManager([]config.Action{{ID: "x", Type: "nope", Enabled: true}}, reg, testLogger(), nil); err == nil {
+	if _, err := action.NewManager([]config.Action{{ID: "x", Type: "nope", Enabled: true}}, reg, testLogger(), nil, nil); err == nil {
 		t.Fatal("unknown type accepted")
 	}
 	// Even disabled entries with unknown types fail (config typo safety).
-	if _, err := action.NewManager([]config.Action{{ID: "x", Type: "nope", Enabled: false}}, reg, testLogger(), nil); err == nil {
+	if _, err := action.NewManager([]config.Action{{ID: "x", Type: "nope", Enabled: false}}, reg, testLogger(), nil, nil); err == nil {
 		t.Fatal("disabled unknown type accepted")
 	}
 }
@@ -219,7 +219,7 @@ func TestShutdownBoundedDespiteBrokenAction(t *testing.T) {
 	m, err := action.NewManager([]config.Action{{
 		ID: "logger-a", Type: "testa", Enabled: true,
 		Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: 50 * time.Millisecond, ShutdownTimeout: 100 * time.Millisecond},
-	}}, reg, testLogger(), nil)
+	}}, reg, testLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

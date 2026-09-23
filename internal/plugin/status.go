@@ -31,15 +31,20 @@ const (
 // health. A future health endpoint or MQTT status publisher can consume it
 // without changing the plugin API.
 type PluginStatus struct {
-	ID                  string
-	Type                string
-	Kind                PluginKind
-	State               PluginState
-	StartedAt           time.Time
-	LastSuccessAt       *time.Time
-	LastErrorAt         *time.Time
-	LastError           string
-	LastSummary         string
+	ID            string
+	Type          string
+	Kind          PluginKind
+	State         PluginState
+	StartedAt     time.Time
+	LastSuccessAt *time.Time
+	LastErrorAt   *time.Time
+	LastError     string
+	LastSummary   string
+	// Cumulative operational counters (provider polls/errors/filtered
+	// events), exposed on /metrics as source_polls/errors/filtered.
+	Polls               int64
+	Errors              int64
+	Filtered            int64
 	ConsecutiveFailures int
 	RestartCount        int
 }
@@ -66,6 +71,27 @@ func (t *statusTracker) setSummary(summary string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.s.LastSummary = summary
+}
+
+// countPoll increments the cumulative successful-poll counter.
+func (t *statusTracker) countPoll() {
+	t.mu.Lock()
+	t.s.Polls++
+	t.mu.Unlock()
+}
+
+// countPollError increments the cumulative failed-poll counter.
+func (t *statusTracker) countPollError() {
+	t.mu.Lock()
+	t.s.Errors++
+	t.mu.Unlock()
+}
+
+// countFiltered adds one poll's filtered-event count.
+func (t *statusTracker) countFiltered(n int) {
+	t.mu.Lock()
+	t.s.Filtered += int64(n)
+	t.mu.Unlock()
 }
 
 func (t *statusTracker) markStarted(now time.Time) {

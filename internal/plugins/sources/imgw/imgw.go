@@ -171,6 +171,9 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 	if stats, ok := emit.(plugin.SourceStatsReporter); ok {
 		stats.ReportSourceStats(fmt.Sprintf("%d warnings / %d filtered", warnings, filtered))
 	}
+	if fc, ok := emit.(plugin.SourceFilterReporter); ok && filtered > 0 {
+		fc.ReportSourceFiltered(filtered)
+	}
 
 	if reporter != nil {
 		if healthy {

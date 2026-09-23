@@ -13,6 +13,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
@@ -52,6 +53,7 @@ func TestInstanceRetryTrail(t *testing.T) {
 	shortBackoff(t)
 	rec := trail.NewRecorder(10)
 	rec.Receive("imgw:1", "imgw", "severe", "Strong wind", "Gale", time.Now())
+	met := metrics.New()
 
 	reg := action.NewRegistry()
 	flaky := &flakyPlugin{limit: 1}
@@ -63,7 +65,7 @@ func TestInstanceRetryTrail(t *testing.T) {
 			CallTimeout: 10 * time.Second,
 			Retries:     1,
 		},
-	}}, reg, testLogger(), rec)
+	}}, reg, testLogger(), rec, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +101,18 @@ func TestInstanceRetryTrail(t *testing.T) {
 	if !strings.Contains(texts[3], "delivered after 1 retry") {
 		t.Errorf("delivery step text = %q", texts[3])
 	}
+
+	// Metrics: one failed attempt, one retry, one delivery.
+	out := met.Render()
+	for _, want := range []string{
+		`warnflux_notifications_total{action="smtp-alerts",result="failed"} 1`,
+		`warnflux_notifications_total{action="smtp-alerts",result="delivered"} 1`,
+		`warnflux_notification_retry_total{action="smtp-alerts"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics missing %q:\n%s", want, out)
+		}
+	}
 }
 
 // TestInstanceRetriesExhaustedTrail pins the failed outcome when all
@@ -113,7 +127,7 @@ func TestInstanceRetriesExhaustedTrail(t *testing.T) {
 	m, err := action.NewManager([]config.Action{{
 		ID: "smtp-alerts", Type: "flaky", Enabled: true,
 		Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: 5 * time.Second, Retries: 2},
-	}}, reg, testLogger(), rec)
+	}}, reg, testLogger(), rec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +165,7 @@ func TestInstanceTrailWithoutRecorder(t *testing.T) {
 	m, err := action.NewManager([]config.Action{{
 		ID: "smtp-alerts", Type: "flaky", Enabled: true,
 		Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: 5 * time.Second, Retries: 2},
-	}}, reg, testLogger(), nil)
+	}}, reg, testLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

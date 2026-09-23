@@ -30,6 +30,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
+	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
 	mqttout "github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
@@ -129,6 +130,10 @@ func run(configPath string) error {
 	// here and is served by the web UI's /logs viewer.
 	logs := web.NewLogBuffer(web.DefaultLogLines)
 
+	// Prometheus metrics registry: counters and gauges exposed on
+	// /metrics (unauthenticated; counts only).
+	met := metrics.New()
+
 	// Phase 1 — static initialization. No background goroutines exist yet,
 	// so a failure here leaves nothing running behind.
 	cfg, err := config.Load(configPath)
@@ -169,7 +174,7 @@ func run(configPath string) error {
 		logger.Info("database migrated", "from", migration.From, "to", migration.To)
 	}
 
-	ingester := ingest.NewIngester(store, logger)
+	ingester := ingest.NewIngester(store, logger, met)
 
 	// Build the plugin manager from the YAML plugin configuration. Unknown
 	// types, duplicate IDs and malformed plugin configs fail here, before
@@ -223,7 +228,7 @@ func run(configPath string) error {
 	if err := actions.RegisterAll(actionRegistry); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
-	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails)
+	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)
 	if err != nil {
 		return fmt.Errorf("configure actions: %w", err)
 	}
@@ -299,7 +304,7 @@ func run(configPath string) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic, trails)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, manager, actionsMgr, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic, trails, met)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
@@ -327,7 +332,7 @@ func run(configPath string) error {
 		Header1: cfg.Web.Header1,
 		Domain:  cfg.Web.Domain,
 		RepoURL: appinfo.RepoURL,
-	}, trails)
+	}, trails, met)
 	var routingWG sync.WaitGroup
 	routingWG.Add(1)
 	go func() {

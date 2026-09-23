@@ -36,6 +36,14 @@ func newFakeUsers() *fakeUsers {
 // Ping satisfies the optional dbPinger assertion for the health page.
 func (f *fakeUsers) Ping(context.Context) error { return nil }
 
+// PendingStats satisfies the optional storageProbe assertion for /metrics.
+func (f *fakeUsers) PendingStats(context.Context) (int, time.Duration, error) {
+	return 3, time.Minute, nil
+}
+
+// CountActive satisfies the optional storageProbe assertion for /metrics.
+func (f *fakeUsers) CountActive(context.Context) (int, error) { return 4, nil }
+
 func (f *fakeUsers) EnsureAdminUser(username string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

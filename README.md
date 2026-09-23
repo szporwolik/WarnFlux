@@ -661,6 +661,15 @@ stamped on builder-mode alerts and appears as a source row in the Groups
 routing matrix, so alerts from a scraper can be routed at their own
 severity thresholds.
 
+Hardening options per instance: `previous_key` / `previous_key_file` are
+accepted alongside `api_key` for zero-downtime key rotation, `allowed_cidrs`
+restricts the source networks (403 otherwise), `rate_limit_per_minute`
+bounds the request rate (0 = default 60, negative = unlimited; 429 carries
+`Retry-After`). Every request is audited in the log with its request id
+(`X-Request-ID`, echoed in the response), source IP and result, and the
+counters (accepted/rejected/auth_failed/rate_limited/forbidden) appear on
+the Health page and on `/metrics`.
+
 Broker settings are optional: an instance without `broker` inherits the
 broker, credentials and topic prefix of the **primary MQTT output** (the
 first enabled output with `type: mqtt`) — all plugins push to the one main
@@ -709,8 +718,24 @@ Two accepted payload shapes on `POST /api/v1/ingest/<id>`:
    `certainty`, `description`, `instruction`, `areas`, `effective_at`,
    `expires_at`, `latitude`, `longitude`, `category`, `source_url`.
 
-Responses: `202` accepted, `400` invalid payload, `401` bad key, `413`
-oversized (> 1 MiB), `503` broker unavailable.
+Responses: `202` accepted, `400` invalid payload, `401` bad key, `403`
+source address not allowed, `413` oversized (> 1 MiB), `429` rate limited,
+`503` broker unavailable.
+
+## Metrics
+
+`GET /metrics` exposes a small Prometheus text-format endpoint
+(unauthenticated; counters only, never content or secrets):
+
+- `warnflux_source_polls_total` / `warnflux_source_errors_total` /
+  `warnflux_events_filtered_total` per source,
+- `warnflux_events_ingested_total`, `warnflux_events_duplicates_total`,
+  `warnflux_events_active`,
+- `warnflux_notifications_total{action,result}` and
+  `warnflux_notification_retry_total`,
+- `warnflux_mqtt_connected`, `warnflux_dispatch_queue_depth`,
+  `warnflux_pending_changes`,
+- `warnflux_ingest_http_requests_total{instance,result}`.
 
 ## Plugins
 

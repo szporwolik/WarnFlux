@@ -12,6 +12,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
@@ -133,7 +134,7 @@ func hazardEventFrom(source, severity string, typ dispatch.TransitionType) dispa
 // plus the engine for stats assertions.
 func startEngine(t *testing.T, store RuleStore, acts ActionSubmitter) (*Engine, chan<- dispatch.Event) {
 	t.Helper()
-	e := New(store, acts, slog.New(slog.DiscardHandler), action.AppInfo{}, nil)
+	e := New(store, acts, slog.New(slog.DiscardHandler), action.AppInfo{}, nil, nil)
 	events := make(chan dispatch.Event, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -468,7 +469,8 @@ func TestEngineTrailRecording(t *testing.T) {
 	}}
 	acts := &fakeActions{}
 	rec := trail.NewRecorder(10)
-	e := New(store, acts, slog.New(slog.DiscardHandler), action.AppInfo{}, rec)
+	met := metrics.New()
+	e := New(store, acts, slog.New(slog.DiscardHandler), action.AppInfo{}, rec, met)
 	events := make(chan dispatch.Event, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -522,6 +524,18 @@ func TestEngineTrailRecording(t *testing.T) {
 		}
 		return false
 	}, "duplicate skip step")
+
+	// Metrics: log skipped on both passes (threshold), smtp-alerts deduped
+	// on the replay.
+	out := met.Render()
+	for _, want := range []string{
+		`warnflux_notifications_total{action="log",result="skipped"} 2`,
+		`warnflux_notifications_total{action="smtp-alerts",result="deduped"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics missing %q:\n%s", want, out)
+		}
+	}
 
 	// Terminal transition: cancelled hazards record a skip and never
 	// start the notification machine.

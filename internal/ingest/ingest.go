@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -54,11 +55,27 @@ type Ingester struct {
 
 	// now is the clock used for timestamps; injectable in tests.
 	now func() time.Time
+
+	// metric cells (optional, nil-safe).
+	ingested   func(delta int64)
+	duplicates func(delta int64)
 }
 
-// NewIngester creates an Ingester backed by the given store.
-func NewIngester(store storage.EventStore, logger *slog.Logger) *Ingester {
-	return &Ingester{store: store, logger: logger, now: time.Now}
+// NewIngester creates an Ingester backed by the given store. The optional
+// metrics registry (variadic, so existing callers keep compiling) feeds
+// the /metrics counters.
+func NewIngester(store storage.EventStore, logger *slog.Logger, regs ...*metrics.Registry) *Ingester {
+	s := &Ingester{store: store, logger: logger, now: time.Now,
+		ingested:   func(int64) {},
+		duplicates: func(int64) {},
+	}
+	if len(regs) > 0 && regs[0] != nil {
+		s.ingested = regs[0].Counter("warnflux_events_ingested_total",
+			"Hazard events accepted into the journal (new, updated or cancelled).")
+		s.duplicates = regs[0].Counter("warnflux_events_duplicates_total",
+			"Hazard events rejected as identical duplicates.")
+	}
+	return s
 }
 
 // Ingest normalizes, validates and atomically persists the event. Only
@@ -83,22 +100,26 @@ func (s *Ingester) Ingest(ctx context.Context, event core.HazardEvent) (Result, 
 	key := event.Key()
 	switch outcome {
 	case storage.OutcomeNew:
+		s.ingested(1)
 		s.logger.Info("new hazard event",
 			"change_type", core.ChangeNew,
 			"source", event.Source, "source_id", event.SourceID,
 			"event_key", key, "event", event.Event, "severity", event.Severity)
 		return ResultNew, changeToEventChange(change), nil
 	case storage.OutcomeDuplicate:
+		s.duplicates(1)
 		s.logger.Debug("duplicate ignored",
 			"source", event.Source, "source_id", event.SourceID, "event_key", key)
 		return ResultDuplicate, core.EventChange{}, nil
 	case storage.OutcomeUpdated:
+		s.ingested(1)
 		s.logger.Info("hazard event updated",
 			"change_type", core.ChangeUpdated,
 			"source", event.Source, "source_id", event.SourceID,
 			"event_key", key, "event", event.Event, "severity", event.Severity)
 		return ResultUpdated, changeToEventChange(change), nil
 	case storage.OutcomeCancelled:
+		s.ingested(1)
 		s.logger.Info("hazard event cancelled",
 			"change_type", core.ChangeCancelled,
 			"source", event.Source, "source_id", event.SourceID,

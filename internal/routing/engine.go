@@ -29,6 +29,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
@@ -63,6 +64,11 @@ type Engine struct {
 	logger  *slog.Logger
 	trail   *trail.Recorder
 
+	// reg is the optional metrics registry; notifCells caches the
+	// per-action notification counters (action IDs are configuration).
+	reg        *metrics.Registry
+	notifCells sync.Map // actionID|result -> func(int64)
+
 	// app is stamped onto every action request (footers, links).
 	app action.AppInfo
 
@@ -86,16 +92,35 @@ type Engine struct {
 }
 
 // New builds an engine with the default refresh interval. trail is the
-// optional per-alert audit recorder (may be nil).
-func New(store RuleStore, actions ActionSubmitter, logger *slog.Logger, app action.AppInfo, trail *trail.Recorder) *Engine {
+// optional per-alert audit recorder (may be nil); reg is the optional
+// metrics registry (may be nil).
+func New(store RuleStore, actions ActionSubmitter, logger *slog.Logger, app action.AppInfo, trail *trail.Recorder, reg *metrics.Registry) *Engine {
 	return &Engine{
 		store:           store,
 		actions:         actions,
 		logger:          logger,
 		trail:           trail,
+		reg:             reg,
 		app:             app,
 		refreshInterval: defaultRefreshInterval,
 	}
+}
+
+// notifCount increments (or creates) the warnflux_notifications_total
+// counter for one (action, result) pair.
+func (e *Engine) notifCount(actionID, result string, delta int64) {
+	if e.reg == nil {
+		return
+	}
+	k := actionID + "|" + result
+	fn, ok := e.notifCells.Load(k)
+	if !ok {
+		fn = e.reg.Counter("warnflux_notifications_total",
+			"Notification outcomes per action.",
+			"action", actionID, "result", result)
+		e.notifCells.Store(k, fn)
+	}
+	fn.(func(int64))(delta)
 }
 
 // Run drains events until ctx is cancelled or the channel is closed
@@ -221,6 +246,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		var fired int
 		for _, a := range best {
 			if !meetsThreshold(rank, a.MinSeverity) {
+				e.notifCount(a.ID, "skipped", 1)
 				e.trail.Add(key, trail.StepSkipped,
 					fmt.Sprintf("skipped: severity below threshold — group %s action %s needs ≥ %s",
 						rule.Name, a.ID, a.MinSeverity), time.Now())
@@ -237,6 +263,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 					"group", rule.Name, "action", a.ID, "error", err)
 			} else if !claimed {
 				e.actionsDeduped.Add(1)
+				e.notifCount(a.ID, "deduped", 1)
 				e.trail.Add(key, trail.StepSkipped,
 					fmt.Sprintf("skipped: already delivered — group %s action %s (duplicate)",
 						rule.Name, a.ID), time.Now())
@@ -258,6 +285,7 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			}
 			if err := e.actions.Submit(a.ID, req); err != nil {
 				e.actionsFailed.Add(1)
+				e.notifCount(a.ID, "failed", 1)
 				e.trail.Add(key, trail.StepFailed,
 					fmt.Sprintf("%s failed to start: %v", a.ID, err), time.Now())
 				e.trail.SetOutcome(key, trail.OutcomeFailed)

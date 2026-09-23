@@ -23,6 +23,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
+	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/trail"
@@ -52,6 +53,7 @@ type testEnv struct {
 	logs     *web.LogBuffer
 	traffic  *mqttreceiver.TrafficBuffer
 	trails   *trail.Recorder
+	metrics  *metrics.Registry
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -76,6 +78,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 	logs := web.NewLogBuffer(web.DefaultLogLines)
 	traffic := mqttreceiver.NewTrafficBuffer(mqttreceiver.DefaultTrafficEntries)
 	trails := trail.NewRecorder(trail.DefaultMaxTrails)
+	met := metrics.New()
 
 	receivers, err := mqttreceiver.NewManager([]config.Receiver{
 		{
@@ -100,7 +103,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 	actions, err := action.NewManager([]config.Action{
 		{ID: "logger-action", Type: "logger", Enabled: true},
 		{ID: "logger-off", Type: "logger", Enabled: false},
-	}, reg, logger, trails)
+	}, reg, logger, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +124,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		t.Fatal(err)
 	}
 
-	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic, trails)
+	srv, err := web.New(cfg, st, receivers, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +138,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 		return http.ErrUseLastResponse // observe redirects instead of following
 	}}
 
-	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users, logs: logs, traffic: traffic, trails: trails}
+	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, users: users, logs: logs, traffic: traffic, trails: trails, metrics: met}
 }
 
 type nopAction struct{}
@@ -419,6 +422,47 @@ func TestHealthIngestRow(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("health page missing ingest row %q: %s", want, html)
+		}
+	}
+}
+
+// TestMetricsEndpoint pins the Prometheus exposition: unauthenticated,
+// text format, live gauges and the registry-held counters.
+func TestMetricsEndpoint(t *testing.T) {
+	probe := &fakeIngestProbe{
+		id: "news", connected: true, started: true,
+		counters: ingesthttp.Counters{Accepted: 5, AuthFailed: 1, RateLimited: 2},
+	}
+	env := newTestEnvWithIngest(t, map[string]http.Handler{"news": probe})
+
+	// Registry counters: simulate an ingested event and a duplicate.
+	env.metrics.Counter("warnflux_events_ingested_total", "Hazard events accepted into the journal (new, updated or cancelled).")(1)
+	env.metrics.Counter("warnflux_events_duplicates_total", "Hazard events rejected as identical duplicates.")(2)
+
+	// Unauthenticated: metrics must NOT require a session.
+	resp, body := env.get("/metrics")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics = %d, want 200 without login", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("content type = %q", ct)
+	}
+	for _, want := range []string{
+		`warnflux_source_polls_total{source="imgw-warnings"} 0`,
+		`warnflux_source_errors_total{source="imgw-warnings"} 0`,
+		`warnflux_events_filtered_total{source="imgw-warnings"} 0`,
+		`warnflux_mqtt_connected{receiver="local"} 0`,
+		`warnflux_dispatch_queue_depth 0`,
+		`warnflux_pending_changes 3`,
+		`warnflux_events_active 4`,
+		`warnflux_ingest_http_requests_total{instance="news",result="accepted"} 5`,
+		`warnflux_ingest_http_requests_total{instance="news",result="auth_failed"} 1`,
+		`warnflux_ingest_http_requests_total{instance="news",result="rate_limited"} 2`,
+		`warnflux_events_ingested_total 1`,
+		`warnflux_events_duplicates_total 2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q:\n%s", want, body)
 		}
 	}
 }

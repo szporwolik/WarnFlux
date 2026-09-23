@@ -26,6 +26,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -58,6 +59,7 @@ type Server struct {
 	logs      *LogBuffer
 	traffic   *mqttreceiver.TrafficBuffer
 	trails    *trail.Recorder
+	metrics   *metrics.Registry
 
 	// ingest maps each configured public ingest endpoint id to its
 	// API-key-protected handler (may be empty).
@@ -87,13 +89,14 @@ const repoURL = appinfo.RepoURL
 // the optional in-memory log ring buffer served by the /logs viewer;
 // traffic is the optional MQTT traffic ring buffer served by /traffic;
 // trails is the optional notification audit recorder served by
-// /notifications.
+// /notifications; metricsReg is the optional Prometheus registry served
+// by /metrics.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	router RouterStatuses, actions *action.Manager, ingress *dispatch.Ingress,
 	logger *slog.Logger, version, commit string, users storage.DirectoryStore,
 	ingest map[string]http.Handler, logs *LogBuffer,
 	traffic *mqttreceiver.TrafficBuffer,
-	trails *trail.Recorder) (*Server, error) {
+	trails *trail.Recorder, metricsReg *metrics.Registry) (*Server, error) {
 
 	// Read the admin password file at construction: a missing secret is a
 	// startup error, never a runtime surprise. Secrets are never logged.
@@ -128,6 +131,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		logs:      logs,
 		traffic:   traffic,
 		trails:    trails,
+		metrics:   metricsReg,
 		version:   version,
 		commit:    commit,
 		startedAt: time.Now(),
@@ -163,6 +167,9 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/notifications", s.requirePartial(s.handlePartialNotifications))
 	s.mux.Handle("GET /health", s.requirePage(s.handleHealthPage))
 	s.mux.Handle("GET /partials/health", s.requirePartial(s.handlePartialHealth))
+	// Metrics: unauthenticated on purpose (Prometheus cannot log in);
+	// only counters are exposed.
+	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	// Public ingest endpoints: authenticated per instance with the
 	// configured API key, never with a UI session.
 	if len(s.ingest) > 0 {

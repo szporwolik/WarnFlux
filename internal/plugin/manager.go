@@ -169,12 +169,14 @@ type sourceEmitter struct {
 // ReportSourceHealthy implements the optional SourceHealthReporter
 // capability.
 func (e *sourceEmitter) ReportSourceHealthy() {
+	e.tracker.countPoll()
 	e.tracker.success(time.Now())
 }
 
 // ReportSourceDegraded implements the optional SourceHealthReporter
 // capability.
 func (e *sourceEmitter) ReportSourceDegraded(err error) {
+	e.tracker.countPollError()
 	e.tracker.failure(err, 0, time.Now())
 }
 
@@ -182,6 +184,12 @@ func (e *sourceEmitter) ReportSourceDegraded(err error) {
 // capability: the latest poll summary, e.g. "42 items / 7 filtered".
 func (e *sourceEmitter) ReportSourceStats(summary string) {
 	e.tracker.setSummary(summary)
+}
+
+// ReportSourceFiltered implements the optional SourceFilterReporter
+// capability: the filtered-event count of the latest poll.
+func (e *sourceEmitter) ReportSourceFiltered(n int) {
+	e.tracker.countFiltered(n)
 }
 
 // ListSourceActiveEvents implements the optional SourceActiveEventReader

@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Verify the commit is on main
         run: |
@@ -129,13 +129,16 @@ jobs:
           sha256sum * > SHA256SUMS
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: WarnFlux v${{ steps.version.outputs.version }}
-          generate_release_notes: true
-          draft: false
-          files: |
-            dist/warnflux-linux-amd64
-            dist/warnflux-linux-arm64
-            dist/SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # gh CLI (no Node runtime) creates the release; when the run was
+          # triggered manually (workflow_dispatch) it also creates the
+          # missing v<version> tag pointing at this commit.
+          gh release create "v${{ steps.version.outputs.version }}" \
+            dist/warnflux-linux-amd64 \
+            dist/warnflux-linux-arm64 \
+            dist/SHA256SUMS \
+            --title "WarnFlux v${{ steps.version.outputs.version }}" \
+            --generate-notes
 

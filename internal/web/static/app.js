@@ -661,6 +661,11 @@
         window.setTimeout(function () { if (map) { map.invalidateSize(); } }, 60);
       });
     }
+    window.addEventListener("resize", function () {
+      if (map) {
+        map.invalidateSize();
+      }
+    });
   }
 
   function enableRadar() {

@@ -1228,8 +1228,13 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   gap: 0.5rem;
 }
 #aprs-map {
-  height: 440px;
+  /* Fill to a square when the viewport allows it; on short screens the
+  height caps so the attribution line stays visible. */
   width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  min-height: 420px;
+  max-height: calc(100vh - 13rem);
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
   background: var(--surface);

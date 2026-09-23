@@ -8,7 +8,8 @@ package actions
 import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	aprsaction "github.com/szporwolik/WarnFlux/internal/actions/aprs"
-	"github.com/szporwolik/WarnFlux/internal/actions/httpwebhook"
+	aprsout "github.com/szporwolik/WarnFlux/internal/actions/aprsout"
+	httpwebhook "github.com/szporwolik/WarnFlux/internal/actions/httpwebhook"
 	"github.com/szporwolik/WarnFlux/internal/actions/logger"
 	"github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
@@ -28,6 +29,9 @@ func RegisterAll(reg *action.Registry, hub *aprs.Hub) error {
 		return err
 	}
 	if err := aprsaction.Register(reg, hub); err != nil {
+		return err
+	}
+	if err := aprsout.Register(reg, hub); err != nil {
 		return err
 	}
 	return nil

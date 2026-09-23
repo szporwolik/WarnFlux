@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,7 +25,20 @@ const (
 	startupPublishDelay = 2 * time.Second
 	packetDigestWindow  = 10 * time.Minute
 	recentMessagesCap   = 64
+	// ackPendingCap bounds concurrent outbound messages awaiting an ack.
+	ackPendingCap = 64
+	// ackWaitDefault is the fallback ack wait when the caller does not
+	// ask for a specific one.
+	ackWaitDefault = 30 * time.Second
 )
+
+// BackendRadio is the via label of the KISS radio backend; frames coming
+// from it count as rf-received (no q-construct in KISS).
+const BackendRadio = "aprs-radio"
+
+// ErrNoAck reports that the addressee did not acknowledge a message
+// within the wait window.
+var ErrNoAck = errors.New("aprs: no ack received")
 
 // hubOp is one queued observation from a backend.
 type hubOp struct {
@@ -90,6 +105,11 @@ type Hub struct {
 	dropped   atomic.Int64
 	filtered  atomic.Int64
 	expired   atomic.Int64
+	// msgSeq numbers outbound message ids (the {id} ack suffix).
+	msgSeq atomic.Int64
+	// pending holds one result channel per in-flight message id; guarded
+	// by mu.
+	pending map[string]chan string
 }
 
 // NewHub validates the hub identity and returns the hub. The hub is
@@ -139,6 +159,7 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 		ops:          make(chan hubOp, opsQueueSize),
 		tick:         tickInterval,
 		selfDelay:    startupPublishDelay,
+		pending:      make(map[string]chan string),
 	}, nil
 }
 
@@ -363,6 +384,10 @@ func (r *stationRecord) merge(p *Packet, via string, now int64) {
 	}
 	if o := OriginFromPath(p.Path); o != OriginUnknown {
 		st.origin = o
+	} else if via == BackendRadio {
+		// KISS frames have no q-construct: radio reception is rf by
+		// definition.
+		st.origin = OriginRF
 	}
 	if p.MessageCapable {
 		st.messageCapable = true
@@ -463,8 +488,9 @@ func (h *Hub) publishPacket(p Packet, via string) {
 	}
 }
 
-// receiveMessage publishes one received APRS message and keeps it in the
-// recent-message ring.
+// receiveMessage publishes one received APRS message, keeps it in the
+// recent-message ring and signals a pending ack waiter when it is an
+// ack/rej for one of our outbound messages.
 func (h *Hub) receiveMessage(p Packet, via string) {
 	doc := MessageDocument{
 		SchemaVersion: SchemaVersion,
@@ -490,6 +516,41 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	if err := h.publishWithTimeout(MessagesTopic, false, payload); err != nil {
 		h.logger.Warn("aprs: message feed publish failed", "error", err)
 	}
+
+	// Signal the ack waiter only after the rx document is on the message
+	// feed: callers that learn about the ack must also see its document.
+	if p.Message.ID != "" && len(p.Message.Text) >= 3 {
+		if kind := ackKind(p.Message.Text); kind != "" {
+			h.signalAck(p.Message.ID, kind)
+		}
+	}
+}
+
+// ackKind reports whether a received message text is an ack/rej reply.
+func ackKind(text string) string {
+	switch {
+	case strings.HasPrefix(text, "ack"):
+		return "ack"
+	case strings.HasPrefix(text, "rej"):
+		return "rej"
+	}
+	return ""
+}
+
+// signalAck wakes the waiter registered for msgid, if any.
+func (h *Hub) signalAck(msgid, kind string) {
+	h.mu.Lock()
+	ch, ok := h.pending[msgid]
+	if ok {
+		delete(h.pending, msgid)
+	}
+	h.mu.Unlock()
+	if ok {
+		select {
+		case ch <- kind:
+		default:
+		}
+	}
 }
 
 // SendMessage routes one outbound APRS message to the first ready
@@ -504,44 +565,111 @@ func (h *Hub) SendMessage(ctx context.Context, to, text string) error {
 		return fmt.Errorf("aprs: message text must not be empty")
 	}
 
+	tx := h.readyTransmitter()
+	if tx == nil {
+		return ErrNoTransmitter
+	}
+	if err := tx.Send(ctx, to, text); err != nil {
+		return fmt.Errorf("aprs: transmitter %s: %w", tx.Name(), err)
+	}
+	h.publishTxMessage(to, text, "", tx.Name())
+	return nil
+}
+
+// SendMessageWaitAck sends one message with a hub-generated {id} and waits
+// up to timeout for the addressee's ack (or rej) before returning. The
+// bool reports whether an ack arrived; ErrNoAck means the timeout elapsed.
+func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout time.Duration) (bool, error) {
+	to = NormalizeCallsign(to)
+	if !ValidCallsign(to) {
+		return false, fmt.Errorf("aprs: invalid addressee callsign %q", to)
+	}
+	text = TrimMessageText(text)
+	if text == "" {
+		return false, fmt.Errorf("aprs: message text must not be empty")
+	}
+
+	msgid := fmt.Sprintf("%05d", h.msgSeq.Add(1)%100000)
+	ch := make(chan string, 1)
 	h.mu.Lock()
+	if len(h.pending) >= ackPendingCap {
+		h.mu.Unlock()
+		return false, fmt.Errorf("aprs: %d messages already awaiting acks", ackPendingCap)
+	}
+	h.pending[msgid] = ch
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		delete(h.pending, msgid)
+		h.mu.Unlock()
+	}()
+
+	tx := h.readyTransmitter()
+	if tx == nil {
+		return false, ErrNoTransmitter
+	}
+	full := text + "{" + msgid + "}"
+	if err := tx.Send(ctx, to, full); err != nil {
+		return false, fmt.Errorf("aprs: transmitter %s: %w", tx.Name(), err)
+	}
+	h.publishTxMessage(to, text, msgid, tx.Name())
+
+	if timeout <= 0 {
+		timeout = ackWaitDefault
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case kind := <-ch:
+		if kind == "rej" {
+			return false, fmt.Errorf("aprs: message rejected by %s", to)
+		}
+		return true, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		return false, ErrNoAck
+	}
+}
+
+// readyTransmitter returns the first ready outbound backend (sorted by
+// name for determinism), or nil when none is connected.
+func (h *Hub) readyTransmitter() Transmitter {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	names := make([]string, 0, len(h.transmitters))
 	for name := range h.transmitters {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	var tx Transmitter
 	for _, name := range names {
 		if t := h.transmitters[name]; t.Ready() {
-			tx = t
-			break
+			return t
 		}
 	}
-	h.mu.Unlock()
-	if tx == nil {
-		return ErrNoTransmitter
-	}
+	return nil
+}
 
-	if err := tx.Send(ctx, to, text); err != nil {
-		return fmt.Errorf("aprs: transmitter %s: %w", tx.Name(), err)
-	}
-
+// publishTxMessage publishes the outbound confirmation on the message
+// feed.
+func (h *Hub) publishTxMessage(to, text, id, via string) {
 	doc := MessageDocument{
 		SchemaVersion: SchemaVersion,
 		Direction:     "tx",
 		From:          h.cfg.Callsign,
 		To:            to,
 		Text:          text,
+		ID:            id,
 		ReceivedAt:    formatTime(h.now().Unix()),
-		Via:           tx.Name(),
+		Via:           via,
 	}
 	payload, err := json.Marshal(doc)
-	if err == nil {
-		if err := h.publishWithTimeout(MessagesTopic, false, payload); err != nil {
-			h.logger.Debug("aprs: tx message feed publish failed", "error", err)
-		}
+	if err != nil {
+		return
 	}
-	return nil
+	if err := h.publishWithTimeout(MessagesTopic, false, payload); err != nil {
+		h.logger.Debug("aprs: tx message feed publish failed", "error", err)
+	}
 }
 
 // publishSelf publishes our own station document once at startup.

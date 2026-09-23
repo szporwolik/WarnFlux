@@ -8,6 +8,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/aprsinet"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/aprsradio"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/imgw"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/rso"
@@ -27,6 +28,9 @@ func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub) error {
 		return err
 	}
 	if err := aprsinet.Register(reg, hub); err != nil {
+		return err
+	}
+	if err := aprsradio.Register(reg, hub); err != nil {
 		return err
 	}
 	if err := mqtt.Register(reg); err != nil {

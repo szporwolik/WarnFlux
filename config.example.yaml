@@ -189,6 +189,31 @@ sources:
   #     connect_timeout: 15s
   #     read_timeout: 10m
 
+  # KISS radio backend: connects to a KISS TNC server over plain TCP
+  # (Direwolf, aprsd, a hardware TNC bridge...) and feeds every decoded
+  # frame into the shared APRS hub; while connected it also acts as the
+  # outbound transmitter for APRS messages. Requires aprs.enabled: true.
+  # See internal/plugins/sources/aprsradio/README.md.
+  #
+  # - id: aprs-radio-main
+  #   type: aprs-radio
+  #   enabled: false
+  #
+  #   runtime:
+  #     restart: true
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     # KISS server address (host:port). Required.
+  #     server: "127.0.0.1:8001"
+  #
+  #     # Digipeater path used for outbound frames.
+  #     path: ["WIDE1-1"]
+  #
+  #     connect_timeout: 15s
+  #     read_timeout: 10m
+  #     max_frame_bytes: 2048
+
 # Output plugins: receive meaningful event changes from the core.
 outputs:
   # Publishes hazard event changes and an application status snapshot to
@@ -377,6 +402,37 @@ actions:
   #     callsigns: ["SP9XYZ-7", "SR9KR"]
   #     # Prefix of every message; defaults to web.header1.
   #     prefix: "WarnFlux"
+
+  # APRS-out action: sends APRS text messages to the listed ham callsigns
+  # (plus the matched group's members' registered callsigns) and WAITS for
+  # each addressee's ack when possible. Delivery is paced — a per-station
+  # cooldown and a global tx interval keep the action from spamming the
+  # shared channel — and unacknowledged messages fail the call so the
+  # manager retries them, exactly like SMTP. Requires aprs.enabled: true
+  # and a connected transmitter (aprs-inet or aprs-radio).
+  # - id: aprs-hams-rf
+  #   type: aprs-out
+  #   enabled: false
+  #
+  #   runtime:
+  #     queue_size: 128
+  #     # Must comfortably exceed config.ack_timeout.
+  #     call_timeout: 5m
+  #     shutdown_timeout: 10s
+  #     retries: 2
+  #
+  #   config:
+  #     callsigns: ["SP9XYZ-7", "SR9KR"]
+  #     prefix: "WarnFlux"
+  #     # Minimum interval between two messages to the SAME station;
+  #     # negative disables the cooldown.
+  #     cooldown: 2m
+  #     # How long one message waits for the addressee's ack before the
+  #     # call fails.
+  #     ack_timeout: 45s
+  #     # Minimum spacing between any two transmissions of this action;
+  #     # negative disables it.
+  #     tx_interval: 5s
   #
   # Generic HTTP webhook action: one JSON POST per routed notification.
   # Covers Discord, Slack-compatible gateways, ntfy, Gotify bridges,

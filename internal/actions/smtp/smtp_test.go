@@ -382,10 +382,10 @@ rate_limit_per_minute: -1
 		">SPOK</td>",
 		// The severity is colored with the application palette: a card
 		// accent and a tinted Severity table row (severe -> orange).
-		"border-top:3px solid #ff7b43",
-		`<span style="color:#ff7b43;font-weight:600;">severe</span>`,
+		"border-top:3px solid #f0784e",
+		`<span style="color:#f0784e;font-weight:600;">severe</span>`,
 		// Branded footer: version, normalized domain, repository link.
-		"Sent by <strong style=\"color:#c9d1d9;\">SPOK · WarnFlux</strong> v0.1.0",
+		"Sent by <strong style=\"color:#eef2f5;\">SPOK · WarnFlux</strong> v0.1.0",
 		"spok.sp9moa.pl",
 		`href="https://github.com/szporwolik/WarnFlux"`,
 	} {

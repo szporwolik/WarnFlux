@@ -556,15 +556,15 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 func severityColor(severity string) (bg, fg string) {
 	switch strings.ToLower(severity) {
 	case "extreme":
-		return "rgba(248,81,73,0.18)", "#f85149"
+		return "rgba(240,90,105,0.18)", "#f05a69"
 	case "severe":
-		return "rgba(255,123,67,0.18)", "#ff7b43"
+		return "rgba(240,120,78,0.18)", "#f0784e"
 	case "moderate":
-		return "rgba(210,153,34,0.18)", "#d29922"
+		return "rgba(224,166,60,0.18)", "#e0a63c"
 	case "minor":
-		return "rgba(88,166,255,0.18)", "#58a6ff"
+		return "rgba(157,168,177,0.18)", "#9da8b1"
 	default:
-		return "rgba(139,148,158,0.18)", "#8b949e"
+		return "rgba(142,153,163,0.18)", "#8e99a3"
 	}
 }
 
@@ -574,7 +574,7 @@ func severityColor(severity string) (bg, fg string) {
 // (the same palette as the web dashboard), so the alert level is visible
 // at a glance.
 func bodyOfHTML(req action.ActionRequest, now time.Time) string {
-	accent := "#30363d"
+	accent := "#303c46"
 	sevFG := ""
 	if ev := req.Event; ev.Kind == dispatch.EventHazardTransition && ev.Hazard != nil {
 		_, sevFG = severityColor(ev.Hazard.Hazard.Severity)
@@ -582,8 +582,8 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, `<div style="background:#0d1117;padding:24px;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
-<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;border:1px solid #30363d;border-top:3px solid %s;border-radius:8px;background:#161b22;color:#c9d1d9;font-size:14px;">
+	fmt.Fprintf(&b, `<div style="background:#0f1419;padding:24px;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
+<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;border:1px solid #303c46;border-top:3px solid %s;border-radius:8px;background:#151b21;color:#eef2f5;font-size:14px;">
 <tr><td style="padding:24px 28px;">`, accent)
 
 	// Brand row: the embedded logo next to the system header (header1).
@@ -593,11 +593,11 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 	}
 	fmt.Fprintf(&b, `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:16px;"><tr>
 <td style="padding-right:10px;"><img src="cid:%s" width="36" height="36" alt="%s" style="width:36px;height:36px;border-radius:10px;display:block;border:0;"></td>
-<td style="vertical-align:middle;font-size:16px;font-weight:700;color:#e6edf3;letter-spacing:.02em;">%s</td>
+<td style="vertical-align:middle;font-size:16px;font-weight:700;color:#eef2f5;letter-spacing:.02em;">%s</td>
 </tr></table>`,
 		logoCID, htmlEscaper(brand), htmlEscaper(brand))
 
-	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8b949e;">WarnFlux hazard alert</div>`)
+	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">WarnFlux hazard alert</div>`)
 
 	ev := req.Event
 	switch ev.Kind {
@@ -606,20 +606,20 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 	case dispatch.EventMQTTMessage:
 		m := ev.MQTT
 		if m != nil {
-			fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:14px;">%s</div>`,
+			fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">%s</div>`,
 				htmlEscaper("MQTT message on "+m.Topic))
 		}
 	default:
-		b.WriteString(`<div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:14px;">Dispatch event</div>`)
+		b.WriteString(`<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Dispatch event</div>`)
 	}
 
-	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #30363d;padding-top:16px;">
-<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8b949e;margin-bottom:8px;">Technical details</div>
+	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #303c46;padding-top:16px;">
+<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;margin-bottom:8px;">Technical details</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">`)
 	b.WriteString(technicalRows(req, now, sevFG))
 	b.WriteString(`</table></div>`)
 
-	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #30363d;padding-top:14px;font-size:12px;color:#8b949e;">`)
+	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #303c46;padding-top:14px;font-size:12px;color:#87939e;">`)
 	b.WriteString(footerHTML(req))
 	b.WriteString(`</div>`)
 
@@ -631,35 +631,35 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 func hazardHTML(ev dispatch.Event) string {
 	h := ev.Hazard
 	if h == nil {
-		return `<div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:14px;">Hazard transition</div>`
+		return `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Hazard transition</div>`
 	}
 	var b strings.Builder
 	bg, fg := severityColor(h.Hazard.Severity)
-	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="background:%s;color:%s;padding:4px 14px;border-radius:999px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span> <span style="color:#8b949e;font-size:12px;margin-left:8px;">%s</span></div>`,
+	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="background:%s;color:%s;padding:4px 14px;border-radius:999px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span> <span style="color:#87939e;font-size:12px;margin-left:8px;">%s</span></div>`,
 		bg, fg, htmlEscaper(strings.ToUpper(h.Hazard.Severity)), htmlEscaper(string(h.Type)))
 
 	headline := strings.TrimSpace(h.Hazard.Headline)
 	if headline == "" {
 		headline = h.Hazard.Event
 	}
-	fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#e6edf3;margin-top:14px;">%s</div>`, htmlEscaper(headline))
+	fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">%s</div>`, htmlEscaper(headline))
 	if headline != h.Hazard.Event {
-		fmt.Fprintf(&b, `<div style="color:#8b949e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
+		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
 	}
 
 	if len(h.Hazard.Areas) > 0 {
-		b.WriteString(`<div style="margin-top:14px;color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Areas</div>`)
+		b.WriteString(`<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Areas</div>`)
 		var chips strings.Builder
 		for _, a := range geo.DisplayAreas(h.Hazard.Areas) {
-			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#21262d;border:1px solid #30363d;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#c9d1d9;">%s</span>`, htmlEscaper(a))
+			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#1b232b;border:1px solid #303c46;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(a))
 		}
 		b.WriteString(chips.String())
 	}
 	if h.Hazard.EffectiveAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#8b949e;font-size:13px;">Effective: <span style="color:#c9d1d9;">%s</span></div>`, h.Hazard.EffectiveAt.Format(time.RFC3339))
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">Effective: <span style="color:#eef2f5;">%s</span></div>`, h.Hazard.EffectiveAt.Format(time.RFC3339))
 	}
 	if h.Hazard.ExpiresAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#8b949e;font-size:13px;">Expires: <span style="color:#c9d1d9;">%s</span></div>`, h.Hazard.ExpiresAt.Format(time.RFC3339))
+		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">Expires: <span style="color:#eef2f5;">%s</span></div>`, h.Hazard.ExpiresAt.Format(time.RFC3339))
 	}
 	return b.String()
 }
@@ -671,7 +671,7 @@ func technicalRows(req action.ActionRequest, now time.Time, sevFG string) string
 		if v == "" {
 			return ""
 		}
-		return fmt.Sprintf(`<tr><td style="padding:5px 8px;color:#8b949e;white-space:nowrap;vertical-align:top;">%s</td><td style="padding:5px 8px;color:#c9d1d9;">%s</td></tr>`,
+		return fmt.Sprintf(`<tr><td style="padding:5px 8px;color:#87939e;white-space:nowrap;vertical-align:top;">%s</td><td style="padding:5px 8px;color:#eef2f5;">%s</td></tr>`,
 			htmlEscaper(k), htmlEscaper(v))
 	}
 	var b strings.Builder
@@ -692,7 +692,7 @@ func technicalRows(req action.ActionRequest, now time.Time, sevFG string) string
 		b.WriteString(row("Event key", h.Key))
 		b.WriteString(row("Event", h.Hazard.Event))
 		if sevFG != "" {
-			fmt.Fprintf(&b, `<tr><td style="padding:5px 8px;color:#8b949e;white-space:nowrap;vertical-align:top;">Severity</td><td style="padding:5px 8px;"><span style="color:%s;font-weight:600;">%s</span></td></tr>`,
+			fmt.Fprintf(&b, `<tr><td style="padding:5px 8px;color:#87939e;white-space:nowrap;vertical-align:top;">Severity</td><td style="padding:5px 8px;"><span style="color:%s;font-weight:600;">%s</span></td></tr>`,
 				sevFG, htmlEscaper(h.Hazard.Severity))
 		} else {
 			b.WriteString(row("Severity", h.Hazard.Severity))
@@ -771,7 +771,7 @@ func footerHTML(req action.ActionRequest) string {
 	version, domain := footerParts(req)
 	var b strings.Builder
 	b.WriteString("Sent by ")
-	fmt.Fprintf(&b, "<strong style=\"color:#c9d1d9;\">%s</strong>", htmlEscaper(brandName(req)))
+	fmt.Fprintf(&b, "<strong style=\"color:#eef2f5;\">%s</strong>", htmlEscaper(brandName(req)))
 	if version != "" {
 		fmt.Fprintf(&b, " v%s", htmlEscaper(version))
 	}
@@ -779,7 +779,7 @@ func footerHTML(req action.ActionRequest) string {
 		fmt.Fprintf(&b, " · %s", htmlEscaper(domain))
 	}
 	if req.App.RepoURL != "" {
-		fmt.Fprintf(&b, ` · <a href="%s" style="color:#58a6ff;text-decoration:none;">%s</a>`,
+		fmt.Fprintf(&b, ` · <a href="%s" style="color:#78a9c0;text-decoration:none;">%s</a>`,
 			htmlEscaper(req.App.RepoURL), htmlEscaper(req.App.RepoURL))
 	}
 	return b.String()

@@ -178,15 +178,19 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	h := composeHazardFromForm(form, time.Now())
 
 	if s.pub == nil {
+		s.logger.Warn("compose: publish skipped, no broker publisher configured")
 		s.renderComposeError(w, r, http.StatusServiceUnavailable, form,
 			"publishing is unavailable: no broker publisher is configured")
 		return
 	}
 	if err := s.pub.PublishActive(composeSource, h); err != nil {
+		s.logger.Warn("compose: publish failed", "event_key", h.EventKey, "error", err)
 		s.renderComposeError(w, r, http.StatusServiceUnavailable, form,
 			"publish failed: "+err.Error())
 		return
 	}
+	s.logger.Info("compose: communication published",
+		"event_key", h.EventKey, "severity", h.Severity, "status", h.Status)
 
 	flash := "published"
 	if form.EventKey != "" {
@@ -212,13 +216,16 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.pub == nil {
+		s.logger.Warn("compose: expire skipped, no broker publisher configured", "event_key", key)
 		http.Error(w, "publishing is unavailable: no broker publisher is configured", http.StatusServiceUnavailable)
 		return
 	}
 	if err := s.pub.ExpireActive(composeSource, key); err != nil {
+		s.logger.Warn("compose: expire failed", "event_key", key, "error", err)
 		http.Error(w, "expire failed: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	s.logger.Info("compose: communication expired", "event_key", key)
 	http.Redirect(w, r, "/compose?msg=expired", http.StatusSeeOther)
 }
 

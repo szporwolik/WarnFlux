@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -112,10 +113,13 @@ type Output struct {
 
 // activeCacheEntry is one desired retained active payload plus the cache
 // generation it was written with (convergence guard for rehydration).
+// wire is the structured form of the same payload: the consolidated
+// active-list document is built from it without unmarshaling.
 type activeCacheEntry struct {
 	key     string
 	topic   string
 	payload []byte
+	wire    wireActiveHazard
 	seq     uint64
 }
 
@@ -290,8 +294,14 @@ func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 	// The current event status is the authoritative decision for the
 	// active view (not the change type alone): cancelled/expired delete
 	// the retained topic, active replaces it, anything else is ignored.
+	// After the per-event topic, the consolidated retained active list is
+	// republished so subscribers can fetch the whole active set from ONE
+	// topic instead of reconstructing it from /active/#.
 	if err := o.updateActiveState(ctx, change.Event); err != nil {
 		return fmt.Errorf("active state: %w", err)
+	}
+	if err := o.publishActiveList(ctx); err != nil {
+		return fmt.Errorf("active list: %w", err)
 	}
 	return nil
 }
@@ -310,7 +320,9 @@ func (o *Output) updateActiveState(ctx context.Context, event core.HazardEvent) 
 		}
 		o.activeMu.Lock()
 		o.activeSeq++
-		o.activeCache[event.Key()] = activeCacheEntry{key: event.Key(), topic: topic, payload: payload, seq: o.activeSeq}
+		o.activeCache[event.Key()] = activeCacheEntry{key: event.Key(), topic: topic, payload: payload, wire: wireActiveHazard{
+			SchemaVersion: wireSchemaVersion, Type: "active_hazard", EventKey: event.Key(), Event: wireHazardEventOf(event),
+		}, seq: o.activeSeq}
 		// Reactivation: any older pending delete for this key is stale.
 		delete(o.pendingDeletes, event.Key())
 		o.activeMu.Unlock()
@@ -362,7 +374,9 @@ func (o *Output) SeedActiveState(event core.HazardEvent) error {
 	}
 	o.activeMu.Lock()
 	o.activeSeq++
-	o.activeCache[event.Key()] = activeCacheEntry{key: event.Key(), topic: topic, payload: payload, seq: o.activeSeq}
+	o.activeCache[event.Key()] = activeCacheEntry{key: event.Key(), topic: topic, payload: payload, wire: wireActiveHazard{
+		SchemaVersion: wireSchemaVersion, Type: "active_hazard", EventKey: event.Key(), Event: wireHazardEventOf(event),
+	}, seq: o.activeSeq}
 	// Reactivation: any older pending delete for this key is stale.
 	delete(o.pendingDeletes, event.Key())
 	o.activeMu.Unlock()
@@ -425,6 +439,65 @@ func (o *Output) publishActive(ctx context.Context, topic string, payload []byte
 	return nil
 }
 
+// activeListTopic is the consolidated retained active-events document:
+// <topic_prefix>/active-list. One retained message carries the WHOLE
+// active set, so subscribers do not have to reconstruct it from the
+// per-event /active/# topics. It sits OUTSIDE /active/# so receivers
+// never try to parse it as a per-event document.
+func (o *Output) activeListTopic() string {
+	return o.cfg.TopicPrefix + "/active-list"
+}
+
+// wireActiveList is the retained payload on <topic_prefix>/active-list.
+type wireActiveList struct {
+	SchemaVersion int                  `json:"schema_version"` // STABLE
+	Type          string               `json:"type"`           // STABLE: "active_list"
+	GeneratedAt   string               `json:"generated_at"`   // STABLE: RFC3339 UTC observation time
+	Count         int                  `json:"count"`
+	Events        []wireActiveListItem `json:"events"`
+}
+
+// wireActiveListItem is one entry of the active list: the stable identity
+// plus the SAME wireHazardEvent block used by /events and /active/#.
+type wireActiveListItem struct {
+	EventKey string          `json:"event_key"` // STABLE: source:source_id
+	Event    wireHazardEvent `json:"event"`
+}
+
+// activeListPayload builds the consolidated document from the desired
+// active cache, sorted by event key for deterministic output.
+func (o *Output) activeListPayload(now time.Time) ([]byte, error) {
+	o.activeMu.Lock()
+	entries := make([]wireActiveListItem, 0, len(o.activeCache))
+	for _, e := range o.activeCache {
+		entries = append(entries, wireActiveListItem{EventKey: e.wire.EventKey, Event: e.wire.Event})
+	}
+	o.activeMu.Unlock()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].EventKey < entries[j].EventKey })
+
+	payload, err := json.Marshal(wireActiveList{
+		SchemaVersion: wireSchemaVersion,
+		Type:          "active_list",
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		Count:         len(entries),
+		Events:        entries,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal active list: %w", err)
+	}
+	return payload, nil
+}
+
+// publishActiveList republishes the consolidated retained active list
+// (a zero-count list is a valid, meaningful state).
+func (o *Output) publishActiveList(ctx context.Context) error {
+	payload, err := o.activeListPayload(time.Now())
+	if err != nil {
+		return err
+	}
+	return o.publishActive(ctx, o.activeListTopic(), payload)
+}
+
 // rehydrateOnConnect is the paho OnConnect hook: it rehydrates the
 // retained active view in the background so the connection callback never
 // blocks paho.
@@ -449,6 +522,9 @@ func (o *Output) rehydrateActive() {
 		activeSnapshot := o.activeSnapshot()
 		deleteSnapshot := o.pendingDeleteSnapshot()
 		if len(activeSnapshot) == 0 && len(deleteSnapshot) == 0 {
+			// Nothing to rehydrate, but the consolidated list must exist on
+			// (re)connect — including the valid zero-count state.
+			o.publishActiveListBestEffort()
 			return
 		}
 		dirty := false
@@ -490,10 +566,24 @@ func (o *Output) rehydrateActive() {
 			}
 		}
 		if !dirty {
+			// Converged: republish the consolidated list so it matches the
+			// final desired state.
+			o.publishActiveListBestEffort()
 			return
 		}
 	}
 	slog.Warn("active state rehydration did not converge within the iteration bound; a later update or reconnect republishes", "passes", maxRehydratePasses)
+}
+
+// publishActiveListBestEffort republishes the consolidated retained list
+// with a bounded timeout; failures are logged (a later Handle or reconnect
+// retries), never fatal to rehydration.
+func (o *Output) publishActiveListBestEffort() {
+	ctx, cancel := context.WithTimeout(context.Background(), activeRehydrateTimeout)
+	if err := o.publishActiveList(ctx); err != nil {
+		slog.Warn("active list republish failed", "topic", o.activeListTopic(), "error", err)
+	}
+	cancel()
 }
 
 // registerPendingDeleteIfAbsent records that a retained topic must NOT
@@ -722,25 +812,27 @@ type wireActiveHazard struct {
 }
 
 type wireHazardEvent struct {
-	Source      string   `json:"source"`    // STABLE
-	SourceID    string   `json:"source_id"` // STABLE
-	Category    string   `json:"category"`
-	Event       string   `json:"event"` // STABLE
-	Severity    string   `json:"severity"`
-	Urgency     string   `json:"urgency"`
-	Certainty   string   `json:"certainty"`
-	Headline    string   `json:"headline"`
-	Description string   `json:"description"`
-	Instruction string   `json:"instruction"`
-	EffectiveAt *string  `json:"effective_at,omitempty"`
-	ExpiresAt   *string  `json:"expires_at,omitempty"`
-	Latitude    *float64 `json:"latitude,omitempty"`
-	Longitude   *float64 `json:"longitude,omitempty"`
-	Areas       []string `json:"areas"`
-	Status      string   `json:"status"` // STABLE: active|cancelled|expired
-	SourceURL   string   `json:"source_url"`
-	ReceivedAt  string   `json:"received_at"`
-	UpdatedAt   string   `json:"updated_at"`
+	Source   string `json:"source"`    // STABLE
+	SourceID string `json:"source_id"` // STABLE
+	Category string `json:"category"`
+	Event    string `json:"event"` // STABLE
+	Severity string `json:"severity"`
+	// ProviderSeverity is the raw provider-scale value (diagnostics only).
+	ProviderSeverity string   `json:"provider_severity,omitempty"`
+	Urgency          string   `json:"urgency"`
+	Certainty        string   `json:"certainty"`
+	Headline         string   `json:"headline"`
+	Description      string   `json:"description"`
+	Instruction      string   `json:"instruction"`
+	EffectiveAt      *string  `json:"effective_at,omitempty"`
+	ExpiresAt        *string  `json:"expires_at,omitempty"`
+	Latitude         *float64 `json:"latitude,omitempty"`
+	Longitude        *float64 `json:"longitude,omitempty"`
+	Areas            []string `json:"areas"`
+	Status           string   `json:"status"` // STABLE: active|cancelled|expired
+	SourceURL        string   `json:"source_url"`
+	ReceivedAt       string   `json:"received_at"`
+	UpdatedAt        string   `json:"updated_at"`
 }
 
 // wireStatus is the retained status payload (<topic_prefix>/status).
@@ -781,25 +873,26 @@ func toWireEvent(change core.EventChange) wireEvent {
 // stream and the /active retained view.
 func wireHazardEventOf(event core.HazardEvent) wireHazardEvent {
 	return wireHazardEvent{
-		Source:      event.Source,
-		SourceID:    event.SourceID,
-		Category:    event.Category,
-		Event:       event.Event,
-		Severity:    event.Severity,
-		Urgency:     event.Urgency,
-		Certainty:   event.Certainty,
-		Headline:    event.Headline,
-		Description: event.Description,
-		Instruction: event.Instruction,
-		EffectiveAt: wireTime(event.EffectiveAt),
-		ExpiresAt:   wireTime(event.ExpiresAt),
-		Latitude:    event.Latitude,
-		Longitude:   event.Longitude,
-		Areas:       event.Areas,
-		Status:      string(event.Status),
-		SourceURL:   event.SourceURL,
-		ReceivedAt:  formatWireTime(event.ReceivedAt),
-		UpdatedAt:   formatWireTime(event.UpdatedAt),
+		Source:           event.Source,
+		SourceID:         event.SourceID,
+		Category:         event.Category,
+		Event:            event.Event,
+		Severity:         event.Severity,
+		ProviderSeverity: event.ProviderSeverity,
+		Urgency:          event.Urgency,
+		Certainty:        event.Certainty,
+		Headline:         event.Headline,
+		Description:      event.Description,
+		Instruction:      event.Instruction,
+		EffectiveAt:      wireTime(event.EffectiveAt),
+		ExpiresAt:        wireTime(event.ExpiresAt),
+		Latitude:         event.Latitude,
+		Longitude:        event.Longitude,
+		Areas:            event.Areas,
+		Status:           string(event.Status),
+		SourceURL:        event.SourceURL,
+		ReceivedAt:       formatWireTime(event.ReceivedAt),
+		UpdatedAt:        formatWireTime(event.UpdatedAt),
 	}
 }
 

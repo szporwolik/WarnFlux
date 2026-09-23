@@ -10,6 +10,7 @@ other plugin creates its own MQTT client.
 |-------|----------|-----|---------|
 | `<prefix>/events` | no | configured `qos` (1 or 2; 0 rejected) | one JSON message per durable hazard change |
 | `<prefix>/active/<source>/<sha256(event_key)>` | yes | configured `qos` | CURRENT active hazards (materialized view of SQLite state) |
+| `<prefix>/active-list` | yes | configured `qos` | consolidated list of ALL current active hazards (one retained document) |
 | `<prefix>/status` | yes | configured `qos` | application health snapshot |
 | `<prefix>/info/<source>/<producer_id>/<key>/<kind>` | yes | configured `qos` | latest-state informational messages |
 
@@ -57,8 +58,7 @@ WarnFlux restart with an empty broker.
   persistence) and is corrected when that event transitions again or is
   reactivated.
 - At startup the view is reconstructed in two steps: the SQLite current
-  state is seeded into the desired cache LOCALLY (no network waits), then
-  ONE background rehydration pass publishes it — durable `/events`
+  state is seeded into the desired cache LOCALLY (no network waits), then  ONE background rehydration pass publishes it — durable `/events`
   delivery starts immediately and is never delayed by active-state
   startup synchronization, even with hundreds of active events and an
   unreachable broker.
@@ -66,11 +66,43 @@ WarnFlux restart with an empty broker.
   describe provider hazard state, not process liveness. Consumers combine
   them with `<prefix>/status` (`state: offline`) and `expires_at`.
 
+## Consolidated active list (`/active-list`)
+
+The retained `<prefix>/active-list` topic is ONE document with the whole
+current active set, so clients do not have to reconstruct it from the
+per-event `/active/#` topics. It is republished (retained, same QoS)
+after every journal change and after every (re)connect rehydration pass —
+including the valid zero-count state when nothing is active. It sits
+OUTSIDE `/active/#`, so WarnFlux receivers never parse it as a per-event
+document.
+
+Payload (schema version 1, type `active_list`):
+
+```json
+{
+  "schema_version": 1,
+  "type": "active_list",
+  "generated_at": "2026-09-23T17:30:00Z",
+  "count": 1,
+  "events": [
+    {
+      "event_key": "imgw-meteo:42",
+      "event": { "source": "imgw-meteo", "severity": "severe", "provider_severity": "2", "status": "active" }
+    }
+  ]
+}
+```
+
+Each entry carries the stable `event_key` plus the SAME `event` wire
+block used by `/events` and `/active/#` — there is no second hazard JSON
+definition. Entries are sorted by `event_key` for deterministic output.
+
 ## Client usage
 
 ```text
 Realtime hazard transitions:   SUB warnflux/events
 Current active hazards:        SUB warnflux/active/#
+Consolidated active list:      SUB warnflux/active-list
 Weather / information state:   SUB warnflux/info/#
 Service status:                SUB warnflux/status
 ```

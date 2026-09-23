@@ -258,8 +258,8 @@ func TestHandlePublishesEventsThenActiveRetained(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 	pubs := fc.snapshot()
-	if len(pubs) != 2 {
-		t.Fatalf("publishes = %d, want 2 (events + active)", len(pubs))
+	if len(pubs) != 3 {
+		t.Fatalf("publishes = %d, want 3 (events + active + list)", len(pubs))
 	}
 	if pubs[0].topic != "warnflux/events" || pubs[0].retained {
 		t.Errorf("first publish = %+v, want non-retained /events", pubs[0])
@@ -271,6 +271,18 @@ func TestHandlePublishesEventsThenActiveRetained(t *testing.T) {
 	var w wireActiveHazard
 	if err := json.Unmarshal(pubs[1].payload, &w); err != nil || w.EventKey != ev.Key() {
 		t.Errorf("active payload: %v", err)
+	}
+	// The consolidated retained list follows on <prefix>/active-list.
+	if pubs[2].topic != "warnflux/active-list" || !pubs[2].retained {
+		t.Fatalf("third publish = %+v, want retained warnflux/active-list", pubs[2])
+	}
+	var list wireActiveList
+	if err := json.Unmarshal(pubs[2].payload, &list); err != nil {
+		t.Fatalf("list payload: %v", err)
+	}
+	if list.Type != "active_list" || list.Count != 1 || len(list.Events) != 1 ||
+		list.Events[0].EventKey != ev.Key() || list.Events[0].Event.Headline != ev.Headline {
+		t.Errorf("list = %+v", list)
 	}
 	o.activeMu.Lock()
 	entry, ok := o.activeCache[ev.Key()]
@@ -296,13 +308,13 @@ func TestHandleUpdateReplacesRetainedPayload(t *testing.T) {
 		t.Fatalf("Handle v2: %v", err)
 	}
 	pubs := fc.snapshot()
-	if len(pubs) != 4 {
-		t.Fatalf("publishes = %d, want 4", len(pubs))
+	if len(pubs) != 6 {
+		t.Fatalf("publishes = %d, want 6 (events+active+list twice)", len(pubs))
 	}
-	if pubs[1].topic != pubs[3].topic {
-		t.Errorf("active topic changed on update: %q vs %q", pubs[1].topic, pubs[3].topic)
+	if pubs[1].topic != pubs[4].topic {
+		t.Errorf("active topic changed on update: %q vs %q", pubs[1].topic, pubs[4].topic)
 	}
-	if string(pubs[1].payload) == string(pubs[3].payload) {
+	if string(pubs[1].payload) == string(pubs[4].payload) {
 		t.Error("active payload did not change on update")
 	}
 }
@@ -327,14 +339,18 @@ func TestHandleCancelAndExpireDeleteRetained(t *testing.T) {
 				t.Fatalf("Handle %s: %v", name, err)
 			}
 			pubs := fc.snapshot()
-			if len(pubs) != 4 {
-				t.Fatalf("publishes = %d, want 4", len(pubs))
+			if len(pubs) != 6 {
+				t.Fatalf("publishes = %d, want 6 (events+active+list, then events+delete+list)", len(pubs))
 			}
-			if pubs[3].topic != pubs[1].topic || !pubs[3].retained {
-				t.Errorf("deletion publish = %+v, want retained on the same active topic", pubs[3])
+			if pubs[4].topic != pubs[1].topic || !pubs[4].retained {
+				t.Errorf("deletion publish = %+v, want retained on the same active topic", pubs[4])
 			}
-			if len(pubs[3].payload) != 0 {
-				t.Errorf("deletion payload = %d bytes, want zero (retained-topic removal)", len(pubs[3].payload))
+			if len(pubs[4].payload) != 0 {
+				t.Errorf("deletion payload = %d bytes, want zero (retained-topic removal)", len(pubs[4].payload))
+			}
+			var list wireActiveList
+			if err := json.Unmarshal(pubs[5].payload, &list); err != nil || list.Count != 0 {
+				t.Errorf("list after deletion = %+v (err=%v), want zero-count", list, err)
 			}
 			o.activeMu.Lock()
 			_, ok := o.activeCache[ev.Key()]
@@ -382,6 +398,48 @@ func TestHandleActivePublishFailureReturnsError(t *testing.T) {
 	}
 	if got := fc2.count(); got != 1 {
 		t.Errorf("publishes = %d, want 1 (no active attempt after /events failure)", got)
+	}
+}
+
+// TestHandleListPublishFailureReturnsError: a failed /active-list publish
+// must make Handle fail (the journal stays unacknowledged upstream).
+func TestHandleListPublishFailureReturnsError(t *testing.T) {
+	fc := &fakeClient{}
+	o := newTestOutput(fc)
+	fc.setPublishErr(func(topic string) error {
+		if topic == "warnflux/active-list" {
+			return errors.New("list refused")
+		}
+		return nil
+	})
+	ev := activeEvent()
+	err := o.Handle(context.Background(), core.EventChange{ID: 1, Type: core.ChangeNew, Event: ev})
+	if err == nil || !strings.Contains(err.Error(), "active list") {
+		t.Fatalf("Handle = %v, want active-list error", err)
+	}
+	if got := fc.count(); got != 3 {
+		t.Errorf("publishes = %d, want 3 (events, active and the failed list attempt)", got)
+	}
+}
+
+// TestRehydrateEmptyCachePublishesEmptyList: on (re)connect with nothing
+// active, the consolidated list is still published as a valid zero-count
+// retained document.
+func TestRehydrateEmptyCachePublishesEmptyList(t *testing.T) {
+	fc := &fakeClient{}
+	o := newTestOutput(fc)
+	o.rehydrateOnConnect()
+	waitFor(t, 2*time.Second, func() bool { return fc.count() == 1 })
+	p := fc.snapshot()[0]
+	if p.topic != "warnflux/active-list" || !p.retained {
+		t.Fatalf("publish = %+v, want retained warnflux/active-list", p)
+	}
+	var list wireActiveList
+	if err := json.Unmarshal(p.payload, &list); err != nil {
+		t.Fatal(err)
+	}
+	if list.Type != "active_list" || list.Count != 0 || len(list.Events) != 0 {
+		t.Errorf("list = %+v, want zero-count active_list", list)
 	}
 }
 
@@ -453,10 +511,20 @@ func TestRehydrateOnConnectRepublishesCache(t *testing.T) {
 			t.Fatalf("Handle %d: %v", i, err)
 		}
 	}
-	before := fc.count() // 3× (events + active)
+	before := fc.count() // 3× (events + active + list)
 	o.rehydrateOnConnect()
-	waitFor(t, 2*time.Second, func() bool { return fc.count() == before+3 })
+	waitFor(t, 2*time.Second, func() bool { return fc.count() == before+4 })
 	for _, p := range fc.snapshot()[before:] {
+		if p.topic == o.activeListTopic() {
+			if !p.retained {
+				t.Errorf("active-list publish not retained: %+v", p)
+			}
+			var list wireActiveList
+			if err := json.Unmarshal(p.payload, &list); err != nil || list.Count != 3 {
+				t.Errorf("rehydrated list = %+v (err=%v), want 3 entries", list, err)
+			}
+			continue
+		}
 		if !p.retained || !strings.HasPrefix(p.topic, "warnflux/active/") {
 			t.Errorf("rehydration publish = %+v, want retained active topic", p)
 		}
@@ -497,11 +565,16 @@ func TestRehydrateConvergesAfterConcurrentUpdate(t *testing.T) {
 	close(gate.done)
 
 	// The pass notices the generation change and republishes v2.
-	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 3 })
+	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 4 })
 	pubs := fc.snapshot()
-	last := pubs[len(pubs)-1]
-	if !strings.HasPrefix(last.topic, "warnflux/active/") || !last.retained {
-		t.Fatalf("last publish = %+v, want retained active topic", last)
+	last := fakePublish{}
+	for _, p := range pubs {
+		if strings.HasPrefix(p.topic, "warnflux/active/") {
+			last = p
+		}
+	}
+	if !last.retained {
+		t.Fatalf("last active publish = %+v, want retained", last)
 	}
 	var w wireActiveHazard
 	if err := json.Unmarshal(last.payload, &w); err != nil {
@@ -549,9 +622,14 @@ func rehydrateDeleteRace(t *testing.T, status core.EventStatus) {
 	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 3 })
 
 	pubs := fc.snapshot()
-	last := pubs[len(pubs)-1]
-	if !last.retained || !strings.HasPrefix(last.topic, "warnflux/active/") {
-		t.Fatalf("last publish = %+v, want the retained DELETE on the active topic", last)
+	last := fakePublish{}
+	for _, p := range pubs {
+		if strings.HasPrefix(p.topic, "warnflux/active/") {
+			last = p
+		}
+	}
+	if !last.retained {
+		t.Fatalf("last active publish = %+v, want the retained DELETE on the active topic", last)
 	}
 	if len(last.payload) != 0 {
 		t.Errorf("final retained payload = %d bytes, want zero (hazard must not be resurrected)", len(last.payload))
@@ -645,9 +723,14 @@ func TestRehydrateCorrectiveDeleteFailurePersistsAndRetries(t *testing.T) {
 				return !ok
 			})
 			pubs := fc.snapshot()
-			last := pubs[len(pubs)-1]
-			if !last.retained || len(last.payload) != 0 || last.topic != o.activeTopic(ev.Source, ev.Key()) {
-				t.Errorf("final publish = %+v, want the retained zero-length delete on the active topic", last)
+			last := fakePublish{}
+			for _, p := range pubs {
+				if p.topic == o.activeTopic(ev.Source, ev.Key()) {
+					last = p
+				}
+			}
+			if !last.retained || len(last.payload) != 0 {
+				t.Errorf("final active publish = %+v, want the retained zero-length delete", last)
 			}
 		})
 	}
@@ -888,7 +971,7 @@ func TestReactivationDuringInFlightDeleteConvergesToActive(t *testing.T) {
 	gate := &fakeToken{done: make(chan struct{})}
 	fc.gateNext(gate)
 	o.rehydrateOnConnect()
-	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 5 }) // delete is in flight (gated)
+	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 6 }) // delete is in flight (gated)
 
 	// Reactivation while the old DELETE is still in flight: ACTIVE wins.
 	reactivated := ev
@@ -900,7 +983,7 @@ func TestReactivationDuringInFlightDeleteConvergesToActive(t *testing.T) {
 
 	// The pass notices the reactivation and republishes ACTIVE; the final
 	// publish for the topic must be the ACTIVE payload, never a delete.
-	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 7 })
+	waitFor(t, 2*time.Second, func() bool { return fc.count() >= 9 })
 	pubs := fc.snapshot()
 	lastForTopic := fakePublish{}
 	for _, p := range pubs {

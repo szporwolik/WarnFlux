@@ -1072,7 +1072,9 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 
 /* ---- public home page ---- */
 .home {
-  max-width: 62rem;
+  /* Stretch on desktop: up to ~1600px, the typical current PC width;
+  phones keep the narrow single-column layout. */
+  max-width: 100rem;
   margin: 0 auto;
   padding: 1.25rem 1.25rem 2rem;
   min-height: 100vh;
@@ -1186,7 +1188,13 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 1rem;
   margin: 0 0 0.9rem;
 }
-.home-alerts { display: flex; flex-direction: column; gap: 0.6rem; }
+.home-alerts {
+  /* One column on phones, up to ~3 on desktop. */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(22rem, 100%), 1fr));
+  gap: 0.6rem;
+  align-items: start;
+}
 .hazard {
   border: 1px solid var(--border);
   border-left: 4px solid var(--text-disabled);
@@ -1241,6 +1249,17 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 #aprs-map.leaflet-container {
   font-family: inherit;
+}
+/* Phone layout: tighter paddings, smaller brand, compact tabs. */
+@media (max-width: 640px) {
+  .home { padding: 0.9rem 0.85rem 1.5rem; }
+  .home-logo { width: 2.5rem; height: 2.5rem; }
+  .home-brand-text h1 { font-size: 1.2rem; }
+  .home-brand-text p { font-size: 0.78rem; }
+  .home-dash-label { display: none; }
+  .home-tab { padding: 0.45rem 0.7rem; font-size: 0.8rem; }
+  .home-about { font-size: 0.85rem; }
+  #aprs-map { min-height: 300px; }
 }
 .aprs-map-attrib {
   margin: 0;

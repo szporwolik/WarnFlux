@@ -10,8 +10,8 @@ import _ "embed"
 const RepoURL = "https://github.com/szporwolik/WarnFlux"
 
 // logoPNG is the application logo embedded for outbound email branding.
-// It mirrors internal/web/static/assets/logo.png (128x128, the resized UI
-// variant of the master asset in /assets).
+// It is the 128x128 mark resized from assets/logo.png, the dark-theme
+// variant of the WarnFlux logo.
 //
 //go:embed logo.png
 var logoPNG []byte

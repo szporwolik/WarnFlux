@@ -581,9 +581,15 @@ The publisher and a receiver connecting to the same broker MUST use
   Example: MQTT.
 - **ActionPlugin** — explicitly invoked by the group routing rule engine
   through `Manager.Submit`. Examples: SMS, email, Discord, CAT.
-  Built-in actions: `logger` (proof of concept) and `smtp` (one email per
+  Built-in actions: `logger` (proof of concept), `smtp` (one email per
   routed dispatch event; STARTTLS or implicit TLS/SMTPS, AUTH PLAIN,
-  password via `password` or a `password_file` secret). The matched
+  password via `password` or a `password_file` secret) and `http_webhook`
+  (generic JSON POST per routed notification — covers Discord,
+  Slack-compatible gateways, ntfy, Gotify bridges, Home Assistant and
+  SMS gateways; `url`, optional `headers`, `token`/`token_file` bearer
+  secret, per-request `timeout`; body is the canonical dispatch event
+  plus application identity; retries are owned by the action machinery
+  `runtime.retries`). The matched
   group's member emails are delivered as hidden Bcc copies (one SMTP
   transaction per unique address), paced by a per-action rate limit
   (`rate_limit_per_minute`, evenly spaced, default 30). ActionPlugins

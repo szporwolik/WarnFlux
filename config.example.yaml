@@ -312,6 +312,34 @@ actions:
   #     # unlimited). Group members receive Bcc copies: one SMTP
   #     # transaction per unique address.
   #     rate_limit_per_minute: 20
+  #
+  # Generic HTTP webhook action: one JSON POST per routed notification.
+  # Covers Discord, Slack-compatible gateways, ntfy, Gotify bridges,
+  # Home Assistant and SMS gateways — anything accepting a webhook POST.
+  # - id: wh-discord
+  #   type: http_webhook
+  #   enabled: false
+  #
+  #   runtime:
+  #     queue_size: 128
+  #     call_timeout: 15s
+  #     shutdown_timeout: 10s
+  #     # Transient failures (5xx, timeouts) are retried by the action
+  #     # machinery with a fixed 5s backoff; every attempt lands in the
+  #     # /notifications audit trail.
+  #     retries: 2
+  #
+  #   config:
+  #     url: https://discord.com/api/webhooks/1234/secret
+  #     # Optional extra headers (provider-specific fields).
+  #     headers: {}
+  #     # Bearer secret from token OR token_file (Docker secrets),
+  #     # never both. Sent as "Authorization: Bearer <token>".
+  #     token: ""
+  #     token_file: ""
+  #     # Per-request timeout; 0 = default (10s). The instance
+  #     # call_timeout still caps the whole call.
+  #     timeout: 10s
 
 # Public HTTP ingest endpoints: POST /api/v1/ingest/<id>, protected by an
 # API key. Accepts hazard messages in two shapes:

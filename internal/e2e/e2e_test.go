@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -312,6 +313,132 @@ func TestWireSeverityClosure(t *testing.T) {
 	ev := mqttreceiver.EventFromWire(we, "r", time.Now())
 	if ev.Hazard.Hazard.Severity != severity.Severe || ev.Hazard.Hazard.ProviderSeverity != "2" {
 		t.Fatalf("dispatch hazard = %+v", ev.Hazard.Hazard)
+	}
+}
+
+// TestProviderToWebhookE2E runs the full chain into the real
+// http_webhook action: a transient 500 is retried by the action
+// machinery and the second attempt delivers the canonical JSON body.
+func TestProviderToWebhookE2E(t *testing.T) {
+	var mu sync.Mutex
+	var attempts int
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		data, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(data, &body)
+		bodies = append(bodies, body)
+		n := attempts
+		mu.Unlock()
+		if n == 1 {
+			http.Error(w, "transient", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "wh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	group, err := store.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGroupRouting(group.ID, []storage.ChannelAssignment{
+		{ID: "wh", MinSeverity: severity.Moderate},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shorten the action machinery's retry gap for the test.
+	origBackoff := action.RetryBackoff
+	action.RetryBackoff = 20 * time.Millisecond
+	t.Cleanup(func() { action.RetryBackoff = origBackoff })
+
+	met := metrics.New()
+	rec := trail.NewRecorder(trail.DefaultMaxTrails)
+	areg := action.NewRegistry()
+	if err := actions.RegisterAll(areg); err != nil {
+		t.Fatal(err)
+	}
+	actionsMgr, err := action.NewManager([]config.Action{{
+		ID: "wh", Type: "http_webhook", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: 2 * time.Second, Retries: 1},
+		Config:  node(t, map[string]any{"url": srv.URL, "token": "wh-secret"}),
+	}}, areg, testLogger(), rec, met)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	actionsMgr.Start(ctx)
+	t.Cleanup(func() {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutCancel()
+		_ = actionsMgr.Shutdown(shutCtx)
+	})
+
+	engine := routing.New(store, actionsMgr, testLogger(), action.AppInfo{
+		Version: "e2e", Header1: "SOSNA",
+	}, rec, met)
+	events := make(chan dispatch.Event, 4)
+	engCtx, engCancel := context.WithCancel(context.Background())
+	defer engCancel()
+	go engine.Run(engCtx, events)
+	time.Sleep(30 * time.Millisecond) // rule refresh
+
+	wire := []byte(`{"schema_version":1,"change_id":5,"change_type":"new","event_key":"imgw-meteo:42",` +
+		`"event":{"source":"imgw-meteo","source_id":"42","event":"Storm","severity":"severe","provider_severity":"2",` +
+		`"headline":"Gale","areas":["powiat wielicki"],"received_at":"2026-09-23T10:00:00Z","updated_at":"2026-09-23T10:00:00Z"}}`)
+	we, err := mqttreceiver.ParseEventPayload(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events <- mqttreceiver.EventFromWire(we, "e2e-receiver", time.Now())
+
+	waitFor(t, "webhook delivered after retry", func() bool {
+		tr, _ := rec.Get("imgw-meteo:42")
+		return tr.Outcome == trail.OutcomeDelivered
+	})
+
+	mu.Lock()
+	gotAttempts, gotBodies := attempts, append([]map[string]any(nil), bodies...)
+	mu.Unlock()
+	if gotAttempts != 2 {
+		t.Fatalf("webhook attempts = %d, want 2 (500 then retry)", gotAttempts)
+	}
+	body := gotBodies[1]
+	if body["schema_version"].(float64) != 1 || body["type"] != "hazard_notification" {
+		t.Errorf("body envelope = %v", body)
+	}
+	ev, _ := body["event"].(map[string]any)
+	if ev["severity"] != "severe" || ev["provider_severity"] != "2" {
+		t.Errorf("body event = %v", ev)
+	}
+	if body["event_key"] != "imgw-meteo:42" {
+		t.Errorf("body event_key = %v", body["event_key"])
+	}
+	if body["app"].(map[string]any)["header1"] != "SOSNA" {
+		t.Errorf("body app = %v", body["app"])
+	}
+
+	tr, _ := rec.Get("imgw-meteo:42")
+	var kinds []string
+	for _, s := range tr.Steps {
+		kinds = append(kinds, string(s.Kind))
+	}
+	joined := strings.Join(kinds, ",")
+	if !strings.Contains(joined, "failed,retry,delivered") {
+		t.Errorf("trail kinds = %v, want failed → retry → delivered", kinds)
+	}
+	if out := met.Render(); !strings.Contains(out, `warnflux_notification_retry_total{action="wh"} 1`) {
+		t.Errorf("retry metric missing:\n%s", out)
 	}
 }
 

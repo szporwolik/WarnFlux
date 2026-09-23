@@ -43,7 +43,11 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		return
 	}
 
-	keys, complete := s.ingestCombined(ctx, emit, results)
+	total := 0
+	for _, fr := range results {
+		total += len(fr.items)
+	}
+	keys, filtered, complete := s.ingestCombined(ctx, emit, results)
 	if !complete {
 		healthy = false
 	} else {
@@ -52,7 +56,9 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 			slog.Warn("RSO snapshot reconciliation failed", "error", err)
 			healthy = false
 		} else {
-			slog.Debug("RSO snapshot processed", "voivodeships", len(results), "items", len(keys), "cancelled", cancelled)
+			slog.Debug("RSO snapshot processed",
+				"voivodeships", len(results), "scraped", total,
+				"filtered", filtered, "items", len(keys), "cancelled", cancelled)
 		}
 	}
 
@@ -103,7 +109,7 @@ func (s *Source) fetchFeed(ctx context.Context, voivodeship string) feedResult {
 // marks the identity ambiguous and the combined snapshot incomplete).
 // Phase 2 emits only unambiguous identities. Disappearance reconciliation
 // (done by the caller) requires the combined snapshot to be complete.
-func (s *Source) ingestCombined(ctx context.Context, emit plugin.Emitter, results []feedResult) (map[string]bool, bool) {
+func (s *Source) ingestCombined(ctx context.Context, emit plugin.Emitter, results []feedResult) (map[string]bool, int, bool) {
 	type candidate struct {
 		ev        core.HazardEvent
 		signature string
@@ -111,6 +117,7 @@ func (s *Source) ingestCombined(ctx context.Context, emit plugin.Emitter, result
 	}
 	candidates := make(map[string]*candidate)
 	complete := true
+	filtered := 0
 
 	for _, fr := range results {
 		if !fr.complete {
@@ -118,7 +125,7 @@ func (s *Source) ingestCombined(ctx context.Context, emit plugin.Emitter, result
 		}
 		for _, item := range fr.items {
 			if ctx.Err() != nil {
-				return nil, false
+				return nil, filtered, false
 			}
 			ev, err := normalizeNews(item, listURL(s.cfg.BaseURL, fr.voivodeship), fr.voivodeship)
 			if err != nil {
@@ -134,6 +141,7 @@ func (s *Source) ingestCombined(ctx context.Context, emit plugin.Emitter, result
 				d := s.policy.decide(item)
 				if !d.emit {
 					slog.Debug("RSO item filtered out", "id", strings.TrimSpace(item.ID), "reason", d.reason)
+					filtered++
 					continue
 				}
 				ev.Severity = d.severity
@@ -163,7 +171,7 @@ func (s *Source) ingestCombined(ctx context.Context, emit plugin.Emitter, result
 	keys := make(map[string]bool, len(candidates))
 	for key, c := range candidates {
 		if ctx.Err() != nil {
-			return keys, false
+			return keys, filtered, false
 		}
 		if c.conflict {
 			continue
@@ -171,13 +179,13 @@ func (s *Source) ingestCombined(ctx context.Context, emit plugin.Emitter, result
 		keys[key] = true
 		if err := emit.Emit(ctx, c.ev); err != nil {
 			if ctx.Err() != nil {
-				return keys, false
+				return keys, filtered, false
 			}
 			slog.Warn("emit failed; retrying on the next poll", "event_key", key, "error", err)
 			continue
 		}
 	}
-	return keys, complete
+	return keys, filtered, complete
 }
 
 // sortedUnique returns the deduplicated, lexicographically sorted list.

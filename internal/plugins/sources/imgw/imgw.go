@@ -186,12 +186,13 @@ func (s *Source) pollFeed(ctx context.Context, emit plugin.Emitter, feed string,
 	}
 
 	var keys map[string]bool
+	var filtered int
 	var complete bool
 	switch feed {
 	case feedMeteo:
-		keys, complete = s.processMeteo(ctx, emit, body)
+		keys, filtered, complete = s.processMeteo(ctx, emit, body)
 	case feedHydro:
-		keys, complete = s.processHydro(ctx, emit, body)
+		keys, filtered, complete = s.processHydro(ctx, emit, body)
 	}
 	if !complete {
 		return false
@@ -202,20 +203,21 @@ func (s *Source) pollFeed(ctx context.Context, emit plugin.Emitter, feed string,
 		slog.Warn("IMGW snapshot reconciliation failed", "feed", feed, "error", err)
 		return false
 	}
-	slog.Debug("IMGW feed processed", "feed", feed, "warnings", len(keys), "cancelled", cancelled)
+	slog.Debug("IMGW feed processed",
+		"feed", feed, "warnings", len(keys), "filtered", filtered, "cancelled", cancelled)
 	return true
 }
 
 // processMeteo decodes and ingests the meteorological snapshot.
-func (s *Source) processMeteo(ctx context.Context, emit plugin.Emitter, body []byte) (map[string]bool, bool) {
+func (s *Source) processMeteo(ctx context.Context, emit plugin.Emitter, body []byte) (map[string]bool, int, bool) {
 	if err := requireJSONArray(body); err != nil {
 		slog.Warn("IMGW meteo feed has an invalid top-level shape", "error", err)
-		return nil, false
+		return nil, 0, false
 	}
 	var items []meteoWarning
 	if err := json.Unmarshal(body, &items); err != nil {
 		slog.Warn("IMGW meteo feed is not valid JSON", "error", err)
-		return nil, false
+		return nil, 0, false
 	}
 	return s.ingestSnapshot(ctx, emit, sourceMeteo, len(items), func(i int) (core.HazardEvent, error) {
 		ev, err := normalizeMeteo(items[i], s.cfg.BaseURL+"/warningsmeteo")
@@ -226,24 +228,26 @@ func (s *Source) processMeteo(ctx context.Context, emit plugin.Emitter, body []b
 		if err != nil {
 			return ev, err
 		}
-		ev.Areas = areas
 		if !match {
+			slog.Debug("IMGW meteo warning filtered by geography",
+				"event_key", ev.Key(), "event", ev.Event, "teryt", items[i].Teryt)
 			return ev, errGeographicallyFiltered
 		}
+		ev.Areas = areas
 		return ev, nil
 	})
 }
 
 // processHydro decodes and ingests the hydrological snapshot.
-func (s *Source) processHydro(ctx context.Context, emit plugin.Emitter, body []byte) (map[string]bool, bool) {
+func (s *Source) processHydro(ctx context.Context, emit plugin.Emitter, body []byte) (map[string]bool, int, bool) {
 	if err := requireJSONArray(body); err != nil {
 		slog.Warn("IMGW hydro feed has an invalid top-level shape", "error", err)
-		return nil, false
+		return nil, 0, false
 	}
 	var items []hydroWarning
 	if err := json.Unmarshal(body, &items); err != nil {
 		slog.Warn("IMGW hydro feed is not valid JSON", "error", err)
-		return nil, false
+		return nil, 0, false
 	}
 	return s.ingestSnapshot(ctx, emit, sourceHydro, len(items), func(i int) (core.HazardEvent, error) {
 		ev, err := normalizeHydro(items[i], s.cfg.BaseURL+"/warningshydro")
@@ -251,6 +255,8 @@ func (s *Source) processHydro(ctx context.Context, emit plugin.Emitter, body []b
 			return ev, err
 		}
 		if !s.geo.matchesHydro(ev.Areas) {
+			slog.Debug("IMGW hydro warning filtered by geography",
+				"event_key", ev.Key(), "event", ev.Event, "areas", ev.Areas)
 			return ev, errGeographicallyFiltered
 		}
 		return ev, nil
@@ -265,10 +271,10 @@ func (s *Source) processHydro(ctx context.Context, emit plugin.Emitter, body []b
 // corrupt snapshot cannot modify SQLite before being declared incomplete.
 // Emit failures do NOT make the snapshot incomplete (the provider was still
 // understood); they are logged and retried on the next poll.
-func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source string, count int, normalize func(i int) (core.HazardEvent, error)) (map[string]bool, bool) {
+func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source string, count int, normalize func(i int) (core.HazardEvent, error)) (map[string]bool, int, bool) {
 	if count > maxWarningsPerFeed {
 		slog.Warn("IMGW feed exceeds the warning-count bound", "source", source, "count", count, "maximum", maxWarningsPerFeed)
-		return nil, false
+		return nil, 0, false
 	}
 
 	type pending struct {
@@ -277,9 +283,10 @@ func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source
 	}
 	seen := make(map[string]*pending, count)
 	complete := true
+	filtered := 0
 	for i := 0; i < count; i++ {
 		if ctx.Err() != nil {
-			return nil, false
+			return nil, filtered, false
 		}
 		ev, err := normalize(i)
 		if err != nil {
@@ -287,6 +294,7 @@ func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source
 				// Intentional policy filtering: the logical snapshot of THIS
 				// source configuration excludes the event, but the provider
 				// snapshot remains complete.
+				filtered++
 				continue
 			}
 			slog.Warn("IMGW item skipped; snapshot marked incomplete", "source", source, "item", i, "error", err)
@@ -305,7 +313,7 @@ func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source
 	keys := make(map[string]bool, len(seen))
 	for key, p := range seen {
 		if ctx.Err() != nil {
-			return keys, false
+			return keys, filtered, false
 		}
 		if p.count != 1 {
 			continue // ambiguous identity: never emitted
@@ -313,13 +321,13 @@ func (s *Source) ingestSnapshot(ctx context.Context, emit plugin.Emitter, source
 		keys[key] = true
 		if err := emit.Emit(ctx, p.ev); err != nil {
 			if ctx.Err() != nil {
-				return keys, false
+				return keys, filtered, false
 			}
 			slog.Warn("emit failed; retrying on the next poll", "event_key", key, "error", err)
 			continue
 		}
 	}
-	return keys, complete
+	return keys, filtered, complete
 }
 
 func sourceFor(feed string) string {

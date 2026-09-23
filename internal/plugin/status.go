@@ -39,6 +39,7 @@ type PluginStatus struct {
 	LastSuccessAt       *time.Time
 	LastErrorAt         *time.Time
 	LastError           string
+	LastSummary         string
 	ConsecutiveFailures int
 	RestartCount        int
 }
@@ -57,6 +58,14 @@ func (t *statusTracker) setState(state PluginState) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.s.State = state
+}
+
+// setSummary stores the source's latest poll summary (human-readable,
+// e.g. "42 items / 7 filtered").
+func (t *statusTracker) setSummary(summary string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.s.LastSummary = summary
 }
 
 func (t *statusTracker) markStarted(now time.Time) {

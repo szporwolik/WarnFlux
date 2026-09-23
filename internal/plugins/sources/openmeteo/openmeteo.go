@@ -255,6 +255,11 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		slog.Info("weather snapshot published", "location", loc.ID)
 	}
 
+	// Operational summary for the health page.
+	if stats, ok := emit.(plugin.SourceStatsReporter); ok {
+		stats.ReportSourceStats(fmt.Sprintf("%d / %d locations published", succeeded, len(s.cfg.Locations)))
+	}
+
 	if reporter != nil {
 		if succeeded == 0 && firstErr != nil {
 			// Every location failed: the provider is not reachable.

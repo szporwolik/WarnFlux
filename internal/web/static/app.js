@@ -10,7 +10,8 @@
     { path: "/partials/weather", id: "weather-section" },
     { path: "/partials/warnings", id: "warnings-section" },
     { path: "/partials/plugins", id: "plugins-section" },
-    { path: "/partials/actions", id: "actions-section" }
+    { path: "/partials/actions", id: "actions-section" },
+    { path: "/partials/health", id: "health-section" }
   ];
 
   var POLL_MS = 5000;

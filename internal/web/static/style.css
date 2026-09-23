@@ -832,6 +832,30 @@ table.plugins tr:hover td { background: var(--surface-hi); }
 .nt-retry { color: #ffd166; }
 .nt-skipped { color: var(--muted); }
 
+/* ---- system health page ---- */
+.health-card { display: flex; flex-direction: column; gap: 0.75rem; }
+.health-overall { margin-left: 0.5rem; }
+.health-group { display: flex; flex-direction: column; gap: 0.35rem; }
+.health-group h3 {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.health-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-hi);
+  padding: 0.5rem 0.75rem;
+}
+.health-name { min-width: 9rem; }
+.health-detail { color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
+
 /* Compact per-channel chips in the groups table. */
 .routing-matrix { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 .matrix-chip {

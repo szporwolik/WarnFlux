@@ -37,6 +37,7 @@ type notificationsView struct {
 	NavLogs          bool
 	NavTraffic       bool
 	NavNotifications bool
+	NavHealth        bool
 }
 
 // handleNotificationsPage renders the delivery history: the most recent

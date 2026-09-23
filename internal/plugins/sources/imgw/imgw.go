@@ -154,14 +154,24 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plugin.SourceHealthReporter) {
 	healthy := true
 	now := time.Now()
+	warnings, filtered := 0, 0
 	for _, feed := range s.cfg.Feeds {
 		if ctx.Err() != nil {
 			return // shutting down: no health report for a cancelled poll
 		}
-		if !s.pollFeed(ctx, emit, feed, now) {
+		w, f, complete := s.pollFeed(ctx, emit, feed, now)
+		warnings += w
+		filtered += f
+		if !complete {
 			healthy = false
 		}
 	}
+
+	// Operational summary for the health page.
+	if stats, ok := emit.(plugin.SourceStatsReporter); ok {
+		stats.ReportSourceStats(fmt.Sprintf("%d warnings / %d filtered", warnings, filtered))
+	}
+
 	if reporter != nil {
 		if healthy {
 			reporter.ReportSourceHealthy()
@@ -171,18 +181,18 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 	}
 }
 
-// pollFeed processes one feed end-to-end and reports whether the provider
-// snapshot was COMPLETE (fetch succeeded, JSON decoded, every item
-// identified, no duplicates, count bounded). Disappearance reconciliation
-// runs only for complete snapshots.
-func (s *Source) pollFeed(ctx context.Context, emit plugin.Emitter, feed string, now time.Time) bool {
+// pollFeed processes one feed end-to-end and reports the accepted/filtered
+// counts plus whether the provider snapshot was COMPLETE (fetch succeeded,
+// JSON decoded, every item identified, no duplicates, count bounded).
+// Disappearance reconciliation runs only for complete snapshots.
+func (s *Source) pollFeed(ctx context.Context, emit plugin.Emitter, feed string, now time.Time) (int, int, bool) {
 	body, err := s.client.Fetch(ctx, feed)
 	if err != nil {
 		if ctx.Err() != nil {
-			return false
+			return 0, 0, false
 		}
 		slog.Warn("IMGW feed fetch failed", "feed", feed, "error", err)
-		return false
+		return 0, 0, false
 	}
 
 	var keys map[string]bool
@@ -195,17 +205,17 @@ func (s *Source) pollFeed(ctx context.Context, emit plugin.Emitter, feed string,
 		keys, filtered, complete = s.processHydro(ctx, emit, body)
 	}
 	if !complete {
-		return false
+		return len(keys), filtered, false
 	}
 
 	cancelled, err := reconcileSnapshots(ctx, emit, sourceFor(feed), keys, now)
 	if err != nil {
 		slog.Warn("IMGW snapshot reconciliation failed", "feed", feed, "error", err)
-		return false
+		return len(keys), filtered, false
 	}
 	slog.Debug("IMGW feed processed",
 		"feed", feed, "warnings", len(keys), "filtered", filtered, "cancelled", cancelled)
-	return true
+	return len(keys), filtered, true
 }
 
 // processMeteo decodes and ingests the meteorological snapshot.

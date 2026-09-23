@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -48,10 +49,12 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		total += len(fr.items)
 	}
 	keys, filtered, complete := s.ingestCombined(ctx, emit, results)
+	cancelled := 0
 	if !complete {
 		healthy = false
 	} else {
-		cancelled, err := snapshotutil.Reconcile(ctx, emit, sourceRSO, keys, now)
+		var err error
+		cancelled, err = snapshotutil.Reconcile(ctx, emit, sourceRSO, keys, now)
 		if err != nil {
 			slog.Warn("RSO snapshot reconciliation failed", "error", err)
 			healthy = false
@@ -60,6 +63,16 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 				"voivodeships", len(results), "scraped", total,
 				"filtered", filtered, "items", len(keys), "cancelled", cancelled)
 		}
+	}
+
+	// Operational summary for the health page: the latest combined
+	// snapshot in one line.
+	if stats, ok := emit.(plugin.SourceStatsReporter); ok {
+		summary := fmt.Sprintf("%d items / %d filtered", len(keys), filtered)
+		if cancelled > 0 {
+			summary += fmt.Sprintf(" / %d cancelled", cancelled)
+		}
+		stats.ReportSourceStats(summary)
 	}
 
 	if reporter != nil {

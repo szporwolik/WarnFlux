@@ -161,6 +161,8 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/traffic", s.requirePartial(s.handlePartialTraffic))
 	s.mux.Handle("GET /notifications", s.requirePage(s.handleNotificationsPage))
 	s.mux.Handle("GET /partials/notifications", s.requirePartial(s.handlePartialNotifications))
+	s.mux.Handle("GET /health", s.requirePage(s.handleHealthPage))
+	s.mux.Handle("GET /partials/health", s.requirePartial(s.handlePartialHealth))
 	// Public ingest endpoints: authenticated per instance with the
 	// configured API key, never with a UI session.
 	if len(s.ingest) > 0 {

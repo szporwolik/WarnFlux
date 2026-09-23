@@ -131,7 +131,7 @@ func TestPreviouslyRelevantWarningReconciled(t *testing.T) {
 	// The provider now covers only powiat tatrzański for w1: the event is
 	// no longer part of THIS source's logical snapshot.
 	body = meteoBody(meteoWarningJSON("w1", "Burze", []string{"1217"}))
-	if !src.pollFeed(context.Background(), em, feedMeteo, time.Now()) {
+	if _, _, ok := src.pollFeed(context.Background(), em, feedMeteo, time.Now()); !ok {
 		t.Fatal("snapshot must stay complete")
 	}
 	got := em.cancelledKeys()
@@ -152,7 +152,7 @@ func TestUnknownTerytNeverSoleMatch(t *testing.T) {
 	em := &fakeEmitter{}
 	src := geoSource(t, srv.URL)
 	body = meteoBody(meteoWarningJSON("u1", "Mgła", []string{"9999999"}))
-	if !src.pollFeed(context.Background(), em, feedMeteo, time.Now()) {
+	if _, _, ok := src.pollFeed(context.Background(), em, feedMeteo, time.Now()); !ok {
 		t.Fatal("unknown TERYT must not make the snapshot incomplete")
 	}
 	em.mu.Lock()
@@ -178,7 +178,7 @@ func TestGeographyDisabledIsPassThrough(t *testing.T) {
 		geo:    &geography{},
 	}
 	body = meteoBody(meteoWarningJSON("any", "Burze", []string{"1217", "1219"}))
-	if !src.pollFeed(context.Background(), em, feedMeteo, time.Now()) {
+	if _, _, ok := src.pollFeed(context.Background(), em, feedMeteo, time.Now()); !ok {
 		t.Fatal("snapshot must stay complete")
 	}
 	em.mu.Lock()

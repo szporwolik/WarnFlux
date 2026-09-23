@@ -345,6 +345,48 @@ func TestNotificationsFlow(t *testing.T) {
 	}
 }
 
+// TestHealthFlow pins the system health page: login required, the rows
+// render, and the verdict is degraded only when something actually is
+// (here: the test receiver never connects).
+func TestHealthFlow(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Unauthenticated: redirect to the login page.
+	resp, _ := env.get("/health")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("GET /health unauthenticated = %d %q, want redirect", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	env.login()
+	_, html := env.get("/health")
+	for _, want := range []string{
+		`id="health-section"`,
+		`<span class="nav-label">Health</span>`,
+		"System health",
+		"DEGRADED", // receiver "local" is configured but never dialed in tests
+		">imgw-warnings</strong>",
+		">OK</span>", // the running source
+		">DISCONNECTED</span>",
+		">Database</strong>",
+		"ready",
+		">Dispatch queue</strong>",
+		">Pending notifications</strong>",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("health page missing %q: %s", want, html)
+		}
+	}
+
+	// Refresh partial carries the same section markup.
+	resp, body := env.get("/partials/health")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial poll = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, `id="health-section"`) || !strings.Contains(body, "Dispatch queue") {
+		t.Errorf("health partial = %s", body)
+	}
+}
+
 // TestIngestEndpointRouting pins the public ingest route: requests are
 // delegated to the matching instance handler without session auth, unknown
 // ids 404, and the ingest id appears as a routing-matrix source row.

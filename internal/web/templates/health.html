@@ -1,0 +1,75 @@
+{{define "healthpage"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System health · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    {{template "health" .}}
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+{{end}}
+
+{{define "health"}}<section class="card health-card" id="health-section">
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg>System health
+    <span class="badge {{if eq .Overall "ok"}}ok{{else}}bad{{end}} health-overall">{{if eq .Overall "ok"}}OK{{else}}DEGRADED{{end}}</span>
+  </h2>
+  <p class="muted log-hint">Only operational problems are marked red; configured-off components stay gray.</p>
+
+  <div class="health-group">
+    <h3>Sources</h3>
+    {{range .Sources}}<div class="health-row">
+      <span class="health-name"><strong>{{.Name}}</strong></span>
+      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
+      <span class="health-detail">{{.Detail}}</span>
+    </div>{{else}}<p class="empty">No sources configured</p>{{end}}
+  </div>
+
+  <div class="health-group">
+    <h3>MQTT</h3>
+    {{range .MQTT}}<div class="health-row">
+      <span class="health-name"><strong>{{.Name}}</strong></span>
+      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
+      <span class="health-detail">{{.Detail}}</span>
+    </div>{{else}}<p class="empty">No receivers configured</p>{{end}}
+  </div>
+
+  <div class="health-group">
+    <h3>Actions</h3>
+    {{range .Actions}}<div class="health-row">
+      <span class="health-name"><strong>{{.Name}}</strong></span>
+      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
+      <span class="health-detail">{{.Detail}}</span>
+    </div>{{else}}<p class="empty">No actions configured</p>{{end}}
+  </div>
+
+  <div class="health-group">
+    <h3>Infrastructure</h3>
+    <div class="health-row">
+      <span class="health-name"><strong>{{.DB.Name}}</strong></span>
+      <span class="badge {{.DB.BadgeClass}}">{{.DB.BadgeText}}</span>
+      <span class="health-detail">{{.DB.Detail}}</span>
+    </div>
+    <div class="health-row">
+      <span class="health-name"><strong>{{.Queue.Name}}</strong></span>
+      <span class="badge {{.Queue.BadgeClass}}">{{.Queue.BadgeText}}</span>
+      <span class="health-detail">{{.Queue.Detail}}</span>
+    </div>
+    <div class="health-row">
+      <span class="health-name"><strong>{{.Pending.Name}}</strong></span>
+      <span class="badge {{.Pending.BadgeClass}}">{{.Pending.BadgeText}}</span>
+      <span class="health-detail">{{.Pending.Detail}}</span>
+    </div>
+  </div>
+</section>
+{{end}}

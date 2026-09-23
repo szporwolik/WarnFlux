@@ -178,6 +178,12 @@ func (e *sourceEmitter) ReportSourceDegraded(err error) {
 	e.tracker.failure(err, 0, time.Now())
 }
 
+// ReportSourceStats implements the optional SourceStatsReporter
+// capability: the latest poll summary, e.g. "42 items / 7 filtered".
+func (e *sourceEmitter) ReportSourceStats(summary string) {
+	e.tracker.setSummary(summary)
+}
+
 // ListSourceActiveEvents implements the optional SourceActiveEventReader
 // capability: it pages through the authoritative current active events
 // (storage.ActiveEventLister, bounded pages) and returns only the events

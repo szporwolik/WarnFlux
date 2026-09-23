@@ -62,6 +62,15 @@ type SourceHealthReporter interface {
 	ReportSourceDegraded(err error)
 }
 
+// SourceStatsReporter is an OPTIONAL capability implemented by the
+// emitter handed to a source plugin: sources report a one-line summary of
+// their latest poll (e.g. "42 items / 7 filtered"). The supervisor still
+// owns the lifecycle states; this interface only surfaces operational
+// detail on the web health page.
+type SourceStatsReporter interface {
+	ReportSourceStats(summary string)
+}
+
 // SourceActiveEventReader is an OPTIONAL capability implemented by the
 // emitter handed to a source plugin: it returns the CURRENT active events
 // of one source from the authoritative SQLite current-state table

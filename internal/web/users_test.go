@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -31,6 +32,9 @@ func newFakeUsers() *fakeUsers {
 		routing:    make(map[int64]storage.GroupRouting),
 	}
 }
+
+// Ping satisfies the optional dbPinger assertion for the health page.
+func (f *fakeUsers) Ping(context.Context) error { return nil }
 
 func (f *fakeUsers) EnsureAdminUser(username string) error {
 	f.mu.Lock()

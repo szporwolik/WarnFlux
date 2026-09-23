@@ -143,6 +143,7 @@ type groupsView struct {
 	NavLogs          bool
 	NavTraffic       bool
 	NavNotifications bool
+	NavHealth        bool
 }
 
 // handleGroupsPage renders the group administration page. ?edit=<id>

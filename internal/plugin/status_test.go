@@ -70,3 +70,17 @@ func TestFailureBoundsLastError(t *testing.T) {
 		t.Errorf("LastError is not valid UTF-8: %q", snap.LastError)
 	}
 }
+
+// TestStatusSummary pins the source poll summary surface.
+func TestStatusSummary(t *testing.T) {
+	tr := newStatusTracker("s1", "rso", KindSource)
+	tr.setSummary("42 items / 7 filtered")
+	snap := tr.snapshot()
+	if snap.LastSummary != "42 items / 7 filtered" {
+		t.Fatalf("LastSummary = %q", snap.LastSummary)
+	}
+	tr.setSummary("2 items / 1 filtered")
+	if got := tr.snapshot().LastSummary; got != "2 items / 1 filtered" {
+		t.Fatalf("LastSummary after update = %q", got)
+	}
+}

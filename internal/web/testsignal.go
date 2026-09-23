@@ -97,6 +97,7 @@ type testView struct {
 	NavLogs          bool
 	NavTraffic       bool
 	NavNotifications bool
+	NavHealth        bool
 }
 
 // handleTestPage renders the test signal form.

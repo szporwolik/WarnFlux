@@ -30,6 +30,7 @@ type trafficView struct {
 	NavTraffic       bool
 	NavNotifications bool
 
+	NavHealth  bool
 	MaxEntries int
 }
 

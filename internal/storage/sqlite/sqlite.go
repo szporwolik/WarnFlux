@@ -487,6 +487,9 @@ func migrate(db *sql.DB, steps []migration) (MigrationInfo, error) {
 // Close closes the underlying database connection.
 func (s *Store) Close() error { return s.db.Close() }
 
+// Ping verifies the database connection (the web health page's DB row).
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
 // Ingest atomically classifies and persists one normalized event. The event
 // state transition and its change journal record (when meaningful) are
 // written in a single transaction, so no other ingestion can observe the

@@ -465,14 +465,14 @@ func TestPublicHomePage(t *testing.T) {
 		t.Fatalf("GET / = %d, want 200 without login", resp.StatusCode)
 	}
 	for _, want := range []string{
-		"WarnFlux Test",            // header1
-		"Test platform",            // header2
-		"Test info text.",          // configurable about text
-		`href="https://sp9moa.pl"`, // HTML links are allowed in the about text
-		`class="home-about-toggle"`, // Więcej/Zwiń expand button
-		"Ekstremalny wiatr",        // most severe first
-		`href="/login"`,            // sign-in behind the icon button
-		"Aktualne zagrożenia",
+		"WarnFlux Test",             // header1
+		"Test platform",             // header2
+		"Test info text.",           // configurable about text
+		`href="https://sp9moa.pl"`,  // HTML links are allowed in the about text
+		`class="home-about-toggle"`, // More/Less expand button
+		"Ekstremalny wiatr",         // most severe first
+		`href="/login"`,             // sign-in behind the icon button
+		"Active hazards",
 		"Tab 2",
 		`id="home-alerts"`,
 		`class="theme-toggle"`, // light/dark switch

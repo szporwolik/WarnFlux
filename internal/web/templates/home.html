@@ -19,11 +19,11 @@
       </div>
     </div>
     <div class="home-actions">
-      <button type="button" class="theme-toggle" aria-label="Przełącz motyw" title="Przełącz motyw">
+      <button type="button" class="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
         <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
         <svg class="icon ico-moon" aria-hidden="true"><use href="/static/icons.svg#i-moon"></use></svg>
       </button>
-      <a class="home-login" href="/login" title="Zaloguj się" aria-label="Zaloguj się">
+      <a class="home-login" href="/login" title="Sign in" aria-label="Sign in">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>
       </a>
     </div>
@@ -31,11 +31,11 @@
 
   {{if .About}}<div class="home-about" id="home-about">
     <div class="home-about-text">{{.About}}</div>
-    <button type="button" class="home-about-toggle" aria-expanded="false">Więcej</button>
+    <button type="button" class="home-about-toggle" aria-expanded="false">More</button>
   </div>{{end}}
 
-  <nav class="home-tabs" role="tablist" aria-label="Sekcje">
-    <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Aktualne zagrożenia</button>
+  <nav class="home-tabs" role="tablist" aria-label="Sections">
+    <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Active hazards</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab2">Tab 2</button>
   </nav>
 
@@ -45,7 +45,7 @@
     </section>
     <section class="home-panel" id="panel-tab2" data-panel="tab2" hidden>
       <div class="home-empty">
-        <p>Ta sekcja jest w przygotowaniu.</p>
+        <p>This section is under construction.</p>
       </div>
     </section>
   </main>
@@ -57,7 +57,7 @@
     <span class="sep">·</span>
     <span>{{.Version}}</span>
     {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{end}}
-    <a class="home-git" href="https://github.com/szporwolik/WarnFlux" target="_blank" rel="noopener noreferrer" title="Kod źródłowy" aria-label="Kod źródłowy (GitHub)">
+    <a class="home-git" href="https://github.com/szporwolik/WarnFlux" target="_blank" rel="noopener noreferrer" title="Source code" aria-label="Source code (GitHub)">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
     </a>
   </footer>
@@ -67,7 +67,7 @@
 {{end}}
 
 {{define "home_alerts_section"}}<section class="home-alerts-wrap" id="home-alerts">
-  <h2 class="home-alerts-head">Aktywne komunikaty <span class="count">{{.ActiveCount}}</span></h2>
+  <h2 class="home-alerts-head">Active communications <span class="count">{{.ActiveCount}}</span></h2>
   {{if .Hazards}}
   <div class="home-alerts">
     {{range .Hazards}}
@@ -77,19 +77,19 @@
         <h3>{{.Headline}}</h3>
       </div>
       <div class="hazard-meta">
-        <span>Źródło: <strong>{{.Source}}</strong></span>
+        <span>Source: <strong>{{.Source}}</strong></span>
         {{if .Event}}<span>{{.Event}}</span>{{end}}
-        {{if .Areas}}<span>Obszar: {{.Areas}}</span>{{end}}
-        <span>aktualizacja: {{timeShort .UpdatedAt}}</span>
-        {{if .ExpiresAt}}<span>ważne do: {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
+        {{if .Areas}}<span>Area: {{.Areas}}</span>{{end}}
+        <span>updated: {{timeShort .UpdatedAt}}</span>
+        {{if .ExpiresAt}}<span>valid until: {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
       </div>
     </article>
     {{end}}
   </div>
   {{else}}
   <div class="home-empty">
-    <p>Brak aktywnych zagrożeń.</p>
-    <p class="muted">Ta strona odświeża się automatycznie.</p>
+    <p>No active hazards.</p>
+    <p class="muted">This page refreshes automatically.</p>
   </div>
   {{end}}
 </section>

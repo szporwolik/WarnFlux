@@ -464,7 +464,7 @@
 })();
 
 // Public home page: collapse the about intro to three lines with a
-// Więcej/Zwiń toggle (button hidden when the text already fits).
+// More/Less toggle (button hidden when the text already fits).
 (function () {
   "use strict";
 
@@ -484,7 +484,7 @@
     }
     btn.addEventListener("click", function () {
       var expanded = box.classList.toggle("expanded");
-      btn.textContent = expanded ? "Zwiń" : "Więcej";
+      btn.textContent = expanded ? "Less" : "More";
       btn.setAttribute("aria-expanded", expanded ? "true" : "false");
     });
   }

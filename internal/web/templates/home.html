@@ -24,9 +24,9 @@
         <svg class="icon ico-moon" aria-hidden="true"><use href="/static/icons.svg#i-moon"></use></svg>
       </button>
       {{if .LoggedIn}}
-      <a class="home-dash" href="/dashboard" title="Dashboard">
+      <a class="home-dash" href="{{.Landing}}" title="{{.LandingLabel}}">
         <span class="avatar" title="{{.Username}}">{{initials .Username}}</span>
-        <span class="home-dash-label">Dashboard</span>
+        <span class="home-dash-label">{{.LandingLabel}}</span>
       </a>
       {{else}}
       <a class="home-login" href="/login" title="Sign in" aria-label="Sign in">

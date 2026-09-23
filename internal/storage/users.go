@@ -18,6 +18,9 @@ var (
 	// ErrUsernameTaken is returned when a username is already used by
 	// another user (case-insensitive).
 	ErrUsernameTaken = errors.New("username already exists")
+	// ErrBadCredentials is returned by Authenticate when the username
+	// does not exist or the password does not match.
+	ErrBadCredentials = errors.New("bad credentials")
 )
 
 // Group errors surfaced to the web layer.
@@ -34,6 +37,11 @@ var (
 
 // User is one alert-recipient record. The admin user (the web auth
 // account) is seeded from configuration and is read-only.
+//
+// Role is the access tier: "" for a plain recipient, "emcom" for an
+// operator that may sign in and use the compose module. Only users with
+// a non-empty role (and a password set) can sign in; the admin tier
+// always uses the configured auth account.
 type User struct {
 	ID        int64
 	Username  string
@@ -41,6 +49,7 @@ type User struct {
 	Email     string
 	Discord   string
 	IsAdmin   bool
+	Role      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -128,6 +137,10 @@ type DirectoryStore interface {
 
 // UserStore persists alert recipients. Page numbering is 1-based; a page
 // beyond the last valid page is clamped by ListUsers.
+//
+// Role is "" or "emcom". An empty password means the user cannot sign in
+// (plain recipient); on UpdateUser an empty password keeps the current
+// one.
 type UserStore interface {
 	// EnsureAdminUser makes the read-only admin row exist. It is
 	// idempotent and never changes an existing row.
@@ -138,9 +151,14 @@ type UserStore interface {
 	// GetUser returns one user by ID.
 	GetUser(id int64) (User, error)
 	// CreateUser inserts a new regular user.
-	CreateUser(username, phone, email, discord string) (User, error)
-	// UpdateUser replaces the contact fields of a regular user.
-	UpdateUser(id int64, username, phone, email, discord string) (User, error)
+	CreateUser(username, phone, email, discord, role, password string) (User, error)
+	// UpdateUser replaces the contact fields, role and (optionally) the
+	// password of a regular user.
+	UpdateUser(id int64, username, phone, email, discord, role, password string) (User, error)
 	// DeleteUser removes a regular user.
 	DeleteUser(id int64) error
+	// Authenticate verifies a directory user's credentials and returns
+	// the user. Unknown usernames, users without a password and wrong
+	// passwords all report storage.ErrBadCredentials.
+	Authenticate(username, password string) (User, error)
 }

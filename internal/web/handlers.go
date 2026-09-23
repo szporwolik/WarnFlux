@@ -163,6 +163,7 @@ type pageView struct {
 	Commit   string
 	RepoURL  string
 	Username string
+	Role     string
 	Status   statusView
 	MQTT     mqttView
 	Weather  weatherView
@@ -458,10 +459,18 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	username := r.PostFormValue("username")
 	password := r.PostFormValue("password")
-	valid := checkUsername(username, s.cfg.Auth.Username) &&
-		checkPassword(password, s.cfg.Auth.Password)
 
-	if !valid {
+	// The configured admin account outranks everything; a directory user
+	// with a non-empty role (emcom) and a matching password signs in as
+	// that role.
+	role := ""
+	if checkUsername(username, s.cfg.Auth.Username) && checkPassword(password, s.cfg.Auth.Password) {
+		role = "admin"
+	} else if u, err := s.users.Authenticate(username, password); err == nil && u.Role != "" {
+		role = u.Role
+	}
+
+	if role == "" {
 		s.logger.Warn("web: failed login attempt", "remote", r.RemoteAddr)
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -480,14 +489,18 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, _, err := s.sessions.newSession(username)
+	token, _, err := s.sessions.newSession(username, role)
 	if err != nil {
 		s.logger.Error("web: session creation failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	s.sessions.setSessionCookie(w, token)
-	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	landing := "/dashboard"
+	if role != "admin" {
+		landing = "/compose"
+	}
+	http.Redirect(w, r, landing, http.StatusSeeOther)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -526,6 +539,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Commit:       s.commit,
 		RepoURL:      repoURL,
 		Username:     sess.username,
+		Role:         sess.role,
 		Status:       s.buildStatusView(),
 		MQTT:         s.buildMQTTView(snap),
 		Weather:      buildWeatherView(snap),

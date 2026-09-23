@@ -33,12 +33,14 @@ type homeView struct {
 	// About is operator-authored content (config file): rendered with
 	// line breaks preserved and a deliberately small HTML surface so
 	// links work.
-	About    template.HTML
-	Version  string
-	Commit   string
-	RepoURL  string
-	LoggedIn bool
-	Username string
+	About        template.HTML
+	Version      string
+	Commit       string
+	RepoURL      string
+	LoggedIn     bool
+	Username     string
+	Landing      string
+	LandingLabel string
 
 	ActiveCount int
 	Hazards     []publicHazardView
@@ -52,6 +54,12 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	if sess := s.sessions.currentSession(r); sess != nil {
 		v.LoggedIn = true
 		v.Username = sess.username
+		v.Landing = "/dashboard"
+		v.LandingLabel = "Dashboard"
+		if sess.role != "admin" {
+			v.Landing = "/compose"
+			v.LandingLabel = "Compose"
+		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "home", v)

@@ -21,6 +21,7 @@ type trafficView struct {
 	RepoURL  string
 	CSRF     string
 	Username string
+	Role     string
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -41,6 +42,7 @@ func (s *Server) handleTrafficPage(w http.ResponseWriter, r *http.Request) {
 	view := s.baseTrafficView()
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "traffic", view)
 }

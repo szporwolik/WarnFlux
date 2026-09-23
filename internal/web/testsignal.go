@@ -79,6 +79,7 @@ type testView struct {
 	RepoURL  string
 	CSRF     string
 	Username string
+	Role     string
 
 	Transitions []option
 	Severities  []option
@@ -111,6 +112,7 @@ func (s *Server) handleTestPage(w http.ResponseWriter, r *http.Request) {
 	})
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "test", view)
 }
@@ -152,6 +154,7 @@ func (s *Server) handleTestEmit(w http.ResponseWriter, r *http.Request) {
 	view := s.buildTestView(form)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	view.Emitted = true
 	view.Summary = summary
 	w.Header().Set("Cache-Control", "no-store")
@@ -279,6 +282,7 @@ func (s *Server) renderTestError(w http.ResponseWriter, r *http.Request, status 
 	view := s.buildTestView(form)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	view.Error = msg
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)

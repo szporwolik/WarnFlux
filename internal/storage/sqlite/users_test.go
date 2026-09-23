@@ -54,7 +54,7 @@ func TestUsersCRUDAndProtection(t *testing.T) {
 	}
 
 	// Create.
-	alice, err := store.CreateUser("alice", "+48 600 100 200", "alice@example.com", "alice#1234")
+	alice, err := store.CreateUser("alice", "+48 600 100 200", "alice@example.com", "alice#1234", "", "")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -66,12 +66,12 @@ func TestUsersCRUDAndProtection(t *testing.T) {
 	}
 
 	// Duplicate (case-insensitive).
-	if _, err := store.CreateUser("Alice", "", "", ""); !errors.Is(err, storage.ErrUsernameTaken) {
+	if _, err := store.CreateUser("Alice", "", "", "", "", ""); !errors.Is(err, storage.ErrUsernameTaken) {
 		t.Fatalf("duplicate create = %v, want ErrUsernameTaken", err)
 	}
 
 	// Update.
-	alice, err = store.UpdateUser(alice.ID, "alice", "+48 600 999 999", "alice@example.com", "alice#9999")
+	alice, err = store.UpdateUser(alice.ID, "alice", "+48 600 999 999", "alice@example.com", "alice#9999", "", "")
 	if err != nil {
 		t.Fatalf("UpdateUser: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestUsersCRUDAndProtection(t *testing.T) {
 	}
 
 	// Admin row is protected.
-	if _, err := store.UpdateUser(1, "admin", "x", "", ""); !errors.Is(err, storage.ErrUserProtected) {
+	if _, err := store.UpdateUser(1, "admin", "x", "", "", "", ""); !errors.Is(err, storage.ErrUserProtected) {
 		t.Fatalf("admin update = %v, want ErrUserProtected", err)
 	}
 	if err := store.DeleteUser(1); !errors.Is(err, storage.ErrUserProtected) {
@@ -105,6 +105,40 @@ func TestUsersCRUDAndProtection(t *testing.T) {
 	}
 }
 
+// TestUserAuthenticate pins password-based sign-in for directory users:
+// correct credentials return the user with their role, wrong or unknown
+// credentials return ErrBadCredentials, and role-less users cannot sign in.
+func TestUserAuthenticate(t *testing.T) {
+	store := newUsersStore(t)
+	if err := store.EnsureAdminUser("admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("emcom-user", "", "", "", "emcom", "hunter2secret"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("no-role", "", "", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := store.Authenticate("emcom-user", "hunter2secret")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if u.Username != "emcom-user" || u.Role != "emcom" {
+		t.Fatalf("authenticated user = %+v", u)
+	}
+
+	if _, err := store.Authenticate("emcom-user", "wrong"); !errors.Is(err, storage.ErrBadCredentials) {
+		t.Fatalf("wrong password = %v, want ErrBadCredentials", err)
+	}
+	if _, err := store.Authenticate("nobody", "x"); !errors.Is(err, storage.ErrBadCredentials) {
+		t.Fatalf("unknown user = %v, want ErrBadCredentials", err)
+	}
+	if _, err := store.Authenticate("no-role", ""); !errors.Is(err, storage.ErrBadCredentials) {
+		t.Fatalf("role-less user = %v, want ErrBadCredentials", err)
+	}
+}
+
 func TestUsersPagination(t *testing.T) {
 	clock := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	store, _, err := Open(filepath.Join(t.TempDir(), "users.db"), WithClock(func() time.Time { return clock }))
@@ -117,7 +151,7 @@ func TestUsersPagination(t *testing.T) {
 	}
 	for i := 0; i < 12; i++ {
 		name := "user" + string(rune('a'+i))
-		if _, err := store.CreateUser(name, "", "", ""); err != nil {
+		if _, err := store.CreateUser(name, "", "", "", "", ""); err != nil {
 			t.Fatalf("CreateUser %s: %v", name, err)
 		}
 	}

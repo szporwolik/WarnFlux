@@ -125,6 +125,7 @@ type groupsView struct {
 	RepoURL  string
 	CSRF     string
 	Username string
+	Role     string
 
 	Groups []groupRow
 	Form   groupForm
@@ -156,7 +157,7 @@ func (s *Server) handleGroupsPage(w http.ResponseWriter, r *http.Request) {
 	view := s.buildGroupsView(r, groupForm{}, 0, "")
 	view.CSRF = sess.csrf
 	view.Username = sess.username
-
+	view.Role = sess.role
 	if raw := r.URL.Query().Get("edit"); raw != "" {
 		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
 			if g, err := s.users.GetGroup(id); err == nil {
@@ -446,6 +447,7 @@ func (s *Server) renderGroupsError(w http.ResponseWriter, r *http.Request, statu
 	view := s.buildGroupsView(r, form, editID, msg)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	s.render(w, "groups", view)

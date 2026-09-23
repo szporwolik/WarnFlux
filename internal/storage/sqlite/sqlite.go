@@ -362,6 +362,17 @@ ALTER TABLE group_actions_new RENAME TO group_actions;
 		// (unknown/minor/moderate/severe/extreme) that routing uses.
 		SQL: `ALTER TABLE events ADD COLUMN provider_severity TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		// v13: user roles and directory logins. Role '' is a plain
+		// notification recipient; 'emcom' is an operator that may sign
+		// in and use the compose module. password_salt/password_hash
+		// stay empty until the admin sets a password in /users.
+		SQL: `
+ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN password_salt TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

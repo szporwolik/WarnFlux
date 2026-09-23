@@ -18,11 +18,11 @@ func newGroupsStore(t *testing.T) *Store {
 
 func TestGroupsCRUDAndMembership(t *testing.T) {
 	store := newGroupsStore(t)
-	alice, err := store.CreateUser("alice", "", "alice@example.com", "")
+	alice, err := store.CreateUser("alice", "", "alice@example.com", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	bob, err := store.CreateUser("bob", "", "bob@example.com", "")
+	bob, err := store.CreateUser("bob", "", "bob@example.com", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}

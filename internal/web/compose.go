@@ -90,6 +90,7 @@ type composeView struct {
 	RepoURL  string
 	CSRF     string
 	Username string
+	Role     string
 
 	Source string
 	Form   composeForm
@@ -137,6 +138,7 @@ func (s *Server) handleComposePage(w http.ResponseWriter, r *http.Request) {
 	view := s.buildComposeView(form)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	view.Msg = composeFlash[r.URL.Query().Get("msg")]
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "compose", view)
@@ -477,6 +479,7 @@ func (s *Server) renderComposeError(w http.ResponseWriter, r *http.Request, stat
 	view := s.buildComposeView(form)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	view.Error = msg
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)

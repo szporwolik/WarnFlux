@@ -23,6 +23,7 @@ type notificationsView struct {
 	RepoURL  string
 	CSRF     string
 	Username string
+	Role     string
 
 	// FocusKey highlights one trail (?key=… deep links from the
 	// dashboard warning cards).
@@ -55,6 +56,7 @@ func (s *Server) handleNotificationsPage(w http.ResponseWriter, r *http.Request)
 		Commit:           s.commit,
 		RepoURL:          repoURL,
 		Username:         sess.username,
+		Role:             sess.role,
 		CSRF:             sess.csrf,
 		FocusKey:         r.URL.Query().Get("key"),
 		Trails:           s.recentTrails(notificationsPerPage),

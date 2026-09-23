@@ -1,7 +1,12 @@
 package sqlite
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,7 +16,14 @@ import (
 )
 
 // userColumns is the canonical user column list for SELECTs.
-const userColumns = `id, username, phone, email, discord, is_admin, created_at_ms, updated_at_ms`
+const userColumns = `id, username, phone, email, discord, is_admin, role, created_at_ms, updated_at_ms`
+
+// passwordIterations is the PBKDF2-HMAC-SHA256 iteration count used for
+// directory-user passwords (local, single-tenant scope).
+const passwordIterations = 120_000
+
+// passwordSaltBytes is the random per-user salt length.
+const passwordSaltBytes = 16
 
 // EnsureAdminUser makes the read-only admin row exist. It never changes an
 // existing row (the web auth account stays authoritative).
@@ -86,7 +98,7 @@ func (s *Store) GetUser(id int64) (storage.User, error) {
 
 // CreateUser inserts a new regular user. A duplicate username (case
 // insensitive) reports storage.ErrUsernameTaken.
-func (s *Store) CreateUser(username, phone, email, discord string) (storage.User, error) {
+func (s *Store) CreateUser(username, phone, email, discord, role, password string) (storage.User, error) {
 	taken, err := s.usernameTaken(username, 0)
 	if err != nil {
 		return storage.User{}, err
@@ -94,11 +106,15 @@ func (s *Store) CreateUser(username, phone, email, discord string) (storage.User
 	if taken {
 		return storage.User{}, storage.ErrUsernameTaken
 	}
+	salt, hash, err := s.passwordFields(password)
+	if err != nil {
+		return storage.User{}, err
+	}
 	now := s.now().UnixMilli()
 	res, err := s.db.Exec(`
-		INSERT INTO users (username, phone, email, discord, is_admin, created_at_ms, updated_at_ms)
-		VALUES (?, ?, ?, ?, 0, ?, ?)`,
-		username, phone, email, discord, now, now)
+		INSERT INTO users (username, phone, email, discord, is_admin, role, password_salt, password_hash, created_at_ms, updated_at_ms)
+		VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+		username, phone, email, discord, role, salt, hash, now, now)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return storage.User{}, storage.ErrUsernameTaken
@@ -112,9 +128,10 @@ func (s *Store) CreateUser(username, phone, email, discord string) (storage.User
 	return s.userByID(id)
 }
 
-// UpdateUser replaces the contact fields of a regular user. The admin row
-// reports storage.ErrUserProtected and never changes.
-func (s *Store) UpdateUser(id int64, username, phone, email, discord string) (storage.User, error) {
+// UpdateUser replaces the contact fields, role and (when password is
+// non-empty) the password of a regular user. The admin row reports
+// storage.ErrUserProtected and never changes.
+func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, password string) (storage.User, error) {
 	taken, err := s.usernameTaken(username, id)
 	if err != nil {
 		return storage.User{}, err
@@ -123,16 +140,42 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord string) (st
 		return storage.User{}, storage.ErrUsernameTaken
 	}
 	now := s.now().UnixMilli()
+
+	if password != "" {
+		salt, hash, err := s.passwordFields(password)
+		if err != nil {
+			return storage.User{}, err
+		}
+		res, err := s.db.Exec(`
+			UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?,
+				password_salt = ?, password_hash = ?, updated_at_ms = ?
+			WHERE id = ? AND is_admin = 0`,
+			username, phone, email, discord, role, salt, hash, now, id)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				return storage.User{}, storage.ErrUsernameTaken
+			}
+			return storage.User{}, fmt.Errorf("update user %d: %w", id, err)
+		}
+		return s.afterUpdate(res, id)
+	}
+
 	res, err := s.db.Exec(`
-		UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, updated_at_ms = ?
+		UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?, updated_at_ms = ?
 		WHERE id = ? AND is_admin = 0`,
-		username, phone, email, discord, now, id)
+		username, phone, email, discord, role, now, id)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return storage.User{}, storage.ErrUsernameTaken
 		}
 		return storage.User{}, fmt.Errorf("update user %d: %w", id, err)
 	}
+	return s.afterUpdate(res, id)
+}
+
+// afterUpdate maps an UPDATE result to the refreshed user or the precise
+// not-found / protected error.
+func (s *Store) afterUpdate(res sql.Result, id int64) (storage.User, error) {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return storage.User{}, fmt.Errorf("update user %d: %w", id, err)
@@ -141,6 +184,90 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord string) (st
 		return storage.User{}, s.missingOrProtected(id)
 	}
 	return s.userByID(id)
+}
+
+// Authenticate verifies a directory user's credentials. Users without a
+// role or without a stored password can never sign in; the admin row
+// signs in through the configured auth account only.
+func (s *Store) Authenticate(username, password string) (storage.User, error) {
+	var id, isAdmin int64
+	var role, saltHex, hashHex string
+	err := s.db.QueryRow(`
+		SELECT id, is_admin, role, password_salt, password_hash
+		FROM users WHERE username = ? COLLATE NOCASE`, username).
+		Scan(&id, &isAdmin, &role, &saltHex, &hashHex)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	if err != nil {
+		return storage.User{}, fmt.Errorf("authenticate %q: %w", username, err)
+	}
+	if isAdmin != 0 || role == "" || saltHex == "" || hashHex == "" || !verifyPassword(password, saltHex, hashHex) {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	return s.userByID(id)
+}
+
+// passwordFields derives a fresh salt and the password hash for it.
+func (s *Store) passwordFields(password string) (salt, hash string, err error) {
+	saltBytes := make([]byte, passwordSaltBytes)
+	if _, err := rand.Read(saltBytes); err != nil {
+		return "", "", fmt.Errorf("generate password salt: %w", err)
+	}
+	salt = hex.EncodeToString(saltBytes)
+	hash, err = hashPassword(password, salt)
+	if err != nil {
+		return "", "", err
+	}
+	return salt, hash, nil
+}
+
+// hashPassword derives the stored hex PBKDF2-HMAC-SHA256 key.
+func hashPassword(password, saltHex string) (string, error) {
+	salt, err := hex.DecodeString(saltHex)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(pbkdf2Key([]byte(password), salt, passwordIterations, 32)), nil
+}
+
+// verifyPassword compares a candidate password against the stored hash in
+// constant time.
+func verifyPassword(password, saltHex, wantHex string) bool {
+	got, err := hashPassword(password, saltHex)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(wantHex)) == 1
+}
+
+// pbkdf2Key implements PBKDF2 (RFC 8018) with HMAC-SHA256 as the PRF.
+func pbkdf2Key(password, salt []byte, iterations, keyLen int) []byte {
+	prf := func(p, s []byte) []byte {
+		h := hmac.New(sha256.New, p)
+		h.Write(s)
+		return h.Sum(nil)
+	}
+	hashLen := sha256.Size
+	numBlocks := (keyLen + hashLen - 1) / hashLen
+	var block [4]byte
+	out := make([]byte, 0, numBlocks*hashLen)
+	for i := 1; i <= numBlocks; i++ {
+		block[0] = byte(i >> 24)
+		block[1] = byte(i >> 16)
+		block[2] = byte(i >> 8)
+		block[3] = byte(i)
+		u := prf(password, append(append([]byte(nil), salt...), block[:]...))
+		t := append([]byte(nil), u...)
+		for j := 1; j < iterations; j++ {
+			u = prf(password, u)
+			for k := range t {
+				t[k] ^= u[k]
+			}
+		}
+		out = append(out, t...)
+	}
+	return out[:keyLen]
 }
 
 // DeleteUser removes a regular user. The admin row reports
@@ -210,7 +337,7 @@ func scanUser(sc userScanner) (storage.User, error) {
 		admin  int
 		ca, ua int64
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &ca, &ua); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &ca, &ua); err != nil {
 		return storage.User{}, err
 	}
 	u.IsAdmin = admin != 0

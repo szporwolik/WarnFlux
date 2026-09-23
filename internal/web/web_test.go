@@ -789,6 +789,44 @@ func TestIngestEndpointRouting(t *testing.T) {
 	}
 }
 
+// TestEmcomRoleFlow pins the restricted emcom role: an emcom directory
+// account signs in with its own password, lands on /compose, sees only the
+// Compose nav entry, and is redirected away from every admin page.
+func TestEmcomRoleFlow(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("ops-user", "", "", "", "emcom", "password123"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, html := env.get("/login")
+	csrf := extractCSRF(t, html)
+	form := url.Values{"csrf": {csrf}, "username": {"ops-user"}, "password": {"password123"}}
+	resp, _ := env.postForm("/login", form)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose" {
+		t.Fatalf("emcom login = %d %q, want 303 to /compose", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	resp, html = env.get("/compose")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /compose as emcom = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<span class="nav-label">Compose</span>`) {
+		t.Error("compose page missing Compose nav entry")
+	}
+	for _, forbidden := range []string{"Dashboard", "Users", "Groups", "Notifications"} {
+		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
+			t.Errorf("emcom must not see %s nav entry", forbidden)
+		}
+	}
+
+	for _, path := range []string{"/dashboard", "/users", "/groups", "/health", "/logs", "/traffic", "/test", "/notifications"} {
+		resp, _ := env.get(path)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose" {
+			t.Errorf("GET %s as emcom = %d %q, want 303 to /compose", path, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+}
+
 func (e *testEnv) get(path string) (*http.Response, string) {
 	e.t.Helper()
 	resp, err := e.client.Get(e.srv.URL + path)

@@ -22,6 +22,11 @@
         <input type="text" name="phone" placeholder="phone" value="{{.Form.Phone}}" maxlength="32">
         <input type="text" name="email" placeholder="email" value="{{.Form.Email}}" maxlength="128">
         <input type="text" name="discord" placeholder="discord" value="{{.Form.Discord}}" maxlength="128">
+        <select name="role">
+          <option value="" {{if eq .Form.Role ""}}selected{{end}}>member (no sign-in)</option>
+          <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose only)</option>
+        </select>
+        <input type="password" name="password" placeholder="{{if .EditID}}new password (optional){{else}}password (required for emcom){{end}}" maxlength="72" autocomplete="new-password">
         <button type="submit" class="btn-primary btn-add">
           {{if .EditID}}<svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Save{{else}}<svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>Add user{{end}}
         </button>
@@ -58,7 +63,7 @@
                 </details>
                 </div>
               </td>
-              <td>{{if .IsAdmin}}<span class="badge ok">admin</span>{{else}}<span class="badge muted">member</span>{{end}}</td>
+              <td>{{if .IsAdmin}}<span class="badge ok">admin</span>{{else if eq .Role "emcom"}}<span class="badge warn">emcom</span>{{else}}<span class="badge muted">member</span>{{end}}</td>
               <td class="muted">{{timeShort .UpdatedAt}}</td>
               <td>
                 <div class="row-actions">

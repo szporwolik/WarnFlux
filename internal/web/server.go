@@ -165,14 +165,14 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
-	s.mux.Handle("GET /logs", s.requirePage(s.handleLogsPage))
-	s.mux.Handle("GET /partials/logs", s.requirePartial(s.handlePartialLogs))
-	s.mux.Handle("GET /traffic", s.requirePage(s.handleTrafficPage))
-	s.mux.Handle("GET /partials/traffic", s.requirePartial(s.handlePartialTraffic))
-	s.mux.Handle("GET /notifications", s.requirePage(s.handleNotificationsPage))
-	s.mux.Handle("GET /partials/notifications", s.requirePartial(s.handlePartialNotifications))
-	s.mux.Handle("GET /health", s.requirePage(s.handleHealthPage))
-	s.mux.Handle("GET /partials/health", s.requirePartial(s.handlePartialHealth))
+	s.mux.Handle("GET /logs", s.requireAdmin(s.handleLogsPage))
+	s.mux.Handle("GET /partials/logs", s.requireAdminPartial(s.handlePartialLogs))
+	s.mux.Handle("GET /traffic", s.requireAdmin(s.handleTrafficPage))
+	s.mux.Handle("GET /partials/traffic", s.requireAdminPartial(s.handlePartialTraffic))
+	s.mux.Handle("GET /notifications", s.requireAdmin(s.handleNotificationsPage))
+	s.mux.Handle("GET /partials/notifications", s.requireAdminPartial(s.handlePartialNotifications))
+	s.mux.Handle("GET /health", s.requireAdmin(s.handleHealthPage))
+	s.mux.Handle("GET /partials/health", s.requireAdminPartial(s.handlePartialHealth))
 	// Metrics: unauthenticated on purpose (Prometheus cannot log in);
 	// only counters are exposed.
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
@@ -181,28 +181,29 @@ func (s *Server) routes(static http.Handler) {
 	if len(s.ingest) > 0 {
 		s.mux.HandleFunc("POST /api/v1/ingest/{id}", s.handleIngest)
 	}
-	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
-	s.mux.Handle("GET /test", s.requirePage(s.handleTestPage))
-	s.mux.Handle("POST /test", s.requirePage(s.handleTestEmit))
-	// Compose: issue/update/expire community communications on the broker.
+	s.mux.Handle("GET /dashboard", s.requireAdmin(s.handleDashboard))
+	s.mux.Handle("GET /test", s.requireAdmin(s.handleTestPage))
+	s.mux.Handle("POST /test", s.requireAdmin(s.handleTestEmit))
+	// Compose: any authenticated role may issue/update/expire
+	// communications; it is the emcom operator's only surface.
 	s.mux.Handle("GET /compose", s.requirePage(s.handleComposePage))
 	s.mux.Handle("POST /compose", s.requirePage(s.handleComposeSave))
 	s.mux.Handle("POST /compose/expire", s.requirePage(s.handleComposeExpire))
-	s.mux.Handle("GET /users", s.requirePage(s.handleUsersPage))
-	s.mux.Handle("POST /users", s.requirePage(s.handleUserSave))
-	s.mux.Handle("POST /users/{id}/delete", s.requirePage(s.handleUserDelete))
-	s.mux.Handle("POST /users/{id}/groups", s.requirePage(s.handleUserGroups))
-	s.mux.Handle("GET /groups", s.requirePage(s.handleGroupsPage))
-	s.mux.Handle("POST /groups", s.requirePage(s.handleGroupSave))
-	s.mux.Handle("POST /groups/{id}/delete", s.requirePage(s.handleGroupDelete))
-	s.mux.Handle("GET /groups/{id}/routing", s.requirePage(s.handleGroupRoutingPage))
-	s.mux.Handle("POST /groups/{id}/routing", s.requirePage(s.handleGroupRouting))
-	s.mux.Handle("GET /partials/status", s.requirePartial(s.handlePartialStatus))
-	s.mux.Handle("GET /partials/mqtt", s.requirePartial(s.handlePartialMQTT))
-	s.mux.Handle("GET /partials/weather", s.requirePartial(s.handlePartialWeather))
-	s.mux.Handle("GET /partials/warnings", s.requirePartial(s.handlePartialWarnings))
-	s.mux.Handle("GET /partials/plugins", s.requirePartial(s.handlePartialPlugins))
-	s.mux.Handle("GET /partials/actions", s.requirePartial(s.handlePartialActions))
+	s.mux.Handle("GET /users", s.requireAdmin(s.handleUsersPage))
+	s.mux.Handle("POST /users", s.requireAdmin(s.handleUserSave))
+	s.mux.Handle("POST /users/{id}/delete", s.requireAdmin(s.handleUserDelete))
+	s.mux.Handle("POST /users/{id}/groups", s.requireAdmin(s.handleUserGroups))
+	s.mux.Handle("GET /groups", s.requireAdmin(s.handleGroupsPage))
+	s.mux.Handle("POST /groups", s.requireAdmin(s.handleGroupSave))
+	s.mux.Handle("POST /groups/{id}/delete", s.requireAdmin(s.handleGroupDelete))
+	s.mux.Handle("GET /groups/{id}/routing", s.requireAdmin(s.handleGroupRoutingPage))
+	s.mux.Handle("POST /groups/{id}/routing", s.requireAdmin(s.handleGroupRouting))
+	s.mux.Handle("GET /partials/status", s.requireAdminPartial(s.handlePartialStatus))
+	s.mux.Handle("GET /partials/mqtt", s.requireAdminPartial(s.handlePartialMQTT))
+	s.mux.Handle("GET /partials/weather", s.requireAdminPartial(s.handlePartialWeather))
+	s.mux.Handle("GET /partials/warnings", s.requireAdminPartial(s.handlePartialWarnings))
+	s.mux.Handle("GET /partials/plugins", s.requireAdminPartial(s.handlePartialPlugins))
+	s.mux.Handle("GET /partials/actions", s.requireAdminPartial(s.handlePartialActions))
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -253,11 +254,43 @@ func (s *Server) requirePage(next http.HandlerFunc) http.Handler {
 	})
 }
 
+// requireAdmin protects admin-tier routes: unauthenticated requests go to
+// the login page, non-admin sessions (emcom) are sent to their own
+// landing page (/compose) instead.
+func (s *Server) requireAdmin(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess := s.sessions.currentSession(r)
+		if sess == nil {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if sess.role != "admin" {
+			http.Redirect(w, r, "/compose", http.StatusSeeOther)
+			return
+		}
+		next(w, r)
+	})
+}
+
 // requirePartial protects fragment routes: unauthenticated requests get 401
 // so the embedded poller can redirect to the login page.
 func (s *Server) requirePartial(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.sessions.currentSession(r) == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	})
+}
+
+// requireAdminPartial is the fragment-route variant of requireAdmin:
+// unauthenticated and non-admin sessions both get 401 so the embedded
+// poller redirects the browser instead of receiving foreign HTML.
+func (s *Server) requireAdminPartial(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess := s.sessions.currentSession(r)
+		if sess == nil || sess.role != "admin" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

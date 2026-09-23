@@ -16,11 +16,14 @@ const (
 	maxSessions   = 4096
 )
 
-// session is one authenticated admin session.
+// session is one authenticated session.
 type session struct {
 	username string
-	csrf     string
-	expires  time.Time
+	// role is the access tier: "admin" (everything) or "emcom" (compose
+	// only). Set once at login, never from the client.
+	role    string
+	csrf    string
+	expires time.Time
 }
 
 // sessionStore is a server-side, in-memory session store. Sessions being
@@ -36,7 +39,7 @@ func newSessionStore(secure bool) *sessionStore {
 }
 
 // newSession creates a cryptographically random session token.
-func (s *sessionStore) newSession(username string) (token string, sess *session, err error) {
+func (s *sessionStore) newSession(username, role string) (token string, sess *session, err error) {
 	tok, err := randomToken()
 	if err != nil {
 		return "", nil, err
@@ -47,6 +50,7 @@ func (s *sessionStore) newSession(username string) (token string, sess *session,
 	}
 	sess = &session{
 		username: username,
+		role:     role,
 		csrf:     csrf,
 		expires:  time.Now().Add(sessionTTL),
 	}

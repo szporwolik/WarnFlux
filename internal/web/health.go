@@ -50,6 +50,7 @@ type healthView struct {
 	RepoURL  string
 	CSRF     string
 	Username string
+	Role     string
 
 	Overall string // ok | degraded
 	Sources []healthRow
@@ -77,6 +78,7 @@ func (s *Server) handleHealthPage(w http.ResponseWriter, r *http.Request) {
 	view := s.buildHealthView()
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "healthpage", view)
 }

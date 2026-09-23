@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"crypto/subtle"
 	"io"
 	"net/http"
 	"net/url"
@@ -24,6 +25,7 @@ type fakeUsers struct {
 	groups      []storage.Group
 	membership  map[int64]map[int64]bool       // userID -> groupID set
 	routing     map[int64]storage.GroupRouting // groupID -> routing
+	passwords   map[string]string              // username -> plaintext (fake)
 }
 
 func newFakeUsers() *fakeUsers {
@@ -31,6 +33,7 @@ func newFakeUsers() *fakeUsers {
 		nextID: 1, nextGroupID: 1,
 		membership: make(map[int64]map[int64]bool),
 		routing:    make(map[int64]storage.GroupRouting),
+		passwords:  make(map[string]string),
 	}
 }
 
@@ -102,7 +105,7 @@ func (f *fakeUsers) GetUser(id int64) (storage.User, error) {
 	return storage.User{}, storage.ErrUserNotFound
 }
 
-func (f *fakeUsers) CreateUser(username, phone, email, discord string) (storage.User, error) {
+func (f *fakeUsers) CreateUser(username, phone, email, discord, role, password string) (storage.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.rows {
@@ -112,15 +115,16 @@ func (f *fakeUsers) CreateUser(username, phone, email, discord string) (storage.
 	}
 	now := time.Now()
 	u := storage.User{
-		ID: f.nextID, Username: username, Phone: phone, Email: email, Discord: discord,
+		ID: f.nextID, Username: username, Phone: phone, Email: email, Discord: discord, Role: role,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	f.nextID++
 	f.rows = append(f.rows, u)
+	f.passwords[username] = password
 	return u, nil
 }
 
-func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord string) (storage.User, error) {
+func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, password string) (storage.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.rows {
@@ -139,10 +143,32 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord string)
 		f.rows[i].Phone = phone
 		f.rows[i].Email = email
 		f.rows[i].Discord = discord
+		f.rows[i].Role = role
 		f.rows[i].UpdatedAt = time.Now()
+		if password != "" {
+			f.passwords[username] = password
+		}
 		return f.rows[i], nil
 	}
 	return storage.User{}, storage.ErrUserNotFound
+}
+
+func (f *fakeUsers) Authenticate(username, password string) (storage.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want, ok := f.passwords[username]
+	if !ok || want == "" {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	if subtle.ConstantTimeCompare([]byte(want), []byte(password)) != 1 {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	for _, u := range f.rows {
+		if strings.EqualFold(u.Username, username) && !u.IsAdmin && u.Role != "" {
+			return u, nil
+		}
+	}
+	return storage.User{}, storage.ErrBadCredentials
 }
 
 func (f *fakeUsers) DeleteUser(id int64) error {

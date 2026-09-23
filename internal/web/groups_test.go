@@ -69,7 +69,7 @@ func TestUserGroupAssignment(t *testing.T) {
 	if _, err := env.users.CreateGroup("news"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.users.CreateUser("alice", "", "alice@example.com", ""); err != nil {
+	if _, err := env.users.CreateUser("alice", "", "alice@example.com", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 

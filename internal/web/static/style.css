@@ -848,6 +848,15 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.9rem;
 }
 .user-form input:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
+.user-form select {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.9rem;
+}
+.user-form select:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
 .user-form input[name="username"] { width: 180px; }
 .user-form input[name="phone"], .user-form input[name="discord"] { width: 150px; }
 .user-form input[name="email"] { flex: 1 1 220px; }

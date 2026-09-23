@@ -19,22 +19,24 @@
 {{end}}
 
 {{define "sidebar"}}  <aside class="sidebar">
-    <a class="brand" href="/dashboard">
+    <a class="brand" href="{{if eq .Role "admin"}}/dashboard{{else}}/compose{{end}}">
       <img class="brand-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
       <span class="brand-text">
         <span class="brand-name">{{.Header1}}</span>
       </span>
     </a>
     <nav class="sidenav">
-      <a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>
-      <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">Health</span></a>
-      <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">Users</span></a>
-      <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">Groups</span></a>
-      <a class="nav-item{{if .NavTest}} active{{end}}" href="/test"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg><span class="nav-label">Test signal</span></a>
+      {{if eq .Role "admin"}}<a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>{{end}}
       <a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">Compose</span></a>
+      {{if eq .Role "admin"}}
+      <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">Notifications</span></a>
+      <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">Health</span></a>
+      <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">Groups</span></a>
+      <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">Users</span></a>
+      <a class="nav-item{{if .NavTest}} active{{end}}" href="/test"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg><span class="nav-label">Test signal</span></a>
       <a class="nav-item{{if .NavLogs}} active{{end}}" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg><span class="nav-label">Logs</span></a>
       <a class="nav-item{{if .NavTraffic}} active{{end}}" href="/traffic"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">MQTT traffic</span></a>
-      <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">Notifications</span></a>
+      {{end}}
     </nav>
     <span class="sidebar-spacer"></span>
   </aside>

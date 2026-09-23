@@ -228,7 +228,7 @@ func TestGroupRecipientEmails(t *testing.T) {
 		{"dea", "ADA@example.com"},
 	}
 	for _, u := range users {
-		u2, err := store.CreateUser(u.name, "", u.email, "")
+		u2, err := store.CreateUser(u.name, "", u.email, "", "", "")
 		if err != nil {
 			t.Fatalf("CreateUser %s: %v", u.name, err)
 		}

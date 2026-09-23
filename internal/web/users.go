@@ -26,6 +26,7 @@ type userRow struct {
 	Email      string
 	Discord    string
 	IsAdmin    bool
+	Role       string
 	GroupNames []string
 	GroupSet   map[int64]bool
 	UpdatedAt  time.Time
@@ -38,6 +39,8 @@ type userForm struct {
 	Phone    string
 	Email    string
 	Discord  string
+	Role     string
+	Password string
 }
 
 // usersView is the full /users page model.
@@ -52,6 +55,7 @@ type usersView struct {
 	RepoURL  string
 	CSRF     string
 	Username string
+	Role     string
 
 	Users  []userRow
 	Groups []storage.Group
@@ -80,12 +84,13 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 	view := s.buildUsersView(r, userForm{}, 0, "")
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 
 	if raw := r.URL.Query().Get("edit"); raw != "" {
 		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
 			if u, err := s.users.GetUser(id); err == nil {
 				view.EditID = u.ID
-				view.Form = userForm{Username: u.Username, Phone: u.Phone, Email: u.Email, Discord: u.Discord}
+				view.Form = userForm{Username: u.Username, Phone: u.Phone, Email: u.Email, Discord: u.Discord, Role: u.Role}
 			}
 		}
 	}
@@ -107,6 +112,8 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 		Phone:    strings.TrimSpace(r.PostFormValue("phone")),
 		Email:    strings.TrimSpace(r.PostFormValue("email")),
 		Discord:  strings.TrimSpace(r.PostFormValue("discord")),
+		Role:     strings.ToLower(strings.TrimSpace(r.PostFormValue("role"))),
+		Password: r.PostFormValue("password"),
 	}
 	editID := int64(0)
 	if raw := strings.TrimSpace(r.PostFormValue("edit_id")); raw != "" {
@@ -124,12 +131,12 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if editID == 0 {
-		if _, err := s.users.CreateUser(form.Username, form.Phone, form.Email, form.Discord); err != nil {
+		if _, err := s.users.CreateUser(form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
 			return
 		}
 	} else {
-		if _, err := s.users.UpdateUser(editID, form.Username, form.Phone, form.Email, form.Discord); err != nil {
+		if _, err := s.users.UpdateUser(editID, form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
 			return
 		}
@@ -244,6 +251,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 			Email:      u.Email,
 			Discord:    u.Discord,
 			IsAdmin:    u.IsAdmin,
+			Role:       u.Role,
 			GroupNames: names,
 			GroupSet:   set,
 			UpdatedAt:  u.UpdatedAt,
@@ -281,6 +289,7 @@ func (s *Server) renderUsersError(w http.ResponseWriter, r *http.Request, status
 	view := s.buildUsersView(r, form, editID, msg)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
+	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	s.render(w, "users", view)
@@ -290,6 +299,15 @@ func (s *Server) renderUsersError(w http.ResponseWriter, r *http.Request, status
 func validateUserForm(f userForm) string {
 	if !usernamePattern.MatchString(f.Username) {
 		return "username must be 1-64 lowercase letters, digits, dots, dashes or underscores"
+	}
+	if f.Role != "" && f.Role != "emcom" {
+		return "role must be empty or emcom"
+	}
+	if f.Role != "" && f.Password == "" {
+		return "a password is required for users with a role (they sign in with it)"
+	}
+	if f.Password != "" && (len(f.Password) < 8 || len(f.Password) > 72) {
+		return "password must be 8-72 characters"
 	}
 	if len(f.Phone) > 32 || strings.ContainsAny(f.Phone, "\r\n") {
 		return "phone must be at most 32 characters"

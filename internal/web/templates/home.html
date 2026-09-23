@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Header1}} · {{.Header2}}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
 </head>
@@ -17,9 +18,15 @@
         {{if .Header2}}<p class="home-sub">{{.Header2}}</p>{{end}}
       </div>
     </div>
-    <a class="home-login" href="/login" title="Zaloguj się" aria-label="Zaloguj się">
-      <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>
-    </a>
+    <div class="home-actions">
+      <button type="button" class="theme-toggle" aria-label="Przełącz motyw" title="Przełącz motyw">
+        <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
+        <svg class="icon ico-moon" aria-hidden="true"><use href="/static/icons.svg#i-moon"></use></svg>
+      </button>
+      <a class="home-login" href="/login" title="Zaloguj się" aria-label="Zaloguj się">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>
+      </a>
+    </div>
   </header>
 
   <nav class="home-tabs" role="tablist" aria-label="Sekcje">

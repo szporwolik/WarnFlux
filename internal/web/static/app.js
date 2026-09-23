@@ -427,6 +427,42 @@
   }
 })();
 
+// Theme switch (dark by default, light on request): one icon button per
+// page toggles data-theme on <html> and persists the choice.
+(function () {
+  "use strict";
+
+  var THEME_KEY = "warnflux-theme";
+
+  function apply(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+
+  function initTheme() {
+    var saved = null;
+    try {
+      saved = localStorage.getItem(THEME_KEY);
+    } catch (e) { /* storage unavailable */ }
+    apply(saved === "light" ? "light" : "dark");
+
+    document.querySelectorAll(".theme-toggle").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+        apply(next);
+        try {
+          localStorage.setItem(THEME_KEY, next);
+        } catch (e) { /* storage unavailable */ }
+      });
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initTheme);
+  } else {
+    initTheme();
+  }
+})();
+
 // Application drawer: collapses to an icon rail on desktop (persisted),
 // overlays the content on narrow screens.
 (function () {

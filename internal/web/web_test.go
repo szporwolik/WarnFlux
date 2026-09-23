@@ -473,6 +473,7 @@ func TestPublicHomePage(t *testing.T) {
 		"Aktualne zagrożenia",
 		"Tab 2",
 		`id="home-alerts"`,
+		`class="theme-toggle"`, // light/dark switch
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("home page missing %q: %s", want, html)
@@ -908,6 +909,9 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	}
 	if !strings.Contains(dashHTML, `class="gh-link"`) {
 		t.Errorf("dashboard footer missing GitHub link: %s", dashHTML)
+	}
+	if !strings.Contains(dashHTML, `class="theme-toggle"`) {
+		t.Errorf("dashboard topbar missing theme toggle: %s", dashHTML)
 	}
 	if !strings.Contains(dashHTML, `<span class="brand-name">WarnFlux Test</span>`) {
 		t.Errorf("dashboard sidebar missing system name: %s", dashHTML)

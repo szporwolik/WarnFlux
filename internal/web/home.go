@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"sort"
@@ -44,6 +45,15 @@ type homeView struct {
 
 	ActiveCount int
 	Hazards     []publicHazardView
+
+	// AprsEnabled turns the second home tab into the APRS neighbourhood
+	// map: centered on our locator, range circle, radar overlay and the
+	// stations held in the MQTT state.
+	AprsEnabled   bool
+	AprsCenterLat float64
+	AprsCenterLon float64
+	AprsRadiusKM  float64
+	AprsCallsign  string
 }
 
 // handleHome renders the public landing page: header1/header2 plus the
@@ -110,5 +120,28 @@ func (s *Server) buildHomeView() homeView {
 		}
 		return v.Hazards[i].UpdatedAt.After(v.Hazards[j].UpdatedAt)
 	})
+
+	if s.aprs != nil && s.aprs.Enabled() {
+		v.AprsEnabled = true
+		v.AprsCenterLat = s.aprs.CenterLat()
+		v.AprsCenterLon = s.aprs.CenterLon()
+		v.AprsRadiusKM = s.aprs.RadiusKM()
+		v.AprsCallsign = s.aprs.Callsign()
+	}
 	return v
+}
+
+// handleAPRSStations serves the public station list for the home-page map:
+// the merged retained MQTT state, newest last-heard documents excluded when
+// the APRS hub is disabled (the map tab is not rendered then either).
+func (s *Server) handleAPRSStations(w http.ResponseWriter, r *http.Request) {
+	if s.aprs == nil || !s.aprs.Enabled() {
+		http.Error(w, "aprs disabled", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(s.aprs.Stations()); err != nil {
+		s.logger.Warn("web: encode aprs stations failed", "error", err)
+	}
 }

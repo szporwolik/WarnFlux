@@ -219,6 +219,28 @@ func (h *Hub) RecentMessages() []MessageDocument {
 	return out
 }
 
+// Stations returns the current merged state of every nearby station (the
+// hub's own station document excluded), sorted by callsign. It backs the
+// public /api/aprs/stations endpoint that feeds the home-page map.
+func (h *Hub) Stations() []StationDocument {
+	h.mu.Lock()
+	recs := make([]*stationRecord, 0, len(h.stations))
+	for _, rec := range h.stations {
+		if !rec.self {
+			recs = append(recs, rec)
+		}
+	}
+	// The worker mutates station state under the same mutex, so building
+	// the documents here yields a consistent snapshot.
+	out := make([]StationDocument, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, h.buildStationDoc(rec))
+	}
+	h.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Callsign < out[j].Callsign })
+	return out
+}
+
 // Start launches the hub worker: it publishes our own station document and
 // then applies observations and maintenance until ctx is cancelled.
 func (h *Hub) Start(ctx context.Context) {

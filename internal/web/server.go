@@ -23,6 +23,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
+	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
@@ -53,6 +54,7 @@ type Server struct {
 	pub       composePublisher
 	router    RouterStatuses
 	actions   *action.Manager
+	aprs      *aprs.Hub
 	ingress   *dispatch.Ingress
 	users     storage.DirectoryStore
 	logger    *slog.Logger
@@ -94,7 +96,7 @@ const repoURL = appinfo.RepoURL
 // by /metrics.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	pub composePublisher, router RouterStatuses, actions *action.Manager,
-	ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
+	aprsHub *aprs.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
 	users storage.DirectoryStore, ingest map[string]http.Handler,
 	logs *LogBuffer, traffic *mqttreceiver.TrafficBuffer,
 	trails *trail.Recorder, metricsReg *metrics.Registry) (*Server, error) {
@@ -126,6 +128,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		pub:       pub,
 		router:    router,
 		actions:   actions,
+		aprs:      aprsHub,
 		ingress:   ingress,
 		users:     users,
 		logger:    logger,
@@ -163,6 +166,7 @@ func (s *Server) routes(static http.Handler) {
 	// The login form lives behind the top-right icon button (/login).
 	s.mux.HandleFunc("GET /{$}", s.handleHome)
 	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
+	s.mux.HandleFunc("GET /api/aprs/stations", s.handleAPRSStations)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.Handle("GET /logs", s.requireAdmin(s.handleLogsPage))

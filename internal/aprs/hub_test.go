@@ -249,6 +249,37 @@ func TestHubSelfDocument(t *testing.T) {
 	}
 }
 
+func TestHubStationsSnapshot(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hub.Observe(testPacket("SP9AAA>APRS:!5056.25N/01952.50E-"), "aprs-inet")
+	hub.Observe(testPacket("SP9BBB>APRS:!5056.25N/01952.50E-"), "aprs-radio")
+	waitFor(t, func() bool { return len(hub.Stations()) == 2 })
+
+	got := hub.Stations()
+	if len(got) != 2 {
+		t.Fatalf("Stations() = %d docs, want 2", len(got))
+	}
+	// Sorted by callsign; the self document is excluded.
+	if got[0].Callsign != "SP9AAA" || got[1].Callsign != "SP9BBB" {
+		t.Errorf("Stations() order = %v", got)
+	}
+	for _, doc := range got {
+		if doc.Self || doc.Position == nil {
+			t.Errorf("station doc = %+v", doc)
+		}
+	}
+}
+
 func TestNewHubValidation(t *testing.T) {
 	if _, err := NewHub(HubConfig{Enabled: true, Callsign: "BAD!CALL", GridSquare: "JO90WW"}, nil); err == nil {
 		t.Error("invalid callsign accepted")

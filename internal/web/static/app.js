@@ -427,6 +427,165 @@
   }
 })();
 
+// Public home page: APRS neighbourhood map (tab 2) — Leaflet map centered
+// on our locator with the collection-radius circle, a RainViewer radar
+// overlay and the stations held in the retained MQTT state, polled every
+// 30 seconds. Leaflet and the radar tiles load from CDNs only when the
+// APRS hub is enabled (the map element only exists then).
+(function () {
+  "use strict";
+
+  var el = document.getElementById("aprs-map");
+  if (!el) {
+    return;
+  }
+
+  var STATION_POLL_MS = 30 * 1000;
+  var RADAR_REFRESH_MS = 10 * 60 * 1000;
+
+  var lat = parseFloat(el.getAttribute("data-lat"));
+  var lon = parseFloat(el.getAttribute("data-lon"));
+  var radiusKm = parseFloat(el.getAttribute("data-radius") || "0");
+  var ownCall = el.getAttribute("data-callsign") || "";
+
+  var map = null;
+  var stationLayer = null;
+  var radarLayer = null;
+
+  function esc(s) {
+    var d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  }
+
+  function loadLeaflet(cb) {
+    if (window.L) {
+      cb();
+      return;
+    }
+    var css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(css);
+    var script = document.createElement("script");
+    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    script.onload = cb;
+    script.onerror = function () {
+      el.innerHTML = "<p class=\"muted\">Map library failed to load (offline?).</p>";
+    };
+    document.body.appendChild(script);
+  }
+
+  function initMap() {
+    if (map || !window.L) {
+      return;
+    }
+    map = L.map(el, { attributionControl: false }).setView([lat, lon], 11);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18
+    }).addTo(map);
+    stationLayer = L.layerGroup().addTo(map);
+
+    // Our station marker + collection-radius circle.
+    L.circleMarker([lat, lon], {
+      radius: 7, color: "#fff", weight: 2,
+      fillColor: "#007a3d", fillOpacity: 1
+    }).addTo(map).bindTooltip(ownCall || "Our station", { direction: "top" });
+    if (radiusKm > 0) {
+      L.circle([lat, lon], {
+        radius: radiusKm * 1000,
+        color: "#007a3d", weight: 2, opacity: 0.7, dashArray: "10 6",
+        fillColor: "#007a3d", fillOpacity: 0.06, interactive: false
+      }).addTo(map);
+    }
+
+    enableRadar();
+    refreshStations();
+    window.setInterval(refreshStations, STATION_POLL_MS);
+    window.setInterval(refreshRadar, RADAR_REFRESH_MS);
+
+    // The tab is hidden until activated: fix the size once visible.
+    var tab = document.querySelector('.home-tab[data-tab="tab-aprs"]');
+    if (tab) {
+      tab.addEventListener("click", function () {
+        window.setTimeout(function () { if (map) { map.invalidateSize(); } }, 60);
+      });
+    }
+  }
+
+  function enableRadar() {
+    try {
+      fetch("https://api.rainviewer.com/public/weather-maps.json")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (meta) {
+          if (!map || !meta || !meta.radar || !meta.radar.past || !meta.radar.past.length) {
+            return;
+          }
+          var frame = meta.radar.past[meta.radar.past.length - 1];
+          if (!frame || !frame.path) {
+            return;
+          }
+          setRadarUrl("https://tilecache.rainviewer.com" + frame.path + "/256/{z}/{x}/{y}/2/1_1.png");
+        })
+        .catch(function () { /* radar unavailable — map still works */ });
+    } catch (e) { /* ignore */ }
+  }
+
+  function setRadarUrl(url) {
+    if (!map) {
+      return;
+    }
+    var layer = L.tileLayer(url, {
+      opacity: 0.55, maxNativeZoom: 7, maxZoom: 12
+    });
+    if (radarLayer) {
+      map.removeLayer(radarLayer);
+    }
+    radarLayer = layer.addTo(map);
+  }
+
+  function refreshRadar() {
+    // Re-fetch the frame index; a newer frame swaps the tile URL in place.
+    enableRadar();
+  }
+
+  function refreshStations() {
+    fetch("/api/aprs/stations")
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (stations) {
+        if (!stationLayer) {
+          return;
+        }
+        stationLayer.clearLayers();
+        (stations || []).forEach(function (s) {
+          if (!s || !s.position) {
+            return;
+          }
+          var popup = "<strong>" + esc(s.callsign) + "</strong>";
+          if (s.comment) {
+            popup += "<br>" + esc(s.comment);
+          }
+          if (s.distance_km) {
+            popup += "<br>" + Number(s.distance_km).toFixed(1) + " km";
+          }
+          if (s.last_heard_at) {
+            popup += "<br>" + esc(String(s.last_heard_at).replace("T", " ").slice(0, 16)) + "Z";
+          }
+          var marker = L.circleMarker([s.position.latitude, s.position.longitude], {
+            radius: 7, color: "#0d47a1", weight: 2,
+            fillColor: "#42a5f5", fillOpacity: 0.9
+          });
+          marker.bindTooltip(esc(s.callsign), { direction: "top" });
+          marker.bindPopup(popup);
+          stationLayer.addLayer(marker);
+        });
+      })
+      .catch(function () { /* transient — next poll retries */ });
+  }
+
+  loadLeaflet(initMap);
+})();
+
 // Theme switch (dark by default, light on request): one icon button per
 // page toggles data-theme on <html> and persists the choice.
 (function () {

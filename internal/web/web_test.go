@@ -18,6 +18,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/szporwolik/WarnFlux/internal/aprs"
+
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
@@ -76,10 +78,20 @@ func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
 }
 
 func newTestEnv(t *testing.T) *testEnv {
-	return newTestEnvWithIngest(t, nil)
+	return newTestEnvFull(t, nil, nil)
 }
 
 func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv {
+	return newTestEnvFull(t, ingest, nil)
+}
+
+// newTestEnvWithHub builds the test environment with an APRS hub wired
+// into the web server (the home-page map tab reads it).
+func newTestEnvWithHub(t *testing.T, hub *aprs.Hub) *testEnv {
+	return newTestEnvFull(t, nil, hub)
+}
+
+func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub) *testEnv {
 	t.Helper()
 
 	cfg := config.Web{
@@ -146,7 +158,7 @@ func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +506,7 @@ func TestPublicHomePage(t *testing.T) {
 		"Ekstremalny wiatr",         // most severe first
 		`href="/login"`,             // sign-in behind the icon button
 		"Active hazards",
-		"Tab 2",
+		"APRS",
 		`id="home-alerts"`,
 		`class="theme-toggle"`, // light/dark switch
 	} {
@@ -511,6 +523,14 @@ func TestPublicHomePage(t *testing.T) {
 	}
 	if strings.Contains(html, `name="csrf"`) {
 		t.Error("home page must not carry login form state (login is behind the icon button)")
+	}
+	// No APRS hub in this environment: the tab shows the disabled note,
+	// never the map.
+	if strings.Contains(html, `id="aprs-map"`) {
+		t.Error("home page must not render the APRS map when the hub is disabled")
+	}
+	if !strings.Contains(html, "APRS is not enabled") {
+		t.Error("home page should explain that APRS is disabled: " + html)
 	}
 	extremeAt := strings.Index(html, "Ekstremalny wiatr")
 	moderateAt := strings.Index(html, "Umiarkowane burze")
@@ -543,6 +563,66 @@ func TestPublicHomePage(t *testing.T) {
 	}
 	if strings.Contains(html, `href="/login"`) {
 		t.Errorf("home header must drop the sign-in icon when logged in: %s", html)
+	}
+}
+
+// TestHomeAPRSMapTab pins the APRS-enabled second home tab: the map
+// container with our locator/radius data attributes and the attribution
+// line, plus the public stations endpoint that feeds it.
+func TestHomeAPRSMapTab(t *testing.T) {
+	hub, err := aprs.NewHub(aprs.HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		Icon:       "/j",
+		GridSquare: "JO90WW",
+		RadiusKM:   25,
+		StationTTL: 30 * time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvWithHub(t, hub)
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	_, html := env.get("/")
+	if !strings.Contains(html, `id="aprs-map"`) {
+		t.Fatalf("home page missing the APRS map container: %s", html)
+	}
+	for _, want := range []string{
+		`data-lat="50.9375"`,
+		`data-lon="19.875"`,
+		`data-radius="25"`,
+		`data-callsign="SP9MOA-10"`,
+		"RainViewer", // radar attribution under the map
+		"OpenStreetMap",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("home APRS tab missing %q: %s", want, html)
+		}
+	}
+
+	// Stations endpoint: public, JSON list of merged station documents.
+	hub.Observe(aprs.ParseFeedLine("SP9XYZ-7>APRS,TCPIP*:!5056.25N/01952.50E-", time.Now()), "aprs-inet")
+	var got []aprs.StationDocument
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, body := env.get("/api/aprs/stations")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/aprs/stations = %d", resp.StatusCode)
+		}
+		got = nil
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatalf("stations payload = %s: %v", body, err)
+		}
+		if len(got) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(got) != 1 || got[0].Callsign != "SP9XYZ-7" || got[0].Position == nil {
+		t.Fatalf("stations = %+v, want SP9XYZ-7 with a position", got)
 	}
 }
 

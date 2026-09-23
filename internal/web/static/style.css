@@ -1222,6 +1222,31 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   color: var(--text);
 }
 .home-empty p { margin: 0.2rem 0; }
+.aprs-map-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+#aprs-map {
+  height: 440px;
+  width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+#aprs-map.leaflet-container {
+  font-family: inherit;
+}
+.aprs-map-attrib {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: right;
+}
+.aprs-map-attrib a {
+  color: var(--muted);
+  text-decoration: underline;
+}
 .home-foot {
   display: flex;
   flex-wrap: wrap;

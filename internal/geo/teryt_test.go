@@ -37,6 +37,10 @@ func TestLookupBySlug(t *testing.T) {
 		"wielicki":    "1219",
 		"bochenski":   "1201",
 		"wieliczka":   "1219053",
+		"krakowski":   "1206",
+		"miechowski":  "1208",
+		"myslenicki":  "1209",
+		"proszowicki": "1214",
 	} {
 		a, ok := Lookup(slug)
 		if !ok || a.Code != want {

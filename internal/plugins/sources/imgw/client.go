@@ -72,6 +72,15 @@ func (c *Client) Fetch(ctx context.Context, feed string) ([]byte, error) {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
+		// The meteo endpoint reports "no warnings" with HTTP 200 and an
+		// OBJECT {"message":"Brak ostrzeżeń meteorologicznych"} instead of
+		// an array — the same condition the 404 path handles below. Only
+		// that exact payload is an empty successful snapshot.
+		var msg providerMessage
+		if err := json.Unmarshal(body, &msg); err == nil &&
+			strings.TrimSpace(msg.Message) == "Brak ostrzeżeń meteorologicznych" {
+			return []byte("[]"), nil
+		}
 		return body, nil
 	case http.StatusNotFound:
 		// IMGW reports "no warnings currently" as HTTP 404 with the EXACT

@@ -229,6 +229,7 @@ func TestLocalPlacesEmit(t *testing.T) {
 	for _, place := range []string{
 		"Niepołomice", "Podłęże", "Staniątki", "Wola Batorska",
 		"Wieliczka", "Bochnia", "Kraków",
+		"Skawina", "Myślenice", "Dobczyce", "Słomniki", "Proszowice", "Nowe Brzesko",
 	} {
 		text := "Zdarzenie w " + place + ", utrudnienia w ruchu"
 		d := p.decide(item(text, "", ""))

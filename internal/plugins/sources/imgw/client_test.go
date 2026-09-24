@@ -59,6 +59,26 @@ func TestFetchNoProducts404IsEmptySuccess(t *testing.T) {
 	}
 }
 
+// TestFetchMeteoNoWarningsObjectIsEmptySuccess: the meteo endpoint
+// reports "no warnings" with HTTP 200 and an OBJECT body; only that exact
+// payload is an empty successful snapshot (any other object is a
+// provider failure, so mass cancellation can never masquerade as calm).
+func TestFetchMeteoNoWarningsObjectIsEmptySuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"message":"Brak ostrzeżeń meteorologicznych"}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, time.Second)
+	body, err := c.Fetch(context.Background(), feedMeteo)
+	if err != nil {
+		t.Fatalf("documented meteo no-warnings object must be an empty snapshot: %v", err)
+	}
+	if string(body) != "[]" {
+		t.Errorf("body = %s, want []", body)
+	}
+}
+
 func TestFetchFailures(t *testing.T) {
 	cases := []struct {
 		name   string

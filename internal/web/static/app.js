@@ -1158,12 +1158,32 @@
     var idx = code - 33;
     var col = idx % 16;
     var row = Math.floor(idx / 16);
-    var html = '<span class="aprs-sym-img" style="background-image:url(\'' + APRS_SPRITES[table] +
-      "\');background-position:-" + (col * APRS_SYM_SIZE) + "px -" + (row * APRS_SYM_SIZE) + 'px"></span>';
+    // The callsign label sits under the icon (cqops-style) so stations
+    // are identifiable without hovering or clicking.
+    var html = '<span class="aprs-sym-wrap">' +
+      '<span class="aprs-sym-img" style="background-image:url(\'' + APRS_SPRITES[table] +
+      "\');background-position:-" + (col * APRS_SYM_SIZE) + "px -" + (row * APRS_SYM_SIZE) + 'px"></span>' +
+      '<span class="wf-station-label">' + esc(s.callsign) + '</span></span>';
     return L.divIcon({
       className: "aprs-sym",
-      iconSize: [APRS_SYM_SIZE, APRS_SYM_SIZE],
-      iconAnchor: [APRS_SYM_SIZE / 2, APRS_SYM_SIZE / 2],
+      iconSize: [96, 44],
+      iconAnchor: [48, 14],
+      html: html
+    });
+  }
+
+  // Fallback marker for stations without a known symbol: a theme-colored
+  // circle with the same callsign label underneath.
+  function aprsFallbackIcon(s) {
+    var t = tilesForTheme();
+    var svg = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">' +
+      '<circle cx="7" cy="7" r="5.5" fill="' + t.marker.fillColor + '" stroke="' + t.marker.color + '" stroke-width="2"/></svg>';
+    var html = '<span class="aprs-sym-wrap">' + svg +
+      '<span class="wf-station-label">' + esc(s.callsign) + '</span></span>';
+    return L.divIcon({
+      className: "aprs-fallback",
+      iconSize: [96, 40],
+      iconAnchor: [48, 6],
       html: html
     });
   }
@@ -1239,13 +1259,31 @@
           if (icon) {
             marker = L.marker([s.position.latitude, s.position.longitude], { icon: icon, riseOnHover: true });
           } else {
-            marker = L.circleMarker([s.position.latitude, s.position.longitude], {
-              radius: 7, color: tilesForTheme().marker.color, weight: 2,
-              fillColor: tilesForTheme().marker.fillColor, fillOpacity: 0.9
-            });
-            marker._aprsMarker = true;
+            marker = L.marker([s.position.latitude, s.position.longitude], { icon: aprsFallbackIcon(s), riseOnHover: true });
           }
-          marker.bindTooltip(esc(s.callsign), { direction: "top" });
+          // Hover shows the essentials; the click popup keeps the full
+          // detail view.
+          var hover = "<strong>" + esc(s.callsign) + "</strong>";
+          if (s.speed_kmh > 0 || s.course_deg) {
+            hover += "<br>Speed: " + Number(s.speed_kmh).toFixed(0) + " km/h";
+            if (s.course_deg) {
+              hover += " @ " + s.course_deg + "\u00b0";
+            }
+          }
+          if (s.altitude_m != null) {
+            hover += "<br>Alt: " + Number(s.altitude_m).toFixed(0) + " m";
+          }
+          if (s.comment) {
+            hover += "<br>" + esc(s.comment);
+          }
+          if (s.status) {
+            hover += '<br><span class="muted">' + esc(s.status) + "</span>";
+          }
+          hover += "<br>Heard: " + esc(fmtTime(s.last_heard_at));
+          if (s.distance_km) {
+            hover += "<br>" + Number(s.distance_km).toFixed(1) + " km";
+          }
+          marker.bindTooltip(hover, { sticky: true, direction: "top" });
           marker.bindPopup(popup);
 
           // Movement tail: up to three earlier positions (oldest first)

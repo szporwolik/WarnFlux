@@ -89,7 +89,7 @@ deterministic and never touch the network:
 | `suppress_imgw_duplicates` | `false` | discard plain RSO copies of IMGW meteo/hydro warnings; a communication adding a distinct civil-protection consequence (evacuation, road closure, water trouble, infrastructure failure) is kept |
 | `local_min_severity` | `moderate` | minimum severity for the local core (from `filter.local`) and the corridor |
 | `regional_min_severity` | `severe` | minimum severity for the whole voivodeship without a local match |
-| `corridor` | `enabled: true, 400..503` | optional kilometre window (km_from < km_to) treated as the road corridor; `a4_corridor` is accepted as a legacy alias |
+| `corridor` | disabled unless configured | optional kilometre window (km_from < km_to) treated as the road corridor; `a4_corridor` is accepted as a legacy alias |
 
 ## Endpoint and filtering
 

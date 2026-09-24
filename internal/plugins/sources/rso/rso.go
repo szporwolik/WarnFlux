@@ -219,7 +219,7 @@ func buildFilterConfig(f *FileFilterConfig) (*filterConfig, error) {
 		suppressIMGWDupes:   boolDefault(f.SuppressIMGWDupes, false),
 		localMinSeverity:    "moderate",
 		regionalMinSeverity: "severe",
-		corridor:            corridorConfig{enabled: true, kmFrom: 400, kmTo: 503},
+		corridor:            corridorConfig{enabled: false},
 	}
 	if s := strings.TrimSpace(f.LocalMinSeverity); s != "" {
 		p.localMinSeverity = s
@@ -232,9 +232,6 @@ func buildFilterConfig(f *FileFilterConfig) (*filterConfig, error) {
 	}
 	if !severity.Valid(p.regionalMinSeverity) {
 		return nil, fmt.Errorf("filter.regional_min_severity must be a canonical severity, got %q", p.regionalMinSeverity)
-	}
-	if p.corridor.kmFrom <= 0 || p.corridor.kmTo <= p.corridor.kmFrom {
-		return nil, fmt.Errorf("filter.corridor requires 0 < km_from < km_to")
 	}
 	corridor := f.Corridor
 	if corridor == nil {

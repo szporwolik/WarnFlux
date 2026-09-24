@@ -82,7 +82,7 @@ func TestNormalizeHydroDrought(t *testing.T) {
 			t.Errorf("areas[%d] = %q, want %q", i, ev.Areas[i], wantAreas[i])
 		}
 	}
-	if !strings.Contains(ev.Description, "Prawdopodobieństwo IMGW: 90%.") {
+	if !strings.Contains(ev.Description, "IMGW probability: 90%.") {
 		t.Errorf("description lacks probability: %q", ev.Description)
 	}
 	if !strings.Contains(ev.Description, "suszę hydrologiczną") {

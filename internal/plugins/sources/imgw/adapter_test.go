@@ -67,7 +67,7 @@ func TestNormalizeMeteo(t *testing.T) {
 	}
 	// Deterministic description: collapsed whitespace, probability present,
 	// placeholder comment omitted.
-	wantDesc := "Prognozowane są intensywne opady deszczu.\n\nPrawdopodobieństwo IMGW: 80%."
+	wantDesc := "Prognozowane są intensywne opady deszczu.\n\nIMGW probability: 80%."
 	if ev.Description != wantDesc {
 		t.Errorf("description = %q, want %q", ev.Description, wantDesc)
 	}

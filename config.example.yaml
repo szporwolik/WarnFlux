@@ -175,8 +175,8 @@ sources:
         local_min_severity: moderate
         regional_min_severity: severe
         # Optional kilometre-window corridor (enabled + km_from < km_to);
-        # matched only when local.roads is non-empty. Defaults to the
-        # 400..503 window. Legacy alias: a4_corridor.
+        # matched only when local.roads is non-empty. Disabled when
+        # omitted. Legacy alias: a4_corridor.
         # corridor:
         #   enabled: true
         #   km_from: 400

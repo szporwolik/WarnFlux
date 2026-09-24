@@ -67,11 +67,11 @@ func buildDescription(body, komentarz string, probability int, hasProbability bo
 	var b strings.Builder
 	b.WriteString(normalizeText(body))
 	if hasProbability {
-		fmt.Fprintf(&b, "\n\nPrawdopodobieństwo IMGW: %d%%.", probability)
+		fmt.Fprintf(&b, "\n\nIMGW probability: %d%%.", probability)
 	}
 	kom := normalizeText(komentarz)
 	if kom != "" && !strings.EqualFold(kom, "brak") && !strings.EqualFold(kom, "brak.") {
-		fmt.Fprintf(&b, "\nKomentarz: %s", kom)
+		fmt.Fprintf(&b, "\nComment: %s", kom)
 	}
 	return b.String()
 }
@@ -149,7 +149,7 @@ func hydroAreas(obszary []hydroArea) []string {
 		}
 		opis := normalizeText(a.Opis)
 		// Avoid duplicating the voivodeship when opis already starts with
-		// it ("wielkopolskie, Kanał Mosiński" + wojewodztwo wielkopolskie).
+		// it (the feed often prefixes the description with the region name).
 		var combo string
 		switch {
 		case woj == "":

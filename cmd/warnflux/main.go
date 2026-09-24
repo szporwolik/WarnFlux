@@ -202,6 +202,8 @@ func run(configPath string) error {
 		Name:                  cfg.APRS.Name,
 		Icon:                  cfg.APRS.Icon,
 		GridSquare:            cfg.APRS.GridSquare,
+		Latitude:              cfg.APRS.Latitude,
+		Longitude:             cfg.APRS.Longitude,
 		RadiusKM:              cfg.APRS.RadiusKM,
 		StationTTL:            cfg.APRS.StationTTL,
 		ExcludeInfrastructure: cfg.APRS.ExcludeInfrastructure,

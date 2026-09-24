@@ -53,6 +53,8 @@ type homeView struct {
 	AprsEnabled   bool
 	AprsCenterLat float64
 	AprsCenterLon float64
+	AprsOwnLat    float64
+	AprsOwnLon    float64
 	AprsRadiusKM  float64
 	AprsCallsign  string
 }
@@ -126,6 +128,8 @@ func (s *Server) buildHomeView() homeView {
 		v.AprsEnabled = true
 		v.AprsCenterLat = s.aprs.CenterLat()
 		v.AprsCenterLon = s.aprs.CenterLon()
+		v.AprsOwnLat = s.aprs.OwnLat()
+		v.AprsOwnLon = s.aprs.OwnLon()
 		v.AprsRadiusKM = s.aprs.RadiusKM()
 		v.AprsCallsign = s.aprs.Callsign()
 	}

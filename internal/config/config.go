@@ -128,6 +128,14 @@ type APRSConfig struct {
 	Icon string
 	// GridSquare is our position as a Maidenhead locator.
 	GridSquare string
+	// Latitude/Longitude optionally pin our exact position (e.g. the
+	// antenna's real coordinates). When set, they override the center of
+	// GridSquare for the APRS-IS filter, distance math and the home-map
+	// locator. When unset, the hub learns the position from our own
+	// position packets (the Direwolf beacon) and falls back to the
+	// gridsquare center until one is heard.
+	Latitude  *float64
+	Longitude *float64
 	// RadiusKM is the "nearby" radius around our position.
 	RadiusKM float64
 	// StationTTL is how long a station stays in the retained MQTT state
@@ -357,6 +365,8 @@ type fileAPRS struct {
 	Name                  string         `yaml:"name"`
 	Icon                  string         `yaml:"icon"`
 	GridSquare            string         `yaml:"gridsquare"`
+	Latitude              *float64       `yaml:"latitude"`
+	Longitude             *float64       `yaml:"longitude"`
 	RadiusKM              *float64       `yaml:"radius_km"`
 	StationTTL            *time.Duration `yaml:"station_ttl"`
 	ExcludeInfrastructure *bool          `yaml:"exclude_infrastructure"`
@@ -797,6 +807,8 @@ func (f fileConfig) toConfig() Config {
 		cfg.APRS.Callsign = strings.ToUpper(strings.TrimSpace(f.APRS.Callsign))
 		cfg.APRS.Icon = strings.TrimSpace(f.APRS.Icon)
 		cfg.APRS.GridSquare = strings.ToUpper(strings.TrimSpace(f.APRS.GridSquare))
+		cfg.APRS.Latitude = f.APRS.Latitude
+		cfg.APRS.Longitude = f.APRS.Longitude
 		if f.APRS.RadiusKM != nil {
 			cfg.APRS.RadiusKM = *f.APRS.RadiusKM
 		}
@@ -1037,6 +1049,17 @@ func (c Config) Validate() error {
 		}
 		if len(c.APRS.Icon) > 2 {
 			return fmt.Errorf("aprs.icon %q must be one or two characters (<code> or <table><code>)", c.APRS.Icon)
+		}
+		if (c.APRS.Latitude == nil) != (c.APRS.Longitude == nil) {
+			return fmt.Errorf("aprs.latitude and aprs.longitude must be set together")
+		}
+		if c.APRS.Latitude != nil {
+			if *c.APRS.Latitude < -90 || *c.APRS.Latitude > 90 {
+				return fmt.Errorf("aprs.latitude must be between -90 and 90, got %v", *c.APRS.Latitude)
+			}
+			if *c.APRS.Longitude < -180 || *c.APRS.Longitude > 180 {
+				return fmt.Errorf("aprs.longitude must be between -180 and 180, got %v", *c.APRS.Longitude)
+			}
 		}
 	}
 	return nil

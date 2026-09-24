@@ -616,15 +616,23 @@ func TestPublicHomePage(t *testing.T) {
 		t.Errorf("hazards not ordered by severity: extreme@%d moderate@%d", extremeAt, moderateAt)
 	}
 
-	// The minor hazard lives in the collapsed details section, not in the
-	// main grid; the section is closed by default (no open attribute).
+	// The important (moderate+) section is always rendered and open by
+	// default; the minor hazard lives in the separate collapsed details.
+	importantAt := strings.Index(html, `<details class="home-section home-important" open>`)
+	if importantAt < 0 {
+		t.Error("important section missing or not open by default")
+	}
+	if strings.Contains(html, "No active messages.") {
+		t.Error("important section must not show the empty note while hazards are active")
+	}
+
 	minorAt := strings.Index(html, "Drobne prace drogowe")
-	detailsAt := strings.Index(html, `<details class="home-minor">`)
+	detailsAt := strings.Index(html, `<details class="home-section home-minor">`)
 	if minorAt < 0 || detailsAt < 0 || minorAt < detailsAt {
 		t.Errorf("minor hazard must sit inside the collapsed details: minor@%d details@%d",
 			minorAt, detailsAt)
 	}
-	if strings.Contains(html, `<details class="home-minor" open`) {
+	if strings.Contains(html, `<details class="home-section home-minor" open`) {
 		t.Error("minor section must be collapsed by default")
 	}
 	if !strings.Contains(html, "Minor / informational") {
@@ -685,14 +693,40 @@ func TestPublicHomeMinorOnly(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET / = %d, want 200", resp.StatusCode)
 	}
-	if !strings.Contains(html, `<details class="home-minor">`) {
+	if !strings.Contains(html, `<details class="home-section home-minor">`) {
 		t.Error("collapsed minor details missing")
 	}
 	if !strings.Contains(html, "Tylko prace drogowe") {
 		t.Error("minor hazard headline missing")
 	}
 	if strings.Contains(html, "No active hazards.") {
-		t.Error("minor-only page must not show the no-active-hazards empty box")
+		t.Error("the old full-page empty box must be gone")
+	}
+	// The important section is empty but always visible: it carries the
+	// no-active-messages note.
+	if !strings.Contains(html, "No active messages.") {
+		t.Error("minor-only page must carry the no-active-messages note in the important section")
+	}
+}
+
+// TestPublicHomeAllEmpty pins the fully empty home page: the important
+// section renders with the no-active-messages note and no minor details
+// exist.
+func TestPublicHomeAllEmpty(t *testing.T) {
+	env := newTestEnv(t)
+
+	resp, html := env.get("/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<details class="home-section home-important" open>`) {
+		t.Error("important section missing")
+	}
+	if !strings.Contains(html, "No active messages.") {
+		t.Error("empty important section must say there are no active messages")
+	}
+	if strings.Contains(html, "home-section home-minor") {
+		t.Error("minor details must not render when there are no minor hazards")
 	}
 }
 

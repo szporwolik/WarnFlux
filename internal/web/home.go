@@ -48,6 +48,10 @@ type homeView struct {
 	ActiveCount int
 	Hazards     []publicHazardView
 
+	// MainCount counts the important (moderate and above) hazards shown
+	// in the always-rendered Important section.
+	MainCount int
+
 	// MinorCount and MinorHazards carry the low-priority tail (minor and
 	// unknown severity) shown in a collapsed section on the home page.
 	MinorCount   int
@@ -181,6 +185,7 @@ func (s *Server) buildHomeView() homeView {
 		}
 	}
 	v.MinorCount = len(v.MinorHazards)
+	v.MainCount = len(v.Hazards)
 	sortHazards(v.Hazards)
 	sortHazards(v.MinorHazards)
 

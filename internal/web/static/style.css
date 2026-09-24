@@ -434,18 +434,25 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
   padding: 1.5rem 1.25rem 2rem;
 }
 
-/* Dashboard placement: System (1) and the extended MQTT card (2) form the
-   top row; Weather (3) sits under System, so the two top cards end on the
-   same line as the Weather card. Warnings (4) spans the full width. */
+/* Dashboard placement: System (1) and the compact MQTT card (2) form the
+   top row. Active warnings (3) span the full width right under them, and
+   Weather (4) takes the full width below — the freed MQTT space goes to
+   the weather panels. Plugins (5) and actions (6) share the last row. */
 @media (min-width: 900px) {
   .grid { grid-template-columns: 1fr 1fr; }
   .grid > .card:nth-child(1) { grid-column: 1; grid-row: 1; }
-  .grid > .card:nth-child(2) { grid-column: 2; grid-row: 1 / span 2; }
-  .grid > .card:nth-child(3) { grid-column: 1; grid-row: 2; }
+  .grid > .card:nth-child(2) { grid-column: 2; grid-row: 1; }
+  .grid > .card:nth-child(3) { grid-column: 1 / -1; }
   .grid > .card:nth-child(4) { grid-column: 1 / -1; }
   .grid > .card:nth-child(5) { grid-column: 1; }
   .grid > .card:nth-child(6) { grid-column: 2; }
 }
+
+/* The MQTT card holds 1-3 receivers: compact rows, no wasted height. */
+#mqtt-section table.plugins.compact th,
+#mqtt-section table.plugins.compact td { padding: 0.35rem 0.6rem; }
+#mqtt-section .reason { margin-top: 0.1rem; }
+#mqtt-section .small { font-size: 0.72rem; }
 
 /* Dashboard layout: a column flex keeps the footer mounted to the bottom of
    the viewport even when the content is short; content and footer sit to

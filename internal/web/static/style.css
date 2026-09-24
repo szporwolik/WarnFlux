@@ -1279,12 +1279,15 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   overflow: auto;
 }
 
-/* One-time about popup (first visit): the config-driven system intro. */
+/* One-time about popup (first visit): the config-driven system intro.
+   Positioning is left to the UA's native dialog centering
+   (position: fixed; inset: 0; margin: auto): an explicit transform on a
+   top-layer dialog breaks pointer hit-testing in some browsers. */
 .about-dialog {
-  position: relative;
   display: flex;
   flex-direction: column;
   width: min(34rem, 92vw);
+  max-width: 92vw;
   max-height: 80vh;
   padding: 1.1rem;
   border: 1px solid var(--border-strong);
@@ -1309,6 +1312,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.9rem;
   line-height: 1.55;
   overflow-y: auto;
+  min-height: 0;
 }
 .about-dialog-text::first-line { color: var(--text); font-weight: 600; }
 .about-dialog-text a { color: var(--link); }

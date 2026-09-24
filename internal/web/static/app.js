@@ -1277,6 +1277,7 @@
     var x = dialog.querySelector(".about-close");
     if (x) { x.addEventListener("click", close); }
     dialog.addEventListener("click", function (e) { if (e.target === dialog) { close(); } });
+    dialog.addEventListener("cancel", function (e) { e.preventDefault(); close(); });
     if (!seen) { dialog.showModal(); }
   }
 

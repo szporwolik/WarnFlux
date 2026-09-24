@@ -12,6 +12,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/gddkia"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/gios"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/imgw"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/metar"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/rso"
 )
@@ -21,6 +22,9 @@ import (
 // hub (may be nil when the hub is disabled; APRS plugins then fail fast).
 func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub) error {
 	if err := openmeteo.Register(reg); err != nil {
+		return err
+	}
+	if err := metar.Register(reg); err != nil {
 		return err
 	}
 	if err := imgw.Register(reg); err != nil {

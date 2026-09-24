@@ -561,12 +561,12 @@ func TestPublicHomePage(t *testing.T) {
 		t.Fatalf("GET / = %d, want 200 without login", resp.StatusCode)
 	}
 	for _, want := range []string{
-		"WarnFlux Test",             // header1
-		"Test platform",             // header2
-		"Test info text.",           // configurable about text
-		`href="https://sp9moa.pl"`,  // HTML links are allowed in the about text
-		`class="home-about-toggle"`, // More/Less expand button
-		`class="home-disclaimer"`,   // unofficial-system notice
+		"WarnFlux Test",            // header1
+		"Test platform",            // header2
+		"Test info text.",          // configurable about text (one-time popup)
+		`href="https://sp9moa.pl"`, // HTML links are allowed in the about text
+		`id="about-dialog"`,        // one-time about popup
+		`class="home-disclaimer"`,  // unofficial-system notice
 		"Test disclaimer text.",
 		"Ekstremalny wiatr", // most severe first
 		`href="/login"`,     // sign-in behind the icon button
@@ -579,12 +579,12 @@ func TestPublicHomePage(t *testing.T) {
 			t.Errorf("home page missing %q: %s", want, html)
 		}
 	}
-	// The about text must sit above the tabs and the hazard list.
+	// The about text lives in the one-time popup dialog at the end of the
+	// page — not in the flow above the tabs.
 	aboutAt := strings.Index(html, "Test info text.")
 	tabsAt := strings.Index(html, `class="home-tabs"`)
-	alertsAt := strings.Index(html, `id="home-alerts"`)
-	if aboutAt < 0 || tabsAt < 0 || alertsAt < 0 || aboutAt > tabsAt || tabsAt > alertsAt {
-		t.Errorf("about text not above tabs and alerts list: about@%d tabs@%d alerts@%d", aboutAt, tabsAt, alertsAt)
+	if aboutAt < 0 || tabsAt < 0 || aboutAt < tabsAt {
+		t.Errorf("about text must live in the popup dialog after the tabs: about@%d tabs@%d", aboutAt, tabsAt)
 	}
 	if strings.Contains(html, `name="csrf"`) {
 		t.Error("home page must not carry login form state (login is behind the icon button)")

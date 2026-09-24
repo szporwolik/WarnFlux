@@ -29,6 +29,29 @@
     <p class="login-back"><a href="/">← Back to the public page</a></p>
   </main>
   {{template "footer" .}}
+  {{if .About}}<dialog id="about-dialog" class="about-dialog">
+    <button type="button" class="about-close" aria-label="Close">×</button>
+    <div class="about-dialog-text">{{.About}}</div>
+    <button type="button" class="about-ok btn-primary">Rozumiem</button>
+  </dialog>{{end}}
+  <script>
+  (function () {
+    var d = document.getElementById("about-dialog");
+    if (!d) { return; }
+    var seen = false;
+    try { seen = localStorage.getItem("warnflux-about-seen") === "1"; } catch (e) {}
+    var close = function () {
+      try { localStorage.setItem("warnflux-about-seen", "1"); } catch (e) {}
+      d.close();
+    };
+    var ok = d.querySelector(".about-ok");
+    if (ok) { ok.addEventListener("click", close); }
+    var x = d.querySelector(".about-close");
+    if (x) { x.addEventListener("click", close); }
+    d.addEventListener("click", function (e) { if (e.target === d) { close(); } });
+    if (!seen) { d.showModal(); }
+  })();
+  </script>
 </body>
 </html>
 {{end}}

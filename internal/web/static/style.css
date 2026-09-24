@@ -1279,53 +1279,40 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   overflow: auto;
 }
 
-.home-about {
+/* One-time about popup (first visit): the config-driven system intro. */
+.about-dialog {
+  position: relative;
   display: flex;
-  align-items: flex-start;
-  gap: 0.7rem;
-  max-width: 46rem;
-  margin: 1rem 0 0.5rem;
-  padding: 0.75rem 0.9rem;
-  border: 1px solid var(--info-border);
+  flex-direction: column;
+  width: min(34rem, 92vw);
+  max-height: 80vh;
+  padding: 1.1rem;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  background: var(--info-bg);
-  font-size: 0.9rem;
-  line-height: 1.55;
+  background: var(--surface);
   color: var(--text);
 }
-.home-about-icon {
-  flex: none;
-  width: 1.15rem;
-  height: 1.15rem;
-  margin-top: 0.12rem;
-  fill: var(--info);
-}
-.home-about-body { flex: 1 1 auto; min-width: 0; }
-.home-about-text {
-  white-space: pre-line;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-}
-/* First line of the intro (the heading) carries a touch more weight. */
-.home-about-text::first-line { color: var(--text); font-weight: 600; }
-.home-about.expanded .home-about-text {
-  display: block;
-  overflow: visible;
-  -webkit-line-clamp: unset;
-}
-.home-about-toggle {
-  appearance: none;
-  background: none;
+.about-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+.about-dialog .about-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.6rem;
   border: none;
-  padding: 0.25rem 0 0;
-  color: var(--link);
-  font-size: 0.82rem;
-  font-weight: 500;
+  background: none;
+  color: var(--muted);
+  font-size: 1.3rem;
+  line-height: 1;
   cursor: pointer;
 }
-.home-about-toggle:hover { color: var(--link-hover); text-decoration: underline; }
+.about-dialog-text {
+  white-space: pre-line;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  overflow-y: auto;
+}
+.about-dialog-text::first-line { color: var(--text); font-weight: 600; }
+.about-dialog-text a { color: var(--link); }
+.about-dialog .btn-primary { display: block; flex: none; margin: 0.9rem 0 0 auto; }
 .home-alerts-head {
   display: flex;
   align-items: center;
@@ -1427,7 +1414,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   .home-brand-text p { font-size: 0.78rem; }
   .home-dash-label { display: none; }
   .home-tab { padding: 0.45rem 0.7rem; font-size: 0.8rem; }
-  .home-about { font-size: 0.85rem; }
+  .about-dialog-text { font-size: 0.85rem; }
   #aprs-map { min-height: 300px; }
 }
 .aprs-map-attrib {

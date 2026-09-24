@@ -821,11 +821,15 @@
 
   var map = null;
   var stationLayer = null;
+  var hazardLayer = null;
   var rangeCircle = null;
   var radarLayer = null;
   var baseLayer = null;
   var stationBounds = null;
   var fittedOnce = false;
+  // Latest fetches kept for the combined view fit.
+  var lastStations = [];
+  var lastHazards = [];
 
   // Theme-aware base map, the same free provider the CQOps dashboard
   // uses: OpenFreeMap vector styles via MapLibre GL — no API keys, no
@@ -1046,6 +1050,7 @@
     baseLayer = null;
     syncBaseLayer();
     stationLayer = L.layerGroup().addTo(map);
+    hazardLayer = L.layerGroup().addTo(map);
 
     // Center button: fit the view around our locator and all stations.
     addCenterControl(map, function () {
@@ -1068,7 +1073,9 @@
 
     enableRadar();
     refreshStations();
+    refreshHazards();
     window.setInterval(refreshStations, STATION_POLL_MS);
+    window.setInterval(refreshHazards, STATION_POLL_MS);
     window.setInterval(refreshRadar, RADAR_REFRESH_MS);
 
     // Follow theme switches (the theme toggle rewrites data-theme on
@@ -1229,8 +1236,9 @@
         if (!stationLayer) {
           return;
         }
+        lastStations = stations || [];
         stationLayer.clearLayers();
-        (stations || []).forEach(function (s) {
+        (lastStations).forEach(function (s) {
           if (!s || !s.position || s.self) {
             return; // our own locator has its dedicated marker
           }
@@ -1336,26 +1344,91 @@
           stationLayer.addLayer(marker);
         });
 
-        // Track the bounds of everything shown on the map (our locator
-        // plus every station) so the view auto-fits on load and the
-        // center button can refit.
-        var hasStations = false;
-        var b = L.latLngBounds([[ownLat, ownLon]]);
-        (stations || []).forEach(function (s) {
-          if (s && s.position && !s.self) {
-            b.extend([s.position.latitude, s.position.longitude]);
-            hasStations = true;
-          }
-        });
-        stationBounds = hasStations ? b : null;
-        if (!fittedOnce && hasStations) {
-          map.invalidateSize();
-          if (map.getSize().x > 0) {
-            fitToStations();
-          }
-        }
+        computeBounds();
       })
       .catch(function () { /* transient — next poll retries */ });
+  }
+
+  // Hazard icons for active events that carry coordinates (road
+  // difficulties, ...): a severity-colored warning triangle with a
+  // detail popup, included in the view fit.
+  var HAZARD_COLORS = {
+    extreme: "#7b1fa2",
+    severe: "#d32f2f",
+    moderate: "#f57c00",
+    minor: "#fbc02d",
+    unknown: "#78909c"
+  };
+
+  function hazardIcon(sev) {
+    var c = HAZARD_COLORS[sev] || HAZARD_COLORS.unknown;
+    var svg = '<svg width="22" height="20" viewBox="0 0 22 20" aria-hidden="true">' +
+      '<path d="M11 1 L21 19 L1 19 Z" fill="' + c + '" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>' +
+      '<text x="11" y="15.5" text-anchor="middle" font-size="12" font-weight="bold" fill="#fff">!</text></svg>';
+    return L.divIcon({
+      className: "wf-hazard-icon",
+      iconSize: [22, 20],
+      iconAnchor: [11, 18],
+      html: svg
+    });
+  }
+
+  function refreshHazards() {
+    fetch("/api/events")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!hazardLayer) {
+          return;
+        }
+        hazardLayer.clearLayers();
+        lastHazards = (data && data.events) || [];
+        lastHazards.forEach(function (e) {
+          if (!e.latitude || !e.longitude) {
+            return;
+          }
+          var popup = '<span class="sev sev-' + (e.severity || "unknown") + '">' +
+            esc(e.severity || "unknown") + "</span> <strong>" + esc(e.headline || e.event) + "</strong>";
+          if (e.description) {
+            popup += "<br>" + esc(e.description).replace(/\n/g, "<br>");
+          }
+          popup += "<br><span class=\"muted\">Source: " + esc(e.source) + "</span>";
+          var m = L.marker([e.latitude, e.longitude], { icon: hazardIcon(e.severity), riseOnHover: true });
+          m.bindTooltip(esc(e.headline || e.event), { sticky: true, direction: "top" });
+          m.bindPopup(popup);
+          hazardLayer.addLayer(m);
+        });
+        computeBounds();
+      })
+      .catch(function () { /* transient — next poll retries */ });
+  }
+
+  // Fit the view around our locator, every station and every geo-located
+  // hazard; runs after either layer refresh so the union stays current.
+  function computeBounds() {
+    if (!map) {
+      return;
+    }
+    var b = L.latLngBounds([[ownLat, ownLon]]);
+    var has = false;
+    lastStations.forEach(function (s) {
+      if (s && s.position && !s.self) {
+        b.extend([s.position.latitude, s.position.longitude]);
+        has = true;
+      }
+    });
+    lastHazards.forEach(function (e) {
+      if (e && e.latitude && e.longitude) {
+        b.extend([e.latitude, e.longitude]);
+        has = true;
+      }
+    });
+    stationBounds = has ? b : null;
+    if (!fittedOnce && has) {
+      map.invalidateSize();
+      if (map.getSize().x > 0) {
+        fitToStations();
+      }
+    }
   }
 
   loadLibraries(function () {

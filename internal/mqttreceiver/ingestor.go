@@ -218,6 +218,8 @@ func (in *Ingestor) handleActive(pt ParsedTopic, topic string, payload []byte) {
 		ExpiresAt:   optTime(wh.Event.ExpiresAt),
 		Areas:       wh.Event.Areas,
 		Status:      wh.Event.Status,
+		Latitude:    wh.Event.Latitude,
+		Longitude:   wh.Event.Longitude,
 		ReceivedAt:  parseTime(wh.Event.ReceivedAt),
 		UpdatedAt:   parseTime(wh.Event.UpdatedAt),
 	}

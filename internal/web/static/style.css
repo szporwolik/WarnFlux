@@ -1441,6 +1441,11 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background: none;
   border: none;
 }
+/* Geo-located hazard markers on the home map (severity triangles). */
+.wf-hazard-icon {
+  background: none;
+  border: none;
+}
 .aprs-sym .aprs-sym-img {
   display: block;
   width: 28px;

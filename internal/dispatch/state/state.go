@@ -65,6 +65,12 @@ type Hazard struct {
 	Areas       []string
 	Status      string
 
+	// Latitude/Longitude are the optional event coordinates (sources
+	// that publish positions, e.g. road difficulties); the web map
+	// renders hazards that carry them.
+	Latitude  *float64
+	Longitude *float64
+
 	ReceivedAt time.Time
 	UpdatedAt  time.Time
 }

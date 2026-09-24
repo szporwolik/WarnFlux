@@ -60,6 +60,55 @@ type homeView struct {
 	AprsCallsign  string
 }
 
+// mapEventView is the public JSON shape of one geo-located active hazard
+// served to the home map (/api/events).
+type mapEventView struct {
+	EventKey    string     `json:"event_key"`
+	Source      string     `json:"source"`
+	Severity    string     `json:"severity"`
+	Headline    string     `json:"headline"`
+	Event       string     `json:"event"`
+	Description string     `json:"description,omitempty"`
+	Latitude    float64    `json:"latitude"`
+	Longitude   float64    `json:"longitude"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// handleEventsMap serves the public JSON of active hazards that carry
+// coordinates, so the home map can draw them as icons.
+func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
+	events := make([]mapEventView, 0, 16)
+	for _, h := range s.st.Snapshot().Hazards {
+		if h.Latitude == nil || h.Longitude == nil {
+			continue
+		}
+		events = append(events, mapEventView{
+			EventKey:    h.EventKey,
+			Source:      h.Source,
+			Severity:    h.Severity,
+			Headline:    h.Headline,
+			Event:       h.Event,
+			Description: h.Description,
+			Latitude:    *h.Latitude,
+			Longitude:   *h.Longitude,
+			ExpiresAt:   h.ExpiresAt,
+			UpdatedAt:   h.UpdatedAt,
+		})
+	}
+	sort.Slice(events, func(i, j int) bool {
+		ri, _ := severity.Rank(events[i].Severity)
+		rj, _ := severity.Rank(events[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+		return events[i].UpdatedAt.After(events[j].UpdatedAt)
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{"events": events})
+}
+
 // handleHome renders the public landing page: header1/header2 plus the
 // current active hazards. No session is required; a logged-in operator
 // sees a Dashboard entry in the header instead of the sign-in icon.

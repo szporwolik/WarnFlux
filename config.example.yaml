@@ -202,6 +202,26 @@ sources:
           core_areas: ["gmina:your-town"]
           corridor_area: ""
 
+  # GDDKiA national-roads difficulties feed: road works, alternating
+  # traffic and closures, filtered to the configured area (the APRS hub
+  # position + radius; both overridable below). Every entry carries
+  # coordinates, so the home map draws them as warning icons.
+  # - id: gddkia-roads
+  #   type: gddkia
+  #   enabled: true
+  #
+  #   runtime:
+  #     restart: true
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     poll_interval: 15m
+  #     request_timeout: 10s
+  #     # Optional overrides (defaults: the APRS hub position + radius).
+  #     radius_km: 30
+  #     center_latitude: 50.0212
+  #     center_longitude: 20.2075
+
   # APRS-IS source: connects to an APRS-IS server, subscribes to packets
   # around the configured position (aprs.gridsquare + aprs.radius_km) and
   # feeds them into the shared APRS hub, which publishes the merged

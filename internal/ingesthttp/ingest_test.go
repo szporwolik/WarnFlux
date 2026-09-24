@@ -141,8 +141,12 @@ func TestBuilderModePublishesCanonicalWireEvent(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("builder post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
 	}
+	if len(pub.published) != 2 {
+		t.Fatalf("published %d messages, want 2 (events journal + active view)", len(pub.published))
+	}
 
-	p := lastPublish(t, pub)
+	// First publish: the non-retained /events journal entry.
+	p := pub.published[0]
 	if p.topic != "warnflux/events" || p.qos != 1 || p.retained {
 		t.Errorf("publish = %+v, want warnflux/events qos 1 non-retained", p)
 	}
@@ -161,6 +165,20 @@ func TestBuilderModePublishesCanonicalWireEvent(t *testing.T) {
 	}
 	if we.Event.Status != "active" || we.Event.ReceivedAt == "" || we.Event.UpdatedAt == "" {
 		t.Errorf("status/timestamps = %q/%q/%q", we.Event.Status, we.Event.ReceivedAt, we.Event.UpdatedAt)
+	}
+
+	// Second publish: the retained active-view document mirroring the
+	// transition onto <prefix>/active/<source>/<hash>.
+	a := pub.published[1]
+	if a.topic != "warnflux/active/news/"+mqttreceiver.TopicHash(we.EventKey) || a.qos != 1 || !a.retained {
+		t.Errorf("active publish = %+v", a)
+	}
+	var aw mqttreceiver.ActivePayload
+	if err := json.Unmarshal([]byte(a.payload), &aw); err != nil {
+		t.Fatalf("active payload invalid: %v", err)
+	}
+	if aw.Type != mqttreceiver.TypeActiveHazard || aw.EventKey != we.EventKey || aw.Event.Severity != "severe" {
+		t.Errorf("active payload = %+v", aw)
 	}
 }
 
@@ -235,7 +253,7 @@ func TestWireModePassThroughNormalized(t *testing.T) {
 		t.Fatalf("wire post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
 	}
 
-	p := lastPublish(t, pub)
+	p := pub.published[0]
 	if p.topic != "warnflux/events" {
 		t.Errorf("topic = %q, want warnflux/events", p.topic)
 	}
@@ -248,6 +266,32 @@ func TestWireModePassThroughNormalized(t *testing.T) {
 	}
 	if we.EventKey != "imgw-meteo:123" || we.ChangeID != 42 || we.ChangeType != "updated" || we.Event.Source != "imgw-meteo" {
 		t.Errorf("wire event = %+v", we)
+	}
+
+	// The updated transition is also mirrored into the retained active
+	// view under the source-keyed topic.
+	a := pub.published[1]
+	if a.topic != "warnflux/active/imgw-meteo/"+mqttreceiver.TopicHash(we.EventKey) || !a.retained {
+		t.Errorf("active publish = %+v", a)
+	}
+}
+
+func TestWireModeCancelledDeletesActiveView(t *testing.T) {
+	pub := &fakePublisher{connected: true}
+	inst := testInstance(t, pub)
+
+	wire := `{"schema_version":1,"change_id":7,"change_type":"cancelled","event_key":"rso:99","event":{"source":"rso","source_id":"99","event":"Burze","severity":"moderate","status":"cancelled","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`
+	rec := post(t, inst, wire)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("cancelled wire post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	if len(pub.published) != 2 {
+		t.Fatalf("published %d messages, want 2", len(pub.published))
+	}
+
+	a := pub.published[1]
+	if a.topic != "warnflux/active/rso/"+mqttreceiver.TopicHash("rso:99") || !a.retained || a.payload != "" {
+		t.Errorf("cancelled active publish = %+v, want retained empty payload (delete)", a)
 	}
 }
 

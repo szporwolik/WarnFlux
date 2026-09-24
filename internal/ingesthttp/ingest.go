@@ -9,9 +9,12 @@
 //     the event source.
 //
 // Accepted messages are published to <topic_prefix>/events on the
-// configured broker; the regular receiver → dispatch ingress → routing
-// flow then treats them exactly like messages from any upstream WarnFlux
-// instance, and every other consumer on the broker sees them too.
+// configured broker (the journal; feeds the routing engine) and mirrored
+// into the retained active view <prefix>/active/<source>/<hash> so they
+// appear on the public home page and map like source-plugin events. The
+// regular receiver → dispatch ingress → routing flow then treats them
+// exactly like messages from any upstream WarnFlux instance, and every
+// other consumer on the broker sees them too.
 package ingesthttp
 
 import (
@@ -334,11 +337,59 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Maintain the retained active view so ingested hazards show on the
+	// public home page and map exactly like source-plugin events.
+	// Best-effort: the journal transition above is already delivered and
+	// the view is repaired by the next transition for this key.
+	if err := in.publishActive(payload); err != nil {
+		in.logger.Warn("ingest_http: active view publish failed", "instance", in.cfg.ID,
+			"request_id", reqID, "event_key", eventKey, "error", err)
+	}
+
 	in.metrics.accepted.Add(1)
 	audit("accepted", http.StatusAccepted, eventKey, len(body))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"accepted":true,"topic":"` + in.eventsTopic() + `","event_key":"` + eventKey + `","request_id":"` + reqID + `"}`))
+}
+
+// publishActive mirrors one accepted transition into the retained active
+// view (<prefix>/active/<source>/<sha256(event_key)>): a document for
+// new/updated transitions, an empty retained payload (delete) for
+// cancelled/expired ones. The /events journal alone feeds only the
+// routing engine, never the public state mirror.
+func (in *Instance) publishActive(payload []byte) error {
+	we, err := mqttreceiver.ParseEventPayload(payload)
+	if err != nil {
+		return err // impossible after buildPayload; defensive only
+	}
+	topic := in.cfg.TopicPrefix + "/active/" + we.Event.Source + "/" +
+		mqttreceiver.TopicHash(we.EventKey)
+
+	var retained []byte
+	switch we.ChangeType {
+	case mqttreceiver.ChangeNew, mqttreceiver.ChangeUpdated:
+		doc, err := json.Marshal(mqttreceiver.ActivePayload{
+			SchemaVersion: mqttreceiver.WireSchemaVersion,
+			Type:          mqttreceiver.TypeActiveHazard,
+			EventKey:      we.EventKey,
+			Event:         we.Event,
+		})
+		if err != nil {
+			return err
+		}
+		retained = doc
+	case mqttreceiver.ChangeCancelled, mqttreceiver.ChangeExpired:
+		retained = nil // retained delete
+	default:
+		return nil
+	}
+
+	token := in.client.Publish(topic, 1, true, retained)
+	if !token.WaitTimeout(publishTimeout) {
+		return fmt.Errorf("active view publish timed out")
+	}
+	return token.Error()
 }
 
 // authorized checks the bearer token against the current and previous

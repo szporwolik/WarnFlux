@@ -140,6 +140,12 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 			return nil, fmt.Errorf("aprs: gridsquare %q is not a valid Maidenhead locator", cfg.GridSquare)
 		}
 		cfg.CenterLat, cfg.CenterLon = lat, lon
+		if cfg.Latitude != nil || cfg.Longitude != nil {
+			if cfg.Latitude == nil || cfg.Longitude == nil {
+				return nil, fmt.Errorf("aprs: latitude and longitude must be set together")
+			}
+			cfg.CenterLat, cfg.CenterLon = *cfg.Latitude, *cfg.Longitude
+		}
 		if cfg.RadiusKM < 1 || cfg.RadiusKM > 1000 {
 			return nil, fmt.Errorf("aprs: radius_km must be between 1 and 1000, got %v", cfg.RadiusKM)
 		}
@@ -183,6 +189,27 @@ func (h *Hub) GridSquare() string { return h.cfg.GridSquare }
 // CenterLat/CenterLon return the center of our configured gridsquare.
 func (h *Hub) CenterLat() float64 { return h.cfg.CenterLat }
 func (h *Hub) CenterLon() float64 { return h.cfg.CenterLon }
+
+// OwnLat/OwnLon return the best-known position of our station: the
+// position learned from our own position packets (e.g. the Direwolf
+// beacon), falling back to the configured center until one is heard.
+func (h *Hub) OwnLat() float64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if rec := h.stations[h.cfg.Callsign]; rec != nil && rec.state.position != nil {
+		return rec.state.position.Latitude
+	}
+	return h.cfg.CenterLat
+}
+
+func (h *Hub) OwnLon() float64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if rec := h.stations[h.cfg.Callsign]; rec != nil && rec.state.position != nil {
+		return rec.state.position.Longitude
+	}
+	return h.cfg.CenterLon
+}
 
 // RadiusKM returns the configured nearby radius.
 func (h *Hub) RadiusKM() float64 { return h.cfg.RadiusKM }
@@ -838,6 +865,13 @@ func (h *Hub) publishSelf() {
 			},
 		}
 		h.stations[h.cfg.Callsign] = rec
+	}
+	// A packet from our own callsign may have arrived before the delayed
+	// first publish: mark the record as ours either way and never clobber
+	// a position it already learned.
+	rec.self = true
+	if rec.state.position == nil {
+		rec.state.position = &Position{Latitude: h.cfg.CenterLat, Longitude: h.cfg.CenterLon}
 	}
 	h.mu.Unlock()
 	h.publishStation(rec)

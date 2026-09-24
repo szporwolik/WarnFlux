@@ -447,6 +447,8 @@
   var hwMarkerLayer = null;
   var hwTileLayer = null;
   var hwMapReady = false;
+  var hwViewBounds = null;
+  var hwFittedOnce = false;
 
   var COND_ICONS = {
     clear: "wi-day-sunny",
@@ -684,6 +686,27 @@
     window.setTimeout(function () { item.classList.remove("hw-flash"); }, 1600);
   }
 
+  // Fit the overview map so every weather pin is visible. With no pins
+  // the view falls back to the APRS hub locator (the same place the
+  // neighbourhood map centers on).
+  function fitHwView() {
+    if (!hwMap) {
+      return;
+    }
+    if (hwViewBounds && hwViewBounds.length > 1) {
+      hwMap.fitBounds(hwViewBounds, { padding: [28, 28], maxZoom: 13 });
+    } else if (hwViewBounds && hwViewBounds.length === 1) {
+      hwMap.setView(hwViewBounds[0], 12);
+    } else {
+      var mapEl = document.getElementById("aprs-map");
+      var clat = mapEl ? parseFloat(mapEl.getAttribute("data-lat")) : NaN;
+      var clon = mapEl ? parseFloat(mapEl.getAttribute("data-lon")) : NaN;
+      if (clat && clon) {
+        hwMap.setView([clat, clon], 11);
+      }
+    }
+  }
+
   function renderWeatherMap(reports) {
     var wrap = document.querySelector(".hw-map-wrap");
     var points = (reports || []).filter(function (r) {
@@ -726,27 +749,22 @@
         hwMarkerLayer.addLayer(marker);
         bounds.push([r.latitude, r.longitude]);
       });
+      hwViewBounds = bounds.slice();
       if (!hwMapReady) {
         hwMapReady = true;
-        // Same center and zoom as the neighbourhood map: the APRS hub
-        // locator sits in the middle of the covered cities.
-        var mapEl = document.getElementById("aprs-map");
-        var clat = mapEl ? parseFloat(mapEl.getAttribute("data-lat")) : NaN;
-        var clon = mapEl ? parseFloat(mapEl.getAttribute("data-lon")) : NaN;
-        if (clat && clon) {
-          hwMap.setView([clat, clon], 11);
-          addCenterControl(hwMap, function () { hwMap.setView([clat, clon], 11); });
-        } else if (bounds.length > 1) {
-          hwMap.fitBounds(bounds, { padding: [28, 28], maxZoom: 13 });
-          var fit = bounds.slice();
-          addCenterControl(hwMap, function () { hwMap.fitBounds(fit, { padding: [28, 28], maxZoom: 13 }); });
-        } else {
-          hwMap.setView(bounds[0], 12);
-          var single = bounds[0];
-          addCenterControl(hwMap, function () { hwMap.setView(single, 12); });
-        }
+        // One center button: refits the view around all weather pins.
+        addCenterControl(hwMap, function () { fitHwView(); });
       }
-      window.setTimeout(function () { if (hwMap) { hwMap.invalidateSize(); } }, 80);
+      window.setTimeout(function () {
+        if (!hwMap) {
+          return;
+        }
+        hwMap.invalidateSize();
+        if (!hwFittedOnce) {
+          hwFittedOnce = true;
+          fitHwView();
+        }
+      }, 80);
     });
   }
 
@@ -780,6 +798,12 @@
 
   var lat = parseFloat(el.getAttribute("data-lat"));
   var lon = parseFloat(el.getAttribute("data-lon"));
+  var ownLatAttr = el.getAttribute("data-own-lat");
+  var ownLonAttr = el.getAttribute("data-own-lon");
+  // Where OUR station actually sits (learned from our own position
+  // beacon, e.g. the Direwolf PBEACON); falls back to the hub center.
+  var ownLat = ownLatAttr ? parseFloat(ownLatAttr) : lat;
+  var ownLon = ownLonAttr ? parseFloat(ownLonAttr) : lon;
   var radiusKm = parseFloat(el.getAttribute("data-radius") || "0");
   var ownCall = el.getAttribute("data-callsign") || "";
 
@@ -787,6 +811,8 @@
   var stationLayer = null;
   var radarLayer = null;
   var baseLayer = null;
+  var stationBounds = null;
+  var fittedOnce = false;
 
   // Theme-aware base map, the same free provider the CQOps dashboard
   // uses: OpenFreeMap vector styles via MapLibre GL — no API keys, no
@@ -966,11 +992,26 @@
     loadScript("https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js", cb, function () { cb(); });
   }
 
+  // Fit the view so everything displayed on the map is visible: our
+  // locator plus every station. With no station data yet the view falls
+  // back to the locator at the original zoom.
+  function fitToStations() {
+    if (!map) {
+      return;
+    }
+    if (stationBounds && stationBounds.isValid()) {
+      map.fitBounds(stationBounds, { padding: [30, 30], maxZoom: 13 });
+    } else {
+      map.setView([ownLat, ownLon], 11);
+    }
+    fittedOnce = true;
+  }
+
   function initMap() {
     if (map || !window.L) {
       return;
     }
-    map = L.map(el, { attributionControl: false }).setView([lat, lon], 11);
+    map = L.map(el, { attributionControl: false }).setView([ownLat, ownLon], 11);
     map.createPane("aprsBase");
     map.getPane("aprsBase").style.zIndex = 200;
     map.createPane("aprsRadar");
@@ -980,18 +1021,19 @@
     syncBaseLayer();
     stationLayer = L.layerGroup().addTo(map);
 
-    // Center button: back to our locator at the initial zoom.
+    // Center button: fit the view around our locator and all stations.
     addCenterControl(map, function () {
-      map.setView([lat, lon], 11);
+      fitToStations();
     });
 
-    // Our station marker + collection-radius circle.
-    L.circleMarker([lat, lon], {
+    // Our station marker + collection-radius circle at the position
+    // learned from our own beacon (data-own-lat/lon).
+    L.circleMarker([ownLat, ownLon], {
       radius: 7, color: "#fff", weight: 2,
       fillColor: "#007a3d", fillOpacity: 1
     }).addTo(map).bindTooltip(ownCall || "Our station", { direction: "top" });
     if (radiusKm > 0) {
-      L.circle([lat, lon], {
+      L.circle([ownLat, ownLon], {
         radius: radiusKm * 1000,
         color: "#007a3d", weight: 2, opacity: 0.7, dashArray: "10 6",
         fillColor: "#007a3d", fillOpacity: 0.06, interactive: false
@@ -1015,7 +1057,15 @@
     var tab = document.querySelector('.home-tab[data-tab="tab-radio"]');
     if (tab) {
       tab.addEventListener("click", function () {
-        window.setTimeout(function () { if (map) { map.invalidateSize(); } }, 60);
+        window.setTimeout(function () {
+          if (!map) {
+            return;
+          }
+          map.invalidateSize();
+          if (!fittedOnce) {
+            fitToStations();
+          }
+        }, 60);
       });
     }
     window.addEventListener("resize", function () {
@@ -1139,6 +1189,25 @@
           marker.bindPopup(popup);
           stationLayer.addLayer(marker);
         });
+
+        // Track the bounds of everything shown on the map (our locator
+        // plus every station) so the view auto-fits on load and the
+        // center button can refit.
+        var hasStations = false;
+        var b = L.latLngBounds([[ownLat, ownLon]]);
+        (stations || []).forEach(function (s) {
+          if (s && s.position && !s.self) {
+            b.extend([s.position.latitude, s.position.longitude]);
+            hasStations = true;
+          }
+        });
+        stationBounds = hasStations ? b : null;
+        if (!fittedOnce && hasStations) {
+          map.invalidateSize();
+          if (map.getSize().x > 0) {
+            fitToStations();
+          }
+        }
       })
       .catch(function () { /* transient — next poll retries */ });
   }

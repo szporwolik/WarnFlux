@@ -553,6 +553,14 @@ aprs:
   # aprs-inet filter and the nearby-station radius both use its center.
   gridsquare: "JO90WW"
 
+  # Optional exact position of our station (e.g. the antenna's real
+  # coordinates from direwolf.conf). When both are set they override the
+  # gridsquare center. When unset, WarnFlux learns the position from our
+  # own position beacon (Direwolf PBEACON) and the home-map locator
+  # shows it where it actually is.
+  # latitude: 50.0212
+  # longitude: 20.2075
+
   # "Nearby" radius around our position in kilometers.
   radius_km: 60
 

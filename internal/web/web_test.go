@@ -655,6 +655,8 @@ func TestHomeAPRSMapTab(t *testing.T) {
 	for _, want := range []string{
 		`data-lat="50.9375"`,
 		`data-lon="19.875"`,
+		`data-own-lat="50.9375"`, // locator dot: gridsquare center until a beacon is heard
+		`data-own-lon="19.875"`,
 		`data-radius="25"`,
 		`data-callsign="SP9MOA-10"`,
 		"RainViewer", // radar attribution under the map

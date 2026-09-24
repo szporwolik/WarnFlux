@@ -44,6 +44,10 @@ type HubConfig struct {
 	Icon string
 	// GridSquare is our position as a Maidenhead locator.
 	GridSquare string
+	// Latitude/Longitude optionally pin our exact position; they override
+	// the gridsquare center when both are set.
+	Latitude  *float64
+	Longitude *float64
 	// CenterLat/CenterLon are the center of GridSquare (computed).
 	CenterLat float64
 	CenterLon float64

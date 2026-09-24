@@ -100,6 +100,87 @@ func testPacket(line string) Packet {
 	return ParseFeedLine(line, time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC))
 }
 
+// TestHubOwnPositionLearnedFromBeacon verifies that a position packet from
+// our own callsign (e.g. the Direwolf PBEACON) moves the own-position
+// locator away from the gridsquare center.
+func TestHubOwnPositionLearnedFromBeacon(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		Icon:       "/j",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// Before any own packet the locator falls back to the gridsquare center.
+	if lat, lon := hub.OwnLat(), hub.OwnLon(); lat != hub.CenterLat() || lon != hub.CenterLon() {
+		t.Fatalf("own position before beacon = (%v, %v), want center (%v, %v)", lat, lon, hub.CenterLat(), hub.CenterLon())
+	}
+
+	line := "SP9MOA-10>APRS,TCPIP*:!5100.00N/02010.00E-"
+	hub.Observe(testPacket(line), "aprs-inet")
+
+	waitFor(t, func() bool {
+		lat, lon := hub.OwnLat(), hub.OwnLon()
+		return lat != hub.CenterLat() && lon != hub.CenterLon()
+	})
+
+	// The learned position rides along in the self station document.
+	waitFor(t, func() bool {
+		return len(sink.payloads(StationsTopicPrefix+"SP9MOA-10")) >= 1
+	})
+	pubs := sink.payloads(StationsTopicPrefix + "SP9MOA-10")
+	var doc StationDocument
+	if err := json.Unmarshal(pubs[len(pubs)-1], &doc); err != nil {
+		t.Fatalf("unmarshal self doc: %v", err)
+	}
+	if doc.Position == nil || doc.Position.Latitude == hub.CenterLat() {
+		t.Errorf("self doc position = %+v, want the beacon position", doc.Position)
+	}
+}
+
+// TestHubConfiguredPositionOverridesGridSquare verifies the explicit
+// latitude/longitude option pins the center (and the locator) at the
+// configured coordinates.
+func TestHubConfiguredPositionOverridesGridSquare(t *testing.T) {
+	lat, lon := 50.0212, 20.2075
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		Latitude:   &lat,
+		Longitude:  &lon,
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	if hub.CenterLat() != lat || hub.CenterLon() != lon {
+		t.Fatalf("center = (%v, %v), want configured (%v, %v)", hub.CenterLat(), hub.CenterLon(), lat, lon)
+	}
+	if hub.OwnLat() != lat || hub.OwnLon() != lon {
+		t.Fatalf("own = (%v, %v), want configured position", hub.OwnLat(), hub.OwnLon())
+	}
+}
+
+// TestHubPositionRequiresBothCoordinates: half a coordinate pair is a
+// construction error even when the hub is built directly.
+func TestHubPositionRequiresBothCoordinates(t *testing.T) {
+	lat := 50.0
+	if _, err := NewHub(HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		Latitude:   &lat,
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	}, nil); err == nil {
+		t.Fatal("latitude without longitude accepted")
+	}
+}
+
 func TestHubStationStateAndDedupe(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled:    true,

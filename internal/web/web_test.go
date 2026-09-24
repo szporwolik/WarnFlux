@@ -637,7 +637,7 @@ func TestPublicHomePage(t *testing.T) {
 	if strings.Contains(html, `<details class="home-section home-minor" open`) {
 		t.Error("minor section must be collapsed by default")
 	}
-	if !strings.Contains(html, "Minor / informational") {
+	if !strings.Contains(html, "Informational") {
 		t.Error("minor section summary missing")
 	}
 	if !strings.Contains(html, `class="count">1</span>`) {

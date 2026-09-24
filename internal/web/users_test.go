@@ -132,6 +132,12 @@ func (f *fakeUsers) CreateUser(username, phone, email, discord, role, password s
 	f.nextID++
 	f.rows = append(f.rows, u)
 	f.passwords[username] = password
+	// New users are subscribed to all channels by default (mirrors the
+	// SQLite store).
+	f.membership[u.ID] = make(map[int64]bool)
+	for _, g := range f.groups {
+		f.membership[u.ID][g.ID] = true
+	}
 	return u, nil
 }
 

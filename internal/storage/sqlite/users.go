@@ -165,6 +165,13 @@ func (s *Store) CreateUser(username, phone, email, discord, role, password strin
 	if err != nil {
 		return storage.User{}, fmt.Errorf("insert user %q: %w", username, err)
 	}
+	// Every new user is subscribed to all channels by default; users can
+	// unsubscribe themselves on the /account page.
+	if _, err := s.db.Exec(`
+		INSERT INTO user_groups (user_id, group_id)
+		SELECT ?, id FROM groups`, id); err != nil {
+		return storage.User{}, fmt.Errorf("subscribe new user %q to all groups: %w", username, err)
+	}
 	return s.userByID(id)
 }
 

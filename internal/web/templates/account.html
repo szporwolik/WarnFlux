@@ -16,7 +16,8 @@
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Account</h2>
       <p class="page-info">
         Your own contact data as stored for alert routing. The username and
-        role are managed by an administrator.
+        role are managed by an administrator. You are subscribed to every
+        channel by default — uncheck the channels you do not want.
       </p>
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
@@ -46,6 +47,19 @@
           <span>New password</span>
           <input type="password" name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one">
         </label>
+        <div class="account-channels">
+          <span class="account-channels-label">Channels</span>
+          <div class="account-channels-grid">
+            {{range .Groups}}
+            <label class="account-channel">
+              <input type="checkbox" name="groups" value="{{.ID}}" {{if index $.GroupSet .ID}}checked{{end}}>
+              <span>{{.Name}}</span>
+            </label>
+            {{else}}
+            <p class="muted">No channels configured yet.</p>
+            {{end}}
+          </div>
+        </div>
         <div class="form-footer">
           <button type="submit" class="btn-primary">Save</button>
         </div>

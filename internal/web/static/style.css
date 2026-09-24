@@ -1647,6 +1647,29 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   margin: 0 0 0.8rem;
 }
 .compose-templates-label { color: var(--muted); font-size: 0.8rem; }
+/* Self-service channel subscriptions on the account page. */
+.account-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+.account-channels-label { color: var(--muted); font-size: 0.85rem; font-weight: 600; }
+.account-channels-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
+  gap: 0.35rem;
+}
+.account-channel {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 0.85rem;
+}
 .hw-attrib {
   margin: 0.9rem 0 0;
   color: var(--muted);

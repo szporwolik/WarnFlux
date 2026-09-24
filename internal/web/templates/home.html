@@ -127,11 +127,34 @@
     </article>
     {{end}}
   </div>
-  {{else}}
+  {{else if not .MinorHazards}}
   <div class="home-empty">
     <p>No active hazards.</p>
     <p class="muted">This page refreshes automatically.</p>
   </div>
+  {{end}}
+
+  {{if .MinorHazards}}
+  <details class="home-minor">
+    <summary>Minor / informational <span class="count">{{.MinorCount}}</span></summary>
+    <div class="home-alerts">
+      {{range .MinorHazards}}
+      <article class="hazard sev-bd-{{sevClass .Severity}}">
+        <div class="hazard-head">
+          <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
+          <h3>{{.Headline}}</h3>
+        </div>
+        <div class="hazard-meta">
+          <span>Source: <strong>{{.Source}}</strong></span>
+          {{if .Event}}<span>{{.Event}}</span>{{end}}
+          {{if .Areas}}<span>Area: {{.Areas}}</span>{{end}}
+          <span>updated: {{timeShort .UpdatedAt}}</span>
+          {{if .ExpiresAt}}<span>valid until: {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
+        </div>
+      </article>
+      {{end}}
+    </div>
+  </details>
   {{end}}
 </section>
 {{end}}

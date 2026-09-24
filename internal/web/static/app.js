@@ -55,7 +55,20 @@
         }
         var node = document.getElementById(section.id);
         if (node) {
+          // Preserve open/closed state of <details> elements (the home
+          // page's collapsed minor section) across the refresh.
+          var openStates = [];
+          node.querySelectorAll("details").forEach(function (d) {
+            openStates.push(d.open);
+          });
           node.outerHTML = html;
+          var next = document.getElementById(section.id);
+          if (next) {
+            var details = next.querySelectorAll("details");
+            details.forEach(function (d, i) {
+              if (openStates[i]) { d.open = true; }
+            });
+          }
         }
       })
       .catch(function () {

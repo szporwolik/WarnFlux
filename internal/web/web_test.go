@@ -554,6 +554,19 @@ func TestPublicHomePage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Low-priority road noise: must land in the collapsed minor section.
+	if err := env.state.AddOrUpdateActive("local", "warnflux/active/gddkia/cccc", state.Hazard{
+		EventKey:  "gddkia:3",
+		Source:    "gddkia",
+		Event:     "Road works",
+		Severity:  "minor",
+		Headline:  "Drobne prace drogowe",
+		Areas:     []string{"droga:79"},
+		Status:    "active",
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Unauthenticated: the home page is public.
 	resp, html := env.get("/")
@@ -603,6 +616,24 @@ func TestPublicHomePage(t *testing.T) {
 		t.Errorf("hazards not ordered by severity: extreme@%d moderate@%d", extremeAt, moderateAt)
 	}
 
+	// The minor hazard lives in the collapsed details section, not in the
+	// main grid; the section is closed by default (no open attribute).
+	minorAt := strings.Index(html, "Drobne prace drogowe")
+	detailsAt := strings.Index(html, `<details class="home-minor">`)
+	if minorAt < 0 || detailsAt < 0 || minorAt < detailsAt {
+		t.Errorf("minor hazard must sit inside the collapsed details: minor@%d details@%d",
+			minorAt, detailsAt)
+	}
+	if strings.Contains(html, `<details class="home-minor" open`) {
+		t.Error("minor section must be collapsed by default")
+	}
+	if !strings.Contains(html, "Minor / informational") {
+		t.Error("minor section summary missing")
+	}
+	if !strings.Contains(html, `class="count">1</span>`) {
+		t.Error("minor section should carry its own count badge of 1")
+	}
+
 	// The auto-refresh fragment is public as well.
 	resp, body := env.get("/partials/home")
 	if resp.StatusCode != http.StatusOK {
@@ -628,6 +659,40 @@ func TestPublicHomePage(t *testing.T) {
 	}
 	if strings.Contains(html, `href="/login"`) {
 		t.Errorf("home header must drop the sign-in icon when logged in: %s", html)
+	}
+}
+
+// TestPublicHomeMinorOnly pins the collapsed-section rendering when every
+// active hazard is low priority: no empty-state box (the page is not
+// "empty"), just the collapsed minor details with its own count badge.
+func TestPublicHomeMinorOnly(t *testing.T) {
+	env := newTestEnv(t)
+
+	if err := env.state.AddOrUpdateActive("local", "warnflux/active/gddkia/only", state.Hazard{
+		EventKey:  "gddkia:only",
+		Source:    "gddkia",
+		Event:     "Road works",
+		Severity:  "minor",
+		Headline:  "Tylko prace drogowe",
+		Areas:     []string{"droga:79"},
+		Status:    "active",
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, html := env.get("/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<details class="home-minor">`) {
+		t.Error("collapsed minor details missing")
+	}
+	if !strings.Contains(html, "Tylko prace drogowe") {
+		t.Error("minor hazard headline missing")
+	}
+	if strings.Contains(html, "No active hazards.") {
+		t.Error("minor-only page must not show the no-active-hazards empty box")
 	}
 }
 

@@ -1170,7 +1170,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   gap: 0.5rem;
   padding: 0.24rem 0.75rem 0.24rem 0.26rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: var(--surface-hi);
   color: var(--text);
   font-size: 0.85rem;

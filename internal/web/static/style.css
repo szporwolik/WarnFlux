@@ -1295,6 +1295,10 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background: var(--surface);
   color: var(--text);
 }
+/* The explicit display above would otherwise override the UA's
+   dialog:not([open]) { display: none }: without this rule a closed
+   dialog stays painted on top of the page forever. */
+.about-dialog:not([open]) { display: none; }
 .about-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
 .about-dialog .about-close {
   position: absolute;

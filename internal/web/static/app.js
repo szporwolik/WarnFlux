@@ -821,6 +821,7 @@
 
   var map = null;
   var stationLayer = null;
+  var rangeCircle = null;
   var radarLayer = null;
   var baseLayer = null;
   var stationBounds = null;
@@ -923,6 +924,12 @@
         }
       });
     }
+    if (rangeCircle) {
+      rangeCircle.setStyle({ color: aprsOverlayColors().range });
+    }
+    // Track and vector colors are read at render time; a refresh picks
+    // up the new theme immediately.
+    refreshStations();
   }
 
   function esc(s) {
@@ -1052,10 +1059,10 @@
       fillColor: "#007a3d", fillOpacity: 1
     }).addTo(map).bindTooltip(ownCall || "Our station", { direction: "top" });
     if (radiusKm > 0) {
-      L.circle([ownLat, ownLon], {
+      rangeCircle = L.circle([ownLat, ownLon], {
         radius: radiusKm * 1000,
-        color: "#007a3d", weight: 2, opacity: 0.7, dashArray: "10 6",
-        fillColor: "#007a3d", fillOpacity: 0.06, interactive: false
+        color: aprsOverlayColors().range, weight: 1.5, opacity: 0.55, dashArray: "8 6",
+        fill: false, interactive: false
       }).addTo(map);
     }
 
@@ -1175,10 +1182,24 @@
     return [la2 * 180 / Math.PI, lo2 * 180 / Math.PI];
   }
 
-  // Track color shared by the movement tail and the heading vector
-  // (aprs.fi draws station tracks in a similar red).
-  function trackColor() {
-    return document.documentElement.getAttribute("data-theme") !== "light" ? "#ff8a80" : "#c62828";
+  // Overlay colors per theme: the movement tail, its dots and the
+  // heading vector stay distinguishable from each other and from the
+  // station markers on both tile styles. The range circle is neutral.
+  function aprsOverlayColors() {
+    if (document.documentElement.getAttribute("data-theme") !== "light") {
+      return {
+        track: "#4fc3f7",      // tail line + dots (light blue)
+        trackBorder: "#01579b",
+        heading: "#ff7043",    // vector + arrowhead (orange)
+        range: "#9ca3af"       // collection-radius circle (neutral gray)
+      };
+    }
+    return {
+      track: "#0277bd",
+      trackBorder: "#ffffff",
+      heading: "#d32f2f",
+      range: "#6b7280"
+    };
   }
 
   function refreshStations() {
@@ -1228,8 +1249,9 @@
           marker.bindPopup(popup);
 
           // Movement tail: up to three earlier positions (oldest first)
-          // plus the current one, drawn as a trail behind the marker —
-          // the same idea as aprs.fi's station track.
+          // plus the current one. The points are marked with dots and
+          // connected by one line — aprs.fi's track idea.
+          var overlay = aprsOverlayColors();
           var trail = [];
           (s.track || []).forEach(function (tp) {
             if (tp && tp.latitude && tp.longitude) {
@@ -1238,9 +1260,15 @@
           });
           if (trail.length > 0) {
             trail.push([s.position.latitude, s.position.longitude]);
+            trail.forEach(function (pt) {
+              stationLayer.addLayer(L.circleMarker(pt, {
+                radius: 3, color: overlay.trackBorder, weight: 1,
+                fillColor: overlay.track, fillOpacity: 1, interactive: false
+              }));
+            });
             if (trail.length > 1) {
               stationLayer.addLayer(L.polyline(trail, {
-                color: trackColor(), weight: 2.5, opacity: 0.85,
+                color: overlay.track, weight: 2.5, opacity: 0.85,
                 lineCap: "round", lineJoin: "round", interactive: false
               }));
             }
@@ -1253,7 +1281,7 @@
             var vecKm = Math.min(Math.max(s.speed_kmh / 60, 0.25), 2);
             var head = destPoint(s.position.latitude, s.position.longitude, s.course_deg, vecKm);
             stationLayer.addLayer(L.polyline([[s.position.latitude, s.position.longitude], head], {
-              color: trackColor(), weight: 3, opacity: 0.9, interactive: false
+              color: overlay.heading, weight: 3, opacity: 0.9, interactive: false
             }));
             stationLayer.addLayer(L.marker(head, {
               interactive: false,
@@ -1262,7 +1290,7 @@
                 iconSize: [10, 10],
                 iconAnchor: [5, 5],
                 html: '<span class="wf-track-arrow" style="transform:rotate(' + s.course_deg +
-                  'deg);border-bottom-color:' + trackColor() + '"></span>'
+                  'deg);border-bottom-color:' + overlay.heading + '"></span>'
               })
             }));
           }

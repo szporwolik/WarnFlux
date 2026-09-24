@@ -28,7 +28,7 @@ sources:
       server: "127.0.0.1:8001"   # KISS server host:port (required)
       path: ["WIDE1-1"]          # digipeater path for outbound frames
       connect_timeout: 15s
-      read_timeout: 10m
+      read_timeout: 10m          # timeout is NOT an error; reconnect only after 3x of silence
       max_frame_bytes: 2048
 ```
 

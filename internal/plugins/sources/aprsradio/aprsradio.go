@@ -32,7 +32,7 @@ const (
 	defaultReadTimeout    = 10 * time.Minute
 	minConnectTimeout     = time.Second
 	maxConnectTimeout     = time.Minute
-	minReadTimeout        = 30 * time.Second
+	minReadTimeout        = 5 * time.Second
 	maxReadTimeout        = time.Hour
 	writeTimeout          = 10 * time.Second
 	// defaultMaxFrame caps one decoded KISS frame; real APRS frames are
@@ -43,6 +43,12 @@ const (
 	maxReconnectDelay = 2 * time.Minute
 )
 
+// idleTimeoutFactor scales ReadTimeout into the "no frames at all"
+// threshold that ends the session. A single read timeout is expected on a
+// quiet channel — it only resets the deadline. Package-level so tests can
+// shrink it.
+var idleTimeoutFactor = 3
+
 // Config is the plugin-specific configuration.
 type Config struct {
 	// Server is the KISS server address host:port (plain TCP).
@@ -52,8 +58,11 @@ type Config struct {
 	Path []string `yaml:"path"`
 	// ConnectTimeout bounds one dial attempt.
 	ConnectTimeout time.Duration `yaml:"connect_timeout"`
-	// ReadTimeout bounds one read from the TNC; exceeding it forces a
-	// reconnect.
+	// ReadTimeout bounds one read from the TNC. A timeout is NOT an
+	// error: a quiet radio channel sends nothing for long stretches, so
+	// the session resets the deadline and keeps reading. Only when no
+	// frame at all arrives for idleTimeoutFactor × ReadTimeout does the
+	// session reconnect (TCP keepalive still catches dead peers).
 	ReadTimeout time.Duration `yaml:"read_timeout"`
 	// MaxFrameBytes caps one decoded KISS frame.
 	MaxFrameBytes int `yaml:"max_frame_bytes"`
@@ -71,6 +80,7 @@ type Source struct {
 	ready   atomic.Bool
 
 	rxPackets atomic.Int64
+	lastRx    atomic.Int64
 }
 
 // errNotReady is returned when Send is called while disconnected.
@@ -188,7 +198,7 @@ func (s *Source) closeConn() {
 // session runs one connection lifetime: dial, register as transmitter,
 // decode frames, deregister on exit.
 func (s *Source) session(ctx context.Context) error {
-	dialer := net.Dialer{Timeout: s.cfg.ConnectTimeout}
+	dialer := net.Dialer{Timeout: s.cfg.ConnectTimeout, KeepAlive: 30 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", s.cfg.Server)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", s.cfg.Server, err)
@@ -198,6 +208,7 @@ func (s *Source) session(ctx context.Context) error {
 	s.conn = conn
 	s.connMu.Unlock()
 	s.ready.Store(true)
+	s.lastRx.Store(time.Now().UnixNano())
 	s.hub.AddTransmitter(Type, s)
 	defer func() {
 		s.ready.Store(false)
@@ -217,6 +228,7 @@ func (s *Source) session(ctx context.Context) error {
 		_ = conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
 		n, err := reader.Read(buf)
 		if n > 0 {
+			s.lastRx.Store(time.Now().UnixNano())
 			for _, frame := range dec.Feed(buf[:n]) {
 				if len(frame) == 0 || len(frame) > s.cfg.MaxFrameBytes {
 					continue
@@ -228,9 +240,28 @@ func (s *Source) session(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				// A quiet channel has nothing to say: stay connected.
+				// Only a completely silent TNC for the whole idle
+				// window ends the session.
+				idle := s.idleLimit()
+				if time.Since(time.Unix(0, s.lastRx.Load())) < idle {
+					s.logger.Debug("aprs-radio: no frames from the TNC, keeping the connection",
+						"server", s.cfg.Server, "idle_limit", idle)
+					continue
+				}
+				return fmt.Errorf("aprs-radio: no frames from %s for %s", s.cfg.Server, idle)
+			}
 			return fmt.Errorf("read from %s: %w", s.cfg.Server, err)
 		}
 	}
+}
+
+// idleLimit is how long the session tolerates a completely silent TNC
+// before reconnecting.
+func (s *Source) idleLimit() time.Duration {
+	return time.Duration(idleTimeoutFactor) * s.cfg.ReadTimeout
 }
 
 // handleFrame decodes one KISS data frame and feeds the parsed packet into
@@ -281,7 +312,8 @@ func (s *Source) Send(_ context.Context, to, text string) error {
 
 // summary renders the one-line stats report for the web health page.
 func (s *Source) summary() string {
-	return fmt.Sprintf("%d packets / %d stations", s.rxPackets.Load(), s.hub.Stats().Stations)
+	age := time.Since(time.Unix(0, s.lastRx.Load())).Truncate(time.Second)
+	return fmt.Sprintf("%d packets / %d stations / last rx %s ago", s.rxPackets.Load(), s.hub.Stats().Stations, age)
 }
 
 var _ plugin.SourcePlugin = (*Source)(nil)

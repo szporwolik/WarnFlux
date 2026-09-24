@@ -215,6 +215,10 @@ sources:
   #     path: ["WIDE1-1"]
   #
   #     connect_timeout: 15s
+  #     # One read from the TNC may take this long. A timeout is NOT an
+  #     # error: a quiet channel sends nothing for long stretches, so the
+  #     # session stays connected. It reconnects only when no frame
+  #     # arrives for 3x read_timeout (dead TNC detection).
   #     read_timeout: 10m
   #     max_frame_bytes: 2048
 

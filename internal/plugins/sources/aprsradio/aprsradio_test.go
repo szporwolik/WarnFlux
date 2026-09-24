@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
@@ -114,8 +115,13 @@ func testLogger() *slog.Logger {
 
 func newPlugin(t *testing.T, server string, hub *aprs.Hub) plugin.SourcePlugin {
 	t.Helper()
+	return newPluginReadTimeout(t, server, hub, "30s")
+}
+
+func newPluginReadTimeout(t *testing.T, server string, hub *aprs.Hub, readTimeout string) plugin.SourcePlugin {
+	t.Helper()
 	var node yaml.Node
-	if err := yaml.Unmarshal([]byte("server: "+server+"\npath: [WIDE1-1]\nconnect_timeout: 5s\nread_timeout: 30s\n"), &node); err != nil {
+	if err := yaml.Unmarshal([]byte("server: "+server+"\npath: [WIDE1-1]\nconnect_timeout: 5s\nread_timeout: "+readTimeout+"\n"), &node); err != nil {
 		t.Fatal(err)
 	}
 	p, err := New(&node, hub)
@@ -296,6 +302,120 @@ func TestRadioAckRoundtrip(t *testing.T) {
 	}
 	if rxDoc.Text != "ack00001" || !strings.HasPrefix(rxDoc.Text, "ack") {
 		t.Errorf("rx doc = %+v", rxDoc)
+	}
+}
+
+// healthRecorder is an Emitter that records degraded reports.
+type healthRecorder struct {
+	mu       sync.Mutex
+	degraded []error
+}
+
+func (r *healthRecorder) Emit(context.Context, core.HazardEvent) error { return nil }
+func (r *healthRecorder) EmitInformation(context.Context, core.InformationMessage) error {
+	return nil
+}
+func (r *healthRecorder) ReportSourceHealthy() {}
+func (r *healthRecorder) ReportSourceDegraded(err error) {
+	r.mu.Lock()
+	r.degraded = append(r.degraded, err)
+	r.mu.Unlock()
+}
+func (r *healthRecorder) ReportSourceStats(string) {}
+func (r *healthRecorder) degradedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.degraded)
+}
+
+// TestIdleTNCStaysUp pins the quiet-channel behavior: a read timeout is
+// normal (nothing heard), so the session must NOT degrade or reconnect.
+// Regression for the "i/o timeout" degraded state on a silent TNC.
+func TestIdleTNCStaysUp(t *testing.T) {
+	hub, sink := newHub(t)
+	srv := newKissServer(t)
+	defer srv.close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub.Start(ctx)
+	p := newPluginReadTimeout(t, srv.ln.Addr().String(), hub, "5s")
+	rec := &healthRecorder{}
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx, rec) }()
+
+	waitConnected(t, srv)
+
+	// Sleep past one read timeout (5s): the session must stay up.
+	time.Sleep(6 * time.Second)
+	if n := rec.degradedCount(); n != 0 {
+		t.Fatalf("source degraded %d times on an idle TNC, want 0", n)
+	}
+	if !p.(*Source).Ready() {
+		t.Fatal("plugin not ready after an idle read timeout")
+	}
+
+	// The connection is still alive: a frame still flows in.
+	frame, err := aprs.BuildUIFrame("SP9XYZ-7", "APRS", []string{"WIDE1-1"}, []byte("!5056.25N/01952.50E-"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.push(t, frame)
+	waitFor(t, func() bool { return len(sink.payloads("aprs/stations/SP9XYZ-7")) >= 1 })
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not stop after cancel")
+	}
+}
+
+// TestSilentTNCEventuallyReconnects covers the other half of the idle
+// contract: once the TNC sends NOTHING for the whole idle window, the
+// session must end (degraded + reconnect), so a truly dead TNC does not
+// hold the connection forever.
+func TestSilentTNCEventuallyReconnects(t *testing.T) {
+	hub, _ := newHub(t)
+	srv := newKissServer(t)
+	defer srv.close()
+
+	// Shrink the idle window so the test runs fast: 1x read_timeout.
+	old := idleTimeoutFactor
+	idleTimeoutFactor = 1
+	defer func() { idleTimeoutFactor = old }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub.Start(ctx)
+	p := newPluginReadTimeout(t, srv.ln.Addr().String(), hub, "5s")
+	rec := &healthRecorder{}
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx, rec) }()
+
+	waitConnected(t, srv)
+	// The idle break fires after one read timeout (5s) — wait longer
+	// than waitFor's fixed 3s window.
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && rec.degradedCount() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rec.degradedCount() == 0 {
+		t.Fatal("source never degraded after the idle window elapsed")
+	}
+
+	// Run must keep going (reconnect loop), not exit.
+	select {
+	case <-done:
+		t.Fatal("Run exited after the idle reconnect")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not stop after cancel")
 	}
 }
 

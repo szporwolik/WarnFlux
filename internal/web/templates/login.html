@@ -49,6 +49,7 @@
     var x = d.querySelector(".about-close");
     if (x) { x.addEventListener("click", close); }
     d.addEventListener("click", function (e) { if (e.target === d) { close(); } });
+    d.addEventListener("cancel", function (e) { e.preventDefault(); close(); });
     if (!seen) { d.showModal(); }
   })();
   </script>

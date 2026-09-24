@@ -246,10 +246,19 @@ func TestRadioAckRoundtrip(t *testing.T) {
 		ack, err := hub.SendMessageWaitAck(ctx, "SP9XYZ-7", "hello", 5*time.Second)
 		done <- err == nil && ack
 	}()
+	var txFrame []byte
 	select {
-	case <-srv.txFrames:
+	case txFrame = <-srv.txFrames:
 	case <-time.After(3 * time.Second):
 		t.Fatal("no TX frame")
+	}
+
+	// The on-wire frame must carry the {id} ack-request suffix — without
+	// it the addressee never acks.
+	if _, _, _, info, ok := aprs.DecodeUIFrame(txFrame); !ok {
+		t.Fatalf("TX frame does not decode: % x", txFrame)
+	} else if !strings.HasSuffix(string(info), "{00001}") {
+		t.Fatalf("TX info = %q, want ack-request suffix {00001}", info)
 	}
 
 	ackFrame, err := aprs.BuildUIFrame("SP9XYZ-7", "SP9MOA-10", nil, []byte(":SP9MOA-10:ack00001"))

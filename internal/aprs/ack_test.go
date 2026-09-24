@@ -96,7 +96,8 @@ func TestSendMessageWaitAckReject(t *testing.T) {
 		RadiusKM:   DefaultRadiusKM,
 		StationTTL: 30 * time.Minute,
 	})
-	hub.AddTransmitter("radio", &fakeTransmitter{name: "radio", ready: true})
+	tx := &fakeTransmitter{name: "radio", ready: true}
+	hub.AddTransmitter("radio", tx)
 	ctx, cancel := context.WithCancel(context.Background())
 	hub.Start(ctx)
 	defer cancel()
@@ -106,7 +107,11 @@ func TestSendMessageWaitAckReject(t *testing.T) {
 		_, err := hub.SendMessageWaitAck(context.Background(), "SP9XYZ-7", "hello", 5*time.Second)
 		done <- err
 	}()
-	// The first send uses id 00001 for this hub.
+	// Synchronize on the outbound frame: the waiter is registered before
+	// the send, so once the frame is on the wire the rej must reach it.
+	// Observing earlier races the goroutine (the rej is dropped and the
+	// wait degrades into a timeout), which is what flaked on CI.
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
 	hub.Observe(testPacket("SP9XYZ-7>APRS::SP9MOA-10:rej00001"), "aprs-radio")
 	select {
 	case err := <-done:

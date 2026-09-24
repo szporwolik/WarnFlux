@@ -37,6 +37,7 @@ type trafficView struct {
 	NavGroups        bool
 	NavTest          bool
 	NavLogs          bool
+	NavAudit         bool
 	NavTraffic       bool
 	NavNotifications bool
 
@@ -112,6 +113,7 @@ func (s *Server) handlePartialTraffic(w http.ResponseWriter, r *http.Request) {
 // returns the collected messages (retained state included).
 // GET /api/mqtt/browse?receiver=&topic=&window=
 func (s *Server) handleMQTTBrowse(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
 	q := r.URL.Query()
 	topic := strings.TrimSpace(q.Get("topic"))
 	if topic == "" {
@@ -131,6 +133,7 @@ func (s *Server) handleMQTTBrowse(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), window+3*time.Second)
 	defer cancel()
 	entries, err := s.receivers.Browse(ctx, q.Get("receiver"), topic, window, mqttreceiver.BrowseMaxEntries)
+	s.audit(sess.username, "mqtt-browse", topic)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if err != nil {

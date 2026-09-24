@@ -177,6 +177,7 @@ type pageView struct {
 	NavGroups        bool
 	NavTest          bool
 	NavLogs          bool
+	NavAudit         bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
@@ -471,6 +472,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if role == "" {
+		s.audit(username, "login-failed", r.RemoteAddr)
 		s.logger.Warn("web: failed login attempt", "remote", r.RemoteAddr)
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -495,6 +497,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	s.audit(username, "login", "role="+role)
 	s.sessions.setSessionCookie(w, token)
 	landing := "/dashboard"
 	if role != "admin" {
@@ -521,6 +524,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		s.sessions.delete(cookie.Value)
 	}
+	s.audit(sess.username, "logout", "")
 	s.sessions.clearSessionCookie(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }

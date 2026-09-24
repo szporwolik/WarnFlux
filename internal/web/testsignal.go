@@ -96,6 +96,7 @@ type testView struct {
 	NavGroups        bool
 	NavTest          bool
 	NavLogs          bool
+	NavAudit         bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
@@ -157,6 +158,7 @@ func (s *Server) handleTestEmit(w http.ResponseWriter, r *http.Request) {
 	view.Role = sess.role
 	view.Emitted = true
 	view.Summary = summary
+	s.audit(sess.username, "test-emit", summary)
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "test", view)
 }

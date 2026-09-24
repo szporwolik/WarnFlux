@@ -144,6 +144,7 @@ type groupsView struct {
 	NavGroups        bool
 	NavTest          bool
 	NavLogs          bool
+	NavAudit         bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
@@ -199,11 +200,13 @@ func (s *Server) handleGroupSave(w http.ResponseWriter, r *http.Request) {
 			s.renderGroupsError(w, r, groupErrorStatus(err), form, editID, groupErrorMessage(err))
 			return
 		}
+		s.audit(sess.username, "group-create", form.Name)
 	} else {
 		if _, err := s.users.UpdateGroup(editID, form.Name); err != nil {
 			s.renderGroupsError(w, r, groupErrorStatus(err), form, editID, groupErrorMessage(err))
 			return
 		}
+		s.audit(sess.username, "group-update", form.Name)
 	}
 	http.Redirect(w, r, "/groups", http.StatusSeeOther)
 }
@@ -225,6 +228,7 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 		s.renderGroupsError(w, r, groupErrorStatus(err), groupForm{}, 0, groupErrorMessage(err))
 		return
 	}
+	s.audit(sess.username, "group-delete", strconv.FormatInt(id, 10))
 	http.Redirect(w, r, "/groups", http.StatusSeeOther)
 }
 
@@ -260,6 +264,7 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 		s.renderGroupsError(w, r, groupErrorStatus(err), groupForm{}, 0, groupErrorMessage(err))
 		return
 	}
+	s.audit(sess.username, "group-routing", strconv.FormatInt(id, 10)+" cells="+strconv.Itoa(len(actions)))
 	http.Redirect(w, r, "/groups", http.StatusSeeOther)
 }
 

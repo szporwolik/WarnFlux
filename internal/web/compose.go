@@ -109,6 +109,7 @@ type composeView struct {
 	NavTest          bool
 	NavCompose       bool
 	NavLogs          bool
+	NavAudit         bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
@@ -217,6 +218,7 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	if form.Status == "expired" {
 		flash = "expired"
 	}
+	s.audit(sess.username, "compose-"+flash, h.EventKey)
 	http.Redirect(w, r, "/compose?msg="+flash, http.StatusSeeOther)
 }
 
@@ -245,6 +247,7 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("compose: communication expired", "event_key", key)
+	s.audit(sess.username, "compose-expire", key)
 
 	// Group routing sees the expiry too (like the sources' cancelled /
 	// expired transitions on the /events stream).

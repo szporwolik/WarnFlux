@@ -78,6 +78,7 @@ type usersView struct {
 	NavGroups        bool
 	NavTest          bool
 	NavLogs          bool
+	NavAudit         bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
@@ -151,6 +152,7 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
 			return
 		}
+		s.audit(sess.username, "user-create", form.Username)
 		if err := s.users.SetUserAPRS(u.ID, parseAPRSCallsigns(form.APRSCallsigns)); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
 			return
@@ -161,6 +163,7 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
 			return
 		}
+		s.audit(sess.username, "user-update", form.Username)
 		if err := s.users.SetUserAPRS(u.ID, parseAPRSCallsigns(form.APRSCallsigns)); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
 			return
@@ -181,10 +184,15 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid user id", http.StatusBadRequest)
 		return
 	}
+	name := ""
+	if u, err := s.users.GetUser(id); err == nil {
+		name = u.Username
+	}
 	if err := s.users.DeleteUser(id); err != nil {
 		s.renderUsersError(w, r, userErrorStatus(err), userForm{}, 0, userErrorMessage(err))
 		return
 	}
+	s.audit(sess.username, "user-delete", name)
 	http.Redirect(w, r, "/users", http.StatusSeeOther)
 }
 
@@ -215,6 +223,7 @@ func (s *Server) handleUserGroups(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update group membership", http.StatusInternalServerError)
 		return
 	}
+	s.audit(sess.username, "user-groups", strconv.FormatInt(userID, 10)+" groups="+strconv.Itoa(len(groupIDs)))
 	// Return to the same users page.
 	page := r.URL.Query().Get("page")
 	if page == "" {

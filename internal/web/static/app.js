@@ -1087,3 +1087,81 @@
     initUserEditDialog();
   }
 })();
+
+// Audit log page: incremental feed of user actions, newest at the bottom.
+(function () {
+  "use strict";
+
+  var AUDIT_POLL_MS = 2000;
+  var MAX_AUDIT_NODES = 500;
+
+  function pad2(n) {
+    return n < 10 ? "0" + n : "" + n;
+  }
+
+  function lineFor(entry) {
+    var t = new Date(entry.at);
+    var when = isNaN(t.getTime())
+      ? entry.at
+      : pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + ":" + pad2(t.getSeconds());
+    var cls = "au-" + (entry.action || "").replace(/[^a-z0-9-]/g, "-");
+    var text = when + "  [" + entry.user + "] " + entry.action +
+      (entry.detail ? "  " + entry.detail : "");
+    return { cls: cls, text: text };
+  }
+
+  function initAudit() {
+    var viewer = document.getElementById("audit-viewer");
+    if (!viewer) {
+      return;
+    }
+    var after = parseInt(viewer.getAttribute("data-after"), 10) || 0;
+
+    function poll() {
+      fetch("/partials/audit?after=" + after, {
+        headers: { "Accept": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store"
+      })
+        .then(function (res) {
+          if (res.status === 401) {
+            window.location.href = "/login";
+            return null;
+          }
+          if (!res.ok) {
+            return null;
+          }
+          return res.json();
+        })
+        .then(function (data) {
+          if (!data || !data.entries || data.entries.length === 0) {
+            return;
+          }
+          var frag = document.createDocumentFragment();
+          data.entries.forEach(function (entry) {
+            var line = lineFor(entry);
+            var div = document.createElement("div");
+            div.className = "log-line " + line.cls;
+            div.textContent = line.text;
+            frag.appendChild(div);
+            after = entry.seq;
+          });
+          viewer.appendChild(frag);
+          while (viewer.childNodes.length > MAX_AUDIT_NODES) {
+            viewer.removeChild(viewer.firstChild);
+          }
+          viewer.scrollTop = viewer.scrollHeight;
+        })
+        .catch(function () {});
+    }
+
+    poll();
+    setInterval(poll, AUDIT_POLL_MS);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initAudit);
+  } else {
+    initAudit();
+  }
+})();

@@ -61,6 +61,7 @@ type Server struct {
 	sessions  *sessionStore
 	logs      *LogBuffer
 	traffic   *mqttreceiver.TrafficBuffer
+	auditLog  *AuditBuffer
 	trails    *trail.Recorder
 	metrics   *metrics.Registry
 
@@ -135,6 +136,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		sessions:  newSessionStore(cfg.Auth.SecureCookie),
 		logs:      logs,
 		traffic:   traffic,
+		auditLog:  NewAuditBuffer(DefaultAuditEntries),
 		trails:    trails,
 		metrics:   metricsReg,
 		version:   version,
@@ -171,6 +173,8 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.Handle("GET /logs", s.requireAdmin(s.handleLogsPage))
 	s.mux.Handle("GET /partials/logs", s.requireAdminPartial(s.handlePartialLogs))
+	s.mux.Handle("GET /audit", s.requireAdmin(s.handleAuditPage))
+	s.mux.Handle("GET /partials/audit", s.requireAdminPartial(s.handlePartialAudit))
 	s.mux.Handle("GET /traffic", s.requireAdmin(s.handleTrafficPage))
 	s.mux.Handle("GET /partials/traffic", s.requireAdminPartial(s.handlePartialTraffic))
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -214,7 +215,7 @@ func TestRadioTXRoundtrip(t *testing.T) {
 	if len(digis) != 1 || digis[0] != "WIDE1-1" {
 		t.Errorf("digis = %v", digis)
 	}
-	if string(info) != ":SP9XYZ-7 :hello" {
+	if string(info) != fmt.Sprintf(":%-9s:%s", "SP9XYZ-7", "hello") {
 		t.Errorf("info = %q", info)
 	}
 	select {

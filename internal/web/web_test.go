@@ -327,6 +327,51 @@ func TestTrafficViewerFlow(t *testing.T) {
 	}
 }
 
+// TestAuditFlow pins the user-action audit: the page requires login,
+// dashboard actions land in the bounded buffer and the incremental feed
+// carries them.
+func TestAuditFlow(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Unauthenticated: redirect to the login page.
+	resp, _ := env.get("/audit")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("GET /audit unauthenticated = %d %q, want redirect", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	env.login()
+	_, html := env.get("/audit")
+	if !strings.Contains(html, `id="audit-viewer"`) {
+		t.Errorf("audit page missing viewer: %s", html)
+	}
+
+	// The login itself is audited.
+	_, body := env.get("/partials/audit?after=0")
+	if !strings.Contains(body, `"login"`) {
+		t.Fatalf("audit feed missing login entry: %s", body)
+	}
+
+	// A user creation lands in the feed with the acting username.
+	csrf := env.csrfFromPage("/users")
+	resp, _ = env.postForm("/users", url.Values{
+		"csrf": {csrf}, "username": {"audit-ops"}, "role": {"emcom"},
+		"password": {"password123"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("user create = %d", resp.StatusCode)
+	}
+	_, body = env.get("/partials/audit?after=0")
+	if !strings.Contains(body, `"user-create"`) || !strings.Contains(body, `audit-ops`) {
+		t.Fatalf("audit feed missing user-create entry: %s", body)
+	}
+
+	// Bad cursor: rejected.
+	resp, _ = env.get("/partials/audit?after=banana")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad audit cursor = %d, want 400", resp.StatusCode)
+	}
+}
+
 // TestNotificationsFlow pins the delivery-history page: login required,
 // the trail list renders and the JSON feed carries the audit steps.
 func TestNotificationsFlow(t *testing.T) {

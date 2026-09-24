@@ -1448,6 +1448,35 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background-repeat: no-repeat;
   background-size: 448px 168px; /* 768x288 sprite scaled to 28px cells */
 }
+/* Callsign label under every station icon (cqops-style). The halo
+   keeps it readable on both tile styles. */
+.aprs-sym-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 96px;
+}
+.aprs-fallback {
+  background: none;
+  border: none;
+}
+.wf-station-label {
+  display: block;
+  max-width: 96px;
+  margin-top: 1px;
+  font-size: 10px;
+  line-height: 1.15;
+  text-align: center;
+  color: #eceff1;
+  text-shadow: 0 0 3px #000, 0 0 3px #000, 0 1px 2px #000;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-theme="light"] .wf-station-label {
+  color: #263238;
+  text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 1px 2px #fff;
+}
 /* APRS movement track: the tail polyline is a Leaflet layer; this is
    the arrowhead marking the heading-vector endpoint (a CSS triangle
    rotated to the reported course). */

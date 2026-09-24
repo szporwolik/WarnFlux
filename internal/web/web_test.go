@@ -691,6 +691,14 @@ func TestHomeAPRSMapTab(t *testing.T) {
 		t.Errorf("app.js Cache-Control = %q, want no-cache", got)
 	}
 
+	// Regression: a closed about dialog must be hidden even though
+	// .about-dialog sets display: flex (which would override the UA
+	// dialog:not([open]) rule and keep the popup visible forever).
+	_, css := env.get("/static/style.css")
+	if !strings.Contains(css, ".about-dialog:not([open]) { display: none; }") {
+		t.Error("style.css is missing the .about-dialog:not([open]) hide rule")
+	}
+
 	// Stations endpoint: public, JSON list of merged station documents.
 	hub.Observe(aprs.ParseFeedLine("SP9XYZ-7>APRS,TCPIP*:!5056.25N/01952.50E-", time.Now()), "aprs-inet")
 	var got []aprs.StationDocument

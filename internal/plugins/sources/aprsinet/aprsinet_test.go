@@ -170,7 +170,6 @@ func TestSessionFlow(t *testing.T) {
 			return
 		}
 		txCh <- strings.TrimRight(sc.Text(), "\r\n")
-		serverErr <- nil
 	}()
 
 	src, err := New(configNode(t, map[string]any{

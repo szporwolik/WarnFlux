@@ -77,10 +77,17 @@ func newSMTPServer(t *testing.T, tlsCfg *tls.Config) *smtpServer {
 }
 
 // newImplicitSMTPServer is an SMTPS-style server: TLS from the first byte.
+// implicitTLS is set BEFORE the accept loop starts: serve() reads it from
+// the goroutine, so writing it after newSMTPServer races (race detector).
 func newImplicitSMTPServer(t *testing.T, tlsCfg *tls.Config) *smtpServer {
 	t.Helper()
-	s := newSMTPServer(t, tlsCfg)
-	s.implicitTLS = true
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &smtpServer{listener: ln, tlsCfg: tlsCfg, done: make(chan struct{}), implicitTLS: true}
+	go s.acceptLoop()
+	t.Cleanup(s.close)
 	return s
 }
 

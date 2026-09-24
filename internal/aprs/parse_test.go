@@ -15,6 +15,31 @@ func parseLine(t *testing.T, line string) Packet {
 	return p
 }
 
+// TestParseAlternateTablePosition covers the alternate symbol table: the
+// separator between latitude and longitude is '\' instead of '/'
+// (e.g. Direwolf PBEACON symbol="\?" — the information kiosk).
+func TestParseAlternateTablePosition(t *testing.T) {
+	p := parseLine(t, "SP9SPM-10>APDW17,TCPIP*:!5001.27N\\02012.45E?Temp/dev work")
+	if p.Kind != KindPosition {
+		t.Fatalf("kind = %s, want position", p.Kind)
+	}
+	if p.Position == nil {
+		t.Fatal("position missing")
+	}
+	if mathAbs(p.Position.Latitude-50.021167) > 1e-5 {
+		t.Errorf("lat = %v, want 50.021167", p.Position.Latitude)
+	}
+	if mathAbs(p.Position.Longitude-20.2075) > 1e-5 {
+		t.Errorf("lon = %v, want 20.2075", p.Position.Longitude)
+	}
+	if p.SymbolTable != '\\' || p.Symbol != '?' {
+		t.Errorf("symbol = %c%c, want \\?", p.SymbolTable, p.Symbol)
+	}
+	if p.Comment != "Temp/dev work" {
+		t.Errorf("comment = %q, want %q", p.Comment, "Temp/dev work")
+	}
+}
+
 func TestParsePosition(t *testing.T) {
 	// Classic position without timestamp.
 	p := parseLine(t, "SP9MOA-7>APRS,TCPIP*,qAC,T2POLAND:!5003.08N/01956.44E-")

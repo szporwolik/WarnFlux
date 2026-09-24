@@ -38,7 +38,9 @@ var (
 // User is one alert-recipient record. The admin user (the web auth
 // account) is seeded from configuration and is read-only.
 //
-// Role is the access tier: "" for a plain recipient, "emcom" for an
+// Role is the access tier: "" for a plain recipient, "member" for a
+// self-service account (edit own data only), "emcom" for an operator
+// that may also compose communications, and "admin" for the full panel.
 // operator that may sign in and use the compose module. Only users with
 // a non-empty role (and a password set) can sign in; the admin tier
 // always uses the configured auth account.
@@ -147,7 +149,7 @@ type DirectoryStore interface {
 // UserStore persists alert recipients. Page numbering is 1-based; a page
 // beyond the last valid page is clamped by ListUsers.
 //
-// Role is "" or "emcom". An empty password means the user cannot sign in
+// Role is "", "member" or "emcom". An empty password means the user cannot sign in
 // (plain recipient); on UpdateUser an empty password keeps the current
 // one.
 type UserStore interface {
@@ -161,6 +163,9 @@ type UserStore interface {
 	ListUsers(page, perPage int) ([]User, int, error)
 	// GetUser returns one user by ID.
 	GetUser(id int64) (User, error)
+	// GetUserByUsername returns one user by username (case
+	// insensitive); unknown names report ErrUserNotFound.
+	GetUserByUsername(username string) (User, error)
 	// CreateUser inserts a new regular user.
 	CreateUser(username, phone, email, discord, role, password string) (User, error)
 	// UpdateUser replaces the contact fields, role and (optionally) the

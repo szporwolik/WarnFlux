@@ -105,6 +105,17 @@ func (f *fakeUsers) GetUser(id int64) (storage.User, error) {
 	return storage.User{}, storage.ErrUserNotFound
 }
 
+func (f *fakeUsers) GetUserByUsername(username string) (storage.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.rows {
+		if strings.EqualFold(u.Username, username) {
+			return u, nil
+		}
+	}
+	return storage.User{}, storage.ErrUserNotFound
+}
+
 func (f *fakeUsers) CreateUser(username, phone, email, discord, role, password string) (storage.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

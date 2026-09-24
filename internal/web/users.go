@@ -83,6 +83,7 @@ type usersView struct {
 	NavNotifications bool
 	NavHealth        bool
 	NavCompose       bool
+	NavAccount       bool
 }
 
 // handleUsersPage renders the user administration page. ?edit=<id>
@@ -338,8 +339,8 @@ func validateUserForm(f userForm, requirePassword bool) string {
 	if !usernamePattern.MatchString(f.Username) {
 		return "username must be 1-64 lowercase letters, digits, dots, dashes or underscores"
 	}
-	if f.Role != "" && f.Role != "emcom" {
-		return "role must be empty or emcom"
+	if f.Role != "" && f.Role != "member" && f.Role != "emcom" {
+		return "role must be empty, member or emcom"
 	}
 	if requirePassword && f.Role != "" && f.Password == "" {
 		return "a password is required for users with a role (they sign in with it)"

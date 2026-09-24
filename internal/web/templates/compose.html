@@ -22,6 +22,13 @@
       </p>
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
+      <div class="compose-templates">
+        <span class="compose-templates-label">Templates:</span>
+        <button type="button" class="btn-ghost btn-small" data-tpl="information">Information message</button>
+        <button type="button" class="btn-ghost btn-small" data-tpl="urgent">Urgent hazard</button>
+        <button type="button" class="btn-ghost btn-small" data-tpl="weather">Weather alert</button>
+        <button type="button" class="btn-ghost btn-small" data-tpl="test">Test / exercise</button>
+      </div>
       <form method="post" action="/compose" class="test-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <input type="hidden" name="event_key" value="{{.Form.EventKey}}">
@@ -132,6 +139,36 @@
   </main>
   {{template "footer" .}}
   <script src="/static/app.js?v={{.Commit}}" defer></script>
+  <script>
+  // Message templates: prefill the compose form with a typical
+  // combination of event type, severity, urgency and certainty. The
+  // operator still writes the headline and the details.
+  (function () {
+    "use strict";
+    var TEMPLATES = {
+      information: { event: "Information", severity: "minor", urgency: "expected", certainty: "observed" },
+      urgent:      { event: "Hazard", severity: "severe", urgency: "immediate", certainty: "observed" },
+      weather:     { event: "Weather alert", severity: "moderate", urgency: "expected", certainty: "likely" },
+      test:        { event: "Test", severity: "minor", urgency: "unknown", certainty: "unlikely" }
+    };
+    function setField(name, value) {
+      var el = document.querySelector("form.test-form [name=" + name + "]");
+      if (el) { el.value = value; }
+    }
+    document.querySelectorAll(".compose-templates [data-tpl]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var t = TEMPLATES[btn.getAttribute("data-tpl")];
+        if (!t) { return; }
+        setField("event", t.event);
+        setField("severity", t.severity);
+        setField("urgency", t.urgency);
+        setField("certainty", t.certainty);
+        var headline = document.querySelector("form.test-form [name=headline]");
+        if (headline) { headline.focus(); }
+      });
+    });
+  })();
+  </script>
 </body>
 </html>
 {{end}}

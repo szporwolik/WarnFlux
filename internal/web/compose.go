@@ -108,6 +108,7 @@ type composeView struct {
 	NavGroups        bool
 	NavTest          bool
 	NavCompose       bool
+	NavAccount       bool
 	NavLogs          bool
 	NavAudit         bool
 	NavTraffic       bool

@@ -589,6 +589,8 @@
     document.body.appendChild(s);
   }
 
+  var miniCenter = null; // current dialog station, for the center button
+
   function openMiniMap(report) {
     var dialog = document.getElementById("wmap-dialog");
     document.getElementById("wmap-title").textContent = report.name + " — APRS weather station";
@@ -597,20 +599,24 @@
       meta += " · report " + report.generated_at.replace("T", " ").slice(0, 16) + "Z";
     }
     document.getElementById("wmap-meta").textContent = meta;
+    miniCenter = [report.latitude, report.longitude];
     dialog.showModal();
     ensureLeaflet(function () {
       if (!window.L) { return; }
       if (!miniMap) {
-        miniMap = L.map("wmap-map", { attributionControl: false }).setView([report.latitude, report.longitude], 13);
+        miniMap = L.map("wmap-map", { attributionControl: false }).setView(miniCenter, 13);
         var dark = document.documentElement.getAttribute("data-theme") !== "light";
         L.tileLayer(dark
           ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
           : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(miniMap);
+        addCenterControl(miniMap, function () {
+          if (miniCenter) { miniMap.setView(miniCenter, 13); }
+        });
       } else {
-        miniMap.setView([report.latitude, report.longitude], 13);
+        miniMap.setView(miniCenter, 13);
       }
       if (miniMarker) { miniMap.removeLayer(miniMarker); }
-      miniMarker = L.marker([report.latitude, report.longitude]).addTo(miniMap);
+      miniMarker = L.marker(miniCenter).addTo(miniMap);
       miniMarker.bindPopup("<strong>" + report.name + "</strong>").openPopup();
       window.setTimeout(function () { if (miniMap) { miniMap.invalidateSize(); } }, 80);
     });
@@ -631,6 +637,22 @@
     return dark
       ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
       : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  }
+
+  // Re-center control (same widget as the neighbourhood map).
+  function addCenterControl(map, recenter) {
+    var c = L.control({ position: "topleft" });
+    c.onAdd = function () {
+      var btn = L.DomUtil.create("button", "wf-center-btn");
+      btn.type = "button";
+      btn.title = "Center the view";
+      btn.setAttribute("aria-label", "Center the view");
+      btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+      L.DomEvent.disableClickPropagation(btn);
+      L.DomEvent.on(btn, "click", recenter);
+      return btn;
+    };
+    c.addTo(map);
   }
 
   function hwTileLabel() {
@@ -713,10 +735,15 @@
         var clon = mapEl ? parseFloat(mapEl.getAttribute("data-lon")) : NaN;
         if (clat && clon) {
           hwMap.setView([clat, clon], 11);
+          addCenterControl(hwMap, function () { hwMap.setView([clat, clon], 11); });
         } else if (bounds.length > 1) {
           hwMap.fitBounds(bounds, { padding: [28, 28], maxZoom: 13 });
+          var fit = bounds.slice();
+          addCenterControl(hwMap, function () { hwMap.fitBounds(fit, { padding: [28, 28], maxZoom: 13 }); });
         } else {
           hwMap.setView(bounds[0], 12);
+          var single = bounds[0];
+          addCenterControl(hwMap, function () { hwMap.setView(single, 12); });
         }
       }
       window.setTimeout(function () { if (hwMap) { hwMap.invalidateSize(); } }, 80);
@@ -866,6 +893,23 @@
     return d.innerHTML;
   }
 
+  // Re-center control: a small target button under the zoom buttons that
+  // returns the view to the initial center and zoom.
+  function addCenterControl(map, recenter) {
+    var c = L.control({ position: "topleft" });
+    c.onAdd = function () {
+      var btn = L.DomUtil.create("button", "wf-center-btn");
+      btn.type = "button";
+      btn.title = "Center the view";
+      btn.setAttribute("aria-label", "Center the view");
+      btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+      L.DomEvent.disableClickPropagation(btn);
+      L.DomEvent.on(btn, "click", recenter);
+      return btn;
+    };
+    c.addTo(map);
+  }
+
   // fmtTime renders an RFC 3339 timestamp compactly (UTC, minutes).
   function fmtTime(v) {
     if (!v) {
@@ -935,6 +979,11 @@
     baseLayer = null;
     syncBaseLayer();
     stationLayer = L.layerGroup().addTo(map);
+
+    // Center button: back to our locator at the initial zoom.
+    addCenterControl(map, function () {
+      map.setView([lat, lon], 11);
+    });
 
     // Our station marker + collection-radius circle.
     L.circleMarker([lat, lon], {

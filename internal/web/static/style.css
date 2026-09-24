@@ -1551,6 +1551,24 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 #wmap-map { height: 16rem; border: 1px solid var(--border); border-radius: var(--radius); }
 .wmap-dialog .muted { margin: 0.6rem 0 0; font-size: 0.78rem; }
+/* Re-center buttons on all maps: match the Leaflet zoom control look. */
+.wf-center-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+  font: inherit;
+}
+.wf-center-btn:hover { background: #f4f4f4; }
+.leaflet-touch .wf-center-btn { width: 30px; height: 30px; }
 .home-foot {
   display: flex;
   flex-wrap: wrap;

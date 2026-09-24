@@ -35,7 +35,8 @@ type filterConfig struct {
 	corridorArea  string
 }
 
-// corridorConfig bounds the relevant A4 Balice–Tarnów kilometre window.
+// corridorConfig bounds the relevant road-corridor kilometre window
+// (configured per installation; e.g. the A4 Balice–Tarnów stretch here).
 type corridorConfig struct {
 	enabled bool
 	kmFrom  int
@@ -54,7 +55,8 @@ type decision struct {
 // ---- text normalization -------------------------------------------------
 
 // foldDiacritics maps Polish letters to ASCII equivalents so both
-// "Niepołomice" and "Niepolomice" match.
+// folds diacritics so a keyword matches with or without them (e.g. a
+// "Niepołomice"-style name and its ASCII-folded form).
 var foldDiacritics = strings.NewReplacer(
 	"ą", "a", "ć", "c", "ę", "e", "ł", "l", "ń", "n", "ó", "o",
 	"ś", "s", "ź", "z", "ż", "z",
@@ -457,9 +459,8 @@ func (p filterConfig) shouldEmit(sev string, geo geoMatch) bool {
 	local := geo.core || len(geo.city) > 0 || geo.nearby || geo.corridor
 
 	// A road-specific event outside the configured local area is never
-	// relevant, regardless of severity: an A4 closure at km 97 towards
-	// Wrocław or an S7 incident in the far end of the voivodeship must not
-	// reach Niepołomice just because a road number matched.
+	// relevant, regardless of severity: a closure on the far end of the
+	// road must not match just because a road number matched.
 	if len(geo.roads) > 0 && !local {
 		return false
 	}

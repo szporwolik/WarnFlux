@@ -39,11 +39,17 @@ func testLocal() *fileLocalConfig {
 }
 
 // defaultPolicy mirrors buildFilterConfig's defaults for the high-signal
-// target configuration.
+// target configuration, with the installation's corridor pinned
+// explicitly (the code default is a disabled corridor).
 func defaultPolicy() filterConfig {
 	p, err := buildFilterConfig(&FileFilterConfig{
 		HighSignalOnly: boolPtr(true),
-		Local:          testLocal(),
+		Corridor: &fileCorridor{
+			Enabled: boolPtr(true),
+			KMFrom:  intPtr(400),
+			KMTo:    intPtr(503),
+		},
+		Local: testLocal(),
 	})
 	if err != nil {
 		panic(err)
@@ -52,6 +58,7 @@ func defaultPolicy() filterConfig {
 }
 
 func boolPtr(b bool) *bool { return &b }
+func intPtr(i int) *int    { return &i }
 
 func item(title, shortcut, content string) newsItem {
 	return newsItem{ID: "1", Title: title, Shortcut: shortcut, Content: content}
@@ -381,7 +388,11 @@ func TestCustomRegionGeography(t *testing.T) {
 		CoreAreas:        []string{"miasto:gdansk"},
 		CorridorArea:     "corridor:obwodnica-trojmiasta",
 	}
-	p, err := buildFilterConfig(&FileFilterConfig{HighSignalOnly: boolPtr(true), Local: local})
+	p, err := buildFilterConfig(&FileFilterConfig{
+		HighSignalOnly: boolPtr(true),
+		Corridor:       &fileCorridor{Enabled: boolPtr(true), KMFrom: intPtr(1), KMTo: intPtr(100)},
+		Local:          local,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

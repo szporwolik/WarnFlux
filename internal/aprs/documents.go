@@ -10,6 +10,13 @@ type PositionWire struct {
 	Longitude float64 `json:"longitude"`
 }
 
+// TrackWire is one recorded position of a station's movement tail.
+type TrackWire struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	At        string  `json:"at"`
+}
+
 // StationDocument is the retained MQTT state document of ONE nearby
 // station. All backends (aprs-inet today, aprs-radio later) merge into the
 // same document, so every station has exactly one topic.
@@ -19,16 +26,20 @@ type StationDocument struct {
 	// Self marks the WarnFlux instance's own station document.
 	Self bool `json:"self,omitempty"`
 	// Name is the object name when the station is an APRS object.
-	Name           string        `json:"name,omitempty"`
-	Position       *PositionWire `json:"position,omitempty"`
-	SymbolTable    string        `json:"symbol_table,omitempty"`
-	Symbol         string        `json:"symbol,omitempty"`
-	CourseDeg      int           `json:"course_deg,omitempty"`
-	SpeedKMH       float64       `json:"speed_kmh,omitempty"`
-	AltitudeM      *float64      `json:"altitude_m,omitempty"`
-	Comment        string        `json:"comment,omitempty"`
-	Status         string        `json:"status,omitempty"`
-	MessageCapable bool          `json:"message_capable"`
+	Name     string        `json:"name,omitempty"`
+	Position *PositionWire `json:"position,omitempty"`
+	// Track is the movement tail: up to three earlier positions, oldest
+	// first (the current position lives in Position). The map draws it as
+	// a trail behind the marker, like aprs.fi station tracks.
+	Track          []TrackWire `json:"track,omitempty"`
+	SymbolTable    string      `json:"symbol_table,omitempty"`
+	Symbol         string      `json:"symbol,omitempty"`
+	CourseDeg      int         `json:"course_deg,omitempty"`
+	SpeedKMH       float64     `json:"speed_kmh,omitempty"`
+	AltitudeM      *float64    `json:"altitude_m,omitempty"`
+	Comment        string      `json:"comment,omitempty"`
+	Status         string      `json:"status,omitempty"`
+	MessageCapable bool        `json:"message_capable"`
 	// DistanceKM is the distance from our configured position.
 	DistanceKM float64 `json:"distance_km,omitempty"`
 	// Origin reports how the latest packet reached APRS-IS: "rf" (heard

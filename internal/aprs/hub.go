@@ -26,6 +26,13 @@ const (
 	startupPublishDelay = 2 * time.Second
 	packetDigestWindow  = 10 * time.Minute
 	recentMessagesCap   = 64
+	// maxTrackPoints bounds the movement tail kept per station: the map
+	// draws the last three previous positions behind the marker.
+	maxTrackPoints = 3
+	// trackMoveMinM is the minimum displacement (meters) before a new
+	// position earns a track point, so digipeat duplicates and GPS noise
+	// cannot pad the tail.
+	trackMoveMinM = 30.0
 	// ackPendingCap bounds concurrent outbound messages awaiting an ack.
 	ackPendingCap = 64
 	// ackWaitDefault is the fallback ack wait when the caller does not
@@ -64,6 +71,7 @@ type stationRecord struct {
 // stationState is the merged last-known state of a station.
 type stationState struct {
 	position       *Position
+	positionAt     int64
 	symbolTable    byte
 	symbol         byte
 	courseDeg      int
@@ -78,6 +86,31 @@ type stationState struct {
 	via            map[string]bool
 	packets        int
 	weather        *WeatherReport
+	// track is the movement tail: up to maxTrackPoints earlier positions,
+	// oldest first. The current position lives in position, so the map
+	// can draw the full polyline [track..., position].
+	track []trackPoint
+}
+
+// trackPoint is one recorded position of a station's movement tail.
+type trackPoint struct {
+	lat, lon float64
+	at       int64
+}
+
+// pushTrack records one position into the movement tail (bounded,
+// oldest-first). Sub-trackMoveMinM displacement is treated as noise.
+func (st *stationState) pushTrack(lat, lon float64, at int64) {
+	if n := len(st.track); n > 0 {
+		last := &st.track[n-1]
+		if DistanceKM(last.lat, last.lon, lat, lon)*1000 < trackMoveMinM {
+			return
+		}
+	}
+	st.track = append(st.track, trackPoint{lat: lat, lon: lon, at: at})
+	if len(st.track) > maxTrackPoints {
+		st.track = st.track[len(st.track)-maxTrackPoints:]
+	}
 }
 
 // Hub is the shared APRS merge point. Every backend (aprs-inet today,
@@ -435,7 +468,14 @@ func (h *Hub) apply(op hubOp) {
 func (r *stationRecord) merge(p *Packet, via string, now int64) {
 	st := &r.state
 	if p.Position != nil && (st.position == nil || st.position.Latitude != p.Position.Latitude || st.position.Longitude != p.Position.Longitude) {
+		// The previous position joins the movement tail; the new one
+		// becomes the current position (track holds only EARLIER
+		// positions, so the map draws [track..., position]).
+		if st.position != nil {
+			st.pushTrack(st.position.Latitude, st.position.Longitude, st.positionAt)
+		}
 		st.position = p.Position
+		st.positionAt = now
 	}
 	if p.Symbol != 0 {
 		st.symbol, st.symbolTable = p.Symbol, p.SymbolTable
@@ -501,6 +541,9 @@ func (h *Hub) buildStationDoc(rec *stationRecord) StationDocument {
 		if !rec.self {
 			doc.DistanceKM = DistanceKM(h.cfg.CenterLat, h.cfg.CenterLon, st.position.Latitude, st.position.Longitude)
 		}
+	}
+	for _, tp := range st.track {
+		doc.Track = append(doc.Track, TrackWire{Latitude: tp.lat, Longitude: tp.lon, At: formatTime(tp.at)})
 	}
 	if st.symbol != 0 {
 		doc.SymbolTable = string(st.symbolTable)

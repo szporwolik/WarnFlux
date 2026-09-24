@@ -388,6 +388,21 @@ CREATE TABLE user_aprs (
 CREATE UNIQUE INDEX idx_user_aprs_unique ON user_aprs(user_id, callsign COLLATE NOCASE);
 `,
 	},
+	{
+		// v15: persistent dashboard audit log. Every state-changing
+		// operation performed through the web UI lands here; entries are
+		// pruned to storage.AuditRetentionEntries by the store on insert.
+		SQL: `
+CREATE TABLE audit_log (
+	seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+	at_ms   INTEGER NOT NULL,
+	user    TEXT NOT NULL,
+	action  TEXT NOT NULL,
+	detail  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_audit_log_seq ON audit_log(seq);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

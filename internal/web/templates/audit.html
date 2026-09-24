@@ -14,7 +14,7 @@
   <main class="users-main">
     <section class="card log-card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>Audit log</h2>
-      <p class="muted log-hint">User actions performed through the dashboard (last {{.MaxEntries}} entries). Refreshes automatically.</p>
+      <p class="muted log-hint">User actions performed through the dashboard, persisted in the database (up to {{.MaxEntries}} entries). Refreshes automatically.</p>
       <div id="audit-viewer" class="log-viewer" data-after="0"></div>
     </section>
   </main>

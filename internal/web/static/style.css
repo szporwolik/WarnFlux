@@ -1396,6 +1396,19 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   color: var(--muted);
   text-decoration: underline;
 }
+/* APRS station markers: 28px cells cropped from the 48px @2x aprs.fi
+   sprites (the divIcon wrapper carries the background-position). */
+.aprs-sym {
+  background: none;
+  border: none;
+}
+.aprs-sym .aprs-sym-img {
+  display: block;
+  width: 28px;
+  height: 28px;
+  background-repeat: no-repeat;
+  background-size: 448px 168px; /* 768x288 sprite scaled to 28px cells */
+}
 .home-foot {
   display: flex;
   flex-wrap: wrap;

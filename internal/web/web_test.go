@@ -659,10 +659,20 @@ func TestHomeAPRSMapTab(t *testing.T) {
 		`data-callsign="SP9MOA-10"`,
 		"RainViewer", // radar attribution under the map
 		"OpenStreetMap",
+		"aprs-symbols", // APRS symbol attribution under the map
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("home APRS tab missing %q: %s", want, html)
 		}
+	}
+
+	// The bundled APRS symbol sprites are served and embedded.
+	resp, _ := env.get("/static/aprs-symbols/aprs-symbols-24-0@2x.png")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET APRS symbol sprite = %d, want 200", resp.StatusCode)
+	}
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "image/png") {
+		t.Errorf("sprite Content-Type = %q, want image/png", resp.Header.Get("Content-Type"))
 	}
 
 	// Stations endpoint: public, JSON list of merged station documents.

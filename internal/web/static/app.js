@@ -545,7 +545,7 @@
     }
     if (stationLayer) {
       stationLayer.eachLayer(function (m) {
-        if (m._aprsMarker) {
+        if (m._aprsMarker && m.setStyle) {
           m.setStyle({ color: t.marker.color, fillColor: t.marker.fillColor });
         }
       });
@@ -704,6 +704,37 @@
     enableRadar();
   }
 
+  // APRS symbol decoding: stations carry a two-character symbol code
+  // (symbol_table + symbol). The bundled aprs.fi sprite (Heikki
+  // Hannikainen OH7LZB, attribution under the map) holds the primary
+  // table (/) and the alternate table (\) as 48px cells in a 16-column
+  // grid, row-major by character code 33..126. Cells are scaled to
+  // 28px on screen via CSS, so the @2x sprite stays crisp on retina.
+  var APRS_SYM_SIZE = 28;
+  var APRS_SPRITES = {
+    "/": "/static/aprs-symbols/aprs-symbols-24-0@2x.png",
+    "\\": "/static/aprs-symbols/aprs-symbols-24-1@2x.png"
+  };
+
+  function aprsSymbolMarker(s) {
+    var table = s.symbol_table === "\\" ? "\\" : "/";
+    var code = s.symbol ? s.symbol.charCodeAt(0) : 0;
+    if (code < 33 || code > 126) {
+      return null; // unknown symbol — the theme-colored circle fallback
+    }
+    var idx = code - 33;
+    var col = idx % 16;
+    var row = Math.floor(idx / 16);
+    var html = '<span class="aprs-sym-img" style="background-image:url(\'' + APRS_SPRITES[table] +
+      "\');background-position:-" + (col * APRS_SYM_SIZE) + "px -" + (row * APRS_SYM_SIZE) + 'px"></span>';
+    return L.divIcon({
+      className: "aprs-sym",
+      iconSize: [APRS_SYM_SIZE, APRS_SYM_SIZE],
+      iconAnchor: [APRS_SYM_SIZE / 2, APRS_SYM_SIZE / 2],
+      html: html
+    });
+  }
+
   function refreshStations() {
     fetch("/api/aprs/stations")
       .then(function (r) { return r.ok ? r.json() : []; })
@@ -713,8 +744,8 @@
         }
         stationLayer.clearLayers();
         (stations || []).forEach(function (s) {
-          if (!s || !s.position) {
-            return;
+          if (!s || !s.position || s.self) {
+            return; // our own locator has its dedicated marker
           }
           var popup = "<strong>" + esc(s.callsign) + "</strong>";
           if (s.comment) {
@@ -736,11 +767,17 @@
           } else if (s.origin === "internet") {
             popup += "<br>Via: internet (APRS-IS)";
           }
-          var marker = L.circleMarker([s.position.latitude, s.position.longitude], {
-            radius: 7, color: tilesForTheme().marker.color, weight: 2,
-            fillColor: tilesForTheme().marker.fillColor, fillOpacity: 0.9
-          });
-          marker._aprsMarker = true;
+          var icon = aprsSymbolMarker(s);
+          var marker;
+          if (icon) {
+            marker = L.marker([s.position.latitude, s.position.longitude], { icon: icon, riseOnHover: true });
+          } else {
+            marker = L.circleMarker([s.position.latitude, s.position.longitude], {
+              radius: 7, color: tilesForTheme().marker.color, weight: 2,
+              fillColor: tilesForTheme().marker.fillColor, fillOpacity: 0.9
+            });
+            marker._aprsMarker = true;
+          }
           marker.bindTooltip(esc(s.callsign), { direction: "top" });
           marker.bindPopup(popup);
           stationLayer.addLayer(marker);

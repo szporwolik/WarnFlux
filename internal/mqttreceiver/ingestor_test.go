@@ -118,6 +118,28 @@ func TestActiveHazardStoredAndDeleted(t *testing.T) {
 	}
 }
 
+func TestActivePastExpiryDropped(t *testing.T) {
+	env := newIngestorEnv(t, "local", true, nil)
+	key := "compose:1"
+	topic := "warnflux/active/compose/" + TopicHash(key)
+
+	var ap ActivePayload
+	if err := json.Unmarshal(mustActivePayload(t, key, "compose", "ops", "severe"), &ap); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	ap.Event.ExpiresAt = &past
+	payload, err := json.Marshal(ap)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env.ingestor.HandleMessage(nil, &testMessage{topic: topic, payload: payload, retained: true})
+	if got := len(env.state.Snapshot().Hazards); got != 0 {
+		t.Fatalf("hazards = %d, want 0 (a document past its expires_at must never be mirrored)", got)
+	}
+}
+
 // TestMultiBrokerStateCollision is the mandatory collision test: two
 // receivers publishing the SAME topic with different payloads must both
 // exist independently.

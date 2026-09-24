@@ -211,6 +211,13 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("compose: dispatch queue full, transition dropped", "event_key", h.EventKey)
 	}
 
+	// Active communications expire on their own at expires_at (the
+	// retained document is removed and the expiry flows through the
+	// canonical ingress like the manual expire action).
+	if form.Status == "active" {
+		s.scheduleComposeExpiry(h)
+	}
+
 	flash := "published"
 	if form.EventKey != "" {
 		flash = "updated"
@@ -255,6 +262,39 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("compose: dispatch queue full, expiry transition dropped", "event_key", key)
 	}
 	http.Redirect(w, r, "/compose?msg=expired", http.StatusSeeOther)
+}
+
+// scheduleComposeExpiry auto-expires a communication at its expires_at:
+// the retained broker document is removed and the expiry flows through
+// the canonical ingress, exactly like the manual expire action. The timer
+// lives only in this process; after a restart, lingering retained
+// documents are handled by the mirror's expiry pruning instead.
+func (s *Server) scheduleComposeExpiry(h state.Hazard) {
+	if h.Status != "active" || h.ExpiresAt == nil || !h.ExpiresAt.After(time.Now()) {
+		return
+	}
+	expires := *h.ExpiresAt
+	key := h.EventKey
+	time.AfterFunc(time.Until(expires), func() {
+		cur, ok := s.composeHazard(key)
+		if !ok || cur.Status != "active" {
+			return // already removed (manual expire / empty retained payload)
+		}
+		if cur.ExpiresAt == nil || !cur.ExpiresAt.Equal(expires) {
+			return // re-published with a different expiry; that timer owns it
+		}
+		if s.pub == nil {
+			return
+		}
+		if err := s.pub.ExpireActive(composeSource, key); err != nil {
+			s.logger.Warn("compose: auto-expire failed", "event_key", key, "error", err)
+			return
+		}
+		s.logger.Info("compose: communication auto-expired", "event_key", key)
+		if !s.ingress.Enqueue(composeTransition(cur, dispatch.TransitionExpired)) {
+			s.logger.Warn("compose: dispatch queue full, auto-expiry transition dropped", "event_key", key)
+		}
+	})
 }
 
 // composeTransition builds the canonical ingress event for one compose

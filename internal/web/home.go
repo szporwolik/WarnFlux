@@ -80,6 +80,7 @@ type mapEventView struct {
 	Description string     `json:"description,omitempty"`
 	Latitude    float64    `json:"latitude"`
 	Longitude   float64    `json:"longitude"`
+	EffectiveAt *time.Time `json:"effective_at,omitempty"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
@@ -100,8 +101,7 @@ func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 			Event:       h.Event,
 			Description: h.Description,
 			Latitude:    *h.Latitude,
-			Longitude:   *h.Longitude,
-			ExpiresAt:   h.ExpiresAt,
+			Longitude:   *h.Longitude,				EffectiveAt: h.EffectiveAt,			ExpiresAt:   h.ExpiresAt,
 			UpdatedAt:   h.UpdatedAt,
 		})
 	}

@@ -446,6 +446,7 @@
   var hwMap = null;
   var hwMarkerLayer = null;
   var hwTileLayer = null;
+  var hwMapReady = false;
 
   var COND_ICONS = {
     clear: "wi-day-sunny",
@@ -703,10 +704,20 @@
         hwMarkerLayer.addLayer(marker);
         bounds.push([r.latitude, r.longitude]);
       });
-      if (bounds.length > 1) {
-        hwMap.fitBounds(bounds, { padding: [28, 28], maxZoom: 13 });
-      } else {
-        hwMap.setView(bounds[0], 12);
+      if (!hwMapReady) {
+        hwMapReady = true;
+        // Same center and zoom as the neighbourhood map: the APRS hub
+        // locator sits in the middle of the covered cities.
+        var mapEl = document.getElementById("aprs-map");
+        var clat = mapEl ? parseFloat(mapEl.getAttribute("data-lat")) : NaN;
+        var clon = mapEl ? parseFloat(mapEl.getAttribute("data-lon")) : NaN;
+        if (clat && clon) {
+          hwMap.setView([clat, clon], 11);
+        } else if (bounds.length > 1) {
+          hwMap.fitBounds(bounds, { padding: [28, 28], maxZoom: 13 });
+        } else {
+          hwMap.setView(bounds[0], 12);
+        }
       }
       window.setTimeout(function () { if (hwMap) { hwMap.invalidateSize(); } }, 80);
     });

@@ -5,6 +5,7 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -35,6 +36,12 @@ type accountView struct {
 	Phone   string
 	Email   string
 	Discord string
+
+	// Groups is the channel list with the current membership mirrored in
+	// GroupSet: every new user is subscribed to all channels by default
+	// and can unsubscribe here.
+	Groups   []storage.Group
+	GroupSet map[int64]bool
 
 	Msg   string
 	Error string
@@ -82,6 +89,22 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	groups, err := s.users.ListAllGroups()
+	if err != nil {
+		s.logger.Warn("web: account group list failed", "username", sess.username, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	memberIDs, err := s.users.GroupIDsForUser(u.ID)
+	if err != nil {
+		s.logger.Warn("web: account membership lookup failed", "username", sess.username, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	groupSet := make(map[int64]bool, len(memberIDs))
+	for _, id := range memberIDs {
+		groupSet[id] = true
+	}
 
 	v := accountView{
 		AppTitle:   s.cfg.Title,
@@ -98,6 +121,8 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 		Phone:      u.Phone,
 		Email:      u.Email,
 		Discord:    u.Discord,
+		Groups:     groups,
+		GroupSet:   groupSet,
 		NavAccount: true,
 	}
 	msg := r.URL.Query().Get("msg")
@@ -140,7 +165,25 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	discord := strings.TrimSpace(r.PostFormValue("discord"))
 	password := r.PostFormValue("password")
 
+	// Channel subscriptions: checked boxes stay subscribed; everything
+	// else is an unsubscribe.
+	var wantGroups []int64
+	seen := make(map[int64]bool)
+	for _, v := range r.PostForm["groups"] {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		wantGroups = append(wantGroups, id)
+	}
+
 	if msg := validateAccountForm(phone, email, discord, password); msg != "" {
+		groups, gerr := s.users.ListAllGroups()
+		if gerr != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		v := accountView{
 			AppTitle:   s.cfg.Title,
 			Name:       s.displayName(),
@@ -156,8 +199,13 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 			Phone:      phone,
 			Email:      email,
 			Discord:    discord,
+			Groups:     groups,
+			GroupSet:   make(map[int64]bool),
 			Error:      msg,
 			NavAccount: true,
+		}
+		for _, id := range wantGroups {
+			v.GroupSet[id] = true
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusBadRequest)
@@ -167,6 +215,11 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.users.UpdateUser(u.ID, u.Username, phone, email, discord, u.Role, password); err != nil {
 		s.logger.Warn("web: account update failed", "username", sess.username, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.users.SetUserGroups(u.ID, wantGroups); err != nil {
+		s.logger.Warn("web: account subscription update failed", "username", sess.username, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

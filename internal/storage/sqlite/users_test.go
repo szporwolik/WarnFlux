@@ -154,8 +154,52 @@ func TestUsersCRUDAndProtection(t *testing.T) {
 	}
 }
 
-// TestUserAuthenticate pins password-based sign-in for directory users:
-// correct credentials return the user with their role, wrong or unknown
+// TestCreateUserSubscribesAllChannels pins the default subscription: every
+// new user belongs to every group that exists at creation time.
+func TestCreateUserSubscribesAllChannels(t *testing.T) {
+	store := newUsersStore(t)
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	g1, err := store.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := store.CreateGroup("hams")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := store.CreateUser("newbie", "", "", "", "member", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := store.GroupIDsForUser(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got[g1.ID] || !got[g2.ID] || len(ids) != 2 {
+		t.Fatalf("new user memberships = %v, want both groups", ids)
+	}
+
+	// Self-service unsubscribe: membership is replaced, never merged.
+	if err := store.SetUserGroups(u.ID, []int64{g1.ID}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err = store.GroupIDsForUser(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != g1.ID {
+		t.Fatalf("after unsubscribe memberships = %v, want only %d", ids, g1.ID)
+	}
+}
+
+// TestUserAuthenticate pins password-based sign-in for directory users:// correct credentials return the user with their role, wrong or unknown
 // credentials return ErrBadCredentials, and role-less users cannot sign in.
 func TestUserAuthenticate(t *testing.T) {
 	store := newUsersStore(t)

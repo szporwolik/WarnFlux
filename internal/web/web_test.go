@@ -18,6 +18,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/szporwolik/WarnFlux/internal/storage"
+
 	"github.com/szporwolik/WarnFlux/internal/aprs"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
@@ -1239,6 +1241,14 @@ func TestEmcomRoleFlow(t *testing.T) {
 // entry, and is redirected away from compose and every admin page.
 func TestMemberRoleFlow(t *testing.T) {
 	env := newTestEnv(t)
+	ops, err := env.users.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hams, err := env.users.CreateGroup("hams")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := env.users.CreateUser("plain-user", "", "", "", "member", "password123"); err != nil {
 		t.Fatal(err)
 	}
@@ -1261,6 +1271,13 @@ func TestMemberRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `name="phone"`) || !strings.Contains(html, `name="email"`) {
 		t.Error("account page missing the self-service contact form")
 	}
+	// Default subscription: every channel checkbox is checked.
+	for _, g := range []storage.Group{ops, hams} {
+		want := fmt.Sprintf(`name="groups" value="%d" checked`, g.ID)
+		if !strings.Contains(html, want) {
+			t.Errorf("account page missing checked channel %s (%d)", g.Name, g.ID)
+		}
+	}
 	for _, forbidden := range []string{"Compose", "Dashboard", "Users", "Groups"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
 			t.Errorf("member must not see %s nav entry", forbidden)
@@ -1275,9 +1292,13 @@ func TestMemberRoleFlow(t *testing.T) {
 		}
 	}
 
-	// Self-service save: contact fields update, role stays member.
+	// Self-service save: contact fields update, role stays member, and
+	// only the channels still checked stay subscribed.
 	csrf2 := extractCSRF(t, html)
-	form = url.Values{"csrf": {csrf2}, "phone": {"600700800"}, "email": {"member@example.com"}, "password": {""}}
+	form = url.Values{
+		"csrf": {csrf2}, "phone": {"600700800"}, "email": {"member@example.com"},
+		"password": {""}, "groups": {strconv.FormatInt(hams.ID, 10)},
+	}
 	resp, _ = env.postForm("/account", form)
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account?msg=saved" {
 		t.Fatalf("account save = %d %q, want 303 with saved flash", resp.StatusCode, resp.Header.Get("Location"))
@@ -1288,6 +1309,13 @@ func TestMemberRoleFlow(t *testing.T) {
 	}
 	if u.Phone != "600700800" || u.Email != "member@example.com" || u.Role != "member" {
 		t.Errorf("after save = phone %q email %q role %q", u.Phone, u.Email, u.Role)
+	}
+	ids, err := env.users.GroupIDsForUser(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != hams.ID {
+		t.Errorf("after save memberships = %v, want only %d (ops unsubscribed)", ids, hams.ID)
 	}
 }
 

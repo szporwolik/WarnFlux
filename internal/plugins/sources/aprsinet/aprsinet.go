@@ -46,9 +46,6 @@ const (
 
 	minReconnectDelay = 2 * time.Second
 	maxReconnectDelay = 2 * time.Minute
-
-	// statsEvery bounds how often the one-line poll summary is reported.
-	statsEvery = 30 * time.Second
 )
 
 // Config is the plugin-specific configuration.

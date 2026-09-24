@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strings"
 )
 
 // ProviderResponse is the typed Open-Meteo forecast response. Only the
@@ -191,11 +190,4 @@ func checkFiniteResponse(resp *ProviderResponse) error {
 		}
 	}
 	return nil
-}
-
-// queryVars is a test helper returning the exact provider query variables.
-func queryVars() (string, string, string) {
-	return strings.Join(currentVariables, ","),
-		strings.Join(hourlyVariables, ","),
-		strings.Join(dailyVariables, ",")
 }

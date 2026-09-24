@@ -101,8 +101,8 @@ func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 			Event:       h.Event,
 			Description: h.Description,
 			Latitude:    *h.Latitude,
-			Longitude:   *h.Longitude,				EffectiveAt: h.EffectiveAt,			ExpiresAt:   h.ExpiresAt,
-			UpdatedAt:   h.UpdatedAt,
+			Longitude:   *h.Longitude, EffectiveAt: h.EffectiveAt, ExpiresAt: h.ExpiresAt,
+			UpdatedAt: h.UpdatedAt,
 		})
 	}
 	sort.Slice(events, func(i, j int) bool {

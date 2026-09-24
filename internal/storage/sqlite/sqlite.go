@@ -425,8 +425,9 @@ type Store struct {
 // Option customizes a Store during Open.
 type Option func(*Store)
 
-// WithClock sets the clock used for persistence timestamps. Useful in tests
-// and for deterministic behavior.
+// WithClock sets the clock used for persistence timestamps. It is the
+// deterministic-time seam used by tests across packages (ingest, storage);
+// production leaves the wall clock in place.
 func WithClock(now func() time.Time) Option {
 	return func(s *Store) { s.now = now }
 }

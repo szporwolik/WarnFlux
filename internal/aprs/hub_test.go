@@ -301,6 +301,44 @@ func TestHubMessageRXAndTX(t *testing.T) {
 	}
 }
 
+// TestHubSendMessageSanity verifies every outbound message passes through
+// the shared sanity normalizer before the protocol pass: control
+// characters and doubled whitespace collapse, Polish diacritics
+// transliterate, and non-ASCII drops — the transmitter never sees raw
+// operator text.
+func TestHubSendMessageSanity(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		Icon:       "/j",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+
+	if err := hub.SendMessage(context.Background(), "SP9XYZ", "  Uwaga  \n śnieg   i lód 🚨  "); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	sends := tx.sends()
+	if len(sends) != 1 {
+		t.Fatalf("sends = %d, want 1", len(sends))
+	}
+	if sends[0][1] != "Uwaga snieg i lod" {
+		t.Errorf("transmitted = %q, want %q", sends[0][1], "Uwaga snieg i lod")
+	}
+
+	// Same funnel for the ack-tracked path.
+	if _, err := hub.SendMessageWaitAck(context.Background(), "SP9XYZ", "  test \n  ", 100*time.Millisecond); err == nil {
+		// Timeout/ErrNoAck expected without a receiver; only the text matters.
+		t.Fatalf("SendMessageWaitAck unexpectedly succeeded")
+	}
+	if got := tx.sends()[1][1]; got != "test{00001}" {
+		t.Errorf("ack send = %q, want normalized text with ack suffix", got)
+	}
+}
+
 func TestHubStationExpiry(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled:    true,

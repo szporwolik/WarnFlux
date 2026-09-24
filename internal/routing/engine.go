@@ -339,30 +339,6 @@ func meetsThreshold(rank int, minSeverity string) bool {
 	return rank >= threshold
 }
 
-// Stats returns a snapshot of the engine counters (monitoring/tests).
-func (e *Engine) Stats() EngineStats {
-	return EngineStats{
-		EventsSeen:         e.eventsSeen.Load(),
-		TransitionsSkipped: e.transitionsSkipped.Load(),
-		RulesMatched:       e.rulesMatched.Load(),
-		ActionsFired:       e.actionsFired.Load(),
-		ActionsFailed:      e.actionsFailed.Load(),
-		ActionsDeduped:     e.actionsDeduped.Load(),
-		RuleLoadErrors:     e.ruleLoadErrors.Load(),
-	}
-}
-
-// EngineStats is a point-in-time snapshot of the engine counters.
-type EngineStats struct {
-	EventsSeen         int64
-	TransitionsSkipped int64 // cancelled/expired: dashboard-only, never notify
-	RulesMatched       int64
-	ActionsFired       int64
-	ActionsFailed      int64
-	ActionsDeduped     int64
-	RuleLoadErrors     int64
-}
-
 // fireDedupKey builds the stable deduplication identity of one hazard
 // transition. The publisher's journal ChangeID is the canonical identity;
 // when it is absent (synthetic or foreign events) a content hash of the

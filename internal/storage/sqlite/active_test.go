@@ -17,27 +17,6 @@ func activeEv(id string) core.HazardEvent {
 	return e
 }
 
-// ackAllChanges drains and acknowledges every pending journal change for an
-// output, so later tests can run with a fully-caught-up cursor. The cursor
-// advances per batch: PollChanges re-returns the same batch until
-// AckChanges moves it forward.
-func ackAllChanges(t *testing.T, s *Store, outputID string) {
-	t.Helper()
-	ctx := context.Background()
-	for {
-		batch, err := s.PollChanges(ctx, outputID, 256)
-		if err != nil {
-			t.Fatalf("PollChanges: %v", err)
-		}
-		if len(batch) == 0 {
-			return
-		}
-		if err := s.AckChanges(ctx, outputID, batch[len(batch)-1].ID); err != nil {
-			t.Fatalf("AckChanges: %v", err)
-		}
-	}
-}
-
 func TestListActiveEventsOnlyActive(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()

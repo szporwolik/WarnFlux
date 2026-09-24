@@ -3,7 +3,6 @@ package gddkia
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,10 +14,6 @@ import (
 
 // sourceName is the normalized source namespace for routing and display.
 const sourceName = "gddkia"
-
-// errGeographicallyFiltered marks an item that is intentionally out of
-// scope for the configured area: the provider snapshot stays complete.
-var errGeographicallyFiltered = errors.New("gddkia: outside the configured area")
 
 // parseFeedTime parses the feed's RFC3339 timestamps; the feed writes
 // offsets without a colon ("+0200"), so both layouts are accepted.

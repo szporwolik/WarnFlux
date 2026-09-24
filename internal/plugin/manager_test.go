@@ -453,7 +453,6 @@ func TestManagerShutdownWithPendingDeliveries(t *testing.T) {
 // emitter boundary deep-copies.
 type mutatingSource struct {
 	event core.HazardEvent
-	gate  chan struct{}
 }
 
 func (s *mutatingSource) Name() string { return "mutating" }

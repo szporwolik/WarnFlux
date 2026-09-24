@@ -1379,6 +1379,18 @@
     });
   }
 
+  // fmtLocalDate renders an RFC 3339 timestamp in local browser time
+  // (minute precision, no seconds) for hazard popups.
+  function fmtLocalDate(v) {
+    var t = new Date(v);
+    if (isNaN(t.getTime())) {
+      return v;
+    }
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+    return t.getFullYear() + "-" + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) +
+      " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes());
+  }
+
   function refreshHazards() {
     fetch("/api/events")
       .then(function (r) { return r.ok ? r.json() : null; })
@@ -1396,6 +1408,12 @@
             esc(e.severity || "unknown") + "</span> <strong>" + esc(e.headline || e.event) + "</strong>";
           if (e.description) {
             popup += "<br>" + esc(e.description).replace(/\n/g, "<br>");
+          }
+          if (e.effective_at || e.expires_at) {
+            var when = [];
+            if (e.effective_at) { when.push("From: " + fmtLocalDate(e.effective_at)); }
+            if (e.expires_at) { when.push("To: " + fmtLocalDate(e.expires_at)); }
+            popup += "<br><span class=\"muted\">" + when.join(" · ") + "</span>";
           }
           popup += "<br><span class=\"muted\">Source: " + esc(e.source) + "</span>";
           var m = L.marker([e.latitude, e.longitude], { icon: hazardIcon(e.severity), riseOnHover: true });

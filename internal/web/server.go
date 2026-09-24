@@ -359,6 +359,14 @@ func templateFuncs() template.FuncMap {
 			}
 			return strings.ToUpper(string([]rune(s)[0]))
 		},
+		// shortCommit trims full hashes for display (links keep the
+		// full hash; cache-busting query strings must too).
+		"shortCommit": func(s string) string {
+			if len(s) > 7 {
+				return s[:7]
+			}
+			return s
+		},
 		"timeShort": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"

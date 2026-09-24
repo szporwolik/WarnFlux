@@ -62,18 +62,6 @@ func (p *recordingPlugin) Close(ctx context.Context) error {
 	return nil
 }
 
-func nodeCfg(t *testing.T, level string) *yaml.Node {
-	t.Helper()
-	if level == "" {
-		return nil
-	}
-	var n yaml.Node
-	if err := yaml.Unmarshal([]byte("level: "+level), &n); err != nil {
-		t.Fatal(err)
-	}
-	return &n
-}
-
 func newManager(t *testing.T, reg *action.Registry, cfgs []config.Action) *action.Manager {
 	t.Helper()
 	m, err := action.NewManager(cfgs, reg, testLogger(), nil, nil)

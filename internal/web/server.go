@@ -238,9 +238,6 @@ func (s *Server) routes(static http.Handler) {
 // MarkReady flips readiness (database opened, HTTP initialized).
 func (s *Server) MarkReady() { s.ready.Store(true) }
 
-// Handler returns the root HTTP handler (used by tests).
-func (s *Server) Handler() http.Handler { return s.mux }
-
 // Bind creates the listening socket. It fails startup when the address is
 // already in use — the application must not discover that only after
 // everything else is running.
@@ -309,18 +306,6 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.Handler {
 		}
 		if sess.role != "admin" {
 			http.Redirect(w, r, landingForRole(sess.role), http.StatusSeeOther)
-			return
-		}
-		next(w, r)
-	})
-}
-
-// requirePartial protects fragment routes: unauthenticated requests get 401
-// so the embedded poller can redirect to the login page.
-func (s *Server) requirePartial(next http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.sessions.currentSession(r) == nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)

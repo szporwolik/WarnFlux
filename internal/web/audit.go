@@ -83,7 +83,7 @@ func (s *Server) handlePartialAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type entryJSON = auditEntry
-	entries := []entryJSON{}
+	var entries []entryJSON
 	if st, ok := s.users.(storage.AuditStore); ok {
 		dbEntries, err := st.ListAudit(after, auditPageSize)
 		if err != nil {

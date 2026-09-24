@@ -30,7 +30,6 @@ type Manager struct {
 	trail  *trail.Recorder
 	reg    *metrics.Registry
 
-	wg       sync.WaitGroup
 	cancel   context.CancelFunc
 	cancelMu sync.Mutex
 }

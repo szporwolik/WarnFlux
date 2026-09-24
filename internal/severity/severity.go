@@ -20,11 +20,6 @@ const (
 	Extreme  = "extreme"
 )
 
-// All lists the canonical values in ascending order.
-func All() []string {
-	return []string{Unknown, Minor, Moderate, Severe, Extreme}
-}
-
 // rank maps each canonical value to its total order.
 var rank = map[string]int{
 	Unknown:  0,

@@ -607,3 +607,30 @@ func TestEngineTrailRecording(t *testing.T) {
 		return false
 	}, "minor skip step")
 }
+
+// Stats returns a snapshot of the engine counters. It is test
+// instrumentation only (asserting the counters in rule-engine tests);
+// production monitoring would expose it through a health endpoint when
+// needed.
+func (e *Engine) Stats() EngineStats {
+	return EngineStats{
+		EventsSeen:         e.eventsSeen.Load(),
+		TransitionsSkipped: e.transitionsSkipped.Load(),
+		RulesMatched:       e.rulesMatched.Load(),
+		ActionsFired:       e.actionsFired.Load(),
+		ActionsFailed:      e.actionsFailed.Load(),
+		ActionsDeduped:     e.actionsDeduped.Load(),
+		RuleLoadErrors:     e.ruleLoadErrors.Load(),
+	}
+}
+
+// EngineStats is a point-in-time snapshot of the engine counters.
+type EngineStats struct {
+	EventsSeen         int64
+	TransitionsSkipped int64 // cancelled/expired: dashboard-only, never notify
+	RulesMatched       int64
+	ActionsFired       int64
+	ActionsFailed      int64
+	ActionsDeduped     int64
+	RuleLoadErrors     int64
+}

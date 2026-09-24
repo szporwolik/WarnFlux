@@ -19,13 +19,12 @@ import (
 // fakeEmitter implements every capability the imgw source may use and
 // records what it received.
 type fakeEmitter struct {
-	mu         sync.Mutex
-	emitted    []core.HazardEvent
-	active     []core.HazardEvent
-	healthy    int
-	degraded   []error
-	emitErr    error
-	readerOnly bool // when true, ListSourceActiveEvents is absent
+	mu       sync.Mutex
+	emitted  []core.HazardEvent
+	active   []core.HazardEvent
+	healthy  int
+	degraded []error
+	emitErr  error
 }
 
 var _ plugin.Emitter = (*fakeEmitter)(nil)

@@ -35,6 +35,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/geo"
+	"github.com/szporwolik/WarnFlux/internal/sanity"
 )
 
 // Type is the action type name used in the YAML configuration.
@@ -302,7 +303,7 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 		}
 	}
 
-	msg := buildMessage(p.cfg, req, time.Now())
+	msg := buildMessage(ctx, p.cfg, req, time.Now())
 	var errs []error
 	for _, rcpt := range recipients {
 		// One rate slot per email; a cancelled wait fails the remaining
@@ -401,11 +402,14 @@ const logoCID = "warnflux-logo"
 // inline CID image, so the brand renders without any external hosting.
 // The subject line is MIME word-encoded so non-ASCII (e.g. Polish) text
 // stays intact. All dynamic values are HTML-escaped in the HTML part.
-func buildMessage(cfg Config, req action.ActionRequest, now time.Time) []byte {
+func buildMessage(ctx context.Context, cfg Config, req action.ActionRequest, now time.Time) []byte {
 	subject := subjectOf(cfg, req)
+	// Sanity stage: subject and plain body pass through the shared
+	// normalizer before MIME encoding (TODO(llm): future review hook).
+	subject = sanity.NormalizeText(ctx, sanity.ChannelEmailSubject, subject)
 	relatedBoundary := fmt.Sprintf("warnflux-rel-%d", now.UnixNano())
 	altBoundary := fmt.Sprintf("warnflux-alt-%d", now.UnixNano())
-	plain := bodyOfPlain(req, now)
+	plain := sanity.NormalizeText(ctx, sanity.ChannelEmailBody, bodyOfPlain(req, now))
 	htmlBody := bodyOfHTML(req, now)
 
 	var b strings.Builder

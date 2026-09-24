@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// queryVars is a test helper returning the exact provider query variables.
+func queryVars() (string, string, string) {
+	return strings.Join(currentVariables, ","),
+		strings.Join(hourlyVariables, ","),
+		strings.Join(dailyVariables, ",")
+}
+
 func TestFetchRequestParameters(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

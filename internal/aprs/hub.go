@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/sanity"
 )
 
 // Hub runtime bounds.
@@ -747,6 +749,11 @@ func (h *Hub) SendMessage(ctx context.Context, to, text string) error {
 	if !ValidCallsign(to) {
 		return fmt.Errorf("aprs: invalid addressee callsign %q", to)
 	}
+	// Sanity stage: every outbound message passes through the shared
+	// normalizer (control chars, whitespace, 7-bit transliteration);
+	// TODO(llm) will review here in the future. Protocol limits below
+	// still own the final length.
+	text = sanity.NormalizeText(ctx, sanity.ChannelAPRS, text)
 	text = TrimMessageText(text)
 	if text == "" {
 		return fmt.Errorf("aprs: message text must not be empty")
@@ -773,6 +780,8 @@ func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout t
 	if !ValidCallsign(to) {
 		return false, fmt.Errorf("aprs: invalid addressee callsign %q", to)
 	}
+	// Sanity stage before the protocol pass (see SendMessage).
+	text = sanity.NormalizeText(ctx, sanity.ChannelAPRS, text)
 	text = LimitMessageText(text, AckSuffixLen)
 	if text == "" {
 		return false, fmt.Errorf("aprs: message text must not be empty")

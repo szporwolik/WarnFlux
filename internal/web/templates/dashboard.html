@@ -28,7 +28,7 @@
 {{define "status"}}<section class="card" id="status-section">
   <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-speedometer2"></use></svg>System</h2>
   <div class="kv-grid">
-    <div class="kv"><span class="k">Version</span><span class="v">{{.Version}} ({{.Commit}})</span></div>
+    <div class="kv"><span class="k">Version</span><span class="v">{{.Version}} ({{shortCommit .Commit}})</span></div>
     <div class="kv"><span class="k">Uptime</span><span class="v">{{dur .Uptime}}</span></div>
     <div class="kv"><span class="k">Receivers</span><span class="v">{{.Connected}} / {{.Receivers}} connected</span></div>
     <div class="kv"><span class="k">Router status snapshots</span><span class="v">{{.RouterDocs}}</span></div>

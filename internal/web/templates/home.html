@@ -97,7 +97,7 @@
     {{if ne .AppTitle "WarnFlux"}}<span class="sep">·</span><span>WarnFlux</span>{{end}}
     <span class="sep">·</span>
     <span>{{.Version}}</span>
-    {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{.Commit}}</a>{{end}}
+    {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{shortCommit .Commit}}</a>{{end}}
     <a class="home-git" href="https://github.com/szporwolik/WarnFlux" target="_blank" rel="noopener noreferrer" title="Source code" aria-label="Source code (GitHub)">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
     </a>

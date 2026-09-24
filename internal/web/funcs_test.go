@@ -27,6 +27,20 @@ func TestDurFormatting(t *testing.T) {
 	}
 }
 
+func TestShortCommit(t *testing.T) {
+	short := templateFuncs()["shortCommit"].(func(string) string)
+	for in, want := range map[string]string{
+		"87f3c4279dbb69e6e680fdebea6d0d7988956af6": "87f3c42",
+		"abc1234": "abc1234",
+		"unknown": "unknown",
+		"":        "",
+	} {
+		if got := short(in); got != want {
+			t.Errorf("shortCommit(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestContainsFunc(t *testing.T) {
 	contains := templateFuncs()["contains"].(func([]string, string) bool)
 	list := []string{"log-alerts", "mqtt-spok"}

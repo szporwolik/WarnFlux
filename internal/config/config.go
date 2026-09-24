@@ -137,6 +137,15 @@ type APRSConfig struct {
 	// similar infrastructure from the station state, so the neighbourhood
 	// map shows actual ham stations only.
 	ExcludeInfrastructure bool
+	// Name is the optional display name of our own APRS station (e.g.
+	// "SOSNA Niepołomice"); it rides along in routed APRS messages.
+	Name string
+	// RouteMessages turns APRS messages addressed to us that were heard
+	// over the radio (KISS) into routable events: they flow into the
+	// routing matrix as the "aprs" source, so groups can forward them to
+	// Discord, SMTP and friends. Internet-injected messages are excluded
+	// (anyone can spoof those).
+	RouteMessages bool
 }
 
 // Source is one configured source plugin instance.
@@ -345,11 +354,13 @@ type fileConfig struct {
 type fileAPRS struct {
 	Enabled               bool           `yaml:"enabled"`
 	Callsign              string         `yaml:"callsign"`
+	Name                  string         `yaml:"name"`
 	Icon                  string         `yaml:"icon"`
 	GridSquare            string         `yaml:"gridsquare"`
 	RadiusKM              *float64       `yaml:"radius_km"`
 	StationTTL            *time.Duration `yaml:"station_ttl"`
 	ExcludeInfrastructure *bool          `yaml:"exclude_infrastructure"`
+	RouteMessages         *bool          `yaml:"route_messages"`
 }
 
 type fileIngestHTTP struct {
@@ -794,6 +805,10 @@ func (f fileConfig) toConfig() Config {
 		}
 		if f.APRS.ExcludeInfrastructure != nil {
 			cfg.APRS.ExcludeInfrastructure = *f.APRS.ExcludeInfrastructure
+		}
+		cfg.APRS.Name = strings.TrimSpace(f.APRS.Name)
+		if f.APRS.RouteMessages != nil {
+			cfg.APRS.RouteMessages = *f.APRS.RouteMessages
 		}
 	}
 	return cfg

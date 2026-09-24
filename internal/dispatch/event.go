@@ -58,6 +58,11 @@ type Hazard struct {
 	Headline         string
 	Areas            []string
 
+	// Description and Instruction are free-text event metadata carried
+	// on the wire; optional for every producer.
+	Description string
+	Instruction string
+
 	EffectiveAt *time.Time
 	ExpiresAt   *time.Time
 

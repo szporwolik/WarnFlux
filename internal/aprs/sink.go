@@ -56,6 +56,12 @@ type HubConfig struct {
 	// and similar infrastructure from the station state so the map shows
 	// actual ham stations only.
 	ExcludeInfrastructure bool
+	// Name is the optional display name of our own station (e.g. "SOSNA
+	// Niepołomice"); it rides along in routed APRS messages.
+	Name string
+	// RouteMessages turns APRS messages addressed to us and heard over
+	// the radio (KISS) into routable events (source "aprs").
+	RouteMessages bool
 	// Version is the WarnFlux version (used in the APRS-IS login).
 	Version string
 

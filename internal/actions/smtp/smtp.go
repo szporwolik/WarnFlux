@@ -529,6 +529,12 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 		if h.Hazard.Headline != "" {
 			fmt.Fprintf(&b, "Headline: %s\n", h.Hazard.Headline)
 		}
+		if h.Hazard.Description != "" {
+			fmt.Fprintf(&b, "Description: %s\n", h.Hazard.Description)
+		}
+		if h.Hazard.Instruction != "" {
+			fmt.Fprintf(&b, "Instruction: %s\n", h.Hazard.Instruction)
+		}
 		if len(h.Hazard.Areas) > 0 {
 			fmt.Fprintf(&b, "Areas: %s\n", strings.Join(geo.DisplayAreas(h.Hazard.Areas), ", "))
 		}

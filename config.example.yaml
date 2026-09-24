@@ -534,6 +534,10 @@ aprs:
   # addressed to and transmitted from.
   callsign: "SP9MOA-10"
 
+  # Optional display name of our station (e.g. "SOSNA Niepołomice"); it
+  # rides along in routed APRS messages. Defaults to the callsign.
+  name: ""
+
   # Our APRS icon: one symbol code (e.g. "j") or table+code (e.g. "/j").
   icon: "/j"
 
@@ -552,3 +556,10 @@ aprs:
   # digipeaters, igates/gateways, internet-only nodes and repeaters.
   # The neighbourhood map then shows actual ham stations only.
   exclude_infrastructure: true
+
+  # Route APRS messages addressed to us that were heard over the RADIO
+  # (KISS): each becomes a routable event on the /events stream under
+  # the "aprs" source, so groups can forward it to Discord, SMTP, ...
+  # The forwarded message starts with "Message from: <CALLSIGN-SSID>".
+  # Internet-injected messages are excluded (anyone can spoof those).
+  route_messages: false

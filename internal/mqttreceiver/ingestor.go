@@ -361,6 +361,8 @@ func EventFromWire(we *EventPayload, receiverID string, now time.Time) dispatch.
 				Urgency:          we.Event.Urgency,
 				Certainty:        we.Event.Certainty,
 				Headline:         we.Event.Headline,
+				Description:      we.Event.Description,
+				Instruction:      we.Event.Instruction,
 				Areas:            append([]string(nil), we.Event.Areas...),
 				EffectiveAt:      optTime(we.Event.EffectiveAt),
 				ExpiresAt:        optTime(we.Event.ExpiresAt),

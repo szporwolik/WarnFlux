@@ -199,11 +199,13 @@ func run(configPath string) error {
 	hub, err := aprs.NewHub(aprs.HubConfig{
 		Enabled:               cfg.APRS.Enabled,
 		Callsign:              cfg.APRS.Callsign,
+		Name:                  cfg.APRS.Name,
 		Icon:                  cfg.APRS.Icon,
 		GridSquare:            cfg.APRS.GridSquare,
 		RadiusKM:              cfg.APRS.RadiusKM,
 		StationTTL:            cfg.APRS.StationTTL,
 		ExcludeInfrastructure: cfg.APRS.ExcludeInfrastructure,
+		RouteMessages:         cfg.APRS.RouteMessages,
 		Version:               resolvedVersion,
 	}, logger)
 	if err != nil {

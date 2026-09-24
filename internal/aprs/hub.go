@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -112,6 +113,8 @@ type Hub struct {
 	expired   atomic.Int64
 	// msgSeq numbers outbound message ids (the {id} ack suffix).
 	msgSeq atomic.Int64
+	// eventSeq numbers routed APRS-message events on the /events stream.
+	eventSeq atomic.Int64
 	// pending holds one result channel per in-flight message id; guarded
 	// by mu.
 	pending map[string]chan string
@@ -183,6 +186,15 @@ func (h *Hub) CenterLon() float64 { return h.cfg.CenterLon }
 
 // RadiusKM returns the configured nearby radius.
 func (h *Hub) RadiusKM() float64 { return h.cfg.RadiusKM }
+
+// Name returns the display name of our station (falls back to the
+// callsign).
+func (h *Hub) Name() string {
+	if h.cfg.Name != "" {
+		return h.cfg.Name
+	}
+	return h.cfg.Callsign
+}
 
 // Version returns the WarnFlux version for APRS-IS login strings.
 func (h *Hub) Version() string { return h.cfg.Version }
@@ -554,12 +566,78 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 		h.logger.Warn("aprs: message feed publish failed", "error", err)
 	}
 
+	// Routing: APRS messages addressed to us and heard over the RADIO
+	// (KISS) become routable events on the /events stream (the "aprs"
+	// source in the routing matrix). Internet-injected messages are
+	// excluded — anyone on APRS-IS can spoof those.
+	if h.cfg.RouteMessages && via == BackendRadio && h.routableMessage(p) {
+		h.publishMessageEvent(p)
+	}
+
 	// Signal the ack waiter only after the rx document is on the message
 	// feed: callers that learn about the ack must also see its document.
 	if p.Message.ID != "" && len(p.Message.Text) >= 3 {
 		if kind := ackKind(p.Message.Text); kind != "" {
 			h.signalAck(p.Message.ID, kind)
 		}
+	}
+}
+
+// routableMessage reports whether a message addressed to us is real
+// traffic worth routing: not our own transmission and not an ack/rej
+// protocol frame.
+func (h *Hub) routableMessage(p Packet) bool {
+	if p.Src == h.cfg.Callsign || p.Message == nil {
+		return false
+	}
+	text := strings.TrimSpace(p.Message.Text)
+	if text == "" || len(text) >= 3 && ackKind(text) != "" {
+		return false
+	}
+	return true
+}
+
+// publishMessageEvent re-publishes one radio-heard APRS message as a
+// canonical /events payload. The forwarded content starts with
+// "Message from: <callsign with SSID>", the text follows, and our
+// station name is carried as context.
+func (h *Hub) publishMessageEvent(p Packet) {
+	seq := h.eventSeq.Add(1)
+	now := time.Now().UTC()
+	nowS := now.Format(time.RFC3339)
+	expires := now.Add(time.Hour).Format(time.RFC3339)
+	from := p.Src
+	text := strings.TrimSpace(p.Message.Text)
+
+	doc := MessageEventWire{
+		SchemaVersion: messageEventSchemaVersion,
+		ChangeID:      seq,
+		ChangeType:    "new",
+		EventKey:      "aprs:" + from + ":" + strconv.FormatInt(seq, 10),
+		Event: MessageEventHazard{
+			Source:      "aprs",
+			SourceID:    from,
+			Event:       "APRS message",
+			Severity:    "minor",
+			Urgency:     "unknown",
+			Certainty:   "unknown",
+			Headline:    "Message from: " + from + ": " + text,
+			Description: "Received by " + h.Name() + " (" + h.cfg.Callsign + ")",
+			EffectiveAt: &nowS,
+			ExpiresAt:   &expires,
+			Areas:       []string{},
+			Status:      "active",
+			ReceivedAt:  nowS,
+			UpdatedAt:   nowS,
+		},
+	}
+	payload, err := json.Marshal(doc)
+	if err != nil {
+		h.logger.Warn("aprs: routed message marshal failed", "error", err)
+		return
+	}
+	if err := h.publishWithTimeout("events", false, payload); err != nil {
+		h.logger.Warn("aprs: routed message publish failed", "callsign", from, "error", err)
 	}
 }
 

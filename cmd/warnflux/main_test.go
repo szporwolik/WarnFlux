@@ -80,3 +80,47 @@ func TestResolveVersionIgnoresWhitespaceOnly(t *testing.T) {
 		t.Errorf("whitespace-only VERSION file should be ignored: %q", got)
 	}
 }
+
+// TestCheckConfigValid runs the full -check-config path (config load +
+// strict construction of plugins/actions/receivers/web) against a minimal
+// configuration and expects success without any side effects.
+func TestCheckConfigValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+app:
+  log_level: info
+storage:
+  driver: sqlite
+  path: ` + filepath.Join(dir, "warnflux.db") + `
+sources:
+  - id: imgw-warnings
+    type: imgw
+    enabled: false
+actions:
+  - id: smtp-alerts
+    type: smtp
+    enabled: false
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(path, true); err != nil {
+		t.Fatalf("check-config on a valid config: %v", err)
+	}
+}
+
+// TestCheckConfigRejectsBadPluginConfig pins the strict decode: an unknown
+// field inside an enabled plugin block must fail -check-config the same
+// way it would fail a real startup.
+func TestCheckConfigRejectsBadPluginConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "sources:\n  - id: imgw-warnings\n    type: imgw\n    enabled: true\n    config:\n      wat: 1\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(path, true); err == nil {
+		t.Fatal("check-config accepted an unknown plugin field")
+	}
+}

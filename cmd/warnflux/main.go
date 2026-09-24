@@ -117,10 +117,106 @@ const (
 	actionShutdownMax = 30 * time.Second
 )
 
+// validateConfiguration mirrors run()'s static construction phase for
+// -check-config: every strict YAML decoder and cross-validation runs
+// (plugins, actions, MQTT receivers, ingest endpoints, web server), but
+// nothing is started, no database is opened and no connection is made.
+func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVersion string, met *metrics.Registry) error {
+	registry := plugin.NewRegistry()
+	hub, err := aprs.NewHub(aprs.HubConfig{
+		Enabled:               cfg.APRS.Enabled,
+		Callsign:              cfg.APRS.Callsign,
+		Name:                  cfg.APRS.Name,
+		Icon:                  cfg.APRS.Icon,
+		GridSquare:            cfg.APRS.GridSquare,
+		Latitude:              cfg.APRS.Latitude,
+		Longitude:             cfg.APRS.Longitude,
+		RadiusKM:              cfg.APRS.RadiusKM,
+		StationTTL:            cfg.APRS.StationTTL,
+		ExcludeInfrastructure: cfg.APRS.ExcludeInfrastructure,
+		RouteMessages:         cfg.APRS.RouteMessages,
+		Version:               resolvedVersion,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("configure aprs hub: %w", err)
+	}
+	if err := plugins.RegisterBuiltins(registry, hub); err != nil {
+		return fmt.Errorf("register built-in plugins: %w", err)
+	}
+	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs,
+		nil, nil, nil, plugin.ManagerOptions{
+			ExpirationInterval: cfg.App.ExpirationInterval,
+			ChangeRetention:    cfg.App.ChangeRetention,
+			EventRetention:     cfg.App.EventRetention,
+			Version:            resolvedVersion,
+		}, logger)
+	if err != nil {
+		return fmt.Errorf("configure plugins: %w", err)
+	}
+
+	ingress := dispatch.NewIngress(cfg.Dispatch.QueueSize)
+	mirror := state.New()
+	traffic := mqttreceiver.NewTrafficBuffer(mqttreceiver.DefaultTrafficEntries)
+	trails := trail.NewRecorder(trail.DefaultMaxTrails)
+
+	actionRegistry := action.NewRegistry()
+	if err := actions.RegisterAll(actionRegistry, hub); err != nil {
+		return fmt.Errorf("register built-in actions: %w", err)
+	}
+	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)
+	if err != nil {
+		return fmt.Errorf("configure actions: %w", err)
+	}
+
+	receivers, err := mqttreceiver.NewManager(cfg.Dispatch.Receivers, mirror, ingress, logger, traffic)
+	if err != nil {
+		return fmt.Errorf("configure mqtt receivers: %w", err)
+	}
+
+	var mainBroker config.IngestHTTP
+	for _, o := range cfg.Outputs {
+		if o.Enabled && o.Type == "mqtt" && o.Config != nil {
+			var mc mqttout.Config
+			if err := o.Config.Decode(&mc); err == nil {
+				mainBroker = config.IngestHTTP{
+					Broker:       mc.Broker,
+					ClientID:     mc.ClientID,
+					Username:     mc.Username,
+					Password:     mc.Password,
+					PasswordFile: mc.PasswordFile,
+					TopicPrefix:  mc.TopicPrefix,
+				}
+			}
+			break
+		}
+	}
+	for _, ing := range cfg.IngestHTTP {
+		if !ing.Enabled {
+			continue
+		}
+		ing = ingesthttp.Resolve(ing, mainBroker)
+		if ing.Broker == "" {
+			return fmt.Errorf("configure ingest_http %q: no broker configured and no enabled mqtt output to inherit one from", ing.ID)
+		}
+		if _, err := ingesthttp.New(ing, logger); err != nil {
+			return fmt.Errorf("configure ingest_http %q: %w", ing.ID, err)
+		}
+	}
+
+	if cfg.Web.Enabled {
+		if _, err := web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub,
+			ingress, logger, resolvedVersion, commit, nil, nil, nil, traffic, trails, met); err != nil {
+			return fmt.Errorf("configure web: %w", err)
+		}
+	}
+	return nil
+}
+
 func main() {
 	fs := flag.NewFlagSet("warnflux", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultConfigPath, "path to YAML configuration file")
 	showVersion := fs.Bool("version", false, "print version and exit")
+	checkConfig := fs.Bool("check-config", false, "validate the configuration (strict decode of every plugin/action/receiver) and exit without opening the database or connecting anywhere")
 	fs.Parse(os.Args[1:])
 
 	if *showVersion {
@@ -128,13 +224,13 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath); err != nil {
+	if err := run(*configPath, *checkConfig); err != nil {
 		slog.Error("WarnFlux failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath string) error {
+func run(configPath string, checkConfig bool) error {
 	// Resolve the reported version once (dev builds may pick it up from
 	// the repository VERSION file; release builds have it injected).
 	resolvedVersion := resolveVersion(version)
@@ -177,6 +273,18 @@ func run(configPath string) error {
 			return fmt.Errorf("register geo.areas: %w", err)
 		}
 		logger.Info("geo areas registered", "count", len(areas))
+	}
+
+	// -check-config: construct every plugin, action, receiver and the web
+	// server the same way a real run does (so every strict YAML decoder
+	// and cross-validation runs), then exit. Nothing is started, the
+	// database is never opened and no connection is ever made.
+	if checkConfig {
+		if err := validateConfiguration(cfg, logger, resolvedVersion, met); err != nil {
+			return err
+		}
+		logger.Info("configuration valid", "path", configPath)
+		return nil
 	}
 
 	// Dev/debug convenience: when the configuration does not provide a

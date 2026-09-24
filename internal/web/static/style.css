@@ -1560,12 +1560,14 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background: var(--surface);
 }
 .hw-map.leaflet-container { font-family: inherit; }
-/* Temperature pins on the weather map: APRS stations green, internet
-   providers brand-blue. */
+/* Weather map pins: the current condition icon + temperature. APRS
+   stations green, internet providers brand-blue. */
 .hw-pin-wrap { background: none; border: none; }
 .hw-pin {
-  display: inline-block;
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 6px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.7);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
@@ -1574,6 +1576,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   line-height: 1.2;
   white-space: nowrap;
 }
+.hw-pin .wi { font-size: 0.95rem; line-height: 1; }
 .hw-pin-aprs { background: #007a3d; color: #fff; }
 .hw-pin-inet { background: #1565c0; color: #fff; }
 .hw-report { scroll-margin: 4rem 0; }
@@ -1616,37 +1619,25 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .hw-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
 .hw-provider { color: var(--muted); font-size: 0.75rem; }
 .hw-meta { color: var(--muted); font-size: 0.8rem; }
-.hw-forecasts { display: flex; flex-direction: column; gap: 0.8rem; }
-.hw-forecast {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-hi);
-  padding: 0.7rem 0.9rem;
-}
-.hw-forecast-head {
+/* Compressed forecast strip on the report card: the next three days as
+   icon + max-temperature chips (full forecast: title attributes). */
+.hw-fcast {
   display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  margin: 0 0 0.5rem;
-  font-size: 0.95rem;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
 }
-.hw-days { display: flex; gap: 0.4rem; overflow-x: auto; padding-bottom: 0.2rem; }
-.hw-day {
-  flex: 1 1 0;
-  min-width: 5.2rem;
-  display: flex;
-  flex-direction: column;
+.hw-fday {
+  display: inline-flex;
   align-items: center;
-  gap: 0.2rem;
-  padding: 0.5rem 0.3rem;
+  gap: 0.25rem;
+  padding: 1px 7px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 999px;
   background: var(--surface);
+  font-size: 0.78rem;
 }
-.hw-day-date { font-size: 0.72rem; color: var(--muted); }
-.hw-day-icon { font-size: 1.5rem; color: var(--brand); }
-.hw-day-temps { font-size: 0.85rem; }
-.hw-day-rain { font-size: 0.72rem; color: var(--link); min-height: 1em; }
+.hw-fday-icon { font-size: 0.95rem; color: var(--brand); }
 .hw-attrib {
   margin: 0.9rem 0 0;
   color: var(--muted);

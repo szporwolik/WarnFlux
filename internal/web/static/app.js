@@ -507,7 +507,7 @@
       " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes());
   }
 
-  function renderReports(reports) {
+  function renderReports(reports, forecasts) {
     var container = document.getElementById("hw-reports");
     var countEl = document.getElementById("hw-report-count");
     container.textContent = "";
@@ -516,6 +516,15 @@
       container.appendChild(el("p", "muted", "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT."));
       return;
     }
+
+    // Compressed forecasts: the multi-day data is keyed by provider +
+    // location and rendered as a compact strip on the matching report
+    // card (next three days only).
+    var forecastByKey = {};
+    (forecasts || []).forEach(function (f) {
+      forecastByKey[f.provider + "\x00" + f.name] = f;
+    });
+
     reports.forEach(function (r, i) {
       var item = el("button", "hw-report");
       item.type = "button";
@@ -542,6 +551,21 @@
       if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
       if (meta.length) { body.appendChild(el("span", "hw-meta", meta.join(" · "))); }
 
+      var f = forecastByKey[r.provider + "\x00" + r.name];
+      if (f && f.daily && f.daily.length) {
+        var strip = el("span", "hw-fcast");
+        strip.title = "Forecast — next days";
+        f.daily.slice(0, 3).forEach(function (d) {
+          var chip = el("span", "hw-fday");
+          chip.title = d.date || "";
+          chip.appendChild(el("span", "wi hw-fday-icon " + condIcon(d.condition)));
+          chip.appendChild(el("span", "hw-fday-t",
+            d.temperature_max_c != null ? Math.round(d.temperature_max_c) + "°" : "—"));
+          strip.appendChild(chip);
+        });
+        body.appendChild(strip);
+      }
+
       item.appendChild(body);
       if (r.via === "aprs") {
         item.classList.add("hw-aprs");
@@ -554,44 +578,12 @@
     });
   }
 
-  function renderForecasts(forecasts) {
-    var container = document.getElementById("hw-forecasts");
-    container.textContent = "";
-    if (!forecasts.length) {
-      container.appendChild(el("p", "muted", "No forecast data in MQTT yet"));
-      return;
-    }
-    forecasts.forEach(function (f) {
-      var box = el("section", "hw-forecast");
-      var head = el("h3", "hw-forecast-head");
-      head.appendChild(el("strong", null, f.name));
-      head.appendChild(el("span", "hw-provider", f.provider));
-      box.appendChild(head);
-
-      var row = el("div", "hw-days");
-      (f.daily || []).forEach(function (d) {
-        var day = el("div", "hw-day");
-        day.appendChild(el("span", "hw-day-date", d.date ? d.date.slice(5) : ""));
-        day.appendChild(el("span", "wi hw-day-icon " + condIcon(d.condition)));
-        var temps = (d.temperature_min_c != null ? fmtNum(d.temperature_min_c, 0) + "°" : "—") +
-          " / " + (d.temperature_max_c != null ? fmtNum(d.temperature_max_c, 0) + "°" : "—");
-        day.appendChild(el("span", "hw-day-temps", temps));
-        day.appendChild(el("span", "hw-day-rain",
-          d.precipitation_sum_mm != null && d.precipitation_sum_mm > 0 ? fmtNum(d.precipitation_sum_mm) + " mm" : ""));
-        row.appendChild(day);
-      });
-      box.appendChild(row);
-      container.appendChild(box);
-    });
-  }
-
   function refresh() {
     fetch("/api/weather")
       .then(function (resp) { return resp.ok ? resp.json() : null; })
       .then(function (data) {
         if (data) {
-          renderReports(data.reports || []);
-          renderForecasts(data.forecasts || []);
+          renderReports(data.reports || [], data.forecasts || []);
           renderWeatherMap(data.reports || []);
         }
       })
@@ -759,13 +751,14 @@
       hwMarkerLayer.clearLayers();
       var bounds = [];
       points.forEach(function (r, i) {
-        var label = r.temperature_c != null ? Math.round(r.temperature_c) + "°" : "·";
+        var temp = r.temperature_c != null ? Math.round(r.temperature_c) + "°" : "";
         var cls = "hw-pin" + (r.via === "aprs" ? " hw-pin-aprs" : " hw-pin-inet");
         var icon = L.divIcon({
           className: "hw-pin-wrap",
-          iconSize: [40, 22],
-          iconAnchor: [20, 11],
-          html: '<span class="' + cls + '">' + label + "</span>"
+          iconSize: [52, 22],
+          iconAnchor: [26, 11],
+          html: '<span class="' + cls + '"><i class="wi ' + condIcon(r.condition) +
+            '" aria-hidden="true"></i>' + (temp ? '<span class="hw-pin-t">' + temp + '</span>' : '') + '</span>'
         });
         var marker = L.marker([r.latitude, r.longitude], { icon: icon });
         var tip = r.name + (r.temperature_c != null ? " · " + fmtNum(r.temperature_c) + "°C" : "");

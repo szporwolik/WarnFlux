@@ -109,33 +109,34 @@
 
 {{define "home_alerts_section"}}<section class="home-alerts-wrap" id="home-alerts">
   <h2 class="home-alerts-head">Active communications <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span></h2>
-  {{if .Hazards}}
-  <div class="home-alerts">
-    {{range .Hazards}}
-    <article class="hazard sev-bd-{{sevClass .Severity}}">
-      <div class="hazard-head">
-        <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
-        <h3>{{.Headline}}</h3>
-      </div>
-      <div class="hazard-meta">
-        <span>Source: <strong>{{.Source}}</strong></span>
-        {{if .Event}}<span>{{.Event}}</span>{{end}}
-        {{if .Areas}}<span>Area: {{.Areas}}</span>{{end}}
-        <span>updated: {{timeShort .UpdatedAt}}</span>
-        {{if .ExpiresAt}}<span>valid until: {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
-      </div>
-    </article>
+
+  <details class="home-section home-important" open>
+    <summary>Important <span class="count{{if gt .MainCount 0}} count-live{{end}}">{{.MainCount}}</span></summary>
+    {{if .Hazards}}
+    <div class="home-alerts">
+      {{range .Hazards}}
+      <article class="hazard sev-bd-{{sevClass .Severity}}">
+        <div class="hazard-head">
+          <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
+          <h3>{{.Headline}}</h3>
+        </div>
+        <div class="hazard-meta">
+          <span>Source: <strong>{{.Source}}</strong></span>
+          {{if .Event}}<span>{{.Event}}</span>{{end}}
+          {{if .Areas}}<span>Area: {{.Areas}}</span>{{end}}
+          <span>updated: {{timeShort .UpdatedAt}}</span>
+          {{if .ExpiresAt}}<span>valid until: {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
+        </div>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="home-none">No active messages.</p>
     {{end}}
-  </div>
-  {{else if not .MinorHazards}}
-  <div class="home-empty">
-    <p>No active hazards.</p>
-    <p class="muted">This page refreshes automatically.</p>
-  </div>
-  {{end}}
+  </details>
 
   {{if .MinorHazards}}
-  <details class="home-minor">
+  <details class="home-section home-minor">
     <summary>Minor / informational <span class="count">{{.MinorCount}}</span></summary>
     <div class="home-alerts">
       {{range .MinorHazards}}

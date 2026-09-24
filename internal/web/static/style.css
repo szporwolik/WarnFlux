@@ -1383,13 +1383,9 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.78rem;
 }
 .hazard-meta strong { color: var(--text); }
-/* Collapsed low-priority tail (minor / unknown severity). */
-.home-minor {
-  margin-top: 0.9rem;
-  border-top: 1px dashed var(--border-strong);
-  padding-top: 0.55rem;
-}
-.home-minor > summary {
+/* Collapsible priority sections: Important (open by default) and the
+   minor/unknown tail (collapsed by default). */
+.home-section > summary {
   display: flex;
   align-items: center;
   gap: 0.45rem;
@@ -1400,8 +1396,8 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-weight: 600;
   user-select: none;
 }
-.home-minor > summary::-webkit-details-marker { display: none; }
-.home-minor > summary::before {
+.home-section > summary::-webkit-details-marker { display: none; }
+.home-section > summary::before {
   content: "";
   flex: none;
   width: 0;
@@ -1411,14 +1407,28 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   border-bottom: 0.3rem solid transparent;
   transition: transform 0.15s ease;
 }
-.home-minor[open] > summary::before { transform: rotate(90deg); }
-.home-minor > summary .count {
+.home-section[open] > summary::before { transform: rotate(90deg); }
+.home-section > summary .count {
   border: 1px solid var(--border);
   background: var(--surface-raised);
 }
-.home-minor > .home-alerts { margin-top: 0.6rem; }
+.home-section > .home-alerts { margin-top: 0.6rem; }
+.home-important > .home-alerts {
+  /* Important cards keep the full layout; only the minor tail is compact. */
+  margin-top: 0.7rem;
+}
+.home-minor {
+  margin-top: 0.9rem;
+  border-top: 1px dashed var(--border-strong);
+  padding-top: 0.55rem;
+}
 .home-minor .hazard { padding: 0.5rem 0.7rem; box-shadow: none; }
 .home-minor .hazard-head h3 { font-size: 0.95rem; }
+.home-none {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
 .home-empty {
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);

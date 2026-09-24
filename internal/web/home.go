@@ -135,14 +135,24 @@ func (s *Server) buildHomeView() homeView {
 // handleAPRSStations serves the public station list for the home-page map:
 // the merged retained MQTT state, newest last-heard documents excluded when
 // the APRS hub is disabled (the map tab is not rendered then either).
+// Weather stations (symbol '_') are excluded: they live on the weather tab
+// map instead of cluttering the neighbourhood map.
 func (s *Server) handleAPRSStations(w http.ResponseWriter, r *http.Request) {
 	if s.aprs == nil || !s.aprs.Enabled() {
 		http.Error(w, "aprs disabled", http.StatusNotFound)
 		return
 	}
+	stations := s.aprs.Stations()
+	out := stations[:0:0]
+	for _, doc := range stations {
+		if doc.Symbol == "_" {
+			continue
+		}
+		out = append(out, doc)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(w).Encode(s.aprs.Stations()); err != nil {
+	if err := json.NewEncoder(w).Encode(out); err != nil {
 		s.logger.Warn("web: encode aprs stations failed", "error", err)
 	}
 }

@@ -443,6 +443,9 @@
   var loaded = false;
   var miniMap = null;
   var miniMarker = null;
+  var hwMap = null;
+  var hwMarkerLayer = null;
+  var hwTileLayer = null;
 
   var COND_ICONS = {
     clear: "wi-day-sunny",
@@ -485,9 +488,10 @@
       container.appendChild(el("p", "muted", "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT."));
       return;
     }
-    reports.forEach(function (r) {
+    reports.forEach(function (r, i) {
       var item = el("button", "hw-report");
       item.type = "button";
+      item.id = "hw-report-" + i;
       item.dataset.via = r.via;
       item.appendChild(el("span", "wi hw-icon " + condIcon(r.condition)));
 
@@ -560,6 +564,7 @@
         if (data) {
           renderReports(data.reports || []);
           renderForecasts(data.forecasts || []);
+          renderWeatherMap(data.reports || []);
         }
       })
       .catch(function () { /* transient — next poll retries */ });
@@ -614,6 +619,97 @@
   if (dialog) {
     dialog.querySelector(".wmap-close").addEventListener("click", function () { dialog.close(); });
     dialog.addEventListener("click", function (e) { if (e.target === dialog) { dialog.close(); } });
+  }
+
+  // Weather overview map: every report gets a temperature pin at its own
+  // location (internet providers at their configured coordinates, APRS
+  // stations at their positions). Clicking a pin scrolls the page to the
+  // matching report card in the list below.
+  function hwTileURL() {
+    var dark = document.documentElement.getAttribute("data-theme") !== "light";
+    return dark
+      ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+      : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  }
+
+  function hwTileLabel() {
+    var dark = document.documentElement.getAttribute("data-theme") !== "light";
+    var labelEl = document.getElementById("hw-tiles-attrib");
+    if (labelEl) {
+      labelEl.innerHTML = dark
+        ? '<a href="https://www.esri.com/" target="_blank" rel="noopener noreferrer">Esri</a> World Dark Gray'
+        : '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>';
+    }
+  }
+
+  function syncWeatherTiles() {
+    if (!hwMap || !hwTileLayer) {
+      return;
+    }
+    hwMap.removeLayer(hwTileLayer);
+    hwTileLayer = L.tileLayer(hwTileURL(), { maxZoom: 18 }).addTo(hwMap);
+    hwTileLabel();
+  }
+
+  function focusReport(i) {
+    var item = document.getElementById("hw-report-" + i);
+    if (!item) {
+      return;
+    }
+    item.scrollIntoView({ behavior: "smooth", block: "center" });
+    item.classList.add("hw-flash");
+    window.setTimeout(function () { item.classList.remove("hw-flash"); }, 1600);
+  }
+
+  function renderWeatherMap(reports) {
+    var wrap = document.querySelector(".hw-map-wrap");
+    var points = (reports || []).filter(function (r) {
+      return r && r.latitude && r.longitude && (r.latitude !== 0 || r.longitude !== 0);
+    });
+    if (!points.length) {
+      if (wrap) { wrap.hidden = true; }
+      return;
+    }
+    if (wrap) { wrap.hidden = false; }
+
+    ensureLeaflet(function () {
+      if (!window.L) { return; }
+      if (!hwMap) {
+        hwMap = L.map("hw-map", { attributionControl: false }).setView([points[0].latitude, points[0].longitude], 11);
+        hwTileLayer = L.tileLayer(hwTileURL(), { maxZoom: 18 }).addTo(hwMap);
+        hwMarkerLayer = L.layerGroup().addTo(hwMap);
+        hwTileLabel();
+        if (window.MutationObserver) {
+          new MutationObserver(syncWeatherTiles).observe(document.documentElement, {
+            attributes: true, attributeFilter: ["data-theme"]
+          });
+        }
+      }
+      hwMarkerLayer.clearLayers();
+      var bounds = [];
+      points.forEach(function (r, i) {
+        var label = r.temperature_c != null ? Math.round(r.temperature_c) + "°" : "·";
+        var cls = "hw-pin" + (r.via === "aprs" ? " hw-pin-aprs" : " hw-pin-inet");
+        var icon = L.divIcon({
+          className: "hw-pin-wrap",
+          iconSize: [40, 22],
+          iconAnchor: [20, 11],
+          html: '<span class="' + cls + '">' + label + "</span>"
+        });
+        var marker = L.marker([r.latitude, r.longitude], { icon: icon });
+        var tip = r.name + (r.temperature_c != null ? " · " + fmtNum(r.temperature_c) + "°C" : "");
+        marker.bindTooltip(tip, { direction: "top" });
+        marker.on("click", function () { focusReport(i); });
+        hwMarkerLayer.addLayer(marker);
+        bounds.push([r.latitude, r.longitude]);
+      });
+      if (bounds.length > 1) {
+        hwMap.fitBounds(bounds, { padding: [28, 28], maxZoom: 13 });
+      } else {
+        hwMap.setView(bounds[0], 12);
+      }
+      window.setTimeout(function () { if (hwMap) { hwMap.invalidateSize(); } }, 80);
+    });
   }
 
   var tab = document.querySelector('.home-tab[data-tab="tab-weather"]');

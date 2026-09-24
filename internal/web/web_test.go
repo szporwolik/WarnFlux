@@ -663,6 +663,7 @@ func TestHomeAPRSMapTab(t *testing.T) {
 		`data-tab="tab-weather"`,        // third home tab
 		"weather-icons.css",             // weather tab icon set
 		"Weather Icons by Erik Flowers", // icon attribution
+		`id="hw-map"`,                   // weather overview map above the tables
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("home APRS tab missing %q: %s", want, html)
@@ -815,6 +816,22 @@ func TestPublicWeatherAPI(t *testing.T) {
 	if len(view.Forecasts) != 1 || view.Forecasts[0].Name != "Niepołomice" ||
 		len(view.Forecasts[0].Daily) != 1 || view.Forecasts[0].Daily[0].Condition != "rain" {
 		t.Fatalf("forecasts = %+v", view.Forecasts)
+	}
+
+	// Weather stations are excluded from the neighbourhood map endpoint
+	// (they live on the weather tab map instead).
+	resp, body := env.get("/api/aprs/stations")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/aprs/stations = %d", resp.StatusCode)
+	}
+	var stations []aprs.StationDocument
+	if err := json.Unmarshal([]byte(body), &stations); err != nil {
+		t.Fatalf("stations payload: %v", err)
+	}
+	for _, st := range stations {
+		if st.Callsign == "SP9WX" {
+			t.Fatalf("weather station SP9WX still on the APRS map endpoint: %s", body)
+		}
 	}
 }
 

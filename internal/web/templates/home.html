@@ -65,6 +65,10 @@
       {{end}}
     </section>
     <section class="home-panel" id="panel-tab-weather" data-panel="tab-weather" hidden>
+      <div class="hw-map-wrap">
+        <div id="hw-map" class="hw-map"></div>
+        <p class="aprs-map-attrib">Map: <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a> · Tiles: <span id="hw-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span></p>
+      </div>
       <h2 class="hw-title">Current reports <span class="count" id="hw-report-count"></span></h2>
       <div class="hw-reports" id="hw-reports">
         <p class="muted">Loading weather…</p>

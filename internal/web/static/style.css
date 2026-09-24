@@ -1417,6 +1417,44 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background-size: 448px 168px; /* 768x288 sprite scaled to 28px cells */
 }
 /* Public home weather tab: current reports + multi-day forecasts. */
+/* Public home weather tab: map above the tables. */
+.hw-map-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+.hw-map {
+  width: 100%;
+  height: 280px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.hw-map.leaflet-container { font-family: inherit; }
+/* Temperature pins on the weather map: APRS stations green, internet
+   providers brand-blue. */
+.hw-pin-wrap { background: none; border: none; }
+.hw-pin {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.hw-pin-aprs { background: #007a3d; color: #fff; }
+.hw-pin-inet { background: #1565c0; color: #fff; }
+.hw-report { scroll-margin: 4rem 0; }
+.hw-report.hw-flash {
+  border-color: var(--link);
+  background: var(--surface-muted);
+  box-shadow: 0 0 0 3px rgba(100, 150, 255, 0.25);
+  transition: box-shadow 0.3s ease;
+}
 .hw-title {
   display: flex;
   align-items: center;

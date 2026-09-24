@@ -1333,12 +1333,12 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 1rem;
   margin: 0 0 0.9rem;
 }
-/* Unofficial-system notice above the hazard list (web.disclaimer). */
+/* Unofficial-system notice above the tabs (web.disclaimer). */
 .home-disclaimer {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
-  margin: 0 0 0.9rem;
+  margin: 0.5rem 0 0;
   padding: 0.55rem 0.8rem;
   border: 1px solid var(--warn-border);
   border-radius: var(--radius);

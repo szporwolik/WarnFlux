@@ -747,7 +747,7 @@ func footerParts(req action.ActionRequest) (version, domain string) {
 }
 
 // brandName returns the configured header1 plus the project name (e.g.
-// "SOSNA · WarnFlux") that brands the footer, falling back to the project
+// (e.g. the installation name + project name) that brands the footer, falling back to the project
 // name alone when header1 is not populated.
 func brandName(req action.ActionRequest) string {
 	h := strings.TrimSpace(req.App.Header1)

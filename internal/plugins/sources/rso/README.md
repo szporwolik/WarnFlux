@@ -75,7 +75,7 @@ deterministic and never touch the network:
         suppress_imgw_duplicates: true
         local_min_severity: moderate
         regional_min_severity: severe
-        a4_corridor:
+        corridor:
           enabled: true
           km_from: 400
           km_to: 503
@@ -87,9 +87,9 @@ deterministic and never touch the network:
 | `exclude_rcb` | `true` | discard RCB communications unconditionally (they are handled by a dedicated path; a serious RCB message is still not emitted — intentional deduplication) |
 | `exclude_air_quality` | `true` | discard air-quality / smog / PM10 / PM2.5 notices (a dedicated source covers them; toxic smoke from a fire or a chemical release is civil protection and is NOT discarded) |
 | `suppress_imgw_duplicates` | `false` | discard plain RSO copies of IMGW meteo/hydro warnings; a communication adding a distinct civil-protection consequence (evacuation, road closure, water trouble, infrastructure failure) is kept |
-| `local_min_severity` | `moderate` | minimum severity for the Niepołomice core, Kraków/Wieliczka/Bochnia and the A4 corridor |
+| `local_min_severity` | `moderate` | minimum severity for the local core (from `filter.local`) and the corridor |
 | `regional_min_severity` | `severe` | minimum severity for the whole voivodeship without a local match |
-| `a4_corridor` | `400..503` | A4 kilometre window treated as the Balice–Tarnów corridor |
+| `corridor` | `enabled: true, 400..503` | optional kilometre window (km_from < km_to) treated as the road corridor; `a4_corridor` is accepted as a legacy alias |
 
 ## Endpoint and filtering
 

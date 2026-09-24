@@ -396,7 +396,7 @@ func validateAPRSCallsigns(raw string) ([]string, string) {
 	}
 	for _, c := range callsigns {
 		if !aprs.ValidCallsign(c) {
-			return callsigns, fmt.Sprintf("%q is not a valid APRS callsign (e.g. SP9MOA or SP9MOA-16)", c)
+			return callsigns, fmt.Sprintf("%q is not a valid APRS callsign (e.g. SP9XXX or SP9XXX-16)", c)
 		}
 	}
 	return callsigns, ""

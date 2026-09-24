@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -91,6 +93,35 @@ type Config struct {
 	Filter *FileFilterConfig `yaml:"filter"`
 }
 
+// filePlaceConfig maps one configured place slug to its keyword fragments
+// and the area tokens emitted on events classified there.
+type filePlaceConfig struct {
+	Keywords []string `yaml:"keywords"`
+	Areas    []string `yaml:"areas"`
+}
+
+// fileLocalConfig is the optional installation-specific geography block.
+// Nothing about the target area is hardcoded in the binary: keywords are
+// regexp fragments (plain words work), places map keyword sets to the area
+// tokens emitted on the event, roads are ids like a4/s7/dk75/dw964.
+type fileLocalConfig struct {
+	CoreKeywords     []string                   `yaml:"core_keywords"`
+	PowiatKeywords   []string                   `yaml:"powiat_keywords"`
+	NearbyKeywords   []string                   `yaml:"nearby_keywords"`
+	Places           map[string]filePlaceConfig `yaml:"places"`
+	Roads            []string                   `yaml:"roads"`
+	SevereRoads      []string                   `yaml:"severe_roads"`
+	CorridorKeywords []string                   `yaml:"corridor_keywords"`
+	CoreAreas        []string                   `yaml:"core_areas"`
+	CorridorArea     string                     `yaml:"corridor_area"`
+}
+
+type fileCorridor struct {
+	Enabled *bool `yaml:"enabled"`
+	KMFrom  *int  `yaml:"km_from"`
+	KMTo    *int  `yaml:"km_to"`
+}
+
 // FileFilterConfig is the decoded filter block; defaults are applied and
 // validated in New.
 type FileFilterConfig struct {
@@ -100,11 +131,11 @@ type FileFilterConfig struct {
 	SuppressIMGWDupes   *bool  `yaml:"suppress_imgw_duplicates"`
 	LocalMinSeverity    string `yaml:"local_min_severity"`
 	RegionalMinSeverity string `yaml:"regional_min_severity"`
-	A4Corridor          *struct {
-		Enabled *bool `yaml:"enabled"`
-		KMFrom  *int  `yaml:"km_from"`
-		KMTo    *int  `yaml:"km_to"`
-	} `yaml:"a4_corridor"`
+	// Corridor is the generic kilometer-corridor block. a4_corridor is
+	// accepted as a legacy alias (Corridor wins when both are present).
+	Corridor   *fileCorridor    `yaml:"corridor"`
+	A4Corridor *fileCorridor    `yaml:"a4_corridor"`
+	Local      *fileLocalConfig `yaml:"local"`
 }
 
 // Source polls the public RSO XML and ingests the current communication
@@ -203,23 +234,81 @@ func buildFilterConfig(f *FileFilterConfig) (*filterConfig, error) {
 		return nil, fmt.Errorf("filter.regional_min_severity must be a canonical severity, got %q", p.regionalMinSeverity)
 	}
 	if p.corridor.kmFrom <= 0 || p.corridor.kmTo <= p.corridor.kmFrom {
-		return nil, fmt.Errorf("filter.a4_corridor requires 0 < km_from < km_to")
+		return nil, fmt.Errorf("filter.corridor requires 0 < km_from < km_to")
 	}
-	if f.A4Corridor != nil {
-		if f.A4Corridor.Enabled != nil {
-			p.corridor.enabled = *f.A4Corridor.Enabled
+	corridor := f.Corridor
+	if corridor == nil {
+		corridor = f.A4Corridor
+	}
+	if corridor != nil {
+		if corridor.Enabled != nil {
+			p.corridor.enabled = *corridor.Enabled
 		}
-		if f.A4Corridor.KMFrom != nil {
-			p.corridor.kmFrom = *f.A4Corridor.KMFrom
+		if corridor.KMFrom != nil {
+			p.corridor.kmFrom = *corridor.KMFrom
 		}
-		if f.A4Corridor.KMTo != nil {
-			p.corridor.kmTo = *f.A4Corridor.KMTo
+		if corridor.KMTo != nil {
+			p.corridor.kmTo = *corridor.KMTo
 		}
 		if p.corridor.kmFrom <= 0 || p.corridor.kmTo <= p.corridor.kmFrom {
-			return nil, fmt.Errorf("filter.a4_corridor requires 0 < km_from < km_to, got %d..%d", p.corridor.kmFrom, p.corridor.kmTo)
+			return nil, fmt.Errorf("filter.corridor requires 0 < km_from < km_to, got %d..%d", p.corridor.kmFrom, p.corridor.kmTo)
 		}
 	}
+	if err := p.buildLocal(f.Local); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// buildLocal compiles the optional filter.local geography block. An
+// absent block leaves every pattern nil: the policy then has no local
+// scope and only the regional threshold applies.
+func (p *filterConfig) buildLocal(l *fileLocalConfig) error {
+	if l == nil {
+		return nil
+	}
+	p.corePattern = keywordRE(l.CoreKeywords)
+	p.powiatPattern = keywordRE(l.PowiatKeywords)
+	p.nearbyPattern = keywordRE(l.NearbyKeywords)
+	p.corridorLocs = keywordRE(l.CorridorKeywords)
+	p.coreAreas = append([]string(nil), l.CoreAreas...)
+	p.corridorArea = strings.TrimSpace(l.CorridorArea)
+
+	p.placeAreas = make(map[string][]string, len(l.Places))
+	p.cityPatterns = make(map[string]*regexp.Regexp, len(l.Places))
+	for rawSlug, pl := range l.Places {
+		slug := strings.TrimSpace(rawSlug)
+		if slug == "" {
+			return fmt.Errorf("filter.local.places: empty place slug")
+		}
+		re := keywordRE(pl.Keywords)
+		if re == nil {
+			return fmt.Errorf("filter.local.places.%s requires at least one keyword", slug)
+		}
+		p.cityPatterns[slug] = re
+		p.placeAreas[slug] = append([]string(nil), pl.Areas...)
+	}
+
+	p.roadPatterns = make(map[string]*regexp.Regexp, len(l.Roads))
+	for _, raw := range l.Roads {
+		id := strings.ToLower(strings.TrimSpace(raw))
+		if !roadIDRe.MatchString(id) {
+			return fmt.Errorf("filter.local.roads entry %q must look like a4, s7, dk75 or dw964", raw)
+		}
+		p.roadPatterns[id] = roadRE(id)
+	}
+
+	var severe []string
+	for _, raw := range l.SevereRoads {
+		id := strings.ToLower(strings.TrimSpace(raw))
+		if _, ok := p.roadPatterns[id]; !ok {
+			return fmt.Errorf("filter.local.severe_roads entry %q must also be listed in roads", raw)
+		}
+		severe = append(severe, id)
+	}
+	sort.Strings(severe)
+	p.severeRoadRe = keywordRE(severe)
+	return nil
 }
 
 func boolDefault(p *bool, def bool) bool {

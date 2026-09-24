@@ -28,6 +28,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
@@ -161,6 +162,22 @@ func run(configPath string) error {
 	slog.SetDefault(logger)
 
 	logger.Info("WarnFlux starting", "version", resolvedVersion, "commit", commit)
+
+	// Installation-specific geography: the bundled TERYT table covers the
+	// reference region only; geo.areas extends it with any units of this
+	// installation's region, so the same binary serves the whole country.
+	if len(cfg.Geo.Areas) > 0 {
+		areas := make([]geo.Area, 0, len(cfg.Geo.Areas))
+		for _, a := range cfg.Geo.Areas {
+			areas = append(areas, geo.Area{
+				Code: a.Code, Type: a.Type, Slug: a.Slug, Name: a.Name, Parents: a.Parents,
+			})
+		}
+		if err := geo.Register(areas); err != nil {
+			return fmt.Errorf("register geo.areas: %w", err)
+		}
+		logger.Info("geo areas registered", "count", len(areas))
+	}
 
 	// Dev/debug convenience: when the configuration does not provide a
 	// database path, warn and place the database next to the binary

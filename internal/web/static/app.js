@@ -1320,7 +1320,7 @@
         urgency: "immediate",
         certainty: "likely",
         status: "active",
-        areas: "niepolomice, wieliczka",
+        areas: "",
         description: "Debug fill: strong wind gusts expected this evening.",
         instruction: "Secure loose objects and avoid forest areas.",
         effective_at: localDT(now),

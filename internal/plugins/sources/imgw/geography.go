@@ -19,12 +19,35 @@ var errGeographicallyFiltered = errors.New("imgw event outside configured geogra
 type GeographyConfig struct {
 	Enabled bool     `yaml:"enabled"`
 	Include []string `yaml:"include"`
+	// HydroLocalKeywords makes a hydrological warning locally relevant
+	// when any fragment appears in its geographic description (plain
+	// words work; regexp fragments like "niepolomic\w*" are allowed).
+	// Empty means no local keyword matching: hydro warnings then pass
+	// through (a missing keyword list must never silently swallow them).
+	HydroLocalKeywords []string `yaml:"hydro_local_keywords"`
 }
 
-// geography is the runtime-ready policy: the resolved target units.
+// geography is the runtime-ready policy: the resolved target units and the
+// compiled hydro keyword patterns.
 type geography struct {
-	enabled bool
-	targets []geo.Area
+	enabled     bool
+	targets     []geo.Area
+	hydroLocal  *regexp.Regexp
+	hydroRegion *regexp.Regexp // derived from the included voivodeships
+}
+
+// keywordRE joins the configured fragments into one folded-text pattern.
+func keywordRE(fragments []string) *regexp.Regexp {
+	cleaned := make([]string, 0, len(fragments))
+	for _, f := range fragments {
+		if f = strings.TrimSpace(f); f != "" {
+			cleaned = append(cleaned, f)
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return regexp.MustCompile(`\b(?:` + strings.Join(cleaned, "|") + `)\b`)
 }
 
 // buildGeography validates the configured include list. Unknown names fail
@@ -56,6 +79,18 @@ func buildGeography(cfg *GeographyConfig) (*geography, error) {
 		seen[slug] = true
 		g.targets = append(g.targets, a)
 	}
+
+	// Hydro matching: local keywords come from the configuration; the
+	// regional pattern derives from the included voivodeship units so the
+	// operator never has to spell it out.
+	g.hydroLocal = keywordRE(cfg.HydroLocalKeywords)
+	var regionFrags []string
+	for _, t := range g.targets {
+		if t.Type == "wojewodztwo" {
+			regionFrags = append(regionFrags, strings.TrimSuffix(t.Slug, "ie")+`\w*`)
+		}
+	}
+	g.hydroRegion = keywordRE(regionFrags)
 	return g, nil
 }
 
@@ -120,30 +155,26 @@ var foldDiacritics = strings.NewReplacer(
 	"Ś", "S", "Ź", "Z", "Ż", "Z",
 )
 
-// hydroLocalPatterns recognizes the Niepołomice-area surface waters and
-// locations that make a hydrological warning locally relevant. Broad
-// rivers (Wisła, Raba) alone are deliberately not sufficient: their
-// basins span far beyond the target area.
-var hydroLocalPatterns = regexp.MustCompile(`\b(niepolomic\w*|podlez\w*|wieliczk\w*|wielick\w*|krakow\w*|bochn\w*|klaj\w*|targowisko|szarow\w*|brzezie|gdow\w*|staniatk\w*|drwinka|seraf\w*)\b`)
-
-// hydroMalopolskie detects the folded voivodeship names.
-var hydroMalopolskie = regexp.MustCompile(`malopolsk\w*|ma[łl]opolsk\w*`)
-
 // matchesHydro applies the conservative hydrological policy: the warning
 // passes when its normalized geographic description clearly intersects the
-// local area. A plain "małopolskie" without any local reference does not
-// pass. (Full basin-level GIS resolution is documented as a limitation.)
+// local area. A plain voivodeship mention without any configured local
+// keyword does not pass. (Full basin-level GIS resolution is documented as
+// a limitation.) With no hydro_local_keywords configured the warnings pass
+// through: an empty keyword list must not silently hide everything.
 func (g *geography) matchesHydro(areas []string) bool {
 	if g == nil || !g.enabled {
+		return true
+	}
+	if g.hydroLocal == nil {
 		return true
 	}
 	var local bool
 	for _, area := range areas {
 		folded := foldDiacritics.Replace(strings.ToLower(area))
-		if hydroLocalPatterns.MatchString(folded) {
+		if g.hydroLocal.MatchString(folded) {
 			local = true
 		}
-		if hydroMalopolskie.MatchString(folded) {
+		if g.hydroRegion != nil && g.hydroRegion.MatchString(folded) {
 			// regional mention alone is insufficient; keep scanning.
 			continue
 		}

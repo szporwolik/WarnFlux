@@ -11,7 +11,10 @@ import (
 // policySource builds a Source with the high-signal policy enabled.
 func policySource(t *testing.T, baseURL string) *Source {
 	t.Helper()
-	policy, err := buildFilterConfig(&FileFilterConfig{HighSignalOnly: boolPtr(true)})
+	policy, err := buildFilterConfig(&FileFilterConfig{
+		HighSignalOnly: boolPtr(true),
+		Local:          testLocal(),
+	})
 	if err != nil {
 		t.Fatalf("buildFilterConfig: %v", err)
 	}

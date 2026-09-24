@@ -28,6 +28,7 @@ package geo
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -98,11 +99,25 @@ func Lookup(slug string) (Area, bool) {
 	return a, ok
 }
 
-// Ancestors returns the set of the area's slug plus all ancestor slugs.
+// Ancestors returns the set of the area's slug plus all ancestor slugs,
+// expanding parent chains through the table so a single declared parent
+// transitively reaches its own parents.
 func Ancestors(a Area) map[string]bool {
 	out := map[string]bool{a.Slug: true}
+	var walk func(string)
+	walk = func(slug string) {
+		if out[slug] {
+			return
+		}
+		out[slug] = true
+		if p, ok := bySlug[slug]; ok {
+			for _, gp := range p.Parents {
+				walk(gp)
+			}
+		}
+	}
 	for _, p := range a.Parents {
-		out[p] = true
+		walk(p)
 	}
 	return out
 }
@@ -117,7 +132,72 @@ func Intersects(x, y Area) bool {
 	return Ancestors(x)[y.Slug] || Ancestors(y)[x.Slug]
 }
 
+// Register merges installation-specific territorial units (from the
+// top-level geo.areas configuration) into the bundled table, so an
+// installation in any region works without code changes. Errors cover
+// malformed entries, duplicate slugs/codes and unknown parents.
+func Register(extra []Area) error {
+	validType := map[string]bool{
+		"wojewodztwo": true, "powiat": true, "gmina": true, "miasto": true,
+	}
+	slugRe := regexp.MustCompile(`^[a-z0-9-]+$`)
+	codeRe := regexp.MustCompile(`^[0-9]{1,7}$`)
+
+	seenSlugs := map[string]bool{}
+	seenCodes := map[string]bool{}
+	for i, a := range extra {
+		a.Slug = strings.ToLower(strings.TrimSpace(a.Slug))
+		a.Name = strings.TrimSpace(a.Name)
+		a.Code = strings.TrimSpace(a.Code)
+		if !validType[a.Type] {
+			return fmt.Errorf("geo.areas[%d]: type %q must be wojewodztwo, powiat, gmina or miasto", i, a.Type)
+		}
+		if !slugRe.MatchString(a.Slug) {
+			return fmt.Errorf("geo.areas[%d]: slug %q must match %s", i, a.Slug, slugRe)
+		}
+		if !codeRe.MatchString(a.Code) {
+			return fmt.Errorf("geo.areas[%d]: code %q must be a 1-7 digit TERYT code", i, a.Code)
+		}
+		if a.Name == "" {
+			return fmt.Errorf("geo.areas[%d]: name must not be empty", i)
+		}
+		if _, dup := bySlug[a.Slug]; dup || seenSlugs[a.Slug] {
+			return fmt.Errorf("geo.areas[%d]: slug %q already exists in the geography table", i, a.Slug)
+		}
+		if _, dup := byCode[a.Code]; dup || seenCodes[a.Code] {
+			return fmt.Errorf("geo.areas[%d]: code %q already exists in the geography table", i, a.Code)
+		}
+		for _, p := range a.Parents {
+			pn := strings.ToLower(strings.TrimSpace(p))
+			if _, ok := bySlug[pn]; ok {
+				continue
+			}
+			if seenSlugs[pn] {
+				continue
+			}
+			return fmt.Errorf("geo.areas[%d]: parent slug %q is unknown (declare parents before children or use a bundled slug)", i, p)
+		}
+		seenSlugs[a.Slug] = true
+		seenCodes[a.Code] = true
+	}
+
+	for _, a := range extra {
+		a.Slug = strings.ToLower(strings.TrimSpace(a.Slug))
+		a.Code = strings.TrimSpace(a.Code)
+		parents := make([]string, 0, len(a.Parents))
+		for _, p := range a.Parents {
+			parents = append(parents, strings.ToLower(strings.TrimSpace(p)))
+		}
+		a.Parents = parents
+		areas = append(areas, a)
+		bySlug[a.Slug] = a
+		byCode[a.Code] = a
+	}
+	return nil
+}
+
 // Display renders one normalized area token for human consumption. Known
+// bundled units resolve through the table; unknown tokens pass through.
 // TERYT codes and known type:slug tokens become Polish names; everything
 // else is preserved verbatim.
 func Display(token string) string {

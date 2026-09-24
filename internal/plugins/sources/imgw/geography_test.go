@@ -8,7 +8,17 @@ import (
 
 func targetGeography(t *testing.T, include ...string) *geography {
 	t.Helper()
-	g, err := buildGeography(&GeographyConfig{Enabled: true, Include: include})
+	g, err := buildGeography(&GeographyConfig{
+		Enabled: true,
+		Include: include,
+		// The local water keywords of THIS installation's test fixture;
+		// the same values live in build/config.yaml.
+		HydroLocalKeywords: []string{
+			`niepolomic\w*`, `podlez\w*`, `wieliczk\w*`, `wielick\w*`, `krakow\w*`,
+			`bochn\w*`, `klaj\w*`, `targowisko`, `szarow\w*`, `brzezie`, `gdow\w*`,
+			`staniatk\w*`, `drwinka`, `seraf\w*`,
+		},
+	})
 	if err != nil {
 		t.Fatalf("buildGeography: %v", err)
 	}
@@ -117,6 +127,30 @@ func TestHydroMatching(t *testing.T) {
 		if got := g.matchesHydro(c.areas); got != c.want {
 			t.Errorf("matchesHydro(%v) = %v, want %v", c.areas, got, c.want)
 		}
+	}
+}
+
+// TestHydroPassesWithoutKeywords: an installation without
+// hydro_local_keywords must not silently swallow hydrological warnings.
+func TestHydroPassesWithoutKeywords(t *testing.T) {
+	g, err := buildGeography(&GeographyConfig{Enabled: true, Include: []string{"powiat:tarnowski"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !g.matchesHydro([]string{"obszar:małopolskie, zlewnia Dunajca, Nowy Targ"}) {
+		t.Error("hydro warning without configured keywords must pass through")
+	}
+}
+
+// TestHydroRegionDerivedFromVoivodeshipTarget: the regional pattern is
+// derived from the included voivodeship unit, never hardcoded.
+func TestHydroRegionDerivedFromVoivodeshipTarget(t *testing.T) {
+	g := targetGeography(t, "wojewodztwo:malopolskie")
+	if g.matchesHydro([]string{"obszar:małopolskie"}) {
+		t.Error("a plain voivodeship mention must not count as local")
+	}
+	if !g.matchesHydro([]string{"obszar:małopolskie, Niepołomice"}) {
+		t.Error("a local keyword next to the voivodeship must match")
 	}
 }
 

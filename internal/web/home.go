@@ -36,6 +36,7 @@ type homeView struct {
 	// line breaks preserved and a deliberately small HTML surface so
 	// links work.
 	About        template.HTML
+	Disclaimer   string
 	Version      string
 	Commit       string
 	RepoURL      string
@@ -89,14 +90,15 @@ func (s *Server) handlePartialHome(w http.ResponseWriter, r *http.Request) {
 // most severe first, then newest.
 func (s *Server) buildHomeView() homeView {
 	v := homeView{
-		AppTitle: s.cfg.Title,
-		Header1:  s.displayHeader1(),
-		Header2:  s.cfg.Header2,
-		Tagline:  s.cfg.Tagline,
-		About:    template.HTML(s.cfg.About),
-		Version:  s.version,
-		Commit:   s.commit,
-		RepoURL:  repoURL,
+		AppTitle:   s.cfg.Title,
+		Header1:    s.displayHeader1(),
+		Header2:    s.cfg.Header2,
+		Tagline:    s.cfg.Tagline,
+		About:      template.HTML(s.cfg.About),
+		Disclaimer: s.cfg.Disclaimer,
+		Version:    s.version,
+		Commit:     s.commit,
+		RepoURL:    repoURL,
 	}
 
 	snap := s.st.Snapshot()

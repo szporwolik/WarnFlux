@@ -334,6 +334,15 @@ web:
     działania, skąd pochodzą komunikaty i jak je interpretować.
     Więcej: <a href="https://sp9moa.pl">sp9moa.pl</a>
 
+  # Optional notice rendered prominently above the public hazard list,
+  # e.g. that the system is unofficial and does not replace official
+  # alert channels. Plain text; line breaks are preserved. Empty hides it.
+  disclaimer: |
+    Uwaga: ten system ma charakter pomocniczy i nie jest oficjalnym
+    kanałem ostrzegania. Nie zastępuje komunikatów RSO, IMGW-PIB ani
+    numerów alarmowych — w sytuacji zagrożenia polegaj na oficjalnych
+    źródłach.
+
   # Public domain this instance is served under (host, optional port).
   # Reserved for future absolute-link features; no scheme, no path.
   # Empty disables them.

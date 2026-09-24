@@ -108,6 +108,7 @@
 {{end}}
 
 {{define "home_alerts_section"}}<section class="home-alerts-wrap" id="home-alerts">
+  {{if .Disclaimer}}<p class="home-disclaimer" role="note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Disclaimer}}</span></p>{{end}}
   <h2 class="home-alerts-head">Active communications <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span></h2>
   {{if .Hazards}}
   <div class="home-alerts">

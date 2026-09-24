@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Header1}} · {{.Header2}}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="stylesheet" href="/static/weather-icons.css">
   <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
@@ -102,7 +102,7 @@
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
     </a>
   </footer>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
 </body>
 </html>
 {{end}}

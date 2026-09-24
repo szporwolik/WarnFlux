@@ -684,6 +684,13 @@ func TestHomeAPRSMapTab(t *testing.T) {
 		t.Errorf("sprite Content-Type = %q, want image/png", resp.Header.Get("Content-Type"))
 	}
 
+	// Embedded assets must revalidate on every request: no validators
+	// exist, so stale-cache prevention relies on Cache-Control.
+	resp, _ = env.get("/static/app.js")
+	if got := resp.Header.Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("app.js Cache-Control = %q, want no-cache", got)
+	}
+
 	// Stations endpoint: public, JSON list of merged station documents.
 	hub.Observe(aprs.ParseFeedLine("SP9XYZ-7>APRS,TCPIP*:!5056.25N/01952.50E-", time.Now()), "aprs-inet")
 	var got []aprs.StationDocument

@@ -104,9 +104,11 @@ func TestHubWeatherSinkAndStationDoc(t *testing.T) {
 		RadiusKM:   DefaultRadiusKM,
 		StationTTL: 30 * time.Minute,
 	})
-	var got []WeatherReport
+	// The sink callback runs on the hub worker goroutine: collect the
+	// reports over a channel so the test never races the worker.
+	gotCh := make(chan WeatherReport, 4)
 	hub.SetWeatherSink(func(_ context.Context, w WeatherReport) error {
-		got = append(got, w)
+		gotCh <- w
 		return nil
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -115,7 +117,11 @@ func TestHubWeatherSinkAndStationDoc(t *testing.T) {
 
 	hub.Observe(ParseFeedLine("SP9WX>APRS,TCPIP*:!5056.25N/01952.50E_220/004g005t077r000p000P000h50b09900", time.Now()), "aprs-inet")
 
-	waitFor(t, func() bool { return len(got) >= 1 })
+	var got []WeatherReport
+	waitFor(t, func() bool { return len(gotCh) >= 1 })
+	for len(gotCh) > 0 {
+		got = append(got, <-gotCh)
+	}
 	if len(got) != 1 || got[0].Callsign != "SP9WX" || got[0].TemperatureC == nil || *got[0].TemperatureC != 25.0 {
 		t.Fatalf("weather sink report = %+v", got)
 	}

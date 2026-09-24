@@ -191,6 +191,17 @@ func (in *Ingestor) handleActive(pt ParsedTopic, topic string, payload []byte) {
 		return
 	}
 
+	// A stale retained document whose expires_at has already passed is
+	// expired for all practical purposes: never mirror it. This is the
+	// restart/reconnect safety net for publishers that went down before
+	// they could emit the expiry.
+	if exp := optTime(wh.Event.ExpiresAt); exp != nil && !exp.After(time.Now()) {
+		in.state.DeleteActive(in.receiverID, topic)
+		in.logger.Debug("receiver: active hazard removed (expires_at passed)",
+			"receiver", in.receiverID, "topic", topic, "expires_at", wh.Event.ExpiresAt)
+		return
+	}
+
 	h := state.Hazard{
 		EventKey:    wh.EventKey,
 		Source:      wh.Event.Source,

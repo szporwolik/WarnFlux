@@ -244,9 +244,18 @@ func (s *State) SetRouterStatus(receiverID string, rs RouterStatus) {
 }
 
 // Snapshot returns an immutable, sorted copy of the mirrored state.
+// Active hazards whose ExpiresAt has already passed are pruned from the
+// mirror first: a stale retained document on the broker (e.g. left behind
+// by an instance that went down before publishing the expiry) must never
+// leak into rendered views.
 func (s *State) Snapshot() Snapshot {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	now := time.Now()
+	for key, h := range s.activeByKey {
+		if h.Status == "active" && h.ExpiresAt != nil && !h.ExpiresAt.After(now) {
+			delete(s.activeByKey, key)
+		}
+	}
 
 	snap := Snapshot{
 		ActiveCount: len(s.activeByKey),
@@ -290,6 +299,7 @@ func (s *State) Snapshot() Snapshot {
 		}
 		return a.After(b)
 	})
+	s.mu.Unlock()
 	return snap
 }
 

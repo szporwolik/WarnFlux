@@ -141,12 +141,25 @@ jobs:
         run: |
           # gh CLI (no Node runtime) creates the release; when the run was
           # triggered manually (workflow_dispatch) it also creates the
-          # missing v<version> tag pointing at this commit.
-          gh release create "v${{ steps.version.outputs.version }}" \
-            dist/warnflux-linux-amd64 \
-            dist/warnflux-linux-arm64 \
-            dist/warnflux-linux-armv7 \
-            dist/SHA256SUMS \
-            --title "WarnFlux v${{ steps.version.outputs.version }}" \
-            --generate-notes
+          # missing v<version> tag pointing at this commit. Re-running the
+          # workflow for an already-published version is idempotent: the
+          # assets are uploaded (overwriting) to the existing release
+          # instead of failing with "already exists".
+          tag="v${{ steps.version.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists — uploading assets to it."
+            gh release upload "$tag" \
+              dist/warnflux-linux-amd64 \
+              dist/warnflux-linux-arm64 \
+              dist/warnflux-linux-armv7 \
+              dist/SHA256SUMS --clobber
+          else
+            gh release create "$tag" \
+              dist/warnflux-linux-amd64 \
+              dist/warnflux-linux-arm64 \
+              dist/warnflux-linux-armv7 \
+              dist/SHA256SUMS \
+              --title "WarnFlux v${{ steps.version.outputs.version }}" \
+              --generate-notes
+          fi
 

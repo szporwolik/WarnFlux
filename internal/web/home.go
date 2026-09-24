@@ -202,9 +202,43 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 		Forecasts: []weatherForecastView{},
 	}
 
+	// APRS weather stations first: the hub merges their reports into the
+	// station state (with the merged position, so positionless reports
+	// still map correctly). Their names take precedence over the echo of
+	// our own info topics, which the receiver ingests back off the broker.
+	seenReports := make(map[string]bool)
+	if s.aprs != nil && s.aprs.Enabled() {
+		for _, doc := range s.aprs.Stations() {
+			if doc.Weather == nil {
+				continue
+			}
+			lat, lon := 0.0, 0.0
+			if doc.Position != nil {
+				lat, lon = doc.Position.Latitude, doc.Position.Longitude
+			}
+			seenReports["aprs:"+doc.Callsign] = true
+			view.Reports = append(view.Reports, weatherReportView{
+				Provider:         "APRS",
+				Name:             doc.Callsign,
+				Latitude:         lat,
+				Longitude:        lon,
+				Via:              "aprs",
+				Condition:        aprsWeatherCondition(doc.Weather),
+				TemperatureC:     doc.Weather.TemperatureC,
+				HumidityPct:      doc.Weather.HumidityPct,
+				WindSpeedKmh:     doc.Weather.WindSpeedKmh,
+				WindDirectionDeg: doc.Weather.WindDirectionDeg,
+				WindGustsKmh:     doc.Weather.WindGustsKmh,
+				PressureHpa:      doc.Weather.PressureHpa,
+				RadiationUSvh:    doc.Weather.RadiationUSvh,
+				RadiationCPM:     doc.Weather.RadiationCPM,
+				GeneratedAt:      doc.Weather.GeneratedAt,
+			})
+		}
+	}
+
 	// Internet providers: the dashboard state mirrors the retained
 	// <prefix>/info/<source>/<producer>/<key>/weather topics.
-	seenReports := make(map[string]bool)
 	seenForecasts := make(map[string]bool)
 	for _, e := range s.st.Snapshot().Weather {
 		ww := e.Weather
@@ -214,6 +248,11 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 		name := ww.LocationName
 		if name == "" {
 			name = ww.LocationID
+		}
+		// Skip the echo of our own APRS info topics: the hub station
+		// entry above is the authoritative one (position + via=aprs).
+		if seenReports["aprs:"+name] {
+			continue
 		}
 		repKey := e.ProducerID + ":" + ww.LocationID
 		if !seenReports[repKey] {
@@ -250,38 +289,6 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			view.Forecasts = append(view.Forecasts, weatherForecastView{Provider: ww.ProviderName, Name: name, Daily: days})
-		}
-	}
-
-	// APRS weather stations: the hub merges their reports into the
-	// station state; positionless reports use the merged station position.
-	if s.aprs != nil && s.aprs.Enabled() {
-		for _, doc := range s.aprs.Stations() {
-			if doc.Weather == nil {
-				continue
-			}
-			lat, lon := 0.0, 0.0
-			if doc.Position != nil {
-				lat, lon = doc.Position.Latitude, doc.Position.Longitude
-			}
-			rep := weatherReportView{
-				Provider:         "APRS",
-				Name:             doc.Callsign,
-				Latitude:         lat,
-				Longitude:        lon,
-				Via:              "aprs",
-				Condition:        aprsWeatherCondition(doc.Weather),
-				TemperatureC:     doc.Weather.TemperatureC,
-				HumidityPct:      doc.Weather.HumidityPct,
-				WindSpeedKmh:     doc.Weather.WindSpeedKmh,
-				WindDirectionDeg: doc.Weather.WindDirectionDeg,
-				WindGustsKmh:     doc.Weather.WindGustsKmh,
-				PressureHpa:      doc.Weather.PressureHpa,
-				RadiationUSvh:    doc.Weather.RadiationUSvh,
-				RadiationCPM:     doc.Weather.RadiationCPM,
-				GeneratedAt:      doc.Weather.GeneratedAt,
-			}
-			view.Reports = append(view.Reports, rep)
 		}
 	}
 

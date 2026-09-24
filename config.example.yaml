@@ -1,5 +1,18 @@
 # WarnFlux configuration example.
 # Copy to config.yaml and adjust it for your environment.
+#
+# INSTALLING IN ANOTHER REGION — every per-region knob, in one place:
+#   1. aprs.callsign / name / gridsquare / latitude / longitude / radius_km
+#      — the geographic master: the APRS-IS range filter, the gddkia and
+#      gios sources and the home maps all inherit this position + radius.
+#   2. sources.weather-home.config.locations — towns for the weather cards.
+#   3. sources.imgw-warnings.config.geography — TERYT scope + hydro keywords.
+#   4. sources.rso-malopolskie.config — voivodeships + filter.local keywords.
+#   5. sources.gios-awarie.config.wojewodztwo — or leave empty (auto-derived
+#      from the aprs position via reverse geocoding).
+#   6. web.about / disclaimer / domain — branding texts.
+#   7. outputs + dispatch — MQTT broker and unique client IDs.
+#   8. actions — SMTP credentials, APRS recipients.
 
 app:
   # One of: debug, info, warn, error.
@@ -86,10 +99,10 @@ sources:
       forecast_hours: 48
       forecast_days: 7
 
-      # Free Open-Meteo API:
       api_key: ""
       api_key_file: ""
 
+      # Per-region weather cards: the towns this installation covers.
       locations:
         - id: home
           name: Home
@@ -217,10 +230,8 @@ sources:
   #   config:
   #     poll_interval: 15m
   #     request_timeout: 10s
-  #     # Optional overrides (defaults: the APRS hub position + radius).
-  #     radius_km: 30
-  #     center_latitude: 50.0212
-  #     center_longitude: 20.2075
+  #     # Area = aprs.latitude/longitude + aprs.radius_km; override with
+  #     # radius_km, center_latitude, center_longitude.
 
   # GIOŚ serious-industrial-accident register (poważne awarie):
   # current-year accidents, filtered by voivodeship first (auto-derived
@@ -238,14 +249,11 @@ sources:
   #   config:
   #     poll_interval: 6h
   #     request_timeout: 10s
-  #     # Administrative pre-filter: one of the 16 provider names. Empty =
-  #     # derived once from the home position via reverse geocoding.
+  #     # One of the 16 provider voivodeship names. Empty = derived once
+  #     # from the aprs position (reverse geocoding).
   #     wojewodztwo: małopolskie
   #     # powiat: wielicki
   #     # rok: 0          # 0 = the current year
-  #     radius_km: 30
-  #     center_latitude: 50.0212
-  #     center_longitude: 20.2075
 
   # APRS-IS source: connects to an APRS-IS server, subscribes to packets
   # around the configured position (aprs.gridsquare + aprs.radius_km) and

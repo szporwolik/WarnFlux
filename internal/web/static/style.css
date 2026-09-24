@@ -1560,8 +1560,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   height: 30px;
   padding: 0;
   border: 2px solid rgba(0, 0, 0, 0.2);
-  border-top: none;
-  border-radius: 0 0 4px 4px;
+  border-radius: 4px;
   background: #fff;
   color: #333;
   cursor: pointer;

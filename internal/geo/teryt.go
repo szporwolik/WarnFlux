@@ -10,6 +10,9 @@
 //	1201    powiat bocheński
 //	1202    powiat brzeski
 //	1206    powiat krakowski
+//	1208    powiat miechowski
+//	1209    powiat myślenicki
+//	1214    powiat proszowicki
 //	1216    powiat tarnowski
 //	1217    powiat tatrzański (example of known-but-irrelevant geography)
 //	1219    powiat wielicki
@@ -49,6 +52,9 @@ var areas = []Area{
 	{Code: "1201", Type: "powiat", Slug: "bochenski", Name: "powiat bocheński", Parents: []string{"malopolskie"}},
 	{Code: "1202", Type: "powiat", Slug: "brzeski", Name: "powiat brzeski", Parents: []string{"malopolskie"}},
 	{Code: "1206", Type: "powiat", Slug: "krakowski", Name: "powiat krakowski", Parents: []string{"malopolskie"}},
+	{Code: "1208", Type: "powiat", Slug: "miechowski", Name: "powiat miechowski", Parents: []string{"malopolskie"}},
+	{Code: "1209", Type: "powiat", Slug: "myslenicki", Name: "powiat myślenicki", Parents: []string{"malopolskie"}},
+	{Code: "1214", Type: "powiat", Slug: "proszowicki", Name: "powiat proszowicki", Parents: []string{"malopolskie"}},
 	{Code: "1216", Type: "powiat", Slug: "tarnowski", Name: "powiat tarnowski", Parents: []string{"malopolskie"}},
 	{Code: "1217", Type: "powiat", Slug: "tatrzanski", Name: "powiat tatrzański", Parents: []string{"malopolskie"}},
 	{Code: "1219", Type: "powiat", Slug: "wielicki", Name: "powiat wielicki", Parents: []string{"malopolskie"}},

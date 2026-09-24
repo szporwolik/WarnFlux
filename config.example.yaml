@@ -110,6 +110,10 @@ sources:
           - miasto:krakow
           - powiat:wielicki
           - powiat:bochenski
+          - powiat:krakowski
+          - powiat:myslenicki
+          - powiat:miechowski
+          - powiat:proszowicki
 
   # Regionalny System Ostrzegania (RSO) public XML communications:
   # a HAZARD source with upstream voivodeship filtering via the official

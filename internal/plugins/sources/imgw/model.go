@@ -53,3 +53,9 @@ type providerStatus struct {
 	Status  *bool  `json:"status"`
 	Message string `json:"message"`
 }
+
+// providerMessage is the meteo endpoint's HTTP-200 no-warnings shape:
+// a plain object with a Polish message, no status field.
+type providerMessage struct {
+	Message string `json:"message"`
+}

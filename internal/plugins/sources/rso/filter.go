@@ -279,9 +279,15 @@ var (
 	powiatWielickiPattern = regexp.MustCompile(`\bpowiat wielicki\b|\bwielickim\b`)
 
 	cityPatterns = map[string]*regexp.Regexp{
-		"krakow":    regexp.MustCompile(`\bkrakow\w*\b`),
-		"wieliczka": regexp.MustCompile(`\bwieliczk\w*\b|\bwieliczc\w*\b|\bwielick\w*\b`),
-		"bochnia":   regexp.MustCompile(`\bbochn\w*\b`),
+		"krakow":       regexp.MustCompile(`\bkrakow\w*\b`),
+		"wieliczka":    regexp.MustCompile(`\bwieliczk\w*\b|\bwieliczc\w*\b|\bwielick\w*\b`),
+		"bochnia":      regexp.MustCompile(`\bbochn\w*\b`),
+		"skawina":      regexp.MustCompile(`\bskawin\w*\b`),
+		"myslenice":    regexp.MustCompile(`\bmyslenic\w*\b`),
+		"dobczyce":     regexp.MustCompile(`\bdobczyc\w*\b`),
+		"slomniki":     regexp.MustCompile(`\bslomnik\w*\b`),
+		"proszowice":   regexp.MustCompile(`\bproszowic\w*\b`),
+		"nowe-brzesko": regexp.MustCompile(`\bnow(ego|e|ym)? brzesk\w*\b`),
 	}
 	nearbyPattern = regexp.MustCompile(`\b(klaj\w*|targowisko|szarow\w*|brzezie|kokotow\w*)\b`)
 
@@ -451,6 +457,14 @@ func enrichAreas(geo geoMatch) []string {
 			out = append(out, "miasto:wieliczka")
 		case "bochnia":
 			out = append(out, "miasto:bochnia")
+		case "skawina":
+			out = append(out, "powiat:krakowski")
+		case "myslenice", "dobczyce":
+			out = append(out, "powiat:myslenicki")
+		case "slomniki":
+			out = append(out, "powiat:miechowski")
+		case "proszowice", "nowe-brzesko":
+			out = append(out, "powiat:proszowicki")
 		}
 	}
 	for road := range geo.roads {

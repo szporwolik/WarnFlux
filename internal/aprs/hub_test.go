@@ -444,6 +444,68 @@ func TestHubInfrastructureFilterDisabled(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.payloads(StationsTopicPrefix+"SR9NR")) >= 1 })
 }
 
+// TestStationTrackTail pins the movement-tail wire: up to three earlier
+// positions, oldest first, deduplicated against sub-30m noise.
+func TestStationTrackTail(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// 6 packets near the configured center: 4 distinct positions ~1 km
+	// apart, one exact duplicate (digest-skipped) and one sub-30m
+	// near-duplicate (position updates, track does not grow).
+	hub.Observe(testPacket("SP9MOV>APRS:!5055.00N/01952.00E>"), "aprs-inet")
+	hub.Observe(testPacket("SP9MOV>APRS:!5055.50N/01952.50E>"), "aprs-inet")
+	hub.Observe(testPacket("SP9MOV>APRS:!5056.00N/01953.00E>"), "aprs-inet")
+	hub.Observe(testPacket("SP9MOV>APRS:!5056.50N/01953.50E>"), "aprs-inet")
+	hub.Observe(testPacket("SP9MOV>APRS:!5056.50N/01953.50E>"), "aprs-inet")  // exact duplicate
+	hub.Observe(testPacket("SP9MOV>APRS:!5056.51N/01953.51E>"), "aprs-radio") // ~20 m: noise
+
+	waitFor(t, func() bool {
+		docs := hub.Stations()
+		return len(docs) == 1 && docs[0].Position != nil
+	})
+	docs := hub.Stations()
+	doc := docs[0]
+	if len(doc.Track) != 3 {
+		t.Fatalf("track length = %d, want 3 (got %+v)", len(doc.Track), doc.Track)
+	}
+	// Oldest first: after the noise packet the tail holds positions 2-4.
+	want := []float64{50.925, 50.933333, 50.941667}
+	for i, tp := range doc.Track {
+		if mathAbs(tp.Latitude-want[i]) > 0.0001 {
+			t.Errorf("track[%d].latitude = %v, want %v", i, tp.Latitude, want[i])
+		}
+		if tp.At == "" {
+			t.Errorf("track[%d].at empty", i)
+		}
+	}
+	// The current position is the 4th distinct one.
+	if doc.Position == nil || mathAbs(doc.Position.Latitude-50.941833) > 0.0001 {
+		t.Errorf("position = %+v, want latitude ~50.941833", doc.Position)
+	}
+
+	// The retained wire document carries the same track.
+	payloads := sink.payloads(StationsTopicPrefix + "SP9MOV")
+	if len(payloads) == 0 {
+		t.Fatal("no station payload published")
+	}
+	var wire StationDocument
+	if err := json.Unmarshal(payloads[len(payloads)-1], &wire); err != nil {
+		t.Fatalf("unmarshal station doc: %v", err)
+	}
+	if len(wire.Track) != 3 {
+		t.Errorf("wire track length = %d, want 3", len(wire.Track))
+	}
+}
+
 func TestHubStationOrigin(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled:    true,

@@ -1448,6 +1448,22 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background-repeat: no-repeat;
   background-size: 448px 168px; /* 768x288 sprite scaled to 28px cells */
 }
+/* APRS movement track: the tail polyline is a Leaflet layer; this is
+   the arrowhead marking the heading-vector endpoint (a CSS triangle
+   rotated to the reported course). */
+.wf-track-arrow-wrap {
+  background: none;
+  border: none;
+}
+.wf-track-arrow {
+  display: block;
+  width: 0;
+  height: 0;
+  margin: 0 auto;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 10px solid #c62828; /* overridden inline by theme color */
+}
 /* Public home weather tab: current reports + multi-day forecasts. */
 /* Public home weather tab: map above the tables. */
 .hw-map-wrap {

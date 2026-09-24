@@ -1161,6 +1161,26 @@
     });
   }
 
+  // Destination point along a course (degrees, 0 = north) at a given
+  // distance in km, using a spherical-earth approximation.
+  function destPoint(lat, lon, courseDeg, distKm) {
+    var R = 6371;
+    var brg = courseDeg * Math.PI / 180;
+    var d = distKm / R;
+    var la1 = lat * Math.PI / 180;
+    var lo1 = lon * Math.PI / 180;
+    var la2 = Math.asin(Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(brg));
+    var lo2 = lo1 + Math.atan2(Math.sin(brg) * Math.sin(d) * Math.cos(la1),
+      Math.cos(d) - Math.sin(la1) * Math.sin(la2));
+    return [la2 * 180 / Math.PI, lo2 * 180 / Math.PI];
+  }
+
+  // Track color shared by the movement tail and the heading vector
+  // (aprs.fi draws station tracks in a similar red).
+  function trackColor() {
+    return document.documentElement.getAttribute("data-theme") !== "light" ? "#ff8a80" : "#c62828";
+  }
+
   function refreshStations() {
     fetch("/api/aprs/stations")
       .then(function (r) { return r.ok ? r.json() : []; })
@@ -1206,6 +1226,47 @@
           }
           marker.bindTooltip(esc(s.callsign), { direction: "top" });
           marker.bindPopup(popup);
+
+          // Movement tail: up to three earlier positions (oldest first)
+          // plus the current one, drawn as a trail behind the marker —
+          // the same idea as aprs.fi's station track.
+          var trail = [];
+          (s.track || []).forEach(function (tp) {
+            if (tp && tp.latitude && tp.longitude) {
+              trail.push([tp.latitude, tp.longitude]);
+            }
+          });
+          if (trail.length > 0) {
+            trail.push([s.position.latitude, s.position.longitude]);
+            if (trail.length > 1) {
+              stationLayer.addLayer(L.polyline(trail, {
+                color: trackColor(), weight: 2.5, opacity: 0.85,
+                lineCap: "round", lineJoin: "round", interactive: false
+              }));
+            }
+          }
+
+          // Heading vector: one minute of travel in the reported course
+          // (speed_kmh / 60), clamped so slow movers stay readable and
+          // fast movers stay on-screen.
+          if (s.course_deg && s.speed_kmh > 0) {
+            var vecKm = Math.min(Math.max(s.speed_kmh / 60, 0.25), 2);
+            var head = destPoint(s.position.latitude, s.position.longitude, s.course_deg, vecKm);
+            stationLayer.addLayer(L.polyline([[s.position.latitude, s.position.longitude], head], {
+              color: trackColor(), weight: 3, opacity: 0.9, interactive: false
+            }));
+            stationLayer.addLayer(L.marker(head, {
+              interactive: false,
+              icon: L.divIcon({
+                className: "wf-track-arrow-wrap",
+                iconSize: [10, 10],
+                iconAnchor: [5, 5],
+                html: '<span class="wf-track-arrow" style="transform:rotate(' + s.course_deg +
+                  'deg);border-bottom-color:' + trackColor() + '"></span>'
+              })
+            }));
+          }
+
           stationLayer.addLayer(marker);
         });
 

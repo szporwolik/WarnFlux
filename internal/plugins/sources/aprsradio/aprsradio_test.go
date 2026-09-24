@@ -445,3 +445,18 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met within 3s")
 }
+
+func TestResetBackoff(t *testing.T) {
+	old := healthySessionReset
+	healthySessionReset = time.Minute
+	defer func() { healthySessionReset = old }()
+
+	// A healthy session resets the backoff to the minimum.
+	if got := resetBackoff(maxReconnectDelay, 2*time.Minute); got != minReconnectDelay {
+		t.Errorf("healthy session backoff = %v, want %v", got, minReconnectDelay)
+	}
+	// A short failed session keeps the current (growing) delay.
+	if got := resetBackoff(maxReconnectDelay, time.Second); got != maxReconnectDelay {
+		t.Errorf("short session backoff = %v, want unchanged %v", got, maxReconnectDelay)
+	}
+}

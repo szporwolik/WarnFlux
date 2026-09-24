@@ -43,6 +43,12 @@ const (
 	maxReconnectDelay = 2 * time.Minute
 )
 
+// healthySessionReset is how long a session must run before a drop resets
+// the reconnect backoff to the minimum (see aprsinet). The radio is the
+// primary network when the uplink is down, so fast recovery matters even
+// more here. Tests shrink it.
+var healthySessionReset = time.Minute
+
 // idleTimeoutFactor scales ReadTimeout into the "no frames at all"
 // threshold that ends the session. A single read timeout is expected on a
 // quiet channel — it only resets the deadline. Package-level so tests can
@@ -162,10 +168,15 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 
 	delay := minReconnectDelay
 	for {
+		sessionStart := time.Now()
 		err := s.session(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
+		// A session that ran healthily proves the link works: after a
+		// drop, recover at the minimum delay instead of inheriting a
+		// historical failure backoff.
+		delay = resetBackoff(delay, time.Since(sessionStart))
 		if health != nil {
 			health.ReportSourceDegraded(err)
 		}
@@ -184,6 +195,16 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 			stats.ReportSourceStats(s.summary())
 		}
 	}
+}
+
+// resetBackoff returns the reconnect delay after one session end: a
+// healthy session (healthySessionReset or longer) resets it to the
+// minimum; a short failed session keeps the current (growing) delay.
+func resetBackoff(delay, sessionDuration time.Duration) time.Duration {
+	if sessionDuration >= healthySessionReset {
+		return minReconnectDelay
+	}
+	return delay
 }
 
 // closeConn tears down the live connection (idempotent).

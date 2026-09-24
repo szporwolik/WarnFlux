@@ -48,6 +48,12 @@ const (
 	maxReconnectDelay = 2 * time.Minute
 )
 
+// healthySessionReset is how long a session must run before a drop resets
+// the reconnect backoff to the minimum. A connection that survived this
+// long proved the uplink works, so recovery after a single drop must be
+// fast instead of inheriting a historical failure backoff. Tests shrink it.
+var healthySessionReset = time.Minute
+
 // Config is the plugin-specific configuration.
 type Config struct {
 	// Callsign is the login callsign. Empty inherits the hub identity
@@ -195,11 +201,18 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 
 	delay := minReconnectDelay
 	for {
+		sessionStart := time.Now()
 		err := s.session(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
-		health.ReportSourceDegraded(err)
+		// A session that ran healthily proves the uplink works: after a
+		// drop, recover at the minimum delay instead of inheriting a
+		// historical failure backoff.
+		delay = resetBackoff(delay, time.Since(sessionStart))
+		if health != nil {
+			health.ReportSourceDegraded(err)
+		}
 		s.logger.Warn("aprs-inet: session ended, reconnecting",
 			"server", s.cfg.Server, "error", err, "retry_in", delay)
 
@@ -215,6 +228,16 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 			stats.ReportSourceStats(s.summary())
 		}
 	}
+}
+
+// resetBackoff returns the reconnect delay after one session end: a
+// healthy session (healthySessionReset or longer) resets it to the
+// minimum; a short failed session keeps the current (growing) delay.
+func resetBackoff(delay, sessionDuration time.Duration) time.Duration {
+	if sessionDuration >= healthySessionReset {
+		return minReconnectDelay
+	}
+	return delay
 }
 
 // session runs one connection lifetime: dial, login, read, disconnect.

@@ -274,6 +274,17 @@ func run(configPath string) error {
 	// first connected WarnFlux receiver (same broker, same topic prefix).
 	hub.SetSink(&aprsManagerSink{mgmt: receivers})
 
+	// APRS weather stations feed the canonical weather pipeline: every
+	// decoded weather report becomes a retained info/<prefix> topic and a
+	// dashboard card, exactly like the openmeteo source's snapshots.
+	hub.SetWeatherSink(func(ctx context.Context, rep aprs.WeatherReport) error {
+		msg, err := rep.ToInformation()
+		if err != nil {
+			return err
+		}
+		return manager.EmitInformation(ctx, "aprs", msg)
+	})
+
 	// Public HTTP ingest endpoints: API-key-protected publishers. Each
 	// enabled instance accepts hazard messages and publishes them to the
 	// main broker (inherited from the first enabled mqtt output unless

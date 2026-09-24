@@ -405,6 +405,8 @@ func toWeather(ww *wireWeather) *state.Weather {
 		w.WindDirectionDeg = ww.Current.WindDirectionDeg
 		w.WindGustsKmh = ww.Current.WindGustsKmh
 		w.PressureMSLHpa = ww.Current.PressureMSLHpa
+		w.RadiationUSvh = ww.Current.RadiationUSvh
+		w.RadiationCPM = ww.Current.RadiationCPM
 	}
 	return w
 }

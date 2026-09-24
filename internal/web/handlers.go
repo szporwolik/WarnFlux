@@ -63,18 +63,20 @@ type mqttView struct {
 // ---- weather view --------------------------------------------------------
 
 type weatherEntry struct {
-	Key          string
-	Location     string
-	Receiver     string
-	Temperature  *float64
-	Condition    string
-	Humidity     *float64
-	WindSpeed    *float64
-	WindDir      *float64
-	WindGusts    *float64
-	Pressure     *float64
-	GeneratedAt  time.Time
-	ProviderName string
+	Key           string
+	Location      string
+	Receiver      string
+	Temperature   *float64
+	Condition     string
+	Humidity      *float64
+	WindSpeed     *float64
+	WindDir       *float64
+	WindGusts     *float64
+	Pressure      *float64
+	RadiationUSvh *float64
+	RadiationCPM  *float64
+	GeneratedAt   time.Time
+	ProviderName  string
 }
 
 type weatherView struct {
@@ -258,18 +260,20 @@ func buildWeatherView(snap state.Snapshot) weatherView {
 	for _, e := range snap.Weather {
 		w := e.Weather
 		entry := weatherEntry{
-			Key:          e.Key,
-			Location:     w.LocationName,
-			Receiver:     e.ReceiverID,
-			Temperature:  w.TemperatureC,
-			Condition:    w.Condition,
-			Humidity:     w.HumidityPct,
-			WindSpeed:    w.WindSpeedKmh,
-			WindDir:      w.WindDirectionDeg,
-			WindGusts:    w.WindGustsKmh,
-			Pressure:     w.PressureMSLHpa,
-			GeneratedAt:  w.GeneratedAt,
-			ProviderName: w.ProviderName,
+			Key:           e.Key,
+			Location:      w.LocationName,
+			Receiver:      e.ReceiverID,
+			Temperature:   w.TemperatureC,
+			Condition:     w.Condition,
+			Humidity:      w.HumidityPct,
+			WindSpeed:     w.WindSpeedKmh,
+			WindDir:       w.WindDirectionDeg,
+			WindGusts:     w.WindGustsKmh,
+			Pressure:      w.PressureMSLHpa,
+			RadiationUSvh: w.RadiationUSvh,
+			RadiationCPM:  w.RadiationCPM,
+			GeneratedAt:   w.GeneratedAt,
+			ProviderName:  w.ProviderName,
 		}
 		if entry.Location == "" {
 			entry.Location = w.LocationID

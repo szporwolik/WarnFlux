@@ -91,6 +91,8 @@
         {{if .Humidity}}<span>Humidity {{int0 .Humidity}}%</span>{{end}}
         {{if .WindSpeed}}<span>Wind {{float1 .WindSpeed}} km/h{{if .WindDir}} @ {{int0 .WindDir}}°{{end}}{{if .WindGusts}} · gusts {{float1 .WindGusts}} km/h{{end}}</span>{{end}}
         {{if .Pressure}}<span>Pressure {{int0 .Pressure}} hPa</span>{{end}}
+        {{if .RadiationUSvh}}<span>Radiation {{float2 .RadiationUSvh}} µSv/h</span>{{end}}
+        {{if .RadiationCPM}}<span>Radiation {{int0 .RadiationCPM}} cpm</span>{{end}}
       </div>
       <div class="wc-time muted">via <strong>{{.Receiver}}</strong> · updated {{timeFull .GeneratedAt}}</div>
     </div>

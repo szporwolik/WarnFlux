@@ -460,6 +460,12 @@ func templateFuncs() template.FuncMap {
 			}
 			return fmt.Sprintf("%.1f", *v)
 		},
+		"float2": func(v *float64) string {
+			if v == nil {
+				return ""
+			}
+			return fmt.Sprintf("%.2f", *v)
+		},
 		"int0": func(v *float64) string {
 			if v == nil {
 				return ""

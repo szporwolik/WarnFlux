@@ -138,6 +138,8 @@ code, and never an empty string.
     "wind_speed_kmh": 12.1,
     "wind_direction_deg": 245,
     "wind_gusts_kmh": 21.0,
+    "radiation_usv_h": 0.12,
+    "radiation_cpm": 15,
     "is_day": true
   },
 
@@ -177,6 +179,10 @@ code, and never an empty string.
   coordinates are the configured ones; the elevation is provider data).
 - `provider.attribution` is the provider's required attribution text; it
   is data provenance, not WarnFlux branding.
+- `current.radiation_usv_h` / `current.radiation_cpm` are optional
+  radiation readings from radiation sensors (APRS weather stations):
+  ambient dose rate in µSv/h and the raw count rate in CPM. Both must be
+  non-negative when present.
 - `hourly` is strictly ascending by time; `daily` strictly ascending by
   real calendar date (`time.Parse("2006-01-02")` — `2026-02-30` or
   `banana` are rejected); duplicates are rejected.

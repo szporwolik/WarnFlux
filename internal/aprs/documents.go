@@ -38,6 +38,9 @@ type StationDocument struct {
 	LastPacketAt string   `json:"last_packet_at,omitempty"`
 	ReceivedVia  []string `json:"received_via"`
 	PacketCount  int      `json:"packet_count"`
+	// Weather is the latest decoded weather observation, when the
+	// station is a weather station (APRS symbol '_').
+	Weather *WeatherReport `json:"weather,omitempty"`
 }
 
 // PacketDocument is the non-retained MQTT document of one parsed packet.

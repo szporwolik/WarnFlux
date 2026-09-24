@@ -89,6 +89,8 @@ type Weather struct {
 	WindDirectionDeg *float64
 	WindGustsKmh     *float64
 	PressureMSLHpa   *float64
+	RadiationUSvh    *float64
+	RadiationCPM     *float64
 }
 
 // InfoEntry is one retained informational message (usually weather).

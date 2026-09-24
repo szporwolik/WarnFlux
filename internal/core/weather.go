@@ -79,6 +79,12 @@ type WeatherCurrent struct {
 	WindDirectionDeg *float64
 	WindGustsKmh     *float64
 
+	// Radiation readings reported by radiation sensors (APRS weather
+	// stations, uRadMon-style): ambient dose rate in µSv/h and/or the
+	// raw count rate in CPM.
+	RadiationUSvh *float64
+	RadiationCPM  *float64
+
 	Condition string // canonical condition enum value
 
 	ProviderConditionCode *string // raw provider code, informational only
@@ -266,8 +272,14 @@ func (s WeatherSnapshot) Validate() error {
 			s.Current.TemperatureC, s.Current.ApparentTemperatureC,
 			s.Current.PressureMSLHpa, s.Current.SurfacePressureHpa,
 			s.Current.PrecipitationMm, s.Current.RainMm, s.Current.ShowersMm, s.Current.SnowfallCm,
-			s.Current.WindSpeedKmh, s.Current.WindDirectionDeg, s.Current.WindGustsKmh); err != nil {
+			s.Current.WindSpeedKmh, s.Current.WindDirectionDeg, s.Current.WindGustsKmh,
+			s.Current.RadiationUSvh, s.Current.RadiationCPM); err != nil {
 			return err
+		}
+		for _, v := range []*float64{s.Current.RadiationUSvh, s.Current.RadiationCPM} {
+			if v != nil && *v < 0 {
+				return fmt.Errorf("current radiation must not be negative")
+			}
 		}
 		if err := validatePercent("current relative_humidity", s.Current.RelativeHumidityPct); err != nil {
 			return err

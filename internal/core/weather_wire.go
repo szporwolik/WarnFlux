@@ -60,6 +60,9 @@ type wireCurrent struct {
 	WindDirectionDeg *float64 `json:"wind_direction_deg,omitempty"`
 	WindGustsKmh     *float64 `json:"wind_gusts_kmh,omitempty"`
 
+	RadiationUSvh *float64 `json:"radiation_usv_h,omitempty"`
+	RadiationCPM  *float64 `json:"radiation_cpm,omitempty"`
+
 	Condition             string  `json:"condition"`
 	ProviderConditionCode *string `json:"provider_condition_code,omitempty"`
 	IsDay                 *bool   `json:"is_day,omitempty"`
@@ -155,6 +158,8 @@ func MarshalWeatherSnapshot(s WeatherSnapshot) ([]byte, error) {
 			WindSpeedKmh:          c.WindSpeedKmh,
 			WindDirectionDeg:      c.WindDirectionDeg,
 			WindGustsKmh:          c.WindGustsKmh,
+			RadiationUSvh:         c.RadiationUSvh,
+			RadiationCPM:          c.RadiationCPM,
 			Condition:             c.Condition,
 			ProviderConditionCode: c.ProviderConditionCode,
 			IsDay:                 c.IsDay,

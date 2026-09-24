@@ -76,6 +76,7 @@ type stationState struct {
 	lastHeard      int64
 	via            map[string]bool
 	packets        int
+	weather        *WeatherReport
 }
 
 // Hub is the shared APRS merge point. Every backend (aprs-inet today,
@@ -94,6 +95,7 @@ type Hub struct {
 
 	mu           sync.Mutex
 	sink         Sink
+	weatherSink  func(context.Context, WeatherReport) error
 	stations     map[string]*stationRecord
 	transmitters map[string]Transmitter
 	seenDigests  map[string]int64 // digest -> last seen unix
@@ -191,6 +193,15 @@ func (h *Hub) Version() string { return h.cfg.Version }
 func (h *Hub) SetSink(s Sink) {
 	h.mu.Lock()
 	h.sink = s
+	h.mu.Unlock()
+}
+
+// SetWeatherSink attaches the weather bridge: every decoded APRS weather
+// report is handed to the sink so it can feed the canonical weather
+// information pipeline (dashboard cards + retained MQTT info topics).
+func (h *Hub) SetWeatherSink(fn func(context.Context, WeatherReport) error) {
+	h.mu.Lock()
+	h.weatherSink = fn
 	h.mu.Unlock()
 }
 
@@ -351,6 +362,26 @@ func (h *Hub) apply(op hubOp) {
 	h.seenDigests[digest] = now
 	h.mu.Unlock()
 
+	// Weather reports feed the canonical weather pipeline in addition to
+	// the station document: positionless reports fall back to the merged
+	// station position.
+	if w := ParseWeather(&p); w != nil {
+		w.Callsign = p.Src
+		h.mu.Lock()
+		if w.Latitude == 0 && w.Longitude == 0 && rec.state.position != nil {
+			w.Latitude = rec.state.position.Latitude
+			w.Longitude = rec.state.position.Longitude
+		}
+		rec.state.weather = w
+		sink := h.weatherSink
+		h.mu.Unlock()
+		if sink != nil {
+			if err := sink(context.Background(), *w); err != nil {
+				h.logger.Debug("aprs: weather sink failed", "callsign", p.Src, "error", err)
+			}
+		}
+	}
+
 	h.publishStation(rec)
 	if firstSeen {
 		h.publishPacket(p, op.via)
@@ -441,6 +472,9 @@ func (h *Hub) buildStationDoc(rec *stationRecord) StationDocument {
 	doc.AltitudeM = st.altitudeM
 	doc.Comment = st.comment
 	doc.Status = st.status
+	if st.weather != nil {
+		doc.Weather = st.weather
+	}
 	doc.Origin = string(st.origin)
 	if rec.lastPacketAt != 0 {
 		doc.LastPacketAt = formatTime(rec.lastPacketAt)

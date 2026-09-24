@@ -475,6 +475,14 @@ func (m *Manager) failQueued() {
 	}
 }
 
+// EmitInformation forwards one information message through the
+// information-capable outputs, stamping producerID. Sources receive this
+// via their Emitter; this public entry point exists for producers outside
+// the source boundary (the APRS hub weather bridge).
+func (m *Manager) EmitInformation(ctx context.Context, producerID string, message core.InformationMessage) error {
+	return m.emitInformation(ctx, producerID, message)
+}
+
 // emitInformation stamps the ProducerID (the configured source instance ID
 // — plugins cannot choose it), validates and deep-copies the message, and
 // enqueues it into the bounded latest-state queues owned by the

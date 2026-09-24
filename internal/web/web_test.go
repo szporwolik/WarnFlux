@@ -1177,6 +1177,8 @@ func TestDashboardWeatherPresent(t *testing.T) {
 	env.login()
 
 	temp := 21.4
+	usvh := 0.12
+	cpm := 15.0
 	env.state.AddOrUpdateInfo("local", "warnflux/info/openmeteo/weather-home/home/weather", state.InfoEntry{
 		Source:     "openmeteo",
 		ProducerID: "weather-home",
@@ -1184,11 +1186,13 @@ func TestDashboardWeatherPresent(t *testing.T) {
 		Kind:       "weather",
 		ReceivedAt: time.Now(),
 		Weather: &state.Weather{
-			GeneratedAt:  time.Now(),
-			LocationID:   "home",
-			LocationName: "Home",
-			TemperatureC: &temp,
-			Condition:    "partly_cloudy",
+			GeneratedAt:   time.Now(),
+			LocationID:    "home",
+			LocationName:  "Home",
+			TemperatureC:  &temp,
+			Condition:     "partly_cloudy",
+			RadiationUSvh: &usvh,
+			RadiationCPM:  &cpm,
 		},
 	})
 
@@ -1198,6 +1202,12 @@ func TestDashboardWeatherPresent(t *testing.T) {
 	}
 	if !strings.Contains(html, "local") {
 		t.Errorf("receiver origin not rendered with weather: %s", html)
+	}
+	if !strings.Contains(html, "Radiation 0.12 µSv/h") {
+		t.Errorf("radiation (µSv/h) not rendered: %s", html)
+	}
+	if !strings.Contains(html, "Radiation 15 cpm") {
+		t.Errorf("radiation (cpm) not rendered: %s", html)
 	}
 }
 

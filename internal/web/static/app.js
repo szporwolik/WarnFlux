@@ -1255,36 +1255,35 @@
   }
 })();
 
-// Public home page: collapse the about intro to three lines with a
-// More/Less toggle (button hidden when the text already fits).
+// One-time about popup: the config-driven system intro appears as a
+// modal on the first visit (per browser) and stays dismissed afterwards
+// via localStorage.
 (function () {
   "use strict";
 
-  function initAbout() {
-    var box = document.getElementById("home-about");
-    if (!box) {
+  function initAboutPopup() {
+    var dialog = document.getElementById("about-dialog");
+    if (!dialog) {
       return;
     }
-    var text = box.querySelector(".home-about-text");
-    var btn = box.querySelector(".home-about-toggle");
-    if (!text || !btn) {
-      return;
-    }
-    if (text.scrollHeight <= text.clientHeight + 2) {
-      btn.hidden = true; // short enough — nothing to expand
-      return;
-    }
-    btn.addEventListener("click", function () {
-      var expanded = box.classList.toggle("expanded");
-      btn.textContent = expanded ? "Less" : "More";
-      btn.setAttribute("aria-expanded", expanded ? "true" : "false");
-    });
+    var seen = false;
+    try { seen = localStorage.getItem("warnflux-about-seen") === "1"; } catch (e) { /* storage unavailable */ }
+    var close = function () {
+      try { localStorage.setItem("warnflux-about-seen", "1"); } catch (e) { /* storage unavailable */ }
+      dialog.close();
+    };
+    var ok = dialog.querySelector(".about-ok");
+    if (ok) { ok.addEventListener("click", close); }
+    var x = dialog.querySelector(".about-close");
+    if (x) { x.addEventListener("click", close); }
+    dialog.addEventListener("click", function (e) { if (e.target === dialog) { close(); } });
+    if (!seen) { dialog.showModal(); }
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initAbout);
+    document.addEventListener("DOMContentLoaded", initAboutPopup);
   } else {
-    initAbout();
+    initAboutPopup();
   }
 })();
 

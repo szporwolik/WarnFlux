@@ -1,6 +1,7 @@
 package web
 
 import (
+	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
@@ -442,6 +443,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		"Header1":  s.displayHeader1(),
 		"Header2":  s.cfg.Header2,
 		"Tagline":  s.cfg.Tagline,
+		"About":    template.HTML(s.cfg.About),
 		"Version":  s.version,
 		"Commit":   s.commit,
 		"RepoURL":  repoURL,
@@ -486,6 +488,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 			"Header1":  s.displayHeader1(),
 			"Header2":  s.cfg.Header2,
 			"Tagline":  s.cfg.Tagline,
+			"About":    template.HTML(s.cfg.About),
 			"Version":  s.version,
 			"Commit":   s.commit,
 			"RepoURL":  repoURL,

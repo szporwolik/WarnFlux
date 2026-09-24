@@ -151,9 +151,11 @@ type DirectoryStore interface {
 // (plain recipient); on UpdateUser an empty password keeps the current
 // one.
 type UserStore interface {
-	// EnsureAdminUser makes the read-only admin row exist. It is
-	// idempotent and never changes an existing row.
-	EnsureAdminUser(username string) error
+	// EnsureAdminUser makes the read-only admin row exist and keeps its
+	// stored password in sync with the configured auth account (the
+	// YAML/secret password is authoritative). Idempotent: a row whose
+	// hash already verifies the given password is left untouched.
+	EnsureAdminUser(username, password string) error
 	// ListUsers returns the users on the given 1-based page plus the
 	// total count. The admin row is always first.
 	ListUsers(page, perPage int) ([]User, int, error)

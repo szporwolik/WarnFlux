@@ -32,10 +32,10 @@ func TestUsersTableMigratesToV5(t *testing.T) {
 
 func TestEnsureAdminUserIsIdempotent(t *testing.T) {
 	store := newUsersStore(t)
-	if err := store.EnsureAdminUser("admin"); err != nil {
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.EnsureAdminUser("admin"); err != nil {
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
 	}
 	users, total, err := store.ListUsers(1, 10)
@@ -47,9 +47,58 @@ func TestEnsureAdminUserIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestEnsureAdminUserSyncsPassword pins the config-authoritative contract:
+// the admin row stores the YAML password, an unchanged password does not
+// churn the row, and a changed password re-syncs the hash.
+func TestEnsureAdminUserSyncsPassword(t *testing.T) {
+	store := newUsersStore(t)
+	if err := store.EnsureAdminUser("admin", "secret-one"); err != nil {
+		t.Fatal(err)
+	}
+
+	salt, hash, updated := func() (string, string, int64) {
+		var s, h string
+		var u int64
+		if err := store.db.QueryRow(`SELECT password_salt, password_hash, updated_at_ms FROM users WHERE username = 'admin'`).Scan(&s, &h, &u); err != nil {
+			t.Fatal(err)
+		}
+		return s, h, u
+	}()
+	if !verifyPassword("secret-one", salt, hash) {
+		t.Fatal("admin row does not verify the configured password")
+	}
+
+	// Same password: no change.
+	if err := store.EnsureAdminUser("admin", "secret-one"); err != nil {
+		t.Fatal(err)
+	}
+	var updatedAfter int64
+	if err := store.db.QueryRow(`SELECT updated_at_ms FROM users WHERE username = 'admin'`).Scan(&updatedAfter); err != nil {
+		t.Fatal(err)
+	}
+	if updatedAfter != updated {
+		t.Fatal("unchanged password still churned the admin row")
+	}
+
+	// Changed password: the stored hash follows the config.
+	if err := store.EnsureAdminUser("admin", "secret-two"); err != nil {
+		t.Fatal(err)
+	}
+	var s2, h2 string
+	if err := store.db.QueryRow(`SELECT password_salt, password_hash FROM users WHERE username = 'admin'`).Scan(&s2, &h2); err != nil {
+		t.Fatal(err)
+	}
+	if !verifyPassword("secret-two", s2, h2) {
+		t.Fatal("admin row does not verify the new configured password")
+	}
+	if verifyPassword("secret-one", s2, h2) {
+		t.Fatal("admin row still verifies the old password")
+	}
+}
+
 func TestUsersCRUDAndProtection(t *testing.T) {
 	store := newUsersStore(t)
-	if err := store.EnsureAdminUser("admin"); err != nil {
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,7 +159,7 @@ func TestUsersCRUDAndProtection(t *testing.T) {
 // credentials return ErrBadCredentials, and role-less users cannot sign in.
 func TestUserAuthenticate(t *testing.T) {
 	store := newUsersStore(t)
-	if err := store.EnsureAdminUser("admin"); err != nil {
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateUser("emcom-user", "", "", "", "emcom", "hunter2secret"); err != nil {
@@ -143,7 +192,7 @@ func TestUserAuthenticate(t *testing.T) {
 // normalize/dedupe, replace, protect and group-recipient collection.
 func TestUserAPRSCallsigns(t *testing.T) {
 	store := newUsersStore(t)
-	if err := store.EnsureAdminUser("admin"); err != nil {
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
 	}
 	alice, err := store.CreateUser("alice", "", "", "", "", "")
@@ -221,7 +270,7 @@ func TestUsersPagination(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer store.Close()
-	if err := store.EnsureAdminUser("admin"); err != nil {
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 12; i++ {

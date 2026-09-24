@@ -25,17 +25,39 @@ const passwordIterations = 120_000
 // passwordSaltBytes is the random per-user salt length.
 const passwordSaltBytes = 16
 
-// EnsureAdminUser makes the read-only admin row exist. It never changes an
-// existing row (the web auth account stays authoritative).
-func (s *Store) EnsureAdminUser(username string) error {
+// EnsureAdminUser makes the read-only admin row exist and keeps its
+// stored password in sync with the configured web auth account (the YAML
+// password is authoritative). Idempotent: when the stored hash already
+// verifies the password, nothing changes.
+func (s *Store) EnsureAdminUser(username, password string) error {
 	now := s.now().UnixMilli()
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
 		INSERT INTO users (username, is_admin, created_at_ms, updated_at_ms)
 		VALUES (?, 1, ?, ?)
 		ON CONFLICT(username) DO NOTHING`,
-		username, now, now)
+		username, now, now); err != nil {
+		return fmt.Errorf("ensure admin user %q: %w", username, err)
+	}
+
+	// The configured password is authoritative: sync the stored hash
+	// unless it already verifies (no churn on every restart).
+	var saltHex, hashHex string
+	err := s.db.QueryRow(`SELECT password_salt, password_hash FROM users WHERE username = ? COLLATE NOCASE`, username).
+		Scan(&saltHex, &hashHex)
 	if err != nil {
 		return fmt.Errorf("ensure admin user %q: %w", username, err)
+	}
+	if password != "" && !verifyPassword(password, saltHex, hashHex) {
+		salt, hash, err := s.passwordFields(password)
+		if err != nil {
+			return fmt.Errorf("ensure admin user %q: %w", username, err)
+		}
+		if _, err := s.db.Exec(`
+			UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?
+			WHERE username = ? COLLATE NOCASE AND is_admin = 1`,
+			salt, hash, s.now().UnixMilli(), username); err != nil {
+			return fmt.Errorf("ensure admin user %q: %w", username, err)
+		}
 	}
 	return nil
 }

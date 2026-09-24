@@ -152,7 +152,7 @@ func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub)
 	}}
 
 	users := newFakeUsers()
-	if err := users.EnsureAdminUser(testUsername); err != nil {
+	if err := users.EnsureAdminUser(testUsername, "secret123"); err != nil {
 		t.Fatal(err)
 	}
 

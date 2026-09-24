@@ -336,6 +336,10 @@ web:
   domain: "sosna.sp9moa.pl"
 
   auth:
+    # The admin account is ALWAYS configured here (or via password_file):
+    # on startup WarnFlux seeds the read-only admin row in the user
+    # directory from this block and keeps its stored password in sync
+    # with it. Changing the password here takes effect on restart.
     username: admin
     password: change-me
     # Alternatively, read the password from a file (e.g. a Docker secret).

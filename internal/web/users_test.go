@@ -48,7 +48,7 @@ func (f *fakeUsers) PendingStats(context.Context) (int, time.Duration, error) {
 // CountActive satisfies the optional storageProbe assertion for /metrics.
 func (f *fakeUsers) CountActive(context.Context) (int, error) { return 4, nil }
 
-func (f *fakeUsers) EnsureAdminUser(username string) error {
+func (f *fakeUsers) EnsureAdminUser(username, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.rows {

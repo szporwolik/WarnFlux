@@ -347,8 +347,18 @@ func run(configPath string) error {
 	var webSrv *web.Server
 	if cfg.Web.Enabled {
 		// The admin user is the web auth account: it exists in the users
-		// table as the read-only first row.
-		if err := store.EnsureAdminUser(cfg.Web.Auth.Username); err != nil {
+		// table as the read-only first row, and its stored password is
+		// synced to the YAML/secret value so the directory always matches
+		// the config.
+		adminPassword := cfg.Web.Auth.Password
+		if cfg.Web.Auth.PasswordFile != "" {
+			data, err := os.ReadFile(cfg.Web.Auth.PasswordFile)
+			if err != nil {
+				return fmt.Errorf("web: read auth.password_file: %w", err)
+			}
+			adminPassword = strings.TrimRight(string(data), "\r\n")
+		}
+		if err := store.EnsureAdminUser(cfg.Web.Auth.Username, adminPassword); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
 		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic, trails, met)

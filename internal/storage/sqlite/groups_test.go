@@ -10,7 +10,7 @@ import (
 func newGroupsStore(t *testing.T) *Store {
 	t.Helper()
 	store := newUsersStore(t)
-	if err := store.EnsureAdminUser("admin"); err != nil {
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
 	}
 	return store

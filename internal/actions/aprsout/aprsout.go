@@ -39,8 +39,15 @@ type Config struct {
 	// station (default 2m). Negative disables the per-station cooldown.
 	Cooldown time.Duration `yaml:"cooldown"`
 	// AckTimeout bounds how long one message waits for the addressee's
-	// ack before the call fails (and the manager may retry).
+	// ack before the call fails (and the manager may retry). Only used
+	// when RequireAck is set.
 	AckTimeout time.Duration `yaml:"ack_timeout"`
+	// RequireAck makes delivery wait for the addressee's ack and treats
+	// a missing ack as a failure (retried). When false (default) the
+	// call succeeds once the frame is handed to the transmitter — the
+	// right choice for listeners on plain radios that cannot ack — and
+	// acks are still recorded when they happen to arrive.
+	RequireAck bool `yaml:"require_ack"`
 	// TxInterval is the minimum spacing between any two transmissions of
 	// this action (default 5s) — the APRS channel is shared. Negative
 	// disables it.
@@ -118,10 +125,12 @@ func (a *aprsOutAction) Name() string { return Type }
 
 func (a *aprsOutAction) Close(context.Context) error { return nil }
 
-// Execute sends one APRS message per recipient and waits for acks,
-// paced by the per-station cooldown and the global tx interval. Any
-// failure (including a missing ack) fails the call so the manager's
-// retry machinery handles it.
+// Execute sends one APRS message per recipient, paced by the per-station
+// cooldown and the global tx interval. With require_ack the delivery
+// waits for each addressee's ack (a missing ack fails the call so the
+// manager retries); without it the call succeeds once the frame is
+// transmitted — plain-radio listeners never ack, and retrying would only
+// spam the channel.
 func (a *aprsOutAction) Execute(ctx context.Context, req action.ActionRequest) error {
 	text := a.messageText(req)
 	recipients := a.recipients(req)
@@ -140,20 +149,36 @@ func (a *aprsOutAction) Execute(ctx context.Context, req action.ActionRequest) e
 			failed++
 			continue
 		}
-		ack, err := a.hub.SendMessageWaitAck(ctx, callsign, text, a.cfg.AckTimeout)
-		if err == nil && ack {
-			// Transmitted (and acknowledged): the cooldown and spacing
-			// windows now start from this transmission.
-			a.mu.Lock()
-			a.lastSend[callsign] = time.Now()
-			if a.cfg.TxInterval > 0 {
-				a.nextTx = time.Now().Add(a.cfg.TxInterval)
+		err := error(nil)
+		if a.cfg.RequireAck {
+			var ack bool
+			ack, err = a.hub.SendMessageWaitAck(ctx, callsign, text, a.cfg.AckTimeout)
+			if err == nil && ack {
+				// Transmitted and acknowledged: the cooldown and spacing
+				// windows now start from this transmission.
+				a.mu.Lock()
+				a.lastSend[callsign] = time.Now()
+				if a.cfg.TxInterval > 0 {
+					a.nextTx = time.Now().Add(a.cfg.TxInterval)
+				}
+				a.mu.Unlock()
+				continue
 			}
-			a.mu.Unlock()
-			continue
-		}
-		if err == nil {
-			err = fmt.Errorf("no ack from %s within %s", callsign, a.cfg.AckTimeout)
+			if err == nil {
+				err = fmt.Errorf("no ack from %s within %s", callsign, a.cfg.AckTimeout)
+			}
+		} else {
+			err = a.hub.SendMessage(ctx, callsign, text)
+			if err == nil {
+				// Transmitted: enough for listeners that cannot ack.
+				a.mu.Lock()
+				a.lastSend[callsign] = time.Now()
+				if a.cfg.TxInterval > 0 {
+					a.nextTx = time.Now().Add(a.cfg.TxInterval)
+				}
+				a.mu.Unlock()
+				continue
+			}
 		}
 		if firstErr == nil {
 			firstErr = err

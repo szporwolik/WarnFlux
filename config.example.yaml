@@ -432,8 +432,12 @@ actions:
   #     # negative disables the cooldown.
   #     cooldown: 2m
   #     # How long one message waits for the addressee's ack before the
-  #     # call fails.
+  #     # call fails (used only when require_ack is true).
   #     ack_timeout: 45s
+  #     # Wait for acks? false = the call succeeds once the frame is
+  #     # transmitted (listeners on plain radios cannot ack); acks are
+  #     # still recorded when they arrive.
+  #     require_ack: false
   #     # Minimum spacing between any two transmissions of this action;
   #     # negative disables it.
   #     tx_interval: 5s

@@ -88,7 +88,7 @@ func TestAckSucceedsAndCooldownHolds(t *testing.T) {
 	tx := &fakeTx{name: "aprs-radio", ready: true}
 	hub, cancel := newTestHub(t, tx)
 	defer cancel()
-	a := newTestAction(t, "callsigns: [SP9XYZ-7]\nack_timeout: 5s\ncooldown: 300ms\ntx_interval: -1s", hub)
+	a := newTestAction(t, "callsigns: [SP9XYZ-7]\nack_timeout: 5s\nrequire_ack: true\ncooldown: 300ms\ntx_interval: -1s", hub)
 
 	done := make(chan error, 1)
 	go func() { done <- a.Execute(context.Background(), testReq()) }()
@@ -131,7 +131,7 @@ func TestNoAckFails(t *testing.T) {
 	tx := &fakeTx{name: "aprs-radio", ready: true}
 	hub, cancel := newTestHub(t, tx)
 	defer cancel()
-	a := newTestAction(t, "callsigns: [SP9XYZ-7]\nack_timeout: 150ms\ncooldown: -1s\ntx_interval: -1s", hub)
+	a := newTestAction(t, "callsigns: [SP9XYZ-7]\nack_timeout: 150ms\nrequire_ack: true\ncooldown: -1s\ntx_interval: -1s", hub)
 
 	err := a.Execute(context.Background(), testReq())
 	if err == nil || !strings.Contains(err.Error(), "no ack") {
@@ -139,6 +139,29 @@ func TestNoAckFails(t *testing.T) {
 	}
 	if got := len(tx.sends()); got != 1 {
 		t.Fatalf("sends = %d, want 1", got)
+	}
+}
+
+func TestNoAckRequiredFireAndForget(t *testing.T) {
+	tx := &fakeTx{name: "aprs-radio", ready: true}
+	hub, cancel := newTestHub(t, tx)
+	defer cancel()
+	// require_ack is false by default: the call succeeds on transmission
+	// even though no ack ever arrives, and it must not block.
+	a := newTestAction(t, "callsigns: [SP9XYZ-7]\nack_timeout: 30s\ncooldown: -1s\ntx_interval: -1s", hub)
+
+	start := time.Now()
+	if err := a.Execute(context.Background(), testReq()); err != nil {
+		t.Fatalf("Execute without acks = %v, want nil", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Execute blocked for %s, want immediate fire-and-forget", elapsed)
+	}
+	if got := len(tx.sends()); got != 1 {
+		t.Fatalf("sends = %d, want 1", got)
+	}
+	if got := tx.sends()[0]; strings.Contains(got, "{") {
+		t.Fatalf("send = %q, want no ack-request suffix", got)
 	}
 }
 

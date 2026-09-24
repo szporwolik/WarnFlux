@@ -482,6 +482,18 @@
     return v == null ? "" : Number(v).toFixed(digits == null ? 1 : digits);
   }
 
+  // fmtLocalMin renders an RFC 3339 timestamp in local browser time
+  // (minutes precision); unparseable values pass through untouched.
+  function fmtLocalMin(v) {
+    var t = new Date(v);
+    if (isNaN(t.getTime())) {
+      return v;
+    }
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+    return t.getFullYear() + "-" + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) +
+      " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes());
+  }
+
   function renderReports(reports) {
     var container = document.getElementById("hw-reports");
     var countEl = document.getElementById("hw-report-count");
@@ -598,7 +610,7 @@
     document.getElementById("wmap-title").textContent = report.name + " — APRS weather station";
     var meta = Number(report.latitude).toFixed(4) + ", " + Number(report.longitude).toFixed(4);
     if (report.generated_at) {
-      meta += " · report " + report.generated_at.replace("T", " ").slice(0, 16) + "Z";
+      meta += " · report " + fmtLocalMin(report.generated_at);
     }
     document.getElementById("wmap-meta").textContent = meta;
     miniCenter = [report.latitude, report.longitude];
@@ -936,13 +948,20 @@
     c.addTo(map);
   }
 
-  // fmtTime renders an RFC 3339 timestamp compactly (UTC, minutes).
+  // fmtTime renders an RFC 3339 timestamp in local browser time
+  // (minutes). Unparseable values fall back to the raw text.
   function fmtTime(v) {
     if (!v) {
       return "";
     }
-    var s = String(v).replace("T", " ");
-    return s.length > 16 ? s.slice(0, 16) + "Z" : s;
+    var t = new Date(v);
+    if (isNaN(t.getTime())) {
+      var raw = String(v).replace("T", " ");
+      return raw.length > 16 ? raw.slice(0, 16) : raw;
+    }
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+    return t.getFullYear() + "-" + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) +
+      " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes());
   }
 
   function loadScript(src, ok, fail) {

@@ -302,6 +302,11 @@ type Web struct {
 	// Line breaks are preserved; limited HTML (links) is allowed.
 	// Empty hides it.
 	About string
+	// Disclaimer is an optional short notice rendered prominently above
+	// the public hazard list, e.g. that the system is unofficial and does
+	// not replace official alert channels. Plain text; line breaks are
+	// preserved. Empty hides it.
+	Disclaimer string
 	// Domain is the public host (and optional port) this instance is
 	// served under, e.g. "spok.example.com". It is reserved for future
 	// features that generate absolute links (cookies, notifications);
@@ -420,16 +425,17 @@ type fileReceiverSubscription struct {
 }
 
 type fileWeb struct {
-	Enabled bool         `yaml:"enabled"`
-	Listen  string       `yaml:"listen"`
-	Title   string       `yaml:"title"`
-	Name    string       `yaml:"name"`
-	Header1 string       `yaml:"header1"`
-	Header2 string       `yaml:"header2"`
-	Tagline string       `yaml:"tagline"`
-	About   string       `yaml:"about"`
-	Domain  string       `yaml:"domain"`
-	Auth    *fileWebAuth `yaml:"auth"`
+	Enabled    bool         `yaml:"enabled"`
+	Listen     string       `yaml:"listen"`
+	Title      string       `yaml:"title"`
+	Name       string       `yaml:"name"`
+	Header1    string       `yaml:"header1"`
+	Header2    string       `yaml:"header2"`
+	Tagline    string       `yaml:"tagline"`
+	About      string       `yaml:"about"`
+	Disclaimer string       `yaml:"disclaimer"`
+	Domain     string       `yaml:"domain"`
+	Auth       *fileWebAuth `yaml:"auth"`
 }
 
 type fileWebAuth struct {
@@ -733,6 +739,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.Web.Header2 = strings.TrimSpace(f.Web.Header2)
 		cfg.Web.Tagline = strings.TrimSpace(f.Web.Tagline)
 		cfg.Web.About = strings.TrimSpace(f.Web.About)
+		cfg.Web.Disclaimer = strings.TrimSpace(f.Web.Disclaimer)
 		cfg.Web.Domain = strings.TrimSuffix(strings.TrimSpace(f.Web.Domain), "/")
 		if f.Web.Auth != nil {
 			cfg.Web.Auth = WebAuth{
@@ -963,6 +970,9 @@ func (c Config) Validate() error {
 		}
 		if c.Web.Auth.Password != "" && c.Web.Auth.PasswordFile != "" {
 			return fmt.Errorf("web.auth.password and web.auth.password_file are mutually exclusive")
+		}
+		if len(c.Web.Disclaimer) > 500 {
+			return fmt.Errorf("web.disclaimer is %d characters, maximum 500", len(c.Web.Disclaimer))
 		}
 	}
 	for i, a := range c.Actions {

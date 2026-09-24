@@ -95,13 +95,14 @@ func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub)
 	t.Helper()
 
 	cfg := config.Web{
-		Enabled: true,
-		Listen:  ":0",
-		Title:   "WarnFlux Test",
-		Header2: "Test platform",
-		Tagline: "Test tagline",
-		About:   "Test info text. <a href=\"https://sp9moa.pl\">sp9moa.pl</a>",
-		Auth:    config.WebAuth{Username: testUsername, Password: testPassword},
+		Enabled:    true,
+		Listen:     ":0",
+		Title:      "WarnFlux Test",
+		Header2:    "Test platform",
+		Tagline:    "Test tagline",
+		About:      "Test info text. <a href=\"https://sp9moa.pl\">sp9moa.pl</a>",
+		Disclaimer: "Test disclaimer text.",
+		Auth:       config.WebAuth{Username: testUsername, Password: testPassword},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -565,8 +566,10 @@ func TestPublicHomePage(t *testing.T) {
 		"Test info text.",           // configurable about text
 		`href="https://sp9moa.pl"`,  // HTML links are allowed in the about text
 		`class="home-about-toggle"`, // More/Less expand button
-		"Ekstremalny wiatr",         // most severe first
-		`href="/login"`,             // sign-in behind the icon button
+		`class="home-disclaimer"`,   // unofficial-system notice
+		"Test disclaimer text.",
+		"Ekstremalny wiatr", // most severe first
+		`href="/login"`,     // sign-in behind the icon button
 		"Active hazards",
 		"Radio stations",
 		`id="home-alerts"`,

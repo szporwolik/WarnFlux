@@ -109,6 +109,29 @@ sources:
           latitude: 50.0000
           longitude: 20.0000
 
+  # METAR aviation weather source (NOAA Aviation Weather Center):
+  # publishes current airport observations as informational weather
+  # snapshots (no HazardEvents). The feed carries each station's
+  # position, so the airport appears on the weather map automatically —
+  # no coordinates needed.
+  - id: metar-epkk
+    type: metar
+    enabled: false
+
+    runtime:
+      restart: true
+      shutdown_timeout: 10s
+
+    config:
+      poll_interval: 15m
+      request_timeout: 10s
+      # base_url: "https://aviationweather.gov/api/data"
+
+      stations:
+        - id: EPKK
+          name: "Kraków Balice (EPKK)"
+          timezone: "Europe/Warsaw"
+
   # IMGW-PIB public warnings: a real HAZARD source consuming the official
   # warningsmeteo and warningshydro feeds with full-snapshot disappearance
   # reconciliation (see internal/plugins/sources/imgw/README.md).

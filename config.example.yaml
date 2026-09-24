@@ -471,8 +471,8 @@ actions:
   #
   #   config:
   #     callsigns: ["SP9XYZ-7", "SR9KR"]
-  #     # Prefix of every message; defaults to web.header1.
-  #     prefix: "WarnFlux"
+  #     # Prefix of every message; empty = web.header1.
+  #     prefix: ""
 
   # APRS-out action: sends APRS text messages to the listed ham callsigns
   # (plus the matched group's members' registered callsigns) and WAITS for
@@ -494,7 +494,8 @@ actions:
   #
   #   config:
   #     callsigns: ["SP9XYZ-7", "SR9KR"]
-  #     prefix: "WarnFlux"
+  #     # Prefix of every message; empty = web.header1.
+  #     prefix: ""
   #     # Minimum interval between two messages to the SAME station;
   #     # negative disables the cooldown.
   #     cooldown: 2m

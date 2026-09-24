@@ -219,7 +219,9 @@ func (h *Hub) Callsign() string { return h.cfg.Callsign }
 // GridSquare returns our configured Maidenhead locator.
 func (h *Hub) GridSquare() string { return h.cfg.GridSquare }
 
-// CenterLat/CenterLon return the center of our configured gridsquare.
+// CenterLat/CenterLon return the configured position of our station:
+// the explicit aprs.latitude/longitude when set, otherwise the center of
+// the configured gridsquare.
 func (h *Hub) CenterLat() float64 { return h.cfg.CenterLat }
 func (h *Hub) CenterLon() float64 { return h.cfg.CenterLon }
 

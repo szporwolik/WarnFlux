@@ -150,6 +150,7 @@ type groupsView struct {
 	NavNotifications bool
 	NavHealth        bool
 	NavCompose       bool
+	NavAccount       bool
 }
 
 // handleGroupsPage renders the group administration page. ?edit=<id>

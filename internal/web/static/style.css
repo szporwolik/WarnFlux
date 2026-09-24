@@ -1638,6 +1638,15 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.78rem;
 }
 .hw-fday-icon { font-size: 0.95rem; color: var(--brand); }
+/* Compose message templates: quick prefill buttons above the form. */
+.compose-templates {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 0.8rem;
+}
+.compose-templates-label { color: var(--muted); font-size: 0.8rem; }
 .hw-attrib {
   margin: 0.9rem 0 0;
   color: var(--muted);

@@ -122,6 +122,20 @@ func (s *Store) GetUser(id int64) (storage.User, error) {
 	return u, nil
 }
 
+// GetUserByUsername returns one user by username (case insensitive);
+// unknown names report storage.ErrUserNotFound.
+func (s *Store) GetUserByUsername(username string) (storage.User, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM users WHERE username = ? COLLATE NOCASE`, username).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.User{}, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return storage.User{}, fmt.Errorf("lookup user %q: %w", username, err)
+	}
+	return s.userByID(id)
+}
+
 // CreateUser inserts a new regular user. A duplicate username (case
 // insensitive) reports storage.ErrUsernameTaken.
 func (s *Store) CreateUser(username, phone, email, discord, role, password string) (storage.User, error) {

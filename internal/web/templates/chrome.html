@@ -1,7 +1,7 @@
 {{define "topbar"}}<script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>
-    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavTest}}Test signal{{else if .NavCompose}}Compose{{else if .NavLogs}}Logs{{else if .NavAudit}}Audit log{{else if .NavTraffic}}MQTT{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
+    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavTest}}Test signal{{else if .NavCompose}}Compose{{else if .NavAccount}}Account{{else if .NavLogs}}Logs{{else if .NavAudit}}Audit log{{else if .NavTraffic}}MQTT{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
     <span class="topbar-spacer"></span>
     <a class="topbar-home" href="/" title="Public page" aria-label="Public page">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>
@@ -19,7 +19,7 @@
 {{end}}
 
 {{define "sidebar"}}  <aside class="sidebar">
-    <a class="brand" href="{{if eq .Role "admin"}}/dashboard{{else}}/compose{{end}}">
+    <a class="brand" href="{{if eq .Role "admin"}}/dashboard{{else if eq .Role "emcom"}}/compose{{else}}/account{{end}}">
       <img class="brand-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
       <span class="brand-text">
         <span class="brand-name">{{.Header1}}</span>
@@ -27,7 +27,8 @@
     </a>
     <nav class="sidenav">
       {{if eq .Role "admin"}}<a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>{{end}}
-      <a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">Compose</span></a>
+      {{if ne .Role "member"}}<a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">Compose</span></a>{{end}}
+      {{if ne .Role "admin"}}<a class="nav-item{{if .NavAccount}} active{{end}}" href="/account"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">Account</span></a>{{end}}
       {{if eq .Role "admin"}}
       <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">Notifications</span></a>
       <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">Health</span></a>

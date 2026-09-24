@@ -22,11 +22,12 @@
         <input type="text" name="email" placeholder="email" value="{{.Form.Email}}" maxlength="128">
         <input type="text" name="discord" placeholder="discord" value="{{.Form.Discord}}" maxlength="128">
         <select name="role">
-          <option value="" {{if eq .Form.Role ""}}selected{{end}}>member (no sign-in)</option>
-          <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose only)</option>
+          <option value="" {{if eq .Form.Role ""}}selected{{end}}>recipient (no sign-in)</option>
+          <option value="member" {{if eq .Form.Role "member"}}selected{{end}}>member (account only)</option>
+          <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose + account)</option>
         </select>
         <input type="text" name="aprs_callsigns" placeholder="APRS callsigns (e.g. SP9XXX-16)" value="{{.Form.APRSCallsigns}}" maxlength="256">
-        <input type="password" name="password" placeholder="password (required for emcom)" maxlength="72" autocomplete="new-password">
+        <input type="password" name="password" placeholder="password (required for member/emcom)" maxlength="72" autocomplete="new-password">
         <button type="submit" class="btn-primary btn-add">
           <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>Add user
         </button>
@@ -120,8 +121,9 @@
       </label>
       <label class="modal-field">Role
         <select name="role" id="user-edit-role">
-          <option value="" {{if eq .Form.Role ""}}selected{{end}}>member (no sign-in)</option>
-          <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose only)</option>
+          <option value="" {{if eq .Form.Role ""}}selected{{end}}>recipient (no sign-in)</option>
+          <option value="member" {{if eq .Form.Role "member"}}selected{{end}}>member (account only)</option>
+          <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose + account)</option>
         </select>
       </label>
       <label class="modal-field">APRS callsigns

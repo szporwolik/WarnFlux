@@ -206,11 +206,15 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /dashboard", s.requireAdmin(s.handleDashboard))
 	s.mux.Handle("GET /test", s.requireAdmin(s.handleTestPage))
 	s.mux.Handle("POST /test", s.requireAdmin(s.handleTestEmit))
-	// Compose: any authenticated role may issue/update/expire
-	// communications; it is the emcom operator's only surface.
-	s.mux.Handle("GET /compose", s.requirePage(s.handleComposePage))
-	s.mux.Handle("POST /compose", s.requirePage(s.handleComposeSave))
-	s.mux.Handle("POST /compose/expire", s.requirePage(s.handleComposeExpire))
+	// Compose: admin and emcom sessions issue/update/expire
+	// communications; it is the emcom operator's main surface.
+	s.mux.Handle("GET /compose", s.requireCompose(s.handleComposePage))
+	s.mux.Handle("POST /compose", s.requireCompose(s.handleComposeSave))
+	s.mux.Handle("POST /compose/expire", s.requireCompose(s.handleComposeExpire))
+	// Self-service account page: member and emcom sessions edit their
+	// own contact data and password.
+	s.mux.Handle("GET /account", s.requirePage(s.handleAccountPage))
+	s.mux.Handle("POST /account", s.requirePage(s.handleAccountSave))
 	s.mux.Handle("GET /users", s.requireAdmin(s.handleUsersPage))
 	s.mux.Handle("POST /users", s.requireAdmin(s.handleUserSave))
 	s.mux.Handle("POST /users/{id}/delete", s.requireAdmin(s.handleUserDelete))
@@ -276,9 +280,26 @@ func (s *Server) requirePage(next http.HandlerFunc) http.Handler {
 	})
 }
 
+// requireCompose protects the compose routes: any authenticated admin or
+// emcom session; members are sent to their account page.
+func (s *Server) requireCompose(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess := s.sessions.currentSession(r)
+		if sess == nil {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if sess.role == "member" {
+			http.Redirect(w, r, "/account", http.StatusSeeOther)
+			return
+		}
+		next(w, r)
+	})
+}
+
 // requireAdmin protects admin-tier routes: unauthenticated requests go to
-// the login page, non-admin sessions (emcom) are sent to their own
-// landing page (/compose) instead.
+// the login page, non-admin sessions (member/emcom) are sent to their own
+// landing page instead.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess := s.sessions.currentSession(r)
@@ -287,7 +308,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.Handler {
 			return
 		}
 		if sess.role != "admin" {
-			http.Redirect(w, r, "/compose", http.StatusSeeOther)
+			http.Redirect(w, r, landingForRole(sess.role), http.StatusSeeOther)
 			return
 		}
 		next(w, r)

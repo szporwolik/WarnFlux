@@ -1,0 +1,58 @@
+{{define "account"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Account · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Account</h2>
+      <p class="page-info">
+        Your own contact data as stored for alert routing. The username and
+        role are managed by an administrator.
+      </p>
+      {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
+      {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+      <form method="post" action="/account" class="user-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <label class="field">
+          <span>Username</span>
+          <input type="text" value="{{.Username}}" disabled>
+        </label>
+        <label class="field">
+          <span>Role</span>
+          <input type="text" value="{{.Role}}" disabled>
+        </label>
+        <label class="field">
+          <span>Phone</span>
+          <input type="text" name="phone" value="{{.Phone}}" maxlength="32">
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input type="text" name="email" value="{{.Email}}" maxlength="128">
+        </label>
+        <label class="field">
+          <span>Discord</span>
+          <input type="text" name="discord" value="{{.Discord}}" maxlength="128">
+        </label>
+        <label class="field">
+          <span>New password</span>
+          <input type="password" name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one">
+        </label>
+        <div class="form-footer">
+          <button type="submit" class="btn-primary">Save</button>
+        </div>
+      </form>
+    </section>
+  </main>
+  {{template "footer" .}}
+</body>
+</html>
+{{end}}

@@ -185,6 +185,7 @@ type pageView struct {
 	NavNotifications bool
 	NavHealth        bool
 	NavCompose       bool
+	NavAccount       bool
 }
 
 // ---- view builders -------------------------------------------------------
@@ -506,11 +507,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(username, "login", "role="+role)
 	s.sessions.setSessionCookie(w, token)
-	landing := "/dashboard"
-	if role != "admin" {
-		landing = "/compose"
-	}
-	http.Redirect(w, r, landing, http.StatusSeeOther)
+	http.Redirect(w, r, landingForRole(role), http.StatusSeeOther)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

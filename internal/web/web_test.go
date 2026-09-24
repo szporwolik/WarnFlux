@@ -1217,6 +1217,9 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `<span class="nav-label">Compose</span>`) {
 		t.Error("compose page missing Compose nav entry")
 	}
+	if !strings.Contains(html, `<span class="nav-label">Account</span>`) {
+		t.Error("emcom must see the Account nav entry")
+	}
 	for _, forbidden := range []string{"Dashboard", "Users", "Groups", "Notifications"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
 			t.Errorf("emcom must not see %s nav entry", forbidden)
@@ -1228,6 +1231,63 @@ func TestEmcomRoleFlow(t *testing.T) {
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose" {
 			t.Errorf("GET %s as emcom = %d %q, want 303 to /compose", path, resp.StatusCode, resp.Header.Get("Location"))
 		}
+	}
+}
+
+// TestMemberRoleFlow pins the self-service member role: a member signs in
+// with their own password, lands on /account, sees only the Account nav
+// entry, and is redirected away from compose and every admin page.
+func TestMemberRoleFlow(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("plain-user", "", "", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, html := env.get("/login")
+	csrf := extractCSRF(t, html)
+	form := url.Values{"csrf": {csrf}, "username": {"plain-user"}, "password": {"password123"}}
+	resp, _ := env.postForm("/login", form)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account" {
+		t.Fatalf("member login = %d %q, want 303 to /account", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	resp, html = env.get("/account")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /account as member = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<span class="nav-label">Account</span>`) {
+		t.Error("account page missing Account nav entry")
+	}
+	if !strings.Contains(html, `name="phone"`) || !strings.Contains(html, `name="email"`) {
+		t.Error("account page missing the self-service contact form")
+	}
+	for _, forbidden := range []string{"Compose", "Dashboard", "Users", "Groups"} {
+		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
+			t.Errorf("member must not see %s nav entry", forbidden)
+		}
+	}
+
+	// Compose and every admin page redirect the member to /account.
+	for _, path := range []string{"/compose", "/dashboard", "/users", "/groups", "/health", "/logs", "/traffic", "/test", "/notifications"} {
+		resp, _ := env.get(path)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account" {
+			t.Errorf("GET %s as member = %d %q, want 303 to /account", path, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+
+	// Self-service save: contact fields update, role stays member.
+	csrf2 := extractCSRF(t, html)
+	form = url.Values{"csrf": {csrf2}, "phone": {"600700800"}, "email": {"member@example.com"}, "password": {""}}
+	resp, _ = env.postForm("/account", form)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account?msg=saved" {
+		t.Fatalf("account save = %d %q, want 303 with saved flash", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	u, err := env.users.GetUserByUsername("plain-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Phone != "600700800" || u.Email != "member@example.com" || u.Role != "member" {
+		t.Errorf("after save = phone %q email %q role %q", u.Phone, u.Email, u.Role)
 	}
 }
 

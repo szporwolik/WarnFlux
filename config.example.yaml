@@ -222,6 +222,31 @@ sources:
   #     center_latitude: 50.0212
   #     center_longitude: 20.2075
 
+  # GIOŚ serious-industrial-accident register (poważne awarie):
+  # current-year accidents, filtered by voivodeship first (auto-derived
+  # from the home position when not set), then geocoded to the locality
+  # centroid (GUGiK ULDK) and radius-filtered. Event types:
+  # INDUSTRIAL_ACCIDENT, CHEMICAL_RELEASE (rodzajZdarzenia emisja/wyciek).
+  # - id: gios-awarie
+  #   type: gios
+  #   enabled: true
+  #
+  #   runtime:
+  #     restart: true
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     poll_interval: 6h
+  #     request_timeout: 10s
+  #     # Administrative pre-filter: one of the 16 provider names. Empty =
+  #     # derived once from the home position via reverse geocoding.
+  #     wojewodztwo: małopolskie
+  #     # powiat: wielicki
+  #     # rok: 0          # 0 = the current year
+  #     radius_km: 30
+  #     center_latitude: 50.0212
+  #     center_longitude: 20.2075
+
   # APRS-IS source: connects to an APRS-IS server, subscribes to packets
   # around the configured position (aprs.gridsquare + aprs.radius_km) and
   # feeds them into the shared APRS hub, which publishes the merged

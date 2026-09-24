@@ -46,15 +46,15 @@ func ParseFeedLine(line string, now time.Time) Packet {
 	}
 	switch info[0] {
 	case '!':
-		parsePositionBody(&p, info[1:], '/', false)
+		parsePositionBody(&p, info[1:], false)
 	case '=':
-		parsePositionBody(&p, info[1:], '/', true)
+		parsePositionBody(&p, info[1:], true)
 	case '/', '\\':
 		// Both compressed and uncompressed positions start with the symbol
 		// table; the uncompressed form carries hemisphere letters at fixed
 		// offsets (body[8] and body[17]).
 		if len(info) > 18 && (info[9] == 'N' || info[9] == 'S') && (info[18] == 'E' || info[18] == 'W') {
-			parsePositionBody(&p, info[1:], info[0], false)
+			parsePositionBody(&p, info[1:], false)
 		} else {
 			parseCompressed(&p, info)
 		}
@@ -89,9 +89,12 @@ func ParseFeedLine(line string, now time.Time) Packet {
 // parsePositionBody parses an uncompressed position body:
 //
 //	4903.50N/01934.56E-065/070/A=001234 comment
-func parsePositionBody(p *Packet, body string, table byte, capable bool) {
+//
+// The separator between latitude and longitude doubles as the APRS
+// symbol-table indicator: '/' for the primary table, '\' for the
+// alternate one (e.g. the "\?" information-kiosk icon Direwolf sends).
+func parsePositionBody(p *Packet, body string, capable bool) {
 	p.Kind = KindPosition
-	p.SymbolTable = table
 	p.MessageCapable = capable
 	if len(body) < 19 {
 		p.Comment = strings.TrimSpace(body)
@@ -99,10 +102,12 @@ func parsePositionBody(p *Packet, body string, table byte, capable bool) {
 	}
 	lat, okLat := parseCoord(body[0:8], 2, 90)
 	lon, okLon := parseCoord(body[9:18], 3, 180)
-	if !okLat || !okLon || body[8] != '/' {
+	sep := body[8]
+	if !okLat || !okLon || (sep != '/' && sep != '\\') {
 		p.Comment = strings.TrimSpace(body)
 		return
 	}
+	p.SymbolTable = sep
 	p.Position = &Position{Latitude: lat, Longitude: lon}
 	p.Symbol = body[18]
 	parseExtensions(p, body[19:])
@@ -161,7 +166,7 @@ func parseTimestamped(p *Packet, info string, now time.Time) {
 		unix := ts.Unix()
 		p.Timestamp = &unix
 	}
-	parsePositionBody(p, info[8:], '/', false)
+	parsePositionBody(p, info[8:], false)
 }
 
 // parseAPRSTime parses "HHMMSS" + zone ('z' UTC, '/' local, 'h' = zulu in
@@ -284,7 +289,7 @@ func parseObject(p *Packet, info string) {
 		return
 	}
 	if body[0] >= '0' && body[0] <= '9' {
-		parsePositionBody(p, body, '/', false)
+		parsePositionBody(p, body, false)
 		p.Kind = KindObject
 		return
 	}

@@ -115,8 +115,11 @@ func TestExecuteSendsToAllRecipients(t *testing.T) {
 		t.Errorf("recipients = %v", tx.sent)
 	}
 	text := tx.sent[0][1]
-	if !strings.HasPrefix(text, "WarnFlux SEVERE Burza z gradem") {
+	if !strings.HasPrefix(text, "WarnFlux SEV Burza z gradem:") {
 		t.Errorf("message = %q", text)
+	}
+	if !strings.Contains(text, "Ostrzezenie dla powiatu krakowskiego") {
+		t.Errorf("headline missing (or not transliterated): %q", text)
 	}
 	if len(text) > aprs.MaxMessageText {
 		t.Errorf("message is %d bytes, over the %d limit", len(text), aprs.MaxMessageText)

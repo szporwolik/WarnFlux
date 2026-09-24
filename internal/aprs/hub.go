@@ -582,12 +582,14 @@ func (h *Hub) SendMessage(ctx context.Context, to, text string) error {
 // SendMessageWaitAck sends one message with a hub-generated {id} and waits
 // up to timeout for the addressee's ack (or rej) before returning. The
 // bool reports whether an ack arrived; ErrNoAck means the timeout elapsed.
+// The text is shortened to leave room for the {id} suffix, so the whole
+// APRS message field never exceeds the protocol limit.
 func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout time.Duration) (bool, error) {
 	to = NormalizeCallsign(to)
 	if !ValidCallsign(to) {
 		return false, fmt.Errorf("aprs: invalid addressee callsign %q", to)
 	}
-	text = TrimMessageText(text)
+	text = LimitMessageText(text, AckSuffixLen)
 	if text == "" {
 		return false, fmt.Errorf("aprs: message text must not be empty")
 	}

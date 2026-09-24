@@ -223,23 +223,19 @@ func (a *aprsOutAction) recipients(req action.ActionRequest) []string {
 	return out
 }
 
-// messageText renders the notification from the canonical event metadata.
-// APRS messages are a single line of at most 67 characters.
+// messageText renders the notification from the canonical event metadata:
+// headline first, then event, severity and prefix, with less important
+// components dropped before the headline is ever shortened. The ack {id}
+// suffix room is reserved so the final frame always fits the APRS limit.
 func (a *aprsOutAction) messageText(req action.ActionRequest) string {
 	prefix := strings.TrimSpace(a.cfg.Prefix)
 	if prefix == "" {
 		prefix = strings.TrimSpace(req.App.Header1)
 	}
-	var text string
 	if h := req.Event.Hazard; h != nil {
-		sev := strings.ToUpper(strings.TrimSpace(h.Hazard.Severity))
-		event := strings.TrimSpace(h.Hazard.Event)
-		headline := strings.TrimSpace(h.Hazard.Headline)
-		text = strings.Join([]string{prefix, sev, event, headline}, " ")
-	} else {
-		text = strings.Join([]string{prefix, "WarnFlux notification"}, " ")
+		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, h.Hazard.Headline, aprs.AckSuffixLen)
 	}
-	return aprs.TrimMessageText(text)
+	return aprs.LimitMessageText(strings.Join([]string{prefix, "WarnFlux notification"}, " "), aprs.AckSuffixLen)
 }
 
 var _ action.Plugin = (*aprsOutAction)(nil)

@@ -91,6 +91,19 @@ type Weather struct {
 	PressureMSLHpa   *float64
 	RadiationUSvh    *float64
 	RadiationCPM     *float64
+	// Daily is the multi-day forecast (internet providers); APRS
+	// stations only observe, so their entries have none.
+	Daily []DailyWeather
+}
+
+// DailyWeather is one forecast day of a canonical weather document.
+type DailyWeather struct {
+	Date               string
+	Condition          string
+	TemperatureMaxC    *float64
+	TemperatureMinC    *float64
+	PrecipitationSumMm *float64
+	WindSpeedMaxKmh    *float64
 }
 
 // InfoEntry is one retained informational message (usually weather).

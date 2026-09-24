@@ -427,6 +427,207 @@
   }
 })();
 
+// Public home page: Weather tab — current reports from every internet
+// provider and every APRS weather station in range, plus the multi-day
+// forecasts held in the retained MQTT info topics. Clicking an APRS report
+// opens a mini-map popup with the station location.
+(function () {
+  "use strict";
+
+  var panel = document.getElementById("panel-tab-weather");
+  if (!panel) {
+    return;
+  }
+
+  var POLL_MS = 5 * 60 * 1000;
+  var loaded = false;
+  var miniMap = null;
+  var miniMarker = null;
+
+  var COND_ICONS = {
+    clear: "wi-day-sunny",
+    mainly_clear: "wi-day-sunny-overcast",
+    partly_cloudy: "wi-day-cloudy",
+    overcast: "wi-cloudy",
+    fog: "wi-fog",
+    drizzle: "wi-sprinkle",
+    freezing_drizzle: "wi-sleet",
+    rain: "wi-rain",
+    freezing_rain: "wi-rain-mix",
+    snow: "wi-snow",
+    snow_grains: "wi-snow",
+    showers: "wi-showers",
+    snow_showers: "wi-sleet",
+    thunderstorm: "wi-thunderstorm",
+    thunderstorm_hail: "wi-hail",
+    unknown: "wi-na"
+  };
+
+  function condIcon(c) { return COND_ICONS[c] || "wi-na"; }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) { e.className = cls; }
+    if (text != null) { e.textContent = text; }
+    return e;
+  }
+
+  function fmtNum(v, digits) {
+    return v == null ? "" : Number(v).toFixed(digits == null ? 1 : digits);
+  }
+
+  function renderReports(reports) {
+    var container = document.getElementById("hw-reports");
+    var countEl = document.getElementById("hw-report-count");
+    container.textContent = "";
+    if (countEl) { countEl.textContent = reports.length ? "(" + reports.length + ")" : ""; }
+    if (!reports.length) {
+      container.appendChild(el("p", "muted", "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT."));
+      return;
+    }
+    reports.forEach(function (r) {
+      var item = el("button", "hw-report");
+      item.type = "button";
+      item.dataset.via = r.via;
+      item.appendChild(el("span", "wi hw-icon " + condIcon(r.condition)));
+
+      var body = el("span", "hw-body");
+      var head = el("span", "hw-head");
+      head.appendChild(el("strong", null, r.name));
+      head.appendChild(el("span", "hw-provider", r.provider));
+      body.appendChild(head);
+
+      var meta = [];
+      if (r.temperature_c != null) { meta.push(fmtNum(r.temperature_c) + "°C"); }
+      if (r.humidity_pct != null) { meta.push("hum " + fmtNum(r.humidity_pct, 0) + "%"); }
+      if (r.wind_speed_kmh != null) {
+        var w = "wind " + fmtNum(r.wind_speed_kmh) + " km/h";
+        if (r.wind_direction_deg != null) { w += " @ " + fmtNum(r.wind_direction_deg, 0) + "°"; }
+        meta.push(w);
+      }
+      if (r.pressure_hpa != null) { meta.push(fmtNum(r.pressure_hpa, 0) + " hPa"); }
+      if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
+      if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
+      if (meta.length) { body.appendChild(el("span", "hw-meta", meta.join(" · "))); }
+
+      item.appendChild(body);
+      if (r.via === "aprs") {
+        item.classList.add("hw-aprs");
+        item.title = "Show " + r.name + " on the map";
+        item.addEventListener("click", function () { openMiniMap(r); });
+      } else {
+        item.disabled = true;
+      }
+      container.appendChild(item);
+    });
+  }
+
+  function renderForecasts(forecasts) {
+    var container = document.getElementById("hw-forecasts");
+    container.textContent = "";
+    if (!forecasts.length) {
+      container.appendChild(el("p", "muted", "No forecast data in MQTT yet"));
+      return;
+    }
+    forecasts.forEach(function (f) {
+      var box = el("section", "hw-forecast");
+      var head = el("h3", "hw-forecast-head");
+      head.appendChild(el("strong", null, f.name));
+      head.appendChild(el("span", "hw-provider", f.provider));
+      box.appendChild(head);
+
+      var row = el("div", "hw-days");
+      (f.daily || []).forEach(function (d) {
+        var day = el("div", "hw-day");
+        day.appendChild(el("span", "hw-day-date", d.date ? d.date.slice(5) : ""));
+        day.appendChild(el("span", "wi hw-day-icon " + condIcon(d.condition)));
+        var temps = (d.temperature_min_c != null ? fmtNum(d.temperature_min_c, 0) + "°" : "—") +
+          " / " + (d.temperature_max_c != null ? fmtNum(d.temperature_max_c, 0) + "°" : "—");
+        day.appendChild(el("span", "hw-day-temps", temps));
+        day.appendChild(el("span", "hw-day-rain",
+          d.precipitation_sum_mm != null && d.precipitation_sum_mm > 0 ? fmtNum(d.precipitation_sum_mm) + " mm" : ""));
+        row.appendChild(day);
+      });
+      box.appendChild(row);
+      container.appendChild(box);
+    });
+  }
+
+  function refresh() {
+    fetch("/api/weather")
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        if (data) {
+          renderReports(data.reports || []);
+          renderForecasts(data.forecasts || []);
+        }
+      })
+      .catch(function () { /* transient — next poll retries */ });
+  }
+
+  // Mini-map popup for APRS stations: Leaflet loads on demand from the
+  // same CDN the neighbourhood map uses.
+  function ensureLeaflet(cb) {
+    if (window.L) {
+      cb();
+      return;
+    }
+    var css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(css);
+    var s = document.createElement("script");
+    s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    s.onload = function () { cb(); };
+    s.onerror = function () { /* offline: no map in the popup */ };
+    document.body.appendChild(s);
+  }
+
+  function openMiniMap(report) {
+    var dialog = document.getElementById("wmap-dialog");
+    document.getElementById("wmap-title").textContent = report.name + " — APRS weather station";
+    var meta = Number(report.latitude).toFixed(4) + ", " + Number(report.longitude).toFixed(4);
+    if (report.generated_at) {
+      meta += " · report " + report.generated_at.replace("T", " ").slice(0, 16) + "Z";
+    }
+    document.getElementById("wmap-meta").textContent = meta;
+    dialog.showModal();
+    ensureLeaflet(function () {
+      if (!window.L) { return; }
+      if (!miniMap) {
+        miniMap = L.map("wmap-map", { attributionControl: false }).setView([report.latitude, report.longitude], 13);
+        var dark = document.documentElement.getAttribute("data-theme") !== "light";
+        L.tileLayer(dark
+          ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+          : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(miniMap);
+      } else {
+        miniMap.setView([report.latitude, report.longitude], 13);
+      }
+      if (miniMarker) { miniMap.removeLayer(miniMarker); }
+      miniMarker = L.marker([report.latitude, report.longitude]).addTo(miniMap);
+      miniMarker.bindPopup("<strong>" + report.name + "</strong>").openPopup();
+      window.setTimeout(function () { if (miniMap) { miniMap.invalidateSize(); } }, 80);
+    });
+  }
+
+  var dialog = document.getElementById("wmap-dialog");
+  if (dialog) {
+    dialog.querySelector(".wmap-close").addEventListener("click", function () { dialog.close(); });
+    dialog.addEventListener("click", function (e) { if (e.target === dialog) { dialog.close(); } });
+  }
+
+  var tab = document.querySelector('.home-tab[data-tab="tab-weather"]');
+  if (tab) {
+    tab.addEventListener("click", function () {
+      if (!loaded) {
+        loaded = true;
+        refresh();
+        window.setInterval(refresh, POLL_MS);
+      }
+    });
+  }
+})();
+
 // Public home page: APRS neighbourhood map (tab 2) — Leaflet map centered
 // on our locator with the collection-radius circle, a RainViewer radar
 // overlay and the stations held in the retained MQTT state, polled every

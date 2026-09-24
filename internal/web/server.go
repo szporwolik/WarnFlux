@@ -169,6 +169,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /{$}", s.handleHome)
 	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
 	s.mux.HandleFunc("GET /api/aprs/stations", s.handleAPRSStations)
+	s.mux.HandleFunc("GET /api/weather", s.handleWeather)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.Handle("GET /logs", s.requireAdmin(s.handleLogsPage))

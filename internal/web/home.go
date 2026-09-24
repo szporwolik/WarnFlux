@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
@@ -143,5 +144,168 @@ func (s *Server) handleAPRSStations(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(s.aprs.Stations()); err != nil {
 		s.logger.Warn("web: encode aprs stations failed", "error", err)
+	}
+}
+
+// ---- public weather tab --------------------------------------------------
+
+// weatherReportView is one current weather report for the public home
+// weather tab: internet providers (retained info topics) and APRS weather
+// stations heard in range.
+type weatherReportView struct {
+	Provider         string   `json:"provider"`
+	Name             string   `json:"name"`
+	Latitude         float64  `json:"latitude"`
+	Longitude        float64  `json:"longitude"`
+	Via              string   `json:"via"` // "internet" or "aprs"
+	Condition        string   `json:"condition"`
+	TemperatureC     *float64 `json:"temperature_c,omitempty"`
+	HumidityPct      *float64 `json:"humidity_pct,omitempty"`
+	WindSpeedKmh     *float64 `json:"wind_speed_kmh,omitempty"`
+	WindDirectionDeg *float64 `json:"wind_direction_deg,omitempty"`
+	WindGustsKmh     *float64 `json:"wind_gusts_kmh,omitempty"`
+	PressureHpa      *float64 `json:"pressure_hpa,omitempty"`
+	RadiationUSvh    *float64 `json:"radiation_usv_h,omitempty"`
+	RadiationCPM     *float64 `json:"radiation_cpm,omitempty"`
+	GeneratedAt      string   `json:"generated_at,omitempty"`
+}
+
+// weatherForecastDayView is one day of a multi-day forecast.
+type weatherForecastDayView struct {
+	Date               string   `json:"date"`
+	Condition          string   `json:"condition"`
+	TemperatureMaxC    *float64 `json:"temperature_max_c,omitempty"`
+	TemperatureMinC    *float64 `json:"temperature_min_c,omitempty"`
+	PrecipitationSumMm *float64 `json:"precipitation_sum_mm,omitempty"`
+	WindSpeedMaxKmh    *float64 `json:"wind_speed_max_kmh,omitempty"`
+}
+
+// weatherForecastView is one multi-day forecast (one per provider and
+// location, the retained MQTT documents).
+type weatherForecastView struct {
+	Provider string                   `json:"provider"`
+	Name     string                   `json:"name"`
+	Daily    []weatherForecastDayView `json:"daily"`
+}
+
+type weatherAPIView struct {
+	Reports   []weatherReportView   `json:"reports"`
+	Forecasts []weatherForecastView `json:"forecasts"`
+}
+
+// handleWeather serves the public weather tab data: current reports from
+// every internet provider and every APRS weather station in range, plus
+// the multi-day forecasts held in the retained MQTT info topics.
+func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
+	view := weatherAPIView{
+		Reports:   []weatherReportView{},
+		Forecasts: []weatherForecastView{},
+	}
+
+	// Internet providers: the dashboard state mirrors the retained
+	// <prefix>/info/<source>/<producer>/<key>/weather topics.
+	seenReports := make(map[string]bool)
+	seenForecasts := make(map[string]bool)
+	for _, e := range s.st.Snapshot().Weather {
+		ww := e.Weather
+		if ww == nil {
+			continue
+		}
+		name := ww.LocationName
+		if name == "" {
+			name = ww.LocationID
+		}
+		repKey := e.ProducerID + ":" + ww.LocationID
+		if !seenReports[repKey] {
+			seenReports[repKey] = true
+			view.Reports = append(view.Reports, weatherReportView{
+				Provider:         ww.ProviderName,
+				Name:             name,
+				Latitude:         ww.Latitude,
+				Longitude:        ww.Longitude,
+				Via:              "internet",
+				Condition:        ww.Condition,
+				TemperatureC:     ww.TemperatureC,
+				HumidityPct:      ww.HumidityPct,
+				WindSpeedKmh:     ww.WindSpeedKmh,
+				WindDirectionDeg: ww.WindDirectionDeg,
+				WindGustsKmh:     ww.WindGustsKmh,
+				PressureHpa:      ww.PressureMSLHpa,
+				RadiationUSvh:    ww.RadiationUSvh,
+				RadiationCPM:     ww.RadiationCPM,
+				GeneratedAt:      ww.GeneratedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		if len(ww.Daily) > 0 && !seenForecasts[repKey] {
+			seenForecasts[repKey] = true
+			days := make([]weatherForecastDayView, 0, len(ww.Daily))
+			for _, d := range ww.Daily {
+				days = append(days, weatherForecastDayView{
+					Date:               d.Date,
+					Condition:          d.Condition,
+					TemperatureMaxC:    d.TemperatureMaxC,
+					TemperatureMinC:    d.TemperatureMinC,
+					PrecipitationSumMm: d.PrecipitationSumMm,
+					WindSpeedMaxKmh:    d.WindSpeedMaxKmh,
+				})
+			}
+			view.Forecasts = append(view.Forecasts, weatherForecastView{Provider: ww.ProviderName, Name: name, Daily: days})
+		}
+	}
+
+	// APRS weather stations: the hub merges their reports into the
+	// station state; positionless reports use the merged station position.
+	if s.aprs != nil && s.aprs.Enabled() {
+		for _, doc := range s.aprs.Stations() {
+			if doc.Weather == nil {
+				continue
+			}
+			lat, lon := 0.0, 0.0
+			if doc.Position != nil {
+				lat, lon = doc.Position.Latitude, doc.Position.Longitude
+			}
+			rep := weatherReportView{
+				Provider:         "APRS",
+				Name:             doc.Callsign,
+				Latitude:         lat,
+				Longitude:        lon,
+				Via:              "aprs",
+				Condition:        aprsWeatherCondition(doc.Weather),
+				TemperatureC:     doc.Weather.TemperatureC,
+				HumidityPct:      doc.Weather.HumidityPct,
+				WindSpeedKmh:     doc.Weather.WindSpeedKmh,
+				WindDirectionDeg: doc.Weather.WindDirectionDeg,
+				WindGustsKmh:     doc.Weather.WindGustsKmh,
+				PressureHpa:      doc.Weather.PressureHpa,
+				RadiationUSvh:    doc.Weather.RadiationUSvh,
+				RadiationCPM:     doc.Weather.RadiationCPM,
+				GeneratedAt:      doc.Weather.GeneratedAt,
+			}
+			view.Reports = append(view.Reports, rep)
+		}
+	}
+
+	sort.Slice(view.Reports, func(i, j int) bool { return view.Reports[i].Name < view.Reports[j].Name })
+	sort.Slice(view.Forecasts, func(i, j int) bool { return view.Forecasts[i].Name < view.Forecasts[j].Name })
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(view); err != nil {
+		s.logger.Warn("web: encode weather failed", "error", err)
+	}
+}
+
+// aprsWeatherCondition maps an APRS weather observation to the canonical
+// condition enum (rain/snow when the station reports precipitation).
+func aprsWeatherCondition(w *aprs.WeatherReport) string {
+	switch {
+	case w == nil:
+		return "unknown"
+	case w.Snow24hCm != nil && *w.Snow24hCm > 0:
+		return "snow"
+	case w.Rain1hMm != nil && *w.Rain1hMm > 0, w.Rain24hMm != nil && *w.Rain24hMm > 0:
+		return "rain"
+	default:
+		return "unknown"
 	}
 }

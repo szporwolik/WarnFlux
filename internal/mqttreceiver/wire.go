@@ -170,6 +170,7 @@ type wireWeather struct {
 	Provider      wireProvider `json:"provider"`
 	Location      wireLocation `json:"location"`
 	Current       *wireCurrent `json:"current,omitempty"`
+	Daily         []wireDaily  `json:"daily,omitempty"`
 }
 
 type wireProvider struct {
@@ -203,6 +204,16 @@ type wireCurrent struct {
 	RadiationCPM         *float64 `json:"radiation_cpm,omitempty"`
 	Condition            string   `json:"condition"`
 	IsDay                *bool    `json:"is_day,omitempty"`
+}
+
+// wireDaily is one day of the canonical daily forecast array.
+type wireDaily struct {
+	Date               string   `json:"date"`
+	Condition          string   `json:"condition"`
+	TemperatureMaxC    *float64 `json:"temperature_max_c,omitempty"`
+	TemperatureMinC    *float64 `json:"temperature_min_c,omitempty"`
+	PrecipitationSumMm *float64 `json:"precipitation_sum_mm,omitempty"`
+	WindSpeedMaxKmh    *float64 `json:"wind_speed_max_kmh,omitempty"`
 }
 
 // parseTime parses an RFC3339(Nano) timestamp; unparseable values yield the

@@ -659,7 +659,10 @@ func TestHomeAPRSMapTab(t *testing.T) {
 		`data-callsign="SP9MOA-10"`,
 		"RainViewer", // radar attribution under the map
 		"OpenStreetMap",
-		"aprs-symbols", // APRS symbol attribution under the map
+		"aprs-symbols",                  // APRS symbol attribution under the map
+		`data-tab="tab-weather"`,        // third home tab
+		"weather-icons.css",             // weather tab icon set
+		"Weather Icons by Erik Flowers", // icon attribution
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("home APRS tab missing %q: %s", want, html)
@@ -702,6 +705,119 @@ func TestHomeAPRSMapTab(t *testing.T) {
 // publishes onto the broker (fake here), the issued list renders the
 // module's communications, edits update the same event key and expire
 // removes it.
+// TestPublicWeatherAPI pins the public weather tab data: internet reports
+// and forecasts from the retained info state plus APRS weather stations
+// (with position for the mini-map popup).
+func TestPublicWeatherAPI(t *testing.T) {
+	hub, err := aprs.NewHub(aprs.HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		Icon:       "/j",
+		GridSquare: "JO90WW",
+		RadiusKM:   25,
+		StationTTL: 30 * time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvWithHub(t, hub)
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hub.Observe(aprs.ParseFeedLine("SP9WX>APRS,TCPIP*:!5056.25N/01952.50E_220/004g005t077r000p000P000h50b09900 X-Ray 0.12uSv/h", time.Now()), "aprs-inet")
+
+	temp, tmax, tmin := 21.4, 24.0, 14.0
+	env.state.AddOrUpdateInfo("local", "warnflux/info/openmeteo/weather-home/home/weather", state.InfoEntry{
+		Source:     "openmeteo",
+		ProducerID: "weather-home",
+		Key:        "home",
+		Kind:       "weather",
+		ReceivedAt: time.Now(),
+		Weather: &state.Weather{
+			GeneratedAt:  time.Now(),
+			LocationID:   "home",
+			LocationName: "Niepołomice",
+			Latitude:     50.03,
+			Longitude:    20.22,
+			TemperatureC: &temp,
+			Condition:    "partly_cloudy",
+			Daily: []state.DailyWeather{{
+				Date:            "2026-09-25",
+				Condition:       "rain",
+				TemperatureMaxC: &tmax,
+				TemperatureMinC: &tmin,
+			}},
+		},
+	})
+
+	var view struct {
+		Reports []struct {
+			Name          string   `json:"name"`
+			Via           string   `json:"via"`
+			TemperatureC  *float64 `json:"temperature_c"`
+			RadiationUSvh *float64 `json:"radiation_usv_h"`
+		} `json:"reports"`
+		Forecasts []struct {
+			Name  string `json:"name"`
+			Daily []struct {
+				Condition string `json:"condition"`
+			} `json:"daily"`
+		} `json:"forecasts"`
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, body := env.get("/api/weather")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/weather = %d", resp.StatusCode)
+		}
+		view = struct {
+			Reports []struct {
+				Name          string   `json:"name"`
+				Via           string   `json:"via"`
+				TemperatureC  *float64 `json:"temperature_c"`
+				RadiationUSvh *float64 `json:"radiation_usv_h"`
+			} `json:"reports"`
+			Forecasts []struct {
+				Name  string `json:"name"`
+				Daily []struct {
+					Condition string `json:"condition"`
+				} `json:"daily"`
+			} `json:"forecasts"`
+		}{}
+		if err := json.Unmarshal([]byte(body), &view); err != nil {
+			t.Fatalf("weather payload: %s: %v", body, err)
+		}
+		if len(view.Reports) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	byName := map[string]struct {
+		via           string
+		radiationUSvh *float64
+	}{}
+	for _, r := range view.Reports {
+		byName[r.Name] = struct {
+			via           string
+			radiationUSvh *float64
+		}{via: r.Via, radiationUSvh: r.RadiationUSvh}
+	}
+	wx, ok := byName["SP9WX"]
+	if !ok || wx.via != "aprs" || wx.radiationUSvh == nil || *wx.radiationUSvh != 0.12 {
+		t.Fatalf("APRS weather report missing or wrong: %+v", view.Reports)
+	}
+	home, ok := byName["Niepołomice"]
+	if !ok || home.via != "internet" {
+		t.Fatalf("internet weather report missing or wrong: %+v", view.Reports)
+	}
+	if len(view.Forecasts) != 1 || view.Forecasts[0].Name != "Niepołomice" ||
+		len(view.Forecasts[0].Daily) != 1 || view.Forecasts[0].Daily[0].Condition != "rain" {
+		t.Fatalf("forecasts = %+v", view.Forecasts)
+	}
+}
+
 func TestComposeFlow(t *testing.T) {
 	env := newTestEnv(t)
 

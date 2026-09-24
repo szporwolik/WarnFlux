@@ -408,6 +408,22 @@ func toWeather(ww *wireWeather) *state.Weather {
 		w.RadiationUSvh = ww.Current.RadiationUSvh
 		w.RadiationCPM = ww.Current.RadiationCPM
 	}
+	for _, d := range ww.Daily {
+		if len(w.Daily) >= 10 {
+			break
+		}
+		if d.Date == "" {
+			continue
+		}
+		w.Daily = append(w.Daily, state.DailyWeather{
+			Date:               d.Date,
+			Condition:          d.Condition,
+			TemperatureMaxC:    d.TemperatureMaxC,
+			TemperatureMinC:    d.TemperatureMinC,
+			PrecipitationSumMm: d.PrecipitationSumMm,
+			WindSpeedMaxKmh:    d.WindSpeedMaxKmh,
+		})
+	}
 	return w
 }
 

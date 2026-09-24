@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Header1}} · {{.Header2}}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/weather-icons.css">
   <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -44,6 +45,7 @@
   <nav class="home-tabs" role="tablist" aria-label="Sections">
     <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Active hazards</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-radio">Radio stations</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-weather">Weather</button>
   </nav>
 
   <main class="home-main">
@@ -62,7 +64,25 @@
       </div>
       {{end}}
     </section>
+    <section class="home-panel" id="panel-tab-weather" data-panel="tab-weather" hidden>
+      <h2 class="hw-title">Current reports <span class="count" id="hw-report-count"></span></h2>
+      <div class="hw-reports" id="hw-reports">
+        <p class="muted">Loading weather…</p>
+      </div>
+      <h2 class="hw-title">Forecast — next days</h2>
+      <div class="hw-forecasts" id="hw-forecasts">
+        <p class="muted">No forecast data in MQTT yet</p>
+      </div>
+      <p class="hw-attrib">Weather icons: <a href="https://erikflowers.github.io/weather-icons/" target="_blank" rel="noopener noreferrer">Weather Icons by Erik Flowers</a> (SIL OFL 1.1 / MIT)</p>
+    </section>
   </main>
+
+  <dialog id="wmap-dialog" class="wmap-dialog">
+    <button type="button" class="wmap-close" aria-label="Close">×</button>
+    <h3 id="wmap-title"></h3>
+    <div id="wmap-map"></div>
+    <p id="wmap-meta" class="muted"></p>
+  </dialog>
 
   <footer class="home-foot">
     <span>{{.AppTitle}}</span>

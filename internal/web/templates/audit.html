@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Audit log · {{.AppTitle}}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
 </head>
@@ -19,7 +19,7 @@
     </section>
   </main>
   {{template "footer" .}}
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
 </body>
 </html>
 {{end}}

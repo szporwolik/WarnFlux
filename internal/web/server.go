@@ -159,8 +159,19 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	return s, nil
 }
 
+// noCacheStatic forces browsers to revalidate every embedded asset on
+// every request. The embedded files carry no ETag/Last-Modified, so
+// plain caching can serve stale app.js/style.css indefinitely; this
+// guarantees a rebuild is picked up on the next page load.
+func noCacheStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) routes(static http.Handler) {
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", static))
+	s.mux.Handle("GET /static/", http.StripPrefix("/static/", noCacheStatic(static)))
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)

@@ -88,6 +88,23 @@ type Config struct {
 	Actions    []Action
 	IngestHTTP []IngestHTTP
 	APRS       APRSConfig
+	// Geo extends the bundled TERYT table with installation-specific
+	// territorial units (any region of the country).
+	Geo Geo
+}
+
+// GeoArea is one territorial unit added through the configuration.
+type GeoArea struct {
+	Code    string   `yaml:"code"`
+	Type    string   `yaml:"type"`
+	Slug    string   `yaml:"slug"`
+	Name    string   `yaml:"name"`
+	Parents []string `yaml:"parents"`
+}
+
+// Geo is the optional top-level geo block.
+type Geo struct {
+	Areas []GeoArea `yaml:"areas"`
 }
 
 // App holds general application settings.
@@ -146,7 +163,7 @@ type APRSConfig struct {
 	// map shows actual ham stations only.
 	ExcludeInfrastructure bool
 	// Name is the optional display name of our own APRS station (e.g.
-	// "SOSNA Niepołomice"); it rides along in routed APRS messages.
+	// the installation display name); it rides along in routed APRS messages.
 	Name string
 	// RouteMessages turns APRS messages addressed to us that were heard
 	// over the radio (KISS) into routable events: they flow into the
@@ -362,6 +379,11 @@ type fileConfig struct {
 	Actions    []fileAction     `yaml:"actions"`
 	IngestHTTP []fileIngestHTTP `yaml:"ingest_http"`
 	APRS       *fileAPRS        `yaml:"aprs"`
+	Geo        *fileGeo         `yaml:"geo"`
+}
+
+type fileGeo struct {
+	Areas []GeoArea `yaml:"areas"`
 }
 
 type fileAPRS struct {
@@ -829,6 +851,9 @@ func (f fileConfig) toConfig() Config {
 		if f.APRS.RouteMessages != nil {
 			cfg.APRS.RouteMessages = *f.APRS.RouteMessages
 		}
+	}
+	if f.Geo != nil {
+		cfg.Geo.Areas = append(cfg.Geo.Areas, f.Geo.Areas...)
 	}
 	return cfg
 }

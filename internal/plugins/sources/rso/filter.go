@@ -19,6 +19,20 @@ type filterConfig struct {
 	localMinSeverity    string
 	regionalMinSeverity string
 	corridor            corridorConfig
+
+	// Installation geography (filter.local in the YAML): every pattern is
+	// nil when not configured — nothing about the target area is baked
+	// into the code, so the same binary serves any region.
+	corePattern   *regexp.Regexp
+	powiatPattern *regexp.Regexp
+	nearbyPattern *regexp.Regexp
+	cityPatterns  map[string]*regexp.Regexp
+	corridorLocs  *regexp.Regexp
+	roadPatterns  map[string]*regexp.Regexp
+	severeRoadRe  *regexp.Regexp
+	coreAreas     []string
+	placeAreas    map[string][]string
+	corridorArea  string
 }
 
 // corridorConfig bounds the relevant A4 Balice–Tarnów kilometre window.
@@ -123,8 +137,7 @@ var (
 	// One-lane / one-carriageway / alternating traffic stays moderate.
 	laneBlocked = regexp.MustCompile(`zablokowan\w*\s+(jeden|1)\s*pas|jeden pas ruchu|zaj[eę]ty jeden pas|zw[eę]zenie do jednego pasa|ruch wahadlowy|jedna jezdnia|zablokowana jedna jezdnia`)
 	// Any complete-closure wording (subject-independent).
-	closure    = regexp.MustCompile(`zablokowan\w*|calkowicie zamkni[eę]t|zamkni[eę]t[ay]\s*(w obu kierunkach|dla ruchu)|nieprzejezdn|zamkni[eę]ty jeden kierunek`)
-	targetRoad = regexp.MustCompile(`\b(a4|dk\s*75|dk\s*94|dw\s*964)\b`)
+	closure = regexp.MustCompile(`zablokowan\w*|calkowicie zamkni[eę]t|zamkni[eę]t[ay]\s*(w obu kierunkach|dla ruchu)|nieprzejezdn|zamkni[eę]ty jeden kierunek`)
 
 	moderateWater = regexp.MustCompile(`warunkowa przydatnosc|warunkowo przydatn|jakosc wody nie odpowiada|przekroczenie parametrow`)
 	moderateRoad  = regexp.MustCompile(`kolizj|wypadek|utrudnienia w ruchu|znaczne utrudnienia|spowolnien|kork[oi]`)
@@ -166,8 +179,10 @@ func degreeValue(s string) int {
 
 // classifySeverity infers the WarnFlux severity from explicit semantics in
 // the title/shortcut/content. rso_alarm is deliberately never consulted:
-// the provider does not document it as a severity scale.
-func classifySeverity(text string) string {
+// the provider does not document it as a severity scale. severeRoad is the
+// installation's configured list of roads where a complete closure counts
+// as severe (nil = no such roads).
+func classifySeverity(text string, severeRoad *regexp.Regexp) string {
 	// Explicit official wording wins over heuristics.
 	switch degreeFromText(text) {
 	case 1:
@@ -202,10 +217,10 @@ func classifySeverity(text string) string {
 		return "moderate"
 	}
 
-	// Complete closure: a target road (A4, DK75, DK94, DW964) is severe;
-	// any other road is moderate.
+	// Complete closure: a configured severe road (e.g. the installation's
+	// main motorway) is severe; any other road is moderate.
 	if closure.MatchString(text) {
-		if targetRoad.MatchString(text) {
+		if severeRoad != nil && severeRoad.MatchString(text) {
 			return "severe"
 		}
 		return "moderate"
@@ -265,7 +280,7 @@ func classifyCategory(text string) string {
 
 // geoMatch summarizes where an RSO communication applies.
 type geoMatch struct {
-	core     bool // gmina Niepołomice / powiat wielicki / villages
+	core     bool
 	city     map[string]bool
 	nearby   bool
 	corridor bool
@@ -273,72 +288,87 @@ type geoMatch struct {
 	regional bool
 }
 
+// keywordRE builds one case-insensitive-by-folding alternation from the
+// configured keyword fragments: \b(?:k1|k2|k3)\b. Fragments may contain
+// regexp syntax (e.g. "now(ego|e|ym)? brzesk\w*"). An empty list yields
+// nil (never matches).
+func keywordRE(fragments []string) *regexp.Regexp {
+	cleaned := make([]string, 0, len(fragments))
+	for _, f := range fragments {
+		if f = strings.TrimSpace(f); f != "" {
+			cleaned = append(cleaned, f)
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return regexp.MustCompile(`\b(?:` + strings.Join(cleaned, "|") + `)\b`)
+}
+
+// roadIDRe is the accepted road identifier shape in the configuration.
+var roadIDRe = regexp.MustCompile(`^([a-z]{1,3})([0-9]+)$`)
+
+// roadRE builds the mention pattern for one configured road id ("a4",
+// "s7", "dk75", "dw964"): the compact form (whitespace tolerated between
+// the letters and the number) plus the spelled-out national form.
+func roadRE(id string) *regexp.Regexp {
+	m := roadIDRe.FindStringSubmatch(id)
+	letters, digits := m[1], m[2]
+	frags := []string{letters + `\s*` + digits}
+	switch {
+	case strings.HasPrefix(letters, "a"):
+		frags = append(frags, `autostrad[ay]\s*`+letters+`\s*`+digits)
+	case strings.HasPrefix(letters, "s"):
+		frags = append(frags, `droga ekspresowa\s*`+letters+`\s*`+digits)
+	case strings.HasPrefix(letters, "dk"):
+		frags = append(frags, `droga krajowa nr\s*`+digits)
+	case strings.HasPrefix(letters, "dw"):
+		frags = append(frags, `droga wojewodzka nr\s*`+digits)
+	}
+	return keywordRE(frags)
+}
+
+// kmAfterKM etc. recognize kilometre references in the text.
 var (
-	corePattern = regexp.MustCompile(`\b(niepolomic\w*|gmina niepolomic\w*|podlez\w*|staniatk\w*|wola batorsk\w*|wola zabierzowsk\w*|zabierzow bochensk\w*|chobot|ochmanow|slomirog|suchorab|zagorz\w*|zakrzow\w*)\b`)
-	// powiat wielicki reasonably covers the Niepołomice area.
-	powiatWielickiPattern = regexp.MustCompile(`\bpowiat wielicki\b|\bwielickim\b`)
-
-	cityPatterns = map[string]*regexp.Regexp{
-		"krakow":       regexp.MustCompile(`\bkrakow\w*\b`),
-		"wieliczka":    regexp.MustCompile(`\bwieliczk\w*\b|\bwieliczc\w*\b|\bwielick\w*\b`),
-		"bochnia":      regexp.MustCompile(`\bbochn\w*\b`),
-		"skawina":      regexp.MustCompile(`\bskawin\w*\b`),
-		"myslenice":    regexp.MustCompile(`\bmyslenic\w*\b`),
-		"dobczyce":     regexp.MustCompile(`\bdobczyc\w*\b`),
-		"slomniki":     regexp.MustCompile(`\bslomnik\w*\b`),
-		"proszowice":   regexp.MustCompile(`\bproszowic\w*\b`),
-		"nowe-brzesko": regexp.MustCompile(`\bnow(ego|e|ym)? brzesk\w*\b`),
-	}
-	nearbyPattern = regexp.MustCompile(`\b(klaj\w*|targowisko|szarow\w*|brzezie|kokotow\w*)\b`)
-
-	// A4 corridor location tokens (Balice through Tarnów).
-	corridorLocations = regexp.MustCompile(`\b(balice|krakow\w*|biezanow|wieliczk\w*|podleze|niepolomic\w*|targowisko|szarow\w*|klaj\w*|bochn\w*|brzesk\w*|wierzchoslawic\w*|tarnow\w*|moscice)\b`)
-
-	roadPatterns = map[string]*regexp.Regexp{
-		"a4":    regexp.MustCompile(`\ba4\b|\bautostrad[ay] a4\b`),
-		"dk75":  regexp.MustCompile(`\bdk\s*75\b|\bdroga krajowa nr 75\b`),
-		"dk94":  regexp.MustCompile(`\bdk\s*94\b|\bdroga krajowa nr 94\b`),
-		"dw964": regexp.MustCompile(`\bdw\s*964\b`),
-		"dw965": regexp.MustCompile(`\bdw\s*965\b`),
-		"dw966": regexp.MustCompile(`\bdw\s*966\b`),
-		"dw967": regexp.MustCompile(`\bdw\s*967\b`),
-		"s7":    regexp.MustCompile(`\bs7\b|\bdroga ekspresowa s7\b`),
-	}
-
 	kmAfterKM    = regexp.MustCompile(`\bkm\s*(\d{1,4})(?:[.,]\d+)?\b`)
 	kmBeforeKM   = regexp.MustCompile(`\b(\d{1,4})(?:[.,]\d+)?\s*km\b`)
 	kmHectometre = regexp.MustCompile(`\b(\d{1,4})(?:[.,]\d+)?\+\d{3}\b`)
 )
 
 // classifyGeography scans the folded text for local relevance using the
-// configured A4 corridor window.
+// configured keyword patterns and corridor window. An installation without
+// filter.local has no local scope: everything is regional.
 func (p filterConfig) classifyGeography(text string) geoMatch {
 	g := geoMatch{
 		city:  map[string]bool{},
 		roads: map[string]bool{},
 	}
-	if corePattern.MatchString(text) || powiatWielickiPattern.MatchString(text) {
+	if p.corePattern != nil && p.corePattern.MatchString(text) {
 		g.core = true
 	}
-	for slug, re := range cityPatterns {
+	if p.powiatPattern != nil && p.powiatPattern.MatchString(text) {
+		g.core = true
+	}
+	for slug, re := range p.cityPatterns {
 		if re.MatchString(text) {
 			g.city[slug] = true
 		}
 	}
-	g.nearby = nearbyPattern.MatchString(text)
-
-	hasA4 := roadPatterns["a4"].MatchString(text)
-	for slug, re := range roadPatterns {
+	if p.nearbyPattern != nil && p.nearbyPattern.MatchString(text) {
+		g.nearby = true
+	}
+	for slug, re := range p.roadPatterns {
 		if re.MatchString(text) {
 			g.roads[slug] = true
 		}
 	}
 
-	// Corridor relevance: A4 with an in-range kilometre or an A4 event
-	// naming a corridor location (only while the corridor is enabled).
-	if hasA4 && p.corridor.enabled {
-		g.corridor = corridorLocations.MatchString(text)
-		if !g.corridor {
+	// Corridor relevance: a configured road with an in-range kilometre or
+	// a corridor keyword (only while the corridor is enabled).
+	if p.corridor.enabled && len(g.roads) > 0 {
+		if p.corridorLocs != nil && p.corridorLocs.MatchString(text) {
+			g.corridor = true
+		} else {
 			for _, km := range extractKilometres(text) {
 				if km >= p.corridor.kmFrom && km <= p.corridor.kmTo {
 					g.corridor = true
@@ -397,13 +427,13 @@ func (p filterConfig) decide(item newsItem) decision {
 		return decision{reason: "plain IMGW duplicate suppressed"}
 	}
 
-	sev := classifySeverity(text)
+	sev := classifySeverity(text, p.severeRoadRe)
 	geo := p.classifyGeography(text)
 
 	d := decision{
 		severity: sev,
 		category: classifyCategory(text),
-		areas:    enrichAreas(geo),
+		areas:    p.enrichAreas(geo),
 	}
 	d.emit = p.shouldEmit(sev, geo)
 	if !d.emit {
@@ -443,35 +473,22 @@ func (p filterConfig) shouldEmit(sev string, geo geoMatch) bool {
 }
 
 // enrichAreas builds the additional normalized area tokens for a
-// confidently classified event.
-func enrichAreas(geo geoMatch) []string {
+// confidently classified event from the configured core areas, place
+// mappings and corridor area.
+func (p filterConfig) enrichAreas(geo geoMatch) []string {
 	var out []string
 	if geo.core {
-		out = append(out, "gmina:niepolomice", "powiat:wielicki")
+		out = append(out, p.coreAreas...)
 	}
 	for city := range geo.city {
-		switch city {
-		case "krakow":
-			out = append(out, "miasto:krakow")
-		case "wieliczka":
-			out = append(out, "miasto:wieliczka")
-		case "bochnia":
-			out = append(out, "miasto:bochnia")
-		case "skawina":
-			out = append(out, "powiat:krakowski")
-		case "myslenice", "dobczyce":
-			out = append(out, "powiat:myslenicki")
-		case "slomniki":
-			out = append(out, "powiat:miechowski")
-		case "proszowice", "nowe-brzesko":
-			out = append(out, "powiat:proszowicki")
-		}
+		out = append(out, p.placeAreas[city]...)
 	}
 	for road := range geo.roads {
 		out = append(out, "droga:"+road)
 	}
-	if geo.corridor {
-		out = append(out, "corridor:a4-balice-tarnow")
+	if geo.corridor && p.corridorArea != "" {
+		out = append(out, p.corridorArea)
 	}
+	sort.Strings(out)
 	return out
 }

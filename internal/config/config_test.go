@@ -383,3 +383,41 @@ func TestLoadIngestHTTPValidation(t *testing.T) {
 		t.Error("ingest id colliding with a source id accepted")
 	}
 }
+
+// TestLoadGeoAreas covers the top-level geo block: it must decode into
+// cfg.Geo.Areas and remain strict (unknown fields fail, like everywhere
+// else in the configuration).
+func TestLoadGeoAreas(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, `
+geo:
+  areas:
+    - code: "9999901"
+      type: powiat
+      slug: test-powiat
+      name: Test Powiat
+      parents: [malopolskie]
+    - code: "9999902"
+      type: gmina
+      slug: test-gmina
+      name: Test Gmina
+      parents: [test-powiat]
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Geo.Areas) != 2 {
+		t.Fatalf("geo areas = %d, want 2", len(cfg.Geo.Areas))
+	}
+	first := cfg.Geo.Areas[0]
+	if first.Code != "9999901" || first.Type != "powiat" || first.Slug != "test-powiat" || first.Name != "Test Powiat" ||
+		len(first.Parents) != 1 || first.Parents[0] != "malopolskie" {
+		t.Errorf("first area = %+v", first)
+	}
+	if got := cfg.Geo.Areas[1].Parents[0]; got != "test-powiat" {
+		t.Errorf("second area parents = %v", cfg.Geo.Areas[1].Parents)
+	}
+
+	if _, err := Load(writeTempConfig(t, "geo:\n  areas:\n    - code: \"1\"\n      type: powiat\n      slug: x\n      name: X\n      unknown_field: 1\n")); err == nil {
+		t.Error("unknown geo.areas field accepted")
+	}
+}

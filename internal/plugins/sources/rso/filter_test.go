@@ -4,10 +4,47 @@ import (
 	"testing"
 )
 
+// testLocal is the filter.local geography block of this installation's
+// test fixture — the same values live in build/config.yaml. The binary
+// itself carries no geography.
+func testLocal() *fileLocalConfig {
+	return &fileLocalConfig{
+		CoreKeywords: []string{
+			`niepolomic\w*`, `gmina niepolomic\w*`, `podlez\w*`, `staniatk\w*`,
+			`wola batorsk\w*`, `wola zabierzowsk\w*`, `zabierzow bochensk\w*`,
+			`chobot`, `ochmanow`, `slomirog`, `suchorab`, `zagorz\w*`, `zakrzow\w*`,
+		},
+		PowiatKeywords: []string{`powiat wielicki`, `wielickim`},
+		NearbyKeywords: []string{`klaj\w*`, `targowisko`, `szarow\w*`, `brzezie`, `kokotow\w*`},
+		Places: map[string]filePlaceConfig{
+			"krakow":       {Keywords: []string{`krakow\w*`}, Areas: []string{"miasto:krakow"}},
+			"wieliczka":    {Keywords: []string{`wieliczk\w*`, `wieliczc\w*`, `wielick\w*`}, Areas: []string{"miasto:wieliczka"}},
+			"bochnia":      {Keywords: []string{`bochn\w*`}, Areas: []string{"miasto:bochnia"}},
+			"skawina":      {Keywords: []string{`skawin\w*`}, Areas: []string{"powiat:krakowski"}},
+			"myslenice":    {Keywords: []string{`myslenic\w*`}, Areas: []string{"powiat:myslenicki"}},
+			"dobczyce":     {Keywords: []string{`dobczyc\w*`}, Areas: []string{"powiat:myslenicki"}},
+			"slomniki":     {Keywords: []string{`slomnik\w*`}, Areas: []string{"powiat:miechowski"}},
+			"proszowice":   {Keywords: []string{`proszowic\w*`}, Areas: []string{"powiat:proszowicki"}},
+			"nowe-brzesko": {Keywords: []string{`now(ego|e|ym)? brzesk\w*`}, Areas: []string{"powiat:proszowicki"}},
+		},
+		Roads:       []string{"a4", "dk75", "dk94", "dw964", "dw965", "dw966", "dw967", "s7"},
+		SevereRoads: []string{"a4", "dk75", "dk94", "dw964"},
+		CorridorKeywords: []string{
+			`balice`, `krakow\w*`, `biezanow`, `wieliczk\w*`, `podleze`, `niepolomic\w*`, `targowisko`,
+			`szarow\w*`, `klaj\w*`, `bochn\w*`, `brzesk\w*`, `wierzchoslawic\w*`, `tarnow\w*`, `moscice`,
+		},
+		CoreAreas:    []string{"gmina:niepolomice", "powiat:wielicki"},
+		CorridorArea: "corridor:a4-balice-tarnow",
+	}
+}
+
 // defaultPolicy mirrors buildFilterConfig's defaults for the high-signal
 // target configuration.
 func defaultPolicy() filterConfig {
-	p, err := buildFilterConfig(&FileFilterConfig{HighSignalOnly: boolPtr(true)})
+	p, err := buildFilterConfig(&FileFilterConfig{
+		HighSignalOnly: boolPtr(true),
+		Local:          testLocal(),
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -98,7 +135,7 @@ func TestWarningDegreeMapping(t *testing.T) {
 		"stopień: 3":                           "extreme",
 	}
 	for text, want := range cases {
-		if got := classifySeverity(normalizeMatchText(text)); got != want {
+		if got := classifySeverity(normalizeMatchText(text), nil); got != want {
 			t.Errorf("classifySeverity(%q) = %q, want %q", text, got, want)
 		}
 	}
@@ -112,7 +149,7 @@ func TestUnrelatedNumbersAreNotDegrees(t *testing.T) {
 		"Trwa modernizacja odcinka 3,4 km",
 		"20 stopień zasilania energetycznego",
 	} {
-		switch got := classifySeverity(normalizeMatchText(text)); got {
+		switch got := classifySeverity(normalizeMatchText(text), nil); got {
 		case "moderate", "severe", "extreme":
 			t.Errorf("classifySeverity(%q) = %q, want unknown/minor (unrelated number)", text, got)
 		}
@@ -120,6 +157,7 @@ func TestUnrelatedNumbersAreNotDegrees(t *testing.T) {
 }
 
 func TestRoadSeverity(t *testing.T) {
+	severeRoad := defaultPolicy().severeRoadRe
 	cases := []struct {
 		text string
 		want string
@@ -134,7 +172,7 @@ func TestRoadSeverity(t *testing.T) {
 		{"Kolizja dwóch aut na wjeździe do Krakowa", "moderate"},
 	}
 	for _, c := range cases {
-		if got := classifySeverity(normalizeMatchText(c.text)); got != c.want {
+		if got := classifySeverity(normalizeMatchText(c.text), severeRoad); got != c.want {
 			t.Errorf("classifySeverity(%q) = %q, want %q", c.text, got, c.want)
 		}
 	}
@@ -151,7 +189,7 @@ func TestWaterSeverity(t *testing.T) {
 		"przekroczenie parametrów jakości wody":                  "moderate",
 	}
 	for text, want := range cases {
-		if got := classifySeverity(normalizeMatchText(text)); got != want {
+		if got := classifySeverity(normalizeMatchText(text), nil); got != want {
 			t.Errorf("classifySeverity(%q) = %q, want %q", text, got, want)
 		}
 	}
@@ -165,7 +203,7 @@ func TestHydrologySeverity(t *testing.T) {
 		"susza hydrologiczna":                         "unknown", // low signal, filtered by threshold
 	}
 	for text, want := range cases {
-		if got := classifySeverity(normalizeMatchText(text)); got != want {
+		if got := classifySeverity(normalizeMatchText(text), nil); got != want {
 			t.Errorf("classifySeverity(%q) = %q, want %q", text, got, want)
 		}
 	}
@@ -303,6 +341,95 @@ func TestCategoryClassification(t *testing.T) {
 	for text, want := range cases {
 		if got := classifyCategory(normalizeMatchText(text)); got != want {
 			t.Errorf("classifyCategory(%q) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+// TestNoLocalBlockIsRegionalOnly: an installation without filter.local has
+// no local scope — moderate events are filtered by the regional threshold
+// and no local area tokens are invented.
+func TestNoLocalBlockIsRegionalOnly(t *testing.T) {
+	p, err := buildFilterConfig(&FileFilterConfig{HighSignalOnly: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := p.decide(item("Wypadek w Niepołomicach, droga zablokowana", "", ""))
+	if d.emit {
+		t.Errorf("moderate event emitted without local scope: %+v", d)
+	}
+	d2 := p.decide(item("Wyciek gazu, zagrożenie dla mieszkańców województwa", "", ""))
+	if !d2.emit || d2.severity != "severe" {
+		t.Errorf("regional severe event: emit=%v severity=%q, want emitted severe", d2.emit, d2.severity)
+	}
+	if len(d2.areas) != 0 {
+		t.Errorf("areas = %v, want none (no local geography configured)", d2.areas)
+	}
+}
+
+// TestCustomRegionGeography proves portability: a completely different
+// region configured through filter.local behaves like the bundled
+// installation, including place mapping, severe roads and the corridor.
+func TestCustomRegionGeography(t *testing.T) {
+	local := &fileLocalConfig{
+		CoreKeywords:     []string{`gdansk\w*`, `gdyni\w*`},
+		PowiatKeywords:   []string{`powiat gdanski`},
+		NearbyKeywords:   []string{`osow\w*`},
+		Places:           map[string]filePlaceConfig{"sopot": {Keywords: []string{`sopot\w*`, `sopoc\w*`}, Areas: []string{"miasto:sopot"}}},
+		Roads:            []string{"s6"},
+		SevereRoads:      []string{"s6"},
+		CorridorKeywords: []string{`obwodnic\w*`},
+		CoreAreas:        []string{"miasto:gdansk"},
+		CorridorArea:     "corridor:obwodnica-trojmiasta",
+	}
+	p, err := buildFilterConfig(&FileFilterConfig{HighSignalOnly: boolPtr(true), Local: local})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := p.decide(item("Utrudnienia w ruchu w Gdańsku", "", ""))
+	if !d.emit {
+		t.Errorf("local moderate not emitted: %+v", d)
+	}
+	if !contains(d.areas, "miasto:gdansk") {
+		t.Errorf("areas = %v, want miasto:gdansk", d.areas)
+	}
+
+	d2 := p.decide(item("S6 zamknięta w obu kierunkach na obwodnicy", "", ""))
+	if d2.severity != "severe" || !d2.emit {
+		t.Errorf("S6 closure: severity=%q emit=%v, want severe emitted", d2.severity, d2.emit)
+	}
+	for _, w := range []string{"droga:s6", "corridor:obwodnica-trojmiasta"} {
+		if !contains(d2.areas, w) {
+			t.Errorf("areas = %v, want %s", d2.areas, w)
+		}
+	}
+
+	d3 := p.decide(item("Impreza w Sopocie", "", ""))
+	if !contains(d3.areas, "miasto:sopot") {
+		t.Errorf("sopot event areas = %v, want miasto:sopot", d3.areas)
+	}
+}
+
+func contains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLocalConfigValidation: malformed filter.local blocks fail
+// configuration instead of silently misbehaving.
+func TestLocalConfigValidation(t *testing.T) {
+	bad := []*fileLocalConfig{
+		{Roads: []string{"droga 7"}},                         // not a road id
+		{Roads: []string{"a4"}, SevereRoads: []string{"s7"}}, // severe road not listed
+		{Places: map[string]filePlaceConfig{"x": {}}},        // place without keywords
+	}
+	for i, l := range bad {
+		if _, err := buildFilterConfig(&FileFilterConfig{Local: l}); err == nil {
+			t.Errorf("case %d: invalid local config accepted", i)
 		}
 	}
 }

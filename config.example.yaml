@@ -40,6 +40,30 @@ storage:
   # In Docker, always set it explicitly, e.g. /data/warnflux.db.
   path: ./warnflux.db
 
+# Installation geography: extends the bundled TERYT table with territorial
+# units of this region. Use it to reference units that are not shipped with
+# the binary (e.g. a different voivodeship) in imgw.geography.include,
+# rso filter.local and compose areas. Declaration order matters: parents
+# must be declared before children unless they are bundled. Codes are
+# official TERYT numeric codes.
+#
+# geo:
+#   areas:
+#     - code: "1200000"
+#       type: wojewodztwo
+#       slug: malopolskie-example
+#       name: Małopolskie
+#     - code: "1200000"
+#       type: powiat
+#       slug: your-powiat
+#       name: Your Powiat
+#       parents: ["malopolskie-example"]
+#     - code: "1200000"
+#       type: gmina
+#       slug: your-town
+#       name: Your Town
+#       parents: ["your-powiat"]
+
 # Source plugins: ingest hazard information and emit normalized events.
 sources:
   # Open-Meteo INFORMATIONAL weather source: publishes ordinary weather
@@ -102,18 +126,17 @@ sources:
       # matching). Filtered warnings never make the provider snapshot
       # incomplete; a warning whose areas stop intersecting the target is
       # reconciled/cancelled by the next complete snapshot. Unknown
-      # configured names fail startup.
+      # configured names fail startup. TERYT slugs not bundled with the
+      # binary can be added through the top-level geo.areas block.
       geography:
         enabled: true
         include:
-          - gmina:niepolomice
-          - miasto:krakow
-          - powiat:wielicki
-          - powiat:bochenski
-          - powiat:krakowski
-          - powiat:myslenicki
-          - powiat:miechowski
-          - powiat:proszowicki
+          - gmina:your-town
+        # Local surface waters / places that make a hydrological warning
+        # locally relevant. Keywords are regexp fragments (plain words
+        # work too). Omit or leave empty to pass all hydro warnings
+        # through.
+        hydro_local_keywords: []
 
   # Regionalny System Ostrzegania (RSO) public XML communications:
   # a HAZARD source with upstream voivodeship filtering via the official
@@ -142,7 +165,7 @@ sources:
       # Optional high-signal policy: suppress RCB and air-quality
       # communications, collapse plain IMGW duplicates, classify severity
       # from explicit wording (never from rso_alarm) and apply the
-      # Niepołomice-area / A4 Balice–Tarnów geographic thresholds.
+      # installation-geography thresholds (filter.local + corridor).
       # Filtered items never make the provider snapshot incomplete.
       filter:
         high_signal_only: true
@@ -151,10 +174,33 @@ sources:
         suppress_imgw_duplicates: true
         local_min_severity: moderate
         regional_min_severity: severe
-        a4_corridor:
-          enabled: true
-          km_from: 400
-          km_to: 503
+        # Optional kilometre-window corridor (enabled + km_from < km_to);
+        # matched only when local.roads is non-empty. Defaults to the
+        # 400..503 window. Legacy alias: a4_corridor.
+        # corridor:
+        #   enabled: true
+        #   km_from: 400
+        #   km_to: 503
+
+        # Installation geography: everything is config-driven, nothing
+        # regional is hardcoded in the binary. Keywords are regexp
+        # fragments (plain words work too); places map keywords to the
+        # area tokens emitted on the event. Omit local entirely for
+        # regional-only filtering.
+        local:
+          core_keywords:
+            - "your-town\\w*"
+          powiat_keywords: []
+          nearby_keywords: []
+          places:
+            your-town:
+              keywords: ["your-town\\w*"]
+              areas: ["gmina:your-town"]
+          roads: []
+          severe_roads: []
+          corridor_keywords: []
+          core_areas: ["gmina:your-town"]
+          corridor_area: ""
 
   # APRS-IS source: connects to an APRS-IS server, subscribes to packets
   # around the configured position (aprs.gridsquare + aprs.radius_km) and

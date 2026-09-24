@@ -25,7 +25,7 @@
           <option value="" {{if eq .Form.Role ""}}selected{{end}}>member (no sign-in)</option>
           <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose only)</option>
         </select>
-        <input type="text" name="aprs_callsigns" placeholder="APRS callsigns (e.g. SP9MOA-16 SR9KR)" value="{{.Form.APRSCallsigns}}" maxlength="256">
+        <input type="text" name="aprs_callsigns" placeholder="APRS callsigns (e.g. SP9XXX-16)" value="{{.Form.APRSCallsigns}}" maxlength="256">
         <input type="password" name="password" placeholder="password (required for emcom)" maxlength="72" autocomplete="new-password">
         <button type="submit" class="btn-primary btn-add">
           <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>Add user

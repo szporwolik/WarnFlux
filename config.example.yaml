@@ -621,8 +621,9 @@ aprs:
   radius_km: 60
 
   # How long a station stays in the retained MQTT state after its last
-  # packet before the topic is deleted (empty retained payload).
-  station_ttl: 30m
+  # packet before the topic is deleted (empty retained payload). Longer
+  # values keep rarely-beaconing stations visible on the map.
+  station_ttl: 60m
 
   # Drop APRS infrastructure from the station state: objects/items,
   # digipeaters, igates/gateways, internet-only nodes and repeaters.

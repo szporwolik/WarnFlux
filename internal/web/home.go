@@ -48,6 +48,11 @@ type homeView struct {
 	ActiveCount int
 	Hazards     []publicHazardView
 
+	// MinorCount and MinorHazards carry the low-priority tail (minor and
+	// unknown severity) shown in a collapsed section on the home page.
+	MinorCount   int
+	MinorHazards []publicHazardView
+
 	// AprsEnabled turns the second home tab into the APRS neighbourhood
 	// map: centered on our locator, range circle, radar overlay and the
 	// stations held in the MQTT state.
@@ -153,8 +158,10 @@ func (s *Server) buildHomeView() homeView {
 	snap := s.st.Snapshot()
 	v.ActiveCount = len(snap.Hazards)
 	v.Hazards = make([]publicHazardView, 0, len(snap.Hazards))
+	v.MinorHazards = make([]publicHazardView, 0)
+	minorRank, _ := severity.Rank(severity.Minor)
 	for _, h := range snap.Hazards {
-		v.Hazards = append(v.Hazards, publicHazardView{
+		view := publicHazardView{
 			Severity:    h.Severity,
 			Headline:    h.Headline,
 			Event:       h.Event,
@@ -163,17 +170,19 @@ func (s *Server) buildHomeView() homeView {
 			EffectiveAt: h.EffectiveAt,
 			ExpiresAt:   h.ExpiresAt,
 			UpdatedAt:   h.UpdatedAt,
-		})
-	}
-	// Most severe first; within one severity, newest first.
-	sort.Slice(v.Hazards, func(i, j int) bool {
-		ri, _ := severity.Rank(v.Hazards[i].Severity)
-		rj, _ := severity.Rank(v.Hazards[j].Severity)
-		if ri != rj {
-			return ri > rj
 		}
-		return v.Hazards[i].UpdatedAt.After(v.Hazards[j].UpdatedAt)
-	})
+		// Moderate and above stay up front; minor/unknown drop into the
+		// collapsed low-priority section so routine road-info noise does
+		// not push real communications down the page.
+		if r, _ := severity.Rank(h.Severity); r > minorRank {
+			v.Hazards = append(v.Hazards, view)
+		} else {
+			v.MinorHazards = append(v.MinorHazards, view)
+		}
+	}
+	v.MinorCount = len(v.MinorHazards)
+	sortHazards(v.Hazards)
+	sortHazards(v.MinorHazards)
 
 	if s.aprs != nil && s.aprs.Enabled() {
 		v.AprsEnabled = true
@@ -185,6 +194,19 @@ func (s *Server) buildHomeView() homeView {
 		v.AprsCallsign = s.aprs.Callsign()
 	}
 	return v
+}
+
+// sortHazards orders a hazard slice most severe first; within one
+// severity, newest first.
+func sortHazards(hazards []publicHazardView) {
+	sort.Slice(hazards, func(i, j int) bool {
+		ri, _ := severity.Rank(hazards[i].Severity)
+		rj, _ := severity.Rank(hazards[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+		return hazards[i].UpdatedAt.After(hazards[j].UpdatedAt)
+	})
 }
 
 // handleAPRSStations serves the public station list for the home-page map:

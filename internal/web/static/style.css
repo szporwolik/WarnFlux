@@ -1383,6 +1383,42 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.78rem;
 }
 .hazard-meta strong { color: var(--text); }
+/* Collapsed low-priority tail (minor / unknown severity). */
+.home-minor {
+  margin-top: 0.9rem;
+  border-top: 1px dashed var(--border-strong);
+  padding-top: 0.55rem;
+}
+.home-minor > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  user-select: none;
+}
+.home-minor > summary::-webkit-details-marker { display: none; }
+.home-minor > summary::before {
+  content: "";
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 0.38rem solid var(--muted);
+  border-top: 0.3rem solid transparent;
+  border-bottom: 0.3rem solid transparent;
+  transition: transform 0.15s ease;
+}
+.home-minor[open] > summary::before { transform: rotate(90deg); }
+.home-minor > summary .count {
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+.home-minor > .home-alerts { margin-top: 0.6rem; }
+.home-minor .hazard { padding: 0.5rem 0.7rem; box-shadow: none; }
+.home-minor .hazard-head h3 { font-size: 0.95rem; }
 .home-empty {
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);

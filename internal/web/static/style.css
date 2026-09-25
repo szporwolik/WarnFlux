@@ -1033,6 +1033,17 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   box-shadow: var(--shadow-pop);
 }
 .group-opt { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem; cursor: pointer; }
+.group-opt input[type="checkbox"] { accent-color: var(--brand); }
+.group-form-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 0.25rem;
+}
+.group-form-label + .group-form-label { margin-top: 0.45rem; border-top: 1px solid var(--border); padding-top: 0.45rem; }
+.chan-chip { border-color: var(--focus); color: var(--link); }
 
 /* ---- groups table: routing assignment ---- */
 .routing-count { white-space: nowrap; }

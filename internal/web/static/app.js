@@ -1196,7 +1196,7 @@
       className: "hw-pin-wrap",
       iconSize: [52, 22],
       iconAnchor: [26, 11],
-      html: '<span class="hw-pin hw-pin-inet"><i class="wi ' + condIcon(r.condition) +
+      html: '<span class="hw-pin ' + (r.via === "aprs" ? "hw-pin-aprs" : "hw-pin-inet") + '"><i class="wi ' + condIcon(r.condition) +
         '" aria-hidden="true"></i>' + (temp ? '<span class="hw-pin-t">' + temp + '</span>' : '') + '</span>'
     });
   }
@@ -1238,20 +1238,29 @@
     return html + '</div>';
   }
 
-  // renderWeatherLayer puts one pin per INTERNET weather report on the
-  // shared map; APRS weather belongs to the station marker itself (see
-  // stationWeatherBlock), so nothing is duplicated.
+  // renderWeatherLayer puts one pin per weather report on the shared map.
+  // APRS stations normally carry their weather inside their own station
+  // marker (stationWeatherBlock), so an APRS pin is drawn only for
+  // weather stations the station layer does not render (symbol '_'
+  // stations are excluded from /api/aprs/stations) — otherwise they would
+  // sit in the reports list with no pin on the map at all.
   function renderWeatherLayer() {
     if (!weatherLayer) {
       return;
     }
     weatherLayer.clearLayers();
+    var byCall = {};
+    (lastStations || []).forEach(function (s) {
+      if (s && s.callsign) {
+        byCall[String(s.callsign).toUpperCase()] = true;
+      }
+    });
     lastWeather.forEach(function (r) {
       if (!r || !r.latitude || !r.longitude || (r.latitude === 0 && r.longitude === 0)) {
         return;
       }
-      if (r.via === "aprs") {
-        return;
+      if (r.via === "aprs" && byCall[String(r.name || "").toUpperCase()]) {
+        return; // the station marker shows this weather inline
       }
       var marker = L.marker([r.latitude, r.longitude], { icon: weatherIcon(r), riseOnHover: true });
       marker.bindTooltip(
@@ -1319,8 +1328,14 @@
       item.appendChild(body);
       if (r.via === "aprs") {
         item.classList.add("hw-aprs");
-        item.title = "Show " + r.name + " on the map";
-        item.addEventListener("click", function () { openMiniMap(r); });
+        // Only stations with a known position can be shown on the map
+        // (a positionless report has nothing to center on).
+        if (r.latitude && r.longitude && !(r.latitude === 0 && r.longitude === 0)) {
+          item.title = "Show " + r.name + " on the map";
+          item.addEventListener("click", function () { openMiniMap(r); });
+        } else {
+          item.disabled = true;
+        }
       } else {
         item.disabled = true;
       }

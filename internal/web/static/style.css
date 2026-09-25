@@ -1687,6 +1687,30 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .wf-locate-btn.wf-locate-active { color: #1a73e8; border-color: #1a73e8; }
 .wf-locate-btn.wf-locate-denied { color: #d32f2f; border-color: #d32f2f; }
 
+/* Leaflet popups and tooltips follow the app theme: muted text, forecast
+   chips and severity badges stay readable in the dark theme instead of
+   dark-on-dark or light-on-white clashes. The .leaflet-container prefix
+   wins over Leaflet's own stylesheet regardless of load order. */
+.leaflet-container .leaflet-popup-content-wrapper {
+  background: var(--surface-raised);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+.leaflet-container .leaflet-popup-content { color: var(--text); }
+.leaflet-container .leaflet-popup-content strong { color: var(--text); }
+.leaflet-container .leaflet-popup-tip { background: var(--surface-raised); }
+.leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+.leaflet-container a.leaflet-popup-close-button:hover { color: var(--text); }
+.leaflet-container .leaflet-tooltip {
+  background: var(--surface-raised);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+.leaflet-container .leaflet-tooltip-top:before { border-top-color: var(--surface-raised); }
+.leaflet-container .leaflet-tooltip-bottom:before { border-bottom-color: var(--surface-raised); }
+.leaflet-container .leaflet-tooltip-left:before { border-left-color: var(--surface-raised); }
+.leaflet-container .leaflet-tooltip-right:before { border-right-color: var(--surface-raised); }
+
 /* Weather detail popup on the combined map. */
 .hw-popup { min-width: 215px; }
 .hw-popup-head {

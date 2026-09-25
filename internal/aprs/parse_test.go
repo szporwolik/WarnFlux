@@ -66,6 +66,61 @@ func TestParsePosition(t *testing.T) {
 	}
 }
 
+// TestParseCapabilityPrefixedCompressed covers the form where trackers
+// prefix a compressed body with the messaging-capability indicator:
+// "=\54W4SWVkk..." (seen from the FQQTracker / APLRT1 firmware). Without
+// this the whole body lands in the comment and the station never gets a
+// map position.
+func TestParseCapabilityPrefixedCompressed(t *testing.T) {
+	p := parseLine(t, `SP9KSK-9>APLRT1,WIDE1-1,WIDE2-1,qAO,SQ9ZAY:=\54W4SWVkkFQQTracker`)
+	if p.Kind != KindPosition {
+		t.Fatalf("kind = %s, want position", p.Kind)
+	}
+	if p.Position == nil {
+		t.Fatal("position missing")
+	}
+	if mathAbs(p.Position.Latitude-50.008787) > 1e-4 {
+		t.Errorf("lat = %v, want ~50.0088", p.Position.Latitude)
+	}
+	if mathAbs(p.Position.Longitude-20.199618) > 1e-4 {
+		t.Errorf("lon = %v, want ~20.1996", p.Position.Longitude)
+	}
+	if p.SymbolTable != '\\' || p.Symbol != 'k' {
+		t.Errorf("symbol = %c%c, want \\k", p.SymbolTable, p.Symbol)
+	}
+	if !p.MessageCapable {
+		t.Error("'=' prefix must announce messaging capability")
+	}
+	if p.Comment != "FQQTracker" {
+		t.Errorf("comment = %q, want FQQTracker", p.Comment)
+	}
+}
+
+// TestParseDSeparatorPosition covers the legacy "D" latitude/longitude
+// separator emitted by WX3in1Plus firmware ("=5000.28ND02014.59E#PHG...").
+// The separator is treated as the primary symbol table.
+func TestParseDSeparatorPosition(t *testing.T) {
+	p := parseLine(t, "SP9MOA-6>APMI06,WIDE2-2,qAO,SR9NSK-2:=5000.28ND02014.59E#PHG1440/WX3in1Plus2.0")
+	if p.Kind != KindPosition {
+		t.Fatalf("kind = %s, want position", p.Kind)
+	}
+	if p.Position == nil {
+		t.Fatal("position missing")
+	}
+	if mathAbs(p.Position.Latitude-50.004667) > 1e-4 {
+		t.Errorf("lat = %v, want ~50.0047", p.Position.Latitude)
+	}
+	if mathAbs(p.Position.Longitude-20.243167) > 1e-4 {
+		t.Errorf("lon = %v, want ~20.2432", p.Position.Longitude)
+	}
+	if p.SymbolTable != '/' || p.Symbol != '#' {
+		t.Errorf("symbol = %c%c, want /#", p.SymbolTable, p.Symbol)
+	}
+	if p.Comment != "PHG1440/WX3in1Plus2.0" {
+		t.Errorf("comment = %q, want PHG1440/WX3in1Plus2.0", p.Comment)
+	}
+}
+
 func TestParsePositionWithExtensions(t *testing.T) {
 	// '=' prefix announces messaging capability.
 	p := parseLine(t, "SP9XYZ>APRS:!5003.08N/01956.44E-065/070/A=001234 hello")

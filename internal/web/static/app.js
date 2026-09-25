@@ -727,6 +727,7 @@
 
     enableRadar();
     addLayersControl(map);
+    addLocateControl(map);
     initMiniDialog();
     refreshStations();
     refreshHazards();
@@ -1499,6 +1500,71 @@
     }
     dialog.querySelector(".wmap-close").addEventListener("click", function () { dialog.close(); });
     dialog.addEventListener("click", function (e) { if (e.target === dialog) { dialog.close(); } });
+  }
+
+  // ---- user location (like the Google Maps blue dot) ----
+  var userMarker = null;
+  var userAccCircle = null;
+
+  // addLocateControl adds the bottom-right "show my location" button.
+  // The browser permission prompt only appears after the user clicks it
+  // (never on page load). On success a blue dot + accuracy circle appear
+  // and the view centers on the user; the button then recenters.
+  function addLocateControl(map) {
+    var c = L.control({ position: "bottomright" });
+    c.onAdd = function () {
+      var btn = L.DomUtil.create("button", "wf-locate-btn");
+      btn.type = "button";
+      btn.title = "Show my location";
+      btn.setAttribute("aria-label", "Show my location");
+      btn.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3.5M12 18.5V22M2 12h3.5M18.5 12H22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+      L.DomEvent.disableClickPropagation(btn);
+      L.DomEvent.disableScrollPropagation(btn);
+
+      function denied() {
+        btn.classList.add("wf-locate-denied");
+        btn.title = "Location unavailable (permission denied or no signal)";
+        window.setTimeout(function () { btn.classList.remove("wf-locate-denied"); }, 2200);
+      }
+
+      L.DomEvent.on(btn, "click", function () {
+        if (userMarker) {
+          map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 13));
+          return;
+        }
+        if (!navigator.geolocation) {
+          denied();
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(function (pos) {
+          var ll = [pos.coords.latitude, pos.coords.longitude];
+          if (!userMarker) {
+            userMarker = L.circleMarker(ll, {
+              radius: 7, color: "#fff", weight: 2,
+              fillColor: "#1a73e8", fillOpacity: 1
+            }).addTo(map);
+            userMarker.bindTooltip("You are here", { direction: "top" });
+          } else {
+            userMarker.setLatLng(ll);
+          }
+          if (pos.coords.accuracy > 0) {
+            if (userAccCircle) { map.removeLayer(userAccCircle); }
+            userAccCircle = L.circle(ll, {
+              radius: pos.coords.accuracy,
+              color: "#1a73e8", weight: 1, opacity: 0.4,
+              fillColor: "#1a73e8", fillOpacity: 0.07, interactive: false
+            }).addTo(map);
+          }
+          map.setView(ll, Math.max(map.getZoom(), 13));
+          btn.classList.add("wf-locate-active");
+          btn.title = "Center on my location";
+        }, function () {
+          denied();
+        }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 30000 });
+      });
+      return btn;
+    };
+    c.addTo(map);
   }
 
   // Layer toggles: the four overlay families can be switched

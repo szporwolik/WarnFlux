@@ -322,13 +322,64 @@ a:hover { text-decoration: underline; }
 
 .sidebar-spacer { flex: 1; }
 
-.logout { margin: 0; display: flex; }
-.logout .btn-ghost {
+/* ---- user menu (top-right dropdown) ---- */
+.user-menu { position: relative; flex: none; }
+.user-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 2px 7px 2px 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-hi);
+  color: var(--muted);
+  cursor: pointer;
+}
+.user-menu-btn:hover { color: var(--text); border-color: var(--focus); }
+.user-menu-chevron { width: 12px; height: 12px; transition: transform 0.15s ease; }
+.user-menu[data-open="true"] .user-menu-chevron { transform: rotate(180deg); }
+.user-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  min-width: 232px;
+  padding: 0.35rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-drawer);
+}
+.user-menu-panel[hidden] { display: none; }
+.user-menu-head {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  border-radius: var(--radius);
+  padding: 0.5rem 0.55rem 0.7rem;
+  margin-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border);
 }
+.user-menu-id { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+.user-menu-id strong { font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-menu-id .muted { font-size: 0.75rem; }
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.5rem 0.55rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.88rem;
+  font-family: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.user-menu-item:hover { background: var(--surface-hi); }
+.user-menu-logout { margin: 0.25rem 0 0; padding-top: 0.25rem; border-top: 1px solid var(--border); }
 
 /* ---- screen-wide top bar (drawer toggle, title, user, sign out) ---- */
 .topbar {
@@ -395,7 +446,9 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
   font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
+  flex: none;
 }
+.avatar-lg { width: 34px; height: 34px; font-size: 0.85rem; }
 
 /* ---- buttons ---- */
 .btn-ghost {
@@ -754,7 +807,6 @@ table.plugins tr:hover td { background: var(--surface-muted); }
     box-shadow: var(--shadow-drawer);
   }
   .app .topbar, .app .grid, .app .footer, .app .users-main { margin-left: 0; }
-  .logout-label { display: none; }
 }
 
 /* ---- test signal page ---- */
@@ -1648,13 +1700,37 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 .compose-templates-label { color: var(--muted); font-size: 0.8rem; }
 /* Self-service channel subscriptions on the account page. */
-.account-channels {
+.account-card { max-width: 760px; align-self: center; width: 100%; }
+.account-head {
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-top: 0.6rem;
+  align-items: center;
+  gap: 0.9rem;
+  margin-bottom: 0.9rem;
 }
-.account-channels-label { color: var(--muted); font-size: 0.85rem; font-weight: 600; }
+.account-head .avatar {
+  width: 46px;
+  height: 46px;
+  font-size: 1.05rem;
+}
+.account-title { margin: 0 0 0.1rem; font-size: 1.25rem; }
+.account-role { color: var(--muted); font-size: 0.82rem; }
+.account-section { margin-top: 1.1rem; }
+.account-section > h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.account-section > h3 .icon { color: var(--brand); }
+.account-section > .page-info { margin: 0 0 0.8rem; }
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.8rem;
+}
+.account-grid .field { min-width: 0; }
 .account-channels-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
@@ -1663,12 +1739,19 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .account-channel {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.35rem 0.6rem;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface);
-  font-size: 0.85rem;
+  background: var(--surface-hi);
+  font-size: 0.87rem;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.account-channel:hover { border-color: var(--focus); }
+.account-channel:has(input:checked) {
+  border-color: var(--focus);
+  background: var(--focus-ring);
 }
 .hw-attrib {
   margin: 0.9rem 0 0;

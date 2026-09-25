@@ -7,48 +7,63 @@
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
 </head>
 <body class="app">
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Account</h2>
-      <p class="page-info">
-        Your own contact data as stored for alert routing. The username and
-        role are managed by an administrator. You are subscribed to every
-        channel by default — uncheck the channels you do not want.
-      </p>
+    <section class="card account-card">
+      <div class="account-head">
+        <span class="avatar">{{initials .Username}}</span>
+        <div>
+          <h2 class="account-title">{{.Username}}</h2>
+          <span class="account-role">{{roleLabel .Role}}</span>
+        </div>
+      </div>
+
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
-      <form method="post" action="/account" class="user-form">
+
+      <form method="post" action="/account">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <label class="field">
-          <span>Username</span>
-          <input type="text" value="{{.Username}}" disabled>
-        </label>
-        <label class="field">
-          <span>Role</span>
-          <input type="text" value="{{.Role}}" disabled>
-        </label>
-        <label class="field">
-          <span>Phone</span>
-          <input type="text" name="phone" value="{{.Phone}}" maxlength="32">
-        </label>
-        <label class="field">
-          <span>Email</span>
-          <input type="text" name="email" value="{{.Email}}" maxlength="128">
-        </label>
-        <label class="field">
-          <span>Discord</span>
-          <input type="text" name="discord" value="{{.Discord}}" maxlength="128">
-        </label>
-        <label class="field">
-          <span>New password</span>
-          <input type="password" name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one">
-        </label>
-        <div class="account-channels">
-          <span class="account-channels-label">Channels</span>
+
+        <div class="account-section">
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Contact</h3>
+          <p class="page-info">Used for alert routing. The username is managed by an administrator.</p>
+          <div class="account-grid">
+            <label class="field">
+              <span>Phone</span>
+              <input type="text" name="phone" value="{{.Phone}}" maxlength="32" placeholder="+48 600 000 000">
+            </label>
+            <label class="field">
+              <span>Email</span>
+              <input type="email" name="email" value="{{.Email}}" maxlength="128" placeholder="you@example.com">
+            </label>
+            <label class="field">
+              <span>Discord</span>
+              <input type="text" name="discord" value="{{.Discord}}" maxlength="128" placeholder="@handle">
+            </label>
+          </div>
+        </div>
+
+        <div class="account-section">
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>Password</h3>
+          <div class="account-grid">
+            <label class="field">
+              <span>New password</span>
+              <input type="password" name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one">
+            </label>
+            <label class="field">
+              <span>Role</span>
+              <input type="text" value="{{roleLabel .Role}}" disabled>
+            </label>
+          </div>
+        </div>
+
+        <div class="account-section">
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Channels</h3>
+          <p class="page-info">You are subscribed to every channel by default — uncheck the channels you do not want.</p>
           <div class="account-channels-grid">
             {{range .Groups}}
             <label class="account-channel">
@@ -60,8 +75,9 @@
             {{end}}
           </div>
         </div>
+
         <div class="form-footer">
-          <button type="submit" class="btn-primary">Save</button>
+          <button type="submit" class="btn-primary">Save changes</button>
         </div>
       </form>
     </section>

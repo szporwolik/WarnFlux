@@ -1613,6 +1613,43 @@
   });
 })();
 
+// User menu: the avatar in the top-right opens a dropdown with account
+// and sign-out actions. Closes on outside click and Escape.
+(function () {
+  "use strict";
+
+  var menu = document.querySelector(".user-menu");
+  var btn = document.getElementById("user-menu-btn");
+  var panel = document.getElementById("user-menu-panel");
+  if (!menu || !btn || !panel) {
+    return;
+  }
+
+  function setOpen(open) {
+    panel.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+    menu.setAttribute("data-open", String(open));
+  }
+
+  btn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    setOpen(panel.hidden);
+  });
+
+  document.addEventListener("click", function (e) {
+    if (!panel.hidden && !menu.contains(e.target)) {
+      setOpen(false);
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !panel.hidden) {
+      setOpen(false);
+      btn.focus();
+    }
+  });
+})();
+
 // Admin pages with a tab strip (e.g. /traffic): switch panels.
 (function () {
   "use strict";

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/szporwolik/WarnFlux/internal/notify"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -37,11 +38,17 @@ type accountView struct {
 	Email   string
 	Discord string
 
-	// Groups is the channel list with the current membership mirrored in
-	// GroupSet: every new user is subscribed to all channels by default
-	// and can unsubscribe here.
+	// Groups is the notification-group list with the current membership
+	// mirrored in GroupSet: every new user is subscribed to all groups by
+	// default and can unsubscribe here.
 	Groups   []storage.Group
 	GroupSet map[int64]bool
+
+	// Channels is the delivery-channel list (APRS, email, future media);
+	// ChannelSet mirrors the enabled kinds — unchecked boxes become
+	// per-user opt-outs.
+	Channels   []notify.ChannelDef
+	ChannelSet map[string]bool
 
 	Msg   string
 	Error string
@@ -105,6 +112,19 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	for _, id := range memberIDs {
 		groupSet[id] = true
 	}
+	channelSet := make(map[string]bool, len(notify.Channels))
+	for _, c := range notify.Channels {
+		channelSet[c.Kind] = true
+	}
+	opts, err := s.users.UserChannelOptOuts(u.ID)
+	if err != nil {
+		s.logger.Warn("web: account channel opt-out lookup failed", "username", sess.username, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	for kind := range opts {
+		channelSet[kind] = false
+	}
 
 	v := accountView{
 		AppTitle:   s.cfg.Title,
@@ -123,6 +143,8 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 		Discord:    u.Discord,
 		Groups:     groups,
 		GroupSet:   groupSet,
+		Channels:   notify.Channels,
+		ChannelSet: channelSet,
 		NavAccount: true,
 	}
 	msg := r.URL.Query().Get("msg")
@@ -165,7 +187,7 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	discord := strings.TrimSpace(r.PostFormValue("discord"))
 	password := r.PostFormValue("password")
 
-	// Channel subscriptions: checked boxes stay subscribed; everything
+	// Group subscriptions: checked boxes stay subscribed; everything
 	// else is an unsubscribe.
 	var wantGroups []int64
 	seen := make(map[int64]bool)
@@ -176,6 +198,21 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[id] = true
 		wantGroups = append(wantGroups, id)
+	}
+
+	// Delivery channels: checked boxes stay enabled; every known channel
+	// left unchecked becomes a per-user opt-out.
+	checked := make(map[string]bool)
+	for _, v := range r.PostForm["channels"] {
+		if notify.Known(v) {
+			checked[v] = true
+		}
+	}
+	var optOuts []string
+	for _, c := range notify.Channels {
+		if !checked[c.Kind] {
+			optOuts = append(optOuts, c.Kind)
+		}
 	}
 
 	if msg := validateAccountForm(phone, email, discord, password); msg != "" {
@@ -201,6 +238,8 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 			Discord:    discord,
 			Groups:     groups,
 			GroupSet:   make(map[int64]bool),
+			Channels:   notify.Channels,
+			ChannelSet: checked,
 			Error:      msg,
 			NavAccount: true,
 		}
@@ -220,6 +259,11 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.users.SetUserGroups(u.ID, wantGroups); err != nil {
 		s.logger.Warn("web: account subscription update failed", "username", sess.username, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.users.SetUserChannelOptOuts(u.ID, optOuts); err != nil {
+		s.logger.Warn("web: account channel update failed", "username", sess.username, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

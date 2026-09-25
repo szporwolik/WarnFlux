@@ -403,6 +403,20 @@ CREATE TABLE audit_log (
 CREATE INDEX idx_audit_log_seq ON audit_log(seq);
 `,
 	},
+	{
+		// v16: per-user delivery-channel opt-outs. Every user is
+		// subscribed to all notification channels (APRS, email, future
+		// media) by default; an opt-out row disables one channel for one
+		// user. The rule engine filters the per-channel recipient lists
+		// through these rows.
+		SQL: `
+CREATE TABLE user_channel_opts (
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	channel TEXT NOT NULL,
+	PRIMARY KEY (user_id, channel)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

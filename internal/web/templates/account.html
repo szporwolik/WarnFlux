@@ -62,8 +62,8 @@
         </div>
 
         <div class="account-section">
-          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Channels</h3>
-          <p class="page-info">You are subscribed to every channel by default — uncheck the channels you do not want.</p>
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Notification groups</h3>
+          <p class="page-info">You are subscribed to every group by default — uncheck the groups you do not want.</p>
           <div class="account-channels-grid">
             {{range .Groups}}
             <label class="account-channel">
@@ -71,7 +71,20 @@
               <span>{{.Name}}</span>
             </label>
             {{else}}
-            <p class="muted">No channels configured yet.</p>
+            <p class="muted">No groups configured yet.</p>
+            {{end}}
+          </div>
+        </div>
+
+        <div class="account-section">
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Delivery channels</h3>
+          <p class="page-info">Choose which media carry alerts to you (e.g. APRS radio, email). You can change this any time.</p>
+          <div class="account-channels-grid">
+            {{range .Channels}}
+            <label class="account-channel">
+              <input type="checkbox" name="channels" value="{{.Kind}}" {{if index $.ChannelSet .Kind}}checked{{end}}>
+              <span>{{.Label}}</span>
+            </label>
             {{end}}
           </div>
         </div>

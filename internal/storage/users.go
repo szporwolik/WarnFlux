@@ -177,6 +177,13 @@ type UserStore interface {
 	// optional -SSID). The store normalizes (uppercase) and de-duplicates
 	// them; a missing or protected user reports the usual errors.
 	SetUserAPRS(userID int64, callsigns []string) error
+	// UserChannelOptOuts returns the delivery channels this user has
+	// disabled, keyed by channel kind (see internal/notify). An empty
+	// set means every channel is enabled — the default.
+	UserChannelOptOuts(userID int64) (map[string]bool, error)
+	// SetUserChannelOptOuts replaces the user's delivery-channel
+	// opt-outs: listed kinds are disabled, every other channel stays on.
+	SetUserChannelOptOuts(userID int64, kinds []string) error
 	// Authenticate verifies a directory user's credentials and returns
 	// the user. Unknown usernames, users without a password and wrong
 	// passwords all report storage.ErrBadCredentials.

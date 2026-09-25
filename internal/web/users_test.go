@@ -26,14 +26,16 @@ type fakeUsers struct {
 	membership  map[int64]map[int64]bool       // userID -> groupID set
 	routing     map[int64]storage.GroupRouting // groupID -> routing
 	passwords   map[string]string              // username -> plaintext (fake)
+	channelOpts map[int64]map[string]bool      // userID -> disabled delivery-channel kinds
 }
 
 func newFakeUsers() *fakeUsers {
 	return &fakeUsers{
 		nextID: 1, nextGroupID: 1,
-		membership: make(map[int64]map[int64]bool),
-		routing:    make(map[int64]storage.GroupRouting),
-		passwords:  make(map[string]string),
+		membership:  make(map[int64]map[int64]bool),
+		routing:     make(map[int64]storage.GroupRouting),
+		passwords:   make(map[string]string),
+		channelOpts: make(map[int64]map[string]bool),
 	}
 }
 
@@ -234,15 +236,48 @@ func (f *fakeUsers) SetUserAPRS(userID int64, callsigns []string) error {
 	return storage.ErrUserNotFound
 }
 
+// UserChannelOptOuts returns the disabled delivery-channel kinds for a user.
+func (f *fakeUsers) UserChannelOptOuts(userID int64) (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]bool, len(f.channelOpts[userID]))
+	for k, v := range f.channelOpts[userID] {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// SetUserChannelOptOuts replaces the disabled delivery-channel kinds.
+func (f *fakeUsers) SetUserChannelOptOuts(userID int64, kinds []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	found := false
+	for _, u := range f.rows {
+		if u.ID == userID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return storage.ErrUserNotFound
+	}
+	set := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		set[k] = true
+	}
+	f.channelOpts[userID] = set
+	return nil
+}
+
 // GroupRecipientAPRS returns the distinct APRS callsigns of the group's
-// members, sorted.
+// members (minus users who opted out of the aprs channel), sorted.
 func (f *fakeUsers) GroupRecipientAPRS(groupID int64) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	seen := make(map[string]bool)
 	var out []string
 	for _, u := range f.rows {
-		if !f.membership[u.ID][groupID] {
+		if !f.membership[u.ID][groupID] || f.channelOpts[u.ID]["aprs"] {
 			continue
 		}
 		for _, c := range u.APRSCallsigns {
@@ -469,7 +504,7 @@ func (f *fakeUsers) GroupRecipientEmails(groupID int64) ([]string, error) {
 	defer f.mu.Unlock()
 	emails := map[string]bool{}
 	for userID, set := range f.membership {
-		if !set[groupID] {
+		if !set[groupID] || f.channelOpts[userID]["smtp"] {
 			continue
 		}
 		for _, u := range f.rows {

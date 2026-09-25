@@ -1317,6 +1317,13 @@ func TestMemberRoleFlow(t *testing.T) {
 			t.Errorf("account page missing checked channel %s (%d)", g.Name, g.ID)
 		}
 	}
+	// Default delivery channels: every known medium is enabled.
+	for _, kind := range []string{"aprs", "smtp"} {
+		want := fmt.Sprintf(`name="channels" value="%s" checked`, kind)
+		if !strings.Contains(html, want) {
+			t.Errorf("account page missing checked delivery channel %s", kind)
+		}
+	}
 	for _, forbidden := range []string{"Compose", "Dashboard", "Users", "Groups"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
 			t.Errorf("member must not see %s nav entry", forbidden)
@@ -1337,6 +1344,8 @@ func TestMemberRoleFlow(t *testing.T) {
 	form = url.Values{
 		"csrf": {csrf2}, "phone": {"600700800"}, "email": {"member@example.com"},
 		"password": {""}, "groups": {strconv.FormatInt(hams.ID, 10)},
+		// Only aprs stays checked: smtp becomes a per-user opt-out.
+		"channels": {"aprs"},
 	}
 	resp, _ = env.postForm("/account", form)
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account?msg=saved" {
@@ -1355,6 +1364,13 @@ func TestMemberRoleFlow(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != hams.ID {
 		t.Errorf("after save memberships = %v, want only %d (ops unsubscribed)", ids, hams.ID)
+	}
+	opts, err := env.users.UserChannelOptOuts(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts["smtp"] || opts["aprs"] {
+		t.Errorf("after save channel opt-outs = %v, want smtp disabled and aprs enabled", opts)
 	}
 }
 

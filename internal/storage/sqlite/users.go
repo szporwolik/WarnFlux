@@ -411,6 +411,75 @@ func (s *Store) SetUserAPRS(userID int64, callsigns []string) error {
 	return nil
 }
 
+// UserChannelOptOuts returns the delivery channels this user has disabled,
+// keyed by channel kind. An empty set means every channel is enabled.
+func (s *Store) UserChannelOptOuts(userID int64) (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT channel FROM user_channel_opts WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list user %d channel opt-outs: %w", userID, err)
+	}
+	defer rows.Close()
+	out := make(map[string]bool)
+	for rows.Next() {
+		var kind string
+		if err := rows.Scan(&kind); err != nil {
+			return nil, fmt.Errorf("scan user %d channel opt-out: %w", userID, err)
+		}
+		out[kind] = true
+	}
+	return out, rows.Err()
+}
+
+// SetUserChannelOptOuts replaces the user's delivery-channel opt-outs in
+// one transaction: listed kinds are disabled, every other channel stays
+// on. Unknown kinds are stored as-is so future channels degrade
+// gracefully. The admin row reports storage.ErrUserProtected.
+func (s *Store) SetUserChannelOptOuts(userID int64, kinds []string) error {
+	var isAdmin int
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	if isAdmin != 0 {
+		return storage.ErrUserProtected
+	}
+
+	seen := make(map[string]bool, len(kinds))
+	var clean []string
+	for _, k := range kinds {
+		k = strings.ToLower(strings.TrimSpace(k))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		clean = append(clean, k)
+	}
+	now := s.now().UnixMilli()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin channel opt-out update: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM user_channel_opts WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("clear user %d channel opt-outs: %w", userID, err)
+	}
+	for _, k := range clean {
+		if _, err := tx.Exec(`INSERT INTO user_channel_opts (user_id, channel) VALUES (?, ?)`, userID, k); err != nil {
+			return fmt.Errorf("insert user %d channel opt-out %q: %w", userID, k, err)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE users SET updated_at_ms = ? WHERE id = ?`, now, userID); err != nil {
+		return fmt.Errorf("touch user %d: %w", userID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit channel opt-out update: %w", err)
+	}
+	return nil
+}
+
 // attachAPRS fills APRSCallsigns on the given users with one grouped query
 // and returns the updated slice (the input elements are copies).
 func (s *Store) attachAPRS(users []storage.User) ([]storage.User, error) {

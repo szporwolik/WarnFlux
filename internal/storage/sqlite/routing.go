@@ -198,6 +198,9 @@ func (s *Store) GroupRecipientAPRS(groupID int64) ([]string, error) {
 		FROM user_aprs ua
 		JOIN user_groups ug ON ug.user_id = ua.user_id
 		WHERE ug.group_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM user_channel_opts uco
+			WHERE uco.user_id = ua.user_id AND uco.channel = 'aprs')
 		ORDER BY ua.callsign COLLATE NOCASE ASC`, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("list group %d aprs recipients: %w", groupID, err)
@@ -223,6 +226,9 @@ func (s *Store) GroupRecipientEmails(groupID int64) ([]string, error) {
 		FROM users u
 		JOIN user_groups ug ON ug.user_id = u.id
 		WHERE ug.group_id = ? AND u.email <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM user_channel_opts uco
+			WHERE uco.user_id = u.id AND uco.channel = 'smtp')
 		ORDER BY u.email COLLATE NOCASE ASC`, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("list group %d recipients: %w", groupID, err)

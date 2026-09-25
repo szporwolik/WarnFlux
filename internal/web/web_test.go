@@ -1286,6 +1286,40 @@ func TestEmcomRoleFlow(t *testing.T) {
 	}
 }
 
+// TestAdminAccountReadOnly pins the configuration-managed admin account:
+// the self-service page renders the form disabled (no Save button) and the
+// server rejects any direct POST to /account for the admin session.
+func TestAdminAccountReadOnly(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	resp, html := env.get("/account")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /account as admin = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, "account-note") || !strings.Contains(html, "managed in configuration") {
+		t.Errorf("account page missing the managed-account note: %s", html)
+	}
+	if !strings.Contains(html, `name="email" value="" maxlength="128" placeholder="you@example.com" disabled`) {
+		t.Errorf("email field must be disabled for the admin: %s", html)
+	}
+	if !strings.Contains(html, `name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one" disabled`) {
+		t.Errorf("password field must be disabled for the admin: %s", html)
+	}
+	if strings.Contains(html, "Save changes") {
+		t.Errorf("admin account page must not offer Save changes: %s", html)
+	}
+
+	// A direct POST is blocked server-side too.
+	csrf := extractCSRF(t, html)
+	resp, _ = env.postForm("/account", url.Values{
+		"csrf": {csrf}, "email": {"hacker@example.com"}, "password": {"newpassword1"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /account as admin = %d, want 403", resp.StatusCode)
+	}
+}
+
 // TestAdminAccountPageKeepsAdminNav pins the sidebar sync: the admin
 // session must see the full admin navigation on the self-service account
 // page too (the view uses the session role, not the directory row role —

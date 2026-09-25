@@ -34,6 +34,11 @@ type accountView struct {
 	Username string
 	Role     string
 
+	// ManagedAccount marks the configured admin account: its contact
+	// data, username, role and password always come from configuration
+	// and the form renders read-only (no server-side writes either).
+	ManagedAccount bool
+
 	Phone   string
 	Email   string
 	Discord string
@@ -121,25 +126,26 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v := accountView{
-		AppTitle:   s.cfg.Title,
-		Name:       s.displayName(),
-		Header1:    s.displayHeader1(),
-		Header2:    s.cfg.Header2,
-		Tagline:    s.cfg.Tagline,
-		Version:    s.version,
-		Commit:     s.commit,
-		RepoURL:    repoURL,
-		CSRF:       sess.csrf,
-		Username:   u.Username,
-		Role:       sess.role,
-		Phone:      u.Phone,
-		Email:      u.Email,
-		Discord:    u.Discord,
-		Groups:     groups,
-		GroupSet:   groupSet,
-		Channels:   notify.Channels,
-		ChannelSet: channelSet,
-		NavAccount: true,
+		AppTitle:       s.cfg.Title,
+		Name:           s.displayName(),
+		Header1:        s.displayHeader1(),
+		Header2:        s.cfg.Header2,
+		Tagline:        s.cfg.Tagline,
+		Version:        s.version,
+		Commit:         s.commit,
+		RepoURL:        repoURL,
+		CSRF:           sess.csrf,
+		Username:       u.Username,
+		Role:           sess.role,
+		ManagedAccount: sess.role == "admin",
+		Phone:          u.Phone,
+		Email:          u.Email,
+		Discord:        u.Discord,
+		Groups:         groups,
+		GroupSet:       groupSet,
+		Channels:       notify.Channels,
+		ChannelSet:     channelSet,
+		NavAccount:     true,
 	}
 	msg := r.URL.Query().Get("msg")
 	v.Msg = accountFlash[msg]
@@ -163,6 +169,13 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	}
 	if !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	// The configured admin account is managed in configuration: no
+	// self-service write may touch it, whatever the form says.
+	if sess.role == "admin" {
+		http.Error(w, "the configured admin account is managed in configuration and cannot be edited here", http.StatusForbidden)
 		return
 	}
 

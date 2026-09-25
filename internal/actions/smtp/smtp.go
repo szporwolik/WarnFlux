@@ -536,6 +536,13 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 		if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
 			fmt.Fprintf(&b, "Coordinates: %.5f, %.5f\n", *h.Hazard.Latitude, *h.Hazard.Longitude)
 		}
+		if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
+			label := "Road"
+			if len(roads) > 1 {
+				label = "Roads"
+			}
+			fmt.Fprintf(&b, "%s: %s\n", label, strings.Join(roads, ", "))
+		}
 		if h.Hazard.Description != "" {
 			fmt.Fprintf(&b, "Description: %s\n", h.Hazard.Description)
 		}
@@ -543,7 +550,9 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 			fmt.Fprintf(&b, "Instruction: %s\n", h.Hazard.Instruction)
 		}
 		if len(h.Hazard.Areas) > 0 {
-			fmt.Fprintf(&b, "Areas: %s\n", strings.Join(geo.DisplayAreas(h.Hazard.Areas), ", "))
+			if rest := nonRoadAreas(h.Hazard.Areas); len(rest) > 0 {
+				fmt.Fprintf(&b, "Areas: %s\n", strings.Join(geo.DisplayAreas(rest), ", "))
+			}
 		}
 		if h.Hazard.EffectiveAt != nil {
 			fmt.Fprintf(&b, "Effective: %s\n", h.Hazard.EffectiveAt.Format(time.RFC3339))
@@ -562,6 +571,39 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 	b.WriteString("\n--\n")
 	b.WriteString(footerText(req))
 	return b.String()
+}
+
+// nonRoadAreas returns the area tokens that are NOT road identifiers
+// (roads render in their own "Road" line).
+func nonRoadAreas(areas []string) []string {
+	out := make([]string, 0, len(areas))
+	for _, a := range areas {
+		if _, ok := strings.CutPrefix(a, "droga:"); ok {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// roadNumbers extracts the GDDKiA road identifiers from area tokens
+// ("droga:79", "droga:a4"), uppercased and de-duplicated in order.
+func roadNumbers(areas []string) []string {
+	seen := make(map[string]bool, len(areas))
+	out := make([]string, 0, len(areas))
+	for _, a := range areas {
+		rest, ok := strings.CutPrefix(a, "droga:")
+		if !ok {
+			continue
+		}
+		id := strings.ToUpper(strings.TrimSpace(rest))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // severityColor maps a canonical severity to the UI palette used by the
@@ -660,12 +702,24 @@ func hazardHTML(ev dispatch.Event) string {
 		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
 	}
 
-	if len(h.Hazard.Areas) > 0 {
+	if areas := nonRoadAreas(h.Hazard.Areas); len(areas) > 0 {
 		b.WriteString(`<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Areas</div>`)
 		var chips strings.Builder
-		for _, a := range geo.DisplayAreas(h.Hazard.Areas) {
+		for _, a := range geo.DisplayAreas(areas) {
 			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#1b232b;border:1px solid #303c46;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(a))
 		}
+		b.WriteString(chips.String())
+	}
+	if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
+		label := "Road"
+		if len(roads) > 1 {
+			label = "Roads"
+		}
+		var chips strings.Builder
+		for _, r := range roads {
+			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#1b232b;border:1px solid #f0784e;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(r))
+		}
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div>`, label)
 		b.WriteString(chips.String())
 	}
 	if h.Hazard.EffectiveAt != nil {

@@ -338,6 +338,22 @@ func run(configPath string, checkConfig bool) error {
 	if err != nil {
 		return fmt.Errorf("configure aprs hub: %w", err)
 	}
+	// APRS message routing only trusts registered operators: the sender's
+	// base callsign (SSID-insensitive) must appear on a user's APRS
+	// callsign list. Without the gate no message becomes a hazard event.
+	hub.SetSenderGate(func(base string) bool {
+		calls, err := store.AllAPRSCallsigns()
+		if err != nil {
+			logger.Warn("aprs: sender allow-list load failed", "error", err)
+			return false
+		}
+		for _, c := range calls {
+			if c == base {
+				return true
+			}
+		}
+		return false
+	})
 
 	if err := plugins.RegisterBuiltins(registry, hub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)

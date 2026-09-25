@@ -8,6 +8,47 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
+// TestAllAPRSCallsigns pins the sender allow-list query: distinct base
+// callsigns (SSID stripped, uppercased) across all users, sorted.
+func TestAllAPRSCallsigns(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "calls.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	ada, err := store.CreateUser("ada", "", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bea, err := store.CreateUser("bea", "", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAPRS(ada.ID, []string{"SP9KOW-4", "SP9KOW-2", "SR9KR"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAPRS(bea.ID, []string{"sp9kow-7", "SP9BEA"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.AllAPRSCallsigns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"SP9BEA", "SP9KOW", "SR9KR"}
+	if len(got) != len(want) {
+		t.Fatalf("callsigns = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("callsigns = %v, want %v", got, want)
+		}
+	}
+}
+
 // TestUserChannelOptOuts pins the opt-out round trip: replace semantics,
 // normalization, protected/missing-user errors, and the effect on the
 // per-channel recipient lists used by the rule engine.

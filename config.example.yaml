@@ -739,9 +739,11 @@ aprs:
   # The neighbourhood map then shows actual ham stations only.
   exclude_infrastructure: true
 
-  # Route APRS messages addressed to us that were heard over the RADIO
-  # (KISS): each becomes a routable event on the /events stream under
-  # the "aprs" source, so groups can forward it to Discord, SMTP, ...
+  # Route APRS messages addressed to us: each becomes a routable event
+  # on the /events stream under the "aprs" source (default severity
+  # severe), so groups can forward it to Discord, SMTP, ...
   # The forwarded message starts with "Message from: <CALLSIGN-SSID>".
-  # Internet-injected messages are excluded (anyone can spoof those).
+  # Trust boundary: only senders whose BASE callsign (SSID-insensitive)
+  # is registered on one of the directory users may trigger this, over
+  # the radio or via APRS-IS alike.
   route_messages: false

@@ -238,6 +238,29 @@ func (f *fakeUsers) SetUserAPRS(userID int64, callsigns []string) error {
 	return storage.ErrUserNotFound
 }
 
+// AllAPRSCallsigns returns the distinct base callsigns registered for any
+// user (SSID stripped), sorted.
+func (f *fakeUsers) AllAPRSCallsigns() ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := make(map[string]bool)
+	var out []string
+	for _, u := range f.rows {
+		for _, c := range u.APRSCallsigns {
+			base := strings.ToUpper(c)
+			if i := strings.IndexByte(base, '-'); i >= 0 {
+				base = base[:i]
+			}
+			if base != "" && !seen[base] {
+				seen[base] = true
+				out = append(out, base)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // UserChannelOptOuts returns the disabled delivery-channel kinds for a user.
 func (f *fakeUsers) UserChannelOptOuts(userID int64) (map[string]bool, error) {
 	f.mu.Lock()

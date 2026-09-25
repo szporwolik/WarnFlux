@@ -149,8 +149,6 @@ type Hub struct {
 	expired   atomic.Int64
 	// msgSeq numbers outbound message ids (the {id} ack suffix).
 	msgSeq atomic.Int64
-	// eventSeq numbers routed APRS-message events on the /events stream.
-	eventSeq atomic.Int64
 	// pending holds one result channel per in-flight message id; guarded
 	// by mu.
 	pending map[string]chan string
@@ -732,9 +730,15 @@ func (h *Hub) senderApproved(callsign string) bool {
 // "Message from: <callsign with SSID>", the text follows, and our
 // station name is carried as context. Messages from trusted operators
 // are alerts by nature: the default severity is severe.
+//
+// The event identity (ChangeID + event key) is derived from the receipt
+// timestamp, not from a per-process counter: the routing engine persists
+// delivery claims keyed by source/key/ChangeID, and a counter that
+// restarts with the process would let a message collide with a past
+// claim and be silently dropped as a duplicate.
 func (h *Hub) publishMessageEvent(p Packet) {
-	seq := h.eventSeq.Add(1)
 	now := time.Now().UTC()
+	id := now.UnixNano()
 	nowS := now.Format(time.RFC3339)
 	expires := now.Add(time.Hour).Format(time.RFC3339)
 	from := p.Src
@@ -742,9 +746,9 @@ func (h *Hub) publishMessageEvent(p Packet) {
 
 	doc := MessageEventWire{
 		SchemaVersion: messageEventSchemaVersion,
-		ChangeID:      seq,
+		ChangeID:      id,
 		ChangeType:    "new",
-		EventKey:      "aprs:" + from + ":" + strconv.FormatInt(seq, 10),
+		EventKey:      "aprs:" + from + ":" + strconv.FormatInt(id, 10),
 		Event: MessageEventHazard{
 			Source:      "aprs",
 			SourceID:    from,

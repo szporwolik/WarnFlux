@@ -704,6 +704,7 @@
     stationLayer = L.layerGroup().addTo(map);
     hazardLayer = L.layerGroup().addTo(map);
     weatherLayer = L.layerGroup().addTo(map);
+    aircraftLayer = L.layerGroup().addTo(map);
 
     // Center button: fit the view around our locator and all stations.
     addCenterControl(map, function () {
@@ -730,8 +731,10 @@
     refreshStations();
     refreshHazards();
     refreshWeather();
+    refreshAircraft();
     window.setInterval(refreshStations, STATION_POLL_MS);
     window.setInterval(refreshWeather, WEATHER_POLL_MS);
+    window.setInterval(refreshAircraft, AIRCRAFT_POLL_MS);
     window.setInterval(refreshHazards, STATION_POLL_MS);
     window.setInterval(refreshRadar, RADAR_REFRESH_MS);
 
@@ -1325,6 +1328,97 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
+  // ---- aircraft layer (ADS-B): minute vector + 3-5 minute trail ----
+  var aircraftLayer = null;
+  var lastAircraft = [];
+  var AIRCRAFT_POLL_MS = 15 * 1000;
+
+  // planeIcon renders one aircraft as a track-rotated plane glyph;
+  // grounded targets are gray, airborne ones amber.
+  function planeIcon(a) {
+    var rot = a.track_deg != null ? a.track_deg : 0;
+    var color = a.on_ground ? "#9e9e9e" : "#ffb300";
+    var svg = '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<g transform="rotate(' + rot + ' 12 12)">' +
+      '<path d="M12 2 L21 21 L12 17 L3 21 Z" fill="' + color + '" stroke="#000" stroke-width="0.8" stroke-linejoin="round"/>' +
+      '</g></svg>';
+    return L.divIcon({ className: "wf-aircraft", iconSize: [24, 24], iconAnchor: [12, 12], html: svg });
+  }
+
+  function aircraftPopup(a) {
+    var html = "<strong>" + esc(a.callsign || a.icao24) + "</strong>";
+    html += '<br><span class="muted">' + esc(String(a.icao24 || "").toUpperCase()) + "</span>";
+    if (a.altitude_m != null) { html += "<br>Alt: " + fmtNum(a.altitude_m, 0) + " m"; }
+    if (a.speed_kmh != null) {
+      html += "<br>Speed: " + fmtNum(a.speed_kmh, 0) + " km/h";
+      if (a.track_deg != null) { html += " @ " + fmtNum(a.track_deg, 0) + "\u00b0"; }
+    }
+    if (a.vertical_rate_m_s != null) { html += "<br>Climb: " + fmtNum(a.vertical_rate_m_s, 1) + " m/s"; }
+    if (a.category) { html += "<br>Category: " + esc(a.category); }
+    if (a.seen_at) {
+      html += "<br>Seen: " + esc(fmtTime(new Date(a.seen_at * 1000).toISOString()));
+    }
+    return html;
+  }
+
+  function refreshAircraft() {
+    fetch("/api/aircraft")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!aircraftLayer) {
+          return;
+        }
+        aircraftLayer.clearLayers();
+        lastAircraft = (data && data.aircraft) || [];
+        var overlay = aprsOverlayColors();
+        lastAircraft.forEach(function (a) {
+          if (!a.latitude || !a.longitude) {
+            return;
+          }
+          var marker = L.marker([a.latitude, a.longitude], { icon: planeIcon(a), riseOnHover: true });
+          marker.bindTooltip(a.callsign || a.icao24, { direction: "top" });
+          marker.bindPopup(aircraftPopup(a));
+          aircraftLayer.addLayer(marker);
+
+          // The 3-5 minute trail: recent recorded positions as one line.
+          var trail = [];
+          (a.trail || []).forEach(function (tp) {
+            if (tp && tp.latitude && tp.longitude) {
+              trail.push([tp.latitude, tp.longitude]);
+            }
+          });
+          if (trail.length > 1) {
+            aircraftLayer.addLayer(L.polyline(trail, {
+              color: overlay.track, weight: 2, opacity: 0.8, interactive: false
+            }));
+          }
+
+          // Minute vector: one minute of travel along the reported track,
+          // clamped so slow movers stay readable and fast movers stay
+          // on-screen (the same idea as the APRS heading vector).
+          if (a.track_deg != null && a.speed_kmh > 0) {
+            var vecKm = Math.min(Math.max(a.speed_kmh / 60, 0.5), 5);
+            var head = destPoint(a.latitude, a.longitude, a.track_deg, vecKm);
+            aircraftLayer.addLayer(L.polyline([[a.latitude, a.longitude], head], {
+              color: overlay.heading, weight: 3, opacity: 0.9, interactive: false
+            }));
+            aircraftLayer.addLayer(L.marker(head, {
+              interactive: false,
+              icon: L.divIcon({
+                className: "wf-track-arrow-wrap",
+                iconSize: [10, 10],
+                iconAnchor: [5, 5],
+                html: '<span class="wf-track-arrow" style="transform:rotate(' + a.track_deg +
+                  'deg);border-bottom-color:' + overlay.heading + '"></span>'
+              })
+            }));
+          }
+        });
+        computeBounds();
+      })
+      .catch(function () { /* transient — next poll retries */ });
+  }
+
   // Mini-map popup for APRS weather stations: Leaflet loads on demand
   // from the same CDN the main map uses.
   function ensureLeaflet(cb) {
@@ -1395,6 +1489,7 @@
   var radarOn = true;
   var LAYER_DEFS = [
     ["stations", "Stations", function () { return stationLayer; }],
+    ["aircraft", "Aircraft", function () { return aircraftLayer; }],
     ["weather", "Weather", function () { return weatherLayer; }],
     ["hazards", "Hazards", function () { return hazardLayer; }],
     ["radar", "Radar", function () {
@@ -1452,6 +1547,12 @@
     lastWeather.forEach(function (r) {
       if (r && r.latitude && r.longitude && r.via !== "aprs") {
         b.extend([r.latitude, r.longitude]);
+        has = true;
+      }
+    });
+    lastAircraft.forEach(function (a) {
+      if (a && a.latitude && a.longitude) {
+        b.extend([a.latitude, a.longitude]);
         has = true;
       }
     });

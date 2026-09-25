@@ -132,6 +132,27 @@ sources:
           name: "Kraków Balice (EPKK)"
           timezone: "Europe/Warsaw"
 
+  # ADS-B aircraft traffic in the hub's area of interest. Two providers:
+  #   - adsblol: free keyless internet API (rate-limited to ~1 req/10s);
+  #   - tar1090: a LOCAL readsb/tar1090 receiver (base_url points at it),
+  #     which keeps aircraft visibility without an internet uplink.
+  # The area center and radius inherit the APRS hub (override with
+  # latitude/longitude/radius_km). Published as kind=aircraft info topics.
+  - id: adsb-main
+    type: adsb
+    enabled: false
+
+    runtime:
+      restart: true
+      shutdown_timeout: 10s
+
+    config:
+      provider: adsblol
+      # base_url: "https://api.adsb.lol"      # or http://10.0.0.20:8080 for tar1090
+      poll_interval: 10s
+      request_timeout: 15s
+      track_window: 5m
+
   # IMGW-PIB public warnings: a real HAZARD source consuming the official
   # warningsmeteo and warningshydro feeds with full-snapshot disappearance
   # reconciliation (see internal/plugins/sources/imgw/README.md).

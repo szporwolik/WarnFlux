@@ -1,0 +1,251 @@
+// Package adsb is an informational source for aircraft (ADS-B) traffic in
+// the configured area of interest. Two providers are supported:
+//
+//   - adsblol: the free, keyless https://api.adsb.lol API (point/radius
+//     query) for the internet-connected case,
+//   - tar1090: a LOCAL readsb/tar1090 receiver's /data/aircraft.json
+//     (e.g. a Raspberry Pi with an SDR on the same LAN) — this keeps
+//     aircraft visibility working when the internet uplink is gone.
+//
+// Every poll builds one canonical aircraft snapshot: per-aircraft
+// position, altitude, speed, track, vertical rate, the minute vector and
+// a 3-5 minute trail. The snapshot is published as an informational MQTT
+// message (kind "aircraft") and mirrored into the web map layer.
+package adsb
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// maxBodyBytes bounds one provider response.
+const maxBodyBytes = 4 << 20 // 4 MiB (a busy tar1090 receiver can be large)
+
+// Providers.
+const (
+	ProviderAdsbLol = "adsblol"
+	ProviderTar1090 = "tar1090"
+)
+
+// ProviderTarget is one aircraft as reported by a provider, normalized to
+// the fields WarnFlux uses. Units are the provider's raw units; the
+// adapter converts to canonical units.
+type ProviderTarget struct {
+	Hex         string
+	Flight      string
+	Type        string
+	Category    string
+	Lat         float64
+	Lon         float64
+	AltBaroFt   float64
+	GSKt        float64
+	TrackDeg    float64
+	BaroRateFPM float64
+	OnGround    bool
+	SeenAt      time.Time
+}
+
+// Client fetches aircraft from one provider.
+type Client struct {
+	provider string
+	baseURL  string
+	http     *http.Client
+}
+
+// NewClient builds a provider client. baseURL must already be validated.
+func NewClient(provider, baseURL string, timeout time.Duration) *Client {
+	return &Client{
+		provider: provider,
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		http:     &http.Client{Timeout: timeout},
+	}
+}
+
+// Fetch queries the provider for aircraft around (lat, lon) within
+// radiusKm and returns them plus the provider's "now" timestamp.
+func (c *Client) Fetch(ctx context.Context, lat, lon, radiusKm float64) ([]ProviderTarget, time.Time, error) {
+	switch c.provider {
+	case ProviderAdsbLol:
+		return c.fetchAdsbLol(ctx, lat, lon, radiusKm)
+	case ProviderTar1090:
+		return c.fetchTar1090(ctx)
+	default:
+		return nil, time.Time{}, fmt.Errorf("unknown provider %q", c.provider)
+	}
+}
+
+func (c *Client) getJSON(ctx context.Context, u string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "WarnFlux adsb/0.1")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if len(data) > maxBodyBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxBodyBytes)
+	}
+	return data, nil
+}
+
+// fetchAdsbLol queries the point/radius endpoint. The radius is nautical
+// miles server-side, clamped to the API's allowed range.
+func (c *Client) fetchAdsbLol(ctx context.Context, lat, lon, radiusKm float64) ([]ProviderTarget, time.Time, error) {
+	nm := radiusKm / 1.852
+	if nm < 1 {
+		nm = 1
+	}
+	if nm > 250 {
+		nm = 250
+	}
+	u := fmt.Sprintf("%s/v2/point/%.4f/%.4f/%.1f", c.baseURL, lat, lon, nm)
+	data, err := c.getJSON(ctx, u)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	var resp struct {
+		AC    []adsbLolAC `json:"ac"`
+		Now   int64       `json:"now"` // epoch milliseconds
+		Msg   string      `json:"msg"`
+		Total int         `json:"total"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, time.Time{}, fmt.Errorf("parse JSON: %w", err)
+	}
+	if resp.Msg != "" && resp.Msg != "No error" {
+		return nil, time.Time{}, fmt.Errorf("provider error: %s", resp.Msg)
+	}
+	now := time.Now().UTC()
+	if resp.Now > 0 {
+		now = time.UnixMilli(resp.Now).UTC()
+	}
+	out := make([]ProviderTarget, 0, len(resp.AC))
+	for _, ac := range resp.AC {
+		t, ok := ac.target(now)
+		if !ok {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, now, nil
+}
+
+// fetchTar1090 queries a local readsb/tar1090 receiver. The receiver
+// reports its whole coverage; the caller filters to the area of interest.
+func (c *Client) fetchTar1090(ctx context.Context) ([]ProviderTarget, time.Time, error) {
+	u := c.baseURL + "/data/aircraft.json"
+	data, err := c.getJSON(ctx, u)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	var resp struct {
+		Aircraft []tar1090AC `json:"aircraft"`
+		Now      float64     `json:"now"` // epoch seconds
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, time.Time{}, fmt.Errorf("parse JSON: %w", err)
+	}
+	now := time.Now().UTC()
+	if resp.Now > 0 {
+		now = time.Unix(int64(resp.Now), 0).UTC()
+	}
+	out := make([]ProviderTarget, 0, len(resp.Aircraft))
+	for _, ac := range resp.Aircraft {
+		t, ok := ac.target(now)
+		if !ok {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, now, nil
+}
+
+// adsbLolAC mirrors the ac[] entries of api.adsb.lol /v2/point.
+type adsbLolAC struct {
+	Hex      string  `json:"hex"`
+	Flight   string  `json:"flight"`
+	Type     string  `json:"t"`
+	Category string  `json:"category"`
+	Lat      float64 `json:"lat"`
+	Lon      float64 `json:"lon"`
+	AltBaro  float64 `json:"alt_baro"`
+	GS       float64 `json:"gs"`
+	Track    float64 `json:"track"`
+	BaroRate float64 `json:"baro_rate"`
+	Seen     float64 `json:"seen"` // seconds ago
+}
+
+// target converts one adsb.lol entry; entries without a position or
+// without a hex code are skipped.
+func (a adsbLolAC) target(now time.Time) (ProviderTarget, bool) {
+	if a.Hex == "" || a.Lat == 0 && a.Lon == 0 {
+		return ProviderTarget{}, false
+	}
+	return ProviderTarget{
+		Hex:         a.Hex,
+		Flight:      strings.TrimSpace(a.Flight),
+		Type:        a.Type,
+		Category:    a.Category,
+		Lat:         a.Lat,
+		Lon:         a.Lon,
+		AltBaroFt:   a.AltBaro,
+		GSKt:        a.GS,
+		TrackDeg:    a.Track,
+		BaroRateFPM: a.BaroRate,
+		OnGround:    a.AltBaro == 0,
+		SeenAt:      now.Add(-time.Duration(a.Seen * float64(time.Second))),
+	}, true
+}
+
+// tar1090AC mirrors /data/aircraft.json entries (readsb/tar1090 format).
+type tar1090AC struct {
+	Hex      string  `json:"hex"`
+	Flight   string  `json:"flight"`
+	Category string  `json:"category"`
+	Lat      float64 `json:"lat"`
+	Lon      float64 `json:"lon"`
+	AltBaro  float64 `json:"alt_baro"`
+	GS       float64 `json:"gs"`
+	Track    float64 `json:"track"`
+	BaroRate float64 `json:"baro_rate"`
+	Seen     float64 `json:"seen"` // epoch seconds
+}
+
+func (a tar1090AC) target(now time.Time) (ProviderTarget, bool) {
+	if a.Hex == "" || a.Lat == 0 && a.Lon == 0 {
+		return ProviderTarget{}, false
+	}
+	seen := now
+	if a.Seen > 0 {
+		seen = time.Unix(int64(a.Seen), 0).UTC()
+	}
+	return ProviderTarget{
+		Hex:         a.Hex,
+		Flight:      strings.TrimSpace(a.Flight),
+		Category:    a.Category,
+		Lat:         a.Lat,
+		Lon:         a.Lon,
+		AltBaroFt:   a.AltBaro,
+		GSKt:        a.GS,
+		TrackDeg:    a.Track,
+		BaroRateFPM: a.BaroRate,
+		OnGround:    a.AltBaro == 0,
+		SeenAt:      seen,
+	}, true
+}

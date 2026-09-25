@@ -414,3 +414,90 @@ func aprsWeatherCondition(w *aprs.WeatherReport) string {
 		return "unknown"
 	}
 }
+
+// aircraftTrailView is one recorded position of one aircraft.
+type aircraftTrailView struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	At        int64   `json:"at"` // unix seconds
+}
+
+// aircraftView is one aircraft in the area of interest.
+type aircraftView struct {
+	Icao24         string              `json:"icao24"`
+	Callsign       string              `json:"callsign,omitempty"`
+	Category       string              `json:"category,omitempty"`
+	Latitude       float64             `json:"latitude"`
+	Longitude      float64             `json:"longitude"`
+	AltitudeM      *float64            `json:"altitude_m,omitempty"`
+	OnGround       bool                `json:"on_ground"`
+	SpeedKmh       *float64            `json:"speed_kmh,omitempty"`
+	TrackDeg       *float64            `json:"track_deg,omitempty"`
+	VerticalRateMS *float64            `json:"vertical_rate_m_s,omitempty"`
+	SeenAt         int64               `json:"seen_at"`
+	Trail          []aircraftTrailView `json:"trail,omitempty"`
+}
+
+// handleAircraft serves the public aircraft layer: the newest retained
+// <prefix>/info/adsb/<producer>/area/aircraft snapshots, merged across
+// producers with the newest observation per aircraft winning.
+func (s *Server) handleAircraft(w http.ResponseWriter, r *http.Request) {
+	type wireSnap struct {
+		Type          string         `json:"type"`
+		SchemaVersion int            `json:"schema_version"`
+		GeneratedAt   time.Time      `json:"generated_at"`
+		Provider      string         `json:"provider"`
+		Aircraft      []aircraftView `json:"aircraft"`
+	}
+
+	snaps := make([]wireSnap, 0, 2)
+	for _, e := range s.st.Snapshot().Info {
+		if e.Kind != "aircraft" || len(e.Payload) == 0 {
+			continue
+		}
+		var ws wireSnap
+		if err := json.Unmarshal(e.Payload, &ws); err != nil {
+			s.logger.Warn("web: aircraft info payload invalid", "topic", e.Topic, "error", err)
+			continue
+		}
+		if ws.Type != "aircraft" {
+			continue
+		}
+		snaps = append(snaps, ws)
+	}
+	// Newest snapshot first.
+	sort.Slice(snaps, func(i, j int) bool { return snaps[i].GeneratedAt.After(snaps[j].GeneratedAt) })
+
+	view := struct {
+		GeneratedAt string         `json:"generated_at,omitempty"`
+		Aircraft    []aircraftView `json:"aircraft"`
+	}{Aircraft: []aircraftView{}}
+
+	byHex := make(map[string]aircraftView)
+	for _, snap := range snaps {
+		for _, a := range snap.Aircraft {
+			if _, exists := byHex[a.Icao24]; !exists {
+				byHex[a.Icao24] = a
+			}
+		}
+		if view.GeneratedAt == "" {
+			view.GeneratedAt = snap.GeneratedAt.UTC().Format(time.RFC3339)
+		}
+	}
+	for _, a := range byHex {
+		view.Aircraft = append(view.Aircraft, a)
+	}
+	sort.Slice(view.Aircraft, func(i, j int) bool {
+		a, b := view.Aircraft[i], view.Aircraft[j]
+		if a.Callsign != b.Callsign {
+			return a.Callsign < b.Callsign
+		}
+		return a.Icao24 < b.Icao24
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(view); err != nil {
+		s.logger.Warn("web: encode aircraft failed", "error", err)
+	}
+}

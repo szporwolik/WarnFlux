@@ -1643,6 +1643,10 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .wf-layer-btn:hover { background: var(--surface-hi); color: var(--text); }
 .wf-layer-btn.active { background: var(--focus-ring); color: var(--text); font-weight: 600; }
 
+/* Aircraft markers (ADS-B layer): track-rotated plane glyphs. */
+.wf-aircraft { background: none; border: none; }
+.wf-aircraft svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55)); }
+
 /* Weather detail popup on the combined map. */
 .hw-popup { min-width: 215px; }
 .hw-popup-head {

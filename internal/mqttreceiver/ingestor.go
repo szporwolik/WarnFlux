@@ -243,6 +243,7 @@ func (in *Ingestor) handleInfo(pt ParsedTopic, topic string, payload []byte, now
 		Key:        pt.Key,
 		Kind:       pt.InfoKind,
 		ReceivedAt: now,
+		Payload:    append(json.RawMessage(nil), payload...),
 	}
 
 	if pt.InfoKind == TypeWeather {

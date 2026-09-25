@@ -519,7 +519,7 @@ web:
 
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI). They never automatically receive MQTT
-# events. Built-in types: smtp (email), http_webhook, aprs.
+# events. Built-in types: smtp (email), http_webhook, discord, aprs.
 actions:
 
   # SMTP email action: sends one plain-text email per routed dispatch
@@ -645,6 +645,27 @@ actions:
   #     token_file: ""
   #     # Per-request timeout; 0 = default (10s). The instance
   #     # call_timeout still caps the whole call.
+  #     timeout: 10s
+  #
+  # Discord webhook action: one human-readable message per routed
+  # notification (severity first, then event, headline and areas,
+  # truncated to Discord's 2000-character content limit).
+  # - id: discord-alerts
+  #   type: discord
+  #   enabled: false
+  #
+  #   runtime:
+  #     queue_size: 128
+  #     call_timeout: 15s
+  #     shutdown_timeout: 10s
+  #     retries: 2
+  #
+  #   config:
+  #     url: https://discord.com/api/webhooks/1234/secret
+  #     # Optional bot display name override (defaults to the webhook's
+  #     # own name).
+  #     username: "WarnFlux"
+  #     # Per-request timeout; 0 = default (10s).
   #     timeout: 10s
 
 # Public HTTP ingest endpoints: POST /api/v1/ingest/<id>, protected by an

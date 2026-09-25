@@ -1770,3 +1770,37 @@ func TestDashboardSystemShowsDispatchQueue(t *testing.T) {
 		t.Errorf("dispatch queue stats not rendered: %s", html)
 	}
 }
+
+func TestLoginThrottled(t *testing.T) {
+	env := newTestEnv(t)
+	_, html := env.get("/login")
+	csrf := extractCSRF(t, html)
+	form := url.Values{"csrf": {csrf}, "username": {testUsername}, "password": {"wrong-password"}}
+	for i := 0; i < 5; i++ {
+		resp, _ := env.postForm("/login", form)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i+1, resp.StatusCode)
+		}
+	}
+	resp, _ := env.postForm("/login", form)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("throttled login = %d, want 429", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("429 must carry Retry-After")
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	env := newTestEnv(t)
+	resp, _ := env.get("/")
+	for h, want := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer",
+	} {
+		if got := resp.Header.Get(h); got != want {
+			t.Errorf("%s = %q, want %q", h, got, want)
+		}
+	}
+}

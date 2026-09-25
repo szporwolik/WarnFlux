@@ -460,13 +460,22 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	// Double-submit CSRF check for the login form.
 	cookie, _ := r.Cookie(csrfCookie)
-	if cookie == nil || cookie.Value == "" || r.PostFormValue("csrf") != cookie.Value {
+	if cookie == nil || !csrfOK(r.PostFormValue("csrf"), cookie.Value) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
 
 	username := r.PostFormValue("username")
 	password := r.PostFormValue("password")
+
+	// Brute-force gate: per username+address exponential lockout.
+	limiterKey := strings.ToLower(strings.TrimSpace(username)) + "\x00" + r.RemoteAddr
+	if wait := s.loginLimiter.retryIn(limiterKey); wait > 0 {
+		s.logger.Warn("web: login throttled", "remote", r.RemoteAddr, "username", username, "retry_in", wait)
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
+		return
+	}
 
 	// The configured admin account outranks everything; a directory user
 	// with a non-empty role (emcom) and a matching password signs in as
@@ -479,6 +488,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if role == "" {
+		s.loginLimiter.record(limiterKey, false)
 		s.audit(username, "login-failed", r.RemoteAddr)
 		s.logger.Warn("web: failed login attempt", "remote", r.RemoteAddr)
 		w.Header().Set("Cache-Control", "no-store")
@@ -499,6 +509,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.loginLimiter.record(limiterKey, true)
 	token, _, err := s.sessions.newSession(username, role)
 	if err != nil {
 		s.logger.Error("web: session creation failed", "error", err)
@@ -521,7 +532,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Session-bound CSRF token protects the state-changing logout route.
-	if r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+	if !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

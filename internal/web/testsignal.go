@@ -124,7 +124,7 @@ func (s *Server) handleTestPage(w http.ResponseWriter, r *http.Request) {
 // an event received from an upstream WarnFlux instance.
 func (s *Server) handleTestEmit(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

@@ -150,6 +150,89 @@ func checkUsername(got, want string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
+// csrfOK compares two CSRF tokens in constant time.
+func csrfOK(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// loginLimiter slows brute-force guessing of the admin/directory
+// passwords: per-key (username + remote address) exponential backoff on
+// failures, cleared on success. In-memory only: a restart clears the
+// counters, which is acceptable for a single-process deployment.
+type loginLimiter struct {
+	mu    sync.Mutex
+	fails map[string]loginFail
+}
+
+type loginFail struct {
+	count  int
+	locked time.Time
+}
+
+func newLoginLimiter() *loginLimiter {
+	return &loginLimiter{fails: make(map[string]loginFail)}
+}
+
+// loginBackoff maps consecutive failures to a lockout: the first four
+// attempts stay free (typos happen), the fifth locks for 30s and every
+// further failure extends it by 30s up to 5 minutes.
+func loginBackoff(n int) time.Duration {
+	if n < 5 {
+		return 0
+	}
+	d := time.Duration(n-4) * 30 * time.Second
+	if d > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return d
+}
+
+// retryIn reports how long the key must wait before the next attempt;
+// zero means it may try now. Early failures (below the lockout threshold)
+// keep their counter; an elapsed lockout clears the key so the next burst
+// starts from zero again.
+func (l *loginLimiter) retryIn(key string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f, ok := l.fails[key]
+	if !ok {
+		return 0
+	}
+	if d := time.Until(f.locked); d > 0 {
+		return d
+	}
+	if f.count >= 5 {
+		delete(l.fails, key) // the lockout window elapsed
+	}
+	return 0
+}
+
+// record stores one attempt outcome. Failures push the lockout window
+// out; a success clears the key.
+func (l *loginLimiter) record(key string, ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if ok {
+		delete(l.fails, key)
+		return
+	}
+	f := l.fails[key]
+	f.count++
+	f.locked = time.Now().Add(loginBackoff(f.count))
+	l.fails[key] = f
+	if len(l.fails) > 1024 {
+		now := time.Now()
+		for k, v := range l.fails {
+			if now.After(v.locked) {
+				delete(l.fails, k)
+			}
+		}
+	}
+}
+
 // randomToken returns a 32-byte cryptographically random URL-safe token.
 func randomToken() (string, error) {
 	buf := make([]byte, 32)

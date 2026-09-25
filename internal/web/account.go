@@ -145,7 +145,7 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+	if !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

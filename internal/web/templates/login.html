@@ -15,6 +15,7 @@
     <h1 class="login-name">{{.Header1}}</h1>
     {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">Alerts in. Action out.</p>{{end}}
     {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+    {{if .Reset}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>Password updated — sign in with your new password.</p>{{end}}
     <form method="post" action="/login">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <label>Username
@@ -25,7 +26,7 @@
       </label>
       <button type="submit" class="btn-primary">Sign in</button>
     </form>
-    <p class="login-note">Account creation is disabled.</p>
+    <p class="login-note"><a href="/forgot">Forgot password?</a> · Account creation is disabled.</p>
     <p class="login-back"><a href="/">← Back to the public page</a></p>
   </main>
   {{template "footer" .}}

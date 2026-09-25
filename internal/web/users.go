@@ -76,6 +76,9 @@ type usersView struct {
 	Form     userForm
 	EditID   int64
 	Error    string
+	// Notice is a green, one-time banner (e.g. a freshly generated
+	// password after an admin-side reset).
+	Notice string
 
 	Page, Pages, From, To, Total int
 	HasPrev, HasNext             bool
@@ -254,6 +257,51 @@ func (s *Server) handleUserPrefs(w http.ResponseWriter, r *http.Request) {
 		page = "1"
 	}
 	http.Redirect(w, r, "/users?page="+page, http.StatusSeeOther)
+}
+
+// handleUserResetPassword replaces one user's password with a freshly
+// generated one and shows it once (the admin hands it over out of band).
+// The configured admin account is read-only.
+func (s *Server) handleUserResetPassword(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	userID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid user id", http.StatusBadRequest)
+		return
+	}
+	u, err := s.users.GetUser(userID)
+	if err != nil {
+		s.renderUsersError(w, r, userErrorStatus(err), userForm{}, 0, userErrorMessage(err))
+		return
+	}
+	if u.IsAdmin {
+		s.renderUsersError(w, r, http.StatusForbidden, userForm{}, 0, "admin pass is defined in the configuration file")
+		return
+	}
+	password, err := newRandomPassword()
+	if err != nil {
+		s.logger.Error("web: reset password generation failed", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.users.SetUserPassword(userID, password); err != nil {
+		s.logger.Error("web: reset password failed", "user", userID, "error", err)
+		http.Error(w, "could not reset the password", http.StatusInternalServerError)
+		return
+	}
+	s.audit(sess.username, "user-reset", strconv.FormatInt(userID, 10))
+
+	view := s.buildUsersView(r, userForm{}, 0, "")
+	view.CSRF = sess.csrf
+	view.Username = sess.username
+	view.Role = sess.role
+	view.Notice = "New password for " + u.Username + ": " + password + " — hand it over and tell the user to change it after signing in."
+	w.Header().Set("Cache-Control", "no-store")
+	s.render(w, "users", view)
 }
 
 // buildUsersView assembles the page model from the store.

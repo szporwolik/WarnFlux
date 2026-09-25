@@ -1,0 +1,35 @@
+{{define "forgot"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forgot password · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
+    <h1 class="login-name">{{.Header1}}</h1>
+    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">Alerts in. Action out.</p>{{end}}
+    {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+    {{if .Message}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Message}}</p>{{end}}
+    <form method="post" action="/forgot">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Username
+        <input type="text" name="username" value="{{.Username}}" autocomplete="username" required autofocus>
+      </label>
+      <label>Registered email
+        <input type="email" name="email" value="{{.Email}}" autocomplete="email" required>
+      </label>
+      <button type="submit" class="btn-primary">Send reset link</button>
+    </form>
+    <p class="login-note">A one-time link will be sent to the account's registered email address.</p>
+    <p class="login-back"><a href="/login">← Back to sign in</a></p>
+  </main>
+  {{template "footer" .}}
+</body>
+</html>
+{{end}}

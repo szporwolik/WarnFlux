@@ -23,6 +23,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/actions"
+	smtp "github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/config"
@@ -507,6 +508,21 @@ func run(configPath string, checkConfig bool) error {
 		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic, trails, met)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
+		}
+		// Password-reset emails ride the first enabled smtp action's
+		// configuration; without one the self-service flow degrades to
+		// "contact an administrator".
+		for _, a := range cfg.Actions {
+			if !a.Enabled || a.Type != smtp.Type || a.Config == nil {
+				continue
+			}
+			var sc smtp.Config
+			if err := a.Config.Decode(&sc); err == nil {
+				webSrv.SetPasswordResetMailer(func(to, subject, text string) error {
+					return smtp.Direct(context.Background(), sc, []string{to}, subject, text)
+				})
+			}
+			break
 		}
 		if err := webSrv.Bind(); err != nil {
 			return err

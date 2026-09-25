@@ -1,0 +1,35 @@
+{{define "reset"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set a new password · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
+    <h1 class="login-name">{{.Header1}}</h1>
+    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">Alerts in. Action out.</p>{{end}}
+    {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+    {{if not .Expired}}
+    <form method="post" action="/reset">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="token" value="{{.Token}}">
+      <label>New password
+        <input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="72" required autofocus>
+      </label>
+      <button type="submit" class="btn-primary">Set password</button>
+    </form>
+    {{else}}
+    <p class="login-back"><a href="/forgot">Request a new reset link</a></p>
+    {{end}}
+    <p class="login-back"><a href="/login">← Back to sign in</a></p>
+  </main>
+  {{template "footer" .}}
+</body>
+</html>
+{{end}}

@@ -14,6 +14,7 @@
   <main class="users-main">
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Users</h2>
+      {{if .Notice}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Notice}}</p>{{end}}
       {{if .Error}}{{if not .EditID}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
       <form method="post" action="/users" class="user-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -84,6 +85,10 @@
                   data-discord="{{.Discord}}"
                   data-role="{{.Role}}"
                   data-aprs="{{.APRSJoin}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Edit</button>
+                <form method="post" action="/users/{{.ID}}/reset" class="inline-form" onsubmit="return confirm('Reset the password for {{.Username}}? A new random password will be shown once.');">
+                  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                  <button type="submit" class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>Reset</button>
+                </form>
                 <form method="post" action="/users/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('Delete user {{.Username}}?');">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
                   <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>Delete</button>

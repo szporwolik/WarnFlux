@@ -488,6 +488,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		"RepoURL":  repoURL,
 		"CSRF":     csrf,
 		"Error":    "",
+		"Reset":    r.URL.Query().Get("reset") == "1",
 	})
 }
 

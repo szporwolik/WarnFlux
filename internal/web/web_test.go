@@ -1286,6 +1286,128 @@ func TestEmcomRoleFlow(t *testing.T) {
 	}
 }
 
+// TestForgotPasswordFlow pins the standard self-service reset: request →
+// one-time email token → new password → sign-in works. Unknown accounts
+// get the same generic answer (no enumeration); the configured admin gets
+// the explicit configuration message.
+func TestForgotPasswordFlow(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("member1", "", "member1@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	var sentTo, sentSubject, sentText string
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		sentTo, sentSubject, sentText = to, subject, text
+		return nil
+	})
+
+	// The login page links the recovery flow.
+	_, loginHTML := env.get("/login")
+	if !strings.Contains(loginHTML, `href="/forgot"`) {
+		t.Fatalf("login page missing the forgot-password link: %s", loginHTML)
+	}
+
+	// Unknown account: generic answer, no email.
+	_, html := env.get("/forgot")
+	resp, html := env.postForm("/forgot", url.Values{
+		"csrf": {extractCSRF(t, html)}, "username": {"ghost"}, "email": {"ghost@example.com"},
+	})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(html, "If the account exists") {
+		t.Fatalf("unknown account = %d %s", resp.StatusCode, html)
+	}
+	if sentTo != "" {
+		t.Fatalf("unknown account sent an email to %q", sentTo)
+	}
+
+	// The configured admin is explicitly out of scope.
+	_, html = env.get("/forgot")
+	resp, html = env.postForm("/forgot", url.Values{
+		"csrf": {extractCSRF(t, html)}, "username": {testUsername}, "email": {"admin@example.com"},
+	})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(html, "admin pass is defined in the configuration file") {
+		t.Fatalf("admin forgot = %d %s", resp.StatusCode, html)
+	}
+
+	// Wrong email: generic answer, no email.
+	_, html = env.get("/forgot")
+	resp, _ = env.postForm("/forgot", url.Values{
+		"csrf": {extractCSRF(t, html)}, "username": {"member1"}, "email": {"wrong@example.com"},
+	})
+	if sentTo != "" {
+		t.Fatalf("wrong email sent an email to %q", sentTo)
+	}
+
+	// Correct request: one email with a token link.
+	_, html = env.get("/forgot")
+	resp, html = env.postForm("/forgot", url.Values{
+		"csrf": {extractCSRF(t, html)}, "username": {"member1"}, "email": {"member1@example.com"},
+	})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(html, "If the account exists") {
+		t.Fatalf("forgot submit = %d %s", resp.StatusCode, html)
+	}
+	if sentTo != "member1@example.com" || sentSubject == "" || sentText == "" {
+		t.Fatalf("mailer = %q / %q / %q", sentTo, sentSubject, sentText)
+	}
+	m := regexp.MustCompile(`token=([0-9a-f]+)`).FindStringSubmatch(sentText)
+	if m == nil {
+		t.Fatalf("email body has no token link: %s", sentText)
+	}
+	token := m[1]
+
+	// The link renders the new-password form; the token is single-use.
+	_, resetHTML := env.get("/reset?token=" + token)
+	if !strings.Contains(resetHTML, `name="password"`) {
+		t.Fatalf("reset page missing the password form: %s", resetHTML)
+	}
+	resp, _ = env.postForm("/reset", url.Values{
+		"csrf": {extractCSRF(t, resetHTML)}, "token": {token}, "password": {"brand-new-password"},
+	})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?reset=1" {
+		t.Fatalf("reset submit = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if _, err := env.users.Authenticate("member1", "brand-new-password"); err != nil {
+		t.Fatalf("new password does not authenticate: %v", err)
+	}
+	// Replay is rejected.
+	resp, _ = env.postForm("/reset", url.Values{
+		"csrf": {extractCSRF(t, resetHTML)}, "token": {token}, "password": {"another-password-1"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("token replay = %d, want 422", resp.StatusCode)
+	}
+}
+
+// TestAdminResetPassword pins the admin-side "Reset password" action: a
+// fresh random password is shown once; the configured admin row is
+// blocked with the configuration message.
+func TestAdminResetPassword(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	if _, err := env.users.CreateUser("member1", "", "", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	csrf := env.csrfFromPage("/users")
+
+	// The configured admin row is read-only.
+	resp, html := env.postForm("/users/1/reset", url.Values{"csrf": {csrf}})
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(html, "admin pass is defined in the configuration file") {
+		t.Fatalf("admin reset = %d %s, want 403 with the configuration message", resp.StatusCode, html)
+	}
+
+	// A regular user gets a fresh password, shown once.
+	resp, html = env.postForm("/users/2/reset", url.Values{"csrf": {csrf}})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(html, "New password for member1:") {
+		t.Fatalf("user reset = %d %s", resp.StatusCode, html)
+	}
+	m := regexp.MustCompile(`New password for member1: ([A-Za-z0-9]+) —`).FindStringSubmatch(html)
+	if m == nil {
+		t.Fatalf("reset notice missing the generated password: %s", html)
+	}
+	if _, err := env.users.Authenticate("member1", m[1]); err != nil {
+		t.Fatalf("generated password does not authenticate: %v", err)
+	}
+}
+
 // TestAdminAccountReadOnly pins the configuration-managed admin account:
 // the self-service page renders the form disabled (no Save button) and the
 // server rejects any direct POST to /account for the admin session.

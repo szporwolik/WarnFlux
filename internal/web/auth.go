@@ -242,8 +242,15 @@ func randomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// newCSRFCookie issues a fresh CSRF cookie for the login form (double-submit).
+// newCSRFCookie issues a fresh CSRF cookie for the login form
+// (double-submit), scoped to /login.
 func newCSRFCookie(w http.ResponseWriter, secure bool) (string, error) {
+	return newCSRFCookiePath(w, secure, "/login")
+}
+
+// newCSRFCookiePath issues a CSRF cookie scoped to the given path (the
+// public password-recovery flow spans /forgot and /reset, so it uses "/").
+func newCSRFCookiePath(w http.ResponseWriter, secure bool, path string) (string, error) {
 	tok, err := randomToken()
 	if err != nil {
 		return "", err
@@ -251,7 +258,7 @@ func newCSRFCookie(w http.ResponseWriter, secure bool) (string, error) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookie,
 		Value:    tok,
-		Path:     "/login",
+		Path:     path,
 		HttpOnly: false, // the form reads nothing; the hidden field is rendered server-side
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,

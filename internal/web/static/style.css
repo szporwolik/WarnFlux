@@ -1833,6 +1833,21 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background: var(--surface-hi);
   color: var(--brand);
 }
+/* Info banner for configuration-managed accounts (read-only form). */
+.account-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  background: var(--surface-hi);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.8rem;
+  margin-bottom: 0.9rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.account-note .icon { flex: none; color: var(--warn); }
 .account-title { margin: 0 0 0.15rem; font-size: 1.3rem; font-weight: 600; }
 .account-role {
   display: inline-block;

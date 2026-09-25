@@ -24,6 +24,9 @@
 
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+      {{if .ManagedAccount}}
+      <p class="account-note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>This account is managed in configuration: username, email and password come from config.yaml and cannot be changed here.</p>
+      {{end}}
 
       <form method="post" action="/account">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -34,15 +37,15 @@
           <div class="account-grid">
             <label class="field">
               <span>Phone</span>
-              <input type="text" name="phone" value="{{.Phone}}" maxlength="32" placeholder="+48 600 000 000">
+              <input type="text" name="phone" value="{{.Phone}}" maxlength="32" placeholder="+48 600 000 000"{{if .ManagedAccount}} disabled{{end}}>
             </label>
             <label class="field">
               <span>Email</span>
-              <input type="email" name="email" value="{{.Email}}" maxlength="128" placeholder="you@example.com">
+              <input type="email" name="email" value="{{.Email}}" maxlength="128" placeholder="you@example.com"{{if .ManagedAccount}} disabled{{end}}>
             </label>
             <label class="field">
               <span>Discord</span>
-              <input type="text" name="discord" value="{{.Discord}}" maxlength="128" placeholder="@handle">
+              <input type="text" name="discord" value="{{.Discord}}" maxlength="128" placeholder="@handle"{{if .ManagedAccount}} disabled{{end}}>
             </label>
           </div>
         </div>
@@ -53,7 +56,7 @@
           <div class="account-grid">
             <label class="field field-wide">
               <span>New password</span>
-              <input type="password" name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one">
+              <input type="password" name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one"{{if .ManagedAccount}} disabled{{end}}>
             </label>
           </div>
         </div>
@@ -64,7 +67,7 @@
           <div class="account-channels-grid">
             {{range .Groups}}
             <label class="account-channel">
-              <input type="checkbox" name="groups" value="{{.ID}}" {{if index $.GroupSet .ID}}checked{{end}}>
+              <input type="checkbox" name="groups" value="{{.ID}}" {{if index $.GroupSet .ID}}checked{{end}}{{if $.ManagedAccount}} disabled{{end}}>
               <span>{{.Name}}</span>
             </label>
             {{else}}
@@ -79,16 +82,18 @@
           <div class="account-channels-grid">
             {{range .Channels}}
             <label class="account-channel">
-              <input type="checkbox" name="channels" value="{{.Kind}}" {{if index $.ChannelSet .Kind}}checked{{end}}>
+              <input type="checkbox" name="channels" value="{{.Kind}}" {{if index $.ChannelSet .Kind}}checked{{end}}{{if $.ManagedAccount}} disabled{{end}}>
               <span>{{.Label}}</span>
             </label>
             {{end}}
           </div>
         </div>
 
+        {{if not .ManagedAccount}}
         <div class="form-footer">
           <button type="submit" class="btn-primary">Save changes</button>
         </div>
+        {{end}}
       </form>
     </section>
   </main>

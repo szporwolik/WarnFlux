@@ -1531,18 +1531,20 @@
     c.addTo(map);
   }
 
-  // Layer toggles: the four overlay families can be switched
-  // independently so the combined map stays readable.
+  // Layer toggles: the overlay families can be switched independently so
+  // the combined map stays readable. The order mirrors what this system
+  // is about: hazards (the alerts) first, then the radio neighbourhood,
+  // weather and radar, with aircraft traffic last.
   var radarOn = true;
   var LAYER_DEFS = [
-    ["stations", "Stations", function () { return stationLayer; }],
-    ["aircraft", "Aircraft", function () { return aircraftLayer; }],
-    ["weather", "Weather", function () { return weatherLayer; }],
     ["hazards", "Hazards", function () { return hazardLayer; }],
+    ["stations", "Stations", function () { return stationLayer; }],
+    ["weather", "Weather", function () { return weatherLayer; }],
     ["radar", "Radar", function () {
       radarOn = !radarOn;
       return radarLayer;
-    }]
+    }],
+    ["aircraft", "Aircraft", function () { return aircraftLayer; }]
   ];
 
   function addLayersControl(map) {

@@ -126,17 +126,8 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	if sess := s.sessions.currentSession(r); sess != nil {
 		v.LoggedIn = true
 		v.Username = sess.username
-		switch sess.role {
-		case "admin":
-			v.Landing = "/dashboard"
-			v.LandingLabel = "Dashboard"
-		case "emcom":
-			v.Landing = "/compose"
-			v.LandingLabel = "Compose"
-		default:
-			v.Landing = "/account"
-			v.LandingLabel = "Account"
-		}
+		v.Landing = "/dashboard"
+		v.LandingLabel = "Dashboard"
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, "home", v)

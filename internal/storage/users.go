@@ -177,6 +177,10 @@ type UserStore interface {
 	// optional -SSID). The store normalizes (uppercase) and de-duplicates
 	// them; a missing or protected user reports the usual errors.
 	SetUserAPRS(userID int64, callsigns []string) error
+	// AllAPRSCallsigns returns the distinct BASE callsigns (SSID
+	// stripped, uppercase) registered for any user, sorted. The APRS
+	// message-routing bridge uses it as the sender allow-list.
+	AllAPRSCallsigns() ([]string, error)
 	// UserChannelOptOuts returns the delivery channels this user has
 	// disabled, keyed by channel kind (see internal/notify). An empty
 	// set means every channel is enabled — the default.

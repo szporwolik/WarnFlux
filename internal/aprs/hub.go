@@ -88,6 +88,7 @@ type stationState struct {
 	via            map[string]bool
 	packets        int
 	weather        *WeatherReport
+
 	// track is the movement tail: up to maxTrackPoints earlier positions,
 	// oldest first. The current position lives in position, so the map
 	// can draw the full polyline [track..., position].
@@ -153,6 +154,12 @@ type Hub struct {
 	// pending holds one result channel per in-flight message id; guarded
 	// by mu.
 	pending map[string]chan string
+
+	// senderGate approves the base callsign of a message sender for the
+	// notification routing bridge; guarded by mu. nil disables message
+	// routing entirely — a message is only routed when the operator is on
+	// the configured allow-list (SSIDs may differ).
+	senderGate func(base string) bool
 }
 
 // NewHub validates the hub identity and returns the hub. The hub is
@@ -250,6 +257,16 @@ func (h *Hub) OwnLon() float64 {
 
 // RadiusKM returns the configured nearby radius.
 func (h *Hub) RadiusKM() float64 { return h.cfg.RadiusKM }
+
+// SetSenderGate installs the message-sender allow-list check. The
+// callback receives the BASE callsign (no SSID) of a message sender and
+// reports whether it may feed the notification routing bridge. A nil
+// gate disables message routing entirely (fail closed).
+func (h *Hub) SetSenderGate(fn func(base string) bool) {
+	h.mu.Lock()
+	h.senderGate = fn
+	h.mu.Unlock()
+}
 
 // Name returns the display name of our station (falls back to the
 // callsign).
@@ -640,11 +657,11 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 		h.logger.Warn("aprs: message feed publish failed", "error", err)
 	}
 
-	// Routing: APRS messages addressed to us and heard over the RADIO
-	// (KISS) become routable events on the /events stream (the "aprs"
-	// source in the routing matrix). Internet-injected messages are
-	// excluded — anyone on APRS-IS can spoof those.
-	if h.cfg.RouteMessages && via == BackendRadio && h.routableMessage(p) {
+	// Routing: APRS messages addressed to us become routable events on
+	// the /events stream (the "aprs" source in the routing matrix) when
+	// the sender's base callsign is on the registered-user allow-list —
+	// SSIDs may differ, and both radio and APRS-IS delivery qualify.
+	if h.cfg.RouteMessages && h.routableMessage(p) && h.senderApproved(p.Src) {
 		h.publishMessageEvent(p)
 	}
 
@@ -671,10 +688,20 @@ func (h *Hub) routableMessage(p Packet) bool {
 	return true
 }
 
-// publishMessageEvent re-publishes one radio-heard APRS message as a
-// canonical /events payload. The forwarded content starts with
+// senderApproved reports whether the message sender may feed the routing
+// bridge: the gate must be installed and approve the base callsign.
+func (h *Hub) senderApproved(callsign string) bool {
+	h.mu.Lock()
+	gate := h.senderGate
+	h.mu.Unlock()
+	return gate != nil && gate(BaseCallsign(callsign))
+}
+
+// publishMessageEvent re-publishes one APRS message as a canonical
+// /events payload. The forwarded content starts with
 // "Message from: <callsign with SSID>", the text follows, and our
-// station name is carried as context.
+// station name is carried as context. Messages from trusted operators
+// are alerts by nature: the default severity is severe.
 func (h *Hub) publishMessageEvent(p Packet) {
 	seq := h.eventSeq.Add(1)
 	now := time.Now().UTC()
@@ -692,7 +719,7 @@ func (h *Hub) publishMessageEvent(p Packet) {
 			Source:      "aprs",
 			SourceID:    from,
 			Event:       "APRS message",
-			Severity:    "minor",
+			Severity:    "severe",
 			Urgency:     "unknown",
 			Certainty:   "unknown",
 			Headline:    "Message from: " + from + ": " + text,

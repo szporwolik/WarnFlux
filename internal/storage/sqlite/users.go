@@ -480,6 +480,36 @@ func (s *Store) SetUserChannelOptOuts(userID int64, kinds []string) error {
 	return nil
 }
 
+// AllAPRSCallsigns returns the distinct base callsigns (SSID stripped,
+// uppercase, de-duplicated) registered for any user, sorted. It backs the
+// APRS message-routing sender allow-list.
+func (s *Store) AllAPRSCallsigns() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT callsign FROM user_aprs ORDER BY callsign COLLATE NOCASE ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list aprs callsigns: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]bool)
+	var out []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("scan aprs callsign: %w", err)
+		}
+		base := raw
+		if i := strings.IndexByte(base, '-'); i >= 0 {
+			base = base[:i]
+		}
+		base = strings.ToUpper(base)
+		if base == "" || seen[base] {
+			continue
+		}
+		seen[base] = true
+		out = append(out, base)
+	}
+	return out, rows.Err()
+}
+
 // attachAPRS fills APRSCallsigns on the given users with one grouped query
 // and returns the updated slice (the input elements are copies).
 func (s *Store) attachAPRS(users []storage.User) ([]storage.User, error) {

@@ -10,6 +10,7 @@
 package state
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -112,7 +113,9 @@ type DailyWeather struct {
 	WindSpeedMaxKmh    *float64
 }
 
-// InfoEntry is one retained informational message (usually weather).
+// InfoEntry is one retained informational message. Weather documents are
+// decoded into the typed Weather field; every other kind keeps its raw
+// Payload (e.g. aircraft snapshots) for the web layer to parse.
 type InfoEntry struct {
 	ReceiverID string
 	Topic      string
@@ -122,6 +125,7 @@ type InfoEntry struct {
 	Kind       string
 	ReceivedAt time.Time
 	Weather    *Weather
+	Payload    json.RawMessage
 }
 
 // RouterStatus is the last valid WarnFlux <prefix>/status payload from
@@ -170,6 +174,7 @@ type Counters struct {
 type Snapshot struct {
 	Hazards     []Hazard
 	Weather     []InfoEntry
+	Info        []InfoEntry
 	ActiveCount int
 	InfoCount   int
 	Router      map[string]RouterStatus
@@ -304,6 +309,17 @@ func (s *State) Snapshot() Snapshot {
 			return ka < kb
 		}
 		return a.After(b)
+	})
+
+	// All informational entries (including weather) for the generic info
+	// consumers such as the aircraft layer; newest first.
+	snap.Info = make([]InfoEntry, 0, len(s.infoByKey))
+	for _, e := range s.infoByKey {
+		e.Payload = append(json.RawMessage(nil), e.Payload...)
+		snap.Info = append(snap.Info, e)
+	}
+	sort.Slice(snap.Info, func(i, j int) bool {
+		return snap.Info[i].ReceivedAt.After(snap.Info[j].ReceivedAt)
 	})
 	s.mu.Unlock()
 	return snap

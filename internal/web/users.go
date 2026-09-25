@@ -118,7 +118,7 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 // edit_id turns the request into an update.
 func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -176,7 +176,7 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 // handleUserDelete removes a regular user. The admin row is protected.
 func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -201,7 +201,7 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 // on the users page. Empty selection clears all groups.
 func (s *Server) handleUserGroups(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

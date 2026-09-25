@@ -48,22 +48,23 @@ type RouterStatuses interface {
 
 // Server is the HTTP layer of the merged application.
 type Server struct {
-	cfg       config.Web
-	st        *state.State
-	receivers *mqttreceiver.Manager
-	pub       composePublisher
-	router    RouterStatuses
-	actions   *action.Manager
-	aprs      *aprs.Hub
-	ingress   *dispatch.Ingress
-	users     storage.DirectoryStore
-	logger    *slog.Logger
-	sessions  *sessionStore
-	logs      *LogBuffer
-	traffic   *mqttreceiver.TrafficBuffer
-	auditLog  *AuditBuffer
-	trails    *trail.Recorder
-	metrics   *metrics.Registry
+	cfg          config.Web
+	st           *state.State
+	receivers    *mqttreceiver.Manager
+	pub          composePublisher
+	router       RouterStatuses
+	actions      *action.Manager
+	aprs         *aprs.Hub
+	ingress      *dispatch.Ingress
+	users        storage.DirectoryStore
+	logger       *slog.Logger
+	sessions     *sessionStore
+	loginLimiter *loginLimiter
+	logs         *LogBuffer
+	traffic      *mqttreceiver.TrafficBuffer
+	auditLog     *AuditBuffer
+	trails       *trail.Recorder
+	metrics      *metrics.Registry
 
 	// ingest maps each configured public ingest endpoint id to its
 	// API-key-protected handler (may be empty).
@@ -123,28 +124,29 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	}
 
 	s := &Server{
-		cfg:       cfg,
-		st:        st,
-		receivers: receivers,
-		pub:       pub,
-		router:    router,
-		actions:   actions,
-		aprs:      aprsHub,
-		ingress:   ingress,
-		users:     users,
-		logger:    logger,
-		sessions:  newSessionStore(cfg.Auth.SecureCookie),
-		logs:      logs,
-		traffic:   traffic,
-		auditLog:  NewAuditBuffer(DefaultAuditEntries),
-		trails:    trails,
-		metrics:   metricsReg,
-		version:   version,
-		commit:    commit,
-		startedAt: time.Now(),
-		tmpl:      tmpl,
-		mux:       http.NewServeMux(),
-		ingest:    ingest,
+		cfg:          cfg,
+		st:           st,
+		receivers:    receivers,
+		pub:          pub,
+		router:       router,
+		actions:      actions,
+		aprs:         aprsHub,
+		ingress:      ingress,
+		users:        users,
+		logger:       logger,
+		sessions:     newSessionStore(cfg.Auth.SecureCookie),
+		loginLimiter: newLoginLimiter(),
+		logs:         logs,
+		traffic:      traffic,
+		auditLog:     NewAuditBuffer(DefaultAuditEntries),
+		trails:       trails,
+		metrics:      metricsReg,
+		version:      version,
+		commit:       commit,
+		startedAt:    time.Now(),
+		tmpl:         tmpl,
+		mux:          http.NewServeMux(),
+		ingest:       ingest,
 	}
 
 	static, err := fs.Sub(staticFS, "static")
@@ -153,8 +155,13 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	}
 	s.routes(http.FileServerFS(static))
 	s.httpSrv = &http.Server{
-		Handler:           s.mux,
+		Handler:           securityHeaders(s.mux),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Slowloris / connection-exhaustion bounds: the UI has no long
+		// polls, so modest read/write/idle limits are safe.
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	return s, nil
 }
@@ -515,4 +522,20 @@ func templateFuncs() template.FuncMap {
 		},
 		"add": func(a, b int) int { return a + b },
 	}
+}
+
+// securityHeaders applies defense-in-depth response headers to every web
+// response. A strict Content-Security-Policy is deliberately NOT set: the
+// map stack (Leaflet, MapLibre GL blob workers, tile CDNs) requires
+// inline styles and blob workers, and a policy without a full map-stack
+// audit would break rendering.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		next.ServeHTTP(w, r)
+	})
 }

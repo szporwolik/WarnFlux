@@ -160,7 +160,7 @@ func (s *Server) handleComposePage(w http.ResponseWriter, r *http.Request) {
 // explicit expire action).
 func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -244,7 +244,7 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 // publishing an empty retained payload on its topic.
 func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || r.PostFormValue("csrf") == "" || r.PostFormValue("csrf") != sess.csrf {
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

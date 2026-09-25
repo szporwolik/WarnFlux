@@ -49,14 +49,11 @@
 
         <div class="account-section">
           <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>Password</h3>
+          <p class="page-info">Leave empty to keep the current password. The role is managed by an administrator.</p>
           <div class="account-grid">
-            <label class="field">
+            <label class="field field-wide">
               <span>New password</span>
               <input type="password" name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one">
-            </label>
-            <label class="field">
-              <span>Role</span>
-              <input type="text" value="{{roleLabel .Role}}" disabled>
             </label>
           </div>
         </div>

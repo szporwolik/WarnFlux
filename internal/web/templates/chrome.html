@@ -10,11 +10,27 @@
       <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
       <svg class="icon ico-moon" aria-hidden="true"><use href="/static/icons.svg#i-moon"></use></svg>
     </button>
-    <span class="avatar" title="{{.Username}}">{{initials .Username}}</span>
-    <form method="post" action="/logout" class="logout">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <button type="submit" class="btn-ghost"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-box-arrow-right"></use></svg><span class="logout-label">Sign out</span></button>
-    </form>
+    <div class="user-menu">
+      <button type="button" class="user-menu-btn" id="user-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Account menu" title="Account menu">
+        <span class="avatar">{{initials .Username}}</span>
+        <svg class="icon user-menu-chevron" aria-hidden="true"><use href="/static/icons.svg#i-chevron-down"></use></svg>
+      </button>
+      <div class="user-menu-panel" id="user-menu-panel" role="menu" hidden>
+        <div class="user-menu-head">
+          <span class="avatar avatar-lg">{{initials .Username}}</span>
+          <span class="user-menu-id">
+            <strong>{{.Username}}</strong>
+            <span class="muted">{{roleLabel .Role}}</span>
+          </span>
+        </div>
+        <a class="user-menu-item" role="menuitem" href="/account"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Account</a>
+        <a class="user-menu-item" role="menuitem" href="/" title="Public page"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>Public page</a>
+        <form method="post" action="/logout" class="user-menu-logout">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <button type="submit" class="user-menu-item" role="menuitem"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-box-arrow-right"></use></svg>Sign out</button>
+        </form>
+      </div>
+    </div>
   </header>
 {{end}}
 
@@ -28,7 +44,6 @@
     <nav class="sidenav">
       {{if eq .Role "admin"}}<a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>{{end}}
       {{if ne .Role "member"}}<a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">Compose</span></a>{{end}}
-      {{if ne .Role "admin"}}<a class="nav-item{{if .NavAccount}} active{{end}}" href="/account"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">Account</span></a>{{end}}
       {{if eq .Role "admin"}}
       <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">Notifications</span></a>
       <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">Health</span></a>

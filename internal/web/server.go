@@ -366,6 +366,19 @@ func templateFuncs() template.FuncMap {
 			}
 			return strings.ToUpper(string([]rune(s)[0]))
 		},
+		// roleLabel renders a session role for the user menu.
+		"roleLabel": func(role string) string {
+			switch role {
+			case "admin":
+				return "Administrator"
+			case "emcom":
+				return "Emergency communicator"
+			case "member":
+				return "Member"
+			default:
+				return "Recipient"
+			}
+		},
 		// shortCommit trims full hashes for display (links keep the
 		// full hash; cache-busting query strings must too).
 		"shortCommit": func(s string) string {

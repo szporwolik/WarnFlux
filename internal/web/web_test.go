@@ -1219,8 +1219,8 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `<span class="nav-label">Compose</span>`) {
 		t.Error("compose page missing Compose nav entry")
 	}
-	if !strings.Contains(html, `<span class="nav-label">Account</span>`) {
-		t.Error("emcom must see the Account nav entry")
+	if !strings.Contains(html, `href="/account"`) {
+		t.Error("emcom must see the Account entry in the user menu")
 	}
 	for _, forbidden := range []string{"Dashboard", "Users", "Groups", "Notifications"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
@@ -1265,8 +1265,11 @@ func TestMemberRoleFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /account as member = %d", resp.StatusCode)
 	}
-	if !strings.Contains(html, `<span class="nav-label">Account</span>`) {
-		t.Error("account page missing Account nav entry")
+	if !strings.Contains(html, `href="/account"`) {
+		t.Error("account page missing the Account entry in the user menu")
+	}
+	if !strings.Contains(html, `id="user-menu-panel"`) {
+		t.Error("account page missing the user menu panel")
 	}
 	if !strings.Contains(html, `name="phone"`) || !strings.Contains(html, `name="email"`) {
 		t.Error("account page missing the self-service contact form")

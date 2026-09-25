@@ -53,6 +53,16 @@ type HubConfig struct {
 	CenterLon float64
 	// RadiusKM is the "nearby" radius around our position.
 	RadiusKM float64
+	// AreaLatitude/AreaLongitude optionally pin the operational-area
+	// center (the territory we serve) independently of the antenna
+	// position; must be set together.
+	AreaLatitude  *float64
+	AreaLongitude *float64
+	// AreaRadiusKM is the operational-area radius (0 = RadiusKM).
+	AreaRadiusKM float64
+	// AreaLat/AreaLon are the resolved area center (computed).
+	AreaLat float64
+	AreaLon float64
 	// StationTTL is how long a station remains in the retained MQTT
 	// state after its last packet.
 	StationTTL time.Duration

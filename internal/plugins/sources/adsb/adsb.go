@@ -46,7 +46,7 @@ type Config struct {
 	// position, so the coverage follows the configured radius).
 	Latitude  *float64 `yaml:"latitude"`
 	Longitude *float64 `yaml:"longitude"`
-	// RadiusKM overrides the area radius (default: the APRS hub radius).
+	// RadiusKM overrides the area radius (default: the APRS hub area radius).
 	RadiusKM float64 `yaml:"radius_km"`
 	// PollInterval bounds one poll cycle. adsb.lol rate-limits anonymous
 	// clients, so keep it polite (30s is the safe default; the plugin
@@ -106,7 +106,7 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 	if hub == nil || !hub.Enabled() {
 		return nil, fmt.Errorf("adsb: the APRS hub is disabled (set aprs.enabled: true) — the area of interest comes from the hub")
 	}
-	centerLat, centerLon := hub.CenterLat(), hub.CenterLon()
+	centerLat, centerLon := hub.AreaLat(), hub.AreaLon()
 	if cfg.Latitude != nil || cfg.Longitude != nil {
 		if cfg.Latitude == nil || cfg.Longitude == nil {
 			return nil, fmt.Errorf("adsb: latitude and longitude must be set together")
@@ -118,7 +118,7 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 	}
 	radius := cfg.RadiusKM
 	if radius == 0 {
-		radius = hub.RadiusKM()
+		radius = hub.AreaRadius()
 	}
 	if radius < 1 || radius > maxRadiusKm {
 		return nil, fmt.Errorf("adsb: radius_km must be between 1 and %d, got %v", maxRadiusKm, radius)

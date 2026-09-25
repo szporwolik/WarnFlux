@@ -155,6 +155,15 @@ type APRSConfig struct {
 	Longitude *float64
 	// RadiusKM is the "nearby" radius around our position.
 	RadiusKM float64
+	// AreaLatitude/AreaLongitude optionally pin the OPERATIONAL AREA
+	// center (the territory we serve) independently of the antenna
+	// position. When set, the home-map range circle, the geo-scoped
+	// sources (gddkia, gios, adsb) and the compose map picker center on
+	// this point; empty = the station position. Must be set together.
+	AreaLatitude  *float64
+	AreaLongitude *float64
+	// AreaRadiusKM is the operational-area radius; 0 = RadiusKM.
+	AreaRadiusKM float64
 	// StationTTL is how long a station stays in the retained MQTT state
 	// after its last packet.
 	StationTTL time.Duration

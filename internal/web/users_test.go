@@ -382,6 +382,27 @@ func (f *fakeUsers) GroupRecipientAPRS(groupID int64) ([]string, error) {
 	return out, nil
 }
 
+// GroupRecipientDiscord returns the distinct Discord handles of the
+// group's members (minus users who opted out of the discord channel),
+// sorted.
+func (f *fakeUsers) GroupRecipientDiscord(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := make(map[string]bool)
+	var out []string
+	for _, u := range f.rows {
+		if !f.membership[u.ID][groupID] || f.channelOpts[u.ID]["discord"] || u.Discord == "" {
+			continue
+		}
+		if !seen[u.Discord] {
+			seen[u.Discord] = true
+			out = append(out, u.Discord)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func sortUsers(rows []storage.User) {
 	for i := 1; i < len(rows); i++ {
 		for j := i; j > 0 && userBefore(rows[j], rows[j-1]); j-- {

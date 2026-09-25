@@ -18,12 +18,13 @@ import (
 )
 
 type fakeStore struct {
-	mu      sync.Mutex
-	rules   []storage.GroupRouting
-	bcc     map[int64][]string
-	aprsBcc map[int64][]string
-	claimed map[string]bool // group|action|dedupKey -> already delivered
-	err     error
+	mu         sync.Mutex
+	rules      []storage.GroupRouting
+	bcc        map[int64][]string
+	aprsBcc    map[int64][]string
+	discordBcc map[int64][]string
+	claimed    map[string]bool // group|action|dedupKey -> already delivered
+	err        error
 }
 
 func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
@@ -47,6 +48,12 @@ func (f *fakeStore) GroupRecipientAPRS(groupID int64) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.aprsBcc[groupID]...), f.err
+}
+
+func (f *fakeStore) GroupRecipientDiscord(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.discordBcc[groupID]...), f.err
 }
 
 func (f *fakeStore) ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error) {
@@ -91,11 +98,12 @@ func asnSrc(source, id, severity string) storage.ChannelAssignment {
 }
 
 type fakeActions struct {
-	mu    sync.Mutex
-	got   map[string][]string // actionID -> event keys
-	bccs  [][]string          // one Bcc list per submission, in order
-	aprss [][]string          // one APRSCallsigns list per submission, in order
-	err   error
+	mu       sync.Mutex
+	got      map[string][]string // actionID -> event keys
+	bccs     [][]string          // one Bcc list per submission, in order
+	aprss    [][]string          // one APRSCallsigns list per submission, in order
+	discords [][]string          // one DiscordHandles list per submission, in order
+	err      error
 }
 
 func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
@@ -107,6 +115,7 @@ func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
 	f.got[id] = append(f.got[id], req.Event.Hazard.Key)
 	f.bccs = append(f.bccs, append([]string(nil), req.Bcc...))
 	f.aprss = append(f.aprss, append([]string(nil), req.APRSCallsigns...))
+	f.discords = append(f.discords, append([]string(nil), req.DiscordHandles...))
 	return f.err
 }
 
@@ -392,6 +401,40 @@ func TestEngineUnrankedSeverityMatchesOnlyPermissive(t *testing.T) {
 		defer acts.mu.Unlock()
 		return len(acts.got["log"]) == 1
 	}, "permissive action fired once")
+}
+
+// TestEnginePassesGroupDiscordHandles pins the Discord part of the
+// recipient plumbing: the engine hands each group's subscribed members'
+// handles to the action request.
+func TestEnginePassesGroupDiscordHandles(t *testing.T) {
+	store := &fakeStore{
+		rules: []storage.GroupRouting{
+			{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("discord", "unknown")}},
+		},
+		discordBcc: map[int64][]string{
+			1: {"alice#1234", "@bob"},
+		},
+	}
+	acts := &fakeActions{}
+	_, feed := startEngine(t, store, acts)
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+
+	waitFor(t, func() bool {
+		acts.mu.Lock()
+		defer acts.mu.Unlock()
+		return len(acts.got["discord"]) == 1
+	}, "discord action fired")
+
+	acts.mu.Lock()
+	var handles []string
+	for _, ds := range acts.discords {
+		handles = append(handles, ds...)
+	}
+	acts.mu.Unlock()
+	if len(handles) != 2 || handles[0] != "alice#1234" || handles[1] != "@bob" {
+		t.Errorf("discord handles = %v, want [alice#1234 @bob]", handles)
+	}
 }
 
 func TestEnginePassesGroupRecipientsAsBcc(t *testing.T) {

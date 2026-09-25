@@ -140,6 +140,10 @@ type GroupStore interface {
 	// registered for the group's members, sorted. The rule engine hands
 	// them to APRS-capable actions.
 	GroupRecipientAPRS(groupID int64) ([]string, error)
+	// GroupRecipientDiscord returns the distinct non-empty Discord
+	// handles of the group's members, sorted. The rule engine hands them
+	// to Discord-capable actions.
+	GroupRecipientDiscord(groupID int64) ([]string, error)
 }
 
 // DirectoryStore combines the user and group administration stores; the

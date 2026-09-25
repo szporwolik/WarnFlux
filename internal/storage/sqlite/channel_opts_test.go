@@ -120,11 +120,11 @@ func TestUserChannelOptOuts(t *testing.T) {
 	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
 	}
-	ada, err := store.CreateUser("ada", "", "ada@example.com", "", "", "")
+	ada, err := store.CreateUser("ada", "", "ada@example.com", "ada#1111", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bea, err := store.CreateUser("bea", "", "bea@example.com", "", "", "")
+	bea, err := store.CreateUser("bea", "", "bea@example.com", "bea#2222", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,8 +156,12 @@ func TestUserChannelOptOuts(t *testing.T) {
 	if calls, err := store.GroupRecipientAPRS(g.ID); err != nil || len(calls) != 2 {
 		t.Fatalf("default callsigns = %v, %v", calls, err)
 	}
+	if handles, err := store.GroupRecipientDiscord(g.ID); err != nil || len(handles) != 2 {
+		t.Fatalf("default discord handles = %v, %v", handles, err)
+	}
 
-	// Opt ada out of smtp only: email list drops her, APRS still gets her.
+	// Opt ada out of smtp only: email list drops her, APRS and Discord
+	// still reach her.
 	if err := store.SetUserChannelOptOuts(ada.ID, []string{"smtp"}); err != nil {
 		t.Fatalf("SetUserChannelOptOuts: %v", err)
 	}
@@ -178,6 +182,25 @@ func TestUserChannelOptOuts(t *testing.T) {
 	}
 	if len(calls) != 2 {
 		t.Fatalf("callsigns after smtp opt-out = %v, want both members", calls)
+	}
+	handles, err := store.GroupRecipientDiscord(g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 2 {
+		t.Fatalf("discord handles after smtp opt-out = %v, want both members", handles)
+	}
+
+	// Opt ada out of discord: the handle list drops her only.
+	if err := store.SetUserChannelOptOuts(ada.ID, []string{"discord"}); err != nil {
+		t.Fatalf("SetUserChannelOptOuts discord: %v", err)
+	}
+	handles, err = store.GroupRecipientDiscord(g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 1 || handles[0] != "bea#2222" {
+		t.Fatalf("discord handles after discord opt-out = %v, want [bea#2222]", handles)
 	}
 
 	// Opt ada out of aprs as well: both lists drop her.

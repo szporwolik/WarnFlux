@@ -246,3 +246,47 @@ func TestGroupRecipientEmails(t *testing.T) {
 		t.Fatalf("recipients = %v, want [ada@example.com cya@example.com]", got)
 	}
 }
+
+// TestGroupRecipientDiscord mirrors the email test for Discord handles:
+// sorted, distinct, non-empty, and never an error for missing groups.
+func TestGroupRecipientDiscord(t *testing.T) {
+	store := newRoutingStore(t)
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	got, err := store.GroupRecipientDiscord(g.ID)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty group handles = %v, %v", got, err)
+	}
+	got, err = store.GroupRecipientDiscord(999)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("missing group handles = %v, %v", got, err)
+	}
+
+	users := []struct{ name, handle string }{
+		{"ada", "ada#1234"},
+		{"bea", ""},
+		{"cya", "@cya"},
+		{"dea", "ADA#1234"},
+	}
+	for _, u := range users {
+		u2, err := store.CreateUser(u.name, "", "", u.handle, "", "")
+		if err != nil {
+			t.Fatalf("CreateUser %s: %v", u.name, err)
+		}
+		if err := store.SetUserGroups(u2.ID, []int64{g.ID}); err != nil {
+			t.Fatalf("SetUserGroups %s: %v", u.name, err)
+		}
+	}
+
+	got, err = store.GroupRecipientDiscord(g.ID)
+	if err != nil {
+		t.Fatalf("handles: %v", err)
+	}
+	// Sorted, distinct (case-insensitive), non-empty: @cya + ada only.
+	if len(got) != 2 || got[0] != "@cya" || got[1] != "ada#1234" {
+		t.Fatalf("handles = %v, want [@cya ada#1234]", got)
+	}
+}

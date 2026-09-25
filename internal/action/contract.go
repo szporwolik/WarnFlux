@@ -55,6 +55,11 @@ type ActionRequest struct {
 	// callsigns (with -SSID). It is populated by the rule engine and is
 	// used by APRS-capable actions to address outbound messages.
 	APRSCallsigns []string
+	// DiscordHandles carries the matched group's members' registered
+	// Discord handles (their account contact field). It is populated by
+	// the rule engine and used by Discord-capable actions to address
+	// outbound messages.
+	DiscordHandles []string
 	// App identifies the running application (version, domain, repo);
 	// populated by the rule engine.
 	App AppInfo

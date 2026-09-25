@@ -250,3 +250,37 @@ func (s *Store) GroupRecipientEmails(groupID int64) ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// GroupRecipientDiscord returns the distinct (case-insensitive),
+// non-empty Discord handles of the group's members, sorted. Missing
+// groups yield an empty list.
+func (s *Store) GroupRecipientDiscord(groupID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT u.discord
+		FROM users u
+		JOIN user_groups ug ON ug.user_id = u.id
+		WHERE ug.group_id = ? AND u.discord <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM user_channel_opts uco
+			WHERE uco.user_id = u.id AND uco.channel = 'discord')
+		ORDER BY u.discord COLLATE NOCASE ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d discord recipients: %w", groupID, err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	var out []string
+	for rows.Next() {
+		var handle string
+		if err := rows.Scan(&handle); err != nil {
+			return nil, fmt.Errorf("scan group %d discord recipient: %w", groupID, err)
+		}
+		key := strings.ToLower(handle)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, handle)
+	}
+	return out, rows.Err()
+}

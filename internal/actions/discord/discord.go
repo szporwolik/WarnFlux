@@ -158,6 +158,9 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 	default:
 		text = fmt.Sprintf("[%s] WarnFlux notification", prefix)
 	}
+	if len(req.DiscordHandles) > 0 {
+		text += "\nFor: " + strings.Join(req.DiscordHandles, ", ")
+	}
 	return truncateRunes(text, maxContentRunes)
 }
 

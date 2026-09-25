@@ -1304,6 +1304,133 @@ func TestAdminAccountPageKeepsAdminNav(t *testing.T) {
 	}
 }
 
+// TestRouteAuthorizationMatrix pins server-side route protection: hiding
+// links in the UI is cosmetic — every protected route must reject
+// unauthorized sessions at the middleware level, for GET and POST alike.
+func TestRouteAuthorizationMatrix(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("member1", "", "", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.users.CreateUser("ops1", "", "", "", "emcom", "password123"); err != nil {
+		t.Fatal(err)
+	}
+
+	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications"}
+	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications", "/partials/health"}
+	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions"}
+	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing"}
+
+	loginAs := func(user, pass string) {
+		t.Helper()
+		_, html := env.get("/login")
+		form := url.Values{"csrf": {extractCSRF(t, html)}, "username": {user}, "password": {pass}}
+		resp, _ := env.postForm("/login", form)
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("login %s = %d, want 303", user, resp.StatusCode)
+		}
+	}
+
+	// Unauthenticated: pages redirect to /login, partials answer 401 and
+	// POSTs are blocked before any handler runs.
+	for _, p := range adminPages {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+			t.Errorf("unauthenticated GET %s = %d %q, want 303 /login", p, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	for _, p := range append(append([]string{}, adminPartials...), sharedPartials...) {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("unauthenticated GET %s = %d, want 401", p, resp.StatusCode)
+		}
+	}
+	for _, p := range adminPosts {
+		resp, _ := env.postForm(p, nil)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+			t.Errorf("unauthenticated POST %s = %d %q, want 303 /login", p, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	if resp, _ := env.get("/compose"); resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("unauthenticated GET /compose = %d, want 303", resp.StatusCode)
+	}
+	if resp, _ := env.get("/dashboard"); resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("unauthenticated GET /dashboard = %d, want 303", resp.StatusCode)
+	}
+	if resp, _ := env.get("/account"); resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("unauthenticated GET /account = %d, want 303", resp.StatusCode)
+	}
+
+	// Member: admin pages bounce to the dashboard, admin partials answer
+	// 401, admin POSTs bounce, compose bounces; shared surfaces work.
+	loginAs("member1", "password123")
+	for _, p := range adminPages {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+			t.Errorf("member GET %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	for _, p := range adminPartials {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("member GET %s = %d, want 401", p, resp.StatusCode)
+		}
+	}
+	for _, p := range adminPosts {
+		resp, _ := env.postForm(p, nil)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+			t.Errorf("member POST %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	for _, p := range []string{"/compose"} {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+			t.Errorf("member GET %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	for _, p := range append(sharedPartials, "/dashboard", "/account") {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("member GET %s = %d, want 200", p, resp.StatusCode)
+		}
+	}
+
+	// Emcom: same admin walls; compose opens.
+	env.logout()
+	loginAs("ops1", "password123")
+	for _, p := range adminPages {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+			t.Errorf("emcom GET %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	for _, p := range adminPartials {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("emcom GET %s = %d, want 401", p, resp.StatusCode)
+		}
+	}
+	for _, p := range adminPosts {
+		resp, _ := env.postForm(p, nil)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+			t.Errorf("emcom POST %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	if resp, _ := env.get("/compose"); resp.StatusCode != http.StatusOK {
+		t.Errorf("emcom GET /compose = %d, want 200", resp.StatusCode)
+	}
+
+	// Admin: everything listed above opens.
+	env.logout()
+	env.login()
+	for _, p := range append(append(append([]string{}, adminPages...), adminPartials...), sharedPartials...) {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("admin GET %s = %d, want 200", p, resp.StatusCode)
+		}
+	}
+}
+
 // TestMemberRoleFlow pins the self-service member role: a member signs in
 // with their own password, lands on the shared dashboard, sees only the
 // Dashboard nav entry, and is redirected away from compose and every admin
@@ -1436,6 +1563,17 @@ func extractCSRF(t *testing.T, html string) string {
 		t.Fatalf("csrf field not found in: %s", html)
 	}
 	return m[1]
+}
+
+// logout ends the current session (the CSRF token comes from any rendered
+// page that embeds it, e.g. the dashboard).
+func (e *testEnv) logout() {
+	e.t.Helper()
+	_, html := e.get("/dashboard")
+	resp, _ := e.postForm("/logout", url.Values{"csrf": {extractCSRF(e.t, html)}})
+	if resp.StatusCode != http.StatusSeeOther {
+		e.t.Fatalf("logout = %d", resp.StatusCode)
+	}
 }
 
 func (e *testEnv) login() string {

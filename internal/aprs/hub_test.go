@@ -100,6 +100,48 @@ func testPacket(line string) Packet {
 	return ParseFeedLine(line, time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC))
 }
 
+// TestHubOperationalArea pins the territory/area resolution: the area
+// defaults to the station position and radius, an explicit territory
+// center moves the map circle and geo sources without moving the station,
+// and a lone coordinate is rejected.
+func TestHubOperationalArea(t *testing.T) {
+	lat, lon := 50.05, 20.1
+	hub, err := NewHub(HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: 30, Latitude: &lat, Longitude: &lon,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hub.AreaLat() != 50.05 || hub.AreaLon() != 20.1 || hub.AreaRadius() != 30 {
+		t.Fatalf("area defaults = (%v,%v) r=%v, want station position with radius", hub.AreaLat(), hub.AreaLon(), hub.AreaRadius())
+	}
+
+	alat, alon := 50.2, 19.9
+	hub, err = NewHub(HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: 30, Latitude: &lat, Longitude: &lon,
+		AreaLatitude: &alat, AreaLongitude: &alon, AreaRadiusKM: 55,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hub.AreaLat() != 50.2 || hub.AreaLon() != 19.9 || hub.AreaRadius() != 55 {
+		t.Fatalf("area override = (%v,%v) r=%v, want the territory values", hub.AreaLat(), hub.AreaLon(), hub.AreaRadius())
+	}
+	if hub.CenterLat() != 50.05 || hub.CenterLon() != 20.1 || hub.RadiusKM() != 30 {
+		t.Fatalf("station must keep its own position: (%v,%v) r=%v", hub.CenterLat(), hub.CenterLon(), hub.RadiusKM())
+	}
+
+	// A lone area coordinate is a configuration error.
+	if _, err := NewHub(HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: 30, AreaLatitude: &alat,
+	}, nil); err == nil {
+		t.Fatal("area_latitude without area_longitude accepted")
+	}
+}
+
 // TestHubOwnPositionLearnedFromBeacon verifies that a position packet from
 // our own callsign (e.g. the Direwolf PBEACON) moves the own-position
 // locator away from the gridsquare center.

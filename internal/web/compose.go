@@ -608,10 +608,10 @@ func (s *Server) buildComposeView(form composeForm) composeView {
 		Statuses:    composeStatuses,
 		NavCompose:  true,
 	}
-	// The map picker centers on the APRS hub position (the geographic
-	// master of this installation).
+	// The map picker centers on the operational area (the territory we
+	// serve); 0 = no picker (APRS hub disabled).
 	if s.aprs != nil && s.aprs.Enabled() {
-		view.AprsLat, view.AprsLon = s.aprs.CenterLat(), s.aprs.CenterLon()
+		view.AprsLat, view.AprsLon = s.aprs.AreaLat(), s.aprs.AreaLon()
 	}
 	return view
 }

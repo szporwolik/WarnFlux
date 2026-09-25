@@ -187,11 +187,14 @@ func (s *Server) buildHomeView() homeView {
 
 	if s.aprs != nil && s.aprs.Enabled() {
 		v.AprsEnabled = true
-		v.AprsCenterLat = s.aprs.CenterLat()
-		v.AprsCenterLon = s.aprs.CenterLon()
+		// The map centers and the range circle follow the OPERATIONAL
+		// AREA (config territory center/radius); the station locator dot
+		// stays at the antenna position.
+		v.AprsCenterLat = s.aprs.AreaLat()
+		v.AprsCenterLon = s.aprs.AreaLon()
 		v.AprsOwnLat = s.aprs.OwnLat()
 		v.AprsOwnLon = s.aprs.OwnLon()
-		v.AprsRadiusKM = s.aprs.RadiusKM()
+		v.AprsRadiusKM = s.aprs.AreaRadius()
 		v.AprsCallsign = s.aprs.Callsign()
 	}
 	return v

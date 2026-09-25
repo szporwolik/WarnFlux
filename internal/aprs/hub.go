@@ -191,6 +191,22 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 		if cfg.RadiusKM < 1 || cfg.RadiusKM > 1000 {
 			return nil, fmt.Errorf("aprs: radius_km must be between 1 and 1000, got %v", cfg.RadiusKM)
 		}
+		// Operational area: defaults to the station position/radius; an
+		// explicit territory center overrides the map circle and the
+		// geo-scoped sources without moving the station itself.
+		cfg.AreaLat, cfg.AreaLon = cfg.CenterLat, cfg.CenterLon
+		if cfg.AreaLatitude != nil || cfg.AreaLongitude != nil {
+			if cfg.AreaLatitude == nil || cfg.AreaLongitude == nil {
+				return nil, fmt.Errorf("aprs: area_latitude and area_longitude must be set together")
+			}
+			cfg.AreaLat, cfg.AreaLon = *cfg.AreaLatitude, *cfg.AreaLongitude
+		}
+		if cfg.AreaRadiusKM == 0 {
+			cfg.AreaRadiusKM = cfg.RadiusKM
+		}
+		if cfg.AreaRadiusKM < 1 || cfg.AreaRadiusKM > 1000 {
+			return nil, fmt.Errorf("aprs: area_radius_km must be between 1 and 1000, got %v", cfg.AreaRadiusKM)
+		}
 		if cfg.StationTTL < time.Minute || cfg.StationTTL > 24*time.Hour {
 			return nil, fmt.Errorf("aprs: station_ttl must be between 1m and 24h, got %s", cfg.StationTTL)
 		}
@@ -257,6 +273,15 @@ func (h *Hub) OwnLon() float64 {
 
 // RadiusKM returns the configured nearby radius.
 func (h *Hub) RadiusKM() float64 { return h.cfg.RadiusKM }
+
+// AreaLat/AreaLon return the operational-area center: the explicit
+// area_latitude/area_longitude when set, otherwise the station position.
+func (h *Hub) AreaLat() float64 { return h.cfg.AreaLat }
+func (h *Hub) AreaLon() float64 { return h.cfg.AreaLon }
+
+// AreaRadius returns the operational-area radius (falls back to the
+// station radius when not configured).
+func (h *Hub) AreaRadius() float64 { return h.cfg.AreaRadiusKM }
 
 // SetSenderGate installs the message-sender allow-list check. The
 // callback receives the BASE callsign (no SSID) of a message sender and

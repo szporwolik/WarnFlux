@@ -45,7 +45,7 @@ type Config struct {
 	// BaseURL is the feed URL (default: the official archiwum endpoint);
 	// tests override it with an httptest server.
 	BaseURL string `yaml:"base_url"`
-	// RadiusKM overrides the geographic radius; 0 = the APRS hub radius.
+	// RadiusKM overrides the area radius; 0 = the APRS hub area radius.
 	RadiusKM float64 `yaml:"radius_km"`
 	// CenterLat/CenterLon override the area center; when unset the
 	// configured APRS station position (aprs.latitude/longitude or the
@@ -99,7 +99,7 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 	}
 	cfg.BaseURL = baseURL
 
-	centerLat, centerLon := hub.CenterLat(), hub.CenterLon()
+	centerLat, centerLon := hub.AreaLat(), hub.AreaLon()
 	if cfg.CenterLat != nil || cfg.CenterLon != nil {
 		if cfg.CenterLat == nil || cfg.CenterLon == nil {
 			return nil, fmt.Errorf("center_latitude and center_longitude must be set together")
@@ -108,7 +108,7 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 	}
 	radius := cfg.RadiusKM
 	if radius == 0 {
-		radius = hub.RadiusKM()
+		radius = hub.AreaRadius()
 	}
 	if radius < 1 || radius > 1000 {
 		return nil, fmt.Errorf("radius_km must be between 1 and 1000, got %v", radius)

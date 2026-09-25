@@ -1760,48 +1760,87 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   margin: 0 0 0.8rem;
 }
 .compose-templates-label { color: var(--muted); font-size: 0.8rem; }
-/* Self-service channel subscriptions on the account page. */
-.account-card { max-width: 760px; align-self: center; width: 100%; }
+/* Self-service account page: profile header, sectioned form, channels. */
+.account-card { max-width: 760px; align-self: center; width: 100%; flex: 0 0 auto; }
 .account-head {
   display: flex;
   align-items: center;
-  gap: 0.9rem;
-  margin-bottom: 0.9rem;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
 }
 .account-head .avatar {
-  width: 46px;
-  height: 46px;
-  font-size: 1.05rem;
+  width: 52px;
+  height: 52px;
+  font-size: 1.15rem;
+  border: 1px solid var(--border);
+  background: var(--surface-hi);
+  color: var(--brand);
 }
-.account-title { margin: 0 0 0.1rem; font-size: 1.25rem; }
-.account-role { color: var(--muted); font-size: 0.82rem; }
-.account-section { margin-top: 1.1rem; }
+.account-title { margin: 0 0 0.15rem; font-size: 1.3rem; font-weight: 600; }
+.account-role {
+  display: inline-block;
+  color: var(--muted);
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.55rem;
+}
+.account-section { margin-top: 1.25rem; }
+.account-section + .account-section {
+  border-top: 1px solid var(--border);
+  padding-top: 1.25rem;
+}
 .account-section > h3 {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin: 0 0 0.4rem;
-  font-size: 0.95rem;
+  margin: 0 0 0.3rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--text);
 }
 .account-section > h3 .icon { color: var(--brand); }
-.account-section > .page-info { margin: 0 0 0.8rem; }
+.account-section > .page-info { margin: 0 0 0.9rem; font-size: 0.8rem; }
 .account-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 0.8rem;
 }
-.account-grid .field { min-width: 0; }
+.account-grid .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.account-grid .field > span { font-size: 0.78rem; font-weight: 500; color: var(--muted); }
+.account-grid .field input {
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.9rem;
+}
+.account-grid .field input:focus {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.account-grid .field-wide { grid-column: 1 / -1; }
 .account-channels-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
-  gap: 0.35rem;
+  gap: 0.4rem;
 }
 .account-channel {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.7rem;
+  gap: 0.55rem;
+  padding: 0.55rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-hi);
@@ -1814,6 +1853,23 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   border-color: var(--focus);
   background: var(--focus-ring);
 }
+.account-channel input[type="checkbox"] {
+  accent-color: var(--brand);
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
+}
+/* Form footer: right-aligned primary action with a hairline separator. */
+.form-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1.5rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+.form-footer .btn-primary { width: auto; padding: 0.5rem 1.6rem; }
 .hw-attrib {
   margin: 0.9rem 0 0;
   color: var(--muted);

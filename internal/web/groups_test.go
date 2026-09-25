@@ -75,7 +75,7 @@ func TestUserGroupAssignment(t *testing.T) {
 
 	// Assign alice (ID 2: admin is 1) to both groups.
 	csrf := env.csrfFromPage("/users")
-	resp, _ := env.postForm("/users/2/groups?page=1", url.Values{"csrf": {csrf}, "groups": {"1", "2"}})
+	resp, _ := env.postForm("/users/2/prefs?page=1", url.Values{"csrf": {csrf}, "groups": {"1", "2"}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("assign = %d, want redirect", resp.StatusCode)
 	}
@@ -92,14 +92,14 @@ func TestUserGroupAssignment(t *testing.T) {
 		t.Fatalf("groups listing broken: %s", html)
 	}
 
-	// Clearing: no groups selected removes all chips.
-	resp, _ = env.postForm("/users/2/groups?page=1", url.Values{"csrf": {csrf}})
+	// Clearing: no groups selected removes alice's chips.
+	resp, _ = env.postForm("/users/2/prefs?page=1", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("clear = %d, want redirect", resp.StatusCode)
 	}
 	_, html = env.get("/users")
-	if strings.Contains(html, "group-chip") {
-		t.Fatalf("chips still present after clearing: %s", html)
+	if strings.Contains(html, `class="group-chip">ops</span>`) || strings.Contains(html, `class="group-chip">news</span>`) {
+		t.Fatalf("group chips still present after clearing: %s", html)
 	}
 }
 

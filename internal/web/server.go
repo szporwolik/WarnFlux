@@ -230,7 +230,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /users", s.requireAdmin(s.handleUsersPage))
 	s.mux.Handle("POST /users", s.requireAdmin(s.handleUserSave))
 	s.mux.Handle("POST /users/{id}/delete", s.requireAdmin(s.handleUserDelete))
-	s.mux.Handle("POST /users/{id}/groups", s.requireAdmin(s.handleUserGroups))
+	s.mux.Handle("POST /users/{id}/prefs", s.requireAdmin(s.handleUserPrefs))
 	s.mux.Handle("GET /groups", s.requireAdmin(s.handleGroupsPage))
 	s.mux.Handle("POST /groups", s.requireAdmin(s.handleGroupSave))
 	s.mux.Handle("POST /groups/{id}/delete", s.requireAdmin(s.handleGroupDelete))

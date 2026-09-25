@@ -50,14 +50,20 @@
               <td>
                 <div class="groups-cell">
                 {{range $u.GroupNames}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}
+                {{range $u.ChannelNames}}<span class="group-chip chan-chip">{{.}}</span>{{end}}
                 <details class="group-picker">
-                  <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Groups</summary>
-                  <form method="post" action="/users/{{$u.ID}}/groups?page={{$.Page}}" class="group-form">
+                  <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Prefs</summary>
+                  <form method="post" action="/users/{{$u.ID}}/prefs?page={{$.Page}}" class="group-form">
                     <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                    <span class="group-form-label">Groups</span>
                     {{range $.Groups}}
                     <label class="group-opt"><input type="checkbox" name="groups" value="{{.ID}}"{{if index $u.GroupSet .ID}} checked{{end}}> {{.Name}}</label>
                     {{else}}
                     <p class="muted">No groups defined yet — create them on the Groups page.</p>
+                    {{end}}
+                    <span class="group-form-label">Delivery channels</span>
+                    {{range $.Channels}}
+                    <label class="group-opt"><input type="checkbox" name="channels" value="{{.Kind}}"{{if index $u.ChannelSet .Kind}} checked{{end}}> {{.Label}}</label>
                     {{end}}
                     <button type="submit" class="btn-primary btn-small">Save</button>
                   </form>

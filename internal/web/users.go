@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/notify"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -31,6 +32,8 @@ type userRow struct {
 	Role          string
 	GroupNames    []string
 	GroupSet      map[int64]bool
+	ChannelNames  []string
+	ChannelSet    map[string]bool
 	APRSCallsigns []string
 	APRSJoin      string
 	UpdatedAt     time.Time
@@ -66,9 +69,13 @@ type usersView struct {
 
 	Users  []userRow
 	Groups []storage.Group
-	Form   userForm
-	EditID int64
-	Error  string
+	// Channels is the delivery-channel list (same registry as the
+	// self-service account page); admins override per-user opt-outs in
+	// the row preferences popover.
+	Channels []notify.ChannelDef
+	Form     userForm
+	EditID   int64
+	Error    string
 
 	Page, Pages, From, To, Total int
 	HasPrev, HasNext             bool
@@ -196,9 +203,10 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/users", http.StatusSeeOther)
 }
 
-// handleUserGroups replaces one user's group membership from the checkboxes
-// on the users page. Empty selection clears all groups.
-func (s *Server) handleUserGroups(w http.ResponseWriter, r *http.Request) {
+// handleUserPrefs replaces one user's notification preferences: group
+// membership (checked boxes) and delivery-channel opt-outs (checked means
+// enabled). Empty selection clears all groups / disables every channel.
+func (s *Server) handleUserPrefs(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
@@ -218,13 +226,29 @@ func (s *Server) handleUserGroups(w http.ResponseWriter, r *http.Request) {
 		}
 		groupIDs = append(groupIDs, id)
 	}
+	checked := make(map[string]bool)
+	for _, v := range r.PostForm["channels"] {
+		if notify.Known(v) {
+			checked[v] = true
+		}
+	}
+	var optOuts []string
+	for _, c := range notify.Channels {
+		if !checked[c.Kind] {
+			optOuts = append(optOuts, c.Kind)
+		}
+	}
 	if err := s.users.SetUserGroups(userID, groupIDs); err != nil {
 		s.logger.Error("web: set user groups failed", "user", userID, "error", err)
 		http.Error(w, "could not update group membership", http.StatusInternalServerError)
 		return
 	}
-	s.audit(sess.username, "user-groups", strconv.FormatInt(userID, 10)+" groups="+strconv.Itoa(len(groupIDs)))
-	// Return to the same users page.
+	if err := s.users.SetUserChannelOptOuts(userID, optOuts); err != nil {
+		s.logger.Error("web: set user channels failed", "user", userID, "error", err)
+		http.Error(w, "could not update delivery channels", http.StatusInternalServerError)
+		return
+	}
+	s.audit(sess.username, "user-prefs", fmt.Sprintf("%d groups=%d channels=%d", userID, len(groupIDs), len(checked)))
 	page := r.URL.Query().Get("page")
 	if page == "" {
 		page = "1"
@@ -278,6 +302,20 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 				names = append(names, g.Name)
 			}
 		}
+		channelSet := make(map[string]bool, len(notify.Channels))
+		var channelNames []string
+		opts, err := s.users.UserChannelOptOuts(u.ID)
+		if err != nil {
+			s.logger.Error("web: user channel opt-outs failed", "user", u.ID, "error", err)
+			opts = nil
+		}
+		for _, c := range notify.Channels {
+			enabled := !opts[c.Kind]
+			channelSet[c.Kind] = enabled
+			if enabled {
+				channelNames = append(channelNames, c.Label)
+			}
+		}
 		rows = append(rows, userRow{
 			ID:            u.ID,
 			Username:      u.Username,
@@ -288,6 +326,8 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 			Role:          u.Role,
 			GroupNames:    names,
 			GroupSet:      set,
+			ChannelNames:  channelNames,
+			ChannelSet:    channelSet,
 			APRSCallsigns: u.APRSCallsigns,
 			APRSJoin:      strings.Join(u.APRSCallsigns, " "),
 			UpdatedAt:     u.UpdatedAt,
@@ -304,6 +344,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 		RepoURL:  repoURL,
 		Users:    rows,
 		Groups:   groups,
+		Channels: notify.Channels,
 		Form:     form,
 		EditID:   editID,
 		Error:    errMsg,

@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/notify"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -592,6 +594,70 @@ func TestUsersPageListsAdminReadOnly(t *testing.T) {
 	}
 	if strings.Contains(html, "/users/1/delete") {
 		t.Errorf("admin row must not offer delete: %s", html)
+	}
+}
+
+// TestUsersNotificationPrefs pins the admin-side per-user notification
+// override: the row popover posts groups (checked = subscribed) and
+// delivery channels (checked = enabled, everything else is an opt-out).
+func TestUsersNotificationPrefs(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	csrf := env.csrfFromPage("/users")
+
+	group, err := env.users.CreateGroup("hams")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.users.CreateUser("alice", "", "", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+
+	// alice = user 2. Subscribe her to the group and keep only aprs on.
+	resp, _ := env.postForm("/users/2/prefs", url.Values{
+		"csrf":     {csrf},
+		"groups":   {strconv.FormatInt(group.ID, 10)},
+		"channels": {"aprs"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("prefs = %d, want redirect", resp.StatusCode)
+	}
+	ids, err := env.users.GroupIDsForUser(2)
+	if err != nil || len(ids) != 1 || ids[0] != group.ID {
+		t.Fatalf("membership = %v, %v", ids, err)
+	}
+	opts, err := env.users.UserChannelOptOuts(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts["smtp"] || opts["aprs"] {
+		t.Fatalf("channel opt-outs = %v, want smtp disabled and aprs enabled", opts)
+	}
+
+	// The row renders both checked states back (the admin row keeps every
+	// channel on, so count occurrences instead of matching raw substrings).
+	_, html := env.get("/users")
+	if !strings.Contains(html, `name="groups" value="`+strconv.FormatInt(group.ID, 10)+`" checked`) {
+		t.Errorf("users page missing checked group row: %s", html)
+	}
+	if got := strings.Count(html, `name="channels" value="aprs" checked`); got != 2 {
+		t.Errorf("aprs checked rows = %d, want 2 (admin + alice)", got)
+	}
+	if got := strings.Count(html, `name="channels" value="smtp" checked`); got != 1 {
+		t.Errorf("smtp checked rows = %d, want 1 (admin only; alice opted out)", got)
+	}
+
+	// Clearing everything unsubscribes all groups and disables every channel.
+	csrf = env.csrfFromPage("/users")
+	resp, _ = env.postForm("/users/2/prefs", url.Values{"csrf": {csrf}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("clear prefs = %d, want redirect", resp.StatusCode)
+	}
+	if ids, _ := env.users.GroupIDsForUser(2); len(ids) != 0 {
+		t.Fatalf("membership after clear = %v, want empty", ids)
+	}
+	if opts, _ := env.users.UserChannelOptOuts(2); len(opts) != len(notify.Channels) {
+		t.Fatalf("opt-outs after clear = %v, want every channel disabled", opts)
 	}
 }
 

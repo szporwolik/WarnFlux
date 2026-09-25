@@ -30,6 +30,8 @@
   <div class="kv-grid">
     <div class="kv"><span class="k">Version</span><span class="v">{{.Version}} ({{shortCommit .Commit}})</span></div>
     <div class="kv"><span class="k">Uptime</span><span class="v">{{dur .Uptime}}</span></div>
+    <div class="kv"><span class="k">CPU</span><span class="v">{{if .CPUAvail}}<span class="kv-gauge" title="host CPU utilization"><span class="kv-gauge-fill {{.CPUClass}}" style="width: {{printf "%.1f" .CPU}}%"></span></span>{{printf "%.1f" .CPU}}%{{else}}<span class="muted">n/a</span>{{end}}</span></div>
+    <div class="kv"><span class="k">Memory</span><span class="v">{{if .MemAvail}}<span class="kv-gauge" title="host memory utilization"><span class="kv-gauge-fill {{.MemClass}}" style="width: {{printf "%.1f" .Mem}}%"></span></span>{{printf "%.1f" .Mem}}% <span class="muted">({{printf "%.1f" .MemUsed}} / {{printf "%.1f" .MemTotal}} GiB)</span>{{else}}<span class="muted">n/a</span>{{end}}</span></div>
     <div class="kv"><span class="k">Receivers</span><span class="v">{{.Connected}} / {{.Receivers}} connected</span></div>
     <div class="kv"><span class="k">Router status snapshots</span><span class="v">{{.RouterDocs}}</span></div>
     <div class="kv"><span class="k">Dispatch queue</span><span class="v">{{.QueueDepth}} / {{.QueueCap}} ({{.DroppedFull}} dropped)</span></div>

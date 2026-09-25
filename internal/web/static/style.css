@@ -568,6 +568,27 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
 .kv { display: contents; }
 .kv .k { color: var(--muted); }
 .kv .v { font-variant-numeric: tabular-nums; }
+/* Mini utilization gauge inside the System panel (CPU / memory). */
+.kv-gauge {
+  display: inline-block;
+  vertical-align: -1px;
+  width: 4.5rem;
+  height: 6px;
+  margin-right: 0.45rem;
+  border-radius: 999px;
+  background: var(--surface-hi);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.kv-gauge-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.kv-gauge-fill.ok { background: var(--ok); }
+.kv-gauge-fill.warn { background: var(--warn); }
+.kv-gauge-fill.bad { background: var(--bad); }
 
 /* ---- badges ---- */
 .badge {

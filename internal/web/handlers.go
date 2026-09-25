@@ -34,6 +34,18 @@ type statusView struct {
 	QueueDepth  int
 	QueueCap    int
 	DroppedFull int64
+
+	// CPU/Mem are the host utilization percentages sampled from /proc;
+	// the Avail flags are false on unsupported platforms (UI shows n/a)
+	// and Class is the gauge color tier (ok | warn | bad).
+	CPU      float64
+	CPUAvail bool
+	CPUClass string
+	Mem      float64
+	MemAvail bool
+	MemClass string
+	MemUsed  float64 // GiB
+	MemTotal float64 // GiB
 }
 
 // ---- MQTT connections view ----------------------------------------------
@@ -212,7 +224,34 @@ func (s *Server) buildStatusView() statusView {
 		view.Oversized += r.Oversized
 	}
 	view.RouterDocs = len(s.st.Snapshot().Router)
+	if s.sys != nil {
+		if cpu, ok := s.sys.CPUPercent(); ok {
+			view.CPU = cpu
+			view.CPUAvail = true
+			view.CPUClass = gaugeClass(cpu)
+		}
+		if mem, used, total, ok := s.sys.Memory(); ok {
+			view.Mem = mem
+			view.MemAvail = true
+			view.MemClass = gaugeClass(mem)
+			view.MemUsed = used
+			view.MemTotal = total
+		}
+	}
 	return view
+}
+
+// gaugeClass maps a utilization percentage to the gauge color tier: green
+// below 70%, amber below 90%, red above.
+func gaugeClass(pct float64) string {
+	switch {
+	case pct >= 90:
+		return "bad"
+	case pct >= 70:
+		return "warn"
+	default:
+		return "ok"
+	}
 }
 
 func (s *Server) buildMQTTView(snap state.Snapshot) mqttView {

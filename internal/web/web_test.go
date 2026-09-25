@@ -1286,6 +1286,24 @@ func TestEmcomRoleFlow(t *testing.T) {
 	}
 }
 
+// TestAdminAccountPageKeepsAdminNav pins the sidebar sync: the admin
+// session must see the full admin navigation on the self-service account
+// page too (the view uses the session role, not the directory row role —
+// the admin row's role is always empty).
+func TestAdminAccountPageKeepsAdminNav(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	resp, html := env.get("/account")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /account as admin = %d", resp.StatusCode)
+	}
+	for _, want := range []string{"Users", "Groups", "Health", "Logs", "Notifications"} {
+		if !strings.Contains(html, `<span class="nav-label">`+want+`</span>`) {
+			t.Errorf("admin /account sidebar missing %s nav entry", want)
+		}
+	}
+}
+
 // TestMemberRoleFlow pins the self-service member role: a member signs in
 // with their own password, lands on the shared dashboard, sees only the
 // Dashboard nav entry, and is redirected away from compose and every admin

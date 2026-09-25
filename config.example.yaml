@@ -3,16 +3,22 @@
 #
 # INSTALLING IN ANOTHER REGION — every per-region knob, in one place:
 #   1. aprs.callsign / name / gridsquare / latitude / longitude / radius_km
-#      — the geographic master: the APRS-IS range filter, the gddkia and
-#      gios sources and the home maps all inherit this position + radius.
-#   2. sources.weather-home.config.locations — towns for the weather cards.
-#   3. sources.imgw-warnings.config.geography — TERYT scope + hydro keywords.
-#   4. sources.rso-malopolskie.config — voivodeships + filter.local keywords.
-#   5. sources.gios-awarie.config.wojewodztwo — or leave empty (auto-derived
-#      from the aprs position via reverse geocoding).
-#   6. web.about / disclaimer / domain — branding texts.
+#      — the geographic master: the APRS-IS range filter, the geo-scoped
+#      sources and the home maps all inherit this position + radius.
+#   2. sources.weather-home.config.locations — towns for the weather cards
+#      (global source).
+#   3. sources.metar-*.config.stations — airport ICAO codes + display names
+#      (global source; the feed carries each airport's position).
+#   4. sources.adsb-main — aircraft in the hub's area of interest; the
+#      center/radius inherit the aprs section (global source; adsblol or a
+#      local tar1090 receiver).
+#   5. Poland-specific sources (leave disabled outside Poland):
+#      imgw-warnings (TERYT geography + hydro keywords),
+#      rso-* (voivodeships + filter.local),
+#      gddkia-roads, gios-awarie (both inherit the aprs area).
+#   6. web.about / disclaimer / domain / title — branding texts.
 #   7. outputs + dispatch — MQTT broker and unique client IDs.
-#   8. actions — SMTP credentials, APRS recipients.
+#   8. actions — SMTP credentials, APRS recipients, webhook URLs.
 
 app:
   # One of: debug, info, warn, error.
@@ -58,20 +64,20 @@ storage:
 # the binary (e.g. a different voivodeship) in imgw.geography.include,
 # rso filter.local and compose areas. Declaration order matters: parents
 # must be declared before children unless they are bundled. Codes are
-# official TERYT numeric codes.
+# official TERYT numeric codes (padded to 7 digits).
 #
 # geo:
 #   areas:
-#     - code: "1200000"
+#     - code: "1200000"   # województwo małopolskie
 #       type: wojewodztwo
 #       slug: malopolskie-example
 #       name: Małopolskie
-#     - code: "1200000"
+#     - code: "1219000"   # powiat krakowski
 #       type: powiat
 #       slug: your-powiat
 #       name: Your Powiat
 #       parents: ["malopolskie-example"]
-#     - code: "1200000"
+#     - code: "1219043"   # gmina (example TERYT code)
 #       type: gmina
 #       slug: your-town
 #       name: Your Town
@@ -158,9 +164,10 @@ sources:
   # reconciliation (see internal/plugins/sources/imgw/README.md).
   # Data source: Instytut Meteorologii i Gospodarki Wodnej – Państwowy
   # Instytut Badawczy (IMGW-PIB); https://danepubliczne.imgw.pl/apiinfo.
+  # POLAND-ONLY: leave disabled outside Poland.
   - id: imgw-warnings
     type: imgw
-    enabled: true
+    enabled: false
 
     runtime:
       restart: true
@@ -183,12 +190,12 @@ sources:
       # matching). Filtered warnings never make the provider snapshot
       # incomplete; a warning whose areas stop intersecting the target is
       # reconciled/cancelled by the next complete snapshot. Unknown
-      # configured names fail startup. TERYT slugs not bundled with the
-      # binary can be added through the top-level geo.areas block.
+      # configured names fail startup — fill the units in before enabling
+      # (see the geo.areas block above).
       geography:
-        enabled: true
-        include:
-          - gmina:your-town
+        enabled: false
+        # include:
+        #   - gmina:your-town
         # Local surface waters / places that make a hydrological warning
         # locally relevant. Keywords are regexp fragments (plain words
         # work too). Omit or leave empty to pass all hydro warnings
@@ -199,9 +206,10 @@ sources:
   # a HAZARD source with upstream voivodeship filtering via the official
   # endpoint (see internal/plugins/sources/rso/README.md).
   # Source: RSO / TVP, https://www.komunikaty.tvp.pl/Info/Integration.
+  # POLAND-ONLY: leave disabled outside Poland.
   - id: rso-malopolskie
     type: rso
-    enabled: true
+    enabled: false
 
     runtime:
       restart: true
@@ -263,6 +271,7 @@ sources:
   # traffic and closures, filtered to the configured area (the APRS hub
   # position + radius; both overridable below). Every entry carries
   # coordinates, so the home map draws them as warning icons.
+  # POLAND-ONLY: leave disabled outside Poland.
   # - id: gddkia-roads
   #   type: gddkia
   #   enabled: true
@@ -282,6 +291,7 @@ sources:
   # from the home position when not set), then geocoded to the locality
   # centroid (GUGiK ULDK) and radius-filtered. Event types:
   # INDUSTRIAL_ACCIDENT, CHEMICAL_RELEASE (rodzajZdarzenia emisja/wyciek).
+  # POLAND-ONLY: leave disabled outside Poland.
   # - id: gios-awarie
   #   type: gios
   #   enabled: true
@@ -453,17 +463,20 @@ web:
   # emit a synthetic hazard transition (severity/urgency/certainty) into
   # the dispatch ingress to exercise the group routing paths.
 
-  # Application name: browser title and footer.
-  title: "SOSNA"
+  # Application name: browser title and footer. Set it to your
+  # instance's brand (e.g. SOSNA).
+  title: "WarnFlux"
 
   # System name shown next to the logo on the login page and in the
   # sidebar header. Defaults to the title.
-  name: "SOSNA"
+  name: ""
 
   # Branding shown next to the logo (sidebar) and on the login page.
   # header1 defaults to the name; header2 is an optional subtitle.
-  header1: "SOSNA"
-  header2: "Społeczny Otwarty System Notyfikacji i Alertów"
+  # The header1 value also rides along as the SMTP subject bracket
+  # (e.g. "[SOSNA]") and the APRS message prefix.
+  header1: ""
+  header2: ""
 
   # Optional one-line motto rendered in the footer on every page.
   tagline: "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo"

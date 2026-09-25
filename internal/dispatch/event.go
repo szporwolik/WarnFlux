@@ -63,6 +63,11 @@ type Hazard struct {
 	Description string
 	Instruction string
 
+	// Latitude/Longitude are the optional event coordinates (compose map
+	// picker, geo-located sources); nil when the event has no point.
+	Latitude  *float64
+	Longitude *float64
+
 	EffectiveAt *time.Time
 	ExpiresAt   *time.Time
 

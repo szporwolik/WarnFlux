@@ -533,6 +533,9 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 		if h.Hazard.Headline != "" {
 			fmt.Fprintf(&b, "Headline: %s\n", h.Hazard.Headline)
 		}
+		if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
+			fmt.Fprintf(&b, "Coordinates: %.5f, %.5f\n", *h.Hazard.Latitude, *h.Hazard.Longitude)
+		}
 		if h.Hazard.Description != "" {
 			fmt.Fprintf(&b, "Description: %s\n", h.Hazard.Description)
 		}

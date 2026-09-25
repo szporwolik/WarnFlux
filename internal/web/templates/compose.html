@@ -81,6 +81,22 @@
           <span>Areas</span>
           <input type="text" name="areas" value="{{.Form.Areas}}" maxlength="500" placeholder="comma-separated slugs">
         </label>
+        <fieldset class="compose-loc">
+          <legend>Location on the map (optional)</legend>
+          <div class="compose-loc-grid">
+            <label class="field">
+              <span>Latitude</span>
+              <input type="number" step="any" min="-90" max="90" name="latitude" id="compose-lat" value="{{.Form.Latitude}}" placeholder="50.0408">
+            </label>
+            <label class="field">
+              <span>Longitude</span>
+              <input type="number" step="any" min="-180" max="180" name="longitude" id="compose-lon" value="{{.Form.Longitude}}" placeholder="20.2186">
+            </label>
+            <button type="button" class="btn-ghost" id="compose-loc-clear">Clear location</button>
+          </div>
+          {{if .AprsLat}}<div id="compose-map" class="compose-map" data-lat="{{.AprsLat}}" data-lon="{{.AprsLon}}"></div>{{end}}
+          <p class="muted compose-loc-note">Click the map to set the location; drag the marker to adjust it. Events with a location appear on the public map with the APRS warning icon.</p>
+        </fieldset>
         <label class="field field-wide">
           <span>Description</span>
           <textarea class="compose-area" name="description" maxlength="4000" rows="4">{{.Form.Description}}</textarea>

@@ -983,6 +983,14 @@ func TestComposeFlow(t *testing.T) {
 	if !strings.Contains(html, `/static/app.js`) {
 		t.Errorf("compose page missing app.js (debug fill and theme toggle need it): %s", html)
 	}
+	if !strings.Contains(html, `name="latitude"`) || !strings.Contains(html, `name="longitude"`) || !strings.Contains(html, `id="compose-loc-clear"`) {
+		t.Errorf("compose page missing the location fields: %s", html)
+	}
+	// The picker map renders only with an enabled APRS hub (its center
+	// anchors the picker); the test env has no hub.
+	if strings.Contains(html, `id="compose-map"`) {
+		t.Errorf("compose map must be hidden without an APRS hub: %s", html)
+	}
 	csrf := extractCSRF(t, html)
 
 	// CSRF is enforced on both mutations.
@@ -1001,6 +1009,8 @@ func TestComposeFlow(t *testing.T) {
 		"certainty":    {"observed"},
 		"status":       {"active"},
 		"areas":        {"wieliczka, niepolomice"},
+		"latitude":     {"49.985"},
+		"longitude":    {"20.065"},
 		"effective_at": {"2026-09-24T08:00"},
 		"expires_at":   {"2026-09-25T08:00"},
 		"description":  {"Heavy rain may cause local flooding."},
@@ -1022,10 +1032,33 @@ func TestComposeFlow(t *testing.T) {
 	if h.EffectiveAt == nil || h.EffectiveAt.Format("2006-01-02T15:04") != "2026-09-24T08:00" {
 		t.Errorf("effective_at = %v", h.EffectiveAt)
 	}
+	if h.Latitude == nil || h.Longitude == nil || *h.Latitude != 49.985 || *h.Longitude != 20.065 {
+		t.Errorf("published coordinates = %v, %v", h.Latitude, h.Longitude)
+	}
 
-	// The publish also feeds the canonical ingress so group routing fires.
+	// Lone coordinates are rejected.
+	resp, _ = env.postForm("/compose", url.Values{
+		"csrf": {csrf}, "event": {"Flood"}, "headline": {"x"},
+		"severity": {"severe"}, "latitude": {"49.985"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("lone latitude = %d, want 422", resp.StatusCode)
+	}
+	// Out-of-range coordinates are rejected.
+	resp, _ = env.postForm("/compose", url.Values{
+		"csrf": {csrf}, "event": {"Flood"}, "headline": {"x"},
+		"severity": {"severe"}, "latitude": {"99"}, "longitude": {"20"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("out-of-range coordinates = %d, want 422", resp.StatusCode)
+	}
+
+	// The publish also feeds the canonical ingress so group routing fires,
+	// with the coordinates riding along for notifications.
 	if ev := drainIngress(env); ev == nil || ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionNew || ev.Hazard.Key != h.EventKey {
 		t.Fatalf("compose publish did not enqueue a new transition: %+v", ev)
+	} else if ev.Hazard.Hazard.Latitude == nil || *ev.Hazard.Hazard.Latitude != 49.985 {
+		t.Errorf("compose transition lost coordinates: %+v", ev.Hazard.Hazard)
 	}
 
 	// Simulate the broker loopback: the ingestor mirrors the document.
@@ -1047,6 +1080,9 @@ func TestComposeFlow(t *testing.T) {
 	_, html = env.get("/compose?edit=" + h.EventKey)
 	if !strings.Contains(html, `value="Flood warning for the Raba river"`) {
 		t.Errorf("edit page missing prefilled headline: %s", html)
+	}
+	if !strings.Contains(html, `value="49.98500"`) || !strings.Contains(html, `value="20.06500"`) {
+		t.Errorf("edit page missing prefilled coordinates: %s", html)
 	}
 	if !strings.Contains(html, `name="event_key" value="`+h.EventKey+`"`) {
 		t.Errorf("edit page missing hidden event key: %s", html)

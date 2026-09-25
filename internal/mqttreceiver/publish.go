@@ -46,6 +46,8 @@ func (m *Manager) PublishActive(source string, h state.Hazard) error {
 			Headline:    h.Headline,
 			Description: h.Description,
 			Instruction: h.Instruction,
+			Latitude:    h.Latitude,
+			Longitude:   h.Longitude,
 			EffectiveAt: wireTimePtr(h.EffectiveAt),
 			ExpiresAt:   wireTimePtr(h.ExpiresAt),
 			Areas:       h.Areas,

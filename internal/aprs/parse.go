@@ -45,10 +45,17 @@ func ParseFeedLine(line string, now time.Time) Packet {
 		return p
 	}
 	switch info[0] {
-	case '!':
-		parsePositionBody(&p, info[1:], false)
-	case '=':
-		parsePositionBody(&p, info[1:], true)
+	case '!', '=':
+		// Capability-prefixed compressed form: some trackers emit the
+		// capability indicator followed by a compressed body
+		// ("=\54W4SWVkk..."). The table character at info[1] tells the
+		// two forms apart — an uncompressed body starts with digits.
+		if len(info) > 1 && (info[1] == '/' || info[1] == '\\') {
+			parseCompressed(&p, info[1:])
+			p.MessageCapable = info[0] == '='
+		} else {
+			parsePositionBody(&p, info[1:], info[0] == '=')
+		}
 	case '/', '\\':
 		// Both compressed and uncompressed positions start with the symbol
 		// table; the uncompressed form carries hemisphere letters at fixed
@@ -103,11 +110,17 @@ func parsePositionBody(p *Packet, body string, capable bool) {
 	lat, okLat := parseCoord(body[0:8], 2, 90)
 	lon, okLon := parseCoord(body[9:18], 3, 180)
 	sep := body[8]
-	if !okLat || !okLon || (sep != '/' && sep != '\\') {
+	// The separator doubles as the symbol-table indicator: '/' primary,
+	// '\' alternate, and 'D' is the legacy separator some trackers emit
+	// (treated as primary).
+	if !okLat || !okLon || (sep != '/' && sep != '\\' && sep != 'D') {
 		p.Comment = strings.TrimSpace(body)
 		return
 	}
 	p.SymbolTable = sep
+	if sep == 'D' {
+		p.SymbolTable = '/'
+	}
 	p.Position = &Position{Latitude: lat, Longitude: lon}
 	p.Symbol = body[18]
 	parseExtensions(p, body[19:])

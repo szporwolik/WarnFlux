@@ -71,6 +71,10 @@ type Server struct {
 	// nil in minimal constructions (the view degrades to n/a).
 	sys *sysinfo.Sampler
 
+	// resetMailer delivers password-reset emails. nil = email delivery
+	// unavailable (the self-service flow degrades gracefully).
+	resetMailer func(to, subject, text string) error
+
 	// ingest maps each configured public ingest endpoint id to its
 	// API-key-protected handler (may be empty).
 	ingest map[string]http.Handler
@@ -188,6 +192,11 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
+	// Self-service password recovery (token link delivered by email).
+	s.mux.HandleFunc("GET /forgot", s.handleForgotPage)
+	s.mux.HandleFunc("POST /forgot", s.handleForgotSubmit)
+	s.mux.HandleFunc("GET /reset", s.handleResetPage)
+	s.mux.HandleFunc("POST /reset", s.handleResetSubmit)
 	// Public landing page: header1/header2 + the current active hazards.
 	// The login form lives behind the top-right icon button (/login).
 	s.mux.HandleFunc("GET /{$}", s.handleHome)
@@ -231,6 +240,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /users", s.requireAdmin(s.handleUserSave))
 	s.mux.Handle("POST /users/{id}/delete", s.requireAdmin(s.handleUserDelete))
 	s.mux.Handle("POST /users/{id}/prefs", s.requireAdmin(s.handleUserPrefs))
+	s.mux.Handle("POST /users/{id}/reset", s.requireAdmin(s.handleUserResetPassword))
 	s.mux.Handle("GET /groups", s.requireAdmin(s.handleGroupsPage))
 	s.mux.Handle("POST /groups", s.requireAdmin(s.handleGroupSave))
 	s.mux.Handle("POST /groups/{id}/delete", s.requireAdmin(s.handleGroupDelete))

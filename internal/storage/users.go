@@ -33,6 +33,9 @@ var (
 	// ErrInvalidSeverity is returned when a routing severity threshold is
 	// not a canonical severity value.
 	ErrInvalidSeverity = errors.New("invalid severity")
+	// ErrPasswordResetInvalid is returned when a reset token is unknown,
+	// expired or already used.
+	ErrPasswordResetInvalid = errors.New("invalid or expired password reset token")
 )
 
 // User is one alert-recipient record. The admin user (the web auth
@@ -188,6 +191,20 @@ type UserStore interface {
 	// SetUserChannelOptOuts replaces the user's delivery-channel
 	// opt-outs: listed kinds are disabled, every other channel stays on.
 	SetUserChannelOptOuts(userID int64, kinds []string) error
+	// SetUserPassword replaces a regular user's password. The admin row
+	// reports ErrUserProtected (its password lives in configuration).
+	SetUserPassword(userID int64, password string) error
+	// CreatePasswordReset issues a one-time reset token for the user and
+	// returns its plaintext form (the store keeps only a hash). Expired
+	// tokens are pruned opportunistically.
+	CreatePasswordReset(userID int64) (string, error)
+	// ConsumePasswordReset validates a plaintext token (constant-time
+	// hash lookup), marks it used and returns the user ID. Expired,
+	// unknown or already-used tokens report ErrPasswordResetInvalid.
+	ConsumePasswordReset(token string) (int64, error)
+	// PeekPasswordReset validates a token WITHOUT consuming it (the
+	// reset page checks the link before rendering the form).
+	PeekPasswordReset(token string) error
 	// Authenticate verifies a directory user's credentials and returns
 	// the user. Unknown usernames, users without a password and wrong
 	// passwords all report storage.ErrBadCredentials.

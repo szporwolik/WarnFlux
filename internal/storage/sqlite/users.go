@@ -510,6 +510,130 @@ func (s *Store) AllAPRSCallsigns() ([]string, error) {
 	return out, rows.Err()
 }
 
+// SetUserPassword replaces a regular user's password (fresh salt + PBKDF2
+// hash). The admin row reports storage.ErrUserProtected.
+func (s *Store) SetUserPassword(userID int64, password string) error {
+	var isAdmin int
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	if isAdmin != 0 {
+		return storage.ErrUserProtected
+	}
+	salt, hash, err := s.passwordFields(password)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`
+		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?
+		WHERE id = ? AND is_admin = 0`,
+		salt, hash, s.now().UnixMilli(), userID)
+	if err != nil {
+		return fmt.Errorf("set user %d password: %w", userID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("set user %d password: %w", userID, err)
+	} else if n == 0 {
+		return storage.ErrUserNotFound
+	}
+	return nil
+}
+
+// CreatePasswordReset issues a one-time reset token (64 hex chars) for a
+// regular user, stores only its SHA-256 hash and returns the plaintext
+// once. Expired tokens are pruned opportunistically.
+func (s *Store) CreatePasswordReset(userID int64) (string, error) {
+	var isAdmin int
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", storage.ErrUserNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	if isAdmin != 0 {
+		return "", storage.ErrUserProtected
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate reset token: %w", err)
+	}
+	token := hex.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(token))
+	now := s.now().UnixMilli()
+	expires := now + int64((time.Hour).Milliseconds())
+
+	// Opportunistic prune: old rows for the user + globally expired ones.
+	if _, err := s.db.Exec(`DELETE FROM password_resets WHERE user_id = ? OR expires_at_ms < ?`, userID, now); err != nil {
+		return "", fmt.Errorf("prune reset tokens: %w", err)
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO password_resets (user_id, token_hash, expires_at_ms, created_at_ms)
+		VALUES (?, ?, ?, ?)`,
+		userID, hex.EncodeToString(sum[:]), expires, now); err != nil {
+		return "", fmt.Errorf("store reset token: %w", err)
+	}
+	return token, nil
+}
+
+// ConsumePasswordReset validates a plaintext reset token in constant
+// time, marks it used and returns the owning user ID. Unknown, expired or
+// already-used tokens report storage.ErrPasswordResetInvalid.
+func (s *Store) ConsumePasswordReset(token string) (int64, error) {
+	now := s.now().UnixMilli()
+	var userID, expires, used int64
+	var hashHex string
+	err := s.db.QueryRow(`
+		SELECT user_id, token_hash, expires_at_ms, used_at_ms
+		FROM password_resets
+		WHERE token_hash = ?`, tokenHashHex(token)).
+		Scan(&userID, &hashHex, &expires, &used)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, storage.ErrPasswordResetInvalid
+	}
+	if err != nil {
+		return 0, fmt.Errorf("lookup reset token: %w", err)
+	}
+	if used != 0 || expires < now {
+		return 0, storage.ErrPasswordResetInvalid
+	}
+	if _, err := s.db.Exec(`UPDATE password_resets SET used_at_ms = ? WHERE token_hash = ?`, now, hashHex); err != nil {
+		return 0, fmt.Errorf("consume reset token: %w", err)
+	}
+	return userID, nil
+}
+
+// PeekPasswordReset validates a token without consuming it.
+func (s *Store) PeekPasswordReset(token string) error {
+	now := s.now().UnixMilli()
+	var expires, used int64
+	err := s.db.QueryRow(`
+		SELECT expires_at_ms, used_at_ms FROM password_resets
+		WHERE token_hash = ?`, tokenHashHex(token)).
+		Scan(&expires, &used)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ErrPasswordResetInvalid
+	}
+	if err != nil {
+		return fmt.Errorf("lookup reset token: %w", err)
+	}
+	if used != 0 || expires < now {
+		return storage.ErrPasswordResetInvalid
+	}
+	return nil
+}
+
+// tokenHashHex returns the SHA-256 hex of a plaintext token for the
+// constant-shape index lookup.
+func tokenHashHex(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // attachAPRS fills APRSCallsigns on the given users with one grouped query
 // and returns the updated slice (the input elements are copies).
 func (s *Store) attachAPRS(users []storage.User) ([]storage.User, error) {

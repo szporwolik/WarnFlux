@@ -2,7 +2,9 @@ package web_test
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/url"
@@ -29,6 +31,7 @@ type fakeUsers struct {
 	routing     map[int64]storage.GroupRouting // groupID -> routing
 	passwords   map[string]string              // username -> plaintext (fake)
 	channelOpts map[int64]map[string]bool      // userID -> disabled delivery-channel kinds
+	resets      map[string]int64               // plaintext reset token -> userID
 }
 
 func newFakeUsers() *fakeUsers {
@@ -38,6 +41,7 @@ func newFakeUsers() *fakeUsers {
 		routing:     make(map[int64]storage.GroupRouting),
 		passwords:   make(map[string]string),
 		channelOpts: make(map[int64]map[string]bool),
+		resets:      make(map[string]int64),
 	}
 }
 
@@ -259,6 +263,68 @@ func (f *fakeUsers) AllAPRSCallsigns() ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// SetUserPassword replaces a regular user's password; the admin row is
+// protected.
+func (f *fakeUsers) SetUserPassword(userID int64, password string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.rows {
+		if u.ID != userID {
+			continue
+		}
+		if u.IsAdmin {
+			return storage.ErrUserProtected
+		}
+		f.passwords[u.Username] = password
+		return nil
+	}
+	return storage.ErrUserNotFound
+}
+
+// CreatePasswordReset issues a one-time token (fake: stored in plaintext).
+func (f *fakeUsers) CreatePasswordReset(userID int64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.rows {
+		if u.ID != userID {
+			continue
+		}
+		if u.IsAdmin {
+			return "", storage.ErrUserProtected
+		}
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return "", err
+		}
+		token := hex.EncodeToString(raw)
+		f.resets[token] = userID
+		return token, nil
+	}
+	return "", storage.ErrUserNotFound
+}
+
+// PeekPasswordReset validates a token without consuming it.
+func (f *fakeUsers) PeekPasswordReset(token string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.resets[token]; !ok {
+		return storage.ErrPasswordResetInvalid
+	}
+	return nil
+}
+
+// ConsumePasswordReset validates and consumes a one-time token.
+func (f *fakeUsers) ConsumePasswordReset(token string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.resets[token]
+	if !ok {
+		return 0, storage.ErrPasswordResetInvalid
+	}
+	delete(f.resets, token)
+	return id, nil
 }
 
 // UserChannelOptOuts returns the disabled delivery-channel kinds for a user.

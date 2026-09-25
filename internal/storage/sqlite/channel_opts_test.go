@@ -49,6 +49,65 @@ func TestAllAPRSCallsigns(t *testing.T) {
 	}
 }
 
+// TestPasswordResetTokens pins the one-time token ledger: issue → peek →
+// consume → replay fails, plus the admin row being out of scope.
+func TestPasswordResetTokens(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "reset.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := store.CreateUser("alice", "", "", "", "member", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := store.CreatePasswordReset(u.ID)
+	if err != nil || len(token) != 64 {
+		t.Fatalf("CreatePasswordReset = %q, %v", token, err)
+	}
+	if err := store.PeekPasswordReset(token); err != nil {
+		t.Fatalf("PeekPasswordReset = %v", err)
+	}
+	id, err := store.ConsumePasswordReset(token)
+	if err != nil || id != u.ID {
+		t.Fatalf("ConsumePasswordReset = %d, %v", id, err)
+	}
+	if _, err := store.ConsumePasswordReset(token); !errors.Is(err, storage.ErrPasswordResetInvalid) {
+		t.Fatalf("replay = %v, want ErrPasswordResetInvalid", err)
+	}
+	if err := store.PeekPasswordReset(token); !errors.Is(err, storage.ErrPasswordResetInvalid) {
+		t.Fatalf("peek after consume = %v, want ErrPasswordResetInvalid", err)
+	}
+
+	// A fresh token replaces the old one and works.
+	token2, err := store.CreatePasswordReset(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumePasswordReset(token2); err != nil {
+		t.Fatalf("second token consume = %v", err)
+	}
+
+	// The admin row never gets tokens.
+	if _, err := store.CreatePasswordReset(1); !errors.Is(err, storage.ErrUserProtected) {
+		t.Fatalf("admin token = %v, want ErrUserProtected", err)
+	}
+	if err := store.SetUserPassword(1, "x"); !errors.Is(err, storage.ErrUserProtected) {
+		t.Fatalf("admin password = %v, want ErrUserProtected", err)
+	}
+	// The regular user signs in with the replacement password.
+	if err := store.SetUserPassword(u.ID, "new-password-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Authenticate("alice", "new-password-1"); err != nil {
+		t.Fatalf("new password does not authenticate: %v", err)
+	}
+}
+
 // TestUserChannelOptOuts pins the opt-out round trip: replace semantics,
 // normalization, protected/missing-user errors, and the effect on the
 // per-channel recipient lists used by the rule engine.

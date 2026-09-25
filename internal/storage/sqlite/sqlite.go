@@ -417,6 +417,22 @@ CREATE TABLE user_channel_opts (
 );
 `,
 	},
+	{
+		// v17: one-time password-reset tokens. A token is issued per user
+		// (hashed at rest), expires after an hour and can be consumed
+		// exactly once; the self-service reset flow lives in web/forgot.go.
+		SQL: `
+CREATE TABLE password_resets (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	token_hash    TEXT NOT NULL,
+	expires_at_ms INTEGER NOT NULL,
+	used_at_ms    INTEGER NOT NULL DEFAULT 0,
+	created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX idx_password_resets_user ON password_resets(user_id);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

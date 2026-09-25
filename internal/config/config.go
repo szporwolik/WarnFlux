@@ -404,6 +404,9 @@ type fileAPRS struct {
 	Latitude              *float64       `yaml:"latitude"`
 	Longitude             *float64       `yaml:"longitude"`
 	RadiusKM              *float64       `yaml:"radius_km"`
+	AreaLatitude          *float64       `yaml:"area_latitude"`
+	AreaLongitude         *float64       `yaml:"area_longitude"`
+	AreaRadiusKM          *float64       `yaml:"area_radius_km"`
 	StationTTL            *time.Duration `yaml:"station_ttl"`
 	ExcludeInfrastructure *bool          `yaml:"exclude_infrastructure"`
 	RouteMessages         *bool          `yaml:"route_messages"`
@@ -847,8 +850,13 @@ func (f fileConfig) toConfig() Config {
 		cfg.APRS.GridSquare = strings.ToUpper(strings.TrimSpace(f.APRS.GridSquare))
 		cfg.APRS.Latitude = f.APRS.Latitude
 		cfg.APRS.Longitude = f.APRS.Longitude
+		cfg.APRS.AreaLatitude = f.APRS.AreaLatitude
+		cfg.APRS.AreaLongitude = f.APRS.AreaLongitude
 		if f.APRS.RadiusKM != nil {
 			cfg.APRS.RadiusKM = *f.APRS.RadiusKM
+		}
+		if f.APRS.AreaRadiusKM != nil {
+			cfg.APRS.AreaRadiusKM = *f.APRS.AreaRadiusKM
 		}
 		if f.APRS.StationTTL != nil {
 			cfg.APRS.StationTTL = *f.APRS.StationTTL

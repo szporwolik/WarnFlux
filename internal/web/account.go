@@ -56,7 +56,6 @@ type accountView struct {
 	NavDashboard     bool
 	NavUsers         bool
 	NavGroups        bool
-	NavTest          bool
 	NavCompose       bool
 	NavAccount       bool
 	NavLogs          bool

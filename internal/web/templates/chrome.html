@@ -1,7 +1,7 @@
 {{define "topbar"}}<script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>
-    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavTest}}Test signal{{else if .NavCompose}}Compose{{else if .NavAccount}}Account{{else if .NavLogs}}Logs{{else if .NavAudit}}Audit log{{else if .NavTraffic}}MQTT{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
+    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavCompose}}Compose{{else if .NavAccount}}Account{{else if .NavLogs}}Logs{{else if .NavAudit}}Audit log{{else if .NavTraffic}}MQTT{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
     <span class="topbar-spacer"></span>
     <a class="topbar-home" href="/" title="Public page" aria-label="Public page">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>
@@ -49,7 +49,6 @@
       <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">Health</span></a>
       <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">Groups</span></a>
       <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">Users</span></a>
-      <a class="nav-item{{if .NavTest}} active{{end}}" href="/test"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg><span class="nav-label">Test signal</span></a>
       <a class="nav-item{{if .NavLogs}} active{{end}}" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg><span class="nav-label">Logs</span></a>
       <a class="nav-item{{if .NavAudit}} active{{end}}" href="/audit"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span class="nav-label">Audit log</span></a>
       <a class="nav-item{{if .NavTraffic}} active{{end}}" href="/traffic"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">MQTT</span></a>

@@ -19,7 +19,7 @@ type auditEntry struct {
 
 // AuditBuffer is a bounded ring buffer of user actions. Every
 // state-changing dashboard operation lands here (login/logout, users,
-// groups, routing, compose, test signals, MQTT browse); the audit page
+// groups, routing, compose, MQTT browse); the audit page
 // polls snapshots of it.
 type AuditBuffer struct {
 	mu      sync.Mutex

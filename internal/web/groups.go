@@ -52,7 +52,6 @@ var baseRoutingSources = []sourceOption{
 	{Value: "imgw-hydro", Label: "IMGW hydro"},
 	{Value: "rso", Label: "RSO"},
 	{Value: "aprs", Label: "APRS messages"},
-	{Value: "test-signal", Label: "test signal"},
 	{Value: "compose", Label: "Compose"},
 }
 
@@ -143,7 +142,6 @@ type groupsView struct {
 	NavDashboard     bool
 	NavUsers         bool
 	NavGroups        bool
-	NavTest          bool
 	NavLogs          bool
 	NavAudit         bool
 	NavTraffic       bool

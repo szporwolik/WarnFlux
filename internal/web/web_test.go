@@ -999,7 +999,11 @@ func TestComposeFlow(t *testing.T) {
 		t.Fatalf("POST /compose without csrf = %d, want 403", resp.StatusCode)
 	}
 
-	// Publish a new communication.
+	// Publish a new communication. The timestamps are relative to the
+	// test clock: a fixed expiry would rot the test once it drifts into
+	// the past (the compose module auto-expires past-dated items).
+	effStr := time.Now().Add(-2 * time.Hour).Format("2006-01-02T15:04")
+	expStr := time.Now().Add(6 * time.Hour).Format("2006-01-02T15:04")
 	resp, _ = env.postForm("/compose", url.Values{
 		"csrf":         {csrf},
 		"event":        {"Flood"},
@@ -1011,8 +1015,8 @@ func TestComposeFlow(t *testing.T) {
 		"areas":        {"wieliczka, niepolomice"},
 		"latitude":     {"49.985"},
 		"longitude":    {"20.065"},
-		"effective_at": {"2026-09-24T08:00"},
-		"expires_at":   {"2026-09-25T08:00"},
+		"effective_at": {effStr},
+		"expires_at":   {expStr},
 		"description":  {"Heavy rain may cause local flooding."},
 		"instruction":  {"Avoid the river bank."},
 	})
@@ -1029,8 +1033,8 @@ func TestComposeFlow(t *testing.T) {
 	if h.Severity != "severe" || h.Headline != "Flood warning for the Raba river" || len(h.Areas) != 2 {
 		t.Errorf("published hazard = %+v", h)
 	}
-	if h.EffectiveAt == nil || h.EffectiveAt.Format("2006-01-02T15:04") != "2026-09-24T08:00" {
-		t.Errorf("effective_at = %v", h.EffectiveAt)
+	if h.EffectiveAt == nil || h.EffectiveAt.Format("2006-01-02T15:04") != effStr {
+		t.Errorf("effective_at = %v, want %s", h.EffectiveAt, effStr)
 	}
 	if h.Latitude == nil || h.Longitude == nil || *h.Latitude != 49.985 || *h.Longitude != 20.065 {
 		t.Errorf("published coordinates = %v, %v", h.Latitude, h.Longitude)

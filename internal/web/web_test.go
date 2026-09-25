@@ -586,7 +586,7 @@ func TestPublicHomePage(t *testing.T) {
 		"Ekstremalny wiatr", // most severe first
 		`href="/login"`,     // sign-in behind the icon button
 		"Active hazards",
-		"Radio stations",
+		"Map", // combined stations + weather tab
 		`id="home-alerts"`,
 		`class="theme-toggle"`, // light/dark switch
 	} {
@@ -766,10 +766,10 @@ func TestHomeAPRSMapTab(t *testing.T) {
 		"RainViewer", // radar attribution under the map
 		"OpenStreetMap",
 		"aprs-symbols",                  // APRS symbol attribution under the map
-		`data-tab="tab-weather"`,        // third home tab
-		"weather-icons.css",             // weather tab icon set
+		`data-tab="tab-radio"`,           // the combined Map tab
+		"weather-icons.css",             // weather icon set for the map layer
 		"Weather Icons by Erik Flowers", // icon attribution
-		`id="hw-map"`,                   // weather overview map above the tables
+		`id="hw-reports"`,               // weather report cards below the map
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("home APRS tab missing %q: %s", want, html)

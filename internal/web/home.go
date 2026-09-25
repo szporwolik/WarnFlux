@@ -222,8 +222,8 @@ func sortHazards(hazards []publicHazardView) {
 // handleAPRSStations serves the public station list for the home-page map:
 // the merged retained MQTT state, newest last-heard documents excluded when
 // the APRS hub is disabled (the map tab is not rendered then either).
-// Weather stations (symbol '_') are excluded: they live on the weather tab
-// map instead of cluttering the neighbourhood map.
+// Weather stations (symbol '_') are excluded: their readings ride on the
+// weather layer of the same map instead of cluttering the station list.
 func (s *Server) handleAPRSStations(w http.ResponseWriter, r *http.Request) {
 	if s.aprs == nil || !s.aprs.Enabled() {
 		http.Error(w, "aprs disabled", http.StatusNotFound)
@@ -244,10 +244,10 @@ func (s *Server) handleAPRSStations(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ---- public weather tab --------------------------------------------------
+// ---- public weather reports (combined map layer) -----------------------
 
 // weatherReportView is one current weather report for the public home
-// weather tab: internet providers (retained info topics) and APRS weather
+// map: internet providers (retained info topics) and APRS weather
 // stations heard in range.
 type weatherReportView struct {
 	Provider         string   `json:"provider"`
@@ -290,9 +290,10 @@ type weatherAPIView struct {
 	Forecasts []weatherForecastView `json:"forecasts"`
 }
 
-// handleWeather serves the public weather tab data: current reports from
-// every internet provider and every APRS weather station in range, plus
-// the multi-day forecasts held in the retained MQTT info topics.
+// handleWeather serves the public weather-layer data of the combined map:
+// current reports from every internet provider and every APRS weather
+// station in range, plus the multi-day forecasts held in the retained
+// MQTT info topics.
 func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 	view := weatherAPIView{
 		Reports:   []weatherReportView{},

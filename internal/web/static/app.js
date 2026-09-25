@@ -1286,9 +1286,9 @@
     m.openPopup();
   }
 
-  // renderReports builds the report cards below the map. APRS reports
-  // stay clickable: they focus the map on the station and open its
-  // popup.
+  // renderReports builds the report cards below the map. Every report
+  // with a position is clickable: it focuses the map on its pin and
+  // opens the popup.
   function renderReports() {
     var container = document.getElementById("hw-reports");
     var countEl = document.getElementById("hw-report-count");
@@ -1343,14 +1343,13 @@
       item.appendChild(body);
       if (r.via === "aprs") {
         item.classList.add("hw-aprs");
-        // Only stations with a known position can be shown on the map
-        // (a positionless report has nothing to center on).
-        if (r.latitude && r.longitude && !(r.latitude === 0 && r.longitude === 0)) {
-          item.title = "Show " + r.name + " on the map";
-          item.addEventListener("click", function () { focusStation(r); });
-        } else {
-          item.disabled = true;
-        }
+      }
+      // Every report whose pin sits on the map is clickable: it centers
+      // the map on the pin and opens its popup. A positionless report has
+      // nothing to center on and stays disabled.
+      if (r.latitude && r.longitude && !(r.latitude === 0 && r.longitude === 0)) {
+        item.title = "Show " + r.name + " on the map";
+        item.addEventListener("click", function () { focusStation(r); });
       } else {
         item.disabled = true;
       }

@@ -31,6 +31,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/sysinfo"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
@@ -65,6 +66,10 @@ type Server struct {
 	auditLog     *AuditBuffer
 	trails       *trail.Recorder
 	metrics      *metrics.Registry
+
+	// sys samples host CPU/memory utilization for the System card;
+	// nil in minimal constructions (the view degrades to n/a).
+	sys *sysinfo.Sampler
 
 	// ingest maps each configured public ingest endpoint id to its
 	// API-key-protected handler (may be empty).
@@ -141,6 +146,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		auditLog:     NewAuditBuffer(DefaultAuditEntries),
 		trails:       trails,
 		metrics:      metricsReg,
+		sys:          sysinfo.New(),
 		version:      version,
 		commit:       commit,
 		startedAt:    time.Now(),

@@ -482,6 +482,10 @@
   // Latest fetches kept for the combined view fit.
   var lastStations = [];
   var lastHazards = [];
+  // Markers indexed by callsign (uppercased), so the report cards can
+  // focus the map on a station and open its popup.
+  var stationMarkers = {};
+  var weatherMarkers = {};
 
   // Theme-aware base map, the same free provider the CQOps dashboard
   // uses: OpenFreeMap vector styles via MapLibre GL — no API keys, no
@@ -728,7 +732,6 @@
     enableRadar();
     addLayersControl(map);
     addLocateControl(map);
-    initMiniDialog();
     refreshStations();
     refreshHazards();
     refreshWeather();
@@ -902,6 +905,7 @@
         }
         lastStations = stations || [];
         stationLayer.clearLayers();
+        stationMarkers = {};
         (lastStations).forEach(function (s) {
           if (!s || !s.position || s.self) {
             return; // our own locator has its dedicated marker
@@ -1007,6 +1011,7 @@
           }
 
           stationLayer.addLayer(marker);
+          stationMarkers[String(s.callsign || "").toUpperCase()] = marker;
         });
 
         computeBounds();
@@ -1141,18 +1146,6 @@
     return e;
   }
 
-  // fmtLocalMin renders an RFC 3339 timestamp in local browser time
-  // (minutes precision); unparseable values pass through untouched.
-  function fmtLocalMin(v) {
-    var t = new Date(v);
-    if (isNaN(t.getTime())) {
-      return v;
-    }
-    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
-    return t.getFullYear() + "-" + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) +
-      " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes());
-  }
-
   // forecastKey indexes multi-day forecasts by provider + location name.
   function forecastKey() {
     var fk = {};
@@ -1249,6 +1242,7 @@
       return;
     }
     weatherLayer.clearLayers();
+    weatherMarkers = {};
     var byCall = {};
     (lastStations || []).forEach(function (s) {
       if (s && s.callsign) {
@@ -1269,11 +1263,32 @@
       );
       marker.bindPopup(weatherPopup(r));
       weatherLayer.addLayer(marker);
+      weatherMarkers[String(r.name || "").toUpperCase()] = marker;
     });
   }
 
+  // focusStation centers the main map on one report's station and opens
+  // the same popup a click on the map would: the station marker when the
+  // station has one, otherwise its weather pin.
+  function focusStation(r) {
+    if (!map) {
+      return;
+    }
+    var m = stationMarkers[String(r.name || "").toUpperCase()] ||
+      weatherMarkers[String(r.name || "").toUpperCase()];
+    if (!m) {
+      return;
+    }
+    if (el && el.scrollIntoView) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 13), { duration: 0.7 });
+    m.openPopup();
+  }
+
   // renderReports builds the report cards below the map. APRS reports
-  // stay clickable and open the station mini-map dialog.
+  // stay clickable: they focus the map on the station and open its
+  // popup.
   function renderReports() {
     var container = document.getElementById("hw-reports");
     var countEl = document.getElementById("hw-report-count");
@@ -1332,7 +1347,7 @@
         // (a positionless report has nothing to center on).
         if (r.latitude && r.longitude && !(r.latitude === 0 && r.longitude === 0)) {
           item.title = "Show " + r.name + " on the map";
-          item.addEventListener("click", function () { openMiniMap(r); });
+          item.addEventListener("click", function () { focusStation(r); });
         } else {
           item.disabled = true;
         }
@@ -1450,71 +1465,6 @@
         computeBounds();
       })
       .catch(function () { /* transient — next poll retries */ });
-  }
-
-  // Mini-map popup for APRS weather stations: Leaflet loads on demand
-  // from the same CDN the main map uses.
-  function ensureLeaflet(cb) {
-    if (window.L) {
-      cb();
-      return;
-    }
-    var css = document.createElement("link");
-    css.rel = "stylesheet";
-    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    document.head.appendChild(css);
-    var s = document.createElement("script");
-    s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    s.onload = function () { cb(); };
-    s.onerror = function () { /* offline: no map in the popup */ };
-    document.body.appendChild(s);
-  }
-
-  var miniCenter = null;
-  var miniMap = null;
-  var miniMarker = null;
-
-  function openMiniMap(report) {
-    var dialog = document.getElementById("wmap-dialog");
-    if (!dialog) {
-      return;
-    }
-    document.getElementById("wmap-title").textContent = report.name + " — APRS weather station";
-    var meta = Number(report.latitude).toFixed(4) + ", " + Number(report.longitude).toFixed(4);
-    if (report.generated_at) {
-      meta += " · report " + fmtLocalMin(report.generated_at);
-    }
-    document.getElementById("wmap-meta").textContent = meta;
-    miniCenter = [report.latitude, report.longitude];
-    dialog.showModal();
-    ensureLeaflet(function () {
-      if (!window.L) { return; }
-      if (!miniMap) {
-        miniMap = L.map("wmap-map", { attributionControl: false }).setView(miniCenter, 13);
-        var dark = document.documentElement.getAttribute("data-theme") !== "light";
-        L.tileLayer(dark
-          ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-          : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(miniMap);
-        addCenterControl(miniMap, function () {
-          if (miniCenter) { miniMap.setView(miniCenter, 13); }
-        });
-      } else {
-        miniMap.setView(miniCenter, 13);
-      }
-      if (miniMarker) { miniMap.removeLayer(miniMarker); }
-      miniMarker = L.marker(miniCenter).addTo(miniMap);
-      miniMarker.bindPopup("<strong>" + esc(report.name) + "</strong>").openPopup();
-      window.setTimeout(function () { if (miniMap) { miniMap.invalidateSize(); } }, 80);
-    });
-  }
-
-  function initMiniDialog() {
-    var dialog = document.getElementById("wmap-dialog");
-    if (!dialog) {
-      return;
-    }
-    dialog.querySelector(".wmap-close").addEventListener("click", function () { dialog.close(); });
-    dialog.addEventListener("click", function (e) { if (e.target === dialog) { dialog.close(); } });
   }
 
   // ---- user location (like the Google Maps blue dot) ----

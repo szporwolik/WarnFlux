@@ -1948,31 +1948,6 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   text-align: right;
 }
 .hw-attrib a { color: var(--muted); text-decoration: underline; }
-/* Mini-map dialog for APRS weather stations. */
-.wmap-dialog {
-  position: relative;
-  width: min(34rem, 92vw);
-  padding: 1rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text);
-}
-.wmap-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
-.wmap-dialog h3 { margin: 0 1.5rem 0.6rem 0; font-size: 1rem; }
-.wmap-dialog .wmap-close {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.6rem;
-  border: none;
-  background: none;
-  color: var(--muted);
-  font-size: 1.3rem;
-  line-height: 1;
-  cursor: pointer;
-}
-#wmap-map { height: 16rem; border: 1px solid var(--border); border-radius: var(--radius); }
-.wmap-dialog .muted { margin: 0.6rem 0 0; font-size: 0.78rem; }
 /* Re-center buttons on all maps: match the Leaflet zoom control look. */
 .wf-center-btn {
   display: flex;

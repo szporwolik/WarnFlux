@@ -190,7 +190,6 @@ type pageView struct {
 	NavDashboard     bool
 	NavUsers         bool
 	NavGroups        bool
-	NavTest          bool
 	NavLogs          bool
 	NavAudit         bool
 	NavTraffic       bool

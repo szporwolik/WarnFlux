@@ -81,6 +81,50 @@ type composeItem struct {
 	UpdatedAt   time.Time
 }
 
+// option is one select-option entry for the compose form (severity,
+// urgency, certainty, status).
+type option struct {
+	Value string
+	Label string
+}
+
+// Shared select options for the compose form.
+var (
+	testSeverities = []option{
+		{Value: "unknown", Label: "unknown"},
+		{Value: "minor", Label: "minor"},
+		{Value: "moderate", Label: "moderate"},
+		{Value: "severe", Label: "severe"},
+		{Value: "extreme", Label: "extreme"},
+	}
+	testUrgencies = []option{
+		{Value: "", Label: "—"},
+		{Value: "unknown", Label: "unknown"},
+		{Value: "immediate", Label: "immediate"},
+		{Value: "expected", Label: "expected"},
+		{Value: "future", Label: "future"},
+		{Value: "past", Label: "past"},
+	}
+	testCertainties = []option{
+		{Value: "", Label: "—"},
+		{Value: "unknown", Label: "unknown"},
+		{Value: "observed", Label: "observed"},
+		{Value: "likely", Label: "likely"},
+		{Value: "possible", Label: "possible"},
+		{Value: "unlikely", Label: "unlikely"},
+	}
+)
+
+// oneOf reports whether v is one of the option values.
+func oneOf(v string, opts []option) bool {
+	for _, o := range opts {
+		if o.Value == v {
+			return true
+		}
+	}
+	return false
+}
+
 // composeView is the /compose page model.
 type composeView struct {
 	AppTitle string
@@ -114,7 +158,6 @@ type composeView struct {
 	NavDashboard     bool
 	NavUsers         bool
 	NavGroups        bool
-	NavTest          bool
 	NavCompose       bool
 	NavAccount       bool
 	NavLogs          bool

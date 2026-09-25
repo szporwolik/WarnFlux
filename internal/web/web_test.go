@@ -1278,7 +1278,7 @@ func TestEmcomRoleFlow(t *testing.T) {
 		t.Errorf("GET /dashboard as emcom = %d, want 200", resp.StatusCode)
 	}
 
-	for _, path := range []string{"/users", "/groups", "/health", "/logs", "/traffic", "/test", "/notifications"} {
+	for _, path := range []string{"/users", "/groups", "/health", "/logs", "/traffic", "/notifications"} {
 		resp, _ := env.get(path)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
 			t.Errorf("GET %s as emcom = %d %q, want 303 to /dashboard", path, resp.StatusCode, resp.Header.Get("Location"))
@@ -1355,7 +1355,7 @@ func TestMemberRoleFlow(t *testing.T) {
 	}
 
 	// Compose and every admin page redirect the member to the dashboard.
-	for _, path := range []string{"/compose", "/users", "/groups", "/health", "/logs", "/traffic", "/test", "/notifications"} {
+	for _, path := range []string{"/compose", "/users", "/groups", "/health", "/logs", "/traffic", "/notifications"} {
 		resp, _ := env.get(path)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
 			t.Errorf("GET %s as member = %d %q, want 303 to /dashboard", path, resp.StatusCode, resp.Header.Get("Location"))
@@ -1744,12 +1744,6 @@ func TestFooterVersionAndRepoLink(t *testing.T) {
 	_, groupsHTML := env.get("/groups")
 	if !strings.Contains(groupsHTML, `class="footer-h2">Test platform</h2>`) {
 		t.Errorf("groups footer missing header2 lead: %s", groupsHTML)
-	}
-	// The test-signal page renders the same shared footer (regression
-	// guard: the footer tagline crashed this page before).
-	_, testHTML := env.get("/test")
-	if !strings.Contains(testHTML, `class="footer-h2">Test platform</h2>`) {
-		t.Errorf("test footer missing header2 lead: %s", testHTML)
 	}
 }
 

@@ -218,8 +218,6 @@ func (s *Server) routes(static http.Handler) {
 		s.mux.HandleFunc("POST /api/v1/ingest/{id}", s.handleIngest)
 	}
 	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
-	s.mux.Handle("GET /test", s.requireAdmin(s.handleTestPage))
-	s.mux.Handle("POST /test", s.requireAdmin(s.handleTestEmit))
 	// Compose: admin and emcom sessions issue/update/expire
 	// communications; it is the emcom operator's main surface.
 	s.mux.Handle("GET /compose", s.requireCompose(s.handleComposePage))

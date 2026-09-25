@@ -155,7 +155,8 @@ sources:
     config:
       provider: adsblol
       # base_url: "https://api.adsb.lol"      # or http://10.0.0.20:8080 for tar1090
-      poll_interval: 10s
+      # Polite anonymous rate limit (plugin also honors 429 Retry-After).
+      poll_interval: 30s
       request_timeout: 15s
       track_window: 5m
 

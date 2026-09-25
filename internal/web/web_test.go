@@ -1232,8 +1232,9 @@ func TestIngestEndpointRouting(t *testing.T) {
 }
 
 // TestEmcomRoleFlow pins the restricted emcom role: an emcom directory
-// account signs in with its own password, lands on /compose, sees only the
-// Compose nav entry, and is redirected away from every admin page.
+// account signs in with its own password, lands on the shared dashboard,
+// sees the Dashboard and Compose nav entries, and is redirected away from
+// every admin page.
 func TestEmcomRoleFlow(t *testing.T) {
 	env := newTestEnv(t)
 	if _, err := env.users.CreateUser("ops-user", "", "", "", "emcom", "password123"); err != nil {
@@ -1244,13 +1245,16 @@ func TestEmcomRoleFlow(t *testing.T) {
 	csrf := extractCSRF(t, html)
 	form := url.Values{"csrf": {csrf}, "username": {"ops-user"}, "password": {"password123"}}
 	resp, _ := env.postForm("/login", form)
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose" {
-		t.Fatalf("emcom login = %d %q, want 303 to /compose", resp.StatusCode, resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("emcom login = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
 	}
 
 	resp, html = env.get("/compose")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /compose as emcom = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<span class="nav-label">Dashboard</span>`) {
+		t.Error("emcom must see the Dashboard nav entry")
 	}
 	if !strings.Contains(html, `<span class="nav-label">Compose</span>`) {
 		t.Error("compose page missing Compose nav entry")
@@ -1258,23 +1262,30 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `href="/account"`) {
 		t.Error("emcom must see the Account entry in the user menu")
 	}
-	for _, forbidden := range []string{"Dashboard", "Users", "Groups", "Notifications"} {
+	for _, forbidden := range []string{"Users", "Groups", "Notifications"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
 			t.Errorf("emcom must not see %s nav entry", forbidden)
 		}
 	}
 
-	for _, path := range []string{"/dashboard", "/users", "/groups", "/health", "/logs", "/traffic", "/test", "/notifications"} {
+	// The dashboard itself is open to emcom too.
+	resp, _ = env.get("/dashboard")
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /dashboard as emcom = %d, want 200", resp.StatusCode)
+	}
+
+	for _, path := range []string{"/users", "/groups", "/health", "/logs", "/traffic", "/test", "/notifications"} {
 		resp, _ := env.get(path)
-		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose" {
-			t.Errorf("GET %s as emcom = %d %q, want 303 to /compose", path, resp.StatusCode, resp.Header.Get("Location"))
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+			t.Errorf("GET %s as emcom = %d %q, want 303 to /dashboard", path, resp.StatusCode, resp.Header.Get("Location"))
 		}
 	}
 }
 
 // TestMemberRoleFlow pins the self-service member role: a member signs in
-// with their own password, lands on /account, sees only the Account nav
-// entry, and is redirected away from compose and every admin page.
+// with their own password, lands on the shared dashboard, sees only the
+// Dashboard nav entry, and is redirected away from compose and every admin
+// page.
 func TestMemberRoleFlow(t *testing.T) {
 	env := newTestEnv(t)
 	ops, err := env.users.CreateGroup("ops")
@@ -1293,8 +1304,17 @@ func TestMemberRoleFlow(t *testing.T) {
 	csrf := extractCSRF(t, html)
 	form := url.Values{"csrf": {csrf}, "username": {"plain-user"}, "password": {"password123"}}
 	resp, _ := env.postForm("/login", form)
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account" {
-		t.Fatalf("member login = %d %q, want 303 to /account", resp.StatusCode, resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("member login = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// The dashboard is open to members too.
+	resp, html = env.get("/dashboard")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dashboard as member = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<span class="nav-label">Dashboard</span>`) {
+		t.Error("dashboard page missing the Dashboard nav entry")
 	}
 
 	resp, html = env.get("/account")
@@ -1324,17 +1344,17 @@ func TestMemberRoleFlow(t *testing.T) {
 			t.Errorf("account page missing checked delivery channel %s", kind)
 		}
 	}
-	for _, forbidden := range []string{"Compose", "Dashboard", "Users", "Groups"} {
+	for _, forbidden := range []string{"Compose", "Users", "Groups"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
 			t.Errorf("member must not see %s nav entry", forbidden)
 		}
 	}
 
-	// Compose and every admin page redirect the member to /account.
-	for _, path := range []string{"/compose", "/dashboard", "/users", "/groups", "/health", "/logs", "/traffic", "/test", "/notifications"} {
+	// Compose and every admin page redirect the member to the dashboard.
+	for _, path := range []string{"/compose", "/users", "/groups", "/health", "/logs", "/traffic", "/test", "/notifications"} {
 		resp, _ := env.get(path)
-		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account" {
-			t.Errorf("GET %s as member = %d %q, want 303 to /account", path, resp.StatusCode, resp.Header.Get("Location"))
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+			t.Errorf("GET %s as member = %d %q, want 303 to /dashboard", path, resp.StatusCode, resp.Header.Get("Location"))
 		}
 	}
 

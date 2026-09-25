@@ -211,7 +211,7 @@ func (s *Server) routes(static http.Handler) {
 	if len(s.ingest) > 0 {
 		s.mux.HandleFunc("POST /api/v1/ingest/{id}", s.handleIngest)
 	}
-	s.mux.Handle("GET /dashboard", s.requireAdmin(s.handleDashboard))
+	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
 	s.mux.Handle("GET /test", s.requireAdmin(s.handleTestPage))
 	s.mux.Handle("POST /test", s.requireAdmin(s.handleTestEmit))
 	// Compose: admin and emcom sessions issue/update/expire
@@ -232,12 +232,12 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /groups/{id}/delete", s.requireAdmin(s.handleGroupDelete))
 	s.mux.Handle("GET /groups/{id}/routing", s.requireAdmin(s.handleGroupRoutingPage))
 	s.mux.Handle("POST /groups/{id}/routing", s.requireAdmin(s.handleGroupRouting))
-	s.mux.Handle("GET /partials/status", s.requireAdminPartial(s.handlePartialStatus))
-	s.mux.Handle("GET /partials/mqtt", s.requireAdminPartial(s.handlePartialMQTT))
-	s.mux.Handle("GET /partials/weather", s.requireAdminPartial(s.handlePartialWeather))
-	s.mux.Handle("GET /partials/warnings", s.requireAdminPartial(s.handlePartialWarnings))
-	s.mux.Handle("GET /partials/plugins", s.requireAdminPartial(s.handlePartialPlugins))
-	s.mux.Handle("GET /partials/actions", s.requireAdminPartial(s.handlePartialActions))
+	s.mux.Handle("GET /partials/status", s.requirePagePartial(s.handlePartialStatus))
+	s.mux.Handle("GET /partials/mqtt", s.requirePagePartial(s.handlePartialMQTT))
+	s.mux.Handle("GET /partials/weather", s.requirePagePartial(s.handlePartialWeather))
+	s.mux.Handle("GET /partials/warnings", s.requirePagePartial(s.handlePartialWarnings))
+	s.mux.Handle("GET /partials/plugins", s.requirePagePartial(s.handlePartialPlugins))
+	s.mux.Handle("GET /partials/actions", s.requirePagePartial(s.handlePartialActions))
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -285,8 +285,21 @@ func (s *Server) requirePage(next http.HandlerFunc) http.Handler {
 	})
 }
 
+// requirePagePartial is the fragment-route variant of requirePage:
+// unauthenticated requests get 401 so the embedded poller redirects the
+// browser instead of receiving foreign HTML.
+func (s *Server) requirePagePartial(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.sessions.currentSession(r) == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	})
+}
+
 // requireCompose protects the compose routes: any authenticated admin or
-// emcom session; members are sent to their account page.
+// emcom session; members are sent back to the dashboard.
 func (s *Server) requireCompose(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess := s.sessions.currentSession(r)
@@ -295,7 +308,7 @@ func (s *Server) requireCompose(next http.HandlerFunc) http.Handler {
 			return
 		}
 		if sess.role == "member" {
-			http.Redirect(w, r, "/account", http.StatusSeeOther)
+			http.Redirect(w, r, landingForRole(sess.role), http.StatusSeeOther)
 			return
 		}
 		next(w, r)

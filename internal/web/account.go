@@ -66,16 +66,11 @@ type accountView struct {
 	NavHealth        bool
 }
 
-// landingForRole maps an authenticated session's role to its landing page.
-func landingForRole(role string) string {
-	switch role {
-	case "emcom":
-		return "/compose"
-	case "member":
-		return "/account"
-	default:
-		return "/dashboard"
-	}
+// landingForRole maps an authenticated session's role to its landing page:
+// the main dashboard is the shared home surface for every role (admin,
+// emcom, member alike).
+func landingForRole(_ string) string {
+	return "/dashboard"
 }
 
 // handleAccountPage renders the signed-in user's own data.

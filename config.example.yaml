@@ -735,8 +735,8 @@ aprs:
   # station position; area_radius_km: 0 = radius_km. The station itself
   # (APRS-IS range filter, self document, locator dot) always stays at
   # latitude/longitude.
-  # area_latitude: 50.0212
-  # area_longitude: 20.2075
+  # area_latitude: 50.0562
+  # area_longitude: 20.0610
   # area_radius_km: 0
 
   # How long a station stays in the retained MQTT state after its last

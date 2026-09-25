@@ -147,6 +147,37 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadAPRSArea pins the operational-area keys of the aprs section:
+// they must decode (strict YAML) and default to unset when omitted.
+func TestLoadAPRSArea(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, ""))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.APRS.AreaLatitude != nil || cfg.APRS.AreaLongitude != nil || cfg.APRS.AreaRadiusKM != 0 {
+		t.Fatalf("area defaults = %+v/%+v/%v, want unset", cfg.APRS.AreaLatitude, cfg.APRS.AreaLongitude, cfg.APRS.AreaRadiusKM)
+	}
+
+	cfg, err = Load(writeTempConfig(t, `
+aprs:
+  enabled: true
+  callsign: "SP9MOA-10"
+  gridsquare: "KO00BA"
+  area_latitude: 50.0562
+  area_longitude: 20.0610
+  area_radius_km: 35
+`))
+	if err != nil {
+		t.Fatalf("Load with area: %v", err)
+	}
+	if cfg.APRS.AreaLatitude == nil || cfg.APRS.AreaLongitude == nil {
+		t.Fatalf("area center = %+v/%+v, want set", cfg.APRS.AreaLatitude, cfg.APRS.AreaLongitude)
+	}
+	if *cfg.APRS.AreaLatitude != 50.0562 || *cfg.APRS.AreaLongitude != 20.0610 || cfg.APRS.AreaRadiusKM != 35 {
+		t.Fatalf("area = %+v/%+v r=%v, want 50.0562/20.0610 r=35", *cfg.APRS.AreaLatitude, *cfg.APRS.AreaLongitude, cfg.APRS.AreaRadiusKM)
+	}
+}
+
 func TestLoadPluginRuntimeDefaults(t *testing.T) {
 	cfg, err := Load(writeTempConfig(t, "sources:\n  - id: s\n    type: imgw\n    enabled: true\noutputs:\n  - id: o\n    type: mqtt\n    enabled: true\n"))
 	if err != nil {

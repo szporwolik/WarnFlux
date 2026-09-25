@@ -686,7 +686,12 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	// the /events stream (the "aprs" source in the routing matrix) when
 	// the sender's base callsign is on the registered-user allow-list —
 	// SSIDs may differ, and both radio and APRS-IS delivery qualify.
-	if h.cfg.RouteMessages && h.routableMessage(p) && h.senderApproved(p.Src) {
+	routed := h.cfg.RouteMessages && h.routableMessage(p) && h.senderApproved(p.Src)
+	if h.logger != nil {
+		h.logger.Info("aprs: message received",
+			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "routed", routed)
+	}
+	if routed {
 		h.publishMessageEvent(p)
 	}
 

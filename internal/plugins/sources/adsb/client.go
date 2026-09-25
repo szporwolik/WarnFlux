@@ -19,12 +19,45 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // maxBodyBytes bounds one provider response.
 const maxBodyBytes = 4 << 20 // 4 MiB (a busy tar1090 receiver can be large)
+
+// rateLimitError reports a provider-side 429 with the advertised
+// Retry-After window; the run loop backs the next poll off by it.
+type rateLimitError struct {
+	retryAfter time.Duration
+}
+
+func (e *rateLimitError) Error() string {
+	return fmt.Sprintf("rate limited, retry after %s", e.retryAfter)
+}
+
+// parseRetryAfter reads the Retry-After header (seconds or HTTP date),
+// clamped to [1s, 5m]; unparseable values fall back to 30s.
+func parseRetryAfter(v string) time.Duration {
+	if secs, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && secs > 0 {
+		return clampRetry(time.Duration(secs) * time.Second)
+	}
+	if t, err := http.ParseTime(strings.TrimSpace(v)); err == nil {
+		return clampRetry(time.Until(t))
+	}
+	return 30 * time.Second
+}
+
+func clampRetry(d time.Duration) time.Duration {
+	if d < time.Second {
+		return time.Second
+	}
+	if d > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return d
+}
 
 // Providers.
 const (
@@ -91,6 +124,9 @@ func (c *Client) getJSON(ctx context.Context, u string) ([]byte, error) {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, &rateLimitError{retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}

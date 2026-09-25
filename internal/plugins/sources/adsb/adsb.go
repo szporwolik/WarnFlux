@@ -21,7 +21,7 @@ const Type = "adsb"
 
 // Defaults and bounds.
 const (
-	defaultPollInterval   = 10 * time.Second
+	defaultPollInterval   = 30 * time.Second
 	defaultRequestTimeout = 15 * time.Second
 	defaultBaseAdsbLol    = "https://api.adsb.lol"
 	defaultTrackWindow    = 5 * time.Minute
@@ -49,7 +49,8 @@ type Config struct {
 	// RadiusKM overrides the area radius (default: the APRS hub radius).
 	RadiusKM float64 `yaml:"radius_km"`
 	// PollInterval bounds one poll cycle. adsb.lol rate-limits anonymous
-	// clients to roughly one request per 10 seconds.
+	// clients, so keep it polite (30s is the safe default; the plugin
+	// also honors 429 Retry-After when the provider pushes back).
 	PollInterval time.Duration `yaml:"poll_interval"`
 	// RequestTimeout bounds one provider request.
 	RequestTimeout time.Duration `yaml:"request_timeout"`
@@ -148,7 +149,8 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 func (s *Source) Name() string { return Type }
 
 // Run polls the provider on the configured interval. Transient failures
-// degrade the source and never terminate the run.
+// degrade the source and never terminate the run; provider rate limits
+// (429) back the next poll off by the advertised Retry-After window.
 func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	reporter, _ := emit.(plugin.SourceHealthReporter)
 	slog.Info("adsb plugin started",
@@ -161,8 +163,12 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 			break
 		}
 		n, err := s.pollOnce(ctx, emit)
+		delay := s.cfg.PollInterval
 		if err != nil && ctx.Err() == nil {
-			slog.Warn("adsb poll failed", "provider", s.cfg.Provider, "error", err)
+			if rl, ok := err.(*rateLimitError); ok && rl.retryAfter > delay {
+				delay = rl.retryAfter
+			}
+			slog.Warn("adsb poll failed", "provider", s.cfg.Provider, "error", err, "retry_in", delay)
 			if reporter != nil {
 				reporter.ReportSourceDegraded(err)
 			}
@@ -172,7 +178,7 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 			}
 			slog.Debug("adsb snapshot published", "provider", s.cfg.Provider, "aircraft", n)
 		}
-		timer := time.NewTimer(s.cfg.PollInterval)
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

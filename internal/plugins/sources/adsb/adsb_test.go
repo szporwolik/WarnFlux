@@ -285,3 +285,35 @@ func fmtF(v float64) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+func TestRateLimitHandling(t *testing.T) {
+	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "45")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+
+	c := NewClient(ProviderAdsbLol, srv.URL, time.Second)
+	_, _, err := c.Fetch(context.Background(), 50, 20, 45)
+	rl, ok := err.(*rateLimitError)
+	if !ok {
+		t.Fatalf("error = %T %v, want rateLimitError", err, err)
+	}
+	if rl.retryAfter != 45*time.Second {
+		t.Errorf("retryAfter = %v, want 45s", rl.retryAfter)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	if d := parseRetryAfter("12"); d != 12*time.Second {
+		t.Errorf("seconds = %v", d)
+	}
+	if d := parseRetryAfter("bogus"); d != 30*time.Second {
+		t.Errorf("fallback = %v", d)
+	}
+	if d := parseRetryAfter("10000"); d != 5*time.Minute {
+		t.Errorf("cap = %v", d)
+	}
+	if d := parseRetryAfter("0"); d != 30*time.Second {
+		t.Errorf("zero = %v", d)
+	}
+}

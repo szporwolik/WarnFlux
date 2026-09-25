@@ -1024,6 +1024,20 @@
     unknown: "#78909c"
   };
 
+  // aprsWarningIcon renders the APRS emergency symbol (alternate
+  // table "!") used for events composed through the web UI.
+  function aprsWarningIcon() {
+    var html = '<span class="aprs-sym-wrap">' +
+      '<span class="aprs-sym-img" style="background-image:url(\'' + APRS_SPRITES["\\"] + '\');background-position:-0px -0px"></span>' +
+      '</span>';
+    return L.divIcon({
+      className: "aprs-sym",
+      iconSize: [96, 44],
+      iconAnchor: [48, 14],
+      html: html
+    });
+  }
+
   function hazardIcon(sev) {
     var c = HAZARD_COLORS[sev] || HAZARD_COLORS.unknown;
     var svg = '<svg width="22" height="20" viewBox="0 0 22 20" aria-hidden="true">' +
@@ -1074,7 +1088,10 @@
             popup += "<br><span class=\"muted\">" + when.join(" · ") + "</span>";
           }
           popup += "<br><span class=\"muted\">Source: " + esc(e.source) + "</span>";
-          var m = L.marker([e.latitude, e.longitude], { icon: hazardIcon(e.severity), riseOnHover: true });
+          // Composed events carry the APRS emergency symbol; every
+          // other source keeps the severity-colored triangle.
+          var icon = e.source === "compose" ? aprsWarningIcon() : hazardIcon(e.severity);
+          var m = L.marker([e.latitude, e.longitude], { icon: icon, riseOnHover: true });
           m.bindTooltip(esc(e.headline || e.event), { sticky: true, direction: "top" });
           m.bindPopup(popup);
           hazardLayer.addLayer(m);
@@ -1639,6 +1656,108 @@
   } else {
     initAboutPopup();
   }
+})();
+
+// Compose page: optional map picker for the event location.
+// A click drops the APRS warning marker (draggable); the lat/lon inputs
+// stay in sync and the "Clear location" button removes it.
+(function () {
+  "use strict";
+
+  var mapEl = document.getElementById("compose-map");
+  if (!mapEl) {
+    return;
+  }
+  var latInput = document.getElementById("compose-lat");
+  var lonInput = document.getElementById("compose-lon");
+  var clearBtn = document.getElementById("compose-loc-clear");
+
+  var centerLat = parseFloat(mapEl.getAttribute("data-lat"));
+  var centerLon = parseFloat(mapEl.getAttribute("data-lon"));
+  var center = (centerLat && centerLon) ? [centerLat, centerLon] : [50.0, 20.0];
+
+  var map = null;
+  var marker = null;
+
+  // The picker marker is the APRS emergency symbol (alternate table "!"),
+  // the same icon the public map uses for composed events.
+  function warningIcon() {
+    return L.divIcon({
+      className: "aprs-sym",
+      iconSize: [96, 44],
+      iconAnchor: [48, 14],
+      html: '<span class="aprs-sym-wrap">' +
+        '<span class="aprs-sym-img" style="background-image:url(\'/static/aprs-symbols/aprs-symbols-24-1@2x.png\');background-position:-0px -0px"></span>' +
+        '</span>'
+    });
+  }
+
+  function syncInputs() {
+    var p = marker.getLatLng();
+    latInput.value = p.lat.toFixed(5);
+    lonInput.value = p.lng.toFixed(5);
+  }
+
+  function dropMarker(latlng) {
+    if (!marker) {
+      marker = L.marker(latlng, { icon: warningIcon(), draggable: true }).addTo(map);
+      marker.on("dragend", syncInputs);
+    } else {
+      marker.setLatLng(latlng);
+    }
+    syncInputs();
+  }
+
+  function tileURL() {
+    var dark = document.documentElement.getAttribute("data-theme") !== "light";
+    return dark
+      ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+      : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  }
+
+  function loadLeaflet(cb) {
+    if (window.L) {
+      cb();
+      return;
+    }
+    var css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(css);
+    var s = document.createElement("script");
+    s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    s.onload = function () { cb(); };
+    s.onerror = function () { /* offline: the lat/lon inputs still work */ };
+    document.body.appendChild(s);
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener("click", function () {
+      if (marker && map) {
+        map.removeLayer(marker);
+        marker = null;
+      }
+      latInput.value = "";
+      lonInput.value = "";
+    });
+  }
+
+  loadLeaflet(function () {
+    if (!window.L) {
+      return;
+    }
+    map = L.map(mapEl, { attributionControl: false }).setView(center, 11);
+    L.tileLayer(tileURL(), { maxZoom: 18 }).addTo(map);
+    map.on("click", function (e) { dropMarker(e.latlng); });
+
+    // Edit flow: an existing location prefills the marker.
+    var lat = parseFloat(latInput.value);
+    var lon = parseFloat(lonInput.value);
+    if (!isNaN(lat) && !isNaN(lon)) {
+      dropMarker([lat, lon]);
+      map.setView([lat, lon], 13);
+    }
+  });
 })();
 
 // Compose page: fill the form with debug values for quick testing.

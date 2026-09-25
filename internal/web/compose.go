@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,8 @@ type composeForm struct {
 	Description string
 	Instruction string
 	Areas       string
+	Latitude    string
+	Longitude   string
 	EffectiveAt string
 	ExpiresAt   string
 	ReceivedAt  string
@@ -102,6 +105,11 @@ type composeView struct {
 	Urgencies   []option
 	Certainties []option
 	Statuses    []option
+
+	// Latitude/Longitude are the optional event coordinates for the
+	// compose map picker; 0 when the APRS hub is disabled (no picker).
+	AprsLat float64
+	AprsLon float64
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -168,6 +176,8 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 		Description: strings.TrimSpace(r.PostFormValue("description")),
 		Instruction: strings.TrimSpace(r.PostFormValue("instruction")),
 		Areas:       strings.TrimSpace(r.PostFormValue("areas")),
+		Latitude:    strings.TrimSpace(r.PostFormValue("latitude")),
+		Longitude:   strings.TrimSpace(r.PostFormValue("longitude")),
 		EffectiveAt: strings.TrimSpace(r.PostFormValue("effective_at")),
 		ExpiresAt:   strings.TrimSpace(r.PostFormValue("expires_at")),
 		ReceivedAt:  strings.TrimSpace(r.PostFormValue("received_at")),
@@ -321,6 +331,8 @@ func composeTransition(h state.Hazard, typ dispatch.TransitionType) dispatch.Eve
 				Certainty:   h.Certainty,
 				Headline:    h.Headline,
 				Areas:       h.Areas,
+				Latitude:    h.Latitude,
+				Longitude:   h.Longitude,
 				EffectiveAt: h.EffectiveAt,
 				ExpiresAt:   h.ExpiresAt,
 				ReceivedAt:  h.ReceivedAt,
@@ -364,6 +376,19 @@ func validateComposeForm(form composeForm) string {
 	}
 	if len(form.Areas) > maxComposeAreasLen {
 		return fmt.Sprintf("areas are too long (maximum %d characters)", maxComposeAreasLen)
+	}
+	if (form.Latitude == "") != (form.Longitude == "") {
+		return "latitude and longitude must be set together"
+	}
+	if form.Latitude != "" {
+		lat, err1 := strconv.ParseFloat(form.Latitude, 64)
+		lon, err2 := strconv.ParseFloat(form.Longitude, 64)
+		if err1 != nil || err2 != nil {
+			return "invalid coordinates"
+		}
+		if lat < -90 || lat > 90 || lon < -180 || lon > 180 {
+			return "coordinates out of range"
+		}
 	}
 	if form.EffectiveAt != "" && parseComposeTime(form.EffectiveAt) == nil {
 		return "invalid effective time"
@@ -431,12 +456,36 @@ func composeHazardFromForm(form composeForm, now time.Time) state.Hazard {
 		Description: form.Description,
 		Instruction: form.Instruction,
 		Areas:       composeAreas(form.Areas),
+		Latitude:    parseComposeCoord(form.Latitude),
+		Longitude:   parseComposeCoord(form.Longitude),
 		Status:      form.Status,
 		EffectiveAt: parseComposeTime(form.EffectiveAt),
 		ExpiresAt:   parseComposeTime(form.ExpiresAt),
 		ReceivedAt:  *received,
 		UpdatedAt:   now,
 	}
+}
+
+// parseComposeCoord parses one optional coordinate form value; empty
+// yields nil (validated elsewhere).
+func parseComposeCoord(raw string) *float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return nil
+	}
+	return &v
+}
+
+// composeCoordValue formats an optional coordinate for the form.
+func composeCoordValue(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*v, 'f', 5, 64)
 }
 
 // composeFormFromHazard prefills the form for an edit.
@@ -452,6 +501,8 @@ func composeFormFromHazard(h state.Hazard) composeForm {
 		Description: h.Description,
 		Instruction: h.Instruction,
 		Areas:       strings.Join(h.Areas, ", "),
+		Latitude:    composeCoordValue(h.Latitude),
+		Longitude:   composeCoordValue(h.Longitude),
 		EffectiveAt: composeTimeValue(h.EffectiveAt),
 		ExpiresAt:   composeTimeValue(h.ExpiresAt),
 		ReceivedAt:  h.ReceivedAt.Format(time.RFC3339),
@@ -496,7 +547,7 @@ func (s *Server) composeItems() []composeItem {
 
 // buildComposeView assembles the page model.
 func (s *Server) buildComposeView(form composeForm) composeView {
-	return composeView{
+	view := composeView{
 		AppTitle:    s.cfg.Title,
 		Name:        s.displayName(),
 		Header1:     s.displayHeader1(),
@@ -514,6 +565,12 @@ func (s *Server) buildComposeView(form composeForm) composeView {
 		Statuses:    composeStatuses,
 		NavCompose:  true,
 	}
+	// The map picker centers on the APRS hub position (the geographic
+	// master of this installation).
+	if s.aprs != nil && s.aprs.Enabled() {
+		view.AprsLat, view.AprsLon = s.aprs.CenterLat(), s.aprs.CenterLon()
+	}
+	return view
 }
 
 // renderComposeError re-renders the page with an error banner, preserving

@@ -2060,8 +2060,8 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 4px 12px 4px 8px;
-  border-radius: 999px;
+  padding: 4px 10px 4px 8px;
+  border-radius: var(--radius);
   border: 1px solid rgba(255, 255, 255, 0.35);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
   color: #fff;
@@ -2074,7 +2074,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .emcom-chip-level {
   background: rgba(255, 255, 255, 0.22);
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius);
   font-weight: 600;
 }
 .emcom-chip-label { opacity: 0.92; }

@@ -311,6 +311,37 @@ sources:
   #     # powiat: wielicki
   #     # rok: 0          # 0 = the current year
 
+  # GIOŚ air-quality exceedance feed (official Chief Inspectorate of
+  # Environmental Protection API): active exceedances of the information,
+  # alarm, admissible and target levels (PM10, PM2.5, O3, SO2, NO2, ...).
+  # One record becomes one hazard event (category environment) with the
+  # official norm type mapped onto a canonical severity; records carry
+  # the affected zone, and the station directory geocodes them for the
+  # home map. The feed is a paginated history, so only records newer
+  # than max_age become alerts. POLAND-ONLY.
+  # - id: giosaq-main
+  #   type: giosaq
+  #   enabled: true
+  #
+  #   runtime:
+  #     restart: true
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     # The levels endpoint allows 2 requests/minute: 5m is plenty.
+  #     poll_interval: 5m
+  #     request_timeout: 20s
+  #     # Only records newer than this become alerts; 0 = no cutoff.
+  #     max_age: 24h
+  #     # Zone-name substrings (case-insensitive); empty = every zone.
+  #     zones: ["strefa małopolska", "aglomeracja krakowska"]
+  #     # Norm-type keyword -> canonical severity mapping.
+  #     alarm_severity: severe     # "alarmowy" (alarm level)
+  #     info_severity: moderate    # "informowania" (information level)
+  #     limit_severity: minor      # "dopuszczalnego"/"docelowego"
+  #     # Station-directory (coordinates) refresh; 0 = never.
+  #     stations_refresh: 24h
+
   # APRS-IS source: connects to an APRS-IS server, subscribes to packets
   # around the configured position (aprs.gridsquare + aprs.radius_km) and
   # feeds them into the shared APRS hub, which publishes the merged

@@ -12,6 +12,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/aprsradio"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/gddkia"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/gios"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/giosaq"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/imgw"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/metar"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
@@ -38,6 +39,9 @@ func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub) error {
 		return err
 	}
 	if err := gios.Register(reg, hub); err != nil {
+		return err
+	}
+	if err := giosaq.Register(reg); err != nil {
 		return err
 	}
 	if err := adsb.Register(reg, hub); err != nil {

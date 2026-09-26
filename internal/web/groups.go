@@ -52,6 +52,7 @@ var baseRoutingSources = []sourceOption{
 	{Value: "imgw-hydro", Label: "IMGW hydro"},
 	{Value: "rso", Label: "RSO"},
 	{Value: "aprs", Label: "APRS messages"},
+	{Value: "giosaq", Label: "GIOŚ air quality"},
 	{Value: "compose", Label: "Compose"},
 }
 

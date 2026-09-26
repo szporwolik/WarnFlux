@@ -1654,16 +1654,17 @@
   var AIRCRAFT_POLL_MS = 15 * 1000;
 
   // planeIcon renders one aircraft as a small hollow badge with the
-  // track-rotated plane glyph: moving traffic stays visually quiet —
-  // grounded targets are gray, airborne ones muted amber.
+  // track-rotated plane glyph. The whole aircraft layer stays neutral
+  // gray so planes never compete with the alert colors: airborne targets
+  // are a light blue-gray, grounded ones a darker gray.
   function planeIcon(a) {
     var rot = a.track_deg != null ? a.track_deg : 0;
-    var color = a.on_ground ? "#78909c" : "#d4a017";
+    var color = a.on_ground ? "#78909c" : "#b0bec5";
     return wfBadge({ color: color, glyph: BADGE_GLYPHS.plane, rot: rot, hollow: true, size: 18 });
   }
 
   function aircraftPopup(a) {
-    var color = a.on_ground ? "#607d8b" : "#d4a017";
+    var color = a.on_ground ? "#607d8b" : "#90a4ae";
     var lines = [];
     if (a.altitude_m != null) { lines.push(tr("map.alt") + ": " + fmtNum(a.altitude_m, 0) + " m"); }
     if (a.speed_kmh != null) {
@@ -1695,11 +1696,11 @@
         }
         aircraftLayer.clearLayers();
         lastAircraft = (data && data.aircraft) || [];
-        var overlay = aprsOverlayColors();
         lastAircraft.forEach(function (a) {
           if (!a.latitude || !a.longitude) {
             return;
           }
+          var vecColor = a.on_ground ? "#78909c" : "#b0bec5";
           var marker = L.marker([a.latitude, a.longitude], { icon: planeIcon(a), riseOnHover: true });
           marker.bindTooltip(trf("map.aircraft.tip", a.callsign || a.icao24), { direction: "top" });
           marker.bindPopup(aircraftPopup(a));
@@ -1715,7 +1716,7 @@
           });
           if (trail.length > 1) {
             aircraftLayer.addLayer(L.polyline(trail, {
-              color: a.on_ground ? "#9e9e9e" : "#d4a017", weight: 2, opacity: 0.75, interactive: false
+              color: vecColor, weight: 2, opacity: 0.6, interactive: false
             }));
           }
 
@@ -1726,7 +1727,7 @@
             var vecKm = Math.min(Math.max(a.speed_kmh / 60, 0.5), 5);
             var head = destPoint(a.latitude, a.longitude, a.track_deg, vecKm);
             aircraftLayer.addLayer(L.polyline([[a.latitude, a.longitude], head], {
-              color: overlay.heading, weight: 3, opacity: 0.9, interactive: false
+              color: vecColor, weight: 2.5, opacity: 0.7, interactive: false
             }));
             aircraftLayer.addLayer(L.marker(head, {
               interactive: false,
@@ -1735,7 +1736,7 @@
                 iconSize: [10, 10],
                 iconAnchor: [5, 5],
                 html: '<span class="wf-track-arrow" style="transform:rotate(' + a.track_deg +
-                  'deg);border-bottom-color:' + overlay.heading + '"></span>'
+                  'deg);border-bottom-color:' + vecColor + '"></span>'
               })
             }));
           }
@@ -1836,7 +1837,7 @@
     weather: "#00897b",
     radar: "#00bcd4",
     airquality: "#43a047",
-    aircraft: "#d4a017"
+    aircraft: "#90a4ae"
   };
 
   // svgBtn builds one uniform 32px icon button.

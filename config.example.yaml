@@ -121,6 +121,8 @@ sources:
           name: Home
           latitude: 50.0000
           longitude: 20.0000
+          # air_quality: false  # per-location opt-out when an official
+          #                      # station already covers the town
 
   # METAR aviation weather source (NOAA Aviation Weather Center):
   # publishes current airport observations as informational weather

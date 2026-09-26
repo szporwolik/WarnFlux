@@ -125,3 +125,17 @@ func TestAirQualityURL(t *testing.T) {
 		}
 	}
 }
+
+func TestLocAirQualityOverride(t *testing.T) {
+	if !locAirQuality(Location{ID: "home"}) {
+		t.Error("unset override must default to enabled")
+	}
+	off := false
+	on := true
+	if locAirQuality(Location{ID: "home", AirQuality: &off}) {
+		t.Error("explicit false must disable the AQ companion")
+	}
+	if !locAirQuality(Location{ID: "home", AirQuality: &on}) {
+		t.Error("explicit true must enable the AQ companion")
+	}
+}

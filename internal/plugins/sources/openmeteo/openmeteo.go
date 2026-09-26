@@ -59,6 +59,10 @@ type Location struct {
 	Name      string  `yaml:"name"`
 	Latitude  float64 `yaml:"latitude"`
 	Longitude float64 `yaml:"longitude"`
+	// AirQuality optionally overrides the global air_quality switch for
+	// this one location: false skips the AQ companion (e.g. a town that
+	// already has an official GIOŚ station on the map).
+	AirQuality *bool `yaml:"air_quality"`
 }
 
 // Config is the plugin-specific configuration.
@@ -236,6 +240,15 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// locAirQuality resolves the per-location air-quality switch: unset means
+// the global source setting applies.
+func locAirQuality(l Location) bool {
+	if l.AirQuality == nil {
+		return true
+	}
+	return *l.AirQuality
+}
+
 // pollOnce fetches and publishes every configured location once and
 // returns the delay until the next poll: the configured poll interval,
 // extended by any provider Retry-After (clamped). One failing location
@@ -280,8 +293,9 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		// Optional air-quality companion for the same location: a
 		// European-AQI snapshot on the air_quality information kind. It
 		// runs on its own endpoint and quota, so a rate-limited forecast
-		// call must never suppress it.
-		if s.cfg.AirQuality {
+		// call must never suppress it. A location may opt out (air_quality
+		// false) when an official station already covers the town.
+		if s.cfg.AirQuality && locAirQuality(loc) {
 			if ctx.Err() != nil {
 				break
 			}

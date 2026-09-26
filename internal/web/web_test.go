@@ -2120,10 +2120,11 @@ func TestWarningsPagination(t *testing.T) {
 		t.Errorf("page=abc should clamp to page 1: %s", garbage)
 	}
 
-	// Full-page navigation uses ?wpage= (the pager links).
-	_, dash2 := env.get("/dashboard?wpage=2")
-	if !strings.Contains(dash2, `data-wpage="2"`) || !strings.Contains(dash2, "21–40 of 45") {
-		t.Errorf("dashboard wpage=2 wrong: %s", dash2)
+	// The dashboard is purely technical: warnings live on the public home
+	// page and their own partial, not in the dashboard grid.
+	_, dash := env.get("/dashboard?wpage=2")
+	if strings.Contains(dash, `data-wpage="2"`) || strings.Contains(dash, "21–40 of 45") {
+		t.Errorf("dashboard still renders the warnings section: %s", dash)
 	}
 }
 

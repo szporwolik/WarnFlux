@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
 // TestPublicChannels pins the friendly public channel list: enabled
@@ -30,6 +31,34 @@ func TestPublicChannels(t *testing.T) {
 		}
 		if got[i].Icon == "" || got[i].Description == "" {
 			t.Errorf("channel %s lacks icon/description: %+v", name, got[i])
+		}
+	}
+}
+
+// TestPublicSources pins the friendly public source list: enabled source
+// instances only, outputs and unknown types hidden, one row per feed in
+// the fixed friendly order.
+func TestPublicSources(t *testing.T) {
+	statuses := []plugin.PluginStatus{
+		{ID: "mqtt-main", Type: "mqtt", Kind: plugin.KindOutput, State: plugin.StateRunning},
+		{ID: "imgw-old", Type: "imgw", Kind: plugin.KindSource, State: plugin.StateDisabled},
+		{ID: "adsb-main", Type: "adsb", Kind: plugin.KindSource, State: plugin.StateRunning},
+		{ID: "giosaq-main", Type: "giosaq", Kind: plugin.KindSource, State: plugin.StateRunning},
+		{ID: "imgw-warnings", Type: "imgw", Kind: plugin.KindSource, State: plugin.StateRunning},
+		{ID: "rso-main", Type: "rso", Kind: plugin.KindSource, State: plugin.StateRunning},
+		{ID: "future-x", Type: "something-new", Kind: plugin.KindSource, State: plugin.StateRunning},
+	}
+	got := publicSources(statuses)
+	want := []string{"RSO / Alert RCB", "IMGW-PIB", "GIOŚ (air quality)", "ADS-B aircraft"}
+	if len(got) != len(want) {
+		t.Fatalf("sources = %+v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i].Name != name {
+			t.Errorf("source %d = %s, want %s", i, got[i].Name, name)
+		}
+		if got[i].Icon == "" || got[i].Description == "" {
+			t.Errorf("source %s lacks icon/description: %+v", name, got[i])
 		}
 	}
 }

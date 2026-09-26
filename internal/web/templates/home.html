@@ -43,7 +43,7 @@
     <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Active hazards</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-radio">Map</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-archive">Archive</button>
-    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-channels">Channels</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-channels">Sources</button>
   </nav>
 
   <main class="home-main">
@@ -71,8 +71,26 @@
       <div id="archive-box"><p class="muted">Loading archive…</p></div>
     </section>
     <section class="home-panel" id="panel-tab-channels" data-panel="tab-channels" hidden>
+      {{if .Sources}}
+      <h2 class="home-alerts-head">Where the data comes from</h2>
+      <p class="muted home-channels-note">The alerts are collected from these official feeds and networks.</p>
+      <div class="channels-list">
+        {{range .Sources}}
+        <article class="channel-row">
+          <svg class="icon channel-icon" aria-hidden="true"><use href="/static/icons.svg#{{.Icon}}"></use></svg>
+          <div class="channel-body">
+            <h3>{{.Name}}</h3>
+            <p class="muted">{{.Description}}</p>
+          </div>
+        </article>
+        {{end}}
+      </div>
+      {{else}}
+      <p class="home-none">No data sources are configured yet.</p>
+      {{end}}
+
       {{if .Channels}}
-      <h2 class="home-alerts-head">Delivery channels</h2>
+      <h2 class="home-alerts-head home-channels-head">How alerts reach you</h2>
       <p class="muted home-channels-note">When an alert is issued, the system reaches people through these channels.</p>
       <div class="channels-list">
         {{range .Channels}}

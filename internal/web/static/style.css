@@ -1393,6 +1393,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .home-archive .pager { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; }
 .home-archive-window { color: var(--muted); font-size: 0.8rem; font-weight: 500; }
 .home-channels-note { margin: 0 0 1rem; }
+.home-channels-head { margin-top: 1.8rem; }
 .channels-list { display: grid; gap: 0.6rem; max-width: 44rem; }
 .channel-row {
   display: flex;

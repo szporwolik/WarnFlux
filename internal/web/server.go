@@ -49,15 +49,19 @@ type RouterStatuses interface {
 
 // Server is the HTTP layer of the merged application.
 type Server struct {
-	cfg          config.Web
-	st           *state.State
-	receivers    *mqttreceiver.Manager
-	pub          composePublisher
-	router       RouterStatuses
-	actions      *action.Manager
-	aprs         *aprs.Hub
-	ingress      *dispatch.Ingress
-	users        storage.DirectoryStore
+	cfg       config.Web
+	st        *state.State
+	receivers *mqttreceiver.Manager
+	pub       composePublisher
+	router    RouterStatuses
+	actions   *action.Manager
+	aprs      *aprs.Hub
+	ingress   *dispatch.Ingress
+	users     storage.DirectoryStore
+	// events backs the public archive (180-day history of communications).
+	// nil in minimal constructions (the archive tab then shows an empty
+	// state).
+	events       storage.EventStore
 	logger       *slog.Logger
 	sessions     *sessionStore
 	loginLimiter *loginLimiter
@@ -108,7 +112,7 @@ const repoURL = appinfo.RepoURL
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	pub composePublisher, router RouterStatuses, actions *action.Manager,
 	aprsHub *aprs.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
-	users storage.DirectoryStore, ingest map[string]http.Handler,
+	users storage.DirectoryStore, events storage.EventStore, ingest map[string]http.Handler,
 	logs *LogBuffer, traffic *mqttreceiver.TrafficBuffer,
 	trails *trail.Recorder, metricsReg *metrics.Registry) (*Server, error) {
 
@@ -142,6 +146,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		aprs:         aprsHub,
 		ingress:      ingress,
 		users:        users,
+		events:       events,
 		logger:       logger,
 		sessions:     newSessionStore(cfg.Auth.SecureCookie),
 		loginLimiter: newLoginLimiter(),
@@ -201,6 +206,7 @@ func (s *Server) routes(static http.Handler) {
 	// The login form lives behind the top-right icon button (/login).
 	s.mux.HandleFunc("GET /{$}", s.handleHome)
 	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
+	s.mux.HandleFunc("GET /archive", s.handleArchive)
 	s.mux.HandleFunc("GET /api/aprs/stations", s.handleAPRSStations)
 	s.mux.HandleFunc("GET /api/events", s.handleEventsMap)
 	s.mux.HandleFunc("GET /api/weather", s.handleWeather)

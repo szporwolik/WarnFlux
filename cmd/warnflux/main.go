@@ -209,7 +209,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 
 	if cfg.Web.Enabled {
 		if _, err := web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub,
-			ingress, logger, resolvedVersion, commit, nil, nil, nil, traffic, trails, met); err != nil {
+			ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, traffic, trails, met); err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
 	}
@@ -511,7 +511,7 @@ func run(configPath string, checkConfig bool) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username, adminPassword); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, ingress, logger, resolvedVersion, commit, store, ingestHandlers, logs, traffic, trails, met)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, ingress, logger, resolvedVersion, commit, store, store, ingestHandlers, logs, traffic, trails, met)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}

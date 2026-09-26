@@ -42,8 +42,9 @@ app:
   change_retention: 24h
 
   # How long cancelled/expired current-state records are kept in the
-  # events table, e.g. 720h (30 days). Active events are never cleaned.
-  event_retention: 720h
+  # events table, e.g. 4320h (180 days, matching the public home-page
+  # Archive tab). Active events are never cleaned.
+  event_retention: 4320h
 
   # How long action-fire ledger rows are kept before pruning. They bound
   # the dedup window: a replayed event can fire again only after its row

@@ -409,4 +409,10 @@ func (failingStore) Count(context.Context) (int, error)                      { r
 func (failingStore) PendingStats(context.Context) (int, time.Duration, error) {
 	return 0, 0, nil
 }
+func (failingStore) ListArchiveEvents(context.Context, time.Time, int, int) ([]storage.StoredEvent, error) {
+	return nil, nil
+}
+func (failingStore) CountArchiveEvents(context.Context, time.Time) (int, error) {
+	return 0, nil
+}
 func (failingStore) Close() error { return nil }

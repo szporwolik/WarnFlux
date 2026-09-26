@@ -96,6 +96,12 @@ func (m *memStore) Count(context.Context) (int, error) { return 0, nil }
 func (m *memStore) PendingStats(context.Context) (int, time.Duration, error) {
 	return 0, 0, nil
 }
+func (m *memStore) ListArchiveEvents(context.Context, time.Time, int, int) ([]storage.StoredEvent, error) {
+	return nil, nil
+}
+func (m *memStore) CountArchiveEvents(context.Context, time.Time) (int, error) {
+	return 0, nil
+}
 func (m *memStore) Close() error { return nil }
 
 func (m *memStore) cursor(outputID string) int64 {

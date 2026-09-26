@@ -8,20 +8,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/notify"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
-
-// accountFlash maps the post-action redirect marker to a banner message.
-var accountFlash = map[string]string{
-	"saved": "Account updated.",
-}
 
 // accountFlashErr is reserved for future error flash markers.
 var accountFlashErr = map[string]string{}
 
 // accountView is the /account page model.
 type accountView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -149,11 +146,13 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 		NavAccount:     true,
 	}
 	msg := r.URL.Query().Get("msg")
-	v.Msg = accountFlash[msg]
+	if msg == "saved" {
+		v.Msg = i18n.T(s.langFor(r), "account.saved")
+	}
 	v.Error = accountFlashErr[r.URL.Query().Get("error")]
 
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "account", v)
+	s.renderL(w, r, "account", v)
 }
 
 // handleAccountSave applies the self-service edit: contact fields and an
@@ -256,7 +255,7 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusBadRequest)
-		s.render(w, "account", v)
+		s.renderL(w, r, "account", v)
 		return
 	}
 

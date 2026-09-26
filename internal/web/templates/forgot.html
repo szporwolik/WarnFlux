@@ -1,9 +1,9 @@
 {{define "forgot"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Forgot password · {{.AppTitle}}</title>
+  <title>{{tr .Lang "forgot.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
@@ -11,23 +11,27 @@
 </head>
 <body class="login-page">
   <main class="login-card">
+    <div class="lang-switch login-lang" role="group" aria-label="{{tr .Lang "common.language"}}">
+      <a class="lang-opt{{if eq .Lang "en"}} active{{end}}" href="/lang/en" hreflang="en" lang="en" title="English">EN</a>
+      <a class="lang-opt{{if eq .Lang "pl"}} active{{end}}" href="/lang/pl" hreflang="pl" lang="pl" title="Polski">PL</a>
+    </div>
     <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
     <h1 class="login-name">{{.Header1}}</h1>
-    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">Alerts in. Action out.</p>{{end}}
+    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">{{tr .Lang "login.tagline"}}</p>{{end}}
     {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
     {{if .Message}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Message}}</p>{{end}}
     <form method="post" action="/forgot">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <label>Username
+      <label>{{tr .Lang "login.username"}}
         <input type="text" name="username" value="{{.Username}}" autocomplete="username" required autofocus>
       </label>
-      <label>Registered email
+      <label>{{tr .Lang "forgot.email"}}
         <input type="email" name="email" value="{{.Email}}" autocomplete="email" required>
       </label>
-      <button type="submit" class="btn-primary">Send reset link</button>
+      <button type="submit" class="btn-primary">{{tr .Lang "forgot.send"}}</button>
     </form>
-    <p class="login-note">A one-time link will be sent to the account's registered email address.</p>
-    <p class="login-back"><a href="/login">← Back to sign in</a></p>
+    <p class="login-note">{{tr .Lang "forgot.note"}}</p>
+    <p class="login-back"><a href="/login">{{tr .Lang "forgot.back"}}</a></p>
   </main>
   {{template "footer" .}}
 </body>

@@ -1,9 +1,9 @@
 {{define "emcom"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>EMCOM · {{.AppTitle}}</title>
+  <title>{{tr .Lang "emcom.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -13,8 +13,8 @@
   {{template "sidebar" .}}
   <main class="emcom-page">
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>EMCOM networks</h2>
-      <p class="muted">Situational crisis-communications networks. Each network's readiness level is published as a retained MQTT message and shown publicly in the home-page header.</p>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "emcom.title"}}</h2>
+      <p class="muted">{{tr .Lang "emcom.intro"}}</p>
 
       {{if .Msg}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{.Msg}}</span></div>{{end}}
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
@@ -25,15 +25,15 @@
           <div class="emcom-card-head">
             <h3>{{.Name}}</h3>
             <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
-              <span class="emcom-badge-dot"></span>level {{.Level}} — {{.LevelName}}
+              <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
             </span>
           </div>
           <form method="post" action="/emcom/{{.Slug}}/level" class="emcom-form" data-emcom-form>
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
             <div class="emcom-slider-row">
               <input type="range" class="emcom-slider emcom-slider-{{.LevelClass}}" min="0" max="3" step="1"
-                     name="level" value="{{.Level}}" data-emcom-slider aria-label="Readiness level of {{.Name}}">
-              <span class="emcom-slider-value" data-emcom-value>level {{.Level}}</span>
+                     name="level" value="{{.Level}}" data-emcom-slider aria-label="{{trf $.Lang "emcom.slider.aria" .Name}}">
+              <span class="emcom-slider-value" data-emcom-value>{{trf $.Lang "emcom.level" .Level}}</span>
             </div>
             <div class="emcom-level-desc" data-emcom-desc>
               <strong class="emcom-desc-name">{{.LevelName}}</strong>
@@ -41,39 +41,39 @@
             </div>
             <div class="emcom-card-actions">
               <span class="muted small">
-                {{if .UpdatedBy}}set by <strong>{{.UpdatedBy}}</strong> · {{end}}{{timeShort .UpdatedAt}}
+                {{if .UpdatedBy}}{{tr $.Lang "emcom.set_by"}} <strong>{{.UpdatedBy}}</strong> · {{end}}{{timeShort .UpdatedAt}}
               </span>
               <span class="emcom-card-btns">
-                <button type="submit" class="btn-primary btn-small" data-emcom-save>Save level</button>
-                <button type="button" class="btn-danger btn-small" data-emcom-delete data-slug="{{.Slug}}" data-name="{{.Name}}">Delete</button>
+                <button type="submit" class="btn-primary btn-small" data-emcom-save>{{tr $.Lang "emcom.save"}}</button>
+                <button type="button" class="btn-danger btn-small" data-emcom-delete data-slug="{{.Slug}}" data-name="{{.Name}}">{{tr $.Lang "emcom.delete"}}</button>
               </span>
             </div>
           </form>
         </article>
         {{else}}
-        <p class="empty">No EMCOM networks yet. Add the first one below — it starts at level 0 (Monitoring).</p>
+        <p class="empty">{{tr $.Lang "emcom.empty"}}</p>
         {{end}}
       </div>
 
       <form method="post" action="/emcom" class="emcom-add">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <label class="emcom-add-label" for="emcom-name">Add an EMCOM network</label>
+        <label class="emcom-add-label" for="emcom-name">{{tr .Lang "emcom.add_label"}}</label>
         <div class="emcom-add-row">
-          <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="e.g. SP9MOA EMCOM" required>
-          <button type="submit" class="btn-primary">Add network</button>
+          <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="{{tr .Lang "emcom.add_placeholder"}}" required>
+          <button type="submit" class="btn-primary">{{tr .Lang "emcom.add_btn"}}</button>
         </div>
-        <p class="muted small">The name becomes the network's MQTT identifier (e.g. sp9moa-emcom). A new network starts at level 0 — Monitoring.</p>
+        <p class="muted small">{{tr .Lang "emcom.add_note"}}</p>
       </form>
     </section>
 
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>Operational readiness levels</h2>
-      <p class="muted">To launch crisis communications in a way that is efficient and adequate to the situation, the following operational readiness levels apply:</p>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>{{tr .Lang "emcom.levels.title"}}</h2>
+      <p class="muted">{{tr .Lang "emcom.levels.intro"}}</p>
       <div class="emcom-levels">
         {{range .Levels}}
         <article class="emcom-level">
           <div class="emcom-level-head">
-            <span class="emcom-level-num emcom-num-{{.Class}}">level {{.Level}}</span>
+            <span class="emcom-level-num emcom-num-{{.Class}}">{{trf $.Lang "emcom.level" .Level}}</span>
             <strong>{{.Name}}</strong>
           </div>
           <p class="muted">{{.Description}}</p>
@@ -81,12 +81,12 @@
         {{end}}
       </div>
       <ul class="muted emcom-notes">
-        <li>PMR and CB monitoring uses devices that meet the requirements of the given mode of communication. A channel being listed in the communications plan does not authorize using any amateur radio on it.</li>
-        <li>Activating level 2 or 3 means switching to directed-net operation.</li>
-        <li>Level 3 means the network can operate around the clock in shifts, provided enough operators, power, transport, backup communications and logistics are available. It does not mean uninterrupted work of a single operator.</li>
-        <li>The club may on its own start internal monitoring, increased readiness and a control radio network. Deploying operators at the premises of external entities and performing tasks for public administration, services or other units requires a request, consent or confirmed arrangement with an authorized representative of that entity.</li>
+        <li>{{tr .Lang "emcom.note.1"}}</li>
+        <li>{{tr .Lang "emcom.note.2"}}</li>
+        <li>{{tr .Lang "emcom.note.3"}}</li>
+        <li>{{tr .Lang "emcom.note.4"}}</li>
       </ul>
-      <p class="muted small">Raising a network above level 0 publishes a severe communication and dispatches it through the group channels per the routing matrix. Returning to level 0 closes the network's active communication.</p>
+      <p class="muted small">{{tr .Lang "emcom.dispatch_note"}}</p>
     </section>
   </main>
   {{template "footer" .}}
@@ -94,6 +94,9 @@
     (function () {
       // Live slider feedback: the badge, value and description follow the
       // slider before the form is saved.
+      var LVL = "{{tr .Lang "emcom.level"}}";
+      var BADGE = "{{tr .Lang "emcom.badge"}}";
+      var DEL = "{{tr .Lang "emcom.confirm.delete"}}";
       var levels = {{jsonLevels .Levels}};
       function levelInfo(n) {
         for (var i = 0; i < levels.length; i++) {
@@ -115,13 +118,13 @@
           var n = Number(slider.value);
           var info = levelInfo(n);
           if (!info) { return; }
-          value.textContent = "level " + n;
+          value.textContent = LVL.replace("%d", n);
           if (name) { name.textContent = info.name; }
           if (text) { text.textContent = info.description; }
           slider.className = slider.className.replace(/emcom-slider-l\d/g, "emcom-slider-" + info.class);
           if (badge) {
             badge.className = badge.className.replace(/emcom-badge-l\d/g, "emcom-badge-" + info.class);
-            badge.lastChild.textContent = "level " + n + " — " + info.name;
+            badge.lastChild.textContent = " " + BADGE.replace("%d", n).replace("%s", info.name);
           }
           if (saveBtn) { saveBtn.disabled = n === original; }
         }
@@ -135,7 +138,7 @@
         btn.addEventListener("click", function () {
           var name = btn.getAttribute("data-name");
           var slug = btn.getAttribute("data-slug");
-          if (!confirm("Delete network " + name + "?")) { return; }
+          if (!confirm(DEL.replace("%s", name))) { return; }
           var form = document.createElement("form");
           form.method = "post";
           form.action = "/emcom/" + slug + "/delete";

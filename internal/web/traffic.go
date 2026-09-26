@@ -20,6 +20,7 @@ type receiverChoice struct {
 
 // trafficView is the full /traffic page model.
 type trafficView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -56,7 +57,7 @@ func (s *Server) handleTrafficPage(w http.ResponseWriter, r *http.Request) {
 	view.Username = sess.username
 	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "traffic", view)
+	s.renderL(w, r, "traffic", view)
 }
 
 func (s *Server) baseTrafficView() trafficView {

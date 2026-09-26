@@ -1,33 +1,33 @@
 {{define "archive"}}<div class="home-archive">
-  <h2 class="home-alerts-head">Archive <span class="count">{{.Total}}</span><span class="home-archive-window">last {{.Days}} days</span></h2>
+  <h2 class="home-alerts-head">{{tr .Lang "archive.title"}} <span class="count">{{.Total}}</span><span class="home-archive-window">{{trf .Lang "archive.days" .Days}}</span></h2>
   {{if .Events}}
   <div class="home-alerts">
     {{range .Events}}
     <article class="hazard sev-bd-{{sevClass .Severity}}">
       <div class="hazard-head">
         <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
-        {{if eq .Status "active"}}<span class="badge ok">active</span>{{else if eq .Status "cancelled"}}<span class="badge bad">cancelled</span>{{else}}<span class="badge muted">ended</span>{{end}}
+        {{if eq .Status "active"}}<span class="badge ok">{{tr $.Lang "archive.active"}}</span>{{else if eq .Status "cancelled"}}<span class="badge bad">{{tr $.Lang "archive.cancelled"}}</span>{{else}}<span class="badge muted">{{tr $.Lang "archive.ended"}}</span>{{end}}
         <h3>{{.Headline}}</h3>
       </div>
       <div class="hazard-meta">
-        <span>Source: <strong>{{.Source}}</strong></span>
+        <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
         {{if .Event}}<span>{{.Event}}</span>{{end}}
-        {{if .Areas}}<span>Area: {{.Areas}}</span>{{end}}
-        {{if .EffectiveAt}}<span>from: {{timeShort (derefTime .EffectiveAt)}}</span>{{end}}
-        {{if .ExpiresAt}}<span>until: {{timeShort (derefTime .ExpiresAt)}}</span>{{end}}
-        <span>last seen: {{timeShort .LastSeenAt}}</span>
+        {{if .Areas}}<span>{{tr $.Lang "warnings.areas"}} {{.Areas}}</span>{{end}}
+        {{if .EffectiveAt}}<span>{{tr $.Lang "archive.from"}} {{timeShort (derefTime .EffectiveAt)}}</span>{{end}}
+        {{if .ExpiresAt}}<span>{{tr $.Lang "archive.until"}} {{timeShort (derefTime .ExpiresAt)}}</span>{{end}}
+        <span>{{tr $.Lang "archive.last_seen"}} {{timeShort .LastSeenAt}}</span>
       </div>
     </article>
     {{end}}
   </div>
   <div class="pager">
-    <span class="page-info">{{.From}}–{{.To}} of {{.Total}}</span>
-    {{if gt .Page 1}}<a class="page-link" href="/archive?page={{add .Page -1}}" data-archive-page="prev">Prev</a>{{else}}<span class="page-link disabled">Prev</span>{{end}}
-    <span class="page-info">Page {{.Page}} / {{.Pages}}</span>
-    {{if lt .Page .Pages}}<a class="page-link" href="/archive?page={{add .Page 1}}" data-archive-page="next">Next</a>{{else}}<span class="page-link disabled">Next</span>{{end}}
+    <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
+    {{if gt .Page 1}}<a class="page-link" href="/archive?page={{add .Page -1}}" data-archive-page="prev">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+    <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
+    {{if lt .Page .Pages}}<a class="page-link" href="/archive?page={{add .Page 1}}" data-archive-page="next">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
   </div>
   {{else}}
-  <p class="home-none">No communications recorded in the last {{.Days}} days.</p>
+  <p class="home-none">{{trf .Lang "archive.none" .Days}}</p>
   {{end}}
 </div>
 {{end}}

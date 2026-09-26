@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -43,37 +44,47 @@ type sourceOption struct {
 // baseRoutingSources lists the built-in hazard event source slugs offered
 // as matrix rows. "" is the any-source fallback. Sources of events
 // received through the MQTT receiver are the upstream producers' slugs,
-// so they match "any" (or their own row when it exists here).
+// so they match "any" (or their own row when it exists here). Labels are
+// translated per UI language in routingSourcesFor.
 var baseRoutingSources = []sourceOption{
-	{Value: "", Label: "any source"},
+	{Value: "", Label: "groups.routing.any"},
 	{Value: "imgw-meteo", Label: "IMGW meteo"},
 	{Value: "imgw-hydro", Label: "IMGW hydro"},
 	{Value: "rso", Label: "RSO"},
-	{Value: "aprs", Label: "APRS messages"},
-	{Value: "giosaq", Label: "GIOŚ air quality"},
-	{Value: "compose", Label: "Compose"},
+	{Value: "aprs", Label: "groups.src.aprs"},
+	{Value: "giosaq", Label: "groups.src.giosaq"},
+	{Value: "compose", Label: "groups.src.compose"},
 	// EMCOM readiness-level changes flow through the dispatch ingress
 	// like every other source, so groups can route them explicitly.
-	{Value: "emcom", Label: "EMCOM network"},
+	{Value: "emcom", Label: "groups.src.emcom"},
 }
 
-// routingSources returns the full matrix row set: the built-in sources
-// plus one row per configured public ingest endpoint (its id is the event
-// source stamped on builder-mode alerts).
-func (s *Server) routingSources() []sourceOption {
-	if len(s.ingest) == 0 {
-		return baseRoutingSources
-	}
+// routingSourcesFor returns the full matrix row set for a UI language:
+// the built-in sources plus one row per configured public ingest
+// endpoint (its id is the event source stamped on builder-mode alerts).
+func (s *Server) routingSourcesFor(lang string) []sourceOption {
 	ids := make([]string, 0, len(s.ingest))
 	for id := range s.ingest {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	out := append([]sourceOption(nil), baseRoutingSources...)
+	out := make([]sourceOption, 0, len(baseRoutingSources)+len(ids))
+	for _, src := range baseRoutingSources {
+		out = append(out, sourceOption{Value: src.Value, Label: i18n.T(lang, src.Label)})
+	}
 	for _, id := range ids {
-		out = append(out, sourceOption{Value: id, Label: id + " (ingest)"})
+		out = append(out, sourceOption{Value: id, Label: trfSafe(i18n.T(lang, "groups.src.ingest"), id)})
 	}
 	return out
+}
+
+func trfSafe(format string, args ...any) string {
+	return fmt.Sprintf(format, args...)
+}
+
+// routingSources returns the routing sources in English (legacy callers).
+func (s *Server) routingSources() []sourceOption {
+	return s.routingSourcesFor(i18n.LangEN)
 }
 
 // matrixCell is one severity select of the popover grid.
@@ -100,14 +111,16 @@ type severityChoice struct {
 	Label string
 }
 
-// severityChoices lists the canonical thresholds from permissive to
-// strict, as offered by the routing form.
-var severityChoices = []severityChoice{
-	{Value: "unknown", Label: "everything"},
-	{Value: "minor", Label: "minor or higher"},
-	{Value: "moderate", Label: "moderate or higher"},
-	{Value: "severe", Label: "severe or higher"},
-	{Value: "extreme", Label: "extreme only"},
+// severityChoicesFor lists the canonical thresholds from permissive to
+// strict in a UI language, as offered by the routing form.
+func severityChoicesFor(lang string) []severityChoice {
+	return []severityChoice{
+		{Value: "unknown", Label: i18n.T(lang, "groups.routing.sev_unknown")},
+		{Value: "minor", Label: i18n.T(lang, "groups.routing.sev_minor")},
+		{Value: "moderate", Label: i18n.T(lang, "groups.routing.sev_moderate")},
+		{Value: "severe", Label: i18n.T(lang, "groups.routing.sev_severe")},
+		{Value: "extreme", Label: i18n.T(lang, "groups.routing.sev_extreme")},
+	}
 }
 
 // groupForm carries the add/edit form values.
@@ -117,6 +130,7 @@ type groupForm struct {
 
 // groupsView is the full /groups page model.
 type groupsView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -177,7 +191,7 @@ func (s *Server) handleGroupsPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "groups", view)
+	s.renderL(w, r, "groups", view)
 }
 
 // handleGroupSave creates or updates a group from the top form. A hidden
@@ -199,20 +213,20 @@ func (s *Server) handleGroupSave(w http.ResponseWriter, r *http.Request) {
 		editID = id
 	}
 
-	if msg := validateGroupForm(form); msg != "" {
+	if msg := validateGroupForm(s.langFor(r), form); msg != "" {
 		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, form, editID, msg)
 		return
 	}
 
 	if editID == 0 {
 		if _, err := s.users.CreateGroup(form.Name); err != nil {
-			s.renderGroupsError(w, r, groupErrorStatus(err), form, editID, groupErrorMessage(err))
+			s.renderGroupsError(w, r, groupErrorStatus(err), form, editID, groupErrorMessage(s.langFor(r), err))
 			return
 		}
 		s.audit(sess.username, "group-create", form.Name)
 	} else {
 		if _, err := s.users.UpdateGroup(editID, form.Name); err != nil {
-			s.renderGroupsError(w, r, groupErrorStatus(err), form, editID, groupErrorMessage(err))
+			s.renderGroupsError(w, r, groupErrorStatus(err), form, editID, groupErrorMessage(s.langFor(r), err))
 			return
 		}
 		s.audit(sess.username, "group-update", form.Name)
@@ -234,7 +248,7 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.users.DeleteGroup(id); err != nil {
-		s.renderGroupsError(w, r, groupErrorStatus(err), groupForm{}, 0, groupErrorMessage(err))
+		s.renderGroupsError(w, r, groupErrorStatus(err), groupForm{}, 0, groupErrorMessage(s.langFor(r), err))
 		return
 	}
 	s.audit(sess.username, "group-delete", strconv.FormatInt(id, 10))
@@ -272,9 +286,9 @@ func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) 
 	view.Role = sess.role
 	view.RoutingName = group.Name
 	view.RoutingID = group.ID
-	view.RoutingMatrix = buildMatrix(routing.Actions, s.availableActions(), s.routingSources())
+	view.RoutingMatrix = buildMatrix(routing.Actions, s.availableActions(), s.routingSourcesFor(s.langFor(r)))
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "group_routing", view)
+	s.renderL(w, r, "group_routing", view)
 }
 
 // handleGroupRouting saves one group's notification routing matrix: every
@@ -300,7 +314,7 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.users.SetGroupRouting(id, actions); err != nil {
-		s.renderGroupsError(w, r, groupErrorStatus(err), groupForm{}, 0, groupErrorMessage(err))
+		s.renderGroupsError(w, r, groupErrorStatus(err), groupForm{}, 0, groupErrorMessage(s.langFor(r), err))
 		return
 	}
 	s.audit(sess.username, "group-routing", strconv.FormatInt(id, 10)+" cells="+strconv.Itoa(len(actions)))
@@ -383,12 +397,12 @@ func buildMatrix(assignments []storage.ChannelAssignment, actions []channelOptio
 }
 
 // validateGroupForm returns a user-facing message for invalid input.
-func validateGroupForm(form groupForm) string {
+func validateGroupForm(lang string, form groupForm) string {
 	if form.Name == "" {
-		return "group name must not be empty"
+		return i18n.T(lang, "groups.err.empty")
 	}
 	if len(form.Name) > 64 {
-		return "group name is too long (maximum 64 characters)"
+		return i18n.T(lang, "groups.err.long")
 	}
 	return ""
 }
@@ -406,14 +420,14 @@ func groupErrorStatus(err error) int {
 }
 
 // groupErrorMessage maps storage errors to user-facing messages.
-func groupErrorMessage(err error) string {
+func groupErrorMessage(lang string, err error) string {
 	switch {
 	case errors.Is(err, storage.ErrGroupNameTaken):
-		return "a group with this name already exists"
+		return i18n.T(lang, "groups.err.taken")
 	case errors.Is(err, storage.ErrGroupNotFound):
-		return "group not found"
+		return i18n.T(lang, "groups.err.not_found")
 	default:
-		return "internal error"
+		return i18n.T(lang, "groups.err.internal")
 	}
 }
 
@@ -469,7 +483,7 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		Form:       form,
 		EditID:     editID,
 		Error:      errMsg,
-		Severities: severityChoices,
+		Severities: severityChoicesFor(s.langFor(r)),
 		Actions:    s.availableActions(),
 		Page:       page,
 		Pages:      pages,
@@ -492,5 +506,5 @@ func (s *Server) renderGroupsError(w http.ResponseWriter, r *http.Request, statu
 	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	s.render(w, "groups", view)
+	s.renderL(w, r, "groups", view)
 }

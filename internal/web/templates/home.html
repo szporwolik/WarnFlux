@@ -1,5 +1,5 @@
 {{define "home"}}<!doctype html>
-<html lang="pl">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -20,41 +20,45 @@
       </div>
     </div>
     <div class="home-actions">
-      <button type="button" class="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
+      <button type="button" class="theme-toggle" aria-label="{{tr .Lang "common.toggle_theme"}}" title="{{tr .Lang "common.toggle_theme"}}">
         <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
         <svg class="icon ico-moon" aria-hidden="true"><use href="/static/icons.svg#i-moon"></use></svg>
       </button>
+      <div class="lang-switch" role="group" aria-label="{{tr .Lang "common.language"}}">
+        <a class="lang-opt{{if eq .Lang "en"}} active{{end}}" href="/lang/en" hreflang="en" lang="en" title="English">EN</a>
+        <a class="lang-opt{{if eq .Lang "pl"}} active{{end}}" href="/lang/pl" hreflang="pl" lang="pl" title="Polski">PL</a>
+      </div>
       {{if .LoggedIn}}
       <a class="home-dash" href="{{.Landing}}" title="{{.LandingLabel}}">
         <span class="avatar" title="{{.Username}}">{{initials .Username}}</span>
         <span class="home-dash-label">{{.LandingLabel}}</span>
       </a>
       {{else}}
-      <a class="home-login" href="/login" title="Sign in" aria-label="Sign in">
+      <a class="home-login" href="/login" title="{{tr .Lang "common.sign_in"}}" aria-label="{{tr .Lang "common.sign_in"}}">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>
       </a>
       {{end}}
     </div>
   </header>
 
-  {{if .EmcomNetworks}}<div class="home-emcom" role="status" aria-label="EMCOM network readiness">
+  {{if .EmcomNetworks}}<div class="home-emcom" role="status" aria-label="{{tr .Lang "home.emcom.aria"}}">
     {{range .EmcomNetworks}}
-    <span class="emcom-chip emcom-chip-{{.LevelClass}}" title="Updated: {{timeShort .UpdatedAt}}">
+    <span class="emcom-chip emcom-chip-{{.LevelClass}}" title="{{tr $.Lang "warnings.updated"}} {{timeShort .UpdatedAt}}">
       <svg class="icon emcom-chip-icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>
       <span class="emcom-chip-name">{{.Network}}</span>
-      <span class="emcom-chip-level">level {{.Level}}</span>
-      <span class="emcom-chip-label">{{.LevelName}}</span>
+      <span class="emcom-chip-level">{{trf $.Lang "home.emcom.level" .Level}}</span>
+      <span class="emcom-chip-label">{{tr $.Lang (printf "emcom.levels.%d" .Level)}}</span>
     </span>
     {{end}}
   </div>{{end}}
 
   {{if .Disclaimer}}<p class="home-disclaimer" role="note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Disclaimer}}</span></p>{{end}}
 
-  <nav class="home-tabs" role="tablist" aria-label="Sections">
-    <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Active hazards</button>
-    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-radio">Map</button>
-    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-archive">Archive</button>
-    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-channels">Sources</button>
+  <nav class="home-tabs" role="tablist" aria-label="{{tr .Lang "home.tabs.aria"}}">
+    <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">{{tr .Lang "home.tab.alerts"}}</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-radio">{{tr .Lang "home.tab.map"}}</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-archive">{{tr .Lang "home.tab.archive"}}</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-channels">{{tr .Lang "home.tab.sources"}}</button>
   </nav>
 
   <main class="home-main">
@@ -65,26 +69,26 @@
       {{if .AprsEnabled}}
       <div class="aprs-map-wrap">
         <div id="aprs-map" data-lat="{{.AprsCenterLat}}" data-lon="{{.AprsCenterLon}}" data-own-lat="{{.AprsOwnLat}}" data-own-lon="{{.AprsOwnLon}}" data-radius="{{.AprsRadiusKM}}" data-callsign="{{.AprsCallsign}}"></div>
-        <p class="aprs-map-attrib">Map: <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a> · Tiles: <span id="aprs-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · Weather radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> · Symbols: <a href="https://github.com/hessu/aprs-symbols" target="_blank" rel="noopener noreferrer">aprs.fi (OH7LZB)</a> · Stations: WarnFlux (MQTT)</p>
+        <p class="aprs-map-attrib">{{tr .Lang "home.attrib.map"}} <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a> · {{tr .Lang "home.attrib.tiles"}} <span id="aprs-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · {{tr .Lang "home.attrib.radar"}} <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> · {{tr .Lang "home.attrib.symbols"}} <a href="https://github.com/hessu/aprs-symbols" target="_blank" rel="noopener noreferrer">aprs.fi (OH7LZB)</a> · {{tr .Lang "home.attrib.stations"}} WarnFlux (MQTT)</p>
       </div>
       {{else}}
       <div class="home-empty">
-        <p>Radio stations are not enabled. Set <code>aprs.enabled: true</code> in the configuration to show the neighbourhood map.</p>
+        <p>{{trh .Lang "home.map.aprs_disabled"}}</p>
       </div>
       {{end}}
-      <h2 class="hw-title">Current reports <span class="count" id="hw-report-count"></span></h2>
+      <h2 class="hw-title">{{tr .Lang "home.weather.title"}} <span class="count" id="hw-report-count"></span></h2>
       <div class="hw-reports" id="hw-reports">
-        <p class="muted">Loading weather…</p>
+        <p class="muted">{{tr .Lang "home.weather.loading"}}</p>
       </div>
-      <p class="hw-attrib">Weather icons: <a href="https://erikflowers.github.io/weather-icons/" target="_blank" rel="noopener noreferrer">Weather Icons by Erik Flowers</a> (SIL OFL 1.1 / MIT)</p>
+      <p class="hw-attrib">{{tr .Lang "home.attrib.wicons"}} <a href="https://erikflowers.github.io/weather-icons/" target="_blank" rel="noopener noreferrer">Weather Icons by Erik Flowers</a> (SIL OFL 1.1 / MIT)</p>
     </section>
     <section class="home-panel" id="panel-tab-archive" data-panel="tab-archive" hidden>
-      <div id="archive-box"><p class="muted">Loading archive…</p></div>
+      <div id="archive-box"><p class="muted">{{tr .Lang "home.archive.loading"}}</p></div>
     </section>
     <section class="home-panel" id="panel-tab-channels" data-panel="tab-channels" hidden>
       {{if .Sources}}
-      <h2 class="home-alerts-head">Where the data comes from</h2>
-      <p class="muted home-channels-note">The alerts are collected from these official feeds and networks.</p>
+      <h2 class="home-alerts-head">{{tr .Lang "home.sources.head"}}</h2>
+      <p class="muted home-channels-note">{{tr .Lang "home.sources.note"}}</p>
       <div class="channels-list">
         {{range .Sources}}
         <article class="channel-row">
@@ -97,12 +101,12 @@
         {{end}}
       </div>
       {{else}}
-      <p class="home-none">No data sources are configured yet.</p>
+      <p class="home-none">{{tr .Lang "home.no_sources"}}</p>
       {{end}}
 
       {{if .Channels}}
-      <h2 class="home-alerts-head home-channels-head">How alerts reach you</h2>
-      <p class="muted home-channels-note">When an alert is issued, the system reaches people through these channels.</p>
+      <h2 class="home-alerts-head home-channels-head">{{tr .Lang "home.channels.head"}}</h2>
+      <p class="muted home-channels-note">{{tr .Lang "home.channels.note"}}</p>
       <div class="channels-list">
         {{range .Channels}}
         <article class="channel-row">
@@ -115,15 +119,15 @@
         {{end}}
       </div>
       {{else}}
-      <p class="home-none">No delivery channels are configured yet.</p>
+      <p class="home-none">{{tr .Lang "home.no_channels"}}</p>
       {{end}}
     </section>
   </main>
 
   {{if .About}}<dialog id="about-dialog" class="about-dialog">
-    <button type="button" class="about-close" aria-label="Close">×</button>
+    <button type="button" class="about-close" aria-label="{{tr .Lang "home.about.close"}}">×</button>
     <div class="about-dialog-text">{{.About}}</div>
-    <button type="button" class="about-ok btn-primary">Got it</button>
+    <button type="button" class="about-ok btn-primary">{{tr .Lang "home.about.ok"}}</button>
   </dialog>{{end}}
 
   <footer class="home-foot">
@@ -133,7 +137,7 @@
     <span class="sep">·</span>
     <span>{{.Version}}</span>
     {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{shortCommit .Commit}}</a>{{end}}
-    <a class="home-git" href="https://github.com/szporwolik/WarnFlux" target="_blank" rel="noopener noreferrer" title="Source code" aria-label="Source code (GitHub)">
+    <a class="home-git" href="https://github.com/szporwolik/WarnFlux" target="_blank" rel="noopener noreferrer" title="{{tr .Lang "common.source_code"}}" aria-label="{{tr .Lang "common.source_code"}}">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
     </a>
   </footer>
@@ -143,10 +147,10 @@
 {{end}}
 
 {{define "home_alerts_section"}}<section class="home-alerts-wrap" id="home-alerts">
-  <h2 class="home-alerts-head">Active communications <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span></h2>
+  <h2 class="home-alerts-head">{{tr .Lang "home.alerts.head"}} <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span></h2>
 
   <details class="home-section home-important" open>
-    <summary>Important <span class="count{{if gt .MainCount 0}} count-live{{end}}">{{.MainCount}}</span></summary>
+    <summary>{{tr .Lang "home.important"}} <span class="count{{if gt .MainCount 0}} count-live{{end}}">{{.MainCount}}</span></summary>
     {{if .Hazards}}
     <div class="home-alerts">
       {{range .Hazards}}
@@ -156,23 +160,23 @@
           <h3>{{.Headline}}</h3>
         </div>
         <div class="hazard-meta">
-          <span>Source: <strong>{{.Source}}</strong></span>
+          <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
           {{if .Event}}<span>{{.Event}}</span>{{end}}
-          {{if .Areas}}<span>Area: {{.Areas}}</span>{{end}}
-          <span>updated: {{timeShort .UpdatedAt}}</span>
-          {{if .ExpiresAt}}<span>valid until: {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
+          {{if .Areas}}<span>{{tr $.Lang "warnings.areas"}} {{.Areas}}</span>{{end}}
+          <span>{{tr $.Lang "warnings.updated"}} {{timeShort .UpdatedAt}}</span>
+          {{if .ExpiresAt}}<span>{{tr $.Lang "home.valid_until"}} {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
         </div>
       </article>
       {{end}}
     </div>
     {{else}}
-    <p class="home-none">No active messages.</p>
+    <p class="home-none">{{tr .Lang "home.no_active"}}</p>
     {{end}}
   </details>
 
   {{if .MinorHazards}}
   <details class="home-section home-minor">
-    <summary>Informational <span class="count">{{.MinorCount}}</span></summary>
+    <summary>{{tr .Lang "home.informational"}} <span class="count">{{.MinorCount}}</span></summary>
     <div class="home-alerts">
       {{range .MinorHazards}}
       <article class="hazard sev-bd-{{sevClass .Severity}}">
@@ -181,11 +185,11 @@
           <h3>{{.Headline}}</h3>
         </div>
         <div class="hazard-meta">
-          <span>Source: <strong>{{.Source}}</strong></span>
+          <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
           {{if .Event}}<span>{{.Event}}</span>{{end}}
-          {{if .Areas}}<span>Area: {{.Areas}}</span>{{end}}
-          <span>updated: {{timeShort .UpdatedAt}}</span>
-          {{if .ExpiresAt}}<span>valid until: {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
+          {{if .Areas}}<span>{{tr $.Lang "warnings.areas"}} {{.Areas}}</span>{{end}}
+          <span>{{tr $.Lang "warnings.updated"}} {{timeShort .UpdatedAt}}</span>
+          {{if .ExpiresAt}}<span>{{tr $.Lang "home.valid_until"}} {{timeFull (derefTime .ExpiresAt)}}</span>{{end}}
         </div>
       </article>
       {{end}}

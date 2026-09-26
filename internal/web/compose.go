@@ -11,6 +11,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
@@ -44,10 +45,12 @@ type composePublisher interface {
 	PublishRaw(suffix string, retained bool, payload []byte) error
 }
 
-// composeStatuses are the allowed document states for the form.
-var composeStatuses = []option{
-	{Value: "active", Label: "active"},
-	{Value: "expired", Label: "expired"},
+// composeStatusesFor are the allowed document states for the form.
+func composeStatusesFor(lang string) []option {
+	return []option{
+		{Value: "active", Label: i18n.T(lang, "compose.status.active")},
+		{Value: "expired", Label: i18n.T(lang, "compose.status.expired")},
+	}
 }
 
 // composeForm carries the submitted (or prefilled) communication values.
@@ -91,31 +94,19 @@ type option struct {
 	Label string
 }
 
-// Shared select options for the compose form.
+// Shared select options for the compose form, localized per UI language.
+func optionList(lang string, values []string) []option {
+	out := make([]option, 0, len(values))
+	for _, v := range values {
+		out = append(out, option{Value: v, Label: i18n.T(lang, "compose.opt."+v)})
+	}
+	return out
+}
+
 var (
-	testSeverities = []option{
-		{Value: "unknown", Label: "unknown"},
-		{Value: "minor", Label: "minor"},
-		{Value: "moderate", Label: "moderate"},
-		{Value: "severe", Label: "severe"},
-		{Value: "extreme", Label: "extreme"},
-	}
-	testUrgencies = []option{
-		{Value: "", Label: "—"},
-		{Value: "unknown", Label: "unknown"},
-		{Value: "immediate", Label: "immediate"},
-		{Value: "expected", Label: "expected"},
-		{Value: "future", Label: "future"},
-		{Value: "past", Label: "past"},
-	}
-	testCertainties = []option{
-		{Value: "", Label: "—"},
-		{Value: "unknown", Label: "unknown"},
-		{Value: "observed", Label: "observed"},
-		{Value: "likely", Label: "likely"},
-		{Value: "possible", Label: "possible"},
-		{Value: "unlikely", Label: "unlikely"},
-	}
+	testSeverityValues  = []string{"unknown", "minor", "moderate", "severe", "extreme"}
+	testUrgencyValues   = []string{"", "unknown", "immediate", "expected", "future", "past"}
+	testCertaintyValues = []string{"", "unknown", "observed", "likely", "possible", "unlikely"}
 )
 
 // oneOf reports whether v is one of the option values.
@@ -130,6 +121,7 @@ func oneOf(v string, opts []option) bool {
 
 // composeView is the /compose page model.
 type composeView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -171,11 +163,18 @@ type composeView struct {
 	NavHealth        bool
 }
 
-// composeFlash maps the post-action redirect marker to a banner message.
-var composeFlash = map[string]string{
-	"published": "Communication published on the broker.",
-	"updated":   "Communication updated on the broker.",
-	"expired":   "Communication expired and removed from the broker.",
+// composeFlashKey maps the post-action redirect marker to the banner
+// message i18n key.
+func composeFlashKey(marker string) string {
+	switch marker {
+	case "published":
+		return "compose.flash.published"
+	case "updated":
+		return "compose.flash.updated"
+	case "expired":
+		return "compose.flash.expired"
+	}
+	return ""
 }
 
 // handleComposePage renders the compose form and the issued list.
@@ -192,13 +191,13 @@ func (s *Server) handleComposePage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	view := s.buildComposeView(form)
+	view := s.buildComposeView(s.langFor(r), form)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
-	view.Msg = composeFlash[r.URL.Query().Get("msg")]
+	view.Msg = i18n.T(s.langFor(r), composeFlashKey(r.URL.Query().Get("msg")))
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "compose", view)
+	s.renderL(w, r, "compose", view)
 }
 
 // handleComposeSave validates the form and publishes the communication
@@ -233,7 +232,7 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 		form.Status = "active"
 	}
 
-	if msg := validateComposeForm(form); msg != "" {
+	if msg := validateComposeForm(s.langFor(r), form); msg != "" {
 		s.renderComposeError(w, r, http.StatusUnprocessableEntity, form, msg)
 		return
 	}
@@ -243,7 +242,7 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	if s.pub == nil {
 		s.logger.Warn("compose: publish skipped, no broker publisher configured")
 		s.renderComposeError(w, r, http.StatusServiceUnavailable, form,
-			"publishing is unavailable: no broker publisher is configured")
+			i18n.T(s.langFor(r), "compose.err.no_publisher"))
 		return
 	}
 	if err := s.pub.PublishActive(composeSource, h); err != nil {
@@ -389,59 +388,60 @@ func composeTransition(h state.Hazard, typ dispatch.TransitionType) dispatch.Eve
 	}
 }
 
-// validateComposeForm returns a user-facing message for invalid input.
-func validateComposeForm(form composeForm) string {
+// validateComposeForm returns a user-facing message for invalid input,
+// localized to the UI language.
+func validateComposeForm(lang string, form composeForm) string {
 	if form.EventKey != "" && !composeEventKeyRe.MatchString(form.EventKey) {
-		return "invalid event key"
+		return i18n.T(lang, "compose.err.invalid_key")
 	}
 	if form.Event == "" {
-		return "event must not be empty"
+		return i18n.T(lang, "compose.err.empty_event")
 	}
 	if len(form.Event) > maxComposeEvent {
-		return fmt.Sprintf("event is too long (maximum %d characters)", maxComposeEvent)
+		return fmt.Sprintf(i18n.T(lang, "compose.err.event_long"), maxComposeEvent)
 	}
 	if form.Headline == "" {
-		return "headline must not be empty"
+		return i18n.T(lang, "compose.err.empty_headline")
 	}
 	if len(form.Headline) > maxComposeHeadline {
-		return fmt.Sprintf("headline is too long (maximum %d characters)", maxComposeHeadline)
+		return fmt.Sprintf(i18n.T(lang, "compose.err.headline_long"), maxComposeHeadline)
 	}
 	if !severity.Valid(form.Severity) {
-		return "invalid severity"
+		return i18n.T(lang, "compose.err.invalid_severity")
 	}
-	if form.Urgency != "" && !oneOf(form.Urgency, testUrgencies) {
-		return "invalid urgency"
+	if form.Urgency != "" && !oneOf(form.Urgency, optionList(lang, testUrgencyValues)) {
+		return i18n.T(lang, "compose.err.invalid_urgency")
 	}
-	if form.Certainty != "" && !oneOf(form.Certainty, testCertainties) {
-		return "invalid certainty"
+	if form.Certainty != "" && !oneOf(form.Certainty, optionList(lang, testCertaintyValues)) {
+		return i18n.T(lang, "compose.err.invalid_certainty")
 	}
 	if form.Status != "active" && form.Status != "expired" {
-		return "invalid status"
+		return i18n.T(lang, "compose.err.invalid_status")
 	}
 	if len(form.Description) > maxComposeText || len(form.Instruction) > maxComposeText {
-		return fmt.Sprintf("description and instruction are limited to %d characters", maxComposeText)
+		return fmt.Sprintf(i18n.T(lang, "compose.err.text_limit"), maxComposeText)
 	}
 	if len(form.Areas) > maxComposeAreasLen {
-		return fmt.Sprintf("areas are too long (maximum %d characters)", maxComposeAreasLen)
+		return fmt.Sprintf(i18n.T(lang, "compose.err.areas_long"), maxComposeAreasLen)
 	}
 	if (form.Latitude == "") != (form.Longitude == "") {
-		return "latitude and longitude must be set together"
+		return i18n.T(lang, "compose.err.coords_together")
 	}
 	if form.Latitude != "" {
 		lat, err1 := strconv.ParseFloat(form.Latitude, 64)
 		lon, err2 := strconv.ParseFloat(form.Longitude, 64)
 		if err1 != nil || err2 != nil {
-			return "invalid coordinates"
+			return i18n.T(lang, "compose.err.invalid_coords")
 		}
 		if lat < -90 || lat > 90 || lon < -180 || lon > 180 {
-			return "coordinates out of range"
+			return i18n.T(lang, "compose.err.coords_range")
 		}
 	}
 	if form.EffectiveAt != "" && parseComposeTime(form.EffectiveAt) == nil {
-		return "invalid effective time"
+		return i18n.T(lang, "compose.err.invalid_effective")
 	}
 	if form.ExpiresAt != "" && parseComposeTime(form.ExpiresAt) == nil {
-		return "invalid expires time"
+		return i18n.T(lang, "compose.err.invalid_expires")
 	}
 	return ""
 }
@@ -592,8 +592,8 @@ func (s *Server) composeItems() []composeItem {
 	return items
 }
 
-// buildComposeView assembles the page model.
-func (s *Server) buildComposeView(form composeForm) composeView {
+// buildComposeView assembles the page model in a UI language.
+func (s *Server) buildComposeView(lang string, form composeForm) composeView {
 	view := composeView{
 		AppTitle:    s.cfg.Title,
 		Name:        s.displayName(),
@@ -606,10 +606,10 @@ func (s *Server) buildComposeView(form composeForm) composeView {
 		Source:      composeSource,
 		Form:        form,
 		Items:       s.composeItems(),
-		Severities:  testSeverities,
-		Urgencies:   testUrgencies,
-		Certainties: testCertainties,
-		Statuses:    composeStatuses,
+		Severities:  optionList(lang, testSeverityValues),
+		Urgencies:   optionList(lang, testUrgencyValues),
+		Certainties: optionList(lang, testCertaintyValues),
+		Statuses:    composeStatusesFor(lang),
 		NavCompose:  true,
 	}
 	// The map picker centers on the operational area (the territory we
@@ -624,12 +624,12 @@ func (s *Server) buildComposeView(form composeForm) composeView {
 // the submitted form values.
 func (s *Server) renderComposeError(w http.ResponseWriter, r *http.Request, status int, form composeForm, msg string) {
 	sess := s.sessions.currentSession(r)
-	view := s.buildComposeView(form)
+	view := s.buildComposeView(s.langFor(r), form)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
 	view.Error = msg
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	s.render(w, "compose", view)
+	s.renderL(w, r, "compose", view)
 }

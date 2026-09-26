@@ -1,9 +1,9 @@
 {{define "users"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Users · {{.AppTitle}}</title>
+  <title>{{tr .Lang "users.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -13,19 +13,19 @@
   {{template "sidebar" .}}
   <main class="users-main">
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Users</h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>{{tr .Lang "users.title"}}</h2>
       {{if .Notice}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Notice}}</p>{{end}}
       {{if .Error}}{{if not .DialogOpen}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
       <div class="user-toolbar">
         <button type="button" class="btn-primary btn-add" id="user-add-btn">
-          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>Add user
+          <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>{{tr .Lang "users.add"}}
         </button>
       </div>
       {{if .Users}}
       <div class="table-wrap">
         <table class="plugins">
           <thead>
-            <tr><th>Username</th><th>Phone</th><th>Email</th><th>Discord</th><th>APRS</th><th>Groups</th><th>Role</th><th>Updated</th><th></th></tr>
+            <tr><th>{{tr .Lang "users.username"}}</th><th>{{tr .Lang "users.phone"}}</th><th>{{tr .Lang "users.email"}}</th><th>{{tr .Lang "users.discord"}}</th><th>{{tr .Lang "users.aprs"}}</th><th>{{tr .Lang "users.groups"}}</th><th>{{tr .Lang "users.role"}}</th><th>{{tr .Lang "users.updated"}}</th><th></th></tr>
           </thead>
           <tbody>
             {{range .Users}}
@@ -41,20 +41,20 @@
                 {{range $u.GroupNames}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}
                 </div>
               </td>
-              <td>{{if .IsAdmin}}<span class="badge ok">admin</span>{{else if eq .Role "emcom"}}<span class="badge warn">emcom</span>{{else}}<span class="badge muted">member</span>{{end}}</td>
+              <td>{{if .IsAdmin}}<span class="badge ok">{{tr $.Lang "role.admin"}}</span>{{else if eq .Role "emcom"}}<span class="badge warn">{{tr $.Lang "role.emcom"}}</span>{{else}}<span class="badge muted">{{tr $.Lang "role.member"}}</span>{{end}}</td>
               <td class="muted">{{timeShort .UpdatedAt}}</td>
               <td>
                 <div class="row-actions">
-                {{if .IsAdmin}}<span class="muted">read-only</span>
+                {{if .IsAdmin}}<span class="muted">{{tr $.Lang "users.read_only"}}</span>
                 {{else}}
-                <a class="btn-ghost btn-small" href="/users?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Edit</a>
-                <form method="post" action="/users/{{.ID}}/reset" class="inline-form" onsubmit="return confirm('Reset the password for {{.Username}}? A new random password will be shown once.');">
+                <a class="btn-ghost btn-small" href="/users?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr $.Lang "common.edit"}}</a>
+                <form method="post" action="/users/{{.ID}}/reset" class="inline-form" onsubmit="return confirm('{{trf $.Lang "users.confirm.reset" .Username}}');">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                  <button type="submit" class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>Reset</button>
+                  <button type="submit" class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>{{tr $.Lang "users.reset"}}</button>
                 </form>
-                <form method="post" action="/users/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('Delete user {{.Username}}?');">
+                <form method="post" action="/users/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('{{trf $.Lang "users.confirm.delete" .Username}}');">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                  <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>Delete</button>
+                  <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>{{tr $.Lang "common.delete"}}</button>
                 </form>
                 {{end}}
                 </div>
@@ -65,13 +65,13 @@
         </table>
       </div>
       <div class="pager">
-        <span class="page-info">{{.From}}–{{.To}} of {{.Total}}</span>
-        {{if .HasPrev}}<a class="page-link" href="/users?page={{add .Page -1}}">Prev</a>{{else}}<span class="page-link disabled">Prev</span>{{end}}
-        <span class="page-info">Page {{.Page}} / {{.Pages}}</span>
-        {{if .HasNext}}<a class="page-link" href="/users?page={{add .Page 1}}">Next</a>{{else}}<span class="page-link disabled">Next</span>{{end}}
+        <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
+        {{if .HasPrev}}<a class="page-link" href="/users?page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+        <span class="page-info">{{trf .Lang "users.page" .Page .Pages}}</span>
+        {{if .HasNext}}<a class="page-link" href="/users?page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
       </div>
       {{else}}
-      <p class="empty">No users yet</p>
+      <p class="empty">{{tr .Lang "users.no_users"}}</p>
       {{end}}
     </section>
   </main>
@@ -79,32 +79,32 @@
     <form method="post" action="/users" class="modal-form">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="edit_id" value="{{if gt .EditID 0}}{{.EditID}}{{else}}0{{end}}" id="user-edit-id">
-      <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span id="user-edit-title">{{if gt .EditID 0}}Edit user{{else}}Add user{{end}}</span></h3>
+      <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span id="user-edit-title">{{if gt .EditID 0}}{{tr .Lang "users.edit_title"}}{{else}}{{tr .Lang "users.add_title"}}{{end}}</span></h3>
       {{if .Error}}{{if .DialogOpen}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
-      <label class="modal-field">Username
+      <label class="modal-field">{{tr .Lang "users.username"}}
         <input type="text" name="username" id="user-edit-username" value="{{.Form.Username}}" required maxlength="64" pattern="[a-z0-9._-]+">
       </label>
-      <label class="modal-field">Phone
+      <label class="modal-field">{{tr .Lang "users.phone"}}
         <input type="text" name="phone" id="user-edit-phone" value="{{.Form.Phone}}" maxlength="32">
       </label>
-      <label class="modal-field">Email
+      <label class="modal-field">{{tr .Lang "users.email"}}
         <input type="text" name="email" id="user-edit-email" value="{{.Form.Email}}" maxlength="128">
       </label>
-      <label class="modal-field">Discord
+      <label class="modal-field">{{tr .Lang "users.discord"}}
         <input type="text" name="discord" id="user-edit-discord" value="{{.Form.Discord}}" maxlength="128">
       </label>
-      <label class="modal-field">Role
+      <label class="modal-field">{{tr .Lang "users.role"}}
         <select name="role" id="user-edit-role">
-          <option value="" {{if eq .Form.Role ""}}selected{{end}}>recipient (no sign-in)</option>
-          <option value="member" {{if eq .Form.Role "member"}}selected{{end}}>member (account only)</option>
-          <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose + account)</option>
+          <option value="" {{if eq .Form.Role ""}}selected{{end}}>{{tr .Lang "users.modal.role_empty"}}</option>
+          <option value="member" {{if eq .Form.Role "member"}}selected{{end}}>{{tr .Lang "users.modal.role_member"}}</option>
+          <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>{{tr .Lang "users.modal.role_emcom"}}</option>
         </select>
       </label>
-      <label class="modal-field">APRS callsigns
+      <label class="modal-field">{{tr .Lang "users.modal.aprs"}}
         <input type="text" name="aprs_callsigns" id="user-edit-aprs" value="{{.Form.APRSCallsigns}}" maxlength="256">
       </label>
       <fieldset class="modal-section">
-        <legend class="modal-legend">Groups</legend>
+        <legend class="modal-legend">{{tr .Lang "users.modal.groups"}}</legend>
         {{if .Groups}}
         <div class="modal-checks">
           {{range .Groups}}
@@ -112,25 +112,25 @@
           {{end}}
         </div>
         {{else}}
-        <p class="muted modal-note">No groups defined yet — create them on the Groups page.</p>
+        <p class="muted modal-note">{{tr .Lang "users.modal.no_groups"}}</p>
         {{end}}
       </fieldset>
       <fieldset class="modal-section">
-        <legend class="modal-legend">Delivery channels</legend>
+        <legend class="modal-legend">{{tr .Lang "users.modal.channels"}}</legend>
         <div class="modal-checks">
           {{range .Channels}}
           <label class="modal-check"><input type="checkbox" name="channels" value="{{.Kind}}"{{if index $.Form.ChannelSet .Kind}} checked{{end}}> {{.Label}}</label>
           {{end}}
         </div>
-        <p class="muted modal-note">Unchecked channels are skipped when alerts go out to this user.</p>
+        <p class="muted modal-note">{{tr .Lang "users.modal.channels_note"}}</p>
       </fieldset>
       <input type="hidden" name="prefs" value="1">
-      <label class="modal-field">Password
-        <input type="password" name="password" id="user-edit-password" placeholder="{{if gt .EditID 0}}new password (optional){{else}}password (required for member/emcom){{end}}" maxlength="72" autocomplete="new-password">
+      <label class="modal-field">{{tr .Lang "users.modal.password"}}
+        <input type="password" name="password" id="user-edit-password" placeholder="{{if gt .EditID 0}}{{tr .Lang "users.modal.password_edit"}}{{else}}{{tr .Lang "users.modal.password_add"}}{{end}}" maxlength="72" autocomplete="new-password">
       </label>
       <div class="modal-actions">
-        <button type="submit" class="btn-primary">Save</button>
-        <button type="button" class="btn-ghost" id="user-edit-cancel">Cancel</button>
+        <button type="submit" class="btn-primary">{{tr .Lang "common.save"}}</button>
+        <button type="button" class="btn-ghost" id="user-edit-cancel">{{tr .Lang "common.cancel"}}</button>
       </div>
     </form>
   </dialog>

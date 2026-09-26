@@ -433,6 +433,40 @@ a:hover { text-decoration: underline; }
 html[data-theme="light"] .theme-toggle .ico-sun { display: none; }
 html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
 
+/* ---- language switch (EN | PL) ---- */
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.lang-opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-hi);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.lang-opt:hover { color: var(--text); border-color: var(--focus); text-decoration: none; }
+.lang-opt.active {
+  color: var(--text);
+  border-color: var(--accent, var(--focus));
+  background: var(--accent-soft, var(--surface-hi));
+}
+.lang-opt.active { cursor: default; }
+/* Login-family cards: pinned top-right inside the card. */
+.login-lang { position: absolute; top: 12px; right: 12px; }
+
 .avatar {
   width: 26px;
   height: 26px;
@@ -741,6 +775,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 
 .login-card {
+  position: relative;
   width: 100%;
   max-width: 400px;
   background: var(--surface);

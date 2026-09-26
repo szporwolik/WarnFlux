@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
@@ -28,6 +29,7 @@ type publicHazardView struct {
 // homeView is the PUBLIC home page model. The login form is deliberately
 // not part of it: the sign-in lives behind the top-right icon button.
 type homeView struct {
+	Lang     string
 	AppTitle string
 	Header1  string
 	Header2  string
@@ -153,21 +155,22 @@ func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 // sees a Dashboard entry in the header instead of the sign-in icon.
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	v := s.buildHomeView()
+	lang := s.langFor(r)
 	if sess := s.sessions.currentSession(r); sess != nil {
 		v.LoggedIn = true
 		v.Username = sess.username
 		v.Landing = "/dashboard"
-		v.LandingLabel = "Dashboard"
+		v.LandingLabel = i18n.T(lang, "nav.dashboard")
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "home", v)
+	s.renderL(w, r, "home", v)
 }
 
 // handlePartialHome serves the public auto-refresh fragment of the active
 // hazard list (the home page polls it).
 func (s *Server) handlePartialHome(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "home_alerts_section", s.buildHomeView())
+	s.renderL(w, r, "home_alerts_section", s.buildHomeView())
 }
 
 // buildHomeView assembles the public view from the mirrored MQTT state,

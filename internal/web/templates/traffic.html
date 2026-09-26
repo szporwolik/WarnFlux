@@ -1,9 +1,9 @@
 {{define "traffic"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MQTT traffic · {{.AppTitle}}</title>
+  <title>{{tr .Lang "traffic.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -14,30 +14,30 @@
   <main class="users-main">
     <div class="page-tabs" role="tablist">
       <button type="button" class="page-tab active" role="tab" aria-selected="true" data-tab="panel-traffic">
-        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Traffic
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "traffic.tab.traffic"}}
       </button>
       <button type="button" class="page-tab" role="tab" aria-selected="false" data-tab="panel-browser">
-        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>Browser
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "traffic.tab.browser"}}
       </button>
     </div>
     <section class="card log-card page-panel" id="panel-traffic" data-panel="panel-traffic">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>MQTT traffic</h2>
-      <p class="muted log-hint">Last {{.MaxEntries}} inbound MQTT frames received by this instance. Refreshes automatically.</p>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "traffic.title"}}</h2>
+      <p class="muted log-hint">{{trf .Lang "traffic.hint" .MaxEntries}}</p>
       <div id="traffic-viewer" class="log-viewer traffic-viewer" data-after="0"></div>
     </section>
     <section class="card log-card page-panel" id="panel-browser" data-panel="panel-browser" hidden>
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>MQTT browser</h2>
-      <p class="muted log-hint">Opens a temporary subscription on one receiver and collects messages for a few seconds — retained state and broker status (<span class="mono">$SYS/#</span>) included. Nothing is published.</p>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "traffic.browser"}}</h2>
+      <p class="muted log-hint">{{tr .Lang "traffic.browser.hint"}}</p>
       <form id="browse-form" class="browse-form">
-        <label class="browse-field">Receiver
+        <label class="browse-field">{{tr .Lang "dash.receiver"}}
           <select id="browse-receiver">
             {{range .Receivers}}<option value="{{.ID}}">{{if .Connected}}● {{end}}{{.Label}}</option>{{end}}
           </select>
         </label>
-        <label class="browse-field">Topic
+        <label class="browse-field">{{tr .Lang "traffic.topic"}}
           <input id="browse-topic" class="mono" value="#" autocomplete="off" spellcheck="false">
         </label>
-        <label class="browse-field">Window
+        <label class="browse-field">{{tr .Lang "traffic.window"}}
           <select id="browse-window">
             <option value="1">1 s</option>
             <option value="2" selected>2 s</option>
@@ -46,13 +46,13 @@
             <option value="10">10 s</option>
           </select>
         </label>
-        <button type="submit" class="btn-primary">Browse</button>
+        <button type="submit" class="btn-primary">{{tr .Lang "traffic.browse"}}</button>
       </form>
       <div id="browse-status" class="browse-status" hidden></div>
       <div id="browse-results" class="table-wrap" hidden>
         <table class="browse-table">
           <thead>
-            <tr><th>Topic</th><th>QoS</th><th>Retained</th><th>Size</th><th>Payload</th></tr>
+            <tr><th>{{tr .Lang "traffic.topic"}}</th><th>QoS</th><th>{{tr .Lang "traffic.retained"}}</th><th>{{tr .Lang "traffic.size"}}</th><th>{{tr .Lang "traffic.payload"}}</th></tr>
           </thead>
           <tbody id="browse-rows"></tbody>
         </table>

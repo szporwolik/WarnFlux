@@ -1,9 +1,9 @@
 {{define "reset"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Set a new password · {{.AppTitle}}</title>
+  <title>{{tr .Lang "reset.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
@@ -11,23 +11,27 @@
 </head>
 <body class="login-page">
   <main class="login-card">
+    <div class="lang-switch login-lang" role="group" aria-label="{{tr .Lang "common.language"}}">
+      <a class="lang-opt{{if eq .Lang "en"}} active{{end}}" href="/lang/en" hreflang="en" lang="en" title="English">EN</a>
+      <a class="lang-opt{{if eq .Lang "pl"}} active{{end}}" href="/lang/pl" hreflang="pl" lang="pl" title="Polski">PL</a>
+    </div>
     <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
     <h1 class="login-name">{{.Header1}}</h1>
-    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">Alerts in. Action out.</p>{{end}}
+    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">{{tr .Lang "login.tagline"}}</p>{{end}}
     {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
     {{if not .Expired}}
     <form method="post" action="/reset">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="token" value="{{.Token}}">
-      <label>New password
+      <label>{{tr .Lang "reset.password"}}
         <input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="72" required autofocus>
       </label>
-      <button type="submit" class="btn-primary">Set password</button>
+      <button type="submit" class="btn-primary">{{tr .Lang "reset.save"}}</button>
     </form>
     {{else}}
-    <p class="login-back"><a href="/forgot">Request a new reset link</a></p>
+    <p class="login-back"><a href="/forgot">{{tr .Lang "reset.new_link"}}</a></p>
     {{end}}
-    <p class="login-back"><a href="/login">← Back to sign in</a></p>
+    <p class="login-back"><a href="/login">{{tr .Lang "forgot.back"}}</a></p>
   </main>
   {{template "footer" .}}
 </body>

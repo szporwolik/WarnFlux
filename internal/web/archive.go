@@ -28,6 +28,7 @@ type archiveEventView struct {
 
 // archiveView is the public archive fragment model (list + pagination).
 type archiveView struct {
+	Lang   string
 	Events []archiveEventView
 	Page   int
 	Pages  int
@@ -45,7 +46,7 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	view := archiveView{Days: archiveDays}
 	if s.events == nil {
-		s.render(w, "archive", view)
+		s.renderL(w, r, "archive", view)
 		return
 	}
 
@@ -53,7 +54,7 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	total, err := s.events.CountArchiveEvents(r.Context(), since)
 	if err != nil {
 		s.logger.Warn("web: archive count failed", "error", err)
-		s.render(w, "archive", view)
+		s.renderL(w, r, "archive", view)
 		return
 	}
 	view.Total = total
@@ -82,7 +83,7 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	stored, err := s.events.ListArchiveEvents(r.Context(), since, (page-1)*archivePageSize, archivePageSize)
 	if err != nil {
 		s.logger.Warn("web: archive list failed", "error", err)
-		s.render(w, "archive", view)
+		s.renderL(w, r, "archive", view)
 		return
 	}
 	view.Events = make([]archiveEventView, 0, len(stored))
@@ -100,5 +101,5 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 			LastSeenAt:  se.LastSeenAt,
 		})
 	}
-	s.render(w, "archive", view)
+	s.renderL(w, r, "archive", view)
 }

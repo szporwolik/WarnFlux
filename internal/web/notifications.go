@@ -13,6 +13,7 @@ const notificationsPerPage = 50
 
 // notificationsView is the full /notifications page model.
 type notificationsView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -29,7 +30,7 @@ type notificationsView struct {
 	// dashboard warning cards).
 	FocusKey string
 
-	Trails []trail.Trail
+	Trails []trailView
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -44,10 +45,18 @@ type notificationsView struct {
 	NavAccount       bool
 }
 
+// trailView pairs one notification trail with the UI language for the
+// notif-item sub-template (which otherwise loses the root context).
+type trailView struct {
+	Lang  string
+	Trail trail.Trail
+}
+
 // handleNotificationsPage renders the delivery history: the most recent
 // notification trails, newest first. ?key= focuses one trail.
 func (s *Server) handleNotificationsPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
+	lang := s.langFor(r)
 	view := notificationsView{
 		AppTitle:         s.cfg.Title,
 		Name:             s.displayName(),
@@ -61,11 +70,20 @@ func (s *Server) handleNotificationsPage(w http.ResponseWriter, r *http.Request)
 		Role:             sess.role,
 		CSRF:             sess.csrf,
 		FocusKey:         r.URL.Query().Get("key"),
-		Trails:           s.recentTrails(notificationsPerPage),
+		Trails:           wrapTrails(lang, s.recentTrails(notificationsPerPage)),
 		NavNotifications: true,
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "notifications", view)
+	s.renderL(w, r, "notifications", view)
+}
+
+// wrapTrails pairs each trail with a UI language.
+func wrapTrails(lang string, trails []trail.Trail) []trailView {
+	out := make([]trailView, 0, len(trails))
+	for _, tr := range trails {
+		out = append(out, trailView{Lang: lang, Trail: tr})
+	}
+	return out
 }
 
 // handlePartialNotifications serves the full current trail list as JSON:

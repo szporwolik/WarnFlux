@@ -1,9 +1,9 @@
 {{define "account"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Account · {{.AppTitle}}</title>
+  <title>{{tr .Lang "nav.account"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -18,52 +18,52 @@
         <span class="avatar">{{initials .Username}}</span>
         <div>
           <h2 class="account-title">{{.Username}}</h2>
-          <span class="account-role">{{roleLabel .Role}}</span>
+          <span class="account-role">{{roleLabelL .Lang .Role}}</span>
         </div>
       </div>
 
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
       {{if .ManagedAccount}}
-      <p class="account-note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>This account is managed in configuration: username, email and password come from config.yaml and cannot be changed here.</p>
+      <p class="account-note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>{{tr .Lang "account.config_note"}}</p>
       {{end}}
 
       <form method="post" action="/account">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
 
         <div class="account-section">
-          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Contact</h3>
-          <p class="page-info">Used for alert routing. The username is managed by an administrator.</p>
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>{{tr .Lang "account.contact"}}</h3>
+          <p class="page-info">{{tr .Lang "account.contact_note"}}</p>
           <div class="account-grid">
             <label class="field">
-              <span>Phone</span>
+              <span>{{tr .Lang "account.phone"}}</span>
               <input type="text" name="phone" value="{{.Phone}}" maxlength="32" placeholder="+48 600 000 000"{{if .ManagedAccount}} disabled{{end}}>
             </label>
             <label class="field">
-              <span>Email</span>
+              <span>{{tr .Lang "account.email"}}</span>
               <input type="email" name="email" value="{{.Email}}" maxlength="128" placeholder="you@example.com"{{if .ManagedAccount}} disabled{{end}}>
             </label>
             <label class="field">
-              <span>Discord</span>
+              <span>{{tr .Lang "account.discord"}}</span>
               <input type="text" name="discord" value="{{.Discord}}" maxlength="128" placeholder="@handle"{{if .ManagedAccount}} disabled{{end}}>
             </label>
           </div>
         </div>
 
         <div class="account-section">
-          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>Password</h3>
-          <p class="page-info">Leave empty to keep the current password. The role is managed by an administrator.</p>
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>{{tr .Lang "account.password"}}</h3>
+          <p class="page-info">{{tr .Lang "account.password_note"}}</p>
           <div class="account-grid">
             <label class="field field-wide">
-              <span>New password</span>
-              <input type="password" name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one"{{if .ManagedAccount}} disabled{{end}}>
+              <span>{{tr .Lang "account.new_password"}}</span>
+              <input type="password" name="password" value="" autocomplete="new-password" placeholder="{{tr .Lang "account.password_placeholder"}}"{{if .ManagedAccount}} disabled{{end}}>
             </label>
           </div>
         </div>
 
         <div class="account-section">
-          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Notification groups</h3>
-          <p class="page-info">Checked means subscribed — uncheck a group to stop receiving its alerts. You can change this any time.</p>
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "account.groups"}}</h3>
+          <p class="page-info">{{tr .Lang "account.groups_note"}}</p>
           <div class="account-channels-grid">
             {{range .Groups}}
             <label class="account-channel">
@@ -71,14 +71,14 @@
               <span>{{.Name}}</span>
             </label>
             {{else}}
-            <p class="muted">No groups configured yet.</p>
+            <p class="muted">{{tr $.Lang "account.no_groups"}}</p>
             {{end}}
           </div>
         </div>
 
         <div class="account-section">
-          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Delivery channels</h3>
-          <p class="page-info">Choose which media carry alerts to you (e.g. APRS radio, email). You can change this any time.</p>
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "account.channels"}}</h3>
+          <p class="page-info">{{tr .Lang "account.channels_note"}}</p>
           <div class="account-channels-grid">
             {{range .Channels}}
             <label class="account-channel">
@@ -91,7 +91,7 @@
 
         {{if not .ManagedAccount}}
         <div class="form-footer">
-          <button type="submit" class="btn-primary">Save changes</button>
+          <button type="submit" class="btn-primary">{{tr .Lang "account.save"}}</button>
         </div>
         {{end}}
       </form>

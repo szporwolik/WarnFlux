@@ -1,9 +1,9 @@
 {{define "audit"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Audit log · {{.AppTitle}}</title>
+  <title>{{tr .Lang "audit.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -13,8 +13,8 @@
   {{template "sidebar" .}}
   <main class="users-main">
     <section class="card log-card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>Audit log</h2>
-      <p class="muted log-hint">User actions performed through the dashboard, persisted in the database (up to {{.MaxEntries}} entries). Refreshes automatically.</p>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{tr .Lang "audit.title"}}</h2>
+      <p class="muted log-hint">{{trf .Lang "audit.hint" .MaxEntries}}</p>
       <div id="audit-viewer" class="log-viewer" data-after="0"></div>
     </section>
   </main>

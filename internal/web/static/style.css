@@ -1624,8 +1624,9 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   border-bottom: 10px solid #c62828; /* overridden inline by theme color */
 }
 /* Public home weather: pins and report cards on the combined map. */
-/* Weather map pins: the current condition icon + temperature. APRS
-   stations green, internet providers brand-blue. */
+/* Weather map pins: the current condition icon + temperature. One color
+   for every weather report — the transport (APRS radio vs an internet
+   provider) is shown in the pin popup and the report cards. */
 .hw-pin-wrap { background: none; border: none; }
 .hw-pin {
   display: inline-flex;
@@ -1639,10 +1640,10 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-weight: 600;
   line-height: 1.2;
   white-space: nowrap;
+  background: #1565c0;
+  color: #fff;
 }
 .hw-pin .wi { font-size: 0.95rem; line-height: 1; }
-.hw-pin-aprs { background: #007a3d; color: #fff; }
-.hw-pin-inet { background: #1565c0; color: #fff; }
 
 /* Air-quality station pins: colored dot by the GIOŚ index level
    (0 very good ... 5 very bad, grey when the index is missing). */

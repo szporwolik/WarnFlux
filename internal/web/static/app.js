@@ -1245,7 +1245,7 @@
       className: "hw-pin-wrap",
       iconSize: [52, 22],
       iconAnchor: [26, 11],
-      html: '<span class="hw-pin ' + (r.via === "aprs" ? "hw-pin-aprs" : "hw-pin-inet") + '"><i class="wi ' + condIcon(r.condition) +
+      html: '<span class="hw-pin"><i class="wi ' + condIcon(r.condition) +
         '" aria-hidden="true"></i>' + (temp ? '<span class="hw-pin-t">' + temp + '</span>' : '') + '</span>'
     });
   }

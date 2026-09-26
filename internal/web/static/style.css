@@ -75,15 +75,15 @@
   --info-bg: rgba(110, 173, 208, 0.16);
   --muted-bg: rgba(135, 147, 158, 0.14);
 
-  /* Severity scale — one distinct hue per level: unknown slate →
-     minor green → moderate amber → severe orange → extreme red. */
+  /* Severity scale — one cohesive alert ramp: neutral levels (unknown,
+     informational) off the ramp, then yellow → orange → red. */
   --sev-unknown:   #8f9aa6;
-  --sev-minor:     #66bb6a;
-  --sev-moderate:  #e0a63c;
-  --sev-severe:    #f0784e;
-  --sev-extreme:   #f05a69;
+  --sev-minor:     #ffd54f;
+  --sev-moderate:  #ff9800;
+  --sev-severe:    #f4511e;
+  --sev-extreme:   #c62828;
   --sev-unknown-bg:   rgba(143, 154, 166, 0.14);
-  --sev-minor-bg:     rgba(102, 187, 106, 0.14);
+  --sev-minor-bg:     rgba(255, 213, 79, 0.14);
   --sev-moderate-bg:  #302718;
   --sev-severe-bg:    #332019;
   --sev-extreme-bg:   #32191e;
@@ -114,7 +114,7 @@
   --bad-border:  rgba(240, 90, 105, 0.45);
   --info-border: rgba(110, 173, 208, 0.45);
   --sev-unknown-border:  rgba(143, 154, 166, 0.45);
-  --sev-minor-border:    rgba(102, 187, 106, 0.45);
+  --sev-minor-border:    rgba(255, 213, 79, 0.45);
   --sev-moderate-border: rgba(224, 166, 60, 0.45);
   --sev-severe-border:   rgba(240, 120, 78, 0.45);
   --sev-extreme-border:  rgba(240, 90, 105, 0.45);
@@ -169,12 +169,12 @@ html[data-theme="light"] {
   --muted-bg: rgba(104, 114, 123, 0.12);
 
   --sev-unknown:   #68727b;
-  --sev-minor:     #2e7d32;
+  --sev-minor:     #b8860b;
   --sev-moderate:  #b47a18;
   --sev-severe:    #c75532;
   --sev-extreme:   #b52d3e;
   --sev-unknown-bg:   #eef1f3;
-  --sev-minor-bg:     #e4f2e5;
+  --sev-minor-bg:     #faf3d5;
   --sev-moderate-bg:  #fbf2de;
   --sev-severe-bg:    #fbeae4;
   --sev-extreme-bg:   #f9e5e8;
@@ -202,7 +202,7 @@ html[data-theme="light"] {
   --bad-border:  rgba(181, 45, 62, 0.4);
   --info-border: rgba(50, 117, 154, 0.4);
   --sev-unknown-border:  rgba(104, 114, 123, 0.45);
-  --sev-minor-border:    rgba(46, 125, 50, 0.4);
+  --sev-minor-border:    rgba(184, 134, 11, 0.4);
   --sev-moderate-border: rgba(180, 122, 24, 0.4);
   --sev-severe-border:   rgba(199, 85, 50, 0.4);
   --sev-extreme-border:  rgba(181, 45, 62, 0.4);
@@ -1684,6 +1684,14 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 .wf-badge svg { display: block; }
 .wf-badge .wi { font-size: 0.82rem; line-height: 1; }
+/* Hollow variant: transparent fill, glyph in the category color — used
+   for moving traffic (aircraft) so it stays visually quiet. */
+.wf-badge.hollow {
+  background: rgba(15, 23, 42, 0.5);
+  color: var(--wf-bg, #607d8b);
+}
+.wf-badge.hollow::after { border-top-color: var(--wf-bg, #607d8b); }
+[data-theme="light"] .wf-badge.hollow { background: rgba(255, 255, 255, 0.65); }
 .wf-badge-wrap {
   display: flex;
   flex-direction: column;
@@ -1774,6 +1782,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   padding: 0.5rem 0.75rem;
   color: #fff;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(rgba(0, 0, 0, 0.28), rgba(0, 0, 0, 0.28)), var(--wf-pop-c, #607d8b);
 }
 .wf-pop-ico {
   flex: none;

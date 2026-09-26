@@ -961,26 +961,30 @@
   // conditions reuse the Weather Icons font). Stations carry a halo
   // callsign label under the badge, like every labeled pin.
   var BADGE_GLYPHS = {
-    antenna: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16"/><path d="M7 8a7.5 7.5 0 0 1 10 0"/><path d="M4 12a11.5 11.5 0 0 1 16 0"/></svg>',
-    warning: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
-    wind: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/></svg>',
-    plane: '<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M12 2 L21 21 L12 17 L3 21 Z"/></svg>'
+    antenna: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16"/><path d="M7 8a7.5 7.5 0 0 1 10 0"/><path d="M4 12a11.5 11.5 0 0 1 16 0"/></svg>',
+    warning: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
+    wind: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/></svg>',
+    plane: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L21 21 L12 17 L3 21 Z"/></svg>'
   };
 
   // wfBadge renders one unified pin. opts: color, glyph (SVG or HTML),
-  // rot (glyph rotation, e.g. the aircraft track) and an optional halo
+  // rot (glyph rotation, e.g. the aircraft track), size (default 24),
+  // hollow (transparent fill, glyph in the category color — used for
+  // moving traffic so it stays visually quiet) and an optional halo
   // label under the pin.
   function wfBadge(opts) {
     var color = opts.color || "#607d8b";
+    var sz = opts.size || 24;
     var glyph = '<span style="display:inline-flex;transform:rotate(' + (opts.rot || 0) + 'deg)">' + (opts.glyph || "") + '</span>';
-    var html = '<span class="wf-badge" style="--wf-bg:' + color + '">' + glyph + '</span>';
-    var size = [24, 30];
-    var anchor = [12, 28];
+    var cls = "wf-badge" + (opts.hollow ? " hollow" : "");
+    var html = '<span class="' + cls + '" style="--wf-bg:' + color + ';width:' + sz + 'px;height:' + sz + 'px">' + glyph + '</span>';
+    var size = [sz, sz + 6];
+    var anchor = [sz / 2, sz + 4];
     if (opts.label) {
       html = '<span class="wf-badge-wrap">' + html +
         '<span class="wf-station-label">' + esc(opts.label) + '</span></span>';
-      size = [96, 46];
-      anchor = [48, 30];
+      size = [96, sz + 22];
+      anchor = [48, sz + 6];
     }
     return L.divIcon({
       className: "wf-badge-pin",
@@ -1130,15 +1134,15 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
-  // Severity palette for hazard pins and popup banners: one distinct hue
-  // per level so informational/unknown events never read like minor ones.
-  // Matches the .sev badge palette in style.css.
+  // Severity palette for hazard pins and popup banners: one cohesive
+  // alert ramp (yellow → orange → red) with the neutral levels (info /
+  // unknown) kept off the ramp. Matches the .sev palette in style.css.
   var HAZARD_COLORS = {
-    extreme: "#d32f2f",
-    severe: "#ef6c00",
-    moderate: "#f0a020",
-    minor: "#43a047",
-    informational: "#1e88e5",
+    extreme: "#c62828",
+    severe: "#f4511e",
+    moderate: "#ff9800",
+    minor: "#ffd54f",
+    informational: "#90a4ae",
     unknown: "#64748b"
   };
 
@@ -1282,15 +1286,16 @@
   }
 
   // wfPopup builds the unified popup: a colored banner (the category
-  // color) with the same glyph as the pin, the title, an optional value
-  // chip, then the detail body on the themed surface.
+  // color, darkened slightly by CSS for text contrast) with the same
+  // glyph as the pin, the title, an optional value chip, then the detail
+  // body on the themed surface.
   function wfPopup(opts) {
     var icon = opts.icon || "";
     if (opts.iconRot) {
       icon = '<span style="display:inline-flex;transform:rotate(' + opts.iconRot + 'deg)">' + icon + '</span>';
     }
     var html = '<div class="wf-pop">';
-    html += '<div class="wf-pop-head" style="background:' + (opts.color || "#607d8b") + '">';
+    html += '<div class="wf-pop-head" style="--wf-pop-c:' + (opts.color || "#607d8b") + '">';
     if (icon) {
       html += '<span class="wf-pop-ico">' + icon + '</span>';
     }
@@ -1343,7 +1348,7 @@
   function weatherIcon(r) {
     var temp = r.temperature_c != null ? Math.round(r.temperature_c) + "°" : "";
     return wfBadge({
-      color: "#1e88e5",
+      color: "#00897b",
       glyph: '<i class="wi ' + condIcon(r.condition) + '" aria-hidden="true"></i>',
       label: temp || undefined
     });
@@ -1381,7 +1386,7 @@
       body += '<div class="wf-pop-time muted">' + tr("map.updated") + " " + esc(fmtTime(r.generated_at)) + '</div>';
     }
     return wfPopup({
-      color: "#1e88e5",
+      color: "#00897b",
       icon: '<i class="wi ' + condIcon(r.condition) + '" aria-hidden="true"></i>',
       title: esc(r.name),
       sub: esc(r.provider),
@@ -1646,16 +1651,17 @@
   var aircraftMarkers = {};
   var AIRCRAFT_POLL_MS = 15 * 1000;
 
-  // planeIcon renders one aircraft as a badge with the track-rotated
-  // plane glyph; grounded targets are gray, airborne ones amber.
+  // planeIcon renders one aircraft as a small hollow badge with the
+  // track-rotated plane glyph: moving traffic stays visually quiet —
+  // grounded targets are gray, airborne ones muted amber.
   function planeIcon(a) {
     var rot = a.track_deg != null ? a.track_deg : 0;
-    var color = a.on_ground ? "#757575" : "#ffb300";
-    return wfBadge({ color: color, glyph: BADGE_GLYPHS.plane, rot: rot });
+    var color = a.on_ground ? "#78909c" : "#d4a017";
+    return wfBadge({ color: color, glyph: BADGE_GLYPHS.plane, rot: rot, hollow: true, size: 18 });
   }
 
   function aircraftPopup(a) {
-    var color = a.on_ground ? "#757575" : "#ffb300";
+    var color = a.on_ground ? "#607d8b" : "#d4a017";
     var lines = [];
     if (a.altitude_m != null) { lines.push(tr("map.alt") + ": " + fmtNum(a.altitude_m, 0) + " m"); }
     if (a.speed_kmh != null) {
@@ -1707,7 +1713,7 @@
           });
           if (trail.length > 1) {
             aircraftLayer.addLayer(L.polyline(trail, {
-              color: a.on_ground ? "#9e9e9e" : "#ffd54f", weight: 2.5, opacity: 0.8, interactive: false
+              color: a.on_ground ? "#9e9e9e" : "#d4a017", weight: 2, opacity: 0.75, interactive: false
             }));
           }
 
@@ -1825,10 +1831,10 @@
   var MAP_CTRL_COLORS = {
     hazards: "#d32f2f",
     stations: "#1565c0",
-    weather: "#e67e22",
-    radar: "#00897b",
-    airquality: "#7b1fa2",
-    aircraft: "#f9a825"
+    weather: "#00897b",
+    radar: "#00bcd4",
+    airquality: "#43a047",
+    aircraft: "#d4a017"
   };
 
   // svgBtn builds one uniform 32px icon button.

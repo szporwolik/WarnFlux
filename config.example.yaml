@@ -100,7 +100,7 @@ sources:
       shutdown_timeout: 10s
 
     config:
-      poll_interval: 15m
+      poll_interval: 30m
       request_timeout: 10s
 
       forecast_hours: 48

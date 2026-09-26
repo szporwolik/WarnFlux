@@ -227,6 +227,46 @@ func TestRunFetchesImmediatelyAndPublishes(t *testing.T) {
 	}
 }
 
+// TestPollEmitsAirQualityDespiteForecastRateLimit pins the decoupling
+// between the two provider endpoints: a rate-limited forecast call must
+// never suppress the air-quality companion of the same location.
+func TestPollEmitsAirQualityDespiteForecastRateLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/air-quality") {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"latitude":50,"longitude":20,"elevation":300,"timezone":"Europe/Warsaw","current":{"time":"2026-09-26T12:00","european_aqi":35}}`)
+			return
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	s := testSource(srv.URL, []Location{{ID: "home", Latitude: 50, Longitude: 20}}, time.Hour)
+	s.cfg.AirQuality = true
+	emit := &recordingEmitter{}
+
+	next := s.pollOnce(context.Background(), emit, nil)
+	if next != time.Hour {
+		t.Errorf("next poll = %v, want the configured interval", next)
+	}
+
+	var aq, weather int
+	for _, m := range emit.messages {
+		switch m.Kind {
+		case "air_quality":
+			aq++
+		case "weather":
+			weather++
+		}
+	}
+	if aq != 1 {
+		t.Errorf("air_quality messages = %d, want 1 (forecast rate limit must not suppress AQ)", aq)
+	}
+	if weather != 0 {
+		t.Errorf("weather messages = %d, want 0 (forecast was rate limited)", weather)
+	}
+}
+
 func TestRunTransientFailureThenSuccess(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

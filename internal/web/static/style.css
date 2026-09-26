@@ -1701,6 +1701,26 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   border: none;
 }
 .wf-badge-wrap .wf-station-label { margin-top: 3px; }
+/* Overlapping-pin chip: a small +n counter above a pin that hides other
+   layers at the same coordinates; its popup lists them. */
+.wf-pin-chip-wrap { background: none; border: none; }
+.wf-pin-chip {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid #fff;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+[data-theme="light"] .wf-pin-chip { background: rgba(255, 255, 255, 0.92); color: #263238; }
+.wf-pophint { cursor: pointer; padding: 2px 0; line-height: 1.35; }
+.wf-pophint:hover { color: var(--brand); }
 .leaflet-popup-content .muted { opacity: 0.75; font-size: 0.85em; }
 
 /* Unified map control stack (top-right): layer toggles on top, then a

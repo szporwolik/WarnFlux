@@ -42,6 +42,11 @@ const (
 	maxLocations      = 64
 	maxLocationName   = 256
 	maxAPIKeyFileSize = 64 * 1024
+
+	// locationStagger is the pause between location requests inside one
+	// poll, keeping the provider burst pattern gentle on the shared
+	// public quota.
+	locationStagger = 120 * time.Millisecond
 )
 
 // locationSlugRE is the accepted shape of location IDs. They become MQTT
@@ -218,6 +223,19 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	return nil
 }
 
+// sleepCtx sleeps for d or until the context is cancelled; it reports
+// whether the sleep completed (false = shutting down).
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
 // pollOnce fetches and publishes every configured location once and
 // returns the delay until the next poll: the configured poll interval,
 // extended by any provider Retry-After (clamped). One failing location
@@ -250,19 +268,23 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 				}
 				next = after
 			}
-			continue
+		} else {
+			succeeded++
+			if err := emit.EmitInformation(ctx, message); err != nil {
+				slog.Warn("weather publish failed", "location", loc.ID, "error", err)
+			} else {
+				slog.Info("weather snapshot published", "location", loc.ID)
+			}
 		}
-		succeeded++
-		if err := emit.EmitInformation(ctx, message); err != nil {
-			slog.Warn("weather publish failed", "location", loc.ID, "error", err)
-			continue
-		}
-		slog.Info("weather snapshot published", "location", loc.ID)
 
 		// Optional air-quality companion for the same location: a
-		// European-AQI snapshot on the air_quality information kind. A
-		// failing AQ request never degrades the weather publication.
+		// European-AQI snapshot on the air_quality information kind. It
+		// runs on its own endpoint and quota, so a rate-limited forecast
+		// call must never suppress it.
 		if s.cfg.AirQuality {
+			if ctx.Err() != nil {
+				break
+			}
 			aq, err := s.fetchAirQuality(ctx, loc)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -282,6 +304,12 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 				continue
 			}
 			slog.Info("air-quality snapshot published", "location", loc.ID)
+		}
+
+		// One short breath between locations keeps the provider burst
+		// pattern gentle on the shared public quota.
+		if !sleepCtx(ctx, locationStagger) {
+			break
 		}
 	}
 

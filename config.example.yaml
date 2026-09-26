@@ -106,6 +106,12 @@ sources:
       forecast_hours: 48
       forecast_days: 7
 
+      # Per-location European-AQI snapshots (Open-Meteo air-quality
+      # API): published on the same air_quality information kind the
+      # GIOŚ station layer uses, so the home map renders town air quality
+      # next to the official stations. One extra request per location.
+      air_quality: false
+
       api_key: ""
       api_key_file: ""
 

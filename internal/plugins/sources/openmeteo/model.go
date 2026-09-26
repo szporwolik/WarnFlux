@@ -75,6 +75,49 @@ type DailyData struct {
 	Sunset                []string   `json:"sunset"`
 }
 
+// AirQualityResponse is the typed Open-Meteo air-quality response for one
+// location: the European AQI plus the per-pollutant index values.
+type AirQualityResponse struct {
+	Latitude  float64            `json:"latitude"`
+	Longitude float64            `json:"longitude"`
+	Elevation float64            `json:"elevation"`
+	Timezone  string             `json:"timezone"`
+	Current   *AirQualityCurrent `json:"current"`
+}
+
+// AirQualityCurrent is the instantaneous air-quality block.
+type AirQualityCurrent struct {
+	Time            string   `json:"time"`
+	EuropeanAQI     *float64 `json:"european_aqi"`
+	PM10            *float64 `json:"pm10"`
+	PM25            *float64 `json:"pm2_5"`
+	CarbonMonoxide  *float64 `json:"carbon_monoxide"`
+	NitrogenDioxide *float64 `json:"nitrogen_dioxide"`
+	SulphurDioxide  *float64 `json:"sulphur_dioxide"`
+	Ozone           *float64 `json:"ozone"`
+	AQIPM10         *float64 `json:"european_aqi_pm10"`
+	AQIPM25         *float64 `json:"european_aqi_pm2_5"`
+	AQINitrogen     *float64 `json:"european_aqi_nitrogen_dioxide"`
+	AQISulphur      *float64 `json:"european_aqi_sulphur_dioxide"`
+	AQIOzone        *float64 `json:"european_aqi_ozone"`
+}
+
+// parseAirQualityResponse decodes and validates a provider air-quality
+// response body.
+func parseAirQualityResponse(data []byte) (*AirQualityResponse, error) {
+	var resp AirQualityResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("parse provider air-quality JSON: %w", err)
+	}
+	if resp.Current == nil || resp.Current.Time == "" {
+		return nil, fmt.Errorf("provider air-quality response is missing current data")
+	}
+	if resp.Current.EuropeanAQI == nil {
+		return nil, fmt.Errorf("provider air-quality response is missing european_aqi")
+	}
+	return &resp, nil
+}
+
 // parseResponse decodes and validates a provider response body.
 func parseResponse(data []byte) (*ProviderResponse, error) {
 	var resp ProviderResponse

@@ -7,6 +7,7 @@ package openmeteo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -61,6 +62,10 @@ type Config struct {
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 	ForecastHours  int           `yaml:"forecast_hours"`
 	ForecastDays   int           `yaml:"forecast_days"`
+
+	// AirQuality enables per-location European-AQI snapshots (published
+	// as air_quality information next to the weather snapshots).
+	AirQuality bool `yaml:"air_quality"`
 
 	// APIKey / APIKeyFile are mutually exclusive. The public API needs no
 	// key; a key selects the commercial customer endpoint unless BaseURL
@@ -253,6 +258,31 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 			continue
 		}
 		slog.Info("weather snapshot published", "location", loc.ID)
+
+		// Optional air-quality companion for the same location: a
+		// European-AQI snapshot on the air_quality information kind. A
+		// failing AQ request never degrades the weather publication.
+		if s.cfg.AirQuality {
+			aq, err := s.fetchAirQuality(ctx, loc)
+			if err != nil {
+				if ctx.Err() != nil {
+					break
+				}
+				slog.Warn("air-quality fetch failed", "location", loc.ID, "error", err)
+				if after, ok := retryAfter(err); ok && after > next {
+					if after > maxRetryAfter {
+						after = maxRetryAfter
+					}
+					next = after
+				}
+				continue
+			}
+			if err := emit.EmitInformation(ctx, aq); err != nil {
+				slog.Warn("air-quality publish failed", "location", loc.ID, "error", err)
+				continue
+			}
+			slog.Info("air-quality snapshot published", "location", loc.ID)
+		}
 	}
 
 	// Operational summary for the health page.
@@ -292,6 +322,121 @@ func (s *Source) fetchLocation(ctx context.Context, loc Location) (core.Informat
 	// ProducerID is stamped by the manager from the configured source ID;
 	// the plugin cannot know or choose it.
 	return core.NewWeatherInformation("", snapshot)
+}
+
+// fetchAirQuality performs one air-quality request for the location and
+// builds the informational snapshot in the same public shape the GIOŚ
+// station layer uses, so the home map renders Open-Meteo town air quality
+// right next to the official stations.
+func (s *Source) fetchAirQuality(ctx context.Context, loc Location) (core.InformationMessage, error) {
+	resp, err := s.client.FetchAirQuality(ctx, loc)
+	if err != nil {
+		return core.InformationMessage{}, err
+	}
+	payload := buildAirQualityPayload(loc, resp, s.now())
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return core.InformationMessage{}, fmt.Errorf("openmeteo: marshal air-quality snapshot: %w", err)
+	}
+	return core.InformationMessage{
+		Source:      Type,
+		ProducerID:  "", // stamped by the manager at the source boundary
+		Key:         payload.StationCode,
+		Kind:        "air_quality",
+		GeneratedAt: s.now().UTC(),
+		Payload:     data,
+	}, nil
+}
+
+// openmeteoAQPayload mirrors the public air-quality station wire shape
+// (the same one the GIOŚ source publishes) so consumers render both
+// sources identically.
+type openmeteoAQPayload struct {
+	SchemaVersion  int                    `json:"schema_version"`
+	StationCode    string                 `json:"station_code"`
+	StationName    string                 `json:"station_name"`
+	Latitude       float64                `json:"latitude"`
+	Longitude      float64                `json:"longitude"`
+	IndexLevelID   *int                   `json:"index_level_id,omitempty"`
+	IndexLevelName string                 `json:"index_level_name"`
+	GeneratedAt    string                 `json:"generated_at"`
+	Pollutants     []openmeteoAQPollutant `json:"pollutants,omitempty"`
+}
+
+type openmeteoAQPollutant struct {
+	Code      string `json:"code"`
+	LevelID   *int   `json:"level_id,omitempty"`
+	LevelName string `json:"level_name"`
+}
+
+// europeanAQINames label the GIOŚ-compatible 0..5 index levels; they stay
+// in Polish because the official station layer already uses Polish names.
+var europeanAQINames = []string{
+	"Bardzo dobry", "Dobry", "Umiarkowany", "Dostateczny", "Zły", "Bardzo zły",
+}
+
+// europeanAQILevel maps the European AQI onto the 0..5 index used by the
+// public station layer: Good ≤20, Fair ≤40, Moderate ≤60, Poor ≤80,
+// Very poor ≤100, Extremely poor above.
+func europeanAQILevel(aqi *float64) *int {
+	if aqi == nil {
+		return nil
+	}
+	v := *aqi
+	level := 0
+	switch {
+	case v >= 100:
+		level = 5
+	case v >= 80:
+		level = 4
+	case v >= 60:
+		level = 3
+	case v >= 40:
+		level = 2
+	case v >= 20:
+		level = 1
+	}
+	return &level
+}
+
+// buildAirQualityPayload normalizes one provider air-quality response into
+// the public station snapshot shape.
+func buildAirQualityPayload(loc Location, resp *AirQualityResponse, generated time.Time) openmeteoAQPayload {
+	cur := resp.Current
+	payload := openmeteoAQPayload{
+		SchemaVersion:  1,
+		StationCode:    "om-aq-" + loc.ID,
+		StationName:    loc.Name,
+		Latitude:       loc.Latitude,
+		Longitude:      loc.Longitude,
+		IndexLevelID:   europeanAQILevel(cur.EuropeanAQI),
+		IndexLevelName: "",
+		GeneratedAt:    generated.UTC().Format(time.RFC3339),
+	}
+	if payload.IndexLevelID != nil {
+		payload.IndexLevelName = europeanAQINames[*payload.IndexLevelID]
+	}
+	for _, p := range []struct {
+		code string
+		aqi  *float64
+	}{
+		{"PM10", cur.AQIPM10},
+		{"PM2.5", cur.AQIPM25},
+		{"NO2", cur.AQINitrogen},
+		{"SO2", cur.AQISulphur},
+		{"O3", cur.AQIOzone},
+	} {
+		lv := europeanAQILevel(p.aqi)
+		if lv == nil {
+			continue
+		}
+		payload.Pollutants = append(payload.Pollutants, openmeteoAQPollutant{
+			Code:      p.code,
+			LevelID:   lv,
+			LevelName: europeanAQINames[*lv],
+		})
+	}
+	return payload
 }
 
 // Register registers the openmeteo source plugin type.

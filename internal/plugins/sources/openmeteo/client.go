@@ -17,6 +17,12 @@ const (
 	// customerBaseURL is used automatically when an API key is configured
 	// and no base_url override is set.
 	customerBaseURL = "https://customer-api.open-meteo.com/v1/forecast"
+	// defaultAirQualityBaseURL is the public Open-Meteo air-quality
+	// endpoint (European AQI).
+	defaultAirQualityBaseURL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+	// customerAirQualityBaseURL mirrors the forecast customer endpoint for
+	// commercial API keys.
+	customerAirQualityBaseURL = "https://customer-air-quality-api.open-meteo.com/v1/air-quality"
 	// maxResponseBytes bounds one provider response body (1 MiB).
 	maxResponseBytes = 1 << 20
 	// userAgent identifies WarnFlux to the provider.
@@ -25,6 +31,37 @@ const (
 	// poll loop: honoring Retry-After must not stall the source forever.
 	maxRetryAfter = 5 * time.Minute
 )
+
+// airQualityVariables are the requested current air-quality fields.
+var airQualityVariables = []string{
+	"european_aqi",
+	"pm10",
+	"pm2_5",
+	"carbon_monoxide",
+	"nitrogen_dioxide",
+	"sulphur_dioxide",
+	"ozone",
+	"european_aqi_pm10",
+	"european_aqi_pm2_5",
+	"european_aqi_nitrogen_dioxide",
+	"european_aqi_sulphur_dioxide",
+	"european_aqi_ozone",
+}
+
+// airQualityURL derives the air-quality endpoint from the configured
+// forecast base URL: the public and customer hosts swap to their
+// air-quality equivalents, while a custom base_url (tests) swaps the
+// path segment in place.
+func airQualityURL(baseURL string) string {
+	switch baseURL {
+	case defaultBaseURL:
+		return defaultAirQualityBaseURL
+	case customerBaseURL:
+		return customerAirQualityBaseURL
+	default:
+		return strings.TrimSuffix(baseURL, "/forecast") + "/air-quality"
+	}
+}
 
 // currentVariables are the requested current-weather fields.
 var currentVariables = []string{
@@ -172,6 +209,59 @@ func (c *Client) Fetch(ctx context.Context, loc Location, forecastHours, forecas
 	}
 
 	parsed, err := parseResponse(body)
+	if err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
+// FetchAirQuality performs one bounded air-quality request and decodes
+// the response.
+func (c *Client) FetchAirQuality(ctx context.Context, loc Location) (*AirQualityResponse, error) {
+	u, err := url.Parse(airQualityURL(c.baseURL))
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("latitude", strconv.FormatFloat(loc.Latitude, 'f', 4, 64))
+	q.Set("longitude", strconv.FormatFloat(loc.Longitude, 'f', 4, 64))
+	q.Set("timezone", "auto")
+	q.Set("current", strings.Join(airQualityVariables, ","))
+	if c.apiKey != "" {
+		q.Set("apikey", c.apiKey)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %s", redactKey(err.Error(), c.apiKey))
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return nil, c.rateLimited(resp)
+	default:
+		return nil, fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	if len(body) > maxResponseBytes {
+		return nil, fmt.Errorf("provider response exceeds %d bytes", maxResponseBytes)
+	}
+
+	parsed, err := parseAirQualityResponse(body)
 	if err != nil {
 		return nil, err
 	}

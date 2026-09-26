@@ -75,15 +75,15 @@
   --info-bg: rgba(110, 173, 208, 0.16);
   --muted-bg: rgba(135, 147, 158, 0.14);
 
-  /* Severity scale — independent of branding: unknown gray → minor
-     blue-gray → moderate amber → severe orange-red → extreme red. */
-  --sev-unknown:   #8e99a3;
-  --sev-minor:     #9da8b1;
+  /* Severity scale — one distinct hue per level: unknown slate →
+     minor green → moderate amber → severe orange → extreme red. */
+  --sev-unknown:   #8f9aa6;
+  --sev-minor:     #66bb6a;
   --sev-moderate:  #e0a63c;
   --sev-severe:    #f0784e;
   --sev-extreme:   #f05a69;
-  --sev-unknown-bg:   rgba(142, 153, 163, 0.12);
-  --sev-minor-bg:     rgba(157, 168, 177, 0.12);
+  --sev-unknown-bg:   rgba(143, 154, 166, 0.14);
+  --sev-minor-bg:     rgba(102, 187, 106, 0.14);
   --sev-moderate-bg:  #302718;
   --sev-severe-bg:    #332019;
   --sev-extreme-bg:   #32191e;
@@ -113,8 +113,8 @@
   --warn-border: rgba(224, 166, 60, 0.45);
   --bad-border:  rgba(240, 90, 105, 0.45);
   --info-border: rgba(110, 173, 208, 0.45);
-  --sev-unknown-border:  rgba(142, 153, 163, 0.45);
-  --sev-minor-border:    rgba(157, 168, 177, 0.45);
+  --sev-unknown-border:  rgba(143, 154, 166, 0.45);
+  --sev-minor-border:    rgba(102, 187, 106, 0.45);
   --sev-moderate-border: rgba(224, 166, 60, 0.45);
   --sev-severe-border:   rgba(240, 120, 78, 0.45);
   --sev-extreme-border:  rgba(240, 90, 105, 0.45);
@@ -169,12 +169,12 @@ html[data-theme="light"] {
   --muted-bg: rgba(104, 114, 123, 0.12);
 
   --sev-unknown:   #68727b;
-  --sev-minor:     #7a8792;
+  --sev-minor:     #2e7d32;
   --sev-moderate:  #b47a18;
   --sev-severe:    #c75532;
   --sev-extreme:   #b52d3e;
   --sev-unknown-bg:   #eef1f3;
-  --sev-minor-bg:     #e9eef1;
+  --sev-minor-bg:     #e4f2e5;
   --sev-moderate-bg:  #fbf2de;
   --sev-severe-bg:    #fbeae4;
   --sev-extreme-bg:   #f9e5e8;
@@ -202,7 +202,7 @@ html[data-theme="light"] {
   --bad-border:  rgba(181, 45, 62, 0.4);
   --info-border: rgba(50, 117, 154, 0.4);
   --sev-unknown-border:  rgba(104, 114, 123, 0.45);
-  --sev-minor-border:    rgba(122, 135, 146, 0.45);
+  --sev-minor-border:    rgba(46, 125, 50, 0.4);
   --sev-moderate-border: rgba(180, 122, 24, 0.4);
   --sev-severe-border:   rgba(199, 85, 50, 0.4);
   --sev-extreme-border:  rgba(181, 45, 62, 0.4);
@@ -1601,11 +1601,6 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background: none;
   border: none;
 }
-/* Geo-located hazard markers on the home map (severity triangles). */
-.wf-hazard-icon {
-  background: none;
-  border: none;
-}
 .aprs-sym .aprs-sym-img {
   display: block;
   width: 28px;
@@ -1658,40 +1653,46 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   border-right: 5px solid transparent;
   border-bottom: 10px solid #c62828; /* overridden inline by theme color */
 }
-/* Public home weather: pins and report cards on the combined map. */
-/* Weather map pins: the current condition icon + temperature. One color
-   for every weather report — the transport (APRS radio vs an internet
-   provider) is shown in the pin popup and the report cards. */
-.hw-pin-wrap { background: none; border: none; }
-.hw-pin {
-  display: inline-flex;
+/* Public home weather: report cards on the combined map. */
+/* Unified map badge: every category pin is the same flat circle with a
+   white ring, drop shadow and a pointer tail; --wf-bg is set inline per
+   category. Labels under badges reuse the halo station label. */
+/* Transparent Leaflet icon wrapper for every badge pin: all visuals live
+   on the inner .wf-badge so only one pin is rendered per marker. */
+.wf-badge-pin { background: none; border: none; }
+.wf-badge {
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px 2px 6px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-  font-size: 0.78rem;
-  font-weight: 600;
-  line-height: 1.2;
-  white-space: nowrap;
-  background: #1565c0;
-  color: #fff;
-}
-.hw-pin .wi { font-size: 0.95rem; line-height: 1; }
-
-/* Air-quality station pins: colored dot by the GIOŚ index level
-   (0 very good ... 5 very bad, grey when the index is missing). */
-.aq-pin-wrap { background: none; border: none; }
-.aq-pin {
-  display: block;
-  width: 18px;
-  height: 18px;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.85);
+  border: 2px solid #fff;
+  background: var(--wf-bg, #607d8b);
+  color: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
-.leaflet-popup-content .aq-level { font-weight: 600; }
+.wf-badge::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  margin: -2px 0 0 -4px;
+  border: 4px solid transparent;
+  border-top: 4px solid var(--wf-bg, #607d8b);
+}
+.wf-badge svg { display: block; }
+.wf-badge .wi { font-size: 0.82rem; line-height: 1; }
+.wf-badge-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 96px;
+  background: none;
+  border: none;
+}
+.wf-badge-wrap .wf-station-label { margin-top: 3px; }
 .leaflet-popup-content .muted { opacity: 0.75; font-size: 0.85em; }
 
 /* Unified map control stack (top-right): layer toggles on top, then a
@@ -1736,9 +1737,8 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   background: var(--border);
 }
 
-/* Aircraft markers (ADS-B layer): track-rotated plane glyphs. */
-.wf-aircraft { background: none; border: none; }
-.wf-aircraft svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55)); }
+/* Aircraft markers (ADS-B layer) use the unified badge, like every
+   other category; no dedicated marker class remains. */
 
 /* Leaflet popups and tooltips follow the app theme: muted text, forecast
    chips and severity badges stay readable in the dark theme instead of
@@ -1749,7 +1749,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   color: var(--text);
   border: 1px solid var(--border-strong);
 }
-.leaflet-container .leaflet-popup-content { color: var(--text); }
+.leaflet-container .leaflet-popup-content { color: var(--text); margin: 0; }
 .leaflet-container .leaflet-popup-content strong { color: var(--text); }
 .leaflet-container .leaflet-popup-tip { background: var(--surface-raised); }
 .leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
@@ -1764,20 +1764,45 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .leaflet-container .leaflet-tooltip-left:before { border-left-color: var(--surface-raised); }
 .leaflet-container .leaflet-tooltip-right:before { border-right-color: var(--surface-raised); }
 
-/* Weather detail popup on the combined map. */
-.hw-popup { min-width: 215px; }
-.hw-popup-head {
+/* Unified popup banner on the combined map: colored head strip with the
+   category glyph + title, then the detail body on the themed surface. */
+.wf-pop { min-width: 230px; border-radius: 11px; overflow: hidden; }
+.wf-pop-head {
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  margin-bottom: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
-.hw-popup-head .wi { font-size: 1.5rem; color: var(--brand); flex: none; }
-.hw-popup-id { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; flex: 1; }
-.hw-popup-id strong { font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hw-popup-id .muted { font-size: 0.72rem; }
-.hw-popup-temp { font-size: 1.25rem; font-weight: 600; flex: none; }
-.hw-popup-meta { font-size: 0.82rem; margin-bottom: 0.3rem; }
+.wf-pop-ico {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+}
+.wf-pop-ico .wi { font-size: 1rem; line-height: 1; }
+.wf-pop-t { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
+.wf-pop-t strong { font-size: 0.92rem; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-pop-sub { font-size: 0.72rem; opacity: 0.9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-pop-val {
+  flex: none;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.22);
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+.wf-pop-body { padding: 0.55rem 0.75rem; font-size: 0.82rem; line-height: 1.45; }
+.wf-pop-body .wf-pop-meta { margin-bottom: 0.3rem; }
+.wf-pop-body .wf-pop-time { font-size: 0.75rem; margin-top: 0.4rem; }
+.wf-pop-body .hw-fcast { margin-top: 0.45rem; }
 .hw-popup-block {
   display: flex;
   align-items: center;
@@ -1788,8 +1813,6 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.82rem;
 }
 .hw-popup-block .wi { color: var(--brand); }
-.hw-popup-time { font-size: 0.75rem; margin-top: 0.4rem; }
-.hw-popup .hw-fcast { margin-top: 0.45rem; }
 .hw-report { scroll-margin: 4rem 0; }
 .hw-report.hw-flash {
   border-color: var(--link);

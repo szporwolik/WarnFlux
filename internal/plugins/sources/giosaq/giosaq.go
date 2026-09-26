@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -422,6 +423,10 @@ func (s *Source) pollStations(ctx context.Context, emit plugin.Emitter) error {
 		refs = append(refs, ref)
 	}
 	s.stationMu.Unlock()
+	// Stable publish order: the directory is a map, so without the sort
+	// the snapshots would land on the broker in a different order every
+	// poll.
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Code < refs[j].Code })
 
 	published := 0
 	for _, ref := range refs {

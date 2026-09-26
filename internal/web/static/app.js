@@ -750,22 +750,8 @@
     return d.innerHTML;
   }
 
-  // Re-center control: a small target button under the zoom buttons that
-  // returns the view to the initial center and zoom.
-  function addCenterControl(map, recenter) {
-    var c = L.control({ position: "topleft" });
-    c.onAdd = function () {
-      var btn = L.DomUtil.create("button", "wf-center-btn");
-      btn.type = "button";
-      btn.title = tr("map.center");
-      btn.setAttribute("aria-label", tr("map.center"));
-      btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-      L.DomEvent.disableClickPropagation(btn);
-      L.DomEvent.on(btn, "click", recenter);
-      return btn;
-    };
-    c.addTo(map);
-  }
+  // Re-center control is part of the unified control stack built by
+  // addMapControls (top-right); see below.
 
   // fmtTime renders an RFC 3339 timestamp in local browser time
   // (minutes). Unparseable values fall back to the raw text.
@@ -863,11 +849,6 @@
     aircraftLayer = L.layerGroup().addTo(map);
     aqLayer = L.layerGroup().addTo(map);
 
-    // Center button: fit the view around our locator and all stations.
-    addCenterControl(map, function () {
-      fitToStations();
-    });
-
     // Our station marker at the position learned from our own beacon
     // (data-own-lat/lon). The collection-radius circle is drawn around
     // the operational-area center (data-lat/lon), not around the station:
@@ -884,9 +865,9 @@
       }).addTo(map);
     }
 
+    // Unified controls (layers, fit view, my location) at the top-right.
     enableRadar();
-    addLayersControl(map);
-    addLocateControl(map);
+    addMapControls(map);
     refreshStations();
     refreshHazards();
     refreshWeather();
@@ -1802,65 +1783,87 @@
   var userMarker = null;
   var userAccCircle = null;
 
-  // addLocateControl adds the bottom-right "show my location" button.
-  // The browser permission prompt only appears after the user clicks it
-  // (never on page load). On success a blue dot + accuracy circle appear
-  // and the view centers on the user; the button then recenters.
-  function addLocateControl(map) {
-    var c = L.control({ position: "bottomright" });
-    c.onAdd = function () {
-      var btn = L.DomUtil.create("button", "wf-locate-btn");
-      btn.type = "button";
-      btn.title = tr("map.show_location");
-      btn.setAttribute("aria-label", tr("map.show_location"));
-      btn.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3.5M12 18.5V22M2 12h3.5M18.5 12H22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
-      L.DomEvent.disableClickPropagation(btn);
-      L.DomEvent.disableScrollPropagation(btn);
+  // Unified map controls: one vertical stack at the top-right — layer
+  // toggles on top (one icon button per layer, active layers light up in
+  // their own color), then a divider, then the navigation actions (fit
+  // view, my location). Every button is the same 32px square with the
+  // same border and hover treatment, so the stack reads as one control;
+  // the Leaflet zoom control stays untouched at the top-left.
+  var MAP_CTRL_ICONS = {
+    hazards: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
+    stations: '<path d="M12 4v16"/><path d="M7 8a7.5 7.5 0 0 1 10 0"/><path d="M4 12a11.5 11.5 0 0 1 16 0"/>',
+    weather: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
+    radar: '<circle cx="12" cy="12" r="8"/><path d="M12 12V4"/><path d="M12 12l6-3.5"/>',
+    airquality: '<path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/>',
+    aircraft: '<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/>'
+  };
+  var MAP_CTRL_COLORS = {
+    hazards: "#d32f2f",
+    stations: "#1565c0",
+    weather: "#e67e22",
+    radar: "#00897b",
+    airquality: "#7b1fa2",
+    aircraft: "#f9a825"
+  };
 
-      function denied() {
-        btn.classList.add("wf-locate-denied");
-        btn.title = "Location unavailable (permission denied or no signal)";
-        window.setTimeout(function () { btn.classList.remove("wf-locate-denied"); }, 2200);
+  // svgBtn builds one uniform 32px icon button.
+  function svgBtn(cls, inner, title) {
+    var btn = L.DomUtil.create("button", cls);
+    btn.type = "button";
+    btn.title = title;
+    btn.setAttribute("aria-label", title);
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>';
+    L.DomEvent.disableClickPropagation(btn);
+    L.DomEvent.disableScrollPropagation(btn);
+    return btn;
+  }
+
+  // bindLocate wires the "my location" button: the browser permission
+  // prompt only appears after the click (never on page load). On success
+  // a blue dot + accuracy circle appear and the view centers on the user;
+  // the button then recenters.
+  function bindLocate(map, btn) {
+    function denied() {
+      btn.classList.add("wf-locate-denied");
+      btn.title = "Location unavailable (permission denied or no signal)";
+      window.setTimeout(function () { btn.classList.remove("wf-locate-denied"); }, 2200);
+    }
+
+    L.DomEvent.on(btn, "click", function () {
+      if (userMarker) {
+        map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 13));
+        return;
       }
-
-      L.DomEvent.on(btn, "click", function () {
-        if (userMarker) {
-          map.setView(userMarker.getLatLng(), Math.max(map.getZoom(), 13));
-          return;
+      if (!navigator.geolocation) {
+        denied();
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(function (pos) {
+        var ll = [pos.coords.latitude, pos.coords.longitude];
+        if (!userMarker) {
+          userMarker = L.circleMarker(ll, {
+            radius: 7, color: "#fff", weight: 2,
+            fillColor: "#1a73e8", fillOpacity: 1
+          }).addTo(map);
+          userMarker.bindTooltip(tr("map.you_are_here"), { direction: "top" });
+        } else {
+          userMarker.setLatLng(ll);
         }
-        if (!navigator.geolocation) {
-          denied();
-          return;
+        if (pos.coords.accuracy > 0) {
+          if (userAccCircle) { map.removeLayer(userAccCircle); }
+          userAccCircle = L.circle(ll, {
+            radius: pos.coords.accuracy,
+            color: "#1a73e8", weight: 1, opacity: 0.4,
+            fillColor: "#1a73e8", fillOpacity: 0.07, interactive: false
+          }).addTo(map);
         }
-        navigator.geolocation.getCurrentPosition(function (pos) {
-          var ll = [pos.coords.latitude, pos.coords.longitude];
-          if (!userMarker) {
-            userMarker = L.circleMarker(ll, {
-              radius: 7, color: "#fff", weight: 2,
-              fillColor: "#1a73e8", fillOpacity: 1
-            }).addTo(map);
-            userMarker.bindTooltip(tr("map.you_are_here"), { direction: "top" });
-          } else {
-            userMarker.setLatLng(ll);
-          }
-          if (pos.coords.accuracy > 0) {
-            if (userAccCircle) { map.removeLayer(userAccCircle); }
-            userAccCircle = L.circle(ll, {
-              radius: pos.coords.accuracy,
-              color: "#1a73e8", weight: 1, opacity: 0.4,
-              fillColor: "#1a73e8", fillOpacity: 0.07, interactive: false
-            }).addTo(map);
-          }
-          map.setView(ll, Math.max(map.getZoom(), 13));
-          btn.classList.add("wf-locate-active");
-          btn.title = tr("map.center_location");
-        }, function () {
-          denied();
-        }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 30000 });
-      });
-      return btn;
-    };
-    c.addTo(map);
+        map.setView(ll, Math.max(map.getZoom(), 13));
+        btn.classList.add("wf-locate-active");
+        btn.title = tr("map.center_location");
+      }, function () {
+        denied();
+      }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 30000 });
+    });
   }
 
   // Layer toggles: the overlay families can be switched independently so
@@ -1880,18 +1883,15 @@
     ["aircraft", tr("map.layer.aircraft"), function () { return aircraftLayer; }]
   ];
 
-  function addLayersControl(map) {
+  function addMapControls(map) {
     var c = L.control({ position: "topright" });
     c.onAdd = function () {
-      var box = L.DomUtil.create("div", "wf-layers");
+      var box = L.DomUtil.create("div", "wf-map-ctl");
+
       LAYER_DEFS.forEach(function (def) {
-        var btn = L.DomUtil.create("button", "wf-layer-btn active");
-        btn.type = "button";
-        btn.textContent = def[1];
-        btn.title = trf("map.toggle_layer", def[1].toLowerCase());
+        var btn = svgBtn("wf-mc-btn active", MAP_CTRL_ICONS[def[0]], def[1]);
+        btn.style.setProperty("--wf-mc-hue", MAP_CTRL_COLORS[def[0]]);
         btn.setAttribute("aria-pressed", "true");
-        L.DomEvent.disableClickPropagation(btn);
-        L.DomEvent.disableScrollPropagation(btn);
         L.DomEvent.on(btn, "click", function () {
           var layer = def[2]();
           var on = btn.classList.toggle("active");
@@ -1901,6 +1901,23 @@
         });
         box.appendChild(btn);
       });
+
+      box.appendChild(L.DomUtil.create("div", "wf-mc-sep"));
+
+      // Fit view: the whole operational area + stations in one glance.
+      var fit = svgBtn("wf-mc-btn",
+        '<path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/>',
+        tr("map.center"));
+      L.DomEvent.on(fit, "click", fitToStations);
+      box.appendChild(fit);
+
+      // My location: blue dot, then re-centers.
+      var loc = svgBtn("wf-mc-btn wf-mc-locate",
+        '<circle cx="12" cy="12" r="3.2"/><path d="M12 2v3.5M12 18.5V22M2 12h3.5M18.5 12H22"/>',
+        tr("map.show_location"));
+      bindLocate(map, loc);
+      box.appendChild(loc);
+
       return box;
     };
     c.addTo(map);

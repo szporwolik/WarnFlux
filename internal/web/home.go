@@ -71,6 +71,10 @@ type homeView struct {
 	// Channels carries the friendly public view of the configured
 	// delivery channels (one row per medium, no technical detail).
 	Channels []publicChannelView
+
+	// Sources carries the friendly public view of the enabled data
+	// sources (one row per feed, no technical detail).
+	Sources []publicChannelView
 }
 
 // publicChannelView is one delivery medium shown to the public on the
@@ -211,6 +215,9 @@ func (s *Server) buildHomeView() homeView {
 	}
 	if s.actions != nil {
 		v.Channels = publicChannels(s.actions.Statuses())
+	}
+	if s.router != nil {
+		v.Sources = publicSources(s.router.Statuses())
 	}
 	return v
 }

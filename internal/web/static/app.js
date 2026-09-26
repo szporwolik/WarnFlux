@@ -1449,7 +1449,7 @@
   }
 
   function aircraftPopup(a) {
-    var html = "<strong>" + esc(a.callsign || a.icao24) + "</strong>";
+    var html = '<span class="muted">Aircraft</span><br><strong>' + esc(a.callsign || a.icao24) + "</strong>";
     html += '<br><span class="muted">' + esc(String(a.icao24 || "").toUpperCase()) + "</span>";
     if (a.altitude_m != null) { html += "<br>Alt: " + fmtNum(a.altitude_m, 0) + " m"; }
     if (a.speed_kmh != null) {
@@ -1479,7 +1479,7 @@
             return;
           }
           var marker = L.marker([a.latitude, a.longitude], { icon: planeIcon(a), riseOnHover: true });
-          marker.bindTooltip(a.callsign || a.icao24, { direction: "top" });
+          marker.bindTooltip("Aircraft: " + (a.callsign || a.icao24), { direction: "top" });
           marker.bindPopup(aircraftPopup(a));
           aircraftLayer.addLayer(marker);
 
@@ -1543,7 +1543,7 @@
   }
 
   function aqPopup(station) {
-    var html = "<strong>" + esc(station.station_name) + "</strong>";
+    var html = '<span class="muted">Air quality</span><br><strong>' + esc(station.station_name) + "</strong>";
     if (station.index_level_name) {
       html += '<br><span class="aq-level" style="color:' + aqColor(station.index_level_id) + '">' +
         esc(station.index_level_name) + "</span>";
@@ -1574,7 +1574,7 @@
           var marker = L.marker([station.latitude, station.longitude], {
             icon: aqIcon(station), riseOnHover: true
           });
-          marker.bindTooltip(station.station_name, { direction: "top" });
+          marker.bindTooltip("Air quality: " + station.station_name, { direction: "top" });
           marker.bindPopup(aqPopup(station));
           aqLayer.addLayer(marker);
         });

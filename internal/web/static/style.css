@@ -2054,3 +2054,119 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 .compose-map.leaflet-container { font-family: inherit; }
 .compose-loc-note { margin: 0; font-size: 0.78rem; }
+
+/* EMCOM readiness networks: public header chips on the home page. */
+.home-emcom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  justify-content: center;
+}
+.emcom-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 0.8rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.emcom-chip-icon { width: 13px; height: 13px; flex: none; }
+.emcom-chip-name { font-weight: 700; letter-spacing: 0.02em; }
+.emcom-chip-level {
+  background: rgba(255, 255, 255, 0.22);
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.emcom-chip-label { opacity: 0.92; }
+.emcom-chip-l0 { background: #607d8b; }
+.emcom-chip-l1 { background: #b28704; }
+.emcom-chip-l2 { background: #e07b00; }
+.emcom-chip-l3 { background: #c62828; }
+
+/* EMCOM panel page. */
+.emcom-page { max-width: 900px; margin: 0 auto; display: grid; gap: 1rem; padding: 1rem; }
+.emcom-flash {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--radius);
+  background: var(--ok-bg, #e8f5e9);
+  color: var(--ok-fg, #1b5e20);
+  border: 1px solid var(--ok-bd, #a5d6a7);
+  animation: emcom-pop 0.45s ease-out;
+}
+.emcom-flash .icon { width: 16px; height: 16px; flex: none; }
+.emcom-flash-err {
+  background: var(--warn-bg, #fff3e0);
+  color: var(--warn-fg, #b71c1c);
+  border-color: var(--warn-bd, #ffcc80);
+}
+@keyframes emcom-pop {
+  0% { opacity: 0; transform: translateY(-6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.emcom-list { display: grid; gap: 0.9rem; margin: 1rem 0; }
+.emcom-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem 1rem; background: var(--surface); }
+.emcom-card-head { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+.emcom-card-head h3 { margin: 0; font-size: 1.05rem; }
+.emcom-level-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+.emcom-badge-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, 0.9); }
+.emcom-badge-l0 { background: #607d8b; }
+.emcom-badge-l1 { background: #b28704; }
+.emcom-badge-l2 { background: #e07b00; }
+.emcom-badge-l3 { background: #c62828; }
+.emcom-slider-row { display: flex; align-items: center; gap: 0.8rem; margin: 0.8rem 0 0.4rem; }
+.emcom-slider { flex: 1; accent-color: #607d8b; min-width: 0; }
+.emcom-slider-l1 { accent-color: #b28704; }
+.emcom-slider-l2 { accent-color: #e07b00; }
+.emcom-slider-l3 { accent-color: #c62828; }
+.emcom-slider-value { min-width: 5.5rem; text-align: right; font-weight: 600; font-size: 0.85rem; }
+.emcom-level-desc { display: grid; gap: 2px; font-size: 0.85rem; }
+.emcom-desc-name { font-size: 0.88rem; }
+.emcom-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; margin-top: 0.7rem; flex-wrap: wrap; }
+.emcom-card-btns { display: inline-flex; gap: 0.5rem; }
+.emcom-add { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: 0.6rem; }
+.emcom-add-label { display: block; font-weight: 600; margin-bottom: 0.4rem; }
+.emcom-add-row { display: flex; gap: 0.6rem; }
+.emcom-add-row input[type="text"] { flex: 1; }
+.emcom-levels { display: grid; gap: 0.7rem; margin: 0.8rem 0; }
+.emcom-level { border-left: 4px solid var(--border); padding: 0.35rem 0.6rem; }
+.emcom-level:nth-child(1) { border-left-color: #607d8b; }
+.emcom-level:nth-child(2) { border-left-color: #b28704; }
+.emcom-level:nth-child(3) { border-left-color: #e07b00; }
+.emcom-level:nth-child(4) { border-left-color: #c62828; }
+.emcom-level-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.emcom-level-num {
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.emcom-num-l0 { background: #607d8b; }
+.emcom-num-l1 { background: #b28704; }
+.emcom-num-l2 { background: #e07b00; }
+.emcom-num-l3 { background: #c62828; }
+.emcom-level p { margin: 0.25rem 0 0; }
+.emcom-notes { margin: 0.5rem 0 0; padding-left: 1.2rem; display: grid; gap: 0.35rem; font-size: 0.82rem; }

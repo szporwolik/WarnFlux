@@ -10,6 +10,7 @@ package web
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -239,6 +240,12 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /compose", s.requireCompose(s.handleComposePage))
 	s.mux.Handle("POST /compose", s.requireCompose(s.handleComposeSave))
 	s.mux.Handle("POST /compose/expire", s.requireCompose(s.handleComposeExpire))
+	// EMCOM networks: admin and emcom sessions manage the retained
+	// readiness-level state of the club's crisis radio networks.
+	s.mux.Handle("GET /emcom", s.requireCompose(s.handleEmcomPage))
+	s.mux.Handle("POST /emcom", s.requireCompose(s.handleEmcomAdd))
+	s.mux.Handle("POST /emcom/{slug}/level", s.requireCompose(s.handleEmcomSetLevel))
+	s.mux.Handle("POST /emcom/{slug}/delete", s.requireCompose(s.handleEmcomDelete))
 	// Self-service account page: member and emcom sessions edit their
 	// own contact data and password.
 	s.mux.Handle("GET /account", s.requirePage(s.handleAccountPage))
@@ -428,6 +435,25 @@ func templateFuncs() template.FuncMap {
 				return s[:7]
 			}
 			return s
+		},
+		// jsonLevels serializes the EMCOM readiness levels for the
+		// panel's slider script (the official names and descriptions).
+		"jsonLevels": func(levels []emcomLevelView) template.JS {
+			type lv struct {
+				Level       int    `json:"level"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				Class       string `json:"class"`
+			}
+			out := make([]lv, 0, len(levels))
+			for _, l := range levels {
+				out = append(out, lv{Level: l.Level, Name: l.Name, Description: l.Description, Class: l.Class})
+			}
+			b, err := json.Marshal(out)
+			if err != nil {
+				return template.JS("[]")
+			}
+			return template.JS(b)
 		},
 		"timeShort": func(t time.Time) string {
 			if t.IsZero() {

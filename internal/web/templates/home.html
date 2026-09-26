@@ -37,6 +37,17 @@
     </div>
   </header>
 
+  {{if .EmcomNetworks}}<div class="home-emcom" role="status" aria-label="Poziom gotowości sieci EMCOM">
+    {{range .EmcomNetworks}}
+    <span class="emcom-chip emcom-chip-{{.LevelClass}}" title="Aktualizacja: {{timeShort .UpdatedAt}}">
+      <svg class="icon emcom-chip-icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>
+      <span class="emcom-chip-name">{{.Network}}</span>
+      <span class="emcom-chip-level">poziom {{.Level}}</span>
+      <span class="emcom-chip-label">{{.LevelName}}</span>
+    </span>
+    {{end}}
+  </div>{{end}}
+
   {{if .Disclaimer}}<p class="home-disclaimer" role="note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Disclaimer}}</span></p>{{end}}
 
   <nav class="home-tabs" role="tablist" aria-label="Sections">

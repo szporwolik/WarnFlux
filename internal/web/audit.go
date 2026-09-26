@@ -35,6 +35,7 @@ type auditView struct {
 	NavNotifications bool
 	NavHealth        bool
 	NavCompose       bool
+	NavEmcom         bool
 	NavAccount       bool
 	NavAudit         bool
 	MaxEntries       int

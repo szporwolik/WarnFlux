@@ -35,10 +35,13 @@ const (
 )
 
 // composePublisher issues and removes active-hazard documents on the
-// WarnFlux broker. *mqttreceiver.Manager implements it.
+// WarnFlux broker and publishes arbitrary retained raw documents (the
+// EMCOM networks use the raw path for their state).
+// *mqttreceiver.Manager implements it.
 type composePublisher interface {
 	PublishActive(source string, h state.Hazard) error
 	ExpireActive(source string, eventKey string) error
+	PublishRaw(suffix string, retained bool, payload []byte) error
 }
 
 // composeStatuses are the allowed document states for the form.
@@ -159,6 +162,7 @@ type composeView struct {
 	NavUsers         bool
 	NavGroups        bool
 	NavCompose       bool
+	NavEmcom         bool
 	NavAccount       bool
 	NavLogs          bool
 	NavAudit         bool

@@ -1,7 +1,7 @@
 {{define "topbar"}}<script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>
-    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavCompose}}Compose{{else if .NavAccount}}Account{{else if .NavLogs}}Logs{{else if .NavAudit}}Audit log{{else if .NavTraffic}}MQTT{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
+    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavCompose}}Compose{{else if .NavEmcom}}EMCOM{{else if .NavAccount}}Account{{else if .NavLogs}}Logs{{else if .NavAudit}}Audit log{{else if .NavTraffic}}MQTT{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
     <span class="topbar-spacer"></span>
     <a class="topbar-home" href="/" title="Public page" aria-label="Public page">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>
@@ -44,6 +44,7 @@
     <nav class="sidenav">
       <a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>
       {{if ne .Role "member"}}<a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">Compose</span></a>{{end}}
+      {{if ne .Role "member"}}<a class="nav-item{{if .NavEmcom}} active{{end}}" href="/emcom"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">EMCOM</span></a>{{end}}
       {{if eq .Role "admin"}}
       <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">Notifications</span></a>
       <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">Health</span></a>

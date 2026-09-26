@@ -54,6 +54,9 @@ var baseRoutingSources = []sourceOption{
 	{Value: "aprs", Label: "APRS messages"},
 	{Value: "giosaq", Label: "GIOŚ air quality"},
 	{Value: "compose", Label: "Compose"},
+	// EMCOM readiness-level changes flow through the dispatch ingress
+	// like every other source, so groups can route them explicitly.
+	{Value: "emcom", Label: "EMCOM network"},
 }
 
 // routingSources returns the full matrix row set: the built-in sources

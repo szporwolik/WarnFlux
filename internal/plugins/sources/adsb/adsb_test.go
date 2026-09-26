@@ -128,7 +128,8 @@ func TestClientAdsbLol(t *testing.T) {
 
 // TestClientAdsbLolStringNumbers pins the tolerance for the provider
 // quirk of sending numeric fields as strings (api.adsb.lol does this for
-// alt_baro and occasionally other fields).
+// alt_baro and occasionally other fields), including non-numeric sentinel
+// strings like "ground" (0.2.63: the whole snapshot used to be dropped).
 func TestClientAdsbLolStringNumbers(t *testing.T) {
 	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -136,8 +137,9 @@ func TestClientAdsbLolStringNumbers(t *testing.T) {
   {"hex":"49d418","flight":"TVP7111 ","alt_baro":"14550","gs":"344.9",
    "track":"329.12","baro_rate":"-1984","lat":"49.968","lon":"19.859",
    "seen":"0.5"},
-  {"hex":"abc123","alt_baro":null,"lat":50.1,"lon":20.2,"seen":1}
-],"msg":"No error","now":1790295311003,"total":2}`))
+  {"hex":"abc123","alt_baro":null,"lat":50.1,"lon":20.2,"seen":1},
+  {"hex":"def456","alt_baro":"ground","lat":50.15,"lon":20.25,"seen":2}
+],"msg":"No error","now":1790295311003,"total":3}`))
 	})
 
 	c := NewClient(ProviderAdsbLol, srv.URL, time.Second)
@@ -145,8 +147,8 @@ func TestClientAdsbLolStringNumbers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if len(targets) != 2 {
-		t.Fatalf("targets = %d, want 2", len(targets))
+	if len(targets) != 3 {
+		t.Fatalf("targets = %d, want 3", len(targets))
 	}
 	a := targets[0]
 	if a.AltBaroFt != 14550 || a.GSKt != 344.9 || a.TrackDeg != 329.12 || a.BaroRateFPM != -1984 {
@@ -154,6 +156,9 @@ func TestClientAdsbLolStringNumbers(t *testing.T) {
 	}
 	if targets[1].AltBaroFt != 0 || !targets[1].OnGround {
 		t.Errorf("null alt_baro must decode as 0 and on-ground: %+v", targets[1])
+	}
+	if targets[2].AltBaroFt != 0 {
+		t.Errorf("sentinel string alt_baro must decode as 0: %+v", targets[2])
 	}
 }
 

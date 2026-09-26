@@ -214,7 +214,8 @@ func (c *Client) fetchTar1090(ctx context.Context) ([]ProviderTarget, time.Time,
 
 // flexFloat decodes a JSON number that the provider occasionally sends
 // as a string (api.adsb.lol does this for alt_baro and other numeric
-// fields). "null" and missing values decode as 0.
+// fields). "null", missing values and non-numeric sentinel strings (the
+// provider sends e.g. "ground" for grounded aircraft) decode as 0.
 type flexFloat float64
 
 func (f *flexFloat) UnmarshalJSON(data []byte) error {
@@ -225,11 +226,14 @@ func (f *flexFloat) UnmarshalJSON(data []byte) error {
 	}
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {
-		return fmt.Errorf("adsb: expected a number or numeric string, got %s", data)
+		return fmt.Errorf("adsb: expected a number or string, got %s", data)
 	}
 	n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
-		return fmt.Errorf("adsb: invalid numeric string %q", s)
+		// Sentinel strings like "ground" are not numbers: treat them
+		// like a missing value instead of dropping the whole snapshot.
+		*f = 0
+		return nil
 	}
 	*f = flexFloat(n)
 	return nil

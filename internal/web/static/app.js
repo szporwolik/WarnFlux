@@ -33,6 +33,7 @@
       "home.aircraft.none": "No aircraft in range right now.",
       "map.km": "km",
       "map.center": "Center the view",
+      "map.pins_hidden": "More layers at this spot:",
       "map.our_station": "Our station",
       "map.you_are_here": "You are here",
       "map.show_location": "Show my location",
@@ -78,6 +79,7 @@
       "home.aircraft.none": "W tej chwili brak samolotów w zasięgu.",
       "map.km": "km",
       "map.center": "Wyśrodkuj widok",
+      "map.pins_hidden": "Więcej warstw w tym punkcie:",
       "map.our_station": "Nasza stacja",
       "map.you_are_here": "Jesteś tutaj",
       "map.show_location": "Pokaż moją lokalizację",
@@ -850,6 +852,7 @@
     // user turns it on with the layer toggle.
     aircraftLayer = L.layerGroup();
     aqLayer = L.layerGroup().addTo(map);
+    pinChipLayer = L.layerGroup().addTo(map);
 
     // Our station marker at the position learned from our own beacon
     // (data-own-lat/lon), in the same badge style as the other pins. The
@@ -1048,6 +1051,7 @@
         lastStations = stations || [];
         stationLayer.clearLayers();
         stationMarkers = {};
+        pinRegistry.stations = [];
         (lastStations).forEach(function (s) {
           if (!s || !s.position || s.self) {
             return; // our own locator has its dedicated marker
@@ -1128,10 +1132,19 @@
 
           stationLayer.addLayer(marker);
           stationMarkers[String(s.callsign || "").toUpperCase()] = marker;
+          registerPin("stations", {
+            group: stationLayer,
+            marker: marker,
+            latlng: [s.position.latitude, s.position.longitude],
+            markerKey: "S:" + s.callsign,
+            title: s.callsign,
+            kindLabel: tr("map.layer.stations")
+          });
         });
 
         computeBounds();
         renderStations();
+        reconcilePins();
       })
       .catch(function () { /* transient — next poll retries */ });
   }
@@ -1175,6 +1188,7 @@
           return;
         }
         hazardLayer.clearLayers();
+        pinRegistry.hazards = [];
         lastHazards = (data && data.events) || [];
         lastHazards.forEach(function (e) {
           if (!e.latitude || !e.longitude) {
@@ -1205,8 +1219,17 @@
           m.bindTooltip(esc(e.headline || e.event), { sticky: true, direction: "top" });
           m.bindPopup(popup);
           hazardLayer.addLayer(m);
+          registerPin("hazards", {
+            group: hazardLayer,
+            marker: m,
+            latlng: [e.latitude, e.longitude],
+            markerKey: "H:" + (e.event || e.headline || e.latitude + "/" + e.longitude),
+            title: e.headline || e.event,
+            kindLabel: tr("map.layer.hazards")
+          });
         });
         computeBounds();
+        reconcilePins();
       })
       .catch(function () { /* transient — next poll retries */ });
   }
@@ -1409,6 +1432,7 @@
     }
     weatherLayer.clearLayers();
     weatherMarkers = {};
+    pinRegistry.weather = [];
     var byCall = {};
     (lastStations || []).forEach(function (s) {
       if (s && s.callsign) {
@@ -1430,7 +1454,16 @@
       marker.bindPopup(weatherPopup(r));
       weatherLayer.addLayer(marker);
       weatherMarkers[String(r.name || "").toUpperCase()] = marker;
+      registerPin("weather", {
+        group: weatherLayer,
+        marker: marker,
+        latlng: [r.latitude, r.longitude],
+        markerKey: "W:" + (r.name || r.provider),
+        title: r.name,
+        kindLabel: tr("map.layer.weather")
+      });
     });
+    reconcilePins();
   }
 
   // focusStation centers the main map on one report's station and opens
@@ -1448,13 +1481,102 @@
     focusMarker(m);
   }
 
-  // focusMarker centers the map on any pin and opens its popup.
+  // focusMarker centers the map on any pin and opens its popup. A pin
+  // stashed by the overlap handling is re-attached to its layer first.
   function focusMarker(m) {
     if (!map || !m) {
       return;
     }
+    if (!m._map && m._wfGroup) {
+      m.addTo(m._wfGroup);
+    }
     map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 13), { duration: 0.7 });
     m.openPopup();
+  }
+
+  // ---- overlapping-pin handling ----
+  // Stations, weather, air quality, hazards and aircraft can share exact
+  // coordinates (a town weather pin and its AQ pin). One pin must never
+  // hide another: pins at the same spot are ranked by priority, the top
+  // one stays visible and the rest are stashed; a small "+n" chip above
+  // the visible pin lists everything underneath.
+  var pinChipLayer = null;
+  var pinRegistry = {}; // category -> [{marker, group, latlng, markerKey, title, kindLabel}]
+  var pinPriority = { hazards: 0, stations: 1, weather: 2, airquality: 3, aircraft: 4 };
+
+  function registerPin(category, entry) {
+    entry.category = category;
+    entry.marker._wfGroup = entry.group;
+    (pinRegistry[category] = pinRegistry[category] || []).push(entry);
+  }
+
+  function pinGroupKey(latlng) {
+    return latlng[0].toFixed(4) + "," + latlng[1].toFixed(4);
+  }
+
+  function reconcilePins() {
+    if (!map || !pinChipLayer) {
+      return;
+    }
+    pinChipLayer.clearLayers();
+    var groups = {};
+    Object.keys(pinRegistry).forEach(function (cat) {
+      (pinRegistry[cat] || []).forEach(function (e) {
+        var k = pinGroupKey(e.latlng);
+        (groups[k] = groups[k] || []).push(e);
+      });
+    });
+    Object.keys(groups).forEach(function (k) {
+      var list = groups[k];
+      if (list.length < 2) {
+        return;
+      }
+      list.sort(function (a, b) { return pinPriority[a.category] - pinPriority[b.category]; });
+      var top = list[0];
+      var hidden = list.slice(1);
+      // Lower-priority pins stay in their layer groups (toggling a layer
+      // re-shows them; the next reconcile hides them again).
+      hidden.forEach(function (e) {
+        if (e.marker._map) {
+          e.marker.remove();
+        }
+      });
+      var chip = L.marker(top.latlng, {
+        interactive: true,
+        zIndexOffset: 5000,
+        icon: L.divIcon({
+          className: "wf-pin-chip-wrap",
+          iconSize: [34, 20],
+          iconAnchor: [17, 46],
+          html: '<span class="wf-pin-chip">+' + hidden.length + '</span>'
+        })
+      });
+      var items = hidden.map(function (e) {
+        return '<div class="wf-pophint" data-pin="' + e.category + ':' + encodeURIComponent(e.markerKey) + '">' +
+          esc(e.title) + ' <span class="muted">· ' + esc(e.kindLabel) + '</span></div>';
+      }).join("");
+      chip.bindPopup('<div class="wf-pop"><div class="wf-pop-body"><div class="muted">' +
+        tr("map.pins_hidden") + '</div>' + items + '</div></div>');
+      chip.on("popupopen", function () {
+        var el = chip.getPopup().getElement();
+        if (!el) {
+          return;
+        }
+        el.querySelectorAll(".wf-pophint").forEach(function (row) {
+          row.addEventListener("click", function () {
+            var parts = row.getAttribute("data-pin").split(":");
+            var target = (pinRegistry[parts[0]] || []).filter(function (e) {
+              return e.markerKey === decodeURIComponent(parts[1]);
+            })[0];
+            map.closePopup();
+            if (target) {
+              focusMarker(target.marker);
+            }
+          });
+        });
+      });
+      pinChipLayer.addLayer(chip);
+    });
   }
 
   // renderReports builds the report cards below the map. Every report
@@ -1695,6 +1817,7 @@
           return;
         }
         aircraftLayer.clearLayers();
+        pinRegistry.aircraft = [];
         lastAircraft = (data && data.aircraft) || [];
         lastAircraft.forEach(function (a) {
           if (!a.latitude || !a.longitude) {
@@ -1706,6 +1829,14 @@
           marker.bindPopup(aircraftPopup(a));
           aircraftLayer.addLayer(marker);
           aircraftMarkers[keyAircraft(a)] = marker;
+          registerPin("aircraft", {
+            group: aircraftLayer,
+            marker: marker,
+            latlng: [a.latitude, a.longitude],
+            markerKey: "A:" + (a.callsign || a.icao24 || ""),
+            title: a.callsign || a.icao24,
+            kindLabel: tr("map.layer.aircraft")
+          });
 
           // The 3-5 minute trail: recent recorded positions as one line.
           var trail = [];
@@ -1743,6 +1874,7 @@
         });
         computeBounds();
         renderAircraft();
+        reconcilePins();
       })
       .catch(function () { /* transient — next poll retries */ });
   }
@@ -1798,6 +1930,7 @@
           return;
         }
         aqLayer.clearLayers();
+        pinRegistry.airquality = [];
         ((data && data.stations) || []).forEach(function (station) {
           if (!station.latitude || !station.longitude) {
             return;
@@ -1808,7 +1941,16 @@
           marker.bindTooltip(trf("map.airquality.tip", station.station_name), { direction: "top" });
           marker.bindPopup(aqPopup(station));
           aqLayer.addLayer(marker);
+          registerPin("airquality", {
+            group: aqLayer,
+            marker: marker,
+            latlng: [station.latitude, station.longitude],
+            markerKey: "Q:" + station.station_code,
+            title: station.station_name,
+            kindLabel: tr("map.layer.airquality")
+          });
         });
+        reconcilePins();
       })
       .catch(function () { /* transient — next poll retries */ });
   }
@@ -1935,6 +2077,7 @@
           btn.setAttribute("aria-pressed", String(nowOn));
           if (!layer) { return; }
           if (nowOn) { map.addLayer(layer); } else { map.removeLayer(layer); }
+          reconcilePins();
         });
         box.appendChild(btn);
       });

@@ -26,6 +26,9 @@
       "map.wind": "wind",
       "map.gusts": "gusts",
       "map.pressure": "hPa",
+      "map.updated": "updated",
+      "home.weather.none": "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT.",
+      "home.weather.forecast": "Forecast — next days",
       "map.km": "km",
       "map.center": "Center the view",
       "map.our_station": "Our station",
@@ -66,6 +69,9 @@
       "map.wind": "wiatr",
       "map.gusts": "porywy",
       "map.pressure": "hPa",
+      "map.updated": "aktualizacja",
+      "home.weather.none": "Brak jeszcze raportów pogodowych — publikują je stacje pogodowe APRS i dostawcy prognoz przez MQTT.",
+      "home.weather.forecast": "Prognoza — kolejne dni",
       "map.km": "km",
       "map.center": "Wyśrodkuj widok",
       "map.our_station": "Nasza stacja",
@@ -1370,7 +1376,7 @@
       html += '</div>';
     }
     if (r.generated_at) {
-      html += '<div class="hw-popup-time muted">updated ' + esc(fmtTime(r.generated_at)) + '</div>';
+      html += '<div class="hw-popup-time muted">' + tr("map.updated") + " " + esc(fmtTime(r.generated_at)) + '</div>';
     }
     return html + '</div>';
   }
@@ -1439,7 +1445,7 @@
     container.textContent = "";
     if (countEl) { countEl.textContent = lastWeather.length ? "(" + lastWeather.length + ")" : ""; }
     if (!lastWeather.length) {
-      container.appendChild(mk("p", "muted", "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT."));
+      container.appendChild(mk("p", "muted", tr("home.weather.none")));
       return;
     }
     var fk = forecastKey();
@@ -1472,7 +1478,7 @@
       var f = fk[r.provider + "\x00" + r.name];
       if (f && f.daily && f.daily.length) {
         var strip = mk("span", "hw-fcast");
-        strip.title = "Forecast — next days";
+        strip.title = tr("home.weather.forecast");
         f.daily.slice(0, 3).forEach(function (d) {
           var chip = mk("span", "hw-fday");
           chip.title = d.date || "";
@@ -1642,7 +1648,7 @@
       }
     });
     if (station.generated_at) {
-      html += '<br><span class="muted">updated ' + esc(fmtTime(station.generated_at)) + "</span>";
+      html += '<br><span class="muted">' + tr("map.updated") + " " + esc(fmtTime(station.generated_at)) + "</span>";
     }
     return html;
   }

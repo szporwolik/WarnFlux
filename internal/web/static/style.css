@@ -979,7 +979,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .inline-form { margin: 0; display: inline-flex; }
 .users-main .pager { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; }
 
-/* ---- users table: group assignment ---- */
+/* ---- users table: group chips ---- */
 .groups-cell { display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; }
 .group-chip {
   background: var(--surface-hi);
@@ -990,37 +990,28 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   color: var(--text);
   white-space: nowrap;
 }
-.group-picker { position: relative; }
-.group-picker summary { list-style: none; cursor: pointer; }
-.group-picker summary::-webkit-details-marker { display: none; }
-.group-picker[open] summary { border-color: var(--link); }
-.group-form {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.3rem);
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  min-width: 220px;
-  padding: 0.6rem;
-  background: var(--surface);
-  border: 1px solid var(--border-hi);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-pop);
-}
-.group-opt { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem; cursor: pointer; }
-.group-opt input[type="checkbox"] { accent-color: var(--brand); }
-.group-form-label {
-  font-size: 0.72rem;
+
+/* ---- users modal: membership + delivery-channel sections ---- */
+.modal-section { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.modal-legend {
+  font-size: 0.78rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
-  margin-top: 0.25rem;
+  padding: 0;
 }
-.group-form-label + .group-form-label { margin-top: 0.45rem; border-top: 1px solid var(--border); padding-top: 0.45rem; }
-.chan-chip { border-color: var(--focus); color: var(--link); }
+.modal-checks { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; }
+.modal-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--text);
+}
+.modal-check input[type="checkbox"] { accent-color: var(--brand); }
+.modal-note { margin: 0.1rem 0 0; font-size: 0.76rem; }
 
 /* ---- groups table: routing assignment ---- */
 .routing-count { white-space: nowrap; }

@@ -39,24 +39,6 @@
               <td>
                 <div class="groups-cell">
                 {{range $u.GroupNames}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}
-                {{range $u.ChannelNames}}<span class="group-chip chan-chip">{{.}}</span>{{end}}
-                <details class="group-picker">
-                  <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Prefs</summary>
-                  <form method="post" action="/users/{{$u.ID}}/prefs?page={{$.Page}}" class="group-form">
-                    <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                    <span class="group-form-label">Groups</span>
-                    {{range $.Groups}}
-                    <label class="group-opt"><input type="checkbox" name="groups" value="{{.ID}}"{{if index $u.GroupSet .ID}} checked{{end}}> {{.Name}}</label>
-                    {{else}}
-                    <p class="muted">No groups defined yet — create them on the Groups page.</p>
-                    {{end}}
-                    <span class="group-form-label">Delivery channels</span>
-                    {{range $.Channels}}
-                    <label class="group-opt"><input type="checkbox" name="channels" value="{{.Kind}}"{{if index $u.ChannelSet .Kind}} checked{{end}}> {{.Label}}</label>
-                    {{end}}
-                    <button type="submit" class="btn-primary btn-small">Save</button>
-                  </form>
-                </details>
                 </div>
               </td>
               <td>{{if .IsAdmin}}<span class="badge ok">admin</span>{{else if eq .Role "emcom"}}<span class="badge warn">emcom</span>{{else}}<span class="badge muted">member</span>{{end}}</td>
@@ -65,14 +47,7 @@
                 <div class="row-actions">
                 {{if .IsAdmin}}<span class="muted">read-only</span>
                 {{else}}
-                <button type="button" class="btn-ghost btn-small user-edit-btn"
-                  data-id="{{.ID}}"
-                  data-username="{{.Username}}"
-                  data-phone="{{.Phone}}"
-                  data-email="{{.Email}}"
-                  data-discord="{{.Discord}}"
-                  data-role="{{.Role}}"
-                  data-aprs="{{.APRSJoin}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Edit</button>
+                <a class="btn-ghost btn-small" href="/users?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Edit</a>
                 <form method="post" action="/users/{{.ID}}/reset" class="inline-form" onsubmit="return confirm('Reset the password for {{.Username}}? A new random password will be shown once.');">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
                   <button type="submit" class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>Reset</button>
@@ -128,6 +103,28 @@
       <label class="modal-field">APRS callsigns
         <input type="text" name="aprs_callsigns" id="user-edit-aprs" value="{{.Form.APRSCallsigns}}" maxlength="256">
       </label>
+      <fieldset class="modal-section">
+        <legend class="modal-legend">Groups</legend>
+        {{if .Groups}}
+        <div class="modal-checks">
+          {{range .Groups}}
+          <label class="modal-check"><input type="checkbox" name="groups" value="{{.ID}}"{{if index $.Form.GroupSet .ID}} checked{{end}}> {{.Name}}</label>
+          {{end}}
+        </div>
+        {{else}}
+        <p class="muted modal-note">No groups defined yet — create them on the Groups page.</p>
+        {{end}}
+      </fieldset>
+      <fieldset class="modal-section">
+        <legend class="modal-legend">Delivery channels</legend>
+        <div class="modal-checks">
+          {{range .Channels}}
+          <label class="modal-check"><input type="checkbox" name="channels" value="{{.Kind}}"{{if index $.Form.ChannelSet .Kind}} checked{{end}}> {{.Label}}</label>
+          {{end}}
+        </div>
+        <p class="muted modal-note">Unchecked channels are skipped when alerts go out to this user.</p>
+      </fieldset>
+      <input type="hidden" name="prefs" value="1">
       <label class="modal-field">Password
         <input type="password" name="password" id="user-edit-password" placeholder="{{if gt .EditID 0}}new password (optional){{else}}password (required for member/emcom){{end}}" maxlength="72" autocomplete="new-password">
       </label>

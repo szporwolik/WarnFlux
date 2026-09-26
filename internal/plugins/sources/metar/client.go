@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,26 +22,56 @@ import (
 // maxBodyBytes bounds one API response.
 const maxBodyBytes = 1 << 20 // 1 MiB
 
-// metarRecord is the relevant surface of one JSON METAR entry.
+// flexFloat decodes a JSON number that the provider occasionally sends
+// as a string (the AWC API reports "VRB" for variable wind direction
+// and similar sentinels for other observation fields). Non-numeric
+// sentinels decode as NaN so the adapter omits the field instead of
+// failing the whole poll.
+type flexFloat float64
+
+func (f *flexFloat) UnmarshalJSON(data []byte) error {
+	var n float64
+	if err := json.Unmarshal(data, &n); err == nil {
+		*f = flexFloat(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("metar: expected a number or string, got %s", data)
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		*f = flexFloat(math.NaN())
+		return nil
+	}
+	*f = flexFloat(n)
+	return nil
+}
+
+func (f flexFloat) Float() float64 { return float64(f) }
+
+// metarRecord is the relevant surface of one JSON METAR entry. The
+// observation fields are flexible: the provider occasionally sends
+// non-numeric sentinels where a number is expected.
 type metarRecord struct {
-	IcaoID     string  `json:"icaoId"`
-	Name       string  `json:"name"`
-	Lat        float64 `json:"lat"`
-	Lon        float64 `json:"lon"`
-	Elev       float64 `json:"elev"`
-	ObsTime    int64   `json:"obsTime"` // unix seconds
-	ReportTime string  `json:"reportTime"`
-	Temp       float64 `json:"temp"`
-	Dewp       float64 `json:"dewp"`
-	Wdir       float64 `json:"wdir"`
-	Wspd       float64 `json:"wspd"` // knots
-	Wgst       float64 `json:"wgst"` // knots
-	Altim      float64 `json:"altim"`
-	RawOb      string  `json:"rawOb"`
-	WxString   string  `json:"wxString"`
+	IcaoID     string    `json:"icaoId"`
+	Name       string    `json:"name"`
+	Lat        float64   `json:"lat"`
+	Lon        float64   `json:"lon"`
+	Elev       float64   `json:"elev"`
+	ObsTime    int64     `json:"obsTime"` // unix seconds
+	ReportTime string    `json:"reportTime"`
+	Temp       flexFloat `json:"temp"`
+	Dewp       flexFloat `json:"dewp"`
+	Wdir       flexFloat `json:"wdir"`
+	Wspd       flexFloat `json:"wspd"` // knots
+	Wgst       flexFloat `json:"wgst"` // knots
+	Altim      flexFloat `json:"altim"`
+	RawOb      string    `json:"rawOb"`
+	WxString   string    `json:"wxString"`
 	Clouds     []struct {
-		Cover string  `json:"cover"`
-		Base  float64 `json:"base"`
+		Cover string    `json:"cover"`
+		Base  flexFloat `json:"base"`
 	} `json:"clouds"`
 }
 

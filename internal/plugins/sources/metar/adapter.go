@@ -44,32 +44,32 @@ func normalize(rec metarRecord, displayName, timezone string, generated time.Tim
 		Condition:             conditionOf(rec),
 		ProviderConditionCode: codePtr(strings.TrimSpace(rec.RawOb)),
 	}
-	if !math.IsNaN(rec.Temp) {
-		current.TemperatureC = ptr(rec.Temp)
+	if t := rec.Temp.Float(); !math.IsNaN(t) {
+		current.TemperatureC = ptr(t)
 	}
-	if !math.IsNaN(rec.Dewp) {
-		current.RelativeHumidityPct = relativeHumidity(rec.Temp, rec.Dewp)
+	if d := rec.Dewp.Float(); !math.IsNaN(d) {
+		current.RelativeHumidityPct = relativeHumidity(rec.Temp.Float(), d)
 	}
-	if !math.IsNaN(rec.Altim) && rec.Altim > 0 {
+	if a := rec.Altim.Float(); !math.IsNaN(a) && a > 0 {
 		// The API reports altimeter setting in the station's local unit:
 		// hPa for non-US stations (rawOb "Q1019" → altim 1019) and inHg
 		// for US ones ("A2992" → altim 29.92).
-		hpa := rec.Altim
+		hpa := a
 		if hpa < 100 {
 			hpa *= 33.8638816
 		}
 		current.PressureMSLHpa = &hpa
 	}
-	if !math.IsNaN(rec.Wspd) {
-		kmh := rec.Wspd * 1.852
+	if s := rec.Wspd.Float(); !math.IsNaN(s) {
+		kmh := s * 1.852
 		current.WindSpeedKmh = &kmh
 	}
-	if !math.IsNaN(rec.Wdir) {
-		current.WindDirectionDeg = ptr(rec.Wdir)
+	if wd := rec.Wdir.Float(); !math.IsNaN(wd) {
+		current.WindDirectionDeg = ptr(wd)
 	}
 	// wgst == 0 means "no gust reported", not a real zero reading.
-	if !math.IsNaN(rec.Wgst) && rec.Wgst > 0 {
-		kmh := rec.Wgst * 1.852
+	if g := rec.Wgst.Float(); !math.IsNaN(g) && g > 0 {
+		kmh := g * 1.852
 		current.WindGustsKmh = &kmh
 	}
 	if c := cloudCoverPct(rec); c != nil {
@@ -198,12 +198,12 @@ func coverCondition(rec metarRecord) string {
 // cloudsFromRaw extracts cover groups (OVC005, BKN040, SKC, ...) from the
 // raw METAR text.
 func cloudsFromRaw(raw string) []struct {
-	Cover string  `json:"cover"`
-	Base  float64 `json:"base"`
+	Cover string    `json:"cover"`
+	Base  flexFloat `json:"base"`
 } {
 	clouds := []struct {
-		Cover string  `json:"cover"`
-		Base  float64 `json:"base"`
+		Cover string    `json:"cover"`
+		Base  flexFloat `json:"base"`
 	}{}
 	for _, tok := range strings.Fields(strings.ToUpper(strings.TrimSpace(raw))) {
 		if len(tok) < 3 || len(tok) > 7 {
@@ -215,8 +215,8 @@ func cloudsFromRaw(raw string) []struct {
 			continue
 		}
 		clouds = append(clouds, struct {
-			Cover string  `json:"cover"`
-			Base  float64 `json:"base"`
+			Cover string    `json:"cover"`
+			Base  flexFloat `json:"base"`
 		}{Cover: code})
 	}
 	return clouds

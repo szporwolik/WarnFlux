@@ -1781,8 +1781,11 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font: inherit;
 }
 .hw-report:disabled { cursor: default; }
-.hw-report.hw-aprs { cursor: pointer; }
-.hw-report.hw-aprs:hover { border-color: var(--link); }
+/* Every positioned report card is clickable (centers the map + opens the
+   pin popup): pointer cursor and a hover highlight; inert cards stay
+   muted. */
+.hw-report:not(:disabled) { cursor: pointer; }
+.hw-report:not(:disabled):hover { border-color: var(--link); }
 .hw-icon { flex-shrink: 0; width: 2rem; text-align: center; font-size: 1.6rem; color: var(--brand); }
 .hw-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 .hw-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }

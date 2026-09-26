@@ -43,6 +43,7 @@
     <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Active hazards</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-radio">Map</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-archive">Archive</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-channels">Channels</button>
   </nav>
 
   <main class="home-main">
@@ -68,6 +69,25 @@
     </section>
     <section class="home-panel" id="panel-tab-archive" data-panel="tab-archive" hidden>
       <div id="archive-box"><p class="muted">Loading archive…</p></div>
+    </section>
+    <section class="home-panel" id="panel-tab-channels" data-panel="tab-channels" hidden>
+      {{if .Channels}}
+      <h2 class="home-alerts-head">Delivery channels</h2>
+      <p class="muted home-channels-note">When an alert is issued, the system reaches people through these channels.</p>
+      <div class="channels-list">
+        {{range .Channels}}
+        <article class="channel-row">
+          <svg class="icon channel-icon" aria-hidden="true"><use href="/static/icons.svg#{{.Icon}}"></use></svg>
+          <div class="channel-body">
+            <h3>{{.Name}}</h3>
+            <p class="muted">{{.Description}}</p>
+          </div>
+        </article>
+        {{end}}
+      </div>
+      {{else}}
+      <p class="home-none">No delivery channels are configured yet.</p>
+      {{end}}
     </section>
   </main>
 

@@ -67,6 +67,18 @@ type homeView struct {
 	AprsOwnLon    float64
 	AprsRadiusKM  float64
 	AprsCallsign  string
+
+	// Channels carries the friendly public view of the configured
+	// delivery channels (one row per medium, no technical detail).
+	Channels []publicChannelView
+}
+
+// publicChannelView is one delivery medium shown to the public on the
+// home page: icon, name and a one-line plain-language description.
+type publicChannelView struct {
+	Icon        string
+	Name        string
+	Description string
 }
 
 // mapEventView is the public JSON shape of one geo-located active hazard
@@ -196,6 +208,9 @@ func (s *Server) buildHomeView() homeView {
 		v.AprsOwnLon = s.aprs.OwnLon()
 		v.AprsRadiusKM = s.aprs.AreaRadius()
 		v.AprsCallsign = s.aprs.Callsign()
+	}
+	if s.actions != nil {
+		v.Channels = publicChannels(s.actions.Statuses())
 	}
 	return v
 }

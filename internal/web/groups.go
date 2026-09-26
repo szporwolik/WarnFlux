@@ -17,14 +17,12 @@ import (
 const groupsPerPage = 10
 
 // groupRow is one groups-table row for the template. Assignments holds the
-// saved routing cells; Matrix is the full source × action grid with the
-// current severity prefilled (for the popover form).
+// saved routing cells (rendered as chips).
 type groupRow struct {
 	ID          int64
 	Name        string
 	Members     int64
 	Assignments []storage.ChannelAssignment
-	Matrix      []matrixSourceRow
 	UpdatedAt   time.Time
 }
 
@@ -140,6 +138,12 @@ type groupsView struct {
 	Severities []severityChoice
 	Actions    []channelOption
 
+	// RoutingName + RoutingID + RoutingMatrix turn the page into the
+	// dedicated routing editor of one group (GET /groups/{id}/routing).
+	RoutingName   string
+	RoutingID     int64
+	RoutingMatrix []matrixSourceRow
+
 	Page, Pages, From, To, Total int
 	HasPrev, HasNext             bool
 
@@ -237,10 +241,40 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/groups", http.StatusSeeOther)
 }
 
-// handleGroupRoutingPage serves GET /groups/{id}/routing (e.g. an
-// address-bar revisit after saving): just go back to the groups list.
+// handleGroupRoutingPage renders the dedicated routing editor of one
+// group: the full source × action matrix with one severity select per
+// cell (the groups table links here instead of the old in-row popover).
 func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/groups", http.StatusSeeOther)
+	sess := s.sessions.currentSession(r)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	group, err := s.users.GetGroup(id)
+	if err != nil {
+		if errors.Is(err, storage.ErrGroupNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		s.logger.Error("web: get group failed", "group", id, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	routing, err := s.users.GroupRouting(id)
+	if err != nil {
+		s.logger.Warn("web: group routing unavailable", "group", id, "error", err)
+		routing.Actions = nil
+	}
+	view := s.buildGroupsView(r, groupForm{}, 0, "")
+	view.CSRF = sess.csrf
+	view.Username = sess.username
+	view.Role = sess.role
+	view.RoutingName = group.Name
+	view.RoutingID = group.ID
+	view.RoutingMatrix = buildMatrix(routing.Actions, s.availableActions(), s.routingSources())
+	w.Header().Set("Cache-Control", "no-store")
+	s.render(w, "group_routing", view)
 }
 
 // handleGroupRouting saves one group's notification routing matrix: every
@@ -408,7 +442,6 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		}
 	}
 	rows := make([]groupRow, 0, len(groups))
-	actions := s.availableActions()
 	for _, g := range groups {
 		row := groupRow{
 			ID:        g.ID,
@@ -418,7 +451,6 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		}
 		if routing, err := s.users.GroupRouting(g.ID); err == nil {
 			row.Assignments = routing.Actions
-			row.Matrix = buildMatrix(routing.Actions, actions, s.routingSources())
 		} else {
 			s.logger.Warn("web: group routing unavailable", "group", g.ID, "error", err)
 		}
@@ -438,7 +470,7 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		EditID:     editID,
 		Error:      errMsg,
 		Severities: severityChoices,
-		Actions:    actions,
+		Actions:    s.availableActions(),
 		Page:       page,
 		Pages:      pages,
 		From:       from,

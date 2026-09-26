@@ -185,15 +185,23 @@ func TestGroupRoutingMatrix(t *testing.T) {
 		}
 	}
 
-	// The page renders the chips with the source badge and the popover
-	// grid prefills.
+	// The groups table renders the assignment chips; the full matrix with
+	// its severity selects lives on the dedicated routing page.
 	_, html = env.get("/groups")
 	for _, wantStr := range []string{
 		"logger-action",
 		"any",
 		"rso",
 		"compose",
-		"EMCOM network",
+		"emcom",
+	} {
+		if !strings.Contains(html, wantStr) {
+			t.Errorf("groups page missing %q: %s", wantStr, html)
+		}
+	}
+	_, html = env.get("/groups/1/routing")
+	for _, wantStr := range []string{
+		"Routing · ops",
 		`name="cell:|logger-action"`,
 		`name="cell:rso|logger-action"`,
 		`name="cell:compose|logger-action"`,
@@ -203,7 +211,7 @@ func TestGroupRoutingMatrix(t *testing.T) {
 		"minor or higher",
 	} {
 		if !strings.Contains(html, wantStr) {
-			t.Errorf("groups page missing %q: %s", wantStr, html)
+			t.Errorf("routing page missing %q: %s", wantStr, html)
 		}
 	}
 

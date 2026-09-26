@@ -1238,18 +1238,18 @@ func TestIngestEndpointRouting(t *testing.T) {
 		t.Fatalf("unknown ingest id = %d, want 404", resp.StatusCode)
 	}
 
-	// The groups routing popover offers the ingest id as a matrix source.
+	// The routing editor offers the ingest id as a matrix source.
 	env.login()
 	if _, err := env.users.CreateGroup("ops"); err != nil {
 		t.Fatal(err)
 	}
-	_, html := env.get("/groups")
+	_, html := env.get("/groups/1/routing")
 	for _, want := range []string{
 		`name="cell:news|logger-action"`,
 		"news (ingest)",
 	} {
 		if !strings.Contains(html, want) {
-			t.Errorf("groups page missing ingest source %q: %s", want, html)
+			t.Errorf("routing page missing ingest source %q: %s", want, html)
 		}
 	}
 }

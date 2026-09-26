@@ -1383,7 +1383,11 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .home-archive-window { color: var(--muted); font-size: 0.8rem; font-weight: 500; }
 .home-channels-note { margin: 0 0 1rem; }
 .home-channels-head { margin-top: 1.8rem; }
-.channels-list { display: grid; gap: 0.6rem; max-width: 44rem; }
+/* Sources and delivery channels flow in a compact responsive grid:
+   one column on phones, two on tablets, three on desktop. */
+.channels-list { display: grid; gap: 0.6rem; grid-template-columns: 1fr; }
+@media (min-width: 640px) { .channels-list { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1024px) { .channels-list { grid-template-columns: repeat(3, 1fr); } }
 .channel-row {
   display: flex;
   align-items: flex-start;

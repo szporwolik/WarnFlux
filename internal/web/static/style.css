@@ -1694,8 +1694,11 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .leaflet-popup-content .aq-level { font-weight: 600; }
 .leaflet-popup-content .muted { opacity: 0.75; font-size: 0.85em; }
 
-/* Layer toggles on the combined map (top-right control). */
-.wf-layers {
+/* Unified map control stack (top-right): layer toggles on top, then a
+   divider, then fit-view and my-location. Every button is the same 32px
+   square with the same border and hover treatment; active layers light
+   up in their own color (--wf-mc-hue set per layer in app.js). */
+.wf-map-ctl {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1705,43 +1708,37 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   border-radius: var(--radius);
   box-shadow: var(--shadow-drawer);
 }
-.wf-layer-btn {
-  font: inherit;
-  font-size: 0.78rem;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: 5px;
+.wf-mc-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  text-align: left;
   cursor: pointer;
-  white-space: nowrap;
+  font: inherit;
 }
-.wf-layer-btn:hover { background: var(--surface-hi); color: var(--text); }
-.wf-layer-btn.active { background: var(--focus-ring); color: var(--text); font-weight: 600; }
+.wf-mc-btn:hover { background: var(--surface-hi); color: var(--text); }
+.wf-mc-btn.active {
+  background: var(--surface-hi);
+  border-color: var(--border);
+  color: var(--wf-mc-hue, var(--brand));
+}
+.wf-mc-btn.wf-locate-active { color: #1a73e8; border-color: #1a73e8; }
+.wf-mc-btn.wf-locate-denied { color: #d32f2f; border-color: #d32f2f; }
+.wf-mc-sep {
+  height: 1px;
+  margin: 3px 2px;
+  background: var(--border);
+}
 
 /* Aircraft markers (ADS-B layer): track-rotated plane glyphs. */
 .wf-aircraft { background: none; border: none; }
 .wf-aircraft svg { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55)); }
-
-/* User-location control (bottom-right): blue when the dot is shown,
-   red flash when the location is unavailable. */
-.wf-locate-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--muted);
-  cursor: pointer;
-  box-shadow: var(--shadow-drawer);
-}
-.wf-locate-btn:hover { color: var(--text); }
-.wf-locate-btn.wf-locate-active { color: #1a73e8; border-color: #1a73e8; }
-.wf-locate-btn.wf-locate-denied { color: #d32f2f; border-color: #d32f2f; }
 
 /* Leaflet popups and tooltips follow the app theme: muted text, forecast
    chips and severity badges stay readable in the dark theme instead of
@@ -2012,23 +2009,6 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   text-align: right;
 }
 .hw-attrib a { color: var(--muted); text-decoration: underline; }
-/* Re-center buttons on all maps: match the Leaflet zoom control look. */
-.wf-center-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 2px solid rgba(0, 0, 0, 0.2);
-  border-radius: 4px;
-  background: #fff;
-  color: #333;
-  cursor: pointer;
-  font: inherit;
-}
-.wf-center-btn:hover { background: #f4f4f4; }
-.leaflet-touch .wf-center-btn { width: 30px; height: 30px; }
 .home-foot {
   display: flex;
   flex-wrap: wrap;

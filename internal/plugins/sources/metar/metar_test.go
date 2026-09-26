@@ -64,9 +64,59 @@ func epkkRecord() metarRecord {
 		Altim:      30.09,
 		RawOb:      "METAR EPKK 242300Z 23005KT 6000 -RA OVC005 11/10 Q1019",
 		Clouds: []struct {
-			Cover string  `json:"cover"`
-			Base  float64 `json:"base"`
+			Cover string    `json:"cover"`
+			Base  flexFloat `json:"base"`
 		}{{Cover: "OVC", Base: 500}},
+	}
+}
+
+// TestFlexFloatSentinels pins the tolerance for non-numeric observation
+// values: the AWC API reports "VRB" for variable wind direction and
+// similar sentinels, which must not fail the whole poll.
+func TestFlexFloatSentinels(t *testing.T) {
+	body := `[
+	  {"icaoId":"EPKK","name":"x","lat":50.078,"lon":19.797,"elev":237,
+	   "obsTime":1790290800,"reportTime":"2026-09-24T23:00:00.000Z",
+	   "temp":11,"dewp":10,"wdir":"VRB","wspd":"MPS","wgst":12,"altim":30.09,
+	   "rawOb":"METAR EPKK 242300Z VRB05KT 6000 -RA OVC005 11/10 Q1019",
+	   "clouds":[{"cover":"OVC","base":"500"}]}
+	]`
+	var recs []metarRecord
+	if err := json.Unmarshal([]byte(body), &recs); err != nil {
+		t.Fatalf("unmarshal with sentinels: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("records = %d", len(recs))
+	}
+	rec := recs[0]
+	if !math.IsNaN(rec.Wdir.Float()) {
+		t.Errorf("wdir sentinel should decode as NaN, got %v", rec.Wdir.Float())
+	}
+	if !math.IsNaN(rec.Wspd.Float()) {
+		t.Errorf("wspd sentinel should decode as NaN, got %v", rec.Wspd.Float())
+	}
+	if rec.Wgst.Float() != 12 || rec.Temp.Float() != 11 {
+		t.Errorf("numeric fields mangled: temp=%v wgst=%v", rec.Temp.Float(), rec.Wgst.Float())
+	}
+
+	snap, err := normalize(rec, "Balice (EPKK)", "Europe/Warsaw", time.Now(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("normalize with sentinels: %v", err)
+	}
+	if snap.Current == nil {
+		t.Fatal("missing current conditions")
+	}
+	if snap.Current.WindDirectionDeg != nil {
+		t.Errorf("variable wind should omit direction, got %v", *snap.Current.WindDirectionDeg)
+	}
+	if snap.Current.WindSpeedKmh != nil {
+		t.Errorf("non-numeric speed should be omitted, got %v", *snap.Current.WindSpeedKmh)
+	}
+	if snap.Current.TemperatureC == nil || *snap.Current.TemperatureC != 11 {
+		t.Errorf("temperature = %v, want 11", snap.Current.TemperatureC)
+	}
+	if snap.Current.WindGustsKmh == nil || *snap.Current.WindGustsKmh != 22.224 {
+		t.Errorf("gusts = %v, want 22.224 km/h", snap.Current.WindGustsKmh)
 	}
 }
 

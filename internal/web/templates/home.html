@@ -81,6 +81,14 @@
         <p class="muted">{{tr .Lang "home.weather.loading"}}</p>
       </div>
       <p class="hw-attrib">{{tr .Lang "home.attrib.wicons"}} <a href="https://erikflowers.github.io/weather-icons/" target="_blank" rel="noopener noreferrer">Weather Icons by Erik Flowers</a> (SIL OFL 1.1 / MIT)</p>
+      <h2 class="hw-title">{{tr .Lang "home.stations.title"}} <span class="count" id="hw-station-count"></span></h2>
+      <div class="hw-reports" id="hw-stations">
+        <p class="muted">{{tr .Lang "home.stations.loading"}}</p>
+      </div>
+      <h2 class="hw-title">{{tr .Lang "home.aircraft.title"}} <span class="count" id="hw-aircraft-count"></span></h2>
+      <div class="hw-reports" id="hw-aircraft">
+        <p class="muted">{{tr .Lang "home.aircraft.loading"}}</p>
+      </div>
     </section>
     <section class="home-panel" id="panel-tab-archive" data-panel="tab-archive" hidden>
       <div id="archive-box"><p class="muted">{{tr .Lang "home.archive.loading"}}</p></div>

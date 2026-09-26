@@ -1832,6 +1832,22 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .hw-report:not(:disabled) { cursor: pointer; }
 .hw-report:not(:disabled):hover { border-color: var(--link); }
 .hw-icon { flex-shrink: 0; width: 2rem; text-align: center; font-size: 1.6rem; color: var(--brand); }
+/* Station callsign badge and aircraft glyph cards (below the weather
+   cards): same report-card shape, non-weather icons. */
+.hw-icon.hw-sta {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.5rem;
+  width: auto;
+  min-width: 2rem;
+  padding: 0 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+}
+.hw-icon.hw-plane { font-size: 1.25rem; color: var(--muted); }
 .hw-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 .hw-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
 .hw-provider { color: var(--muted); font-size: 0.75rem; }

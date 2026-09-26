@@ -29,6 +29,8 @@
       "map.updated": "updated",
       "home.weather.none": "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT.",
       "home.weather.forecast": "Forecast — next days",
+      "home.stations.none": "No stations heard yet — ham stations beacon through APRS.",
+      "home.aircraft.none": "No aircraft in range right now.",
       "map.km": "km",
       "map.center": "Center the view",
       "map.our_station": "Our station",
@@ -72,6 +74,8 @@
       "map.updated": "aktualizacja",
       "home.weather.none": "Brak jeszcze raportów pogodowych — publikują je stacje pogodowe APRS i dostawcy prognoz przez MQTT.",
       "home.weather.forecast": "Prognoza — kolejne dni",
+      "home.stations.none": "Nie słychać jeszcze żadnych stacji — krótkofalowcy nadają przez APRS.",
+      "home.aircraft.none": "W tej chwili brak samolotów w zasięgu.",
       "map.km": "km",
       "map.center": "Wyśrodkuj widok",
       "map.our_station": "Nasza stacja",
@@ -1165,6 +1169,7 @@
         });
 
         computeBounds();
+        renderStations();
       })
       .catch(function () { /* transient — next poll retries */ });
   }
@@ -1429,8 +1434,13 @@
     if (!m) {
       return;
     }
-    if (el && el.scrollIntoView) {
-      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    focusMarker(m);
+  }
+
+  // focusMarker centers the map on any pin and opens its popup.
+  function focusMarker(m) {
+    if (!map || !m) {
+      return;
     }
     map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 13), { duration: 0.7 });
     m.openPopup();
@@ -1507,6 +1517,107 @@
     });
   }
 
+  // renderStations builds the radio-station cards below the map:
+  // callsign, comment, speed/altitude and when the station was last
+  // heard. Cards focus the map on the station pin, like the weather cards.
+  function renderStations() {
+    var container = document.getElementById("hw-stations");
+    var countEl = document.getElementById("hw-station-count");
+    if (!container) {
+      return;
+    }
+    container.textContent = "";
+    var visible = (lastStations || []).filter(function (st) {
+      return st && st.position && !st.self;
+    });
+    if (countEl) {
+      countEl.textContent = visible.length ? "(" + visible.length + ")" : "";
+    }
+    if (!visible.length) {
+      container.appendChild(mk("p", "muted", tr("home.stations.none")));
+      return;
+    }
+    visible.forEach(function (st) {
+      var item = mk("button", "hw-report");
+      item.type = "button";
+      item.appendChild(mk("span", "hw-icon hw-sta", String(st.callsign || "?").slice(0, 4)));
+      var body = mk("span", "hw-body");
+      var head = mk("span", "hw-head");
+      head.appendChild(mk("strong", null, st.callsign));
+      if (st.comment) {
+        head.appendChild(mk("span", "hw-provider", st.comment));
+      }
+      body.appendChild(head);
+      var meta = [];
+      if (st.speed_kmh > 0) {
+        meta.push(tr("map.speed") + " " + fmtNum(st.speed_kmh, 0) + " km/h");
+      }
+      if (st.altitude_m != null) {
+        meta.push(tr("map.alt") + " " + fmtNum(st.altitude_m, 0) + " m");
+      }
+      meta.push(tr("map.heard") + " " + fmtTime(st.last_heard_at));
+      body.appendChild(mk("span", "hw-meta", meta.join(" · ")));
+      item.appendChild(body);
+      var call = st.callsign;
+      item.addEventListener("click", function () {
+        focusMarker(stationMarkers[String(call || "").toUpperCase()]);
+      });
+      container.appendChild(item);
+    });
+  }
+
+  // renderAircraft builds the aircraft cards below the map: callsign,
+  // speed, altitude, climb and when the plane was last seen.
+  function renderAircraft() {
+    var container = document.getElementById("hw-aircraft");
+    var countEl = document.getElementById("hw-aircraft-count");
+    if (!container) {
+      return;
+    }
+    container.textContent = "";
+    var visible = (lastAircraft || []).filter(function (a) {
+      return a && a.latitude && a.longitude;
+    });
+    if (countEl) {
+      countEl.textContent = visible.length ? "(" + visible.length + ")" : "";
+    }
+    if (!visible.length) {
+      container.appendChild(mk("p", "muted", tr("home.aircraft.none")));
+      return;
+    }
+    visible.forEach(function (a) {
+      var item = mk("button", "hw-report");
+      item.type = "button";
+      item.appendChild(mk("span", "hw-icon hw-plane", "✈"));
+      var body = mk("span", "hw-body");
+      var head = mk("span", "hw-head");
+      head.appendChild(mk("strong", null, a.callsign || a.icao24 || "?"));
+      if (a.category) {
+        head.appendChild(mk("span", "hw-provider", a.category));
+      }
+      body.appendChild(head);
+      var meta = [];
+      if (a.speed_kmh != null) {
+        meta.push(tr("map.speed") + " " + fmtNum(a.speed_kmh, 0) + " km/h");
+      }
+      if (a.altitude_m != null) {
+        meta.push(tr("map.alt") + " " + fmtNum(a.altitude_m, 0) + " m");
+      }
+      if (a.vertical_rate_m_s != null) {
+        meta.push(tr("map.climb") + " " + fmtNum(a.vertical_rate_m_s, 1) + " m/s");
+      }
+      if (a.seen_at) {
+        meta.push(tr("map.seen") + " " + fmtTime(new Date(a.seen_at * 1000).toISOString()));
+      }
+      body.appendChild(mk("span", "hw-meta", meta.join(" · ")));
+      item.appendChild(body);
+      item.addEventListener("click", function () {
+        focusMarker(aircraftMarkers[keyAircraft(a)]);
+      });
+      container.appendChild(item);
+    });
+  }
+
   function refreshWeather() {
     fetch("/api/weather")
       .then(function (resp) { return resp.ok ? resp.json() : null; })
@@ -1528,6 +1639,7 @@
   // ---- aircraft layer (ADS-B): minute vector + 3-5 minute trail ----
   var aircraftLayer = null;
   var lastAircraft = [];
+  var aircraftMarkers = {};
   var AIRCRAFT_POLL_MS = 15 * 1000;
 
   // planeIcon renders one aircraft as a track-rotated plane glyph;
@@ -1576,6 +1688,7 @@
           marker.bindTooltip(trf("map.aircraft.tip", a.callsign || a.icao24), { direction: "top" });
           marker.bindPopup(aircraftPopup(a));
           aircraftLayer.addLayer(marker);
+          aircraftMarkers[keyAircraft(a)] = marker;
 
           // The 3-5 minute trail: recent recorded positions as one line.
           var trail = [];
@@ -1612,8 +1725,14 @@
           }
         });
         computeBounds();
+        renderAircraft();
       })
       .catch(function () { /* transient — next poll retries */ });
+  }
+
+  // keyAircraft derives the per-aircraft marker key from its identifiers.
+  function keyAircraft(a) {
+    return String(a.callsign || a.icao24 || "").toUpperCase();
   }
 
   // ---- air-quality station layer (GIOŚ official index) ----

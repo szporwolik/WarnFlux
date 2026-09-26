@@ -1261,6 +1261,8 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .home-login:hover { border-color: var(--link); color: var(--link); }
 .home-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 .home-actions .theme-toggle { width: 2.4rem; height: 2.4rem; }
+/* The language switch matches the larger home-header controls. */
+.home-actions .lang-opt { height: 2.4rem; min-width: 2.4rem; font-size: 0.78rem; }
 .home-dash {
   display: inline-flex;
   align-items: center;

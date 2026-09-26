@@ -817,6 +817,9 @@ func TestUsersCRUDFlow(t *testing.T) {
 	if !strings.Contains(html, `value="alice"`) || !strings.Contains(html, `name="edit_id" value="2"`) {
 		t.Fatalf("edit prefill missing: %s", html)
 	}
+	if !strings.Contains(html, `id="user-edit-dialog" open`) {
+		t.Errorf("edit dialog not rendered open: %s", html)
+	}
 
 	// Save the edit.
 	resp, _ = env.postForm("/users", url.Values{

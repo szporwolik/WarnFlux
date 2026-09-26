@@ -114,6 +114,7 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
 			if u, err := s.users.GetUser(id); err == nil {
 				view.EditID = u.ID
+				view.DialogOpen = true
 				view.Form = userForm{
 					Username:      u.Username,
 					Phone:         u.Phone,

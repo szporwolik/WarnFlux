@@ -525,6 +525,8 @@
   var stationLayer = null;
   var hazardLayer = null;
   var weatherLayer = null;
+  var aircraftLayer = null;
+  var aqLayer = null;
   var rangeCircle = null;
   var radarLayer = null;
   var baseLayer = null;
@@ -760,6 +762,7 @@
     hazardLayer = L.layerGroup().addTo(map);
     weatherLayer = L.layerGroup().addTo(map);
     aircraftLayer = L.layerGroup().addTo(map);
+    aqLayer = L.layerGroup().addTo(map);
 
     // Center button: fit the view around our locator and all stations.
     addCenterControl(map, function () {
@@ -787,9 +790,11 @@
     refreshHazards();
     refreshWeather();
     refreshAircraft();
+    refreshAirQuality();
     window.setInterval(refreshStations, STATION_POLL_MS);
     window.setInterval(refreshWeather, WEATHER_POLL_MS);
     window.setInterval(refreshAircraft, AIRCRAFT_POLL_MS);
+    window.setInterval(refreshAirQuality, AQ_POLL_MS);
     window.setInterval(refreshHazards, STATION_POLL_MS);
     window.setInterval(refreshRadar, RADAR_REFRESH_MS);
 
@@ -1517,6 +1522,66 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
+  // ---- air-quality station layer (GIOŚ official index) ----
+  var AQ_POLL_MS = 5 * 60 * 1000;
+
+  // GIOŚ air-quality index levels (0 = very good ... 5 = very bad).
+  var AQ_COLORS = ["#2e7d32", "#7cb342", "#fbc02d", "#f57c00", "#d32f2f", "#8e1b1b"];
+
+  function aqColor(level) {
+    return level != null && level >= 0 && level < AQ_COLORS.length ? AQ_COLORS[level] : "#78909c";
+  }
+
+  function aqIcon(station) {
+    var color = aqColor(station.index_level_id);
+    return L.divIcon({
+      className: "aq-pin-wrap",
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+      html: '<span class="aq-pin" style="background:' + color + '"></span>'
+    });
+  }
+
+  function aqPopup(station) {
+    var html = "<strong>" + esc(station.station_name) + "</strong>";
+    if (station.index_level_name) {
+      html += '<br><span class="aq-level" style="color:' + aqColor(station.index_level_id) + '">' +
+        esc(station.index_level_name) + "</span>";
+    }
+    (station.pollutants || []).forEach(function (p) {
+      if (p.level_name) {
+        html += "<br>" + esc(p.code) + ": " + esc(p.level_name);
+      }
+    });
+    if (station.generated_at) {
+      html += '<br><span class="muted">updated ' + esc(fmtTime(station.generated_at)) + "</span>";
+    }
+    return html;
+  }
+
+  function refreshAirQuality() {
+    fetch("/api/airquality")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!aqLayer) {
+          return;
+        }
+        aqLayer.clearLayers();
+        ((data && data.stations) || []).forEach(function (station) {
+          if (!station.latitude || !station.longitude) {
+            return;
+          }
+          var marker = L.marker([station.latitude, station.longitude], {
+            icon: aqIcon(station), riseOnHover: true
+          });
+          marker.bindTooltip(station.station_name, { direction: "top" });
+          marker.bindPopup(aqPopup(station));
+          aqLayer.addLayer(marker);
+        });
+      })
+      .catch(function () { /* transient — next poll retries */ });
+  }
+
   // ---- user location (like the Google Maps blue dot) ----
   var userMarker = null;
   var userAccCircle = null;
@@ -1595,6 +1660,7 @@
       radarOn = !radarOn;
       return radarLayer;
     }],
+    ["airquality", "Air quality", function () { return aqLayer; }],
     ["aircraft", "Aircraft", function () { return aircraftLayer; }]
   ];
 

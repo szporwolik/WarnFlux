@@ -1644,6 +1644,20 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .hw-pin-aprs { background: #007a3d; color: #fff; }
 .hw-pin-inet { background: #1565c0; color: #fff; }
 
+/* Air-quality station pins: colored dot by the GIOŚ index level
+   (0 very good ... 5 very bad, grey when the index is missing). */
+.aq-pin-wrap { background: none; border: none; }
+.aq-pin {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.leaflet-popup-content .aq-level { font-weight: 600; }
+.leaflet-popup-content .muted { opacity: 0.75; font-size: 0.85em; }
+
 /* Layer toggles on the combined map (top-right control). */
 .wf-layers {
   display: flex;

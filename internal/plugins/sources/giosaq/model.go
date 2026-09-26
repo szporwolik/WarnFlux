@@ -49,9 +49,57 @@ type station struct {
 
 // stationRef is the geocoding-relevant part of a station.
 type stationRef struct {
+	ID   int64
+	Code string
 	Name string
 	Lat  float64
 	Lon  float64
+}
+
+// aqIndexDoc is the response of /v1/rest/aqindex/getIndex/{stationId}:
+// the official air-quality index for one station, overall and per
+// pollutant.
+type aqIndexDoc struct {
+	Index aqIndex `json:"AqIndex"`
+}
+
+// aqIndex is one station's official air-quality index.
+type aqIndex struct {
+	StationID      int64  `json:"Identyfikator stacji pomiarowej"`
+	CalculatedAt   string `json:"Data wykonania obliczeń indeksu"`
+	IndexLevelID   *int   `json:"Wartość indeksu"`
+	IndexLevelName string `json:"Nazwa kategorii indeksu"`
+	SO2LevelID     *int   `json:"Wartość indeksu dla wskaźnika SO2"`
+	SO2LevelName   string `json:"Nazwa kategorii indeksu dla wskażnika SO2"`
+	NO2LevelID     *int   `json:"Wartość indeksu dla wskaźnika NO2"`
+	NO2LevelName   string `json:"Nazwa kategorii indeksu dla wskaźnika NO2"`
+	PM10LevelID    *int   `json:"Wartość indeksu dla wskaźnika PM10"`
+	PM10LevelName  string `json:"Nazwa kategorii indeksu dla wskaźnika PM10"`
+	PM25LevelID    *int   `json:"Wartość indeksu dla wskaźnika PM2.5"`
+	PM25LevelName  string `json:"Nazwa kategorii indeksu dla wskaźnika PM2.5"`
+	O3LevelID      *int   `json:"Wartość indeksu dla wskaźnika O3"`
+	O3LevelName    string `json:"Nazwa kategorii indeksu dla wskaźnika O3"`
+}
+
+// aqPayload is the canonical information document published on the
+// air_quality topics and parsed by the web map layer.
+type aqPayload struct {
+	SchemaVersion  int           `json:"schema_version"`
+	StationCode    string        `json:"station_code"`
+	StationName    string        `json:"station_name"`
+	Latitude       float64       `json:"latitude"`
+	Longitude      float64       `json:"longitude"`
+	IndexLevelID   *int          `json:"index_level_id,omitempty"`
+	IndexLevelName string        `json:"index_level_name"`
+	GeneratedAt    string        `json:"generated_at"`
+	Pollutants     []aqPollutant `json:"pollutants,omitempty"`
+}
+
+// aqPollutant is one pollutant's index level within a station snapshot.
+type aqPollutant struct {
+	Code      string `json:"code"`
+	LevelID   *int   `json:"level_id,omitempty"`
+	LevelName string `json:"level_name"`
 }
 
 // parsedExceedance is one record after the raw fields were interpreted.

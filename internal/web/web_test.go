@@ -2156,3 +2156,89 @@ func TestSecurityHeaders(t *testing.T) {
 		}
 	}
 }
+
+// TestAirQualityAPI pins the public air-quality station layer: the map
+// endpoint serves the newest air_quality snapshot per station code and
+// ignores other informational kinds.
+func TestAirQualityAPI(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now()
+	lvl := 2
+	pm10 := 3
+	aq := func(code, name string, lat, lon float64, at time.Time) map[string]any {
+		return map[string]any{
+			"station_code":     code,
+			"station_name":     name,
+			"latitude":         lat,
+			"longitude":        lon,
+			"index_level_id":   lvl,
+			"index_level_name": "Umiarkowany",
+			"generated_at":     at.Add(-10 * time.Minute).Format(time.RFC3339),
+			"pollutants": []map[string]any{{
+				"code": "PM10", "level_id": pm10, "level_name": "Dostateczny",
+			}},
+		}
+	}
+	mk := func(code string, body map[string]any, at time.Time) state.InfoEntry {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state.InfoEntry{
+			Source: "giosaq", ProducerID: "giosaq-main", Key: code,
+			Kind: "air_quality", ReceivedAt: at, Payload: payload,
+		}
+	}
+	// Two snapshots of the same station: the newer one wins. One
+	// unrelated informational kind is ignored.
+	env.state.AddOrUpdateInfo("local", "warnflux/info/giosaq/giosaq-main/mpkrakbulwar/air_quality",
+		mk("mpkrakbulwar", aq("mpkrakbulwar", "Kraków, Bulwarowa", 50.05, 19.95, now.Add(-1*time.Hour)), now.Add(-1*time.Hour)))
+	env.state.AddOrUpdateInfo("local", "warnflux/info/giosaq/giosaq-main/mpkrakbulwar/air_quality",
+		mk("mpkrakbulwar", aq("mpkrakbulwar", "Kraków, Bulwarowa", 50.05, 19.95, now), now))
+	env.state.AddOrUpdateInfo("local", "warnflux/info/giosaq/giosaq-main/mpniepo3maja/air_quality",
+		mk("mpniepo3maja", aq("mpniepo3maja", "Niepołomice, 3 Maja", 50.04, 20.22, now.Add(-30*time.Minute)), now.Add(-30*time.Minute)))
+	env.state.AddOrUpdateInfo("local", "warnflux/info/openmeteo/weather-home/home/weather", state.InfoEntry{
+		Source: "openmeteo", ProducerID: "weather-home", Key: "home",
+		Kind: "weather", ReceivedAt: now,
+	})
+
+	resp, body := env.get("/api/airquality")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/airquality = %d", resp.StatusCode)
+	}
+	var view struct {
+		Stations []struct {
+			StationCode    string  `json:"station_code"`
+			StationName    string  `json:"station_name"`
+			Latitude       float64 `json:"latitude"`
+			Longitude      float64 `json:"longitude"`
+			IndexLevelID   int     `json:"index_level_id"`
+			IndexLevelName string  `json:"index_level_name"`
+			Pollutants     []struct {
+				Code      string `json:"code"`
+				LevelID   int    `json:"level_id"`
+				LevelName string `json:"level_name"`
+			} `json:"pollutants"`
+		} `json:"stations"`
+	}
+	if err := json.Unmarshal([]byte(body), &view); err != nil {
+		t.Fatalf("airquality payload: %s: %v", body, err)
+	}
+	if len(view.Stations) != 2 {
+		t.Fatalf("stations = %d, want 2 (dedup by code, weather ignored): %s", len(view.Stations), body)
+	}
+	got := view.Stations[0]
+	if got.StationCode != "mpkrakbulwar" || got.StationName != "Kraków, Bulwarowa" ||
+		got.Latitude != 50.05 || got.Longitude != 19.95 {
+		t.Errorf("station = %+v", got)
+	}
+	if got.IndexLevelID != 2 || got.IndexLevelName != "Umiarkowany" {
+		t.Errorf("index = %+v", got)
+	}
+	if len(got.Pollutants) != 1 || got.Pollutants[0].Code != "PM10" || got.Pollutants[0].LevelName != "Dostateczny" {
+		t.Errorf("pollutants = %+v", got.Pollutants)
+	}
+	if view.Stations[1].StationCode != "mpniepo3maja" {
+		t.Errorf("second station = %+v", view.Stations[1])
+	}
+}

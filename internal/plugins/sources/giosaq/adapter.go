@@ -39,7 +39,7 @@ func stationRefOf(st station) (stationRef, bool) {
 	if err != nil {
 		return stationRef{}, false
 	}
-	return stationRef{Name: strings.TrimSpace(st.Name), Lat: lat, Lon: lon}, true
+	return stationRef{ID: st.ID, Code: strings.TrimSpace(st.Code), Name: strings.TrimSpace(st.Name), Lat: lat, Lon: lon}, true
 }
 
 // parseProviderTime parses the provider's local wall-clock timestamp

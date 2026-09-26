@@ -2,6 +2,7 @@ package giosaq
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
@@ -72,15 +74,28 @@ const stationsFixture = `{
   ]
 }`
 
+const aqIndexFixture = `{"AqIndex":{
+  "Identyfikator stacji pomiarowej": 301,
+  "Data wykonania obliczeń indeksu": "2026-09-26 16:25:16",
+  "Wartość indeksu": 2,
+  "Nazwa kategorii indeksu": "Umiarkowany",
+  "Wartość indeksu dla wskaźnika PM10": 2,
+  "Nazwa kategorii indeksu dla wskaźnika PM10": "Umiarkowany",
+  "Wartość indeksu dla wskaźnika PM2.5": 1,
+  "Nazwa kategorii indeksu dla wskaźnika PM2.5": "Dobry"
+}}`
+
 func giosServer(t *testing.T, levels, stations string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/v1/rest/levels/getInformationAboutExceeding":
+		switch {
+		case r.URL.Path == "/v1/rest/levels/getInformationAboutExceeding":
 			_, _ = w.Write([]byte(levels))
-		case "/v1/rest/station/findAll":
+		case r.URL.Path == "/v1/rest/station/findAll":
 			_, _ = w.Write([]byte(stations))
+		case strings.HasPrefix(r.URL.Path, "/v1/rest/aqindex/getIndex/"):
+			_, _ = w.Write([]byte(aqIndexFixture))
 		default:
 			http.NotFound(w, r)
 		}
@@ -96,7 +111,7 @@ func testSource(t *testing.T, srv *httptest.Server) *Source {
 	if err := yaml.Unmarshal([]byte(cfg), &n); err != nil {
 		t.Fatal(err)
 	}
-	p, err := New(&n)
+	p, err := New(&n, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +120,7 @@ func testSource(t *testing.T, srv *httptest.Server) *Source {
 
 type recordingEmitter struct {
 	events []core.HazardEvent
+	info   []core.InformationMessage
 }
 
 func (r *recordingEmitter) Emit(_ context.Context, ev core.HazardEvent) error {
@@ -112,7 +128,8 @@ func (r *recordingEmitter) Emit(_ context.Context, ev core.HazardEvent) error {
 	return nil
 }
 
-func (r *recordingEmitter) EmitInformation(context.Context, core.InformationMessage) error {
+func (r *recordingEmitter) EmitInformation(_ context.Context, m core.InformationMessage) error {
+	r.info = append(r.info, m)
 	return nil
 }
 
@@ -167,7 +184,7 @@ func TestPollOnceFilteringEmits(t *testing.T) {
 
 func TestNewDefaultsAndValidation(t *testing.T) {
 	var n yaml.Node
-	p, err := New(&n)
+	p, err := New(&n, nil)
 	if err != nil {
 		t.Fatalf("New with empty config: %v", err)
 	}
@@ -194,7 +211,7 @@ func TestNewDefaultsAndValidation(t *testing.T) {
 		if err := yaml.Unmarshal([]byte(c.cfg), &node); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := New(&node); err == nil || !strings.Contains(err.Error(), c.want) {
+		if _, err := New(&node, nil); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want mention of %q", c.name, err, c.want)
 		}
 	}
@@ -256,3 +273,62 @@ func TestNormalizeIdentityAndPollutant(t *testing.T) {
 }
 
 var _ plugin.SourcePlugin = (*Source)(nil)
+
+// TestPollStationsPublishesAirQuality pins the informational station layer:
+// only stations inside the hub area get an air_quality snapshot, with the
+// station coordinates and the official index levels.
+func TestPollStationsPublishesAirQuality(t *testing.T) {
+	srv := giosServer(t, levelsFixture(time.Now()), stationsFixture)
+	lat, lon := 50.0212, 20.2075
+	hub, err := aprs.NewHub(aprs.HubConfig{
+		Enabled: true, Callsign: "SP9TST-10", GridSquare: "KO00BA",
+		Latitude: &lat, Longitude: &lon, RadiusKM: 30,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var n yaml.Node
+	cfg := fmt.Sprintf("base_url: %q\nair_index: true\nstation_poll_interval: 5m\nzones: [\"strefa małopolska\"]\n", srv.URL)
+	if err := yaml.Unmarshal([]byte(cfg), &n); err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(&n, hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := p.(*Source)
+	if !s.airIndex {
+		t.Fatal("air_index not enabled")
+	}
+
+	emit := &recordingEmitter{}
+	if err := s.pollStations(context.Background(), emit); err != nil {
+		t.Fatalf("pollStations: %v", err)
+	}
+	if len(emit.info) != 2 {
+		t.Fatalf("station snapshots = %d, want 2 (both fixture stations inside 30 km)", len(emit.info))
+	}
+	for _, m := range emit.info {
+		if m.Kind != "air_quality" || m.Source != sourceName || m.Key == "" {
+			t.Errorf("message identity = kind %s source %s key %q", m.Kind, m.Source, m.Key)
+		}
+		var payload aqPayload
+		if err := json.Unmarshal(m.Payload, &payload); err != nil {
+			t.Fatalf("payload: %v", err)
+		}
+		if payload.Latitude == 0 || payload.IndexLevelName == "" || payload.StationCode == "" {
+			t.Errorf("payload incomplete: %+v", payload)
+		}
+	}
+
+	// The station directory refreshed once; a second poll reuses it and
+	// publishes the same two snapshots (stable keys).
+	emit2 := &recordingEmitter{}
+	if err := s.pollStations(context.Background(), emit2); err != nil {
+		t.Fatalf("second pollStations: %v", err)
+	}
+	if len(emit2.info) != 2 || emit2.info[0].Key != emit.info[0].Key {
+		t.Errorf("second poll changed identities: %+v", emit2.info)
+	}
+}

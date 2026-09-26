@@ -99,3 +99,13 @@ func (c *Client) FetchStations(ctx context.Context) (map[string]stationRef, erro
 	}
 	return out, nil
 }
+
+// FetchAQIndex downloads the official air-quality index for one station.
+func (c *Client) FetchAQIndex(ctx context.Context, stationID int64) (aqIndex, error) {
+	u := fmt.Sprintf("%s/v1/rest/aqindex/getIndex/%d", c.baseURL, stationID)
+	var doc aqIndexDoc
+	if err := c.getJSON(ctx, u, &doc); err != nil {
+		return aqIndex{}, err
+	}
+	return doc.Index, nil
+}

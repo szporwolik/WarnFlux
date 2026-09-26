@@ -67,6 +67,14 @@ type testEnv struct {
 type fakeComposePublisher struct {
 	published []state.Hazard
 	expired   []string
+	raw       []fakeRawPublish
+}
+
+// fakeRawPublish is one recorded retained raw publication (EMCOM state).
+type fakeRawPublish struct {
+	Suffix   string
+	Retained bool
+	Payload  []byte
 }
 
 func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) error {
@@ -76,6 +84,11 @@ func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) erro
 
 func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
 	f.expired = append(f.expired, eventKey)
+	return nil
+}
+
+func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload []byte) error {
+	f.raw = append(f.raw, fakeRawPublish{Suffix: suffix, Retained: retained, Payload: append([]byte(nil), payload...)})
 	return nil
 }
 
@@ -2240,5 +2253,160 @@ func TestAirQualityAPI(t *testing.T) {
 	}
 	if view.Stations[1].StationCode != "mpniepo3maja" {
 		t.Errorf("second station = %+v", view.Stations[1])
+	}
+}
+
+// TestEmcomPanelFlow pins the EMCOM networks module end to end: an
+// operator adds a network (retained MQTT state at level 0), raises it to
+// level 2 (severe hazard + dispatch transition so the routing matrix
+// fires), sees the public header chip, lowers it back to monitoring
+// (hazard retired) and deletes it.
+func TestEmcomPanelFlow(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	// The page is operator-only and carries the readiness legend.
+	resp, html := env.get("/emcom")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /emcom = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, "EMCOM networks") || !strings.Contains(html, "Pełna aktywacja") {
+		t.Fatalf("emcom page missing sections: %s", html)
+	}
+	csrf := extractCSRF(t, html)
+
+	// CSRF is enforced on mutations.
+	resp, _ = env.postForm("/emcom", url.Values{"name": {"SP9MOA EMCOM"}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /emcom without csrf = %d, want 403", resp.StatusCode)
+	}
+
+	// Add a network: one retained info document at level 0.
+	resp, _ = env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /emcom = %d, want 303", resp.StatusCode)
+	}
+	if len(env.pub.raw) != 1 || env.pub.raw[0].Suffix != "info/emcom/emcom/sp9moa-emcom/emcom" || !env.pub.raw[0].Retained {
+		t.Fatalf("raw publish = %+v", env.pub.raw)
+	}
+	var wire struct {
+		Network string `json:"network"`
+		Slug    string `json:"slug"`
+		Level   int    `json:"level"`
+	}
+	if err := json.Unmarshal(env.pub.raw[0].Payload, &wire); err != nil || wire.Slug != "sp9moa-emcom" || wire.Level != 0 {
+		t.Fatalf("state payload = %s (%v)", env.pub.raw[0].Payload, err)
+	}
+
+	// The fake publisher does not echo: mirror the broker loopback into
+	// the state like the receiver would.
+	mirrorInfo := func(i int) {
+		env.state.AddOrUpdateInfo("local", "warnflux/info/emcom/emcom/sp9moa-emcom/emcom", state.InfoEntry{
+			Source: "emcom", ProducerID: "emcom", Key: "sp9moa-emcom", Kind: "emcom",
+			ReceivedAt: time.Now(), Payload: env.pub.raw[i].Payload,
+		})
+	}
+	mirrorInfo(0)
+
+	// Duplicate names are rejected.
+	_, html = env.get("/emcom")
+	csrf = extractCSRF(t, html)
+	resp, _ = env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"sp9moa EMCOM"}})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate add = %d, want 409", resp.StatusCode)
+	}
+
+	// Raise to level 2: a severe hazard document plus a canonical
+	// transition through the dispatch ingress.
+	resp, _ = env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST level 2 = %d, want 303", resp.StatusCode)
+	}
+	if len(env.pub.published) != 1 {
+		t.Fatalf("published hazards = %d, want 1", len(env.pub.published))
+	}
+	h := env.pub.published[0]
+	if h.EventKey != "emcom:sp9moa-emcom" || h.Severity != "severe" || h.Urgency != "immediate" ||
+		!strings.Contains(h.Headline, "poziom 2 – Aktywacja lokalna") || !strings.Contains(h.Headline, "SP9MOA EMCOM") {
+		t.Errorf("hazard = %+v", h)
+	}
+	var ev dispatch.Event
+	select {
+	case ev = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no transition enqueued")
+	}
+	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionNew || ev.Hazard.Hazard.Severity != "severe" {
+		t.Errorf("transition = %+v", ev)
+	}
+
+	// The broker would mirror the hazard into the active state.
+	env.state.AddOrUpdateActive("local", "warnflux/active/emcom/abc", h)
+	mirrorInfo(1) // level 2 payload
+
+	// Raising again updates the same document (no duplicate firing).
+	resp, _ = env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("second POST level 2 = %d, want 303", resp.StatusCode)
+	}
+	select {
+	case ev = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no update transition enqueued")
+	}
+	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionUpdated {
+		t.Errorf("second transition = %+v, want updated", ev)
+	}
+
+	// The public home page shows the colored chip and the severe
+	// communication in the Important section.
+	_, homeHTML := env.get("/")
+	if !strings.Contains(homeHTML, "SP9MOA EMCOM") || !strings.Contains(homeHTML, "poziom 2") ||
+		!strings.Contains(homeHTML, "emcom-chip-l2") {
+		t.Fatalf("home header chip missing: %s", homeHTML)
+	}
+	if !strings.Contains(homeHTML, "poziom 2 – Aktywacja lokalna") {
+		t.Errorf("active communication missing on home page: %s", homeHTML)
+	}
+
+	// Back to monitoring: the hazard is retired and the chip drops to l0.
+	resp, _ = env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"0"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST level 0 = %d, want 303", resp.StatusCode)
+	}
+	if len(env.pub.expired) != 1 || env.pub.expired[0] != "emcom:sp9moa-emcom" {
+		t.Fatalf("expired = %v", env.pub.expired)
+	}
+	select {
+	case ev = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no expiry transition enqueued")
+	}
+	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionExpired {
+		t.Errorf("expiry transition = %+v", ev)
+	}
+	mirrorInfo(3) // level 0 payload
+	_, homeHTML = env.get("/")
+	if !strings.Contains(homeHTML, "emcom-chip-l0") || !strings.Contains(homeHTML, "Monitoring") {
+		t.Errorf("chip did not fall back to monitoring: %s", homeHTML)
+	}
+
+	// Deleting the network clears the retained document.
+	_, html = env.get("/emcom")
+	csrf = extractCSRF(t, html)
+	resp, _ = env.postForm("/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST delete = %d, want 303", resp.StatusCode)
+	}
+	last := env.pub.raw[len(env.pub.raw)-1]
+	if !last.Retained || len(last.Payload) != 0 {
+		t.Errorf("delete publish = %+v, want retained empty payload", last)
+	}
+
+	// Unauthenticated access redirects to the login page.
+	env.logout()
+	resp, _ = env.get("/emcom")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("GET /emcom unauthenticated = %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }

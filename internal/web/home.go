@@ -75,6 +75,20 @@ type homeView struct {
 	// Sources carries the friendly public view of the enabled data
 	// sources (one row per feed, no technical detail).
 	Sources []publicChannelView
+
+	// EmcomNetworks carries the current readiness level of every EMCOM
+	// network (retained MQTT state) for the colored header chips.
+	EmcomNetworks []emcomChipView
+}
+
+// emcomChipView is one EMCOM network's readiness status as shown in the
+// public header.
+type emcomChipView struct {
+	Network    string
+	Level      int
+	LevelName  string
+	LevelClass string
+	UpdatedAt  time.Time
 }
 
 // publicChannelView is one delivery medium shown to the public on the
@@ -218,6 +232,15 @@ func (s *Server) buildHomeView() homeView {
 	}
 	if s.router != nil {
 		v.Sources = publicSources(s.router.Statuses())
+	}
+	for _, net := range s.emcomNetworks() {
+		v.EmcomNetworks = append(v.EmcomNetworks, emcomChipView{
+			Network:    net.Name,
+			Level:      net.Level,
+			LevelName:  net.LevelName,
+			LevelClass: emcomLevelClass(net.Level),
+			UpdatedAt:  net.UpdatedAt,
+		})
 	}
 	return v
 }

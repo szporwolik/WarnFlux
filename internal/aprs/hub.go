@@ -269,7 +269,8 @@ func (h *Hub) OwnLon() float64 {
 	return h.cfg.CenterLon
 }
 
-// RadiusKM returns the configured nearby radius.
+// RadiusKM returns the configured nearby radius (the default for the
+// operational area when area_radius_km is unset).
 func (h *Hub) RadiusKM() float64 { return h.cfg.RadiusKM }
 
 // AreaLat/AreaLon return the operational-area center: the explicit
@@ -447,10 +448,11 @@ func (h *Hub) apply(op hubOp) {
 	}
 
 	// Defense in depth: the APRS-IS filter already limits the feed to the
-	// configured radius; position-bearing packets outside it are dropped.
+	// operational area (virtual center of the served towns); position-bearing
+	// packets outside the area are dropped.
 	if p.Position != nil {
-		d := DistanceKM(h.cfg.CenterLat, h.cfg.CenterLon, p.Position.Latitude, p.Position.Longitude)
-		if d > h.cfg.RadiusKM {
+		d := DistanceKM(h.cfg.AreaLat, h.cfg.AreaLon, p.Position.Latitude, p.Position.Longitude)
+		if d > h.cfg.AreaRadiusKM {
 			h.filtered.Add(1)
 			return
 		}

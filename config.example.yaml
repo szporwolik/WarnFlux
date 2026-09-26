@@ -782,7 +782,7 @@ aprs:
   icon: "/j"
 
   # Our position as a Maidenhead locator (2, 4, 6 or 8 characters). The
-  # aprs-inet filter and the nearby-station radius both use its center.
+  # station identity (self document, own beacon) uses its center.
   gridsquare: "JO90WW"
 
   # Optional exact position of our station (e.g. the antenna's real
@@ -793,15 +793,16 @@ aprs:
   # latitude: 50.0212
   # longitude: 20.2075
 
-  # "Nearby" radius around our position in kilometers.
+  # "Nearby" radius in kilometers: the fallback for the operational-area
+  # radius when area_radius_km is unset.
   radius_km: 60
 
   # Operational area (the territory we serve): the home-map range circle,
-  # the compose map picker and the geo-scoped sources (gddkia, gios,
-  # adsb) center on this point and use this radius. Empty center = the
-  # station position; area_radius_km: 0 = radius_km. The station itself
-  # (APRS-IS range filter, self document, locator dot) always stays at
-  # latitude/longitude.
+  # the compose map picker, the APRS-IS collection filter and the
+  # geo-scoped sources (gddkia, gios, adsb) center on this point and use
+  # this radius. Empty center = the station position; area_radius_km: 0
+  # = radius_km. The station itself (self document, locator dot) always
+  # stays at latitude/longitude.
   # area_latitude: 50.0562
   # area_longitude: 20.0610
   # area_radius_km: 0

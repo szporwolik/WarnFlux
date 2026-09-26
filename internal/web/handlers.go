@@ -181,8 +181,6 @@ type pageView struct {
 	Role     string
 	Status   statusView
 	MQTT     mqttView
-	Weather  weatherView
-	Warnings warningsView
 	Plugins  pluginsView
 	Actions  actionsView
 	CSRF     string
@@ -601,8 +599,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Role:         sess.role,
 		Status:       s.buildStatusView(),
 		MQTT:         s.buildMQTTView(snap),
-		Weather:      buildWeatherView(snap),
-		Warnings:     buildWarningsView(snap, pageParam(r, "wpage")),
 		Plugins:      s.buildPluginsView(),
 		Actions:      s.buildActionsView(),
 		CSRF:         sess.csrf,

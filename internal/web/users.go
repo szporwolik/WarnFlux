@@ -31,9 +31,6 @@ type userRow struct {
 	IsAdmin       bool
 	Role          string
 	GroupNames    []string
-	GroupSet      map[int64]bool
-	ChannelNames  []string
-	ChannelSet    map[string]bool
 	APRSCallsigns []string
 	APRSJoin      string
 	UpdatedAt     time.Time
@@ -51,6 +48,11 @@ type userForm struct {
 	// APRSCallsigns is the free-text APRS callsign list (space or comma
 	// separated, each with optional -SSID).
 	APRSCallsigns string
+	// GroupSet / ChannelSet carry the modal's checked boxes (group
+	// membership and enabled delivery channels) for the edit prefill
+	// and the validation-error echo.
+	GroupSet   map[int64]bool
+	ChannelSet map[string]bool
 }
 
 // usersView is the full /users page model.
@@ -119,6 +121,8 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 					Discord:       u.Discord,
 					Role:          u.Role,
 					APRSCallsigns: strings.Join(u.APRSCallsigns, " "),
+					GroupSet:      s.userGroupSet(u.ID),
+					ChannelSet:    s.userChannelSet(u.ID),
 				}
 			}
 		}
@@ -144,7 +148,13 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 		Role:          strings.ToLower(strings.TrimSpace(r.PostFormValue("role"))),
 		Password:      r.PostFormValue("password"),
 		APRSCallsigns: strings.TrimSpace(r.PostFormValue("aprs_callsigns")),
+		GroupSet:      groupSetFromForm(r.PostForm["groups"]),
+		ChannelSet:    channelSetFromForm(r.PostForm["channels"]),
 	}
+	// The modal always submits the preference boxes; clients that omit
+	// the marker (older flows, the basic save tests) leave membership
+	// and channel opt-outs untouched.
+	savePrefs := r.PostFormValue("prefs") != ""
 	editID := int64(0)
 	if raw := strings.TrimSpace(r.PostFormValue("edit_id")); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
@@ -171,6 +181,11 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
+		if savePrefs {
+			if msg := s.applyUserPrefs(w, r, u.ID, form, editID, sess.username); msg != "" {
+				return
+			}
+		}
 	} else {
 		u, err := s.users.UpdateUser(editID, form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password)
 		if err != nil {
@@ -182,8 +197,92 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
+		if savePrefs {
+			if msg := s.applyUserPrefs(w, r, u.ID, form, editID, sess.username); msg != "" {
+				return
+			}
+		}
 	}
 	http.Redirect(w, r, "/users", http.StatusSeeOther)
+}
+
+// applyUserPrefs persists the modal's group-membership and delivery-channel
+// boxes for one user. On failure it re-renders the dialog with the error
+// and returns a non-empty message.
+func (s *Server) applyUserPrefs(w http.ResponseWriter, r *http.Request, userID int64, form userForm, editID int64, actor string) string {
+	groupIDs := make([]int64, 0, len(form.GroupSet))
+	for id := range form.GroupSet {
+		groupIDs = append(groupIDs, id)
+	}
+	if err := s.users.SetUserGroups(userID, groupIDs); err != nil {
+		s.logger.Error("web: set user groups failed", "user", userID, "error", err)
+		s.renderUsersError(w, r, http.StatusInternalServerError, form, dialogEditID(editID), "could not update group membership")
+		return "groups"
+	}
+	var optOuts []string
+	for _, c := range notify.Channels {
+		if !form.ChannelSet[c.Kind] {
+			optOuts = append(optOuts, c.Kind)
+		}
+	}
+	if err := s.users.SetUserChannelOptOuts(userID, optOuts); err != nil {
+		s.logger.Error("web: set user channels failed", "user", userID, "error", err)
+		s.renderUsersError(w, r, http.StatusInternalServerError, form, dialogEditID(editID), "could not update delivery channels")
+		return "channels"
+	}
+	s.audit(actor, "user-prefs", fmt.Sprintf("%d groups=%d channels=%d", userID, len(groupIDs), len(form.ChannelSet)))
+	return ""
+}
+
+// groupSetFromForm builds the checked-group set from the form values.
+func groupSetFromForm(values []string) map[int64]bool {
+	set := make(map[int64]bool, len(values))
+	for _, raw := range values {
+		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+			set[id] = true
+		}
+	}
+	return set
+}
+
+// channelSetFromForm builds the enabled-channel set from the form values
+// (checked = enabled, like the dedicated prefs endpoint).
+func channelSetFromForm(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		if notify.Known(v) {
+			set[v] = true
+		}
+	}
+	return set
+}
+
+// userGroupSet loads the current group membership of one user.
+func (s *Server) userGroupSet(userID int64) map[int64]bool {
+	ids, err := s.users.GroupIDsForUser(userID)
+	if err != nil {
+		s.logger.Error("web: user groups failed", "user", userID, "error", err)
+		ids = nil
+	}
+	set := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set
+}
+
+// userChannelSet loads the enabled delivery channels of one user.
+func (s *Server) userChannelSet(userID int64) map[string]bool {
+	opts, err := s.users.UserChannelOptOuts(userID)
+	if err != nil {
+		s.logger.Error("web: user channel opt-outs failed", "user", userID, "error", err)
+		opts = nil
+	}
+	set := make(map[string]bool, len(notify.Channels))
+	for _, c := range notify.Channels {
+		set[c.Kind] = !opts[c.Kind]
+	}
+	return set
 }
 
 // dialogEditID maps a create attempt (editID 0) onto the dialog-open
@@ -364,20 +463,6 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 				names = append(names, g.Name)
 			}
 		}
-		channelSet := make(map[string]bool, len(notify.Channels))
-		var channelNames []string
-		opts, err := s.users.UserChannelOptOuts(u.ID)
-		if err != nil {
-			s.logger.Error("web: user channel opt-outs failed", "user", u.ID, "error", err)
-			opts = nil
-		}
-		for _, c := range notify.Channels {
-			enabled := !opts[c.Kind]
-			channelSet[c.Kind] = enabled
-			if enabled {
-				channelNames = append(channelNames, c.Label)
-			}
-		}
 		rows = append(rows, userRow{
 			ID:            u.ID,
 			Username:      u.Username,
@@ -387,9 +472,6 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 			IsAdmin:       u.IsAdmin,
 			Role:          u.Role,
 			GroupNames:    names,
-			GroupSet:      set,
-			ChannelNames:  channelNames,
-			ChannelSet:    channelSet,
 			APRSCallsigns: u.APRSCallsigns,
 			APRSJoin:      strings.Join(u.APRSCallsigns, " "),
 			UpdatedAt:     u.UpdatedAt,

@@ -744,17 +744,22 @@ func TestUsersNotificationPrefs(t *testing.T) {
 		t.Fatalf("channel opt-outs = %v, want smtp disabled and aprs enabled", opts)
 	}
 
-	// The row renders both checked states back (the admin row keeps every
-	// channel on, so count occurrences instead of matching raw substrings).
-	_, html := env.get("/users")
+	// The row renders both checked states back through the edit dialog
+	// (membership and channel boxes live in the modal now).
+	_, html := env.get("/users?edit=2")
 	if !strings.Contains(html, `name="groups" value="`+strconv.FormatInt(group.ID, 10)+`" checked`) {
-		t.Errorf("users page missing checked group row: %s", html)
+		t.Errorf("edit dialog missing checked group row: %s", html)
 	}
-	if got := strings.Count(html, `name="channels" value="aprs" checked`); got != 2 {
-		t.Errorf("aprs checked rows = %d, want 2 (admin + alice)", got)
+	if got := strings.Count(html, `name="channels" value="aprs" checked`); got != 1 {
+		t.Errorf("aprs checked rows = %d, want 1 (alice only)", got)
 	}
-	if got := strings.Count(html, `name="channels" value="smtp" checked`); got != 1 {
-		t.Errorf("smtp checked rows = %d, want 1 (admin only; alice opted out)", got)
+	if strings.Contains(html, `name="channels" value="smtp" checked`) {
+		t.Errorf("smtp must be unchecked for alice: %s", html)
+	}
+	// The table itself no longer carries the inline prefs popover.
+	_, html = env.get("/users")
+	if strings.Contains(html, "group-picker") {
+		t.Errorf("users table still renders the inline prefs popover: %s", html)
 	}
 
 	// Clearing everything unsubscribes all groups and disables every channel.
@@ -884,4 +889,51 @@ func (e *testEnv) csrfFromPage(path string) string {
 		e.t.Fatal("unterminated csrf token")
 	}
 	return rest[:end]
+}
+
+// TestUsersModalPrefsApply pins the modal path of the save endpoint: with
+// the prefs marker the submitted membership and channel boxes are applied;
+// without it (plain saves from other flows) they stay untouched.
+func TestUsersModalPrefsApply(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	csrf := env.csrfFromPage("/users")
+
+	group, err := env.users.CreateGroup("hams")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.users.CreateUser("alice", "", "", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Save with the prefs marker: alice joins hams and keeps only aprs.
+	resp, _ := env.postForm("/users", url.Values{
+		"csrf": {csrf}, "edit_id": {"2"}, "username": {"alice"}, "prefs": {"1"},
+		"groups":   {strconv.FormatInt(group.ID, 10)},
+		"channels": {"aprs"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("save = %d, want redirect", resp.StatusCode)
+	}
+	if ids, err := env.users.GroupIDsForUser(2); err != nil || len(ids) != 1 || ids[0] != group.ID {
+		t.Fatalf("membership = %v, %v", ids, err)
+	}
+	if opts, err := env.users.UserChannelOptOuts(2); err != nil || !opts["smtp"] || opts["aprs"] {
+		t.Fatalf("opt-outs = %v, %v", opts, err)
+	}
+
+	// A plain save without the marker must not wipe the prefs.
+	resp, _ = env.postForm("/users", url.Values{
+		"csrf": {csrf}, "edit_id": {"2"}, "username": {"alice"}, "phone": {"600700800"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("plain save = %d, want redirect", resp.StatusCode)
+	}
+	if ids, _ := env.users.GroupIDsForUser(2); len(ids) != 1 {
+		t.Fatalf("membership after plain save = %v, want unchanged", ids)
+	}
+	if opts, _ := env.users.UserChannelOptOuts(2); !opts["smtp"] || opts["aprs"] {
+		t.Fatalf("opt-outs after plain save = %v, want unchanged", opts)
+	}
 }

@@ -2190,20 +2190,9 @@
       }
     }
 
-    document.querySelectorAll(".user-edit-btn").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        field("user-edit-id").value = btn.dataset.id || "0";
-        field("user-edit-username").value = btn.dataset.username || "";
-        field("user-edit-phone").value = btn.dataset.phone || "";
-        field("user-edit-email").value = btn.dataset.email || "";
-        field("user-edit-discord").value = btn.dataset.discord || "";
-        field("user-edit-role").value = btn.dataset.role || "";
-        field("user-edit-aprs").value = btn.dataset.aprs || "";
-        field("user-edit-password").value = "";
-        openDialog("edit");
-      });
-    });
-
+    // Edit prefills server-side (?edit=<id> renders the dialog open with
+    // the user's data and checked preference boxes); the Add button just
+    // opens the empty dialog.
     var add = document.getElementById("user-add-btn");
     if (add) {
       add.addEventListener("click", function () {
@@ -2215,6 +2204,12 @@
         field("user-edit-role").value = "";
         field("user-edit-aprs").value = "";
         field("user-edit-password").value = "";
+        // A fresh add starts with no memberships and every channel on
+        // (opt-out is the exceptional state). The checkbox rows are
+        // rendered unchecked, so flip the channels back on explicitly.
+        dialog.querySelectorAll("input[name='channels']").forEach(function (c) {
+          c.checked = true;
+        });
         openDialog("add");
       });
     }

@@ -75,7 +75,10 @@ type usersView struct {
 	Channels []notify.ChannelDef
 	Form     userForm
 	EditID   int64
-	Error    string
+	// DialogOpen re-renders the add/edit dialog already open (an edit via
+	// ?edit=, or a failed add/edit submit that echoes the form back).
+	DialogOpen bool
+	Error      string
 	// Notice is a green, one-time banner (e.g. a freshly generated
 	// password after an admin-side reset).
 	Notice string
@@ -152,34 +155,44 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if msg := validateUserForm(form, editID == 0); msg != "" {
-		s.renderUsersError(w, r, http.StatusUnprocessableEntity, form, editID, msg)
+		s.renderUsersError(w, r, http.StatusUnprocessableEntity, form, dialogEditID(editID), msg)
 		return
 	}
 
 	if editID == 0 {
 		u, err := s.users.CreateUser(form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password)
 		if err != nil {
-			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
+			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
 		s.audit(sess.username, "user-create", form.Username)
 		if err := s.users.SetUserAPRS(u.ID, parseAPRSCallsigns(form.APRSCallsigns)); err != nil {
-			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
+			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
 	} else {
 		u, err := s.users.UpdateUser(editID, form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password)
 		if err != nil {
-			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
+			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
 		s.audit(sess.username, "user-update", form.Username)
 		if err := s.users.SetUserAPRS(u.ID, parseAPRSCallsigns(form.APRSCallsigns)); err != nil {
-			s.renderUsersError(w, r, userErrorStatus(err), form, editID, userErrorMessage(err))
+			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
 	}
 	http.Redirect(w, r, "/users", http.StatusSeeOther)
+}
+
+// dialogEditID maps a create attempt (editID 0) onto the dialog-open
+// sentinel (-1), so a failed add re-renders the page with the add dialog
+// open and the submitted values echoed back. Positive IDs pass through.
+func dialogEditID(editID int64) int64 {
+	if editID == 0 {
+		return -1
+	}
+	return editID
 }
 
 // handleUserDelete removes a regular user. The admin row is protected.
@@ -382,28 +395,29 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 		})
 	}
 	return usersView{
-		AppTitle: s.cfg.Title,
-		Name:     s.displayName(),
-		Header1:  s.displayHeader1(),
-		Header2:  s.cfg.Header2,
-		Tagline:  s.cfg.Tagline,
-		Version:  s.version,
-		Commit:   s.commit,
-		RepoURL:  repoURL,
-		Users:    rows,
-		Groups:   groups,
-		Channels: notify.Channels,
-		Form:     form,
-		EditID:   editID,
-		Error:    errMsg,
-		Page:     page,
-		Pages:    pages,
-		From:     from,
-		To:       to,
-		Total:    total,
-		HasPrev:  page > 1,
-		HasNext:  page < pages,
-		NavUsers: true,
+		AppTitle:   s.cfg.Title,
+		Name:       s.displayName(),
+		Header1:    s.displayHeader1(),
+		Header2:    s.cfg.Header2,
+		Tagline:    s.cfg.Tagline,
+		Version:    s.version,
+		Commit:     s.commit,
+		RepoURL:    repoURL,
+		Users:      rows,
+		Groups:     groups,
+		Channels:   notify.Channels,
+		Form:       form,
+		EditID:     editID,
+		DialogOpen: editID != 0,
+		Error:      errMsg,
+		Page:       page,
+		Pages:      pages,
+		From:       from,
+		To:         to,
+		Total:      total,
+		HasPrev:    page > 1,
+		HasNext:    page < pages,
+		NavUsers:   true,
 	}
 }
 

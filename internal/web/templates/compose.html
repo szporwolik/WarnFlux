@@ -1,9 +1,9 @@
 {{define "compose"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Compose · {{.AppTitle}}</title>
+  <title>{{tr .Lang "compose.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -13,116 +13,111 @@
   {{template "sidebar" .}}
   <main class="users-main">
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Compose communication</h2>
-      <p class="page-info">
-        Issue a community communication straight onto the WarnFlux broker: it becomes an
-        active hazard for every subscriber and appears on the public home page. The same
-        transition flows through the group routing rules, so groups receive it through
-        their assigned actions. Expiring removes it everywhere.
-      </p>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "compose.title"}}</h2>
+      <p class="page-info">{{tr .Lang "compose.intro"}}</p>
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
       <div class="compose-templates">
-        <span class="compose-templates-label">Templates:</span>
-        <button type="button" class="btn-ghost btn-small" data-tpl="information">Information message</button>
-        <button type="button" class="btn-ghost btn-small" data-tpl="urgent">Urgent hazard</button>
-        <button type="button" class="btn-ghost btn-small" data-tpl="weather">Weather alert</button>
-        <button type="button" class="btn-ghost btn-small" data-tpl="test">Test / exercise</button>
+        <span class="compose-templates-label">{{tr .Lang "compose.templates"}}</span>
+        <button type="button" class="btn-ghost btn-small" data-tpl="information">{{tr .Lang "compose.tpl.information"}}</button>
+        <button type="button" class="btn-ghost btn-small" data-tpl="urgent">{{tr .Lang "compose.tpl.urgent"}}</button>
+        <button type="button" class="btn-ghost btn-small" data-tpl="weather">{{tr .Lang "compose.tpl.weather"}}</button>
+        <button type="button" class="btn-ghost btn-small" data-tpl="test">{{tr .Lang "compose.tpl.test"}}</button>
       </div>
       <form method="post" action="/compose" class="test-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <input type="hidden" name="event_key" value="{{.Form.EventKey}}">
         <input type="hidden" name="received_at" value="{{.Form.ReceivedAt}}">
         <label class="field">
-          <span>Source</span>
+          <span>{{tr .Lang "compose.source"}}</span>
           <input type="text" name="source_display" value="{{.Source}}" disabled>
         </label>
         <label class="field">
-          <span>Event</span>
-          <input type="text" name="event" value="{{.Form.Event}}" required maxlength="120" placeholder="Storm, Flood, …">
+          <span>{{tr .Lang "compose.event"}}</span>
+          <input type="text" name="event" value="{{.Form.Event}}" required maxlength="120" placeholder="{{tr .Lang "compose.ph.event"}}">
         </label>
         <label class="field">
-          <span>Headline</span>
-          <input type="text" name="headline" value="{{.Form.Headline}}" required maxlength="200" placeholder="Short summary for the public page">
+          <span>{{tr .Lang "compose.headline"}}</span>
+          <input type="text" name="headline" value="{{.Form.Headline}}" required maxlength="200" placeholder="{{tr .Lang "compose.ph.headline"}}">
         </label>
         <label class="field">
-          <span>Severity</span>
+          <span>{{tr .Lang "compose.severity"}}</span>
           <select name="severity">
             {{range .Severities}}<option value="{{.Value}}" {{if eq .Value $.Form.Severity}}selected{{end}}>{{.Label}}</option>{{end}}
           </select>
         </label>
         <label class="field">
-          <span>Urgency</span>
+          <span>{{tr .Lang "compose.urgency"}}</span>
           <select name="urgency">
             {{range .Urgencies}}<option value="{{.Value}}" {{if eq .Value $.Form.Urgency}}selected{{end}}>{{.Label}}</option>{{end}}
           </select>
         </label>
         <label class="field">
-          <span>Certainty</span>
+          <span>{{tr .Lang "compose.certainty"}}</span>
           <select name="certainty">
             {{range .Certainties}}<option value="{{.Value}}" {{if eq .Value $.Form.Certainty}}selected{{end}}>{{.Label}}</option>{{end}}
           </select>
         </label>
         <label class="field">
-          <span>Status</span>
+          <span>{{tr .Lang "compose.status"}}</span>
           <select name="status">
             {{range .Statuses}}<option value="{{.Value}}" {{if eq .Value $.Form.Status}}selected{{end}}>{{.Label}}</option>{{end}}
           </select>
         </label>
         <label class="field">
-          <span>Effective at</span>
+          <span>{{tr .Lang "compose.effective"}}</span>
           <input type="datetime-local" name="effective_at" value="{{.Form.EffectiveAt}}">
         </label>
         <label class="field">
-          <span>Expires at</span>
+          <span>{{tr .Lang "compose.expires"}}</span>
           <input type="datetime-local" name="expires_at" value="{{.Form.ExpiresAt}}">
         </label>
         <label class="field field-wide">
-          <span>Areas</span>
-          <input type="text" name="areas" value="{{.Form.Areas}}" maxlength="500" placeholder="comma-separated slugs">
+          <span>{{tr .Lang "compose.areas"}}</span>
+          <input type="text" name="areas" value="{{.Form.Areas}}" maxlength="500" placeholder="{{tr .Lang "compose.ph.areas"}}">
         </label>
         <fieldset class="compose-loc">
-          <legend>Location on the map (optional)</legend>
+          <legend>{{tr .Lang "compose.location"}}</legend>
           <div class="compose-loc-grid">
             <label class="field">
-              <span>Latitude</span>
+              <span>{{tr .Lang "compose.latitude"}}</span>
               <input type="number" step="any" min="-90" max="90" name="latitude" id="compose-lat" value="{{.Form.Latitude}}" placeholder="50.0408">
             </label>
             <label class="field">
-              <span>Longitude</span>
+              <span>{{tr .Lang "compose.longitude"}}</span>
               <input type="number" step="any" min="-180" max="180" name="longitude" id="compose-lon" value="{{.Form.Longitude}}" placeholder="20.2186">
             </label>
-            <button type="button" class="btn-ghost" id="compose-loc-clear">Clear location</button>
+            <button type="button" class="btn-ghost" id="compose-loc-clear">{{tr .Lang "compose.clear_loc"}}</button>
           </div>
           {{if .AprsLat}}<div id="compose-map" class="compose-map" data-lat="{{.AprsLat}}" data-lon="{{.AprsLon}}"></div>{{end}}
-          <p class="muted compose-loc-note">Click the map to set the location; drag the marker to adjust it. Events with a location appear on the public map with the APRS warning icon.</p>
+          <p class="muted compose-loc-note">{{tr .Lang "compose.location_note"}}</p>
         </fieldset>
         <label class="field field-wide">
-          <span>Description</span>
+          <span>{{tr .Lang "compose.description"}}</span>
           <textarea class="compose-area" name="description" maxlength="4000" rows="4">{{.Form.Description}}</textarea>
         </label>
         <label class="field field-wide">
-          <span>Instruction</span>
+          <span>{{tr .Lang "compose.instruction"}}</span>
           <textarea class="compose-area" name="instruction" maxlength="4000" rows="3">{{.Form.Instruction}}</textarea>
         </label>
         <div class="compose-actions">
           <button type="submit" class="btn-primary btn-add">
             <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>
-            {{if .Form.EventKey}}Update communication{{else}}Publish communication{{end}}
+            {{if .Form.EventKey}}{{tr .Lang "compose.update"}}{{else}}{{tr .Lang "compose.publish"}}{{end}}
           </button>
-          {{if .Form.EventKey}}<a class="btn-ghost" href="/compose">Discard changes</a>{{end}}
-          <button type="button" class="btn-ghost" id="compose-debug-fill">Debug fill</button>
+          {{if .Form.EventKey}}<a class="btn-ghost" href="/compose">{{tr .Lang "compose.discard"}}</a>{{end}}
+          <button type="button" class="btn-ghost" id="compose-debug-fill">{{tr .Lang "compose.debug"}}</button>
         </div>
       </form>
     </section>
 
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Issued communications</h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "compose.issued"}}</h2>
       {{if .Items}}
       <div class="table-wrap">
         <table class="plugins">
           <thead>
-            <tr><th>Severity</th><th>Headline</th><th>Event</th><th>Areas</th><th>Status</th><th>Updated</th><th>Actions</th></tr>
+            <tr><th>{{tr .Lang "compose.severity"}}</th><th>{{tr .Lang "compose.headline"}}</th><th>{{tr .Lang "compose.event"}}</th><th>{{tr .Lang "compose.areas"}}</th><th>{{tr .Lang "compose.status"}}</th><th>{{tr .Lang "users.updated"}}</th><th>{{tr .Lang "actions.title"}}</th></tr>
           </thead>
           <tbody>
             {{range .Items}}
@@ -131,15 +126,15 @@
               <td><strong>{{.Headline}}</strong></td>
               <td>{{.Event}}{{if .Urgency}} <span class="muted">· {{.Urgency}}{{if .Certainty}}/{{.Certainty}}{{end}}</span>{{end}}</td>
               <td>{{.Areas}}</td>
-              <td><span class="badge {{if eq .Status "active"}}ok{{else}}muted{{end}}">{{.Status}}</span></td>
+              <td><span class="badge {{if eq .Status "active"}}ok{{else}}muted{{end}}">{{tr $.Lang (printf "compose.status.%s" .Status)}}</span></td>
               <td>{{timeFull .UpdatedAt}}</td>
               <td>
                 <div class="row-actions">
-                  <a class="btn-ghost btn-small" href="/compose?edit={{.EventKey}}">Edit</a>
+                  <a class="btn-ghost btn-small" href="/compose?edit={{.EventKey}}">{{tr $.Lang "common.edit"}}</a>
                   <form method="post" action="/compose/expire" class="inline-form">
                     <input type="hidden" name="csrf" value="{{$.CSRF}}">
                     <input type="hidden" name="event_key" value="{{.EventKey}}">
-                    <button type="submit" class="btn-ghost btn-small btn-danger">Expire</button>
+                    <button type="submit" class="btn-ghost btn-small btn-danger">{{tr $.Lang "compose.expire"}}</button>
                   </form>
                 </div>
               </td>
@@ -149,7 +144,7 @@
         </table>
       </div>
       {{else}}
-      <p class="empty">No communications issued yet.</p>
+      <p class="empty">{{tr .Lang "compose.no_issued"}}</p>
       {{end}}
     </section>
   </main>

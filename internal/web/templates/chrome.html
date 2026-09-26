@@ -1,17 +1,21 @@
 {{define "topbar"}}<script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>
-    <span class="topbar-title">{{if .NavUsers}}Users{{else if .NavGroups}}Groups{{else if .NavCompose}}Compose{{else if .NavEmcom}}EMCOM{{else if .NavAccount}}Account{{else if .NavLogs}}Logs{{else if .NavAudit}}Audit log{{else if .NavTraffic}}MQTT{{else if .NavNotifications}}Notifications{{else if .NavHealth}}System health{{else}}Dashboard{{end}}</span>
+    <span class="topbar-title">{{if .NavUsers}}{{tr .Lang "nav.users"}}{{else if .NavGroups}}{{tr .Lang "nav.groups"}}{{else if .NavCompose}}{{tr .Lang "nav.compose"}}{{else if .NavEmcom}}{{tr .Lang "nav.emcom"}}{{else if .NavAccount}}{{tr .Lang "nav.account"}}{{else if .NavLogs}}{{tr .Lang "nav.logs"}}{{else if .NavAudit}}{{tr .Lang "nav.audit"}}{{else if .NavTraffic}}{{tr .Lang "nav.mqtt"}}{{else if .NavNotifications}}{{tr .Lang "nav.notifications"}}{{else if .NavHealth}}{{tr .Lang "nav.health"}}{{else}}{{tr .Lang "nav.dashboard"}}{{end}}</span>
     <span class="topbar-spacer"></span>
-    <a class="topbar-home" href="/" title="Public page" aria-label="Public page">
+    <a class="topbar-home" href="/" title="{{tr .Lang "common.public_page"}}" aria-label="{{tr .Lang "common.public_page"}}">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>
     </a>
-    <button type="button" class="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
+    <div class="lang-switch" role="group" aria-label="{{tr .Lang "common.language"}}">
+      <a class="lang-opt{{if eq .Lang "en"}} active{{end}}" href="/lang/en" hreflang="en" lang="en" title="English">EN</a>
+      <a class="lang-opt{{if eq .Lang "pl"}} active{{end}}" href="/lang/pl" hreflang="pl" lang="pl" title="Polski">PL</a>
+    </div>
+    <button type="button" class="theme-toggle" aria-label="{{tr .Lang "common.toggle_theme"}}" title="{{tr .Lang "common.toggle_theme"}}">
       <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
       <svg class="icon ico-moon" aria-hidden="true"><use href="/static/icons.svg#i-moon"></use></svg>
     </button>
     <div class="user-menu">
-      <button type="button" class="user-menu-btn" id="user-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Account menu" title="Account menu">
+      <button type="button" class="user-menu-btn" id="user-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-label="{{tr .Lang "common.account_menu"}}" title="{{tr .Lang "common.account_menu"}}">
         <span class="avatar">{{initials .Username}}</span>
         <svg class="icon user-menu-chevron" aria-hidden="true"><use href="/static/icons.svg#i-chevron-down"></use></svg>
       </button>
@@ -20,14 +24,14 @@
           <span class="avatar avatar-lg">{{initials .Username}}</span>
           <span class="user-menu-id">
             <strong>{{.Username}}</strong>
-            <span class="muted">{{roleLabel .Role}}</span>
+            <span class="muted">{{roleLabelL .Lang .Role}}</span>
           </span>
         </div>
-        <a class="user-menu-item" role="menuitem" href="/account"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Account</a>
-        <a class="user-menu-item" role="menuitem" href="/" title="Public page"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>Public page</a>
+        <a class="user-menu-item" role="menuitem" href="/account"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>{{tr .Lang "nav.account"}}</a>
+        <a class="user-menu-item" role="menuitem" href="/" title="{{tr .Lang "common.public_page"}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>{{tr .Lang "common.public_page"}}</a>
         <form method="post" action="/logout" class="user-menu-logout">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
-          <button type="submit" class="user-menu-item" role="menuitem"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-box-arrow-right"></use></svg>Sign out</button>
+          <button type="submit" class="user-menu-item" role="menuitem"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-box-arrow-right"></use></svg>{{tr .Lang "common.sign_out"}}</button>
         </form>
       </div>
     </div>
@@ -42,17 +46,17 @@
       </span>
     </a>
     <nav class="sidenav">
-      <a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">Dashboard</span></a>
-      {{if ne .Role "member"}}<a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">Compose</span></a>{{end}}
-      {{if ne .Role "member"}}<a class="nav-item{{if .NavEmcom}} active{{end}}" href="/emcom"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">EMCOM</span></a>{{end}}
+      <a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">{{tr .Lang "nav.dashboard"}}</span></a>
+      {{if ne .Role "member"}}<a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">{{tr .Lang "nav.compose"}}</span></a>{{end}}
+      {{if ne .Role "member"}}<a class="nav-item{{if .NavEmcom}} active{{end}}" href="/emcom"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">{{tr .Lang "nav.emcom"}}</span></a>{{end}}
       {{if eq .Role "admin"}}
-      <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">Notifications</span></a>
-      <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">Health</span></a>
-      <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">Groups</span></a>
-      <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">Users</span></a>
-      <a class="nav-item{{if .NavLogs}} active{{end}}" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg><span class="nav-label">Logs</span></a>
-      <a class="nav-item{{if .NavAudit}} active{{end}}" href="/audit"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span class="nav-label">Audit log</span></a>
-      <a class="nav-item{{if .NavTraffic}} active{{end}}" href="/traffic"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">MQTT</span></a>
+      <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">{{tr .Lang "nav.notifications"}}</span></a>
+      <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">{{tr .Lang "nav.health"}}</span></a>
+      <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">{{tr .Lang "nav.groups"}}</span></a>
+      <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">{{tr .Lang "nav.users"}}</span></a>
+      <a class="nav-item{{if .NavLogs}} active{{end}}" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg><span class="nav-label">{{tr .Lang "nav.logs"}}</span></a>
+      <a class="nav-item{{if .NavAudit}} active{{end}}" href="/audit"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span class="nav-label">{{tr .Lang "nav.audit"}}</span></a>
+      <a class="nav-item{{if .NavTraffic}} active{{end}}" href="/traffic"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">{{tr .Lang "nav.mqtt"}}</span></a>
       {{end}}
     </nav>
     <span class="sidebar-spacer"></span>

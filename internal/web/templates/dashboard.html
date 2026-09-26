@@ -1,5 +1,5 @@
 {{define "page"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -24,28 +24,28 @@
 {{end}}
 
 {{define "status"}}<section class="card" id="status-section">
-  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-speedometer2"></use></svg>System</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-speedometer2"></use></svg>{{tr .Lang "dash.system"}}</h2>
   <div class="kv-grid">
-    <div class="kv"><span class="k">Version</span><span class="v">{{.Version}} ({{shortCommit .Commit}})</span></div>
-    <div class="kv"><span class="k">Uptime</span><span class="v">{{dur .Uptime}}</span></div>
-    <div class="kv"><span class="k">CPU</span><span class="v">{{if .CPUAvail}}<span class="kv-gauge" title="host CPU utilization"><span class="kv-gauge-fill {{.CPUClass}}" style="width: {{printf "%.1f" .CPU}}%"></span></span>{{printf "%.1f" .CPU}}%{{else}}<span class="muted">n/a</span>{{end}}</span></div>
-    <div class="kv"><span class="k">Memory</span><span class="v">{{if .MemAvail}}<span class="kv-gauge" title="host memory utilization"><span class="kv-gauge-fill {{.MemClass}}" style="width: {{printf "%.1f" .Mem}}%"></span></span>{{printf "%.1f" .Mem}}% <span class="muted">({{printf "%.1f" .MemUsed}} / {{printf "%.1f" .MemTotal}} GiB)</span>{{else}}<span class="muted">n/a</span>{{end}}</span></div>
-    <div class="kv"><span class="k">Receivers</span><span class="v">{{.Connected}} / {{.Receivers}} connected</span></div>
-    <div class="kv"><span class="k">Router status snapshots</span><span class="v">{{.RouterDocs}}</span></div>
-    <div class="kv"><span class="k">Dispatch queue</span><span class="v">{{.QueueDepth}} / {{.QueueCap}} ({{.DroppedFull}} dropped)</span></div>
-    <div class="kv"><span class="k">Messages</span><span class="v">{{.Messages}} ({{.Malformed}} malformed, {{.Oversized}} oversized)</span></div>
-    <div class="kv"><span class="k">Database</span><span class="v"><span class="badge ok">ready</span></span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.version"}}</span><span class="v">{{.Version}} ({{shortCommit .Commit}})</span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.uptime"}}</span><span class="v">{{dur .Uptime}}</span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.cpu"}}</span><span class="v">{{if .CPUAvail}}<span class="kv-gauge" title="{{tr .Lang "dash.host_cpu_hint"}}"><span class="kv-gauge-fill {{.CPUClass}}" style="width: {{printf "%.1f" .CPU}}%"></span></span>{{printf "%.1f" .CPU}}%{{else}}<span class="muted">n/a</span>{{end}}</span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.memory"}}</span><span class="v">{{if .MemAvail}}<span class="kv-gauge" title="{{tr .Lang "dash.host_mem_hint"}}"><span class="kv-gauge-fill {{.MemClass}}" style="width: {{printf "%.1f" .Mem}}%"></span></span>{{printf "%.1f" .Mem}}% <span class="muted">({{printf "%.1f" .MemUsed}} / {{printf "%.1f" .MemTotal}} GiB)</span>{{else}}<span class="muted">n/a</span>{{end}}</span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.receivers"}}</span><span class="v">{{trf .Lang "dash.connected_of" .Connected .Receivers}}</span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.router_snapshots"}}</span><span class="v">{{.RouterDocs}}</span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.dispatch_queue"}}</span><span class="v">{{.QueueDepth}} / {{.QueueCap}} ({{trf .Lang "dash.dropped" .DroppedFull}})</span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.messages"}}</span><span class="v">{{.Messages}} {{trf .Lang "dash.malformed_of" .Malformed .Oversized}}</span></div>
+    <div class="kv"><span class="k">{{tr .Lang "dash.database"}}</span><span class="v"><span class="badge ok">{{tr .Lang "dash.ready"}}</span></span></div>
   </div>
 </section>
 {{end}}
 
 {{define "mqtt"}}<section class="card" id="mqtt-section">
-  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>MQTT connections</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "dash.mqtt"}}</h2>
   {{if .Receivers}}
   <div class="table-wrap">
     <table class="plugins compact">
       <thead>
-        <tr><th>Receiver</th><th>State</th><th>Broker</th><th>Last message</th><th>Errors</th></tr>
+        <tr><th>{{tr .Lang "dash.receiver"}}</th><th>{{tr .Lang "dash.state"}}</th><th>{{tr .Lang "dash.broker"}}</th><th>{{tr .Lang "dash.last_message"}}</th><th>{{tr .Lang "dash.errors"}}</th></tr>
       </thead>
       <tbody>
         {{range .Receivers}}
@@ -53,31 +53,31 @@
           <td><strong>{{.ID}}</strong>{{if .WFEnabled}}<div class="muted small">WF {{.WFPrefix}}</div>{{end}}</td>
           <td>
             <span class="badge-row">
-              <span class="badge {{if .Connected}}ok{{else}}bad{{end}}">{{if .Connected}}connected{{else}}disconnected{{end}}</span>
+              <span class="badge {{if .Connected}}ok{{else}}bad{{end}}">{{if .Connected}}{{tr $.Lang "dash.connected"}}{{else}}{{tr $.Lang "dash.disconnected"}}{{end}}</span>
               {{if .WFEnabled}}
-                {{if eq .Heartbeat "fresh"}}<span class="badge ok">heartbeat fresh</span>
-                {{else if eq .Heartbeat "stale"}}<span class="badge warn">heartbeat stale</span>
-                {{else}}<span class="badge muted">no heartbeat</span>{{end}}
+                {{if eq .Heartbeat "fresh"}}<span class="badge ok">{{tr $.Lang "dash.heartbeat_fresh"}}</span>
+                {{else if eq .Heartbeat "stale"}}<span class="badge warn">{{tr $.Lang "dash.heartbeat_stale"}}</span>
+                {{else}}<span class="badge muted">{{tr $.Lang "dash.no_heartbeat"}}</span>{{end}}
               {{end}}
             </span>
             {{if .LastError}}<div class="reason">{{.LastError}}</div>{{end}}
           </td>
           <td class="mono">{{.Broker}}</td>
-          <td>{{timeFull .LastMessage}}{{if not .LastMessage.IsZero}} <span class="muted">({{age .LastMessage}})</span>{{end}}</td>
-          <td class="muted">{{.Messages}} msgs · {{.Malformed}} mal · {{.Oversized}} over · {{.Dropped}} drop</td>
+          <td>{{timeFull .LastMessage}}{{if not .LastMessage.IsZero}} <span class="muted">({{ageL $.Lang .LastMessage}})</span>{{end}}</td>
+          <td class="muted">{{trf $.Lang "dash.msgs" .Messages}} · {{trf $.Lang "dash.mal" .Malformed}} · {{trf $.Lang "dash.over" .Oversized}} · {{trf $.Lang "dash.drop" .Dropped}}</td>
         </tr>
         {{end}}
       </tbody>
     </table>
   </div>
   {{else}}
-  <p class="empty">No MQTT receivers configured</p>
+  <p class="empty">{{tr .Lang "dash.no_receivers"}}</p>
   {{end}}
 </section>
 {{end}}
 
 {{define "weather"}}<section class="card" id="weather-section">
-  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-sun"></use></svg>Weather</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-sun"></use></svg>{{tr .Lang "weather.title"}}</h2>
   {{if .Entries}}
   <div class="weather-grid">
     {{range .Entries}}
@@ -86,24 +86,24 @@
       <div class="wc-temp">{{if .Temperature}}{{float1 .Temperature}}°C{{else}}—{{end}}</div>
       <div class="wc-cond">{{if .Condition}}{{.Condition}}{{end}}</div>
       <div class="wc-meta">
-        {{if .Humidity}}<span>Humidity {{int0 .Humidity}}%</span>{{end}}
-        {{if .WindSpeed}}<span>Wind {{float1 .WindSpeed}} km/h{{if .WindDir}} @ {{int0 .WindDir}}°{{end}}{{if .WindGusts}} · gusts {{float1 .WindGusts}} km/h{{end}}</span>{{end}}
-        {{if .Pressure}}<span>Pressure {{int0 .Pressure}} hPa</span>{{end}}
-        {{if .RadiationUSvh}}<span>Radiation {{float2 .RadiationUSvh}} µSv/h</span>{{end}}
-        {{if .RadiationCPM}}<span>Radiation {{int0 .RadiationCPM}} cpm</span>{{end}}
+        {{if .Humidity}}<span>{{tr $.Lang "weather.humidity"}} {{int0 .Humidity}}%</span>{{end}}
+        {{if .WindSpeed}}<span>{{tr $.Lang "weather.wind"}} {{float1 .WindSpeed}} km/h{{if .WindDir}} @ {{int0 .WindDir}}°{{end}}{{if .WindGusts}} · {{tr $.Lang "weather.gusts"}} {{float1 .WindGusts}} km/h{{end}}</span>{{end}}
+        {{if .Pressure}}<span>{{tr $.Lang "weather.pressure"}} {{int0 .Pressure}} hPa</span>{{end}}
+        {{if .RadiationUSvh}}<span>{{tr $.Lang "weather.radiation"}} {{float2 .RadiationUSvh}} µSv/h</span>{{end}}
+        {{if .RadiationCPM}}<span>{{tr $.Lang "weather.radiation"}} {{int0 .RadiationCPM}} cpm</span>{{end}}
       </div>
-      <div class="wc-time muted">via <strong>{{.Receiver}}</strong> · updated {{timeFull .GeneratedAt}}</div>
+      <div class="wc-time muted">{{tr $.Lang "weather.via"}} <strong>{{.Receiver}}</strong> · {{tr $.Lang "weather.updated"}} {{timeFull .GeneratedAt}}</div>
     </div>
     {{end}}
   </div>
   {{else}}
-  <p class="empty">No weather data received yet</p>
+  <p class="empty">{{tr .Lang "weather.no_data"}}</p>
   {{end}}
 </section>
 {{end}}
 
 {{define "warnings"}}<section class="card" id="warnings-section" data-wpage="{{.Page}}">
-  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg>Active warnings <span class="count">{{.Count}}</span></h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg>{{tr .Lang "warnings.title"}} <span class="count">{{.Count}}</span></h2>
   {{if .Hazards}}
   <div class="warnings">
     {{range .Hazards}}
@@ -113,47 +113,47 @@
         <h3>{{.Headline}}</h3>
       </div>
       <div class="w-meta">
-        <span>Source: <strong>{{.Source}}</strong></span>
-        <span>via <strong>{{.Receiver}}</strong></span>
-        {{if .EffectiveAt}}<span>Effective: {{timeFull .EffectiveAt}}</span>{{end}}
-        {{if .ExpiresAt}}<span>Expires: {{timeFull .ExpiresAt}}</span>{{end}}
-        <span>Updated: {{timeFull .UpdatedAt}}</span>
-        {{if .Status}}<span>Status: {{.Status}}</span>{{end}}
+        <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
+        <span>{{tr $.Lang "warnings.via"}} <strong>{{.Receiver}}</strong></span>
+        {{if .EffectiveAt}}<span>{{tr $.Lang "warnings.effective"}} {{timeFull .EffectiveAt}}</span>{{end}}
+        {{if .ExpiresAt}}<span>{{tr $.Lang "warnings.expires"}} {{timeFull .ExpiresAt}}</span>{{end}}
+        <span>{{tr $.Lang "warnings.updated"}} {{timeFull .UpdatedAt}}</span>
+        {{if .Status}}<span>{{tr $.Lang "warnings.status"}} {{.Status}}</span>{{end}}
       </div>
-      {{if .Areas}}<div class="w-areas">Areas: {{.Areas}}</div>{{end}}
-      {{if .Description}}<details><summary>Description</summary><p>{{.Description}}</p></details>{{end}}
-      {{if .Key}}<a class="w-trail" href="/notifications?key={{.Key}}">delivery trail</a>{{end}}
+      {{if .Areas}}<div class="w-areas">{{tr $.Lang "warnings.areas"}} {{.Areas}}</div>{{end}}
+      {{if .Description}}<details><summary>{{tr $.Lang "warnings.description"}}</summary><p>{{.Description}}</p></details>{{end}}
+      {{if .Key}}<a class="w-trail" href="/notifications?key={{.Key}}">{{tr $.Lang "warnings.delivery_trail"}}</a>{{end}}
     </article>
     {{end}}
   </div>
   {{if gt .Pages 1}}
   <div class="pager">
-    {{if .HasPrev}}<a class="page-link" href="/dashboard?wpage={{add .Page -1}}">Previous</a>{{else}}<span class="page-link disabled">Previous</span>{{end}}
-    <span class="page-info">{{.From}}–{{.To}} of {{.Count}}</span>
-    {{if .HasNext}}<a class="page-link" href="/dashboard?wpage={{add .Page 1}}">Next</a>{{else}}<span class="page-link disabled">Next</span>{{end}}
+    {{if .HasPrev}}<a class="page-link" href="/dashboard?wpage={{add .Page -1}}">{{tr $.Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr $.Lang "common.prev"}}</span>{{end}}
+    <span class="page-info">{{.From}}–{{.To}} {{tr $.Lang "warnings.of"}} {{.Count}}</span>
+    {{if .HasNext}}<a class="page-link" href="/dashboard?wpage={{add .Page 1}}">{{tr $.Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr $.Lang "common.next"}}</span>{{end}}
   </div>
   {{end}}
   {{else}}
-  <p class="empty">No active warnings</p>
+  <p class="empty">{{tr .Lang "warnings.none"}}</p>
   {{end}}
 </section>
 {{end}}
 
 {{define "plugins"}}<section class="card" id="plugins-section">
-  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-puzzle"></use></svg>Sources &amp; outputs</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-puzzle"></use></svg>{{tr .Lang "dash.sources_outputs"}}</h2>
   {{if .Sources}}
-  <h3>Sources</h3>
+  <h3>{{tr .Lang "dash.sources"}}</h3>
   <div class="table-wrap">
     <table class="plugins">
       <thead>
-        <tr><th>Source</th><th>Type</th><th>Status</th><th>Restarts</th><th>Failures</th><th>Last success</th><th>Last error</th></tr>
+        <tr><th>{{tr .Lang "dash.source"}}</th><th>{{tr .Lang "dash.type"}}</th><th>{{tr .Lang "dash.status"}}</th><th>{{tr .Lang "dash.restarts"}}</th><th>{{tr .Lang "dash.failures"}}</th><th>{{tr .Lang "dash.last_success"}}</th><th>{{tr .Lang "dash.last_error"}}</th></tr>
       </thead>
       <tbody>
         {{range .Sources}}
         <tr>
           <td><strong>{{.ID}}</strong></td>
           <td>{{.Type}}</td>
-          <td><span class="badge {{pluginClass .State}}">{{.State}}</span></td>
+          <td><span class="badge {{pluginClass .State}}">{{stateL $.Lang .State}}</span></td>
           <td>{{.RestartCount}}</td>
           <td>{{.ConsecutiveFailures}}</td>
           <td>{{timeShort (derefTime .LastSuccessAt)}}</td>
@@ -165,18 +165,18 @@
   </div>
   {{end}}
   {{if .Outputs}}
-  <h3>Outputs</h3>
+  <h3>{{tr .Lang "dash.outputs"}}</h3>
   <div class="table-wrap">
     <table class="plugins">
       <thead>
-        <tr><th>Output</th><th>Type</th><th>Status</th><th>Restarts</th><th>Failures</th><th>Last success</th><th>Last error</th></tr>
+        <tr><th>{{tr .Lang "dash.outputs"}}</th><th>{{tr .Lang "dash.type"}}</th><th>{{tr .Lang "dash.status"}}</th><th>{{tr .Lang "dash.restarts"}}</th><th>{{tr .Lang "dash.failures"}}</th><th>{{tr .Lang "dash.last_success"}}</th><th>{{tr .Lang "dash.last_error"}}</th></tr>
       </thead>
       <tbody>
         {{range .Outputs}}
         <tr>
           <td><strong>{{.ID}}</strong></td>
           <td>{{.Type}}</td>
-          <td><span class="badge {{pluginClass .State}}">{{.State}}</span></td>
+          <td><span class="badge {{pluginClass .State}}">{{stateL $.Lang .State}}</span></td>
           <td>{{.RestartCount}}</td>
           <td>{{.ConsecutiveFailures}}</td>
           <td>{{timeShort (derefTime .LastSuccessAt)}}</td>
@@ -188,25 +188,25 @@
   </div>
   {{end}}
   {{if not (or .Sources .Outputs)}}
-  <p class="empty">No plugins configured</p>
+  <p class="empty">{{tr .Lang "dash.no_plugins"}}</p>
   {{end}}
 </section>
 {{end}}
 
 {{define "actions"}}<section class="card" id="actions-section">
-  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg>Actions</h2>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg>{{tr .Lang "actions.title"}}</h2>
   {{if .Actions}}
   <div class="table-wrap">
     <table class="plugins">
       <thead>
-        <tr><th>Action</th><th>Type</th><th>Status</th><th>Queue</th><th>Handled</th><th>Failures</th><th>Last success</th><th>Last error</th></tr>
+        <tr><th>{{tr .Lang "actions.action"}}</th><th>{{tr .Lang "dash.type"}}</th><th>{{tr .Lang "dash.status"}}</th><th>{{tr .Lang "actions.queue"}}</th><th>{{tr .Lang "actions.handled"}}</th><th>{{tr .Lang "dash.failures"}}</th><th>{{tr .Lang "dash.last_success"}}</th><th>{{tr .Lang "dash.last_error"}}</th></tr>
       </thead>
       <tbody>
         {{range .Actions}}
         <tr>
           <td><strong>{{.ID}}</strong></td>
           <td>{{.Type}}</td>
-          <td><span class="badge {{actionClass .State}}">{{.State}}</span>{{if .Reason}}<div class="reason">{{.Reason}}</div>{{end}}</td>
+          <td><span class="badge {{actionClass .State}}">{{stateL $.Lang .State}}</span>{{if .Reason}}<div class="reason">{{.Reason}}</div>{{end}}</td>
           <td>{{.QueueDepth}} / {{.QueueCapacity}}</td>
           <td>{{.Handled}}</td>
           <td>{{.Failures}}</td>
@@ -218,7 +218,7 @@
     </table>
   </div>
   {{else}}
-  <p class="empty">No actions configured</p>
+  <p class="empty">{{tr .Lang "actions.no_actions"}}</p>
   {{end}}
 </section>
 {{end}}

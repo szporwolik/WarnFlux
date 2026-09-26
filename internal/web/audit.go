@@ -15,6 +15,7 @@ const auditPageSize = 500
 
 // auditView is the full /audit page model.
 type auditView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -64,7 +65,7 @@ func (s *Server) handleAuditPage(w http.ResponseWriter, r *http.Request) {
 		MaxEntries: max,
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "audit", v)
+	s.renderL(w, r, "audit", v)
 }
 
 // handlePartialAudit serves the incremental audit feed:

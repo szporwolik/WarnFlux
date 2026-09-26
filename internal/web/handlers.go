@@ -10,6 +10,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/geo"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
@@ -21,6 +22,7 @@ const routerHeartbeatStaleAfter = 90 * time.Second
 // ---- system view ---------------------------------------------------------
 
 type statusView struct {
+	Lang        string
 	Title       string
 	Version     string
 	Commit      string
@@ -70,6 +72,7 @@ type receiverRow struct {
 }
 
 type mqttView struct {
+	Lang      string
 	Receivers []receiverRow
 }
 
@@ -93,6 +96,7 @@ type weatherEntry struct {
 }
 
 type weatherView struct {
+	Lang    string
 	Entries []weatherEntry
 }
 
@@ -119,6 +123,7 @@ type hazardView struct {
 }
 
 type warningsView struct {
+	Lang    string
 	Hazards []hazardView
 	Count   int
 	Page    int
@@ -144,6 +149,7 @@ type pluginStatusView struct {
 }
 
 type pluginsView struct {
+	Lang    string
 	Sources []pluginStatusView
 	Outputs []pluginStatusView
 }
@@ -165,10 +171,12 @@ type actionStatusView struct {
 }
 
 type actionsView struct {
+	Lang    string
 	Actions []actionStatusView
 }
 
 type pageView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -475,7 +483,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "login", map[string]any{
+	s.renderL(w, r, "login", map[string]any{
 		"AppTitle": s.cfg.Title,
 		"Name":     s.displayName(),
 		"Header1":  s.displayHeader1(),
@@ -485,6 +493,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		"Version":  s.version,
 		"Commit":   s.commit,
 		"RepoURL":  repoURL,
+		"Lang":     s.langFor(r),
 		"CSRF":     csrf,
 		"Error":    "",
 		"Reset":    r.URL.Query().Get("reset") == "1",
@@ -531,7 +540,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("web: failed login attempt", "remote", r.RemoteAddr)
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusUnauthorized)
-		s.render(w, "login", map[string]any{
+		s.renderL(w, r, "login", map[string]any{
 			"AppTitle": s.cfg.Title,
 			"Name":     s.displayName(),
 			"Header1":  s.displayHeader1(),
@@ -541,8 +550,9 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 			"Version":  s.version,
 			"Commit":   s.commit,
 			"RepoURL":  repoURL,
+			"Lang":     s.langFor(r),
 			"CSRF":     cookie.Value,
-			"Error":    "Invalid username or password",
+			"Error":    i18n.T(s.langFor(r), "login.error"),
 		})
 		return
 	}
@@ -586,7 +596,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	snap := s.st.Snapshot()
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "page", pageView{
+	s.renderL(w, r, "page", pageView{
 		AppTitle:     s.cfg.Title,
 		Name:         s.displayName(),
 		Header1:      s.displayHeader1(),
@@ -608,32 +618,32 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePartialStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "status", s.buildStatusView())
+	s.renderL(w, r, "status", s.buildStatusView())
 }
 
 func (s *Server) handlePartialMQTT(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "mqtt", s.buildMQTTView(s.st.Snapshot()))
+	s.renderL(w, r, "mqtt", s.buildMQTTView(s.st.Snapshot()))
 }
 
 func (s *Server) handlePartialWeather(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "weather", buildWeatherView(s.st.Snapshot()))
+	s.renderL(w, r, "weather", buildWeatherView(s.st.Snapshot()))
 }
 
 func (s *Server) handlePartialWarnings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "warnings", buildWarningsView(s.st.Snapshot(), pageParam(r, "page")))
+	s.renderL(w, r, "warnings", buildWarningsView(s.st.Snapshot(), pageParam(r, "page")))
 }
 
 func (s *Server) handlePartialPlugins(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "plugins", s.buildPluginsView())
+	s.renderL(w, r, "plugins", s.buildPluginsView())
 }
 
 func (s *Server) handlePartialActions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "actions", s.buildActionsView())
+	s.renderL(w, r, "actions", s.buildActionsView())
 }
 
 // handleHealthz reports process liveness. It never fails because MQTT is

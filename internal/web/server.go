@@ -17,8 +17,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +31,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
@@ -208,6 +212,8 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /{$}", s.handleHome)
 	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
 	s.mux.HandleFunc("GET /archive", s.handleArchive)
+	// UI language switch: stores the choice in a cookie and returns.
+	s.mux.HandleFunc("GET /lang/{code}", s.handleLanguage)
 	s.mux.HandleFunc("GET /api/aprs/stations", s.handleAPRSStations)
 	s.mux.HandleFunc("GET /api/events", s.handleEventsMap)
 	s.mux.HandleFunc("GET /api/weather", s.handleWeather)
@@ -386,11 +392,108 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	h.ServeHTTP(w, r)
 }
 
+// langFor resolves the UI language for a request (cookie, then the
+// browser's Accept-Language, then English).
+func (s *Server) langFor(r *http.Request) string {
+	return i18n.FromRequest(r)
+}
+
+// handleLanguage stores the chosen UI language in a long-lived cookie and
+// sends the visitor back where they came from (same-origin only).
+func (s *Server) handleLanguage(w http.ResponseWriter, r *http.Request) {
+	code := r.PathValue("code")
+	if !i18n.Supported(code) {
+		http.NotFound(w, r)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: "wf_lang", Value: code, Path: "/", MaxAge: 365 * 24 * 3600,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		Secure: s.sessions.secure,
+	})
+	target := r.Referer()
+	if u, err := url.Parse(target); err != nil || u.Scheme != "" && u.Host != r.Host {
+		target = "/"
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
 func (s *Server) render(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
 		s.logger.Error("web: template render failed", "template", name, "error", err)
 	}
+}
+
+// langFieldCache memoizes the Lang field index per view type so the
+// per-request language injection stays cheap.
+var langFieldCache sync.Map // reflect.Type -> int (index, -1 = none)
+
+// stampLang returns a copy of the view with the UI language stamped onto
+// every struct (and nested struct field) carrying a Lang field. Pointers
+// are stamped in place; value structs are copied. Maps and other kinds
+// (login) are returned unchanged.
+func stampLang(data any, lang string) any {
+	if data == nil {
+		return data
+	}
+	v := reflect.ValueOf(data)
+	if v.Kind() != reflect.Pointer {
+		if v.Kind() != reflect.Struct {
+			return data
+		}
+		pv := reflect.New(v.Type())
+		pv.Elem().Set(v)
+		setLangValue(pv, lang)
+		return pv.Elem().Interface()
+	}
+	setLangValue(v, lang)
+	return data
+}
+
+func setLangValue(v reflect.Value, lang string) {
+	for v.IsValid() && v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return
+		}
+		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.Struct || !v.CanSet() {
+		return
+	}
+	t := v.Type()
+	cached, ok := langFieldCache.Load(t)
+	var idx int
+	if ok {
+		idx, _ = cached.(int)
+	} else {
+		sf, found := t.FieldByName("Lang")
+		idx = -1
+		if found && sf.Type.Kind() == reflect.String {
+			idx = sf.Index[0]
+		}
+		langFieldCache.Store(t, idx)
+	}
+	if idx >= 0 {
+		v.Field(idx).SetString(lang)
+	}
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		if f.Kind() != reflect.Struct {
+			continue
+		}
+		if f.CanSet() {
+			setLangValue(f, lang)
+		} else if f.CanAddr() && f.Addr().CanInterface() {
+			setLangValue(f.Addr(), lang)
+		}
+	}
+}
+
+// renderL renders a page template with the request's UI language stamped
+// onto the view (so the {{tr}} calls resolve correctly).
+func (s *Server) renderL(w http.ResponseWriter, r *http.Request, name string, data any) {
+	s.render(w, name, stampLang(data, s.langFor(r)))
 }
 
 // templateFuncs provides the small set of formatting helpers used by the UI.
@@ -408,6 +511,18 @@ func templateFuncs() template.FuncMap {
 			}
 			return *t
 		},
+		// tr/trf resolve a translation key in the page's language.
+		"tr": func(lang, key string) string {
+			return i18n.T(lang, key)
+		},
+		// trf resolves a translation key with format args in the page language.
+		"trf": func(lang, key string, args ...any) string {
+			return fmt.Sprintf(i18n.T(lang, key), args...)
+		},
+		// trh is tr for keys whose values contain trusted HTML markup.
+		"trh": func(lang, key string) template.HTML {
+			return template.HTML(i18n.T(lang, key))
+		},
 		"initials": func(s string) string {
 			s = strings.TrimSpace(s)
 			if s == "" {
@@ -417,16 +532,11 @@ func templateFuncs() template.FuncMap {
 		},
 		// roleLabel renders a session role for the user menu.
 		"roleLabel": func(role string) string {
-			switch role {
-			case "admin":
-				return "Administrator"
-			case "emcom":
-				return "Emergency communicator"
-			case "member":
-				return "Member"
-			default:
-				return "Recipient"
-			}
+			return i18n.T(i18n.LangEN, "role."+role)
+		},
+		// roleLabelL renders a role label in the given UI language.
+		"roleLabelL": func(lang, role string) string {
+			return i18n.T(lang, "role."+role)
 		},
 		// shortCommit trims full hashes for display (links keep the
 		// full hash; cache-busting query strings must too).
@@ -515,6 +625,33 @@ func templateFuncs() template.FuncMap {
 			default:
 				return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 			}
+		},
+		// ageL renders a human age ("3m ago") in the page language.
+		"ageL": func(lang string, t time.Time) string {
+			if t.IsZero() {
+				return "—"
+			}
+			d := time.Since(t)
+			if d < 0 {
+				d = 0
+			}
+			switch {
+			case d < time.Second:
+				return i18n.T(lang, "time.just_now")
+			case d < time.Minute:
+				return fmt.Sprintf(i18n.T(lang, "time.secs_ago"), int(d.Seconds()))
+			case d < time.Hour:
+				return fmt.Sprintf(i18n.T(lang, "time.mins_ago"), int(d.Minutes()))
+			case d < 24*time.Hour:
+				return fmt.Sprintf(i18n.T(lang, "time.hours_ago"), int(d.Hours()))
+			default:
+				return fmt.Sprintf(i18n.T(lang, "time.days_ago"), int(d.Hours()/24))
+			}
+		},
+		// stateL renders a plugin/action state word in the page language.
+		// The state arrives as a defined string type, so accept any.
+		"stateL": func(lang string, st any) string {
+			return i18n.T(lang, "dash."+fmt.Sprint(st))
 		},
 		"sevClass": func(severity string) string {
 			switch strings.ToLower(severity) {

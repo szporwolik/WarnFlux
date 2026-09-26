@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/notify"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -57,6 +58,7 @@ type userForm struct {
 
 // usersView is the full /users page model.
 type usersView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -129,7 +131,7 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "users", view)
+	s.renderL(w, r, "users", view)
 }
 
 // handleUserSave creates or updates a user from the top form. A hidden
@@ -413,9 +415,9 @@ func (s *Server) handleUserResetPassword(w http.ResponseWriter, r *http.Request)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
-	view.Notice = "New password for " + u.Username + ": " + password + " — hand it over and tell the user to change it after signing in."
+	view.Notice = fmt.Sprintf(i18n.T(s.langFor(r), "users.notice.password"), u.Username, password)
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "users", view)
+	s.renderL(w, r, "users", view)
 }
 
 // buildUsersView assembles the page model from the store.
@@ -515,7 +517,7 @@ func (s *Server) renderUsersError(w http.ResponseWriter, r *http.Request, status
 	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	s.render(w, "users", view)
+	s.renderL(w, r, "users", view)
 }
 
 // validateUserForm returns a human-readable problem or "". requirePassword

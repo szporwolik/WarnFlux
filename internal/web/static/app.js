@@ -4,6 +4,107 @@
 (function () {
   "use strict";
 
+  // Client-side UI strings, keyed like internal/i18n. The server stamps
+  // <html lang> on every page, so table = I18N[lang] works everywhere.
+  var I18N = {
+    en: {
+      "map.layer.hazards": "Hazards",
+      "map.layer.stations": "Stations",
+      "map.layer.weather": "Weather",
+      "map.layer.radar": "Radar",
+      "map.layer.airquality": "Air quality",
+      "map.layer.aircraft": "Aircraft",
+      "map.aircraft": "Aircraft",
+      "map.aircraft.tip": "Aircraft: %s",
+      "map.airquality": "Air quality",
+      "map.airquality.tip": "Air quality: %s",
+      "map.alt": "Alt",
+      "map.speed": "Speed",
+      "map.climb": "Climb",
+      "map.category": "Category",
+      "map.seen": "Seen",
+      "map.sent": "Sent",
+      "map.heard": "Heard",
+      "map.hum": "hum",
+      "map.wind": "wind",
+      "map.gusts": "gusts",
+      "map.pressure": "hPa",
+      "map.km": "km",
+      "map.center": "Center the view",
+      "map.our_station": "Our station",
+      "map.you_are_here": "You are here",
+      "map.show_location": "Show my location",
+      "map.center_location": "Center on my location",
+      "map.show_on_map": "Show %s on the map",
+      "map.toggle_layer": "Toggle %s layer",
+      "map.from": "From:",
+      "map.to": "To:",
+      "map.via.radio": "Via: radio (APRS)",
+      "map.via.internet": "Via: internet (APRS-IS)",
+      "warnings.source": "Source:",
+      "notif.empty": "No notifications processed yet",
+      "traffic.subscribing": "Subscribing to %s… (%s s)",
+      "users.edit_title": "Edit user",
+      "users.add_title": "Add user"
+    },
+    pl: {
+      "map.layer.hazards": "Zagrożenia",
+      "map.layer.stations": "Stacje",
+      "map.layer.weather": "Pogoda",
+      "map.layer.radar": "Radar",
+      "map.layer.airquality": "Jakość powietrza",
+      "map.layer.aircraft": "Samoloty",
+      "map.aircraft": "Samolot",
+      "map.aircraft.tip": "Samolot: %s",
+      "map.airquality": "Jakość powietrza",
+      "map.airquality.tip": "Jakość powietrza: %s",
+      "map.alt": "Wys.",
+      "map.speed": "Prędkość",
+      "map.climb": "Wznoszenie",
+      "map.category": "Kategoria",
+      "map.seen": "Widziany",
+      "map.sent": "Wysłano",
+      "map.heard": "Słyszano",
+      "map.hum": "wilg.",
+      "map.wind": "wiatr",
+      "map.gusts": "porywy",
+      "map.pressure": "hPa",
+      "map.km": "km",
+      "map.center": "Wyśrodkuj widok",
+      "map.our_station": "Nasza stacja",
+      "map.you_are_here": "Jesteś tutaj",
+      "map.show_location": "Pokaż moją lokalizację",
+      "map.center_location": "Wyśrodkuj na mojej lokalizacji",
+      "map.show_on_map": "Pokaż %s na mapie",
+      "map.toggle_layer": "Przełącz warstwę %s",
+      "map.from": "Od:",
+      "map.to": "Do:",
+      "map.via.radio": "Przez: radio (APRS)",
+      "map.via.internet": "Przez: internet (APRS-IS)",
+      "warnings.source": "Źródło:",
+      "notif.empty": "Nie przetworzono jeszcze powiadomień",
+      "traffic.subscribing": "Subskrybowanie %s… (%s s)",
+      "users.edit_title": "Edytuj użytkownika",
+      "users.add_title": "Dodaj użytkownika"
+    }
+  };
+
+  // tr resolves a client-side string in the page language; trf formats it.
+  function tr(key) {
+    var lang = document.documentElement.getAttribute("lang") || "en";
+    var table = I18N[lang] || I18N.en;
+    if (table[key] !== undefined) { return table[key]; }
+    if (I18N.en[key] !== undefined) { return I18N.en[key]; }
+    return key;
+  }
+  function trf(key) {
+    var s = tr(key);
+    for (var i = 1; i < arguments.length; i++) {
+      s = s.replace(/%[sd]/, String(arguments[i] === undefined ? "" : arguments[i]));
+    }
+    return s;
+  }
+
   var SECTIONS = [
     { path: "/partials/status", id: "status-section" },
     { path: "/partials/mqtt", id: "mqtt-section" },
@@ -346,7 +447,7 @@
       if (!trails || trails.length === 0) {
         var p = document.createElement("p");
         p.className = "empty";
-        p.textContent = "No notifications processed yet";
+        p.textContent = tr("notif.empty");
         list.appendChild(p);
       }
     }
@@ -644,8 +745,8 @@
     c.onAdd = function () {
       var btn = L.DomUtil.create("button", "wf-center-btn");
       btn.type = "button";
-      btn.title = "Center the view";
-      btn.setAttribute("aria-label", "Center the view");
+      btn.title = tr("map.center");
+      btn.setAttribute("aria-label", tr("map.center"));
       btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
       L.DomEvent.disableClickPropagation(btn);
       L.DomEvent.on(btn, "click", recenter);
@@ -760,7 +861,7 @@
     L.circleMarker([ownLat, ownLon], {
       radius: 7, color: "#fff", weight: 2,
       fillColor: "#007a3d", fillOpacity: 1
-    }).addTo(map).bindTooltip(ownCall || "Our station", { direction: "top" });
+    }).addTo(map).bindTooltip(ownCall || tr("map.our_station"), { direction: "top" });
     if (radiusKm > 0) {
       rangeCircle = L.circle([ownLat, ownLon], {
         radius: radiusKm * 1000,
@@ -959,9 +1060,9 @@
           // When the frame was transmitted (packet timestamp) or, when
           // the packet carried none, when we last heard the station.
           if (s.last_packet_at) {
-            popup += "<br>Sent: " + esc(fmtTime(s.last_packet_at));
+            popup += "<br>tr("map.sent") + ": " + esc(fmtTime(s.last_packet_at));
           }
-          popup += "<br>Heard: " + esc(fmtTime(s.last_heard_at));
+          popup += "<br>tr("map.heard") + ": " + esc(fmtTime(s.last_heard_at));
           if (s.distance_km) {
             popup += "<br>" + Number(s.distance_km).toFixed(1) + " km";
           }
@@ -984,13 +1085,13 @@
           // detail view.
           var hover = "<strong>" + esc(s.callsign) + "</strong>";
           if (s.speed_kmh > 0 || s.course_deg) {
-            hover += "<br>Speed: " + Number(s.speed_kmh).toFixed(0) + " km/h";
+            hover += "<br>tr("map.speed") + ": " + Number(s.speed_kmh).toFixed(0) + " km/h";
             if (s.course_deg) {
               hover += " @ " + s.course_deg + "\u00b0";
             }
           }
           if (s.altitude_m != null) {
-            hover += "<br>Alt: " + Number(s.altitude_m).toFixed(0) + " m";
+            hover += "<br>tr("map.alt") + ": " + Number(s.altitude_m).toFixed(0) + " m";
           }
           if (s.comment) {
             hover += "<br>" + esc(s.comment);
@@ -998,7 +1099,7 @@
           if (s.status) {
             hover += '<br><span class="muted">' + esc(s.status) + "</span>";
           }
-          hover += "<br>Heard: " + esc(fmtTime(s.last_heard_at));
+          hover += "<br>tr("map.heard") + ": " + esc(fmtTime(s.last_heard_at));
           if (s.distance_km) {
             hover += "<br>" + Number(s.distance_km).toFixed(1) + " km";
           }
@@ -1131,11 +1232,11 @@
           }
           if (e.effective_at || e.expires_at) {
             var when = [];
-            if (e.effective_at) { when.push("From: " + fmtLocalDate(e.effective_at)); }
-            if (e.expires_at) { when.push("To: " + fmtLocalDate(e.expires_at)); }
+            if (e.effective_at) { when.push(tr("map.from") + " " + fmtLocalDate(e.effective_at)); }
+            if (e.expires_at) { when.push(tr("map.to") + " " + fmtLocalDate(e.expires_at)); }
             popup += "<br><span class=\"muted\">" + when.join(" · ") + "</span>";
           }
-          popup += "<br><span class=\"muted\">Source: " + esc(e.source) + "</span>";
+          popup += "<br><span class=\"muted\">tr("warnings.source") + " " + esc(e.source) + "</span>";
           // Composed events carry the APRS emergency symbol; every
           // other source keeps the severity-colored triangle.
           var icon = e.source === "compose" ? aprsWarningIcon() : hazardIcon(e.severity);
@@ -1216,12 +1317,12 @@
     }
     var html = '<div class="hw-popup-block"><i class="wi ' + condIcon(r.condition) + '" aria-hidden="true"></i> ';
     if (r.temperature_c != null) { html += fmtNum(r.temperature_c) + "°C"; }
-    if (r.humidity_pct != null) { html += " · hum " + fmtNum(r.humidity_pct, 0) + "%"; }
+    if (r.humidity_pct != null) { html += " · " + tr("map.hum") + " " + fmtNum(r.humidity_pct, 0) + "%"; }
     if (r.wind_speed_kmh != null) {
-      html += " · wind " + fmtNum(r.wind_speed_kmh) + " km/h";
+      html += " · " + tr("map.wind") + " " + fmtNum(r.wind_speed_kmh) + " km/h";
       if (r.wind_direction_deg != null) { html += " @ " + fmtNum(r.wind_direction_deg, 0) + "°"; }
     }
-    if (r.pressure_hpa != null) { html += " · " + fmtNum(r.pressure_hpa, 0) + " hPa"; }
+    if (r.pressure_hpa != null) { html += " · " + fmtNum(r.pressure_hpa, 0) + tr("map.pressure"); }
     return html + "</div>";
   }
 
@@ -1246,13 +1347,13 @@
     html += r.temperature_c != null ? '<span class="hw-popup-temp">' + fmtNum(r.temperature_c) + '°C</span>' : '';
     html += '</div>';
     var meta = [];
-    if (r.humidity_pct != null) { meta.push("hum " + fmtNum(r.humidity_pct, 0) + "%"); }
+    if (r.humidity_pct != null) { meta.push(tr("map.hum") + " " + fmtNum(r.humidity_pct, 0) + "%"); }
     if (r.wind_speed_kmh != null) {
-      var w = "wind " + fmtNum(r.wind_speed_kmh) + " km/h";
+      var w = tr("map.wind") + " " + fmtNum(r.wind_speed_kmh) + " km/h";
       if (r.wind_direction_deg != null) { w += " @ " + fmtNum(r.wind_direction_deg, 0) + "°"; }
       meta.push(w);
     }
-    if (r.wind_gusts_kmh != null) { meta.push("gusts " + fmtNum(r.wind_gusts_kmh) + " km/h"); }
+    if (r.wind_gusts_kmh != null) { meta.push(tr("map.gusts") + " " + fmtNum(r.wind_gusts_kmh) + " km/h"); }
     if (r.pressure_hpa != null) { meta.push(fmtNum(r.pressure_hpa, 0) + " hPa"); }
     if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
     if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
@@ -1356,9 +1457,9 @@
 
       var meta = [];
       if (r.temperature_c != null) { meta.push(fmtNum(r.temperature_c) + "°C"); }
-      if (r.humidity_pct != null) { meta.push("hum " + fmtNum(r.humidity_pct, 0) + "%"); }
+      if (r.humidity_pct != null) { meta.push(tr("map.hum") + " " + fmtNum(r.humidity_pct, 0) + "%"); }
       if (r.wind_speed_kmh != null) {
-        var w = "wind " + fmtNum(r.wind_speed_kmh) + " km/h";
+        var w = tr("map.wind") + " " + fmtNum(r.wind_speed_kmh) + " km/h";
         if (r.wind_direction_deg != null) { w += " @ " + fmtNum(r.wind_direction_deg, 0) + "°"; }
         meta.push(w);
       }
@@ -1390,7 +1491,7 @@
       // the map on the pin and opens its popup. A positionless report has
       // nothing to center on and stays disabled.
       if (r.latitude && r.longitude && !(r.latitude === 0 && r.longitude === 0)) {
-        item.title = "Show " + r.name + " on the map";
+        item.title = trf("map.show_on_map", r.name);
         item.addEventListener("click", function () { focusStation(r); });
       } else {
         item.disabled = true;
@@ -1435,17 +1536,17 @@
   }
 
   function aircraftPopup(a) {
-    var html = '<span class="muted">Aircraft</span><br><strong>' + esc(a.callsign || a.icao24) + "</strong>";
+    var html = '<span class="muted">' + tr("map.aircraft") + '</span><br><strong>' + esc(a.callsign || a.icao24) + "</strong>";
     html += '<br><span class="muted">' + esc(String(a.icao24 || "").toUpperCase()) + "</span>";
-    if (a.altitude_m != null) { html += "<br>Alt: " + fmtNum(a.altitude_m, 0) + " m"; }
+    if (a.altitude_m != null) { html += "<br>tr("map.alt") + ": " + fmtNum(a.altitude_m, 0) + " m"; }
     if (a.speed_kmh != null) {
-      html += "<br>Speed: " + fmtNum(a.speed_kmh, 0) + " km/h";
+      html += "<br>tr("map.speed") + ": " + fmtNum(a.speed_kmh, 0) + " km/h";
       if (a.track_deg != null) { html += " @ " + fmtNum(a.track_deg, 0) + "\u00b0"; }
     }
-    if (a.vertical_rate_m_s != null) { html += "<br>Climb: " + fmtNum(a.vertical_rate_m_s, 1) + " m/s"; }
-    if (a.category) { html += "<br>Category: " + esc(a.category); }
+    if (a.vertical_rate_m_s != null) { html += "<br>tr("map.climb") + ": " + fmtNum(a.vertical_rate_m_s, 1) + " m/s"; }
+    if (a.category) { html += "<br>tr("map.category") + ": " + esc(a.category); }
     if (a.seen_at) {
-      html += "<br>Seen: " + esc(fmtTime(new Date(a.seen_at * 1000).toISOString()));
+      html += "<br>tr("map.seen") + ": " + esc(fmtTime(new Date(a.seen_at * 1000).toISOString()));
     }
     return html;
   }
@@ -1465,7 +1566,7 @@
             return;
           }
           var marker = L.marker([a.latitude, a.longitude], { icon: planeIcon(a), riseOnHover: true });
-          marker.bindTooltip("Aircraft: " + (a.callsign || a.icao24), { direction: "top" });
+          marker.bindTooltip(trf("map.aircraft.tip", a.callsign || a.icao24), { direction: "top" });
           marker.bindPopup(aircraftPopup(a));
           aircraftLayer.addLayer(marker);
 
@@ -1529,7 +1630,7 @@
   }
 
   function aqPopup(station) {
-    var html = '<span class="muted">Air quality</span><br><strong>' + esc(station.station_name) + "</strong>";
+    var html = '<span class="muted">' + tr("map.airquality") + '</span><br><strong>' + esc(station.station_name) + "</strong>";
     if (station.index_level_name) {
       html += '<br><span class="aq-level" style="color:' + aqColor(station.index_level_id) + '">' +
         esc(station.index_level_name) + "</span>";
@@ -1560,7 +1661,7 @@
           var marker = L.marker([station.latitude, station.longitude], {
             icon: aqIcon(station), riseOnHover: true
           });
-          marker.bindTooltip("Air quality: " + station.station_name, { direction: "top" });
+          marker.bindTooltip(trf("map.airquality.tip", station.station_name), { direction: "top" });
           marker.bindPopup(aqPopup(station));
           aqLayer.addLayer(marker);
         });
@@ -1581,8 +1682,8 @@
     c.onAdd = function () {
       var btn = L.DomUtil.create("button", "wf-locate-btn");
       btn.type = "button";
-      btn.title = "Show my location";
-      btn.setAttribute("aria-label", "Show my location");
+      btn.title = tr("map.show_location");
+      btn.setAttribute("aria-label", tr("map.show_location"));
       btn.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3.5M12 18.5V22M2 12h3.5M18.5 12H22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
       L.DomEvent.disableClickPropagation(btn);
       L.DomEvent.disableScrollPropagation(btn);
@@ -1609,7 +1710,7 @@
               radius: 7, color: "#fff", weight: 2,
               fillColor: "#1a73e8", fillOpacity: 1
             }).addTo(map);
-            userMarker.bindTooltip("You are here", { direction: "top" });
+            userMarker.bindTooltip(tr("map.you_are_here"), { direction: "top" });
           } else {
             userMarker.setLatLng(ll);
           }
@@ -1623,7 +1724,7 @@
           }
           map.setView(ll, Math.max(map.getZoom(), 13));
           btn.classList.add("wf-locate-active");
-          btn.title = "Center on my location";
+          btn.title = tr("map.center_location");
         }, function () {
           denied();
         }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 30000 });
@@ -1639,15 +1740,15 @@
   // weather and radar, with aircraft traffic last.
   var radarOn = true;
   var LAYER_DEFS = [
-    ["hazards", "Hazards", function () { return hazardLayer; }],
-    ["stations", "Stations", function () { return stationLayer; }],
-    ["weather", "Weather", function () { return weatherLayer; }],
-    ["radar", "Radar", function () {
+    ["hazards", tr("map.layer.hazards"), function () { return hazardLayer; }],
+    ["stations", tr("map.layer.stations"), function () { return stationLayer; }],
+    ["weather", tr("map.layer.weather"), function () { return weatherLayer; }],
+    ["radar", tr("map.layer.radar"), function () {
       radarOn = !radarOn;
       return radarLayer;
     }],
-    ["airquality", "Air quality", function () { return aqLayer; }],
-    ["aircraft", "Aircraft", function () { return aircraftLayer; }]
+    ["airquality", tr("map.layer.airquality"), function () { return aqLayer; }],
+    ["aircraft", tr("map.layer.aircraft"), function () { return aircraftLayer; }]
   ];
 
   function addLayersControl(map) {
@@ -1658,7 +1759,7 @@
         var btn = L.DomUtil.create("button", "wf-layer-btn active");
         btn.type = "button";
         btn.textContent = def[1];
-        btn.title = "Toggle " + def[1].toLowerCase() + " layer";
+        btn.title = trf("map.toggle_layer", def[1].toLowerCase());
         btn.setAttribute("aria-pressed", "true");
         L.DomEvent.disableClickPropagation(btn);
         L.DomEvent.disableScrollPropagation(btn);
@@ -2117,7 +2218,7 @@
         return;
       }
       statusEl.hidden = false;
-      statusEl.textContent = "Subscribing to " + topic + "… (" + windowSecs + " s)";
+      statusEl.textContent = trf("traffic.subscribing", topic, windowSecs);
       var url = "/api/mqtt/browse?topic=" + encodeURIComponent(topic) +
         "&window=" + encodeURIComponent(windowSecs) +
         "&receiver=" + encodeURIComponent(receiver);
@@ -2169,7 +2270,7 @@
       }
       var title = document.getElementById("user-edit-title");
       if (title) {
-        title.textContent = mode === "edit" ? "Edit user" : "Add user";
+        title.textContent = tr(mode === "edit" ? "users.edit_title" : "users.add_title");
       }
       var password = field("user-edit-password");
       if (password) {

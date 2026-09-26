@@ -1,9 +1,9 @@
 {{define "notifications"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Notifications · {{.AppTitle}}</title>
+  <title>{{tr .Lang "notif.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -13,10 +13,10 @@
   {{template "sidebar" .}}
   <main class="users-main">
     <section class="card nt-card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>Notifications · delivery history</h2>
-      <p class="muted log-hint">Why each alert was or was not delivered: routing decisions, thresholds, deduplication and action attempts. Refreshes automatically.</p>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "notif.title"}}</h2>
+      <p class="muted log-hint">{{tr .Lang "notif.hint"}}</p>
       <div id="notif-list" class="notif-list">
-        {{range .Trails}}{{template "notif-item" .}}{{else}}<p class="empty">No notifications processed yet</p>{{end}}
+        {{range .Trails}}{{template "notif-item" .}}{{else}}<p class="empty">{{tr $.Lang "notif.empty"}}</p>{{end}}
       </div>
     </section>
   </main>
@@ -26,16 +26,16 @@
 </html>
 {{end}}
 
-{{define "notif-item"}}<article class="notif{{if eq .Outcome "failed"}} notif-failed{{end}}" id="notif-{{.Key}}" data-key="{{.Key}}">
+{{define "notif-item"}}<article class="notif{{if eq .Trail.Outcome "failed"}} notif-failed{{end}}" id="notif-{{.Trail.Key}}" data-key="{{.Trail.Key}}">
   <div class="notif-head">
-    <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
-    <strong>{{.Source}} alert</strong>
-    {{if .Headline}}<span class="nt-title">{{.Headline}}</span>{{end}}
-    <span class="muted nt-time">{{timeFullStr .ReceivedAt}}</span>
-    <span class="badge nt-outcome nt-outcome-{{.Outcome}}">{{.Outcome}}</span>
+    <span class="sev sev-{{sevClass .Trail.Severity}}">{{.Trail.Severity}}</span>
+    <strong>{{trf .Lang "notif.source_alert" .Trail.Source}}</strong>
+    {{if .Trail.Headline}}<span class="nt-title">{{.Trail.Headline}}</span>{{end}}
+    <span class="muted nt-time">{{timeFullStr .Trail.ReceivedAt}}</span>
+    <span class="badge nt-outcome nt-outcome-{{.Trail.Outcome}}">{{tr .Lang (printf "notif.outcome.%s" .Trail.Outcome)}}</span>
   </div>
   <ol class="nt-steps">
-    {{range .Steps}}<li class="nt-step nt-{{.Kind}}"><span class="nt-at">{{timeHMS .At}}</span><span class="nt-text">{{.Text}}</span></li>{{end}}
+    {{range .Trail.Steps}}<li class="nt-step nt-{{.Kind}}"><span class="nt-at">{{timeHMS .At}}</span><span class="nt-text">{{.Text}}</span></li>{{end}}
   </ol>
 </article>
 {{end}}

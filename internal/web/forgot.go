@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -23,6 +24,7 @@ func (s *Server) SetPasswordResetMailer(fn func(to, subject, text string) error)
 
 // forgotView is the /forgot page model.
 type forgotView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -53,7 +55,7 @@ func (s *Server) handleForgotPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "forgot", forgotView{
+	s.renderL(w, r, "forgot", forgotView{
 		AppTitle: s.cfg.Title,
 		Name:     s.displayName(),
 		Header1:  s.displayHeader1(),
@@ -91,7 +93,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		s.render(w, "forgot", forgotView{
+		s.renderL(w, r, "forgot", forgotView{
 			AppTitle: s.cfg.Title,
 			Name:     s.displayName(),
 			Header1:  s.displayHeader1(),
@@ -117,10 +119,11 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	lang := s.langFor(r)
 	// The configured admin account is managed in configuration.
 	if checkUsername(username, s.cfg.Auth.Username) {
 		s.loginLimiter.record(limiterKey, false)
-		view("admin pass is defined in the configuration file", "")
+		view(i18n.T(lang, "forgot.admin_pass"), "")
 		return
 	}
 
@@ -129,7 +132,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		!strings.EqualFold(strings.TrimSpace(u.Email), email) {
 		s.loginLimiter.record(limiterKey, false)
 		// Generic answer — no account enumeration.
-		view("", "If the account exists and the email matches, a reset link has been sent to its registered address.")
+		view("", i18n.T(lang, "forgot.sent"))
 		return
 	}
 
@@ -137,7 +140,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Error("web: password reset token failed", "username", username, "error", err)
 		s.loginLimiter.record(limiterKey, false)
-		view("", "If the account exists and the email matches, a reset link has been sent to its registered address.")
+		view("", i18n.T(lang, "forgot.sent"))
 		return
 	}
 
@@ -150,12 +153,12 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		if err := s.resetMailer(strings.TrimSpace(u.Email), subject, body); err != nil {
 			s.logger.Warn("web: password reset email failed", "username", username, "error", err)
 			s.loginLimiter.record(limiterKey, false)
-			view("The reset email could not be sent — please contact an administrator.", "")
+			view(i18n.T(lang, "forgot.mail_failed"), "")
 			return
 		}
 	}
 	s.loginLimiter.record(limiterKey, true)
-	view("", "If the account exists and the email matches, a reset link has been sent to its registered address.")
+	view("", i18n.T(lang, "forgot.sent"))
 }
 
 // resetLink builds the public base URL for reset links: the configured
@@ -173,6 +176,7 @@ func (s *Server) resetLink(r *http.Request) string {
 
 // resetView is the /reset page model.
 type resetView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -218,7 +222,7 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 		view.Error = "This link is invalid or has expired — request a new one."
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "reset", view)
+	s.renderL(w, r, "reset", view)
 }
 
 // handleResetSubmit consumes the token and replaces the password.
@@ -244,7 +248,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		s.render(w, "reset", resetView{
+		s.renderL(w, r, "reset", resetView{
 			AppTitle: s.cfg.Title,
 			Name:     s.displayName(),
 			Header1:  s.displayHeader1(),

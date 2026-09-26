@@ -90,6 +90,7 @@ func (b *LogBuffer) Snapshot(after int64) []logLine {
 
 // logsView is the full /logs page model.
 type logsView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -123,7 +124,7 @@ func (s *Server) handleLogsPage(w http.ResponseWriter, r *http.Request) {
 	view.Username = sess.username
 	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "logs", view)
+	s.renderL(w, r, "logs", view)
 }
 
 func (s *Server) baseLogsView() logsView {

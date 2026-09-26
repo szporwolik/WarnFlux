@@ -1,9 +1,9 @@
 {{define "login"}}<!doctype html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in · {{.AppTitle}}</title>
+  <title>{{tr .Lang "common.sign_in"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
@@ -11,29 +11,33 @@
 </head>
 <body class="login-page">
   <main class="login-card">
+    <div class="lang-switch login-lang" role="group" aria-label="{{tr .Lang "common.language"}}">
+      <a class="lang-opt{{if eq .Lang "en"}} active{{end}}" href="/lang/en" hreflang="en" lang="en" title="English">EN</a>
+      <a class="lang-opt{{if eq .Lang "pl"}} active{{end}}" href="/lang/pl" hreflang="pl" lang="pl" title="Polski">PL</a>
+    </div>
     <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
     <h1 class="login-name">{{.Header1}}</h1>
-    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">Alerts in. Action out.</p>{{end}}
+    {{if .Header2}}<p class="login-sub">{{.Header2}}</p>{{else}}<p class="login-tagline">{{tr .Lang "login.tagline"}}</p>{{end}}
     {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
-    {{if .Reset}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>Password updated — sign in with your new password.</p>{{end}}
+    {{if .Reset}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{tr .Lang "login.reset_ok"}}</p>{{end}}
     <form method="post" action="/login">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <label>Username
+      <label>{{tr .Lang "login.username"}}
         <input type="text" name="username" autocomplete="username" required autofocus>
       </label>
-      <label>Password
+      <label>{{tr .Lang "login.password"}}
         <input type="password" name="password" autocomplete="current-password" required>
       </label>
-      <button type="submit" class="btn-primary">Sign in</button>
+      <button type="submit" class="btn-primary">{{tr .Lang "common.sign_in"}}</button>
     </form>
-    <p class="login-note"><a href="/forgot">Forgot password?</a> · Account creation is disabled.</p>
-    <p class="login-back"><a href="/">← Back to the public page</a></p>
+    <p class="login-note"><a href="/forgot">{{tr .Lang "login.forgot"}}</a> · {{tr .Lang "login.disabled"}}</p>
+    <p class="login-back"><a href="/">{{tr .Lang "login.back"}}</a></p>
   </main>
   {{template "footer" .}}
   {{if .About}}<dialog id="about-dialog" class="about-dialog">
-    <button type="button" class="about-close" aria-label="Close">×</button>
+    <button type="button" class="about-close" aria-label="{{tr .Lang "home.about.close"}}">×</button>
     <div class="about-dialog-text">{{.About}}</div>
-    <button type="button" class="about-ok btn-primary">Got it</button>
+    <button type="button" class="about-ok btn-primary">{{tr .Lang "home.about.ok"}}</button>
   </dialog>{{end}}
   <script>
   (function () {

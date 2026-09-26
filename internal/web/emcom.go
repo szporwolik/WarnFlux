@@ -12,6 +12,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
@@ -307,6 +308,7 @@ func (s *Server) publishEmcomState(net emcomNetwork, by string) error {
 
 // emcomView is the /emcom page model.
 type emcomView struct {
+	Lang     string
 	AppTitle string
 	Name     string
 	Header1  string
@@ -357,27 +359,36 @@ type emcomLevelView struct {
 	Class       string
 }
 
-// emcomFlash maps the post-action redirect marker to a confirmation.
-var emcomFlash = map[string]string{
-	"added":   "Network added — it starts at level 0 (Monitoring).",
-	"level":   "Network readiness level updated and broadcast.",
-	"deleted": "Network deleted.",
+// emcomFlashKey maps the post-action redirect marker to the banner
+// message i18n key.
+func emcomFlashKey(marker string) string {
+	switch marker {
+	case "added":
+		return "emcom.flash.added"
+	case "level":
+		return "emcom.flash.level"
+	case "deleted":
+		return "emcom.flash.deleted"
+	}
+	return ""
 }
 
 // handleEmcomPage renders the EMCOM networks panel.
 func (s *Server) handleEmcomPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	view := s.buildEmcomView()
+	view := s.buildEmcomView(s.langFor(r))
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
-	view.Msg = emcomFlash[r.URL.Query().Get("msg")]
+	view.Msg = i18n.T(s.langFor(r), emcomFlashKey(r.URL.Query().Get("msg")))
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "emcom", view)
+	s.renderL(w, r, "emcom", view)
 }
 
-// buildEmcomView assembles the page model from the mirrored state.
-func (s *Server) buildEmcomView() emcomView {
+// buildEmcomView assembles the page model from the mirrored state in a UI
+// language. Level names/descriptions are localized for display; the wire
+// payload keeps the English canonical names.
+func (s *Server) buildEmcomView(lang string) emcomView {
 	view := emcomView{
 		AppTitle: s.cfg.Title,
 		Name:     s.displayName(),
@@ -391,8 +402,10 @@ func (s *Server) buildEmcomView() emcomView {
 	}
 	for _, l := range emcomLevels {
 		view.Levels = append(view.Levels, emcomLevelView{
-			Level: l.Level, Name: l.Name, Description: l.Description,
-			Class: emcomLevelClass(l.Level),
+			Level:       l.Level,
+			Name:        i18n.T(lang, fmt.Sprintf("emcom.levels.%d", l.Level)),
+			Description: i18n.T(lang, fmt.Sprintf("emcom.desc.%d", l.Level)),
+			Class:       emcomLevelClass(l.Level),
 		})
 	}
 	for _, net := range s.emcomNetworks() {
@@ -400,7 +413,7 @@ func (s *Server) buildEmcomView() emcomView {
 			Slug:       net.Slug,
 			Name:       net.Name,
 			Level:      net.Level,
-			LevelName:  net.LevelName,
+			LevelName:  i18n.T(lang, fmt.Sprintf("emcom.levels.%d", net.Level)),
 			LevelClass: emcomLevelClass(net.Level),
 			UpdatedBy:  net.UpdatedBy,
 			UpdatedAt:  net.UpdatedAt,
@@ -413,14 +426,14 @@ func (s *Server) buildEmcomView() emcomView {
 // renderEmcomError re-renders the page with an error banner.
 func (s *Server) renderEmcomError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	sess := s.sessions.currentSession(r)
-	view := s.buildEmcomView()
+	view := s.buildEmcomView(s.langFor(r))
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
 	view.Error = msg
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	s.render(w, "emcom", view)
+	s.renderL(w, r, "emcom", view)
 }
 
 // handleEmcomAdd creates a new network at level 0 (monitoring). The
@@ -434,38 +447,38 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	if name == "" {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, "Enter a network name (e.g. SP9MOA EMCOM).")
+		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "emcom.err.name_required"))
 		return
 	}
 	if len([]rune(name)) > maxEmcomName {
 		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
-			fmt.Sprintf("Network name is too long (maximum %d characters).", maxEmcomName))
+			fmt.Sprintf(i18n.T(s.langFor(r), "emcom.err.name_long"), maxEmcomName))
 		return
 	}
 	slug := emcomSlugify(name)
 	if !emcomSlugRe.MatchString(slug) {
 		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
-			"Network name must contain letters or digits.")
+			i18n.T(s.langFor(r), "emcom.err.name_chars"))
 		return
 	}
 	if len(s.emcomNetworks()) >= maxEmcomNetworks {
 		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
-			fmt.Sprintf("Too many networks (maximum %d).", maxEmcomNetworks))
+			fmt.Sprintf(i18n.T(s.langFor(r), "emcom.err.too_many"), maxEmcomNetworks))
 		return
 	}
 	if _, ok := s.emcomNetworkBySlug(slug); ok {
-		s.renderEmcomError(w, r, http.StatusConflict, "A network with this name already exists.")
+		s.renderEmcomError(w, r, http.StatusConflict, i18n.T(s.langFor(r), "emcom.err.exists"))
 		return
 	}
 	if s.pub == nil {
 		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			"Publishing is unavailable: no broker connection.")
+			i18n.T(s.langFor(r), "emcom.err.no_broker"))
 		return
 	}
 	net := emcomNetwork{Slug: slug, Name: name, Level: 0}
 	if err := s.publishEmcomState(net, sess.username); err != nil {
 		s.logger.Warn("emcom: publish failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publishing to the broker failed.")
+		s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
 		return
 	}
 	s.logger.Info("emcom: network added", "slug", slug, "name", name, "by", sess.username)
@@ -485,17 +498,17 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	net, ok := s.emcomNetworkBySlug(slug)
 	if !ok {
-		http.Error(w, "unknown network", http.StatusNotFound)
+		http.Error(w, i18n.T(s.langFor(r), "emcom.err.unknown"), http.StatusNotFound)
 		return
 	}
 	level, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("level")))
 	if err != nil || level < 0 || level > 3 {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, "Level must be a number 0-3.")
+		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "emcom.err.level_range"))
 		return
 	}
 	if s.pub == nil {
 		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			"Publishing is unavailable: no broker connection.")
+			i18n.T(s.langFor(r), "emcom.err.no_broker"))
 		return
 	}
 
@@ -503,7 +516,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	net.UpdatedBy = sess.username
 	if err := s.publishEmcomState(net, sess.username); err != nil {
 		s.logger.Warn("emcom: state publish failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publishing to the broker failed.")
+		s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
 		return
 	}
 
@@ -512,7 +525,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		h := emcomHazard(net, now)
 		if err := s.pub.PublishActive(emcomSource, h); err != nil {
 			s.logger.Warn("emcom: hazard publish failed", "slug", slug, "error", err)
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publishing the communication failed.")
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.communication"))
 			return
 		}
 		typ := dispatch.TransitionNew
@@ -548,17 +561,17 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	net, ok := s.emcomNetworkBySlug(slug)
 	if !ok {
-		http.Error(w, "unknown network", http.StatusNotFound)
+		http.Error(w, i18n.T(s.langFor(r), "emcom.err.unknown"), http.StatusNotFound)
 		return
 	}
 	if s.pub == nil {
 		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			"Publishing is unavailable: no broker connection.")
+			i18n.T(s.langFor(r), "emcom.err.no_broker"))
 		return
 	}
 	if err := s.publishEmcomState(emcomNetwork{Slug: slug}, sess.username); err != nil {
 		s.logger.Warn("emcom: state delete failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Deleting from the broker failed.")
+		s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.deleting"))
 		return
 	}
 	if s.emcomHazardInMirror(slug) {

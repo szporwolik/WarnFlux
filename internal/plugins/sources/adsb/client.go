@@ -212,25 +212,52 @@ func (c *Client) fetchTar1090(ctx context.Context) ([]ProviderTarget, time.Time,
 	return out, now, nil
 }
 
+// flexFloat decodes a JSON number that the provider occasionally sends
+// as a string (api.adsb.lol does this for alt_baro and other numeric
+// fields). "null" and missing values decode as 0.
+type flexFloat float64
+
+func (f *flexFloat) UnmarshalJSON(data []byte) error {
+	var n float64
+	if err := json.Unmarshal(data, &n); err == nil {
+		*f = flexFloat(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("adsb: expected a number or numeric string, got %s", data)
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return fmt.Errorf("adsb: invalid numeric string %q", s)
+	}
+	*f = flexFloat(n)
+	return nil
+}
+
+func (f flexFloat) Float() float64 { return float64(f) }
+
 // adsbLolAC mirrors the ac[] entries of api.adsb.lol /v2/point.
 type adsbLolAC struct {
-	Hex      string  `json:"hex"`
-	Flight   string  `json:"flight"`
-	Type     string  `json:"t"`
-	Category string  `json:"category"`
-	Lat      float64 `json:"lat"`
-	Lon      float64 `json:"lon"`
-	AltBaro  float64 `json:"alt_baro"`
-	GS       float64 `json:"gs"`
-	Track    float64 `json:"track"`
-	BaroRate float64 `json:"baro_rate"`
-	Seen     float64 `json:"seen"` // seconds ago
+	Hex      string    `json:"hex"`
+	Flight   string    `json:"flight"`
+	Type     string    `json:"t"`
+	Category string    `json:"category"`
+	Lat      flexFloat `json:"lat"`
+	Lon      flexFloat `json:"lon"`
+	AltBaro  flexFloat `json:"alt_baro"`
+	GS       flexFloat `json:"gs"`
+	Track    flexFloat `json:"track"`
+	BaroRate flexFloat `json:"baro_rate"`
+	Seen     flexFloat `json:"seen"` // seconds ago
 }
 
 // target converts one adsb.lol entry; entries without a position or
 // without a hex code are skipped.
 func (a adsbLolAC) target(now time.Time) (ProviderTarget, bool) {
-	if a.Hex == "" || a.Lat == 0 && a.Lon == 0 {
+	lat, lon := a.Lat.Float(), a.Lon.Float()
+	alt, gs, track, baro, seen := a.AltBaro.Float(), a.GS.Float(), a.Track.Float(), a.BaroRate.Float(), a.Seen.Float()
+	if a.Hex == "" || lat == 0 && lon == 0 {
 		return ProviderTarget{}, false
 	}
 	return ProviderTarget{
@@ -238,14 +265,14 @@ func (a adsbLolAC) target(now time.Time) (ProviderTarget, bool) {
 		Flight:      strings.TrimSpace(a.Flight),
 		Type:        a.Type,
 		Category:    a.Category,
-		Lat:         a.Lat,
-		Lon:         a.Lon,
-		AltBaroFt:   a.AltBaro,
-		GSKt:        a.GS,
-		TrackDeg:    a.Track,
-		BaroRateFPM: a.BaroRate,
-		OnGround:    a.AltBaro == 0,
-		SeenAt:      now.Add(-time.Duration(a.Seen * float64(time.Second))),
+		Lat:         lat,
+		Lon:         lon,
+		AltBaroFt:   alt,
+		GSKt:        gs,
+		TrackDeg:    track,
+		BaroRateFPM: baro,
+		OnGround:    alt == 0,
+		SeenAt:      now.Add(-time.Duration(seen * float64(time.Second))),
 	}, true
 }
 

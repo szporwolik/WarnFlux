@@ -126,6 +126,37 @@ func TestClientAdsbLol(t *testing.T) {
 	}
 }
 
+// TestClientAdsbLolStringNumbers pins the tolerance for the provider
+// quirk of sending numeric fields as strings (api.adsb.lol does this for
+// alt_baro and occasionally other fields).
+func TestClientAdsbLolStringNumbers(t *testing.T) {
+	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ac":[
+  {"hex":"49d418","flight":"TVP7111 ","alt_baro":"14550","gs":"344.9",
+   "track":"329.12","baro_rate":"-1984","lat":"49.968","lon":"19.859",
+   "seen":"0.5"},
+  {"hex":"abc123","alt_baro":null,"lat":50.1,"lon":20.2,"seen":1}
+],"msg":"No error","now":1790295311003,"total":2}`))
+	})
+
+	c := NewClient(ProviderAdsbLol, srv.URL, time.Second)
+	targets, _, err := c.Fetch(context.Background(), 50.02, 20.21, 45)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("targets = %d, want 2", len(targets))
+	}
+	a := targets[0]
+	if a.AltBaroFt != 14550 || a.GSKt != 344.9 || a.TrackDeg != 329.12 || a.BaroRateFPM != -1984 {
+		t.Errorf("units = %+v", a)
+	}
+	if targets[1].AltBaroFt != 0 || !targets[1].OnGround {
+		t.Errorf("null alt_baro must decode as 0 and on-ground: %+v", targets[1])
+	}
+}
+
 func TestClientTar1090(t *testing.T) {
 	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/data/aircraft.json" {

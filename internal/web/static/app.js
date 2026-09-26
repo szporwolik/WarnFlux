@@ -846,7 +846,9 @@
     stationLayer = L.layerGroup().addTo(map);
     hazardLayer = L.layerGroup().addTo(map);
     weatherLayer = L.layerGroup().addTo(map);
-    aircraftLayer = L.layerGroup().addTo(map);
+    // Aircraft start hidden: the layer exists and refreshes, but the
+    // user turns it on with the layer toggle.
+    aircraftLayer = L.layerGroup();
     aqLayer = L.layerGroup().addTo(map);
 
     // Our station marker at the position learned from our own beacon
@@ -1920,15 +1922,18 @@
       var box = L.DomUtil.create("div", "wf-map-ctl");
 
       LAYER_DEFS.forEach(function (def) {
-        var btn = svgBtn("wf-mc-btn active", MAP_CTRL_ICONS[def[0]], def[1]);
+        // All layers on by default, except aircraft: planes are noisy on
+        // the map, so they stay off until asked for.
+        var on = def[0] !== "aircraft";
+        var btn = svgBtn("wf-mc-btn" + (on ? " active" : ""), MAP_CTRL_ICONS[def[0]], def[1]);
         btn.style.setProperty("--wf-mc-hue", MAP_CTRL_COLORS[def[0]]);
-        btn.setAttribute("aria-pressed", "true");
+        btn.setAttribute("aria-pressed", String(on));
         L.DomEvent.on(btn, "click", function () {
           var layer = def[2]();
-          var on = btn.classList.toggle("active");
-          btn.setAttribute("aria-pressed", String(on));
+          var nowOn = btn.classList.toggle("active");
+          btn.setAttribute("aria-pressed", String(nowOn));
           if (!layer) { return; }
-          if (on) { map.addLayer(layer); } else { map.removeLayer(layer); }
+          if (nowOn) { map.addLayer(layer); } else { map.removeLayer(layer); }
         });
         box.appendChild(btn);
       });
@@ -1981,12 +1986,15 @@
         has = true;
       }
     });
-    lastAircraft.forEach(function (a) {
-      if (a && a.latitude && a.longitude) {
-        b.extend([a.latitude, a.longitude]);
-        has = true;
-      }
-    });
+    // Aircraft count towards the view fit only when their layer is on.
+    if (map.hasLayer(aircraftLayer)) {
+      lastAircraft.forEach(function (a) {
+        if (a && a.latitude && a.longitude) {
+          b.extend([a.latitude, a.longitude]);
+          has = true;
+        }
+      });
+    }
     stationBounds = has ? b : null;
     if (!fittedOnce && has) {
       map.invalidateSize();

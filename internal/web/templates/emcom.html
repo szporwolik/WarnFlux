@@ -14,7 +14,7 @@
   <main class="emcom-page">
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>EMCOM networks</h2>
-      <p class="muted">Sytuacyjne sieci łączności kryzysowej. Poziom gotowości każdej sieci publikowany jest jako komunikat utrzymywany (retain) na MQTT i widoczny publicznie w nagłówku strony głównej.</p>
+      <p class="muted">Situational crisis-communications networks. Each network's readiness level is published as a retained MQTT message and shown publicly in the home-page header.</p>
 
       {{if .Msg}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{.Msg}}</span></div>{{end}}
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
@@ -25,15 +25,15 @@
           <div class="emcom-card-head">
             <h3>{{.Name}}</h3>
             <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
-              <span class="emcom-badge-dot"></span>poziom {{.Level}} — {{.LevelName}}
+              <span class="emcom-badge-dot"></span>level {{.Level}} — {{.LevelName}}
             </span>
           </div>
           <form method="post" action="/emcom/{{.Slug}}/level" class="emcom-form" data-emcom-form>
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
             <div class="emcom-slider-row">
               <input type="range" class="emcom-slider emcom-slider-{{.LevelClass}}" min="0" max="3" step="1"
-                     name="level" value="{{.Level}}" data-emcom-slider aria-label="Poziom gotowości sieci {{.Name}}">
-              <span class="emcom-slider-value" data-emcom-value>poziom {{.Level}}</span>
+                     name="level" value="{{.Level}}" data-emcom-slider aria-label="Readiness level of {{.Name}}">
+              <span class="emcom-slider-value" data-emcom-value>level {{.Level}}</span>
             </div>
             <div class="emcom-level-desc" data-emcom-desc>
               <strong class="emcom-desc-name">{{.LevelName}}</strong>
@@ -41,7 +41,7 @@
             </div>
             <div class="emcom-card-actions">
               <span class="muted small">
-                {{if .UpdatedBy}}ustawił: <strong>{{.UpdatedBy}}</strong> · {{end}}{{timeShort .UpdatedAt}}
+                {{if .UpdatedBy}}set by <strong>{{.UpdatedBy}}</strong> · {{end}}{{timeShort .UpdatedAt}}
               </span>
               <span class="emcom-card-btns">
                 <button type="submit" class="btn-primary btn-small" data-emcom-save>Save level</button>
@@ -51,29 +51,29 @@
           </form>
         </article>
         {{else}}
-        <p class="empty">Brak sieci EMCOM. Dodaj pierwszą poniżej — zacznie od poziomu 0 (Monitoring).</p>
+        <p class="empty">No EMCOM networks yet. Add the first one below — it starts at level 0 (Monitoring).</p>
         {{end}}
       </div>
 
       <form method="post" action="/emcom" class="emcom-add">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <label class="emcom-add-label" for="emcom-name">Dodaj sieć EMCOM</label>
+        <label class="emcom-add-label" for="emcom-name">Add an EMCOM network</label>
         <div class="emcom-add-row">
-          <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="np. SP9MOA EMCOM" required>
+          <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="e.g. SP9MOA EMCOM" required>
           <button type="submit" class="btn-primary">Add network</button>
         </div>
-        <p class="muted small">Nazwa staje się identyfikatorem sieci na MQTT (np. sp9moa-emcom). Nowa sieć startuje na poziomie 0 — Monitoring.</p>
+        <p class="muted small">The name becomes the network's MQTT identifier (e.g. sp9moa-emcom). A new network starts at level 0 — Monitoring.</p>
       </form>
     </section>
 
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>Poziomy gotowości operacyjnej</h2>
-      <p class="muted">W celu zapewnienia sprawnego i adekwatnego do sytuacji uruchamiania działań w zakresie łączności kryzysowej wprowadza się następujące poziomy gotowości operacyjnej.</p>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>Operational readiness levels</h2>
+      <p class="muted">To launch crisis communications in a way that is efficient and adequate to the situation, the following operational readiness levels apply:</p>
       <div class="emcom-levels">
         {{range .Levels}}
         <article class="emcom-level">
           <div class="emcom-level-head">
-            <span class="emcom-level-num emcom-num-{{.Class}}">poziom {{.Level}}</span>
+            <span class="emcom-level-num emcom-num-{{.Class}}">level {{.Level}}</span>
             <strong>{{.Name}}</strong>
           </div>
           <p class="muted">{{.Description}}</p>
@@ -81,12 +81,12 @@
         {{end}}
       </div>
       <ul class="muted emcom-notes">
-        <li>Monitoring kanałów PMR i CB prowadzony jest przy użyciu urządzeń spełniających wymagania właściwe dla danego rodzaju łączności. Ujęcie kanału w planie łączności nie oznacza dopuszczenia do używania na nim dowolnego radiotelefonu amatorskiego.</li>
-        <li>Wprowadzenie poziomu 2 lub 3 skutkuje przejściem do pracy w trybie sieci kierowanej (ang. directed net).</li>
-        <li>Poziom 3 oznacza zdolność sieci do pracy całodobowej w systemie zmianowym, pod warunkiem dostępności odpowiedniej liczby operatorów, zasilania, transportu, łączności zapasowej i zaplecza logistycznego. Nie oznacza nieprzerwanej pracy pojedynczego operatora.</li>
-        <li>Klub może samodzielnie uruchomić wewnętrzny monitoring, podwyższoną gotowość oraz kontrolną sieć radiową. Rozmieszczenie operatorów w obiektach podmiotów zewnętrznych oraz wykonywanie zadań na rzecz administracji publicznej, służb lub innych jednostek następuje po otrzymaniu wniosku, zgody albo potwierdzonego uzgodnienia z upoważnionym przedstawicielem tego podmiotu.</li>
+        <li>PMR and CB monitoring uses devices that meet the requirements of the given mode of communication. A channel being listed in the communications plan does not authorize using any amateur radio on it.</li>
+        <li>Activating level 2 or 3 means switching to directed-net operation.</li>
+        <li>Level 3 means the network can operate around the clock in shifts, provided enough operators, power, transport, backup communications and logistics are available. It does not mean uninterrupted work of a single operator.</li>
+        <li>The club may on its own start internal monitoring, increased readiness and a control radio network. Deploying operators at the premises of external entities and performing tasks for public administration, services or other units requires a request, consent or confirmed arrangement with an authorized representative of that entity.</li>
       </ul>
-      <p class="muted small">Podniesienie sieci powyżej poziomu 0 publikuje komunikat o wadze severe i rozsyła go kanałami grup zgodnie z macierzą routingu. Powrót do poziomu 0 zamyka aktywny komunikat sieci.</p>
+      <p class="muted small">Raising a network above level 0 publishes a severe communication and dispatches it through the group channels per the routing matrix. Returning to level 0 closes the network's active communication.</p>
     </section>
   </main>
   {{template "footer" .}}
@@ -115,13 +115,13 @@
           var n = Number(slider.value);
           var info = levelInfo(n);
           if (!info) { return; }
-          value.textContent = "poziom " + n;
+          value.textContent = "level " + n;
           if (name) { name.textContent = info.name; }
           if (text) { text.textContent = info.description; }
           slider.className = slider.className.replace(/emcom-slider-l\d/g, "emcom-slider-" + info.class);
           if (badge) {
             badge.className = badge.className.replace(/emcom-badge-l\d/g, "emcom-badge-" + info.class);
-            badge.lastChild.textContent = "poziom " + n + " — " + info.name;
+            badge.lastChild.textContent = "level " + n + " — " + info.name;
           }
           if (saveBtn) { saveBtn.disabled = n === original; }
         }
@@ -135,7 +135,7 @@
         btn.addEventListener("click", function () {
           var name = btn.getAttribute("data-name");
           var slug = btn.getAttribute("data-slug");
-          if (!confirm("Usunąć sieć " + name + "?")) { return; }
+          if (!confirm("Delete network " + name + "?")) { return; }
           var form = document.createElement("form");
           form.method = "post";
           form.action = "/emcom/" + slug + "/delete";

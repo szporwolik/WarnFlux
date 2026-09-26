@@ -37,12 +37,12 @@
     </div>
   </header>
 
-  {{if .EmcomNetworks}}<div class="home-emcom" role="status" aria-label="Poziom gotowości sieci EMCOM">
+  {{if .EmcomNetworks}}<div class="home-emcom" role="status" aria-label="EMCOM network readiness">
     {{range .EmcomNetworks}}
-    <span class="emcom-chip emcom-chip-{{.LevelClass}}" title="Aktualizacja: {{timeShort .UpdatedAt}}">
+    <span class="emcom-chip emcom-chip-{{.LevelClass}}" title="Updated: {{timeShort .UpdatedAt}}">
       <svg class="icon emcom-chip-icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>
       <span class="emcom-chip-name">{{.Network}}</span>
-      <span class="emcom-chip-level">poziom {{.Level}}</span>
+      <span class="emcom-chip-level">level {{.Level}}</span>
       <span class="emcom-chip-label">{{.LevelName}}</span>
     </span>
     {{end}}

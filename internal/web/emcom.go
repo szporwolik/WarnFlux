@@ -49,25 +49,24 @@ type emcomLevel struct {
 }
 
 // emcomLevels are the four readiness levels of the club's crisis
-// communications plan (poziomy gotowości operacyjnej). Anything above
-// monitoring dispatches as a severe communication so the message goes out
-// immediately.
+// communications plan. Anything above monitoring dispatches as a severe
+// communication so the message goes out immediately.
 var emcomLevels = []emcomLevel{
 	{
 		Level: 0, Name: "Monitoring", Severity: severity.Minor,
-		Description: "Prowadzenie bieżącego nasłuchu ustalonych częstotliwości oraz kanałów ogólnodostępnych (np. PMR, CB) bez uruchamiania zorganizowanej sieci łączności.",
+		Description: "Ongoing monitoring of the agreed frequencies and public channels (e.g. PMR, CB) without activating an organized communications network.",
 	},
 	{
-		Level: 1, Name: "Podwyższona gotowość", Severity: severity.Severe,
-		Description: "Zwiększenie gotowości operatorów do podjęcia działań, w tym przygotowanie sprzętu radiowego oraz utrzymywanie dyżuru na ustalonej częstotliwości podstawowej.",
+		Level: 1, Name: "Increased readiness", Severity: severity.Severe,
+		Description: "Operators ready to act: radio equipment prepared and a duty station maintained on the agreed primary frequency.",
 	},
 	{
-		Level: 2, Name: "Aktywacja lokalna", Severity: severity.Severe,
-		Description: "Uruchomienie zorganizowanej sieci łączności radiowej na obszarze objętym działaniami, w tym wyznaczenie stacji kierującej siecią (SKS) oraz rozpoczęcie pracy operatorów terenowych i stacji pośredniczących. Wprowadzenie poziomu 2 lub 3 oznacza pracę w trybie sieci kierowanej (directed net).",
+		Level: 2, Name: "Local activation", Severity: severity.Severe,
+		Description: "An organized radio network is activated in the affected area, including the net control station (SKS), field operators and relay stations. Activating level 2 or 3 means the network works as a directed net.",
 	},
 	{
-		Level: 3, Name: "Pełna aktywacja", Severity: severity.Severe,
-		Description: "Uruchomienie pełnej struktury organizacyjnej sieci łączności, w tym stacji bazowej, operatorów terenowych oraz stacji pośredniczących, z możliwością prowadzenia działań w trybie ciągłym — praca całodobowa w systemie zmianowym.",
+		Level: 3, Name: "Full activation", Severity: severity.Severe,
+		Description: "The full organizational structure is activated — base station, field operators and relay stations — with continuous operation: around-the-clock work in shifts.",
 	},
 }
 
@@ -177,7 +176,7 @@ func emcomHazard(net emcomNetwork, now time.Time) state.Hazard {
 		Severity:   lvl.Severity,
 		Urgency:    "immediate",
 		Certainty:  "observed",
-		Headline:   fmt.Sprintf("%s: poziom %d – %s", net.Name, net.Level, lvl.Name),
+		Headline:   fmt.Sprintf("%s: level %d – %s", net.Name, net.Level, lvl.Name),
 		Status:     "active",
 		ReceivedAt: now,
 		UpdatedAt:  now,
@@ -360,9 +359,9 @@ type emcomLevelView struct {
 
 // emcomFlash maps the post-action redirect marker to a confirmation.
 var emcomFlash = map[string]string{
-	"added":   "Sieć dodana — zaczyna od poziomu 0 (Monitoring).",
-	"level":   "Poziom gotowości sieci zaktualizowany i rozgłoszony.",
-	"deleted": "Sieć usunięta.",
+	"added":   "Network added — it starts at level 0 (Monitoring).",
+	"level":   "Network readiness level updated and broadcast.",
+	"deleted": "Network deleted.",
 }
 
 // handleEmcomPage renders the EMCOM networks panel.
@@ -435,38 +434,38 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	if name == "" {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, "Podaj nazwę sieci (np. SP9MOA EMCOM).")
+		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, "Enter a network name (e.g. SP9MOA EMCOM).")
 		return
 	}
 	if len([]rune(name)) > maxEmcomName {
 		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
-			fmt.Sprintf("Nazwa sieci jest za długa (maksymalnie %d znaków).", maxEmcomName))
+			fmt.Sprintf("Network name is too long (maximum %d characters).", maxEmcomName))
 		return
 	}
 	slug := emcomSlugify(name)
 	if !emcomSlugRe.MatchString(slug) {
 		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
-			"Nazwa sieci musi zawierać litery lub cyfry.")
+			"Network name must contain letters or digits.")
 		return
 	}
 	if len(s.emcomNetworks()) >= maxEmcomNetworks {
 		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
-			fmt.Sprintf("Zbyt wiele sieci (maksymalnie %d).", maxEmcomNetworks))
+			fmt.Sprintf("Too many networks (maximum %d).", maxEmcomNetworks))
 		return
 	}
 	if _, ok := s.emcomNetworkBySlug(slug); ok {
-		s.renderEmcomError(w, r, http.StatusConflict, "Sieć o takiej nazwie już istnieje.")
+		s.renderEmcomError(w, r, http.StatusConflict, "A network with this name already exists.")
 		return
 	}
 	if s.pub == nil {
 		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			"Publikacja niedostępna: brak połączenia z brokerem.")
+			"Publishing is unavailable: no broker connection.")
 		return
 	}
 	net := emcomNetwork{Slug: slug, Name: name, Level: 0}
 	if err := s.publishEmcomState(net, sess.username); err != nil {
 		s.logger.Warn("emcom: publish failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publikacja na brokerze nie powiodła się.")
+		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publishing to the broker failed.")
 		return
 	}
 	s.logger.Info("emcom: network added", "slug", slug, "name", name, "by", sess.username)
@@ -491,12 +490,12 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	}
 	level, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("level")))
 	if err != nil || level < 0 || level > 3 {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, "Poziom musi być liczbą 0-3.")
+		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, "Level must be a number 0-3.")
 		return
 	}
 	if s.pub == nil {
 		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			"Publikacja niedostępna: brak połączenia z brokerem.")
+			"Publishing is unavailable: no broker connection.")
 		return
 	}
 
@@ -504,7 +503,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	net.UpdatedBy = sess.username
 	if err := s.publishEmcomState(net, sess.username); err != nil {
 		s.logger.Warn("emcom: state publish failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publikacja na brokerze nie powiodła się.")
+		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publishing to the broker failed.")
 		return
 	}
 
@@ -513,7 +512,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		h := emcomHazard(net, now)
 		if err := s.pub.PublishActive(emcomSource, h); err != nil {
 			s.logger.Warn("emcom: hazard publish failed", "slug", slug, "error", err)
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publikacja komunikatu nie powiodła się.")
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Publishing the communication failed.")
 			return
 		}
 		typ := dispatch.TransitionNew
@@ -554,12 +553,12 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.pub == nil {
 		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			"Publikacja niedostępna: brak połączenia z brokerem.")
+			"Publishing is unavailable: no broker connection.")
 		return
 	}
 	if err := s.publishEmcomState(emcomNetwork{Slug: slug}, sess.username); err != nil {
 		s.logger.Warn("emcom: state delete failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Usunięcie na brokerze nie powiodło się.")
+		s.renderEmcomError(w, r, http.StatusServiceUnavailable, "Deleting from the broker failed.")
 		return
 	}
 	if s.emcomHazardInMirror(slug) {

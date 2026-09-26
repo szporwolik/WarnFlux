@@ -2270,7 +2270,7 @@ func TestEmcomPanelFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /emcom = %d", resp.StatusCode)
 	}
-	if !strings.Contains(html, "EMCOM networks") || !strings.Contains(html, "Pełna aktywacja") {
+	if !strings.Contains(html, "EMCOM networks") || !strings.Contains(html, "Full activation") {
 		t.Fatalf("emcom page missing sections: %s", html)
 	}
 	csrf := extractCSRF(t, html)
@@ -2327,7 +2327,7 @@ func TestEmcomPanelFlow(t *testing.T) {
 	}
 	h := env.pub.published[0]
 	if h.EventKey != "emcom:sp9moa-emcom" || h.Severity != "severe" || h.Urgency != "immediate" ||
-		!strings.Contains(h.Headline, "poziom 2 – Aktywacja lokalna") || !strings.Contains(h.Headline, "SP9MOA EMCOM") {
+		!strings.Contains(h.Headline, "level 2 – Local activation") || !strings.Contains(h.Headline, "SP9MOA EMCOM") {
 		t.Errorf("hazard = %+v", h)
 	}
 	var ev dispatch.Event
@@ -2361,11 +2361,11 @@ func TestEmcomPanelFlow(t *testing.T) {
 	// The public home page shows the colored chip and the severe
 	// communication in the Important section.
 	_, homeHTML := env.get("/")
-	if !strings.Contains(homeHTML, "SP9MOA EMCOM") || !strings.Contains(homeHTML, "poziom 2") ||
+	if !strings.Contains(homeHTML, "SP9MOA EMCOM") || !strings.Contains(homeHTML, "level 2") ||
 		!strings.Contains(homeHTML, "emcom-chip-l2") {
 		t.Fatalf("home header chip missing: %s", homeHTML)
 	}
-	if !strings.Contains(homeHTML, "poziom 2 – Aktywacja lokalna") {
+	if !strings.Contains(homeHTML, "level 2 – Local activation") {
 		t.Errorf("active communication missing on home page: %s", homeHTML)
 	}
 

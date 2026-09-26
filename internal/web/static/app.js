@@ -418,6 +418,42 @@
     if (tabs.length === 0) {
       return;
     }
+
+    // Archive tab: the fragment (list + pagination) is fetched lazily and
+    // replaced in place by the pagination links.
+    var archiveBox = document.getElementById("archive-box");
+    var archiveLoaded = false;
+
+    function loadingNote(text) {
+      var p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = text;
+      return p;
+    }
+
+    function loadArchive(url) {
+      if (!archiveBox) {
+        return;
+      }
+      archiveBox.textContent = "";
+      archiveBox.appendChild(loadingNote("Loading archive…"));
+      fetch(url || "/archive", { headers: { "Accept": "text/html" }, cache: "no-store" })
+        .then(function (resp) { return resp.ok ? resp.text() : null; })
+        .then(function (html) {
+          if (!archiveBox || !html) {
+            return;
+          }
+          archiveBox.innerHTML = html;
+          archiveLoaded = true;
+        })
+        .catch(function () {
+          if (archiveBox) {
+            archiveBox.textContent = "";
+            archiveBox.appendChild(loadingNote("Archive failed to load."));
+          }
+        });
+    }
+
     tabs.forEach(function (tab) {
       tab.addEventListener("click", function () {
         tabs.forEach(function (t) {
@@ -429,8 +465,23 @@
             panel.hidden = !active;
           }
         });
+        if (tab.dataset.tab === "tab-archive" && !archiveLoaded) {
+          loadArchive();
+        }
       });
     });
+
+    if (archiveBox) {
+      archiveBox.addEventListener("click", function (ev) {
+        var link = ev.target.closest ? ev.target.closest("a[href^='/archive?']") : null;
+        if (!link) {
+          return;
+        }
+        ev.preventDefault();
+        loadArchive(link.getAttribute("href"));
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    }
   }
 
   if (document.readyState === "loading") {

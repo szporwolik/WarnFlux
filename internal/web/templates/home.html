@@ -42,6 +42,7 @@
   <nav class="home-tabs" role="tablist" aria-label="Sections">
     <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">Active hazards</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-radio">Map</button>
+    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-archive">Archive</button>
   </nav>
 
   <main class="home-main">
@@ -64,6 +65,9 @@
         <p class="muted">Loading weather…</p>
       </div>
       <p class="hw-attrib">Weather icons: <a href="https://erikflowers.github.io/weather-icons/" target="_blank" rel="noopener noreferrer">Weather Icons by Erik Flowers</a> (SIL OFL 1.1 / MIT)</p>
+    </section>
+    <section class="home-panel" id="panel-tab-archive" data-panel="tab-archive" hidden>
+      <div id="archive-box"><p class="muted">Loading archive…</p></div>
     </section>
   </main>
 

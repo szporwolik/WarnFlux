@@ -80,20 +80,26 @@ func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
 }
 
 func newTestEnv(t *testing.T) *testEnv {
-	return newTestEnvFull(t, nil, nil)
+	return newTestEnvFull(t, nil, nil, nil)
 }
 
 func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv {
-	return newTestEnvFull(t, ingest, nil)
+	return newTestEnvFull(t, ingest, nil, nil)
 }
 
 // newTestEnvWithHub builds the test environment with an APRS hub wired
 // into the web server (the home-page map tab reads it).
 func newTestEnvWithHub(t *testing.T, hub *aprs.Hub) *testEnv {
-	return newTestEnvFull(t, nil, hub)
+	return newTestEnvFull(t, nil, hub, nil)
 }
 
-func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub) *testEnv {
+// newTestEnvWithStore builds the test environment with an event store
+// wired into the web server (the home-page archive tab reads it).
+func newTestEnvWithStore(t *testing.T, events storage.EventStore) *testEnv {
+	return newTestEnvFull(t, nil, nil, events)
+}
+
+func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore) *testEnv {
 	t.Helper()
 
 	cfg := config.Web{
@@ -161,7 +167,7 @@ func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub)
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, ingress, logger, "test-version", "abc1234", users, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, ingress, logger, "test-version", "abc1234", users, events, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}

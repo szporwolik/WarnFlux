@@ -2166,6 +2166,14 @@
     if (!dialog) {
       return;
     }
+    // Server-rendered opens (?edit=<id>, failed submits) use the bare
+    // open attribute; upgrade them to a real modal with a backdrop.
+    if (dialog.hasAttribute("open")) {
+      dialog.removeAttribute("open");
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+      }
+    }
     var field = function (id) { return document.getElementById(id); };
 
     function openDialog(mode) {

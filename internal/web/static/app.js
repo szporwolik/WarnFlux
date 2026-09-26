@@ -2051,6 +2051,28 @@
     }
     var field = function (id) { return document.getElementById(id); };
 
+    function openDialog(mode) {
+      var err = dialog.querySelector(".login-error");
+      if (err) {
+        err.remove();
+      }
+      var title = document.getElementById("user-edit-title");
+      if (title) {
+        title.textContent = mode === "edit" ? "Edit user" : "Add user";
+      }
+      var password = field("user-edit-password");
+      if (password) {
+        password.placeholder = mode === "edit"
+          ? "new password (optional)"
+          : "password (required for member/emcom)";
+      }
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+      } else {
+        dialog.setAttribute("open", "");
+      }
+    }
+
     document.querySelectorAll(".user-edit-btn").forEach(function (btn) {
       btn.addEventListener("click", function () {
         field("user-edit-id").value = btn.dataset.id || "0";
@@ -2061,17 +2083,24 @@
         field("user-edit-role").value = btn.dataset.role || "";
         field("user-edit-aprs").value = btn.dataset.aprs || "";
         field("user-edit-password").value = "";
-        var err = dialog.querySelector(".login-error");
-        if (err) {
-          err.remove();
-        }
-        if (typeof dialog.showModal === "function") {
-          dialog.showModal();
-        } else {
-          dialog.setAttribute("open", "");
-        }
+        openDialog("edit");
       });
     });
+
+    var add = document.getElementById("user-add-btn");
+    if (add) {
+      add.addEventListener("click", function () {
+        field("user-edit-id").value = "0";
+        field("user-edit-username").value = "";
+        field("user-edit-phone").value = "";
+        field("user-edit-email").value = "";
+        field("user-edit-discord").value = "";
+        field("user-edit-role").value = "";
+        field("user-edit-aprs").value = "";
+        field("user-edit-password").value = "";
+        openDialog("add");
+      });
+    }
 
     var cancel = document.getElementById("user-edit-cancel");
     if (cancel) {

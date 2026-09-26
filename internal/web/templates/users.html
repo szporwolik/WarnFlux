@@ -15,24 +15,12 @@
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>Users</h2>
       {{if .Notice}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Notice}}</p>{{end}}
-      {{if .Error}}{{if not .EditID}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
-      <form method="post" action="/users" class="user-form">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="text" name="username" placeholder="username" value="{{.Form.Username}}" required maxlength="64" pattern="[a-z0-9._-]+">
-        <input type="text" name="phone" placeholder="phone" value="{{.Form.Phone}}" maxlength="32">
-        <input type="text" name="email" placeholder="email" value="{{.Form.Email}}" maxlength="128">
-        <input type="text" name="discord" placeholder="discord" value="{{.Form.Discord}}" maxlength="128">
-        <select name="role">
-          <option value="" {{if eq .Form.Role ""}}selected{{end}}>recipient (no sign-in)</option>
-          <option value="member" {{if eq .Form.Role "member"}}selected{{end}}>member (account only)</option>
-          <option value="emcom" {{if eq .Form.Role "emcom"}}selected{{end}}>emcom (compose + account)</option>
-        </select>
-        <input type="text" name="aprs_callsigns" placeholder="APRS callsigns (e.g. SP9XXX-16)" value="{{.Form.APRSCallsigns}}" maxlength="256">
-        <input type="password" name="password" placeholder="password (required for member/emcom)" maxlength="72" autocomplete="new-password">
-        <button type="submit" class="btn-primary btn-add">
+      {{if .Error}}{{if not .DialogOpen}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
+      <div class="user-toolbar">
+        <button type="button" class="btn-primary btn-add" id="user-add-btn">
           <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>Add user
         </button>
-      </form>
+      </div>
       {{if .Users}}
       <div class="table-wrap">
         <table class="plugins">
@@ -112,12 +100,12 @@
       {{end}}
     </section>
   </main>
-  <dialog class="modal" id="user-edit-dialog" {{if .EditID}}open{{end}}>
+  <dialog class="modal" id="user-edit-dialog" {{if .DialogOpen}}open{{end}}>
     <form method="post" action="/users" class="modal-form">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <input type="hidden" name="edit_id" value="{{.EditID}}" id="user-edit-id">
-      <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Edit user</h3>
-      {{if .Error}}{{if .EditID}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
+      <input type="hidden" name="edit_id" value="{{if gt .EditID 0}}{{.EditID}}{{else}}0{{end}}" id="user-edit-id">
+      <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span id="user-edit-title">{{if gt .EditID 0}}Edit user{{else}}Add user{{end}}</span></h3>
+      {{if .Error}}{{if .DialogOpen}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
       <label class="modal-field">Username
         <input type="text" name="username" id="user-edit-username" value="{{.Form.Username}}" required maxlength="64" pattern="[a-z0-9._-]+">
       </label>
@@ -141,7 +129,7 @@
         <input type="text" name="aprs_callsigns" id="user-edit-aprs" value="{{.Form.APRSCallsigns}}" maxlength="256">
       </label>
       <label class="modal-field">Password
-        <input type="password" name="password" id="user-edit-password" placeholder="new password (optional)" maxlength="72" autocomplete="new-password">
+        <input type="password" name="password" id="user-edit-password" placeholder="{{if gt .EditID 0}}new password (optional){{else}}password (required for member/emcom){{end}}" maxlength="72" autocomplete="new-password">
       </label>
       <div class="modal-actions">
         <button type="submit" class="btn-primary">Save</button>

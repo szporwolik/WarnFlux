@@ -909,37 +909,14 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   flex-direction: column;
   min-height: 0;
 }
-.users-main .user-form,
 .users-main .pager { flex: 0 0 auto; }
 .users-main .table-wrap { overflow: visible; }
-.user-form {
+.user-toolbar {
+  flex: 0 0 auto;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
+  justify-content: flex-end;
   margin-bottom: 1rem;
 }
-.user-form input {
-  background: var(--input-bg);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
-  color: var(--text);
-  padding: 0.45rem 0.7rem;
-  font-size: 0.9rem;
-}
-.user-form input:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
-.user-form select {
-  background: var(--input-bg);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
-  color: var(--text);
-  padding: 0.45rem 0.7rem;
-  font-size: 0.9rem;
-}
-.user-form select:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
-.user-form input[name="username"] { width: 180px; }
-.user-form input[name="phone"], .user-form input[name="discord"] { width: 150px; }
-.user-form input[name="email"] { flex: 1 1 220px; }
 .btn-add { width: auto; display: inline-flex; align-items: center; gap: 0.4rem; }
 /* Modal dialogs (users page edit form). */
 .modal {

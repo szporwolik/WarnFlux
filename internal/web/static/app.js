@@ -1,9 +1,6 @@
 // WarnFlux dashboard poller — no external dependencies.
 // Refreshes the dashboard sections every 5 seconds via fetch.
 // On session expiry (401) the browser is sent back to the login page.
-(function () {
-  "use strict";
-
   // Client-side UI strings, keyed like internal/i18n. The server stamps
   // <html lang> on every page, so table = I18N[lang] works everywhere.
   var I18N = {
@@ -104,6 +101,10 @@
     }
     return s;
   }
+
+
+(function () {
+  "use strict";
 
   var SECTIONS = [
     { path: "/partials/status", id: "status-section" },
@@ -1060,9 +1061,9 @@
           // When the frame was transmitted (packet timestamp) or, when
           // the packet carried none, when we last heard the station.
           if (s.last_packet_at) {
-            popup += "<br>tr("map.sent") + ": " + esc(fmtTime(s.last_packet_at));
+            popup += "<br>" + tr("map.sent") + ": " + esc(fmtTime(s.last_packet_at));
           }
-          popup += "<br>tr("map.heard") + ": " + esc(fmtTime(s.last_heard_at));
+          popup += "<br>" + tr("map.heard") + ": " + esc(fmtTime(s.last_heard_at));
           if (s.distance_km) {
             popup += "<br>" + Number(s.distance_km).toFixed(1) + " km";
           }
@@ -1085,13 +1086,13 @@
           // detail view.
           var hover = "<strong>" + esc(s.callsign) + "</strong>";
           if (s.speed_kmh > 0 || s.course_deg) {
-            hover += "<br>tr("map.speed") + ": " + Number(s.speed_kmh).toFixed(0) + " km/h";
+            hover += "<br>" + tr("map.speed") + ": " + Number(s.speed_kmh).toFixed(0) + " km/h";
             if (s.course_deg) {
               hover += " @ " + s.course_deg + "\u00b0";
             }
           }
           if (s.altitude_m != null) {
-            hover += "<br>tr("map.alt") + ": " + Number(s.altitude_m).toFixed(0) + " m";
+            hover += "<br>" + tr("map.alt") + ": " + Number(s.altitude_m).toFixed(0) + " m";
           }
           if (s.comment) {
             hover += "<br>" + esc(s.comment);
@@ -1099,7 +1100,7 @@
           if (s.status) {
             hover += '<br><span class="muted">' + esc(s.status) + "</span>";
           }
-          hover += "<br>tr("map.heard") + ": " + esc(fmtTime(s.last_heard_at));
+          hover += "<br>" + tr("map.heard") + ": " + esc(fmtTime(s.last_heard_at));
           if (s.distance_km) {
             hover += "<br>" + Number(s.distance_km).toFixed(1) + " km";
           }
@@ -1236,7 +1237,7 @@
             if (e.expires_at) { when.push(tr("map.to") + " " + fmtLocalDate(e.expires_at)); }
             popup += "<br><span class=\"muted\">" + when.join(" · ") + "</span>";
           }
-          popup += "<br><span class=\"muted\">tr("warnings.source") + " " + esc(e.source) + "</span>";
+          popup += "<br><span class=\"muted\">" + tr("warnings.source") + " " + esc(e.source) + "</span>";
           // Composed events carry the APRS emergency symbol; every
           // other source keeps the severity-colored triangle.
           var icon = e.source === "compose" ? aprsWarningIcon() : hazardIcon(e.severity);
@@ -1322,7 +1323,7 @@
       html += " · " + tr("map.wind") + " " + fmtNum(r.wind_speed_kmh) + " km/h";
       if (r.wind_direction_deg != null) { html += " @ " + fmtNum(r.wind_direction_deg, 0) + "°"; }
     }
-    if (r.pressure_hpa != null) { html += " · " + fmtNum(r.pressure_hpa, 0) + tr("map.pressure"); }
+    if (r.pressure_hpa != null) { html += " · " + fmtNum(r.pressure_hpa, 0) + " " + tr("map.pressure"); }
     return html + "</div>";
   }
 
@@ -1538,15 +1539,15 @@
   function aircraftPopup(a) {
     var html = '<span class="muted">' + tr("map.aircraft") + '</span><br><strong>' + esc(a.callsign || a.icao24) + "</strong>";
     html += '<br><span class="muted">' + esc(String(a.icao24 || "").toUpperCase()) + "</span>";
-    if (a.altitude_m != null) { html += "<br>tr("map.alt") + ": " + fmtNum(a.altitude_m, 0) + " m"; }
+    if (a.altitude_m != null) { html += "<br>" + tr("map.alt") + ": " + fmtNum(a.altitude_m, 0) + " m"; }
     if (a.speed_kmh != null) {
-      html += "<br>tr("map.speed") + ": " + fmtNum(a.speed_kmh, 0) + " km/h";
+      html += "<br>" + tr("map.speed") + ": " + fmtNum(a.speed_kmh, 0) + " km/h";
       if (a.track_deg != null) { html += " @ " + fmtNum(a.track_deg, 0) + "\u00b0"; }
     }
-    if (a.vertical_rate_m_s != null) { html += "<br>tr("map.climb") + ": " + fmtNum(a.vertical_rate_m_s, 1) + " m/s"; }
-    if (a.category) { html += "<br>tr("map.category") + ": " + esc(a.category); }
+    if (a.vertical_rate_m_s != null) { html += "<br>" + tr("map.climb") + ": " + fmtNum(a.vertical_rate_m_s, 1) + " m/s"; }
+    if (a.category) { html += "<br>" + tr("map.category") + ": " + esc(a.category); }
     if (a.seen_at) {
-      html += "<br>tr("map.seen") + ": " + esc(fmtTime(new Date(a.seen_at * 1000).toISOString()));
+      html += "<br>" + tr("map.seen") + ": " + esc(fmtTime(new Date(a.seen_at * 1000).toISOString()));
     }
     return html;
   }

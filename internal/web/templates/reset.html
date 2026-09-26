@@ -12,8 +12,8 @@
 <body class="login-page">
   <main class="login-card">
     <div class="lang-switch login-lang" role="group" aria-label="{{tr .Lang "common.language"}}">
-      <a class="lang-opt{{if eq .Lang "en"}} active{{end}}" href="/lang/en" hreflang="en" lang="en" title="English">EN</a>
-      <a class="lang-opt{{if eq .Lang "pl"}} active{{end}}" href="/lang/pl" hreflang="pl" lang="pl" title="Polski">PL</a>
+      <a class="lang-opt{{if eq .Lang "en"}} active{{end}}" href="/lang/en" hreflang="en" lang="en" title="English" onclick="this.href='/lang/en?next='+encodeURIComponent(location.pathname+location.search)">EN</a>
+      <a class="lang-opt{{if eq .Lang "pl"}} active{{end}}" href="/lang/pl" hreflang="pl" lang="pl" title="Polski" onclick="this.href='/lang/pl?next='+encodeURIComponent(location.pathname+location.search)">PL</a>
     </div>
     <img class="login-logo" src="/static/assets/logo.png" alt="WarnFlux logo">
     <h1 class="login-name">{{.Header1}}</h1>

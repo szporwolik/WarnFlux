@@ -18,10 +18,13 @@ func TestLanguageSwitch(t *testing.T) {
 		t.Fatalf("GET /lang/de = %d, want 404", resp.StatusCode)
 	}
 
-	// Valid code: 303 back to the referer and the wf_lang cookie set.
-	resp, _ = env.get("/lang/pl")
+	// Valid code: 303 back to the requested page and the wf_lang cookie set.
+	resp, _ = env.get("/lang/pl?next=%2Fusers")
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("GET /lang/pl = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/users" {
+		t.Fatalf("redirect target = %q, want /users", loc)
 	}
 	var cookie *http.Cookie
 	for _, c := range resp.Cookies() {

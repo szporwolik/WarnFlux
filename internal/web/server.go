@@ -411,8 +411,17 @@ func (s *Server) handleLanguage(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		Secure: s.sessions.secure,
 	})
-	target := r.Referer()
-	if u, err := url.Parse(target); err != nil || u.Scheme != "" && u.Host != r.Host {
+	// Return address: the ?next= path wins (the app's Referrer-Policy is
+	// no-referrer, so the Referer is usually empty), then the Referer,
+	// then the public page.
+	target := r.URL.Query().Get("next")
+	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
+		target = ""
+	}
+	if target == "" {
+		target = r.Referer()
+	}
+	if u, err := url.Parse(target); target == "" || err != nil || u.Scheme != "" && u.Host != r.Host {
 		target = "/"
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)

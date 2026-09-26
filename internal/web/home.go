@@ -234,6 +234,12 @@ func (s *Server) buildHomeView() homeView {
 		v.Sources = publicSources(s.router.Statuses())
 	}
 	for _, net := range s.emcomNetworks() {
+		// Monitoring (level 0) is the default, calm state of every
+		// network — the public header only announces networks that are
+		// actually raised.
+		if net.Level <= 0 {
+			continue
+		}
 		v.EmcomNetworks = append(v.EmcomNetworks, emcomChipView{
 			Network:    net.Name,
 			Level:      net.Level,

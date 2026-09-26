@@ -2387,8 +2387,10 @@ func TestEmcomPanelFlow(t *testing.T) {
 	}
 	mirrorInfo(3) // level 0 payload
 	_, homeHTML = env.get("/")
-	if !strings.Contains(homeHTML, "emcom-chip-l0") || !strings.Contains(homeHTML, "Monitoring") {
-		t.Errorf("chip did not fall back to monitoring: %s", homeHTML)
+	// Monitoring is the default state: level-0 networks disappear from
+	// the public header entirely.
+	if strings.Contains(homeHTML, "emcom-chip") || strings.Contains(homeHTML, "Monitoring") {
+		t.Errorf("monitoring network still shown on the home header: %s", homeHTML)
 	}
 
 	// Deleting the network clears the retained document.

@@ -850,13 +850,19 @@
     aqLayer = L.layerGroup().addTo(map);
 
     // Our station marker at the position learned from our own beacon
-    // (data-own-lat/lon). The collection-radius circle is drawn around
-    // the operational-area center (data-lat/lon), not around the station:
-    // the area center is the virtual middle of the towns we serve.
-    L.circleMarker([ownLat, ownLon], {
-      radius: 7, color: "#fff", weight: 2,
-      fillColor: "#007a3d", fillOpacity: 1
-    }).addTo(map).bindTooltip(ownCall || tr("map.our_station"), { direction: "top" });
+    // (data-own-lat/lon), in the same badge style as the other pins. The
+    // collection-radius circle is drawn around the operational-area
+    // center (data-lat/lon), not around the station: the area center is
+    // the virtual middle of the towns we serve.
+    var ownMarker = L.marker([ownLat, ownLon], {
+      icon: wfBadge({
+        color: "#007a3d",
+        glyph: BADGE_GLYPHS.antenna,
+        label: ownCall || tr("map.our_station")
+      }),
+      riseOnHover: true
+    }).addTo(map);
+    ownMarker.bindTooltip(ownCall || tr("map.our_station"), { direction: "top" });
     if (radiusKm > 0) {
       rangeCircle = L.circle([lat, lon], {
         radius: radiusKm * 1000,
@@ -949,54 +955,46 @@
     enableRadar();
   }
 
-  // APRS symbol decoding: stations carry a two-character symbol code
-  // (symbol_table + symbol). The bundled aprs.fi sprite (Heikki
-  // Hannikainen OH7LZB, attribution under the map) holds the primary
-  // table (/) and the alternate table (\) as 48px cells in a 16-column
-  // grid, row-major by character code 33..126. Cells are scaled to
-  // 28px on screen via CSS, so the @2x sprite stays crisp on retina.
-  var APRS_SYM_SIZE = 28;
-  var APRS_SPRITES = {
-    "/": "/static/aprs-symbols/aprs-symbols-24-0@2x.png",
-    "\\": "/static/aprs-symbols/aprs-symbols-24-1@2x.png"
+  // Unified map badge: one shared pin style for every category — a flat
+  // colored circle with a white ring, a drop shadow and a pointer tail,
+  // with a white glyph inside (SVG stroke icons in one style; weather
+  // conditions reuse the Weather Icons font). Stations carry a halo
+  // callsign label under the badge, like every labeled pin.
+  var BADGE_GLYPHS = {
+    antenna: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16"/><path d="M7 8a7.5 7.5 0 0 1 10 0"/><path d="M4 12a11.5 11.5 0 0 1 16 0"/></svg>',
+    warning: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
+    wind: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/></svg>',
+    plane: '<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M12 2 L21 21 L12 17 L3 21 Z"/></svg>'
   };
 
-  function aprsSymbolMarker(s) {
-    var table = s.symbol_table === "\\" ? "\\" : "/";
-    var code = s.symbol ? s.symbol.charCodeAt(0) : 0;
-    if (code < 33 || code > 126) {
-      return null; // unknown symbol — the theme-colored circle fallback
+  // wfBadge renders one unified pin. opts: color, glyph (SVG or HTML),
+  // rot (glyph rotation, e.g. the aircraft track) and an optional halo
+  // label under the pin.
+  function wfBadge(opts) {
+    var color = opts.color || "#607d8b";
+    var glyph = '<span style="display:inline-flex;transform:rotate(' + (opts.rot || 0) + 'deg)">' + (opts.glyph || "") + '</span>';
+    var html = '<span class="wf-badge" style="--wf-bg:' + color + '">' + glyph + '</span>';
+    var size = [24, 30];
+    var anchor = [12, 28];
+    if (opts.label) {
+      html = '<span class="wf-badge-wrap">' + html +
+        '<span class="wf-station-label">' + esc(opts.label) + '</span></span>';
+      size = [96, 46];
+      anchor = [48, 30];
     }
-    var idx = code - 33;
-    var col = idx % 16;
-    var row = Math.floor(idx / 16);
-    // The callsign label sits under the icon (cqops-style) so stations
-    // are identifiable without hovering or clicking.
-    var html = '<span class="aprs-sym-wrap">' +
-      '<span class="aprs-sym-img" style="background-image:url(\'' + APRS_SPRITES[table] +
-      "\');background-position:-" + (col * APRS_SYM_SIZE) + "px -" + (row * APRS_SYM_SIZE) + 'px"></span>' +
-      '<span class="wf-station-label">' + esc(s.callsign) + '</span></span>';
     return L.divIcon({
-      className: "aprs-sym",
-      iconSize: [96, 44],
-      iconAnchor: [48, 14],
+      className: "wf-badge-pin",
+      iconSize: size,
+      iconAnchor: anchor,
       html: html
     });
   }
 
-  // Fallback marker for stations without a known symbol: a theme-colored
-  // circle with the same callsign label underneath.
-  function aprsFallbackIcon(s) {
-    var t = tilesForTheme();
-    var svg = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">' +
-      '<circle cx="7" cy="7" r="5.5" fill="' + t.marker.fillColor + '" stroke="' + t.marker.color + '" stroke-width="2"/></svg>';
-    var html = '<span class="aprs-sym-wrap">' + svg +
-      '<span class="wf-station-label">' + esc(s.callsign) + '</span></span>';
-    return L.divIcon({
-      className: "aprs-fallback",
-      iconSize: [96, 40],
-      iconAnchor: [48, 6],
-      html: html
+  function stationBadge(s) {
+    return wfBadge({
+      color: "#1565c0",
+      glyph: BADGE_GLYPHS.antenna,
+      label: s.callsign
     });
   }
 
@@ -1014,23 +1012,23 @@
     return [la2 * 180 / Math.PI, lo2 * 180 / Math.PI];
   }
 
-  // Overlay colors per theme: the movement tail, its dots and the
-  // heading vector stay distinguishable from each other and from the
-  // station markers on both tile styles. The range circle is neutral.
+  // Overlay colors per theme: movement tails and heading vectors share
+  // one language across categories — the tail in the category accent,
+  // the heading vector always orange. The range circle is neutral.
   function aprsOverlayColors() {
     if (document.documentElement.getAttribute("data-theme") !== "light") {
       return {
-        track: "#4fc3f7",      // tail line + dots (light blue)
+        track: "#4fc3f7",      // station tails (light blue)
         trackBorder: "#01579b",
-        heading: "#ff7043",    // vector + arrowhead (orange)
-        range: "#9ca3af"       // collection-radius circle (neutral gray)
+        heading: "#ff9800",    // direction vector + arrowhead (orange)
+        range: "#94a3b8"       // collection-radius circle (neutral)
       };
     }
     return {
       track: "#0277bd",
       trackBorder: "#ffffff",
-      heading: "#d32f2f",
-      range: "#6b7280"
+      heading: "#e65100",
+      range: "#64748b"
     };
   }
 
@@ -1048,34 +1046,8 @@
           if (!s || !s.position || s.self) {
             return; // our own locator has its dedicated marker
           }
-          var popup = "<strong>" + esc(s.callsign) + "</strong>";
-          if (s.comment) {
-            popup += "<br>" + esc(s.comment);
-          }
-          // When the frame was transmitted (packet timestamp) or, when
-          // the packet carried none, when we last heard the station.
-          if (s.last_packet_at) {
-            popup += "<br>" + tr("map.sent") + ": " + esc(fmtTime(s.last_packet_at));
-          }
-          popup += "<br>" + tr("map.heard") + ": " + esc(fmtTime(s.last_heard_at));
-          if (s.distance_km) {
-            popup += "<br>" + Number(s.distance_km).toFixed(1) + " km";
-          }
-          // How the frame reached us: over the radio via an i-gate, or
-          // injected directly from the internet.
-          if (s.origin === "rf") {
-            popup += "<br>Via: radio (APRS)";
-          } else if (s.origin === "internet") {
-            popup += "<br>Via: internet (APRS-IS)";
-          }
-          popup += stationWeatherBlock(s.callsign);
-          var icon = aprsSymbolMarker(s);
-          var marker;
-          if (icon) {
-            marker = L.marker([s.position.latitude, s.position.longitude], { icon: icon, riseOnHover: true });
-          } else {
-            marker = L.marker([s.position.latitude, s.position.longitude], { icon: aprsFallbackIcon(s), riseOnHover: true });
-          }
+          var popup = stationPopup(s);
+          var marker = L.marker([s.position.latitude, s.position.longitude], { icon: stationBadge(s), riseOnHover: true });
           // Hover shows the essentials; the click popup keeps the full
           // detail view.
           var hover = "<strong>" + esc(s.callsign) + "</strong>";
@@ -1158,41 +1130,22 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
-  // Hazard icons for active events that carry coordinates (road
-  // difficulties, ...): a severity-colored warning triangle with a
-  // detail popup, included in the view fit.
+  // Severity palette for hazard pins and popup banners: one distinct hue
+  // per level so informational/unknown events never read like minor ones.
+  // Matches the .sev badge palette in style.css.
   var HAZARD_COLORS = {
-    extreme: "#7b1fa2",
-    severe: "#d32f2f",
-    moderate: "#f57c00",
-    minor: "#fbc02d",
-    unknown: "#78909c"
+    extreme: "#d32f2f",
+    severe: "#ef6c00",
+    moderate: "#f0a020",
+    minor: "#43a047",
+    informational: "#1e88e5",
+    unknown: "#64748b"
   };
 
-  // aprsWarningIcon renders the APRS emergency symbol (alternate
-  // table "!") used for events composed through the web UI.
-  function aprsWarningIcon() {
-    var html = '<span class="aprs-sym-wrap">' +
-      '<span class="aprs-sym-img" style="background-image:url(\'' + APRS_SPRITES["\\"] + '\');background-position:-0px -0px"></span>' +
-      '</span>';
-    return L.divIcon({
-      className: "aprs-sym",
-      iconSize: [96, 44],
-      iconAnchor: [48, 14],
-      html: html
-    });
-  }
-
   function hazardIcon(sev) {
-    var c = HAZARD_COLORS[sev] || HAZARD_COLORS.unknown;
-    var svg = '<svg width="22" height="20" viewBox="0 0 22 20" aria-hidden="true">' +
-      '<path d="M11 1 L21 19 L1 19 Z" fill="' + c + '" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>' +
-      '<text x="11" y="15.5" text-anchor="middle" font-size="12" font-weight="bold" fill="#fff">!</text></svg>';
-    return L.divIcon({
-      className: "wf-hazard-icon",
-      iconSize: [22, 20],
-      iconAnchor: [11, 18],
-      html: svg
+    return wfBadge({
+      color: HAZARD_COLORS[sev] || HAZARD_COLORS.unknown,
+      glyph: BADGE_GLYPHS.warning
     });
   }
 
@@ -1221,21 +1174,27 @@
           if (!e.latitude || !e.longitude) {
             return;
           }
-          var popup = '<span class="sev sev-' + (e.severity || "unknown") + '">' +
-            esc(e.severity || "unknown") + "</span> <strong>" + esc(e.headline || e.event) + "</strong>";
+          var body = "";
           if (e.description) {
-            popup += "<br>" + esc(e.description).replace(/\n/g, "<br>");
+            body += esc(e.description).replace(/\n/g, "<br>");
           }
           if (e.effective_at || e.expires_at) {
             var when = [];
             if (e.effective_at) { when.push(tr("map.from") + " " + fmtLocalDate(e.effective_at)); }
             if (e.expires_at) { when.push(tr("map.to") + " " + fmtLocalDate(e.expires_at)); }
-            popup += "<br><span class=\"muted\">" + when.join(" · ") + "</span>";
+            body += "<br><span class=\"muted\">" + when.join(" · ") + "</span>";
           }
-          popup += "<br><span class=\"muted\">" + tr("warnings.source") + " " + esc(e.source) + "</span>";
-          // Composed events carry the APRS emergency symbol; every
-          // other source keeps the severity-colored triangle.
-          var icon = e.source === "compose" ? aprsWarningIcon() : hazardIcon(e.severity);
+          body += "<br><span class=\"muted\">" + tr("warnings.source") + " " + esc(e.source) + "</span>";
+          // Severity-colored badge + banner, the same visual system as
+          // every other map pin.
+          var popup = wfPopup({
+            color: HAZARD_COLORS[e.severity] || HAZARD_COLORS.unknown,
+            icon: BADGE_GLYPHS.warning,
+            title: esc(e.headline || e.event),
+            value: esc(e.severity || "unknown"),
+            body: body
+          });
+          var icon = hazardIcon(e.severity);
           var m = L.marker([e.latitude, e.longitude], { icon: icon, riseOnHover: true });
           m.bindTooltip(esc(e.headline || e.event), { sticky: true, direction: "top" });
           m.bindPopup(popup);
@@ -1322,26 +1281,80 @@
     return html + "</div>";
   }
 
-  function weatherIcon(r) {
-    var temp = r.temperature_c != null ? Math.round(r.temperature_c) + "°" : "";
-    return L.divIcon({
-      className: "hw-pin-wrap",
-      iconSize: [52, 22],
-      iconAnchor: [26, 11],
-      html: '<span class="hw-pin"><i class="wi ' + condIcon(r.condition) +
-        '" aria-hidden="true"></i>' + (temp ? '<span class="hw-pin-t">' + temp + '</span>' : '') + '</span>'
+  // wfPopup builds the unified popup: a colored banner (the category
+  // color) with the same glyph as the pin, the title, an optional value
+  // chip, then the detail body on the themed surface.
+  function wfPopup(opts) {
+    var icon = opts.icon || "";
+    if (opts.iconRot) {
+      icon = '<span style="display:inline-flex;transform:rotate(' + opts.iconRot + 'deg)">' + icon + '</span>';
+    }
+    var html = '<div class="wf-pop">';
+    html += '<div class="wf-pop-head" style="background:' + (opts.color || "#607d8b") + '">';
+    if (icon) {
+      html += '<span class="wf-pop-ico">' + icon + '</span>';
+    }
+    html += '<span class="wf-pop-t"><strong>' + (opts.title || "") + '</strong>';
+    if (opts.sub) {
+      html += '<span class="wf-pop-sub">' + opts.sub + '</span>';
+    }
+    html += '</span>';
+    if (opts.value) {
+      html += '<span class="wf-pop-val">' + opts.value + '</span>';
+    }
+    html += '</div><div class="wf-pop-body">' + (opts.body || "") + '</div></div>';
+    return html;
+  }
+
+  // stationPopup renders the unified popup for one station: blue banner
+  // with the antenna glyph and callsign, details in the body.
+  function stationPopup(s) {
+    var body = "";
+    if (s.comment) {
+      body += '<div class="muted">' + esc(s.comment) + '</div>';
+    }
+    var lines = [];
+    // When the frame was transmitted (packet timestamp) or, when the
+    // packet carried none, when we last heard the station.
+    if (s.last_packet_at) {
+      lines.push(tr("map.sent") + ": " + fmtTime(s.last_packet_at));
+    }
+    lines.push(tr("map.heard") + ": " + fmtTime(s.last_heard_at));
+    if (s.distance_km) {
+      lines.push(Number(s.distance_km).toFixed(1) + " km");
+    }
+    // How the frame reached us: over the radio via an i-gate, or
+    // injected directly from the internet.
+    if (s.origin === "rf") {
+      lines.push(tr("map.via.radio"));
+    } else if (s.origin === "internet") {
+      lines.push(tr("map.via.internet"));
+    }
+    body += lines.join("<br>");
+    body += stationWeatherBlock(s.callsign);
+    return wfPopup({
+      color: "#1565c0",
+      icon: BADGE_GLYPHS.antenna,
+      title: esc(s.callsign),
+      body: body
     });
   }
 
-  // weatherPopup renders the full detail popup for one report: condition,
-  // temperature, humidity, wind, pressure, radiation, the next three
-  // forecast days and the report time.
+  function weatherIcon(r) {
+    var temp = r.temperature_c != null ? Math.round(r.temperature_c) + "°" : "";
+    return wfBadge({
+      color: "#1e88e5",
+      glyph: '<i class="wi ' + condIcon(r.condition) + '" aria-hidden="true"></i>',
+      label: temp || undefined
+    });
+  }
+
+  // weatherPopup renders the full detail popup for one report: a blue
+  // banner with the condition glyph, name, provider and temperature,
+  // then humidity/wind/pressure/radiation, the next three forecast days
+  // and the report time.
   function weatherPopup(r) {
-    var html = '<div class="hw-popup">';
-    html += '<div class="hw-popup-head"><i class="wi ' + condIcon(r.condition) + '" aria-hidden="true"></i>';
-    html += '<div class="hw-popup-id"><strong>' + esc(r.name) + '</strong><span class="muted">' + esc(r.provider) + '</span></div>';
-    html += r.temperature_c != null ? '<span class="hw-popup-temp">' + fmtNum(r.temperature_c) + '°C</span>' : '';
-    html += '</div>';
+    var body = "";
     var meta = [];
     if (r.humidity_pct != null) { meta.push(tr("map.hum") + " " + fmtNum(r.humidity_pct, 0) + "%"); }
     if (r.wind_speed_kmh != null) {
@@ -1353,21 +1366,28 @@
     if (r.pressure_hpa != null) { meta.push(fmtNum(r.pressure_hpa, 0) + " hPa"); }
     if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
     if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
-    if (meta.length) { html += '<div class="hw-popup-meta">' + meta.join(" · ") + '</div>'; }
+    if (meta.length) { body += '<div class="wf-pop-meta">' + meta.join(" · ") + '</div>'; }
     var f = forecastKey()[r.provider + "\x00" + r.name];
     if (f && f.daily && f.daily.length) {
-      html += '<div class="hw-fcast">';
+      body += '<div class="hw-fcast">';
       f.daily.slice(0, 3).forEach(function (d) {
-        html += '<span class="hw-fday" title="' + esc(d.date || "") + '">' +
+        body += '<span class="hw-fday" title="' + esc(d.date || "") + '">' +
           '<i class="wi hw-fday-icon ' + condIcon(d.condition) + '" aria-hidden="true"></i>' +
           '<span class="hw-fday-t">' + (d.temperature_max_c != null ? Math.round(d.temperature_max_c) + "°" : "—") + '</span></span>';
       });
-      html += '</div>';
+      body += '</div>';
     }
     if (r.generated_at) {
-      html += '<div class="hw-popup-time muted">' + tr("map.updated") + " " + esc(fmtTime(r.generated_at)) + '</div>';
+      body += '<div class="wf-pop-time muted">' + tr("map.updated") + " " + esc(fmtTime(r.generated_at)) + '</div>';
     }
-    return html + '</div>';
+    return wfPopup({
+      color: "#1e88e5",
+      icon: '<i class="wi ' + condIcon(r.condition) + '" aria-hidden="true"></i>',
+      title: esc(r.name),
+      sub: esc(r.provider),
+      value: r.temperature_c != null ? fmtNum(r.temperature_c) + "°C" : "",
+      body: body
+    });
   }
 
   // renderWeatherLayer puts one pin per weather report on the shared map.
@@ -1626,32 +1646,36 @@
   var aircraftMarkers = {};
   var AIRCRAFT_POLL_MS = 15 * 1000;
 
-  // planeIcon renders one aircraft as a track-rotated plane glyph;
-  // grounded targets are gray, airborne ones amber.
+  // planeIcon renders one aircraft as a badge with the track-rotated
+  // plane glyph; grounded targets are gray, airborne ones amber.
   function planeIcon(a) {
     var rot = a.track_deg != null ? a.track_deg : 0;
-    var color = a.on_ground ? "#9e9e9e" : "#ffb300";
-    var svg = '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<g transform="rotate(' + rot + ' 12 12)">' +
-      '<path d="M12 2 L21 21 L12 17 L3 21 Z" fill="' + color + '" stroke="#000" stroke-width="0.8" stroke-linejoin="round"/>' +
-      '</g></svg>';
-    return L.divIcon({ className: "wf-aircraft", iconSize: [24, 24], iconAnchor: [12, 12], html: svg });
+    var color = a.on_ground ? "#757575" : "#ffb300";
+    return wfBadge({ color: color, glyph: BADGE_GLYPHS.plane, rot: rot });
   }
 
   function aircraftPopup(a) {
-    var html = '<span class="muted">' + tr("map.aircraft") + '</span><br><strong>' + esc(a.callsign || a.icao24) + "</strong>";
-    html += '<br><span class="muted">' + esc(String(a.icao24 || "").toUpperCase()) + "</span>";
-    if (a.altitude_m != null) { html += "<br>" + tr("map.alt") + ": " + fmtNum(a.altitude_m, 0) + " m"; }
+    var color = a.on_ground ? "#757575" : "#ffb300";
+    var lines = [];
+    if (a.altitude_m != null) { lines.push(tr("map.alt") + ": " + fmtNum(a.altitude_m, 0) + " m"); }
     if (a.speed_kmh != null) {
-      html += "<br>" + tr("map.speed") + ": " + fmtNum(a.speed_kmh, 0) + " km/h";
-      if (a.track_deg != null) { html += " @ " + fmtNum(a.track_deg, 0) + "\u00b0"; }
+      var sp = tr("map.speed") + ": " + fmtNum(a.speed_kmh, 0) + " km/h";
+      if (a.track_deg != null) { sp += " @ " + fmtNum(a.track_deg, 0) + "\u00b0"; }
+      lines.push(sp);
     }
-    if (a.vertical_rate_m_s != null) { html += "<br>" + tr("map.climb") + ": " + fmtNum(a.vertical_rate_m_s, 1) + " m/s"; }
-    if (a.category) { html += "<br>" + tr("map.category") + ": " + esc(a.category); }
+    if (a.vertical_rate_m_s != null) { lines.push(tr("map.climb") + ": " + fmtNum(a.vertical_rate_m_s, 1) + " m/s"); }
+    if (a.category) { lines.push(tr("map.category") + ": " + esc(a.category)); }
     if (a.seen_at) {
-      html += "<br>" + tr("map.seen") + ": " + esc(fmtTime(new Date(a.seen_at * 1000).toISOString()));
+      lines.push(tr("map.seen") + ": " + esc(fmtTime(new Date(a.seen_at * 1000).toISOString())));
     }
-    return html;
+    return wfPopup({
+      color: color,
+      icon: BADGE_GLYPHS.plane,
+      iconRot: a.track_deg != null ? a.track_deg : 0,
+      title: esc(a.callsign || a.icao24),
+      sub: String(a.icao24 || "").toUpperCase(),
+      body: lines.join("<br>")
+    });
   }
 
   function refreshAircraft() {
@@ -1683,7 +1707,7 @@
           });
           if (trail.length > 1) {
             aircraftLayer.addLayer(L.polyline(trail, {
-              color: overlay.track, weight: 2, opacity: 0.8, interactive: false
+              color: a.on_ground ? "#9e9e9e" : "#ffd54f", weight: 2.5, opacity: 0.8, interactive: false
             }));
           }
 
@@ -1730,30 +1754,31 @@
   }
 
   function aqIcon(station) {
-    var color = aqColor(station.index_level_id);
-    return L.divIcon({
-      className: "aq-pin-wrap",
-      iconSize: [18, 18],
-      iconAnchor: [9, 9],
-      html: '<span class="aq-pin" style="background:' + color + '"></span>'
+    return wfBadge({
+      color: aqColor(station.index_level_id),
+      glyph: BADGE_GLYPHS.wind
     });
   }
 
   function aqPopup(station) {
-    var html = '<span class="muted">' + tr("map.airquality") + '</span><br><strong>' + esc(station.station_name) + "</strong>";
-    if (station.index_level_name) {
-      html += '<br><span class="aq-level" style="color:' + aqColor(station.index_level_id) + '">' +
-        esc(station.index_level_name) + "</span>";
-    }
+    var level = station.index_level_name || "";
+    var lines = [];
     (station.pollutants || []).forEach(function (p) {
       if (p.level_name) {
-        html += "<br>" + esc(p.code) + ": " + esc(p.level_name);
+        lines.push(esc(p.code) + ": " + esc(p.level_name));
       }
     });
+    var body = lines.join("<br>");
     if (station.generated_at) {
-      html += '<br><span class="muted">' + tr("map.updated") + " " + esc(fmtTime(station.generated_at)) + "</span>";
+      body += '<div class="wf-pop-time muted">' + tr("map.updated") + " " + esc(fmtTime(station.generated_at)) + '</div>';
     }
-    return html;
+    return wfPopup({
+      color: aqColor(station.index_level_id),
+      icon: BADGE_GLYPHS.wind,
+      title: esc(station.station_name),
+      value: esc(level),
+      body: body
+    });
   }
 
   function refreshAirQuality() {

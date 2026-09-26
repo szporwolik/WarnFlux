@@ -171,7 +171,9 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 
 	filter := strings.TrimSpace(cfg.Filter)
 	if filter == "" {
-		filter = fmt.Sprintf("r/%.4f/%.4f/%d", hub.CenterLat(), hub.CenterLon(), int(hub.RadiusKM()))
+		// Automatic filter: the whole operational area (virtual center of
+		// the towns we serve), not just the surroundings of the station.
+		filter = fmt.Sprintf("r/%.4f/%.4f/%d", hub.AreaLat(), hub.AreaLon(), int(hub.AreaRadius()))
 	}
 	if len(filter) > maxFilterBytes {
 		return nil, fmt.Errorf("aprs-inet: filter is %d bytes, maximum %d", len(filter), maxFilterBytes)

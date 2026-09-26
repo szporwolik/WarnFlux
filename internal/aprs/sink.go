@@ -51,7 +51,8 @@ type HubConfig struct {
 	// CenterLat/CenterLon are the center of GridSquare (computed).
 	CenterLat float64
 	CenterLon float64
-	// RadiusKM is the "nearby" radius around our position.
+	// RadiusKM is the nearby radius; it doubles as the default
+	// operational-area radius (see AreaRadiusKM).
 	RadiusKM float64
 	// AreaLatitude/AreaLongitude optionally pin the operational-area
 	// center (the territory we serve) independently of the antenna

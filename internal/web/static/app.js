@@ -590,7 +590,8 @@
 })();
 
 // Public home page: the combined neighbourhood map (Map tab) — Leaflet
-// centered on our locator with the collection-radius circle, a RainViewer
+// centered on the operational-area center with the collection-radius circle
+// around that center, a RainViewer
 // radar overlay, APRS stations held in the retained MQTT state (polled
 // every 30 seconds) and the weather layer from /api/weather (polled every
 // 5 minutes). Stations, weather, hazards and radar are separate layers
@@ -839,7 +840,7 @@
     if (stationBounds && stationBounds.isValid()) {
       map.fitBounds(stationBounds, { padding: [30, 30], maxZoom: 13 });
     } else {
-      map.setView([ownLat, ownLon], 11);
+      map.setView([lat, lon], 11);
     }
     fittedOnce = true;
   }
@@ -848,7 +849,7 @@
     if (map || !window.L) {
       return;
     }
-    map = L.map(el, { attributionControl: false }).setView([ownLat, ownLon], 11);
+    map = L.map(el, { attributionControl: false }).setView([lat, lon], 11);
     map.createPane("aprsBase");
     map.getPane("aprsBase").style.zIndex = 200;
     map.createPane("aprsRadar");
@@ -867,14 +868,16 @@
       fitToStations();
     });
 
-    // Our station marker + collection-radius circle at the position
-    // learned from our own beacon (data-own-lat/lon).
+    // Our station marker at the position learned from our own beacon
+    // (data-own-lat/lon). The collection-radius circle is drawn around
+    // the operational-area center (data-lat/lon), not around the station:
+    // the area center is the virtual middle of the towns we serve.
     L.circleMarker([ownLat, ownLon], {
       radius: 7, color: "#fff", weight: 2,
       fillColor: "#007a3d", fillOpacity: 1
     }).addTo(map).bindTooltip(ownCall || tr("map.our_station"), { direction: "top" });
     if (radiusKm > 0) {
-      rangeCircle = L.circle([ownLat, ownLon], {
+      rangeCircle = L.circle([lat, lon], {
         radius: radiusKm * 1000,
         color: aprsOverlayColors().range, weight: 1.5, opacity: 0.55, dashArray: "8 6",
         fill: false, interactive: false
@@ -1903,13 +1906,14 @@
     c.addTo(map);
   }
 
-  // Fit the view around our locator, every station and every geo-located
-  // hazard; runs after either layer refresh so the union stays current.
+  // Fit the view around the operational-area center, our locator, every
+  // station and every geo-located hazard; runs after either layer refresh
+  // so the union stays current.
   function computeBounds() {
     if (!map) {
       return;
     }
-    var b = L.latLngBounds([[ownLat, ownLon]]);
+    var b = L.latLngBounds([[lat, lon], [ownLat, ownLon]]);
     var has = false;
     lastStations.forEach(function (s) {
       if (s && s.position && !s.self) {

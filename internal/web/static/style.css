@@ -2015,8 +2015,11 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   margin-right: 0.1rem;
 }
 
-/* Compose page: optional map location picker. */
+/* Compose page: optional map location picker. The form is an auto-fit
+   grid of 220px columns; the picker spans every column so the map gets
+   the full card width instead of one narrow track. */
 .compose-loc {
+  grid-column: 1 / -1;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0.9rem 1rem 0.8rem;
@@ -2037,7 +2040,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 .compose-map {
   width: 100%;
-  height: 260px;
+  height: 320px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   background: var(--surface);

@@ -1013,10 +1013,8 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .modal-check input[type="checkbox"] { accent-color: var(--brand); }
 .modal-note { margin: 0.1rem 0 0; font-size: 0.76rem; }
 
-/* ---- groups table: routing assignment ---- */
-.routing-count { white-space: nowrap; }
-.routing-form { width: 420px; max-width: calc(100vw - 2rem); }
-.routing-hint { font-size: 0.78rem; color: var(--muted); margin: 0 0 0.25rem; }
+/* ---- group routing editor (dedicated page) ---- */
+.routing-form { width: 100%; margin-top: 0.8rem; }
 .routing-form select {
   background: var(--input-bg);
   border: 1px solid var(--input-border);

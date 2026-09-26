@@ -48,31 +48,7 @@
               <td class="muted">{{timeShort .UpdatedAt}}</td>
               <td>
                 <div class="row-actions">
-                <details class="group-picker">
-                  <summary class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Routing</summary>
-                  <form method="post" action="/groups/{{.ID}}/routing" class="group-form routing-form">
-                    <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                    <p class="routing-hint">Pick the minimum severity that fires each action, per input plugin. "any source" is the fallback when no specific row matches. "—" leaves the cell off.</p>
-                    {{if $.Actions}}
-                    <div class="matrix-grid" style="grid-template-columns:max-content repeat({{len $.Actions}}, minmax(0, 1fr))">
-                      <span class="matrix-head matrix-corner">source \ action</span>
-                      {{range $.Actions}}<span class="matrix-head" title="{{.ID}}">{{.ID}}</span>{{end}}
-                      {{range .Matrix}}
-                      <span class="matrix-src">{{.Label}}</span>
-                      {{range .Cells}}{{$cell := .}}
-                      <select name="cell:{{$cell.Source}}|{{$cell.Action}}" class="matrix-sev" title="{{$cell.Action}} via {{if $cell.Source}}{{$cell.Source}}{{else}}any source{{end}}">
-                        <option value="" {{if eq $cell.Sev ""}}selected{{end}}>—</option>
-                        {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $cell.Sev}}selected{{end}}>{{.Label}}</option>{{end}}
-                      </select>
-                      {{end}}
-                      {{end}}
-                    </div>
-                    <button type="submit" class="btn-primary btn-add">Save routing</button>
-                    {{else}}
-                    <p class="muted routing-empty">No actions are configured in this instance.</p>
-                    {{end}}
-                  </form>
-                </details>
+                <a class="btn-ghost btn-small" href="/groups/{{.ID}}/routing"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Routing</a>
                 <a class="btn-ghost btn-small" href="/groups?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>Edit</a>
                 <form method="post" action="/groups/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('Delete group {{.Name}}?');">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -93,6 +69,55 @@
       </div>
       {{else}}
       <p class="empty">No groups yet</p>
+      {{end}}
+    </section>
+  </main>
+  {{template "footer" .}}
+</body>
+</html>
+{{end}}
+
+{{define "group_routing"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Routing · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>Routing · {{.RoutingName}}</h2>
+      <p class="page-info">Pick the minimum severity that fires each action, per input plugin. "any source" is the fallback when no specific row matches. "—" leaves the cell off.</p>
+      {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+      {{if .Actions}}
+      <form method="post" action="/groups/{{.RoutingID}}/routing" class="routing-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <div class="matrix-grid" style="grid-template-columns:max-content repeat({{len .Actions}}, minmax(0, 1fr))">
+          <span class="matrix-head matrix-corner">source \ action</span>
+          {{range .Actions}}<span class="matrix-head" title="{{.ID}}">{{.ID}}</span>{{end}}
+          {{range .RoutingMatrix}}
+          <span class="matrix-src">{{.Label}}</span>
+          {{range .Cells}}{{$cell := .}}
+          <select name="cell:{{$cell.Source}}|{{$cell.Action}}" class="matrix-sev" title="{{$cell.Action}} via {{if $cell.Source}}{{$cell.Source}}{{else}}any source{{end}}">
+            <option value="" {{if eq $cell.Sev ""}}selected{{end}}>—</option>
+            {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $cell.Sev}}selected{{end}}>{{.Label}}</option>{{end}}
+          </select>
+          {{end}}
+          {{end}}
+        </div>
+        <div class="compose-actions">
+          <button type="submit" class="btn-primary">Save routing</button>
+          <a class="btn-ghost" href="/groups">Back to groups</a>
+        </div>
+      </form>
+      {{else}}
+      <p class="empty">No actions are configured in this instance.</p>
       {{end}}
     </section>
   </main>

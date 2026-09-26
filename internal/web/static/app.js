@@ -7,8 +7,6 @@
   var SECTIONS = [
     { path: "/partials/status", id: "status-section" },
     { path: "/partials/mqtt", id: "mqtt-section" },
-    { path: "/partials/weather", id: "weather-section" },
-    { path: "/partials/warnings", id: "warnings-section" },
     { path: "/partials/plugins", id: "plugins-section" },
     { path: "/partials/actions", id: "actions-section" },
     { path: "/partials/health", id: "health-section" },
@@ -18,23 +16,11 @@
 
   var POLL_MS = 5000;
 
-  function sectionPath(section) {
-    // Preserve the user's warnings page across the periodic refreshes.
-    if (section.id === "warnings-section") {
-      var el = document.getElementById(section.id);
-      var page = el ? el.getAttribute("data-wpage") : "";
-      if (page && page !== "1") {
-        return section.path + "?page=" + page;
-      }
-    }
-    return section.path;
-  }
-
   function refresh(section) {
     if (!document.getElementById(section.id)) {
       return; // section not on this page (e.g. /partials/home off-site)
     }
-    fetch(sectionPath(section), {
+    fetch(section.path, {
       headers: { "Accept": "text/html" },
       credentials: "same-origin",
       cache: "no-store"

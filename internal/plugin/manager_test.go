@@ -388,8 +388,24 @@ func TestManagerExpirationReachesOutputs(t *testing.T) {
 
 	// Restart: the expired change was acked and must not be re-created
 	// (expiration is idempotent); reopening must not add new changes.
-	store2, _, err := sqlite.Open(path)
-	if err != nil {
+	// Under the race detector the previous connection's teardown can lag
+	// briefly, so retry while the database reports a lock.
+	var (
+		store2   *sqlite.Store
+		reopenOK bool
+	)
+	for attempt := 0; attempt < 40; attempt++ {
+		store2, _, err = sqlite.Open(path)
+		if err == nil {
+			reopenOK = true
+			break
+		}
+		if !strings.Contains(err.Error(), "locked") && !strings.Contains(err.Error(), "busy") {
+			t.Fatalf("reopen: %v", err)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !reopenOK {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer store2.Close()

@@ -341,6 +341,20 @@ sources:
   #     limit_severity: minor      # "dopuszczalnego"/"docelowego"
   #     # Station-directory (coordinates) refresh; 0 = never.
   #     stations_refresh: 24h
+  #
+  #     # Air-quality index layer: publish the official per-station index
+  #     # (aqindex) for the stations inside the aprs.area radius as an
+  #     # informational "air_quality" layer on the home map. Requires
+  #     # aprs.enabled with area_latitude/area_longitude/area_radius_km.
+  #     air_index: true
+  #     # Index refresh cadence; one request per station per poll.
+  #     station_poll_interval: 15m
+  #     # Only stations within this many kilometres of the area centre
+  #     # are published (default: aprs.area_radius_km).
+  #     station_radius_km: 35
+  #     # Area-centre overrides (default: aprs area).
+  #     # center_lat: 50.0562
+  #     # center_lon: 20.0610
 
   # APRS-IS source: connects to an APRS-IS server, subscribes to packets
   # around the configured position (aprs.gridsquare + aprs.radius_km) and

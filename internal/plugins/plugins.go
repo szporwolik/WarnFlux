@@ -41,7 +41,7 @@ func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub) error {
 	if err := gios.Register(reg, hub); err != nil {
 		return err
 	}
-	if err := giosaq.Register(reg); err != nil {
+	if err := giosaq.Register(reg, hub); err != nil {
 		return err
 	}
 	if err := adsb.Register(reg, hub); err != nil {

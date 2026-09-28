@@ -15,12 +15,20 @@ import (
 
 // publicHazardView is one active hazard as shown on the public home page:
 // severity, headline, source, event, areas and times — no admin surface.
+// Description/Instruction/Status/Urgency/Certainty ride along for the
+// client-side detail popup opened by clicking a card.
 type publicHazardView struct {
+	EventKey    string
 	Severity    string
 	Headline    string
 	Event       string
 	Source      string
 	Areas       string
+	Description string
+	Instruction string
+	Status      string
+	Urgency     string
+	Certainty   string
 	EffectiveAt *time.Time
 	ExpiresAt   *time.Time
 	UpdatedAt   time.Time
@@ -78,6 +86,13 @@ type homeView struct {
 	// sources (one row per feed, no technical detail).
 	Sources []publicChannelView
 
+	// HazardsJSON carries the full detail payload of the active hazards
+	// (both sections) embedded in the alerts fragment so a card click
+	// can open the detail popup without another round trip. It is a
+	// template.JS: json.Marshal HTML-escapes <, > and &, so the payload
+	// is safe to emit verbatim inside the <script> element.
+	HazardsJSON template.JS
+
 	// EmcomNetworks carries the current readiness level of every EMCOM
 	// network (retained MQTT state) for the colored header chips.
 	EmcomNetworks []emcomChipView
@@ -115,6 +130,26 @@ type mapEventView struct {
 	EffectiveAt *time.Time `json:"effective_at,omitempty"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// homeHazardJSON is the client-side payload of one home hazard card,
+// embedded as JSON in the alerts section for the detail popup. json.Marshal
+// escapes <, > and &, so the payload is safe inside a <script> element.
+type homeHazardJSON struct {
+	EventKey    string `json:"event_key"`
+	Severity    string `json:"severity"`
+	Headline    string `json:"headline"`
+	Event       string `json:"event"`
+	Source      string `json:"source"`
+	Areas       string `json:"areas,omitempty"`
+	Description string `json:"description,omitempty"`
+	Instruction string `json:"instruction,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Urgency     string `json:"urgency,omitempty"`
+	Certainty   string `json:"certainty,omitempty"`
+	EffectiveAt string `json:"effective_at,omitempty"`
+	ExpiresAt   string `json:"expires_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 // handleEventsMap serves the public JSON of active hazards that carry
@@ -193,13 +228,26 @@ func (s *Server) buildHomeView() homeView {
 	v.Hazards = make([]publicHazardView, 0, len(snap.Hazards))
 	v.MinorHazards = make([]publicHazardView, 0)
 	minorRank, _ := severity.Rank(severity.Minor)
+	hazardsJSON := make([]homeHazardJSON, 0, len(snap.Hazards))
+	jsonTime := func(t *time.Time) string {
+		if t == nil {
+			return ""
+		}
+		return t.Format(time.RFC3339)
+	}
 	for _, h := range snap.Hazards {
 		view := publicHazardView{
+			EventKey:    h.EventKey,
 			Severity:    h.Severity,
 			Headline:    h.Headline,
 			Event:       h.Event,
 			Source:      h.Source,
 			Areas:       strings.Join(h.Areas, ", "),
+			Description: h.Description,
+			Instruction: h.Instruction,
+			Status:      h.Status,
+			Urgency:     h.Urgency,
+			Certainty:   h.Certainty,
 			EffectiveAt: h.EffectiveAt,
 			ExpiresAt:   h.ExpiresAt,
 			UpdatedAt:   h.UpdatedAt,
@@ -212,6 +260,27 @@ func (s *Server) buildHomeView() homeView {
 		} else {
 			v.MinorHazards = append(v.MinorHazards, view)
 		}
+		hazardsJSON = append(hazardsJSON, homeHazardJSON{
+			EventKey:    h.EventKey,
+			Severity:    h.Severity,
+			Headline:    h.Headline,
+			Event:       h.Event,
+			Source:      h.Source,
+			Areas:       view.Areas,
+			Description: h.Description,
+			Instruction: h.Instruction,
+			Status:      h.Status,
+			Urgency:     h.Urgency,
+			Certainty:   h.Certainty,
+			EffectiveAt: jsonTime(h.EffectiveAt),
+			ExpiresAt:   jsonTime(h.ExpiresAt),
+			UpdatedAt:   h.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+	if b, err := json.Marshal(hazardsJSON); err == nil {
+		v.HazardsJSON = template.JS(b)
+	} else {
+		v.HazardsJSON = template.JS("[]")
 	}
 	v.MinorCount = len(v.MinorHazards)
 	v.MainCount = len(v.Hazards)

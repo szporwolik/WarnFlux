@@ -210,6 +210,10 @@ func (s *Server) routes(static http.Handler) {
 	// Public landing page: header1/header2 + the current active hazards.
 	// The login form lives behind the top-right icon button (/login).
 	s.mux.HandleFunc("GET /{$}", s.handleHome)
+	// Deep link: /message/<event-key> opens the public home page with the
+	// detail popup for that specific hazard — the link form used in
+	// email and Discord notifications.
+	s.mux.HandleFunc("GET /message/{key}", s.handleHome)
 	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
 	s.mux.HandleFunc("GET /archive", s.handleArchive)
 	// UI language switch: stores the choice in a cookie and returns.

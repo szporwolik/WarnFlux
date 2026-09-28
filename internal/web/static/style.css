@@ -1523,6 +1523,26 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 .hz-desc { line-height: 1.45; font-size: 0.9rem; overflow-wrap: anywhere; }
 .hz-actions { padding: 0 1.1rem 1rem; margin-top: 0; }
+.hz-actions-row { margin-top: 0.7rem; display: flex; justify-content: flex-end; }
+.hz-map-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--brand, #1f6feb);
+  color: #fff;
+  border: 0;
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.hz-map-btn:hover { filter: brightness(1.12); }
+.hazard-click.hz-flash { animation: hz-flash 1.1s ease-in-out 2; }
+@keyframes hz-flash {
+  0%, 100% { box-shadow: var(--card-shadow); }
+  50% { box-shadow: 0 0 0 3px var(--focus-ring); border-color: var(--focus); }
+}
 /* Collapsible priority sections: Important (open by default) and the
    minor/unknown tail (collapsed by default). */
 .home-section > summary {

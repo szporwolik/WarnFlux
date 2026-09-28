@@ -253,6 +253,7 @@ var en = map[string]string{
 	// Warnings panel (dashboard).
 	"warnings.title":          "Active warnings",
 	"warnings.source":         "Source:",
+	"popup.close":             "Close",
 	"warnings.effective":      "Effective:",
 	"warnings.expires":        "Expires:",
 	"warnings.updated":        "Updated:",
@@ -763,6 +764,7 @@ var pl = map[string]string{
 	// Warnings panel (dashboard).
 	"warnings.title":          "Aktywne ostrzeżenia",
 	"warnings.source":         "Źródło:",
+	"popup.close":             "Zamknij",
 	"warnings.effective":      "Od:",
 	"warnings.expires":        "Wygasa:",
 	"warnings.updated":        "Zaktualizowano:",

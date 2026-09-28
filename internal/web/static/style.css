@@ -1497,6 +1497,32 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.78rem;
 }
 .hazard-meta strong { color: var(--text); }
+/* Clickable hazard cards: a click opens the detail popup. */
+.hazard-click { cursor: pointer; }
+.hazard-click:hover { border-color: var(--focus); }
+.hazard-click:focus-visible {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+/* Home-page hazard detail popup (dialog reusing the map popup look). */
+.hz-modal { max-width: 36rem; padding: 0; overflow: hidden; }
+.hz-modal .wf-pop { min-width: 0; border-radius: 0; }
+.hz-modal .wf-pop-t strong { white-space: normal; }
+.hz-body { max-height: 60vh; overflow: auto; padding: 0.9rem 1.1rem; }
+.hz-row { display: flex; gap: 0.6rem; margin: 0.3rem 0; font-size: 0.88rem; }
+.hz-label { flex: 0 0 auto; color: var(--muted); min-width: 6.5rem; }
+.hz-times { font-size: 0.8rem; margin: 0.4rem 0; }
+.hz-block { margin: 0.55rem 0; }
+.hz-block-title {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.2rem;
+}
+.hz-desc { line-height: 1.45; font-size: 0.9rem; overflow-wrap: anywhere; }
+.hz-actions { padding: 0 1.1rem 1rem; margin-top: 0; }
 /* Collapsible priority sections: Important (open by default) and the
    minor/unknown tail (collapsed by default). */
 .home-section > summary {

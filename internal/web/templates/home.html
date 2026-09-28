@@ -149,6 +149,12 @@
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
     </a>
   </footer>
+  <dialog class="modal hz-modal" id="hz-dialog" aria-labelledby="hz-title">
+    <div id="hz-content"></div>
+    <div class="modal-actions hz-actions">
+      <button type="button" class="btn btn-small" id="hz-close">{{tr .Lang "popup.close"}}</button>
+    </div>
+  </dialog>
   <script src="/static/app.js?v={{.Commit}}" defer></script>
 </body>
 </html>
@@ -162,7 +168,7 @@
     {{if .Hazards}}
     <div class="home-alerts">
       {{range .Hazards}}
-      <article class="hazard sev-bd-{{sevClass .Severity}}">
+      <article class="hazard hazard-click sev-bd-{{sevClass .Severity}}" tabindex="0" role="button" data-key="{{.EventKey}}">
         <div class="hazard-head">
           <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
           <h3>{{.Headline}}</h3>
@@ -187,7 +193,7 @@
     <summary>{{tr .Lang "home.informational"}} <span class="count">{{.MinorCount}}</span></summary>
     <div class="home-alerts">
       {{range .MinorHazards}}
-      <article class="hazard sev-bd-{{sevClass .Severity}}">
+      <article class="hazard hazard-click sev-bd-{{sevClass .Severity}}" tabindex="0" role="button" data-key="{{.EventKey}}">
         <div class="hazard-head">
           <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
           <h3>{{.Headline}}</h3>
@@ -204,5 +210,6 @@
     </div>
   </details>
   {{end}}
+  <script type="application/json" id="home-hazards-data">{{.HazardsJSON}}</script>
 </section>
 {{end}}

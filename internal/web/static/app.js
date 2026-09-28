@@ -45,6 +45,15 @@
       "map.via.radio": "Via: radio (APRS)",
       "map.via.internet": "Via: internet (APRS-IS)",
       "warnings.source": "Source:",
+      "popup.event": "Event:",
+      "popup.status": "Status:",
+      "popup.urgency": "Urgency:",
+      "popup.certainty": "Certainty:",
+      "popup.areas": "Areas:",
+      "popup.description": "Description",
+      "popup.instruction": "Instruction",
+      "popup.updated": "Updated:",
+      "popup.valid_until": "Valid until:",
       "notif.empty": "No notifications processed yet",
       "traffic.subscribing": "Subscribing to %s… (%s s)",
       "users.edit_title": "Edit user",
@@ -91,6 +100,15 @@
       "map.via.radio": "Przez: radio (APRS)",
       "map.via.internet": "Przez: internet (APRS-IS)",
       "warnings.source": "Źródło:",
+      "popup.event": "Zdarzenie:",
+      "popup.status": "Status:",
+      "popup.urgency": "Pilność:",
+      "popup.certainty": "Pewność:",
+      "popup.areas": "Obszary:",
+      "popup.description": "Opis",
+      "popup.instruction": "Polecenie",
+      "popup.updated": "Zaktualizowano:",
+      "popup.valid_until": "Ważne do:",
       "notif.empty": "Nie przetworzono jeszcze powiadomień",
       "traffic.subscribing": "Subskrybowanie %s… (%s s)",
       "users.edit_title": "Edytuj użytkownika",
@@ -2733,5 +2751,149 @@
     document.addEventListener("DOMContentLoaded", initAudit);
   } else {
     initAudit();
+  }
+})();
+
+// Home page: clicking an active-hazard card opens a detail popup with
+// every available field — the same set the map pins expose, plus the
+// card-only metadata (event, areas, status, urgency, certainty).
+(function () {
+  "use strict";
+
+  var HZ_SEV_COLORS = {
+    extreme: "#c62828",
+    severe: "#f4511e",
+    moderate: "#ff9800",
+    minor: "#ffd54f",
+    informational: "#90a4ae",
+    unknown: "#64748b"
+  };
+
+  var WARNING_GLYPH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>';
+
+  function hzEsc(s) {
+    var d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  }
+
+  function hzDate(v) {
+    if (!v) { return ""; }
+    var t = new Date(v);
+    if (isNaN(t.getTime())) { return v; }
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+    return t.getFullYear() + "-" + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) +
+      " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes());
+  }
+
+  // hzData reads the hazard JSON embedded in the (polled) alerts fragment
+  // at click time, so refreshes are always picked up.
+  function hzData() {
+    var node = document.getElementById("home-hazards-data");
+    if (!node) { return {}; }
+    try {
+      var map = {};
+      (JSON.parse(node.textContent) || []).forEach(function (h) {
+        if (h && h.event_key) { map[h.event_key] = h; }
+      });
+      return map;
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function hzRow(label, value) {
+    if (!value) { return ""; }
+    return '<div class="hz-row">' +
+      (label ? '<span class="hz-label">' + hzEsc(label) + "</span>" : "") +
+      "<span>" + hzEsc(value) + "</span></div>";
+  }
+
+  function hzBlock(title, text) {
+    if (!text) { return ""; }
+    return '<div class="hz-block"><div class="hz-block-title">' + hzEsc(title) +
+      '</div><div class="hz-desc">' + hzEsc(text).replace(/\n/g, "<br>") + "</div></div>";
+  }
+
+  function hzRender(h) {
+    var html = '<div class="wf-pop">';
+    html += '<div class="wf-pop-head" style="--wf-pop-c:' +
+      (HZ_SEV_COLORS[h.severity] || HZ_SEV_COLORS.unknown) + '">';
+    html += '<span class="wf-pop-ico">' + WARNING_GLYPH + "</span>";
+    html += '<span class="wf-pop-t" id="hz-title"><strong>' + hzEsc(h.headline || h.event) + "</strong>";
+    if (h.source) {
+      html += '<span class="wf-pop-sub">' + tr("warnings.source") + " " + hzEsc(h.source) + "</span>";
+    }
+    html += "</span>";
+    if (h.severity) {
+      html += '<span class="wf-pop-val">' + hzEsc(h.severity) + "</span>";
+    }
+    html += '</div><div class="wf-pop-body hz-body">';
+    html += hzRow(tr("popup.event"), h.event);
+    html += hzRow(tr("popup.status"), h.status);
+    html += hzRow(tr("popup.urgency"), h.urgency);
+    html += hzRow(tr("popup.certainty"), h.certainty);
+    html += hzRow(tr("popup.areas"), h.areas);
+    var times = [];
+    if (h.effective_at) { times.push(tr("map.from") + " " + hzDate(h.effective_at)); }
+    if (h.expires_at) { times.push(tr("popup.valid_until") + " " + hzDate(h.expires_at)); }
+    if (h.updated_at) { times.push(tr("popup.updated") + " " + hzDate(h.updated_at)); }
+    if (times.length) {
+      html += '<div class="hz-times muted">' + times.map(hzEsc).join(" · ") + "</div>";
+    }
+    html += hzBlock(tr("popup.description"), h.description);
+    html += hzBlock(tr("popup.instruction"), h.instruction);
+    html += "</div></div>";
+    return html;
+  }
+
+  function initHazardModal() {
+    var dialog = document.getElementById("hz-dialog");
+    if (!dialog) { return; }
+    var content = document.getElementById("hz-content");
+    var closeBtn = document.getElementById("hz-close");
+
+    function openFor(card) {
+      var data = hzData()[card.getAttribute("data-key")];
+      if (!data) { return; }
+      content.innerHTML = hzRender(data);
+      if (typeof dialog.showModal === "function") {
+        if (!dialog.open) { dialog.showModal(); }
+      } else {
+        dialog.setAttribute("open", "");
+      }
+    }
+
+    document.addEventListener("click", function (e) {
+      var card = e.target && e.target.closest ? e.target.closest(".hazard-click") : null;
+      if (card) { openFor(card); }
+    });
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") { return; }
+      if (e.target && (e.target.tagName === "BUTTON" || e.target.tagName === "A" ||
+        e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT")) {
+        return;
+      }
+      var card = e.target && e.target.closest ? e.target.closest(".hazard-click") : null;
+      if (card) {
+        e.preventDefault();
+        openFor(card);
+      }
+    });
+
+    if (closeBtn) {
+      closeBtn.addEventListener("click", function () { dialog.close(); });
+    }
+    // Click on the backdrop closes the popup.
+    dialog.addEventListener("click", function (e) {
+      if (e.target === dialog) { dialog.close(); }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initHazardModal);
+  } else {
+    initHazardModal();
   }
 })();

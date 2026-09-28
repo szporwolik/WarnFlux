@@ -766,7 +766,7 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">Expires: <span style="color:#eef2f5;">%s</span></div>`, h.Hazard.ExpiresAt.Format(time.RFC3339))
 	}
 	if link != "" {
-		fmt.Fprintf(&b, `<div style="margin-top:20px;"><a href="%s" style="display:inline-block;background:#1f6feb;color:#fff;text-decoration:none;padding:9px 18px;border-radius:8px;font-weight:600;font-size:13px;">Open on the map</a></div>`, htmlEscaper(link))
+		fmt.Fprintf(&b, `<div style="margin-top:20px;"><a href="%s" style="display:inline-block;background:#1f6feb;color:#fff;text-decoration:none;padding:9px 18px;border-radius:8px;font-weight:600;font-size:13px;">View details</a></div>`, htmlEscaper(link))
 	}
 	return b.String()
 }

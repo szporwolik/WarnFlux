@@ -54,6 +54,9 @@
       "popup.instruction": "Instruction",
       "popup.updated": "Updated:",
       "popup.valid_until": "Valid until:",
+      "popup.location": "Location:",
+      "popup.show_map": "Show on map",
+      "popup.not_found": "The message is not active anymore.",
       "notif.empty": "No notifications processed yet",
       "traffic.subscribing": "Subscribing to %s… (%s s)",
       "users.edit_title": "Edit user",
@@ -109,6 +112,9 @@
       "popup.instruction": "Polecenie",
       "popup.updated": "Zaktualizowano:",
       "popup.valid_until": "Ważne do:",
+      "popup.location": "Położenie:",
+      "popup.show_map": "Pokaż na mapie",
+      "popup.not_found": "Komunikat nie jest już aktywny.",
       "notif.empty": "Nie przetworzono jeszcze powiadomień",
       "traffic.subscribing": "Subskrybowanie %s… (%s s)",
       "users.edit_title": "Edytuj użytkownika",
@@ -909,6 +915,26 @@
     window.setInterval(refreshHazards, STATION_POLL_MS);
     window.setInterval(refreshRadar, RADAR_REFRESH_MS);
 
+    // Deep links from email/Discord (/message/<key>): switch to the map
+    // tab, center on the hazard marker and open its popup.
+    window.__wfShowHazard = function (eventKey) {
+      if (!map || !hazardLayer) { return false; }
+      var marker = null;
+      hazardLayer.eachLayer(function (m) {
+        if (m._hzEventKey === eventKey) { marker = m; }
+      });
+      if (!marker) { return false; }
+      var tab = document.querySelector('.home-tab[data-tab="tab-radio"]');
+      if (tab) { tab.click(); }
+      window.setTimeout(function () {
+        if (!map) { return; }
+        map.invalidateSize();
+        map.setView(marker.getLatLng(), Math.max(map.getZoom(), 12));
+        marker.openPopup();
+      }, 120);
+      return true;
+    };
+
     // Follow theme switches (the theme toggle rewrites data-theme on
     // <html>): swap tiles + attribution + marker colors in place.
     if (window.MutationObserver) {
@@ -1236,6 +1262,7 @@
           var m = L.marker([e.latitude, e.longitude], { icon: icon, riseOnHover: true });
           m.bindTooltip(esc(e.headline || e.event), { sticky: true, direction: "top" });
           m.bindPopup(popup);
+          m._hzEventKey = e.event_key;
           hazardLayer.addLayer(m);
           registerPin("hazards", {
             group: hazardLayer,
@@ -2834,6 +2861,9 @@
     html += hzRow(tr("popup.urgency"), h.urgency);
     html += hzRow(tr("popup.certainty"), h.certainty);
     html += hzRow(tr("popup.areas"), h.areas);
+    if (h.latitude != null && h.longitude != null) {
+      html += hzRow(tr("popup.location"), Number(h.latitude).toFixed(5) + ", " + Number(h.longitude).toFixed(5));
+    }
     var times = [];
     if (h.effective_at) { times.push(tr("map.from") + " " + hzDate(h.effective_at)); }
     if (h.expires_at) { times.push(tr("popup.valid_until") + " " + hzDate(h.expires_at)); }
@@ -2843,6 +2873,9 @@
     }
     html += hzBlock(tr("popup.description"), h.description);
     html += hzBlock(tr("popup.instruction"), h.instruction);
+    if (h.latitude != null && h.longitude != null) {
+      html += '<div class="hz-actions-row"><button type="button" class="hz-map-btn" data-hz-map="' + hzEsc(h.event_key) + '">' + tr("popup.show_map") + "</button></div>";
+    }
     html += "</div></div>";
     return html;
   }
@@ -2853,10 +2886,7 @@
     var content = document.getElementById("hz-content");
     var closeBtn = document.getElementById("hz-close");
 
-    function openFor(card) {
-      var data = hzData()[card.getAttribute("data-key")];
-      if (!data) { return; }
-      content.innerHTML = hzRender(data);
+    function showModal() {
       if (typeof dialog.showModal === "function") {
         if (!dialog.open) { dialog.showModal(); }
       } else {
@@ -2864,9 +2894,61 @@
       }
     }
 
+    function openKey(key) {
+      var data = hzData()[key];
+      if (!data) { return false; }
+      content.innerHTML = hzRender(data);
+      showModal();
+      // Highlight the matching card (deep links land on the list).
+      var cards = document.querySelectorAll(".hazard-click");
+      for (var i = 0; i < cards.length; i++) {
+        if (cards[i].getAttribute("data-key") === key) {
+          var cardEl = cards[i];
+          cardEl.scrollIntoView({ block: "center" });
+          cardEl.classList.add("hz-flash");
+          window.setTimeout(function () {
+            cardEl.classList.remove("hz-flash");
+          }, 2400);
+          break;
+        }
+      }
+      return true;
+    }
+
+    // Deep link: /message/<event-key> opens this hazard's popup. The
+    // hazard data lands with the 5 s poll, so retry briefly.
+    var deepLink = /^\/message\/(.+)$/.exec(window.location.pathname);
+    if (deepLink) {
+      var key = decodeURIComponent(deepLink[1]);
+      var tries = 0;
+      (function waitOpen() {
+        tries++;
+        if (openKey(key)) { return; }
+        if (tries < 8) {
+          window.setTimeout(waitOpen, 2500);
+        } else {
+          content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.not_found") + "</p></div>";
+          showModal();
+        }
+      })();
+    }
+
+    // "Show on map" button inside the popup: switch to the map tab and
+    // open the hazard's marker.
+    if (content) {
+      content.addEventListener("click", function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest(".hz-map-btn") : null;
+        if (!btn) { return; }
+        if (window.__wfShowHazard) {
+          window.__wfShowHazard(btn.getAttribute("data-hz-map"));
+        }
+        dialog.close();
+      });
+    }
+
     document.addEventListener("click", function (e) {
       var card = e.target && e.target.closest ? e.target.closest(".hazard-click") : null;
-      if (card) { openFor(card); }
+      if (card) { openKey(card.getAttribute("data-key")); }
     });
 
     document.addEventListener("keydown", function (e) {
@@ -2878,7 +2960,7 @@
       var card = e.target && e.target.closest ? e.target.closest(".hazard-click") : null;
       if (card) {
         e.preventDefault();
-        openFor(card);
+        openKey(card.getAttribute("data-key"));
       }
     });
 

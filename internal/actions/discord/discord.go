@@ -128,6 +128,30 @@ func (a *discordAction) Close(ctx context.Context) error {
 	return nil
 }
 
+// detailsLink builds the absolute deep link to the hazard detail view on
+// the public home page, or "" when the event has no key or no public
+// domain is configured.
+func detailsLink(req action.ActionRequest) string {
+	if req.Event.Kind != dispatch.EventHazardTransition || req.Event.Hazard == nil {
+		return ""
+	}
+	key := req.Event.Hazard.Key
+	domain := strings.TrimSpace(req.App.Domain)
+	if key == "" || domain == "" {
+		return ""
+	}
+	scheme := "https://"
+	if i := strings.Index(domain, "://"); i >= 0 {
+		scheme = domain[:i+3]
+		domain = domain[i+3:]
+	}
+	domain = strings.TrimSuffix(domain, "/")
+	if domain == "" {
+		return ""
+	}
+	return scheme + domain + "/message/" + url.PathEscape(key)
+}
+
 // messageText renders one Discord message from the canonical event
 // metadata: severity first, then event, headline and areas. The content
 // never exceeds Discord's 2000-character limit.
@@ -155,13 +179,24 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 		if h.Hazard.ExpiresAt != nil {
 			text += "\nValid until: " + h.Hazard.ExpiresAt.Format(time.RFC3339)
 		}
+		if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
+			text += "\n" + desc
+		}
 	default:
 		text = fmt.Sprintf("[%s] WarnFlux notification", prefix)
 	}
 	if len(req.DiscordHandles) > 0 {
 		text += "\nFor: " + strings.Join(req.DiscordHandles, ", ")
 	}
-	return truncateRunes(text, maxContentRunes)
+	if link := detailsLink(req); link != "" {
+		// The link must survive truncation: bound the body first, then
+		// append the details line in full.
+		reserve := len(link) + len("\nDetails: ")
+		text = truncateRunes(text, maxContentRunes-reserve) + "\nDetails: " + link
+	} else {
+		text = truncateRunes(text, maxContentRunes)
+	}
+	return text
 }
 
 // truncateRunes bounds text to at most max runes (appending an ellipsis),

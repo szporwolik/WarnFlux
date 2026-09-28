@@ -136,20 +136,22 @@ type mapEventView struct {
 // embedded as JSON in the alerts section for the detail popup. json.Marshal
 // escapes <, > and &, so the payload is safe inside a <script> element.
 type homeHazardJSON struct {
-	EventKey    string `json:"event_key"`
-	Severity    string `json:"severity"`
-	Headline    string `json:"headline"`
-	Event       string `json:"event"`
-	Source      string `json:"source"`
-	Areas       string `json:"areas,omitempty"`
-	Description string `json:"description,omitempty"`
-	Instruction string `json:"instruction,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Urgency     string `json:"urgency,omitempty"`
-	Certainty   string `json:"certainty,omitempty"`
-	EffectiveAt string `json:"effective_at,omitempty"`
-	ExpiresAt   string `json:"expires_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	EventKey    string   `json:"event_key"`
+	Severity    string   `json:"severity"`
+	Headline    string   `json:"headline"`
+	Event       string   `json:"event"`
+	Source      string   `json:"source"`
+	Areas       string   `json:"areas,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Instruction string   `json:"instruction,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	Urgency     string   `json:"urgency,omitempty"`
+	Certainty   string   `json:"certainty,omitempty"`
+	EffectiveAt string   `json:"effective_at,omitempty"`
+	ExpiresAt   string   `json:"expires_at,omitempty"`
+	UpdatedAt   string   `json:"updated_at,omitempty"`
+	Latitude    *float64 `json:"latitude,omitempty"`
+	Longitude   *float64 `json:"longitude,omitempty"`
 }
 
 // handleEventsMap serves the public JSON of active hazards that carry
@@ -275,6 +277,8 @@ func (s *Server) buildHomeView() homeView {
 			EffectiveAt: jsonTime(h.EffectiveAt),
 			ExpiresAt:   jsonTime(h.ExpiresAt),
 			UpdatedAt:   h.UpdatedAt.Format(time.RFC3339),
+			Latitude:    h.Latitude,
+			Longitude:   h.Longitude,
 		})
 	}
 	if b, err := json.Marshal(hazardsJSON); err == nil {

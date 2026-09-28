@@ -24,6 +24,7 @@ import (
 	"mime"
 	"net"
 	"net/smtp"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -501,6 +502,26 @@ func subjectOf(cfg Config, req action.ActionRequest) string {
 
 // bodyOfPlain renders the canonical event metadata as plain text. It never
 // includes raw payloads.
+// messageURL builds the absolute deep link to one hazard's detail view on
+// the public home page. Empty when no public domain is configured or the
+// event carries no key.
+func messageURL(req action.ActionRequest, key string) string {
+	domain := strings.TrimSpace(req.App.Domain)
+	if domain == "" || key == "" {
+		return ""
+	}
+	scheme := "https://"
+	if i := strings.Index(domain, "://"); i >= 0 {
+		scheme = domain[:i+3]
+		domain = domain[i+3:]
+	}
+	domain = strings.TrimSuffix(domain, "/")
+	if domain == "" {
+		return ""
+	}
+	return scheme + domain + "/message/" + url.PathEscape(key)
+}
+
 func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 	var b strings.Builder
 	b.WriteString("WarnFlux notification\n")
@@ -522,6 +543,9 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 		fmt.Fprintf(&b, "Transition: %s\n", h.Type)
 		fmt.Fprintf(&b, "Source: %s\n", h.Source)
 		fmt.Fprintf(&b, "Event key: %s\n", h.Key)
+		if link := messageURL(req, h.Key); link != "" {
+			fmt.Fprintf(&b, "Details: %s\n", link)
+		}
 		fmt.Fprintf(&b, "Event: %s\n", h.Hazard.Event)
 		fmt.Fprintf(&b, "Severity: %s\n", h.Hazard.Severity)
 		if h.Hazard.Urgency != "" {
@@ -657,7 +681,11 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 	ev := req.Event
 	switch ev.Kind {
 	case dispatch.EventHazardTransition:
-		b.WriteString(hazardHTML(ev))
+		link := ""
+		if ev.Hazard != nil {
+			link = messageURL(req, ev.Hazard.Key)
+		}
+		b.WriteString(hazardHTML(ev, link))
 	case dispatch.EventMQTTMessage:
 		m := ev.MQTT
 		if m != nil {
@@ -683,7 +711,7 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 }
 
 // hazardHTML renders the focused, human-readable summary block.
-func hazardHTML(ev dispatch.Event) string {
+func hazardHTML(ev dispatch.Event, link string) string {
 	h := ev.Hazard
 	if h == nil {
 		return `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Hazard transition</div>`
@@ -700,6 +728,15 @@ func hazardHTML(ev dispatch.Event) string {
 	fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">%s</div>`, htmlEscaper(headline))
 	if headline != h.Hazard.Event {
 		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
+	}
+	if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
+		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Description</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(desc))
+	}
+	if instr := strings.TrimSpace(h.Hazard.Instruction); instr != "" {
+		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Instruction</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(instr))
+	}
+	if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">Location: <span style="color:#eef2f5;">%.5f, %.5f</span></div>`, *h.Hazard.Latitude, *h.Hazard.Longitude)
 	}
 
 	if areas := nonRoadAreas(h.Hazard.Areas); len(areas) > 0 {
@@ -727,6 +764,9 @@ func hazardHTML(ev dispatch.Event) string {
 	}
 	if h.Hazard.ExpiresAt != nil {
 		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">Expires: <span style="color:#eef2f5;">%s</span></div>`, h.Hazard.ExpiresAt.Format(time.RFC3339))
+	}
+	if link != "" {
+		fmt.Fprintf(&b, `<div style="margin-top:20px;"><a href="%s" style="display:inline-block;background:#1f6feb;color:#fff;text-decoration:none;padding:9px 18px;border-radius:8px;font-weight:600;font-size:13px;">Open on the map</a></div>`, htmlEscaper(link))
 	}
 	return b.String()
 }
@@ -769,6 +809,9 @@ func technicalRows(req action.ActionRequest, now time.Time, sevFG string) string
 		b.WriteString(row("Headline", h.Hazard.Headline))
 		if len(h.Hazard.Areas) > 0 {
 			b.WriteString(row("Areas", strings.Join(h.Hazard.Areas, ", ")))
+		}
+		if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
+			b.WriteString(row("Coordinates", fmt.Sprintf("%.5f, %.5f", *h.Hazard.Latitude, *h.Hazard.Longitude)))
 		}
 		if h.Hazard.EffectiveAt != nil {
 			b.WriteString(row("Effective", h.Hazard.EffectiveAt.Format(time.RFC3339)))

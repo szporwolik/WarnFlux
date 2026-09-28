@@ -334,9 +334,10 @@ type Web struct {
 	// preserved. Empty hides it.
 	Disclaimer string
 	// Domain is the public host (and optional port) this instance is
-	// served under, e.g. "spok.example.com". It is reserved for future
-	// features that generate absolute links (cookies, notifications);
-	// empty disables them. No scheme, no path.
+	// served under, e.g. "spok.example.com". Used to generate absolute
+	// deep links (/message/<key>) in email and Discord notifications;
+	// empty disables links. No scheme required — https is assumed when
+	// absent. No path.
 	Domain string
 	Auth   WebAuth
 }

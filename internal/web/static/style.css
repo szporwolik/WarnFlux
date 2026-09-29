@@ -1384,7 +1384,9 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 .page-tab:hover { color: var(--text); }
 .page-tab.active { color: var(--text); border-bottom-color: var(--brand); }
+.page-tab { text-decoration: none; }
 .page-panel[hidden] { display: none; }
+.page-panel .page-tabs { margin: 0.2rem 0 0.9rem; }
 
 /* MQTT browser (second tab of /traffic). */
 .browse-form {

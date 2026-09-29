@@ -12,6 +12,11 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
+    <div class="page-tabs" role="tablist">
+      <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/messages">{{tr .Lang "messages.dir_all"}}</a>
+      <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/messages?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
+      <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/messages?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
+    </div>
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "messages.title"}} <span class="count">{{.Total}}</span></h2>
       <p class="muted log-hint">{{tr .Lang "messages.hint"}}</p>
@@ -23,11 +28,6 @@
         <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="67" required>
         <button type="submit" class="btn-primary btn-small">{{tr .Lang "messages.send"}}</button>
       </form>
-      <div class="msgs-filter">
-        <a class="chip{{if eq .Dir "all"}} active{{end}}" href="/messages">{{tr .Lang "messages.dir_all"}}</a>
-        <a class="chip{{if eq .Dir "rx"}} active{{end}}" href="/messages?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
-        <a class="chip{{if eq .Dir "tx"}} active{{end}}" href="/messages?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
-      </div>
       {{if .Messages}}
       <div class="msgs-table-wrap">
         <table class="msgs-table">

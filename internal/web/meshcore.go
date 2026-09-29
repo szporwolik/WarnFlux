@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/hex"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -23,13 +24,16 @@ type meshMessageView struct {
 
 // meshNodeView is one heard neighbour shown on the admin page.
 type meshNodeView struct {
-	PubKey   string
-	Short    string
-	Name     string
-	Type     string
-	Lat      float64
-	Lon      float64
-	LastSeen string
+	PubKey     string
+	Short      string
+	Name       string
+	Type       string
+	Lat        float64
+	Lon        float64
+	DistKM     float64
+	BearingDeg float64
+	Cardinal   string
+	LastSeen   string
 }
 
 // meshView is the admin MeshCore page model.
@@ -169,6 +173,12 @@ func (s *Server) fillMeshNodes(v *meshView) {
 		return
 	}
 	v.Snap = s.mesh.Snapshot()
+	// Resolve names for nodes whose adverts carry none: any directory
+	// user who registered that public key labels the node.
+	var owners map[string]string
+	if s.users != nil {
+		owners, _ = s.users.MeshKeyOwners()
+	}
 	v.Nodes = make([]meshNodeView, 0, len(v.Snap.Nodes))
 	for _, n := range v.Snap.Nodes {
 		short := n.PubKey
@@ -184,16 +194,29 @@ func (s *Server) fillMeshNodes(v *meshView) {
 		case 3:
 			typ = "room"
 		}
+		name := n.Name
+		if name == "" {
+			name = owners[n.PubKey]
+		}
 		v.Nodes = append(v.Nodes, meshNodeView{
-			PubKey:   n.PubKey,
-			Short:    short,
-			Name:     n.Name,
-			Type:     typ,
-			Lat:      n.Lat,
-			Lon:      n.Lon,
-			LastSeen: n.LastSeen.Format("15:04:05"),
+			PubKey:     n.PubKey,
+			Short:      short,
+			Name:       name,
+			Type:       typ,
+			Lat:        n.Lat,
+			Lon:        n.Lon,
+			DistKM:     n.DistKM,
+			BearingDeg: n.BearingDeg,
+			Cardinal:   cardinalDirection(n.BearingDeg),
+			LastSeen:   n.LastSeen.Format("15:04:05"),
 		})
 	}
+}
+
+// cardinalDirection maps a bearing in degrees to the 8-wind compass point.
+func cardinalDirection(bearing float64) string {
+	dirs := []string{"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
+	return dirs[int(math.Mod(bearing+22.5, 360)/45)]
 }
 
 // handlePartialMeshcore serves the nodes-tab fragment (polled by the page).

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"sort"
 	"sync"
@@ -26,7 +27,11 @@ type Node struct {
 	Type     byte
 	Lat      float64
 	Lon      float64
-	LastSeen time.Time
+	// DistKM and BearingDeg are computed relative to our station's
+	// position in Snapshot (0 when either position is unknown).
+	DistKM     float64
+	BearingDeg float64
+	LastSeen   time.Time
 }
 
 // Message is one received or sent channel/contact message.
@@ -410,6 +415,10 @@ func (h *Hub) Snapshot() Snapshot {
 		s.Firmware = h.device.Build
 	}
 	for _, n := range h.nodes {
+		if h.self != nil && (h.self.AdvLatRaw != 0 || h.self.AdvLonRaw != 0) && (n.Lat != 0 || n.Lon != 0) {
+			n.DistKM = DistanceKM(h.self.Lat(), h.self.Lon(), n.Lat, n.Lon)
+			n.BearingDeg = BearingDeg(h.self.Lat(), h.self.Lon(), n.Lat, n.Lon)
+		}
 		s.Nodes = append(s.Nodes, *n)
 	}
 	sort.Slice(s.Nodes, func(i, j int) bool { return s.Nodes[i].LastSeen.After(s.Nodes[j].LastSeen) })
@@ -426,4 +435,27 @@ func binaryLE16(b []byte) uint16 {
 // isTimeout reports a benign read deadline exceeded.
 func isTimeout(err error) bool {
 	return errors.Is(err, os.ErrDeadlineExceeded)
+}
+
+// DistanceKM returns the haversine great-circle distance in kilometres
+// between two WGS84 coordinates.
+func DistanceKM(lat1, lon1, lat2, lon2 float64) float64 {
+	const deg2rad = math.Pi / 180
+	dLat := (lat2 - lat1) * deg2rad
+	dLon := (lon2 - lon1) * deg2rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*deg2rad)*math.Cos(lat2*deg2rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return 6371.0088 * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+// BearingDeg returns the initial bearing in degrees in [0, 360) from the
+// first WGS84 coordinate to the second.
+func BearingDeg(lat1, lon1, lat2, lon2 float64) float64 {
+	const deg2rad = math.Pi / 180
+	p1 := lat1 * deg2rad
+	p2 := lat2 * deg2rad
+	dLon := (lon2 - lon1) * deg2rad
+	y := math.Sin(dLon) * math.Cos(p2)
+	x := math.Cos(p1)*math.Sin(p2) - math.Sin(p1)*math.Cos(p2)*math.Cos(dLon)
+	return math.Mod(math.Atan2(y, x)*180/math.Pi+360, 360)
 }

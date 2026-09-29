@@ -463,6 +463,29 @@ func (s *Store) SetUserMeshKeys(userID int64, keys []string) error {
 	return nil
 }
 
+// MeshKeyOwners returns every registered MeshCore public key mapped to
+// the username that registered it.
+func (s *Store) MeshKeyOwners() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT m.pubkey, u.username FROM user_meshkeys m
+		JOIN users u ON u.id = m.user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query meshkey owners: %w", err)
+	}
+	defer rows.Close()
+	owners := make(map[string]string)
+	for rows.Next() {
+		var key, username string
+		if err := rows.Scan(&key, &username); err != nil {
+			return nil, fmt.Errorf("scan meshkey owner: %w", err)
+		}
+		owners[key] = username
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate meshkey owners: %w", err)
+	}
+	return owners, nil
+}
+
 // UserChannelOptOuts returns the delivery channels this user has disabled,
 // keyed by channel kind. An empty set means every channel is enabled.
 func (s *Store) UserChannelOptOuts(userID int64) (map[string]bool, error) {

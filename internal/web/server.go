@@ -66,7 +66,10 @@ type Server struct {
 	// events backs the public archive (180-day history of communications).
 	// nil in minimal constructions (the archive tab then shows an empty
 	// state).
-	events       storage.EventStore
+	events storage.EventStore
+	// aprsMsgs backs the admin APRS message history page; nil in minimal
+	// constructions (the page then shows an empty state).
+	aprsMsgs     storage.APRSMessageStore
 	logger       *slog.Logger
 	sessions     *sessionStore
 	loginLimiter *loginLimiter
@@ -117,7 +120,7 @@ const repoURL = appinfo.RepoURL
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	pub composePublisher, router RouterStatuses, actions *action.Manager,
 	aprsHub *aprs.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
-	users storage.DirectoryStore, events storage.EventStore, ingest map[string]http.Handler,
+	users storage.DirectoryStore, events storage.EventStore, aprsMsgs storage.APRSMessageStore, ingest map[string]http.Handler,
 	logs *LogBuffer, traffic *mqttreceiver.TrafficBuffer,
 	trails *trail.Recorder, metricsReg *metrics.Registry) (*Server, error) {
 
@@ -152,6 +155,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		ingress:      ingress,
 		users:        users,
 		events:       events,
+		aprsMsgs:     aprsMsgs,
 		logger:       logger,
 		sessions:     newSessionStore(cfg.Auth.SecureCookie),
 		loginLimiter: newLoginLimiter(),
@@ -231,6 +235,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/audit", s.requireAdminPartial(s.handlePartialAudit))
 	s.mux.Handle("GET /traffic", s.requireAdmin(s.handleTrafficPage))
 	s.mux.Handle("GET /partials/traffic", s.requireAdminPartial(s.handlePartialTraffic))
+	s.mux.Handle("GET /messages", s.requireAdmin(s.handleAPRSMessagesPage))
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))
 	s.mux.Handle("GET /notifications", s.requireAdmin(s.handleNotificationsPage))
 	s.mux.Handle("GET /partials/notifications", s.requireAdminPartial(s.handlePartialNotifications))

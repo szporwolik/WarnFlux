@@ -38,6 +38,7 @@ type trafficView struct {
 	NavGroups        bool
 	NavLogs          bool
 	NavAudit         bool
+	NavMessages      bool
 	NavTraffic       bool
 	NavNotifications bool
 

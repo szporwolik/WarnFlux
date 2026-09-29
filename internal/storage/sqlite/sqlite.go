@@ -451,6 +451,19 @@ CREATE TABLE aprs_messages (
 CREATE INDEX idx_aprs_messages_created ON aprs_messages(created_at_ms);
 `,
 	},
+	{
+		// v19: per-user MeshCore public keys: one user may own several
+		// mesh nodes; the keys feed the room-server ACL (setperm).
+		SQL: `
+CREATE TABLE user_meshkeys (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	pubkey        TEXT NOT NULL COLLATE NOCASE,
+	created_at_ms INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX idx_user_meshkeys_unique ON user_meshkeys(user_id, pubkey COLLATE NOCASE);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

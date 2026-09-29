@@ -242,6 +242,36 @@ func (f *fakeUsers) SetUserAPRS(userID int64, callsigns []string) error {
 	return storage.ErrUserNotFound
 }
 
+// SetUserMeshKeys replaces the user's registered MeshCore public keys
+// (lowercase 64-hex, de-duplicated, sorted).
+func (f *fakeUsers) SetUserMeshKeys(userID int64, keys []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := make(map[string]bool, len(keys))
+	var clean []string
+	for _, k := range keys {
+		k = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(k), "0x"))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		clean = append(clean, k)
+	}
+	sort.Strings(clean)
+	for i := range f.rows {
+		if f.rows[i].ID != userID {
+			continue
+		}
+		if f.rows[i].IsAdmin {
+			return storage.ErrUserProtected
+		}
+		f.rows[i].MeshKeys = clean
+		f.rows[i].UpdatedAt = time.Now()
+		return nil
+	}
+	return storage.ErrUserNotFound
+}
+
 // AllAPRSCallsigns returns the distinct base callsigns registered for any
 // user (SSID stripped), sorted.
 func (f *fakeUsers) AllAPRSCallsigns() ([]string, error) {

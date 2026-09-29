@@ -34,6 +34,7 @@ type userRow struct {
 	GroupNames    []string
 	APRSCallsigns []string
 	APRSJoin      string
+	MeshKeys      []string
 	UpdatedAt     time.Time
 }
 
@@ -49,6 +50,9 @@ type userForm struct {
 	// APRSCallsigns is the free-text APRS callsign list (space or comma
 	// separated, each with optional -SSID).
 	APRSCallsigns string
+	// MeshKeys is the free-text MeshCore public key list (space or comma
+	// separated, 64-hex keys, optional 0x prefix).
+	MeshKeys string
 	// GroupSet / ChannelSet carry the modal's checked boxes (group
 	// membership and enabled delivery channels) for the edit prefill
 	// and the validation-error echo.
@@ -124,9 +128,8 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 					Email:         u.Email,
 					Discord:       u.Discord,
 					Role:          u.Role,
-					APRSCallsigns: strings.Join(u.APRSCallsigns, " "),
-					GroupSet:      s.userGroupSet(u.ID),
-					ChannelSet:    s.userChannelSet(u.ID),
+					APRSCallsigns: strings.Join(u.APRSCallsigns, " "), MeshKeys: strings.Join(u.MeshKeys, " "), GroupSet: s.userGroupSet(u.ID),
+					ChannelSet: s.userChannelSet(u.ID),
 				}
 			}
 		}
@@ -151,9 +154,8 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 		Discord:       strings.TrimSpace(r.PostFormValue("discord")),
 		Role:          strings.ToLower(strings.TrimSpace(r.PostFormValue("role"))),
 		Password:      r.PostFormValue("password"),
-		APRSCallsigns: strings.TrimSpace(r.PostFormValue("aprs_callsigns")),
-		GroupSet:      groupSetFromForm(r.PostForm["groups"]),
-		ChannelSet:    channelSetFromForm(r.PostForm["channels"]),
+		APRSCallsigns: strings.TrimSpace(r.PostFormValue("aprs_callsigns")), MeshKeys: strings.TrimSpace(r.PostFormValue("mesh_keys")), GroupSet: groupSetFromForm(r.PostForm["groups"]),
+		ChannelSet: channelSetFromForm(r.PostForm["channels"]),
 	}
 	// The modal always submits the preference boxes; clients that omit
 	// the marker (older flows, the basic save tests) leave membership
@@ -185,6 +187,10 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
+		if err := s.users.SetUserMeshKeys(u.ID, parseMeshKeys(form.MeshKeys)); err != nil {
+			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
+			return
+		}
 		if savePrefs {
 			if msg := s.applyUserPrefs(w, r, u.ID, form, editID, sess.username); msg != "" {
 				return
@@ -198,6 +204,10 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit(sess.username, "user-update", form.Username)
 		if err := s.users.SetUserAPRS(u.ID, parseAPRSCallsigns(form.APRSCallsigns)); err != nil {
+			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
+			return
+		}
+		if err := s.users.SetUserMeshKeys(u.ID, parseMeshKeys(form.MeshKeys)); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
@@ -477,8 +487,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 			Role:          u.Role,
 			GroupNames:    names,
 			APRSCallsigns: u.APRSCallsigns,
-			APRSJoin:      strings.Join(u.APRSCallsigns, " "),
-			UpdatedAt:     u.UpdatedAt,
+			APRSJoin:      strings.Join(u.APRSCallsigns, " "), MeshKeys: u.MeshKeys, UpdatedAt: u.UpdatedAt,
 		})
 	}
 	return usersView{
@@ -553,6 +562,10 @@ func validateUserForm(f userForm, requirePassword bool) string {
 		_ = callsigns
 		return msg
 	}
+	if keys, msg := validateMeshKeys(f.MeshKeys); msg != "" {
+		_ = keys
+		return msg
+	}
 	return ""
 }
 
@@ -590,6 +603,56 @@ func validateAPRSCallsigns(raw string) ([]string, string) {
 		}
 	}
 	return callsigns, ""
+}
+
+// maxMeshKeysPerUser bounds the registered MeshCore public key list per
+// user.
+const maxMeshKeysPerUser = 4
+
+// parseMeshKeys normalizes the free-text key list (space/comma separated)
+// into lowercase de-duplicated 64-hex keys (optional 0x prefix stripped).
+func parseMeshKeys(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ',' || r == ';' || r == '\n'
+	})
+	seen := make(map[string]bool, len(fields))
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		k := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f), "0x"))
+		if k != "" && !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// validateMeshKeys returns a user-facing problem when the raw list
+// contains too many or malformed MeshCore public keys.
+func validateMeshKeys(raw string) ([]string, string) {
+	keys := parseMeshKeys(raw)
+	if len(keys) > maxMeshKeysPerUser {
+		return keys, fmt.Sprintf("at most %d MeshCore keys per user", maxMeshKeysPerUser)
+	}
+	for _, k := range keys {
+		if !isHex64(k) {
+			return keys, fmt.Sprintf("%q is not a valid MeshCore public key (64 hex characters)", k)
+		}
+	}
+	return keys, ""
+}
+
+// isHex64 reports whether s is exactly 64 lowercase hex characters.
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // userErrorStatus maps storage errors to HTTP statuses.

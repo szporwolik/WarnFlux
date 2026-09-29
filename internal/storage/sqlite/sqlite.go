@@ -433,6 +433,24 @@ CREATE TABLE password_resets (
 CREATE INDEX idx_password_resets_user ON password_resets(user_id);
 `,
 	},
+	{
+		// v18: durable APRS message history (received and sent), surfacing
+		// on the admin /messages page; survives restarts. Retention is
+		// bounded to storage.APRSMessageRetentionEntries by the store.
+		SQL: `
+CREATE TABLE aprs_messages (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	direction     TEXT NOT NULL CHECK (direction IN ('rx','tx')),
+	from_call     TEXT NOT NULL,
+	to_call       TEXT NOT NULL,
+	text          TEXT NOT NULL,
+	msg_id        TEXT NOT NULL DEFAULT '',
+	via           TEXT NOT NULL DEFAULT '',
+	created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX idx_aprs_messages_created ON aprs_messages(created_at_ms);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

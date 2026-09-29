@@ -1,0 +1,33 @@
+package storage
+
+import (
+	"context"
+	"time"
+)
+
+// APRSMessageRetentionEntries bounds the persisted APRS message history
+// (the admin /messages page): the store keeps the newest N rows and prunes
+// the rest on insert. The value is deliberately generous — the volume is
+// tiny (a few messages per hour at most).
+const APRSMessageRetentionEntries = 2000
+
+// APRSMessage is one persisted APRS message: received (rx) or sent (tx).
+type APRSMessage struct {
+	ID        int64
+	Direction string // rx | tx
+	From      string
+	To        string
+	Text      string
+	MsgID     string
+	Via       string
+	At        time.Time
+}
+
+// APRSMessageStore persists APRS message history. The hub records both
+// directions; the web admin page reads the history back. Implementations
+// bound retention to APRSMessageRetentionEntries.
+type APRSMessageStore interface {
+	RecordAPRSMessage(ctx context.Context, direction, from, to, text, msgID, via string, at time.Time) error
+	ListAPRSMessages(ctx context.Context, direction string, limit, offset int) ([]APRSMessage, error)
+	CountAPRSMessages(ctx context.Context, direction string) (int, error)
+}

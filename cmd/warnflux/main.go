@@ -209,7 +209,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 
 	if cfg.Web.Enabled {
 		if _, err := web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub,
-			ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, traffic, trails, met); err != nil {
+			ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, nil, traffic, trails, met); err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
 	}
@@ -340,8 +340,7 @@ func run(configPath string, checkConfig bool) error {
 		StationTTL:            cfg.APRS.StationTTL,
 		ExcludeInfrastructure: cfg.APRS.ExcludeInfrastructure,
 		RouteMessages:         cfg.APRS.RouteMessages,
-		Version:               resolvedVersion,
-	}, logger)
+		Version:               resolvedVersion, MessageRecorder: store}, logger)
 	if err != nil {
 		return fmt.Errorf("configure aprs hub: %w", err)
 	}
@@ -511,7 +510,7 @@ func run(configPath string, checkConfig bool) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username, adminPassword); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, ingress, logger, resolvedVersion, commit, store, store, ingestHandlers, logs, traffic, trails, met)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, ingress, logger, resolvedVersion, commit, store, store, store, ingestHandlers, logs, traffic, trails, met)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
@@ -588,6 +587,36 @@ func run(configPath string, checkConfig bool) error {
 				}
 				if n > 0 {
 					logger.Debug("routing: fire ledger pruned", "removed", n)
+				}
+			}
+			prune()
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					prune()
+				}
+			}
+		}()
+	}
+
+	// Durable APRS message history: pruned to the retention bound at
+	// startup and then hourly (the store also prunes on every insert).
+	{
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prune := func() {
+				n, err := store.PruneAPRSMessages(ctx, storage.APRSMessageRetentionEntries)
+				if err != nil {
+					logger.Warn("aprs: message history prune failed", "error", err)
+					return
+				}
+				if n > 0 {
+					logger.Debug("aprs: message history pruned", "removed", n)
 				}
 			}
 			prune()

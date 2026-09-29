@@ -674,6 +674,18 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	}
 	h.mu.Unlock()
 
+	// Durable history (admin /messages page): best-effort, never blocks
+	// message handling on a storage hiccup.
+	if h.cfg.MessageRecorder != nil {
+		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := h.cfg.MessageRecorder.RecordAPRSMessage(recCtx, "rx", p.Src,
+			p.Message.To, p.Message.Text, p.Message.ID, via, time.Unix(p.ReceivedAt, 0))
+		cancel()
+		if err != nil && h.logger != nil {
+			h.logger.Debug("aprs: message history record failed", "direction", "rx", "error", err)
+		}
+	}
+
 	payload, err := json.Marshal(doc)
 	if err != nil {
 		return
@@ -959,6 +971,16 @@ func (h *Hub) publishTxMessage(to, text, id, via string) {
 	}
 	if err := h.publishWithTimeout(MessagesTopic, false, payload); err != nil {
 		h.logger.Debug("aprs: tx message feed publish failed", "error", err)
+	}
+
+	// Durable history (admin /messages page): best-effort.
+	if h.cfg.MessageRecorder != nil {
+		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := h.cfg.MessageRecorder.RecordAPRSMessage(recCtx, "tx", h.cfg.Callsign, to, text, id, via, time.Now())
+		cancel()
+		if err != nil && h.logger != nil {
+			h.logger.Debug("aprs: message history record failed", "direction", "tx", "error", err)
+		}
 	}
 }
 

@@ -68,6 +68,7 @@ type healthView struct {
 	NavGroups        bool
 	NavLogs          bool
 	NavAudit         bool
+	NavMessages      bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool

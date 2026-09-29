@@ -180,7 +180,7 @@ func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub,
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, ingress, logger, "test-version", "abc1234", users, events, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, ingress, logger, "test-version", "abc1234", users, events, nil, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1491,7 +1491,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications"}
+	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/messages"}
 	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications", "/partials/health"}
 	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions"}
 	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing"}
@@ -2411,5 +2411,29 @@ func TestEmcomPanelFlow(t *testing.T) {
 	resp, _ = env.get("/emcom")
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
 		t.Fatalf("GET /emcom unauthenticated = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// TestAPRSMessagesPage pins the admin APRS message history: admin-only
+// and renders the (empty or populated) durable history. Row rendering is
+// covered by the sqlite store tests plus live verification.
+func TestAPRSMessagesPage(t *testing.T) {
+	env := newTestEnv(t)
+
+	resp, _ := env.get("/messages")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("GET /messages unauthenticated = %d %q, want 303 /login", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	env.login()
+	resp2, html := env.get("/messages")
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("GET /messages = %d, want 200", resp2.StatusCode)
+	}
+	if !strings.Contains(html, "messages.none") && !strings.Contains(html, "No APRS messages recorded yet") {
+		t.Errorf("messages page missing empty state: %s", html)
+	}
+	if !strings.Contains(html, "/messages?dir=rx") || !strings.Contains(html, "/messages?dir=tx") {
+		t.Errorf("messages page missing direction filters: %s", html)
 	}
 }

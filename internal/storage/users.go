@@ -60,8 +60,11 @@ type User struct {
 	// engine hands them to APRS-capable actions so notifications reach
 	// the right operators.
 	APRSCallsigns []string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// MeshKeys are the MeshCore node public keys (64 hex chars, lowercase)
+	// owned by this user; they feed the mesh room-server ACL.
+	MeshKeys  []string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Group is one notification recipient group. Members is the number of
@@ -184,6 +187,10 @@ type UserStore interface {
 	// optional -SSID). The store normalizes (uppercase) and de-duplicates
 	// them; a missing or protected user reports the usual errors.
 	SetUserAPRS(userID int64, callsigns []string) error
+	// SetUserMeshKeys replaces the user's registered MeshCore public keys
+	// (lowercase 64-hex). The store de-duplicates; a missing or protected
+	// user reports the usual errors.
+	SetUserMeshKeys(userID int64, keys []string) error
 	// AllAPRSCallsigns returns the distinct BASE callsigns (SSID
 	// stripped, uppercase) registered for any user, sorted. The APRS
 	// message-routing bridge uses it as the sender allow-list.

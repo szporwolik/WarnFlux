@@ -25,7 +25,7 @@
       <div class="table-wrap">
         <table class="plugins">
           <thead>
-            <tr><th>{{tr .Lang "users.username"}}</th><th>{{tr .Lang "users.phone"}}</th><th>{{tr .Lang "users.email"}}</th><th>{{tr .Lang "users.discord"}}</th><th>{{tr .Lang "users.aprs"}}</th><th>{{tr .Lang "users.groups"}}</th><th>{{tr .Lang "users.role"}}</th><th>{{tr .Lang "users.updated"}}</th><th></th></tr>
+            <tr><th>{{tr .Lang "users.username"}}</th><th>{{tr .Lang "users.phone"}}</th><th>{{tr .Lang "users.email"}}</th><th>{{tr .Lang "users.discord"}}</th><th>{{tr .Lang "users.aprs"}}</th><th>{{tr .Lang "users.mesh"}}</th><th>{{tr .Lang "users.groups"}}</th><th>{{tr .Lang "users.role"}}</th><th>{{tr .Lang "users.updated"}}</th><th></th></tr>
           </thead>
           <tbody>
             {{range .Users}}
@@ -36,6 +36,7 @@
               <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td>{{if .Discord}}{{.Discord}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td>{{range .APRSCallsigns}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+              <td>{{range .MeshKeys}}<span class="group-chip mesh-key" title="{{.}}">{{printf "%.12s" .}}…</span>{{else}}<span class="muted">—</span>{{end}}</td>
               <td>
                 <div class="groups-cell">
                 {{range $u.GroupNames}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}
@@ -102,6 +103,9 @@
       </label>
       <label class="modal-field">{{tr .Lang "users.modal.aprs"}}
         <input type="text" name="aprs_callsigns" id="user-edit-aprs" value="{{.Form.APRSCallsigns}}" maxlength="256">
+      </label>
+      <label class="modal-field">{{tr .Lang "users.modal.meshkeys"}}
+        <input type="text" name="mesh_keys" id="user-edit-meshkeys" value="{{.Form.MeshKeys}}" maxlength="512">
       </label>
       <fieldset class="modal-section">
         <legend class="modal-legend">{{tr .Lang "users.modal.groups"}}</legend>

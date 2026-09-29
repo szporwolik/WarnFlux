@@ -22,11 +22,11 @@ type Recorder interface {
 
 // Node is one neighbour heard through adverts.
 type Node struct {
-	PubKey   string
-	Name     string
-	Type     byte
-	Lat      float64
-	Lon      float64
+	PubKey string
+	Name   string
+	Type   byte
+	Lat    float64
+	Lon    float64
 	// DistKM and BearingDeg are computed relative to our station's
 	// position in Snapshot (0 when either position is unknown).
 	DistKM     float64
@@ -168,11 +168,27 @@ func (h *Hub) runSession(ctx context.Context) error {
 		return err
 	}
 
+	// The device answers APP_START/DEVICE_QUERY/BATTERY once. If the
+	// reply is lost (busy device, USB glitch) the station info stays
+	// empty forever, which also breaks distance/bearing for nodes — so
+	// re-request it while it is missing.
+	lastHandshake := time.Now()
 	buf := make([]byte, 512)
 	dec := &decoder{}
 	for {
 		if ctx.Err() != nil {
 			return nil
+		}
+		if time.Since(lastHandshake) > 10*time.Second {
+			h.mu.Lock()
+			missing := h.self == nil
+			h.mu.Unlock()
+			if missing {
+				if err := h.handshake(conn); err != nil {
+					return err
+				}
+				lastHandshake = time.Now()
+			}
 		}
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, err := conn.Read(buf)

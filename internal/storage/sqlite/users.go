@@ -104,6 +104,9 @@ func (s *Store) ListUsers(page, perPage int) ([]storage.User, int, error) {
 		return nil, 0, fmt.Errorf("iterate users: %w", err)
 	}
 	out, err = s.attachAPRS(out)
+	if err == nil {
+		out, err = s.attachMeshKeys(out)
+	}
 	if err != nil {
 		return nil, 0, err
 	}
@@ -411,6 +414,55 @@ func (s *Store) SetUserAPRS(userID int64, callsigns []string) error {
 	return nil
 }
 
+// SetUserMeshKeys replaces the user's registered MeshCore public keys
+// (lowercase 64-hex, de-duplicated). The admin row reports
+// storage.ErrUserProtected.
+func (s *Store) SetUserMeshKeys(userID int64, keys []string) error {
+	var isAdmin int
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	if isAdmin != 0 {
+		return storage.ErrUserProtected
+	}
+	seen := make(map[string]bool, len(keys))
+	var clean []string
+	for _, k := range keys {
+		k = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(k), "0x"))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		clean = append(clean, k)
+	}
+	now := s.now().UnixMilli()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin meshkeys update: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM user_meshkeys WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("clear user %d meshkeys: %w", userID, err)
+	}
+	for _, k := range clean {
+		if _, err := tx.Exec(`INSERT INTO user_meshkeys (user_id, pubkey, created_at_ms) VALUES (?, ?, ?)`,
+			userID, k, now); err != nil {
+			return fmt.Errorf("insert user %d meshkey: %w", userID, err)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE users SET updated_at_ms = ? WHERE id = ?`, now, userID); err != nil {
+		return fmt.Errorf("touch user %d: %w", userID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit meshkeys update: %w", err)
+	}
+	return nil
+}
+
 // UserChannelOptOuts returns the delivery channels this user has disabled,
 // keyed by channel kind. An empty set means every channel is enabled.
 func (s *Store) UserChannelOptOuts(userID int64) (map[string]bool, error) {
@@ -668,6 +720,40 @@ func (s *Store) attachAPRS(users []storage.User) ([]storage.User, error) {
 	return users, nil
 }
 
+// attachMeshKeys fills MeshKeys on the given users with one grouped query
+// and returns the updated slice (the input elements are copies).
+func (s *Store) attachMeshKeys(users []storage.User) ([]storage.User, error) {
+	if len(users) == 0 {
+		return users, nil
+	}
+	ids := make([]any, 0, len(users))
+	byID := make(map[int64]int, len(users))
+	for i, u := range users {
+		ids = append(ids, u.ID)
+		byID[u.ID] = i
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	rows, err := s.db.Query(`SELECT user_id, pubkey FROM user_meshkeys WHERE user_id IN (`+ph+`) ORDER BY pubkey COLLATE NOCASE ASC`, ids...)
+	if err != nil {
+		return nil, fmt.Errorf("list user meshkeys: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userID int64
+		var pubkey string
+		if err := rows.Scan(&userID, &pubkey); err != nil {
+			return nil, fmt.Errorf("scan user meshkey: %w", err)
+		}
+		if i, ok := byID[userID]; ok {
+			users[i].MeshKeys = append(users[i].MeshKeys, pubkey)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 // userByID loads one user by ID (used after inserts/updates).
 func (s *Store) userByID(id int64) (storage.User, error) {
 	row := s.db.QueryRow(`SELECT `+userColumns+` FROM users WHERE id = ?`, id)
@@ -676,6 +762,10 @@ func (s *Store) userByID(id int64) (storage.User, error) {
 		return storage.User{}, err
 	}
 	users, err := s.attachAPRS([]storage.User{u})
+	if err != nil {
+		return storage.User{}, err
+	}
+	users, err = s.attachMeshKeys(users)
 	if err != nil {
 		return storage.User{}, err
 	}

@@ -5,6 +5,7 @@ package plugins
 
 import (
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/meshcore"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/adsb"
@@ -14,6 +15,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/gios"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/giosaq"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/imgw"
+	meshsource "github.com/szporwolik/WarnFlux/internal/plugins/sources/meshcore"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/metar"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/rso"
@@ -21,12 +23,16 @@ import (
 
 // RegisterBuiltins registers every built-in plugin type. Registration is
 // explicit so it is easy to audit, test and search. hub is the shared APRS
-// hub (may be nil when the hub is disabled; APRS plugins then fail fast).
-func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub) error {
+// hub and meshHub the shared MeshCore hub (each may be nil when its
+// integration is disabled; the affected plugins then fail fast).
+func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub, meshHub *meshcore.Hub) error {
 	if err := openmeteo.Register(reg); err != nil {
 		return err
 	}
 	if err := metar.Register(reg); err != nil {
+		return err
+	}
+	if err := meshsource.Register(reg, meshHub); err != nil {
 		return err
 	}
 	if err := imgw.Register(reg); err != nil {

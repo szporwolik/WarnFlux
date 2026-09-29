@@ -40,6 +40,7 @@ type auditView struct {
 	NavAccount       bool
 	NavAudit         bool
 	NavMessages      bool
+	NavMeshcore      bool
 	MaxEntries       int
 }
 

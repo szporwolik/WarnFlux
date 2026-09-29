@@ -32,6 +32,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
+	"github.com/szporwolik/WarnFlux/internal/meshcore"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
@@ -144,7 +145,17 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 	if err != nil {
 		return fmt.Errorf("configure aprs hub: %w", err)
 	}
-	if err := plugins.RegisterBuiltins(registry, hub); err != nil {
+	meshHub, err := meshcore.NewHub(meshcore.Config{
+		Enabled:    cfg.MeshCore.Enabled,
+		Device:     cfg.MeshCore.Device,
+		Baud:       cfg.MeshCore.Baud,
+		ChannelIdx: cfg.MeshCore.ChannelIdx,
+		NodeTTL:    cfg.MeshCore.NodeTTL,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("configure meshcore hub: %w", err)
+	}
+	if err := plugins.RegisterBuiltins(registry, hub, meshHub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
 	}
 	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs,
@@ -164,7 +175,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 	trails := trail.NewRecorder(trail.DefaultMaxTrails)
 
 	actionRegistry := action.NewRegistry()
-	if err := actions.RegisterAll(actionRegistry, hub); err != nil {
+	if err := actions.RegisterAll(actionRegistry, hub, nil); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
 	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)
@@ -209,7 +220,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 
 	if cfg.Web.Enabled {
 		if _, err := web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub,
-			ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, nil, traffic, trails, met); err != nil {
+			nil, ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, nil, nil, traffic, trails, met); err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
 	}
@@ -344,6 +355,20 @@ func run(configPath string, checkConfig bool) error {
 	if err != nil {
 		return fmt.Errorf("configure aprs hub: %w", err)
 	}
+	// The MeshCore hub owns the Companion serial session to the Heltec
+	// node; the source plugin, the meshcore action and the admin page
+	// share it. History is persisted like APRS messages.
+	meshHub, err := meshcore.NewHub(meshcore.Config{
+		Enabled:    cfg.MeshCore.Enabled,
+		Device:     cfg.MeshCore.Device,
+		Baud:       cfg.MeshCore.Baud,
+		ChannelIdx: cfg.MeshCore.ChannelIdx,
+		NodeTTL:    cfg.MeshCore.NodeTTL,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("configure meshcore hub: %w", err)
+	}
+	meshHub.SetRecorder(store)
 	// APRS message routing only trusts registered operators: the sender's
 	// base callsign (SSID-insensitive) must appear on a user's APRS
 	// callsign list. Without the gate no message becomes a hazard event.
@@ -361,7 +386,7 @@ func run(configPath string, checkConfig bool) error {
 		return false
 	})
 
-	if err := plugins.RegisterBuiltins(registry, hub); err != nil {
+	if err := plugins.RegisterBuiltins(registry, hub, meshHub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
 	}
 	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs,
@@ -406,7 +431,7 @@ func run(configPath string, checkConfig bool) error {
 	// ActionPlugins: explicit routing only. Unknown types fail here, before
 	// any worker starts (even for disabled entries).
 	actionRegistry := action.NewRegistry()
-	if err := actions.RegisterAll(actionRegistry, hub); err != nil {
+	if err := actions.RegisterAll(actionRegistry, hub, meshHub); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
 	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)
@@ -510,7 +535,7 @@ func run(configPath string, checkConfig bool) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username, adminPassword); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, ingress, logger, resolvedVersion, commit, store, store, store, ingestHandlers, logs, traffic, trails, met)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, meshHub, ingress, logger, resolvedVersion, commit, store, store, store, store, ingestHandlers, logs, traffic, trails, met)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}

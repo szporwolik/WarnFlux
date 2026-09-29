@@ -191,6 +191,10 @@ type UserStore interface {
 	// (lowercase 64-hex). The store de-duplicates; a missing or protected
 	// user reports the usual errors.
 	SetUserMeshKeys(userID int64, keys []string) error
+	// MeshKeyOwners returns every registered MeshCore public key mapped
+	// to the username that registered it. The admin meshcore page uses
+	// it to label heard nodes.
+	MeshKeyOwners() (map[string]string, error)
 	// AllAPRSCallsigns returns the distinct BASE callsigns (SSID
 	// stripped, uppercase) registered for any user, sorted. The APRS
 	// message-routing bridge uses it as the sender allow-list.

@@ -105,10 +105,10 @@ func TestHubSession(t *testing.T) {
 		name := make([]byte, 32)
 		copy(name, "RKSR-TN-R3")
 		adv = append(adv, name...)
-		adv = append(adv, 0, 0, 0, 0) // lastAdvert
-		binary.LittleEndian.PutUint32(b[:], 50_000_000)
+		adv = append(adv, 0, 0, 0, 0)                   // lastAdvert
+		binary.LittleEndian.PutUint32(b[:], 50_020_000) // ~2.2 km N of us
 		adv = append(adv, b[:]...)
-		binary.LittleEndian.PutUint32(b[:], 20_000_000)
+		binary.LittleEndian.PutUint32(b[:], 20_000_000) // same longitude
 		adv = append(adv, b[:]...)
 		adv = append(adv, 0, 0, 0, 0) // lastMod
 		host.Write(encodeDeviceFrame(adv))
@@ -135,6 +135,13 @@ func TestHubSession(t *testing.T) {
 	}
 	if len(snap.Nodes) != 1 || snap.Nodes[0].Name != "RKSR-TN-R3" {
 		t.Fatalf("nodes = %+v", snap.Nodes)
+	}
+	// The advert sits 0.02° north of the self position: ~2.2 km, bearing ~0.
+	if d := snap.Nodes[0].DistKM; d < 2.0 || d > 2.5 {
+		t.Fatalf("node distance = %.2f km, want ~2.2", d)
+	}
+	if b := snap.Nodes[0].BearingDeg; b > 1.5 {
+		t.Fatalf("node bearing = %.2f, want ~0", b)
 	}
 	got := rec.messages()
 	if len(got) != 1 || got[0].Text != "Test SOSNA" || got[0].Direction != "rx" {
@@ -164,5 +171,28 @@ func TestHubSession(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("hub did not stop on cancel")
+	}
+}
+
+func TestDistanceAndBearing(t *testing.T) {
+	// One degree of latitude is about 111.2 km.
+	d := DistanceKM(0, 0, 1, 0)
+	if d < 110.5 || d > 111.5 {
+		t.Fatalf("distance(0,0 -> 1,0) = %.2f km, want ~111.2", d)
+	}
+	if b := BearingDeg(0, 0, 1, 0); b > 1 {
+		t.Fatalf("bearing north = %.2f, want ~0", b)
+	}
+	if b := BearingDeg(0, 0, 0, 1); b < 89 || b > 91 {
+		t.Fatalf("bearing east = %.2f, want ~90", b)
+	}
+	// Warsaw (52.2297, 21.0122) to Krakow (50.0647, 19.9450): ~252 km SSW.
+	d = DistanceKM(52.2297, 21.0122, 50.0647, 19.9450)
+	if d < 247 || d > 257 {
+		t.Fatalf("Warsaw->Krakow distance = %.1f km, want ~252", d)
+	}
+	b := BearingDeg(52.2297, 21.0122, 50.0647, 19.9450)
+	if b < 190 || b > 200 {
+		t.Fatalf("Warsaw->Krakow bearing = %.1f, want ~195", b)
 	}
 }

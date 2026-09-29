@@ -3,6 +3,7 @@ package sqlite
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -233,5 +234,45 @@ func TestUserChannelOptOuts(t *testing.T) {
 	}
 	if err := store.SetUserChannelOptOuts(999, []string{"smtp"}); !errors.Is(err, storage.ErrUserNotFound) {
 		t.Fatalf("missing opt-outs = %v, want ErrUserNotFound", err)
+	}
+}
+
+// TestMeshKeyOwners pins the pubkey -> username mapping used to label
+// heard MeshCore nodes on the admin page.
+func TestMeshKeyOwners(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "owners.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	bea, err := store.CreateUser("sp9bea", "600111222", "", "", "member", "pw1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kow, err := store.CreateUser("sp9kow", "600333444", "", "", "member", "pw2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyA := "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"
+	keyB := "1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd"
+	if err := store.SetUserMeshKeys(bea.ID, []string{keyA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserMeshKeys(kow.ID, []string{keyB}); err != nil {
+		t.Fatal(err)
+	}
+
+	owners, err := store.MeshKeyOwners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owners[keyA] != "sp9bea" || owners[keyB] != "sp9kow" {
+		t.Fatalf("owners = %v", owners)
+	}
+	if _, ok := owners[strings.Repeat("f", 64)]; ok {
+		t.Fatal("unregistered key has an owner")
 	}
 }

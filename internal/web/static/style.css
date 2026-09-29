@@ -811,6 +811,7 @@ table.plugins tr:hover td { background: var(--surface-muted); }
   font-size: 0.85rem;
 }
 .mesh-send input[name="text"] { flex: 1 1 16rem; }
+.mesh-send .btn-primary { width: auto; flex: none; }
 
 /* ---- login ---- */
 .login-page {

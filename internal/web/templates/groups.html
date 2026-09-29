@@ -48,7 +48,7 @@
               <td class="muted">{{timeShort .UpdatedAt}}</td>
               <td>
                 <div class="row-actions">
-                <a class="btn-ghost btn-small" href="/groups/{{.ID}}/routing"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr $.Lang "common.routing"}}</a>
+                <a class="btn-ghost btn-small" href="/groups/{{.ID}}/routing"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr $.Lang "common.routing"}}</a>
                 <a class="btn-ghost btn-small" href="/groups?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr $.Lang "common.edit"}}</a>
                 <form method="post" action="/groups/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('{{trf $.Lang "groups.confirm.delete" .Name}}');">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
@@ -92,7 +92,7 @@
   {{template "sidebar" .}}
   <main class="users-main">
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{trf .Lang "groups.routing_title" .RoutingName}}</h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{trf .Lang "groups.routing_title" .RoutingName}}</h2>
       <p class="page-info">{{tr .Lang "groups.routing_hint"}}</p>
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
       {{if .Actions}}

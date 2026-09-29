@@ -14,14 +14,14 @@
   <main class="users-main">
     <div class="page-tabs" role="tablist">
       <button type="button" class="page-tab active" role="tab" aria-selected="true" data-tab="panel-traffic">
-        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "traffic.tab.traffic"}}
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr .Lang "traffic.tab.traffic"}}
       </button>
       <button type="button" class="page-tab" role="tab" aria-selected="false" data-tab="panel-browser">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "traffic.tab.browser"}}
       </button>
     </div>
     <section class="card log-card page-panel" id="panel-traffic" data-panel="panel-traffic">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "traffic.title"}}</h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr .Lang "traffic.title"}}</h2>
       <p class="muted log-hint">{{trf .Lang "traffic.hint" .MaxEntries}}</p>
       <div id="traffic-viewer" class="log-viewer traffic-viewer" data-after="0"></div>
     </section>

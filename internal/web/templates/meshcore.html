@@ -13,7 +13,7 @@
   {{template "sidebar" .}}
   <main class="users-main">
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "meshcore.title"}}</h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshcore.title"}}</h2>
       <div class="msgs-filter">
         <a class="chip{{if eq .Tab "messages"}} active{{end}}" href="/meshcore?tab=messages">{{tr .Lang "meshcore.tab_messages"}}</a>
         <a class="chip{{if eq .Tab "nodes"}} active{{end}}" href="/meshcore?tab=nodes">{{tr .Lang "meshcore.tab_nodes"}}</a>

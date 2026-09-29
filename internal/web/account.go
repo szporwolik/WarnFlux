@@ -64,6 +64,7 @@ type accountView struct {
 	NavLogs          bool
 	NavAudit         bool
 	NavMessages      bool
+	NavMeshcore      bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool

@@ -794,6 +794,23 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .msgs-table .nowrap { white-space: nowrap; }
 .msgs-rx td { background: rgba(35, 209, 96, 0.04); }
 .msgs-tx td { background: rgba(90, 140, 190, 0.04); }
+.mesh-forms { display: flex; gap: 0.5rem; margin-bottom: 0.9rem; }
+.mesh-send {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.9rem;
+}
+.mesh-send input[type="text"], .mesh-send select {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+.mesh-send input[name="text"] { flex: 1 1 16rem; }
 
 /* ---- login ---- */
 .login-page {

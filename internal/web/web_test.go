@@ -180,7 +180,7 @@ func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub,
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, ingress, logger, "test-version", "abc1234", users, events, nil, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, nil, ingress, logger, "test-version", "abc1234", users, events, nil, nil, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1491,7 +1491,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/messages"}
+	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/messages", "/meshcore"}
 	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications", "/partials/health"}
 	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions"}
 	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing"}

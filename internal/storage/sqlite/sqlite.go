@@ -464,6 +464,21 @@ CREATE TABLE user_meshkeys (
 CREATE UNIQUE INDEX idx_user_meshkeys_unique ON user_meshkeys(user_id, pubkey COLLATE NOCASE);
 `,
 	},
+	{
+		// v20: durable MeshCore message history (received and sent),
+		// surfacing on the admin /meshcore page; survives restarts.
+		SQL: `
+CREATE TABLE meshcore_messages (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	direction     TEXT NOT NULL CHECK (direction IN ('rx','tx')),
+	sender        TEXT NOT NULL DEFAULT '',
+	channel       TEXT NOT NULL DEFAULT '',
+	text          TEXT NOT NULL,
+	created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX idx_meshcore_messages_created ON meshcore_messages(created_at_ms);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

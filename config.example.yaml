@@ -833,3 +833,15 @@ aprs:
   # is registered on one of the directory users may trigger this, over
   # the radio or via APRS-IS alike.
   route_messages: false
+
+# MeshCore Companion serial link (Heltec V4 over USB). When enabled,
+# WarnFlux speaks the Companion protocol: adverts populate the admin
+# /meshcore "heard nodes" tab, channel/contact messages land in the
+# durable history, and the "meshcore" action pushes SOSNA alerts onto
+# the mesh.
+# meshcore:
+#   enabled: true
+#   device: /dev/ttyACM0
+#   baud: 115200
+#   channel_idx: 0        # group channel used for SOSNA messages
+#   node_ttl: 30m

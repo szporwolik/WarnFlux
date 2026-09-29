@@ -80,9 +80,19 @@ type HubConfig struct {
 	// Version is the WarnFlux version (used in the APRS-IS login).
 	Version string
 
+	// MessageRecorder optionally persists the APRS message history
+	// (received and sent) for the admin /messages page; nil disables it.
+	MessageRecorder MessageRecorder
+
 	// SymbolTable/Symbol are our icon, parsed from Icon.
 	SymbolTable byte
 	Symbol      byte
+}
+
+// MessageRecorder persists one APRS message (rx or tx). Implemented by
+// storage stores; the hub treats recording failures as best-effort.
+type MessageRecorder interface {
+	RecordAPRSMessage(ctx context.Context, direction, from, to, text, msgID, via string, at time.Time) error
 }
 
 // Defaults applied by NewHub when the config omits values.

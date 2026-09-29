@@ -1,0 +1,143 @@
+package web
+
+import (
+	"net/http"
+	"time"
+)
+
+// aprsMessagesPageSize bounds one page of the admin APRS message history.
+const aprsMessagesPageSize = 100
+
+// aprsMessageView is one history row shown on the admin page.
+type aprsMessageView struct {
+	ID        int64
+	Direction string
+	From      string
+	To        string
+	Text      string
+	Via       string
+	At        time.Time
+}
+
+// aprsMessagesView is the admin APRS message history page model.
+type aprsMessagesView struct {
+	Lang     string
+	AppTitle string
+	Name     string
+	Header1  string
+	Header2  string
+	Tagline  string
+	Version  string
+	Commit   string
+	RepoURL  string
+	CSRF     string
+	Username string
+	Role     string
+
+	NavDashboard     bool
+	NavUsers         bool
+	NavGroups        bool
+	NavLogs          bool
+	NavTraffic       bool
+	NavNotifications bool
+	NavHealth        bool
+	NavCompose       bool
+	NavEmcom         bool
+	NavAccount       bool
+	NavAudit         bool
+	NavMessages      bool
+
+	Messages []aprsMessageView
+	Dir      string // all | rx | tx
+	Page     int
+	Pages    int
+	From     int
+	To       int
+	Total    int
+}
+
+// handleAPRSMessagesPage renders the admin view of every received and sent
+// APRS message, newest first, paginated, with an rx/tx filter. The history
+// lives in the database and survives restarts.
+func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	v := aprsMessagesView{
+		AppTitle:    s.cfg.Title,
+		Name:        s.displayName(),
+		Header1:     s.displayHeader1(),
+		Header2:     s.cfg.Header2,
+		Tagline:     s.cfg.Tagline,
+		Version:     s.version,
+		Commit:      s.commit,
+		RepoURL:     repoURL,
+		CSRF:        sess.csrf,
+		Username:    sess.username,
+		Role:        sess.role,
+		NavMessages: true,
+		Dir:         "all",
+	}
+	w.Header().Set("Cache-Control", "no-store")
+
+	if s.aprsMsgs == nil {
+		s.renderL(w, r, "messages", v)
+		return
+	}
+
+	switch d := r.URL.Query().Get("dir"); d {
+	case "rx", "tx":
+		v.Dir = d
+	}
+	dirFilter := ""
+	if v.Dir != "all" {
+		dirFilter = v.Dir
+	}
+
+	total, err := s.aprsMsgs.CountAPRSMessages(r.Context(), dirFilter)
+	if err != nil {
+		s.logger.Warn("web: aprs messages count failed", "error", err)
+		s.renderL(w, r, "messages", v)
+		return
+	}
+	v.Total = total
+	pages := (total + aprsMessagesPageSize - 1) / aprsMessagesPageSize
+	if pages < 1 {
+		pages = 1
+	}
+	v.Pages = pages
+
+	page := pageParam(r, "page")
+	if page < 1 {
+		page = 1
+	}
+	if page > pages {
+		page = pages
+	}
+	v.Page = page
+	if total > 0 {
+		v.From = (page-1)*aprsMessagesPageSize + 1
+		v.To = page * aprsMessagesPageSize
+		if v.To > total {
+			v.To = total
+		}
+	}
+
+	stored, err := s.aprsMsgs.ListAPRSMessages(r.Context(), dirFilter, aprsMessagesPageSize, (page-1)*aprsMessagesPageSize)
+	if err != nil {
+		s.logger.Warn("web: aprs messages list failed", "error", err)
+		s.renderL(w, r, "messages", v)
+		return
+	}
+	v.Messages = make([]aprsMessageView, 0, len(stored))
+	for _, m := range stored {
+		v.Messages = append(v.Messages, aprsMessageView{
+			ID:        m.ID,
+			Direction: m.Direction,
+			From:      m.From,
+			To:        m.To,
+			Text:      m.Text,
+			Via:       m.Via,
+			At:        m.At,
+		})
+	}
+	s.renderL(w, r, "messages", v)
+}

@@ -44,7 +44,7 @@
   {{if .EmcomNetworks}}<div class="home-emcom" role="status" aria-label="{{tr .Lang "home.emcom.aria"}}">
     {{range .EmcomNetworks}}
     <span class="emcom-chip emcom-chip-{{.LevelClass}}" title="{{tr $.Lang "warnings.updated"}} {{timeShort .UpdatedAt}}">
-      <svg class="icon emcom-chip-icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>
+      <svg class="icon emcom-chip-icon" aria-hidden="true"><use href="/static/icons.svg#i-megaphone"></use></svg>
       <span class="emcom-chip-name">{{.Network}}</span>
       <span class="emcom-chip-level">{{trf $.Lang "home.emcom.level" .Level}}</span>
       <span class="emcom-chip-label">{{tr $.Lang (printf "emcom.levels.%d" .Level)}}</span>

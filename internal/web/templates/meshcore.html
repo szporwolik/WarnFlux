@@ -81,6 +81,7 @@
   {{if .Snap.Model}}<span class="badge muted">{{.Snap.Model}}</span>{{end}}
   {{if .Snap.BatteryMV}}<span class="badge muted">{{.Snap.BatteryMV}} mV</span>{{end}}
   {{if .Snap.FreqMHz}}<span class="badge muted">{{printf "%.3f" .Snap.FreqMHz}} MHz · {{printf "%.1f" .Snap.BwKHz}} kHz · SF{{.Snap.SF}}/CR{{.Snap.CR}}</span>{{end}}
+  {{if .Snap.ChannelIdx}}<span class="badge muted">{{trf .Lang "meshcore.tx_channel" .Snap.ChannelIdx}}</span>{{else}}<span class="badge bad">{{tr .Lang "meshcore.public_blocked"}}</span>{{end}}
   {{if .Snap.Lat}}<span class="badge muted">{{printf "%.5f, %.5f" .Snap.Lat .Snap.Lon}}</span>{{end}}
 </div>
 {{else}}

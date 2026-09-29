@@ -106,7 +106,7 @@ var en = map[string]string{
 	"nav.logs":          "Logs",
 	"nav.audit":         "Audit log",
 	"nav.mqtt":          "MQTT",
-	"nav.messages":      "APRS messages",
+	"nav.messages":      "APRS",
 	"nav.meshcore":      "MeshCore",
 
 	"meshcore.title":          "MeshCore",
@@ -134,7 +134,7 @@ var en = map[string]string{
 	"meshcore.node_seen":      "Last seen",
 	"meshcore.no_nodes":       "No nodes heard yet.",
 
-	"messages.title":   "APRS messages",
+	"messages.title":   "APRS",
 	"messages.hint":    "Every APRS message received or sent by this station, kept in the database (newest first).",
 	"messages.time":    "Time",
 	"messages.dir":     "Direction",
@@ -146,6 +146,9 @@ var en = map[string]string{
 	"messages.dir_rx":  "Received",
 	"messages.dir_tx":  "Sent",
 	"messages.none":    "No APRS messages recorded yet.",
+	"messages.send":    "Send",
+	"messages.sent":    "Message queued for transmission.",
+	"messages.to_ph":   "Callsign (e.g. SP9XXX)",
 
 	// Public home page.
 	"home.tab.alerts":        "Active hazards",
@@ -662,7 +665,7 @@ var pl = map[string]string{
 	"nav.logs":          "Logi",
 	"nav.audit":         "Dziennik audytu",
 	"nav.mqtt":          "MQTT",
-	"nav.messages":      "Wiadomości APRS",
+	"nav.messages":      "APRS",
 	"nav.meshcore":      "MeshCore",
 
 	"meshcore.title":          "MeshCore",
@@ -690,7 +693,7 @@ var pl = map[string]string{
 	"meshcore.node_seen":      "Ostatnio",
 	"meshcore.no_nodes":       "Nie słychać jeszcze żadnych węzłów.",
 
-	"messages.title":   "Wiadomości APRS",
+	"messages.title":   "APRS",
 	"messages.hint":    "Wszystkie wiadomości APRS odebrane i wysłane przez tę stację, przechowywane w bazie (od najnowszych).",
 	"messages.time":    "Czas",
 	"messages.dir":     "Kierunek",
@@ -702,6 +705,9 @@ var pl = map[string]string{
 	"messages.dir_rx":  "Odebrane",
 	"messages.dir_tx":  "Wysłane",
 	"messages.none":    "Nie zarejestrowano jeszcze żadnych wiadomości APRS.",
+	"messages.send":    "Wyślij",
+	"messages.sent":    "Wiadomość przekazana do wysłania.",
+	"messages.to_ph":   "Znak (np. SP9XXX)",
 
 	"home.tab.alerts":        "Aktywne zagrożenia",
 	"home.tab.map":           "Mapa",

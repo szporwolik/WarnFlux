@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +37,25 @@ func encodeDeviceFrame(payload []byte) []byte {
 	return append(out, payload...)
 }
 
+// readHostFrame reads one host→device frame (0x3C header) payload from the
+// fake device end of the pipe.
+func readHostFrame(host net.Conn) ([]byte, error) {
+	buf := make([]byte, 256)
+	host.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := host.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	if n < 3 || buf[0] != frameOut {
+		return buf[:n], nil // let the caller diagnose
+	}
+	plen := int(binary.LittleEndian.Uint16(buf[1:3]))
+	if n < 3+plen {
+		return buf[:n], nil
+	}
+	return buf[3 : 3+plen], nil
+}
+
 func TestHubSession(t *testing.T) {
 	dev, host := net.Pipe()
 	defer dev.Close()
@@ -45,7 +65,7 @@ func TestHubSession(t *testing.T) {
 	Dial = func(Config) (conn, error) { return dev, nil }
 	defer func() { Dial = origDial }()
 
-	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, ChannelName: "#sp9moa", NodeTTL: time.Hour}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +99,41 @@ func TestHubSession(t *testing.T) {
 			t.Log("DEVICE: no handshake bytes read")
 			return
 		}
+
+		// The hub's syncChannel sends GET_CHANNEL next; answer with a
+		// stale name so it must issue SET_CHANNEL (read it back before
+		// writing anything else — the pipe is synchronous).
+		get, err := readHostFrame(host)
+		if err != nil {
+			t.Logf("DEVICE: get-channel read: %v", err)
+			return
+		}
+		if len(get) != 2 || get[0] != cmdGetChannel || get[1] != 2 {
+			t.Logf("DEVICE: unexpected get-channel frame %x", get)
+			return
+		}
+		ci := []byte{respChannelInfo, 2}
+		name32 := make([]byte, 32)
+		copy(name32, "#stary")
+		ci = append(ci, name32...)
+		ci = append(ci, make([]byte, 16)...) // unencrypted slot
+		host.Write(encodeDeviceFrame(ci))
+
+		set, err := readHostFrame(host)
+		if err != nil {
+			t.Logf("DEVICE: set-channel read: %v", err)
+			return
+		}
+		if len(set) != 2+32+16 || set[0] != cmdSetChannel || set[1] != 2 {
+			t.Logf("DEVICE: unexpected set-channel frame %x", set)
+			return
+		}
+		if got := strings.TrimRight(string(set[2:34]), "\x00"); got != "#sp9moa" {
+			t.Logf("DEVICE: set-channel name = %q, want #sp9moa", got)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+
 		// Self info reply: type,tx,maxTx + pubkey32 + lat/lon + 3 reserved
 		// + manual + freq + bw + sf + cr + name.
 		raw := []byte{respSelfInfo, 0x01, 0x14, 0x16}
@@ -118,6 +173,7 @@ func TestHubSession(t *testing.T) {
 		msg = binary.LittleEndian.AppendUint32(msg, 1234567890)
 		msg = append(msg, []byte("Test SOSNA")...)
 		host.Write(encodeDeviceFrame(msg))
+		t.Log("DEVICE: channel sync done")
 	}()
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -133,8 +189,8 @@ func TestHubSession(t *testing.T) {
 	if snap.Name != "MOA SOSNA" {
 		t.Fatalf("self name = %q, want MOA SOSNA", snap.Name)
 	}
-	if snap.ChannelIdx != 2 {
-		t.Fatalf("channel idx = %d, want 2", snap.ChannelIdx)
+	if snap.ChannelIdx != 2 || snap.ChannelName != "#sp9moa" {
+		t.Fatalf("channel = %d %q, want 2 #sp9moa", snap.ChannelIdx, snap.ChannelName)
 	}
 	if len(snap.Nodes) != 1 || snap.Nodes[0].Name != "RKSR-TN-R3" {
 		t.Fatalf("nodes = %+v", snap.Nodes)
@@ -149,6 +205,14 @@ func TestHubSession(t *testing.T) {
 	got := rec.messages()
 	if len(got) != 1 || got[0].Text != "Test SOSNA" || got[0].Direction != "rx" {
 		t.Fatalf("recorded = %+v", got)
+	}
+
+	// The device side must have completed the channel-name exchange before
+	// the outbound send, or it would eat that frame.
+	select {
+	case <-devDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device goroutine did not finish the channel sync")
 	}
 
 	// Outbound: send a channel message; the device reads it back. The

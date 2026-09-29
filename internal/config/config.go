@@ -148,6 +148,10 @@ type MeshCoreConfig struct {
 	// ChannelIdx is the channel used for SOSNA group messages (0-7).
 	// Channel 0 is Public: the hub refuses to transmit on it.
 	ChannelIdx int
+	// ChannelName optionally pins the device slot's name (e.g. "#sp9moa"):
+	// the hub reads the slot at connect time and issues SET_CHANNEL when
+	// the name differs, preserving the channel secret.
+	ChannelName string
 	// NodeTTL bounds how long an unheard neighbour stays in the node
 	// list.
 	NodeTTL time.Duration
@@ -417,11 +421,12 @@ type fileConfig struct {
 // fileMeshCore mirrors the top-level meshcore block (pointer fields keep
 // omitted values distinguishable from explicit zeroes).
 type fileMeshCore struct {
-	Enabled    bool           `yaml:"enabled"`
-	Device     string         `yaml:"device"`
-	Baud       *int           `yaml:"baud"`
-	ChannelIdx int            `yaml:"channel_idx"`
-	NodeTTL    *time.Duration `yaml:"node_ttl"`
+	Enabled     bool           `yaml:"enabled"`
+	Device      string         `yaml:"device"`
+	Baud        *int           `yaml:"baud"`
+	ChannelIdx  int            `yaml:"channel_idx"`
+	ChannelName string         `yaml:"channel_name"`
+	NodeTTL     *time.Duration `yaml:"node_ttl"`
 }
 
 type fileGeo struct {
@@ -907,6 +912,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.MeshCore.Enabled = f.MeshCore.Enabled
 		cfg.MeshCore.Device = strings.TrimSpace(f.MeshCore.Device)
 		cfg.MeshCore.ChannelIdx = f.MeshCore.ChannelIdx
+		cfg.MeshCore.ChannelName = f.MeshCore.ChannelName
 		if f.MeshCore.Baud != nil {
 			cfg.MeshCore.Baud = *f.MeshCore.Baud
 		}

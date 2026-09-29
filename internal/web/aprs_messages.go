@@ -2,6 +2,8 @@ package web
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -55,6 +57,10 @@ type aprsMessagesView struct {
 	From     int
 	To       int
 	Total    int
+
+	// Send-form feedback (query flashes).
+	Error string
+	Sent  bool
 }
 
 // handleAPRSMessagesPage renders the admin view of every received and sent
@@ -78,6 +84,10 @@ func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) 
 		Dir:         "all",
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	if errMsg := r.URL.Query().Get("err"); errMsg != "" {
+		v.Error = errMsg
+	}
+	v.Sent = r.URL.Query().Get("sent") != ""
 
 	if s.aprsMsgs == nil {
 		s.renderL(w, r, "messages", v)
@@ -141,4 +151,28 @@ func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 	s.renderL(w, r, "messages", v)
+}
+
+// handleAPRSSend transmits one APRS message from the admin panel through
+// the first ready transmitter. The hub validates the addressee, records
+// the tx in the durable history and reports the outcome back via the
+// page flash.
+func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	if s.aprs == nil {
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape("APRS hub not configured"), http.StatusSeeOther)
+		return
+	}
+	to := strings.TrimSpace(r.PostFormValue("to"))
+	text := strings.TrimSpace(r.PostFormValue("text"))
+	if err := s.aprs.SendMessage(r.Context(), to, text); err != nil {
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	s.audit(sess.username, "aprs-send", to)
+	http.Redirect(w, r, "/messages?sent=1", http.StatusSeeOther)
 }

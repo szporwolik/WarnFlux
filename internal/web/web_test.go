@@ -2436,4 +2436,47 @@ func TestAPRSMessagesPage(t *testing.T) {
 	if !strings.Contains(html, "/messages?dir=rx") || !strings.Contains(html, "/messages?dir=tx") {
 		t.Errorf("messages page missing direction filters: %s", html)
 	}
+	if !strings.Contains(html, `action="/messages/send"`) {
+		t.Errorf("messages page missing send form: %s", html)
+	}
+	if !strings.Contains(html, `<span class="nav-label">APRS</span>`) {
+		t.Errorf("messages page nav should read APRS: %s", html)
+	}
+}
+
+// TestAPRSSendValidation pins the send form: bad CSRF is rejected and an
+// invalid addressee flashes the error instead of transmitting.
+func TestAPRSSendValidation(t *testing.T) {
+	hub, err := aprs.NewHub(aprs.HubConfig{Enabled: false}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvWithHub(t, hub)
+	env.login()
+	_, html := env.get("/messages")
+	csrf := extractCSRF(t, html)
+
+	// Wrong CSRF: hard 403.
+	resp, _ := env.postForm("/messages/send", url.Values{"csrf": {"bogus"}, "to": {"SP9XXX"}, "text": {"hello"}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST send bad csrf = %d, want 403", resp.StatusCode)
+	}
+
+	// Invalid addressee: redirect with an error flash, nothing sent.
+	resp, _ = env.postForm("/messages/send", url.Values{"csrf": {csrf}, "to": {"!!!"}, "text": {"hello"}})
+	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "err=") {
+		t.Fatalf("POST send invalid callsign = %d %q, want redirect with err", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// Empty text: same treatment.
+	resp, _ = env.postForm("/messages/send", url.Values{"csrf": {csrf}, "to": {"SP9XXX"}, "text": {"  "}})
+	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "err=") {
+		t.Fatalf("POST send empty text = %d %q, want redirect with err", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// No transmitter available: error surfaced as a flash too.
+	resp, _ = env.postForm("/messages/send", url.Values{"csrf": {csrf}, "to": {"SP9XXX"}, "text": {"hello"}})
+	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "err=") {
+		t.Fatalf("POST send no transmitter = %d %q, want redirect with err", resp.StatusCode, resp.Header.Get("Location"))
+	}
 }

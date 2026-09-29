@@ -2987,6 +2987,8 @@
   function pollMeshNodes() {
     var box = document.getElementById("mesh-nodes");
     if (!box) { return; }
+    // Skip while the nodes tab panel is hidden.
+    if (box.closest("[hidden]")) { return; }
     // Never replace the fragment while someone is typing in the send form.
     var active = document.activeElement;
     if (active && box.contains(active)) { return; }

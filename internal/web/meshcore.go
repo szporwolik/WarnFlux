@@ -105,11 +105,10 @@ func (s *Server) handleMeshcorePage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 
-	if v.Tab == "nodes" {
-		s.fillMeshNodes(&v)
-	} else {
-		s.fillMeshMessages(r, &v)
-	}
+	// Both panels render at once; the tab strip toggles them client-side
+	// (Tab only preselects the visible one, e.g. /meshcore?tab=nodes).
+	s.fillMeshNodes(&v)
+	s.fillMeshMessages(r, &v)
 	s.renderL(w, r, "meshcore", v)
 }
 

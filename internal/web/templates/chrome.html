@@ -54,11 +54,11 @@
       <a class="nav-item{{if .NavHealth}} active{{end}}" href="/health"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg><span class="nav-label">{{tr .Lang "nav.health"}}</span></a>
       <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">{{tr .Lang "nav.groups"}}</span></a>
       <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">{{tr .Lang "nav.users"}}</span></a>
-      <a class="nav-item{{if .NavLogs}} active{{end}}" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg><span class="nav-label">{{tr .Lang "nav.logs"}}</span></a>
-      <a class="nav-item{{if .NavAudit}} active{{end}}" href="/audit"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span class="nav-label">{{tr .Lang "nav.audit"}}</span></a>
-      <a class="nav-item{{if .NavTraffic}} active{{end}}" href="/traffic"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg><span class="nav-label">{{tr .Lang "nav.mqtt"}}</span></a>
       <a class="nav-item{{if .NavMessages}} active{{end}}" href="/messages"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg><span class="nav-label">{{tr .Lang "nav.messages"}}</span></a>
       <a class="nav-item{{if .NavMeshcore}} active{{end}}" href="/meshcore"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg><span class="nav-label">{{tr .Lang "nav.meshcore"}}</span></a>
+      <a class="nav-item{{if .NavTraffic}} active{{end}}" href="/traffic"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg><span class="nav-label">{{tr .Lang "nav.mqtt"}}</span></a>
+      <a class="nav-item{{if .NavLogs}} active{{end}}" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg><span class="nav-label">{{tr .Lang "nav.logs"}}</span></a>
+      <a class="nav-item{{if .NavAudit}} active{{end}}" href="/audit"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span class="nav-label">{{tr .Lang "nav.audit"}}</span></a>
       {{end}}
     </nav>
     <span class="sidebar-spacer"></span>

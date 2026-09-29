@@ -88,6 +88,9 @@ type Config struct {
 	Actions    []Action
 	IngestHTTP []IngestHTTP
 	APRS       APRSConfig
+	// MeshCore holds the Companion serial link settings (top-level
+	// "meshcore:"). The Heltec node plugs in over USB.
+	MeshCore MeshCoreConfig
 	// Geo extends the bundled TERYT table with installation-specific
 	// territorial units (any region of the country).
 	Geo Geo
@@ -130,6 +133,23 @@ type App struct {
 	LogMaxSizeMB int
 	// LogMaxBackups is how many rotated files are retained.
 	LogMaxBackups int
+}
+
+// MeshCoreConfig holds the MeshCore Companion serial link settings
+// (top-level "meshcore:").
+type MeshCoreConfig struct {
+	// Enabled switches the mesh integration on; a disabled mesh leaves
+	// the source plugin and the meshcore action inert.
+	Enabled bool
+	// Device is the serial device path (e.g. /dev/ttyACM0).
+	Device string
+	// Baud is the serial speed (default 115200).
+	Baud int
+	// ChannelIdx is the channel used for SOSNA group messages (0-7).
+	ChannelIdx int
+	// NodeTTL bounds how long an unheard neighbour stays in the node
+	// list.
+	NodeTTL time.Duration
 }
 
 // APRSConfig holds the shared APRS hub settings (top-level "aprs:"). The
@@ -389,7 +409,18 @@ type fileConfig struct {
 	Actions    []fileAction     `yaml:"actions"`
 	IngestHTTP []fileIngestHTTP `yaml:"ingest_http"`
 	APRS       *fileAPRS        `yaml:"aprs"`
+	MeshCore   *fileMeshCore    `yaml:"meshcore"`
 	Geo        *fileGeo         `yaml:"geo"`
+}
+
+// fileMeshCore mirrors the top-level meshcore block (pointer fields keep
+// omitted values distinguishable from explicit zeroes).
+type fileMeshCore struct {
+	Enabled    bool           `yaml:"enabled"`
+	Device     string         `yaml:"device"`
+	Baud       *int           `yaml:"baud"`
+	ChannelIdx int            `yaml:"channel_idx"`
+	NodeTTL    *time.Duration `yaml:"node_ttl"`
 }
 
 type fileGeo struct {
@@ -868,6 +899,18 @@ func (f fileConfig) toConfig() Config {
 		cfg.APRS.Name = strings.TrimSpace(f.APRS.Name)
 		if f.APRS.RouteMessages != nil {
 			cfg.APRS.RouteMessages = *f.APRS.RouteMessages
+		}
+	}
+	cfg.MeshCore = MeshCoreConfig{Baud: 115200, NodeTTL: 30 * time.Minute}
+	if f.MeshCore != nil {
+		cfg.MeshCore.Enabled = f.MeshCore.Enabled
+		cfg.MeshCore.Device = strings.TrimSpace(f.MeshCore.Device)
+		cfg.MeshCore.ChannelIdx = f.MeshCore.ChannelIdx
+		if f.MeshCore.Baud != nil {
+			cfg.MeshCore.Baud = *f.MeshCore.Baud
+		}
+		if f.MeshCore.NodeTTL != nil {
+			cfg.MeshCore.NodeTTL = *f.MeshCore.NodeTTL
 		}
 	}
 	if f.Geo != nil {

@@ -32,6 +32,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	"github.com/szporwolik/WarnFlux/internal/meshcore"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
@@ -61,6 +62,7 @@ type Server struct {
 	router    RouterStatuses
 	actions   *action.Manager
 	aprs      *aprs.Hub
+	mesh      *meshcore.Hub
 	ingress   *dispatch.Ingress
 	users     storage.DirectoryStore
 	// events backs the public archive (180-day history of communications).
@@ -69,7 +71,10 @@ type Server struct {
 	events storage.EventStore
 	// aprsMsgs backs the admin APRS message history page; nil in minimal
 	// constructions (the page then shows an empty state).
-	aprsMsgs     storage.APRSMessageStore
+	aprsMsgs storage.APRSMessageStore
+	// meshMsgs backs the admin MeshCore message history page; nil in
+	// minimal constructions (the page then shows an empty state).
+	meshMsgs     storage.MeshMessageStore
 	logger       *slog.Logger
 	sessions     *sessionStore
 	loginLimiter *loginLimiter
@@ -119,8 +124,9 @@ const repoURL = appinfo.RepoURL
 // by /metrics.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	pub composePublisher, router RouterStatuses, actions *action.Manager,
-	aprsHub *aprs.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
-	users storage.DirectoryStore, events storage.EventStore, aprsMsgs storage.APRSMessageStore, ingest map[string]http.Handler,
+	aprsHub *aprs.Hub, meshHub *meshcore.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
+	users storage.DirectoryStore, events storage.EventStore, aprsMsgs storage.APRSMessageStore,
+	meshMsgs storage.MeshMessageStore, ingest map[string]http.Handler,
 	logs *LogBuffer, traffic *mqttreceiver.TrafficBuffer,
 	trails *trail.Recorder, metricsReg *metrics.Registry) (*Server, error) {
 
@@ -152,10 +158,12 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		router:       router,
 		actions:      actions,
 		aprs:         aprsHub,
+		mesh:         meshHub,
 		ingress:      ingress,
 		users:        users,
 		events:       events,
 		aprsMsgs:     aprsMsgs,
+		meshMsgs:     meshMsgs,
 		logger:       logger,
 		sessions:     newSessionStore(cfg.Auth.SecureCookie),
 		loginLimiter: newLoginLimiter(),
@@ -236,6 +244,10 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /traffic", s.requireAdmin(s.handleTrafficPage))
 	s.mux.Handle("GET /partials/traffic", s.requireAdminPartial(s.handlePartialTraffic))
 	s.mux.Handle("GET /messages", s.requireAdmin(s.handleAPRSMessagesPage))
+	s.mux.Handle("GET /meshcore", s.requireAdmin(s.handleMeshcorePage))
+	s.mux.Handle("GET /partials/meshcore", s.requireAdminPartial(s.handlePartialMeshcore))
+	s.mux.Handle("POST /meshcore/advert", s.requireAdmin(s.handleMeshcoreAdvert))
+	s.mux.Handle("POST /meshcore/send", s.requireAdmin(s.handleMeshcoreSend))
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))
 	s.mux.Handle("GET /notifications", s.requireAdmin(s.handleNotificationsPage))
 	s.mux.Handle("GET /partials/notifications", s.requireAdminPartial(s.handlePartialNotifications))

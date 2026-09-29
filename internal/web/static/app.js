@@ -2979,3 +2979,35 @@
     initHazardModal();
   }
 })();
+
+// Admin MeshCore page: poll the nodes-tab fragment while it is on screen.
+(function () {
+  "use strict";
+
+  function pollMeshNodes() {
+    var box = document.getElementById("mesh-nodes");
+    if (!box) { return; }
+    // Never replace the fragment while someone is typing in the send form.
+    var active = document.activeElement;
+    if (active && box.contains(active)) { return; }
+    fetch("/partials/meshcore", {
+      headers: { "Accept": "text/html" },
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+      .then(function (res) {
+        if (res.status === 401) { window.location.href = "/login"; return null; }
+        return res.ok ? res.text() : null;
+      })
+      .then(function (html) {
+        if (html === null) { return; }
+        var next = document.getElementById("mesh-nodes");
+        if (next) { next.outerHTML = html; }
+      })
+      .catch(function () { /* transient — next poll retries */ });
+  }
+
+  if (document.getElementById("mesh-nodes")) {
+    window.setInterval(pollMeshNodes, 10000);
+  }
+})();

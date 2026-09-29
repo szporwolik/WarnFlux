@@ -1,0 +1,142 @@
+{{define "meshcore"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{tr .Lang "meshcore.title"}} · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "meshcore.title"}}</h2>
+      <div class="msgs-filter">
+        <a class="chip{{if eq .Tab "messages"}} active{{end}}" href="/meshcore?tab=messages">{{tr .Lang "meshcore.tab_messages"}}</a>
+        <a class="chip{{if eq .Tab "nodes"}} active{{end}}" href="/meshcore?tab=nodes">{{tr .Lang "meshcore.tab_nodes"}}</a>
+      </div>
+
+      {{if eq .Tab "messages"}}
+      <p class="muted log-hint">{{tr .Lang "meshcore.hint"}}</p>
+      <div class="msgs-filter">
+        <a class="chip{{if eq .Dir "all"}} active{{end}}" href="/meshcore?dir=all">{{tr .Lang "messages.dir_all"}}</a>
+        <a class="chip{{if eq .Dir "rx"}} active{{end}}" href="/meshcore?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
+        <a class="chip{{if eq .Dir "tx"}} active{{end}}" href="/meshcore?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
+      </div>
+      {{if .Messages}}
+      <div class="msgs-table-wrap">
+        <table class="msgs-table">
+          <thead>
+            <tr>
+              <th>{{tr .Lang "messages.time"}}</th>
+              <th>{{tr .Lang "messages.dir"}}</th>
+              <th>{{tr .Lang "meshcore.from"}}</th>
+              <th>{{tr .Lang "meshcore.channel"}}</th>
+              <th>{{tr .Lang "messages.text"}}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Messages}}
+            <tr class="msgs-{{.Direction}}">
+              <td class="muted nowrap">{{timeFull .At}}</td>
+              <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
+              <td><strong>{{if .Sender}}{{.Sender}}{{else}}—{{end}}</strong></td>
+              <td>{{.Channel}}</td>
+              <td class="msgs-text">{{.Text}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
+        {{if gt .Page 1}}<a class="page-link" href="/meshcore?dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+        <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
+        {{if lt .Page .Pages}}<a class="page-link" href="/meshcore?dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
+      </div>
+      {{else}}
+      <p class="home-none">{{tr .Lang "meshcore.none"}}</p>
+      {{end}}
+      {{else}}
+      <div id="mesh-nodes">
+        {{template "mesh_nodes" .}}
+      </div>
+      {{end}}
+    </section>
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
+</body>
+</html>
+{{end}}
+
+{{define "mesh_nodes"}}
+{{if .Snap.Connected}}
+<div class="msgs-filter">
+  <span class="badge ok">{{tr .Lang "meshcore.connected"}}</span>
+  {{if .Snap.Name}}<span class="badge muted">{{.Snap.Name}}</span>{{end}}
+  {{if .Snap.Model}}<span class="badge muted">{{.Snap.Model}}</span>{{end}}
+  {{if .Snap.BatteryMV}}<span class="badge muted">{{.Snap.BatteryMV}} mV</span>{{end}}
+  {{if .Snap.FreqMHz}}<span class="badge muted">{{printf "%.3f" .Snap.FreqMHz}} MHz · {{printf "%.1f" .Snap.BwKHz}} kHz · SF{{.Snap.SF}}/CR{{.Snap.CR}}</span>{{end}}
+  {{if .Snap.Lat}}<span class="badge muted">{{printf "%.5f, %.5f" .Snap.Lat .Snap.Lon}}</span>{{end}}
+</div>
+{{else}}
+<div class="msgs-filter"><span class="badge bad">{{tr .Lang "meshcore.disconnected"}}</span>{{if .Snap.LastError}}<span class="muted">{{.Snap.LastError}}</span>{{end}}</div>
+{{end}}
+
+<div class="mesh-forms">
+  <form method="post" action="/meshcore/advert" class="inline-form">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="kind" value="flood">
+    <button type="submit" class="btn btn-small">{{tr .Lang "meshcore.advert_flood"}}</button>
+  </form>
+  <form method="post" action="/meshcore/advert" class="inline-form">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="kind" value="zerohop">
+    <button type="submit" class="btn btn-small">{{tr .Lang "meshcore.advert_zerohop"}}</button>
+  </form>
+</div>
+
+<form method="post" action="/meshcore/send" class="mesh-send">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <select name="target">
+    <option value="channel">{{tr .Lang "meshcore.send_channel"}}</option>
+    <option value="contact">{{tr .Lang "meshcore.send_contact"}}</option>
+  </select>
+  <input type="text" name="contact" placeholder="{{tr .Lang "meshcore.contact_ph"}}" maxlength="12">
+  <input type="text" name="text" placeholder="{{tr .Lang "meshcore.text_ph"}}" maxlength="133" required>
+  <button type="submit" class="btn btn-small">{{tr .Lang "meshcore.send"}}</button>
+</form>
+
+{{if .Nodes}}
+<div class="msgs-table-wrap">
+  <table class="msgs-table">
+    <thead>
+      <tr>
+        <th>{{tr .Lang "meshcore.node_name"}}</th>
+        <th>{{tr .Lang "meshcore.node_key"}}</th>
+        <th>{{tr .Lang "meshcore.node_type"}}</th>
+        <th>{{tr .Lang "meshcore.node_pos"}}</th>
+        <th>{{tr .Lang "meshcore.node_seen"}}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Nodes}}
+      <tr>
+        <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}</strong></td>
+        <td class="muted nowrap" title="{{.PubKey}}">{{.Short}}…</td>
+        <td>{{.Type}}</td>
+        <td class="muted nowrap">{{if .Lat}}{{printf "%.5f, %.5f" .Lat .Lon}}{{else}}—{{end}}</td>
+        <td class="muted nowrap">{{.LastSeen}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+<p class="home-none">{{tr .Lang "meshcore.no_nodes"}}</p>
+{{end}}
+{{end}}

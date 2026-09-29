@@ -12,14 +12,17 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/actions/discord"
 	httpwebhook "github.com/szporwolik/WarnFlux/internal/actions/httpwebhook"
 	"github.com/szporwolik/WarnFlux/internal/actions/logger"
+	meshaction "github.com/szporwolik/WarnFlux/internal/actions/meshcore"
 	"github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/meshcore"
 )
 
 // RegisterAll registers every built-in action type. hub is the shared APRS
-// hub (may be nil when the hub is disabled; the aprs action then fails
-// fast when configured).
-func RegisterAll(reg *action.Registry, hub *aprs.Hub) error {
+// hub and meshHub the shared MeshCore hub (each may be nil when its
+// integration is disabled; the affected actions then fail fast when
+// configured).
+func RegisterAll(reg *action.Registry, hub *aprs.Hub, meshHub *meshcore.Hub) error {
 	if err := reg.Register("logger", logger.New); err != nil {
 		return err
 	}
@@ -36,6 +39,9 @@ func RegisterAll(reg *action.Registry, hub *aprs.Hub) error {
 		return err
 	}
 	if err := aprsout.Register(reg, hub); err != nil {
+		return err
+	}
+	if err := meshaction.Register(reg, meshHub); err != nil {
 		return err
 	}
 	return nil

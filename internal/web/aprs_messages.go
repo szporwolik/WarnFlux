@@ -46,6 +46,7 @@ type aprsMessagesView struct {
 	NavAccount       bool
 	NavAudit         bool
 	NavMessages      bool
+	NavMeshcore      bool
 
 	Messages []aprsMessageView
 	Dir      string // all | rx | tx

@@ -843,5 +843,6 @@ aprs:
 #   enabled: true
 #   device: /dev/ttyACM0
 #   baud: 115200
-#   channel_idx: 0        # group channel used for SOSNA messages
+#   channel_idx: 2        # group channel used for SOSNA messages;
+#                         # 0 is Public — transmissions are refused
 #   node_ttl: 30m

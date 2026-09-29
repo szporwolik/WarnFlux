@@ -12,19 +12,22 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshcore.title"}}</h2>
-      <div class="msgs-filter">
-        <a class="chip{{if eq .Tab "messages"}} active{{end}}" href="/meshcore?tab=messages">{{tr .Lang "meshcore.tab_messages"}}</a>
-        <a class="chip{{if eq .Tab "nodes"}} active{{end}}" href="/meshcore?tab=nodes">{{tr .Lang "meshcore.tab_nodes"}}</a>
-      </div>
+    <div class="page-tabs" role="tablist">
+      <button type="button" class="page-tab{{if eq .Tab "messages"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "messages"}}true{{else}}false{{end}}" data-tab="panel-msgs">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "meshcore.tab_messages"}}
+      </button>
+      <button type="button" class="page-tab{{if eq .Tab "nodes"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "nodes"}}true{{else}}false{{end}}" data-tab="panel-nodes">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshcore.tab_nodes"}}
+      </button>
+    </div>
 
-      {{if eq .Tab "messages"}}
+    <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "messages"}} hidden{{end}}>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "meshcore.tab_messages"}}</h2>
       <p class="muted log-hint">{{tr .Lang "meshcore.hint"}}</p>
-      <div class="msgs-filter">
-        <a class="chip{{if eq .Dir "all"}} active{{end}}" href="/meshcore?dir=all">{{tr .Lang "messages.dir_all"}}</a>
-        <a class="chip{{if eq .Dir "rx"}} active{{end}}" href="/meshcore?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
-        <a class="chip{{if eq .Dir "tx"}} active{{end}}" href="/meshcore?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
+      <div class="page-tabs">
+        <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/meshcore">{{tr .Lang "messages.dir_all"}}</a>
+        <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/meshcore?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
+        <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/meshcore?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
       </div>
       {{if .Messages}}
       <div class="msgs-table-wrap">
@@ -60,11 +63,13 @@
       {{else}}
       <p class="home-none">{{tr .Lang "meshcore.none"}}</p>
       {{end}}
-      {{else}}
+    </section>
+
+    <section class="card page-panel" id="panel-nodes" data-panel="panel-nodes"{{if ne .Tab "nodes"}} hidden{{end}}>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshcore.tab_nodes"}}</h2>
       <div id="mesh-nodes">
         {{template "mesh_nodes" .}}
       </div>
-      {{end}}
     </section>
   </main>
   {{template "footer" .}}

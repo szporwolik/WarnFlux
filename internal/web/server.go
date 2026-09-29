@@ -244,6 +244,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /traffic", s.requireAdmin(s.handleTrafficPage))
 	s.mux.Handle("GET /partials/traffic", s.requireAdminPartial(s.handlePartialTraffic))
 	s.mux.Handle("GET /messages", s.requireAdmin(s.handleAPRSMessagesPage))
+	s.mux.Handle("POST /messages/send", s.requireAdmin(s.handleAPRSSend))
 	s.mux.Handle("GET /meshcore", s.requireAdmin(s.handleMeshcorePage))
 	s.mux.Handle("GET /partials/meshcore", s.requireAdminPartial(s.handlePartialMeshcore))
 	s.mux.Handle("POST /meshcore/advert", s.requireAdmin(s.handleMeshcoreAdvert))

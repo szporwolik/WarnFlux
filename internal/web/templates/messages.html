@@ -15,6 +15,14 @@
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "messages.title"}} <span class="count">{{.Total}}</span></h2>
       <p class="muted log-hint">{{tr .Lang "messages.hint"}}</p>
+      {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
+      {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.sent"}}</span></div>{{end}}
+      <form method="post" action="/messages/send" class="aprs-send">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" required>
+        <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="67" required>
+        <button type="submit" class="btn-primary btn-small">{{tr .Lang "messages.send"}}</button>
+      </form>
       <div class="msgs-filter">
         <a class="chip{{if eq .Dir "all"}} active{{end}}" href="/messages">{{tr .Lang "messages.dir_all"}}</a>
         <a class="chip{{if eq .Dir "rx"}} active{{end}}" href="/messages?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>

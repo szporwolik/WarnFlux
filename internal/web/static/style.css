@@ -812,6 +812,24 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 }
 .mesh-send input[name="text"] { flex: 1 1 16rem; }
 .mesh-send .btn-primary { width: auto; flex: none; }
+.aprs-send {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.9rem;
+}
+.aprs-send input[type="text"] {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+.aprs-send input[name="to"] { flex: 0 1 10rem; }
+.aprs-send input[name="text"] { flex: 1 1 16rem; }
+.aprs-send .btn-primary { width: auto; flex: none; }
 
 /* ---- login ---- */
 .login-page {

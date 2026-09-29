@@ -483,6 +483,42 @@ func buildGetBattery() []byte {
 	return []byte{cmdGetBattery}
 }
 
+// channelNameLen is the fixed name field width inside SET_CHANNEL and
+// CHANNEL_INFO packets.
+const channelNameLen = 32
+
+// buildGetChannel queries one channel slot (idx 0-7) from the device.
+func buildGetChannel(idx byte) []byte {
+	return []byte{cmdGetChannel, idx}
+}
+
+// buildSetChannel creates or updates one channel slot: name is UTF-8,
+// truncated/padded to 32 bytes, plus the 16-byte secret (all zeroes for
+// an unencrypted channel). The device supports only the 128-bit variant.
+func buildSetChannel(idx byte, name string, secret []byte) []byte {
+	if len(secret) != 16 {
+		return nil
+	}
+	out := make([]byte, 2+channelNameLen+16)
+	out[0] = cmdSetChannel
+	out[1] = idx
+	copy(out[2:2+channelNameLen], name)
+	copy(out[2+channelNameLen:], secret)
+	return out
+}
+
+// parseChannelInfo decodes a PACKET_CHANNEL_INFO payload (after the 0x12):
+// channel index, 32-byte null-padded name and the 16-byte secret.
+func parseChannelInfo(b []byte) (idx byte, name string, secret []byte, err error) {
+	if len(b) < 1+channelNameLen+16 {
+		return 0, "", nil, io.ErrUnexpectedEOF
+	}
+	idx = b[0]
+	name = string(bytes.TrimRight(b[1:1+channelNameLen], "\x00"))
+	secret = append([]byte(nil), b[1+channelNameLen:1+channelNameLen+16]...)
+	return idx, name, secret, nil
+}
+
 // pubKeyHex renders a public key (or prefix) as hex for map keys.
 func pubKeyHex(b []byte) string { return hex.EncodeToString(b) }
 

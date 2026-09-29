@@ -845,4 +845,6 @@ aprs:
 #   baud: 115200
 #   channel_idx: 2        # group channel used for SOSNA messages;
 #                         # 0 is Public — transmissions are refused
+#   channel_name: "#sp9moa"  # pinned slot name: SET_CHANNEL is issued
+#                         # at connect time when the device differs
 #   node_ttl: 30m

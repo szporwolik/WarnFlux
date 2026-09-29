@@ -49,6 +49,10 @@ type Config struct {
 	Device     string
 	Baud       int
 	ChannelIdx int
+	// ChannelName optionally pins the device slot's name (e.g. "#sp9moa"):
+	// the hub reads the slot at connect time and issues SET_CHANNEL when
+	// the name differs, preserving the channel secret.
+	ChannelName string
 	// NodeTTL bounds how long an unheard neighbour stays in the node list.
 	NodeTTL time.Duration
 }
@@ -175,6 +179,9 @@ func (h *Hub) runSession(ctx context.Context) error {
 	if err := h.handshake(conn); err != nil {
 		return err
 	}
+	if err := h.syncChannel(conn); err != nil {
+		return err
+	}
 
 	// The device answers APP_START/DEVICE_QUERY/BATTERY once. If the
 	// reply is lost (busy device, USB glitch) the station info stays
@@ -226,6 +233,63 @@ func (h *Hub) handshake(conn conn) error {
 		return fmt.Errorf("handshake write: %w", err)
 	}
 	return nil
+}
+
+// syncChannel aligns the configured channel slot on the device with
+// cfg.ChannelName (e.g. "#sp9moa"): it reads the current name via
+// GET_CHANNEL and issues SET_CHANNEL only when the name differs, reusing
+// the slot's existing secret. A missing answer only logs a warning — the
+// link still works.
+func (h *Hub) syncChannel(conn conn) error {
+	if h.cfg.ChannelName == "" {
+		return nil
+	}
+	idx := byte(h.cfg.ChannelIdx)
+	if _, err := conn.Write(encodeFrame(buildGetChannel(idx))); err != nil {
+		return fmt.Errorf("meshcore: get channel write: %w", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	dec := &decoder{}
+	buf := make([]byte, 512)
+	for {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			for _, frame := range dec.feed(buf[:n]) {
+				if len(frame) == 0 {
+					continue
+				}
+				if frame[0] == respChannelInfo {
+					gotIdx, name, secret, perr := parseChannelInfo(frame[1:])
+					if perr == nil && gotIdx == idx {
+						if name != h.cfg.ChannelName {
+							payload := buildSetChannel(idx, h.cfg.ChannelName, secret)
+							if payload == nil {
+								return errors.New("meshcore: bad channel secret length")
+							}
+							if _, werr := conn.Write(encodeFrame(payload)); werr != nil {
+								return fmt.Errorf("meshcore: set channel write: %w", werr)
+							}
+							if h.logger != nil {
+								h.logger.Info("meshcore: channel name synced", "channel", idx, "name", h.cfg.ChannelName)
+							}
+						}
+						return nil
+					}
+				} else {
+					h.handleFrame(frame)
+				}
+			}
+		}
+		if err != nil {
+			if isTimeout(err) {
+				if h.logger != nil {
+					h.logger.Warn("meshcore: channel name sync timed out", "channel", idx)
+				}
+				return nil
+			}
+			return fmt.Errorf("meshcore: channel sync read: %w", err)
+		}
+	}
 }
 
 // writeFrame encodes and writes one outgoing command.
@@ -403,21 +467,22 @@ func (h *Hub) recordMessage(direction, sender, channel, text string) {
 
 // Snapshot is the live view for the admin page.
 type Snapshot struct {
-	Connected  bool
-	Name       string
-	Model      string
-	Firmware   string
-	BatteryMV  int
-	FreqMHz    float64
-	BwKHz      float64
-	SF         byte
-	CR         byte
-	Lat        float64
-	Lon        float64
-	ChannelIdx int
-	Nodes      []Node
-	Recent     []Message
-	LastError  string
+	Connected   bool
+	Name        string
+	Model       string
+	Firmware    string
+	BatteryMV   int
+	FreqMHz     float64
+	BwKHz       float64
+	SF          byte
+	CR          byte
+	Lat         float64
+	Lon         float64
+	ChannelIdx  int
+	ChannelName string
+	Nodes       []Node
+	Recent      []Message
+	LastError   string
 }
 
 // Snapshot returns a copy of the hub state.
@@ -425,11 +490,12 @@ func (h *Hub) Snapshot() Snapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	s := Snapshot{
-		Connected:  h.connected,
-		BatteryMV:  h.battery,
-		ChannelIdx: h.cfg.ChannelIdx,
-		Nodes:      make([]Node, 0, len(h.nodes)),
-		Recent:     append([]Message(nil), h.recent...),
+		Connected:   h.connected,
+		BatteryMV:   h.battery,
+		ChannelIdx:  h.cfg.ChannelIdx,
+		ChannelName: h.cfg.ChannelName,
+		Nodes:       make([]Node, 0, len(h.nodes)),
+		Recent:      append([]Message(nil), h.recent...),
 	}
 	if h.self != nil {
 		s.Name = h.self.Name

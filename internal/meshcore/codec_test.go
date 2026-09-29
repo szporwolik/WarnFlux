@@ -3,6 +3,7 @@ package meshcore
 import (
 	"bytes"
 	"encoding/binary"
+	"strings"
 	"testing"
 )
 
@@ -136,5 +137,34 @@ func TestEncodeFrameHeader(t *testing.T) {
 	}
 	if !bytes.Equal(frame[3:], []byte{0x01, 0x02, 0x03}) {
 		t.Fatalf("bad outbound payload: %x", frame[3:])
+	}
+}
+
+func TestChannelFrames(t *testing.T) {
+	if got := buildGetChannel(2); len(got) != 2 || got[0] != cmdGetChannel || got[1] != 2 {
+		t.Fatalf("get channel = %x", got)
+	}
+	set := buildSetChannel(2, "#sp9moa", make([]byte, 16))
+	if len(set) != 2+channelNameLen+16 || set[0] != cmdSetChannel || set[1] != 2 {
+		t.Fatalf("set channel frame = %x", set)
+	}
+	if name := strings.TrimRight(string(set[2:2+channelNameLen]), "\x00"); name != "#sp9moa" {
+		t.Fatalf("set channel name = %q", name)
+	}
+	if buildSetChannel(2, "#sp9moa", make([]byte, 32)) != nil {
+		t.Fatal("32-byte secret must be rejected (device supports 128-bit only)")
+	}
+
+	info := []byte{0x12, 2}
+	name32 := make([]byte, 32)
+	copy(name32, "#stary")
+	info = append(info, name32...)
+	info = append(info, make([]byte, 16)...)
+	idx, name, secret, err := parseChannelInfo(info[1:])
+	if err != nil || idx != 2 || name != "#stary" || len(secret) != 16 {
+		t.Fatalf("channel info = %d %q %x %v", idx, name, secret, err)
+	}
+	if _, _, _, err := parseChannelInfo([]byte{1, 2, 3}); err == nil {
+		t.Fatal("short channel info accepted")
 	}
 }

@@ -295,6 +295,20 @@ func (f *fakeUsers) AllAPRSCallsigns() ([]string, error) {
 	return out, nil
 }
 
+// MeshKeyOwners returns each registered MeshCore public key mapped to the
+// owning username.
+func (f *fakeUsers) MeshKeyOwners() (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	owners := make(map[string]string)
+	for _, u := range f.rows {
+		for _, k := range u.MeshKeys {
+			owners[k] = u.Username
+		}
+	}
+	return owners, nil
+}
+
 // SetUserPassword replaces a regular user's password; the admin row is
 // protected.
 func (f *fakeUsers) SetUserPassword(userID int64, password string) error {

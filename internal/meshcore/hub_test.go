@@ -45,7 +45,7 @@ func TestHubSession(t *testing.T) {
 	Dial = func(Config) (conn, error) { return dev, nil }
 	defer func() { Dial = origDial }()
 
-	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 0, NodeTTL: time.Hour}, slog.Default())
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +133,9 @@ func TestHubSession(t *testing.T) {
 	if snap.Name != "MOA SOSNA" {
 		t.Fatalf("self name = %q, want MOA SOSNA", snap.Name)
 	}
+	if snap.ChannelIdx != 2 {
+		t.Fatalf("channel idx = %d, want 2", snap.ChannelIdx)
+	}
 	if len(snap.Nodes) != 1 || snap.Nodes[0].Name != "RKSR-TN-R3" {
 		t.Fatalf("nodes = %+v", snap.Nodes)
 	}
@@ -194,5 +197,20 @@ func TestDistanceAndBearing(t *testing.T) {
 	b := BearingDeg(52.2297, 21.0122, 50.0647, 19.9450)
 	if b < 190 || b > 200 {
 		t.Fatalf("Warsaw->Krakow bearing = %.1f, want ~195", b)
+	}
+}
+
+// TestPublicChannelBlocked pins the safety rule: the hub never transmits
+// on the Public channel (index 0), even with a live connection.
+func TestPublicChannelBlocked(t *testing.T) {
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 0, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.SendChannelMessage("must not go out"); err == nil {
+		t.Fatal("SendChannelMessage on public channel 0 succeeded, want refusal")
+	}
+	if hub.Snapshot().ChannelIdx != 0 {
+		t.Fatal("snapshot should report the configured channel 0")
 	}
 }

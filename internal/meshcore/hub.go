@@ -59,6 +59,11 @@ const (
 	DefaultNodeTTL = 30 * time.Minute
 )
 
+// PublicChannelIdx is the device's Public channel. WarnFlux never
+// transmits on it: messages sent there would reach the whole mesh
+// uninvited. Receiving is still allowed.
+const PublicChannelIdx = 0
+
 // Hub owns the serial connection to the MeshCore Companion device and the
 // shared state: self info, neighbours and the message history. The source
 // plugin runs Run; the outbound action sends through SendChannelMessage;
@@ -97,6 +102,9 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	}
 	if cfg.Device == "" {
 		return nil, errors.New("meshcore: device path is required")
+	}
+	if cfg.ChannelIdx == PublicChannelIdx && logger != nil {
+		logger.Warn("meshcore: channel 0 is Public — transmissions are disabled")
 	}
 	return &Hub{
 		cfg:    cfg,
@@ -235,7 +243,11 @@ func (h *Hub) writeFrame(payload []byte) error {
 }
 
 // SendChannelMessage sends one text message on the configured channel.
+// The Public channel (0) is refused: never transmit there.
 func (h *Hub) SendChannelMessage(text string) error {
+	if h.cfg.ChannelIdx == PublicChannelIdx {
+		return errors.New("meshcore: refusing to transmit on public channel 0")
+	}
 	if err := h.writeFrame(buildSendChannelTxtMsg(byte(h.cfg.ChannelIdx), text)); err != nil {
 		return err
 	}
@@ -391,20 +403,21 @@ func (h *Hub) recordMessage(direction, sender, channel, text string) {
 
 // Snapshot is the live view for the admin page.
 type Snapshot struct {
-	Connected bool
-	Name      string
-	Model     string
-	Firmware  string
-	BatteryMV int
-	FreqMHz   float64
-	BwKHz     float64
-	SF        byte
-	CR        byte
-	Lat       float64
-	Lon       float64
-	Nodes     []Node
-	Recent    []Message
-	LastError string
+	Connected  bool
+	Name       string
+	Model      string
+	Firmware   string
+	BatteryMV  int
+	FreqMHz    float64
+	BwKHz      float64
+	SF         byte
+	CR         byte
+	Lat        float64
+	Lon        float64
+	ChannelIdx int
+	Nodes      []Node
+	Recent     []Message
+	LastError  string
 }
 
 // Snapshot returns a copy of the hub state.
@@ -412,10 +425,11 @@ func (h *Hub) Snapshot() Snapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	s := Snapshot{
-		Connected: h.connected,
-		BatteryMV: h.battery,
-		Nodes:     make([]Node, 0, len(h.nodes)),
-		Recent:    append([]Message(nil), h.recent...),
+		Connected:  h.connected,
+		BatteryMV:  h.battery,
+		ChannelIdx: h.cfg.ChannelIdx,
+		Nodes:      make([]Node, 0, len(h.nodes)),
+		Recent:     append([]Message(nil), h.recent...),
 	}
 	if h.self != nil {
 		s.Name = h.self.Name

@@ -146,6 +146,7 @@ type MeshCoreConfig struct {
 	// Baud is the serial speed (default 115200).
 	Baud int
 	// ChannelIdx is the channel used for SOSNA group messages (0-7).
+	// Channel 0 is Public: the hub refuses to transmit on it.
 	ChannelIdx int
 	// NodeTTL bounds how long an unheard neighbour stays in the node
 	// list.

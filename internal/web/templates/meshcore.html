@@ -91,12 +91,12 @@
   <form method="post" action="/meshcore/advert" class="inline-form">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="kind" value="flood">
-    <button type="submit" class="btn btn-small">{{tr .Lang "meshcore.advert_flood"}}</button>
+    <button type="submit" class="btn-ghost btn-small">{{tr .Lang "meshcore.advert_flood"}}</button>
   </form>
   <form method="post" action="/meshcore/advert" class="inline-form">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="kind" value="zerohop">
-    <button type="submit" class="btn btn-small">{{tr .Lang "meshcore.advert_zerohop"}}</button>
+    <button type="submit" class="btn-ghost btn-small">{{tr .Lang "meshcore.advert_zerohop"}}</button>
   </form>
 </div>
 
@@ -108,7 +108,7 @@
   </select>
   <input type="text" name="contact" placeholder="{{tr .Lang "meshcore.contact_ph"}}" maxlength="12">
   <input type="text" name="text" placeholder="{{tr .Lang "meshcore.text_ph"}}" maxlength="133" required>
-  <button type="submit" class="btn btn-small">{{tr .Lang "meshcore.send"}}</button>
+  <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshcore.send"}}</button>
 </form>
 
 {{if .Nodes}}

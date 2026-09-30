@@ -42,6 +42,12 @@ type Manager struct {
 	// each execution; the in-memory queue remains a fallback path.
 	store storage.DeliveryStore
 
+	// deliveryGate is the optional staleness oracle consulted directly
+	// BEFORE a queued job is transmitted: false means the hazard has
+	// expired or was cancelled while the job waited, and the worker
+	// settles the job as expired instead of executing it.
+	deliveryGate func(ctx context.Context, eventKey string) bool
+
 	cancel   context.CancelFunc
 	cancelMu sync.Mutex
 }
@@ -100,6 +106,9 @@ func (m *Manager) Start(ctx context.Context) {
 		if m.store != nil {
 			inst.setDeliveryStore(m.store)
 		}
+		if m.deliveryGate != nil {
+			inst.setDeliveryGate(m.deliveryGate)
+		}
 		inst.Start(mgrCtx)
 	}
 	if m.store != nil {
@@ -114,6 +123,13 @@ func (m *Manager) Start(ctx context.Context) {
 // called before Start.
 func (m *Manager) SetDeliveryStore(st storage.DeliveryStore) {
 	m.store = st
+}
+
+// SetDeliveryGate attaches the staleness oracle consulted directly
+// before a queued job is transmitted (see DeliveryGate). It must be
+// called before Start.
+func (m *Manager) SetDeliveryGate(gate func(ctx context.Context, eventKey string) bool) {
+	m.deliveryGate = gate
 }
 
 // recoverStaleClaims re-queues jobs a previous process claimed but never

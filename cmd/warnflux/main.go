@@ -552,6 +552,17 @@ func run(configPath string, checkConfig bool) error {
 	// the result after each execution, so a restart never loses a
 	// queued notification.
 	actionsMgr.SetDeliveryStore(store)
+	// Staleness oracle consulted directly before transmission: an alert
+	// that expired or was cancelled while its job waited in the queue
+	// must never hit the radio.
+	actionsMgr.SetDeliveryGate(func(ctx context.Context, eventKey string) bool {
+		active, err := store.HazardActive(ctx, eventKey, time.Now())
+		if err != nil {
+			logger.Warn("actions: delivery freshness lookup failed", "event_key", eventKey, "error", err)
+			return true // never suppress on a lookup failure
+		}
+		return active
+	})
 
 	// MQTT receivers: independent input clients (never the publisher).
 	// Construction failures are fatal; connection failures are not.

@@ -1221,6 +1221,32 @@ func (s *Store) CountActive(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// HazardActive reports whether a stored hazard is still worth notifying
+// for. An unknown key counts as active (the transition may come from a
+// producer without local storage); a known key counts as inactive when
+// its status is not active (cancelled/expired — an older update must
+// never outrank a known cancellation) or its expires_at_ms has passed.
+func (s *Store) HazardActive(ctx context.Context, eventKey string, now time.Time) (bool, error) {
+	var status string
+	var expiresMs int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT status, expires_at_ms FROM events WHERE event_key = ?`, eventKey).
+		Scan(&status, &expiresMs)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("hazard freshness for %q: %w", eventKey, err)
+	}
+	if status != string(core.StatusActive) {
+		return false, nil
+	}
+	if expiresMs > 0 && expiresMs <= now.UnixMilli() {
+		return false, nil
+	}
+	return true, nil
+}
+
 // ---- internals ----
 
 const insertSQL = `

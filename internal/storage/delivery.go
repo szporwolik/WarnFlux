@@ -27,6 +27,13 @@ const (
 	// can reach it; others stay at accepted.
 	DeliveryConfirmed
 
+	// DeliveryExpired means the hazard was no longer worth transmitting
+	// when the worker was about to execute it (its ExpiresAt passed
+	// while the job sat in the queue, or the store knows a newer
+	// cancellation/expiry). Terminal: replays deduplicate — the stale
+	// alert must never hit the radio.
+	DeliveryExpired
+
 	// DeliveryFailed means the execution failed and the retry budget is
 	// exhausted (terminal for the scheduler). A replayed transition
 	// re-arms the job with a fresh budget instead of deduplicating it,
@@ -42,6 +49,8 @@ func (s DeliveryStatus) String() string {
 		return "accepted"
 	case DeliveryConfirmed:
 		return "confirmed"
+	case DeliveryExpired:
+		return "expired"
 	case DeliveryFailed:
 		return "failed"
 	}

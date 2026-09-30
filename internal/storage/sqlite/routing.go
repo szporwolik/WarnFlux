@@ -175,6 +175,8 @@ func statusFromDB(s string) storage.DeliveryStatus {
 		return storage.DeliveryConfirmed
 	case "accepted", "succeeded":
 		return storage.DeliveryAccepted
+	case "expired":
+		return storage.DeliveryExpired
 	case "failed":
 		return storage.DeliveryFailed
 	default: // "saved", "running"
@@ -356,6 +358,7 @@ func (s *Store) SettleDelivery(ctx context.Context, groupID int64, actionID, ded
 		storage.DeliverySaved:     "saved",
 		storage.DeliveryAccepted:  "accepted",
 		storage.DeliveryConfirmed: "confirmed",
+		storage.DeliveryExpired:   "expired",
 		storage.DeliveryFailed:    "failed",
 	}[stage]
 	if !ok {

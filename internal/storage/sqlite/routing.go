@@ -160,23 +160,56 @@ func dedupeAssignments(list []storage.ChannelAssignment) []storage.ChannelAssign
 	return out
 }
 
-// ClaimActionFire records that (group, action) has delivered the event
-// identified by dedupKey. It returns true when the row is newly inserted
-// (the caller should fire the action) and false when that delivery was
-// already recorded (duplicate, skip).
-func (s *Store) ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error) {
-	res, err := s.db.Exec(`
+// BeginDelivery atomically opens the durable delivery job for
+// (group, action, event). A fresh job is persisted as running and reports
+// DeliveryRetry (execute now); a succeeded job reports DeliverySucceeded
+// (duplicate, skip); a running or failed job — crashed between claim and
+// execution, or rejected earlier — also reports DeliveryRetry so a
+// replayed transition re-attempts the alert instead of losing it.
+func (s *Store) BeginDelivery(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (storage.DeliveryStatus, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin delivery for action %q group %d: %w", actionID, groupID, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
 		INSERT OR IGNORE INTO action_fires
-			(group_id, action_id, event_key, dedup_key, fired_at_ms)
-		VALUES (?, ?, ?, ?, ?)`, groupID, actionID, eventKey, dedupKey, at.UnixMilli())
-	if err != nil {
-		return false, fmt.Errorf("claim action %q fire for group %d: %w", actionID, groupID, err)
+			(group_id, action_id, event_key, dedup_key, status, fired_at_ms)
+		VALUES (?, ?, ?, ?, 'running', ?)`,
+		groupID, actionID, eventKey, dedupKey, at.UnixMilli()); err != nil {
+		return 0, fmt.Errorf("begin delivery for action %q group %d: %w", actionID, groupID, err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("claim action %q fire for group %d: %w", actionID, groupID, err)
+	var status string
+	if err := tx.QueryRow(`
+		SELECT status FROM action_fires
+		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
+		groupID, actionID, dedupKey).Scan(&status); err != nil {
+		return 0, fmt.Errorf("begin delivery for action %q group %d: %w", actionID, groupID, err)
 	}
-	return n == 1, nil
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("begin delivery for action %q group %d: %w", actionID, groupID, err)
+	}
+	if status == "succeeded" {
+		return storage.DeliverySucceeded, nil
+	}
+	return storage.DeliveryRetry, nil
+}
+
+// CompleteDelivery settles one delivery job: succeeded only after the
+// action accepted the request; anything else records failed so a replay
+// retries the alert.
+func (s *Store) CompleteDelivery(groupID int64, actionID, dedupKey string, succeeded bool) error {
+	status := "failed"
+	if succeeded {
+		status = "succeeded"
+	}
+	if _, err := s.db.Exec(`
+		UPDATE action_fires SET status = ?
+		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
+		status, groupID, actionID, dedupKey); err != nil {
+		return fmt.Errorf("settle delivery for action %q group %d: %w", actionID, groupID, err)
+	}
+	return nil
 }
 
 // PruneActionFires deletes ledger rows older than the cutoff and returns

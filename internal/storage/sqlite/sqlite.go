@@ -493,6 +493,15 @@ ALTER TABLE meshcore_messages ADD COLUMN hops INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE meshcore_messages ADD COLUMN operator TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v23: action_fires rows become durable delivery jobs carrying an
+		// execution state, so a crash or a rejected submission between
+		// claim and execution can be retried on replay. Historical rows
+		// were claimed-before-delivery and count as succeeded.
+		SQL: `
+ALTER TABLE action_fires ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

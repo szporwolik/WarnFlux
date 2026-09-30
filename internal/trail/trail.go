@@ -123,14 +123,28 @@ func (r *Recorder) Add(key string, kind StepKind, text string, at time.Time) {
 	r.addStepLocked(key, kind, text, at)
 }
 
-// SetOutcome updates the terminal outcome of one alert.
+// outcomeRank orders outcomes so a later write never downgrades a more
+// terminal state: the engine records "submitted" after the action
+// accepted the request, but a fast worker may already have recorded
+// "delivered" — the delivered outcome must stick.
+var outcomeRank = map[Outcome]int{
+	OutcomeSkipped:   1,
+	OutcomeSubmitted: 2,
+	OutcomeFailed:    3,
+	OutcomeDelivered: 4,
+}
+
+// SetOutcome updates the terminal outcome of one alert. The write only
+// takes effect when the new outcome ranks at least as terminal as the
+// current one (delivered > failed > submitted > skipped), so a racing
+// writer can never regress a finished alert to an earlier state.
 func (r *Recorder) SetOutcome(key string, outcome Outcome) {
 	if r == nil || key == "" {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if t, ok := r.byKey[key]; ok {
+	if t, ok := r.byKey[key]; ok && outcomeRank[outcome] >= outcomeRank[t.Outcome] {
 		t.Outcome = outcome
 	}
 }

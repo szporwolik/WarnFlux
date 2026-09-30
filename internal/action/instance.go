@@ -2,6 +2,7 @@ package action
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/metrics"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
@@ -31,6 +33,11 @@ const graceAfterTimeout = 1 * time.Second
 // sequential worker needs no exponential scheduler. Exported only so
 // tests can shorten it; production code never mutates it.
 var RetryBackoff = 5 * time.Second
+
+// DeliveryPollInterval is how often an idle worker checks the durable
+// job queue for work. Exported only so tests can shorten it; production
+// code never mutates it.
+var DeliveryPollInterval = 250 * time.Millisecond
 
 // Status is a point-in-time view of one action instance.
 type Status struct {
@@ -73,6 +80,14 @@ type Instance struct {
 	// number of extra delivery attempts after the first failure.
 	trail   *trail.Recorder
 	retries int
+
+	// store is the optional durable delivery job queue. When attached,
+	// the worker claims jobs from SQLite (payload, recipients, attempts
+	// and the next-attempt deadline all live in the row) and records the
+	// execution result after each attempt. The in-memory queue remains
+	// as the fallback path for a failing ledger and for direct Submit
+	// callers.
+	store storage.DeliveryStore
 
 	// metric cells (optional, nil-safe).
 	metricDelivered func(int64)
@@ -136,10 +151,26 @@ func (i *Instance) Start(ctx context.Context) {
 	})
 }
 
-// run is the worker loop: sequential Execute calls, drain on cancel.
+// setDeliveryStore attaches the durable job queue (called by the
+// manager before Start when one is configured).
+func (i *Instance) setDeliveryStore(st storage.DeliveryStore) {
+	i.store = st
+}
+
+// run is the worker loop. Durable jobs from the queue take priority;
+// between polls the in-memory fallback queue is drained.
 func (i *Instance) run(ctx context.Context) {
 	defer i.wg.Done()
 	for {
+		select {
+		case <-ctx.Done():
+			i.drainAndClose()
+			return
+		default:
+		}
+		if i.store != nil && i.runNextJob(ctx) {
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			i.drainAndClose()
@@ -150,7 +181,101 @@ func (i *Instance) run(ctx context.Context) {
 				continue
 			}
 			i.handle(req)
+		case <-time.After(DeliveryPollInterval):
 		}
+	}
+}
+
+// runNextJob claims and executes one due durable job. It reports whether
+// a job ran. Claim errors are logged, never fatal: the next poll retries.
+func (i *Instance) runNextJob(ctx context.Context) bool {
+	job, ok, err := i.store.ClaimNextDelivery(ctx, i.id, i.retries+1, time.Now())
+	if err != nil {
+		i.logger.Warn("action: delivery claim failed", "action", i.id, "error", err)
+		return false
+	}
+	if !ok {
+		return false
+	}
+	i.deliverJob(job)
+	return true
+}
+
+// deliverJob executes one claimed durable job and records the result in
+// the queue afterwards — "accepted"/"confirmed" on success (depending on
+// what the channel can prove), "failed" with the next-attempt deadline on
+// a transient failure, terminal "failed" when the budget is spent.
+func (i *Instance) deliverJob(job storage.DeliveryJob) {
+	i.handled.Add(1)
+	key := job.EventKey
+	max := i.retries + 1
+
+	// Rows migrated from before the payload era carry no payload; their
+	// claim already stood for "accepted". Settle them as accepted so a
+	// replay never re-fires an unreconstructable alert.
+	if len(job.Payload) == 0 {
+		i.logger.Warn("action: delivery job without payload settled as accepted",
+			"action", i.id, "event_key", key)
+		i.settle(job, storage.DeliveryAccepted, time.Time{})
+		return
+	}
+	var req ActionRequest
+	if err := json.Unmarshal(job.Payload, &req); err != nil {
+		i.logger.Error("action: delivery payload corrupt",
+			"action", i.id, "event_key", key, "error", err)
+		i.settle(job, storage.DeliveryFailed, time.Time{})
+		i.trail.Add(key, trail.StepFailed, "job payload corrupt", time.Now())
+		i.trail.SetOutcome(key, trail.OutcomeFailed)
+		return
+	}
+
+	stage, err := i.executeOnce(req)
+	if err == nil {
+		terminal := storage.DeliveryAccepted
+		if stage == StageConfirmed {
+			terminal = storage.DeliveryConfirmed
+		}
+		i.settle(job, terminal, time.Time{})
+		i.metricDelivered(1)
+		if job.Attempts > 1 {
+			i.trail.Add(key, trail.StepDelivered,
+				fmt.Sprintf("delivered after %d retr%s", job.Attempts-1, plural(job.Attempts-1)), time.Now())
+		} else {
+			i.trail.Add(key, trail.StepDelivered, "delivered", time.Now())
+		}
+		i.trail.SetOutcome(key, trail.OutcomeDelivered)
+		return
+	}
+
+	i.metricFailed(1)
+	i.trail.Add(key, trail.StepFailed,
+		fmt.Sprintf("attempt %d/%d failed: %v", job.Attempts, max, err), time.Now())
+	if i.disabled.Load() {
+		// A hung plugin was disabled mid-attempt: never re-invoke it.
+		i.settle(job, storage.DeliveryFailed, time.Time{})
+		i.trail.SetOutcome(key, trail.OutcomeFailed)
+		return
+	}
+	if job.Attempts < max {
+		i.metricRetry(1)
+		i.trail.Add(key, trail.StepRetry,
+			fmt.Sprintf("retrying in %s", RetryBackoff), time.Now())
+		i.settle(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff))
+		return
+	}
+	// Budget spent: terminal failure. A replayed transition re-arms the
+	// job instead of suppressing the alert.
+	i.settle(job, storage.DeliveryFailed, time.Time{})
+	i.trail.SetOutcome(key, trail.OutcomeFailed)
+}
+
+// settle records the post-execution stage of a durable job. Settlement
+// errors only log: the job stays running and the stale-claim recovery
+// re-queues it (at-least-once).
+func (i *Instance) settle(job storage.DeliveryJob, stage storage.DeliveryStatus, next time.Time) {
+	if err := i.store.SettleDelivery(context.Background(), job.GroupID, job.ActionID, job.DedupKey, stage, next); err != nil {
+		i.logger.Warn("action: delivery settle failed",
+			"action", i.id, "event_key", job.EventKey, "stage", stage, "error", err)
 	}
 }
 
@@ -175,6 +300,11 @@ drain:
 			}
 			i.handle(req)
 		default:
+			// Due durable jobs are attempted before giving up; the rest
+			// survive the shutdown and execute on the next start.
+			if i.store != nil && i.runNextJob(context.Background()) {
+				continue
+			}
 			break drain
 		}
 	}
@@ -214,7 +344,7 @@ func (i *Instance) handle(req ActionRequest) {
 
 	total := i.retries + 1
 	for attempt := 0; ; attempt++ {
-		err := i.executeOnce(req)
+		_, err := i.executeOnce(req)
 		if err == nil {
 			i.metricDelivered(1)
 			if attempt > 0 {
@@ -257,38 +387,49 @@ func plural(n int) string {
 
 // executeOnce runs a single plugin call under the per-call timeout and
 // panic guard, updating the instance health status. It returns the
+// transport stage the plugin reported (accepted by default) and the
 // plugin's error (or a timeout wrapper).
-func (i *Instance) executeOnce(req ActionRequest) error {
+func (i *Instance) executeOnce(req ActionRequest) (DeliveryStage, error) {
 	callCtx, cancel := context.WithTimeout(context.Background(), i.callTO)
 	defer cancel()
 
-	done := make(chan error, 1)
+	type result struct {
+		stage DeliveryStage
+		err   error
+	}
+	done := make(chan result, 1)
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
-				done <- fmt.Errorf("panic: %v", p)
+				done <- result{StageAccepted, fmt.Errorf("panic: %v", p)}
 			}
 		}()
-		done <- i.plugin.Execute(callCtx, req)
+		if cp, ok := i.plugin.(ConfirmingPlugin); ok {
+			stage, err := cp.ExecuteStage(callCtx, req)
+			done <- result{stage, err}
+			return
+		}
+		err := i.plugin.Execute(callCtx, req)
+		done <- result{StageAccepted, err}
 	}()
 
 	select {
-	case err := <-done:
-		i.recordResult(err)
-		return err
+	case res := <-done:
+		i.recordResult(res.err)
+		return res.stage, res.err
 	case <-callCtx.Done():
 		// Deadline hit. Give a context-respecting plugin a short grace
 		// period to return; if it does not, it ignored cancellation and
 		// is hung. In that case we disable it and abandon the single
 		// in-flight goroutine.
 		select {
-		case err := <-done:
-			err = fmt.Errorf("callback exceeded %s: %w", i.callTO, err)
+		case res := <-done:
+			err := fmt.Errorf("callback exceeded %s: %w", i.callTO, res.err)
 			i.recordResult(err)
-			return err
+			return res.stage, err
 		case <-time.After(graceAfterTimeout):
 			i.disable(fmt.Sprintf("callback exceeded %s and ignored cancellation", i.callTO))
-			return fmt.Errorf("callback exceeded %s and ignored cancellation", i.callTO)
+			return StageAccepted, fmt.Errorf("callback exceeded %s and ignored cancellation", i.callTO)
 		}
 	}
 }

@@ -547,6 +547,11 @@ func run(configPath string, checkConfig bool) error {
 	if err != nil {
 		return fmt.Errorf("configure actions: %w", err)
 	}
+	// Durable delivery: the action workers claim jobs from SQLite
+	// (payload, recipients, attempts, next-attempt deadline) and record
+	// the result after each execution, so a restart never loses a
+	// queued notification.
+	actionsMgr.SetDeliveryStore(store)
 
 	// MQTT receivers: independent input clients (never the publisher).
 	// Construction failures are fatal; connection failures are not.

@@ -40,25 +40,46 @@ evaluated the event.
 
 ## 3. Action completion (routing evaluation → notification)
 
-**Guarantee: at-least-once per (group, action, event); retried on replay.**
+**Guarantee: durable job queue; at-least-once per (group, action, event).**
 
-Routing persists a delivery job (`action_fires`, one row per
-group × action × event × publisher) **before** submitting the action and
-settles it **only after** the action accepted the request:
+Routing persists a full delivery job (`action_fires`, one row per
+group × action × event × publisher) that carries the **execution payload**
+(event + recipients), the **attempt counter** and the **next-attempt
+deadline**. The action workers claim jobs from SQLite and record the
+result **after** each execution — the in-memory queue is never the source
+of truth:
 
-- `running` / `failed` jobs are retried when the same transition replays
-  (including after restarts).
-- `succeeded` jobs deduplicate replays.
-- A crash between submission and settlement leaves the job retryable.
-- Channel floods without delivery acknowledgements (e.g. MeshCore group
-  messages) are "sent" once the device accepted them — the protocol has no
-  stronger signal.
+- `saved` — the job is in the durable queue and WILL be executed (first
+  execution or scheduled retry). Replays of the transition deduplicate:
+  they see the job is pending and do not enqueue a second one.
+- `running` — a worker claimed the job. If the process dies before
+  settling, the stale-claim sweep re-queues the job after the claim lease
+  (5 minutes) expires, so the alert still executes after a restart.
+- `accepted` — the transport accepted the transmission (the device/relay
+  queued or sent it). Terminal: replays deduplicate. This is the strongest
+  stage most channels can prove.
+- `confirmed` — the transport proved recipient-level confirmation (only
+  channels whose protocol offers it, via the optional `ConfirmingPlugin`
+  interface). Terminal: replays deduplicate.
+- `failed` — an execution attempt failed. A transient failure schedules
+  the next attempt at the retry deadline; once the attempt budget is
+  spent the job is terminally failed, and a **replayed transition
+  re-arms it** with a fresh budget instead of deduplicating it away.
+
+A power loss between "job queued" and "transmitted" therefore retries on
+restart, and an execution that burns all attempts is retried by the next
+replay of the transition. Channel floods without delivery
+acknowledgements (e.g. MeshCore group messages) stop at `accepted` — the
+device took the message, the protocol has no stronger signal.
 
 ## What is NOT guaranteed
 
-- The live in-memory queue and the audit trail (`trail`) are not durable:
-  they are diagnostics, never the source of truth.
+- The audit trail (`trail`) is not durable: it is diagnostics, never the
+  source of truth. The in-memory queue survives only as the fallback path
+  when the ledger itself fails (best-effort, undeduplicated).
 - The retained active-view topics on the broker are best-effort mirrors;
   the journal is authoritative.
 - Duplicates are possible at every stage (at-least-once): consumers must
   deduplicate by `publisher + source + event_key + change_id`.
+- A crash **during** an action execution can transmit twice (the job may
+  re-run after recovery): at-least-once, not exactly-once.

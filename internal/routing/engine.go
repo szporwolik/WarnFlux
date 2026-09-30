@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -54,14 +55,13 @@ type RuleStore interface {
 	// GroupRecipientDiscord returns the group members' registered
 	// Discord handles (empty list when the group has none).
 	GroupRecipientDiscord(groupID int64) ([]string, error)
-	// BeginDelivery atomically opens the durable delivery job for
-	// (group, action, event): DeliveryRetry means the job must execute
-	// (fresh, or running/failed from a crash or earlier rejection);
-	// DeliverySucceeded means a replay may be deduplicated.
-	BeginDelivery(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (storage.DeliveryStatus, error)
-	// CompleteDelivery settles the job: succeeded only after the action
-	// accepted the request, failed otherwise (replay retries).
-	CompleteDelivery(groupID int64, actionID, dedupKey string, succeeded bool) error
+	// EnqueueDelivery persists the durable delivery job — full payload
+	// (event + recipients), attempt counter and next-attempt deadline
+	// all live in the row. queued=true means this transition made the
+	// job pending (fresh insert, or a terminally failed job re-armed);
+	// queued=false means the transition was deduplicated and st
+	// explains why (already pending or already delivered).
+	EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error)
 }
 
 // Inbox is the optional durable dispatch inbox: events persisted before
@@ -377,27 +377,14 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 						rule.Name, a.ID, a.MinSeverity), time.Now())
 				continue
 			}
-			// Durable delivery job: claim the execution before submitting,
-			// but settle success only AFTER the action accepts the
-			// request. A full queue, a disabled action or a crash between
-			// claim and execution leaves the job running/failed, so a
-			// replayed transition retries it instead of dropping the
-			// alert as already-delivered.
+			// Durable delivery: the full job (payload, recipients) is
+			// persisted BEFORE anything counts as "accepted", and the
+			// action worker records the result AFTER each execution. A
+			// power loss between "queued" and "transmitted" therefore
+			// retries on restart, and an execution that burns all
+			// attempts is re-armed by a replay instead of being
+			// deduplicated away.
 			dedup := fireDedupKey(ev)
-			status, err := e.store.BeginDelivery(rule.GroupID, a.ID, ev.Hazard.Key, dedup, time.Now())
-			if err != nil {
-				// A ledger failure must never suppress an alert: log and
-				// deliver anyway (best-effort deduplication).
-				e.logger.Warn("routing: delivery job open failed",
-					"group", rule.Name, "action", a.ID, "error", err)
-			} else if status == storage.DeliverySucceeded {
-				e.actionsDeduped.Add(1)
-				e.notifCount(a.ID, "deduped", 1)
-				e.trail.Add(key, trail.StepSkipped,
-					fmt.Sprintf("skipped: already delivered — group %s action %s (duplicate)",
-						rule.Name, a.ID), time.Now())
-				continue
-			}
 			e.trail.Add(key, trail.StepMatched, "matched group "+rule.Name, time.Now())
 			routeSrc := a.Source
 			if routeSrc == "" {
@@ -406,43 +393,74 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			e.trail.Add(key, trail.StepRoute,
 				fmt.Sprintf("%s → %s ≥ %s", routeSrc, a.ID, a.MinSeverity), time.Now())
 			req := action.ActionRequest{
-				ID:            fmt.Sprintf("%s/%s", ev.Hazard.Key, a.ID),
-				CreatedAt:     time.Now(),
-				Event:         ev,
-				Bcc:           append([]string(nil), bcc[rule.GroupID]...),
-				APRSCallsigns: append([]string(nil), aprsBcc[rule.GroupID]...),
-				DiscordHandles: append([]string(nil),
-					e.discordBcc[rule.GroupID]...),
-				App: e.app,
+				ID:             fmt.Sprintf("%s/%s", ev.Hazard.Key, a.ID),
+				CreatedAt:      time.Now(),
+				Event:          ev,
+				Bcc:            append([]string(nil), bcc[rule.GroupID]...),
+				APRSCallsigns:  append([]string(nil), aprsBcc[rule.GroupID]...),
+				DiscordHandles: append([]string(nil), e.discordBcc[rule.GroupID]...),
+				App:            e.app,
 			}
-			if err := e.actions.Submit(a.ID, req); err != nil {
-				// The action did not accept the request (queue full,
-				// disabled, ...): settle the job as failed so a replay
-				// retries it instead of losing the alert.
-				if cerr := e.store.CompleteDelivery(rule.GroupID, a.ID, dedup, false); cerr != nil {
-					e.logger.Warn("routing: delivery job settle failed",
-						"group", rule.Name, "action", a.ID, "error", cerr)
-				}
+			payload, err := json.Marshal(req)
+			if err != nil {
+				// Defensive: this struct cannot fail JSON encoding in
+				// practice, but an alert must never be silently dropped.
 				e.actionsFailed.Add(1)
 				e.notifCount(a.ID, "failed", 1)
 				e.trail.Add(key, trail.StepFailed,
-					fmt.Sprintf("%s failed to start: %v", a.ID, err), time.Now())
+					fmt.Sprintf("%s job encode failed: %v", a.ID, err), time.Now())
 				e.trail.SetOutcome(key, trail.OutcomeFailed)
-				e.logger.Warn("routing: action submission failed",
+				e.logger.Warn("routing: action request encode failed",
 					"group", rule.Name, "action", a.ID, "error", err)
-			} else {
-				// Execution accepted: only now is the job succeeded and
-				// replays deduplicated.
-				if cerr := e.store.CompleteDelivery(rule.GroupID, a.ID, dedup, true); cerr != nil {
-					e.logger.Warn("routing: delivery job settle failed",
-						"group", rule.Name, "action", a.ID, "error", cerr)
-				}
-				e.actionsFired.Add(1)
-				fired++
-				e.trail.Add(key, trail.StepSubmitted,
-					fmt.Sprintf("%s action started (group %s)", a.ID, rule.Name), time.Now())
-				e.trail.SetOutcome(key, trail.OutcomeSubmitted)
+				continue
 			}
+			st, queued, err := e.store.EnqueueDelivery(ctx, storage.DeliveryJob{
+				GroupID:  rule.GroupID,
+				ActionID: a.ID,
+				EventKey: ev.Hazard.Key,
+				DedupKey: dedup,
+				Payload:  payload,
+				FiredAt:  time.Now(),
+			})
+			if err != nil {
+				// A ledger failure must never suppress an alert: fall
+				// back to the in-memory submission path (best-effort
+				// deduplication).
+				e.logger.Warn("routing: delivery job persist failed",
+					"group", rule.Name, "action", a.ID, "error", err)
+				if serr := e.actions.Submit(a.ID, req); serr != nil {
+					e.actionsFailed.Add(1)
+					e.notifCount(a.ID, "failed", 1)
+					e.trail.Add(key, trail.StepFailed,
+						fmt.Sprintf("%s failed to start: %v", a.ID, serr), time.Now())
+					e.trail.SetOutcome(key, trail.OutcomeFailed)
+					e.logger.Warn("routing: action submission failed",
+						"group", rule.Name, "action", a.ID, "error", serr)
+				} else {
+					e.actionsFired.Add(1)
+					fired++
+					e.trail.Add(key, trail.StepSubmitted,
+						fmt.Sprintf("%s action started (group %s, ledger unavailable)", a.ID, rule.Name), time.Now())
+					e.trail.SetOutcome(key, trail.OutcomeSubmitted)
+				}
+				continue
+			}
+			if !queued {
+				// The job is already pending or already delivered:
+				// replays deduplicate (the worker executes queued jobs;
+				// delivered jobs never fire twice).
+				e.actionsDeduped.Add(1)
+				e.notifCount(a.ID, "deduped", 1)
+				e.trail.Add(key, trail.StepSkipped,
+					fmt.Sprintf("skipped: already queued or delivered — group %s action %s (duplicate, %s)",
+						rule.Name, a.ID, st), time.Now())
+				continue
+			}
+			e.actionsFired.Add(1)
+			fired++
+			e.trail.Add(key, trail.StepSubmitted,
+				fmt.Sprintf("%s job queued durably (group %s)", a.ID, rule.Name), time.Now())
+			e.trail.SetOutcome(key, trail.OutcomeSubmitted)
 		}
 
 		if fired > 0 {

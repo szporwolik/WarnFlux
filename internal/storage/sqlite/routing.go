@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -160,56 +161,204 @@ func dedupeAssignments(list []storage.ChannelAssignment) []storage.ChannelAssign
 	return out
 }
 
-// BeginDelivery atomically opens the durable delivery job for
-// (group, action, event). A fresh job is persisted as running and reports
-// DeliveryRetry (execute now); a succeeded job reports DeliverySucceeded
-// (duplicate, skip); a running or failed job — crashed between claim and
-// execution, or rejected earlier — also reports DeliveryRetry so a
-// replayed transition re-attempts the alert instead of losing it.
-func (s *Store) BeginDelivery(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (storage.DeliveryStatus, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("begin delivery for action %q group %d: %w", actionID, groupID, err)
+// deliveryClaimLease is how long a claimed job may stay "running" before
+// RecoverStaleClaims assumes the claiming process died and re-queues it.
+// It must comfortably exceed the per-call timeout of any action.
+const deliveryClaimLease = 5 * time.Minute
+
+// statusFromDB maps a persisted action_fires.status onto the storage
+// model. Legacy rows written before v23 statuses existed carry
+// 'succeeded' and count as accepted (claimed-before-delivery).
+func statusFromDB(s string) storage.DeliveryStatus {
+	switch s {
+	case "confirmed":
+		return storage.DeliveryConfirmed
+	case "accepted", "succeeded":
+		return storage.DeliveryAccepted
+	case "failed":
+		return storage.DeliveryFailed
+	default: // "saved", "running"
+		return storage.DeliverySaved
 	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`
-		INSERT OR IGNORE INTO action_fires
-			(group_id, action_id, event_key, dedup_key, status, fired_at_ms)
-		VALUES (?, ?, ?, ?, 'running', ?)`,
-		groupID, actionID, eventKey, dedupKey, at.UnixMilli()); err != nil {
-		return 0, fmt.Errorf("begin delivery for action %q group %d: %w", actionID, groupID, err)
-	}
-	var status string
-	if err := tx.QueryRow(`
-		SELECT status FROM action_fires
-		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-		groupID, actionID, dedupKey).Scan(&status); err != nil {
-		return 0, fmt.Errorf("begin delivery for action %q group %d: %w", actionID, groupID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("begin delivery for action %q group %d: %w", actionID, groupID, err)
-	}
-	if status == "succeeded" {
-		return storage.DeliverySucceeded, nil
-	}
-	return storage.DeliveryRetry, nil
 }
 
-// CompleteDelivery settles one delivery job: succeeded only after the
-// action accepted the request; anything else records failed so a replay
-// retries the alert.
-func (s *Store) CompleteDelivery(groupID int64, actionID, dedupKey string, succeeded bool) error {
-	status := "failed"
-	if succeeded {
-		status = "succeeded"
+// EnqueueDelivery persists one durable delivery job with its full
+// payload. A fresh row reports (DeliverySaved, true). An existing row
+// reports (status, false) — the transition was deduplicated — EXCEPT a
+// terminally failed job, which is re-armed with the fresh payload and a
+// clean budget and reports (DeliverySaved, true), so an alert that
+// burned all its execution attempts is retried on replay instead of
+// being suppressed as already delivered.
+func (s *Store) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, fmt.Errorf("begin delivery enqueue for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
-	if _, err := s.db.Exec(`
-		UPDATE action_fires SET status = ?
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO action_fires
+			(group_id, action_id, event_key, dedup_key, payload, status, attempts, next_attempt_at_ms, fired_at_ms)
+		VALUES (?, ?, ?, ?, ?, 'saved', 0, 0, ?)`,
+		job.GroupID, job.ActionID, job.EventKey, job.DedupKey, string(job.Payload), job.FiredAt.UnixMilli())
+	if err != nil {
+		return 0, false, fmt.Errorf("insert delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, false, fmt.Errorf("insert delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
+	} else if n == 1 {
+		if err := tx.Commit(); err != nil {
+			return 0, false, fmt.Errorf("commit delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
+		}
+		return storage.DeliverySaved, true, nil
+	}
+
+	var dbStatus string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT status FROM action_fires
 		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-		status, groupID, actionID, dedupKey); err != nil {
+		job.GroupID, job.ActionID, job.DedupKey).Scan(&dbStatus); err != nil {
+		return 0, false, fmt.Errorf("read delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
+	}
+	if dbStatus != "failed" {
+		if err := tx.Commit(); err != nil {
+			return 0, false, fmt.Errorf("commit delivery enqueue for action %q group %d: %w", job.ActionID, job.GroupID, err)
+		}
+		return statusFromDB(dbStatus), false, nil
+	}
+
+	// Terminal failure: re-arm the job with the fresh payload and budget.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE action_fires
+		SET payload = ?, status = 'saved', attempts = 0, next_attempt_at_ms = 0
+		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
+		string(job.Payload), job.GroupID, job.ActionID, job.DedupKey); err != nil {
+		return 0, false, fmt.Errorf("re-arm delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit re-armed delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
+	}
+	return storage.DeliverySaved, true, nil
+}
+
+// ClaimNextDelivery atomically claims the next due job of one action.
+// The claim flips the row to running, increments the attempt counter and
+// moves the claim deadline past now; concurrent claimers never receive
+// the same job. Jobs whose retry budget is exhausted are not claimed —
+// EXCEPT a saved job recovered from a crashed claim (its spent attempt
+// may equal the budget, but it never produced a result, so it must
+// still execute; a later failure settles terminally).
+func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttempts int, now time.Time) (storage.DeliveryJob, bool, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	deadline := now.Add(deliveryClaimLease).UnixMilli()
+	for {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return storage.DeliveryJob{}, false, fmt.Errorf("begin delivery claim for action %q: %w", actionID, err)
+		}
+		var gid int64
+		var aid, dkey string
+		err = tx.QueryRowContext(ctx, `
+			SELECT group_id, action_id, dedup_key FROM action_fires
+			WHERE action_id = ? AND status IN ('saved','failed')
+			  AND next_attempt_at_ms <= ? AND (attempts < ? OR status = 'saved')
+			ORDER BY next_attempt_at_ms ASC, fired_at_ms ASC
+			LIMIT 1`, actionID, now.UnixMilli(), maxAttempts).Scan(&gid, &aid, &dkey)
+		if errors.Is(err, sql.ErrNoRows) {
+			tx.Rollback()
+			return storage.DeliveryJob{}, false, nil
+		}
+		if err != nil {
+			tx.Rollback()
+			return storage.DeliveryJob{}, false, fmt.Errorf("pick delivery job for action %q: %w", actionID, err)
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE action_fires
+			SET status = 'running', attempts = attempts + 1, next_attempt_at_ms = ?
+			WHERE group_id = ? AND action_id = ? AND dedup_key = ? AND status IN ('saved','failed')`,
+			deadline, gid, aid, dkey)
+		if err != nil {
+			tx.Rollback()
+			return storage.DeliveryJob{}, false, fmt.Errorf("claim delivery job for action %q: %w", actionID, err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			tx.Rollback()
+			return storage.DeliveryJob{}, false, fmt.Errorf("claim delivery job for action %q: %w", actionID, err)
+		} else if n == 0 {
+			tx.Rollback()
+			continue // lost the race against another claimer; retry
+		}
+		var job storage.DeliveryJob
+		var payload string
+		var firedAt int64
+		err = tx.QueryRowContext(ctx, `
+			SELECT group_id, action_id, event_key, dedup_key, payload, attempts, fired_at_ms
+			FROM action_fires WHERE group_id = ? AND action_id = ? AND dedup_key = ?`, gid, aid, dkey).
+			Scan(&job.GroupID, &job.ActionID, &job.EventKey, &job.DedupKey, &payload, &job.Attempts, &firedAt)
+		if err != nil {
+			tx.Rollback()
+			return storage.DeliveryJob{}, false, fmt.Errorf("read claimed delivery job for action %q: %w", actionID, err)
+		}
+		job.Payload = []byte(payload)
+		job.FiredAt = time.UnixMilli(firedAt)
+		if err := tx.Commit(); err != nil {
+			return storage.DeliveryJob{}, false, fmt.Errorf("commit delivery claim for action %q: %w", actionID, err)
+		}
+		return job, true, nil
+	}
+}
+
+// SettleDelivery records the post-execution stage of one job. A
+// non-terminal failure (DeliveryFailed with a non-zero nextAttempt)
+// schedules the retry deadline; a terminal settlement zeroes it.
+func (s *Store) SettleDelivery(ctx context.Context, groupID int64, actionID, dedupKey string, stage storage.DeliveryStatus, nextAttempt time.Time) error {
+	status, ok := map[storage.DeliveryStatus]string{
+		storage.DeliverySaved:     "saved",
+		storage.DeliveryAccepted:  "accepted",
+		storage.DeliveryConfirmed: "confirmed",
+		storage.DeliveryFailed:    "failed",
+	}[stage]
+	if !ok {
+		return fmt.Errorf("settle delivery for action %q group %d: unknown stage %v", actionID, groupID, stage)
+	}
+	next := int64(0)
+	if stage == storage.DeliveryFailed && !nextAttempt.IsZero() {
+		next = nextAttempt.UnixMilli()
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE action_fires SET status = ?, next_attempt_at_ms = ?
+		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
+		status, next, groupID, actionID, dedupKey); err != nil {
 		return fmt.Errorf("settle delivery for action %q group %d: %w", actionID, groupID, err)
 	}
 	return nil
+}
+
+// RecoverStaleClaims re-queues running jobs whose claim deadline has
+// passed — the claiming process died between claim and settlement. The
+// attempt counter stays spent, so the retry budget still applies.
+func (s *Store) RecoverStaleClaims(ctx context.Context, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE action_fires SET status = 'saved'
+		WHERE status = 'running' AND next_attempt_at_ms != 0 AND next_attempt_at_ms < ?`,
+		now.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("recover stale delivery claims: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// PendingDeliveries counts the non-terminal jobs of one action.
+func (s *Store) PendingDeliveries(ctx context.Context, actionID string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM action_fires
+		WHERE action_id = ? AND status IN ('saved','running','failed')`, actionID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count pending deliveries for action %q: %w", actionID, err)
+	}
+	return n, nil
 }
 
 // PruneActionFires deletes ledger rows older than the cutoff and returns

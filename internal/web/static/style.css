@@ -2013,10 +2013,39 @@ tr.click-send:hover td { background: var(--surface-hi); }
   color: var(--muted);
 }
 .hw-icon.hw-plane { font-size: 1.25rem; color: var(--muted); }
+/* MeshCore node cards: purple accent matching the map layer. */
+.hw-icon.hw-mesh { color: #9c4dcc; }
 .hw-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 .hw-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
 .hw-provider { color: var(--muted); font-size: 0.75rem; }
 .hw-meta { color: var(--muted); font-size: 0.8rem; }
+/* MeshCore nodes heard without a position: a wrapped badge row below the
+   node cards — one pill per node with the name, type, hops and last-heard
+   time (full key on hover). */
+.home-mesh-noloc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  margin: -0.1rem 0 0.9rem;
+}
+.home-mesh-noloc .mc-noloc-title {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-right: 0.1rem;
+}
+.mc-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.14rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.8rem;
+}
+.mc-chip-name { font-weight: 600; }
+.mc-chip-meta { color: var(--muted); font-size: 0.75rem; }
 /* Compressed forecast strip on the report card: the next three days as
    icon + max-temperature chips (full forecast: title attributes). */
 .hw-fcast {

@@ -895,6 +895,46 @@ func (h *Hub) publishStationLocked(key string, n *Node, now time.Time, removed b
 	}()
 }
 
+// SeedNode merges one retained station document (restored from the
+// broker at startup) into the node registry, so heard stations survive
+// restarts. Seeding never publishes for fresh documents — the broker
+// already holds them — and never rewinds fresher live state. Documents
+// older than NodeTTL are tombstoned as expired instead of restored:
+// retention stays bounded exactly like the live publish path.
+func (h *Hub) SeedNode(key, name string, typ byte, lat, lon float64, hops int, lastSeen time.Time) {
+	if key == "" {
+		return
+	}
+	now := time.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !lastSeen.IsZero() && now.Sub(lastSeen) > h.cfg.NodeTTL {
+		// Expired document: clear it from the broker.
+		h.publishStationLocked(key, &Node{PubKey: key, LastSeen: lastSeen}, now, true)
+		return
+	}
+	n := h.nodes[key]
+	if n == nil {
+		n = &Node{PubKey: key, LastSeen: lastSeen}
+		h.nodes[key] = n
+	} else if lastSeen.After(n.LastSeen) {
+		n.LastSeen = lastSeen
+	}
+	if n.Name == "" {
+		n.Name = name
+	}
+	if n.Type == 0 {
+		n.Type = typ
+	}
+	if (n.Lat == 0 || n.Lon == 0) && (lat != 0 || lon != 0) {
+		n.Lat = lat
+		n.Lon = lon
+	}
+	if n.Hops == 0 {
+		n.Hops = hops
+	}
+}
+
 // maybeQueryContact asks the device for a known contact's full record
 // when the node has no name yet (throttled per key).
 func (h *Hub) maybeQueryContact(pubKey []byte) {

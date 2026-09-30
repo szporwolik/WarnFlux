@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -72,6 +73,64 @@ type aprsManagerSink struct {
 
 func (s *aprsManagerSink) PublishRaw(suffix string, retained bool, payload []byte) error {
 	return s.mgmt.PublishRaw(suffix, retained, payload)
+}
+
+// seedMeshcoreStations restores the heard-node list from the retained
+// meshcore/stations/# documents on the broker, so stations survive
+// restarts the same way the APRS retained station state does. It retries
+// with bounded backoff until a receiver connects or the context ends;
+// the hub merges fresh documents without publishing and tombstones
+// expired ones.
+func seedMeshcoreStations(ctx context.Context, meshHub *meshcore.Hub, receivers *mqttreceiver.Manager, cfg *config.Config, logger *slog.Logger) {
+	prefix := "warnflux"
+	for _, r := range cfg.Dispatch.Receivers {
+		if r.Enabled && r.WF.Enabled && r.WF.TopicPrefix != "" {
+			prefix = r.WF.TopicPrefix
+			break
+		}
+	}
+	backoff := time.Second
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		entries, err := receivers.Browse(ctx, "", prefix+"/meshcore/stations/#",
+			mqttreceiver.BrowseDefaultWindow, mqttreceiver.BrowseMaxEntries)
+		if err == nil {
+			seeded := 0
+			for _, e := range entries {
+				var doc struct {
+					Key      string  `json:"key"`
+					Name     string  `json:"name"`
+					Type     byte    `json:"type"`
+					Lat      float64 `json:"lat"`
+					Lon      float64 `json:"lon"`
+					Hops     int     `json:"hops"`
+					LastSeen string  `json:"last_seen"`
+				}
+				if json.Unmarshal([]byte(e.Payload), &doc) != nil || doc.Key == "" {
+					continue
+				}
+				seen, err := time.Parse(time.RFC3339, doc.LastSeen)
+				if err != nil {
+					seen = time.Time{}
+				}
+				meshHub.SeedNode(doc.Key, doc.Name, doc.Type, doc.Lat, doc.Lon, doc.Hops, seen)
+				seeded++
+			}
+			logger.Info("meshcore: restored heard stations", "count", seeded)
+			return
+		}
+		logger.Debug("meshcore: station restore retrying", "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
 }
 
 // version and commit are injected at build time via -ldflags:
@@ -603,6 +662,10 @@ func run(configPath string, checkConfig bool) error {
 	// Startup order: action workers → receivers → Router core → HTTP.
 	actionsMgr.Start(ctx)
 	receivers.StartAll()
+	// Restore heard MeshCore nodes from the retained broker documents, so
+	// the station list survives restarts the same way the APRS retained
+	// station state does. Bounded retries until a receiver connects.
+	go seedMeshcoreStations(ctx, meshHub, receivers, cfg, logger)
 	if hub.Enabled() {
 		hub.Start(ctx)
 	}

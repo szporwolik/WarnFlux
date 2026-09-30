@@ -3016,8 +3016,8 @@
   }
 })();
 
-// MeshCore: clicking a heard-node row or a direct-message row prefills
-// the send form (above the tabs) with the pubkey prefix.
+// Clicking a heard-node row, a meshcore direct-message row or an APRS
+// message row prefills the send form and focuses the text field.
 (function () {
   "use strict";
 
@@ -3026,6 +3026,19 @@
       ? e.target.closest("tr.click-send[data-key]")
       : null;
     if (!row) { return; }
+
+    var aprs = document.querySelector("form.aprs-send");
+    if (aprs) {
+      var to = aprs.querySelector("input[name='to']");
+      var aprsText = aprs.querySelector("input[name='text']");
+      if (to && aprsText) {
+        to.value = row.getAttribute("data-key");
+        aprsText.focus();
+        aprsText.scrollIntoView({ block: "nearest" });
+        return;
+      }
+    }
+
     var form = document.querySelector("form.mesh-send");
     if (!form) { return; }
     var select = form.querySelector("select[name='target']");

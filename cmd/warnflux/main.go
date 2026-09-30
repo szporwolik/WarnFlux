@@ -460,6 +460,12 @@ func run(configPath string, checkConfig bool) error {
 		return receivers.PublishRaw(topic, retained, payload)
 	})
 
+	// MeshCore rx/tx messages feed the broker as non-retained documents
+	// on meshcore/messages, mirroring the APRS message feed.
+	meshHub.SetMessageSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
+		return receivers.PublishRaw(topic, retained, payload)
+	})
+
 	// APRS weather stations feed the canonical weather pipeline: every
 	// decoded weather report becomes a retained info/<prefix> topic and a
 	// dashboard card, exactly like the openmeteo source's snapshots.

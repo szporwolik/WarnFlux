@@ -140,8 +140,8 @@
       <tr class="msgs-{{.Direction}}{{if .Key}} click-send{{end}}"{{if .Key}} data-key="{{.Key}}" title="{{tr $.Lang "meshcore.click_to_send"}}"{{end}}>
         <td class="muted nowrap">{{timeFull .At}}</td>
         <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
-        <td><strong>{{if .Sender}}{{.Sender}}{{else}}—{{end}}</strong></td>
-        <td>{{.Channel}}</td>
+        <td><strong>{{if .SenderName}}{{.SenderName}}<span class="muted short-key"> {{.Sender}}</span>{{else}}{{if .Sender}}{{.Sender}}{{else}}—{{end}}{{end}}</strong></td>
+        <td>{{.Channel}}{{if gt .Hops 0}} <span class="muted">· {{trf $.Lang "meshcore.hops" .Hops}}</span>{{end}}</td>
         <td class="msgs-text">{{.Text}}</td>
       </tr>
       {{end}}

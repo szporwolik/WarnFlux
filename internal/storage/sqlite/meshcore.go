@@ -10,14 +10,14 @@ import (
 
 // RecordMeshMessage appends one MeshCore message and prunes the table back
 // to storage.MeshMessageRetentionEntries newest rows.
-func (s *Store) RecordMeshMessage(ctx context.Context, direction, sender, channel, text string, at time.Time) error {
+func (s *Store) RecordMeshMessage(ctx context.Context, direction, sender, channel, text string, hops int, at time.Time) error {
 	if direction != "rx" && direction != "tx" {
 		return fmt.Errorf("mesh message: invalid direction %q", direction)
 	}
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO meshcore_messages (direction, sender, channel, text, created_at_ms)
-		VALUES (?, ?, ?, ?, ?)`,
-		direction, sender, channel, text, at.UnixMilli()); err != nil {
+		INSERT INTO meshcore_messages (direction, sender, channel, hops, text, created_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		direction, sender, channel, hops, text, at.UnixMilli()); err != nil {
 		return fmt.Errorf("insert mesh message: %w", err)
 	}
 	if _, err := s.PruneMeshMessages(ctx, storage.MeshMessageRetentionEntries); err != nil {
@@ -30,7 +30,7 @@ func (s *Store) RecordMeshMessage(ctx context.Context, direction, sender, channe
 // "tx" or "" (both).
 func (s *Store) ListMeshMessages(ctx context.Context, direction string, limit, offset int) ([]storage.MeshMessage, error) {
 	query := `
-		SELECT id, direction, sender, channel, text, created_at_ms
+		SELECT id, direction, sender, channel, hops, text, created_at_ms
 		FROM meshcore_messages`
 	args := []any{}
 	if direction == "rx" || direction == "tx" {
@@ -50,7 +50,7 @@ func (s *Store) ListMeshMessages(ctx context.Context, direction string, limit, o
 	for rows.Next() {
 		var m storage.MeshMessage
 		var atMs int64
-		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Channel, &m.Text, &atMs); err != nil {
+		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Channel, &m.Hops, &m.Text, &atMs); err != nil {
 			return nil, fmt.Errorf("scan mesh message: %w", err)
 		}
 		m.At = time.UnixMilli(atMs)

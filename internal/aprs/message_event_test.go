@@ -165,3 +165,30 @@ func TestRoutedMessageEventDisabled(t *testing.T) {
 		t.Fatalf("route_messages disabled but %d events published", got)
 	}
 }
+
+// TestBulletinRecordedNotRouted pins the bulletin policy: broadcast
+// frames (addressed to BLNn) land in the received-message feed but never
+// become routed /events, even when the sender sits on the allow-list.
+func TestBulletinRecordedNotRouted(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:       true,
+		Callsign:      "SP9MOA-10",
+		Icon:          "/j",
+		GridSquare:    "JO90WW",
+		RadiusKM:      DefaultRadiusKM,
+		StationTTL:    30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::BLN0     :ops bulletin", time.Now()), BackendRadio)
+
+	waitFor(t, func() bool { return len(sink.payloads(MessagesTopic)) >= 1 })
+	time.Sleep(150 * time.Millisecond)
+	if got := len(sink.payloads("events")); got != 0 {
+		t.Fatalf("bulletin produced %d routed events: %s", got, sink.payloads("events"))
+	}
+}

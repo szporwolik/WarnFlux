@@ -19,14 +19,15 @@ import (
 )
 
 type fakeStore struct {
-	mu          sync.Mutex
-	rules       []storage.GroupRouting
-	bcc         map[int64][]string
-	aprsBcc     map[int64][]string
-	discordBcc  map[int64][]string
-	jobs        map[string]storage.DeliveryStatus // group|action|dedupKey -> status
-	completeErr error                             // returned by CompleteDelivery
-	err         error
+	mu           sync.Mutex
+	rules        []storage.GroupRouting
+	bcc          map[int64][]string
+	aprsBcc      map[int64][]string
+	discordBcc   map[int64][]string
+	jobs         map[string]storage.DeliveryStatus // group|action|dedupKey -> status
+	completeErr  error                             // returned by CompleteDelivery
+	recipientErr error                             // returned by the recipient lookups
+	err          error
 }
 
 func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
@@ -43,18 +44,27 @@ func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
 func (f *fakeStore) GroupRecipientEmails(groupID int64) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.recipientErr != nil {
+		return nil, f.recipientErr
+	}
 	return append([]string(nil), f.bcc[groupID]...), f.err
 }
 
 func (f *fakeStore) GroupRecipientAPRS(groupID int64) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.recipientErr != nil {
+		return nil, f.recipientErr
+	}
 	return append([]string(nil), f.aprsBcc[groupID]...), f.err
 }
 
 func (f *fakeStore) GroupRecipientDiscord(groupID int64) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.recipientErr != nil {
+		return nil, f.recipientErr
+	}
 	return append([]string(nil), f.discordBcc[groupID]...), f.err
 }
 
@@ -681,7 +691,8 @@ func (e *Engine) Stats() EngineStats {
 		ActionsFired:       e.actionsFired.Load(),
 		ActionsFailed:      e.actionsFailed.Load(),
 		ActionsDeduped:     e.actionsDeduped.Load(),
-		RuleLoadErrors:     e.ruleLoadErrors.Load(),
+		RefreshFailures:    e.RefreshFailures(),
+		SnapshotAge:        e.SnapshotAge(),
 	}
 }
 
@@ -693,7 +704,12 @@ type EngineStats struct {
 	ActionsFired       int64
 	ActionsFailed      int64
 	ActionsDeduped     int64
-	RuleLoadErrors     int64
+	// RefreshFailures counts reloads that failed (rule list or any
+	// recipient-channel lookup); the previous snapshot stays installed.
+	RefreshFailures int64
+	// SnapshotAge is how long ago the routing snapshot was last
+	// refreshed successfully (0 = never).
+	SnapshotAge time.Duration
 }
 
 // TestEngineRejectedSubmissionRetries pins the durable delivery-job
@@ -791,5 +807,60 @@ func TestEnginePublisherIsolation(t *testing.T) {
 	acts.mu.Unlock()
 	if got != 2 {
 		t.Errorf("log fired %d times, want 2 (one per publisher)", got)
+	}
+}
+
+// TestRefreshFailureKeepsSnapshot pins the all-or-nothing refresh: a
+// recipient-channel lookup failure must NOT install the new rules (and
+// must not wipe working recipient data) — the previous snapshot keeps
+// serving until the next successful refresh.
+func TestRefreshFailureKeepsSnapshot(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "initial rules loaded")
+
+	// The initial snapshot routes to log.
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "initial delivery")
+
+	// New rules want sms, but the recipient lookup breaks: the refresh
+	// must fail and keep the OLD snapshot (log) in service.
+	store.mu.Lock()
+	store.rules = []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("sms", "unknown")}},
+	}
+	store.recipientErr = errors.New("directory unavailable")
+	store.mu.Unlock()
+	e.refresh()
+	if got := e.RefreshFailures(); got != 1 {
+		t.Fatalf("refresh failures = %d, want 1", got)
+	}
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 2 }, "old snapshot still delivered")
+	acts.mu.Lock()
+	smsCalls := len(acts.got["sms"])
+	acts.mu.Unlock()
+	if smsCalls != 0 {
+		t.Fatalf("sms fired %d times, want 0 (failed refresh must not install)", smsCalls)
+	}
+
+	// Healed directory: the next refresh installs the new snapshot.
+	store.mu.Lock()
+	store.recipientErr = nil
+	store.mu.Unlock()
+	e.refresh()
+	if age := e.SnapshotAge(); age < 0 {
+		t.Fatalf("snapshot age = %v, want non-negative", age)
+	}
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 3 }, "new snapshot delivered")
+	acts.mu.Lock()
+	smsCalls = len(acts.got["sms"])
+	acts.mu.Unlock()
+	if smsCalls != 1 {
+		t.Fatalf("sms fired %d times after healed refresh, want 1", smsCalls)
 	}
 }

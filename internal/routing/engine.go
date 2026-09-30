@@ -108,6 +108,9 @@ type Engine struct {
 	actionsDeduped     atomic.Int64
 	ruleLoadErrors     atomic.Int64
 	rulesLoaded        atomic.Int64
+	// lastRefresh is the unix-nano timestamp of the last successfully
+	// installed routing snapshot (0 = never).
+	lastRefresh atomic.Int64
 }
 
 // New builds an engine with the default refresh interval. trail is the
@@ -170,8 +173,27 @@ func (e *Engine) Ready() bool {
 	return e.rulesLoaded.Load() > 0
 }
 
-// refresh reloads the rules; a failed load keeps the previous rules and
-// is retried on the next tick.
+// SnapshotAge reports how long ago the installed routing snapshot was
+// refreshed successfully. Zero means no snapshot has been installed yet.
+func (e *Engine) SnapshotAge() time.Duration {
+	ts := e.lastRefresh.Load()
+	if ts == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, ts))
+}
+
+// RefreshFailures counts reloads that failed (rule list or any
+// recipient-channel lookup); the previous snapshot stays installed.
+func (e *Engine) RefreshFailures() int64 {
+	return e.ruleLoadErrors.Load()
+}
+
+// refresh reloads the rules and every group's recipient channels into a
+// complete new snapshot. The snapshot is installed ONLY when every read
+// succeeded: a failed email, APRS or Discord lookup must never replace
+// working routing data with empty recipients. A failed load keeps the
+// previous snapshot and is retried on the next tick.
 func (e *Engine) refresh() {
 	rules, err := e.store.ListGroupRoutings()
 	if err != nil {
@@ -188,21 +210,24 @@ func (e *Engine) refresh() {
 		}
 		emails, err := e.store.GroupRecipientEmails(rule.GroupID)
 		if err != nil {
-			e.logger.Warn("routing: recipient load failed",
-				"group", rule.Name, "error", err)
-			continue
+			e.ruleLoadErrors.Add(1)
+			e.logger.Warn("routing: recipient load failed, keeping the previous snapshot",
+				"group", rule.Name, "channel", "email", "error", err)
+			return
 		}
 		callsigns, err := e.store.GroupRecipientAPRS(rule.GroupID)
 		if err != nil {
-			e.logger.Warn("routing: aprs recipient load failed",
-				"group", rule.Name, "error", err)
-			continue
+			e.ruleLoadErrors.Add(1)
+			e.logger.Warn("routing: recipient load failed, keeping the previous snapshot",
+				"group", rule.Name, "channel", "aprs", "error", err)
+			return
 		}
 		handles, err := e.store.GroupRecipientDiscord(rule.GroupID)
 		if err != nil {
-			e.logger.Warn("routing: discord recipient load failed",
-				"group", rule.Name, "error", err)
-			continue
+			e.ruleLoadErrors.Add(1)
+			e.logger.Warn("routing: recipient load failed, keeping the previous snapshot",
+				"group", rule.Name, "channel", "discord", "error", err)
+			return
 		}
 		bcc[rule.GroupID] = emails
 		aprsBcc[rule.GroupID] = callsigns
@@ -215,6 +240,7 @@ func (e *Engine) refresh() {
 	e.discordBcc = discordBcc
 	e.mu.Unlock()
 	e.rulesLoaded.Add(1)
+	e.lastRefresh.Store(time.Now().UnixNano())
 }
 
 // handle evaluates one canonical event against the cached rules.

@@ -655,11 +655,17 @@ func (h *Hub) handleFrame(frame []byte) {
 			h.receiveContact(m)
 		}
 	case pushMsgWaiting:
+		if h.logger != nil {
+			h.logger.Debug("meshcore: messages waiting, pulling queue")
+		}
 		_ = h.writeFrame(buildSyncNextMessage())
 	case pushLogRxData:
 		// RF log stream: informational only (ignored).
 	case respNoMoreMessages:
 		// End of queued messages.
+		if h.logger != nil {
+			h.logger.Debug("meshcore: queued messages drained")
+		}
 	case respErr:
 		code := byte(0)
 		if len(frame) > 1 {
@@ -675,7 +681,11 @@ func (h *Hub) handleFrame(frame []byte) {
 			ch <- nil
 		}
 	default:
-		// unknown: ignore silently.
+		// unknown: ignore silently, but log the type at debug level so
+		// unexpected device frames are visible in the log.
+		if h.logger != nil {
+			h.logger.Debug("meshcore: unhandled frame", "type", frame[0], "len", len(frame))
+		}
 	}
 }
 
@@ -692,6 +702,9 @@ func (h *Hub) receiveChannel(m ChannelMessage) {
 // /events document (the "meshcore" source in the routing matrix).
 func (h *Hub) receiveContact(m ContactMessage) {
 	prefix := pubKeyHex(m.PubKeyPrefix)
+	if h.logger != nil {
+		h.logger.Info("meshcore: contact message", "from", prefix, "text", m.Text)
+	}
 	h.recordMessage("rx", prefix, "direct", m.Text)
 	text := strings.TrimSpace(m.Text)
 	if !h.cfg.RouteMessages || text == "" || ackText(text) {

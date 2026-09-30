@@ -2090,6 +2090,14 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .key-copy .icon { width: 13px; height: 13px; }
 .key-copy.copied { color: var(--ok, #2e7d32); border-color: var(--ok, #2e7d32); }
 .key-copy.copied .key-short { overflow-wrap: anywhere; }
+/* Raw key prefix shown next to a resolved username in the mesh message
+   history: subtle, mono, smaller than the name. */
+.short-key {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.8em;
+  font-weight: 400;
+  color: var(--muted);
+}
 /* Compressed forecast strip on the report card: the next three days as
    icon + max-temperature chips (full forecast: title attributes). */
 .hw-fcast {

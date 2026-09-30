@@ -20,7 +20,7 @@ import (
 // Recorder persists mesh message history (implemented by storage stores).
 // Best-effort: the hub logs recording failures and keeps running.
 type Recorder interface {
-	RecordMeshMessage(ctx context.Context, direction, sender, channel, text string, at time.Time) error
+	RecordMeshMessage(ctx context.Context, direction, sender, channel, text string, hops int, at time.Time) error
 }
 
 // Node is one neighbour heard through adverts.
@@ -49,6 +49,7 @@ type Message struct {
 	Direction string // rx | tx
 	Sender    string
 	Channel   string
+	Hops      int // radio path length from the frame (0 = unknown/ours)
 	Text      string
 	At        time.Time
 }
@@ -626,7 +627,7 @@ func (h *Hub) SendChannelMessage(text string) error {
 	if err := h.waitAck(ack); err != nil {
 		return err
 	}
-	h.recordMessage("tx", "SOSNA", h.ChannelLabel(h.cfg.ChannelIdx), text)
+	h.recordMessage("tx", "SOSNA", h.ChannelLabel(h.cfg.ChannelIdx), text, 0)
 	return nil
 }
 
@@ -672,7 +673,7 @@ func (h *Hub) SendContactMessage(addr, text string) error {
 			return err
 		}
 	}
-	h.recordMessage("tx", hex.EncodeToString(prefix), "direct", text)
+	h.recordMessage("tx", hex.EncodeToString(prefix), "direct", text, 0)
 	return nil
 }
 
@@ -829,7 +830,7 @@ func (h *Hub) handleFrame(frame []byte) {
 }
 
 func (h *Hub) receiveChannel(m ChannelMessage) {
-	h.recordMessage("rx", "", h.ChannelLabel(int(m.ChannelIdx)), m.Text)
+	h.recordMessage("rx", "", h.ChannelLabel(int(m.ChannelIdx)), m.Text, int(m.PathLen))
 	if h.logger != nil {
 		h.logger.Info("meshcore: channel message", "channel", m.ChannelIdx, "text", m.Text)
 	}
@@ -844,7 +845,7 @@ func (h *Hub) receiveContact(m ContactMessage) {
 	if h.logger != nil {
 		h.logger.Info("meshcore: contact message", "from", prefix, "text", m.Text)
 	}
-	h.recordMessage("rx", prefix, "direct", m.Text)
+	h.recordMessage("rx", prefix, "direct", m.Text, int(m.PathLen))
 	text := strings.TrimSpace(m.Text)
 	if !h.cfg.RouteMessages || text == "" || ackText(text) {
 		return
@@ -1105,10 +1106,10 @@ func (h *Hub) maybeQueryContact(pubKey []byte) {
 	}
 }
 
-func (h *Hub) recordMessage(direction, sender, channel, text string) {
+func (h *Hub) recordMessage(direction, sender, channel, text string, hops int) {
 	now := time.Now()
 	h.mu.Lock()
-	h.recent = append(h.recent, Message{Direction: direction, Sender: sender, Channel: channel, Text: text, At: now})
+	h.recent = append(h.recent, Message{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Text: text, At: now})
 	if len(h.recent) > 64 {
 		h.recent = h.recent[len(h.recent)-64:]
 	}
@@ -1118,7 +1119,7 @@ func (h *Hub) recordMessage(direction, sender, channel, text string) {
 	if rec != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := rec.RecordMeshMessage(ctx, direction, sender, channel, text, now); err != nil && h.logger != nil {
+		if err := rec.RecordMeshMessage(ctx, direction, sender, channel, text, hops, now); err != nil && h.logger != nil {
 			h.logger.Debug("meshcore: message history record failed", "error", err)
 		}
 	}
@@ -1127,9 +1128,10 @@ func (h *Hub) recordMessage(direction, sender, channel, text string) {
 			Direction string `json:"direction"`
 			Sender    string `json:"sender"`
 			Channel   string `json:"channel"`
+			Hops      int    `json:"hops"`
 			Text      string `json:"text"`
 			At        string `json:"at"`
-		}{direction, sender, channel, text, now.UTC().Format(time.RFC3339)})
+		}{direction, sender, channel, hops, text, now.UTC().Format(time.RFC3339)})
 		if err == nil {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

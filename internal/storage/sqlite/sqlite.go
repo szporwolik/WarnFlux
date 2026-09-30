@@ -479,6 +479,13 @@ CREATE TABLE meshcore_messages (
 CREATE INDEX idx_meshcore_messages_created ON meshcore_messages(created_at_ms);
 `,
 	},
+	{
+		// v21: mesh message radio path length (hops) from the companion
+		// frame, shown in the admin history.
+		SQL: `
+ALTER TABLE meshcore_messages ADD COLUMN hops INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

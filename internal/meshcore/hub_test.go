@@ -20,10 +20,10 @@ type fakeRecorder struct {
 	got []Message
 }
 
-func (f *fakeRecorder) RecordMeshMessage(_ context.Context, direction, sender, channel, text string, at time.Time) error {
+func (f *fakeRecorder) RecordMeshMessage(_ context.Context, direction, sender, channel, text string, hops int, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.got = append(f.got, Message{Direction: direction, Sender: sender, Channel: channel, Text: text, At: at})
+	f.got = append(f.got, Message{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Text: text, At: at})
 	return nil
 }
 
@@ -183,7 +183,7 @@ func TestHubSession(t *testing.T) {
 		host.Write(encodeDeviceFrame(adv))
 
 		// Channel message (V3): snr, reserved2, chIdx, pathLen, txtType, ts.
-		msg := []byte{respChannelMsgV3, 0x0C, 0x00, 0x00, 0x00, 0xFF, 0x00}
+		msg := []byte{respChannelMsgV3, 0x0C, 0x00, 0x00, 0x00, 0x03, 0x00}
 		msg = binary.LittleEndian.AppendUint32(msg, 1234567890)
 		msg = append(msg, []byte("Test SOSNA")...)
 		host.Write(encodeDeviceFrame(msg))
@@ -217,7 +217,7 @@ func TestHubSession(t *testing.T) {
 		t.Fatalf("node bearing = %.2f, want ~0", b)
 	}
 	got := rec.messages()
-	if len(got) != 1 || got[0].Text != "Test SOSNA" || got[0].Direction != "rx" {
+	if len(got) != 1 || got[0].Text != "Test SOSNA" || got[0].Direction != "rx" || got[0].Hops != 3 {
 		t.Fatalf("recorded = %+v", got)
 	}
 

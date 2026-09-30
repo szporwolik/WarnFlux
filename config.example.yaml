@@ -579,8 +579,12 @@ web:
     komunikacji rządowej ani numerów alarmowych.
 
   # Public domain this instance is served under (host, optional port).
-  # Reserved for future absolute-link features; no scheme, no path.
-  # Empty disables them.
+  # Used for absolute deep links in notifications AND as the canonical
+  # origin of password-reset links. No scheme, no path.
+  # Security: reset links are built ONLY from this domain, never from
+  # the request Host header (a spoofed Host must not redirect a reset
+  # to a foreign domain). Empty disables deep links AND the self-service
+  # email reset (recovery stays with an administrator on the machine).
   domain: "sosna.sp9moa.pl"
 
   auth:

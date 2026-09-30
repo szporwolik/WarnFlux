@@ -1,0 +1,42 @@
+package meshcore
+
+// MeshCore-message routing wire documents: a direct message from a
+// directory-known sender is re-published as a canonical /events payload
+// on the WarnFlux topic prefix, so it enters the normal MQTT → routing
+// matrix flow as the "meshcore" source (groups can forward it to
+// Discord, SMTP, ...). The schema mirrors mqttreceiver.WireSchemaVersion
+// (both live on the same /events stream, so the version must never
+// drift).
+const meshMessageEventSchemaVersion = 1
+
+// MessageEventWire is the /events envelope for one routed direct message.
+type MessageEventWire struct {
+	SchemaVersion int                `json:"schema_version"`
+	ChangeID      int64              `json:"change_id"`
+	ChangeType    string             `json:"change_type"`
+	EventKey      string             `json:"event_key"`
+	Event         MessageEventHazard `json:"event"`
+}
+
+// MessageEventHazard is the hazard block: the forwarded content starts
+// with "Message from: <node name or key prefix>", the message text
+// follows, and the receiving node's name is carried as context.
+type MessageEventHazard struct {
+	Source      string   `json:"source"`
+	SourceID    string   `json:"source_id"`
+	Category    string   `json:"category"`
+	Event       string   `json:"event"`
+	Severity    string   `json:"severity"`
+	Urgency     string   `json:"urgency"`
+	Certainty   string   `json:"certainty"`
+	Headline    string   `json:"headline"`
+	Description string   `json:"description"`
+	Instruction string   `json:"instruction"`
+	EffectiveAt *string  `json:"effective_at,omitempty"`
+	ExpiresAt   *string  `json:"expires_at,omitempty"`
+	Areas       []string `json:"areas"`
+	Status      string   `json:"status"`
+	SourceURL   string   `json:"source_url"`
+	ReceivedAt  string   `json:"received_at"`
+	UpdatedAt   string   `json:"updated_at"`
+}

@@ -155,6 +155,9 @@ type MeshCoreConfig struct {
 	// AutoAddContacts makes the device auto-add unknown heard nodes to its
 	// contact list, so their adverts reach WarnFlux's node list.
 	AutoAddContacts bool
+	// RouteMessages re-publishes direct messages from directory-known
+	// senders as canonical /events documents (the alarm pipeline).
+	RouteMessages bool
 	// NodeTTL bounds how long an unheard neighbour stays in the node
 	// list.
 	NodeTTL time.Duration
@@ -430,6 +433,7 @@ type fileMeshCore struct {
 	ChannelIdx      int            `yaml:"channel_idx"`
 	ChannelName     string         `yaml:"channel_name"`
 	AutoAddContacts bool           `yaml:"auto_add_contacts"`
+	RouteMessages   bool           `yaml:"route_messages"`
 	NodeTTL         *time.Duration `yaml:"node_ttl"`
 }
 
@@ -918,6 +922,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.MeshCore.ChannelIdx = f.MeshCore.ChannelIdx
 		cfg.MeshCore.ChannelName = f.MeshCore.ChannelName
 		cfg.MeshCore.AutoAddContacts = f.MeshCore.AutoAddContacts
+		cfg.MeshCore.RouteMessages = f.MeshCore.RouteMessages
 		if f.MeshCore.Baud != nil {
 			cfg.MeshCore.Baud = *f.MeshCore.Baud
 		}

@@ -518,14 +518,38 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	username := r.PostFormValue("username")
 	password := r.PostFormValue("password")
 
-	// Brute-force gate: per username+address exponential lockout.
-	limiterKey := strings.ToLower(strings.TrimSpace(username)) + "\x00" + r.RemoteAddr
-	if wait := s.loginLimiter.retryIn(limiterKey); wait > 0 {
-		s.logger.Warn("web: login throttled", "remote", r.RemoteAddr, "username", username, "retry_in", wait)
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+	// Brute-force gates: independent budgets per account, per client IP
+	// and a fleet-wide budget over the costly password hashes. The IP is
+	// normalized WITHOUT the port (a new TCP connection must never buy a
+	// fresh counter) and proxy headers count only from configured
+	// trusted proxies.
+	acct := strings.ToLower(strings.TrimSpace(username))
+	ip := s.clientIP(r)
+	for _, gate := range []struct {
+		key, scope string
+	}{
+		{"acct\x00" + acct, "account"},
+		{"ip\x00" + ip, "source ip"},
+		{"global", "global"},
+	} {
+		if wait := s.loginLimiter.retryIn(gate.key); wait > 0 {
+			s.logger.Warn("web: login throttled",
+				"scope", gate.scope, "remote", r.RemoteAddr, "ip", ip, "username", username, "retry_in", wait)
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+			http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
+			return
+		}
+	}
+
+	// Concurrency gate: never run more than a few costly password-hash
+	// computations at once — shed the excess instead of burning CPU.
+	if !s.loginLimiter.acquireHash() {
+		s.logger.Warn("web: login hash gate full", "remote", r.RemoteAddr)
+		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
 		return
 	}
+	defer s.loginLimiter.releaseHash()
 
 	// The configured admin account outranks everything; a directory user
 	// with a non-empty role (emcom) and a matching password signs in as
@@ -540,7 +564,9 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if role == "" {
-		s.loginLimiter.record(limiterKey, false)
+		s.loginLimiter.record("acct\x00"+acct, false)
+		s.loginLimiter.record("ip\x00"+ip, false)
+		s.loginLimiter.recordGlobalFailure()
 		s.audit(username, "login-failed", r.RemoteAddr)
 		s.logger.Warn("web: failed login attempt", "remote", r.RemoteAddr)
 		w.Header().Set("Cache-Control", "no-store")
@@ -562,7 +588,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.loginLimiter.record(limiterKey, true)
+	s.loginLimiter.record("acct\x00"+acct, true)
 	token, _, err := s.sessions.newSession(userID, username, role)
 	if err != nil {
 		if errors.Is(err, errSessionCapacity) {

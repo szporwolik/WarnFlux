@@ -123,12 +123,10 @@ func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub,
 	return newTestEnvAll(t, ingest, hub, events, meshHub, nil, nil)
 }
 
-// newTestEnvAll is newTestEnvFull plus explicit APRS/mesh message stores
-// (nil leaves the corresponding admin history empty).
-func newTestEnvAll(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
-	t.Helper()
-
-	cfg := config.Web{
+// defaultTestWebConfig is the shared web configuration for test
+// environments.
+func defaultTestWebConfig() config.Web {
+	return config.Web{
 		Enabled:    true,
 		Listen:     ":0",
 		Title:      "WarnFlux Test",
@@ -138,6 +136,25 @@ func newTestEnvAll(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, 
 		Disclaimer: "Test disclaimer text.",
 		Auth:       config.WebAuth{Username: testUsername, Password: testPassword},
 	}
+}
+
+// newTestEnvWithAuth builds the environment with a custom web auth block
+// (e.g. trusted proxies for the login rate-limit tests).
+func newTestEnvWithAuth(t *testing.T, auth config.WebAuth) *testEnv {
+	cfg := defaultTestWebConfig()
+	cfg.Auth = auth
+	return newTestEnvWeb(t, cfg, nil, nil, nil, nil, nil, nil)
+}
+
+// newTestEnvAll is newTestEnvFull plus explicit APRS/mesh message stores
+// (nil leaves the corresponding admin history empty).
+func newTestEnvAll(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
+	return newTestEnvWeb(t, defaultTestWebConfig(), ingest, hub, events, meshHub, aprsMsgs, meshMsgs)
+}
+
+// newTestEnvWeb builds the environment with an explicit web config.
+func newTestEnvWeb(t *testing.T, cfg config.Web, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
+	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st := state.New()
@@ -2164,6 +2181,145 @@ func TestLoginThrottled(t *testing.T) {
 	resp, _ := env.postForm("/login", form)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("throttled login = %d, want 429", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("429 must carry Retry-After")
+	}
+}
+
+// postFormClose performs a POST on a FRESH TCP connection (Connection:
+// close) with optional extra headers — a new source port per call, like
+// a client that reconnects between attempts.
+func (e *testEnv) postFormClose(path string, values url.Values, headers map[string]string) *http.Response {
+	e.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, e.srv.URL+path, strings.NewReader(values.Encode()))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	req.Close = true
+	resp, err := e.client.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp
+}
+
+// TestLoginThrottledAcrossConnections pins the port normalization: a
+// fresh TCP connection (new source port) must NOT reset the limiter —
+// the sixth failure from the same IP is still 429.
+func TestLoginThrottledAcrossConnections(t *testing.T) {
+	env := newTestEnv(t)
+	_, html := env.get("/login")
+	form := url.Values{"csrf": {extractCSRF(t, html)}, "username": {testUsername}, "password": {"wrong-password"}}
+	for i := 0; i < 5; i++ {
+		resp := env.postFormClose("/login", form, nil)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i+1, resp.StatusCode)
+		}
+	}
+	resp := env.postFormClose("/login", form, nil)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("sixth attempt on a fresh connection = %d, want 429", resp.StatusCode)
+	}
+}
+
+// TestLoginThrottledByForwardedIP pins the trusted-proxy path: behind a
+// configured proxy the per-IP budget keys on the forwarded client
+// address, so attacks spread across accounts are still caught.
+func TestLoginThrottledByForwardedIP(t *testing.T) {
+	env := newTestEnvWithAuth(t, config.WebAuth{
+		Username: testUsername, Password: testPassword,
+		TrustedProxies: []string{"127.0.0.1"},
+	})
+	_, html := env.get("/login")
+	csrf := extractCSRF(t, html)
+	post := func(user, xff string) *http.Response {
+		return env.postFormClose("/login",
+			url.Values{"csrf": {csrf}, "username": {user}, "password": {"wrong"}},
+			map[string]string{"X-Forwarded-For": xff})
+	}
+	// Five failures from 10.0.0.1 spread over five accounts; four more
+	// from 10.0.0.2 over four more accounts.
+	for i := 0; i < 5; i++ {
+		if resp := post(fmt.Sprintf("u%d", i), "10.0.0.1"); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("account %d attempt = %d, want 401", i, resp.StatusCode)
+		}
+	}
+	for i := 5; i < 9; i++ {
+		if resp := post(fmt.Sprintf("u%d", i), "10.0.0.2"); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("account %d attempt = %d, want 401", i, resp.StatusCode)
+		}
+	}
+	// The per-IP budget of 10.0.0.1 is spent: the next attempt from it
+	// is throttled even under a fresh account.
+	if resp := post("u9", "10.0.0.1"); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("sixth attempt from 10.0.0.1 = %d, want 429", resp.StatusCode)
+	}
+}
+
+// TestLoginProxyHeadersOnlyFromTrustedProxies pins the untrusted case:
+// without configured proxies X-Forwarded-For is ignored and the per-IP
+// budget keys on the direct peer, so header rotation buys nothing.
+func TestLoginProxyHeadersOnlyFromTrustedProxies(t *testing.T) {
+	env := newTestEnv(t) // no trusted proxies configured
+	_, html := env.get("/login")
+	csrf := extractCSRF(t, html)
+	post := func(user, xff string) *http.Response {
+		return env.postFormClose("/login",
+			url.Values{"csrf": {csrf}, "username": {user}, "password": {"wrong"}},
+			map[string]string{"X-Forwarded-For": xff})
+	}
+	// Four failures under one forged XFF identity.
+	for i := 0; i < 4; i++ {
+		if resp := post(fmt.Sprintf("u%d", i), "10.0.0.1"); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i, resp.StatusCode)
+		}
+	}
+	// The fifth failure rotates to a fresh identity AND a fresh account:
+	// still within the shared budget (headers are ignored), so 401.
+	if resp := post("u4", "10.0.0.2"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("fifth attempt = %d, want 401 (within the shared budget)", resp.StatusCode)
+	}
+	// The sixth failure rotates again. Honoring the header would keep
+	// every budget below the threshold (401); the direct peer is what
+	// counts, so it is throttled (429).
+	if resp := post("u5", "10.0.0.3"); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("sixth attempt with rotated headers = %d, want 429 (headers ignored)", resp.StatusCode)
+	}
+}
+
+// TestLoginGlobalBudget pins the fleet-wide budget: distributed guessing
+// across accounts and IPs trips the global counter and locks the login
+// form for everyone.
+func TestLoginGlobalBudget(t *testing.T) {
+	env := newTestEnvWithAuth(t, config.WebAuth{
+		Username: testUsername, Password: testPassword,
+		TrustedProxies: []string{"127.0.0.1"},
+	})
+	_, html := env.get("/login")
+	csrf := extractCSRF(t, html)
+	// loginGlobalBudget lives in the web package; this mirror keeps the
+	// external test readable.
+	const globalBudget = 30
+	for i := 0; i < globalBudget; i++ {
+		resp := env.postFormClose("/login",
+			url.Values{"csrf": {csrf}, "username": {fmt.Sprintf("u%d", i)}, "password": {"wrong"}},
+			map[string]string{"X-Forwarded-For": fmt.Sprintf("10.1.%d.%d", i/250, i%250+1)})
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i+1, resp.StatusCode)
+		}
+	}
+	resp := env.postFormClose("/login",
+		url.Values{"csrf": {csrf}, "username": {"another"}, "password": {"wrong"}},
+		map[string]string{"X-Forwarded-For": "10.2.2.2"})
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("attempt past the global budget = %d, want 429", resp.StatusCode)
 	}
 	if resp.Header.Get("Retry-After") == "" {
 		t.Error("429 must carry Retry-After")

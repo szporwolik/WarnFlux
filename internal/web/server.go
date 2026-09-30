@@ -96,6 +96,11 @@ type Server struct {
 	// API-key-protected handler (may be empty).
 	ingest map[string]http.Handler
 
+	// trustedProxies is the parsed set of reverse proxies whose
+	// X-Forwarded-For header may identify the client (empty = direct
+	// exposure, proxy headers ignored).
+	trustedProxies []*net.IPNet
+
 	version string
 	commit  string
 
@@ -150,35 +155,43 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		return nil, fmt.Errorf("web: parse templates: %w", err)
 	}
 
+	// Trusted reverse proxies: proxy headers are honored ONLY from these
+	// peers (IP or CIDR). An empty list means direct exposure.
+	trusted, err := parseTrustedProxies(cfg.Auth.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("web: auth.trusted_proxies: %w", err)
+	}
+
 	s := &Server{
-		cfg:          cfg,
-		st:           st,
-		receivers:    receivers,
-		pub:          pub,
-		router:       router,
-		actions:      actions,
-		aprs:         aprsHub,
-		mesh:         meshHub,
-		ingress:      ingress,
-		users:        users,
-		events:       events,
-		aprsMsgs:     aprsMsgs,
-		meshMsgs:     meshMsgs,
-		logger:       logger,
-		sessions:     newSessionStore(cfg.Auth.SecureCookie),
-		loginLimiter: newLoginLimiter(),
-		logs:         logs,
-		traffic:      traffic,
-		auditLog:     NewAuditBuffer(DefaultAuditEntries),
-		trails:       trails,
-		metrics:      metricsReg,
-		sys:          sysinfo.New(),
-		version:      version,
-		commit:       commit,
-		startedAt:    time.Now(),
-		tmpl:         tmpl,
-		mux:          http.NewServeMux(),
-		ingest:       ingest,
+		cfg:            cfg,
+		st:             st,
+		receivers:      receivers,
+		pub:            pub,
+		router:         router,
+		actions:        actions,
+		aprs:           aprsHub,
+		mesh:           meshHub,
+		ingress:        ingress,
+		users:          users,
+		events:         events,
+		aprsMsgs:       aprsMsgs,
+		meshMsgs:       meshMsgs,
+		logger:         logger,
+		sessions:       newSessionStore(cfg.Auth.SecureCookie),
+		loginLimiter:   newLoginLimiter(),
+		trustedProxies: trusted,
+		logs:           logs,
+		traffic:        traffic,
+		auditLog:       NewAuditBuffer(DefaultAuditEntries),
+		trails:         trails,
+		metrics:        metricsReg,
+		sys:            sysinfo.New(),
+		version:        version,
+		commit:         commit,
+		startedAt:      time.Now(),
+		tmpl:           tmpl,
+		mux:            http.NewServeMux(),
+		ingest:         ingest,
 	}
 
 	static, err := fs.Sub(staticFS, "static")

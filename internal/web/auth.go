@@ -219,12 +219,18 @@ func csrfOK(got, want string) bool {
 }
 
 // loginLimiter slows brute-force guessing of the admin/directory
-// passwords: per-key (username + remote address) exponential backoff on
-// failures, cleared on success. In-memory only: a restart clears the
-// counters, which is acceptable for a single-process deployment.
+// passwords with three independent budgets — per account, per client IP
+// and a global one over the costly password-hash computations — plus a
+// concurrency gate for the hashes themselves. Exponential backoff on
+// failures, cleared on success for the account key. In-memory only: a
+// restart clears the counters, which is acceptable for a single-process
+// deployment.
 type loginLimiter struct {
 	mu    sync.Mutex
 	fails map[string]loginFail
+	// hashGate bounds concurrent costly password-hash computations
+	// (bcrypt/argon2 are deliberately expensive).
+	hashGate chan struct{}
 }
 
 type loginFail struct {
@@ -232,8 +238,26 @@ type loginFail struct {
 	locked time.Time
 }
 
+// Brute-force budgets and the global fleet-wide failure window.
+const (
+	// loginGlobalBudget is the total number of consecutive failed login
+	// attempts (across every account and source) before the login form
+	// locks for everyone: a distributed guessing run can spread across
+	// accounts and IPs, but not across the global budget.
+	loginGlobalBudget = 30
+	// loginGlobalLockout is the fixed lock window once the global
+	// budget is spent.
+	loginGlobalLockout = 30 * time.Second
+	// maxLoginHashConcurrency bounds simultaneous password-hash
+	// computations; further attempts are shed before burning CPU.
+	maxLoginHashConcurrency = 4
+)
+
 func newLoginLimiter() *loginLimiter {
-	return &loginLimiter{fails: make(map[string]loginFail)}
+	return &loginLimiter{
+		fails:    make(map[string]loginFail),
+		hashGate: make(chan struct{}, maxLoginHashConcurrency),
+	}
 }
 
 // loginBackoff maps consecutive failures to a lockout: the first four
@@ -264,14 +288,15 @@ func (l *loginLimiter) retryIn(key string) time.Duration {
 	if d := time.Until(f.locked); d > 0 {
 		return d
 	}
-	if f.count >= 5 {
+	if !f.locked.IsZero() {
 		delete(l.fails, key) // the lockout window elapsed
 	}
 	return 0
 }
 
 // record stores one attempt outcome. Failures push the lockout window
-// out; a success clears the key.
+// out (below the threshold the key has no lockout at all); a success
+// clears the key.
 func (l *loginLimiter) record(key string, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -281,17 +306,55 @@ func (l *loginLimiter) record(key string, ok bool) {
 	}
 	f := l.fails[key]
 	f.count++
-	f.locked = time.Now().Add(loginBackoff(f.count))
+	if d := loginBackoff(f.count); d > 0 {
+		f.locked = time.Now().Add(d)
+	}
 	l.fails[key] = f
-	if len(l.fails) > 1024 {
-		now := time.Now()
-		for k, v := range l.fails {
-			if now.After(v.locked) {
-				delete(l.fails, k)
-			}
+	l.sweepLocked()
+}
+
+// recordGlobalFailure counts one failed attempt against the fleet-wide
+// budget: below the budget nothing happens, past it the login form locks
+// for everyone for loginGlobalLockout (extended by further failures).
+func (l *loginLimiter) recordGlobalFailure() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f := l.fails["global"]
+	f.count++
+	if f.count >= loginGlobalBudget {
+		f.locked = time.Now().Add(loginGlobalLockout)
+	}
+	l.fails["global"] = f
+	l.sweepLocked()
+}
+
+// sweepLocked drops expired lockouts when the map grows large.
+func (l *loginLimiter) sweepLocked() {
+	if len(l.fails) <= 1024 {
+		return
+	}
+	now := time.Now()
+	for k, v := range l.fails {
+		if now.After(v.locked) {
+			delete(l.fails, k)
 		}
 	}
 }
+
+// acquireHash takes one password-hash slot; the caller MUST release it
+// with releaseHash. False means the gate is full and the request must
+// be shed before any costly verification runs.
+func (l *loginLimiter) acquireHash() bool {
+	select {
+	case l.hashGate <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// releaseHash returns one password-hash slot.
+func (l *loginLimiter) releaseHash() { <-l.hashGate }
 
 // randomToken returns a 32-byte cryptographically random URL-safe token.
 func randomToken() (string, error) {

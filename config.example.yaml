@@ -571,6 +571,12 @@ web:
     # Set to true when serving behind TLS (session cookie becomes Secure).
     secure_cookie: false
 
+    # Trusted reverse proxies (single IPs or CIDRs). Only requests whose
+    # direct peer matches one of these may carry X-Forwarded-For: the
+    # client IP used by the login rate limiters comes from the header
+    # only then. Empty = direct exposure, proxy headers are ignored.
+    trusted_proxies: []
+
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI). They never automatically receive MQTT
 # events. Built-in types: smtp (email), http_webhook, discord, aprs.

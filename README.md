@@ -130,6 +130,7 @@ limit per instance.
 - [config.example.yaml](config.example.yaml) — every option, commented
 - [docs/plugins.md](docs/plugins.md) — plugin contracts and rules
 - [docs/weather-schema.md](docs/weather-schema.md) — weather wire format
+- [docs/durability.md](docs/durability.md) — delivery & durability guarantees
 - per-plugin READMEs under `internal/plugins/`
 
 Plugins are compiled-in Go packages registered in

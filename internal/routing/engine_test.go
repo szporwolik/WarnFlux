@@ -864,3 +864,75 @@ func TestRefreshFailureKeepsSnapshot(t *testing.T) {
 		t.Fatalf("sms fired %d times after healed refresh, want 1", smsCalls)
 	}
 }
+
+// fakeInbox is a test double for the durable dispatch inbox.
+type fakeInbox struct {
+	mu      sync.Mutex
+	pending []storage.InboxItem
+	acked   []int64
+	err     error
+}
+
+func (f *fakeInbox) PendingInboxEvents(_ context.Context, limit int) ([]storage.InboxItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]storage.InboxItem(nil), f.pending...), nil
+}
+
+func (f *fakeInbox) AckInboxEvent(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.acked = append(f.acked, id)
+	return nil
+}
+
+// TestEngineInboxRecoveryAndAck pins the durable acceptance loop: live
+// events carrying an inbox ID are acknowledged after evaluation, and
+// pending inbox rows (crash / full queue) re-enter the engine on
+// recovery and are acknowledged too.
+func TestEngineInboxRecoveryAndAck(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+
+	in := &fakeInbox{}
+	e.SetInbox(in)
+
+	// Live path: the event carries its inbox ID and is acked afterwards.
+	live := hazardEvent("severe", dispatch.TransitionNew)
+	live.InboxID = 42
+	feed <- live
+	waitFor(t, func() bool {
+		in.mu.Lock()
+		defer in.mu.Unlock()
+		return len(in.acked) == 1 && in.acked[0] == 42
+	}, "live inbox event acked")
+	if got := e.Stats().ActionsFired; got != 1 {
+		t.Fatalf("actions fired = %d, want 1", got)
+	}
+
+	// Recovery path: a pending row (crash before evaluation) re-enters.
+	rec := hazardEvent("severe", dispatch.TransitionNew)
+	rec.InboxID = 7
+	in.mu.Lock()
+	in.pending = []storage.InboxItem{{ID: 7, Event: rec}}
+	in.mu.Unlock()
+	e.recoverInbox(context.Background())
+	waitFor(t, func() bool {
+		in.mu.Lock()
+		defer in.mu.Unlock()
+		return len(in.acked) == 2 && in.acked[1] == 7
+	}, "recovered inbox event acked")
+	if got := e.Stats().ActionsFired; got != 2 {
+		t.Fatalf("actions fired = %d, want 2 after recovery", got)
+	}
+}

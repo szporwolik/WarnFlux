@@ -2812,3 +2812,151 @@ func TestAPRSOwnerNames(t *testing.T) {
 		t.Errorf("owner labels = %d, want 2: %.300s", got, body)
 	}
 }
+
+// TestSessionRevocation pins the account-change session policy: deleting,
+// demoting, renaming or re-passwording a user revokes every live session
+// of theirs — an old cookie must no longer authorize anything.
+func TestSessionRevocation(t *testing.T) {
+	env := newTestEnv(t)
+	u1, err := env.users.CreateUser("emcom1", "", "", "", "emcom", "pw12345678")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u2, err := env.users.CreateUser("emcom2", "", "", "", "emcom", "pw87654321")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A second browser for the directory users, with its own cookie jar.
+	jar2, _ := cookiejar.New(nil)
+	client2 := &http.Client{Jar: jar2, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	client2Get := func(path string) (*http.Response, []byte) {
+		t.Helper()
+		resp, err := client2.Get(env.srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, body
+	}
+	loginAs := func(username, password string) {
+		t.Helper()
+		_, html := client2Get("/login")
+		form := url.Values{"csrf": {extractCSRF(t, string(html))}, "username": {username}, "password": {password}}
+		req, _ := http.NewRequest(http.MethodPost, env.srv.URL+"/login", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r2, err := client2.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, r2.Body)
+		r2.Body.Close()
+		if r2.StatusCode != http.StatusSeeOther {
+			t.Fatalf("login %s = %d, want 303", username, r2.StatusCode)
+		}
+	}
+	// accountResult reports whether the cookie still authorizes a
+	// session (any role may open /account) — 303 to /login means the
+	// session is gone.
+	accountResult := func() (int, string) {
+		t.Helper()
+		resp, _ := client2Get("/account")
+		return resp.StatusCode, resp.Header.Get("Location")
+	}
+	wantAuthorized := func(step string) {
+		t.Helper()
+		if st, _ := accountResult(); st != http.StatusOK {
+			t.Fatalf("%s: account = %d, want 200", step, st)
+		}
+	}
+	wantRevoked := func(step string) {
+		t.Helper()
+		st, loc := accountResult()
+		if st != http.StatusSeeOther || loc != "/login" {
+			t.Fatalf("%s: account = %d %q, want 303 redirect to /login", step, st, loc)
+		}
+	}
+	adminCSRF := func() string {
+		t.Helper()
+		_, html := env.get("/users")
+		return extractCSRF(t, html)
+	}
+
+	loginAs("emcom1", "pw12345678")
+	wantAuthorized("fresh emcom1 session")
+
+	env.login() // the admin client
+
+	// 1) Admin edit: new password + demotion to member. The old cookie
+	// must stop authorizing immediately (redirect to /login, not to the
+	// member landing page — the session is gone, not merely demoted).
+	form := url.Values{
+		"csrf":     {adminCSRF()},
+		"edit_id":  {strconv.FormatInt(u1.ID, 10)},
+		"username": {"emcom1"},
+		"role":     {"member"},
+		"password": {"newpw1234"},
+	}
+	if resp, _ := env.postForm("/users", form); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("user save = %d, want 303", resp.StatusCode)
+	}
+	wantRevoked("after password+role edit")
+
+	// 2) The new credentials work, and the demotion is real: a member
+	// session may open /account but is bounced from compose.
+	loginAs("emcom1", "newpw1234")
+	wantAuthorized("member session after re-login")
+	if resp, _ := client2Get("/compose"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("member compose = %d %q, want 303 to the member landing", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// 3) Username change revokes the session as well.
+	form = url.Values{
+		"csrf":     {adminCSRF()},
+		"edit_id":  {strconv.FormatInt(u1.ID, 10)},
+		"username": {"emcom9"},
+		"role":     {"member"},
+	}
+	if resp, _ := env.postForm("/users", form); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("user rename = %d, want 303", resp.StatusCode)
+	}
+	wantRevoked("after username change")
+	loginAs("emcom9", "newpw1234")
+	wantAuthorized("renamed account session")
+
+	// 4) Self-service password change kills the session and bounces the
+	// browser to /login.
+	_, acctHTML := client2Get("/account")
+	form = url.Values{"csrf": {extractCSRF(t, string(acctHTML))}, "password": {"selfpw1234"}}
+	req, _ := http.NewRequest(http.MethodPost, env.srv.URL+"/account", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r2, err := client2.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, r2.Body)
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusSeeOther || r2.Header.Get("Location") != "/login" {
+		t.Fatalf("account password change = %d %q, want 303 to /login", r2.StatusCode, r2.Header.Get("Location"))
+	}
+	wantRevoked("after self-service password change")
+
+	// 5) Admin password reset revokes the (re-established) session.
+	loginAs("emcom9", "selfpw1234")
+	wantAuthorized("session before admin reset")
+	if resp, _ := env.postForm("/users/"+strconv.FormatInt(u1.ID, 10)+"/reset", url.Values{"csrf": {adminCSRF()}}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("user reset = %d, want 200", resp.StatusCode)
+	}
+	wantRevoked("after admin password reset")
+
+	// 6) Deletion revokes the last session too.
+	loginAs("emcom2", "pw87654321")
+	wantAuthorized("emcom2 session before delete")
+	if resp, _ := env.postForm("/users/"+strconv.FormatInt(u2.ID, 10)+"/delete", url.Values{"csrf": {adminCSRF()}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("user delete = %d, want 303", resp.StatusCode)
+	}
+	wantRevoked("after deletion")
+}

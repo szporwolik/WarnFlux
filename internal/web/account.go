@@ -277,6 +277,15 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A self-service password change revokes every session of the user
+	// (including this one): they sign in again with the new password.
+	if password != "" {
+		s.sessions.revokeUser(u.ID)
+		s.audit(sess.username, "account-password", "")
+		s.sessions.clearSessionCookie(w)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
 	s.audit(sess.username, "account-update", "")
 	http.Redirect(w, r, "/account?msg=saved", http.StatusSeeOther)
 }

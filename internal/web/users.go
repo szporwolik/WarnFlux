@@ -198,12 +198,21 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
+		// Identity-relevant edits (password, role, username) revoke every
+		// live session of the user: a demoted or re-passworded account
+		// must not keep its old sessions authorized.
+		old, oldErr := s.users.GetUser(editID)
 		u, err := s.users.UpdateUser(editID, form.Username, form.Phone, form.Email, form.Discord, form.Role, form.Password)
 		if err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
 		s.audit(sess.username, "user-update", form.Username)
+		if form.Password != "" || oldErr != nil || old.Role != form.Role || old.Username != form.Username {
+			if n := s.sessions.revokeUser(editID); n > 0 {
+				s.audit(sess.username, "sessions-revoked", fmt.Sprintf("user %s sessions=%d", form.Username, n))
+			}
+		}
 		if err := s.users.SetUserAPRS(u.ID, parseAPRSCallsigns(form.APRSCallsigns)); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
@@ -331,6 +340,9 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(sess.username, "user-delete", name)
+	if n := s.sessions.revokeUser(id); n > 0 {
+		s.audit(sess.username, "sessions-revoked", fmt.Sprintf("user %s sessions=%d", name, n))
+	}
 	http.Redirect(w, r, "/users", http.StatusSeeOther)
 }
 
@@ -422,6 +434,9 @@ func (s *Server) handleUserResetPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.audit(sess.username, "user-reset", strconv.FormatInt(userID, 10))
+	if n := s.sessions.revokeUser(userID); n > 0 {
+		s.audit(sess.username, "sessions-revoked", fmt.Sprintf("user %s sessions=%d", u.Username, n))
+	}
 
 	view := s.buildUsersView(r, userForm{}, 0, "")
 	view.CSRF = sess.csrf

@@ -147,6 +147,7 @@ func defaultTestWebConfig() config.Web {
 		Tagline:    "Test tagline",
 		About:      "Test info text. <a href=\"https://sp9moa.pl\">sp9moa.pl</a>",
 		Disclaimer: "Test disclaimer text.",
+		Domain:     "spok.example.com",
 		Auth:       config.WebAuth{Username: testUsername, Password: testPassword},
 	}
 }
@@ -1499,6 +1500,140 @@ func TestForgotPasswordFlow(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("token replay = %d, want 422", resp.StatusCode)
+	}
+}
+
+// TestForgotCanonicalHostOnly pins the host-header hardening: a reset
+// request carrying a spoofed Host header still mails a link to the
+// configured canonical domain, never the attacker's.
+func TestForgotCanonicalHostOnly(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("member1", "", "member1@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	var sentText string
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		sentText = text
+		return nil
+	})
+
+	_, html := env.get("/forgot")
+	// Go's http.Client looks the cookie jar up by req.Host, so a spoofed
+	// Host would also drop the CSRF cookie; attach it explicitly (an
+	// attacker controls their own session anyway — the mail link is the
+	// surface under test).
+	u, _ := url.Parse(env.srv.URL)
+	makeReq := func(host string) *http.Request {
+		req, err := http.NewRequest(http.MethodPost, env.srv.URL+"/forgot",
+			strings.NewReader(url.Values{
+				"csrf":     {extractCSRF(t, html)},
+				"username": {"member1"},
+				"email":    {"member1@example.com"},
+			}.Encode()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range env.client.Jar.Cookies(u) {
+			req.AddCookie(c)
+		}
+		req.Host = host
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return req
+	}
+
+	resp, err := env.client.Do(makeReq("evil.example.net")) // spoofed Host header
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("forgot with spoofed host = %d, want 200", resp.StatusCode)
+	}
+	if sentText == "" || !strings.Contains(sentText, "http://spok.example.com/reset?token=") {
+		t.Fatalf("reset link must use the canonical domain: %q", sentText)
+	}
+	if strings.Contains(sentText, "evil.example.net") {
+		t.Fatalf("spoofed host leaked into the reset link: %q", sentText)
+	}
+
+	// A malformed Host (userinfo injection) is rejected outright.
+	resp2, err := env.client.Do(makeReq("spok.example.com@evil.example.net"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("forgot with userinfo host = %d, want 400", resp2.StatusCode)
+	}
+}
+
+// TestForgotOfflineWithoutDomain pins the canonical-origin requirement:
+// without web.domain the flow never mails a link built from the request
+// Host — it answers with the offline (contact an administrator) message.
+func TestForgotOfflineWithoutDomain(t *testing.T) {
+	cfg := defaultTestWebConfig()
+	cfg.Domain = ""
+	env := newTestEnvWeb(t, cfg, nil, nil, nil, nil, nil, nil)
+	if _, err := env.users.CreateUser("member1", "", "member1@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	sent := false
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		sent = true
+		return nil
+	})
+
+	_, html := env.get("/forgot")
+	resp, html := env.postForm("/forgot", url.Values{
+		"csrf":     {extractCSRF(t, html)},
+		"username": {"member1"},
+		"email":    {"member1@example.com"},
+	})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(html, "contact an administrator") {
+		t.Fatalf("offline forgot = %d %s", resp.StatusCode, html)
+	}
+	if sent {
+		t.Fatal("email sent without a canonical domain")
+	}
+}
+
+// TestForgotSuccessCooldown pins the post-success cooldown: a successful
+// send does NOT clear the limiter — repeating the correct request within
+// the window is throttled with 429 and sends no second email.
+func TestForgotSuccessCooldown(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("member1", "", "member1@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	sends := 0
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		sends++
+		return nil
+	})
+
+	_, html := env.get("/forgot")
+	resp, _ := env.postForm("/forgot", url.Values{
+		"csrf":     {extractCSRF(t, html)},
+		"username": {"member1"},
+		"email":    {"member1@example.com"},
+	})
+	if resp.StatusCode != http.StatusOK || sends != 1 {
+		t.Fatalf("first correct request = %d (%d sends), want 200 with 1 send", resp.StatusCode, sends)
+	}
+
+	// The identical correct request inside the cooldown window: 429, no
+	// second email.
+	_, html = env.get("/forgot")
+	resp, _ = env.postForm("/forgot", url.Values{
+		"csrf":     {extractCSRF(t, html)},
+		"username": {"member1"},
+		"email":    {"member1@example.com"},
+	})
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("repeat after success = %d, want 429", resp.StatusCode)
+	}
+	if sends != 1 {
+		t.Fatalf("repeat after success sent %d emails, want 1", sends)
 	}
 }
 

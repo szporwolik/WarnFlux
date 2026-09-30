@@ -313,6 +313,18 @@ func (l *loginLimiter) record(key string, ok bool) {
 	l.sweepLocked()
 }
 
+// recordCooldown stamps a fixed cooldown on a key after a SUCCESSFUL
+// action whose repetition must be limited too (password-reset emails):
+// unlike a login success, the key is NOT cleared — repeat requests wait.
+func (l *loginLimiter) recordCooldown(key string, d time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f := l.fails[key]
+	f.locked = time.Now().Add(d)
+	l.fails[key] = f
+	l.sweepLocked()
+}
+
 // recordGlobalFailure counts one failed attempt against the fleet-wide
 // budget: below the budget nothing happens, past it the login form locks
 // for everyone for loginGlobalLockout (extended by further failures).

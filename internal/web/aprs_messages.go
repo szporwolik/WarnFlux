@@ -182,3 +182,23 @@ func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 	s.audit(sess.username, "aprs-send", to)
 	http.Redirect(w, r, "/messages?sent=1", http.StatusSeeOther)
 }
+
+// handleAPRSBeacon forces an immediate position beacon through the radio
+// backend (the manual "send beacon now" button above the page tabs).
+func (s *Server) handleAPRSBeacon(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	if s.aprs == nil {
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape("APRS hub not configured"), http.StatusSeeOther)
+		return
+	}
+	if err := s.aprs.SendBeacon(r.Context()); err != nil {
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	s.audit(sess.username, "aprs-beacon", "")
+	http.Redirect(w, r, "/messages?sent=1", http.StatusSeeOther)
+}

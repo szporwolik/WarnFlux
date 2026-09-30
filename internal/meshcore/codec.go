@@ -34,6 +34,7 @@ const (
 	cmdGetChannel        = 31
 	cmdSetChannel        = 32
 	cmdAddUpdateContact  = 9
+	cmdSetAutoaddConfig  = 58
 	cmdGetStats          = 56
 	cmdSendChannelData   = 62
 )
@@ -527,6 +528,12 @@ func buildSetChannel(idx byte, name string, secret []byte) []byte {
 	copy(out[2:2+channelNameLen], name)
 	copy(out[2+channelNameLen:], secret)
 	return out
+}
+
+// buildSetAutoaddConfig controls which advert types the device auto-adds
+// to its contact list (chat, repeater, room, sensor) and the hop limit.
+func buildSetAutoaddConfig(mask, maxHops byte) []byte {
+	return []byte{cmdSetAutoaddConfig, mask, maxHops}
 }
 
 // parseChannelInfo decodes a PACKET_CHANNEL_INFO payload (after the 0x12):

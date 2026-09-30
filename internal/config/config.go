@@ -152,6 +152,9 @@ type MeshCoreConfig struct {
 	// the hub reads the slot at connect time and issues SET_CHANNEL when
 	// the name differs, preserving the channel secret.
 	ChannelName string
+	// AutoAddContacts makes the device auto-add unknown heard nodes to its
+	// contact list, so their adverts reach WarnFlux's node list.
+	AutoAddContacts bool
 	// NodeTTL bounds how long an unheard neighbour stays in the node
 	// list.
 	NodeTTL time.Duration
@@ -421,12 +424,13 @@ type fileConfig struct {
 // fileMeshCore mirrors the top-level meshcore block (pointer fields keep
 // omitted values distinguishable from explicit zeroes).
 type fileMeshCore struct {
-	Enabled     bool           `yaml:"enabled"`
-	Device      string         `yaml:"device"`
-	Baud        *int           `yaml:"baud"`
-	ChannelIdx  int            `yaml:"channel_idx"`
-	ChannelName string         `yaml:"channel_name"`
-	NodeTTL     *time.Duration `yaml:"node_ttl"`
+	Enabled         bool           `yaml:"enabled"`
+	Device          string         `yaml:"device"`
+	Baud            *int           `yaml:"baud"`
+	ChannelIdx      int            `yaml:"channel_idx"`
+	ChannelName     string         `yaml:"channel_name"`
+	AutoAddContacts bool           `yaml:"auto_add_contacts"`
+	NodeTTL         *time.Duration `yaml:"node_ttl"`
 }
 
 type fileGeo struct {
@@ -913,6 +917,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.MeshCore.Device = strings.TrimSpace(f.MeshCore.Device)
 		cfg.MeshCore.ChannelIdx = f.MeshCore.ChannelIdx
 		cfg.MeshCore.ChannelName = f.MeshCore.ChannelName
+		cfg.MeshCore.AutoAddContacts = f.MeshCore.AutoAddContacts
 		if f.MeshCore.Baud != nil {
 			cfg.MeshCore.Baud = *f.MeshCore.Baud
 		}

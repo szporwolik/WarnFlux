@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,10 @@ type Config struct {
 	// (chat/repeater/room/sensor, up to 8 hops) to its contact list, so
 	// their adverts reach WarnFlux and show up as heard nodes.
 	AutoAddContacts bool
+	// RouteMessages re-publishes direct messages from directory-known
+	// senders as canonical /events documents, so they enter the normal
+	// MQTT routing matrix (the alarm pipeline) like APRS messages do.
+	RouteMessages bool
 	// NodeTTL bounds how long an unheard neighbour stays in the node list.
 	NodeTTL time.Duration
 }
@@ -109,6 +114,11 @@ type Hub struct {
 	// messageSink optionally publishes rx/tx messages to MQTT
 	// (non-retained, one JSON document per message).
 	messageSink func(ctx context.Context, topic string, retained bool, payload []byte) error
+	// senderGate approves the 12-hex key prefix of a direct-message
+	// sender for the routing bridge (registered operators only).
+	senderGate func(key string) bool
+	// eventSink publishes routed message events on the /events stream.
+	eventSink func(ctx context.Context, topic string, retained bool, payload []byte) error
 
 	// pendingAcks queues send-command acknowledgements: the device
 	// answers each host command in order with OK / SENT / ERR.
@@ -162,6 +172,24 @@ func (h *Hub) SetStationSink(fn func(ctx context.Context, topic string, retained
 func (h *Hub) SetMessageSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
 	h.mu.Lock()
 	h.messageSink = fn
+	h.mu.Unlock()
+}
+
+// SetSenderGate installs the direct-message sender allow-list check. The
+// gate receives the sender's lowercase 12-hex key prefix and reports
+// whether it belongs to a registered WarnFlux user. Without the gate no
+// mesh message becomes a hazard event.
+func (h *Hub) SetSenderGate(fn func(key string) bool) {
+	h.mu.Lock()
+	h.senderGate = fn
+	h.mu.Unlock()
+}
+
+// SetEventSink attaches the /events publisher (optional): routed direct
+// messages become canonical event documents on the events stream.
+func (h *Hub) SetEventSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
+	h.mu.Lock()
+	h.eventSink = fn
 	h.mu.Unlock()
 }
 
@@ -620,11 +648,11 @@ func (h *Hub) handleFrame(frame []byte) {
 		}
 	case respContactMsg:
 		if m, err := parseContactMsg(frame[1:], false); err == nil {
-			h.recordMessage("rx", pubKeyHex(m.PubKeyPrefix), "direct", m.Text)
+			h.receiveContact(m)
 		}
 	case respContactMsgV3:
 		if m, err := parseContactMsg(frame[1:], true); err == nil {
-			h.recordMessage("rx", pubKeyHex(m.PubKeyPrefix), "direct", m.Text)
+			h.receiveContact(m)
 		}
 	case pushMsgWaiting:
 		_ = h.writeFrame(buildSyncNextMessage())
@@ -656,6 +684,123 @@ func (h *Hub) receiveChannel(m ChannelMessage) {
 	if h.logger != nil {
 		h.logger.Info("meshcore: channel message", "channel", m.ChannelIdx, "text", m.Text)
 	}
+}
+
+// receiveContact handles one direct message: it records the rx and, when
+// routing is enabled and the sender's 12-hex key prefix sits on the
+// registered-user allow-list, re-publishes the message as a canonical
+// /events document (the "meshcore" source in the routing matrix).
+func (h *Hub) receiveContact(m ContactMessage) {
+	prefix := pubKeyHex(m.PubKeyPrefix)
+	h.recordMessage("rx", prefix, "direct", m.Text)
+	text := strings.TrimSpace(m.Text)
+	if !h.cfg.RouteMessages || text == "" || ackText(text) {
+		return
+	}
+	h.mu.Lock()
+	gate := h.senderGate
+	name := h.nodeNameForPrefixLocked(prefix)
+	selfName := ""
+	if h.self != nil {
+		selfName = h.self.Name
+	}
+	h.mu.Unlock()
+	if gate == nil || !gate(prefix) {
+		return
+	}
+	if h.logger != nil {
+		h.logger.Info("meshcore: direct message routed", "from", prefix, "text", text)
+	}
+	h.publishMessageEvent(prefix, name, selfName, text)
+}
+
+// nodeNameForPrefixLocked returns the known name of the node whose key
+// starts with the given 12-hex prefix (callers hold h.mu).
+func (h *Hub) nodeNameForPrefixLocked(prefix string) string {
+	for key, n := range h.nodes {
+		if strings.HasPrefix(key, prefix) && n.Name != "" {
+			return n.Name
+		}
+	}
+	return ""
+}
+
+// ackText reports whether a received direct-message text is an ack/rej
+// protocol reply.
+func ackText(text string) bool {
+	return strings.HasPrefix(text, "ack") || strings.HasPrefix(text, "rej")
+}
+
+// publishMessageEvent re-publishes one routed direct message as a
+// canonical /events payload. The forwarded content starts with
+// "Message from: <node name or key prefix>", the text follows, and our
+// node name is carried as context. Messages from trusted operators are
+// alerts by nature: the default severity is severe.
+//
+// The event identity (ChangeID + event key) is derived from the receipt
+// timestamp, not from a per-process counter: the routing engine persists
+// delivery claims keyed by source/key/ChangeID, and a counter that
+// restarts with the process would let a message collide with a past
+// claim and be silently dropped as a duplicate.
+func (h *Hub) publishMessageEvent(prefix, name, selfName, text string) {
+	now := time.Now().UTC()
+	id := now.UnixNano()
+	nowS := now.Format(time.RFC3339)
+	expires := now.Add(time.Hour).Format(time.RFC3339)
+	label := prefix
+	if name != "" {
+		label = name
+	}
+	desc := "Received by "
+	if selfName != "" {
+		desc += selfName
+	} else {
+		desc += "the MeshCore node"
+	}
+	desc += " via MeshCore"
+
+	doc := MessageEventWire{
+		SchemaVersion: meshMessageEventSchemaVersion,
+		ChangeID:      id,
+		ChangeType:    "new",
+		EventKey:      "meshcore:" + prefix + ":" + strconv.FormatInt(id, 10),
+		Event: MessageEventHazard{
+			Source:      "meshcore",
+			SourceID:    prefix,
+			Event:       "MeshCore message",
+			Severity:    "severe",
+			Urgency:     "unknown",
+			Certainty:   "unknown",
+			Headline:    "Message from: " + label + ": " + text,
+			Description: desc,
+			EffectiveAt: &nowS,
+			ExpiresAt:   &expires,
+			Areas:       []string{},
+			Status:      "active",
+			ReceivedAt:  nowS,
+			UpdatedAt:   nowS,
+		},
+	}
+	payload, err := json.Marshal(doc)
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Warn("meshcore: routed message marshal failed", "error", err)
+		}
+		return
+	}
+	h.mu.Lock()
+	sink := h.eventSink
+	h.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := sink(ctx, "events", false, payload); err != nil && h.logger != nil {
+			h.logger.Warn("meshcore: routed message publish failed", "from", prefix, "error", err)
+		}
+	}()
 }
 
 func (h *Hub) touchNode(pubKey []byte, name string, typ byte, lat, lon float64, hops int, advAt time.Time) {

@@ -152,6 +152,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 		ChannelIdx:      cfg.MeshCore.ChannelIdx,
 		ChannelName:     cfg.MeshCore.ChannelName,
 		AutoAddContacts: cfg.MeshCore.AutoAddContacts,
+		RouteMessages:   cfg.MeshCore.RouteMessages,
 		NodeTTL:         cfg.MeshCore.NodeTTL,
 	}, logger)
 	if err != nil {
@@ -367,12 +368,25 @@ func run(configPath string, checkConfig bool) error {
 		ChannelIdx:      cfg.MeshCore.ChannelIdx,
 		ChannelName:     cfg.MeshCore.ChannelName,
 		AutoAddContacts: cfg.MeshCore.AutoAddContacts,
+		RouteMessages:   cfg.MeshCore.RouteMessages,
 		NodeTTL:         cfg.MeshCore.NodeTTL,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshcore hub: %w", err)
 	}
 	meshHub.SetRecorder(store)
+	// MeshCore direct-message routing trusts registered operators: the
+	// sender's 12-hex key prefix must belong to a user's registered mesh
+	// key list. Without the gate no mesh message becomes a hazard event.
+	meshHub.SetSenderGate(func(key string) bool {
+		owners, err := store.MeshKeyOwners()
+		if err != nil {
+			logger.Warn("meshcore: sender allow-list load failed", "error", err)
+			return false
+		}
+		_, ok := owners[strings.ToLower(key)]
+		return ok
+	})
 	// APRS message routing only trusts registered operators: the sender's
 	// base callsign (SSID-insensitive) must appear on a user's APRS
 	// callsign list. Without the gate no message becomes a hazard event.
@@ -463,6 +477,12 @@ func run(configPath string, checkConfig bool) error {
 	// MeshCore rx/tx messages feed the broker as non-retained documents
 	// on meshcore/messages, mirroring the APRS message feed.
 	meshHub.SetMessageSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
+		return receivers.PublishRaw(topic, retained, payload)
+	})
+
+	// MeshCore direct messages from registered operators feed the alarm
+	// pipeline: canonical /events documents on the events stream.
+	meshHub.SetEventSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
 		return receivers.PublishRaw(topic, retained, payload)
 	})
 

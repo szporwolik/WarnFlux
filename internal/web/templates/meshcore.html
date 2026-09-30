@@ -133,7 +133,7 @@
     </thead>
     <tbody>
       {{range .Nodes}}
-      <tr>
+      <tr class="node-row" data-key="{{.Short}}" title="{{tr $.Lang "meshcore.click_to_send"}}">
         <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}</strong></td>
         <td class="muted nowrap" title="{{.PubKey}}">{{.Short}}…</td>
         <td>{{.Type}}</td>

@@ -847,6 +847,47 @@ func TestMeshDirectMessageEventDisabled(t *testing.T) {
 	}
 }
 
+// TestHubSeedNode pins the restart restore path: seeding merges a
+// retained document into the registry without publishing, and documents
+// older than NodeTTL are tombstoned instead of restored.
+func TestHubSeedNode(t *testing.T) {
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "43188f3a7e2d4fcdb5d5d29a0b25c645466d621a5f1750eb5f654fb8fed25c25"
+	seen := time.Now().Add(-10 * time.Minute)
+
+	// No sink installed: seeding must not panic or publish anything.
+	hub.SeedNode(key, "PL-KR-MAKI-RPT", 2, 50.012734, 19.886038, 1, seen)
+
+	snap := hub.Snapshot()
+	if len(snap.Nodes) != 1 {
+		t.Fatalf("seeded nodes = %d, want 1", len(snap.Nodes))
+	}
+	n := snap.Nodes[0]
+	if n.PubKey != key || n.Name != "PL-KR-MAKI-RPT" || n.Type != 2 || n.Lat == 0 || n.Hops != 1 {
+		t.Fatalf("seeded node = %+v", n)
+	}
+
+	// A stale document (older than NodeTTL) is tombstoned, not restored.
+	capture := &stationCapture{}
+	hub.SetStationSink(capture.publish)
+	stale := "9f986ab53ada7f53b7fb5ae09a813582fcb9895c26c2bf8d5fe163ba80a88819"
+	hub.SeedNode(stale, "OLD-NODE", 2, 50, 20, 0, time.Now().Add(-2*time.Hour))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && capture.count() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	capture.mu.Lock()
+	got := append([]stationPub(nil), capture.got...)
+	capture.mu.Unlock()
+	if len(got) != 1 || got[0].topic != "meshcore/stations/9f986ab53ada" || !got[0].retained || len(got[0].payload) != 0 {
+		t.Fatalf("tombstone publish = %+v", got)
+	}
+}
+
 // TestHubStationPublish pins the MQTT station feed: one retained document
 // per node, throttled, with the node's details.
 func TestHubStationPublish(t *testing.T) {

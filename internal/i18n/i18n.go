@@ -152,6 +152,7 @@ var en = map[string]string{
 	"messages.click_to_send": "Click to send a message",
 	"messages.send":          "Send",
 	"messages.sent":          "Message queued for transmission.",
+	"messages.beacon_now":    "Send beacon now",
 	"messages.to_ph":         "Callsign (e.g. SP9XXX)",
 
 	// Public home page.
@@ -721,6 +722,7 @@ var pl = map[string]string{
 	"messages.click_to_send": "Kliknij, aby wysłać wiadomość",
 	"messages.send":          "Wyślij",
 	"messages.sent":          "Wiadomość przekazana do wysłania.",
+	"messages.beacon_now":    "Wyślij beacon teraz",
 	"messages.to_ph":         "Znak (np. SP9XXX)",
 
 	"home.tab.alerts":        "Aktywne zagrożenia",

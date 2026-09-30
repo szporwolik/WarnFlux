@@ -2516,6 +2516,29 @@ func TestAPRSSendValidation(t *testing.T) {
 	}
 }
 
+// TestAPRSBeaconValidation pins the manual beacon button: bad CSRF is
+// rejected and, with no beacon-capable transmitter connected, the error
+// flashes back on the page instead of pretending success.
+func TestAPRSBeaconValidation(t *testing.T) {
+	hub, err := aprs.NewHub(aprs.HubConfig{Enabled: false}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvWithHub(t, hub)
+	env.login()
+	_, html := env.get("/messages")
+	csrf := extractCSRF(t, html)
+
+	resp, _ := env.postForm("/messages/beacon", url.Values{"csrf": {"bogus"}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST beacon bad csrf = %d, want 403", resp.StatusCode)
+	}
+	resp, _ = env.postForm("/messages/beacon", url.Values{"csrf": {csrf}})
+	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "err=") {
+		t.Fatalf("POST beacon no transmitter = %d %q, want redirect with err", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
 func TestMeshcoreStationsAPI(t *testing.T) {
 	// Without a mesh hub the public endpoint is absent.
 	env := newTestEnv(t)

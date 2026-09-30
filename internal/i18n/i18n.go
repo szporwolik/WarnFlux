@@ -626,6 +626,7 @@ var en = map[string]string{
 	"forgot.back":  "← Back to sign in", "forgot.email": "Registered email",
 	"forgot.note":        "A one-time link will be sent to the account's registered email address.",
 	"forgot.sent":        "If the account exists and the email matches, a reset link has been sent to its registered address.",
+	"forgot.offline":     "Password reset by email is unavailable on this installation (no canonical web.domain configured) — contact an administrator.",
 	"forgot.mail_failed": "The reset email could not be sent — please contact an administrator.",
 	"forgot.admin_pass":  "admin pass is defined in the configuration file",
 	// Reset page.
@@ -1192,6 +1193,7 @@ var pl = map[string]string{
 	"forgot.email":       "Zarejestrowany e-mail",
 	"forgot.note":        "Jednorazowy link zostanie wysłany na zarejestrowany adres e-mail konta.",
 	"forgot.sent":        "Jeśli konto istnieje i adres e-mail się zgadza, link do resetu został wysłany na zarejestrowany adres.",
+	"forgot.offline":     "Odzyskiwanie hasła e-mailem jest niedostępne w tej instalacji (brak skonfigurowanego web.domain) — skontaktuj się z administratorem.",
 	"forgot.mail_failed": "Nie udało się wysłać e-maila resetującego — skontaktuj się z administratorem.",
 	"forgot.admin_pass":  "hasło administratora jest zdefiniowane w pliku konfiguracyjnym",
 

@@ -7,13 +7,21 @@ package web
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
+
+// forgotSendCooldown is the minimum wait between two successful reset
+// emails for the same (username, client IP) pair: a successful send must
+// not reset the limiter, or a flood of correct requests would keep
+// hammering the mailbox.
+const forgotSendCooldown = 60 * time.Second
 
 // SetPasswordResetMailer installs the delivery function for reset emails
 // (to, subject, plain body). A nil mailer disables email delivery: the
@@ -77,6 +85,10 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	if err := validateRequestHost(r.Host); err != nil {
+		http.Error(w, "invalid host header", http.StatusBadRequest)
+		return
+	}
 	cookie, _ := r.Cookie(csrfCookie)
 	if cookie == nil || !csrfOK(r.PostFormValue("csrf"), cookie.Value) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
@@ -116,7 +128,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	limiterKey := "forgot\x00" + username + "\x00" + s.clientIP(r)
 	if wait := s.loginLimiter.retryIn(limiterKey); wait > 0 {
 		s.logger.Warn("web: forgot throttled", "remote", r.RemoteAddr, "username", username)
-		w.Header().Set("Retry-After", "30")
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(wait.Seconds())+1))
 		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
 		return
 	}
@@ -146,26 +158,54 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.resetMailer != nil {
-		link := s.resetLink(r) + "/reset?token=" + url.QueryEscape(token)
-		subject := s.displayName() + " — password reset"
-		body := "A password reset was requested for the WarnFlux account \"" + u.Username + "\".\n\n" +
-			"Open this link to set a new password (it expires in one hour):\n" + link + "\n\n" +
-			"If you did not request this, ignore this message — your password stays unchanged.\n"
-		if err := s.resetMailer(strings.TrimSpace(u.Email), subject, body); err != nil {
-			s.logger.Warn("web: password reset email failed", "username", username, "error", err)
-			s.loginLimiter.record(limiterKey, false)
-			view(i18n.T(lang, "forgot.mail_failed"), "")
-			return
-		}
+	// Canonical origin: reset links are built ONLY from the configured
+	// public domain, never from the request Host — a spoofed Host header
+	// must not redirect the victim to a foreign domain. Without the
+	// canonical domain (or without a mailer) the flow stays offline:
+	// recovery goes through an administrator on the machine.
+	origin := s.resetOrigin()
+	if origin == "" || s.resetMailer == nil {
+		s.logger.Warn("web: password reset offline (web.domain not configured or no mailer)", "username", username)
+		s.loginLimiter.recordCooldown(limiterKey, forgotSendCooldown)
+		view("", i18n.T(lang, "forgot.offline"))
+		return
 	}
-	s.loginLimiter.record(limiterKey, true)
+
+	link := origin + "/reset?token=" + url.QueryEscape(token)
+	subject := s.displayName() + " — password reset"
+	body := "A password reset was requested for the WarnFlux account \"" + u.Username + "\".\n\n" +
+		"Open this link to set a new password (it expires in one hour):\n" + link + "\n\n" +
+		"If you did not request this, ignore this message — your password stays unchanged.\n"
+	if err := s.resetMailer(strings.TrimSpace(u.Email), subject, body); err != nil {
+		s.logger.Warn("web: password reset email failed", "username", username, "error", err)
+		s.loginLimiter.record(limiterKey, false)
+		view(i18n.T(lang, "forgot.mail_failed"), "")
+		return
+	}
+	// A successful send imposes a cooldown, it does not clear the key:
+	// repeat sends for the same user+IP must wait.
+	s.loginLimiter.recordCooldown(limiterKey, forgotSendCooldown)
 	view("", i18n.T(lang, "forgot.sent"))
 }
 
-// resetLink builds the public base URL for reset links: the configured
-// domain (production identity) or the request host.
-func (s *Server) resetLink(r *http.Request) string {
+// validateRequestHost rejects malformed Host headers on the recovery
+// endpoints (userinfo, slashes, whitespace). It is input validation, not
+// trust: reset links never use the request Host.
+func validateRequestHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return errors.New("empty host")
+	}
+	if strings.ContainsAny(host, "@/\\\t\r\n ") {
+		return errors.New("invalid characters in host")
+	}
+	return nil
+}
+
+// resetOrigin returns the canonical base URL for reset links: the
+// configured public domain only. Empty when no canonical domain is
+// configured (the flow stays offline).
+func (s *Server) resetOrigin() string {
 	scheme := "http"
 	if s.cfg.Auth.SecureCookie {
 		scheme = "https"
@@ -173,7 +213,7 @@ func (s *Server) resetLink(r *http.Request) string {
 	if d := strings.TrimSpace(s.cfg.Domain); d != "" {
 		return scheme + "://" + d
 	}
-	return scheme + "://" + r.Host
+	return ""
 }
 
 // resetView is the /reset page model.
@@ -197,6 +237,10 @@ type resetView struct {
 // handleResetPage renders the new-password form for a token link. An
 // invalid token renders the expired state instead of the form.
 func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
+	if err := validateRequestHost(r.Host); err != nil {
+		http.Error(w, "invalid host header", http.StatusBadRequest)
+		return
+	}
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
 	csrf, err := newCSRFCookiePath(w, s.cfg.Auth.SecureCookie, "/")
 	if err != nil {
@@ -231,6 +275,10 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := validateRequestHost(r.Host); err != nil {
+		http.Error(w, "invalid host header", http.StatusBadRequest)
 		return
 	}
 	cookie, _ := r.Cookie(csrfCookie)

@@ -152,6 +152,11 @@ type MeshCoreConfig struct {
 	// the hub reads the slot at connect time and issues SET_CHANNEL when
 	// the name differs, preserving the channel secret.
 	ChannelName string
+	// ChannelNames optionally maps channel indices onto friendly display
+	// names (e.g. 0: "Public", 2: "#sp9moa"): recorded messages carry
+	// the friendly name instead of "ch0". The TX slot falls back to
+	// ChannelName when no map entry exists.
+	ChannelNames map[int]string
 	// AutoAddContacts makes the device auto-add unknown heard nodes to its
 	// contact list, so their adverts reach WarnFlux's node list.
 	AutoAddContacts bool
@@ -432,6 +437,7 @@ type fileMeshCore struct {
 	Baud            *int           `yaml:"baud"`
 	ChannelIdx      int            `yaml:"channel_idx"`
 	ChannelName     string         `yaml:"channel_name"`
+	ChannelNames    map[int]string `yaml:"channel_names"`
 	AutoAddContacts bool           `yaml:"auto_add_contacts"`
 	RouteMessages   bool           `yaml:"route_messages"`
 	NodeTTL         *time.Duration `yaml:"node_ttl"`
@@ -921,6 +927,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.MeshCore.Device = strings.TrimSpace(f.MeshCore.Device)
 		cfg.MeshCore.ChannelIdx = f.MeshCore.ChannelIdx
 		cfg.MeshCore.ChannelName = f.MeshCore.ChannelName
+		cfg.MeshCore.ChannelNames = f.MeshCore.ChannelNames
 		cfg.MeshCore.AutoAddContacts = f.MeshCore.AutoAddContacts
 		cfg.MeshCore.RouteMessages = f.MeshCore.RouteMessages
 		if f.MeshCore.Baud != nil {

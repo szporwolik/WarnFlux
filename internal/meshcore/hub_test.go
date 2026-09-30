@@ -1217,3 +1217,36 @@ func TestHubContactProtect(t *testing.T) {
 		t.Fatal("device side did not finish")
 	}
 }
+
+// TestHubChannelLabels pins the friendly channel-name resolution: the
+// configured map first, then the pinned TX slot name, then "ch<N>".
+func TestHubChannelLabels(t *testing.T) {
+	hub, err := NewHub(Config{
+		Enabled:     true,
+		Device:      "/dev/fake",
+		ChannelIdx:  2,
+		ChannelName: "#sp9moa",
+		ChannelNames: map[int]string{
+			0: "Public",
+			5: "Klub",
+		},
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		idx  int
+		want string
+	}{
+		{0, "Public"},      // mapped
+		{2, "#sp9moa"},     // pinned TX slot fallback
+		{5, "Klub"},        // mapped
+		{7, "ch7"},         // unmapped fallback
+		{2 + 100, "ch102"}, // numeric fallback
+	}
+	for _, c := range cases {
+		if got := hub.ChannelLabel(c.idx); got != c.want {
+			t.Errorf("ChannelLabel(%d) = %q, want %q", c.idx, got, c.want)
+		}
+	}
+}

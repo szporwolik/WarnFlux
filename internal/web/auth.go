@@ -18,6 +18,11 @@ const (
 
 // session is one authenticated session.
 type session struct {
+	// userID is the directory user's immutable ID (0 = the configured
+	// admin account, which has no directory row). Account changes
+	// (password, role, username, deletion) revoke every session of the
+	// user ID, so stale sessions never keep old privileges.
+	userID   int64
 	username string
 	// role is the access tier: "admin" (everything) or "emcom" (compose
 	// only). Set once at login, never from the client.
@@ -39,7 +44,7 @@ func newSessionStore(secure bool) *sessionStore {
 }
 
 // newSession creates a cryptographically random session token.
-func (s *sessionStore) newSession(username, role string) (token string, sess *session, err error) {
+func (s *sessionStore) newSession(userID int64, username, role string) (token string, sess *session, err error) {
 	tok, err := randomToken()
 	if err != nil {
 		return "", nil, err
@@ -49,6 +54,7 @@ func (s *sessionStore) newSession(username, role string) (token string, sess *se
 		return "", nil, err
 	}
 	sess = &session{
+		userID:   userID,
 		username: username,
 		role:     role,
 		csrf:     csrf,
@@ -85,6 +91,23 @@ func (s *sessionStore) delete(token string) {
 	s.mu.Lock()
 	delete(s.m, token)
 	s.mu.Unlock()
+}
+
+// revokeUser invalidates every live session of one directory user
+// (password reset, role/username change or deletion) and reports how many
+// sessions were dropped. The configured admin (userID 0) is never revoked
+// this way — its credentials live in configuration.
+func (s *sessionStore) revokeUser(userID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for tok, sess := range s.m {
+		if sess.userID == userID {
+			delete(s.m, tok)
+			n++
+		}
+	}
+	return n
 }
 
 func (s *sessionStore) sweepLocked() {

@@ -3016,21 +3016,21 @@
   }
 })();
 
-// MeshCore heard nodes: clicking a row prefills the send form with the
-// node's pubkey prefix so a direct message can be sent right away.
+// MeshCore: clicking a heard-node row or a direct-message row prefills
+// the send form (above the tabs) with the pubkey prefix.
 (function () {
   "use strict";
 
   document.addEventListener("click", function (e) {
     var row = e.target && e.target.closest
-      ? e.target.closest("#mesh-nodes tr.node-row[data-key]")
+      ? e.target.closest("tr.click-send[data-key]")
       : null;
     if (!row) { return; }
-    var box = document.getElementById("mesh-nodes");
-    if (!box) { return; }
-    var select = box.querySelector("select[name='target']");
-    var contact = box.querySelector("input[name='contact']");
-    var text = box.querySelector("input[name='text']");
+    var form = document.querySelector("form.mesh-send");
+    if (!form) { return; }
+    var select = form.querySelector("select[name='target']");
+    var contact = form.querySelector("input[name='contact']");
+    var text = form.querySelector("input[name='text']");
     if (!select || !contact || !text) { return; }
     select.value = "contact";
     contact.value = row.getAttribute("data-key");

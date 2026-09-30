@@ -112,7 +112,8 @@
     <option value="channel">{{tr .Lang "meshcore.send_channel"}}</option>
     <option value="contact">{{tr .Lang "meshcore.send_contact"}}</option>
   </select>
-  <input type="text" name="contact" placeholder="{{tr .Lang "meshcore.contact_ph"}}" maxlength="12">
+  <input type="text" name="contact" placeholder="{{tr .Lang "meshcore.contact_ph"}}" maxlength="12" list="mesh-contacts">
+  <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.Prefix}}">{{.Username}}</option>{{end}}</datalist>
   <input type="text" name="text" placeholder="{{tr .Lang "meshcore.text_ph"}}" maxlength="133" required>
   <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshcore.send"}}</button>
 </form>

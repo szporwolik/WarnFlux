@@ -24,7 +24,8 @@
       {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.sent"}}</span></div>{{end}}
       <form method="post" action="/messages/send" class="aprs-send">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" required>
+        <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" required>
+        <datalist id="aprs-calls">{{range .Calls}}<option value="{{.}}">{{end}}</datalist>
         <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="67" required>
         <button type="submit" class="btn-primary btn-small">{{tr .Lang "messages.send"}}</button>
       </form>

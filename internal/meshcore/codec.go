@@ -30,6 +30,7 @@ const (
 	cmdSyncNextMessage   = 10
 	cmdGetBattery        = 20
 	cmdDeviceQuery       = 22
+	cmdGetContactByKey   = 30
 	cmdGetChannel        = 31
 	cmdSetChannel        = 32
 	cmdGetStats          = 56
@@ -40,6 +41,7 @@ const (
 const (
 	respOK              = 0
 	respErr             = 1
+	respContact         = 3
 	respSelfInfo        = 5
 	respSent            = 6
 	respContactMsg      = 7
@@ -490,6 +492,14 @@ const channelNameLen = 32
 // buildGetChannel queries one channel slot (idx 0-7) from the device.
 func buildGetChannel(idx byte) []byte {
 	return []byte{cmdGetChannel, idx}
+}
+
+// buildGetContactByKey requests the device's full contact record for one
+// public key (name, type, path, position, last advert).
+func buildGetContactByKey(pubKey []byte) []byte {
+	out := make([]byte, 1, 1+32)
+	out[0] = cmdGetContactByKey
+	return append(out, pubKey[:32]...)
 }
 
 // buildSetChannel creates or updates one channel slot: name is UTF-8,

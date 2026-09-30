@@ -168,3 +168,11 @@ func TestChannelFrames(t *testing.T) {
 		t.Fatal("short channel info accepted")
 	}
 }
+
+func TestBuildGetContactByKey(t *testing.T) {
+	key := bytes.Repeat([]byte{0xAB}, 32)
+	frame := buildGetContactByKey(key)
+	if len(frame) != 33 || frame[0] != cmdGetContactByKey || !bytes.Equal(frame[1:], key) {
+		t.Fatalf("get contact frame = %x", frame)
+	}
+}

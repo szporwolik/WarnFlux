@@ -29,6 +29,7 @@ type meshNodeView struct {
 	Short      string
 	Name       string
 	Type       string
+	Hops       int
 	Lat        float64
 	Lon        float64
 	DistKM     float64
@@ -227,6 +228,7 @@ func (s *Server) fillMeshNodes(v *meshView) {
 			Short:      short,
 			Name:       name,
 			Type:       typ,
+			Hops:       n.Hops,
 			Lat:        n.Lat,
 			Lon:        n.Lon,
 			DistKM:     n.DistKM,
@@ -309,6 +311,7 @@ func (s *Server) handleMeshcoreSend(w http.ResponseWriter, r *http.Request) {
 		err = s.mesh.SendChannelMessage(text)
 	}
 	if err != nil {
+		s.logger.Warn("web: meshcore send failed", "target", r.PostFormValue("target"), "error", err)
 		http.Error(w, "send failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}

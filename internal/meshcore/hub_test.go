@@ -1,6 +1,7 @@
 package meshcore
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"log/slog"
@@ -215,9 +216,11 @@ func TestHubSession(t *testing.T) {
 		t.Fatal("device goroutine did not finish the channel sync")
 	}
 
-	// Outbound: send a channel message; the device reads it back. The
-	// frame uses host→device framing (0x3C header).
-	go hub.SendChannelMessage("HELLO MESH")
+	// Outbound: send a channel message; the device reads it back and
+	// acknowledges, so the hub records the tx. The frame uses host→device
+	// framing (0x3C header).
+	sendErr := make(chan error, 1)
+	go func() { sendErr <- hub.SendChannelMessage("HELLO MESH") }()
 	buf := make([]byte, 128)
 	host.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := host.Read(buf)
@@ -232,11 +235,24 @@ func TestHubSession(t *testing.T) {
 	if payload[0] != cmdSendChannelTxtMsg || string(payload[7:]) != "HELLO MESH" {
 		t.Fatalf("device payload %x", payload)
 	}
+	host.Write(encodeDeviceFrame([]byte{respOK}))
+	select {
+	case err := <-sendErr:
+		if err != nil {
+			t.Fatalf("SendChannelMessage = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendChannelMessage did not finish after the device ack")
+	}
+	got = rec.messages()
+	if len(got) != 2 || got[1].Text != "HELLO MESH" || got[1].Direction != "tx" {
+		t.Fatalf("recorded after tx = %+v", got)
+	}
 
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("hub did not stop on cancel")
 	}
 }
@@ -276,5 +292,155 @@ func TestPublicChannelBlocked(t *testing.T) {
 	}
 	if hub.Snapshot().ChannelIdx != 0 {
 		t.Fatal("snapshot should report the configured channel 0")
+	}
+}
+
+// TestHubContactLookup pins the name enrichment: a known contact only
+// pushes its pubkey (0x80), the hub asks CMD_GET_CONTACT_BY_KEY and fills
+// the node from the full contact record.
+func TestHubContactLookup(t *testing.T) {
+	dev, host := net.Pipe()
+	defer dev.Close()
+	defer host.Close()
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+	defer func() { Dial = origDial }()
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.Run(ctx)
+
+	go func() {
+		buf := make([]byte, 256)
+		gotBytes := 0
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && gotBytes == 0 {
+			host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := host.Read(buf)
+			if n > 0 {
+				gotBytes = n // handshake
+			}
+			if err != nil && !isTimeout(err) {
+				return
+			}
+		}
+		if gotBytes == 0 {
+			return
+		}
+
+		// A known contact announces via the bare pubkey push.
+		key := bytes.Repeat([]byte{0xAB}, 32)
+		host.Write(encodeDeviceFrame(append([]byte{pushAdvert}, key...)))
+
+		// The hub must ask for the full record.
+		req, err := readHostFrame(host)
+		if err != nil || len(req) != 33 || req[0] != cmdGetContactByKey || !bytes.Equal(req[1:], key) {
+			t.Logf("DEVICE: unexpected contact query %x (%v)", req, err)
+			return
+		}
+
+		// Full contact record: [0x03, pubkey32, type, flags, pathLen,
+		// path64, name32, lastAdvert4, lat4, lon4, lastMod4].
+		rec := []byte{respContact}
+		rec = append(rec, key...)
+		rec = append(rec, 0x02, 0x00, 0x03) // type repeater, flags 0, 3 hops
+		rec = append(rec, make([]byte, 64)...)
+		name := make([]byte, 32)
+		copy(name, "RKSR-TN-R3")
+		rec = append(rec, name...)
+		rec = append(rec, 0, 0, 0, 0) // lastAdvert
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], 50_020_000)
+		rec = append(rec, b[:]...)
+		binary.LittleEndian.PutUint32(b[:], 20_000_000)
+		rec = append(rec, b[:]...)
+		rec = append(rec, 0, 0, 0, 0) // lastMod
+		host.Write(encodeDeviceFrame(rec))
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := hub.Snapshot()
+		if len(snap.Nodes) == 1 && snap.Nodes[0].Name == "RKSR-TN-R3" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	snap := hub.Snapshot()
+	if len(snap.Nodes) != 1 {
+		t.Fatalf("nodes = %+v", snap.Nodes)
+	}
+	n := snap.Nodes[0]
+	if n.Name != "RKSR-TN-R3" || n.Type != 2 || n.Hops != 3 || n.Lat != 50.02 {
+		t.Fatalf("node = %+v", n)
+	}
+}
+
+// TestHubSendRejected pins the device-error surfacing: when the device
+// rejects a direct send (unknown contact), the caller gets the error and
+// no tx is recorded.
+func TestHubSendRejected(t *testing.T) {
+	dev, host := net.Pipe()
+	defer dev.Close()
+	defer host.Close()
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+	defer func() { Dial = origDial }()
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.Run(ctx)
+
+	// Wait until the session is up before sending.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !hub.Connected() {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	go func() {
+		buf := make([]byte, 256)
+		gotBytes := 0
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && gotBytes == 0 {
+			host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := host.Read(buf)
+			if n > 0 {
+				gotBytes = n
+			}
+			if err != nil && !isTimeout(err) {
+				return
+			}
+		}
+		if gotBytes == 0 {
+			return
+		}
+		req, err := readHostFrame(host)
+		if err != nil || len(req) < 7 || req[0] != cmdSendTxtMsg {
+			t.Logf("DEVICE: unexpected direct send %x (%v)", req, err)
+			return
+		}
+		// Unknown contact on the device: PACKET_ERR, code NOT_FOUND.
+		host.Write(encodeDeviceFrame([]byte{respErr, 2}))
+	}()
+
+	err = hub.SendContactMessage("abcd1234abcd", "hello")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("SendContactMessage = %v, want device not-found error", err)
+	}
+	if got := rec.messages(); len(got) != 0 {
+		t.Fatalf("recorded = %+v, want no tx for a rejected send", got)
 	}
 }

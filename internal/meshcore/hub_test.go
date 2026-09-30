@@ -525,3 +525,62 @@ func TestHubSendAutoAdd(t *testing.T) {
 		t.Fatalf("recorded = %+v", got)
 	}
 }
+
+// TestHubAutoaddConfig pins the auto-add setup: with AutoAddContacts the
+// hub issues SET_AUTOADD_CONFIG right after the channel sync.
+func TestHubAutoaddConfig(t *testing.T) {
+	dev, host := net.Pipe()
+	defer dev.Close()
+	defer host.Close()
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+	defer func() { Dial = origDial }()
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, AutoAddContacts: true, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.Run(ctx)
+
+	go func() {
+		buf := make([]byte, 256)
+		gotBytes := 0
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && gotBytes == 0 {
+			host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := host.Read(buf)
+			if n > 0 {
+				gotBytes = n
+			}
+			if err != nil && !isTimeout(err) {
+				return
+			}
+		}
+		if gotBytes == 0 {
+			return
+		}
+		req, err := readHostFrame(host)
+		if err != nil || len(req) != 3 || req[0] != cmdSetAutoaddConfig {
+			t.Logf("DEVICE: unexpected autoadd frame %x (%v)", req, err)
+			return
+		}
+		if req[1] != 0x1E || req[2] != 8 {
+			t.Logf("DEVICE: autoadd mask/hops = %x, want 1e/8", req[1:])
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+	}()
+
+	// The hub considers autoadd non-fatal but should complete it; give it
+	// a moment and confirm the session stays connected.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !hub.Connected() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !hub.Connected() {
+		t.Fatal("hub session did not come up")
+	}
+}

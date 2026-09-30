@@ -60,6 +60,10 @@ type Config struct {
 	// the hub reads the slot at connect time and issues SET_CHANNEL when
 	// the name differs, preserving the channel secret.
 	ChannelName string
+	// AutoAddContacts makes the device auto-add unknown heard nodes
+	// (chat/repeater/room/sensor, up to 8 hops) to its contact list, so
+	// their adverts reach WarnFlux and show up as heard nodes.
+	AutoAddContacts bool
 	// NodeTTL bounds how long an unheard neighbour stays in the node list.
 	NodeTTL time.Duration
 }
@@ -197,6 +201,9 @@ func (h *Hub) runSession(ctx context.Context) error {
 	if err := h.syncChannel(conn); err != nil {
 		return err
 	}
+	if err := h.syncAutoadd(conn); err != nil {
+		return err
+	}
 
 	// The device answers APP_START/DEVICE_QUERY/BATTERY once. If the
 	// reply is lost (busy device, USB glitch) the station info stays
@@ -248,6 +255,58 @@ func (h *Hub) handshake(conn conn) error {
 		return fmt.Errorf("handshake write: %w", err)
 	}
 	return nil
+}
+
+// syncAutoadd enables the device's auto-add of unknown heard nodes so
+// their adverts reach WarnFlux (a persistent device preference). It reads
+// the device reply itself because the main pump has not started yet.
+func (h *Hub) syncAutoadd(conn conn) error {
+	if !h.cfg.AutoAddContacts {
+		return nil
+	}
+	const mask = 0x02 | 0x04 | 0x08 | 0x10 // chat, repeater, room, sensor
+	if _, err := conn.Write(encodeFrame(buildSetAutoaddConfig(mask, 8))); err != nil {
+		return fmt.Errorf("meshcore: set autoadd write: %w", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	dec := &decoder{}
+	buf := make([]byte, 512)
+	for {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			for _, frame := range dec.feed(buf[:n]) {
+				if len(frame) == 0 {
+					continue
+				}
+				if frame[0] == respOK {
+					if h.logger != nil {
+						h.logger.Info("meshcore: auto-add enabled", "mask", mask, "max_hops", 8)
+					}
+					return nil
+				}
+				if frame[0] == respErr {
+					code := byte(0)
+					if len(frame) > 1 {
+						code = frame[1]
+					}
+					if h.logger != nil {
+						h.logger.Warn("meshcore: autoadd config rejected", "code", code)
+					}
+					return nil // non-fatal
+				}
+				h.handleFrame(frame)
+			}
+		}
+		if err != nil {
+			if isTimeout(err) {
+				if h.logger != nil {
+					h.logger.Warn("meshcore: autoadd config timed out")
+				}
+				return nil // non-fatal: the link still works
+			}
+			return fmt.Errorf("meshcore: autoadd read: %w", err)
+		}
+	}
 }
 
 // syncChannel aligns the configured channel slot on the device with

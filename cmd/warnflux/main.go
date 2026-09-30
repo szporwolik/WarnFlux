@@ -146,12 +146,13 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 		return fmt.Errorf("configure aprs hub: %w", err)
 	}
 	meshHub, err := meshcore.NewHub(meshcore.Config{
-		Enabled:     cfg.MeshCore.Enabled,
-		Device:      cfg.MeshCore.Device,
-		Baud:        cfg.MeshCore.Baud,
-		ChannelIdx:  cfg.MeshCore.ChannelIdx,
-		ChannelName: cfg.MeshCore.ChannelName,
-		NodeTTL:     cfg.MeshCore.NodeTTL,
+		Enabled:         cfg.MeshCore.Enabled,
+		Device:          cfg.MeshCore.Device,
+		Baud:            cfg.MeshCore.Baud,
+		ChannelIdx:      cfg.MeshCore.ChannelIdx,
+		ChannelName:     cfg.MeshCore.ChannelName,
+		AutoAddContacts: cfg.MeshCore.AutoAddContacts,
+		NodeTTL:         cfg.MeshCore.NodeTTL,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshcore hub: %w", err)
@@ -360,12 +361,13 @@ func run(configPath string, checkConfig bool) error {
 	// node; the source plugin, the meshcore action and the admin page
 	// share it. History is persisted like APRS messages.
 	meshHub, err := meshcore.NewHub(meshcore.Config{
-		Enabled:     cfg.MeshCore.Enabled,
-		Device:      cfg.MeshCore.Device,
-		Baud:        cfg.MeshCore.Baud,
-		ChannelIdx:  cfg.MeshCore.ChannelIdx,
-		ChannelName: cfg.MeshCore.ChannelName,
-		NodeTTL:     cfg.MeshCore.NodeTTL,
+		Enabled:         cfg.MeshCore.Enabled,
+		Device:          cfg.MeshCore.Device,
+		Baud:            cfg.MeshCore.Baud,
+		ChannelIdx:      cfg.MeshCore.ChannelIdx,
+		ChannelName:     cfg.MeshCore.ChannelName,
+		AutoAddContacts: cfg.MeshCore.AutoAddContacts,
+		NodeTTL:         cfg.MeshCore.NodeTTL,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshcore hub: %w", err)

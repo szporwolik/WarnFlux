@@ -629,15 +629,17 @@ func parseMeshKeys(raw string) []string {
 }
 
 // validateMeshKeys returns a user-facing problem when the raw list
-// contains too many or malformed MeshCore public keys.
+// contains too many or malformed MeshCore public keys. Both the full
+// 64-hex key and its 12-hex short prefix are accepted; the directory
+// stores whichever form the user entered.
 func validateMeshKeys(raw string) ([]string, string) {
 	keys := parseMeshKeys(raw)
 	if len(keys) > maxMeshKeysPerUser {
 		return keys, fmt.Sprintf("at most %d MeshCore keys per user", maxMeshKeysPerUser)
 	}
 	for _, k := range keys {
-		if !isHex64(k) {
-			return keys, fmt.Sprintf("%q is not a valid MeshCore public key (64 hex characters)", k)
+		if !isHex64(k) && !isHex12(k) {
+			return keys, fmt.Sprintf("%q is not a valid MeshCore public key (12-hex prefix or 64 hex characters)", k)
 		}
 	}
 	return keys, ""
@@ -646,6 +648,20 @@ func validateMeshKeys(raw string) ([]string, string) {
 // isHex64 reports whether s is exactly 64 lowercase hex characters.
 func isHex64(s string) bool {
 	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// isHex12 reports whether s is exactly 12 lowercase hex characters (the
+// short pubkey prefix used across the UI and the wire protocol).
+func isHex12(s string) bool {
+	if len(s) != 12 {
 		return false
 	}
 	for _, c := range s {

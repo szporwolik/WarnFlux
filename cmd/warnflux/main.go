@@ -443,8 +443,18 @@ func run(configPath string, checkConfig bool) error {
 			logger.Warn("meshcore: sender allow-list load failed", "error", err)
 			return false
 		}
-		_, ok := owners[strings.ToLower(key)]
-		return ok
+		key = strings.ToLower(key)
+		if _, ok := owners[key]; ok {
+			return true
+		}
+		// The user may have registered the full 64-hex key: a 12-hex
+		// prefix match approves the same operator.
+		for k := range owners {
+			if strings.HasPrefix(k, key) {
+				return true
+			}
+		}
+		return false
 	})
 	// APRS message routing only trusts registered operators: the sender's
 	// base callsign (SSID-insensitive) must appear on a user's APRS

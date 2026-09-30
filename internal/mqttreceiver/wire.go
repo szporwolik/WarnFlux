@@ -94,11 +94,15 @@ type ActivePayload struct {
 
 // EventPayload is the non-retained payload on <prefix>/events.
 type EventPayload struct {
-	SchemaVersion int           `json:"schema_version"`
-	ChangeID      int64         `json:"change_id"`
-	ChangeType    string        `json:"change_type"`
-	EventKey      string        `json:"event_key"`
-	Event         HazardPayload `json:"event"`
+	SchemaVersion int    `json:"schema_version"`
+	ChangeID      int64  `json:"change_id"`
+	ChangeType    string `json:"change_type"`
+	EventKey      string `json:"event_key"`
+	// Publisher is the persistent UUID of the producing WarnFlux
+	// instance (optional for legacy publishers): deduplication includes
+	// it, so independent instances never collide.
+	Publisher string        `json:"publisher,omitempty"`
+	Event     HazardPayload `json:"event"`
 }
 
 // ParseEventPayload validates one /events wire payload: JSON shape,

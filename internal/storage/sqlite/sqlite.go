@@ -4,7 +4,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -502,6 +504,17 @@ ALTER TABLE meshcore_messages ADD COLUMN operator TEXT NOT NULL DEFAULT '';
 ALTER TABLE action_fires ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';
 `,
 	},
+	{
+		// v24: the persistent publisher UUID of this WarnFlux database,
+		// stamped onto the /events journal contract so independent
+		// instances can never collide in notification deduplication.
+		SQL: `
+CREATE TABLE instance_meta (
+	id          INTEGER PRIMARY KEY CHECK (id = 1),
+	instance_id TEXT NOT NULL
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -834,6 +847,30 @@ func (s *Store) Expire(ctx context.Context, now time.Time) ([]storage.Change, er
 // snapshot whose source:source_id does not match the journal event_key)
 // are a hard error: the cursor is NOT advanced and nothing is silently
 // skipped.
+// instanceID returns the persistent publisher UUID of this database,
+// generated once on first use (crypto/rand, hex). Concurrent first calls
+// converge on the same value.
+func (s *Store) instanceID(ctx context.Context) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT instance_id FROM instance_meta WHERE id = 1`).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("read instance id: %w", err)
+	}
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate instance id: %w", err)
+	}
+	id = hex.EncodeToString(b)
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO instance_meta (id, instance_id) VALUES (1, ?)`, id); err != nil {
+		return "", fmt.Errorf("store instance id: %w", err)
+	}
+	// Another goroutine may have won the insert race: read back.
+	return s.instanceID(ctx)
+}
+
 func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]storage.Change, error) {
 	cursor, err := s.cursor(ctx, outputID)
 	if err != nil {
@@ -841,6 +878,15 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 	}
 	if limit <= 0 || limit > 256 {
 		limit = 256
+	}
+
+	// The publisher identity is stable for the life of this database:
+	// every journal change leaves this instance stamped with the same
+	// UUID, so independent publishers can never produce colliding
+	// deduplication keys.
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("publisher id for %q: %w", outputID, err)
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
@@ -865,6 +911,7 @@ func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]
 		if err := rows.Scan(&change.ID, &changeType, &key, &snapshot); err != nil {
 			return nil, fmt.Errorf("scan change for %q: %w", outputID, err)
 		}
+		change.Publisher = publisher
 		ct, ok := core.ChangeTypeOf(changeType)
 		if !ok {
 			return nil, fmt.Errorf("change %d has unknown change_type %q", change.ID, changeType)

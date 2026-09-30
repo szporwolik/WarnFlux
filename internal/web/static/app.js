@@ -3004,7 +3004,9 @@
       .then(function (html) {
         if (html === null) { return; }
         var next = document.getElementById("mesh-nodes");
-        if (next) { next.outerHTML = html; }
+        // innerHTML keeps the #mesh-nodes wrapper (the fragment itself is
+        // the inner content), so the poll and click handlers stay bound.
+        if (next) { next.innerHTML = html; }
       })
       .catch(function () { /* transient — next poll retries */ });
   }
@@ -3012,4 +3014,27 @@
   if (document.getElementById("mesh-nodes")) {
     window.setInterval(pollMeshNodes, 10000);
   }
+})();
+
+// MeshCore heard nodes: clicking a row prefills the send form with the
+// node's pubkey prefix so a direct message can be sent right away.
+(function () {
+  "use strict";
+
+  document.addEventListener("click", function (e) {
+    var row = e.target && e.target.closest
+      ? e.target.closest("#mesh-nodes tr.node-row[data-key]")
+      : null;
+    if (!row) { return; }
+    var box = document.getElementById("mesh-nodes");
+    if (!box) { return; }
+    var select = box.querySelector("select[name='target']");
+    var contact = box.querySelector("input[name='contact']");
+    var text = box.querySelector("input[name='text']");
+    if (!select || !contact || !text) { return; }
+    select.value = "contact";
+    contact.value = row.getAttribute("data-key");
+    text.focus();
+    text.scrollIntoView({ block: "nearest" });
+  });
 })();

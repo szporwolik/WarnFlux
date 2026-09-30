@@ -101,7 +101,7 @@
     <tbody>
       {{range .Nodes}}
       <tr class="click-send" data-key="{{.Short}}" title="{{tr $.Lang "meshcore.click_to_send"}}">
-        <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}</strong></td>
+        <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}{{if and .Name .Owner}} <span class="muted op-name">({{.Owner}})</span>{{end}}</strong></td>
         <td class="muted nowrap">
           <button type="button" class="key-copy" data-key="{{.PubKey}}" title="{{tr $.Lang "meshcore.copy_key"}}">
             <span class="key-short" data-short="{{.Short}}…">{{.Short}}…</span>

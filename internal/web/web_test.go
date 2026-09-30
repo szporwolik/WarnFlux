@@ -2619,8 +2619,8 @@ type fakeMeshMsgs struct {
 	rows []storage.MeshMessage
 }
 
-func (f *fakeMeshMsgs) RecordMeshMessage(_ context.Context, direction, sender, channel, text string, at time.Time) error {
-	f.rows = append(f.rows, storage.MeshMessage{Direction: direction, Sender: sender, Channel: channel, Text: text, At: at})
+func (f *fakeMeshMsgs) RecordMeshMessage(_ context.Context, direction, sender, channel, text string, hops int, at time.Time) error {
+	f.rows = append(f.rows, storage.MeshMessage{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Text: text, At: at})
 	return nil
 }
 
@@ -2652,7 +2652,9 @@ func (f *fakeMeshMsgs) CountMeshMessages(_ context.Context, direction string) (i
 }
 
 // TestMeshMessageChannelNames pins the friendly channel display: legacy
-// "ch0" rows resolve through the hub's configured channel_names map.
+// "ch0" rows resolve through the hub's configured channel_names map, and
+// direct-message senders registered in the directory show their username
+// with the hop count.
 func TestMeshMessageChannelNames(t *testing.T) {
 	hub, err := meshcore.NewHub(meshcore.Config{
 		Enabled:      true,
@@ -2668,20 +2670,30 @@ func TestMeshMessageChannelNames(t *testing.T) {
 	store := &fakeMeshMsgs{rows: []storage.MeshMessage{
 		{Direction: "rx", Channel: "ch0", Text: "hello", At: time.Now()},
 		{Direction: "tx", Channel: "ch2", Text: "73", At: time.Now()},
+		{Direction: "rx", Sender: "abcd1234abcd", Channel: "direct", Hops: 3, Text: "ggg", At: time.Now()},
 	}}
 	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
+	// Register the sender's key in the directory so the history can show
+	// the username next to the raw prefix.
+	u, err := env.users.CreateUser("sp9kow", "600111222", "", "", "member", "pw1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserMeshKeys(u.ID, []string{"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"}); err != nil {
+		t.Fatal(err)
+	}
 	env.login()
 
 	resp, body := env.get("/partials/meshcore?tab=messages")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("partial = %d", resp.StatusCode)
 	}
-	for _, want := range []string{"Public", "#sp9moa"} {
+	for _, want := range []string{"Public", "#sp9moa", "sp9kow", "abcd1234abcd", "via 3 hops"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("messages partial missing %q: %.200s", want, body)
+			t.Errorf("messages partial missing %q: %.300s", want, body)
 		}
 	}
 	if strings.Contains(body, "ch0") || strings.Contains(body, "ch2") {
-		t.Errorf("messages partial still shows raw channel ids: %.200s", body)
+		t.Errorf("messages partial still shows raw channel ids: %.300s", body)
 	}
 }

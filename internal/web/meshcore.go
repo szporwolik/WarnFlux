@@ -19,9 +19,13 @@ const meshMessagesPageSize = 100
 type meshMessageView struct {
 	Direction string
 	Sender    string
-	Channel   string
-	Text      string
-	At        time.Time
+	// SenderName is the directory username owning the sender's key when
+	// one exists (empty otherwise, so the raw prefix stays visible).
+	SenderName string
+	Channel    string
+	Hops       int
+	Text       string
+	At         time.Time
 	// Key is the 12-hex pubkey prefix when the row can prefill the send
 	// form (direct messages), empty otherwise.
 	Key string
@@ -170,16 +174,24 @@ func (s *Server) fillMeshMessages(r *http.Request, v *meshView) {
 		return
 	}
 	v.Messages = make([]meshMessageView, 0, len(stored))
+	// Resolve directory usernames for direct-message senders so the
+	// history shows names instead of raw key prefixes.
+	var owners map[string]string
+	if s.users != nil {
+		owners, _ = s.users.MeshKeyOwners()
+	}
 	for _, m := range stored {
 		view := meshMessageView{
 			Direction: m.Direction,
 			Sender:    m.Sender,
 			Channel:   s.meshChannelName(m.Channel),
+			Hops:      m.Hops,
 			Text:      m.Text,
 			At:        m.At,
 		}
 		if b, hexErr := hex.DecodeString(m.Sender); hexErr == nil && len(b) == 6 {
 			view.Key = strings.ToLower(m.Sender)
+			view.SenderName = meshOwnerFor(owners, strings.ToLower(m.Sender))
 		}
 		v.Messages = append(v.Messages, view)
 	}

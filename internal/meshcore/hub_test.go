@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"strings"
@@ -646,6 +647,204 @@ func newAdvertFrame(key []byte, name string, typ byte) []byte {
 	adv = append(adv, b[:]...)
 	adv = append(adv, 0, 0, 0, 0) // lastMod
 	return adv
+}
+
+// newDirectMsgFrame builds a CONTACT_MSG (V3) push from a 6-byte key
+// prefix.
+func newDirectMsgFrame(prefix []byte, text string) []byte {
+	msg := []byte{respContactMsgV3, 0x0C, 0x00, 0x00} // snr, reserved2
+	msg = append(msg, prefix[:6]...)
+	msg = append(msg, 0x00, 0x01) // pathLen, txtType
+	msg = binary.LittleEndian.AppendUint32(msg, 1234567890)
+	return append(msg, []byte(text)...)
+}
+
+// startEventTestHub starts a hub on a fake serial pipe and returns the
+// device end plus the /events capture. Cleanup cancels the hub, closes
+// the pipe and waits for Run to return before restoring Dial, so a hub
+// from one test can never reconnect into another test's pipe.
+func startEventTestHub(t *testing.T, cfg Config) (*Hub, net.Conn, *stationCapture) {
+	dev, host := net.Pipe()
+	t.Cleanup(func() { dev.Close(); host.Close() })
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+
+	hub, err := NewHub(cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &stationCapture{}
+	hub.SetEventSink(capture.publish)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { hub.Run(ctx); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		dev.Close()
+		host.Close()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+		Dial = origDial
+	})
+	return hub, host, capture
+}
+
+// pumpDevice waits for the hub's handshake bytes, then delivers the given
+// device frames.
+func pumpDevice(host net.Conn, frames [][]byte) {
+	buf := make([]byte, 256)
+	gotBytes := 0
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && gotBytes == 0 {
+		host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, err := host.Read(buf)
+		if n > 0 {
+			gotBytes = n
+		}
+		if err != nil && !isTimeout(err) {
+			return
+		}
+	}
+	if gotBytes == 0 {
+		return
+	}
+	for _, f := range frames {
+		host.Write(encodeDeviceFrame(f))
+	}
+}
+
+// TestMeshDirectMessageEvent pins the meshcore-message → /events bridge:
+// a direct message from a directory-known sender is re-published on the
+// events stream with the "meshcore" source, the "Message from:" headline
+// prefix (node name when known) and severe severity.
+func TestMeshDirectMessageEvent(t *testing.T) {
+	hub, host, capture := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+		RouteMessages: true,
+	})
+	hub.SetSenderGate(func(key string) bool { return key == "aabbccddeeff" })
+
+	key := append([]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, make([]byte, 26)...)
+	go pumpDevice(host, [][]byte{
+		newAdvertFrame(key, "RKSR-TN-R3", 0x02),
+		newDirectMsgFrame(key[:6], "flood on the Raba river"),
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && capture.count() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	capture.mu.Lock()
+	got := append([]stationPub(nil), capture.got...)
+	capture.mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("events = %d, want 1", len(got))
+	}
+	p := got[0]
+	if p.topic != "events" || p.retained {
+		t.Fatalf("publish = %+v", p)
+	}
+	var ev MessageEventWire
+	if err := json.Unmarshal(p.payload, &ev); err != nil {
+		t.Fatalf("event payload: %v", err)
+	}
+	if ev.SchemaVersion != meshMessageEventSchemaVersion || ev.ChangeType != "new" || ev.ChangeID == 0 {
+		t.Fatalf("envelope = %+v", ev)
+	}
+	if !strings.HasPrefix(ev.EventKey, "meshcore:aabbccddeeff:") {
+		t.Fatalf("event key = %q", ev.EventKey)
+	}
+	h := ev.Event
+	if h.Source != "meshcore" || h.SourceID != "aabbccddeeff" || h.Event != "MeshCore message" {
+		t.Fatalf("hazard identity = %+v", h)
+	}
+	if h.Severity != "severe" {
+		t.Fatalf("severity = %q, want severe", h.Severity)
+	}
+	if h.Headline != "Message from: RKSR-TN-R3: flood on the Raba river" {
+		t.Fatalf("headline = %q, want node name + text", h.Headline)
+	}
+	if !strings.Contains(h.Description, "MeshCore") {
+		t.Fatalf("description = %q", h.Description)
+	}
+	if h.ExpiresAt == nil || h.EffectiveAt == nil || h.Status != "active" {
+		t.Fatalf("lifecycle = %+v", h)
+	}
+}
+
+// TestMeshDirectMessageEventExclusions pins the anti-noise rules:
+// unregistered senders, ack/rej frames and empty texts never route, and
+// a valid message from an approved sender routes exactly once.
+func TestMeshDirectMessageEventExclusions(t *testing.T) {
+	hub, host, capture := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+		RouteMessages: true,
+	})
+	hub.SetSenderGate(func(key string) bool { return key == "aabbccddeeff" })
+
+	approved := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	unknown := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	go pumpDevice(host, [][]byte{
+		newDirectMsgFrame(unknown, "unknown sender"),
+		newDirectMsgFrame(approved, "ack00001"),
+		newDirectMsgFrame(approved, "rej00002"),
+		newDirectMsgFrame(approved, "   "),
+		newDirectMsgFrame(approved, "real alert"),
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && capture.count() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	capture.mu.Lock()
+	got := append([]stationPub(nil), capture.got...)
+	capture.mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("events = %d, want exactly 1: %s", len(got), func() string {
+			out := ""
+			for _, p := range got {
+				out += string(p.payload) + "\n"
+			}
+			return out
+		}())
+	}
+	if !strings.Contains(string(got[0].payload), "real alert") {
+		t.Fatalf("payload = %s", got[0].payload)
+	}
+}
+
+// TestMeshDirectMessageEventNoGate pins the fail-closed behavior: without
+// a sender gate no direct message ever becomes a hazard event.
+func TestMeshDirectMessageEventNoGate(t *testing.T) {
+	_, host, capture := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+		RouteMessages: true,
+	})
+	approved := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	go pumpDevice(host, [][]byte{newDirectMsgFrame(approved, "hello ops")})
+	time.Sleep(300 * time.Millisecond)
+	if n := capture.count(); n != 0 {
+		t.Fatalf("no-gate message produced %d events", n)
+	}
+}
+
+// TestMeshDirectMessageEventDisabled pins that routing stays off unless
+// meshcore.route_messages is enabled.
+func TestMeshDirectMessageEventDisabled(t *testing.T) {
+	hub, host, capture := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+	hub.SetSenderGate(func(key string) bool { return true })
+	approved := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	go pumpDevice(host, [][]byte{newDirectMsgFrame(approved, "hello ops")})
+	time.Sleep(300 * time.Millisecond)
+	if n := capture.count(); n != 0 {
+		t.Fatalf("disabled routing produced %d events", n)
+	}
 }
 
 // TestHubStationPublish pins the MQTT station feed: one retained document

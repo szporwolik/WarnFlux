@@ -850,4 +850,7 @@ aprs:
 #   auto_add_contacts: true  # device auto-adds unknown heard nodes
 #                         # (chat/repeater/room/sensor, ≤8 hops) so their
 #                         # adverts reach WarnFlux
+#   route_messages: false  # direct messages from directory-registered
+#                         # operators become canonical /events documents
+#                         # (alarm pipeline), like APRS messages
 #   node_ttl: 30m

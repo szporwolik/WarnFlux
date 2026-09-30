@@ -103,10 +103,13 @@ type EventChange struct {
 
 	Type  ChangeType
 	Event HazardEvent
+	// Publisher is the persistent UUID of the producing WarnFlux
+	// instance (empty for synthetic changes without a journal).
+	Publisher string
 }
 
 // Clone returns a deep copy of the change so outputs can never mutate data
 // shared with the core or with other outputs.
 func (c EventChange) Clone() EventChange {
-	return EventChange{ID: c.ID, Type: c.Type, Event: c.Event.Clone()}
+	return EventChange{ID: c.ID, Type: c.Type, Event: c.Event.Clone(), Publisher: c.Publisher}
 }

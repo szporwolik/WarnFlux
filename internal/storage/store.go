@@ -79,6 +79,10 @@ type Change struct {
 	ChangeType core.ChangeType
 	// Event is the event state after the transition.
 	Event core.HazardEvent
+	// Publisher is the persistent UUID of the WarnFlux instance that
+	// produced this journal entry; it rides on the /events wire contract
+	// so independent publishers never collide in deduplication.
+	Publisher string
 }
 
 // EventStore persists normalized hazard events together with a durable

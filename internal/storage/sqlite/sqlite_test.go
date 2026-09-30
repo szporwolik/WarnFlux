@@ -1351,3 +1351,41 @@ func TestExpiredContentChangeKeepsExpiredStatus(t *testing.T) {
 		t.Fatalf("unexpected updated snapshot: %+v", polled[2])
 	}
 }
+
+// TestPublisherInstanceID pins the persistent publisher UUID: generated
+// once per database, stable across a reopen, and stamped onto every
+// polled journal change.
+func TestPublisherInstanceID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inst.db")
+	s1, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	outcome, change, err := s1.Ingest(context.Background(), normEvent(), core.Fingerprint(normEvent()))
+	if err != nil || outcome != storage.OutcomeNew || change == nil {
+		t.Fatalf("Ingest = (%v, %v, %v)", outcome, change, err)
+	}
+	polled, err := s1.PollChanges(context.Background(), "out", 10)
+	if err != nil || len(polled) != 1 {
+		t.Fatalf("PollChanges = (%d, %v)", len(polled), err)
+	}
+	if len(polled[0].Publisher) != 32 {
+		t.Fatalf("publisher = %q, want 32-hex UUID", polled[0].Publisher)
+	}
+	id1 := polled[0].Publisher
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	polled2, err := s2.PollChanges(context.Background(), "out2", 10)
+	if err != nil || len(polled2) != 1 || polled2[0].Publisher != id1 {
+		t.Fatalf("after reopen publisher = %q (changes %d, err %v), want %q",
+			polled2[0].Publisher, len(polled2), err, id1)
+	}
+}

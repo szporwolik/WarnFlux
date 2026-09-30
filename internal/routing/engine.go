@@ -388,13 +388,28 @@ func meetsThreshold(rank int, minSeverity string) bool {
 }
 
 // fireDedupKey builds the stable deduplication identity of one hazard
-// transition. The publisher's journal ChangeID is the canonical identity;
-// when it is absent (synthetic or foreign events) a content hash of the
-// canonical fields stands in.
+// transition. The publisher's journal ChangeID is the canonical identity
+// plus the publisher UUID (independent instances can produce identical
+// source/key/changeID tuples and must never suppress each other; receivers
+// observing the SAME publisher deduplicate together). Without a publisher
+// (legacy producers) the key falls back to the publisher-less form; when
+// there is no ChangeID either, a content hash of the canonical fields
+// stands in.
 func fireDedupKey(ev dispatch.Event) string {
 	h := ev.Hazard
 	if h.ChangeID != 0 {
+		if h.Publisher != "" {
+			return fmt.Sprintf("c:%s:%s:%s:%d", h.Publisher, h.Source, h.Key, h.ChangeID)
+		}
 		return fmt.Sprintf("c:%s:%s:%d", h.Source, h.Key, h.ChangeID)
+	}
+	if h.Publisher != "" {
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s|%s|%s|%s|%d|%s|%s|%s|%s|%s",
+			h.Publisher, h.Type, h.Key, h.Source, h.Timestamp.UnixNano(),
+			h.Hazard.EventKey, h.Hazard.Severity, h.Hazard.Urgency, h.Hazard.Certainty, h.Hazard.Headline)
+		sum := sha256.Sum256([]byte(b.String()))
+		return "h:" + hex.EncodeToString(sum[:16])
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s|%s|%s|%d|%s|%s|%s|%s|%s",

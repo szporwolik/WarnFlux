@@ -792,10 +792,11 @@ func (o *Output) ensureConnected(ctx context.Context) error {
 
 // wireEvent is the event stream payload (<topic_prefix>/events).
 type wireEvent struct {
-	SchemaVersion int             `json:"schema_version"` // STABLE
-	ChangeID      int64           `json:"change_id"`      // STABLE: journal ID (unique within ONE WarnFlux database)
-	ChangeType    string          `json:"change_type"`    // STABLE: new|updated|cancelled|expired
-	EventKey      string          `json:"event_key"`      // STABLE: source:source_id — the logical upstream event
+	SchemaVersion int             `json:"schema_version"`      // STABLE
+	ChangeID      int64           `json:"change_id"`           // STABLE: journal ID (unique within ONE WarnFlux database)
+	ChangeType    string          `json:"change_type"`         // STABLE: new|updated|cancelled|expired
+	EventKey      string          `json:"event_key"`           // STABLE: source:source_id — the logical upstream event
+	Publisher     string          `json:"publisher,omitempty"` // STABLE: persistent UUID of this WarnFlux instance
 	Event         wireHazardEvent `json:"event"`
 }
 
@@ -865,6 +866,7 @@ func toWireEvent(change core.EventChange) wireEvent {
 		ChangeID:      change.ID,
 		ChangeType:    string(change.Type),
 		EventKey:      change.Event.Key(),
+		Publisher:     change.Publisher,
 		Event:         wireHazardEventOf(change.Event),
 	}
 }

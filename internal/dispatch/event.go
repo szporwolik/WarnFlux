@@ -85,6 +85,10 @@ type HazardTransition struct {
 	Source    string
 	ChangeID  int64
 	Timestamp time.Time
+	// Publisher is the persistent UUID of the producing WarnFlux
+	// instance (empty for legacy publishers): deduplication includes it,
+	// so independent instances can never suppress each other.
+	Publisher string
 	Hazard    Hazard
 }
 

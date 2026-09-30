@@ -760,3 +760,36 @@ func TestEngineSettleFailureRetries(t *testing.T) {
 	feed <- ev
 	waitFor(t, func() bool { return e.Stats().ActionsDeduped == 1 }, "settled job deduplicated")
 }
+
+// TestEnginePublisherIsolation pins the publisher-aware dedup key:
+// independent publishers producing identical source/key/changeID tuples
+// both fire; replays of the SAME publisher deduplicate together.
+func TestEnginePublisherIsolation(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+
+	mk := func(publisher string) dispatch.Event {
+		ev := hazardEvent("severe", dispatch.TransitionNew)
+		ev.Hazard.Publisher = publisher
+		return ev
+	}
+	evA, evB := mk("pub-a"), mk("pub-b")
+	feed <- evA
+	feed <- evA // same publisher, identical transition: deduplicated
+	feed <- evB // identical identity, independent publisher: fires
+
+	waitFor(t, func() bool {
+		s := e.Stats()
+		return s.ActionsFired == 2 && s.ActionsDeduped == 1
+	}, "publishers isolated, replays deduplicated")
+
+	acts.mu.Lock()
+	got := len(acts.got["log"])
+	acts.mu.Unlock()
+	if got != 2 {
+		t.Errorf("log fired %d times, want 2 (one per publisher)", got)
+	}
+}

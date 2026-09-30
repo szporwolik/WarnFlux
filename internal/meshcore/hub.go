@@ -147,6 +147,11 @@ type Hub struct {
 	// pendingAcks queues send-command acknowledgements: the device
 	// answers each host command in order with OK / SENT / ERR.
 	pendingAcks []chan error
+	// cmdMu serializes every host command that expects a device reply:
+	// registration and write happen in the same critical section, so
+	// waiters line up with the device's in-order replies and a reply to
+	// one command can never satisfy another.
+	cmdMu sync.Mutex
 }
 
 // NewHub validates the config and builds the hub.
@@ -577,6 +582,19 @@ func (h *Hub) failPendingAcks(err error) {
 	}
 }
 
+// cancelAck removes a waiter that will never be satisfied (timeout): a
+// stale waiter would otherwise consume the next command's reply.
+func (h *Hub) cancelAck(ack chan error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, ch := range h.pendingAcks {
+		if ch == ack {
+			h.pendingAcks = append(h.pendingAcks[:i], h.pendingAcks[i+1:]...)
+			return
+		}
+	}
+}
+
 // waitAck waits for the device to accept (nil) or reject (error) a
 // command. OK, SENT and ERR frames all satisfy the wait.
 func (h *Hub) waitAck(ack chan error) error {
@@ -584,6 +602,7 @@ func (h *Hub) waitAck(ack chan error) error {
 	case err := <-ack:
 		return err
 	case <-time.After(5 * time.Second):
+		h.cancelAck(ack)
 		return errors.New("meshcore: device did not acknowledge the command")
 	}
 }
@@ -622,6 +641,10 @@ func (h *Hub) SendChannelMessage(text, operator string) error {
 	if h.cfg.ChannelIdx == PublicChannelIdx {
 		return errors.New("meshcore: refusing to transmit on public channel 0")
 	}
+	// Serialized with every other device command so the ack waiter can
+	// only ever be satisfied by this command's own reply.
+	h.cmdMu.Lock()
+	defer h.cmdMu.Unlock()
 	ack := h.registerAck()
 	if err := h.writeFrame(buildSendChannelTxtMsg(byte(h.cfg.ChannelIdx), text)); err != nil {
 		return err
@@ -647,6 +670,10 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 		fullKey = b
 	}
 	prefix := b[:6]
+	// Serialized with every other device command: the contact add/retry
+	// sequence and the send share one in-order command stream.
+	h.cmdMu.Lock()
+	defer h.cmdMu.Unlock()
 	send := func() error {
 		payload := []byte{cmdSendTxtMsg, 0, 0} // txtType plain, attempt 0
 		payload = binary.LittleEndian.AppendUint32(payload, uint32(nowUnix()))
@@ -684,6 +711,8 @@ func (h *Hub) SendAdvert(kind int) error {
 	if kind != AdvertZeroHop && kind != AdvertFlood {
 		return fmt.Errorf("meshcore: invalid advert kind %d", kind)
 	}
+	h.cmdMu.Lock()
+	defer h.cmdMu.Unlock()
 	ack := h.registerAck()
 	if err := h.writeFrame(buildSendSelfAdvert(byte(kind))); err != nil {
 		return err
@@ -770,6 +799,19 @@ func (h *Hub) handleFrame(frame []byte) {
 			h.logger.Debug("meshcore: messages waiting, pulling queue")
 		}
 		_ = h.writeFrame(buildSyncNextMessage())
+	case pushSendConfirmed:
+		// The device heard the destination's delivery ACK for one of our
+		// direct messages: the protocol's proof of delivery (channel
+		// floods carry no acks, so only direct sends can confirm).
+		if len(frame) >= 9 {
+			trip := binary.LittleEndian.Uint32(frame[5:9])
+			if h.logger != nil {
+				h.logger.Info("meshcore: direct message confirmed",
+					"ack", hex.EncodeToString(frame[1:5]), "trip_ms", trip)
+			}
+		} else if h.logger != nil {
+			h.logger.Debug("meshcore: send confirmed push too short", "len", len(frame))
+		}
 	case pushContactDeleted:
 		// The device overwrote a contact (auto-add recycling). When the
 		// key belongs to a registered operator, re-add it immediately so
@@ -1103,7 +1145,14 @@ func (h *Hub) maybeQueryContact(pubKey []byte) {
 	}
 	n.lastQuery = now
 	h.mu.Unlock()
-	if err := h.writeFrame(buildGetContactByKey(pubKey)); err != nil && h.logger != nil {
+	// Register the waiter before writing (serialized with other
+	// commands) so the device's in-order reply is consumed by the query,
+	// never by an unrelated send.
+	h.cmdMu.Lock()
+	h.registerAck()
+	err := h.writeFrame(buildGetContactByKey(pubKey))
+	h.cmdMu.Unlock()
+	if err != nil && h.logger != nil {
 		h.logger.Debug("meshcore: contact query failed", "error", err)
 	}
 }

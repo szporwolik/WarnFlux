@@ -79,6 +79,9 @@ type HubConfig struct {
 	// StationTTL is how long a station remains in the retained MQTT
 	// state after its last packet.
 	StationTTL time.Duration
+	// BulletinTTL is how long a heard APRS bulletin stays in the
+	// retained MQTT state (aprs/bulletins/*) before it is deleted.
+	BulletinTTL time.Duration
 	// ExcludeInfrastructure drops APRS objects, digipeaters, gateways
 	// and similar infrastructure from the station state so the map shows
 	// actual ham stations only.
@@ -111,4 +114,5 @@ type MessageRecorder interface {
 const (
 	DefaultRadiusKM   = 60
 	DefaultStationTTL = 30 * time.Minute
+	DefaultBulletinTTL = 24 * time.Hour
 )

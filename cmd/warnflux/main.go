@@ -213,6 +213,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 		AreaLongitude:         cfg.APRS.AreaLongitude,
 		AreaRadiusKM:          cfg.APRS.AreaRadiusKM,
 		StationTTL:            cfg.APRS.StationTTL,
+		BulletinTTL:           cfg.APRS.BulletinTTL,
 		ExcludeInfrastructure: cfg.APRS.ExcludeInfrastructure,
 		RouteMessages:         cfg.APRS.RouteMessages,
 		Version:               resolvedVersion,
@@ -428,6 +429,7 @@ func run(configPath string, checkConfig bool) error {
 		AreaLongitude:         cfg.APRS.AreaLongitude,
 		AreaRadiusKM:          cfg.APRS.AreaRadiusKM,
 		StationTTL:            cfg.APRS.StationTTL,
+		BulletinTTL:           cfg.APRS.BulletinTTL,
 		ExcludeInfrastructure: cfg.APRS.ExcludeInfrastructure,
 		RouteMessages:         cfg.APRS.RouteMessages,
 		Version:               resolvedVersion, MessageRecorder: store}, logger)

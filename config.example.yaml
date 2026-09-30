@@ -820,6 +820,11 @@ aprs:
   # values keep rarely-beaconing stations visible on the map.
   station_ttl: 60m
 
+  # How long a heard APRS bulletin (BLNn broadcast) stays in the
+  # retained MQTT state under aprs/bulletins/* before the topic is
+  # deleted. 1m-24h; default 24h.
+  # bulletin_ttl: 24h
+
   # Drop APRS infrastructure from the station state: objects/items,
   # digipeaters, igates/gateways, internet-only nodes and repeaters.
   # The neighbourhood map then shows actual ham stations only.

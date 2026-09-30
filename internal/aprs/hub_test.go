@@ -3,6 +3,7 @@ package aprs
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,19 @@ func (f *fakeSink) payloads(suffix string) [][]byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]byte(nil), f.pubs[suffix]...)
+}
+
+// byPrefix returns the first topic (and its payloads) starting with
+// prefix — used for topics whose full id is not known up front.
+func (f *fakeSink) byPrefix(prefix string) (string, [][]byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for k, v := range f.pubs {
+		if strings.HasPrefix(k, prefix) {
+			return k, append([][]byte(nil), v...)
+		}
+	}
+	return "", nil
 }
 
 // fakeTransmitter records sends.
@@ -643,4 +657,73 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("condition not met within 2s")
+}
+
+// TestBulletinRetainedFeed pins the persistent bulletin presence: a heard
+// bulletin publishes one retained document under aprs/bulletins/* and is
+// never routed as an event.
+func TestBulletinRetainedFeed(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::BLN0     :ops bulletin", time.Now()), BackendRadio)
+
+	var topic string
+	var pubs [][]byte
+	waitFor(t, func() bool {
+		topic, pubs = sink.byPrefix(BulletinsTopicPrefix)
+		return topic != "" && len(pubs) >= 1 && pubs[0] != nil
+	})
+	if !strings.HasPrefix(topic, BulletinsTopicPrefix+"SP9XYZ-7-") {
+		t.Fatalf("bulletin topic = %q", topic)
+	}
+	var doc BulletinDocument
+	if err := json.Unmarshal(pubs[0], &doc); err != nil {
+		t.Fatalf("bulletin payload: %v", err)
+	}
+	if doc.SchemaVersion != SchemaVersion || doc.From != "SP9XYZ-7" || doc.To != "BLN0" || doc.Text != "ops bulletin" {
+		t.Fatalf("bulletin doc = %+v", doc)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := len(sink.payloads("events")); got != 0 {
+		t.Fatalf("bulletin produced %d routed events", got)
+	}
+}
+
+// TestBulletinExpiry pins the bounded retention: after the bulletin TTL
+// the topic is deleted with an empty retained payload.
+func TestBulletinExpiry(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		BulletinTTL: time.Minute,
+	})
+	hub.tick = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::BLN0     :ops bulletin", time.Now()), BackendRadio)
+	var topic string
+	waitFor(t, func() bool {
+		topic, _ = sink.byPrefix(BulletinsTopicPrefix)
+		return topic != ""
+	})
+
+	hub.mu.Lock()
+	for id := range hub.bulletins {
+		hub.bulletins[id] = time.Now().Add(-2 * time.Minute).Unix()
+	}
+	hub.mu.Unlock()
+
+	waitFor(t, func() bool {
+		_, pubs := sink.byPrefix(BulletinsTopicPrefix)
+		return len(pubs) == 2 && pubs[1] == nil
+	})
 }

@@ -584,3 +584,175 @@ func TestHubAutoaddConfig(t *testing.T) {
 		t.Fatal("hub session did not come up")
 	}
 }
+
+type stationPub struct {
+	topic    string
+	retained bool
+	payload  []byte
+}
+
+type stationCapture struct {
+	mu  sync.Mutex
+	got []stationPub
+}
+
+func (c *stationCapture) publish(_ context.Context, topic string, retained bool, payload []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.got = append(c.got, stationPub{topic: topic, retained: retained, payload: append([]byte(nil), payload...)})
+	return nil
+}
+
+func (c *stationCapture) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.got)
+}
+
+// newAdvertFrame builds a NEW_ADVERT push with the given key, name and type.
+func newAdvertFrame(key []byte, name string, typ byte) []byte {
+	adv := []byte{pushNewAdvert}
+	adv = append(adv, key[:32]...)
+	adv = append(adv, typ, 0x00, 0x03) // type, flags, 3 hops
+	adv = append(adv, make([]byte, 64)...)
+	n32 := make([]byte, 32)
+	copy(n32, name)
+	adv = append(adv, n32...)
+	adv = append(adv, 0, 0, 0, 0) // lastAdvert
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], 50_020_000)
+	adv = append(adv, b[:]...)
+	binary.LittleEndian.PutUint32(b[:], 20_000_000)
+	adv = append(adv, b[:]...)
+	adv = append(adv, 0, 0, 0, 0) // lastMod
+	return adv
+}
+
+// TestHubStationPublish pins the MQTT station feed: one retained document
+// per node, throttled, with the node's details.
+func TestHubStationPublish(t *testing.T) {
+	dev, host := net.Pipe()
+	defer dev.Close()
+	defer host.Close()
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+	defer func() { Dial = origDial }()
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &stationCapture{}
+	hub.SetStationSink(capture.publish)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.Run(ctx)
+
+	key := bytes.Repeat([]byte{0xAB}, 32)
+	go func() {
+		buf := make([]byte, 256)
+		gotBytes := 0
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && gotBytes == 0 {
+			host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := host.Read(buf)
+			if n > 0 {
+				gotBytes = n
+			}
+			if err != nil && !isTimeout(err) {
+				return
+			}
+		}
+		if gotBytes == 0 {
+			return
+		}
+		host.Write(encodeDeviceFrame(newAdvertFrame(key, "RKSR-TN-R3", 0x02)))
+		// Second advert of the same node within the throttle window.
+		host.Write(encodeDeviceFrame(newAdvertFrame(key, "RKSR-TN-R3", 0x02)))
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && capture.count() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	capture.mu.Lock()
+	got := append([]stationPub(nil), capture.got...)
+	capture.mu.Unlock()
+	if len(got) == 0 {
+		t.Fatal("no station publish")
+	}
+	p := got[0]
+	if p.topic != "meshcore/stations/abababababab" || !p.retained || !bytes.Contains(p.payload, []byte("RKSR-TN-R3")) {
+		t.Fatalf("publish = %+v payload=%s", p, p.payload)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := capture.count(); n != 1 {
+		t.Fatalf("publish count = %d, want 1 (throttled)", n)
+	}
+}
+
+// TestHubStationTombstone pins the expiry path: a pruned node publishes an
+// empty retained payload (the topic delete).
+func TestHubStationTombstone(t *testing.T) {
+	dev, host := net.Pipe()
+	defer dev.Close()
+	defer host.Close()
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+	defer func() { Dial = origDial }()
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: 100 * time.Millisecond}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &stationCapture{}
+	hub.SetStationSink(capture.publish)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.Run(ctx)
+
+	keyA := bytes.Repeat([]byte{0xAB}, 32)
+	keyB := bytes.Repeat([]byte{0xCD}, 32)
+	go func() {
+		buf := make([]byte, 256)
+		gotBytes := 0
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && gotBytes == 0 {
+			host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := host.Read(buf)
+			if n > 0 {
+				gotBytes = n
+			}
+			if err != nil && !isTimeout(err) {
+				return
+			}
+		}
+		if gotBytes == 0 {
+			return
+		}
+		host.Write(encodeDeviceFrame(newAdvertFrame(keyA, "NODE-A", 0x02)))
+		time.Sleep(200 * time.Millisecond) // A expires
+		host.Write(encodeDeviceFrame(newAdvertFrame(keyB, "NODE-B", 0x02)))
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && capture.count() < 3 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	capture.mu.Lock()
+	got := append([]stationPub(nil), capture.got...)
+	capture.mu.Unlock()
+	var tombstone *stationPub
+	for i := range got {
+		if got[i].topic == "meshcore/stations/abababababab" && got[i].retained && got[i].payload == nil {
+			tombstone = &got[i]
+		}
+	}
+	if tombstone == nil {
+		t.Fatalf("no tombstone publish, got %+v", got)
+	}
+}

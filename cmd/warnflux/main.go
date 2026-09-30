@@ -454,6 +454,12 @@ func run(configPath string, checkConfig bool) error {
 	// first connected WarnFlux receiver (same broker, same topic prefix).
 	hub.SetSink(&aprsManagerSink{mgmt: receivers})
 
+	// Heard MeshCore nodes feed the broker as retained station documents
+	// under meshcore/stations/<key12>; expired nodes are tombstoned.
+	meshHub.SetStationSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
+		return receivers.PublishRaw(topic, retained, payload)
+	})
+
 	// APRS weather stations feed the canonical weather pipeline: every
 	// decoded weather report becomes a retained info/<prefix> topic and a
 	// dashboard card, exactly like the openmeteo source's snapshots.

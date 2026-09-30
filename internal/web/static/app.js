@@ -933,7 +933,7 @@
     var ownMarker = L.marker([ownLat, ownLon], {
       icon: wfBadge({
         color: "#007a3d",
-        glyph: BADGE_GLYPHS.chat,
+        glyph: BADGE_GLYPHS.waves,
         label: ownCall || tr("map.our_station")
       }),
       riseOnHover: true
@@ -1060,7 +1060,7 @@
   // callsign label under the badge, like every labeled pin.
   var BADGE_GLYPHS = {
     chat: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 15h5"/></svg>',
-    mesh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.9" fill="currentColor" stroke="none"/><path d="M8.6 8.6a4.8 4.8 0 0 1 6.8 0"/><path d="M5.2 5.2a9.6 9.6 0 0 1 13.6 0"/></svg>',
+    waves: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.9" fill="currentColor" stroke="none"/><path d="M8.6 8.6a4.8 4.8 0 0 1 6.8 0"/><path d="M5.2 5.2a9.6 9.6 0 0 1 13.6 0"/></svg>',
     warning: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
     wind: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/></svg>',
     plane: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L21 21 L12 17 L3 21 Z"/></svg>'
@@ -1096,17 +1096,17 @@
   function stationBadge(s) {
     return wfBadge({
       color: "#1565c0",
-      glyph: BADGE_GLYPHS.chat,
+      glyph: BADGE_GLYPHS.waves,
       label: s.callsign
     });
   }
 
-  // meshBadge renders the MeshCore pin: the broadcast glyph in the
-  // category color with the node name (or key prefix) as the halo label.
+  // meshBadge renders the MeshCore pin: the chat glyph in the category
+  // color with the node name (or key prefix) as the halo label.
   function meshBadge(n) {
     return wfBadge({
       color: "#8e24aa",
-      glyph: BADGE_GLYPHS.mesh,
+      glyph: BADGE_GLYPHS.chat,
       label: n.name || n.key.slice(0, 12)
     });
   }
@@ -1269,7 +1269,7 @@
     body += '<div class="wf-pop-meta muted">' + esc(n.key) + "</div>";
     return wfPopup({
       color: "#8e24aa",
-      icon: BADGE_GLYPHS.mesh,
+      icon: BADGE_GLYPHS.chat,
       title: esc(n.name || n.key.slice(0, 12)),
       sub: "MeshCore",
       value: esc(n.type || "node"),
@@ -1619,7 +1619,7 @@
     body += stationWeatherBlock(s.callsign);
     return wfPopup({
       color: "#1565c0",
-      icon: BADGE_GLYPHS.chat,
+      icon: BADGE_GLYPHS.waves,
       title: esc(s.callsign),
       body: body
     });
@@ -2222,8 +2222,8 @@
   // the Leaflet zoom control stays untouched at the top-left.
   var MAP_CTRL_ICONS = {
     hazards: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
-    stations: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 15h5"/>',
-    meshcore: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/>',
+    stations: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/>',
+    meshcore: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 15h5"/>',
     weather: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
     radar: '<circle cx="12" cy="12" r="8"/><path d="M12 12V4"/><path d="M12 12l6-3.5"/>',
     airquality: '<path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/>',

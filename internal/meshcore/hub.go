@@ -152,6 +152,10 @@ type Hub struct {
 	// waiters line up with the device's in-order replies and a reply to
 	// one command can never satisfy another.
 	cmdMu sync.Mutex
+	// ready is closed once a session finished its startup handshake and
+	// queue drain; sends wait on it so they are written after the
+	// startup command stream.
+	ready chan struct{}
 }
 
 // NewHub validates the config and builds the hub.
@@ -165,7 +169,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
-		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node)}, nil
+		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node), ready: make(chan struct{})}, nil
 	}
 	if cfg.ChannelIdx < 0 || cfg.ChannelIdx > 7 {
 		return nil, fmt.Errorf("meshcore: channel_idx %d out of range 0-7", cfg.ChannelIdx)
@@ -180,6 +184,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		cfg:    cfg,
 		logger: logger,
 		nodes:  make(map[string]*Node),
+		ready:  make(chan struct{}),
 	}, nil
 }
 
@@ -285,6 +290,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.mu.Lock()
 	h.client = conn
 	h.connected = true
+	h.ready = make(chan struct{})
 	h.mu.Unlock()
 	defer conn.Close()
 	defer h.failPendingAcks(errors.New("meshcore: session ended"))
@@ -301,6 +307,10 @@ func (h *Hub) runSession(ctx context.Context) error {
 	if err := h.drainMessages(conn); err != nil {
 		return err
 	}
+	// The startup command stream is done: unblock the sends.
+	h.mu.Lock()
+	close(h.ready)
+	h.mu.Unlock()
 
 	// The device answers APP_START/DEVICE_QUERY/BATTERY once. If the
 	// reply is lost (busy device, USB glitch) the station info stays
@@ -634,12 +644,30 @@ func (e *DeviceErr) Error() string {
 	return fmt.Sprintf("meshcore: device rejected the command: %s", deviceErrText(e.Code))
 }
 
+// waitReady blocks until the current session finished its startup
+// handshake and queue drain, so sends are written after the startup
+// command stream instead of interleaving with SYNC_NEXT frames.
+func (h *Hub) waitReady() error {
+	h.mu.Lock()
+	ready := h.ready
+	h.mu.Unlock()
+	select {
+	case <-ready:
+		return nil
+	case <-time.After(12 * time.Second):
+		return errors.New("meshcore: device session is not ready")
+	}
+}
+
 // SendChannelMessage sends one text message on the configured channel.
 // The Public channel (0) is refused: never transmit there. operator is
 // the username behind the send (admin panel) or "" for automation.
 func (h *Hub) SendChannelMessage(text, operator string) error {
 	if h.cfg.ChannelIdx == PublicChannelIdx {
 		return errors.New("meshcore: refusing to transmit on public channel 0")
+	}
+	if err := h.waitReady(); err != nil {
+		return err
 	}
 	// Serialized with every other device command so the ack waiter can
 	// only ever be satisfied by this command's own reply.
@@ -670,6 +698,9 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 		fullKey = b
 	}
 	prefix := b[:6]
+	if err := h.waitReady(); err != nil {
+		return err
+	}
 	// Serialized with every other device command: the contact add/retry
 	// sequence and the send share one in-order command stream.
 	h.cmdMu.Lock()
@@ -710,6 +741,9 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 func (h *Hub) SendAdvert(kind int) error {
 	if kind != AdvertZeroHop && kind != AdvertFlood {
 		return fmt.Errorf("meshcore: invalid advert kind %d", kind)
+	}
+	if err := h.waitReady(); err != nil {
+		return err
 	}
 	h.cmdMu.Lock()
 	defer h.cmdMu.Unlock()

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -95,10 +96,10 @@ func TestGroupRoutingErrors(t *testing.T) {
 	}
 }
 
-// TestClaimActionFire pins the durable delivery ledger: a (group, action,
-// event) claim succeeds exactly once and PruneActionFires removes rows by
-// age only.
-func TestClaimActionFire(t *testing.T) {
+// TestDeliveryJobs pins the durable delivery ledger states: a fresh job
+// reports retry (execute), a running job replays as retry (crashed before
+// execution), a failed job retries, and only a succeeded job deduplicates.
+func TestDeliveryJobs(t *testing.T) {
 	store := newRoutingStore(t)
 
 	g, err := store.CreateGroup("spok")
@@ -107,26 +108,45 @@ func TestClaimActionFire(t *testing.T) {
 	}
 	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 
-	first, err := store.ClaimActionFire(g.ID, "log", "imgw:1", "c:imgw:imgw:1:7", at)
-	if err != nil || !first {
-		t.Fatalf("first claim = (%v, %v), want (true, nil)", first, err)
+	// Fresh job: execute now.
+	st, err := store.BeginDelivery(g.ID, "log", "imgw:1", "c:1", at)
+	if err != nil || st != storage.DeliveryRetry {
+		t.Fatalf("fresh job = (%v, %v), want (DeliveryRetry, nil)", st, err)
 	}
-	second, err := store.ClaimActionFire(g.ID, "log", "imgw:1", "c:imgw:imgw:1:7", at.Add(time.Second))
-	if err != nil || second {
-		t.Fatalf("second claim = (%v, %v), want (false, nil)", second, err)
+	// Still running (crashed between claim and execution): replay retries.
+	st, err = store.BeginDelivery(g.ID, "log", "imgw:1", "c:1", at.Add(time.Second))
+	if err != nil || st != storage.DeliveryRetry {
+		t.Fatalf("running job = (%v, %v), want (DeliveryRetry, nil)", st, err)
 	}
-	// Same dedup key but a different action or group is a new claim.
-	otherAction, err := store.ClaimActionFire(g.ID, "sms", "imgw:1", "c:imgw:imgw:1:7", at)
-	if err != nil || !otherAction {
-		t.Fatalf("other action claim = (%v, %v), want (true, nil)", otherAction, err)
+	// The action rejected the request: failed also retries on replay.
+	if err := store.CompleteDelivery(g.ID, "log", "c:1", false); err != nil {
+		t.Fatalf("settle failed: %v", err)
+	}
+	st, err = store.BeginDelivery(g.ID, "log", "imgw:1", "c:1", at.Add(2*time.Second))
+	if err != nil || st != storage.DeliveryRetry {
+		t.Fatalf("failed job = (%v, %v), want (DeliveryRetry, nil)", st, err)
+	}
+	// Execution accepted: succeeded deduplicates.
+	if err := store.CompleteDelivery(g.ID, "log", "c:1", true); err != nil {
+		t.Fatalf("settle succeeded: %v", err)
+	}
+	st, err = store.BeginDelivery(g.ID, "log", "imgw:1", "c:1", at.Add(3*time.Second))
+	if err != nil || st != storage.DeliverySucceeded {
+		t.Fatalf("succeeded job = (%v, %v), want (DeliverySucceeded, nil)", st, err)
+	}
+
+	// Same dedup key with another action or group is a fresh job.
+	st, err = store.BeginDelivery(g.ID, "sms", "imgw:1", "c:1", at)
+	if err != nil || st != storage.DeliveryRetry {
+		t.Fatalf("other action job = (%v, %v), want (DeliveryRetry, nil)", st, err)
 	}
 	h, err := store.CreateGroup("rsp")
 	if err != nil {
 		t.Fatalf("CreateGroup rsp: %v", err)
 	}
-	otherGroup, err := store.ClaimActionFire(h.ID, "log", "imgw:1", "c:imgw:imgw:1:7", at)
-	if err != nil || !otherGroup {
-		t.Fatalf("other group claim = (%v, %v), want (true, nil)", otherGroup, err)
+	st, err = store.BeginDelivery(h.ID, "log", "imgw:1", "c:1", at)
+	if err != nil || st != storage.DeliveryRetry {
+		t.Fatalf("other group job = (%v, %v), want (DeliveryRetry, nil)", st, err)
 	}
 
 	// Prune with a cutoff before every row: nothing removed.
@@ -134,10 +154,10 @@ func TestClaimActionFire(t *testing.T) {
 	if err != nil || n != 0 {
 		t.Fatalf("young prune = (%d, %v), want (0, nil)", n, err)
 	}
-	// A later change from the same event key is a fresh claim.
-	fresh, err := store.ClaimActionFire(g.ID, "log", "imgw:1", "c:imgw:imgw:1:8", at.Add(time.Hour))
-	if err != nil || !fresh {
-		t.Fatalf("fresh change claim = (%v, %v), want (true, nil)", fresh, err)
+	// A later change from the same event key is a fresh job.
+	st, err = store.BeginDelivery(g.ID, "log", "imgw:1", "c:2", at.Add(time.Hour))
+	if err != nil || st != storage.DeliveryRetry {
+		t.Fatalf("fresh change job = (%v, %v), want (DeliveryRetry, nil)", st, err)
 	}
 	// Cutoff after the first three rows but before the fresh change:
 	// exactly the old rows go.
@@ -150,9 +170,52 @@ func TestClaimActionFire(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("full prune = (%d, %v), want (1, nil)", n, err)
 	}
-	again, err := store.ClaimActionFire(g.ID, "log", "imgw:1", "c:imgw:imgw:1:7", at)
-	if err != nil || !again {
-		t.Fatalf("claim after prune = (%v, %v), want (true, nil)", again, err)
+	st, err = store.BeginDelivery(g.ID, "log", "imgw:1", "c:1", at)
+	if err != nil || st != storage.DeliveryRetry {
+		t.Fatalf("job after prune = (%v, %v), want (DeliveryRetry, nil)", st, err)
+	}
+}
+
+// TestDeliveryJobsSurviveRestart pins the crash-recovery contract across
+// a real reopen: jobs left running are retryable after the restart, jobs
+// already succeeded stay deduplicated.
+func TestDeliveryJobsSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.db")
+	s1, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	g, err := s1.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Now()
+	if _, err := s1.BeginDelivery(g.ID, "log", "imgw:1", "c:done", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.CompleteDelivery(g.ID, "log", "c:done", true); err != nil {
+		t.Fatal(err)
+	}
+	// Left running: the process "crashed" between claim and execution.
+	if _, err := s1.BeginDelivery(g.ID, "log", "imgw:2", "c:crashed", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	st, err := s2.BeginDelivery(g.ID, "log", "imgw:1", "c:done", at)
+	if err != nil || st != storage.DeliverySucceeded {
+		t.Fatalf("reopened succeeded job = (%v, %v), want (DeliverySucceeded, nil)", st, err)
+	}
+	st, err = s2.BeginDelivery(g.ID, "log", "imgw:2", "c:crashed", at)
+	if err != nil || st != storage.DeliveryRetry {
+		t.Fatalf("reopened running job = (%v, %v), want (DeliveryRetry, nil)", st, err)
 	}
 }
 

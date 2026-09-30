@@ -59,7 +59,10 @@ func node(t *testing.T, v any) *yaml.Node {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// 15s: the race-detector run of the whole suite runs packages in
+	// parallel on loaded machines, so a 5s budget occasionally starves
+	// innocent chains (SQLite fsync + action worker under contention).
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -225,8 +228,10 @@ func TestProviderToActionE2E(t *testing.T) {
 	engCtx, engCancel := context.WithCancel(context.Background())
 	defer engCancel()
 	go engine.Run(engCtx, events)
-	// Rules are loaded once at Run start; give the refresh a moment.
-	time.Sleep(30 * time.Millisecond)
+	// The engine evaluates against an empty matrix until its first rule
+	// load completes (slow under -race): wait for readiness before
+	// feeding the event, or it would be skipped silently.
+	waitFor(t, "routing rules loaded", engine.Ready)
 
 	// Feed the public wire payload through the same strict parsing the
 	// receivers use.
@@ -391,7 +396,7 @@ func TestProviderToWebhookE2E(t *testing.T) {
 	engCtx, engCancel := context.WithCancel(context.Background())
 	defer engCancel()
 	go engine.Run(engCtx, events)
-	time.Sleep(30 * time.Millisecond) // rule refresh
+	waitFor(t, "routing rules loaded", engine.Ready)
 
 	wire := []byte(`{"schema_version":1,"change_id":5,"change_type":"new","event_key":"imgw-meteo:42",` +
 		`"event":{"source":"imgw-meteo","source_id":"42","event":"Storm","severity":"severe","provider_severity":"2",` +

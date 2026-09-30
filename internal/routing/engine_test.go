@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -18,13 +19,14 @@ import (
 )
 
 type fakeStore struct {
-	mu         sync.Mutex
-	rules      []storage.GroupRouting
-	bcc        map[int64][]string
-	aprsBcc    map[int64][]string
-	discordBcc map[int64][]string
-	claimed    map[string]bool // group|action|dedupKey -> already delivered
-	err        error
+	mu          sync.Mutex
+	rules       []storage.GroupRouting
+	bcc         map[int64][]string
+	aprsBcc     map[int64][]string
+	discordBcc  map[int64][]string
+	jobs        map[string]storage.DeliveryStatus // group|action|dedupKey -> status
+	completeErr error                             // returned by CompleteDelivery
+	err         error
 }
 
 func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
@@ -56,18 +58,35 @@ func (f *fakeStore) GroupRecipientDiscord(groupID int64) ([]string, error) {
 	return append([]string(nil), f.discordBcc[groupID]...), f.err
 }
 
-func (f *fakeStore) ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error) {
+func (f *fakeStore) BeginDelivery(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (storage.DeliveryStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.claimed == nil {
-		f.claimed = map[string]bool{}
+	if f.jobs == nil {
+		f.jobs = map[string]storage.DeliveryStatus{}
 	}
 	key := fmt.Sprintf("%d|%s|%s", groupID, actionID, dedupKey)
-	if f.claimed[key] {
-		return false, f.err
+	if st, ok := f.jobs[key]; ok && st == storage.DeliverySucceeded {
+		return storage.DeliverySucceeded, f.err
 	}
-	f.claimed[key] = true
-	return true, f.err
+	f.jobs[key] = storage.DeliveryRetry // running
+	return storage.DeliveryRetry, f.err
+}
+
+func (f *fakeStore) CompleteDelivery(groupID int64, actionID, dedupKey string, succeeded bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.jobs == nil {
+		f.jobs = map[string]storage.DeliveryStatus{}
+	}
+	key := fmt.Sprintf("%d|%s|%s", groupID, actionID, dedupKey)
+	st := storage.DeliveryRetry // failed
+	if succeeded {
+		st = storage.DeliverySucceeded
+	}
+	if f.completeErr == nil {
+		f.jobs[key] = st
+	}
+	return f.completeErr
 }
 
 // setActionSeverity mutates one cached rule's action threshold.
@@ -213,7 +232,6 @@ func TestEngineDuplicateDeliveryFiresOnce(t *testing.T) {
 		s := e.Stats()
 		return s.EventsSeen == 2 && s.ActionsDeduped == 2
 	}, "two groups claimed once, two replays deduplicated")
-
 	acts.mu.Lock()
 	defer acts.mu.Unlock()
 	if got := len(acts.got["log"]); got != 2 {
@@ -676,4 +694,69 @@ type EngineStats struct {
 	ActionsFailed      int64
 	ActionsDeduped     int64
 	RuleLoadErrors     int64
+}
+
+// TestEngineRejectedSubmissionRetries pins the durable delivery-job
+// rework: when the action rejects the request (queue full, disabled),
+// the job is settled as failed, so a replay of the same transition
+// retries it instead of dropping the alert as already delivered.
+func TestEngineRejectedSubmissionRetries(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+
+	acts.mu.Lock()
+	acts.err = errors.New("queue full")
+	acts.mu.Unlock()
+	ev := hazardEvent("severe", dispatch.TransitionNew)
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsFailed == 1 }, "first submission rejected")
+
+	// The queue drains; the same transition replays and must re-fire.
+	acts.mu.Lock()
+	acts.err = nil
+	acts.mu.Unlock()
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "replay re-fired after rejection")
+
+	acts.mu.Lock()
+	got := len(acts.got["log"])
+	acts.mu.Unlock()
+	if got != 2 {
+		t.Errorf("log submitted %d times, want 2 (rejected attempt + retry)", got)
+	}
+	if d := e.Stats().ActionsDeduped; d != 0 {
+		t.Errorf("deduped = %d, want 0 (rejection must not deduplicate)", d)
+	}
+}
+
+// TestEngineSettleFailureRetries pins the crash window: when the success
+// settle itself fails, the job stays running and a replay re-fires the
+// action (at-least-once rather than lost).
+func TestEngineSettleFailureRetries(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+
+	store.mu.Lock()
+	store.completeErr = errors.New("db busy")
+	store.mu.Unlock()
+	ev := hazardEvent("severe", dispatch.TransitionNew)
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "first delivery executed")
+
+	// The settle failure left the job running; a replay must retry.
+	store.mu.Lock()
+	store.completeErr = nil
+	store.mu.Unlock()
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 2 }, "replay re-fired after settle failure")
+
+	// From now on the job is succeeded: further replays deduplicate.
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsDeduped == 1 }, "settled job deduplicated")
 }

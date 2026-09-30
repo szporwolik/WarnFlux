@@ -78,3 +78,31 @@ func TestRecorderNilSafe(t *testing.T) {
 		t.Fatal("nil recorder returned a trail")
 	}
 }
+
+// TestSetOutcomePrecedence pins the terminal-outcome rule: a later write
+// never downgrades a more terminal state (the engine records "submitted"
+// after the worker may already have recorded "delivered").
+func TestSetOutcomePrecedence(t *testing.T) {
+	r := NewRecorder(8)
+	r.Receive("imgw:1", "imgw-meteo", "severe", "Storm", "Gale", time.Now())
+
+	r.SetOutcome("imgw:1", OutcomeDelivered)
+	r.SetOutcome("imgw:1", OutcomeSubmitted) // racing engine write
+	tr, _ := r.Get("imgw:1")
+	if tr.Outcome != OutcomeDelivered {
+		t.Fatalf("outcome = %q, want delivered to stick", tr.Outcome)
+	}
+
+	r.SetOutcome("imgw:1", OutcomeFailed)
+	if tr.Outcome != OutcomeDelivered {
+		t.Fatalf("outcome = %q, want delivered above failed", tr.Outcome)
+	}
+
+	r.Receive("imgw:2", "imgw-meteo", "severe", "Storm", "Gale", time.Now())
+	r.SetOutcome("imgw:2", OutcomeSubmitted)
+	r.SetOutcome("imgw:2", OutcomeFailed) // upgrades
+	tr2, _ := r.Get("imgw:2")
+	if tr2.Outcome != OutcomeFailed {
+		t.Fatalf("outcome = %q, want submitted upgraded to failed", tr2.Outcome)
+	}
+}

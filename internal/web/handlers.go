@@ -530,10 +530,12 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	// with a non-empty role (emcom) and a matching password signs in as
 	// that role.
 	role := ""
+	var userID int64
 	if checkUsername(username, s.cfg.Auth.Username) && checkPassword(password, s.cfg.Auth.Password) {
 		role = "admin"
 	} else if u, err := s.users.Authenticate(username, password); err == nil && u.Role != "" {
 		role = u.Role
+		userID = u.ID
 	}
 
 	if role == "" {
@@ -560,7 +562,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.loginLimiter.record(limiterKey, true)
-	token, _, err := s.sessions.newSession(username, role)
+	token, _, err := s.sessions.newSession(userID, username, role)
 	if err != nil {
 		s.logger.Error("web: session creation failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

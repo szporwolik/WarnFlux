@@ -164,6 +164,7 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 				return storage.User{}, storage.ErrUsernameTaken
 			}
 		}
+		oldName := f.rows[i].Username
 		f.rows[i].Username = username
 		f.rows[i].Phone = phone
 		f.rows[i].Email = email
@@ -172,6 +173,11 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 		f.rows[i].UpdatedAt = time.Now()
 		if password != "" {
 			f.passwords[username] = password
+		} else if username != oldName {
+			// The real store keeps the hash on the user row; the fake
+			// must follow the rename so the old password still works.
+			f.passwords[username] = f.passwords[oldName]
+			delete(f.passwords, oldName)
 		}
 		return f.rows[i], nil
 	}

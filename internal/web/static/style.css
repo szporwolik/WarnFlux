@@ -2048,7 +2048,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
   flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem 0.5rem;
-  margin: -0.1rem 0 0.9rem;
+  margin: 0.75rem 0 0.9rem;
 }
 .home-mesh-noloc .mc-noloc-title {
   color: var(--muted);

@@ -847,6 +847,9 @@ aprs:
 #                         # 0 is Public — transmissions are refused
 #   channel_name: "#sp9moa"  # pinned slot name: SET_CHANNEL is issued
 #                         # at connect time when the device differs
+#   channel_names: {0: Public}  # friendly names shown in the message
+#                         # history instead of "ch0" (the TX slot above
+#                         # falls back to channel_name automatically)
 #   auto_add_contacts: true  # device auto-adds unknown heard nodes
 #                         # (chat/repeater/room/sensor, ≤8 hops) so their
 #                         # adverts reach WarnFlux

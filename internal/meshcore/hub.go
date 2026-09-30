@@ -63,6 +63,10 @@ type Config struct {
 	// the hub reads the slot at connect time and issues SET_CHANNEL when
 	// the name differs, preserving the channel secret.
 	ChannelName string
+	// ChannelNames optionally maps channel indices onto friendly display
+	// names (e.g. 0: "Public"): recorded messages carry the friendly
+	// name instead of "ch0"; the TX slot falls back to ChannelName.
+	ChannelNames map[int]string
 	// AutoAddContacts makes the device auto-add unknown heard nodes
 	// (chat/repeater/room/sensor, up to 8 hops) to its contact list, so
 	// their adverts reach WarnFlux and show up as heard nodes.
@@ -85,6 +89,21 @@ const (
 // transmits on it: messages sent there would reach the whole mesh
 // uninvited. Receiving is still allowed.
 const PublicChannelIdx = 0
+
+// ChannelLabel resolves a channel index onto its friendly display name:
+// the configured channel_names map first, then the pinned ChannelName
+// for the TX slot, then "ch<N>" as a fallback for unnamed slots.
+func (h *Hub) ChannelLabel(idx int) string {
+	if h.cfg.ChannelNames != nil {
+		if name := strings.TrimSpace(h.cfg.ChannelNames[idx]); name != "" {
+			return name
+		}
+	}
+	if idx == h.cfg.ChannelIdx && h.cfg.ChannelName != "" {
+		return h.cfg.ChannelName
+	}
+	return fmt.Sprintf("ch%d", idx)
+}
 
 // contactQueryInterval throttles CMD_GET_CONTACT_BY_KEY lookups per node.
 const contactQueryInterval = 30 * time.Second
@@ -607,7 +626,7 @@ func (h *Hub) SendChannelMessage(text string) error {
 	if err := h.waitAck(ack); err != nil {
 		return err
 	}
-	h.recordMessage("tx", "SOSNA", fmt.Sprintf("ch%d", h.cfg.ChannelIdx), text)
+	h.recordMessage("tx", "SOSNA", h.ChannelLabel(h.cfg.ChannelIdx), text)
 	return nil
 }
 
@@ -810,7 +829,7 @@ func (h *Hub) handleFrame(frame []byte) {
 }
 
 func (h *Hub) receiveChannel(m ChannelMessage) {
-	h.recordMessage("rx", "", fmt.Sprintf("ch%d", m.ChannelIdx), m.Text)
+	h.recordMessage("rx", "", h.ChannelLabel(int(m.ChannelIdx)), m.Text)
 	if h.logger != nil {
 		h.logger.Info("meshcore: channel message", "channel", m.ChannelIdx, "text", m.Text)
 	}

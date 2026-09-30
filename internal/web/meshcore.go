@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/hex"
+	"fmt"
 	"math"
 	"net/http"
 	"sort"
@@ -173,7 +174,7 @@ func (s *Server) fillMeshMessages(r *http.Request, v *meshView) {
 		view := meshMessageView{
 			Direction: m.Direction,
 			Sender:    m.Sender,
-			Channel:   m.Channel,
+			Channel:   s.meshChannelName(m.Channel),
 			Text:      m.Text,
 			At:        m.At,
 		}
@@ -182,6 +183,21 @@ func (s *Server) fillMeshMessages(r *http.Request, v *meshView) {
 		}
 		v.Messages = append(v.Messages, view)
 	}
+}
+
+// meshChannelName resolves a stored channel label for display. New rows
+// already carry the friendly name from the hub ("Public", "#sp9moa");
+// legacy rows store "ch<N>" and are resolved through the hub's
+// configured channel_names map.
+func (s *Server) meshChannelName(stored string) string {
+	if stored == "" || stored[0] != 'c' || s.mesh == nil {
+		return stored
+	}
+	var idx int
+	if _, err := fmt.Sscanf(stored, "ch%d", &idx); err != nil {
+		return stored
+	}
+	return s.mesh.ChannelLabel(idx)
 }
 
 func (s *Server) fillMeshNodes(v *meshView) {

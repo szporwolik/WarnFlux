@@ -392,6 +392,10 @@ type WebAuth struct {
 	// SecureCookie marks session cookies Secure (for TLS-terminated
 	// deployments).
 	SecureCookie bool
+	// TrustedProxies lists the reverse proxies (IPs or CIDRs) whose
+	// X-Forwarded-For header may identify the client. Empty means the
+	// service is exposed directly and proxy headers are ignored.
+	TrustedProxies []string
 }
 
 // Action is one configured ActionPlugin instance. ActionPlugins are
@@ -529,10 +533,11 @@ type fileWeb struct {
 }
 
 type fileWebAuth struct {
-	Username     string `yaml:"username"`
-	Password     string `yaml:"password"`
-	PasswordFile string `yaml:"password_file"`
-	SecureCookie bool   `yaml:"secure_cookie"`
+	Username       string   `yaml:"username"`
+	Password       string   `yaml:"password"`
+	PasswordFile   string   `yaml:"password_file"`
+	SecureCookie   bool     `yaml:"secure_cookie"`
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 type fileAction struct {
@@ -833,10 +838,11 @@ func (f fileConfig) toConfig() Config {
 		cfg.Web.Domain = strings.TrimSuffix(strings.TrimSpace(f.Web.Domain), "/")
 		if f.Web.Auth != nil {
 			cfg.Web.Auth = WebAuth{
-				Username:     f.Web.Auth.Username,
-				Password:     f.Web.Auth.Password,
-				PasswordFile: strings.TrimSpace(f.Web.Auth.PasswordFile),
-				SecureCookie: f.Web.Auth.SecureCookie,
+				Username:       f.Web.Auth.Username,
+				Password:       f.Web.Auth.Password,
+				PasswordFile:   strings.TrimSpace(f.Web.Auth.PasswordFile),
+				SecureCookie:   f.Web.Auth.SecureCookie,
+				TrustedProxies: append([]string(nil), f.Web.Auth.TrustedProxies...),
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"html/template"
 	"net/http"
 	"strconv"
@@ -564,6 +565,10 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	s.loginLimiter.record(limiterKey, true)
 	token, _, err := s.sessions.newSession(userID, username, role)
 	if err != nil {
+		if errors.Is(err, errSessionCapacity) {
+			http.Error(w, "session capacity exhausted, try again later", http.StatusServiceUnavailable)
+			return
+		}
 		s.logger.Error("web: session creation failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

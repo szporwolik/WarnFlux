@@ -555,7 +555,10 @@ func TestEngineRuleReload(t *testing.T) {
 
 func waitFor(t *testing.T, cond func() bool, what string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	// 5s: the full suite (and the race run after it) executes packages in
+	// parallel on loaded machines, so a 2s budget occasionally starves
+	// innocent goroutines.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

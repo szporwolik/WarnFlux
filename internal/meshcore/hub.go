@@ -20,7 +20,7 @@ import (
 // Recorder persists mesh message history (implemented by storage stores).
 // Best-effort: the hub logs recording failures and keeps running.
 type Recorder interface {
-	RecordMeshMessage(ctx context.Context, direction, sender, channel, text string, hops int, at time.Time) error
+	RecordMeshMessage(ctx context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error
 }
 
 // Node is one neighbour heard through adverts.
@@ -49,7 +49,8 @@ type Message struct {
 	Direction string // rx | tx
 	Sender    string
 	Channel   string
-	Hops      int // radio path length from the frame (0 = unknown/ours)
+	Hops      int    // radio path length from the frame (0 = unknown/ours)
+	Operator  string // admin username behind a tx (rx rows are empty)
 	Text      string
 	At        time.Time
 }
@@ -615,8 +616,9 @@ func (e *DeviceErr) Error() string {
 }
 
 // SendChannelMessage sends one text message on the configured channel.
-// The Public channel (0) is refused: never transmit there.
-func (h *Hub) SendChannelMessage(text string) error {
+// The Public channel (0) is refused: never transmit there. operator is
+// the username behind the send (admin panel) or "" for automation.
+func (h *Hub) SendChannelMessage(text, operator string) error {
 	if h.cfg.ChannelIdx == PublicChannelIdx {
 		return errors.New("meshcore: refusing to transmit on public channel 0")
 	}
@@ -627,7 +629,7 @@ func (h *Hub) SendChannelMessage(text string) error {
 	if err := h.waitAck(ack); err != nil {
 		return err
 	}
-	h.recordMessage("tx", "SOSNA", h.ChannelLabel(h.cfg.ChannelIdx), text, 0)
+	h.recordMessage("tx", "SOSNA", h.ChannelLabel(h.cfg.ChannelIdx), text, operator, 0)
 	return nil
 }
 
@@ -635,7 +637,7 @@ func (h *Hub) SendChannelMessage(text string) error {
 // key prefix (12 hex chars) or full key (64 hex chars). When the full key
 // is given and the device does not know the contact yet, the contact is
 // added on the device and the send retried once.
-func (h *Hub) SendContactMessage(addr, text string) error {
+func (h *Hub) SendContactMessage(addr, text, operator string) error {
 	b, err := hex.DecodeString(strings.TrimPrefix(addr, "0x"))
 	if err != nil || (len(b) != 6 && len(b) != 32) {
 		return fmt.Errorf("meshcore: contact address must be 12 or 64 hex chars")
@@ -673,7 +675,7 @@ func (h *Hub) SendContactMessage(addr, text string) error {
 			return err
 		}
 	}
-	h.recordMessage("tx", hex.EncodeToString(prefix), "direct", text, 0)
+	h.recordMessage("tx", hex.EncodeToString(prefix), "direct", text, operator, 0)
 	return nil
 }
 
@@ -830,7 +832,7 @@ func (h *Hub) handleFrame(frame []byte) {
 }
 
 func (h *Hub) receiveChannel(m ChannelMessage) {
-	h.recordMessage("rx", "", h.ChannelLabel(int(m.ChannelIdx)), m.Text, int(m.PathLen))
+	h.recordMessage("rx", "", h.ChannelLabel(int(m.ChannelIdx)), m.Text, "", int(m.PathLen))
 	if h.logger != nil {
 		h.logger.Info("meshcore: channel message", "channel", m.ChannelIdx, "text", m.Text)
 	}
@@ -845,7 +847,7 @@ func (h *Hub) receiveContact(m ContactMessage) {
 	if h.logger != nil {
 		h.logger.Info("meshcore: contact message", "from", prefix, "text", m.Text)
 	}
-	h.recordMessage("rx", prefix, "direct", m.Text, int(m.PathLen))
+	h.recordMessage("rx", prefix, "direct", m.Text, "", int(m.PathLen))
 	text := strings.TrimSpace(m.Text)
 	if !h.cfg.RouteMessages || text == "" || ackText(text) {
 		return
@@ -1106,10 +1108,10 @@ func (h *Hub) maybeQueryContact(pubKey []byte) {
 	}
 }
 
-func (h *Hub) recordMessage(direction, sender, channel, text string, hops int) {
+func (h *Hub) recordMessage(direction, sender, channel, text, operator string, hops int) {
 	now := time.Now()
 	h.mu.Lock()
-	h.recent = append(h.recent, Message{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Text: text, At: now})
+	h.recent = append(h.recent, Message{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Operator: operator, Text: text, At: now})
 	if len(h.recent) > 64 {
 		h.recent = h.recent[len(h.recent)-64:]
 	}
@@ -1119,7 +1121,7 @@ func (h *Hub) recordMessage(direction, sender, channel, text string, hops int) {
 	if rec != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := rec.RecordMeshMessage(ctx, direction, sender, channel, text, hops, now); err != nil && h.logger != nil {
+		if err := rec.RecordMeshMessage(ctx, direction, sender, channel, text, operator, hops, now); err != nil && h.logger != nil {
 			h.logger.Debug("meshcore: message history record failed", "error", err)
 		}
 	}
@@ -1129,9 +1131,10 @@ func (h *Hub) recordMessage(direction, sender, channel, text string, hops int) {
 			Sender    string `json:"sender"`
 			Channel   string `json:"channel"`
 			Hops      int    `json:"hops"`
+			Operator  string `json:"operator,omitempty"`
 			Text      string `json:"text"`
 			At        string `json:"at"`
-		}{direction, sender, channel, hops, text, now.UTC().Format(time.RFC3339)})
+		}{direction, sender, channel, hops, operator, text, now.UTC().Format(time.RFC3339)})
 		if err == nil {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

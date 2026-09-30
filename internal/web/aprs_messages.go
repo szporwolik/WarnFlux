@@ -58,6 +58,9 @@ type aprsMessagesView struct {
 	To       int
 	Total    int
 
+	// Calls lists the registered user callsigns for the send-form picker.
+	Calls []string
+
 	// Send-form feedback (query flashes).
 	Error string
 	Sent  bool
@@ -88,6 +91,9 @@ func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) 
 		v.Error = errMsg
 	}
 	v.Sent = r.URL.Query().Get("sent") != ""
+	if s.users != nil {
+		v.Calls, _ = s.users.AllAPRSCallsigns()
+	}
 
 	if s.aprsMsgs == nil {
 		s.renderL(w, r, "messages", v)

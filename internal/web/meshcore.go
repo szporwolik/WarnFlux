@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,6 +35,13 @@ type meshNodeView struct {
 	BearingDeg float64
 	Cardinal   string
 	LastSeen   string
+}
+
+// meshContactView is one directory user's MeshCore key offered by the
+// send-form picker.
+type meshContactView struct {
+	Username string
+	Prefix   string // first 12 hex chars of the public key
 }
 
 // meshView is the admin MeshCore page model.
@@ -77,8 +85,9 @@ type meshView struct {
 	Total    int
 
 	// nodes tab
-	Snap  mesh.Snapshot
-	Nodes []meshNodeView
+	Snap     mesh.Snapshot
+	Nodes    []meshNodeView
+	Contacts []meshContactView
 }
 
 // handleMeshcorePage renders the admin MeshCore page.
@@ -168,16 +177,32 @@ func (s *Server) fillMeshMessages(r *http.Request, v *meshView) {
 }
 
 func (s *Server) fillMeshNodes(v *meshView) {
+	// Contact picker comes from the directory (independent of the hub).
+	var owners map[string]string
+	if s.users != nil {
+		owners, _ = s.users.MeshKeyOwners()
+	}
+	v.Contacts = make([]meshContactView, 0, len(owners))
+	for key, username := range owners {
+		prefix := key
+		if len(prefix) > 12 {
+			prefix = prefix[:12]
+		}
+		v.Contacts = append(v.Contacts, meshContactView{Username: username, Prefix: prefix})
+	}
+	sort.Slice(v.Contacts, func(i, j int) bool {
+		if v.Contacts[i].Username != v.Contacts[j].Username {
+			return v.Contacts[i].Username < v.Contacts[j].Username
+		}
+		return v.Contacts[i].Prefix < v.Contacts[j].Prefix
+	})
+
 	if s.mesh == nil {
 		return
 	}
 	v.Snap = s.mesh.Snapshot()
 	// Resolve names for nodes whose adverts carry none: any directory
 	// user who registered that public key labels the node.
-	var owners map[string]string
-	if s.users != nil {
-		owners, _ = s.users.MeshKeyOwners()
-	}
 	v.Nodes = make([]meshNodeView, 0, len(v.Snap.Nodes))
 	for _, n := range v.Snap.Nodes {
 		short := n.PubKey

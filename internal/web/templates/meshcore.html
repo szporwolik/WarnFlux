@@ -12,6 +12,17 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
+    <form method="post" action="/meshcore/send" class="mesh-send">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <select name="target">
+        <option value="channel">{{tr .Lang "meshcore.send_channel"}}</option>
+        <option value="contact">{{tr .Lang "meshcore.send_contact"}}</option>
+      </select>
+      <input type="text" name="contact" placeholder="{{tr .Lang "meshcore.contact_ph"}}" maxlength="12" list="mesh-contacts">
+      <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.Prefix}}">{{.Username}}</option>{{end}}</datalist>
+      <input type="text" name="text" placeholder="{{tr .Lang "meshcore.text_ph"}}" maxlength="133" required>
+      <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshcore.send"}}</button>
+    </form>
     <div class="page-tabs" role="tablist">
       <button type="button" class="page-tab{{if eq .Tab "messages"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "messages"}}true{{else}}false{{end}}" data-tab="panel-msgs">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "meshcore.tab_messages"}}
@@ -43,7 +54,7 @@
           </thead>
           <tbody>
             {{range .Messages}}
-            <tr class="msgs-{{.Direction}}">
+            <tr class="msgs-{{.Direction}}{{if .Key}} click-send{{end}}"{{if .Key}} data-key="{{.Key}}" title="{{tr $.Lang "meshcore.click_to_send"}}"{{end}}>
               <td class="muted nowrap">{{timeFull .At}}</td>
               <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
               <td><strong>{{if .Sender}}{{.Sender}}{{else}}—{{end}}</strong></td>
@@ -106,18 +117,6 @@
   </form>
 </div>
 
-<form method="post" action="/meshcore/send" class="mesh-send">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <select name="target">
-    <option value="channel">{{tr .Lang "meshcore.send_channel"}}</option>
-    <option value="contact">{{tr .Lang "meshcore.send_contact"}}</option>
-  </select>
-  <input type="text" name="contact" placeholder="{{tr .Lang "meshcore.contact_ph"}}" maxlength="12" list="mesh-contacts">
-  <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.Prefix}}">{{.Username}}</option>{{end}}</datalist>
-  <input type="text" name="text" placeholder="{{tr .Lang "meshcore.text_ph"}}" maxlength="133" required>
-  <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshcore.send"}}</button>
-</form>
-
 {{if .Nodes}}
 <div class="msgs-table-wrap">
   <table class="msgs-table">
@@ -133,7 +132,7 @@
     </thead>
     <tbody>
       {{range .Nodes}}
-      <tr class="node-row" data-key="{{.Short}}" title="{{tr $.Lang "meshcore.click_to_send"}}">
+      <tr class="click-send" data-key="{{.Short}}" title="{{tr $.Lang "meshcore.click_to_send"}}">
         <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}</strong></td>
         <td class="muted nowrap" title="{{.PubKey}}">{{.Short}}…</td>
         <td>{{.Type}}</td>

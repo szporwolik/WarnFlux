@@ -21,6 +21,9 @@ type meshMessageView struct {
 	Channel   string
 	Text      string
 	At        time.Time
+	// Key is the 12-hex pubkey prefix when the row can prefill the send
+	// form (direct messages), empty otherwise.
+	Key string
 }
 
 // meshNodeView is one heard neighbour shown on the admin page.
@@ -167,13 +170,17 @@ func (s *Server) fillMeshMessages(r *http.Request, v *meshView) {
 	}
 	v.Messages = make([]meshMessageView, 0, len(stored))
 	for _, m := range stored {
-		v.Messages = append(v.Messages, meshMessageView{
+		view := meshMessageView{
 			Direction: m.Direction,
 			Sender:    m.Sender,
 			Channel:   m.Channel,
 			Text:      m.Text,
 			At:        m.At,
-		})
+		}
+		if b, hexErr := hex.DecodeString(m.Sender); hexErr == nil && len(b) == 6 {
+			view.Key = strings.ToLower(m.Sender)
+		}
+		v.Messages = append(v.Messages, view)
 	}
 }
 

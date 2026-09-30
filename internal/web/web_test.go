@@ -2444,6 +2444,34 @@ func TestAPRSMessagesPage(t *testing.T) {
 	}
 }
 
+// TestContactPickers pins the recipient pickers: the APRS send form
+// offers registered user callsigns and the MeshCore send form offers the
+// registered public-key prefixes.
+func TestContactPickers(t *testing.T) {
+	env := newTestEnv(t)
+	u, err := env.users.CreateUser("sp9kow", "600111222", "", "", "member", "pw1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserAPRS(u.ID, []string{"sp9kow-7"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserMeshKeys(u.ID, []string{"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"}); err != nil {
+		t.Fatal(err)
+	}
+	env.login()
+
+	_, html := env.get("/messages")
+	if !strings.Contains(html, `list="aprs-calls"`) || !strings.Contains(html, `<datalist id="aprs-calls"><option value="SP9KOW">`) {
+		t.Errorf("APRS page missing callsign picker: %s", html)
+	}
+
+	_, html = env.get("/meshcore")
+	if !strings.Contains(html, `list="mesh-contacts"`) || !strings.Contains(html, `<datalist id="mesh-contacts"><option value="abcd1234abcd">sp9kow</option>`) {
+		t.Errorf("meshcore page missing contact picker: %s", html)
+	}
+}
+
 // TestAPRSSendValidation pins the send form: bad CSRF is rejected and an
 // invalid addressee flashes the error instead of transmitting.
 func TestAPRSSendValidation(t *testing.T) {

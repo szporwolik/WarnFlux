@@ -1109,6 +1109,12 @@ func (h *Hub) maybeQueryContact(pubKey []byte) {
 }
 
 func (h *Hub) recordMessage(direction, sender, channel, text, operator string, hops int) {
+	// The device uses 0xFF as the "no path info" sentinel on direct
+	// frames; normalize it here so neither the history nor the MQTT feed
+	// ever claims 255 hops.
+	if hops >= 255 {
+		hops = 0
+	}
 	now := time.Now()
 	h.mu.Lock()
 	h.recent = append(h.recent, Message{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Operator: operator, Text: text, At: now})

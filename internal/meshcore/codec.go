@@ -57,11 +57,13 @@ const (
 	respStats           = 24
 	respChannelDataRecv = 27
 
-	pushAdvert        = 0x80
-	pushSendConfirmed = 0x82
-	pushMsgWaiting    = 0x83
-	pushLogRxData     = 0x88
-	pushNewAdvert     = 0x8A
+	pushAdvert         = 0x80
+	pushSendConfirmed  = 0x82
+	pushMsgWaiting     = 0x83
+	pushContactDeleted = 0x8F
+	pushContactsFull   = 0x90
+	pushLogRxData      = 0x88
+	pushNewAdvert      = 0x8A
 )
 
 // Advert types (SendSelfAdvert argument).

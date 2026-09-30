@@ -319,7 +319,11 @@ func (h *Hub) syncAutoadd(conn conn) error {
 	if !h.cfg.AutoAddContacts {
 		return nil
 	}
-	const mask = 0x02 | 0x04 | 0x08 | 0x10 // chat, repeater, room, sensor
+	// Mask 0x01 (overwrite oldest non-favourite when the contact table is
+	// full) keeps auto-add working forever; without it the device stops
+	// accepting new contacts and fires CONTACTS_FULL (0x90) pushes while
+	// direct messages from unknown keys are silently dropped.
+	const mask = 0x01 | 0x02 | 0x04 | 0x08 | 0x10 // overwrite + chat, repeater, room, sensor
 	if _, err := conn.Write(encodeFrame(buildSetAutoaddConfig(mask, 8))); err != nil {
 		return fmt.Errorf("meshcore: set autoadd write: %w", err)
 	}
@@ -659,6 +663,23 @@ func (h *Hub) handleFrame(frame []byte) {
 			h.logger.Debug("meshcore: messages waiting, pulling queue")
 		}
 		_ = h.writeFrame(buildSyncNextMessage())
+	case pushContactDeleted:
+		// The device overwrote a contact (auto-add with overwrite-oldest).
+		// Keep the heard node until NodeTTL; it is no longer on the device
+		// contact table, so direct sends will re-add it on demand.
+		if h.logger != nil {
+			key := ""
+			if len(frame) >= 33 {
+				key = pubKeyHex(frame[1:33])[:12]
+			}
+			h.logger.Debug("meshcore: contact overwritten on device", "key", key)
+		}
+	case pushContactsFull:
+		// Without the overwrite-oldest bit the device stops adding new
+		// contacts — direct messages from unknown keys are then dropped.
+		if h.logger != nil {
+			h.logger.Warn("meshcore: device contact storage full", "hint", "auto-add overwrite bit is enabled, table will recycle")
+		}
 	case pushLogRxData:
 		// RF log stream: informational only (ignored).
 	case respNoMoreMessages:

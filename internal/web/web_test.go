@@ -3,6 +3,7 @@ package web_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,6 +33,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 	"github.com/szporwolik/WarnFlux/internal/web"
 )
@@ -55,7 +58,7 @@ type testEnv struct {
 	client   *http.Client
 	receiver *mqttreceiver.Manager
 	pub      *fakeComposePublisher
-	users    *fakeUsers
+	users    storage.DirectoryStore
 	logs     *web.LogBuffer
 	traffic  *mqttreceiver.TrafficBuffer
 	trails   *trail.Recorder
@@ -64,11 +67,12 @@ type testEnv struct {
 
 // fakeComposePublisher records the communications the compose module
 // publishes; the test drives the state mirror itself to simulate the
-// broker loopback.
+// broker loopback. fail simulates a down broker (every publish errors).
 type fakeComposePublisher struct {
 	published []state.Hazard
 	expired   []string
 	raw       []fakeRawPublish
+	fail      bool
 }
 
 // fakeRawPublish is one recorded retained raw publication (EMCOM state).
@@ -79,16 +83,25 @@ type fakeRawPublish struct {
 }
 
 func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) error {
+	if f.fail {
+		return errors.New("broker down")
+	}
 	f.published = append(f.published, h)
 	return nil
 }
 
 func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
+	if f.fail {
+		return errors.New("broker down")
+	}
 	f.expired = append(f.expired, eventKey)
 	return nil
 }
 
 func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload []byte) error {
+	if f.fail {
+		return errors.New("broker down")
+	}
 	f.raw = append(f.raw, fakeRawPublish{Suffix: suffix, Retained: retained, Payload: append([]byte(nil), payload...)})
 	return nil
 }
@@ -154,6 +167,19 @@ func newTestEnvAll(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, 
 
 // newTestEnvWeb builds the environment with an explicit web config.
 func newTestEnvWeb(t *testing.T, cfg config.Web, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
+	return newTestEnvWebUsers(t, cfg, nil, ingest, hub, events, meshHub, aprsMsgs, meshMsgs)
+}
+
+// newTestEnvWithUsers builds the environment with an explicit directory
+// store (nil = the in-memory fake): tests exercising the local-first
+// panel paths inject the real SQLite store.
+func newTestEnvWithUsers(t *testing.T, users storage.DirectoryStore) *testEnv {
+	return newTestEnvWebUsers(t, defaultTestWebConfig(), users, nil, nil, nil, nil, nil, nil)
+}
+
+// newTestEnvWebUsers builds the environment with an explicit web config
+// and directory store.
+func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectoryStore, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -203,14 +229,17 @@ func newTestEnvWeb(t *testing.T, cfg config.Web, ingest map[string]http.Handler,
 		{ID: "mqtt-main", Type: "mqtt", Kind: plugin.KindOutput, State: plugin.StateDegraded, LastError: "broker down"},
 	}}
 
-	users := newFakeUsers()
-	if err := users.EnsureAdminUser(testUsername, "secret123"); err != nil {
+	users2 := users
+	if users2 == nil {
+		users2 = newFakeUsers()
+	}
+	if err := users2.EnsureAdminUser(testUsername, "secret123"); err != nil {
 		t.Fatal(err)
 	}
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshHub, ingress, logger, "test-version", "abc1234", users, events, aprsMsgs, meshMsgs, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshHub, ingress, logger, "test-version", "abc1234", users2, events, aprsMsgs, meshMsgs, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +253,7 @@ func newTestEnvWeb(t *testing.T, cfg config.Web, ingest map[string]http.Handler,
 		return http.ErrUseLastResponse // observe redirects instead of following
 	}}
 
-	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, pub: pub, users: users, logs: logs, traffic: traffic, trails: trails, metrics: met}
+	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, pub: pub, users: users2, logs: logs, traffic: traffic, trails: trails, metrics: met}
 }
 
 type nopAction struct{}
@@ -2627,6 +2656,125 @@ func TestEmcomPanelFlow(t *testing.T) {
 	resp, _ = env.get("/emcom")
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
 		t.Fatalf("GET /emcom unauthenticated = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// newLocalPanelStore opens a real SQLite store for the local-first panel
+// tests (the directory store doubles as the compose/emcom local record).
+func newLocalPanelStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+// TestComposeLocalFirstNoBroker pins the P1 fix: a communication is
+// persisted and routed locally even when the broker is unreachable — the
+// save succeeds (303), the transition hits the ingress and the issued
+// list renders from the local record.
+func TestComposeLocalFirstNoBroker(t *testing.T) {
+	env := newTestEnvWithUsers(t, newLocalPanelStore(t))
+	env.pub.fail = true // broker down
+	env.login()
+
+	_, html := env.get("/compose")
+	csrf := extractCSRF(t, html)
+	resp, _ := env.postForm("/compose", url.Values{
+		"csrf":     {csrf},
+		"event":    {"Storm"},
+		"headline": {"Test storm"},
+		"severity": {"severe"},
+		"status":   {"active"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("compose save with a down broker = %d, want 303 (local-first)", resp.StatusCode)
+	}
+	var ev dispatch.Event
+	select {
+	case ev = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no transition enqueued")
+	}
+	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionNew || ev.Hazard.Key == "" {
+		t.Fatalf("transition = %+v, want a new transition", ev)
+	}
+	key := ev.Hazard.Key
+
+	// The local record renders the issued list even though the mirror
+	// never saw the document.
+	_, html = env.get("/compose")
+	if !strings.Contains(html, "Test storm") {
+		t.Errorf("issued list missing the communication: %s", html)
+	}
+
+	// Expiry works without the broker too.
+	resp, _ = env.postForm("/compose/expire", url.Values{"csrf": {csrf}, "event_key": {key}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("compose expire with a down broker = %d, want 303 (local-first)", resp.StatusCode)
+	}
+	select {
+	case ev = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no expiry transition enqueued")
+	}
+	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionExpired {
+		t.Errorf("expiry transition = %+v", ev)
+	}
+	_, html = env.get("/compose")
+	if strings.Contains(html, "Test storm") {
+		t.Errorf("expired communication still listed: %s", html)
+	}
+}
+
+// TestEmcomLocalFirstNoBroker pins the P1 fix for the readiness panel:
+// networks are saved in the local database and level changes route
+// locally even when the broker is unreachable.
+func TestEmcomLocalFirstNoBroker(t *testing.T) {
+	env := newTestEnvWithUsers(t, newLocalPanelStore(t))
+	env.pub.fail = true // broker down
+	env.login()
+
+	_, html := env.get("/emcom")
+	csrf := extractCSRF(t, html)
+	resp, _ := env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("emcom add with a down broker = %d, want 303 (local-first)", resp.StatusCode)
+	}
+	_, html = env.get("/emcom")
+	if !strings.Contains(html, `data-slug="sp9moa-emcom"`) {
+		t.Fatalf("network missing from the panel despite the dead broker: %s", html)
+	}
+
+	// Raising the level dispatches locally even though the broker is down.
+	resp, _ = env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("emcom level with a down broker = %d, want 303 (local-first)", resp.StatusCode)
+	}
+	var ev dispatch.Event
+	select {
+	case ev = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no transition enqueued")
+	}
+	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionNew || ev.Hazard.Hazard.Severity != "severe" {
+		t.Errorf("transition = %+v, want a new severe transition", ev)
+	}
+	_, html = env.get("/emcom")
+	if !strings.Contains(html, "emcom-badge-l2") || !strings.Contains(html, "Local activation") {
+		t.Errorf("panel missing the raised level: %s", html)
+	}
+
+	// Deleting works locally too.
+	resp, _ = env.postForm("/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("emcom delete with a down broker = %d, want 303 (local-first)", resp.StatusCode)
+	}
+	_, html = env.get("/emcom")
+	if strings.Contains(html, `data-slug="sp9moa-emcom"`) {
+		t.Errorf("deleted network still listed: %s", html)
 	}
 }
 

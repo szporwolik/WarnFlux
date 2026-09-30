@@ -58,7 +58,15 @@ func NewIngestor(receiverID string, wfEnabled bool, prefix string, filters []str
 // configured prefix are ALWAYS treated as protocol topics — a malformed
 // protocol frame is rejected and counted, never reclassified as a raw
 // generic event, even when generic subscriptions overlap.
-func (in *Ingestor) HandleMessage(_ mqtt.Client, msg mqtt.Message) {
+//
+// The return value is the MQTT acknowledgment decision: true means the
+// message was consumed (state mirrored) or its events were accepted by
+// the dispatch ingress — the caller ACKs so the broker forgets it.
+// false means the ingress REJECTED the event: the caller leaves the
+// message unacknowledged, so the broker keeps it queued and redelivers
+// it after the next (re)connect. Receipt is thus confirmed only after
+// the durable inbox write succeeded.
+func (in *Ingestor) HandleMessage(_ mqtt.Client, msg mqtt.Message) bool {
 	now := time.Now()
 	if in.stats != nil {
 		in.stats.Messages.Add(1)
@@ -94,7 +102,7 @@ func (in *Ingestor) HandleMessage(_ mqtt.Client, msg mqtt.Message) {
 		}
 		in.logger.Warn("receiver: oversized message ignored",
 			"receiver", in.receiverID, "topic", topic, "bytes", len(payload), "limit", MaxPayload)
-		return
+		return true // deliberately dropped; do not redeliver a poison frame
 	}
 
 	if in.wfEnabled && strings.HasPrefix(topic, in.prefix+"/") {
@@ -107,20 +115,20 @@ func (in *Ingestor) HandleMessage(_ mqtt.Client, msg mqtt.Message) {
 		case TopicStatus:
 			in.handleStatus(topic, payload, now)
 		case TopicEvents:
-			in.handleEvent(topic, payload, now)
+			return in.handleEvent(topic, payload, now)
 		default:
 			// Inside the protocol namespace but not a valid protocol
 			// topic: reject, never fall through to generic handling.
 			in.reject(topic, "malformed warnflux protocol topic", nil)
 		}
-		return
+		return true
 	}
 
 	if in.matchesFilter(topic) {
-		in.handleGeneric(msg, topic, payload, now)
-		return
+		return in.handleGeneric(msg, topic, payload, now)
 	}
 	in.logger.Debug("receiver: unsubscribed topic ignored", "receiver", in.receiverID, "topic", topic)
+	return true
 }
 
 func (in *Ingestor) matchesFilter(topic string) bool {
@@ -134,8 +142,10 @@ func (in *Ingestor) matchesFilter(topic string) bool {
 
 // handleGeneric feeds a raw subscribed frame into the canonical ingress as
 // a generic MQTT event. The payload is deep-copied: the canonical event
-// never aliases the Paho-owned buffer.
-func (in *Ingestor) handleGeneric(msg mqtt.Message, topic string, payload []byte, now time.Time) {
+// never aliases the Paho-owned buffer. Returns the MQTT ack decision: an
+// event REJECTED by the ingress stays unacknowledged so the broker
+// redelivers it.
+func (in *Ingestor) handleGeneric(msg mqtt.Message, topic string, payload []byte, now time.Time) bool {
 	ev := dispatch.Event{
 		Kind:       dispatch.EventMQTTMessage,
 		ReceivedAt: now,
@@ -153,8 +163,9 @@ func (in *Ingestor) handleGeneric(msg mqtt.Message, topic string, payload []byte
 		if in.stats != nil {
 			in.stats.Dropped.Add(1)
 		}
-		in.logger.Warn("receiver: dispatch intake full, generic event dropped",
+		in.logger.Warn("receiver: dispatch intake full, generic event rejected (message left unacked for broker redelivery)",
 			"receiver", in.receiverID, "topic", topic)
+		return false
 	case dispatch.AcceptedEmergency:
 		if in.stats != nil {
 			in.stats.Emergency.Add(1)
@@ -162,6 +173,7 @@ func (in *Ingestor) handleGeneric(msg mqtt.Message, topic string, payload []byte
 		in.logger.Warn("receiver: generic event accepted WITHOUT durable storage (emergency mode; lost on restart)",
 			"receiver", in.receiverID, "topic", topic)
 	}
+	return true
 }
 
 // handleActive stores or removes a retained active hazard (per receiver
@@ -314,15 +326,17 @@ func (in *Ingestor) handleStatus(topic string, payload []byte, now time.Time) {
 }
 
 // handleEvent feeds strictly validated hazard transitions into the
-// canonical dispatch ingress. It never infers actions.
-func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
+// canonical dispatch ingress. It never infers actions. Returns the MQTT
+// ack decision: a REJECTED transition stays unacknowledged so the broker
+// redelivers it.
+func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) bool {
 	if len(payload) == 0 {
-		return
+		return true
 	}
 	we, err := ParseEventPayload(payload)
 	if err != nil {
 		in.reject(topic, "events", err)
-		return
+		return true
 	}
 
 	ev := EventFromWire(we, in.receiverID, now)
@@ -335,8 +349,9 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 		if in.stats != nil {
 			in.stats.Dropped.Add(1)
 		}
-		in.logger.Warn("receiver: dispatch intake full, transition dropped",
+		in.logger.Warn("receiver: dispatch intake full, transition rejected (message left unacked for broker redelivery)",
 			"receiver", in.receiverID, "type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
+		return false
 	case dispatch.AcceptedEmergency:
 		if in.stats != nil {
 			in.stats.Emergency.Add(1)
@@ -344,6 +359,7 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 		in.logger.Warn("receiver: transition accepted WITHOUT durable storage (emergency mode; lost on restart)",
 			"receiver", in.receiverID, "type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
 	}
+	return true
 }
 
 // EventFromWire converts one validated /events wire payload into the

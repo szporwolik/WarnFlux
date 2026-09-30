@@ -66,13 +66,38 @@ func resolveStoragePath(path string, logger *slog.Logger) string {
 
 // aprsManagerSink adapts the MQTT receiver manager to the APRS hub's
 // publishing surface: hub topics go out under the first connected
-// WarnFlux receiver's topic prefix.
+// WarnFlux receiver's topic prefix. Canonical /events payloads are also
+// dispatched locally first, so radio-message alarms never depend on the
+// broker round-trip.
 type aprsManagerSink struct {
-	mgmt *mqttreceiver.Manager
+	mgmt    *mqttreceiver.Manager
+	ingress *dispatch.Ingress
+	logger  *slog.Logger
 }
 
 func (s *aprsManagerSink) PublishRaw(suffix string, retained bool, payload []byte) error {
+	if suffix == "events" {
+		dispatchLocalEvent(s.ingress, s.logger, payload)
+	}
 	return s.mgmt.PublishRaw(suffix, retained, payload)
+}
+
+// dispatchLocalEvent enqueues one canonical /events payload into the
+// LOCAL ingress before the broker publish: local routing (the durable
+// inbox row) never depends on the broker round-trip. The loopback copy
+// arriving through the receiver deduplicates at the delivery ledger.
+func dispatchLocalEvent(ingress *dispatch.Ingress, logger *slog.Logger, payload []byte) {
+	we, err := mqttreceiver.ParseEventPayload(payload)
+	if err != nil {
+		return // hub-built payloads always parse; defensive only
+	}
+	ev := mqttreceiver.EventFromWire(we, "local", time.Now())
+	switch ingress.Enqueue(ev) {
+	case dispatch.Rejected:
+		logger.Warn("local dispatch rejected a radio event", "event_key", ev.Hazard.Key)
+	case dispatch.AcceptedEmergency:
+		logger.Warn("radio event accepted WITHOUT durable storage (emergency mode; lost on restart)", "event_key", ev.Hazard.Key)
+	}
 }
 
 // directoryHasMeshKey reports whether the given key (12-hex prefix or
@@ -573,8 +598,9 @@ func run(configPath string, checkConfig bool) error {
 	}
 
 	// The APRS hub publishes its station/packet/message feeds through the
-	// first connected WarnFlux receiver (same broker, same topic prefix).
-	hub.SetSink(&aprsManagerSink{mgmt: receivers})
+	// first connected WarnFlux receiver (same broker, same topic prefix);
+	// routed message events also dispatch locally first.
+	hub.SetSink(&aprsManagerSink{mgmt: receivers, ingress: ingress, logger: logger})
 
 	// Heard MeshCore nodes feed the broker as retained station documents
 	// under meshcore/stations/<key12>; expired nodes are tombstoned.
@@ -589,8 +615,11 @@ func run(configPath string, checkConfig bool) error {
 	})
 
 	// MeshCore direct messages from registered operators feed the alarm
-	// pipeline: canonical /events documents on the events stream.
+	// pipeline: canonical /events documents on the events stream. They
+	// dispatch locally FIRST (durable inbox, no broker dependency); the
+	// broker publish is the asynchronous sync copy for other instances.
 	meshHub.SetEventSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
+		dispatchLocalEvent(ingress, logger, payload)
 		return receivers.PublishRaw(topic, retained, payload)
 	})
 
@@ -686,6 +715,12 @@ func run(configPath string, checkConfig bool) error {
 		// Low-disk alarm: the health page and /metrics report the free
 		// space against storage.min_free_mb (0 disables the alarm).
 		webSrv.SetStorageAlarm(cfg.Storage.MinFreeMB * 1024 * 1024)
+		// Broker resync: after every receiver (re)connect the panel's
+		// local-first state (communications, EMCOM networks) is
+		// republished, so broker outages never lose it permanently.
+		receivers.SetResync(func() {
+			go webSrv.SyncBrokerState()
+		})
 		// Password-reset emails ride the first enabled smtp action's
 		// configuration; without one the self-service flow degrades to
 		// "contact an administrator".
@@ -818,6 +853,19 @@ func run(configPath string, checkConfig bool) error {
 				}
 				if n > 0 {
 					logger.Info("dispatch: inbox pruned", "dropped_unevaluated", n, "low_disk", lowDisk)
+				}
+				// Panel tombstone pruning: expired compose communications
+				// and deleted EMCOM networks stop being useful once the
+				// broker has seen their tombstone sync.
+				if n, err := store.PruneComposeHazards(ctx, cutoff); err != nil {
+					logger.Warn("compose: tombstone prune failed", "error", err)
+				} else if n > 0 {
+					logger.Debug("compose: tombstones pruned", "removed", n)
+				}
+				if n, err := store.PruneEmcomNetworks(ctx, cutoff); err != nil {
+					logger.Warn("emcom: tombstone prune failed", "error", err)
+				} else if n > 0 {
+					logger.Debug("emcom: tombstones pruned", "removed", n)
 				}
 			}
 			prune()

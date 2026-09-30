@@ -31,6 +31,21 @@ the live queue. The inbox row is consumed **only** by
 produced and deletes the inbox row **in one transaction** — either all
 jobs exist durably and the row is gone, or neither happened.
 
+**Receiver recovery (the /events stream survives outages):**
+
+- Receivers use a **persistent MQTT session** by default
+  (`clean_session: false`): the broker keeps the subscriptions and queues
+  QoS≥1 messages while the receiver is disconnected and redelivers them
+  on the next (re)connect — the recovery protocol for the non-retained
+  `/events` stream without replay bookkeeping.
+- **Receipt is acknowledged only after the durable write**: the message
+  handler ACKs a frame only when its events were accepted by the ingress
+  (or deliberately consumed). An event REJECTED by a full intake is left
+  unacknowledged, so the broker keeps it queued and redelivers it.
+- Duplicates are expected and tolerated: the routing ledger deduplicates
+  per (group, action, event, publisher/change ID) and the staleness gates
+  suppress replayed alerts whose hazard already expired.
+
 Acceptance is a **tri-state result**, never a silent fallback:
 
 - **durable** — the inbox row exists before the live queue is offered. A
@@ -75,6 +90,19 @@ instead of hanging MQTT ingestion.
   in-memory submission path and **keeps the inbox row pending**:
   recovery re-evaluates the event and persists the jobs once the ledger
   heals (at-least-once, duplicates possible).
+
+**Local-first panel and radio (a down broker must not break local
+delivery):**
+
+Panel communications (compose), EMCOM readiness levels and routed
+APRS/MeshCore messages are **saved to the local database first**
+(`compose_hazards`, `emcom_networks` or the dispatch inbox row) and
+**dispatched directly into the local ingress** — the radio TX and local
+notifications work even when the broker is unreachable. The MQTT
+documents are asynchronous, best-effort sync copies for other instances;
+the resync hook republishes the current local state on every receiver
+(re)connect, and deleted/expired entries publish tombstones so a stale
+broker copy can never revive them.
 
 ## 3. Action completion (routing evaluation → notification)
 

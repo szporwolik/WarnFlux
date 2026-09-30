@@ -323,6 +323,39 @@ actions:
 	}
 }
 
+func TestReceiverCleanSession(t *testing.T) {
+	base := "app:\n  log_level: info\nstorage:\n  driver: sqlite\ndispatch:\n  mqtt_receivers:\n"
+	// Default: PERSISTENT session (the broker queues QoS≥1 messages while
+	// the receiver is disconnected, so the /events stream survives).
+	cfg, err := Load(writeTempConfig(t, base+`
+    - id: local
+      enabled: true
+      broker: tcp://a:1883
+      client_id: c1
+      warnflux: {}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dispatch.Receivers[0].CleanSession {
+		t.Error("clean_session must default to false (persistent session)")
+	}
+
+	// Explicit clean session restores the amnesia mode.
+	cfg, err = Load(writeTempConfig(t, base+`
+    - id: local
+      enabled: true
+      broker: tcp://a:1883
+      client_id: c1
+      clean_session: true
+      warnflux: {}`))
+	if err != nil {
+		t.Fatalf("Load explicit: %v", err)
+	}
+	if !cfg.Dispatch.Receivers[0].CleanSession {
+		t.Error("clean_session: true not honored")
+	}
+}
+
 func TestDispatchQueueSizeBounds(t *testing.T) {
 	for _, size := range []string{"0", "100001"} {
 		body := "app:\n  log_level: info\nstorage:\n  driver: sqlite\ndispatch:\n  queue_size: " + size + "\n"

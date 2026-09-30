@@ -545,6 +545,29 @@ ALTER TABLE action_fires ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE action_fires ADD COLUMN next_attempt_at_ms INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		// v27: the LOCAL-FIRST panel. EMCOM readiness networks and panel
+		// communications become local database state: the panel routes
+		// them through the dispatch ingress directly (no broker
+		// dependency) and the retained MQTT documents are asynchronous
+		// sync copies for other instances. Expired compose rows stay as
+		// authoritative tombstones until pruning.
+		SQL: `
+CREATE TABLE emcom_networks (
+	slug          TEXT PRIMARY KEY,
+	name          TEXT NOT NULL,
+	level         INTEGER NOT NULL DEFAULT 0,
+	updated_by    TEXT NOT NULL DEFAULT '',
+	updated_at_ms INTEGER NOT NULL
+);
+CREATE TABLE compose_hazards (
+	event_key     TEXT PRIMARY KEY,
+	hazard_json   TEXT NOT NULL,
+	status        TEXT NOT NULL,
+	updated_at_ms INTEGER NOT NULL
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -957,6 +980,127 @@ func (s *Store) PruneInbox(ctx context.Context, olderThan time.Time) (int64, err
 		`DELETE FROM dispatch_inbox WHERE received_at_ms < ?`, olderThan.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("prune inbox: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// SaveEmcomNetwork upserts one EMCOM readiness network (the panel's
+// durable local record; the retained MQTT document is only a sync copy).
+func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO emcom_networks (slug, name, level, updated_by, updated_at_ms)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(slug) DO UPDATE SET
+			name = excluded.name, level = excluded.level,
+			updated_by = excluded.updated_by, updated_at_ms = excluded.updated_at_ms`,
+		net.Slug, net.Name, net.Level, net.UpdatedBy, net.UpdatedAt.UnixMilli()); err != nil {
+		return fmt.Errorf("save emcom network %q: %w", net.Slug, err)
+	}
+	return nil
+}
+
+// DeleteEmcomNetwork removes one EMCOM readiness network.
+func (s *Store) DeleteEmcomNetwork(ctx context.Context, slug string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM emcom_networks WHERE slug = ?`, slug); err != nil {
+		return fmt.Errorf("delete emcom network %q: %w", slug, err)
+	}
+	return nil
+}
+
+// EmcomNetworks returns the persisted readiness networks sorted by name.
+func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT slug, name, level, updated_by, updated_at_ms
+		FROM emcom_networks ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list emcom networks: %w", err)
+	}
+	defer rows.Close()
+	var out []storage.EmcomNetwork
+	for rows.Next() {
+		var n storage.EmcomNetwork
+		var ms int64
+		if err := rows.Scan(&n.Slug, &n.Name, &n.Level, &n.UpdatedBy, &ms); err != nil {
+			return nil, fmt.Errorf("scan emcom network: %w", err)
+		}
+		n.UpdatedAt = time.UnixMilli(ms)
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// SaveComposeHazard upserts one panel-issued communication (the panel's
+// durable local record; the retained MQTT document is only a sync copy).
+// Expired rows stay as authoritative tombstones so a stale broker copy
+// can never revive them.
+func (s *Store) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO compose_hazards (event_key, hazard_json, status, updated_at_ms)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(event_key) DO UPDATE SET
+			hazard_json = excluded.hazard_json, status = excluded.status,
+			updated_at_ms = excluded.updated_at_ms`,
+		h.EventKey, string(h.State), h.Status, h.UpdatedAt.UnixMilli()); err != nil {
+		return fmt.Errorf("save compose hazard %q: %w", h.EventKey, err)
+	}
+	return nil
+}
+
+// DeleteComposeHazard removes one panel-issued communication.
+func (s *Store) DeleteComposeHazard(ctx context.Context, eventKey string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM compose_hazards WHERE event_key = ?`, eventKey); err != nil {
+		return fmt.Errorf("delete compose hazard %q: %w", eventKey, err)
+	}
+	return nil
+}
+
+// ComposeHazards returns the persisted panel communications.
+func (s *Store) ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_key, hazard_json, status, updated_at_ms
+		FROM compose_hazards ORDER BY updated_at_ms DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list compose hazards: %w", err)
+	}
+	defer rows.Close()
+	var out []storage.ComposeHazard
+	for rows.Next() {
+		var h storage.ComposeHazard
+		var raw string
+		var ms int64
+		if err := rows.Scan(&h.EventKey, &raw, &h.Status, &ms); err != nil {
+			return nil, fmt.Errorf("scan compose hazard: %w", err)
+		}
+		h.State = []byte(raw)
+		h.UpdatedAt = time.UnixMilli(ms)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// PruneComposeHazards deletes expired compose tombstone rows older than
+// olderThan (the controlled retention of auxiliary panel data).
+func (s *Store) PruneComposeHazards(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM compose_hazards WHERE status = 'expired' AND updated_at_ms < ?`,
+		olderThan.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("prune compose hazards: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// PruneEmcomNetworks deletes EMCOM tombstone rows (level < 0) older than
+// olderThan: they only exist to remove stale broker copies on resync and
+// stop being useful once the broker has seen them.
+func (s *Store) PruneEmcomNetworks(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM emcom_networks WHERE level < 0 AND updated_at_ms < ?`,
+		olderThan.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("prune emcom networks: %w", err)
 	}
 	return res.RowsAffected()
 }

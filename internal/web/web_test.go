@@ -2753,3 +2753,34 @@ func TestAPRSBulletinBadge(t *testing.T) {
 		t.Errorf("partial missing bulletin row/badge: %.300s", body)
 	}
 }
+
+// TestMeshNodeOwnerLabel pins the admin-only directory match: a node
+// whose public key belongs to a registered user shows the username next
+// to the advert name on the nodes tab (the public home page never does).
+func TestMeshNodeOwnerLabel(t *testing.T) {
+	hub, err := meshcore.NewHub(meshcore.Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"
+	hub.SeedNode(key, "RKSR-TN-R3", 2, 50.02, 20.0, 2, time.Now())
+	env := newTestEnvWithMesh(t, hub)
+	u, err := env.users.CreateUser("sp9kow", "600111222", "", "", "member", "pw1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserMeshKeys(u.ID, []string{key}); err != nil {
+		t.Fatal(err)
+	}
+	env.login()
+
+	resp, body := env.get("/partials/meshcore?tab=nodes")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("nodes partial = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "RKSR-TN-R3") || !strings.Contains(body, "(sp9kow)") {
+		t.Errorf("nodes partial missing owner label: %.300s", body)
+	}
+}

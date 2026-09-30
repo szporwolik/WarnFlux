@@ -35,9 +35,12 @@ type meshMessageView struct {
 
 // meshNodeView is one heard neighbour shown on the admin page.
 type meshNodeView struct {
-	PubKey     string
-	Short      string
-	Name       string
+	PubKey string
+	Short  string
+	Name   string
+	// Owner is the directory username whose registered key matches the
+	// node's public key (empty when nobody registered it).
+	Owner      string
 	Type       string
 	Hops       int
 	Lat        float64
@@ -246,8 +249,9 @@ func (s *Server) fillMeshNodes(v *meshView) {
 		return
 	}
 	v.Snap = s.mesh.Snapshot()
-	// Resolve names for nodes whose adverts carry none: any directory
-	// user who registered that public key labels the node.
+	// Directory match: any user who registered a node's public key
+	// labels it (as the name when the advert carries none, and next to
+	// the name otherwise). The public home page never sees this.
 	v.Nodes = make([]meshNodeView, 0, len(v.Snap.Nodes))
 	for _, n := range v.Snap.Nodes {
 		short := n.PubKey
@@ -263,14 +267,16 @@ func (s *Server) fillMeshNodes(v *meshView) {
 		case 3:
 			typ = "room"
 		}
+		owner := meshOwnerFor(owners, n.PubKey)
 		name := n.Name
 		if name == "" {
-			name = meshOwnerFor(owners, n.PubKey)
+			name = owner
 		}
 		v.Nodes = append(v.Nodes, meshNodeView{
 			PubKey:     n.PubKey,
 			Short:      short,
 			Name:       name,
+			Owner:      owner,
 			Type:       typ,
 			Hops:       n.Hops,
 			Lat:        n.Lat,

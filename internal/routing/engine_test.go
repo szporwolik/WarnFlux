@@ -28,7 +28,8 @@ type fakeStore struct {
 	jobs         map[string]storage.DeliveryStatus // group|action|dedupKey -> status
 	payloads     map[string][]byte                 // group|action|dedupKey -> JSON payload
 	payloadOrder []string                          // insertion order of payload keys
-	enqueueErr   error                             // returned by EnqueueDelivery
+	ackedInbox   []int64                           // inbox rows consumed by CommitInboxDelivery
+	commitErr    error                             // returned by CommitInboxDelivery
 	recipientErr error                             // returned by the recipient lookups
 	err          error
 }
@@ -71,17 +72,14 @@ func (f *fakeStore) GroupRecipientDiscord(groupID int64) ([]string, error) {
 	return append([]string(nil), f.discordBcc[groupID]...), f.err
 }
 
-func (f *fakeStore) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+// enqueueLocked applies one job with the same semantics as the SQLite
+// implementation (caller holds f.mu).
+func (f *fakeStore) enqueueLocked(job storage.DeliveryJob) (storage.DeliveryStatus, bool) {
 	if f.jobs == nil {
 		f.jobs = map[string]storage.DeliveryStatus{}
 	}
 	if f.payloads == nil {
 		f.payloads = map[string][]byte{}
-	}
-	if f.enqueueErr != nil {
-		return 0, false, f.enqueueErr
 	}
 	key := fmt.Sprintf("%d|%s|%s", job.GroupID, job.ActionID, job.DedupKey)
 	if st, ok := f.jobs[key]; ok {
@@ -90,14 +88,40 @@ func (f *fakeStore) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob
 			f.jobs[key] = storage.DeliverySaved
 			f.payloads[key] = job.Payload
 			f.payloadOrder = append(f.payloadOrder, key)
-			return storage.DeliverySaved, true, f.err
+			return storage.DeliverySaved, true
 		}
-		return st, false, f.err
+		return st, false
 	}
 	f.jobs[key] = storage.DeliverySaved
 	f.payloads[key] = job.Payload
 	f.payloadOrder = append(f.payloadOrder, key)
-	return storage.DeliverySaved, true, f.err
+	return storage.DeliverySaved, true
+}
+
+// CommitInboxDelivery persists every job and consumes the inbox row —
+// "atomically": a commitErr returns before anything is recorded.
+func (f *fakeStore) CommitInboxDelivery(ctx context.Context, inboxID int64, jobs []storage.DeliveryJob) ([]storage.DeliveryResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.commitErr != nil {
+		return nil, f.commitErr
+	}
+	results := make([]storage.DeliveryResult, 0, len(jobs))
+	for _, job := range jobs {
+		st, queued := f.enqueueLocked(job)
+		results = append(results, storage.DeliveryResult{Status: st, Queued: queued})
+	}
+	if inboxID != 0 {
+		f.ackedInbox = append(f.ackedInbox, inboxID)
+	}
+	return results, f.err
+}
+
+// inboxAcked reports the consumed inbox row IDs in order.
+func (f *fakeStore) inboxAcked() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.ackedInbox...)
 }
 
 // payloadCount reports how many queued durable jobs belong to one action.
@@ -601,8 +625,13 @@ func TestEngineTrailRecording(t *testing.T) {
 		kinds = append(kinds, string(s.Kind))
 	}
 	joined := strings.Join(kinds, ",")
-	if !strings.Contains(joined, "matched,route,submitted") {
-		t.Fatalf("trail kinds = %v, want matched/route/submitted present", kinds)
+	// The engine collects every job first and submits after the commit,
+	// so the below-threshold skip can sit between route and submitted.
+	if !strings.Contains(joined, "matched,route") {
+		t.Fatalf("trail kinds = %v, want matched/route present", kinds)
+	}
+	if !strings.Contains(joined, "submitted") {
+		t.Fatalf("trail kinds = %v, want submitted present", kinds)
 	}
 	if !strings.Contains(joined, "skipped") {
 		t.Fatalf("trail kinds = %v, want a below-threshold skip for action log", kinds)
@@ -714,7 +743,7 @@ func TestEngineRejectedSubmissionRetries(t *testing.T) {
 	e, feed := startEngine(t, store, acts)
 
 	store.mu.Lock()
-	store.enqueueErr = errors.New("db busy")
+	store.commitErr = errors.New("db busy")
 	store.mu.Unlock()
 	acts.mu.Lock()
 	acts.err = errors.New("queue full")
@@ -726,7 +755,7 @@ func TestEngineRejectedSubmissionRetries(t *testing.T) {
 	// The ledger recovers and the queue drains; the same transition
 	// replays and must be queued for execution.
 	store.mu.Lock()
-	store.enqueueErr = nil
+	store.commitErr = nil
 	store.mu.Unlock()
 	acts.mu.Lock()
 	acts.err = nil
@@ -812,7 +841,7 @@ func TestEngineLedgerFallback(t *testing.T) {
 	e, feed := startEngine(t, store, acts)
 
 	store.mu.Lock()
-	store.enqueueErr = errors.New("db busy")
+	store.commitErr = errors.New("db busy")
 	store.mu.Unlock()
 	ev := hazardEvent("severe", dispatch.TransitionNew)
 	feed <- ev
@@ -821,7 +850,7 @@ func TestEngineLedgerFallback(t *testing.T) {
 	// The ledger heals: the replay is queued durably (nothing was
 	// recorded during the failure, so it fires again — at-least-once).
 	store.mu.Lock()
-	store.enqueueErr = nil
+	store.commitErr = nil
 	store.mu.Unlock()
 	feed <- ev
 	waitFor(t, func() bool { return e.Stats().ActionsFired == 2 }, "replay queued durably after heal")
@@ -909,11 +938,12 @@ func TestRefreshFailureKeepsSnapshot(t *testing.T) {
 	}
 }
 
-// fakeInbox is a test double for the durable dispatch inbox.
+// fakeInbox is a test double for the durable dispatch inbox. Rows are
+// consumed through the store's CommitInboxDelivery (tracked by the
+// fakeStore), never by the inbox itself.
 type fakeInbox struct {
 	mu      sync.Mutex
 	pending []storage.InboxItem
-	acked   []int64
 	err     error
 }
 
@@ -926,20 +956,10 @@ func (f *fakeInbox) PendingInboxEvents(_ context.Context, limit int) ([]storage.
 	return append([]storage.InboxItem(nil), f.pending...), nil
 }
 
-func (f *fakeInbox) AckInboxEvent(_ context.Context, id int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.err != nil {
-		return f.err
-	}
-	f.acked = append(f.acked, id)
-	return nil
-}
-
 // TestEngineInboxRecoveryAndAck pins the durable acceptance loop: live
-// events carrying an inbox ID are acknowledged after evaluation, and
-// pending inbox rows (crash / full queue) re-enter the engine on
-// recovery and are acknowledged too.
+// events carrying an inbox ID are consumed atomically with their
+// delivery jobs, and pending inbox rows (crash / full queue) re-enter
+// the engine on recovery and are consumed too.
 func TestEngineInboxRecoveryAndAck(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
@@ -951,15 +971,15 @@ func TestEngineInboxRecoveryAndAck(t *testing.T) {
 	in := &fakeInbox{}
 	e.SetInbox(in)
 
-	// Live path: the event carries its inbox ID and is acked afterwards.
+	// Live path: the event carries its inbox ID and the row is consumed
+	// in the same commit as the delivery job.
 	live := hazardEvent("severe", dispatch.TransitionNew)
 	live.InboxID = 42
 	feed <- live
 	waitFor(t, func() bool {
-		in.mu.Lock()
-		defer in.mu.Unlock()
-		return len(in.acked) == 1 && in.acked[0] == 42
-	}, "live inbox event acked")
+		acked := store.inboxAcked()
+		return len(acked) == 1 && acked[0] == 42
+	}, "live inbox event consumed")
 	if got := e.Stats().ActionsFired; got != 1 {
 		t.Fatalf("actions fired = %d, want 1", got)
 	}
@@ -972,11 +992,135 @@ func TestEngineInboxRecoveryAndAck(t *testing.T) {
 	in.mu.Unlock()
 	e.recoverInbox(context.Background())
 	waitFor(t, func() bool {
-		in.mu.Lock()
-		defer in.mu.Unlock()
-		return len(in.acked) == 2 && in.acked[1] == 7
-	}, "recovered inbox event acked")
+		acked := store.inboxAcked()
+		return len(acked) == 2 && acked[1] == 7
+	}, "recovered inbox event consumed")
 	if got := e.Stats().ActionsFired; got != 2 {
 		t.Fatalf("actions fired = %d, want 2 after recovery", got)
+	}
+}
+
+// TestEngineInboxDeferredWithoutRules pins the failed-first-load case:
+// without a validly loaded routing snapshot the event cannot be
+// deliberately evaluated, so the inbox row stays PENDING — and is
+// consumed only after the rules load and recovery re-evaluates it.
+func TestEngineInboxDeferredWithoutRules(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	store.mu.Lock()
+	store.err = errors.New("directory unavailable")
+	store.mu.Unlock()
+
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	in := &fakeInbox{}
+	e.SetInbox(in)
+
+	ev := hazardEvent("severe", dispatch.TransitionNew)
+	ev.InboxID = 5
+	feed <- ev
+	time.Sleep(80 * time.Millisecond)
+
+	// The first rule load failed: the event must NOT be consumed and
+	// nothing may fire on an empty rule set.
+	if got := len(store.inboxAcked()); got != 0 {
+		t.Fatalf("inbox consumed %d times without rules, want 0", got)
+	}
+	if got := e.Stats().ActionsFired; got != 0 {
+		t.Fatalf("actions fired = %d without rules, want 0", got)
+	}
+
+	// The directory heals: the next refresh installs the rules and
+	// inbox recovery re-evaluates the pending event.
+	store.mu.Lock()
+	store.err = nil
+	store.mu.Unlock()
+	in.mu.Lock()
+	in.pending = []storage.InboxItem{{ID: 5, Event: ev}}
+	in.mu.Unlock()
+	e.refresh()
+	waitFor(t, e.Ready, "rules loaded after heal")
+	e.recoverInbox(context.Background())
+	waitFor(t, func() bool {
+		acked := store.inboxAcked()
+		return len(acked) == 1 && acked[0] == 5
+	}, "deferred event consumed after rules loaded")
+	if got := e.Stats().ActionsFired; got != 1 {
+		t.Fatalf("actions fired = %d after recovery, want 1", got)
+	}
+}
+
+// TestEngineInboxKeptOnLedgerFailure pins the ledger-failure case: when
+// the commit fails, the engine falls back to the in-memory path but
+// MUST NOT consume the inbox row — recovery re-evaluates the event and
+// persists the jobs durably once the ledger heals (at-least-once).
+func TestEngineInboxKeptOnLedgerFailure(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+	in := &fakeInbox{}
+	e.SetInbox(in)
+
+	store.mu.Lock()
+	store.commitErr = errors.New("db busy")
+	store.mu.Unlock()
+
+	ev := hazardEvent("severe", dispatch.TransitionNew)
+	ev.InboxID = 9
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "in-memory fallback delivered")
+	if got := len(store.inboxAcked()); got != 0 {
+		t.Fatalf("inbox consumed %d times after failed commit, want 0", got)
+	}
+
+	// The ledger heals; recovery re-evaluates the pending row and now
+	// persists the job durably (the earlier in-memory delivery was not
+	// recorded, so it fires again — at-least-once).
+	store.mu.Lock()
+	store.commitErr = nil
+	store.mu.Unlock()
+	in.mu.Lock()
+	in.pending = []storage.InboxItem{{ID: 9, Event: ev}}
+	in.mu.Unlock()
+	e.recoverInbox(context.Background())
+	waitFor(t, func() bool {
+		acked := store.inboxAcked()
+		return len(acked) == 1 && acked[0] == 9
+	}, "recovered event consumed after heal")
+	if got := e.Stats().ActionsFired; got != 2 {
+		t.Fatalf("actions fired = %d after recovery, want 2 (fallback + durable)", got)
+	}
+}
+
+// TestEngineInboxNoMatchDeliberateAck pins the deliberate no-match: a
+// correct evaluation that matches no route consumes the inbox row (the
+// result was intended, not a failed rule load) — no jobs are created.
+func TestEngineInboxNoMatchDeliberateAck(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asnSrc("rso", "log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+	in := &fakeInbox{}
+	e.SetInbox(in)
+
+	// imgw event: no cell matches (rso-only routing).
+	ev := hazardEventFrom("imgw", "severe", dispatch.TransitionNew)
+	ev.InboxID = 3
+	feed <- ev
+	waitFor(t, func() bool {
+		acked := store.inboxAcked()
+		return len(acked) == 1 && acked[0] == 3
+	}, "no-match event consumed deliberately")
+	if got := e.Stats().ActionsFired; got != 0 {
+		t.Fatalf("actions fired = %d on a no-match event, want 0", got)
+	}
+	if got := store.payloadCount("log"); got != 0 {
+		t.Fatalf("jobs queued = %d on a no-match event, want 0", got)
 	}
 }

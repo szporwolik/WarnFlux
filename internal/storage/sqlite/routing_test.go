@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -94,6 +95,77 @@ func TestGroupRoutingErrors(t *testing.T) {
 	}
 	if err := store.SetGroupRouting(g.ID, []storage.ChannelAssignment{{ID: "a", MinSeverity: "EXTREME"}}); !errors.Is(err, storage.ErrInvalidSeverity) {
 		t.Fatalf("non-canonical severity error = %v, want ErrInvalidSeverity", err)
+	}
+}
+
+// TestCommitInboxDeliveryAtomic pins the P1 contract: every delivery job
+// and the inbox consumption happen in ONE transaction — either the jobs
+// exist durably and the inbox row is gone, or nothing happened. A
+// failure (here: a foreign-key violation on an unknown group) must roll
+// everything back and leave the inbox row pending.
+func TestCommitInboxDeliveryAtomic(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Now()
+	inboxEv := func() dispatch.Event {
+		return dispatch.Event{Kind: dispatch.EventHazardTransition,
+			Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	}
+
+	// Happy path: two jobs + the inbox row in one commit.
+	id, err := store.AppendEvent(ctx, inboxEv())
+	if err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	res, err := store.CommitInboxDelivery(ctx, id, []storage.DeliveryJob{
+		{GroupID: g.ID, ActionID: "log", EventKey: "imgw:1", DedupKey: "c:1", Payload: []byte("{}"), FiredAt: at},
+		{GroupID: g.ID, ActionID: "sms", EventKey: "imgw:1", DedupKey: "c:2", Payload: []byte("{}"), FiredAt: at},
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(res) != 2 || !res[0].Queued || !res[1].Queued {
+		t.Fatalf("results = %+v, want 2 queued jobs", res)
+	}
+	if pending, err := store.PendingInboxEvents(ctx, 10); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after commit = (%v, %v), want (empty, nil)", pending, err)
+	}
+
+	// Failure path: an unknown group violates the foreign key, so the
+	// whole commit (jobs AND inbox consumption) must roll back.
+	id2, err := store.AppendEvent(ctx, inboxEv())
+	if err != nil {
+		t.Fatalf("AppendEvent 2: %v", err)
+	}
+	if _, err := store.CommitInboxDelivery(ctx, id2, []storage.DeliveryJob{
+		{GroupID: 999, ActionID: "log", EventKey: "imgw:1", DedupKey: "c:bad", Payload: []byte("{}"), FiredAt: at},
+	}); err == nil {
+		t.Fatal("commit with unknown group succeeded, want FK failure")
+	}
+	pending, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("pending read: %v", err)
+	}
+	found := false
+	for _, p := range pending {
+		if p.ID == id2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("inbox row consumed by a failed commit; it must stay pending")
+	}
+	// No half-written job either: the same dedup key enqueues fresh.
+	st, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
+		GroupID: g.ID, ActionID: "log", EventKey: "imgw:1", DedupKey: "c:bad", Payload: []byte("{}"), FiredAt: at,
+	})
+	if err != nil || st != storage.DeliverySaved || !queued {
+		t.Fatalf("job after rolled-back commit = (%v, %v, %v), want (saved, true, nil)", st, queued, err)
 	}
 }
 

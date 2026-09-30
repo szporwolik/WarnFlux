@@ -195,7 +195,20 @@ func (s *Store) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (s
 		return 0, false, fmt.Errorf("begin delivery enqueue for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
 	defer tx.Rollback()
+	st, queued, err := s.enqueueDeliveryTx(ctx, tx, job)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("commit delivery enqueue for action %q group %d: %w", job.ActionID, job.GroupID, err)
+	}
+	return st, queued, nil
+}
 
+// enqueueDeliveryTx applies one job inside an open transaction: fresh
+// insert, deduplicated read or terminal-failure re-arm (see
+// EnqueueDelivery).
+func (s *Store) enqueueDeliveryTx(ctx context.Context, tx *sql.Tx, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT OR IGNORE INTO action_fires
 			(group_id, action_id, event_key, dedup_key, payload, status, attempts, next_attempt_at_ms, fired_at_ms)
@@ -207,9 +220,6 @@ func (s *Store) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (s
 	if n, err := res.RowsAffected(); err != nil {
 		return 0, false, fmt.Errorf("insert delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	} else if n == 1 {
-		if err := tx.Commit(); err != nil {
-			return 0, false, fmt.Errorf("commit delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
-		}
 		return storage.DeliverySaved, true, nil
 	}
 
@@ -221,9 +231,6 @@ func (s *Store) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (s
 		return 0, false, fmt.Errorf("read delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
 	if dbStatus != "failed" {
-		if err := tx.Commit(); err != nil {
-			return 0, false, fmt.Errorf("commit delivery enqueue for action %q group %d: %w", job.ActionID, job.GroupID, err)
-		}
 		return statusFromDB(dbStatus), false, nil
 	}
 
@@ -235,10 +242,41 @@ func (s *Store) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (s
 		string(job.Payload), job.GroupID, job.ActionID, job.DedupKey); err != nil {
 		return 0, false, fmt.Errorf("re-arm delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, false, fmt.Errorf("commit re-armed delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
-	}
 	return storage.DeliverySaved, true, nil
+}
+
+// CommitInboxDelivery persists every delivery job of one evaluation and,
+// for inbox events, deletes the inbox row — all in ONE transaction.
+// Either all jobs exist durably and the inbox row is consumed, or
+// nothing happened (the inbox row stays pending for recovery). It
+// returns one result per job, in order.
+func (s *Store) CommitInboxDelivery(ctx context.Context, inboxID int64, jobs []storage.DeliveryJob) ([]storage.DeliveryResult, error) {
+	if inboxID == 0 && len(jobs) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin inbox delivery commit: %w", err)
+	}
+	defer tx.Rollback()
+
+	results := make([]storage.DeliveryResult, 0, len(jobs))
+	for _, job := range jobs {
+		st, queued, err := s.enqueueDeliveryTx(ctx, tx, job)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, storage.DeliveryResult{Status: st, Queued: queued})
+	}
+	if inboxID != 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM dispatch_inbox WHERE id = ?`, inboxID); err != nil {
+			return nil, fmt.Errorf("consume inbox row %d: %w", inboxID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit inbox delivery: %w", err)
+	}
+	return results, nil
 }
 
 // ClaimNextDelivery atomically claims the next due job of one action.

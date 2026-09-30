@@ -55,21 +55,22 @@ type RuleStore interface {
 	// GroupRecipientDiscord returns the group members' registered
 	// Discord handles (empty list when the group has none).
 	GroupRecipientDiscord(groupID int64) ([]string, error)
-	// EnqueueDelivery persists the durable delivery job — full payload
-	// (event + recipients), attempt counter and next-attempt deadline
-	// all live in the row. queued=true means this transition made the
-	// job pending (fresh insert, or a terminally failed job re-armed);
-	// queued=false means the transition was deduplicated and st
-	// explains why (already pending or already delivered).
-	EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error)
+	// CommitInboxDelivery persists every delivery job of one evaluation
+	// — full payload (event + recipients), attempt counter and
+	// next-attempt deadline all live in the row — and, for inbox events
+	// (inboxID != 0), deletes the inbox row in the SAME transaction.
+	// It returns one result per job: Queued=true means the transition
+	// made the job pending (fresh insert, or a terminally failed job
+	// re-armed); Queued=false means it was deduplicated.
+	CommitInboxDelivery(ctx context.Context, inboxID int64, jobs []storage.DeliveryJob) ([]storage.DeliveryResult, error)
 }
 
 // Inbox is the optional durable dispatch inbox: events persisted before
-// routing are re-delivered after a restart or a full live queue, and
-// acknowledged once the engine evaluated them.
+// routing are re-delivered after a restart or a full live queue. Rows
+// are consumed only through RuleStore.CommitInboxDelivery, atomically
+// with the delivery jobs they produced — never on a failed evaluation.
 type Inbox interface {
 	PendingInboxEvents(ctx context.Context, limit int) ([]storage.InboxItem, error)
-	AckInboxEvent(ctx context.Context, id int64) error
 }
 
 // inboxBatch bounds one recovery pass over the durable inbox.
@@ -287,18 +288,11 @@ func (e *Engine) refresh() {
 
 // handle evaluates one canonical event against the cached rules.
 func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
-	// Durable acceptance: the inbox row is acknowledged once the
-	// evaluation finishes (on every path), so a crash mid-evaluation
-	// re-delivers the event after a restart.
-	if ev.InboxID != 0 && e.inbox != nil {
-		defer func() {
-			if err := e.inbox.AckInboxEvent(context.Background(), ev.InboxID); err != nil {
-				e.logger.Warn("routing: inbox ack failed",
-					"id", ev.InboxID, "error", err)
-			}
-		}()
-	}
+	inboxID := ev.InboxID
 	if ev.Kind != dispatch.EventHazardTransition || ev.Hazard == nil {
+		// Non-routed kinds are a deliberate no-op: consume the inbox
+		// row (if any) so it never loops.
+		e.consumeDeliberate(ctx, inboxID)
 		return
 	}
 	e.eventsSeen.Add(1)
@@ -331,6 +325,20 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			"skipped: "+string(ev.Hazard.Type)+" transition — notifications are never started for cancelled/expired hazards",
 			time.Now())
 		e.trail.SetOutcome(key, trail.OutcomeSkipped)
+		e.consumeDeliberate(ctx, inboxID)
+		return
+	}
+
+	// The notification machine needs a validly loaded routing snapshot.
+	// Without one the event cannot be deliberately evaluated, so an
+	// inbox event stays PENDING for recovery instead of being consumed
+	// by a broken evaluation. ("No matching rule" must be a deliberate
+	// result, never the side effect of a failed rule load.)
+	if e.rulesLoaded.Load() == 0 {
+		e.logger.Debug("routing: rules not loaded yet, event kept pending",
+			"event_key", key, "inbox_id", inboxID)
+		e.trail.Add(key, trail.StepSkipped,
+			"skipped: rules not loaded — event kept pending for retry", time.Now())
 		return
 	}
 
@@ -340,6 +348,12 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	aprsBcc := e.aprsBcc
 	e.mu.RUnlock()
 
+	// One evaluation first collects EVERY delivery job, then commits
+	// them — together with the inbox consumption — in a single
+	// transaction. A crash or failure therefore either persists all
+	// jobs durably and removes the inbox row, or does neither.
+	var jobs []storage.DeliveryJob
+	var metas []jobMeta
 	anyCell := false
 	for _, rule := range rules {
 		if len(rule.Actions) == 0 {
@@ -367,8 +381,6 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		}
 		anyCell = true
 
-		// One event can fire a subset of the actions.
-		var fired int
 		for _, a := range best {
 			if !meetsThreshold(rank, a.MinSeverity) {
 				e.notifCount(a.ID, "skipped", 1)
@@ -377,14 +389,6 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 						rule.Name, a.ID, a.MinSeverity), time.Now())
 				continue
 			}
-			// Durable delivery: the full job (payload, recipients) is
-			// persisted BEFORE anything counts as "accepted", and the
-			// action worker records the result AFTER each execution. A
-			// power loss between "queued" and "transmitted" therefore
-			// retries on restart, and an execution that burns all
-			// attempts is re-armed by a replay instead of being
-			// deduplicated away.
-			dedup := fireDedupKey(ev)
 			e.trail.Add(key, trail.StepMatched, "matched group "+rule.Name, time.Now())
 			routeSrc := a.Source
 			if routeSrc == "" {
@@ -404,7 +408,9 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 			payload, err := json.Marshal(req)
 			if err != nil {
 				// Defensive: this struct cannot fail JSON encoding in
-				// practice, but an alert must never be silently dropped.
+				// practice — but without a payload the job cannot be
+				// made durable, so the whole event stays pending rather
+				// than being consumed half-processed.
 				e.actionsFailed.Add(1)
 				e.notifCount(a.ID, "failed", 1)
 				e.trail.Add(key, trail.StepFailed,
@@ -412,65 +418,123 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 				e.trail.SetOutcome(key, trail.OutcomeFailed)
 				e.logger.Warn("routing: action request encode failed",
 					"group", rule.Name, "action", a.ID, "error", err)
-				continue
+				return
 			}
-			st, queued, err := e.store.EnqueueDelivery(ctx, storage.DeliveryJob{
+			jobs = append(jobs, storage.DeliveryJob{
 				GroupID:  rule.GroupID,
 				ActionID: a.ID,
 				EventKey: ev.Hazard.Key,
-				DedupKey: dedup,
+				DedupKey: fireDedupKey(ev),
 				Payload:  payload,
 				FiredAt:  time.Now(),
 			})
-			if err != nil {
-				// A ledger failure must never suppress an alert: fall
-				// back to the in-memory submission path (best-effort
-				// deduplication).
-				e.logger.Warn("routing: delivery job persist failed",
-					"group", rule.Name, "action", a.ID, "error", err)
-				if serr := e.actions.Submit(a.ID, req); serr != nil {
-					e.actionsFailed.Add(1)
-					e.notifCount(a.ID, "failed", 1)
-					e.trail.Add(key, trail.StepFailed,
-						fmt.Sprintf("%s failed to start: %v", a.ID, serr), time.Now())
-					e.trail.SetOutcome(key, trail.OutcomeFailed)
-					e.logger.Warn("routing: action submission failed",
-						"group", rule.Name, "action", a.ID, "error", serr)
-				} else {
-					e.actionsFired.Add(1)
-					fired++
-					e.trail.Add(key, trail.StepSubmitted,
-						fmt.Sprintf("%s action started (group %s, ledger unavailable)", a.ID, rule.Name), time.Now())
-					e.trail.SetOutcome(key, trail.OutcomeSubmitted)
-				}
-				continue
-			}
-			if !queued {
-				// The job is already pending or already delivered:
-				// replays deduplicate (the worker executes queued jobs;
-				// delivered jobs never fire twice).
-				e.actionsDeduped.Add(1)
-				e.notifCount(a.ID, "deduped", 1)
-				e.trail.Add(key, trail.StepSkipped,
-					fmt.Sprintf("skipped: already queued or delivered — group %s action %s (duplicate, %s)",
-						rule.Name, a.ID, st), time.Now())
-				continue
-			}
-			e.actionsFired.Add(1)
-			fired++
-			e.trail.Add(key, trail.StepSubmitted,
-				fmt.Sprintf("%s job queued durably (group %s)", a.ID, rule.Name), time.Now())
-			e.trail.SetOutcome(key, trail.OutcomeSubmitted)
-		}
-
-		if fired > 0 {
-			e.rulesMatched.Add(1)
+			metas = append(metas, jobMeta{
+				groupID: rule.GroupID, ruleName: rule.Name, actionID: a.ID, req: req,
+			})
 		}
 	}
 
+	// Single transaction: every delivery job (full payload, recipients,
+	// attempts, deadline) is persisted together with the inbox
+	// consumption. Durable delivery then proceeds in the action workers,
+	// which record the result after each execution.
+	results, err := e.store.CommitInboxDelivery(ctx, inboxID, jobs)
+	if err != nil {
+		// A ledger failure must never suppress an alert and must never
+		// consume the inbox row: fall back to the in-memory submission
+		// path (best-effort, undeduplicated) and leave the event pending
+		// so recovery re-evaluates it — at-least-once.
+		e.logger.Warn("routing: delivery commit failed",
+			"inbox_id", inboxID, "jobs", len(jobs), "error", err)
+		e.deliverInMemory(key, metas)
+		if !anyCell {
+			e.trail.Add(key, trail.StepSkipped,
+				"skipped: no group has a matching route for this alert", time.Now())
+		}
+		return
+	}
+
+	groupFired := make(map[int64]struct{}, len(jobs))
+	for i, m := range metas {
+		r := results[i]
+		if !r.Queued {
+			// The job is already pending or already delivered: replays
+			// deduplicate (the worker executes queued jobs; delivered
+			// jobs never fire twice).
+			e.actionsDeduped.Add(1)
+			e.notifCount(m.actionID, "deduped", 1)
+			e.trail.Add(key, trail.StepSkipped,
+				fmt.Sprintf("skipped: already queued or delivered — group %s action %s (duplicate, %s)",
+					m.ruleName, m.actionID, r.Status), time.Now())
+			continue
+		}
+		e.actionsFired.Add(1)
+		groupFired[m.groupID] = struct{}{}
+		e.trail.Add(key, trail.StepSubmitted,
+			fmt.Sprintf("%s job queued durably (group %s)", m.actionID, m.ruleName), time.Now())
+		e.trail.SetOutcome(key, trail.OutcomeSubmitted)
+	}
+	if len(groupFired) > 0 {
+		e.rulesMatched.Add(int64(len(groupFired)))
+	}
+
 	if !anyCell {
+		// A deliberate no-match: the evaluation was correct and the
+		// inbox row (if any) was consumed atomically with the (empty)
+		// commit above.
 		e.trail.Add(key, trail.StepSkipped,
 			"skipped: no group has a matching route for this alert", time.Now())
+	}
+}
+
+// jobMeta is the in-memory companion of one delivery job collected
+// during an evaluation: it links the persisted job back to the action
+// request, rule and group for counters, the trail and the fallback path.
+type jobMeta struct {
+	groupID  int64
+	ruleName string
+	actionID string
+	req      action.ActionRequest
+}
+
+// deliverInMemory submits every collected request through the
+// in-memory fallback path. It is used only when the durable ledger is
+// unavailable: alerts fire (at-least-once) but are not deduplicated.
+func (e *Engine) deliverInMemory(key string, metas []jobMeta) {
+	groupFired := make(map[int64]struct{}, len(metas))
+	for _, m := range metas {
+		if err := e.actions.Submit(m.actionID, m.req); err != nil {
+			e.actionsFailed.Add(1)
+			e.notifCount(m.actionID, "failed", 1)
+			e.trail.Add(key, trail.StepFailed,
+				fmt.Sprintf("%s failed to start: %v", m.actionID, err), time.Now())
+			e.trail.SetOutcome(key, trail.OutcomeFailed)
+			e.logger.Warn("routing: action submission failed",
+				"group", m.ruleName, "action", m.actionID, "error", err)
+			continue
+		}
+		e.actionsFired.Add(1)
+		groupFired[m.groupID] = struct{}{}
+		e.trail.Add(key, trail.StepSubmitted,
+			fmt.Sprintf("%s action started (group %s, ledger unavailable)", m.actionID, m.ruleName), time.Now())
+		e.trail.SetOutcome(key, trail.OutcomeSubmitted)
+	}
+	if len(groupFired) > 0 {
+		e.rulesMatched.Add(int64(len(groupFired)))
+	}
+}
+
+// consumeDeliberate marks an inbox event as processed with no delivery
+// jobs: the result was deliberate (non-routed kind or terminal
+// transition), so the inbox row is deleted in its own transaction. A
+// failing ledger keeps the row pending for recovery.
+func (e *Engine) consumeDeliberate(ctx context.Context, inboxID int64) {
+	if inboxID == 0 {
+		return
+	}
+	if _, err := e.store.CommitInboxDelivery(ctx, inboxID, nil); err != nil {
+		e.logger.Warn("routing: inbox consume failed, event stays pending",
+			"id", inboxID, "error", err)
 	}
 }
 

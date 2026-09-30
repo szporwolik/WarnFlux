@@ -24,8 +24,10 @@ type meshMessageView struct {
 	SenderName string
 	Channel    string
 	Hops       int
-	Text       string
-	At         time.Time
+	// Operator is the admin username behind a tx row (rx rows empty).
+	Operator string
+	Text     string
+	At       time.Time
 	// Key is the 12-hex pubkey prefix when the row can prefill the send
 	// form (direct messages), empty otherwise.
 	Key string
@@ -181,11 +183,18 @@ func (s *Server) fillMeshMessages(r *http.Request, v *meshView) {
 		owners, _ = s.users.MeshKeyOwners()
 	}
 	for _, m := range stored {
+		// The device uses 0xFF as the "no path info" sentinel; treat it
+		// as unknown so the history never claims 255 hops.
+		hops := m.Hops
+		if hops >= 255 {
+			hops = 0
+		}
 		view := meshMessageView{
 			Direction: m.Direction,
 			Sender:    m.Sender,
 			Channel:   s.meshChannelName(m.Channel),
-			Hops:      m.Hops,
+			Hops:      hops,
+			Operator:  m.Operator,
 			Text:      m.Text,
 			At:        m.At,
 		}
@@ -377,9 +386,9 @@ func (s *Server) handleMeshcoreSend(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		err = s.mesh.SendContactMessage(addr, text)
+		err = s.mesh.SendContactMessage(addr, text, sess.username)
 	} else {
-		err = s.mesh.SendChannelMessage(text)
+		err = s.mesh.SendChannelMessage(text, sess.username)
 	}
 	if err != nil {
 		s.logger.Warn("web: meshcore send failed", "target", r.PostFormValue("target"), "error", err)

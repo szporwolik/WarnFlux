@@ -486,6 +486,13 @@ CREATE INDEX idx_meshcore_messages_created ON meshcore_messages(created_at_ms);
 ALTER TABLE meshcore_messages ADD COLUMN hops INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		// v22: the admin username behind sent mesh messages, shown in the
+		// history next to the TX sender.
+		SQL: `
+ALTER TABLE meshcore_messages ADD COLUMN operator TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

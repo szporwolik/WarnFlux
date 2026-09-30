@@ -585,6 +585,26 @@ func (s *Store) AllAPRSCallsigns() ([]string, error) {
 	return out, rows.Err()
 }
 
+// APRSCallsignOwners returns every registered APRS callsign mapped to the
+// username that registered it (uppercase, SSID kept as entered). The
+// admin APRS message history uses it to label senders and addressees.
+func (s *Store) APRSCallsignOwners() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT u.username, a.callsign FROM user_aprs a JOIN users u ON u.id = a.user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list aprs owners: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var username, callsign string
+		if err := rows.Scan(&username, &callsign); err != nil {
+			return nil, fmt.Errorf("scan aprs owner: %w", err)
+		}
+		out[strings.ToUpper(strings.TrimSpace(callsign))] = username
+	}
+	return out, rows.Err()
+}
+
 // SetUserPassword replaces a regular user's password (fresh salt + PBKDF2
 // hash). The admin row reports storage.ErrUserProtected.
 func (s *Store) SetUserPassword(userID int64, password string) error {

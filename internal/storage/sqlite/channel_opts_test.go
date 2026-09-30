@@ -276,3 +276,30 @@ func TestMeshKeyOwners(t *testing.T) {
 		t.Fatal("unregistered key has an owner")
 	}
 }
+
+// TestAPRSCallsignOwners pins the owner mapping query: every registered
+// callsign (uppercase, SSID kept) maps onto the username that owns it.
+func TestAPRSCallsignOwners(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "owners.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	ada, err := store.CreateUser("ada", "", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserAPRS(ada.ID, []string{"sp9kow-4", "SR9KR"}); err != nil {
+		t.Fatal(err)
+	}
+	owners, err := store.APRSCallsignOwners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owners["SP9KOW-4"] != "ada" || owners["SR9KR"] != "ada" || len(owners) != 2 {
+		t.Fatalf("owners = %v", owners)
+	}
+}

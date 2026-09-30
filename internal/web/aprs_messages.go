@@ -17,10 +17,16 @@ type aprsMessageView struct {
 	ID        int64
 	Direction string
 	From      string
-	To        string
-	Text      string
-	Via       string
-	At        time.Time
+	// FromName is the directory username owning the sender's callsign on
+	// rx rows (empty otherwise).
+	FromName string
+	To       string
+	// ToName is the directory username owning the addressee's callsign
+	// on tx rows (empty otherwise).
+	ToName string
+	Text   string
+	Via    string
+	At     time.Time
 	// Bulletin marks broadcast frames (addressed to BLN0-BLN9, BLNA-Z):
 	// visible in the history, never routed as alerts.
 	Bulletin bool
@@ -154,8 +160,14 @@ func (s *Server) fillAPRSMessages(r *http.Request, v *aprsMessagesView) {
 		return
 	}
 	v.Messages = make([]aprsMessageView, 0, len(stored))
+	// Directory match: label senders (rx) and addressees (tx) whose
+	// callsign is registered on a user, base-callsign insensitive.
+	var owners map[string]string
+	if s.users != nil {
+		owners, _ = s.users.APRSCallsignOwners()
+	}
 	for _, m := range stored {
-		v.Messages = append(v.Messages, aprsMessageView{
+		view := aprsMessageView{
 			ID:        m.ID,
 			Direction: m.Direction,
 			From:      m.From,
@@ -164,8 +176,41 @@ func (s *Server) fillAPRSMessages(r *http.Request, v *aprsMessagesView) {
 			Via:       m.Via,
 			At:        m.At,
 			Bulletin:  aprs.IsBulletin(m.To),
-		})
+		}
+		if m.Direction == "rx" {
+			view.FromName = aprsOwnerFor(owners, m.From)
+		} else {
+			view.ToName = aprsOwnerFor(owners, m.To)
+		}
+		v.Messages = append(v.Messages, view)
 	}
+}
+
+// aprsOwnerFor resolves the directory username for a callsign: an exact
+// match on the registered callsign first, then a base-callsign match
+// (SSID-insensitive), mirroring the routing sender allow-list.
+func aprsOwnerFor(owners map[string]string, callsign string) string {
+	c := strings.ToUpper(strings.TrimSpace(callsign))
+	if c == "" {
+		return ""
+	}
+	if u, ok := owners[c]; ok {
+		return u
+	}
+	base := c
+	if i := strings.IndexByte(base, '-'); i > 0 {
+		base = base[:i]
+	}
+	for key, u := range owners {
+		k := key
+		if i := strings.IndexByte(k, '-'); i > 0 {
+			k = k[:i]
+		}
+		if k == base {
+			return u
+		}
+	}
+	return ""
 }
 
 // handlePartialMessages serves the polled APRS message-list fragment so

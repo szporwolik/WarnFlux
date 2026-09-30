@@ -97,6 +97,18 @@ type MessageDocument struct {
 	Via           string `json:"via"`
 }
 
+// BulletinDocument is the retained MQTT document of one heard APRS
+// bulletin (a broadcast frame addressed to BLNn). It stays on the broker
+// until the bulletin TTL expires it (empty retained payload = delete).
+type BulletinDocument struct {
+	SchemaVersion int    `json:"schema_version"`
+	From          string `json:"from"`
+	To            string `json:"to"`
+	Text          string `json:"text"`
+	ReceivedAt    string `json:"received_at"`
+	Via           string `json:"via"`
+}
+
 // formatTime renders a unix timestamp as RFC 3339 UTC.
 func formatTime(unix int64) string {
 	if unix <= 0 {

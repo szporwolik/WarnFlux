@@ -158,6 +158,10 @@ type Hub struct {
 	// routing entirely — a message is only routed when the operator is on
 	// the configured allow-list (SSIDs may differ).
 	senderGate func(base string) bool
+
+	// bulletins maps retained bulletin topic ids onto their receipt
+	// unix time; maintenance deletes them after BulletinTTL.
+	bulletins map[string]int64
 }
 
 // NewHub validates the hub identity and returns the hub. The hub is
@@ -168,6 +172,9 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 	}
 	if cfg.StationTTL == 0 {
 		cfg.StationTTL = DefaultStationTTL
+	}
+	if cfg.BulletinTTL == 0 {
+		cfg.BulletinTTL = DefaultBulletinTTL
 	}
 	cfg.Callsign = NormalizeCallsign(cfg.Callsign)
 
@@ -208,6 +215,9 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 		if cfg.StationTTL < time.Minute || cfg.StationTTL > 24*time.Hour {
 			return nil, fmt.Errorf("aprs: station_ttl must be between 1m and 24h, got %s", cfg.StationTTL)
 		}
+		if cfg.BulletinTTL < time.Minute || cfg.BulletinTTL > 24*time.Hour {
+			return nil, fmt.Errorf("aprs: bulletin_ttl must be between 1m and 24h, got %s", cfg.BulletinTTL)
+		}
 		switch len(cfg.Icon) {
 		case 0:
 		case 1:
@@ -224,6 +234,7 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 		logger:       logger,
 		now:          time.Now,
 		stations:     make(map[string]*stationRecord),
+		bulletins:    make(map[string]int64),
 		transmitters: make(map[string]Transmitter),
 		seenDigests:  make(map[string]int64),
 		ops:          make(chan hubOp, opsQueueSize),
@@ -697,6 +708,13 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 		h.logger.Warn("aprs: message feed publish failed", "error", err)
 	}
 
+	// Bulletins also get a bounded retained presence: one document per
+	// bulletin on aprs/bulletins/*, deleted by maintenance after the
+	// bulletin TTL. A repeated bulletin updates the same topic.
+	if IsBulletin(p.Message.To) {
+		h.publishBulletin(p, via)
+	}
+
 	// Routing: APRS messages addressed to us become routable events on
 	// the /events stream (the "aprs" source in the routing matrix) when
 	// the sender's base callsign is on the registered-user allow-list —
@@ -716,6 +734,32 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 		if kind := ackKind(p.Message.Text); kind != "" {
 			h.signalAck(p.Message.ID, kind)
 		}
+	}
+}
+
+// publishBulletin keeps one heard bulletin in the retained MQTT state:
+// the topic id derives from the sender and receipt time, so a repeated
+// bulletin overwrites in place. Maintenance tombstones it after the
+// bulletin TTL (empty retained payload = topic deletion).
+func (h *Hub) publishBulletin(p Packet, via string) {
+	id := fmt.Sprintf("%s-%d", p.Src, p.ReceivedAt)
+	payload, err := json.Marshal(BulletinDocument{
+		SchemaVersion: SchemaVersion,
+		From:          p.Src,
+		To:            p.Message.To,
+		Text:          p.Message.Text,
+		ReceivedAt:    formatTime(p.ReceivedAt),
+		Via:           via,
+	})
+	if err != nil {
+		h.logger.Warn("aprs: bulletin marshal failed", "error", err)
+		return
+	}
+	h.mu.Lock()
+	h.bulletins[id] = p.ReceivedAt
+	h.mu.Unlock()
+	if err := h.publishWithTimeout(BulletinsTopicPrefix+id, true, payload); err != nil {
+		h.logger.Warn("aprs: bulletin publish failed", "id", id, "error", err)
 	}
 }
 
@@ -1072,6 +1116,14 @@ func (h *Hub) maintenance() {
 			delete(h.seenDigests, digest)
 		}
 	}
+	bulletCutoff := now.Add(-h.cfg.BulletinTTL).Unix()
+	var staleBulletins []string
+	for id, at := range h.bulletins {
+		if at < bulletCutoff {
+			staleBulletins = append(staleBulletins, id)
+			delete(h.bulletins, id)
+		}
+	}
 	dirty := make([]*stationRecord, 0, len(h.stations))
 	for _, rec := range h.stations {
 		if rec.dirty {
@@ -1086,6 +1138,11 @@ func (h *Hub) maintenance() {
 			continue
 		}
 		h.expired.Add(1)
+	}
+	for _, id := range staleBulletins {
+		if err := h.publishWithTimeout(BulletinsTopicPrefix+id, true, nil); err != nil {
+			h.logger.Warn("aprs: bulletin delete failed", "id", id, "error", err)
+		}
 	}
 	for _, rec := range dirty {
 		h.publishStation(rec)

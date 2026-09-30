@@ -231,6 +231,7 @@ func (s *Server) routes(static http.Handler) {
 	// UI language switch: stores the choice in a cookie and returns.
 	s.mux.HandleFunc("GET /lang/{code}", s.handleLanguage)
 	s.mux.HandleFunc("GET /api/aprs/stations", s.handleAPRSStations)
+	s.mux.HandleFunc("GET /api/meshcore/stations", s.handleMeshcoreStations)
 	s.mux.HandleFunc("GET /api/events", s.handleEventsMap)
 	s.mux.HandleFunc("GET /api/weather", s.handleWeather)
 	s.mux.HandleFunc("GET /api/aircraft", s.handleAircraft)

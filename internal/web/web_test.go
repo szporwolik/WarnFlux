@@ -27,6 +27,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
+	"github.com/szporwolik/WarnFlux/internal/meshcore"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
@@ -93,26 +94,32 @@ func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload 
 }
 
 func newTestEnv(t *testing.T) *testEnv {
-	return newTestEnvFull(t, nil, nil, nil)
+	return newTestEnvFull(t, nil, nil, nil, nil)
 }
 
 func newTestEnvWithIngest(t *testing.T, ingest map[string]http.Handler) *testEnv {
-	return newTestEnvFull(t, ingest, nil, nil)
+	return newTestEnvFull(t, ingest, nil, nil, nil)
 }
 
 // newTestEnvWithHub builds the test environment with an APRS hub wired
 // into the web server (the home-page map tab reads it).
 func newTestEnvWithHub(t *testing.T, hub *aprs.Hub) *testEnv {
-	return newTestEnvFull(t, nil, hub, nil)
+	return newTestEnvFull(t, nil, hub, nil, nil)
+}
+
+// newTestEnvWithMesh builds the test environment with a MeshCore hub
+// wired into the web server (the home-page map reads its nodes).
+func newTestEnvWithMesh(t *testing.T, meshHub *meshcore.Hub) *testEnv {
+	return newTestEnvFull(t, nil, nil, nil, meshHub)
 }
 
 // newTestEnvWithStore builds the test environment with an event store
 // wired into the web server (the home-page archive tab reads it).
 func newTestEnvWithStore(t *testing.T, events storage.EventStore) *testEnv {
-	return newTestEnvFull(t, nil, nil, events)
+	return newTestEnvFull(t, nil, nil, events, nil)
 }
 
-func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore) *testEnv {
+func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub) *testEnv {
 	t.Helper()
 
 	cfg := config.Web{
@@ -180,7 +187,7 @@ func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub,
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, nil, ingress, logger, "test-version", "abc1234", users, events, nil, nil, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshHub, ingress, logger, "test-version", "abc1234", users, events, nil, nil, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2506,5 +2513,45 @@ func TestAPRSSendValidation(t *testing.T) {
 	resp, _ = env.postForm("/messages/send", url.Values{"csrf": {csrf}, "to": {"SP9XXX"}, "text": {"hello"}})
 	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "err=") {
 		t.Fatalf("POST send no transmitter = %d %q, want redirect with err", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+func TestMeshcoreStationsAPI(t *testing.T) {
+	// Without a mesh hub the public endpoint is absent.
+	env := newTestEnv(t)
+	resp, _ := env.get("/api/meshcore/stations")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /api/meshcore/stations without mesh = %d, want 404", resp.StatusCode)
+	}
+
+	// With a mesh hub configured the endpoint serves the two lists
+	// (located nodes and the position-less badge list).
+	meshHub, err := meshcore.NewHub(meshcore.Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = newTestEnvWithMesh(t, meshHub)
+	resp, body := env.get("/api/meshcore/stations")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/meshcore/stations = %d", resp.StatusCode)
+	}
+	var view struct {
+		Nodes []struct {
+			Key  string  `json:"key"`
+			Name string  `json:"name"`
+			Lat  float64 `json:"latitude"`
+			Lon  float64 `json:"longitude"`
+		} `json:"nodes"`
+		NoPos []struct {
+			Key string `json:"key"`
+		} `json:"nopos"`
+	}
+	if err := json.Unmarshal([]byte(body), &view); err != nil {
+		t.Fatalf("payload = %s: %v", body, err)
+	}
+	if view.Nodes == nil || view.NoPos == nil {
+		t.Fatalf("payload = %s, want nodes and nopos arrays", body)
 	}
 }

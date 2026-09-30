@@ -177,6 +177,10 @@ var en = map[string]string{
 	"home.stations.title":    "Radio stations",
 	"home.stations.loading":  "Loading stations…",
 	"home.stations.none":     "No stations heard yet — ham stations beacon through APRS.",
+	"home.meshcore.title":    "MeshCore nodes",
+	"home.meshcore.loading":  "Loading MeshCore nodes…",
+	"home.meshcore.none":     "No MeshCore nodes heard yet.",
+	"home.meshcore.noloc":    "Heard without position",
 	"home.aircraft.title":    "Aircraft overhead",
 	"home.aircraft.loading":  "Loading aircraft…",
 	"home.aircraft.none":     "No aircraft in range right now.",
@@ -198,6 +202,7 @@ var en = map[string]string{
 	// Home map layer labels (JS + toggles).
 	"map.layer.hazards":    "Hazards",
 	"map.layer.stations":   "Stations",
+	"map.layer.meshcore":   "MeshCore",
 	"map.layer.weather":    "Weather",
 	"map.layer.radar":      "Radar",
 	"map.layer.airquality": "Air quality",
@@ -222,6 +227,7 @@ var en = map[string]string{
 	"map.via.internet":     "Via: internet (APRS-IS)",
 	"map.sent":             "Sent",
 	"map.heard":            "Heard",
+	"map.hops":             "hops",
 	"map.km":               "km",
 
 	// Admin dashboard.
@@ -738,6 +744,10 @@ var pl = map[string]string{
 	"home.stations.title":    "Stacje radiowe",
 	"home.stations.loading":  "Wczytywanie stacji…",
 	"home.stations.none":     "Nie słychać jeszcze żadnych stacji — krótkofalowcy nadają przez APRS.",
+	"home.meshcore.title":    "Węzły MeshCore",
+	"home.meshcore.loading":  "Wczytywanie węzłów MeshCore…",
+	"home.meshcore.none":     "Nie słychać jeszcze żadnych węzłów MeshCore.",
+	"home.meshcore.noloc":    "Słyszane bez pozycji",
 	"home.aircraft.title":    "Samoloty nad nami",
 	"home.aircraft.loading":  "Wczytywanie samolotów…",
 	"home.aircraft.none":     "W tej chwili brak samolotów w zasięgu.",
@@ -758,6 +768,7 @@ var pl = map[string]string{
 
 	"map.layer.hazards":    "Zagrożenia",
 	"map.layer.stations":   "Stacje",
+	"map.layer.meshcore":   "MeshCore",
 	"map.layer.weather":    "Pogoda",
 	"map.layer.radar":      "Radar",
 	"map.layer.airquality": "Jakość powietrza",
@@ -782,6 +793,7 @@ var pl = map[string]string{
 	"map.via.internet":     "Przez: internet (APRS-IS)",
 	"map.sent":             "Wysłano",
 	"map.heard":            "Odebrano",
+	"map.hops":             "przeskoków",
 	"map.km":               "km",
 
 	"dash.system":           "System",

@@ -112,7 +112,7 @@ type MessageRecorder interface {
 
 // Defaults applied by NewHub when the config omits values.
 const (
-	DefaultRadiusKM   = 60
-	DefaultStationTTL = 30 * time.Minute
+	DefaultRadiusKM    = 60
+	DefaultStationTTL  = 30 * time.Minute
 	DefaultBulletinTTL = 24 * time.Hour
 )

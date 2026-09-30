@@ -2784,3 +2784,31 @@ func TestMeshNodeOwnerLabel(t *testing.T) {
 		t.Errorf("nodes partial missing owner label: %.300s", body)
 	}
 }
+
+// TestAPRSOwnerNames pins the directory match in the APRS history: rx
+// senders and tx addressees whose callsign belongs to a registered user
+// show the username (exact SSID or base-callsign match).
+func TestAPRSOwnerNames(t *testing.T) {
+	store := &fakeAPRSMsgs{rows: []storage.APRSMessage{
+		{Direction: "rx", From: "SP9XYZ-7", To: "SP9MOA-10", Text: "hello", Via: "aprs-inet", At: time.Now()},
+		{Direction: "tx", From: "SP9MOA-10", To: "SP9XYZ-2", Text: "reply", Via: "aprs-inet", At: time.Now()},
+	}}
+	env := newTestEnvAll(t, nil, nil, nil, nil, store, nil)
+	u, err := env.users.CreateUser("sp9kow", "600111222", "", "", "member", "pw1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserAPRS(u.ID, []string{"SP9XYZ-7"}); err != nil {
+		t.Fatal(err)
+	}
+	env.login()
+
+	resp, body := env.get("/partials/messages")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial = %d", resp.StatusCode)
+	}
+	// rx exact match + tx base-callsign match both label sp9kow.
+	if got := strings.Count(body, "(sp9kow)"); got != 2 {
+		t.Errorf("owner labels = %d, want 2: %.300s", got, body)
+	}
+}

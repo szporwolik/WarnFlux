@@ -199,6 +199,10 @@ type UserStore interface {
 	// stripped, uppercase) registered for any user, sorted. The APRS
 	// message-routing bridge uses it as the sender allow-list.
 	AllAPRSCallsigns() ([]string, error)
+	// APRSCallsignOwners returns every registered APRS callsign mapped
+	// to the username that registered it (uppercase, SSID kept as
+	// entered). The admin APRS history uses it to label messages.
+	APRSCallsignOwners() (map[string]string, error)
 	// UserChannelOptOuts returns the delivery channels this user has
 	// disabled, keyed by channel kind (see internal/notify). An empty
 	// set means every channel is enabled — the default.

@@ -309,6 +309,20 @@ func (f *fakeUsers) MeshKeyOwners() (map[string]string, error) {
 	return owners, nil
 }
 
+// APRSCallsignOwners returns each registered APRS callsign mapped to the
+// owning username (uppercase).
+func (f *fakeUsers) APRSCallsignOwners() (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	owners := make(map[string]string)
+	for _, u := range f.rows {
+		for _, c := range u.APRSCallsigns {
+			owners[strings.ToUpper(c)] = u.Username
+		}
+	}
+	return owners, nil
+}
+
 // SetUserPassword replaces a regular user's password; the admin row is
 // protected.
 func (f *fakeUsers) SetUserPassword(userID int64, password string) error {

@@ -228,7 +228,7 @@ func (s *Server) fillMeshNodes(v *meshView) {
 		}
 		name := n.Name
 		if name == "" {
-			name = owners[n.PubKey]
+			name = meshOwnerFor(owners, n.PubKey)
 		}
 		v.Nodes = append(v.Nodes, meshNodeView{
 			PubKey:     n.PubKey,
@@ -244,6 +244,21 @@ func (s *Server) fillMeshNodes(v *meshView) {
 			LastSeen:   n.LastSeen.Format("15:04:05"),
 		})
 	}
+}
+
+// meshOwnerFor resolves the directory username for a heard node: the
+// registered key may be the full 64-hex public key or its 12-hex short
+// prefix, so an exact match wins, then a prefix match either way.
+func meshOwnerFor(owners map[string]string, pubKey string) string {
+	if u, ok := owners[pubKey]; ok {
+		return u
+	}
+	for key, u := range owners {
+		if strings.HasPrefix(key, pubKey) || strings.HasPrefix(pubKey, key) {
+			return u
+		}
+	}
+	return ""
 }
 
 // cardinalDirection maps a bearing in degrees to the 8-wind compass point.

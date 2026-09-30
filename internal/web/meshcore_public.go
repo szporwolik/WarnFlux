@@ -68,7 +68,7 @@ func (s *Server) handleMeshcoreStations(w http.ResponseWriter, r *http.Request) 
 		typ := meshNodeTypeName(n.Type)
 		name := n.Name
 		if name == "" {
-			name = owners[n.PubKey]
+			name = meshOwnerFor(owners, n.PubKey)
 		}
 		seen := n.LastSeen.UTC().Format(time.RFC3339)
 		if n.Lat == 0 && n.Lon == 0 {

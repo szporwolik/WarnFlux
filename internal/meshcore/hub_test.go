@@ -588,8 +588,8 @@ func TestHubAutoaddConfig(t *testing.T) {
 			t.Logf("DEVICE: unexpected autoadd frame %x (%v)", req, err)
 			return
 		}
-		if req[1] != 0x1E || req[2] != 8 {
-			t.Logf("DEVICE: autoadd mask/hops = %x, want 1e/8", req[1:])
+		if req[1] != 0x1F || req[2] != 8 {
+			t.Logf("DEVICE: autoadd mask/hops = %x, want 1f/8", req[1:])
 			return
 		}
 		host.Write(encodeDeviceFrame([]byte{respOK}))

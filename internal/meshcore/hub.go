@@ -144,18 +144,61 @@ type Hub struct {
 	// eventSink publishes routed message events on the /events stream.
 	eventSink func(ctx context.Context, topic string, retained bool, payload []byte) error
 
-	// pendingAcks queues send-command acknowledgements: the device
-	// answers each host command in order with OK / SENT / ERR.
-	pendingAcks []chan error
-	// cmdMu serializes every host command that expects a device reply:
-	// registration and write happen in the same critical section, so
-	// waiters line up with the device's in-order replies and a reply to
-	// one command can never satisfy another.
-	cmdMu sync.Mutex
+	// cmdCh serializes every host command that expects a device reply:
+	// ONE command worker writes a command, waits for its matching reply
+	// (the expected type is part of the request) and only then takes the
+	// next one. The frame pump never blocks here — commands discovered
+	// while reading (contact queries, protect re-adds) are enqueued
+	// best-effort, so a reply can always reach the worker.
+	cmdCh chan cmdReq
+	// curCmd is the command whose reply the frame pump is currently
+	// routing (guarded by mu); exactly one command is in flight.
+	curCmd *cmdSlot
+	// sessionCtx is cancelled when the current session ends: command
+	// submission fails against it and the worker stops with it
+	// (guarded by mu).
+	sessionCtx    context.Context
+	sessionCancel context.CancelFunc
 	// ready is closed once a session finished its startup handshake and
 	// queue drain; sends wait on it so they are written after the
 	// startup command stream.
 	ready chan struct{}
+}
+
+// cmdExpect selects which device reply satisfies a command.
+type cmdExpect byte
+
+const (
+	// expectAck: the command is satisfied by OK / SENT / ERR.
+	expectAck cmdExpect = iota + 1
+	// expectContact: the command is satisfied by a contact record
+	// (GET_CONTACT_BY_KEY answer) or ERR.
+	expectContact
+)
+
+// cmdReplyTimeout bounds the wait for a send/ack reply; contact queries
+// get a shorter budget (their record is only informational).
+const (
+	cmdReplyTimeout   = 5 * time.Second
+	queryReplyTimeout = 2 * time.Second
+)
+
+// cmdReq is one device command the worker executes.
+type cmdReq struct {
+	payload []byte
+	expect  cmdExpect
+	timeout time.Duration // 0 = cmdReplyTimeout
+	// reply receives the result (buffered, size 1); background commands
+	// may leave it unread — the worker never blocks delivering to it.
+	reply chan error
+}
+
+// cmdSlot is the in-flight command the frame pump routes replies to.
+type cmdSlot struct {
+	expect cmdExpect
+	// done carries the reply from the frame pump to the worker
+	// (buffered, size 1); the worker forwards it to the caller.
+	done chan error
 }
 
 // NewHub validates the config and builds the hub.
@@ -169,7 +212,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
-		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node), ready: make(chan struct{})}, nil
+		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node), ready: make(chan struct{}), cmdCh: make(chan cmdReq, 16)}, nil
 	}
 	if cfg.ChannelIdx < 0 || cfg.ChannelIdx > 7 {
 		return nil, fmt.Errorf("meshcore: channel_idx %d out of range 0-7", cfg.ChannelIdx)
@@ -185,6 +228,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		logger: logger,
 		nodes:  make(map[string]*Node),
 		ready:  make(chan struct{}),
+		cmdCh:  make(chan cmdReq, 16),
 	}, nil
 }
 
@@ -293,7 +337,6 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.ready = make(chan struct{})
 	h.mu.Unlock()
 	defer conn.Close()
-	defer h.failPendingAcks(errors.New("meshcore: session ended"))
 
 	if err := h.handshake(conn); err != nil {
 		return err
@@ -307,10 +350,37 @@ func (h *Hub) runSession(ctx context.Context) error {
 	if err := h.drainMessages(conn); err != nil {
 		return err
 	}
-	// The startup command stream is done: unblock the sends.
+
+	// Startup stream done: install the session context, unblock the
+	// sends and start the single command worker. The context is stored
+	// BEFORE ready closes so a send that passes waitReady always finds
+	// a live session.
+	cmdCtx, cmdCancel := context.WithCancel(ctx)
 	h.mu.Lock()
+	h.sessionCtx = cmdCtx
+	h.sessionCancel = cmdCancel
+	h.curCmd = nil
 	close(h.ready)
 	h.mu.Unlock()
+	cmdDone := make(chan struct{})
+	go func() {
+		defer close(cmdDone)
+		h.commandWorker(cmdCtx, conn)
+	}()
+	defer func() {
+		// Every exit path: stop the worker first (an in-flight command
+		// gets "session ended"), close the connection so a stuck write
+		// can never hold the worker hostage, wait for it, then forget
+		// the session.
+		cmdCancel()
+		conn.Close()
+		<-cmdDone
+		h.mu.Lock()
+		h.sessionCtx = nil
+		h.sessionCancel = nil
+		h.curCmd = nil
+		h.mu.Unlock()
+	}()
 
 	// The device answers APP_START/DEVICE_QUERY/BATTERY once. If the
 	// reply is lost (busy device, USB glitch) the station info stays
@@ -560,61 +630,163 @@ func (h *Hub) writeFrame(payload []byte) error {
 	return nil
 }
 
-// registerAck enqueues a waiter for the next device OK/SENT/ERR reply.
-func (h *Hub) registerAck() chan error {
-	ch := make(chan error, 1)
-	h.mu.Lock()
-	h.pendingAcks = append(h.pendingAcks, ch)
-	h.mu.Unlock()
-	return ch
-}
-
-// popAck returns the oldest ack waiter, if any.
-func (h *Hub) popAck() chan error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if len(h.pendingAcks) == 0 {
-		return nil
+// writeFrameOn encodes and writes one outgoing command on the given
+// connection (the command worker owns its session connection).
+func (h *Hub) writeFrameOn(c conn, payload []byte) error {
+	if _, err := c.Write(encodeFrame(payload)); err != nil {
+		return fmt.Errorf("meshcore: write: %w", err)
 	}
-	ch := h.pendingAcks[0]
-	h.pendingAcks = h.pendingAcks[1:]
-	return ch
+	return nil
 }
 
-// failPendingAcks fails every outstanding waiter (session teardown).
-func (h *Hub) failPendingAcks(err error) {
-	h.mu.Lock()
-	waiters := h.pendingAcks
-	h.pendingAcks = nil
-	h.mu.Unlock()
-	for _, ch := range waiters {
-		ch <- err
-	}
-}
-
-// cancelAck removes a waiter that will never be satisfied (timeout): a
-// stale waiter would otherwise consume the next command's reply.
-func (h *Hub) cancelAck(ack chan error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for i, ch := range h.pendingAcks {
-		if ch == ack {
-			h.pendingAcks = append(h.pendingAcks[:i], h.pendingAcks[i+1:]...)
+// commandWorker is the single goroutine executing every reply-expecting
+// host command, strictly one at a time.
+func (h *Hub) commandWorker(ctx context.Context, c conn) {
+	for {
+		select {
+		case <-ctx.Done():
 			return
+		case req := <-h.cmdCh:
+			h.runCommand(ctx, c, req)
 		}
 	}
 }
 
-// waitAck waits for the device to accept (nil) or reject (error) a
-// command. OK, SENT and ERR frames all satisfy the wait.
-func (h *Hub) waitAck(ack chan error) error {
-	select {
-	case err := <-ack:
-		return err
-	case <-time.After(5 * time.Second):
-		h.cancelAck(ack)
-		return errors.New("meshcore: device did not acknowledge the command")
+// runCommand writes one command and waits for its MATCHING reply. The
+// expectation slot is published before the write so the frame pump can
+// route the reply the instant it arrives; every exit path (write
+// failure, session end, timeout) clears the slot — no stale waiter can
+// ever consume a later command's reply.
+func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
+	timeout := req.timeout
+	if timeout <= 0 {
+		timeout = cmdReplyTimeout
 	}
+	slot := &cmdSlot{expect: req.expect, done: make(chan error, 1)}
+	h.mu.Lock()
+	h.curCmd = slot
+	h.mu.Unlock()
+	clear := func() {
+		h.mu.Lock()
+		if h.curCmd == slot {
+			h.curCmd = nil
+		}
+		h.mu.Unlock()
+	}
+
+	// The write itself is bounded too: a stalled transport must never
+	// hold the worker (and every queued command) hostage. The session
+	// teardown closes the connection, which unblocks a stray write.
+	type writeResult struct{ err error }
+	wdone := make(chan writeResult, 1)
+	go func() { wdone <- writeResult{h.writeFrameOn(c, req.payload)} }()
+	select {
+	case wr := <-wdone:
+		if wr.err != nil {
+			clear()
+			deliverErr(req.reply, wr.err)
+			return
+		}
+	case <-ctx.Done():
+		clear()
+		deliverErr(req.reply, errors.New("meshcore: session ended"))
+		return
+	case <-time.After(timeout):
+		clear()
+		deliverErr(req.reply, errors.New("meshcore: device did not acknowledge the command"))
+		return
+	}
+
+	select {
+	case err := <-slot.done:
+		// The frame pump routed this command's matching reply here.
+		clear()
+		deliverErr(req.reply, err)
+	case <-ctx.Done():
+		clear()
+		deliverErr(req.reply, errors.New("meshcore: session ended"))
+	case <-time.After(timeout):
+		clear()
+		deliverErr(req.reply, errors.New("meshcore: device did not acknowledge the command"))
+	}
+}
+
+// deliverErr hands a command result to its waiter without ever blocking
+// (background commands may leave the channel unread).
+func deliverErr(ch chan error, err error) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- err:
+	default:
+	}
+}
+
+// submitCmd enqueues one command for the worker and waits until the
+// worker takes it (commands are strictly serialized). It fails fast
+// when no session is running.
+func (h *Hub) submitCmd(req cmdReq) error {
+	h.mu.Lock()
+	sc := h.sessionCtx
+	h.mu.Unlock()
+	if sc == nil {
+		return errors.New("meshcore: device not connected")
+	}
+	select {
+	case h.cmdCh <- req:
+		return nil
+	case <-sc.Done():
+		return errors.New("meshcore: session ended")
+	}
+}
+
+// enqueueCmdBackground offers a command to the worker without blocking
+// (frame-pump paths: contact queries, protect re-adds). The worker
+// still waits for the matching reply to keep the command stream
+// ordered; an unanswered background command can only delay later
+// commands by its own timeout.
+func (h *Hub) enqueueCmdBackground(req cmdReq) {
+	h.mu.Lock()
+	sc := h.sessionCtx
+	h.mu.Unlock()
+	if sc == nil {
+		return
+	}
+	select {
+	case h.cmdCh <- req:
+	default:
+		if h.logger != nil {
+			h.logger.Debug("meshcore: command queue full, dropping background command")
+		}
+	}
+}
+
+// takeSlot consumes the in-flight command when the frame matches its
+// expected reply type; anything else is a late/mismatched reply and is
+// ignored by the command stream. The returned channel feeds the worker.
+func (h *Hub) takeSlot(expect cmdExpect) chan error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.curCmd == nil || h.curCmd.expect != expect {
+		return nil
+	}
+	ch := h.curCmd.done
+	h.curCmd = nil
+	return ch
+}
+
+// takeSlotAny consumes the in-flight command regardless of type
+// (respErr satisfies any command).
+func (h *Hub) takeSlotAny() chan error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.curCmd == nil {
+		return nil
+	}
+	ch := h.curCmd.done
+	h.curCmd = nil
+	return ch
 }
 
 // deviceErrText names the device's PACKET_ERR codes.
@@ -669,15 +841,17 @@ func (h *Hub) SendChannelMessage(text, operator string) error {
 	if err := h.waitReady(); err != nil {
 		return err
 	}
-	// Serialized with every other device command so the ack waiter can
-	// only ever be satisfied by this command's own reply.
-	h.cmdMu.Lock()
-	defer h.cmdMu.Unlock()
-	ack := h.registerAck()
-	if err := h.writeFrame(buildSendChannelTxtMsg(byte(h.cfg.ChannelIdx), text)); err != nil {
+	// One command through the serialized worker: only THIS command's
+	// reply (OK/SENT/ERR) can satisfy it.
+	req := cmdReq{
+		payload: buildSendChannelTxtMsg(byte(h.cfg.ChannelIdx), text),
+		expect:  expectAck,
+		reply:   make(chan error, 1),
+	}
+	if err := h.submitCmd(req); err != nil {
 		return err
 	}
-	if err := h.waitAck(ack); err != nil {
+	if err := <-req.reply; err != nil {
 		return err
 	}
 	h.recordMessage("tx", "SOSNA", h.ChannelLabel(h.cfg.ChannelIdx), text, operator, 0)
@@ -701,20 +875,19 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 	if err := h.waitReady(); err != nil {
 		return err
 	}
-	// Serialized with every other device command: the contact add/retry
-	// sequence and the send share one in-order command stream.
-	h.cmdMu.Lock()
-	defer h.cmdMu.Unlock()
+	// The contact add/retry sequence and the send share one in-order
+	// command stream (the worker serializes it); each step waits for its
+	// own reply.
 	send := func() error {
 		payload := []byte{cmdSendTxtMsg, 0, 0} // txtType plain, attempt 0
 		payload = binary.LittleEndian.AppendUint32(payload, uint32(nowUnix()))
 		payload = append(payload, prefix...)
 		payload = append(payload, []byte(text)...)
-		ack := h.registerAck()
-		if err := h.writeFrame(payload); err != nil {
+		req := cmdReq{payload: payload, expect: expectAck, reply: make(chan error, 1)}
+		if err := h.submitCmd(req); err != nil {
 			return err
 		}
-		return h.waitAck(ack)
+		return <-req.reply
 	}
 	if err := send(); err != nil {
 		var derr *DeviceErr
@@ -722,11 +895,11 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 			return err
 		}
 		// The device does not know this contact yet: add it and retry.
-		ack := h.registerAck()
-		if err := h.writeFrame(buildAddUpdateContact(fullKey)); err != nil {
+		req := cmdReq{payload: buildAddUpdateContact(fullKey), expect: expectAck, reply: make(chan error, 1)}
+		if err := h.submitCmd(req); err != nil {
 			return err
 		}
-		if err := h.waitAck(ack); err != nil {
+		if err := <-req.reply; err != nil {
 			return err
 		}
 		if err := send(); err != nil {
@@ -745,13 +918,15 @@ func (h *Hub) SendAdvert(kind int) error {
 	if err := h.waitReady(); err != nil {
 		return err
 	}
-	h.cmdMu.Lock()
-	defer h.cmdMu.Unlock()
-	ack := h.registerAck()
-	if err := h.writeFrame(buildSendSelfAdvert(byte(kind))); err != nil {
+	req := cmdReq{
+		payload: buildSendSelfAdvert(byte(kind)),
+		expect:  expectAck,
+		reply:   make(chan error, 1),
+	}
+	if err := h.submitCmd(req); err != nil {
 		return err
 	}
-	return h.waitAck(ack)
+	return <-req.reply
 }
 
 func (h *Hub) handleFrame(frame []byte) {
@@ -812,6 +987,11 @@ func (h *Hub) handleFrame(frame []byte) {
 			}
 			h.touchNode(a.PublicKey, a.AdvName, a.Type, a.Lat(), a.Lon(), int(a.OutPathLen), advAt)
 		}
+		// A pending contact query is satisfied by exactly this record
+		// (never by an ack frame, and never the other way around).
+		if ch := h.takeSlot(expectContact); ch != nil {
+			deliverErr(ch, nil)
+		}
 	case respChannelMsg:
 		if m, err := parseChannelMsg(frame[1:], false); err == nil {
 			h.receiveChannel(m)
@@ -860,7 +1040,12 @@ func (h *Hub) handleFrame(frame []byte) {
 				if h.logger != nil {
 					h.logger.Info("meshcore: re-adding protected contact", "key", key[:12])
 				}
-				_ = h.writeFrame(buildAddUpdateContact(frame[1:33]))
+				req := cmdReq{
+					payload: buildAddUpdateContact(frame[1:33]),
+					expect:  expectAck,
+					reply:   make(chan error, 1),
+				}
+				h.enqueueCmdBackground(req)
 				return
 			}
 		}
@@ -889,14 +1074,20 @@ func (h *Hub) handleFrame(frame []byte) {
 		if len(frame) > 1 {
 			code = frame[1]
 		}
-		if ch := h.popAck(); ch != nil {
-			ch <- &DeviceErr{Code: code}
+		if ch := h.takeSlotAny(); ch != nil {
+			deliverErr(ch, &DeviceErr{Code: code})
 		} else if h.logger != nil {
 			h.logger.Warn("meshcore: device error", "code", code)
 		}
 	case respOK, respSent:
-		if ch := h.popAck(); ch != nil {
-			ch <- nil
+		// Satisfy an in-flight ack-expecting command. A late reply for a
+		// timed-out command (or a reply to a command that never expected
+		// an ack) matches no slot and is dropped — it can never satisfy
+		// a different command.
+		if ch := h.takeSlot(expectAck); ch != nil {
+			deliverErr(ch, nil)
+		} else if h.logger != nil {
+			h.logger.Debug("meshcore: ack without an in-flight command", "type", frame[0])
 		}
 	default:
 		// unknown: ignore silently, but log the type at debug level so
@@ -1179,16 +1370,17 @@ func (h *Hub) maybeQueryContact(pubKey []byte) {
 	}
 	n.lastQuery = now
 	h.mu.Unlock()
-	// Register the waiter before writing (serialized with other
-	// commands) so the device's in-order reply is consumed by the query,
-	// never by an unrelated send.
-	h.cmdMu.Lock()
-	h.registerAck()
-	err := h.writeFrame(buildGetContactByKey(pubKey))
-	h.cmdMu.Unlock()
-	if err != nil && h.logger != nil {
-		h.logger.Debug("meshcore: contact query failed", "error", err)
+	// The query goes through the command worker with an EXPLICIT
+	// expected reply type (the contact record): the frame pump never
+	// blocks on the command stream, and the query reply can never be
+	// confused with — or steal — a send's ack.
+	req := cmdReq{
+		payload: buildGetContactByKey(pubKey),
+		expect:  expectContact,
+		timeout: queryReplyTimeout,
+		reply:   make(chan error, 1),
 	}
+	h.enqueueCmdBackground(req)
 }
 
 func (h *Hub) recordMessage(direction, sender, channel, text, operator string, hops int) {

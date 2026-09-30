@@ -43,8 +43,15 @@ func encodeDeviceFrame(payload []byte) []byte {
 // readHostFrame reads one host→device frame (0x3C header) payload from the
 // fake device end of the pipe.
 func readHostFrame(host net.Conn) ([]byte, error) {
+	return readHostFrameWithin(host, 2*time.Second)
+}
+
+// readHostFrameWithin is readHostFrame with an explicit read deadline:
+// reads that wait for a command whose budget is spent elsewhere (e.g. a
+// send arriving only after a query timeout) need a longer window.
+func readHostFrameWithin(host net.Conn, d time.Duration) ([]byte, error) {
 	buf := make([]byte, 256)
-	host.SetReadDeadline(time.Now().Add(2 * time.Second))
+	host.SetReadDeadline(time.Now().Add(d))
 	n, err := host.Read(buf)
 	if err != nil {
 		return nil, err
@@ -1333,7 +1340,10 @@ func TestHubQueryAckCannotConfirmSend(t *testing.T) {
 			return
 		}
 		host.Write(encodeDeviceFrame([]byte{respOK}))
-		s, err := readHostFrame(host)
+		// The mismatched OK does not satisfy the query: the send is
+		// written only after the query's own budget (2s) expires, so
+		// this read needs a longer window than the default.
+		s, err := readHostFrameWithin(host, 8*time.Second)
 		if err != nil || len(s) < 1 || s[0] != cmdSendChannelTxtMsg {
 			t.Logf("DEVICE: send frame = %x (%v)", s, err)
 			return
@@ -1349,4 +1359,261 @@ func TestHubQueryAckCannotConfirmSend(t *testing.T) {
 	if got := rec.messages(); len(got) != 0 {
 		t.Fatalf("rejected send recorded TX: %+v", got)
 	}
+}
+
+// contactRecord builds a respContact frame for the given key and name.
+func contactRecord(key []byte, name string) []byte {
+	rec := []byte{respContact}
+	rec = append(rec, key...)
+	rec = append(rec, 0x02, 0x00, 0x03) // type repeater, flags 0, 3 hops
+	rec = append(rec, make([]byte, 64)...)
+	name32 := make([]byte, 32)
+	copy(name32, name)
+	rec = append(rec, name32...)
+	rec = append(rec, 0, 0, 0, 0) // lastAdvert
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], 50_020_000)
+	rec = append(rec, b[:]...)
+	binary.LittleEndian.PutUint32(b[:], 20_000_000)
+	rec = append(rec, b[:]...)
+	rec = append(rec, 0, 0, 0, 0) // lastMod
+	return rec
+}
+
+// TestContactQueryDoesNotStealSendAck pins the P1 scenario: a contact
+// query issued from the frame pump (bare-key advert) answers with a
+// CONTACT RECORD, not an ack. The later respOK for the send must satisfy
+// the SEND, never the query's stale waiter — the send succeeds and is
+// recorded as TX.
+func TestContactQueryDoesNotStealSendAck(t *testing.T) {
+	hub, host, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+
+	// Stage one: startup choreography only (handshake → drain NO_MORE),
+	// like TestHubQueryAckCannotConfirmSend. The pipe is synchronous, so
+	// the device must answer the drain before writing anything itself.
+	devReady := make(chan struct{})
+	go func() {
+		defer close(devReady)
+		buf := make([]byte, 256)
+		host.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host.Read(buf); err != nil {
+			t.Logf("DEVICE: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+	}()
+	select {
+	case <-devReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device did not complete the startup choreography")
+	}
+
+	// Stage two (separate goroutine — never gated on the send): advert →
+	// query → contact record → send → OK.
+	key := bytes.Repeat([]byte{0xAB}, 32)
+	devDone := make(chan struct{})
+	queryRead := make(chan struct{})
+	go func() {
+		defer close(devDone)
+		// A bare-key advert: the hub must ask for the full record.
+		host.Write(encodeDeviceFrame(append([]byte{pushAdvert}, key...)))
+
+		// The query arrives first and is answered with the contact
+		// RECORD (never an ack frame). Reading the query proves it is
+		// already in flight: a send submitted now queues BEHIND it.
+		q, err := readHostFrame(host)
+		if err != nil || len(q) != 33 || q[0] != cmdGetContactByKey || !bytes.Equal(q[1:], key) {
+			t.Logf("DEVICE: query frame = %x (%v)", q, err)
+			return
+		}
+		close(queryRead)
+		host.Write(encodeDeviceFrame(contactRecord(key, "RKSR-TN-R3")))
+
+		// Only then the send: its ack must land on the send's own
+		// waiter.
+		s, err := readHostFrame(host)
+		if err != nil || len(s) < 1 || s[0] != cmdSendChannelTxtMsg {
+			t.Logf("DEVICE: send frame = %x (%v)", s, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+	}()
+
+	select {
+	case <-queryRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("device never received the contact query")
+	}
+
+	if err := hub.SendChannelMessage("hello", "admin"); err != nil {
+		t.Fatalf("SendChannelMessage = %v, want success (query must not steal the ack)", err)
+	}
+	select {
+	case <-devDone:
+	case <-time.After(8 * time.Second):
+		t.Fatal("device choreography did not complete")
+	}
+	if got := rec.messages(); len(got) != 1 || got[0].Direction != "tx" || got[0].Text != "hello" {
+		t.Fatalf("recorded = %+v, want exactly one TX", got)
+	}
+	waitForMesh(t, func() bool {
+		snap := hub.Snapshot()
+		return len(snap.Nodes) == 1 && snap.Nodes[0].Name == "RKSR-TN-R3"
+	}, "contact record applied")
+}
+
+// TestQueryReplyTypeIsolation pins the explicit-expected-reply design: an
+// ack frame that arrives while a contact query is in flight does NOT
+// satisfy the query (wrong type). The query times out on its own budget
+// and the send that follows gets its own ack — delayed replies never
+// cross commands.
+func TestQueryReplyTypeIsolation(t *testing.T) {
+	hub, host, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+
+	// Stage one: startup choreography only (handshake → drain NO_MORE).
+	devReady := make(chan struct{})
+	go func() {
+		defer close(devReady)
+		buf := make([]byte, 256)
+		host.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host.Read(buf); err != nil {
+			t.Logf("DEVICE: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+	}()
+	select {
+	case <-devReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device did not complete the startup choreography")
+	}
+
+	// Stage two: advert → query → MISMATCHED reply → send → OK.
+	key := bytes.Repeat([]byte{0xCD}, 32)
+	devDone := make(chan struct{})
+	queryRead := make(chan struct{})
+	go func() {
+		defer close(devDone)
+		host.Write(encodeDeviceFrame(append([]byte{pushAdvert}, key...)))
+		q, err := readHostFrame(host)
+		if err != nil || len(q) != 33 || q[0] != cmdGetContactByKey {
+			t.Logf("DEVICE: query frame = %x (%v)", q, err)
+			return
+		}
+		close(queryRead)
+		// A MISMATCHED reply: the query expects a contact record, but
+		// the device sends a bare OK. It must not satisfy the query.
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+
+		// The send follows only after the query's own budget (2s)
+		// expires, so this read needs a longer window than the default.
+		s, err := readHostFrameWithin(host, 8*time.Second)
+		if err != nil || len(s) < 1 || s[0] != cmdSendChannelTxtMsg {
+			t.Logf("DEVICE: send frame = %x (%v)", s, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+	}()
+
+	select {
+	case <-queryRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("device never received the contact query")
+	}
+
+	start := time.Now()
+	if err := hub.SendChannelMessage("hello", "admin"); err != nil {
+		t.Fatalf("SendChannelMessage = %v, want success despite the mismatched query reply", err)
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Errorf("send took %v, want ≤ query budget + margin", elapsed)
+	}
+	select {
+	case <-devDone:
+	case <-time.After(8 * time.Second):
+		t.Fatal("device choreography did not complete")
+	}
+	if got := rec.messages(); len(got) != 1 || got[0].Direction != "tx" {
+		t.Fatalf("recorded = %+v, want exactly one TX", got)
+	}
+}
+
+// TestSendFailsFastAfterSessionEnd pins the teardown cleanup: once the
+// device link dies, a send must fail fast (not hang on a dead session),
+// and the command worker must not outlive its session.
+func TestSendFailsFastAfterSessionEnd(t *testing.T) {
+	hub, host, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+
+	devReady := make(chan struct{})
+	go func() {
+		defer close(devReady)
+		buf := make([]byte, 256)
+		host.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host.Read(buf); err != nil {
+			t.Logf("DEVICE: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+	}()
+	select {
+	case <-devReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device did not complete the startup choreography")
+	}
+
+	// Kill the link; wait until the hub notices (session ended).
+	host.Close()
+	waitForMesh(t, func() bool {
+		hub.mu.Lock()
+		conn := hub.client
+		hub.mu.Unlock()
+		return conn == nil
+	}, "session ended after link close")
+
+	start := time.Now()
+	err := hub.SendChannelMessage("hello", "admin")
+	if err == nil {
+		t.Fatal("send must fail after the session ended")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("failed send took %v, want a fast error", elapsed)
+	}
+}
+
+// waitForMesh polls a condition with a short deadline (test-local).
+func waitForMesh(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

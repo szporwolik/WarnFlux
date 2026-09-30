@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -13,8 +14,18 @@ const (
 	sessionCookie = "wf_session"
 	csrfCookie    = "wf_csrf"
 	sessionTTL    = 24 * time.Hour
-	maxSessions   = 4096
+
+	// maxSessions is the hard global capacity of the session store.
+	maxSessions = 4096
+	// maxSessionsPerUser bounds one account's concurrent sessions; at the
+	// cap the OLDEST session of that user is evicted (explicit eviction),
+	// so a login always succeeds for its owner.
+	maxSessionsPerUser = 16
 )
+
+// errSessionCapacity is returned by newSession when the global session
+// cap is reached and every existing session is still valid.
+var errSessionCapacity = errors.New("web: session capacity exhausted")
 
 // session is one authenticated session.
 type session struct {
@@ -26,9 +37,10 @@ type session struct {
 	username string
 	// role is the access tier: "admin" (everything) or "emcom" (compose
 	// only). Set once at login, never from the client.
-	role    string
-	csrf    string
-	expires time.Time
+	role      string
+	csrf      string
+	createdAt time.Time
+	expires   time.Time
 }
 
 // sessionStore is a server-side, in-memory session store. Sessions being
@@ -43,7 +55,10 @@ func newSessionStore(secure bool) *sessionStore {
 	return &sessionStore{m: make(map[string]*session), secure: secure}
 }
 
-// newSession creates a cryptographically random session token.
+// newSession creates a cryptographically random session token. Capacity
+// is enforced explicitly: at the global cap with every session still
+// valid the creation is REJECTED (caller returns 503), and at the
+// per-user cap the OLDEST session of that user is EVICTED.
 func (s *sessionStore) newSession(userID int64, username, role string) (token string, sess *session, err error) {
 	tok, err := randomToken()
 	if err != nil {
@@ -54,18 +69,40 @@ func (s *sessionStore) newSession(userID int64, username, role string) (token st
 		return "", nil, err
 	}
 	sess = &session{
-		userID:   userID,
-		username: username,
-		role:     role,
-		csrf:     csrf,
-		expires:  time.Now().Add(sessionTTL),
+		userID:    userID,
+		username:  username,
+		role:      role,
+		csrf:      csrf,
+		createdAt: time.Now(),
+		expires:   time.Now().Add(sessionTTL),
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked()
+
+	// Per-user cap: evict the oldest session of the same account so a
+	// login never fails because of its own leftovers.
+	userSessions := 0
+	var oldestTok string
+	var oldestAt time.Time
+	for t, sess := range s.m {
+		if sess.userID != userID {
+			continue
+		}
+		userSessions++
+		if oldestTok == "" || sess.createdAt.Before(oldestAt) {
+			oldestTok, oldestAt = t, sess.createdAt
+		}
+	}
+	if userSessions >= maxSessionsPerUser {
+		delete(s.m, oldestTok)
+	}
+
+	// Global cap: reject instead of silently growing beyond it.
 	if len(s.m) >= maxSessions {
-		s.sweepLocked()
+		return "", nil, errSessionCapacity
 	}
 	s.m[tok] = sess
-	s.mu.Unlock()
 	return tok, sess, nil
 }
 

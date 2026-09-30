@@ -120,6 +120,12 @@ func newTestEnvWithStore(t *testing.T, events storage.EventStore) *testEnv {
 }
 
 func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub) *testEnv {
+	return newTestEnvAll(t, ingest, hub, events, meshHub, nil, nil)
+}
+
+// newTestEnvAll is newTestEnvFull plus explicit APRS/mesh message stores
+// (nil leaves the corresponding admin history empty).
+func newTestEnvAll(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
 	t.Helper()
 
 	cfg := config.Web{
@@ -187,7 +193,7 @@ func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub,
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshHub, ingress, logger, "test-version", "abc1234", users, events, nil, nil, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshHub, ingress, logger, "test-version", "abc1234", users, events, aprsMsgs, meshMsgs, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2605,5 +2611,77 @@ func TestMessageListPartials(t *testing.T) {
 		if !strings.Contains(body, "home-none") && !strings.Contains(body, "msgs-table") {
 			t.Fatalf("GET %s missing list or empty-state: %.120s", p, body)
 		}
+	}
+}
+
+// fakeMeshMsgs is an in-memory MeshMessageStore for the admin history.
+type fakeMeshMsgs struct {
+	rows []storage.MeshMessage
+}
+
+func (f *fakeMeshMsgs) RecordMeshMessage(_ context.Context, direction, sender, channel, text string, at time.Time) error {
+	f.rows = append(f.rows, storage.MeshMessage{Direction: direction, Sender: sender, Channel: channel, Text: text, At: at})
+	return nil
+}
+
+func (f *fakeMeshMsgs) ListMeshMessages(_ context.Context, direction string, limit, offset int) ([]storage.MeshMessage, error) {
+	var out []storage.MeshMessage
+	for _, m := range f.rows {
+		if direction == "" || m.Direction == direction {
+			out = append(out, m)
+		}
+	}
+	if offset > len(out) {
+		offset = len(out)
+	}
+	out = out[offset:]
+	if limit < len(out) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeMeshMsgs) CountMeshMessages(_ context.Context, direction string) (int, error) {
+	n := 0
+	for _, m := range f.rows {
+		if direction == "" || m.Direction == direction {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// TestMeshMessageChannelNames pins the friendly channel display: legacy
+// "ch0" rows resolve through the hub's configured channel_names map.
+func TestMeshMessageChannelNames(t *testing.T) {
+	hub, err := meshcore.NewHub(meshcore.Config{
+		Enabled:      true,
+		Device:       "/dev/fake",
+		ChannelIdx:   2,
+		ChannelName:  "#sp9moa",
+		ChannelNames: map[int]string{0: "Public"},
+		NodeTTL:      time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeMeshMsgs{rows: []storage.MeshMessage{
+		{Direction: "rx", Channel: "ch0", Text: "hello", At: time.Now()},
+		{Direction: "tx", Channel: "ch2", Text: "73", At: time.Now()},
+	}}
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
+	env.login()
+
+	resp, body := env.get("/partials/meshcore?tab=messages")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial = %d", resp.StatusCode)
+	}
+	for _, want := range []string{"Public", "#sp9moa"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("messages partial missing %q: %.200s", want, body)
+		}
+	}
+	if strings.Contains(body, "ch0") || strings.Contains(body, "ch2") {
+		t.Errorf("messages partial still shows raw channel ids: %.200s", body)
 	}
 }

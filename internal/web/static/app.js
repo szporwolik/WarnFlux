@@ -1102,12 +1102,13 @@
   }
 
   // meshBadge renders the MeshCore pin: the chat glyph in the category
-  // color with the node name (or key prefix) as the halo label.
+  // color with the node name as the halo label (unnamed nodes get the
+  // generic label; keys stay off the public map).
   function meshBadge(n) {
     return wfBadge({
       color: "#8e24aa",
       glyph: BADGE_GLYPHS.chat,
-      label: n.name || n.key.slice(0, 12)
+      label: n.name || tr("meshcore.type.node")
     });
   }
 
@@ -1266,11 +1267,10 @@
       lines.push(tr("map.hops") + ": " + n.hops);
     }
     var body = lines.join("<br>");
-    body += '<div class="wf-pop-meta muted">' + esc(n.key) + "</div>";
     return wfPopup({
       color: "#8e24aa",
       icon: BADGE_GLYPHS.chat,
-      title: esc(n.name || n.key.slice(0, 12)),
+      title: esc(n.name || tr("meshcore.type.node")),
       sub: "MeshCore",
       value: esc(n.type || "node"),
       body: body
@@ -1353,7 +1353,7 @@
       item.appendChild(mk("span", "hw-icon hw-mesh", "⌁"));
       var body = mk("span", "hw-body");
       var head = mk("span", "hw-head");
-      head.appendChild(mk("strong", null, n.name || n.key.slice(0, 12)));
+      head.appendChild(mk("strong", null, n.name || tr("meshcore.type.node")));
       if (n.type && n.type !== "node") {
         head.appendChild(mk("span", "hw-provider", n.type));
       }
@@ -1368,7 +1368,7 @@
       meta.push(tr("map.heard") + " " + fmtClock(n.last_seen));
       body.appendChild(mk("span", "hw-meta", meta.join(" · ")));
       item.appendChild(body);
-      item.title = trf("map.show_on_map", n.name || n.key.slice(0, 12));
+      item.title = trf("map.show_on_map", n.name || tr("meshcore.type.node"));
       item.addEventListener("click", function () {
         focusMarker(meshMarkers[n.key]);
       });
@@ -1385,9 +1385,8 @@
       badges.appendChild(mk("span", "mc-noloc-title", tr("home.meshcore.noloc")));
       lastMeshNoPos.forEach(function (n) {
         var chip = mk("span", "mc-chip");
-        var label = n.name || n.key.slice(0, 12);
-        chip.title = label + " · " + fmtTime(n.last_seen) + " · " + n.key;
-        chip.setAttribute("data-key", n.key);
+        var label = n.name || tr("meshcore.type.node");
+        chip.title = label + " · " + fmtTime(n.last_seen);
         chip.appendChild(mk("span", "mc-chip-name", label));
         if (n.type && n.type !== "node" && MESH_TYPE_GLYPHS[n.type]) {
           chip.appendChild(mk("span", "mc-chip-type", MESH_TYPE_GLYPHS[n.type] + " " + tr("meshcore.type." + n.type)));

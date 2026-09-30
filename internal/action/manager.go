@@ -103,7 +103,10 @@ func (m *Manager) Start(ctx context.Context) {
 		inst.Start(mgrCtx)
 	}
 	if m.store != nil {
-		go m.recoverStaleClaims(mgrCtx)
+		// The interval is captured NOW (synchronously under the caller)
+		// so the goroutine never reads the mutable package var again —
+		// tests shorten it and restore it at cleanup.
+		go m.recoverStaleClaims(mgrCtx, DeliveryRecoveryInterval)
 	}
 }
 
@@ -116,13 +119,13 @@ func (m *Manager) SetDeliveryStore(st storage.DeliveryStore) {
 // recoverStaleClaims re-queues jobs a previous process claimed but never
 // settled (crash between claim and execution). One immediate pass runs
 // before the workers are active, then a periodic sweep.
-func (m *Manager) recoverStaleClaims(ctx context.Context) {
+func (m *Manager) recoverStaleClaims(ctx context.Context, interval time.Duration) {
 	if n, err := m.store.RecoverStaleClaims(ctx, time.Now()); err != nil {
 		m.logger.Warn("action: stale claim recovery failed", "error", err)
 	} else if n > 0 {
 		m.logger.Info("action: stale delivery claims recovered", "jobs", n)
 	}
-	t := time.NewTicker(DeliveryRecoveryInterval)
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {

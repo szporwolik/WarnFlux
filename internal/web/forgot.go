@@ -110,8 +110,10 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Rate limit: same exponential-lockout gate as the login form.
-	limiterKey := "forgot\x00" + username + "\x00" + r.RemoteAddr
+	// Rate limit: same exponential-lockout gate as the login form. The
+	// client IP is normalized without the port and proxy headers count
+	// only from configured trusted proxies.
+	limiterKey := "forgot\x00" + username + "\x00" + s.clientIP(r)
 	if wait := s.loginLimiter.retryIn(limiterKey); wait > 0 {
 		s.logger.Warn("web: forgot throttled", "remote", r.RemoteAddr, "username", username)
 		w.Header().Set("Retry-After", "30")

@@ -18,7 +18,7 @@
       <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/messages?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
     </div>
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "messages.title"}} <span class="count">{{.Total}}</span></h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "messages.title"}} <span class="count">{{.Total}}</span></h2>
       <p class="muted log-hint">{{tr .Lang "messages.hint"}}</p>
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
       {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.sent"}}</span></div>{{end}}

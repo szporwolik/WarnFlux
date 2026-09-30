@@ -12,13 +12,19 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    <form method="post" action="/messages/send" class="aprs-send">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" required>
-      <datalist id="aprs-calls">{{range .Calls}}<option value="{{.}}">{{end}}</datalist>
-      <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="67" required>
-      <button type="submit" class="btn-primary btn-small">{{tr .Lang "messages.send"}}</button>
-    </form>
+    <div class="aprs-toolbar">
+      <form method="post" action="/messages/send" class="aprs-send">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" required>
+        <datalist id="aprs-calls">{{range .Calls}}<option value="{{.}}">{{end}}</datalist>
+        <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="67" required>
+        <button type="submit" class="btn-primary btn-small">{{tr .Lang "messages.send"}}</button>
+      </form>
+      <form method="post" action="/messages/beacon" class="inline-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <button type="submit" class="btn-ghost btn-small">{{tr .Lang "messages.beacon_now"}}</button>
+      </form>
+    </div>
     <div class="page-tabs" role="tablist">
       <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/messages">{{tr .Lang "messages.dir_all"}}</a>
       <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/messages?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>

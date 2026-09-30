@@ -808,6 +808,16 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .mesh-toolbar .mesh-send { flex: 1 1 24rem; margin-bottom: 0; }
 .mesh-toolbar .mesh-forms { margin-bottom: 0; }
+/* Same toolbar pattern on the APRS messages page: send form (left) and
+   the manual beacon action (right). */
+.aprs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.9rem;
+}
+.aprs-toolbar .aprs-send { flex: 1 1 24rem; margin-bottom: 0; }
 .mesh-send {
   display: flex;
   flex-wrap: wrap;

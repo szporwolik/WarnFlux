@@ -331,6 +331,38 @@ func (s *Source) Send(_ context.Context, to, text string) error {
 	return nil
 }
 
+// Beacon transmits our position packet immediately (the manual
+// "send beacon now" action from the admin page).
+func (s *Source) Beacon(_ context.Context) error {
+	s.connMu.Lock()
+	conn := s.conn
+	s.connMu.Unlock()
+	if conn == nil || !s.ready.Load() {
+		return errNotReady
+	}
+	info, err := aprs.BuildPositionPacket(s.hub.OwnLat(), s.hub.OwnLon(), s.hub.Icon(), s.hub.Name())
+	if err != nil {
+		return err
+	}
+	frame, err := aprs.BuildUIFrame(s.hub.Callsign(), "APRS", s.cfg.Path, info)
+	if err != nil {
+		return fmt.Errorf("build frame: %w", err)
+	}
+	kiss := aprs.EncodeKISS(frame)
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	for len(kiss) > 0 {
+		n, err := conn.Write(kiss)
+		if err != nil {
+			return fmt.Errorf("write to %s: %w", s.cfg.Server, err)
+		}
+		kiss = kiss[n:]
+	}
+	return nil
+}
+
 // summary renders the one-line stats report for the web health page.
 func (s *Source) summary() string {
 	age := time.Since(time.Unix(0, s.lastRx.Load())).Truncate(time.Second)

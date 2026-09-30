@@ -26,9 +26,21 @@ type Transmitter interface {
 	Send(ctx context.Context, to, text string) error
 }
 
+// BeaconTransmitter is an optional Transmitter capability: a backend that
+// can force an immediate position beacon (the KISS radio backend).
+type BeaconTransmitter interface {
+	Transmitter
+	// Beacon transmits our position packet now.
+	Beacon(ctx context.Context) error
+}
+
 // ErrNoTransmitter is returned by Hub.SendMessage when no backend is
 // connected and ready to transmit.
 var ErrNoTransmitter = errors.New("no APRS transmitter is connected")
+
+// ErrNoBeacon is returned by Hub.SendBeacon when no connected backend can
+// transmit a position beacon.
+var ErrNoBeacon = errors.New("no APRS transmitter can beacon")
 
 // HubConfig is the shared APRS hub configuration (top-level "aprs:" YAML
 // section). The hub is the merge point for every APRS backend: aprs-inet

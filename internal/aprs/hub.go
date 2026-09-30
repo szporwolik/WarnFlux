@@ -301,6 +301,9 @@ func (h *Hub) Name() string {
 	return h.cfg.Callsign
 }
 
+// Icon returns the configured APRS symbol of our station (e.g. "/j").
+func (h *Hub) Icon() string { return h.cfg.Icon }
+
 // Version returns the WarnFlux version for APRS-IS login strings.
 func (h *Hub) Version() string { return h.cfg.Version }
 
@@ -845,8 +848,34 @@ func (h *Hub) SendMessage(ctx context.Context, to, text string) error {
 	return nil
 }
 
-// SendMessageWaitAck sends one message with a hub-generated {id} and waits
-// up to timeout for the addressee's ack (or rej) before returning. The
+// SendBeacon forces an immediate position beacon through a
+// beacon-capable transmitter, preferring the radio backend.
+func (h *Hub) SendBeacon(ctx context.Context) error {
+	h.mu.Lock()
+	var radio, fallback BeaconTransmitter
+	for name, t := range h.transmitters {
+		bt, ok := t.(BeaconTransmitter)
+		if !ok || !bt.Ready() {
+			continue
+		}
+		if name == BackendRadio {
+			radio = bt
+		} else if fallback == nil {
+			fallback = bt
+		}
+	}
+	h.mu.Unlock()
+	bt := radio
+	if bt == nil {
+		bt = fallback
+	}
+	if bt == nil {
+		return ErrNoBeacon
+	}
+	return bt.Beacon(ctx)
+}
+
+// SendMessageWaitAck sends one message with a hub-generated {id} and waits// up to timeout for the addressee's ack (or rej) before returning. The
 // bool reports whether an ack arrived; ErrNoAck means the timeout elapsed.
 // The text is shortened to leave room for the {id} suffix, so the whole
 // APRS message field never exceeds the protocol limit.

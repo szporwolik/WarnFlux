@@ -126,6 +126,7 @@
         <th>{{tr .Lang "meshcore.node_name"}}</th>
         <th>{{tr .Lang "meshcore.node_key"}}</th>
         <th>{{tr .Lang "meshcore.node_type"}}</th>
+        <th>{{tr .Lang "meshcore.node_hops"}}</th>
         <th>{{tr .Lang "meshcore.node_pos"}}</th>
         <th>{{tr .Lang "meshcore.node_seen"}}</th>
       </tr>
@@ -136,6 +137,7 @@
         <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}</strong></td>
         <td class="muted nowrap" title="{{.PubKey}}">{{.Short}}…</td>
         <td>{{.Type}}</td>
+        <td>{{if .Hops}}{{.Hops}}{{else}}—{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}</td>
       </tr>

@@ -65,6 +65,29 @@ type DeliveryJob struct {
 	FiredAt time.Time
 }
 
+// DeliveryResult is the per-job outcome of one CommitInboxDelivery call.
+type DeliveryResult struct {
+	// Status is the stored job state after the call.
+	Status DeliveryStatus
+	// Queued reports whether the call made the job pending (fresh insert
+	// or a re-armed terminal failure). false = the transition was
+	// deduplicated (already pending or delivered).
+	Queued bool
+}
+
+// InboxDeliveryStore atomically persists delivery jobs and consumes the
+// inbox row they came from: either every job exists durably AND the
+// inbox row is gone, or neither happened. This is the only way the
+// routing engine may process an inbox event — a failed evaluation must
+// leave the row pending for recovery, never silently drop it.
+type InboxDeliveryStore interface {
+	// CommitInboxDelivery persists every job and, when inboxID != 0,
+	// deletes the inbox row — all in one transaction. It returns one
+	// result per job, in order. inboxID == 0 with no jobs is a no-op
+	// (live events need no ledger round trip).
+	CommitInboxDelivery(ctx context.Context, inboxID int64, jobs []DeliveryJob) ([]DeliveryResult, error)
+}
+
 // DeliveryStore is the durable action-job queue backing the notification
 // machine. The routing engine persists jobs; action workers claim and
 // settle them. Every row carries the full payload, the attempt counter

@@ -21,22 +21,32 @@ journal order.
 
 ## 2. Dispatch acceptance (wire → routing evaluation)
 
-**Guarantee: durable acceptance; at-least-once evaluation.**
+**Guarantee: durable acceptance; at-least-once evaluation; atomic
+hand-off to delivery.**
 
 Every canonical event accepted from a receiver (MQTT or HTTP ingest) is
 persisted to the dispatch inbox (`dispatch_inbox`) **before** it enters
-the live queue. The routing engine acknowledges the row only after it has
-evaluated the event.
+the live queue. The inbox row is consumed **only** by
+`CommitInboxDelivery`, which persists every delivery job the evaluation
+produced and deletes the inbox row **in one transaction** — either all
+jobs exist durably and the row is gone, or neither happened.
 
 - A full live queue defers the event to inbox recovery instead of dropping
-  it.
-- A crash between acceptance and evaluation re-delivers the event after
-  the restart (recovery runs on the refresh tick).
+  it; a crash between acceptance and evaluation re-delivers the event
+  after the restart (recovery runs on the refresh tick).
 - If the inbox write itself fails, acceptance falls back to the live queue
   only (the event is not durable).
-- The inbox row is acknowledged even when the evaluation ends in
-  "no matching route" or a rejected action submission — durability for the
-  action stage lives in the delivery jobs below, not in the inbox.
+- **Without a validly loaded routing snapshot the event stays pending**:
+  an evaluation on an empty rule set is not a deliberate result, so the
+  engine refuses to consume the row and recovery retries after the next
+  successful rule load.
+- A deliberate no-match (no cell matches, severity below every threshold,
+  cancelled/expired transitions, non-routed kinds) consumes the inbox row
+  with zero jobs — the result was intended.
+- If the commit itself fails (ledger down), the engine falls back to the
+  in-memory submission path and **keeps the inbox row pending**:
+  recovery re-evaluates the event and persists the jobs once the ledger
+  heals (at-least-once, duplicates possible).
 
 ## 3. Action completion (routing evaluation → notification)
 

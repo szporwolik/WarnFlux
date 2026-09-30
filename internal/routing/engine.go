@@ -64,6 +64,17 @@ type RuleStore interface {
 	CompleteDelivery(groupID int64, actionID, dedupKey string, succeeded bool) error
 }
 
+// Inbox is the optional durable dispatch inbox: events persisted before
+// routing are re-delivered after a restart or a full live queue, and
+// acknowledged once the engine evaluated them.
+type Inbox interface {
+	PendingInboxEvents(ctx context.Context, limit int) ([]storage.InboxItem, error)
+	AckInboxEvent(ctx context.Context, id int64) error
+}
+
+// inboxBatch bounds one recovery pass over the durable inbox.
+const inboxBatch = 64
+
 // defaultRefreshInterval is how often rules are reloaded from storage.
 const defaultRefreshInterval = 10 * time.Second
 
@@ -111,6 +122,11 @@ type Engine struct {
 	// lastRefresh is the unix-nano timestamp of the last successfully
 	// installed routing snapshot (0 = never).
 	lastRefresh atomic.Int64
+
+	// inbox is the optional durable dispatch inbox (see Inbox): events
+	// recovered from it are evaluated like live ones and acknowledged
+	// afterwards.
+	inbox Inbox
 }
 
 // New builds an engine with the default refresh interval. trail is the
@@ -145,8 +161,15 @@ func (e *Engine) notifCount(actionID, result string, delta int64) {
 	fn.(func(int64))(delta)
 }
 
+// SetInbox attaches the durable dispatch inbox (optional): pending rows
+// re-enter the engine on the refresh tick and after restarts.
+func (e *Engine) SetInbox(in Inbox) {
+	e.inbox = in
+}
+
 // Run drains events until ctx is cancelled or the channel is closed
-// (ingress StopIntake). It also reloads the rules on an interval.
+// (ingress StopIntake). It also reloads the rules and recovers the
+// durable inbox on an interval.
 func (e *Engine) Run(ctx context.Context, events <-chan dispatch.Event) {
 	e.refresh()
 	ticker := time.NewTicker(e.refreshInterval)
@@ -162,7 +185,26 @@ func (e *Engine) Run(ctx context.Context, events <-chan dispatch.Event) {
 			e.handle(ctx, ev)
 		case <-ticker.C:
 			e.refresh()
+			e.recoverInbox(ctx)
 		}
+	}
+}
+
+// recoverInbox re-evaluates durable inbox rows that were accepted but
+// never acknowledged (crash between acceptance and evaluation, or a full
+// live queue). The per-(group, action) delivery jobs deduplicate, so
+// re-evaluation is safe.
+func (e *Engine) recoverInbox(ctx context.Context) {
+	if e.inbox == nil {
+		return
+	}
+	items, err := e.inbox.PendingInboxEvents(ctx, inboxBatch)
+	if err != nil {
+		e.logger.Warn("routing: inbox recovery failed", "error", err)
+		return
+	}
+	for _, it := range items {
+		e.handle(ctx, it.Event)
 	}
 }
 
@@ -245,6 +287,17 @@ func (e *Engine) refresh() {
 
 // handle evaluates one canonical event against the cached rules.
 func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
+	// Durable acceptance: the inbox row is acknowledged once the
+	// evaluation finishes (on every path), so a crash mid-evaluation
+	// re-delivers the event after a restart.
+	if ev.InboxID != 0 && e.inbox != nil {
+		defer func() {
+			if err := e.inbox.AckInboxEvent(context.Background(), ev.InboxID); err != nil {
+				e.logger.Warn("routing: inbox ack failed",
+					"id", ev.InboxID, "error", err)
+			}
+		}()
+	}
 	if ev.Kind != dispatch.EventHazardTransition || ev.Hazard == nil {
 		return
 	}

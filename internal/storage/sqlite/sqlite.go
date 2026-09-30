@@ -15,6 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -515,6 +516,21 @@ CREATE TABLE instance_meta (
 );
 `,
 	},
+	{
+		// v25: the durable dispatch inbox: canonical events are persisted
+		// BEFORE routing evaluates them, so a full live queue or a crash
+		// between acceptance and evaluation no longer loses them. Rows
+		// are deleted once the routing engine acknowledges them.
+		SQL: `
+CREATE TABLE dispatch_inbox (
+	id             INTEGER PRIMARY KEY AUTOINCREMENT,
+	event_json     TEXT NOT NULL,
+	received_at_ms INTEGER NOT NULL,
+	receiver       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_dispatch_inbox_id ON dispatch_inbox(id);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -869,6 +885,66 @@ func (s *Store) instanceID(ctx context.Context) (string, error) {
 	}
 	// Another goroutine may have won the insert race: read back.
 	return s.instanceID(ctx)
+}
+
+// AppendEvent persists one canonical dispatch event into the durable
+// inbox (dispatch acceptance): it returns the inbox row ID that the
+// routing engine must acknowledge once the event has been evaluated.
+func (s *Store) AppendEvent(ctx context.Context, ev dispatch.Event) (int64, error) {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return 0, fmt.Errorf("encode inbox event: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO dispatch_inbox (event_json, received_at_ms, receiver)
+		VALUES (?, ?, ?)`, string(data), time.Now().UnixMilli(), ev.Origin.ReceiverID)
+	if err != nil {
+		return 0, fmt.Errorf("append inbox event: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("inbox event id: %w", err)
+	}
+	return id, nil
+}
+
+// PendingInboxEvents returns the oldest unacknowledged inbox rows (at most
+// limit, bounded 1..256), oldest first. Every returned item carries the
+// inbox ID inside its event so the engine can acknowledge it.
+func (s *Store) PendingInboxEvents(ctx context.Context, limit int) ([]storage.InboxItem, error) {
+	if limit <= 0 || limit > 256 {
+		limit = 256
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, event_json FROM dispatch_inbox ORDER BY id LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pending inbox events: %w", err)
+	}
+	defer rows.Close()
+	var out []storage.InboxItem
+	for rows.Next() {
+		var it storage.InboxItem
+		var raw string
+		if err := rows.Scan(&it.ID, &raw); err != nil {
+			return nil, fmt.Errorf("scan inbox event: %w", err)
+		}
+		if err := json.Unmarshal([]byte(raw), &it.Event); err != nil {
+			return nil, fmt.Errorf("decode inbox event %d: %w", it.ID, err)
+		}
+		it.Event.InboxID = it.ID
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// AckInboxEvent deletes one inbox row after the routing engine evaluated
+// the event (the per-(group, action) delivery jobs carry the action-level
+// at-least-once semantics from there on).
+func (s *Store) AckInboxEvent(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM dispatch_inbox WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("ack inbox event %d: %w", id, err)
+	}
+	return nil
 }
 
 func (s *Store) PollChanges(ctx context.Context, outputID string, limit int) ([]storage.Change, error) {

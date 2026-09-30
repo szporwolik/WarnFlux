@@ -13,6 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -1387,5 +1388,57 @@ func TestPublisherInstanceID(t *testing.T) {
 	if err != nil || len(polled2) != 1 || polled2[0].Publisher != id1 {
 		t.Fatalf("after reopen publisher = %q (changes %d, err %v), want %q",
 			polled2[0].Publisher, len(polled2), err, id1)
+	}
+}
+
+// TestDispatchInboxRoundTrip pins the durable dispatch inbox: events
+// append, survive a reopen, and ack deletes them.
+func TestDispatchInboxRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inbox.db")
+	s1, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ev := dispatch.Event{
+		Kind:   dispatch.EventHazardTransition,
+		Origin: dispatch.Origin{Type: "mqtt", ReceiverID: "local"},
+		Hazard: &dispatch.HazardTransition{
+			Type: dispatch.TransitionNew, Key: "imgw:1", Source: "imgw-meteo",
+			ChangeID: 9, Publisher: "pub",
+		},
+	}
+	id, err := s1.AppendEvent(context.Background(), ev)
+	if err != nil || id == 0 {
+		t.Fatalf("AppendEvent = (%d, %v)", id, err)
+	}
+	pending, err := s1.PendingInboxEvents(context.Background(), 10)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("Pending = (%d, %v)", len(pending), err)
+	}
+	got := pending[0]
+	if got.ID != id || got.Event.InboxID != id || got.Event.Hazard == nil ||
+		got.Event.Hazard.Key != "imgw:1" || got.Event.Hazard.Publisher != "pub" {
+		t.Fatalf("roundtrip item = %+v", got)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Survives a reopen; ack removes it.
+	s2, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	pending, err = s2.PendingInboxEvents(context.Background(), 10)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("after reopen Pending = (%d, %v)", len(pending), err)
+	}
+	if err := s2.AckInboxEvent(context.Background(), id); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	pending, err = s2.PendingInboxEvents(context.Background(), 10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("after ack Pending = (%d, %v), want empty", len(pending), err)
 	}
 }

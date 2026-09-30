@@ -521,8 +521,11 @@ func run(configPath string, checkConfig bool) error {
 	}
 
 	// Dispatch subsystem: one canonical bounded ingress plus the mirrored
-	// retained MQTT state (per receiver, never persisted).
+	// retained MQTT state (per receiver, never persisted). The ingress
+	// gets the durable inbox: acceptance is persisted before routing, so
+	// a full queue or a crash no longer loses accepted events.
 	ingress := dispatch.NewIngress(cfg.Dispatch.QueueSize)
+	ingress.SetInbox(store)
 	mirror := state.New()
 
 	// Inbound MQTT traffic ring buffer: every frame the receivers ingest
@@ -710,6 +713,7 @@ func run(configPath string, checkConfig bool) error {
 		Domain:  cfg.Web.Domain,
 		RepoURL: appinfo.RepoURL,
 	}, trails, met)
+	ruleEngine.SetInbox(store)
 	var routingWG sync.WaitGroup
 	routingWG.Add(1)
 	go func() {

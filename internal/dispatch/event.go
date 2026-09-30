@@ -112,6 +112,12 @@ type Event struct {
 
 	Hazard *HazardTransition
 	MQTT   *MQTTMessage
+
+	// InboxID is the durable inbox row this event was accepted through
+	// (0 = no inbox attached): the routing engine acknowledges it once
+	// the event has been evaluated, so a crash between acceptance and
+	// evaluation re-delivers the event after a restart.
+	InboxID int64
 }
 
 // Clone returns a deep copy of the event (payload included).

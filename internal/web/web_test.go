@@ -539,6 +539,47 @@ func TestHealthFlow(t *testing.T) {
 	}
 }
 
+// TestHealthEmergencyAcceptance pins the visible degradation: an event
+// accepted without durable storage (no inbox in the test env) turns the
+// dispatch queue row amber and names the emergency mode — the operator
+// can never mistake it for durable acceptance.
+func TestHealthEmergencyAcceptance(t *testing.T) {
+	env := newTestEnv(t)
+	if res := env.ingress.Enqueue(dispatch.Event{Kind: dispatch.EventMQTTMessage}); res != dispatch.AcceptedEmergency {
+		t.Fatalf("enqueue = %v, want emergency (no inbox in test env)", res)
+	}
+
+	env.login()
+	_, html := env.get("/health")
+	for _, want := range []string{
+		"EMERGENCY",
+		"accepted without durable storage",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("health page missing %q: %s", want, html)
+		}
+	}
+}
+
+// TestHealthLowDiskAlarm pins the low-disk alarm: below the configured
+// threshold the Database row turns red and reports the free space.
+func TestHealthLowDiskAlarm(t *testing.T) {
+	env := newTestEnv(t)
+	// fakeUsers reports 12 GiB free; a 1 TiB threshold trips the alarm.
+	env.server.SetStorageAlarm(1 << 40)
+
+	env.login()
+	_, html := env.get("/health")
+	for _, want := range []string{
+		"LOW DISK",
+		"free space 12288 MB (alarm below 1048576 MB)",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("health page missing %q: %s", want, html)
+		}
+	}
+}
+
 // fakeIngestProbe implements the ingestProbe surface for the health page.
 type fakeIngestProbe struct {
 	id        string
@@ -1219,8 +1260,14 @@ func TestMetricsEndpoint(t *testing.T) {
 		`warnflux_events_filtered_total{source="imgw-warnings"} 0`,
 		`warnflux_mqtt_connected{receiver="local"} 0`,
 		`warnflux_dispatch_queue_depth 0`,
+		`warnflux_dispatch_accepts_total{durability="durable"} 0`,
+		`warnflux_dispatch_accepts_total{durability="emergency"} 0`,
+		`warnflux_dispatch_rejects_total 0`,
+		`warnflux_dispatch_inbox_failures_total 0`,
 		`warnflux_pending_changes 3`,
 		`warnflux_events_active 4`,
+		`warnflux_inbox_backlog 7`,
+		`warnflux_storage_free_bytes 12884901888`,
 		`warnflux_ingest_http_requests_total{instance="news",result="accepted"} 5`,
 		`warnflux_ingest_http_requests_total{instance="news",result="auth_failed"} 1`,
 		`warnflux_ingest_http_requests_total{instance="news",result="rate_limited"} 2`,

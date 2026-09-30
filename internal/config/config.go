@@ -41,6 +41,10 @@ const (
 
 	defaultDispatchQueueSize = 1024
 
+	defaultInboxWriteTimeout = 2 * time.Second
+	defaultInboxRetention    = 24 * time.Hour
+	defaultStorageMinFreeMB  = 100
+
 	defaultReceiverConnectTimeout = 10 * time.Second
 	defaultReceiverKeepAlive      = 30 * time.Second
 	defaultWFPrefix               = "warnflux" // WarnFlux MQTT protocol namespace
@@ -263,6 +267,11 @@ type OutputRuntime struct {
 type Storage struct {
 	Driver string
 	Path   string
+	// MinFreeMB is the low-disk alarm threshold in megabytes: below it
+	// the health page turns red, a metric reports the free space and the
+	// dispatch inbox retention shortens. 0 disables the alarm and the
+	// aggressive retention policy.
+	MinFreeMB int64
 }
 
 // IngestHTTP is one configured public HTTP ingest endpoint: an API-key
@@ -306,6 +315,14 @@ type IngestHTTP struct {
 type Dispatch struct {
 	// QueueSize is the bounded canonical dispatch intake queue capacity.
 	QueueSize int
+	// InboxWriteTimeout bounds one durable inbox write inside Enqueue:
+	// a database that stalls longer degrades the event to emergency
+	// (RAM-only, auditable) acceptance instead of blocking the receiver.
+	InboxWriteTimeout time.Duration
+	// InboxRetention bounds how long an unevaluated inbox row may wait
+	// before maintenance prunes it (0 disables pruning). Below the
+	// storage.min_free_mb alarm threshold the cutoff shortens.
+	InboxRetention time.Duration
 	// Receivers are the independent MQTT receiver connections.
 	Receivers []Receiver
 }
@@ -490,8 +507,10 @@ type fileIngestHTTP struct {
 }
 
 type fileDispatch struct {
-	QueueSize *int           `yaml:"queue_size"`
-	Receivers []fileReceiver `yaml:"mqtt_receivers"`
+	QueueSize         *int           `yaml:"queue_size"`
+	InboxWriteTimeout *time.Duration `yaml:"inbox_write_timeout"`
+	InboxRetention    *time.Duration `yaml:"inbox_retention"`
+	Receivers         []fileReceiver `yaml:"mqtt_receivers"`
 }
 
 type fileReceiver struct {
@@ -567,8 +586,9 @@ type fileApp struct {
 }
 
 type fileStorage struct {
-	Driver string `yaml:"driver"`
-	Path   string `yaml:"path"`
+	Driver    string `yaml:"driver"`
+	Path      string `yaml:"path"`
+	MinFreeMB *int64 `yaml:"min_free_mb"`
 }
 
 type fileSource struct {
@@ -679,8 +699,9 @@ func (f fileConfig) toConfig() Config {
 			LogMaxBackups:         defaultLogMaxBackups,
 		},
 		Storage: Storage{
-			Driver: defaultStorageDriver,
-			Path:   defaultStoragePath,
+			Driver:    defaultStorageDriver,
+			Path:      defaultStoragePath,
+			MinFreeMB: defaultStorageMinFreeMB,
 		},
 	}
 
@@ -714,6 +735,9 @@ func (f fileConfig) toConfig() Config {
 	}
 	if path := strings.TrimSpace(f.Storage.Path); path != "" {
 		cfg.Storage.Path = path
+	}
+	if f.Storage.MinFreeMB != nil {
+		cfg.Storage.MinFreeMB = *f.Storage.MinFreeMB
 	}
 
 	cfg.Sources = make([]Source, 0, len(f.Sources))
@@ -762,10 +786,20 @@ func (f fileConfig) toConfig() Config {
 		cfg.Outputs = append(cfg.Outputs, inst)
 	}
 
-	cfg.Dispatch = Dispatch{QueueSize: defaultDispatchQueueSize}
+	cfg.Dispatch = Dispatch{
+		QueueSize:         defaultDispatchQueueSize,
+		InboxWriteTimeout: defaultInboxWriteTimeout,
+		InboxRetention:    defaultInboxRetention,
+	}
 	if f.Dispatch != nil {
 		if f.Dispatch.QueueSize != nil {
 			cfg.Dispatch.QueueSize = *f.Dispatch.QueueSize
+		}
+		if f.Dispatch.InboxWriteTimeout != nil {
+			cfg.Dispatch.InboxWriteTimeout = *f.Dispatch.InboxWriteTimeout
+		}
+		if f.Dispatch.InboxRetention != nil {
+			cfg.Dispatch.InboxRetention = *f.Dispatch.InboxRetention
 		}
 		for _, r := range f.Dispatch.Receivers {
 			inst := Receiver{
@@ -1021,6 +1055,15 @@ func (c Config) Validate() error {
 	}
 	if c.Dispatch.QueueSize < 1 || c.Dispatch.QueueSize > maxPluginQueueSize {
 		return fmt.Errorf("dispatch.queue_size must be between 1 and %d, got %d", maxPluginQueueSize, c.Dispatch.QueueSize)
+	}
+	if c.Dispatch.InboxWriteTimeout < 10*time.Millisecond || c.Dispatch.InboxWriteTimeout > time.Minute {
+		return fmt.Errorf("dispatch.inbox_write_timeout must be between 10ms and 1m, got %s", c.Dispatch.InboxWriteTimeout)
+	}
+	if c.Dispatch.InboxRetention < 0 || (c.Dispatch.InboxRetention > 0 && c.Dispatch.InboxRetention < time.Minute) || c.Dispatch.InboxRetention > 30*24*time.Hour {
+		return fmt.Errorf("dispatch.inbox_retention must be 0 (disabled) or between 1m and 720h, got %s", c.Dispatch.InboxRetention)
+	}
+	if c.Storage.MinFreeMB < 0 || c.Storage.MinFreeMB > 10_000_000 {
+		return fmt.Errorf("storage.min_free_mb must be between 0 and 10000000, got %d", c.Storage.MinFreeMB)
 	}
 	receiverSeen := make(map[string]bool, len(c.Dispatch.Receivers))
 	for i, r := range c.Dispatch.Receivers {

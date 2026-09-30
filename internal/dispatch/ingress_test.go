@@ -11,13 +11,13 @@ import (
 func TestIngressEnqueueAndConsume(t *testing.T) {
 	g := NewIngress(4)
 	for i := 0; i < 4; i++ {
-		if !g.Enqueue(Event{Kind: EventMQTTMessage}) {
-			t.Fatalf("enqueue %d failed", i)
+		if res := g.Enqueue(Event{Kind: EventMQTTMessage}); res != AcceptedEmergency {
+			t.Fatalf("enqueue %d = %v, want emergency (no inbox attached)", i, res)
 		}
 	}
 	// Queue full: non-blocking drop.
-	if g.Enqueue(Event{Kind: EventMQTTMessage}) {
-		t.Fatal("enqueue into full queue succeeded, want drop")
+	if res := g.Enqueue(Event{Kind: EventMQTTMessage}); res != Rejected {
+		t.Fatalf("enqueue into full queue = %v, want rejected", res)
 	}
 	recv, _, _, _, _ := g.Stats()
 	if recv != 4 {
@@ -26,6 +26,10 @@ func TestIngressEnqueueAndConsume(t *testing.T) {
 	_, dropped, _, _, _ := g.Stats()
 	if dropped != 1 {
 		t.Errorf("droppedFull = %d, want 1", dropped)
+	}
+	if g.EmergencyAccepted() != 4 || g.DurableAccepted() != 0 {
+		t.Errorf("accepts = (%d durable, %d emergency), want (0, 4)",
+			g.DurableAccepted(), g.EmergencyAccepted())
 	}
 
 	for i := 0; i < 4; i++ {
@@ -42,11 +46,13 @@ func TestIngressEnqueueAndConsume(t *testing.T) {
 
 func TestIngressStopIntakeRejectsAndCloses(t *testing.T) {
 	g := NewIngress(4)
-	g.Enqueue(Event{Kind: EventMQTTMessage})
+	if res := g.Enqueue(Event{Kind: EventMQTTMessage}); res != AcceptedEmergency {
+		t.Fatalf("enqueue = %v, want emergency", res)
+	}
 	g.StopIntake()
 
-	if g.Enqueue(Event{Kind: EventMQTTMessage}) {
-		t.Fatal("enqueue after StopIntake succeeded")
+	if res := g.Enqueue(Event{Kind: EventMQTTMessage}); res != Rejected {
+		t.Fatalf("enqueue after StopIntake = %v, want rejected", res)
 	}
 	_, _, late, _, _ := g.Stats()
 	if late != 1 {
@@ -124,38 +130,50 @@ func TestEventCloneDeepCopies(t *testing.T) {
 
 func timePtr(t time.Time) *time.Time { return &t }
 
-// fakeInbox records accepted events; fail simulates a broken backend.
+// fakeInbox records accepted events; fail simulates a broken backend and
+// block simulates a database that stalls until the write deadline.
 type fakeInbox struct {
 	mu    sync.Mutex
 	items []Event
 	fail  bool
+	block bool
 }
 
-func (f *fakeInbox) AppendEvent(_ context.Context, e Event) (int64, error) {
+func (f *fakeInbox) AppendEvent(ctx context.Context, e Event) (int64, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.fail {
+	if f.block {
+		f.mu.Unlock()
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
+	fail := f.fail
+	var id int64
+	if !fail {
+		f.items = append(f.items, e)
+		id = int64(len(f.items))
+	}
+	f.mu.Unlock()
+	if fail {
 		return 0, errors.New("db down")
 	}
-	f.items = append(f.items, e)
-	return int64(len(f.items)), nil
+	return id, nil
 }
 
 // TestIngressDurableAcceptance pins the inbox semantics: acceptance is
 // persisted before the live queue is offered, so a full queue defers the
-// event instead of dropping it; an inbox failure falls back to live-only
-// acceptance (and a full queue then drops again).
+// event instead of dropping it; an inbox failure falls back to emergency
+// acceptance (and a full queue then rejects).
 func TestIngressDurableAcceptance(t *testing.T) {
 	g := NewIngress(1)
 	in := &fakeInbox{}
 	g.SetInbox(in)
 
-	if !g.Enqueue(Event{Kind: EventMQTTMessage}) {
-		t.Fatal("first enqueue failed")
+	if res := g.Enqueue(Event{Kind: EventMQTTMessage}); res != AcceptedDurable {
+		t.Fatalf("first enqueue = %v, want durable", res)
 	}
 	// Live queue full: the inbox still accepts durably.
-	if !g.Enqueue(Event{Kind: EventMQTTMessage}) {
-		t.Fatal("durable acceptance failed while the live queue is full")
+	if res := g.Enqueue(Event{Kind: EventMQTTMessage}); res != AcceptedDurable {
+		t.Fatalf("durable acceptance while the live queue is full = %v, want durable", res)
 	}
 	in.mu.Lock()
 	got := len(in.items)
@@ -167,13 +185,50 @@ func TestIngressDurableAcceptance(t *testing.T) {
 	if recv != 1 || dropped != 1 {
 		t.Fatalf("stats = (%d received, %d dropped), want (1, 1)", recv, dropped)
 	}
+	if g.DurableAccepted() != 2 || g.EmergencyAccepted() != 0 {
+		t.Errorf("accepts = (%d durable, %d emergency), want (2, 0)",
+			g.DurableAccepted(), g.EmergencyAccepted())
+	}
 
-	// Broken inbox + full queue: hard drop, false.
+	// Broken inbox + full queue: hard rejection, never silent.
 	in.mu.Lock()
 	in.fail = true
 	in.mu.Unlock()
-	if g.Enqueue(Event{Kind: EventMQTTMessage}) {
-		t.Fatal("enqueue succeeded with a broken inbox and a full queue")
+	if res := g.Enqueue(Event{Kind: EventMQTTMessage}); res != Rejected {
+		t.Fatalf("enqueue with a broken inbox and a full queue = %v, want rejected", res)
+	}
+	if g.InboxFailures() != 1 {
+		t.Fatalf("inbox failures = %d, want 1", g.InboxFailures())
+	}
+
+	// Broken inbox + free queue: the explicit emergency fallback —
+	// delivered now, lost on restart, counted as emergency.
+	<-g.Events()
+	if res := g.Enqueue(Event{Kind: EventMQTTMessage}); res != AcceptedEmergency {
+		t.Fatalf("enqueue with a broken inbox and a free queue = %v, want emergency", res)
+	}
+	if g.EmergencyAccepted() != 1 {
+		t.Fatalf("emergency accepted = %d, want 1", g.EmergencyAccepted())
+	}
+}
+
+// TestIngressWriteDeadline pins the bounded-wait guarantee: a stuck
+// database degrades the event to emergency acceptance after the deadline
+// instead of hanging the receiver callback.
+func TestIngressWriteDeadline(t *testing.T) {
+	g := NewIngress(4)
+	in := &fakeInbox{block: true}
+	g.SetInbox(in)
+	g.SetInboxWriteTimeout(30 * time.Millisecond)
+
+	start := time.Now()
+	res := g.Enqueue(Event{Kind: EventMQTTMessage})
+	elapsed := time.Since(start)
+	if res != AcceptedEmergency {
+		t.Fatalf("enqueue with a stuck inbox = %v, want emergency", res)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("Enqueue blocked for %v; the inbox write deadline must bound it", elapsed)
 	}
 	if g.InboxFailures() != 1 {
 		t.Fatalf("inbox failures = %d, want 1", g.InboxFailures())

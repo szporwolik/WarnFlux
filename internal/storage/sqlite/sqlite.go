@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
+	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
@@ -558,6 +560,10 @@ areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, up
 type Store struct {
 	db *sql.DB
 
+	// path is the database file path; FreeBytes stats the directory
+	// holding it (the WAL and journal live there too).
+	path string
+
 	// now is the clock used for timestamps; injectable in tests.
 	now func() time.Time
 }
@@ -622,7 +628,7 @@ func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 		return nil, MigrationInfo{}, err
 	}
 
-	store := &Store{db: db, now: time.Now}
+	store := &Store{db: db, now: time.Now, path: path}
 	for _, opt := range opts {
 		opt(store)
 	}
@@ -909,7 +915,7 @@ func (s *Store) AppendEvent(ctx context.Context, ev dispatch.Event) (int64, erro
 	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO dispatch_inbox (event_json, received_at_ms, receiver)
-		VALUES (?, ?, ?)`, string(data), time.Now().UnixMilli(), ev.Origin.ReceiverID)
+		VALUES (?, ?, ?)`, string(data), s.now().UnixMilli(), ev.Origin.ReceiverID)
 	if err != nil {
 		return 0, fmt.Errorf("append inbox event: %w", err)
 	}
@@ -918,6 +924,41 @@ func (s *Store) AppendEvent(ctx context.Context, ev dispatch.Event) (int64, erro
 		return 0, fmt.Errorf("inbox event id: %w", err)
 	}
 	return id, nil
+}
+
+// FreeBytes reports the filesystem free space for the database
+// directory (the WAL and journal live next to the database file). It
+// feeds the low-disk alarm and the aggressive inbox retention policy.
+func (s *Store) FreeBytes(ctx context.Context) (int64, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(filepath.Dir(s.path), &st); err != nil {
+		return 0, fmt.Errorf("statfs %q: %w", filepath.Dir(s.path), err)
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
+// InboxCount reports the current durable dispatch-inbox backlog (rows
+// persisted but not yet acknowledged by the routing engine).
+func (s *Store) InboxCount(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM dispatch_inbox`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count inbox rows: %w", err)
+	}
+	return n, nil
+}
+
+// PruneInbox deletes durable inbox rows older than olderThan. Rows
+// pruned this way are dropped BEFORE routing evaluation: the controlled
+// auxiliary-data policy that keeps a full disk from growing the inbox
+// without bound (unevaluated rows older than the retention are stale
+// hazards anyway, and the staleness gates would suppress them).
+func (s *Store) PruneInbox(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM dispatch_inbox WHERE received_at_ms < ?`, olderThan.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("prune inbox: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // PendingInboxEvents returns the oldest unacknowledged inbox rows (at most

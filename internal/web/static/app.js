@@ -7,6 +7,7 @@
     en: {
       "map.layer.hazards": "Hazards",
       "map.layer.stations": "Stations",
+      "map.layer.meshcore": "MeshCore",
       "map.layer.weather": "Weather",
       "map.layer.radar": "Radar",
       "map.layer.airquality": "Air quality",
@@ -22,6 +23,7 @@
       "map.seen": "Seen",
       "map.sent": "Sent",
       "map.heard": "Heard",
+      "map.hops": "hops",
       "map.hum": "hum",
       "map.wind": "wind",
       "map.gusts": "gusts",
@@ -30,6 +32,8 @@
       "home.weather.none": "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT.",
       "home.weather.forecast": "Forecast — next days",
       "home.stations.none": "No stations heard yet — ham stations beacon through APRS.",
+      "home.meshcore.none": "No MeshCore nodes heard yet.",
+      "home.meshcore.noloc": "Heard without position",
       "home.aircraft.none": "No aircraft in range right now.",
       "map.km": "km",
       "map.center": "Center the view",
@@ -65,6 +69,7 @@
     pl: {
       "map.layer.hazards": "Zagrożenia",
       "map.layer.stations": "Stacje",
+      "map.layer.meshcore": "MeshCore",
       "map.layer.weather": "Pogoda",
       "map.layer.radar": "Radar",
       "map.layer.airquality": "Jakość powietrza",
@@ -80,6 +85,7 @@
       "map.seen": "Widziany",
       "map.sent": "Wysłano",
       "map.heard": "Słyszano",
+      "map.hops": "przeskoków",
       "map.hum": "wilg.",
       "map.wind": "wiatr",
       "map.gusts": "porywy",
@@ -88,6 +94,8 @@
       "home.weather.none": "Brak jeszcze raportów pogodowych — publikują je stacje pogodowe APRS i dostawcy prognoz przez MQTT.",
       "home.weather.forecast": "Prognoza — kolejne dni",
       "home.stations.none": "Nie słychać jeszcze żadnych stacji — krótkofalowcy nadają przez APRS.",
+      "home.meshcore.none": "Nie słychać jeszcze żadnych węzłów MeshCore.",
+      "home.meshcore.noloc": "Słyszane bez pozycji",
       "home.aircraft.none": "W tej chwili brak samolotów w zasięgu.",
       "map.km": "km",
       "map.center": "Wyśrodkuj widok",
@@ -648,6 +656,7 @@
 
   var map = null;
   var stationLayer = null;
+  var meshLayer = null;
   var hazardLayer = null;
   var weatherLayer = null;
   var aircraftLayer = null;
@@ -660,9 +669,12 @@
   // Latest fetches kept for the combined view fit.
   var lastStations = [];
   var lastHazards = [];
+  var lastMeshNodes = [];
+  var lastMeshNoPos = [];
   // Markers indexed by callsign (uppercased), so the report cards can
   // focus the map on a station and open its popup.
   var stationMarkers = {};
+  var meshMarkers = {};
   var weatherMarkers = {};
 
   // Theme-aware base map, the same free provider the CQOps dashboard
@@ -870,6 +882,7 @@
     baseLayer = null;
     syncBaseLayer();
     stationLayer = L.layerGroup().addTo(map);
+    meshLayer = L.layerGroup().addTo(map);
     hazardLayer = L.layerGroup().addTo(map);
     weatherLayer = L.layerGroup().addTo(map);
     // Aircraft start hidden: the layer exists and refreshes, but the
@@ -904,11 +917,13 @@
     enableRadar();
     addMapControls(map);
     refreshStations();
+    refreshMeshNodes();
     refreshHazards();
     refreshWeather();
     refreshAircraft();
     refreshAirQuality();
     window.setInterval(refreshStations, STATION_POLL_MS);
+    window.setInterval(refreshMeshNodes, STATION_POLL_MS);
     window.setInterval(refreshWeather, WEATHER_POLL_MS);
     window.setInterval(refreshAircraft, AIRCRAFT_POLL_MS);
     window.setInterval(refreshAirQuality, AQ_POLL_MS);
@@ -1011,6 +1026,7 @@
   // callsign label under the badge, like every labeled pin.
   var BADGE_GLYPHS = {
     antenna: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18.5" r="1.7" fill="currentColor" stroke="none"/><path d="M5 13.5a7 7 0 0 1 14 0"/><path d="M8.5 16a3.5 3.5 0 0 1 7 0"/></svg>',
+    mesh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.9" fill="currentColor" stroke="none"/><path d="M8.6 8.6a4.8 4.8 0 0 1 6.8 0"/><path d="M5.2 5.2a9.6 9.6 0 0 1 13.6 0"/></svg>',
     warning: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
     wind: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/></svg>',
     plane: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L21 21 L12 17 L3 21 Z"/></svg>'
@@ -1048,6 +1064,16 @@
       color: "#1565c0",
       glyph: BADGE_GLYPHS.antenna,
       label: s.callsign
+    });
+  }
+
+  // meshBadge renders the MeshCore pin: the broadcast glyph in the
+  // category color with the node name (or key prefix) as the halo label.
+  function meshBadge(n) {
+    return wfBadge({
+      color: "#8e24aa",
+      glyph: BADGE_GLYPHS.mesh,
+      label: n.name || n.key.slice(0, 12)
     });
   }
 
@@ -1191,6 +1217,154 @@
         reconcilePins();
       })
       .catch(function () { /* transient — next poll retries */ });
+  }
+
+  // meshPopup renders the unified popup for one MeshCore node: purple
+  // banner with the broadcast glyph, name, type chip, then distance,
+  // hops, last-heard time and the full key.
+  function meshPopup(n) {
+    var lines = [];
+    lines.push(tr("map.heard") + ": " + fmtTime(n.last_seen));
+    if (n.distance_km) {
+      lines.push(Number(n.distance_km).toFixed(1) + " km");
+    }
+    if (n.hops) {
+      lines.push(tr("map.hops") + ": " + n.hops);
+    }
+    var body = lines.join("<br>");
+    body += '<div class="wf-pop-meta muted">' + esc(n.key) + "</div>";
+    return wfPopup({
+      color: "#8e24aa",
+      icon: BADGE_GLYPHS.mesh,
+      title: esc(n.name || n.key.slice(0, 12)),
+      sub: "MeshCore",
+      value: esc(n.type || "node"),
+      body: body
+    });
+  }
+
+  // refreshMeshNodes pulls the heard-node list: located nodes inside the
+  // operational ring become map pins (the "meshcore" layer); nodes
+  // without a position render as a badge list below the cards.
+  function refreshMeshNodes() {
+    var block = document.getElementById("hw-mesh-block");
+    fetch("/api/meshcore/stations")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !meshLayer) {
+          if (block) { block.hidden = true; }
+          return;
+        }
+        if (block) { block.hidden = false; }
+        lastMeshNodes = (data.nodes || []).filter(function (n) {
+          return n && n.latitude && n.longitude;
+        });
+        lastMeshNoPos = data.nopos || [];
+        meshLayer.clearLayers();
+        meshMarkers = {};
+        pinRegistry.meshcore = [];
+        lastMeshNodes.forEach(function (n) {
+          var marker = L.marker([n.latitude, n.longitude], { icon: meshBadge(n), riseOnHover: true });
+          var hover = "<strong>" + esc(n.name || n.key.slice(0, 12)) + "</strong>";
+          if (n.type && n.type !== "node") {
+            hover += "<br>" + esc(n.type);
+          }
+          if (n.hops) {
+            hover += "<br>" + tr("map.hops") + ": " + n.hops;
+          }
+          hover += "<br>" + tr("map.heard") + ": " + esc(fmtTime(n.last_seen));
+          if (n.distance_km) {
+            hover += "<br>" + Number(n.distance_km).toFixed(1) + " km";
+          }
+          marker.bindTooltip(hover, { sticky: true, direction: "top" });
+          marker.bindPopup(meshPopup(n));
+          meshLayer.addLayer(marker);
+          meshMarkers[n.key] = marker;
+          registerPin("meshcore", {
+            group: meshLayer,
+            marker: marker,
+            latlng: [n.latitude, n.longitude],
+            markerKey: "M:" + n.key,
+            title: n.name || n.key.slice(0, 12),
+            kindLabel: tr("map.layer.meshcore")
+          });
+        });
+        renderMeshCards();
+        computeBounds();
+        reconcilePins();
+      })
+      .catch(function () { /* transient — next poll retries */ });
+  }
+
+  // renderMeshCards builds the MeshCore cards below the map (located
+  // nodes, clickable like the station cards) and the badge list of
+  // heard nodes that carry no position.
+  function renderMeshCards() {
+    var container = document.getElementById("hw-mesh");
+    var countEl = document.getElementById("hw-mesh-count");
+    var badges = document.getElementById("hw-mesh-nopos");
+    if (!container) {
+      return;
+    }
+    container.textContent = "";
+    if (countEl) {
+      countEl.textContent = lastMeshNodes.length ? "(" + lastMeshNodes.length + ")" : "";
+    }
+    if (!lastMeshNodes.length) {
+      container.appendChild(mk("p", "muted", tr("home.meshcore.none")));
+    }
+    lastMeshNodes.forEach(function (n) {
+      var item = mk("button", "hw-report");
+      item.type = "button";
+      item.appendChild(mk("span", "hw-icon hw-mesh", "⌁"));
+      var body = mk("span", "hw-body");
+      var head = mk("span", "hw-head");
+      head.appendChild(mk("strong", null, n.name || n.key.slice(0, 12)));
+      if (n.type && n.type !== "node") {
+        head.appendChild(mk("span", "hw-provider", n.type));
+      }
+      body.appendChild(head);
+      var meta = [];
+      if (n.distance_km) {
+        meta.push(Number(n.distance_km).toFixed(1) + " km");
+      }
+      if (n.hops) {
+        meta.push(tr("map.hops") + " " + n.hops);
+      }
+      meta.push(tr("map.heard") + " " + fmtTime(n.last_seen));
+      body.appendChild(mk("span", "hw-meta", meta.join(" · ")));
+      item.appendChild(body);
+      item.title = trf("map.show_on_map", n.name || n.key.slice(0, 12));
+      item.addEventListener("click", function () {
+        focusMarker(meshMarkers[n.key]);
+      });
+      container.appendChild(item);
+    });
+
+    if (badges) {
+      badges.textContent = "";
+      if (!lastMeshNoPos.length) {
+        badges.hidden = true;
+        return;
+      }
+      badges.hidden = false;
+      badges.appendChild(mk("span", "mc-noloc-title", tr("home.meshcore.noloc")));
+      lastMeshNoPos.forEach(function (n) {
+        var chip = mk("span", "mc-chip");
+        chip.title = n.key;
+        chip.appendChild(mk("span", "mc-chip-name", n.name || n.key.slice(0, 12)));
+        var extra = [];
+        if (n.type && n.type !== "node") {
+          extra.push(n.type);
+        }
+        if (n.hops) {
+          extra.push(tr("map.hops") + " " + n.hops);
+        }
+        extra.push(fmtTime(n.last_seen));
+        chip.appendChild(mk("span", "mc-chip-meta", extra.join(" · ")));
+        badges.appendChild(chip);
+      });
+    }
   }
 
   // Severity palette for hazard pins and popup banners: one cohesive
@@ -1547,7 +1721,7 @@
   // the visible pin lists everything underneath.
   var pinChipLayer = null;
   var pinRegistry = {}; // category -> [{marker, group, latlng, markerKey, title, kindLabel}]
-  var pinPriority = { hazards: 0, stations: 1, weather: 2, airquality: 3, aircraft: 4 };
+  var pinPriority = { hazards: 0, stations: 1, meshcore: 2, weather: 3, airquality: 4, aircraft: 5 };
 
   function registerPin(category, entry) {
     entry.category = category;
@@ -2013,6 +2187,7 @@
   var MAP_CTRL_ICONS = {
     hazards: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
     stations: '<circle cx="12" cy="18.5" r="1.7" fill="currentColor" stroke="none"/><path d="M5 13.5a7 7 0 0 1 14 0"/><path d="M8.5 16a3.5 3.5 0 0 1 7 0"/>',
+    meshcore: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/>',
     weather: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
     radar: '<circle cx="12" cy="12" r="8"/><path d="M12 12V4"/><path d="M12 12l6-3.5"/>',
     airquality: '<path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/>',
@@ -2021,6 +2196,7 @@
   var MAP_CTRL_COLORS = {
     hazards: "#d32f2f",
     stations: "#1565c0",
+    meshcore: "#8e24aa",
     weather: "#00897b",
     radar: "#00bcd4",
     airquality: "#43a047",
@@ -2095,6 +2271,7 @@
   var LAYER_DEFS = [
     ["hazards", tr("map.layer.hazards"), function () { return hazardLayer; }],
     ["stations", tr("map.layer.stations"), function () { return stationLayer; }],
+    ["meshcore", tr("map.layer.meshcore"), function () { return meshLayer; }],
     ["weather", tr("map.layer.weather"), function () { return weatherLayer; }],
     ["radar", tr("map.layer.radar"), function () {
       radarOn = !radarOn;
@@ -2160,6 +2337,12 @@
     lastStations.forEach(function (s) {
       if (s && s.position && !s.self) {
         b.extend([s.position.latitude, s.position.longitude]);
+        has = true;
+      }
+    });
+    lastMeshNodes.forEach(function (n) {
+      if (n && n.latitude && n.longitude) {
+        b.extend([n.latitude, n.longitude]);
         has = true;
       }
     });

@@ -534,8 +534,11 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		if s.emcomHazardInMirror(slug) {
 			typ = dispatch.TransitionUpdated
 		}
-		if !s.ingress.Enqueue(emcomTransition(h, typ)) {
+		switch s.ingress.Enqueue(emcomTransition(h, typ)) {
+		case dispatch.Rejected:
 			s.logger.Warn("emcom: dispatch queue full, transition dropped", "slug", slug)
+		case dispatch.AcceptedEmergency:
+			s.logger.Warn("emcom: transition accepted WITHOUT durable storage (emergency mode; lost on restart)", "slug", slug)
 		}
 	} else if s.emcomHazardInMirror(slug) {
 		// Back to monitoring: retire the hazard document; the expiry
@@ -543,7 +546,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
 		}
-		if !s.ingress.Enqueue(emcomTransition(emcomHazard(net, now), dispatch.TransitionExpired)) {
+		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, now), dispatch.TransitionExpired)) == dispatch.Rejected {
 			s.logger.Warn("emcom: dispatch queue full, expiry transition dropped", "slug", slug)
 		}
 	}
@@ -580,7 +583,7 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 		if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
 		}
-		if !s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired)) {
+		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired)) == dispatch.Rejected {
 			s.logger.Warn("emcom: dispatch queue full, expiry transition dropped", "slug", slug)
 		}
 	}

@@ -148,11 +148,18 @@ func (in *Ingestor) handleGeneric(msg mqtt.Message, topic string, payload []byte
 			Payload:   append([]byte(nil), payload...),
 		},
 	}
-	if !in.ingress.Enqueue(ev) {
+	switch in.ingress.Enqueue(ev) {
+	case dispatch.Rejected:
 		if in.stats != nil {
 			in.stats.Dropped.Add(1)
 		}
 		in.logger.Warn("receiver: dispatch intake full, generic event dropped",
+			"receiver", in.receiverID, "topic", topic)
+	case dispatch.AcceptedEmergency:
+		if in.stats != nil {
+			in.stats.Emergency.Add(1)
+		}
+		in.logger.Warn("receiver: generic event accepted WITHOUT durable storage (emergency mode; lost on restart)",
 			"receiver", in.receiverID, "topic", topic)
 	}
 }
@@ -321,12 +328,20 @@ func (in *Ingestor) handleEvent(topic string, payload []byte, now time.Time) {
 	ev := EventFromWire(we, in.receiverID, now)
 
 	// Non-blocking offer: a full dispatch queue drops the event instead of
-	// slowing down MQTT ingestion.
-	if !in.ingress.Enqueue(ev) {
+	// slowing down MQTT ingestion. The result distinguishes durable,
+	// emergency (RAM-only) and rejected acceptance.
+	switch in.ingress.Enqueue(ev) {
+	case dispatch.Rejected:
 		if in.stats != nil {
 			in.stats.Dropped.Add(1)
 		}
 		in.logger.Warn("receiver: dispatch intake full, transition dropped",
+			"receiver", in.receiverID, "type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
+	case dispatch.AcceptedEmergency:
+		if in.stats != nil {
+			in.stats.Emergency.Add(1)
+		}
+		in.logger.Warn("receiver: transition accepted WITHOUT durable storage (emergency mode; lost on restart)",
 			"receiver", in.receiverID, "type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
 	}
 }
@@ -465,4 +480,7 @@ type Stats struct {
 	Malformed atomic.Int64
 	Oversized atomic.Int64
 	Dropped   atomic.Int64
+	// Emergency counts events accepted without durable storage (inbox
+	// write failed or no inbox attached): delivered now, lost on restart.
+	Emergency atomic.Int64
 }

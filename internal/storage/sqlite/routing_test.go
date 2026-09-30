@@ -77,6 +77,53 @@ func TestGroupRoutingRoundTrip(t *testing.T) {
 	}
 }
 
+// TestInboxPruneAndBacklog pins the controlled auxiliary-data policy for
+// the durable dispatch inbox: unevaluated rows older than the cutoff are
+// pruned (stale alerts the staleness gates would suppress anyway), and
+// the free-space probe reports the database filesystem for the low-disk
+// alarm.
+func TestInboxPruneAndBacklog(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	store, _, err := Open(":memory:", WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ctx := context.Background()
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	if _, err := store.AppendEvent(ctx, ev); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if _, err := store.AppendEvent(ctx, ev); err != nil {
+		t.Fatalf("AppendEvent 2: %v", err)
+	}
+	if n, err := store.InboxCount(ctx); err != nil || n != 2 {
+		t.Fatalf("backlog = (%d, %v), want (2, nil)", n, err)
+	}
+
+	// A cutoff before both rows removes nothing.
+	if n, err := store.PruneInbox(ctx, now.Add(-time.Hour)); err != nil || n != 0 {
+		t.Fatalf("prune past = (%d, %v), want (0, nil)", n, err)
+	}
+	// A cutoff after both rows removes everything.
+	if n, err := store.PruneInbox(ctx, now.Add(time.Hour)); err != nil || n != 2 {
+		t.Fatalf("prune future = (%d, %v), want (2, nil)", n, err)
+	}
+	if n, err := store.InboxCount(ctx); err != nil || n != 0 {
+		t.Fatalf("backlog after prune = (%d, %v), want (0, nil)", n, err)
+	}
+
+	free, err := store.FreeBytes(ctx)
+	if err != nil {
+		t.Fatalf("FreeBytes: %v", err)
+	}
+	if free <= 0 {
+		t.Fatalf("free bytes = %d, want > 0", free)
+	}
+}
+
 func TestGroupRoutingErrors(t *testing.T) {
 	store := newRoutingStore(t)
 

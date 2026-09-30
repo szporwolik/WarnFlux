@@ -16,6 +16,8 @@ import (
 type storageProbe interface {
 	PendingStats(ctx context.Context) (pending int, oldest time.Duration, err error)
 	CountActive(ctx context.Context) (int, error)
+	InboxCount(ctx context.Context) (int, error)
+	FreeBytes(ctx context.Context) (int64, error)
 }
 
 // handleMetrics renders the Prometheus exposition text. It is intentionally
@@ -59,11 +61,30 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _, _, depth, _ := s.ingress.Stats()
 	fmt.Fprintf(&b, "warnflux_dispatch_queue_depth %d\n", depth)
 
+	// Dispatch acceptance accounting: durable vs emergency vs rejected.
+	// Emergency acceptance is the visible degradation when the durable
+	// inbox write fails or no inbox is attached.
+	fmt.Fprintf(&b, "# HELP warnflux_dispatch_accepts_total Events accepted by the dispatch ingress, by durability.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_dispatch_accepts_total counter\n")
+	fmt.Fprintf(&b, "warnflux_dispatch_accepts_total{durability=%q} %d\n", "durable", s.ingress.DurableAccepted())
+	fmt.Fprintf(&b, "warnflux_dispatch_accepts_total{durability=%q} %d\n", "emergency", s.ingress.EmergencyAccepted())
+	fmt.Fprintf(&b, "# HELP warnflux_dispatch_rejects_total Events rejected by the dispatch ingress (full queue or closed intake).\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_dispatch_rejects_total counter\n")
+	_, droppedFull, droppedLate, _, _ := s.ingress.Stats()
+	fmt.Fprintf(&b, "warnflux_dispatch_rejects_total %d\n", droppedFull+droppedLate)
+	fmt.Fprintf(&b, "# HELP warnflux_dispatch_inbox_failures_total Durable inbox write failures (events fell back to emergency acceptance).\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_dispatch_inbox_failures_total counter\n")
+	fmt.Fprintf(&b, "warnflux_dispatch_inbox_failures_total %d\n", s.ingress.InboxFailures())
+
 	// Storage-derived gauges.
 	fmt.Fprintf(&b, "# HELP warnflux_pending_changes Unacknowledged journal changes awaiting output delivery.\n")
 	fmt.Fprintf(&b, "# TYPE warnflux_pending_changes gauge\n")
 	fmt.Fprintf(&b, "# HELP warnflux_events_active Currently active hazard events.\n")
 	fmt.Fprintf(&b, "# TYPE warnflux_events_active gauge\n")
+	fmt.Fprintf(&b, "# HELP warnflux_inbox_backlog Durable dispatch-inbox rows awaiting routing evaluation.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_inbox_backlog gauge\n")
+	fmt.Fprintf(&b, "# HELP warnflux_storage_free_bytes Filesystem free bytes on the database volume.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_storage_free_bytes gauge\n")
 	if probe, ok := s.users.(storageProbe); ok {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		if pending, _, err := probe.PendingStats(ctx); err == nil {
@@ -71,6 +92,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 		if active, err := probe.CountActive(ctx); err == nil {
 			fmt.Fprintf(&b, "warnflux_events_active %d\n", active)
+		}
+		if backlog, err := probe.InboxCount(ctx); err == nil {
+			fmt.Fprintf(&b, "warnflux_inbox_backlog %d\n", backlog)
+		}
+		if free, err := probe.FreeBytes(ctx); err == nil {
+			fmt.Fprintf(&b, "warnflux_storage_free_bytes %d\n", free)
 		}
 		cancel()
 	}

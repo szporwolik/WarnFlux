@@ -88,6 +88,10 @@ type Server struct {
 	// nil in minimal constructions (the view degrades to n/a).
 	sys *sysinfo.Sampler
 
+	// minFreeBytes is the low-disk alarm threshold: below it the health
+	// DB row turns red and the retention policy shortens (0 = disabled).
+	minFreeBytes int64
+
 	// resetMailer delivers password-reset emails. nil = email delivery
 	// unavailable (the self-service flow degrades gracefully).
 	resetMailer func(to, subject, text string) error
@@ -317,6 +321,14 @@ func (s *Server) routes(static http.Handler) {
 
 // MarkReady flips readiness (database opened, HTTP initialized).
 func (s *Server) MarkReady() { s.ready.Store(true) }
+
+// SetStorageAlarm installs the low-disk alarm threshold in bytes (0
+// disables the alarm): below it the health DB row turns red, /metrics
+// reports the free space, and the dispatch inbox retention shortens.
+// Must be called before serving traffic.
+func (s *Server) SetStorageAlarm(minFreeBytes int64) {
+	s.minFreeBytes = minFreeBytes
+}
 
 // Bind creates the listening socket. It fails startup when the address is
 // already in use — the application must not discover that only after

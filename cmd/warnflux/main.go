@@ -525,6 +525,7 @@ func run(configPath string, checkConfig bool) error {
 	// gets the durable inbox: acceptance is persisted before routing, so
 	// a full queue or a crash no longer loses accepted events.
 	ingress := dispatch.NewIngress(cfg.Dispatch.QueueSize)
+	ingress.SetInboxWriteTimeout(cfg.Dispatch.InboxWriteTimeout)
 	ingress.SetInbox(store)
 	mirror := state.New()
 
@@ -682,6 +683,9 @@ func run(configPath string, checkConfig bool) error {
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
+		// Low-disk alarm: the health page and /metrics report the free
+		// space against storage.min_free_mb (0 disables the alarm).
+		webSrv.SetStorageAlarm(cfg.Storage.MinFreeMB * 1024 * 1024)
 		// Password-reset emails ride the first enabled smtp action's
 		// configuration; without one the self-service flow degrades to
 		// "contact an administrator".
@@ -764,6 +768,60 @@ func run(configPath string, checkConfig bool) error {
 			}
 			prune()
 			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					prune()
+				}
+			}
+		}()
+	}
+
+	// Durable dispatch-inbox maintenance: unevaluated rows older than the
+	// configured retention are pruned (stale alerts the staleness gates
+	// would suppress anyway). Below the low-disk alarm threshold the
+	// cutoff shortens so auxiliary data stops competing with primary
+	// storage on a full card. A retention of 0 disables pruning.
+	if cfg.Dispatch.InboxRetention > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			interval := cfg.App.ExpirationInterval
+			if interval <= 0 {
+				interval = time.Minute
+			}
+			minFree := cfg.Storage.MinFreeMB * 1024 * 1024
+			prune := func() {
+				now := time.Now()
+				cutoff := now.Add(-cfg.Dispatch.InboxRetention)
+				lowDisk := false
+				if minFree > 0 {
+					if free, err := store.FreeBytes(ctx); err != nil {
+						logger.Warn("storage: free space check failed", "error", err)
+					} else if free < minFree {
+						lowDisk = true
+						short := now.Add(-dispatch.LowDiskInboxRetention)
+						if short.After(cutoff) {
+							cutoff = short
+						}
+						logger.Warn("storage: low disk space, shortening inbox retention",
+							"free_mb", free/1024/1024, "min_free_mb", cfg.Storage.MinFreeMB)
+					}
+				}
+				n, err := store.PruneInbox(ctx, cutoff)
+				if err != nil {
+					logger.Warn("dispatch: inbox prune failed", "error", err)
+					return
+				}
+				if n > 0 {
+					logger.Info("dispatch: inbox pruned", "dropped_unevaluated", n, "low_disk", lowDisk)
+				}
+			}
+			prune()
+			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			for {
 				select {

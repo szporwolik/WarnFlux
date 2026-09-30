@@ -266,8 +266,11 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	if form.Status == "expired" {
 		typ = dispatch.TransitionExpired
 	}
-	if !s.ingress.Enqueue(composeTransition(h, typ)) {
+	switch s.ingress.Enqueue(composeTransition(h, typ)) {
+	case dispatch.Rejected:
 		s.logger.Warn("compose: dispatch queue full, transition dropped", "event_key", h.EventKey)
+	case dispatch.AcceptedEmergency:
+		s.logger.Warn("compose: transition accepted WITHOUT durable storage (emergency mode; lost on restart)", "event_key", h.EventKey)
 	}
 
 	// Active communications expire on their own at expires_at (the
@@ -317,7 +320,7 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 
 	// Group routing sees the expiry too (like the sources' cancelled /
 	// expired transitions on the /events stream).
-	if !s.ingress.Enqueue(composeTransition(h, dispatch.TransitionExpired)) {
+	if s.ingress.Enqueue(composeTransition(h, dispatch.TransitionExpired)) == dispatch.Rejected {
 		s.logger.Warn("compose: dispatch queue full, expiry transition dropped", "event_key", key)
 	}
 	http.Redirect(w, r, "/compose?msg=expired", http.StatusSeeOther)
@@ -350,7 +353,7 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard) {
 			return
 		}
 		s.logger.Info("compose: communication auto-expired", "event_key", key)
-		if !s.ingress.Enqueue(composeTransition(cur, dispatch.TransitionExpired)) {
+		if s.ingress.Enqueue(composeTransition(cur, dispatch.TransitionExpired)) == dispatch.Rejected {
 			s.logger.Warn("compose: dispatch queue full, auto-expiry transition dropped", "event_key", key)
 		}
 	})

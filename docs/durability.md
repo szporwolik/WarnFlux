@@ -21,8 +21,8 @@ journal order.
 
 ## 2. Dispatch acceptance (wire → routing evaluation)
 
-**Guarantee: durable acceptance; at-least-once evaluation; atomic
-hand-off to delivery.**
+**Guarantee: explicit acceptance result; durable-first; at-least-once
+evaluation; atomic hand-off to delivery.**
 
 Every canonical event accepted from a receiver (MQTT or HTTP ingest) is
 persisted to the dispatch inbox (`dispatch_inbox`) **before** it enters
@@ -31,11 +31,39 @@ the live queue. The inbox row is consumed **only** by
 produced and deletes the inbox row **in one transaction** — either all
 jobs exist durably and the row is gone, or neither happened.
 
-- A full live queue defers the event to inbox recovery instead of dropping
+Acceptance is a **tri-state result**, never a silent fallback:
+
+- **durable** — the inbox row exists before the live queue is offered. A
+  full live queue defers the event to inbox recovery instead of dropping
   it; a crash between acceptance and evaluation re-delivers the event
   after the restart (recovery runs on the refresh tick).
-- If the inbox write itself fails, acceptance falls back to the live queue
-  only (the event is not durable).
+- **emergency** — the inbox write failed (full or damaged card) or no
+  inbox is attached: the event is delivered now but lives only in RAM.
+  The result is **visible and auditable**, never green: the health page
+  turns the dispatch queue row amber with an EMERGENCY badge and a
+  running count, `/metrics` exposes
+  `warnflux_dispatch_accepts_total{durability="emergency"}` and
+  `warnflux_dispatch_inbox_failures_total`, and every receiver logs the
+  degradation per event.
+- **rejected** — neither the inbox nor the live queue took the event; it
+  is lost and counted.
+
+Each inbox write is bounded by `dispatch.inbox_write_timeout` (default
+2 s): the intake never blocks the receiver callback longer than the
+deadline — a stuck database degrades the event to emergency acceptance
+instead of hanging MQTT ingestion.
+
+**Auxiliary-data policy (a full card must not kill acceptance silently):**
+
+- `dispatch.inbox_retention` (default 24 h) prunes unevaluated inbox rows
+  older than the cutoff — stale alerts the staleness gates would suppress
+  anyway. Below the `storage.min_free_mb` alarm threshold the cutoff
+  shortens to 5 minutes, so auxiliary data stops competing with primary
+  storage.
+- The health page reports the free space on the database filesystem and
+  turns the Database row red below the threshold; `/metrics` exposes
+  `warnflux_storage_free_bytes` and `warnflux_inbox_backlog`.
+
 - **Without a validly loaded routing snapshot the event stays pending**:
   an evaluation on an empty rule set is not a deliberate result, so the
   engine refuses to consume the row and recovery retries after the next

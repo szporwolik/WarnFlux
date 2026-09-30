@@ -27,11 +27,17 @@ type Node struct {
 	Type   byte
 	Lat    float64
 	Lon    float64
+	// Hops is the contact's stored outbound path length (0 when unknown).
+	Hops int
+	// AdvAt is when the neighbour last sent an advert (zero when unknown).
+	AdvAt time.Time
 	// DistKM and BearingDeg are computed relative to our station's
 	// position in Snapshot (0 when either position is unknown).
 	DistKM     float64
 	BearingDeg float64
 	LastSeen   time.Time
+
+	lastQuery time.Time // device contact lookup throttling (internal)
 }
 
 // Message is one received or sent channel/contact message.
@@ -68,6 +74,9 @@ const (
 // uninvited. Receiving is still allowed.
 const PublicChannelIdx = 0
 
+// contactQueryInterval throttles CMD_GET_CONTACT_BY_KEY lookups per node.
+const contactQueryInterval = 30 * time.Second
+
 // Hub owns the serial connection to the MeshCore Companion device and the
 // shared state: self info, neighbours and the message history. The source
 // plugin runs Run; the outbound action sends through SendChannelMessage;
@@ -86,6 +95,10 @@ type Hub struct {
 	recorder  Recorder
 	lastErr   error
 	connected bool
+
+	// pendingAcks queues send-command acknowledgements: the device
+	// answers each host command in order with OK / SENT / ERR.
+	pendingAcks []chan error
 }
 
 // NewHub validates the config and builds the hub.
@@ -175,6 +188,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.connected = true
 	h.mu.Unlock()
 	defer conn.Close()
+	defer h.failPendingAcks(errors.New("meshcore: session ended"))
 
 	if err := h.handshake(conn); err != nil {
 		return err
@@ -306,13 +320,78 @@ func (h *Hub) writeFrame(payload []byte) error {
 	return nil
 }
 
+// registerAck enqueues a waiter for the next device OK/SENT/ERR reply.
+func (h *Hub) registerAck() chan error {
+	ch := make(chan error, 1)
+	h.mu.Lock()
+	h.pendingAcks = append(h.pendingAcks, ch)
+	h.mu.Unlock()
+	return ch
+}
+
+// popAck returns the oldest ack waiter, if any.
+func (h *Hub) popAck() chan error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.pendingAcks) == 0 {
+		return nil
+	}
+	ch := h.pendingAcks[0]
+	h.pendingAcks = h.pendingAcks[1:]
+	return ch
+}
+
+// failPendingAcks fails every outstanding waiter (session teardown).
+func (h *Hub) failPendingAcks(err error) {
+	h.mu.Lock()
+	waiters := h.pendingAcks
+	h.pendingAcks = nil
+	h.mu.Unlock()
+	for _, ch := range waiters {
+		ch <- err
+	}
+}
+
+// waitAck waits for the device to accept (nil) or reject (error) a
+// command. OK, SENT and ERR frames all satisfy the wait.
+func (h *Hub) waitAck(ack chan error) error {
+	select {
+	case err := <-ack:
+		return err
+	case <-time.After(5 * time.Second):
+		return errors.New("meshcore: device did not acknowledge the command")
+	}
+}
+
+// deviceErrText names the device's PACKET_ERR codes.
+func deviceErrText(code byte) string {
+	switch code {
+	case 1:
+		return "unsupported command"
+	case 2:
+		return "not found"
+	case 3:
+		return "table full"
+	case 4:
+		return "bad state"
+	case 5:
+		return "file io error"
+	default:
+		return fmt.Sprintf("code %d", code)
+	}
+}
+
 // SendChannelMessage sends one text message on the configured channel.
 // The Public channel (0) is refused: never transmit there.
 func (h *Hub) SendChannelMessage(text string) error {
 	if h.cfg.ChannelIdx == PublicChannelIdx {
 		return errors.New("meshcore: refusing to transmit on public channel 0")
 	}
+	ack := h.registerAck()
 	if err := h.writeFrame(buildSendChannelTxtMsg(byte(h.cfg.ChannelIdx), text)); err != nil {
+		return err
+	}
+	if err := h.waitAck(ack); err != nil {
 		return err
 	}
 	h.recordMessage("tx", "SOSNA", fmt.Sprintf("ch%d", h.cfg.ChannelIdx), text)
@@ -330,7 +409,11 @@ func (h *Hub) SendContactMessage(prefixHex, text string) error {
 	payload = binary.LittleEndian.AppendUint32(payload, uint32(nowUnix()))
 	payload = append(payload, b...)
 	payload = append(payload, []byte(text)...)
+	ack := h.registerAck()
 	if err := h.writeFrame(payload); err != nil {
+		return err
+	}
+	if err := h.waitAck(ack); err != nil {
 		return err
 	}
 	h.recordMessage("tx", prefixHex, "direct", text)
@@ -342,7 +425,11 @@ func (h *Hub) SendAdvert(kind int) error {
 	if kind != AdvertZeroHop && kind != AdvertFlood {
 		return fmt.Errorf("meshcore: invalid advert kind %d", kind)
 	}
-	return h.writeFrame(buildSendSelfAdvert(byte(kind)))
+	ack := h.registerAck()
+	if err := h.writeFrame(buildSendSelfAdvert(byte(kind))); err != nil {
+		return err
+	}
+	return h.waitAck(ack)
 }
 
 func (h *Hub) handleFrame(frame []byte) {
@@ -377,14 +464,31 @@ func (h *Hub) handleFrame(frame []byte) {
 		}
 	case pushAdvert:
 		if len(frame) >= 33 {
-			h.touchNode(frame[1:33], "", 0, 0, 0)
+			h.touchNode(frame[1:33], "", 0, 0, 0, -1, time.Time{})
+			// Known contacts only push their pubkey: ask the device for
+			// the full record so the node list shows real names.
+			h.maybeQueryContact(frame[1:33])
 		}
 	case pushNewAdvert:
 		if a, err := parseNewAdvert(frame[1:]); err == nil {
-			h.touchNode(a.PublicKey, a.AdvName, a.Type, a.Lat(), a.Lon())
+			var advAt time.Time
+			if a.LastAdvert != 0 {
+				advAt = time.Unix(int64(a.LastAdvert), 0)
+			}
+			h.touchNode(a.PublicKey, a.AdvName, a.Type, a.Lat(), a.Lon(), int(a.OutPathLen), advAt)
 			if h.logger != nil {
 				h.logger.Debug("meshcore: advert", "name", a.AdvName, "type", a.Type)
 			}
+		}
+	case respContact:
+		// Full contact record (name, type, path, position, last advert)
+		// answering CMD_GET_CONTACT_BY_KEY. Same layout as NEW_ADVERT.
+		if a, err := parseNewAdvert(frame[1:]); err == nil {
+			var advAt time.Time
+			if a.LastAdvert != 0 {
+				advAt = time.Unix(int64(a.LastAdvert), 0)
+			}
+			h.touchNode(a.PublicKey, a.AdvName, a.Type, a.Lat(), a.Lon(), int(a.OutPathLen), advAt)
 		}
 	case respChannelMsg:
 		if m, err := parseChannelMsg(frame[1:], false); err == nil {
@@ -408,8 +512,22 @@ func (h *Hub) handleFrame(frame []byte) {
 		// RF log stream: informational only (ignored).
 	case respNoMoreMessages:
 		// End of queued messages.
+	case respErr:
+		code := byte(0)
+		if len(frame) > 1 {
+			code = frame[1]
+		}
+		if ch := h.popAck(); ch != nil {
+			ch <- fmt.Errorf("meshcore: device rejected the command: %s", deviceErrText(code))
+		} else if h.logger != nil {
+			h.logger.Warn("meshcore: device error", "code", code)
+		}
+	case respOK, respSent:
+		if ch := h.popAck(); ch != nil {
+			ch <- nil
+		}
 	default:
-		// OK/Err/unknown: ignore silently.
+		// unknown: ignore silently.
 	}
 }
 
@@ -420,7 +538,7 @@ func (h *Hub) receiveChannel(m ChannelMessage) {
 	}
 }
 
-func (h *Hub) touchNode(pubKey []byte, name string, typ byte, lat, lon float64) {
+func (h *Hub) touchNode(pubKey []byte, name string, typ byte, lat, lon float64, hops int, advAt time.Time) {
 	key := pubKeyHex(pubKey)
 	now := time.Now()
 	h.mu.Lock()
@@ -439,11 +557,35 @@ func (h *Hub) touchNode(pubKey []byte, name string, typ byte, lat, lon float64) 
 		n.Lat = lat
 		n.Lon = lon
 	}
+	if hops >= 0 {
+		n.Hops = hops
+	}
+	if !advAt.IsZero() {
+		n.AdvAt = advAt
+	}
 	// Drop expired neighbours opportunistically.
 	for k, v := range h.nodes {
 		if now.Sub(v.LastSeen) > h.cfg.NodeTTL {
 			delete(h.nodes, k)
 		}
+	}
+}
+
+// maybeQueryContact asks the device for a known contact's full record
+// when the node has no name yet (throttled per key).
+func (h *Hub) maybeQueryContact(pubKey []byte) {
+	key := pubKeyHex(pubKey)
+	now := time.Now()
+	h.mu.Lock()
+	n := h.nodes[key]
+	if n == nil || n.Name != "" || now.Sub(n.lastQuery) < contactQueryInterval {
+		h.mu.Unlock()
+		return
+	}
+	n.lastQuery = now
+	h.mu.Unlock()
+	if err := h.writeFrame(buildGetContactByKey(pubKey)); err != nil && h.logger != nil {
+		h.logger.Debug("meshcore: contact query failed", "error", err)
 	}
 }
 

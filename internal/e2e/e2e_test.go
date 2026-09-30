@@ -12,6 +12,7 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -120,20 +121,28 @@ func wirePayloadFor(t *testing.T, st *sqlite.Store, key string) []byte {
 // by the real SQLite ledger.
 func TestProviderToActionE2E(t *testing.T) {
 	// Provider side: a real IMGW warningsmeteo feed with degree 2.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[{
+	// Dates are anchored to the wall clock: the staleness gates
+	// (scheduling + pre-transmission) suppress hazards whose expiry has
+	// already passed, so a fixture that is live right now keeps testing
+	// the full delivery chain.
+	now := time.Now()
+	fixture := fmt.Sprintf(`[{
 			"id": "warn-1",
 			"nazwa_zdarzenia": "Silny wiatr",
 			"stopien": "2",
 			"prawdopodobienstwo": "85",
-			"obowiazuje_od": "2026-09-23 10:00:00",
-			"obowiazuje_do": "2026-09-23 22:00:00",
-			"opublikowano": "2026-09-23 08:00:00",
+			"obowiazuje_od": "%s",
+			"obowiazuje_do": "%s",
+			"opublikowano": "%s",
 			"tresc": "Prognozuje się silny wiatr.",
 			"komentarz": "Brak.",
 			"biuro": "Biuro Prognoz",
 			"teryt": ["1219"]
-		}]`))
+	}]`, now.Add(-2*time.Hour).Format("2006-01-02 15:04:05"),
+		now.Add(2*time.Hour).Format("2006-01-02 15:04:05"),
+		now.Add(-4*time.Hour).Format("2006-01-02 15:04:05"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(fixture))
 	}))
 	defer srv.Close()
 

@@ -31,7 +31,20 @@ type fakeStore struct {
 	ackedInbox   []int64                           // inbox rows consumed by CommitInboxDelivery
 	commitErr    error                             // returned by CommitInboxDelivery
 	recipientErr error                             // returned by the recipient lookups
-	err          error
+	// hazardActiveFn is the staleness oracle; nil = always active.
+	hazardActiveFn func(ctx context.Context, eventKey string, now time.Time) (bool, error)
+	err            error
+}
+
+// HazardActive implements the optional freshness oracle.
+func (f *fakeStore) HazardActive(ctx context.Context, eventKey string, now time.Time) (bool, error) {
+	f.mu.Lock()
+	fn := f.hazardActiveFn
+	f.mu.Unlock()
+	if fn == nil {
+		return true, nil
+	}
+	return fn(ctx, eventKey, now)
 }
 
 func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
@@ -1123,4 +1136,82 @@ func TestEngineInboxNoMatchDeliberateAck(t *testing.T) {
 	if got := store.payloadCount("log"); got != 0 {
 		t.Fatalf("jobs queued = %d on a no-match event, want 0", got)
 	}
+}
+
+// TestEngineExpiredTransitionSkipped pins the scheduling-time staleness
+// gate: a recovered new/updated transition whose expiry has already
+// passed must never start the notification machine.
+func TestEngineExpiredTransitionSkipped(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+
+	ev := hazardEvent("severe", dispatch.TransitionNew)
+	past := time.Now().Add(-time.Hour)
+	ev.Hazard.Hazard.ExpiresAt = &past
+	ev.InboxID = 11
+	feed <- ev
+
+	waitFor(t, func() bool {
+		acked := store.inboxAcked()
+		return len(acked) == 1 && acked[0] == 11
+	}, "stale transition consumed deliberately")
+	if got := e.Stats().ActionsFired; got != 0 {
+		t.Fatalf("actions fired = %d for an expired hazard, want 0", got)
+	}
+	if got := e.Stats().TransitionsSkipped; got != 1 {
+		t.Fatalf("transitions skipped = %d, want 1", got)
+	}
+	if got := store.payloadCount("log"); got != 0 {
+		t.Fatalf("jobs queued = %d for an expired hazard, want 0", got)
+	}
+}
+
+// TestEngineSupersededTransitionSkipped pins the ordering rule: an
+// older update must not outrank a cancellation the store already knows.
+func TestEngineSupersededTransitionSkipped(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	store.mu.Lock()
+	store.hazardActiveFn = func(ctx context.Context, eventKey string, now time.Time) (bool, error) {
+		return false, nil // the store knows a newer cancellation
+	}
+	store.mu.Unlock()
+
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	waitFor(t, func() bool { return e.Stats().TransitionsSkipped == 1 }, "superseded transition skipped")
+	if got := e.Stats().ActionsFired; got != 0 {
+		t.Fatalf("actions fired = %d for a superseded hazard, want 0", got)
+	}
+	if got := store.payloadCount("log"); got != 0 {
+		t.Fatalf("jobs queued = %d for a superseded hazard, want 0", got)
+	}
+}
+
+// TestEngineFreshnessLookupFailureFires pins the fail-open contract: a
+// broken freshness oracle must never suppress an alert.
+func TestEngineFreshnessLookupFailureFires(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	store.mu.Lock()
+	store.hazardActiveFn = func(ctx context.Context, eventKey string, now time.Time) (bool, error) {
+		return false, errors.New("directory unavailable")
+	}
+	store.mu.Unlock()
+
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "alert delivered despite oracle failure")
 }

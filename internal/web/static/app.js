@@ -1352,6 +1352,7 @@
       lastMeshNoPos.forEach(function (n) {
         var chip = mk("span", "mc-chip");
         chip.title = n.key;
+        chip.setAttribute("data-key", n.key);
         chip.appendChild(mk("span", "mc-chip-name", n.name || n.key.slice(0, 12)));
         var extra = [];
         if (n.type && n.type !== "node") {
@@ -3209,6 +3210,9 @@
       ? e.target.closest("tr.click-send[data-key]")
       : null;
     if (!row) { return; }
+    // The key cell's copy button lives inside a clickable row: copying
+    // must not prefill the send form.
+    if (e.target.closest("button.key-copy, .mc-chip[data-key]")) { return; }
 
     var aprs = document.querySelector("form.aprs-send");
     if (aprs) {
@@ -3232,5 +3236,47 @@
     contact.value = row.getAttribute("data-key");
     text.focus();
     text.scrollIntoView({ block: "nearest" });
+  });
+})();
+
+// Copying a heard node's full public key: the clipboard button on the
+// MeshCore nodes table (and the badge chips on the home page) copy the
+// full 64-hex key and flash it in place for a moment.
+(function () {
+  "use strict";
+
+  function flashCopied(btn, key) {
+    var el = btn.querySelector(".key-short") || btn.querySelector(".mc-chip-name");
+    var original = el ? el.textContent : null;
+    if (el) { el.textContent = key; }
+    btn.classList.add("copied");
+    window.setTimeout(function () {
+      btn.classList.remove("copied");
+      if (el && original != null) { el.textContent = original; }
+    }, 2500);
+  }
+
+  document.addEventListener("click", function (e) {
+    var btn = e.target && e.target.closest
+      ? e.target.closest("button.key-copy, .mc-chip[data-key]")
+      : null;
+    if (!btn) { return; }
+    e.stopPropagation();
+    var key = btn.getAttribute("data-key");
+    if (!key) { return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(key).then(function () { flashCopied(btn, key); })
+        .catch(function () { flashCopied(btn, key); });
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = key;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (err) { /* ignored */ }
+      document.body.removeChild(ta);
+      flashCopied(btn, key);
+    }
   });
 })();

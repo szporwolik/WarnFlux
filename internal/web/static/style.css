@@ -2043,9 +2043,32 @@ tr.click-send:hover td { background: var(--surface-hi); }
   border-radius: 999px;
   background: var(--surface);
   font-size: 0.8rem;
+  cursor: pointer;
 }
+.mc-chip:hover { border-color: var(--link); }
 .mc-chip-name { font-weight: 600; }
 .mc-chip-meta { color: var(--muted); font-size: 0.75rem; }
+.mc-chip.copied .mc-chip-name { color: var(--ok, #2e7d32); overflow-wrap: anywhere; }
+/* Copyable public key in the MeshCore nodes table: the short prefix with
+   a clipboard glyph; a click copies the full key and flashes it in place. */
+.key-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.key-copy:hover { color: var(--link); border-color: var(--border); }
+.key-copy .icon { width: 13px; height: 13px; }
+.key-copy.copied { color: var(--ok, #2e7d32); border-color: var(--ok, #2e7d32); }
+.key-copy.copied .key-short { overflow-wrap: anywhere; }
 /* Compressed forecast strip on the report card: the next three days as
    icon + max-temperature chips (full forecast: title attributes). */
 .hw-fcast {

@@ -60,6 +60,12 @@ storage:
   # In Docker, always set it explicitly, e.g. /data/warnflux.db.
   path: ./warnflux.db
 
+  # Low-disk alarm threshold in megabytes: below it the health page turns
+  # red, /metrics reports the free space and the dispatch inbox retention
+  # shortens (auxiliary data stops competing with primary storage on a
+  # full card). 0 disables the alarm and the aggressive retention.
+  min_free_mb: 100
+
 # Installation geography: extends the bundled TERYT table with territorial
 # units of this region. Use it to reference units that are not shipped with
 # the binary (e.g. a different voivodeship) in imgw.geography.include,
@@ -478,6 +484,18 @@ dispatch:
   # Bounded canonical dispatch intake queue; a full queue drops events
   # (counted and logged) until the durable rule engine exists.
   queue_size: 1024
+
+  # One durable inbox write inside Enqueue is bounded by this deadline: a
+  # database that stalls longer degrades the event to EMERGENCY
+  # acceptance (delivered now, visible on the health page, lost on
+  # restart) instead of blocking the receiver callback.
+  inbox_write_timeout: 2s
+
+  # Unevaluated inbox rows older than this are pruned by maintenance
+  # (stale alerts the staleness gates would suppress anyway). Below
+  # storage.min_free_mb the cutoff shortens to 5 minutes. 0 disables
+  # pruning.
+  inbox_retention: 24h
 
   mqtt_receivers:
 

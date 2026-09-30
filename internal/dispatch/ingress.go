@@ -4,10 +4,23 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // DefaultQueueSize is the default bounded ingress capacity.
 const DefaultQueueSize = 1024
+
+// DefaultInboxWriteTimeout bounds the durable inbox write inside Enqueue:
+// the intake is non-blocking for the caller, and a database that stalls
+// longer than this deadline degrades the event to emergency acceptance
+// instead of hanging the MQTT callback forever.
+const DefaultInboxWriteTimeout = 2 * time.Second
+
+// LowDiskInboxRetention is the inbox retention cutoff used while the
+// filesystem reports less free space than storage.min_free_mb: unevaluated
+// rows are pruned much earlier so auxiliary data stops competing with
+// primary storage on a full disk.
+const LowDiskInboxRetention = 5 * time.Minute
 
 // Inbox is an optional durable acceptance backend: every accepted event
 // is persisted before it enters the live queue, so a full queue or a
@@ -17,14 +30,35 @@ type Inbox interface {
 	AppendEvent(ctx context.Context, e Event) (int64, error)
 }
 
+// Acceptance is the explicit, auditable result of one Enqueue offer.
+// The caller can tell durable acceptance from the emergency fallback —
+// the operator must never mistake one for the other.
+type Acceptance int
+
+const (
+	// Rejected means neither the durable inbox nor the live queue took
+	// the event: it is lost and counted.
+	Rejected Acceptance = iota
+	// AcceptedDurable means the event is persisted in the inbox before
+	// entering the live queue: a restart replays it via inbox recovery.
+	AcceptedDurable
+	// AcceptedEmergency means the event lives only in RAM (no inbox
+	// attached, or the inbox write failed): it will be delivered now but
+	// a restart loses it. EMCOM-relevant, never silent.
+	AcceptedEmergency
+)
+
 // Ingress is the single bounded intake queue for canonical dispatch events.
 //
 // Semantics (documented, not stronger than reality):
-//   - Enqueue never blocks: without an inbox, a full queue drops the event
-//     and counts it. With a durable inbox attached, acceptance is
-//     persistent FIRST — a full live queue defers the event to inbox
-//     recovery instead of dropping it.
-//   - After StopIntake, Enqueue always returns false.
+//   - Enqueue never blocks the caller for more than the inbox write
+//     deadline. Without an inbox, a full queue drops the event and
+//     counts it. With a durable inbox attached, acceptance is persistent
+//     FIRST — a full live queue defers the event to inbox recovery
+//     instead of dropping it.
+//   - Every offer returns an explicit Acceptance: durable, emergency
+//     (RAM-only, visible and auditable) or rejected.
+//   - After StopIntake, Enqueue always returns Rejected.
 //   - Without an inbox there is no durable storage: events accepted now
 //     are dropped during a crash or a shutdown drain deadline.
 type Ingress struct {
@@ -32,6 +66,9 @@ type Ingress struct {
 
 	// inbox is the optional durable acceptance backend (see Inbox).
 	inbox Inbox
+
+	// writeTimeout bounds one inbox write (see DefaultInboxWriteTimeout).
+	writeTimeout time.Duration
 
 	// mu serializes enqueues against StopIntake's final drain-and-close:
 	// a send can never land on a closed channel and the channel is never
@@ -43,8 +80,14 @@ type Ingress struct {
 	droppedFull atomic.Int64
 	droppedLate atomic.Int64
 	// inboxFailures counts append errors on an attached inbox (the event
-	// falls back to live-only acceptance).
+	// falls back to emergency, live-only acceptance).
 	inboxFailures atomic.Int64
+	// durable counts events accepted through the inbox (delivered live
+	// now or deferred to inbox recovery).
+	durable atomic.Int64
+	// emergency counts events accepted without durable storage: no inbox
+	// attached, or the inbox write failed.
+	emergency atomic.Int64
 }
 
 // NewIngress creates a bounded ingress queue. Sizes below 1 fall back to
@@ -53,7 +96,7 @@ func NewIngress(size int) *Ingress {
 	if size < 1 {
 		size = DefaultQueueSize
 	}
-	return &Ingress{queue: make(chan Event, size)}
+	return &Ingress{queue: make(chan Event, size), writeTimeout: DefaultInboxWriteTimeout}
 }
 
 // SetInbox attaches the durable acceptance backend. It must be called
@@ -64,24 +107,43 @@ func (g *Ingress) SetInbox(in Inbox) {
 	g.mu.Unlock()
 }
 
-// Enqueue offers a canonical event without ever blocking. With an inbox
-// attached, acceptance is durable before the live queue is offered: the
-// event returns true when it was persisted (it will be delivered now or
-// by inbox recovery) and false only when neither the inbox nor the live
-// queue accepted it.
-func (g *Ingress) Enqueue(e Event) bool {
+// SetInboxWriteTimeout bounds one durable inbox write (the "never
+// blocks" guarantee is bounded, not infinite). Values ≤ 0 restore the
+// default.
+func (g *Ingress) SetInboxWriteTimeout(d time.Duration) {
+	if d <= 0 {
+		d = DefaultInboxWriteTimeout
+	}
+	g.mu.Lock()
+	g.writeTimeout = d
+	g.mu.Unlock()
+}
+
+// Enqueue offers a canonical event and reports exactly how it was
+// accepted. With an inbox attached, acceptance is durable before the live
+// queue is offered: the result is AcceptedDurable when the event was
+// persisted (it will be delivered now or by inbox recovery),
+// AcceptedEmergency when the inbox write failed but the live queue took
+// it, and Rejected only when neither took it.
+func (g *Ingress) Enqueue(e Event) Acceptance {
 	g.mu.Lock()
 	closed := g.closed
 	inbox := g.inbox
+	writeTimeout := g.writeTimeout
 	g.mu.Unlock()
 	if closed {
 		g.droppedLate.Add(1)
-		return false
+		return Rejected
 	}
 
-	// Durable acceptance first.
+	// Durable acceptance first, bounded by the write deadline: a stuck
+	// database degrades to emergency acceptance instead of blocking the
+	// receiver callback.
 	if inbox != nil {
-		if id, err := inbox.AppendEvent(context.Background(), e); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+		id, err := inbox.AppendEvent(ctx, e)
+		cancel()
+		if err == nil {
 			e.InboxID = id
 		} else {
 			g.inboxFailures.Add(1)
@@ -94,17 +156,30 @@ func (g *Ingress) Enqueue(e Event) bool {
 		// Accepted durably right before shutdown: the row stays in the
 		// inbox and re-enters after the restart.
 		g.droppedLate.Add(1)
-		return e.InboxID != 0
+		if e.InboxID != 0 {
+			g.durable.Add(1)
+			return AcceptedDurable
+		}
+		return Rejected
 	}
 	select {
 	case g.queue <- e:
 		g.received.Add(1)
-		return true
+		if e.InboxID != 0 {
+			g.durable.Add(1)
+			return AcceptedDurable
+		}
+		g.emergency.Add(1)
+		return AcceptedEmergency
 	default:
 		// Live queue full: with a durable inbox the event is only
 		// deferred (recovery re-delivers it), not lost.
 		g.droppedFull.Add(1)
-		return e.InboxID != 0
+		if e.InboxID != 0 {
+			g.durable.Add(1)
+			return AcceptedDurable
+		}
+		return Rejected
 	}
 }
 
@@ -154,7 +229,20 @@ func (g *Ingress) Stats() (received, droppedFull, droppedLate int64, queueDepth,
 }
 
 // InboxFailures counts inbox append errors (the event fell back to
-// live-only acceptance).
+// emergency, live-only acceptance).
 func (g *Ingress) InboxFailures() int64 {
 	return g.inboxFailures.Load()
+}
+
+// DurableAccepted counts events accepted through the durable inbox
+// (delivered live now or deferred to inbox recovery).
+func (g *Ingress) DurableAccepted() int64 {
+	return g.durable.Load()
+}
+
+// EmergencyAccepted counts events accepted without durable storage: no
+// inbox attached, or the inbox write failed. They are visible to the
+// operator (health page, metrics, logs) and lost on restart.
+func (g *Ingress) EmergencyAccepted() int64 {
+	return g.emergency.Load()
 }

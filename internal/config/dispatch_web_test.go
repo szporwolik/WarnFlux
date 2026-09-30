@@ -331,3 +331,60 @@ func TestDispatchQueueSizeBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestDispatchDurabilityConfig(t *testing.T) {
+	// Defaults: 2s write deadline, 24h inbox retention, 100 MB alarm.
+	cfg, err := Load(writeTempConfig(t, "app:\n  log_level: info\nstorage:\n  driver: sqlite\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dispatch.InboxWriteTimeout != 2*time.Second {
+		t.Errorf("default inbox_write_timeout = %s", cfg.Dispatch.InboxWriteTimeout)
+	}
+	if cfg.Dispatch.InboxRetention != 24*time.Hour {
+		t.Errorf("default inbox_retention = %s", cfg.Dispatch.InboxRetention)
+	}
+	if cfg.Storage.MinFreeMB != 100 {
+		t.Errorf("default min_free_mb = %d", cfg.Storage.MinFreeMB)
+	}
+
+	// Explicit values.
+	cfg, err = Load(writeTempConfig(t, `
+app:
+  log_level: info
+storage:
+  driver: sqlite
+  min_free_mb: 250
+dispatch:
+  inbox_write_timeout: 5s
+  inbox_retention: 6h
+`))
+	if err != nil {
+		t.Fatalf("Load explicit: %v", err)
+	}
+	if cfg.Dispatch.InboxWriteTimeout != 5*time.Second || cfg.Dispatch.InboxRetention != 6*time.Hour {
+		t.Errorf("dispatch durability = %+v", cfg.Dispatch)
+	}
+	if cfg.Storage.MinFreeMB != 250 {
+		t.Errorf("min_free_mb = %d", cfg.Storage.MinFreeMB)
+	}
+
+	// Bounds.
+	cases := map[string]string{
+		"timeout too short":   "dispatch:\n  inbox_write_timeout: 1ms\n",
+		"timeout too long":    "dispatch:\n  inbox_write_timeout: 2m\n",
+		"retention too short": "dispatch:\n  inbox_retention: 10s\n",
+		"retention negative":  "dispatch:\n  inbox_retention: -1h\n",
+		"min_free negative":   "storage:\n  min_free_mb: -5\n",
+	}
+	for name, doc := range cases {
+		body := "app:\n  log_level: info\nstorage:\n  driver: sqlite\n" + doc
+		if _, err := Load(writeTempConfig(t, body)); err == nil {
+			t.Errorf("%s: accepted, want rejection", name)
+		}
+	}
+	// 0 inbox_retention (disabled) and 0 min_free_mb (alarm off) are valid.
+	if _, err := Load(writeTempConfig(t, "app:\n  log_level: info\nstorage:\n  driver: sqlite\n  min_free_mb: 0\ndispatch:\n  inbox_retention: 0s\n")); err != nil {
+		t.Errorf("disabled retention/alarm rejected: %v", err)
+	}
+}

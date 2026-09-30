@@ -56,6 +56,14 @@ func (f *fakeUsers) PendingStats(context.Context) (int, time.Duration, error) {
 // CountActive satisfies the optional storageProbe assertion for /metrics.
 func (f *fakeUsers) CountActive(context.Context) (int, error) { return 4, nil }
 
+// InboxCount satisfies the optional storageProbe assertion for /metrics
+// (the durable dispatch-inbox backlog gauge).
+func (f *fakeUsers) InboxCount(context.Context) (int, error) { return 7, nil }
+
+// FreeBytes satisfies the optional diskProbe assertion for /metrics and
+// the health-page low-disk alarm (12 GiB free by default).
+func (f *fakeUsers) FreeBytes(context.Context) (int64, error) { return 12 << 30, nil }
+
 func (f *fakeUsers) EnsureAdminUser(username, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

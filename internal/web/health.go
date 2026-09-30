@@ -29,6 +29,18 @@ type dbPinger interface {
 	Ping(ctx context.Context) error
 }
 
+// diskProbe is the optional storage surface for the low-disk alarm
+// (satisfied by *sqlite.Store): free bytes on the database filesystem.
+type diskProbe interface {
+	FreeBytes(ctx context.Context) (int64, error)
+}
+
+// inboxProbe is the optional storage surface for the durable inbox
+// backlog row (satisfied by *sqlite.Store).
+type inboxProbe interface {
+	InboxCount(ctx context.Context) (int, error)
+}
+
 // healthRow is one subsystem line: name, verdict badge and a one-line
 // operational detail. BadgeClass is "ok" (green), "bad" (red — something
 // that actually matters), "warn" (amber) or "muted" (config-disabled).
@@ -229,6 +241,22 @@ func (s *Server) buildHealthView(lang string) healthView {
 			bad = true
 		}
 	}
+	// Low-disk alarm: below the configured threshold the DB row turns red
+	// and the operator sees exactly how much room is left on the card.
+	if s.minFreeBytes > 0 {
+		if dp, ok := s.users.(diskProbe); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			free, err := dp.FreeBytes(ctx)
+			cancel()
+			if err != nil {
+				s.logger.Warn("health: free space check failed", "error", err)
+			} else if free < s.minFreeBytes {
+				v.DB.BadgeClass, v.DB.BadgeText = "bad", i18n.T(lang, "health.badge.low_disk")
+				v.DB.Detail += " · " + fmt.Sprintf(i18n.T(lang, "health.db_free"), free>>20, s.minFreeBytes>>20)
+				bad = true
+			}
+		}
+	}
 
 	// Dispatch queue.
 	received, droppedFull, _, depth, cap := s.ingress.Stats()
@@ -237,6 +265,16 @@ func (s *Server) buildHealthView(lang string) healthView {
 		BadgeClass: "ok",
 		BadgeText:  "OK",
 		Detail:     fmt.Sprintf(i18n.T(lang, "health.queue_detail"), depth, cap, received, droppedFull),
+	}
+	if emergency := s.ingress.EmergencyAccepted(); emergency > 0 {
+		// Emergency acceptance is the explicit, visible fallback: the
+		// events were delivered but live only in RAM until the next
+		// restart. The badge must never stay green while it happens.
+		v.Queue.Detail += " · " + fmt.Sprintf(i18n.T(lang, "health.accept_emergency"), emergency)
+		if v.Queue.BadgeClass == "ok" {
+			v.Queue.BadgeClass, v.Queue.BadgeText = "warn", i18n.T(lang, "health.badge.emergency")
+		}
+		bad = true
 	}
 	if depth >= cap {
 		v.Queue.BadgeClass, v.Queue.BadgeText = "bad", i18n.T(lang, "health.badge.full")

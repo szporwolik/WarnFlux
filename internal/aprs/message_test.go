@@ -108,3 +108,19 @@ func TestBuildAlertMessagePriority(t *testing.T) {
 		t.Fatalf("empty fallback = %q", got)
 	}
 }
+
+// TestIsBulletin pins the bulletin-address detection used by the hub and
+// the admin history: BLN0-BLN9 and BLNA-BLNZ are bulletins, ordinary
+// callsigns are not.
+func TestIsBulletin(t *testing.T) {
+	for _, to := range []string{"BLN0", "BLN9", "BLNA", "BLNZ"} {
+		if !IsBulletin(to) {
+			t.Errorf("IsBulletin(%q) = false, want true", to)
+		}
+	}
+	for _, to := range []string{"", "BLN", "BLN00", "SP9MOA-10", "SP9XYZ", "bln0"} {
+		if IsBulletin(to) {
+			t.Errorf("IsBulletin(%q) = true, want false", to)
+		}
+	}
+}

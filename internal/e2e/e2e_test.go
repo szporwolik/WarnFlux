@@ -216,6 +216,7 @@ func TestProviderToActionE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	actionsMgr.SetDeliveryStore(store)
 	actionsMgr.Start(ctx)
 	t.Cleanup(func() {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -256,7 +257,7 @@ func TestProviderToActionE2E(t *testing.T) {
 	for _, want := range []string{
 		"matched: matched group ops",
 		"route: any → logger-a ≥ moderate",
-		"submitted: logger-a action started",
+		"submitted: logger-a job queued durably (group ops)",
 		"delivered",
 	} {
 		if !strings.Contains(joined, want) {
@@ -277,7 +278,7 @@ func TestProviderToActionE2E(t *testing.T) {
 	waitFor(t, "duplicate deduplicated", func() bool {
 		tr, _ := rec.Get(key)
 		for _, s := range tr.Steps {
-			if s.Kind == trail.StepSkipped && strings.Contains(s.Text, "already delivered") {
+			if s.Kind == trail.StepSkipped && strings.Contains(s.Text, "already queued or delivered") {
 				return true
 			}
 		}
@@ -380,6 +381,7 @@ func TestProviderToWebhookE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	actionsMgr.SetDeliveryStore(store)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	actionsMgr.Start(ctx)

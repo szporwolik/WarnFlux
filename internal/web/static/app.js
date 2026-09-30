@@ -933,7 +933,7 @@
     var ownMarker = L.marker([ownLat, ownLon], {
       icon: wfBadge({
         color: "#007a3d",
-        glyph: BADGE_GLYPHS.antenna,
+        glyph: BADGE_GLYPHS.chat,
         label: ownCall || tr("map.our_station")
       }),
       riseOnHover: true
@@ -1059,7 +1059,7 @@
   // conditions reuse the Weather Icons font). Stations carry a halo
   // callsign label under the badge, like every labeled pin.
   var BADGE_GLYPHS = {
-    antenna: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18.5" r="1.7" fill="currentColor" stroke="none"/><path d="M5 13.5a7 7 0 0 1 14 0"/><path d="M8.5 16a3.5 3.5 0 0 1 7 0"/></svg>',
+    chat: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 15h5"/></svg>',
     mesh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.9" fill="currentColor" stroke="none"/><path d="M8.6 8.6a4.8 4.8 0 0 1 6.8 0"/><path d="M5.2 5.2a9.6 9.6 0 0 1 13.6 0"/></svg>',
     warning: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
     wind: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/></svg>',
@@ -1096,7 +1096,7 @@
   function stationBadge(s) {
     return wfBadge({
       color: "#1565c0",
-      glyph: BADGE_GLYPHS.antenna,
+      glyph: BADGE_GLYPHS.chat,
       label: s.callsign
     });
   }
@@ -1619,7 +1619,7 @@
     body += stationWeatherBlock(s.callsign);
     return wfPopup({
       color: "#1565c0",
-      icon: BADGE_GLYPHS.antenna,
+      icon: BADGE_GLYPHS.chat,
       title: esc(s.callsign),
       body: body
     });
@@ -2222,7 +2222,7 @@
   // the Leaflet zoom control stays untouched at the top-left.
   var MAP_CTRL_ICONS = {
     hazards: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
-    stations: '<circle cx="12" cy="18.5" r="1.7" fill="currentColor" stroke="none"/><path d="M5 13.5a7 7 0 0 1 14 0"/><path d="M8.5 16a3.5 3.5 0 0 1 7 0"/>',
+    stations: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 15h5"/>',
     meshcore: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/>',
     weather: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
     radar: '<circle cx="12" cy="12" r="8"/><path d="M12 12V4"/><path d="M12 12l6-3.5"/>',

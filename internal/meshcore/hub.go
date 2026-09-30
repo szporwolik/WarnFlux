@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +40,7 @@ type Node struct {
 	LastSeen   time.Time
 
 	lastQuery time.Time // device contact lookup throttling (internal)
+	lastPub   time.Time // MQTT station publish throttling (internal)
 }
 
 // Message is one received or sent channel/contact message.
@@ -101,6 +103,10 @@ type Hub struct {
 	lastErr   error
 	connected bool
 
+	// stationSink optionally publishes heard stations to MQTT as retained
+	// documents (nil payload + retained = topic delete).
+	stationSink func(ctx context.Context, topic string, retained bool, payload []byte) error
+
 	// pendingAcks queues send-command acknowledgements: the device
 	// answers each host command in order with OK / SENT / ERR.
 	pendingAcks []chan error
@@ -137,6 +143,15 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 
 // SetRecorder attaches the durable message history store (optional).
 func (h *Hub) SetRecorder(r Recorder) { h.mu.Lock(); h.recorder = r; h.mu.Unlock() }
+
+// SetStationSink attaches the MQTT station publisher (optional): every
+// heard node becomes a retained document under meshcore/stations/<key12>
+// and is tombstoned when its NodeTTL expires.
+func (h *Hub) SetStationSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
+	h.mu.Lock()
+	h.stationSink = fn
+	h.mu.Unlock()
+}
 
 // Enabled reports whether the mesh is configured.
 func (h *Hub) Enabled() bool { return h.cfg.Enabled }
@@ -643,6 +658,10 @@ func (h *Hub) touchNode(pubKey []byte, name string, typ byte, lat, lon float64, 
 	}
 	n.LastSeen = now
 	if name != "" {
+		if n.Name == "" {
+			// Fresh name: publish to MQTT right away.
+			n.lastPub = time.Time{}
+		}
 		n.Name = name
 	}
 	n.Type = typ
@@ -656,12 +675,67 @@ func (h *Hub) touchNode(pubKey []byte, name string, typ byte, lat, lon float64, 
 	if !advAt.IsZero() {
 		n.AdvAt = advAt
 	}
-	// Drop expired neighbours opportunistically.
+	// Drop expired neighbours opportunistically and tombstone them.
 	for k, v := range h.nodes {
 		if now.Sub(v.LastSeen) > h.cfg.NodeTTL {
 			delete(h.nodes, k)
+			h.publishStationLocked(k, v, now, true)
 		}
 	}
+	h.publishStationLocked(key, n, now, false)
+}
+
+// stationPublishInterval throttles MQTT updates per heard node: station
+// docs are informational, not a packet feed.
+const stationPublishInterval = 60 * time.Second
+
+// publishStationLocked schedules one retained MQTT publish (or tombstone)
+// for a node. Callers hold h.mu. Publish work happens on its own
+// goroutine so the serial read loop never blocks on the broker.
+func (h *Hub) publishStationLocked(key string, n *Node, now time.Time, removed bool) {
+	if h.stationSink == nil {
+		return
+	}
+	topic := "meshcore/stations/" + key
+	if len(key) > 12 {
+		topic = "meshcore/stations/" + key[:12]
+	}
+	var payload []byte
+	if !removed {
+		if now.Sub(n.lastPub) < stationPublishInterval {
+			return
+		}
+		n.lastPub = now
+		var err error
+		payload, err = json.Marshal(struct {
+			Key      string  `json:"key"`
+			Name     string  `json:"name"`
+			Type     byte    `json:"type"`
+			Lat      float64 `json:"lat"`
+			Lon      float64 `json:"lon"`
+			Hops     int     `json:"hops"`
+			LastSeen string  `json:"last_seen"`
+		}{
+			Key:      n.PubKey,
+			Name:     n.Name,
+			Type:     n.Type,
+			Lat:      n.Lat,
+			Lon:      n.Lon,
+			Hops:     n.Hops,
+			LastSeen: n.LastSeen.UTC().Format(time.RFC3339),
+		})
+		if err != nil {
+			return
+		}
+	}
+	sink := h.stationSink
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := sink(ctx, topic, true, payload); err != nil && h.logger != nil {
+			h.logger.Debug("meshcore: station publish failed", "topic", topic, "error", err)
+		}
+	}()
 }
 
 // maybeQueryContact asks the device for a known contact's full record

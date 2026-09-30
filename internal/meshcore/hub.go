@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -381,6 +382,15 @@ func deviceErrText(code byte) string {
 	}
 }
 
+// DeviceErr is a PACKET_ERR reply from the device.
+type DeviceErr struct {
+	Code byte
+}
+
+func (e *DeviceErr) Error() string {
+	return fmt.Sprintf("meshcore: device rejected the command: %s", deviceErrText(e.Code))
+}
+
 // SendChannelMessage sends one text message on the configured channel.
 // The Public channel (0) is refused: never transmit there.
 func (h *Hub) SendChannelMessage(text string) error {
@@ -399,24 +409,48 @@ func (h *Hub) SendChannelMessage(text string) error {
 }
 
 // SendContactMessage sends one direct text message to a contact's public
-// key prefix (12 hex chars). The contact must already exist on the device.
-func (h *Hub) SendContactMessage(prefixHex, text string) error {
-	b, err := hex.DecodeString(prefixHex)
-	if err != nil || len(b) != 6 {
-		return fmt.Errorf("meshcore: contact prefix must be 12 hex chars")
+// key prefix (12 hex chars) or full key (64 hex chars). When the full key
+// is given and the device does not know the contact yet, the contact is
+// added on the device and the send retried once.
+func (h *Hub) SendContactMessage(addr, text string) error {
+	b, err := hex.DecodeString(strings.TrimPrefix(addr, "0x"))
+	if err != nil || (len(b) != 6 && len(b) != 32) {
+		return fmt.Errorf("meshcore: contact address must be 12 or 64 hex chars")
 	}
-	payload := []byte{cmdSendTxtMsg, 0, 0} // txtType plain, attempt 0
-	payload = binary.LittleEndian.AppendUint32(payload, uint32(nowUnix()))
-	payload = append(payload, b...)
-	payload = append(payload, []byte(text)...)
-	ack := h.registerAck()
-	if err := h.writeFrame(payload); err != nil {
-		return err
+	var fullKey []byte
+	if len(b) == 32 {
+		fullKey = b
 	}
-	if err := h.waitAck(ack); err != nil {
-		return err
+	prefix := b[:6]
+	send := func() error {
+		payload := []byte{cmdSendTxtMsg, 0, 0} // txtType plain, attempt 0
+		payload = binary.LittleEndian.AppendUint32(payload, uint32(nowUnix()))
+		payload = append(payload, prefix...)
+		payload = append(payload, []byte(text)...)
+		ack := h.registerAck()
+		if err := h.writeFrame(payload); err != nil {
+			return err
+		}
+		return h.waitAck(ack)
 	}
-	h.recordMessage("tx", prefixHex, "direct", text)
+	if err := send(); err != nil {
+		var derr *DeviceErr
+		if !errors.As(err, &derr) || derr.Code != 2 || fullKey == nil {
+			return err
+		}
+		// The device does not know this contact yet: add it and retry.
+		ack := h.registerAck()
+		if err := h.writeFrame(buildAddUpdateContact(fullKey)); err != nil {
+			return err
+		}
+		if err := h.waitAck(ack); err != nil {
+			return err
+		}
+		if err := send(); err != nil {
+			return err
+		}
+	}
+	h.recordMessage("tx", hex.EncodeToString(prefix), "direct", text)
 	return nil
 }
 
@@ -518,7 +552,7 @@ func (h *Hub) handleFrame(frame []byte) {
 			code = frame[1]
 		}
 		if ch := h.popAck(); ch != nil {
-			ch <- fmt.Errorf("meshcore: device rejected the command: %s", deviceErrText(code))
+			ch <- &DeviceErr{Code: code}
 		} else if h.logger != nil {
 			h.logger.Warn("meshcore: device error", "code", code)
 		}

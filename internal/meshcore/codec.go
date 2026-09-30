@@ -33,6 +33,7 @@ const (
 	cmdGetContactByKey   = 30
 	cmdGetChannel        = 31
 	cmdSetChannel        = 32
+	cmdAddUpdateContact  = 9
 	cmdGetStats          = 56
 	cmdSendChannelData   = 62
 )
@@ -500,6 +501,17 @@ func buildGetContactByKey(pubKey []byte) []byte {
 	out := make([]byte, 1, 1+32)
 	out[0] = cmdGetContactByKey
 	return append(out, pubKey[:32]...)
+}
+
+// buildAddUpdateContact adds (or updates) a contact with a bare public
+// key: the device fills in the name and details from the next advert.
+// Layout: cmd, pubkey32, type, flags, path_len, path64, name32,
+// last_advert4, lat4, lon4, lastmod4 — everything else zeroed.
+func buildAddUpdateContact(pubKey []byte) []byte {
+	out := make([]byte, 1+32+1+1+1+64+32+4+4+4+4)
+	out[0] = cmdAddUpdateContact
+	copy(out[1:33], pubKey[:32])
+	return out
 }
 
 // buildSetChannel creates or updates one channel slot: name is UTF-8,

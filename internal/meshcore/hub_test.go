@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"log/slog"
 	"net"
 	"strings"
@@ -442,5 +443,85 @@ func TestHubSendRejected(t *testing.T) {
 	}
 	if got := rec.messages(); len(got) != 0 {
 		t.Fatalf("recorded = %+v, want no tx for a rejected send", got)
+	}
+}
+
+// TestHubSendAutoAdd pins the retry path: with the full public key, a
+// not-found rejection adds the contact on the device and retries the
+// send once.
+func TestHubSendAutoAdd(t *testing.T) {
+	dev, host := net.Pipe()
+	defer dev.Close()
+	defer host.Close()
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+	defer func() { Dial = origDial }()
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.Run(ctx)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !hub.Connected() {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	fullKey := bytes.Repeat([]byte{0xAB}, 32)
+	go func() {
+		buf := make([]byte, 256)
+		gotBytes := 0
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && gotBytes == 0 {
+			host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := host.Read(buf)
+			if n > 0 {
+				gotBytes = n
+			}
+			if err != nil && !isTimeout(err) {
+				return
+			}
+		}
+		if gotBytes == 0 {
+			return
+		}
+		// First direct send: unknown contact.
+		req, err := readHostFrame(host)
+		if err != nil || len(req) < 7 || req[0] != cmdSendTxtMsg {
+			t.Logf("DEVICE: unexpected direct send %x (%v)", req, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respErr, 2}))
+
+		// The hub must add the contact now.
+		add, err := readHostFrame(host)
+		if err != nil || len(add) != 1+32+1+1+1+64+32+4+4+4+4 || add[0] != cmdAddUpdateContact || !bytes.Equal(add[1:33], fullKey) {
+			t.Logf("DEVICE: unexpected add-contact frame %x (%v)", add, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+
+		// Retried send: accepted.
+		req, err = readHostFrame(host)
+		if err != nil || len(req) < 7 || req[0] != cmdSendTxtMsg {
+			t.Logf("DEVICE: unexpected retry send %x (%v)", req, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respSent}))
+	}()
+
+	if err := hub.SendContactMessage(hex.EncodeToString(fullKey), "hello"); err != nil {
+		t.Fatalf("SendContactMessage = %v, want success after auto-add", err)
+	}
+	got := rec.messages()
+	if len(got) != 1 || got[0].Text != "hello" || got[0].Direction != "tx" || got[0].Channel != "direct" {
+		t.Fatalf("recorded = %+v", got)
 	}
 }

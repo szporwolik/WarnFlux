@@ -12,17 +12,31 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    <form method="post" action="/meshcore/send" class="mesh-send">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <select name="target">
-        <option value="channel">{{tr .Lang "meshcore.send_channel"}}</option>
-        <option value="contact">{{tr .Lang "meshcore.send_contact"}}</option>
-      </select>
-      <input type="text" name="contact" placeholder="{{tr .Lang "meshcore.contact_ph"}}" maxlength="12" list="mesh-contacts">
-      <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.Prefix}}">{{.Username}}</option>{{end}}</datalist>
-      <input type="text" name="text" placeholder="{{tr .Lang "meshcore.text_ph"}}" maxlength="133" required>
-      <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshcore.send"}}</button>
-    </form>
+    <div class="mesh-toolbar">
+      <form method="post" action="/meshcore/send" class="mesh-send">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <select name="target">
+          <option value="channel">{{tr .Lang "meshcore.send_channel"}}</option>
+          <option value="contact">{{tr .Lang "meshcore.send_contact"}}</option>
+        </select>
+        <input type="text" name="contact" placeholder="{{tr .Lang "meshcore.contact_ph"}}" maxlength="12" list="mesh-contacts">
+        <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.Prefix}}">{{.Username}}</option>{{end}}</datalist>
+        <input type="text" name="text" placeholder="{{tr .Lang "meshcore.text_ph"}}" maxlength="133" required>
+        <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshcore.send"}}</button>
+      </form>
+      <div class="mesh-forms">
+        <form method="post" action="/meshcore/advert" class="inline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="kind" value="flood">
+          <button type="submit" class="btn-ghost btn-small">{{tr .Lang "meshcore.advert_flood"}}</button>
+        </form>
+        <form method="post" action="/meshcore/advert" class="inline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="kind" value="zerohop">
+          <button type="submit" class="btn-ghost btn-small">{{tr .Lang "meshcore.advert_zerohop"}}</button>
+        </form>
+      </div>
+    </div>
     <div class="page-tabs" role="tablist">
       <button type="button" class="page-tab{{if eq .Tab "messages"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "messages"}}true{{else}}false{{end}}" data-tab="panel-msgs">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshcore.tab_messages"}}
@@ -103,19 +117,6 @@
 {{else}}
 <div class="msgs-filter"><span class="badge bad">{{tr .Lang "meshcore.disconnected"}}</span>{{if .Snap.LastError}}<span class="muted">{{.Snap.LastError}}</span>{{end}}</div>
 {{end}}
-
-<div class="mesh-forms">
-  <form method="post" action="/meshcore/advert" class="inline-form">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <input type="hidden" name="kind" value="flood">
-    <button type="submit" class="btn-ghost btn-small">{{tr .Lang "meshcore.advert_flood"}}</button>
-  </form>
-  <form method="post" action="/meshcore/advert" class="inline-form">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <input type="hidden" name="kind" value="zerohop">
-    <button type="submit" class="btn-ghost btn-small">{{tr .Lang "meshcore.advert_zerohop"}}</button>
-  </form>
-</div>
 
 {{if .Nodes}}
 <div class="msgs-table-wrap">

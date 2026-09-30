@@ -134,7 +134,12 @@
       {{range .Nodes}}
       <tr class="click-send" data-key="{{.Short}}" title="{{tr $.Lang "meshcore.click_to_send"}}">
         <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}</strong></td>
-        <td class="muted nowrap" title="{{.PubKey}}">{{.Short}}…</td>
+        <td class="muted nowrap">
+          <button type="button" class="key-copy" data-key="{{.PubKey}}" title="{{tr $.Lang "meshcore.copy_key"}}">
+            <span class="key-short" data-short="{{.Short}}…">{{.Short}}…</span>
+            <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-clipboard"></use></svg>
+          </button>
+        </td>
         <td>{{.Type}}</td>
         <td>{{if .Hops}}{{.Hops}}{{else}}—{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>

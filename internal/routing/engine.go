@@ -54,9 +54,14 @@ type RuleStore interface {
 	// GroupRecipientDiscord returns the group members' registered
 	// Discord handles (empty list when the group has none).
 	GroupRecipientDiscord(groupID int64) ([]string, error)
-	// ClaimActionFire records a delivery claim for (group, action, event)
-	// and reports whether it is new (true) or already recorded (false).
-	ClaimActionFire(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (bool, error)
+	// BeginDelivery atomically opens the durable delivery job for
+	// (group, action, event): DeliveryRetry means the job must execute
+	// (fresh, or running/failed from a crash or earlier rejection);
+	// DeliverySucceeded means a replay may be deduplicated.
+	BeginDelivery(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (storage.DeliveryStatus, error)
+	// CompleteDelivery settles the job: succeeded only after the action
+	// accepted the request, failed otherwise (replay retries).
+	CompleteDelivery(groupID int64, actionID, dedupKey string, succeeded bool) error
 }
 
 // defaultRefreshInterval is how often rules are reloaded from storage.
@@ -102,6 +107,7 @@ type Engine struct {
 	actionsFailed      atomic.Int64
 	actionsDeduped     atomic.Int64
 	ruleLoadErrors     atomic.Int64
+	rulesLoaded        atomic.Int64
 }
 
 // New builds an engine with the default refresh interval. trail is the
@@ -157,6 +163,13 @@ func (e *Engine) Run(ctx context.Context, events <-chan dispatch.Event) {
 	}
 }
 
+// Ready reports whether the engine has completed at least one rule load:
+// events fed before that moment evaluate against an empty matrix and are
+// skipped, so callers (and tests) can wait for it.
+func (e *Engine) Ready() bool {
+	return e.rulesLoaded.Load() > 0
+}
+
 // refresh reloads the rules; a failed load keeps the previous rules and
 // is retried on the next tick.
 func (e *Engine) refresh() {
@@ -201,6 +214,7 @@ func (e *Engine) refresh() {
 	e.aprsBcc = aprsBcc
 	e.discordBcc = discordBcc
 	e.mu.Unlock()
+	e.rulesLoaded.Add(1)
 }
 
 // handle evaluates one canonical event against the cached rules.
@@ -284,16 +298,20 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 						rule.Name, a.ID, a.MinSeverity), time.Now())
 				continue
 			}
-			// Durable deduplication: claim the delivery in the ledger
-			// before submitting. A retained/replayed transition with the
-			// same identity never re-fires the same (group, action) pair.
-			claimed, err := e.store.ClaimActionFire(rule.GroupID, a.ID, ev.Hazard.Key, fireDedupKey(ev), time.Now())
+			// Durable delivery job: claim the execution before submitting,
+			// but settle success only AFTER the action accepts the
+			// request. A full queue, a disabled action or a crash between
+			// claim and execution leaves the job running/failed, so a
+			// replayed transition retries it instead of dropping the
+			// alert as already-delivered.
+			dedup := fireDedupKey(ev)
+			status, err := e.store.BeginDelivery(rule.GroupID, a.ID, ev.Hazard.Key, dedup, time.Now())
 			if err != nil {
 				// A ledger failure must never suppress an alert: log and
 				// deliver anyway (best-effort deduplication).
-				e.logger.Warn("routing: fire claim failed",
+				e.logger.Warn("routing: delivery job open failed",
 					"group", rule.Name, "action", a.ID, "error", err)
-			} else if !claimed {
+			} else if status == storage.DeliverySucceeded {
 				e.actionsDeduped.Add(1)
 				e.notifCount(a.ID, "deduped", 1)
 				e.trail.Add(key, trail.StepSkipped,
@@ -319,6 +337,13 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 				App: e.app,
 			}
 			if err := e.actions.Submit(a.ID, req); err != nil {
+				// The action did not accept the request (queue full,
+				// disabled, ...): settle the job as failed so a replay
+				// retries it instead of losing the alert.
+				if cerr := e.store.CompleteDelivery(rule.GroupID, a.ID, dedup, false); cerr != nil {
+					e.logger.Warn("routing: delivery job settle failed",
+						"group", rule.Name, "action", a.ID, "error", cerr)
+				}
 				e.actionsFailed.Add(1)
 				e.notifCount(a.ID, "failed", 1)
 				e.trail.Add(key, trail.StepFailed,
@@ -327,6 +352,12 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 				e.logger.Warn("routing: action submission failed",
 					"group", rule.Name, "action", a.ID, "error", err)
 			} else {
+				// Execution accepted: only now is the job succeeded and
+				// replays deduplicated.
+				if cerr := e.store.CompleteDelivery(rule.GroupID, a.ID, dedup, true); cerr != nil {
+					e.logger.Warn("routing: delivery job settle failed",
+						"group", rule.Name, "action", a.ID, "error", cerr)
+				}
 				e.actionsFired.Add(1)
 				fired++
 				e.trail.Add(key, trail.StepSubmitted,

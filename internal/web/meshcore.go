@@ -306,7 +306,20 @@ func (s *Server) handleMeshcoreSend(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "contact prefix must be 12 hex characters", http.StatusBadRequest)
 			return
 		}
-		err = s.mesh.SendContactMessage(prefix, text)
+		// Prefer the full key from the directory: the hub can then add the
+		// contact on the device when it is missing there.
+		addr := prefix
+		if s.users != nil {
+			if owners, ownersErr := s.users.MeshKeyOwners(); ownersErr == nil {
+				for key := range owners {
+					if strings.HasPrefix(key, prefix) {
+						addr = key
+						break
+					}
+				}
+			}
+		}
+		err = s.mesh.SendContactMessage(addr, text)
 	} else {
 		err = s.mesh.SendChannelMessage(text)
 	}

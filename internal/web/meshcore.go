@@ -267,13 +267,21 @@ func cardinalDirection(bearing float64) string {
 	return dirs[int(math.Mod(bearing+22.5, 360)/45)]
 }
 
-// handlePartialMeshcore serves the nodes-tab fragment (polled by the page).
+// handlePartialMeshcore serves the polled fragments: the nodes tab
+// (default) or the messages list (?tab=messages).
 func (s *Server) handlePartialMeshcore(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	v := meshView{
 		AppTitle: s.cfg.Title,
 		Header1:  s.displayHeader1(),
 		CSRF:     sess.csrf,
+	}
+	if r.URL.Query().Get("tab") == "messages" {
+		v.Dir = "all"
+		s.fillMeshMessages(r, &v)
+		w.Header().Set("Cache-Control", "no-store")
+		s.renderL(w, r, "mesh_msgs", v)
+		return
 	}
 	s.fillMeshNodes(&v)
 	w.Header().Set("Cache-Control", "no-store")

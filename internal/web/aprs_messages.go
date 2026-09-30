@@ -99,7 +99,13 @@ func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) 
 		s.renderL(w, r, "messages", v)
 		return
 	}
+	s.fillAPRSMessages(r, &v)
+	s.renderL(w, r, "messages", v)
+}
 
+// fillAPRSMessages loads the filtered, paginated message list into the
+// view (shared by the page and the polled fragment).
+func (s *Server) fillAPRSMessages(r *http.Request, v *aprsMessagesView) {
 	switch d := r.URL.Query().Get("dir"); d {
 	case "rx", "tx":
 		v.Dir = d
@@ -112,7 +118,6 @@ func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) 
 	total, err := s.aprsMsgs.CountAPRSMessages(r.Context(), dirFilter)
 	if err != nil {
 		s.logger.Warn("web: aprs messages count failed", "error", err)
-		s.renderL(w, r, "messages", v)
 		return
 	}
 	v.Total = total
@@ -141,7 +146,6 @@ func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) 
 	stored, err := s.aprsMsgs.ListAPRSMessages(r.Context(), dirFilter, aprsMessagesPageSize, (page-1)*aprsMessagesPageSize)
 	if err != nil {
 		s.logger.Warn("web: aprs messages list failed", "error", err)
-		s.renderL(w, r, "messages", v)
 		return
 	}
 	v.Messages = make([]aprsMessageView, 0, len(stored))
@@ -156,7 +160,21 @@ func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) 
 			At:        m.At,
 		})
 	}
-	s.renderL(w, r, "messages", v)
+}
+
+// handlePartialMessages serves the polled APRS message-list fragment so
+// the admin sees new traffic as it happens.
+func (s *Server) handlePartialMessages(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	v := aprsMessagesView{
+		CSRF: sess.csrf,
+		Dir:  "all",
+	}
+	if s.aprsMsgs != nil {
+		s.fillAPRSMessages(r, &v)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	s.renderL(w, r, "aprs_msgs", v)
 }
 
 // handleAPRSSend transmits one APRS message from the admin panel through

@@ -249,6 +249,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /messages/beacon", s.requireAdmin(s.handleAPRSBeacon))
 	s.mux.Handle("GET /meshcore", s.requireAdmin(s.handleMeshcorePage))
 	s.mux.Handle("GET /partials/meshcore", s.requireAdminPartial(s.handlePartialMeshcore))
+	s.mux.Handle("GET /partials/messages", s.requireAdminPartial(s.handlePartialMessages))
 	s.mux.Handle("POST /meshcore/advert", s.requireAdmin(s.handleMeshcoreAdvert))
 	s.mux.Handle("POST /meshcore/send", s.requireAdmin(s.handleMeshcoreSend))
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))

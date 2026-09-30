@@ -22,31 +22,18 @@ const Type = "meshcore"
 
 var errHubDisabled = errors.New("meshcore: hub is not configured")
 
-// Config is the source-specific configuration.
-type Config struct {
-	// HubID references the mesh hub instance (currently a single hub).
-	HubID string `yaml:"hub_id"`
-}
-
 // Source runs the hub and periodically publishes the node list.
 type Source struct {
-	cfg Config
 	hub *mesh.Hub
 }
 
 // Register wires the source type into the plugin registry.
 func Register(reg *plugin.Registry, hub *mesh.Hub) error {
 	return reg.RegisterSource(Type, func(node *yaml.Node) (plugin.SourcePlugin, error) {
-		var cfg Config
-		if node != nil {
-			if err := node.Decode(&cfg); err != nil {
-				return nil, err
-			}
-		}
 		if hub == nil {
 			return nil, errHubDisabled
 		}
-		return &Source{cfg: cfg, hub: hub}, nil
+		return &Source{hub: hub}, nil
 	})
 }
 

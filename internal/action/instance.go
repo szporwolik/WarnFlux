@@ -89,6 +89,10 @@ type Instance struct {
 	// callers.
 	store storage.DeliveryStore
 
+	// gate is the optional staleness oracle consulted directly BEFORE a
+	// queued job is transmitted (see Manager.SetDeliveryGate).
+	gate func(ctx context.Context, eventKey string) bool
+
 	// metric cells (optional, nil-safe).
 	metricDelivered func(int64)
 	metricFailed    func(int64)
@@ -155,6 +159,12 @@ func (i *Instance) Start(ctx context.Context) {
 // manager before Start when one is configured).
 func (i *Instance) setDeliveryStore(st storage.DeliveryStore) {
 	i.store = st
+}
+
+// setDeliveryGate attaches the staleness oracle (called by the manager
+// before Start when one is configured).
+func (i *Instance) setDeliveryGate(gate func(ctx context.Context, eventKey string) bool) {
+	i.gate = gate
 }
 
 // run is the worker loop. Durable jobs from the queue take priority;
@@ -226,6 +236,30 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		i.settle(job, storage.DeliveryFailed, time.Time{})
 		i.trail.Add(key, trail.StepFailed, "job payload corrupt", time.Now())
 		i.trail.SetOutcome(key, trail.OutcomeFailed)
+		return
+	}
+
+	// Staleness gate DIRECTLY BEFORE the transmission: the hazard may
+	// have expired while the job sat in the queue, or a newer
+	// cancellation may already be known. Either way the stale alert
+	// must never hit the radio — settle as expired, a terminal state
+	// that deduplicates replays.
+	if req.Event.Hazard != nil {
+		if exp := req.Event.Hazard.Hazard.ExpiresAt; exp != nil && !exp.After(time.Now()) {
+			i.logger.Info("action: queued alert expired before transmission",
+				"action", i.id, "event_key", key)
+			i.settle(job, storage.DeliveryExpired, time.Time{})
+			i.trail.Add(key, trail.StepSkipped,
+				"skipped: hazard expired before transmission", time.Now())
+			return
+		}
+	}
+	if i.gate != nil && !i.gate(context.Background(), key) {
+		i.logger.Info("action: queued alert superseded before transmission",
+			"action", i.id, "event_key", key)
+		i.settle(job, storage.DeliveryExpired, time.Time{})
+		i.trail.Add(key, trail.StepSkipped,
+			"skipped: hazard no longer active before transmission", time.Now())
 		return
 	}
 

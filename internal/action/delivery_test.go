@@ -129,7 +129,7 @@ func (m *memDeliveryStore) PendingDeliveries(ctx context.Context, actionID strin
 		if j.job.ActionID != actionID {
 			continue
 		}
-		if j.status != storage.DeliveryAccepted && j.status != storage.DeliveryConfirmed {
+		if j.status != storage.DeliveryAccepted && j.status != storage.DeliveryConfirmed && j.status != storage.DeliveryExpired {
 			n++
 		}
 	}
@@ -327,6 +327,53 @@ func TestInstanceLegacyEmptyPayload(t *testing.T) {
 	}, "empty payload settled as accepted")
 	if got := p.handled.Load(); got != 0 {
 		t.Errorf("plugin invoked %d times, want 0 (no payload to execute)", got)
+	}
+}
+
+// TestInstanceDurableExpiredPayloadSkipped pins the pre-transmission
+// staleness check: a job whose hazard expired while it sat in the queue
+// is settled as expired — a terminal state — and never reaches the
+// plugin.
+func TestInstanceDurableExpiredPayloadSkipped(t *testing.T) {
+	p := &deliveryPlugin{}
+	_, ms := newDeliveryInstance(t, p, 1)
+
+	past := time.Now().Add(-time.Hour)
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw",
+			Hazard: dispatch.Hazard{ExpiresAt: &past}}}
+	payload, _ := json.Marshal(ActionRequest{ID: "imgw:1/log", Event: ev})
+	enqueueOne(t, ms, payload)
+
+	waitForDelivery(t, func() bool {
+		return ms.statusOf(1, "log", "c:1") == storage.DeliveryExpired
+	}, "expired payload settled as expired")
+	if got := p.handled.Load(); got != 0 {
+		t.Errorf("plugin invoked %d times for an expired hazard, want 0", got)
+	}
+}
+
+// TestInstanceDurableGateSkips pins the staleness oracle consulted
+// directly before transmission: when the store reports the hazard is no
+// longer active (e.g. a known cancellation), the job settles as expired
+// without invoking the plugin.
+func TestInstanceDurableGateSkips(t *testing.T) {
+	p := &deliveryPlugin{}
+	inst, ms := newDeliveryInstance(t, p, 1)
+	inst.setDeliveryGate(func(ctx context.Context, eventKey string) bool {
+		return false
+	})
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	payload, _ := json.Marshal(ActionRequest{ID: "imgw:1/log", Event: ev})
+	enqueueOne(t, ms, payload)
+
+	waitForDelivery(t, func() bool {
+		return ms.statusOf(1, "log", "c:1") == storage.DeliveryExpired
+	}, "gated payload settled as expired")
+	if got := p.handled.Load(); got != 0 {
+		t.Errorf("plugin invoked %d times for a gated hazard, want 0", got)
 	}
 }
 

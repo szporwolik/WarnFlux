@@ -73,6 +73,14 @@ type Inbox interface {
 	PendingInboxEvents(ctx context.Context, limit int) ([]storage.InboxItem, error)
 }
 
+// HazardFreshness is the optional storage-side staleness oracle: a
+// store that implements it lets the engine refuse to schedule
+// notifications for hazards that already expired or were cancelled —
+// an older update must never outrank a known cancellation.
+type HazardFreshness interface {
+	HazardActive(ctx context.Context, eventKey string, now time.Time) (bool, error)
+}
+
 // inboxBatch bounds one recovery pass over the durable inbox.
 const inboxBatch = 64
 
@@ -329,6 +337,22 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		return
 	}
 
+	// Staleness gate BEFORE anything is scheduled: a recovered new or
+	// updated transition must never notify for a hazard that already
+	// expired, and an older update must not outrank a cancellation the
+	// store already knows. This is a deliberate skip — the inbox row
+	// (if any) is consumed.
+	if !e.hazardFresh(ctx, ev) {
+		e.transitionsSkipped.Add(1)
+		e.logger.Debug("routing: stale transition skipped",
+			"type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
+		e.trail.Add(key, trail.StepSkipped,
+			"skipped: hazard no longer active (expired or superseded before scheduling)", time.Now())
+		e.trail.SetOutcome(key, trail.OutcomeSkipped)
+		e.consumeDeliberate(ctx, inboxID)
+		return
+	}
+
 	// The notification machine needs a validly loaded routing snapshot.
 	// Without one the event cannot be deliberately evaluated, so an
 	// inbox event stays PENDING for recovery instead of being consumed
@@ -536,6 +560,28 @@ func (e *Engine) consumeDeliberate(ctx context.Context, inboxID int64) {
 		e.logger.Warn("routing: inbox consume failed, event stays pending",
 			"id", inboxID, "error", err)
 	}
+}
+
+// hazardFresh is the scheduling-time staleness gate: the transition's
+// own expiry is always checked, and — when the store offers a
+// freshness oracle — the current stored state too, so an older update
+// never outranks a known cancellation. Lookup failures never suppress
+// an alert.
+func (e *Engine) hazardFresh(ctx context.Context, ev dispatch.Event) bool {
+	if exp := ev.Hazard.Hazard.ExpiresAt; exp != nil && !exp.After(time.Now()) {
+		return false
+	}
+	fh, ok := e.store.(HazardFreshness)
+	if !ok {
+		return true // no oracle: the expiry check above is all we have
+	}
+	active, err := fh.HazardActive(ctx, ev.Hazard.Key, time.Now())
+	if err != nil {
+		e.logger.Warn("routing: hazard freshness lookup failed",
+			"event_key", ev.Hazard.Key, "error", err)
+		return true
+	}
+	return active
 }
 
 // meetsThreshold reports whether an event rank satisfies a channel's

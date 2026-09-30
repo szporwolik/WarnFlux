@@ -82,6 +82,22 @@ replay of the transition. Channel floods without delivery
 acknowledgements (e.g. MeshCore group messages) stop at `accepted` — the
 device took the message, the protocol has no stronger signal.
 
+**Staleness policy (recovered alerts must not hit the radio):**
+
+- At scheduling time the engine refuses to start the notification
+  machine for a `new`/`updated` transition whose `ExpiresAt` already
+  passed, and — when the store offers the freshness oracle
+  (`HazardActive`) — for a hazard whose stored state is already
+  cancelled/expired: an older update never outranks a known
+  cancellation. The skip is deliberate (the inbox row is consumed); a
+  failed oracle lookup never suppresses an alert.
+- Directly before transmission the worker re-checks the payload's
+  `ExpiresAt` and the same oracle. A job that aged out while it waited
+  settles as `expired` — a terminal state that deduplicates replays —
+  instead of reaching the device. The message-type policy is therefore:
+  send while active, mark expired once the hazard is no longer
+  worth notifying.
+
 ## What is NOT guaranteed
 
 - The audit trail (`trail`) is not durable: it is diagnostics, never the

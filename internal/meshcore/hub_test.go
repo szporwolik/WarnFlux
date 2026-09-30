@@ -137,7 +137,16 @@ func TestHubSession(t *testing.T) {
 			t.Logf("DEVICE: set-channel name = %q, want #sp9moa", got)
 			return
 		}
-		host.Write(encodeDeviceFrame([]byte{respOK}))
+
+		// The startup drain sends SYNC_NEXT before the hub reads anything
+		// else; answer with NO_MORE so the session moves to the pump.
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+		host.Write(encodeDeviceFrame([]byte{respOK})) // the SET_CHANNEL ack
 
 		// Self info reply: type,tx,maxTx + pubkey32 + lat/lon + 3 reserved
 		// + manual + freq + bw + sf + cr + name.
@@ -354,6 +363,13 @@ func TestHubContactLookup(t *testing.T) {
 		if gotBytes == 0 {
 			return
 		}
+		// Startup drain: answer NO_MORE so the pump starts.
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
 
 		// A known contact announces via the bare pubkey push.
 		key := bytes.Repeat([]byte{0xAB}, 32)
@@ -449,6 +465,13 @@ func TestHubSendRejected(t *testing.T) {
 		if gotBytes == 0 {
 			return
 		}
+		// Startup drain: answer NO_MORE so the pump starts.
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
 		req, err := readHostFrame(host)
 		if err != nil || len(req) < 7 || req[0] != cmdSendTxtMsg {
 			t.Logf("DEVICE: unexpected direct send %x (%v)", req, err)
@@ -513,6 +536,13 @@ func TestHubSendAutoAdd(t *testing.T) {
 		if gotBytes == 0 {
 			return
 		}
+		// Startup drain: answer NO_MORE so the pump starts.
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
 		// First direct send: unknown contact.
 		req, err := readHostFrame(host)
 		if err != nil || len(req) < 7 || req[0] != cmdSendTxtMsg {
@@ -593,6 +623,13 @@ func TestHubAutoaddConfig(t *testing.T) {
 			return
 		}
 		host.Write(encodeDeviceFrame([]byte{respOK}))
+		// Startup drain: answer NO_MORE.
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
 	}()
 
 	// The hub considers autoadd non-fatal but should complete it; give it
@@ -710,6 +747,11 @@ func pumpDevice(host net.Conn, frames [][]byte) {
 	}
 	if gotBytes == 0 {
 		return
+	}
+	// Startup drain: answer NO_MORE so the pump starts before the frames.
+	sync, err := readHostFrame(host)
+	if err == nil && len(sync) == 1 && sync[0] == cmdSyncNextMessage {
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
 	}
 	for _, f := range frames {
 		host.Write(encodeDeviceFrame(f))
@@ -928,6 +970,13 @@ func TestHubStationPublish(t *testing.T) {
 		if gotBytes == 0 {
 			return
 		}
+		// Startup drain: answer NO_MORE before the adverts.
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
 		host.Write(encodeDeviceFrame(newAdvertFrame(key, "RKSR-TN-R3", 0x02)))
 		// Second advert of the same node within the throttle window.
 		host.Write(encodeDeviceFrame(newAdvertFrame(key, "RKSR-TN-R3", 0x02)))
@@ -994,6 +1043,13 @@ func TestHubStationTombstone(t *testing.T) {
 		if gotBytes == 0 {
 			return
 		}
+		// Startup drain: answer NO_MORE before the adverts.
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
 		host.Write(encodeDeviceFrame(newAdvertFrame(keyA, "NODE-A", 0x02)))
 		time.Sleep(200 * time.Millisecond) // A expires
 		host.Write(encodeDeviceFrame(newAdvertFrame(keyB, "NODE-B", 0x02)))
@@ -1014,5 +1070,150 @@ func TestHubStationTombstone(t *testing.T) {
 	}
 	if tombstone == nil {
 		t.Fatalf("no tombstone publish, got %+v", got)
+	}
+}
+
+// TestHubDrainQueuedMessages pins the startup drain: messages the device
+// queued while the app was away are pulled immediately on (re)connect
+// instead of waiting for the next tickle.
+func TestHubDrainQueuedMessages(t *testing.T) {
+	dev, host := net.Pipe()
+	defer dev.Close()
+	defer host.Close()
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+	defer func() { Dial = origDial }()
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.Run(ctx)
+
+	go func() {
+		buf := make([]byte, 256)
+		gotBytes := 0
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && gotBytes == 0 {
+			host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := host.Read(buf)
+			if n > 0 {
+				gotBytes = n
+			}
+			if err != nil && !isTimeout(err) {
+				return
+			}
+		}
+		if gotBytes == 0 {
+			return
+		}
+		// First SYNC_NEXT from the drain: answer with one queued direct
+		// message.
+		req, err := readHostFrame(host)
+		if err != nil || len(req) != 1 || req[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", req, err)
+			return
+		}
+		prefix := []byte{0x61, 0xc8, 0x49, 0x15, 0x2b, 0x91}
+		host.Write(encodeDeviceFrame(newDirectMsgFrame(prefix, "ret")))
+		// Next SYNC_NEXT: nothing left.
+		req, err = readHostFrame(host)
+		if err != nil || len(req) != 1 || req[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected second drain frame %x (%v)", req, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got := rec.messages()
+		if len(got) == 1 && got[0].Direction == "rx" && got[0].Sender == "61c849152b91" && got[0].Text == "ret" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("drained messages = %+v, want the queued ret", rec.messages())
+}
+
+// TestHubContactProtect pins the directory protection: when the device
+// overwrites a contact whose key the protector approves, the hub re-adds
+// it immediately.
+func TestHubContactProtect(t *testing.T) {
+	dev, host := net.Pipe()
+	defer dev.Close()
+	defer host.Close()
+
+	origDial := Dial
+	Dial = func(Config) (conn, error) { return dev, nil }
+	defer func() { Dial = origDial }()
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte{0x61, 0xc8, 0x49, 0x15, 0x2b, 0x91, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	hub.SetContactProtector(func(k string) bool {
+		return k == pubKeyHex(key)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.Run(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 256)
+		gotBytes := 0
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && gotBytes == 0 {
+			host.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, err := host.Read(buf)
+			if n > 0 {
+				gotBytes = n
+			}
+			if err != nil && !isTimeout(err) {
+				return
+			}
+		}
+		if gotBytes == 0 {
+			return
+		}
+		// Answer the startup drain with NO_MORE so the pump can start.
+		req, err := readHostFrame(host)
+		if err != nil || len(req) != 1 || req[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: unexpected drain frame %x (%v)", req, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+
+		// Push the overwrite event for the protected key.
+		host.Write(encodeDeviceFrame(append([]byte{pushContactDeleted}, key...)))
+
+		// The hub must answer with ADD_UPDATE_CONTACT for that key.
+		host.SetReadDeadline(time.Now().Add(2 * time.Second))
+		req, err = readHostFrame(host)
+		if err != nil {
+			t.Logf("DEVICE: re-add read: %v", err)
+			return
+		}
+		if len(req) < 33 || req[0] != cmdAddUpdateContact || !bytes.Equal(req[1:33], key) {
+			t.Logf("DEVICE: re-add frame %x, want ADD_UPDATE_CONTACT with the key", req)
+			return
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device side did not finish")
 	}
 }

@@ -15,6 +15,18 @@ func EncodeMessageLine(src, to, text string) string {
 	return fmt.Sprintf("%s>APRS,TCPIP*::%-9s:%s", NormalizeCallsign(src), NormalizeCallsign(to), text)
 }
 
+// IsBulletin reports whether an APRS message destination is a bulletin
+// address (BLN0-BLN9, BLNA-BLNZ): broadcast frames aimed at everyone.
+// Bulletins show up in the received-message history but are not personal
+// traffic, so they never enter the alarm routing pipeline.
+func IsBulletin(to string) bool {
+	if len(to) != 4 || to[:3] != "BLN" {
+		return false
+	}
+	c := to[3]
+	return c >= '0' && c <= '9' || c >= 'A' && c <= 'Z'
+}
+
 // AckSuffixLen is the length of the longest ack suffix ("{12345}"). The
 // hub appends it after the message text, so text trimmed for ack-tracked
 // delivery must reserve this room.

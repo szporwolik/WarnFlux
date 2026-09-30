@@ -507,7 +507,7 @@ func (h *Hub) apply(op hubOp) {
 	if firstSeen {
 		h.publishPacket(p, op.via)
 	}
-	if p.Message != nil && p.Message.To == h.cfg.Callsign {
+	if p.Message != nil && (p.Message.To == h.cfg.Callsign || IsBulletin(p.Message.To)) {
 		h.receiveMessage(p, op.via)
 	}
 }
@@ -704,7 +704,7 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	routed := h.cfg.RouteMessages && h.routableMessage(p) && h.senderApproved(p.Src)
 	if h.logger != nil {
 		h.logger.Info("aprs: message received",
-			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "routed", routed)
+			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "bulletin", IsBulletin(p.Message.To), "routed", routed)
 	}
 	if routed {
 		h.publishMessageEvent(p)
@@ -720,10 +720,14 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 }
 
 // routableMessage reports whether a message addressed to us is real
-// traffic worth routing: not our own transmission and not an ack/rej
-// protocol frame.
+// traffic worth routing: not our own transmission, not an ack/rej
+// protocol frame, and not a broadcast bulletin (those are announcements
+// for everyone, not personal alert traffic).
 func (h *Hub) routableMessage(p Packet) bool {
 	if p.Src == h.cfg.Callsign || p.Message == nil {
+		return false
+	}
+	if IsBulletin(p.Message.To) {
 		return false
 	}
 	text := strings.TrimSpace(p.Message.Text)

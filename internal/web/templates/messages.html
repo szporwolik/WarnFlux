@@ -64,7 +64,7 @@
         <td class="muted nowrap">{{timeFull .At}}</td>
         <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
         <td><strong>{{.From}}</strong></td>
-        <td>{{.To}}</td>
+        <td>{{.To}}{{if .Bulletin}} <span class="badge muted">{{tr $.Lang "messages.bulletin"}}</span>{{end}}</td>
         <td class="msgs-text">{{.Text}}</td>
         <td class="muted nowrap">{{.Via}}</td>
       </tr>

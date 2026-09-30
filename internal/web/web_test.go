@@ -2697,3 +2697,59 @@ func TestMeshMessageChannelNames(t *testing.T) {
 		t.Errorf("messages partial still shows raw channel ids: %.300s", body)
 	}
 }
+
+// fakeAPRSMsgs is an in-memory APRSMessageStore for the admin history.
+type fakeAPRSMsgs struct {
+	rows []storage.APRSMessage
+}
+
+func (f *fakeAPRSMsgs) RecordAPRSMessage(_ context.Context, direction, from, to, text, msgID, via string, at time.Time) error {
+	f.rows = append(f.rows, storage.APRSMessage{Direction: direction, From: from, To: to, Text: text, MsgID: msgID, Via: via, At: at})
+	return nil
+}
+
+func (f *fakeAPRSMsgs) ListAPRSMessages(_ context.Context, direction string, limit, offset int) ([]storage.APRSMessage, error) {
+	var out []storage.APRSMessage
+	for _, m := range f.rows {
+		if direction == "" || m.Direction == direction {
+			out = append(out, m)
+		}
+	}
+	if offset > len(out) {
+		offset = len(out)
+	}
+	out = out[offset:]
+	if limit < len(out) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeAPRSMsgs) CountAPRSMessages(_ context.Context, direction string) (int, error) {
+	n := 0
+	for _, m := range f.rows {
+		if direction == "" || m.Direction == direction {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// TestAPRSBulletinBadge pins the bulletin marker in the APRS history:
+// rows addressed to BLNn carry the bulletin badge and stay click-to-send.
+func TestAPRSBulletinBadge(t *testing.T) {
+	store := &fakeAPRSMsgs{rows: []storage.APRSMessage{
+		{Direction: "rx", From: "SP9XYZ-7", To: "BLN0", Text: "ops bulletin", Via: "aprs-inet", At: time.Now()},
+		{Direction: "rx", From: "SP9XYZ-7", To: "SP9MOA-10", Text: "personal", Via: "aprs-inet", At: time.Now()},
+	}}
+	env := newTestEnvAll(t, nil, nil, nil, nil, store, nil)
+	env.login()
+
+	resp, body := env.get("/partials/messages")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "BLN0") || !strings.Contains(body, "bulletin") {
+		t.Errorf("partial missing bulletin row/badge: %.300s", body)
+	}
+}

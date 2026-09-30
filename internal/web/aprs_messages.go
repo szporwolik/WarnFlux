@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/aprs"
 )
 
 // aprsMessagesPageSize bounds one page of the admin APRS message history.
@@ -19,6 +21,9 @@ type aprsMessageView struct {
 	Text      string
 	Via       string
 	At        time.Time
+	// Bulletin marks broadcast frames (addressed to BLN0-BLN9, BLNA-Z):
+	// visible in the history, never routed as alerts.
+	Bulletin bool
 }
 
 // aprsMessagesView is the admin APRS message history page model.
@@ -158,6 +163,7 @@ func (s *Server) fillAPRSMessages(r *http.Request, v *aprsMessagesView) {
 			Text:      m.Text,
 			Via:       m.Via,
 			At:        m.At,
+			Bulletin:  aprs.IsBulletin(m.To),
 		})
 	}
 }

@@ -3280,3 +3280,74 @@
     }
   });
 })();
+
+// Live message lists: the APRS and MeshCore message panels poll their
+// server-rendered fragments and re-render only when the content changed,
+// so the admin watches new traffic arrive without losing text selection
+// or click targets in between polls.
+(function () {
+  "use strict";
+
+  var MSGS_POLL_MS = 5000;
+
+  function poll(id, url, tab) {
+    var box = document.getElementById(id);
+    if (!box) {
+      return null;
+    }
+    var last = "";
+    return function () {
+      var q = new URLSearchParams(window.location.search);
+      var params = new URLSearchParams();
+      if (tab) {
+        params.set("tab", tab);
+      }
+      if (q.get("dir")) {
+        params.set("dir", q.get("dir"));
+      }
+      if (q.get("page")) {
+        params.set("page", q.get("page"));
+      }
+      fetch(url + "?" + params.toString(), {
+        headers: { "Accept": "text/html" },
+        credentials: "same-origin",
+        cache: "no-store"
+      })
+        .then(function (res) {
+          if (res.status === 401) {
+            window.location.href = "/login";
+            return null;
+          }
+          return res.ok ? res.text() : null;
+        })
+        .then(function (html) {
+          if (html === null || html === last) {
+            return;
+          }
+          last = html;
+          var now = document.getElementById(id);
+          if (!now) {
+            return;
+          }
+          now.innerHTML = html;
+          var total = now.querySelector("span[id$='-total']");
+          var countEl = document.getElementById(id === "aprs-msgs" ? "aprs-msg-count" : "mesh-msg-count");
+          if (countEl && total) {
+            countEl.textContent = total.textContent ? "(" + total.textContent + ")" : "";
+          }
+        })
+        .catch(function () { /* transient — next poll retries */ });
+    };
+  }
+
+  var tickAprs = poll("aprs-msgs", "/partials/messages");
+  if (tickAprs) {
+    tickAprs();
+    window.setInterval(tickAprs, MSGS_POLL_MS);
+  }
+  var tickMesh = poll("mesh-msgs", "/partials/meshcore", "messages");
+  if (tickMesh) {
+    tickMesh();
+    window.setInterval(tickMesh, MSGS_POLL_MS);
+  }
+})();

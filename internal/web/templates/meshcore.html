@@ -47,47 +47,14 @@
     </div>
 
     <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "messages"}} hidden{{end}}>
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshcore.tab_messages"}}</h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshcore.tab_messages"}} <span class="count" id="mesh-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
       <p class="muted log-hint">{{tr .Lang "meshcore.hint"}}</p>
       <div class="page-tabs">
         <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/meshcore">{{tr .Lang "messages.dir_all"}}</a>
         <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/meshcore?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
         <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/meshcore?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
       </div>
-      {{if .Messages}}
-      <div class="msgs-table-wrap">
-        <table class="msgs-table">
-          <thead>
-            <tr>
-              <th>{{tr .Lang "messages.time"}}</th>
-              <th>{{tr .Lang "messages.dir"}}</th>
-              <th>{{tr .Lang "meshcore.from"}}</th>
-              <th>{{tr .Lang "meshcore.channel"}}</th>
-              <th>{{tr .Lang "messages.text"}}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {{range .Messages}}
-            <tr class="msgs-{{.Direction}}{{if .Key}} click-send{{end}}"{{if .Key}} data-key="{{.Key}}" title="{{tr $.Lang "meshcore.click_to_send"}}"{{end}}>
-              <td class="muted nowrap">{{timeFull .At}}</td>
-              <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
-              <td><strong>{{if .Sender}}{{.Sender}}{{else}}—{{end}}</strong></td>
-              <td>{{.Channel}}</td>
-              <td class="msgs-text">{{.Text}}</td>
-            </tr>
-            {{end}}
-          </tbody>
-        </table>
-      </div>
-      <div class="pager">
-        <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
-        {{if gt .Page 1}}<a class="page-link" href="/meshcore?dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
-        <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
-        {{if lt .Page .Pages}}<a class="page-link" href="/meshcore?dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
-      </div>
-      {{else}}
-      <p class="home-none">{{tr .Lang "meshcore.none"}}</p>
-      {{end}}
+      <div id="mesh-msgs">{{template "mesh_msgs" .}}</div>
     </section>
 
     <section class="card page-panel" id="panel-nodes" data-panel="panel-nodes"{{if ne .Tab "nodes"}} hidden{{end}}>
@@ -152,5 +119,42 @@
 </div>
 {{else}}
 <p class="home-none">{{tr .Lang "meshcore.no_nodes"}}</p>
+{{end}}
+{{end}}
+
+{{define "mesh_msgs"}}<span id="mesh-msg-total" hidden>{{.Total}}</span>
+{{if .Messages}}
+<div class="msgs-table-wrap">
+  <table class="msgs-table">
+    <thead>
+      <tr>
+        <th>{{tr .Lang "messages.time"}}</th>
+        <th>{{tr .Lang "messages.dir"}}</th>
+        <th>{{tr .Lang "meshcore.from"}}</th>
+        <th>{{tr .Lang "meshcore.channel"}}</th>
+        <th>{{tr .Lang "messages.text"}}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Messages}}
+      <tr class="msgs-{{.Direction}}{{if .Key}} click-send{{end}}"{{if .Key}} data-key="{{.Key}}" title="{{tr $.Lang "meshcore.click_to_send"}}"{{end}}>
+        <td class="muted nowrap">{{timeFull .At}}</td>
+        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
+        <td><strong>{{if .Sender}}{{.Sender}}{{else}}—{{end}}</strong></td>
+        <td>{{.Channel}}</td>
+        <td class="msgs-text">{{.Text}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div class="pager">
+  <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
+  {{if gt .Page 1}}<a class="page-link" href="/meshcore?dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+  <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
+  {{if lt .Page .Pages}}<a class="page-link" href="/meshcore?dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
+</div>
+{{else}}
+<p class="home-none">{{tr .Lang "meshcore.none"}}</p>
 {{end}}
 {{end}}

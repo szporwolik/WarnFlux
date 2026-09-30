@@ -31,50 +31,54 @@
       <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/messages?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
     </div>
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "messages.title"}} <span class="count">{{.Total}}</span></h2>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "messages.title"}} <span class="count" id="aprs-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
       <p class="muted log-hint">{{tr .Lang "messages.hint"}}</p>
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
       {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.sent"}}</span></div>{{end}}
-      {{if .Messages}}
-      <div class="msgs-table-wrap">
-        <table class="msgs-table">
-          <thead>
-            <tr>
-              <th>{{tr .Lang "messages.time"}}</th>
-              <th>{{tr .Lang "messages.dir"}}</th>
-              <th>{{tr .Lang "messages.from"}}</th>
-              <th>{{tr .Lang "messages.to"}}</th>
-              <th>{{tr .Lang "messages.text"}}</th>
-              <th>{{tr .Lang "messages.via"}}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {{range .Messages}}
-            <tr class="msgs-{{.Direction}} click-send" data-key="{{if eq .Direction "rx"}}{{.From}}{{else}}{{.To}}{{end}}" title="{{tr $.Lang "messages.click_to_send"}}">
-              <td class="muted nowrap">{{timeFull .At}}</td>
-              <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
-              <td><strong>{{.From}}</strong></td>
-              <td>{{.To}}</td>
-              <td class="msgs-text">{{.Text}}</td>
-              <td class="muted nowrap">{{.Via}}</td>
-            </tr>
-            {{end}}
-          </tbody>
-        </table>
-      </div>
-      <div class="pager">
-        <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
-        {{if gt .Page 1}}<a class="page-link" href="/messages?dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
-        <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
-        {{if lt .Page .Pages}}<a class="page-link" href="/messages?dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
-      </div>
-      {{else}}
-      <p class="home-none">{{tr .Lang "messages.none"}}</p>
-      {{end}}
+      <div id="aprs-msgs">{{template "aprs_msgs" .}}</div>
     </section>
   </main>
   {{template "footer" .}}
   <script src="/static/app.js?v={{.Commit}}" defer></script>
 </body>
 </html>
+{{end}}
+
+{{define "aprs_msgs"}}<span id="aprs-msg-total" hidden>{{.Total}}</span>
+{{if .Messages}}
+<div class="msgs-table-wrap">
+  <table class="msgs-table">
+    <thead>
+      <tr>
+        <th>{{tr .Lang "messages.time"}}</th>
+        <th>{{tr .Lang "messages.dir"}}</th>
+        <th>{{tr .Lang "messages.from"}}</th>
+        <th>{{tr .Lang "messages.to"}}</th>
+        <th>{{tr .Lang "messages.text"}}</th>
+        <th>{{tr .Lang "messages.via"}}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Messages}}
+      <tr class="msgs-{{.Direction}} click-send" data-key="{{if eq .Direction "rx"}}{{.From}}{{else}}{{.To}}{{end}}" title="{{tr $.Lang "messages.click_to_send"}}">
+        <td class="muted nowrap">{{timeFull .At}}</td>
+        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
+        <td><strong>{{.From}}</strong></td>
+        <td>{{.To}}</td>
+        <td class="msgs-text">{{.Text}}</td>
+        <td class="muted nowrap">{{.Via}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div class="pager">
+  <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
+  {{if gt .Page 1}}<a class="page-link" href="/messages?dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+  <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
+  {{if lt .Page .Pages}}<a class="page-link" href="/messages?dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
+</div>
+{{else}}
+<p class="home-none">{{tr .Lang "messages.none"}}</p>
+{{end}}
 {{end}}

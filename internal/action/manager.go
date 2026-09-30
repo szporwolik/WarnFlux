@@ -11,8 +11,14 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
+
+// DeliveryRecoveryInterval is how often the manager sweeps delivery
+// claims left "running" by a crashed process. Exported only so tests can
+// shorten it; production code never mutates it.
+var DeliveryRecoveryInterval = time.Second
 
 // Manager owns all configured action instances: construction, workers,
 // explicit submission, status aggregation and bounded shutdown.
@@ -29,6 +35,12 @@ type Manager struct {
 	logger *slog.Logger
 	trail  *trail.Recorder
 	reg    *metrics.Registry
+
+	// store is the optional durable delivery job queue. When attached,
+	// every worker claims jobs from SQLite (payload, recipients, attempt
+	// counter and next-attempt deadline) and records the result after
+	// each execution; the in-memory queue remains a fallback path.
+	store storage.DeliveryStore
 
 	cancel   context.CancelFunc
 	cancelMu sync.Mutex
@@ -85,7 +97,44 @@ func (m *Manager) Start(ctx context.Context) {
 	m.cancelMu.Unlock()
 
 	for _, inst := range m.instances {
+		if m.store != nil {
+			inst.setDeliveryStore(m.store)
+		}
 		inst.Start(mgrCtx)
+	}
+	if m.store != nil {
+		go m.recoverStaleClaims(mgrCtx)
+	}
+}
+
+// SetDeliveryStore attaches the durable delivery job queue. It must be
+// called before Start.
+func (m *Manager) SetDeliveryStore(st storage.DeliveryStore) {
+	m.store = st
+}
+
+// recoverStaleClaims re-queues jobs a previous process claimed but never
+// settled (crash between claim and execution). One immediate pass runs
+// before the workers are active, then a periodic sweep.
+func (m *Manager) recoverStaleClaims(ctx context.Context) {
+	if n, err := m.store.RecoverStaleClaims(ctx, time.Now()); err != nil {
+		m.logger.Warn("action: stale claim recovery failed", "error", err)
+	} else if n > 0 {
+		m.logger.Info("action: stale delivery claims recovered", "jobs", n)
+	}
+	t := time.NewTicker(DeliveryRecoveryInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := m.store.RecoverStaleClaims(ctx, time.Now()); err != nil {
+				m.logger.Warn("action: stale claim recovery failed", "error", err)
+			} else if n > 0 {
+				m.logger.Info("action: stale delivery claims recovered", "jobs", n)
+			}
+		}
 	}
 }
 

@@ -531,6 +531,18 @@ CREATE TABLE dispatch_inbox (
 CREATE INDEX idx_dispatch_inbox_id ON dispatch_inbox(id);
 `,
 	},
+	{
+		// v26: action_fires rows become full delivery jobs: the execution
+		// payload (event + recipients) travels with the row, the attempt
+		// counter and the next-attempt deadline drive the retry
+		// scheduler. Historical rows carry no payload and were already
+		// claimed; their status stays terminal ('succeeded').
+		SQL: `
+ALTER TABLE action_fires ADD COLUMN payload TEXT NOT NULL DEFAULT '';
+ALTER TABLE action_fires ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE action_fires ADD COLUMN next_attempt_at_ms INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,7 +26,9 @@ type fakeStore struct {
 	aprsBcc      map[int64][]string
 	discordBcc   map[int64][]string
 	jobs         map[string]storage.DeliveryStatus // group|action|dedupKey -> status
-	completeErr  error                             // returned by CompleteDelivery
+	payloads     map[string][]byte                 // group|action|dedupKey -> JSON payload
+	payloadOrder []string                          // insertion order of payload keys
+	enqueueErr   error                             // returned by EnqueueDelivery
 	recipientErr error                             // returned by the recipient lookups
 	err          error
 }
@@ -68,35 +71,70 @@ func (f *fakeStore) GroupRecipientDiscord(groupID int64) ([]string, error) {
 	return append([]string(nil), f.discordBcc[groupID]...), f.err
 }
 
-func (f *fakeStore) BeginDelivery(groupID int64, actionID, eventKey, dedupKey string, at time.Time) (storage.DeliveryStatus, error) {
+func (f *fakeStore) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.jobs == nil {
 		f.jobs = map[string]storage.DeliveryStatus{}
 	}
-	key := fmt.Sprintf("%d|%s|%s", groupID, actionID, dedupKey)
-	if st, ok := f.jobs[key]; ok && st == storage.DeliverySucceeded {
-		return storage.DeliverySucceeded, f.err
+	if f.payloads == nil {
+		f.payloads = map[string][]byte{}
 	}
-	f.jobs[key] = storage.DeliveryRetry // running
-	return storage.DeliveryRetry, f.err
+	if f.enqueueErr != nil {
+		return 0, false, f.enqueueErr
+	}
+	key := fmt.Sprintf("%d|%s|%s", job.GroupID, job.ActionID, job.DedupKey)
+	if st, ok := f.jobs[key]; ok {
+		if st == storage.DeliveryFailed {
+			// Terminal failure: the replay re-arms the job.
+			f.jobs[key] = storage.DeliverySaved
+			f.payloads[key] = job.Payload
+			f.payloadOrder = append(f.payloadOrder, key)
+			return storage.DeliverySaved, true, f.err
+		}
+		return st, false, f.err
+	}
+	f.jobs[key] = storage.DeliverySaved
+	f.payloads[key] = job.Payload
+	f.payloadOrder = append(f.payloadOrder, key)
+	return storage.DeliverySaved, true, f.err
 }
 
-func (f *fakeStore) CompleteDelivery(groupID int64, actionID, dedupKey string, succeeded bool) error {
+// payloadCount reports how many queued durable jobs belong to one action.
+func (f *fakeStore) payloadCount(actionID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for k := range f.payloads {
+		if strings.Contains(k, "|"+actionID+"|") {
+			n++
+		}
+	}
+	return n
+}
+
+// payloadsFor returns the JSON payloads queued for one action in
+// insertion order (deduplicated replays appear once).
+func (f *fakeStore) payloadsFor(actionID string) [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out [][]byte
+	for _, k := range f.payloadOrder {
+		if strings.Contains(k, "|"+actionID+"|") {
+			out = append(out, f.payloads[k])
+		}
+	}
+	return out
+}
+
+// failJob marks one (group, action, dedupKey) job as terminally failed.
+func (f *fakeStore) failJob(groupID int64, actionID, dedupKey string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.jobs == nil {
 		f.jobs = map[string]storage.DeliveryStatus{}
 	}
-	key := fmt.Sprintf("%d|%s|%s", groupID, actionID, dedupKey)
-	st := storage.DeliveryRetry // failed
-	if succeeded {
-		st = storage.DeliverySucceeded
-	}
-	if f.completeErr == nil {
-		f.jobs[key] = st
-	}
-	return f.completeErr
+	f.jobs[fmt.Sprintf("%d|%s|%s", groupID, actionID, dedupKey)] = storage.DeliveryFailed
 }
 
 // setActionSeverity mutates one cached rule's action threshold.
@@ -211,11 +249,7 @@ func TestEngineSeverityThresholdAndFanOut(t *testing.T) {
 	feed <- hazardEvent("moderate", dispatch.TransitionNew)
 	feed <- hazardEvent("unknown", dispatch.TransitionNew)
 
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["log"]) == 4
-	}, "log action fired 4 times")
+	waitFor(t, func() bool { return store.payloadCount("log") == 4 }, "log action fired 4 times")
 
 	stats := e.Stats()
 	if stats.EventsSeen != 3 || stats.RulesMatched != 4 || stats.ActionsFired != 4 {
@@ -242,9 +276,7 @@ func TestEngineDuplicateDeliveryFiresOnce(t *testing.T) {
 		s := e.Stats()
 		return s.EventsSeen == 2 && s.ActionsDeduped == 2
 	}, "two groups claimed once, two replays deduplicated")
-	acts.mu.Lock()
-	defer acts.mu.Unlock()
-	if got := len(acts.got["log"]); got != 2 {
+	if got := store.payloadCount("log"); got != 2 {
 		t.Errorf("log fired %d times, want 2 (one per group, no replay)", got)
 	}
 	stats := e.Stats()
@@ -267,26 +299,15 @@ func TestEngineRoutingMatrix(t *testing.T) {
 	e, feed := startEngine(t, store, acts)
 
 	feed <- hazardEvent("moderate", dispatch.TransitionNew)
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["log"]) == 1
-	}, "log action fired once")
+	waitFor(t, func() bool { return store.payloadCount("log") == 1 }, "log action fired once")
 
 	// moderate satisfies only log: sms must not fire.
-	acts.mu.Lock()
-	smsCalls := len(acts.got["sms"])
-	acts.mu.Unlock()
-	if smsCalls != 0 {
+	if smsCalls := store.payloadCount("sms"); smsCalls != 0 {
 		t.Fatalf("moderate fired sms %d times, want 0", smsCalls)
 	}
 
 	feed <- hazardEvent("severe", dispatch.TransitionNew)
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["sms"]) == 1
-	}, "sms action fired once")
+	waitFor(t, func() bool { return store.payloadCount("sms") == 1 }, "sms action fired once")
 
 	if s := e.Stats(); s.EventsSeen != 2 || s.ActionsFired != 3 {
 		t.Errorf("stats = %+v, want 2 seen, 3 actions", s)
@@ -312,15 +333,9 @@ func TestEngineRoutingMatrixSource(t *testing.T) {
 	// imgw-meteo moderate: only the specific log cell fires; the
 	// any-source log cell (severe) is shadowed and sms (rso) must not.
 	feed <- hazardEventFrom("imgw-meteo", "moderate", dispatch.TransitionNew)
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["log"]) == 1
-	}, "imgw-meteo cell fired log")
-	acts.mu.Lock()
-	logCalls := len(acts.got["log"])
-	smsCalls := len(acts.got["sms"])
-	acts.mu.Unlock()
+	waitFor(t, func() bool { return store.payloadCount("log") == 1 }, "imgw-meteo cell fired log")
+	logCalls := store.payloadCount("log")
+	smsCalls := store.payloadCount("sms")
 	if smsCalls != 0 {
 		t.Fatalf("imgw-meteo event fired sms %d times, want 0", smsCalls)
 	}
@@ -331,15 +346,9 @@ func TestEngineRoutingMatrixSource(t *testing.T) {
 	// rso severe: sms fires from its rso cell; log has no rso cell, so
 	// the any-source fallback (severe) applies.
 	feed <- hazardEventFrom("rso", "severe", dispatch.TransitionNew)
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["sms"]) == 1
-	}, "rso cell fired sms")
-	acts.mu.Lock()
-	logCalls = len(acts.got["log"])
-	smsCalls = len(acts.got["sms"])
-	acts.mu.Unlock()
+	waitFor(t, func() bool { return store.payloadCount("sms") == 1 }, "rso cell fired sms")
+	logCalls = store.payloadCount("log")
+	smsCalls = store.payloadCount("sms")
 	if logCalls != 2 {
 		t.Errorf("rso severe event: log fired %d times, want 2 (fallback)", logCalls)
 	}
@@ -351,10 +360,8 @@ func TestEngineRoutingMatrixSource(t *testing.T) {
 	// so nothing may fire.
 	feed <- hazardEventFrom("imgw-hydro", "minor", dispatch.TransitionNew)
 	time.Sleep(60 * time.Millisecond)
-	acts.mu.Lock()
-	logCalls = len(acts.got["log"])
-	smsCalls = len(acts.got["sms"])
-	acts.mu.Unlock()
+	logCalls = store.payloadCount("log")
+	smsCalls = store.payloadCount("sms")
 	if logCalls != 2 || smsCalls != 1 {
 		t.Errorf("imgw-hydro minor event fired (log %d, sms %d), want no new firings", logCalls, smsCalls)
 	}
@@ -377,9 +384,9 @@ func TestEngineNonHazardSkipped(t *testing.T) {
 	if s := e.Stats(); s.EventsSeen != 0 {
 		t.Errorf("EventsSeen = %d, want 0 (mqtt_message is not routed)", s.EventsSeen)
 	}
-	acts.mu.Lock()
-	n := len(acts.got)
-	acts.mu.Unlock()
+	store.mu.Lock()
+	n := len(store.payloads)
+	store.mu.Unlock()
 	if n != 0 {
 		t.Errorf("actions fired %d times for a raw MQTT message", n)
 	}
@@ -400,11 +407,7 @@ func TestEngineTerminalTransitionsDoNotFire(t *testing.T) {
 	feed <- hazardEventFrom("imgw", "severe", dispatch.TransitionExpired)
 	feed <- hazardEventFrom("imgw", "severe", dispatch.TransitionUpdated)
 
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["log"]) == 1
-	}, "only the updated transition fired")
+	waitFor(t, func() bool { return store.payloadCount("log") == 1 }, "only the updated transition fired")
 
 	s := e.Stats()
 	if s.EventsSeen != 3 || s.TransitionsSkipped != 2 || s.ActionsFired != 1 {
@@ -424,11 +427,7 @@ func TestEngineUnrankedSeverityMatchesOnlyPermissive(t *testing.T) {
 	// receive it.
 	feed <- hazardEvent("orange", dispatch.TransitionNew)
 
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["log"]) == 1
-	}, "permissive action fired once")
+	waitFor(t, func() bool { return store.payloadCount("log") == 1 }, "permissive action fired once")
 }
 
 // TestEnginePassesGroupDiscordHandles pins the Discord part of the
@@ -448,18 +447,16 @@ func TestEnginePassesGroupDiscordHandles(t *testing.T) {
 
 	feed <- hazardEvent("severe", dispatch.TransitionNew)
 
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["discord"]) == 1
-	}, "discord action fired")
+	waitFor(t, func() bool { return store.payloadCount("discord") == 1 }, "discord action fired")
 
-	acts.mu.Lock()
 	var handles []string
-	for _, ds := range acts.discords {
-		handles = append(handles, ds...)
+	for _, p := range store.payloadsFor("discord") {
+		var req action.ActionRequest
+		if err := json.Unmarshal(p, &req); err != nil {
+			t.Fatalf("payload decode: %v", err)
+		}
+		handles = append(handles, req.DiscordHandles...)
 	}
-	acts.mu.Unlock()
 	if len(handles) != 2 || handles[0] != "alice#1234" || handles[1] != "@bob" {
 		t.Errorf("discord handles = %v, want [alice#1234 @bob]", handles)
 	}
@@ -481,22 +478,15 @@ func TestEnginePassesGroupRecipientsAsBcc(t *testing.T) {
 
 	feed <- hazardEvent("severe", dispatch.TransitionNew)
 
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["smtp"]) == 2
-	}, "both groups' actions fired")
-
-	acts.mu.Lock()
-	bccs := make([][]string, len(acts.bccs))
-	for i := range acts.bccs {
-		bccs[i] = append([]string(nil), acts.bccs[i]...)
-	}
-	acts.mu.Unlock()
+	waitFor(t, func() bool { return store.payloadCount("smtp") == 2 }, "both groups' actions fired")
 
 	var memberEmails []string
-	for _, b := range bccs {
-		memberEmails = append(memberEmails, b...)
+	for _, p := range store.payloadsFor("smtp") {
+		var req action.ActionRequest
+		if err := json.Unmarshal(p, &req); err != nil {
+			t.Fatalf("payload decode: %v", err)
+		}
+		memberEmails = append(memberEmails, req.Bcc...)
 	}
 	if len(memberEmails) != 2 || memberEmails[0] != "a@example.com" || memberEmails[1] != "b@example.com" {
 		t.Errorf("Bcc across submissions = %v, want [a@example.com b@example.com]", memberEmails)
@@ -517,15 +507,16 @@ func TestEnginePassesGroupAPRSCallsigns(t *testing.T) {
 
 	feed <- hazardEvent("severe", dispatch.TransitionNew)
 
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.aprss) == 1
-	}, "aprs action fired")
+	waitFor(t, func() bool { return store.payloadCount("aprs") == 1 }, "aprs action fired")
 
-	acts.mu.Lock()
-	callsigns := append([]string(nil), acts.aprss[0]...)
-	acts.mu.Unlock()
+	var callsigns []string
+	for _, p := range store.payloadsFor("aprs") {
+		var req action.ActionRequest
+		if err := json.Unmarshal(p, &req); err != nil {
+			t.Fatalf("payload decode: %v", err)
+		}
+		callsigns = append(callsigns, req.APRSCallsigns...)
+	}
 	if len(callsigns) != 2 || callsigns[0] != "SP9MOA-16" || callsigns[1] != "SR9KR" {
 		t.Errorf("APRSCallsigns = %v, want [SP9MOA-16 SR9KR]", callsigns)
 	}
@@ -546,11 +537,7 @@ func TestEngineRuleReload(t *testing.T) {
 	e.refresh()
 	feed <- hazardEvent("unknown", dispatch.TransitionNew)
 
-	waitFor(t, func() bool {
-		acts.mu.Lock()
-		defer acts.mu.Unlock()
-		return len(acts.got["log"]) == 1
-	}, "action fired after reload")
+	waitFor(t, func() bool { return store.payloadCount("log") == 1 }, "action fired after reload")
 }
 
 func waitFor(t *testing.T, cond func() bool, what string) {
@@ -629,7 +616,7 @@ func TestEngineTrailRecording(t *testing.T) {
 	waitFor(t, func() bool {
 		tr, _ := rec.Get("imgw:1")
 		for _, s := range tr.Steps {
-			if s.Kind == trail.StepSkipped && strings.Contains(s.Text, "already delivered") {
+			if s.Kind == trail.StepSkipped && strings.Contains(s.Text, "already queued or delivered") {
 				return true
 			}
 		}
@@ -715,10 +702,10 @@ type EngineStats struct {
 	SnapshotAge time.Duration
 }
 
-// TestEngineRejectedSubmissionRetries pins the durable delivery-job
-// rework: when the action rejects the request (queue full, disabled),
-// the job is settled as failed, so a replay of the same transition
-// retries it instead of dropping the alert as already delivered.
+// TestEngineRejectedSubmissionRetries pins the ledger-failure fallback:
+// when the job cannot be persisted, the engine falls back to the
+// in-memory submission path; when the action also rejects the request,
+// the transition is counted failed and a replay retries it.
 func TestEngineRejectedSubmissionRetries(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
@@ -726,6 +713,9 @@ func TestEngineRejectedSubmissionRetries(t *testing.T) {
 	acts := &fakeActions{}
 	e, feed := startEngine(t, store, acts)
 
+	store.mu.Lock()
+	store.enqueueErr = errors.New("db busy")
+	store.mu.Unlock()
 	acts.mu.Lock()
 	acts.err = errors.New("queue full")
 	acts.mu.Unlock()
@@ -733,28 +723,88 @@ func TestEngineRejectedSubmissionRetries(t *testing.T) {
 	feed <- ev
 	waitFor(t, func() bool { return e.Stats().ActionsFailed == 1 }, "first submission rejected")
 
-	// The queue drains; the same transition replays and must re-fire.
+	// The ledger recovers and the queue drains; the same transition
+	// replays and must be queued for execution.
+	store.mu.Lock()
+	store.enqueueErr = nil
+	store.mu.Unlock()
 	acts.mu.Lock()
 	acts.err = nil
 	acts.mu.Unlock()
 	feed <- ev
 	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "replay re-fired after rejection")
 
-	acts.mu.Lock()
-	got := len(acts.got["log"])
-	acts.mu.Unlock()
-	if got != 2 {
-		t.Errorf("log submitted %d times, want 2 (rejected attempt + retry)", got)
-	}
+	// The failed fallback submission must not have deduplicated anything.
 	if d := e.Stats().ActionsDeduped; d != 0 {
 		t.Errorf("deduped = %d, want 0 (rejection must not deduplicate)", d)
 	}
 }
 
-// TestEngineSettleFailureRetries pins the crash window: when the success
-// settle itself fails, the job stays running and a replay re-fires the
-// action (at-least-once rather than lost).
-func TestEngineSettleFailureRetries(t *testing.T) {
+// TestEngineTerminalFailureRearms pins the burned-budget contract: a job
+// whose execution exhausted all attempts is terminally failed, and a
+// replay of the transition re-arms it with a fresh budget instead of
+// deduplicating it away.
+func TestEngineTerminalFailureRearms(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+
+	ev := hazardEvent("severe", dispatch.TransitionNew)
+	store.failJob(1, "log", fireDedupKey(ev))
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "terminal failure re-armed and queued")
+
+	// The re-armed job is now pending: replays deduplicate.
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsDeduped == 1 }, "re-armed job deduplicated")
+}
+
+// TestEnginePayloadPersisted pins the durable-payload contract: the job
+// handed to the queue carries the event and every recipient channel, so
+// a worker can execute it after a restart.
+func TestEnginePayloadPersisted(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}, bcc: map[int64][]string{1: {"a@example.net"}},
+		aprsBcc:    map[int64][]string{1: {"SP9SPM-1"}},
+		discordBcc: map[int64][]string{1: {"ops#1234"}}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+
+	ev := hazardEvent("severe", dispatch.TransitionNew)
+	feed <- ev
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "job queued")
+
+	store.mu.Lock()
+	payload := store.payloads[fmt.Sprintf("1|log|%s", fireDedupKey(ev))]
+	store.mu.Unlock()
+	if len(payload) == 0 {
+		t.Fatal("job persisted without payload")
+	}
+	var req action.ActionRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		t.Fatalf("payload decode: %v", err)
+	}
+	if req.Event.Hazard == nil || req.Event.Hazard.Key != ev.Hazard.Key {
+		t.Errorf("payload event = %+v, want hazard key %q", req.Event.Hazard, ev.Hazard.Key)
+	}
+	if len(req.Bcc) != 1 || req.Bcc[0] != "a@example.net" {
+		t.Errorf("payload Bcc = %v, want [a@example.net]", req.Bcc)
+	}
+	if len(req.APRSCallsigns) != 1 || req.APRSCallsigns[0] != "SP9SPM-1" {
+		t.Errorf("payload APRSCallsigns = %v, want [SP9SPM-1]", req.APRSCallsigns)
+	}
+	if len(req.DiscordHandles) != 1 || req.DiscordHandles[0] != "ops#1234" {
+		t.Errorf("payload DiscordHandles = %v, want [ops#1234]", req.DiscordHandles)
+	}
+}
+
+// TestEngineLedgerFallback pins the never-suppress contract: when the
+// ledger fails, the engine still submits in memory, and once the ledger
+// heals the replay is queued durably (at-least-once across the failure).
+func TestEngineLedgerFallback(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
 	}}
@@ -762,22 +812,22 @@ func TestEngineSettleFailureRetries(t *testing.T) {
 	e, feed := startEngine(t, store, acts)
 
 	store.mu.Lock()
-	store.completeErr = errors.New("db busy")
+	store.enqueueErr = errors.New("db busy")
 	store.mu.Unlock()
 	ev := hazardEvent("severe", dispatch.TransitionNew)
 	feed <- ev
-	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "first delivery executed")
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "in-memory fallback executed")
 
-	// The settle failure left the job running; a replay must retry.
+	// The ledger heals: the replay is queued durably (nothing was
+	// recorded during the failure, so it fires again — at-least-once).
 	store.mu.Lock()
-	store.completeErr = nil
+	store.enqueueErr = nil
 	store.mu.Unlock()
 	feed <- ev
-	waitFor(t, func() bool { return e.Stats().ActionsFired == 2 }, "replay re-fired after settle failure")
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 2 }, "replay queued durably after heal")
 
-	// From now on the job is succeeded: further replays deduplicate.
 	feed <- ev
-	waitFor(t, func() bool { return e.Stats().ActionsDeduped == 1 }, "settled job deduplicated")
+	waitFor(t, func() bool { return e.Stats().ActionsDeduped == 1 }, "durable job deduplicated")
 }
 
 // TestEnginePublisherIsolation pins the publisher-aware dedup key:
@@ -805,10 +855,7 @@ func TestEnginePublisherIsolation(t *testing.T) {
 		return s.ActionsFired == 2 && s.ActionsDeduped == 1
 	}, "publishers isolated, replays deduplicated")
 
-	acts.mu.Lock()
-	got := len(acts.got["log"])
-	acts.mu.Unlock()
-	if got != 2 {
+	if got := store.payloadCount("log"); got != 2 {
 		t.Errorf("log fired %d times, want 2 (one per publisher)", got)
 	}
 }
@@ -843,11 +890,8 @@ func TestRefreshFailureKeepsSnapshot(t *testing.T) {
 	}
 	feed <- hazardEvent("severe", dispatch.TransitionNew)
 	waitFor(t, func() bool { return e.Stats().ActionsFired == 2 }, "old snapshot still delivered")
-	acts.mu.Lock()
-	smsCalls := len(acts.got["sms"])
-	acts.mu.Unlock()
-	if smsCalls != 0 {
-		t.Fatalf("sms fired %d times, want 0 (failed refresh must not install)", smsCalls)
+	if n := store.payloadCount("sms"); n != 0 {
+		t.Fatalf("sms queued %d times, want 0 (failed refresh must not install)", n)
 	}
 
 	// Healed directory: the next refresh installs the new snapshot.
@@ -860,11 +904,8 @@ func TestRefreshFailureKeepsSnapshot(t *testing.T) {
 	}
 	feed <- hazardEvent("severe", dispatch.TransitionNew)
 	waitFor(t, func() bool { return e.Stats().ActionsFired == 3 }, "new snapshot delivered")
-	acts.mu.Lock()
-	smsCalls = len(acts.got["sms"])
-	acts.mu.Unlock()
-	if smsCalls != 1 {
-		t.Fatalf("sms fired %d times after healed refresh, want 1", smsCalls)
+	if n := store.payloadCount("sms"); n != 1 {
+		t.Fatalf("sms queued %d times after healed refresh, want 1", n)
 	}
 }
 

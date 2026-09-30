@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -121,3 +123,59 @@ func TestEventCloneDeepCopies(t *testing.T) {
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
+
+// fakeInbox records accepted events; fail simulates a broken backend.
+type fakeInbox struct {
+	mu    sync.Mutex
+	items []Event
+	fail  bool
+}
+
+func (f *fakeInbox) AppendEvent(_ context.Context, e Event) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return 0, errors.New("db down")
+	}
+	f.items = append(f.items, e)
+	return int64(len(f.items)), nil
+}
+
+// TestIngressDurableAcceptance pins the inbox semantics: acceptance is
+// persisted before the live queue is offered, so a full queue defers the
+// event instead of dropping it; an inbox failure falls back to live-only
+// acceptance (and a full queue then drops again).
+func TestIngressDurableAcceptance(t *testing.T) {
+	g := NewIngress(1)
+	in := &fakeInbox{}
+	g.SetInbox(in)
+
+	if !g.Enqueue(Event{Kind: EventMQTTMessage}) {
+		t.Fatal("first enqueue failed")
+	}
+	// Live queue full: the inbox still accepts durably.
+	if !g.Enqueue(Event{Kind: EventMQTTMessage}) {
+		t.Fatal("durable acceptance failed while the live queue is full")
+	}
+	in.mu.Lock()
+	got := len(in.items)
+	in.mu.Unlock()
+	if got != 2 {
+		t.Fatalf("inbox items = %d, want 2", got)
+	}
+	recv, dropped, _, _, _ := g.Stats()
+	if recv != 1 || dropped != 1 {
+		t.Fatalf("stats = (%d received, %d dropped), want (1, 1)", recv, dropped)
+	}
+
+	// Broken inbox + full queue: hard drop, false.
+	in.mu.Lock()
+	in.fail = true
+	in.mu.Unlock()
+	if g.Enqueue(Event{Kind: EventMQTTMessage}) {
+		t.Fatal("enqueue succeeded with a broken inbox and a full queue")
+	}
+	if g.InboxFailures() != 1 {
+		t.Fatalf("inbox failures = %d, want 1", g.InboxFailures())
+	}
+}

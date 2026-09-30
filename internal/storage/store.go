@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 )
 
 // ErrNotFound is returned by EventStore.Get when no event matches the key.
@@ -83,6 +84,13 @@ type Change struct {
 	// produced this journal entry; it rides on the /events wire contract
 	// so independent publishers never collide in deduplication.
 	Publisher string
+}
+
+// InboxItem is one durable dispatch-inbox row: a canonical event accepted
+// for routing but not yet acknowledged by the routing engine.
+type InboxItem struct {
+	ID    int64
+	Event dispatch.Event
 }
 
 // EventStore persists normalized hazard events together with a durable

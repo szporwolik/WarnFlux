@@ -9,16 +9,29 @@ import (
 // DefaultQueueSize is the default bounded ingress capacity.
 const DefaultQueueSize = 1024
 
+// Inbox is an optional durable acceptance backend: every accepted event
+// is persisted before it enters the live queue, so a full queue or a
+// crash between acceptance and evaluation no longer loses the event.
+// Implemented by the SQLite store.
+type Inbox interface {
+	AppendEvent(ctx context.Context, e Event) (int64, error)
+}
+
 // Ingress is the single bounded intake queue for canonical dispatch events.
 //
 // Semantics (documented, not stronger than reality):
-//   - Enqueue never blocks: a full queue drops the event and counts it.
+//   - Enqueue never blocks: without an inbox, a full queue drops the event
+//     and counts it. With a durable inbox attached, acceptance is
+//     persistent FIRST — a full live queue defers the event to inbox
+//     recovery instead of dropping it.
 //   - After StopIntake, Enqueue always returns false.
-//   - There is no durable storage: events accepted now are dropped during
-//     a crash or a shutdown drain deadline. Durable rule/action semantics
-//     come later.
+//   - Without an inbox there is no durable storage: events accepted now
+//     are dropped during a crash or a shutdown drain deadline.
 type Ingress struct {
 	queue chan Event
+
+	// inbox is the optional durable acceptance backend (see Inbox).
+	inbox Inbox
 
 	// mu serializes enqueues against StopIntake's final drain-and-close:
 	// a send can never land on a closed channel and the channel is never
@@ -29,6 +42,9 @@ type Ingress struct {
 	received    atomic.Int64
 	droppedFull atomic.Int64
 	droppedLate atomic.Int64
+	// inboxFailures counts append errors on an attached inbox (the event
+	// falls back to live-only acceptance).
+	inboxFailures atomic.Int64
 }
 
 // NewIngress creates a bounded ingress queue. Sizes below 1 fall back to
@@ -40,23 +56,55 @@ func NewIngress(size int) *Ingress {
 	return &Ingress{queue: make(chan Event, size)}
 }
 
-// Enqueue offers a canonical event without ever blocking. It returns false
-// (caller logs + counts the drop) when the queue is full or intake has
-// been stopped.
+// SetInbox attaches the durable acceptance backend. It must be called
+// before the ingress starts accepting events.
+func (g *Ingress) SetInbox(in Inbox) {
+	g.mu.Lock()
+	g.inbox = in
+	g.mu.Unlock()
+}
+
+// Enqueue offers a canonical event without ever blocking. With an inbox
+// attached, acceptance is durable before the live queue is offered: the
+// event returns true when it was persisted (it will be delivered now or
+// by inbox recovery) and false only when neither the inbox nor the live
+// queue accepted it.
 func (g *Ingress) Enqueue(e Event) bool {
+	g.mu.Lock()
+	closed := g.closed
+	inbox := g.inbox
+	g.mu.Unlock()
+	if closed {
+		g.droppedLate.Add(1)
+		return false
+	}
+
+	// Durable acceptance first.
+	if inbox != nil {
+		if id, err := inbox.AppendEvent(context.Background(), e); err == nil {
+			e.InboxID = id
+		} else {
+			g.inboxFailures.Add(1)
+		}
+	}
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed {
+		// Accepted durably right before shutdown: the row stays in the
+		// inbox and re-enters after the restart.
 		g.droppedLate.Add(1)
-		return false
+		return e.InboxID != 0
 	}
 	select {
 	case g.queue <- e:
 		g.received.Add(1)
 		return true
 	default:
+		// Live queue full: with a durable inbox the event is only
+		// deferred (recovery re-delivers it), not lost.
 		g.droppedFull.Add(1)
-		return false
+		return e.InboxID != 0
 	}
 }
 
@@ -103,4 +151,10 @@ func (g *Ingress) Drain(ctx context.Context) int {
 // Stats returns intake counters.
 func (g *Ingress) Stats() (received, droppedFull, droppedLate int64, queueDepth, queueCap int) {
 	return g.received.Load(), g.droppedFull.Load(), g.droppedLate.Load(), len(g.queue), cap(g.queue)
+}
+
+// InboxFailures counts inbox append errors (the event fell back to
+// live-only acceptance).
+func (g *Ingress) InboxFailures() int64 {
+	return g.inboxFailures.Load()
 }

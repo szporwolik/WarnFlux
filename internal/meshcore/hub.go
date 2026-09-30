@@ -117,6 +117,9 @@ type Hub struct {
 	// senderGate approves the 12-hex key prefix of a direct-message
 	// sender for the routing bridge (registered operators only).
 	senderGate func(key string) bool
+	// contactProtect optionally re-adds a contact the device just
+	// overwrote when the key belongs to a registered operator.
+	contactProtect func(key string) bool
 	// eventSink publishes routed message events on the /events stream.
 	eventSink func(ctx context.Context, topic string, retained bool, payload []byte) error
 
@@ -193,6 +196,16 @@ func (h *Hub) SetEventSink(fn func(ctx context.Context, topic string, retained b
 	h.mu.Unlock()
 }
 
+// SetContactProtector installs the directory check for overwritten
+// contacts: when the device evicts a contact (auto-add recycling) whose
+// full key the callback approves, the hub immediately re-adds it so
+// registered operators stay addressable and decryptable.
+func (h *Hub) SetContactProtector(fn func(key string) bool) {
+	h.mu.Lock()
+	h.contactProtect = fn
+	h.mu.Unlock()
+}
+
 // Enabled reports whether the mesh is configured.
 func (h *Hub) Enabled() bool { return h.cfg.Enabled }
 
@@ -259,6 +272,9 @@ func (h *Hub) runSession(ctx context.Context) error {
 	if err := h.syncAutoadd(conn); err != nil {
 		return err
 	}
+	if err := h.drainMessages(conn); err != nil {
+		return err
+	}
 
 	// The device answers APP_START/DEVICE_QUERY/BATTERY once. If the
 	// reply is lost (busy device, USB glitch) the station info stays
@@ -308,6 +324,75 @@ func (h *Hub) handshake(conn conn) error {
 	payload = append(payload, buildGetBattery()...)
 	if _, err := conn.Write(encodeFrame(payload)); err != nil {
 		return fmt.Errorf("handshake write: %w", err)
+	}
+	return nil
+}
+
+// drainMessages pulls messages the device queued while the app was away:
+// it loops SYNC_NEXT until the device answers NO_MORE, so messages never
+// sit in the device queue for hours waiting for the next tickle. It reads
+// its own replies because the main pump has not started yet; unrelated
+// pushes are handled normally.
+func (h *Hub) drainMessages(conn conn) error {
+	dec := &decoder{}
+	buf := make([]byte, 512)
+	deadline := time.Now().Add(8 * time.Second)
+syncNext:
+	for time.Now().Before(deadline) {
+		// The device always reads; a write failure here (stalled peer,
+		// closed test pipe) is non-fatal — the queue drains on the next
+		// tickle or reconnect.
+		if _, err := conn.Write(encodeFrame(buildSyncNextMessage())); err != nil {
+			return nil
+		}
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		for {
+			if time.Now().After(deadline) {
+				return nil
+			}
+			n, err := conn.Read(buf)
+			if n > 0 {
+				gotMsg := false
+				noMore := false
+				for _, frame := range dec.feed(buf[:n]) {
+					if len(frame) == 0 {
+						continue
+					}
+					switch frame[0] {
+					case respContactMsg, respContactMsgV3:
+						if m, err := parseContactMsg(frame[1:], frame[0] == respContactMsgV3); err == nil {
+							h.receiveContact(m)
+						}
+						gotMsg = true
+					case respChannelMsg, respChannelMsgV3:
+						if m, err := parseChannelMsg(frame[1:], frame[0] == respChannelMsgV3); err == nil {
+							h.receiveChannel(m)
+						}
+						gotMsg = true
+					case respNoMoreMessages:
+						noMore = true
+					default:
+						// Unrelated push (advert, path update…) — normal
+						// handling, keep draining.
+						h.handleFrame(frame)
+					}
+				}
+				// A chunk may carry NO_MORE followed by further pushes
+				// (self info, adverts): handle them all, then stop.
+				if noMore {
+					return nil
+				}
+				if gotMsg {
+					continue syncNext
+				}
+			}
+			if err != nil {
+				if isTimeout(err) {
+					return nil // nothing queued
+				}
+				return fmt.Errorf("meshcore: drain read: %w", err)
+			}
+		}
 	}
 	return nil
 }
@@ -664,9 +749,23 @@ func (h *Hub) handleFrame(frame []byte) {
 		}
 		_ = h.writeFrame(buildSyncNextMessage())
 	case pushContactDeleted:
-		// The device overwrote a contact (auto-add with overwrite-oldest).
-		// Keep the heard node until NodeTTL; it is no longer on the device
-		// contact table, so direct sends will re-add it on demand.
+		// The device overwrote a contact (auto-add recycling). When the
+		// key belongs to a registered operator, re-add it immediately so
+		// direct messages stay decryptable — the device fills in name and
+		// details from the next advert.
+		if len(frame) >= 33 {
+			key := pubKeyHex(frame[1:33])
+			h.mu.Lock()
+			protect := h.contactProtect
+			h.mu.Unlock()
+			if protect != nil && protect(key) {
+				if h.logger != nil {
+					h.logger.Info("meshcore: re-adding protected contact", "key", key[:12])
+				}
+				_ = h.writeFrame(buildAddUpdateContact(frame[1:33]))
+				return
+			}
+		}
 		if h.logger != nil {
 			key := ""
 			if len(frame) >= 33 {

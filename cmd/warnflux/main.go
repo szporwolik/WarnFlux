@@ -75,6 +75,22 @@ func (s *aprsManagerSink) PublishRaw(suffix string, retained bool, payload []byt
 	return s.mgmt.PublishRaw(suffix, retained, payload)
 }
 
+// directoryHasMeshKey reports whether the given key (12-hex prefix or
+// full 64-hex, lowercase) sits on a user's registered mesh key list —
+// exact match first, then a prefix match either way.
+func directoryHasMeshKey(owners map[string]string, key string) bool {
+	key = strings.ToLower(key)
+	if _, ok := owners[key]; ok {
+		return true
+	}
+	for k := range owners {
+		if strings.HasPrefix(k, key) || strings.HasPrefix(key, k) {
+			return true
+		}
+	}
+	return false
+}
+
 // seedMeshcoreStations restores the heard-node list from the retained
 // meshcore/stations/# documents on the broker, so stations survive
 // restarts the same way the APRS retained station state does. It retries
@@ -443,18 +459,17 @@ func run(configPath string, checkConfig bool) error {
 			logger.Warn("meshcore: sender allow-list load failed", "error", err)
 			return false
 		}
-		key = strings.ToLower(key)
-		if _, ok := owners[key]; ok {
-			return true
+		return directoryHasMeshKey(owners, key)
+	})
+	// When the device's auto-add recycles its full contact table, a
+	// registered operator's key must not stay evicted: re-add it at once
+	// so direct messages keep decrypting.
+	meshHub.SetContactProtector(func(key string) bool {
+		owners, err := store.MeshKeyOwners()
+		if err != nil {
+			return false
 		}
-		// The user may have registered the full 64-hex key: a 12-hex
-		// prefix match approves the same operator.
-		for k := range owners {
-			if strings.HasPrefix(k, key) {
-				return true
-			}
-		}
-		return false
+		return directoryHasMeshKey(owners, key)
 	})
 	// APRS message routing only trusts registered operators: the sender's
 	// base callsign (SSID-insensitive) must appear on a user's APRS

@@ -797,6 +797,17 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 tr.click-send { cursor: pointer; }
 tr.click-send:hover td { background: var(--surface-hi); }
 .mesh-forms { display: flex; gap: 0.5rem; margin-bottom: 0.9rem; }
+/* One toolbar row above the page tabs: the send form (left, growing)
+   and the advert actions (right). */
+.mesh-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.9rem;
+}
+.mesh-toolbar .mesh-send { flex: 1 1 24rem; margin-bottom: 0; }
+.mesh-toolbar .mesh-forms { margin-bottom: 0; }
 .mesh-send {
   display: flex;
   flex-wrap: wrap;

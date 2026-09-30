@@ -337,6 +337,13 @@ type Receiver struct {
 	Password     string
 	PasswordFile string
 
+	// CleanSession selects the MQTT session mode. false (the default)
+	// is a PERSISTENT session: the broker keeps the subscriptions and
+	// queues QoS≥1 messages while this receiver is disconnected, so the
+	// non-retained /events stream survives receiver outages (recovery
+	// without a replay protocol). true restores the old amnesia mode.
+	CleanSession bool
+
 	ConnectTimeout time.Duration
 	KeepAlive      time.Duration
 
@@ -521,6 +528,7 @@ type fileReceiver struct {
 	Username       string                     `yaml:"username"`
 	Password       string                     `yaml:"password"`
 	PasswordFile   string                     `yaml:"password_file"`
+	CleanSession   *bool                      `yaml:"clean_session"`
 	ConnectTimeout *time.Duration             `yaml:"connect_timeout"`
 	KeepAlive      *time.Duration             `yaml:"keep_alive"`
 	WF             *fileReceiverWF            `yaml:"warnflux"`
@@ -810,8 +818,12 @@ func (f fileConfig) toConfig() Config {
 				Username:       strings.TrimSpace(r.Username),
 				Password:       r.Password,
 				PasswordFile:   strings.TrimSpace(r.PasswordFile),
+				CleanSession:   false, // persistent by default: /events recovery
 				ConnectTimeout: defaultReceiverConnectTimeout,
 				KeepAlive:      defaultReceiverKeepAlive,
+			}
+			if r.CleanSession != nil {
+				inst.CleanSession = *r.CleanSession
 			}
 			if r.ConnectTimeout != nil {
 				inst.ConnectTimeout = *r.ConnectTimeout

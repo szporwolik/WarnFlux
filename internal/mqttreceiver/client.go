@@ -70,6 +70,10 @@ type Receiver struct {
 
 	mu     sync.Mutex
 	status Status
+	// resync re-publishes the local-first state (panel communications,
+	// EMCOM networks) after a (re)connect, so broker outages never lose
+	// them permanently.
+	resync func()
 
 	// browseMu serializes the temporary browse subscriptions the web UI
 	// opens (one at a time per receiver).
@@ -128,6 +132,14 @@ func subscriptionFilters(cfg config.Receiver) []string {
 	return out
 }
 
+// SetResync installs the post-(re)connect state sync callback (local-first
+// producers re-publish their current state through it).
+func (r *Receiver) SetResync(fn func()) {
+	r.mu.Lock()
+	r.resync = fn
+	r.mu.Unlock()
+}
+
 // Connect performs the first connection attempt (bounded by
 // connect_timeout) and installs the reconnect-safe subscribe handlers.
 // After that, paho reconnects automatically in the background; a failed
@@ -138,11 +150,12 @@ func (r *Receiver) Connect(ctx context.Context) error {
 		SetClientID(r.cfg.ClientID).
 		SetKeepAlive(r.cfg.KeepAlive).
 		SetConnectTimeout(r.cfg.ConnectTimeout).
-		SetCleanSession(true).
+		SetCleanSession(r.cfg.CleanSession).
 		SetOrderMatters(false).
 		SetAutoReconnect(true).
 		SetConnectRetry(true).
 		SetMaxReconnectInterval(maxReconnectInterval).
+		SetAutoAckDisabled(true). // ack only after the durable inbox write
 		SetDefaultPublishHandler(r.messageHandler())
 
 	if r.cfg.Username != "" {
@@ -152,8 +165,9 @@ func (r *Receiver) Connect(ctx context.Context) error {
 		opts.SetPassword(r.cfg.Password)
 	}
 
-	// With CleanSession the broker forgets subscriptions on disconnect;
-	// OnConnect re-establishes them after every (re)connection.
+	// With CleanSession(true) the broker forgets subscriptions on
+	// disconnect; OnConnect re-establishes them after every (re)connection
+	// either way (idempotent for persistent sessions).
 	opts.SetOnConnectHandler(func(_ mqtt.Client) {
 		if err := r.subscribe(); err != nil {
 			r.logger.Error("receiver: subscription setup failed", "receiver", r.cfg.ID, "error", err)
@@ -161,8 +175,18 @@ func (r *Receiver) Connect(ctx context.Context) error {
 			return
 		}
 		r.setConnected(true, "")
+		mode := "persistent session"
+		if r.cfg.CleanSession {
+			mode = "clean session"
+		}
 		r.logger.Info("receiver: connected and subscribed",
-			"receiver", r.cfg.ID, "broker", sanitizeBroker(r.cfg.Broker))
+			"receiver", r.cfg.ID, "broker", sanitizeBroker(r.cfg.Broker), "session", mode)
+		r.mu.Lock()
+		resync := r.resync
+		r.mu.Unlock()
+		if resync != nil {
+			resync()
+		}
 	})
 	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 		r.setConnected(false, err.Error())
@@ -184,15 +208,19 @@ func (r *Receiver) Connect(ctx context.Context) error {
 }
 
 // messageHandler wraps the ingestor callback: it stamps the last-message
-// time per receiver, then delegates. The callback itself stays fast and
-// non-blocking.
+// time per receiver, then delegates. The MQTT acknowledgment follows the
+// ingestor's decision: the message is ACKed only when its events were
+// durably accepted (or deliberately consumed); a rejected event is left
+// unacknowledged so the broker redelivers it on the next (re)connect.
 func (r *Receiver) messageHandler() mqtt.MessageHandler {
 	return func(c mqtt.Client, msg mqtt.Message) {
 		now := time.Now()
 		r.mu.Lock()
 		r.status.LastMessage = now
 		r.mu.Unlock()
-		r.ingestor.HandleMessage(c, msg)
+		if r.ingestor.HandleMessage(c, msg) {
+			msg.Ack()
+		}
 	}
 }
 

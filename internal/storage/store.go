@@ -93,6 +93,28 @@ type InboxItem struct {
 	Event dispatch.Event
 }
 
+// EmcomNetwork is one EMCOM operational-readiness network persisted
+// locally: the panel edits it without any broker dependency and the
+// retained MQTT document is only an asynchronous sync copy.
+type EmcomNetwork struct {
+	Slug      string
+	Name      string
+	Level     int
+	UpdatedBy string
+	UpdatedAt time.Time
+}
+
+// ComposeHazard is one panel-issued communication persisted locally:
+// the transition is routed from the local record and the retained MQTT
+// document is only an asynchronous sync copy. State is the JSON shape of
+// the web-owned hazard (opaque to storage).
+type ComposeHazard struct {
+	EventKey  string
+	State     []byte
+	Status    string
+	UpdatedAt time.Time
+}
+
 // EventStore persists normalized hazard events together with a durable
 // change journal. Implementations must be safe for concurrent use and must
 // make each Ingest / Expire call atomic (event state + journal record in

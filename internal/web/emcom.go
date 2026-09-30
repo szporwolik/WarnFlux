@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/severity"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // EMCOM operational readiness networks.
@@ -117,6 +119,16 @@ type emcomNetwork struct {
 	UpdatedAt time.Time
 }
 
+// emcomStore is the optional local persistence surface for EMCOM
+// networks (satisfied by *sqlite.Store): the panel works without a
+// broker and the retained MQTT document is only an asynchronous sync
+// copy for other instances.
+type emcomStore interface {
+	SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) error
+	DeleteEmcomNetwork(ctx context.Context, slug string) error
+	EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, error)
+}
+
 // emcomSlugify builds a topic-safe slug from a network display name
 // (Polish diacritics transliterated, everything else folded to dashes).
 func emcomSlugify(name string) string {
@@ -218,9 +230,36 @@ func emcomTransition(h state.Hazard, typ dispatch.TransitionType) dispatch.Event
 	}
 }
 
-// emcomNetworks reads the networks from the mirrored MQTT state, newest
-// document per slug, sorted by display name.
+// emcomNetworks reads the networks from the LOCAL database record
+// (authoritative, broker-independent); mirror-only installations fall
+// back to the mirrored MQTT state (newest document per slug, sorted by
+// display name).
 func (s *Server) emcomNetworks() []emcomNetwork {
+	if st, ok := s.users.(emcomStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		rows, err := st.EmcomNetworks(ctx)
+		cancel()
+		if err != nil {
+			s.logger.Warn("emcom: local network list failed", "error", err)
+		} else {
+			out := make([]emcomNetwork, 0, len(rows))
+			for _, n := range rows {
+				if n.Level < 0 {
+					continue // tombstones are invisible to the panel
+				}
+				lvl, _ := emcomLevelAt(n.Level)
+				out = append(out, emcomNetwork{
+					Slug:      n.Slug,
+					Name:      n.Name,
+					Level:     n.Level,
+					LevelName: lvl.Name,
+					UpdatedBy: n.UpdatedBy,
+					UpdatedAt: n.UpdatedAt,
+				})
+			}
+			return out
+		}
+	}
 	best := make(map[string]emcomNetwork, 4)
 	times := make(map[string]time.Time, 4)
 	for _, e := range s.st.Snapshot().Info {
@@ -282,6 +321,79 @@ func (s *Server) emcomHazardInMirror(slug string) bool {
 	return false
 }
 
+// emcomHazardActive reports whether the network currently has a raised
+// hazard: the local record (level ≥ 1) is authoritative; mirror-only
+// installations ask the mirror.
+func (s *Server) emcomHazardActive(slug string) bool {
+	if st, ok := s.users.(emcomStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		rows, err := st.EmcomNetworks(ctx)
+		cancel()
+		if err != nil {
+			s.logger.Warn("emcom: local network list failed", "error", err)
+		} else {
+			for _, n := range rows {
+				if n.Level < 0 {
+					continue
+				}
+				if n.Slug == slug {
+					return n.Level >= 1
+				}
+			}
+			return false
+		}
+	}
+	return s.emcomHazardInMirror(slug)
+}
+
+// saveEmcomNetwork persists one network to the local record (nil when no
+// store is attached: mirror-only installations keep the broker document
+// as their record).
+func (s *Server) saveEmcomNetwork(net emcomNetwork) error {
+	st, ok := s.users.(emcomStore)
+	if !ok {
+		return nil
+	}
+	return st.SaveEmcomNetwork(context.Background(), storage.EmcomNetwork{
+		Slug:      net.Slug,
+		Name:      net.Name,
+		Level:     net.Level,
+		UpdatedBy: net.UpdatedBy,
+		UpdatedAt: net.UpdatedAt,
+	})
+}
+
+// deleteEmcomNetwork tombstones one network in the local record (level
+// -1): the tombstone keeps a stale broker copy from reviving the network
+// and is pruned by maintenance. Mirror-only installations have no store.
+func (s *Server) deleteEmcomNetwork(slug string) error {
+	st, ok := s.users.(emcomStore)
+	if !ok {
+		return nil
+	}
+	return st.SaveEmcomNetwork(context.Background(), storage.EmcomNetwork{
+		Slug:      slug,
+		Name:      "",
+		Level:     -1,
+		UpdatedBy: "",
+		UpdatedAt: time.Now(),
+	})
+}
+
+// publishEmcomStateAsync publishes the retained state document in the
+// background: broker sync is best-effort and must never block the panel
+// (the resync hook republishes the current state on receiver reconnect).
+func (s *Server) publishEmcomStateAsync(net emcomNetwork, by string) {
+	if s.pub == nil {
+		return
+	}
+	go func() {
+		if err := s.publishEmcomState(net, by); err != nil {
+			s.logger.Warn("emcom: broker state sync failed", "slug", net.Slug, "error", err)
+		}
+	}()
+}
+
 // publishEmcomState publishes (or deletes, with an empty net) the retained
 // info document of one network.
 func (s *Server) publishEmcomState(net emcomNetwork, by string) error {
@@ -304,6 +416,92 @@ func (s *Server) publishEmcomState(net emcomNetwork, by string) error {
 		return err
 	}
 	return s.pub.PublishRaw(suffix, true, payload)
+}
+
+// SyncBrokerState re-publishes the current local-first state (panel
+// communications and EMCOM networks/hazards) to the broker. It is
+// invoked on every receiver (re)connect so broker outages never lose
+// panel state permanently. Best-effort: failures are logged.
+func (s *Server) SyncBrokerState() {
+	if s.pub == nil {
+		return
+	}
+	now := time.Now()
+
+	// Panel communications: the local record is authoritative. Active
+	// rows re-publish their retained document; expired rows tombstone a
+	// stale broker copy.
+	if st, ok := s.users.(composeStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		rows, err := st.ComposeHazards(ctx)
+		cancel()
+		if err != nil {
+			s.logger.Warn("compose: state resync read failed", "error", err)
+		} else {
+			for _, row := range rows {
+				if row.Status == "expired" {
+					if err := s.pub.ExpireActive(composeSource, row.EventKey); err != nil {
+						s.logger.Warn("compose: tombstone resync failed", "event_key", row.EventKey, "error", err)
+					}
+					continue
+				}
+				var h state.Hazard
+				if err := json.Unmarshal(row.State, &h); err != nil {
+					continue
+				}
+				if err := s.pub.PublishActive(composeSource, h); err != nil {
+					s.logger.Warn("compose: state resync failed", "event_key", row.EventKey, "error", err)
+				}
+			}
+		}
+	} else {
+		for _, h := range s.st.Snapshot().Hazards {
+			if h.Source != composeSource {
+				continue
+			}
+			if err := s.pub.PublishActive(composeSource, h); err != nil {
+				s.logger.Warn("compose: state resync failed", "event_key", h.EventKey, "error", err)
+			}
+		}
+	}
+
+	// EMCOM networks: live rows publish their state (and the hazard
+	// document when raised); tombstones remove stale broker copies.
+	if st, ok := s.users.(emcomStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		rows, err := st.EmcomNetworks(ctx)
+		cancel()
+		if err != nil {
+			s.logger.Warn("emcom: state resync read failed", "error", err)
+		} else {
+			for _, n := range rows {
+				if n.Level < 0 {
+					if err := s.publishEmcomState(emcomNetwork{Slug: n.Slug}, ""); err != nil {
+						s.logger.Warn("emcom: tombstone resync failed", "slug", n.Slug, "error", err)
+					}
+					continue
+				}
+				lvl, _ := emcomLevelAt(n.Level)
+				net := emcomNetwork{
+					Slug:      n.Slug,
+					Name:      n.Name,
+					Level:     n.Level,
+					LevelName: lvl.Name,
+					UpdatedBy: n.UpdatedBy,
+					UpdatedAt: n.UpdatedAt,
+				}
+				if err := s.publishEmcomState(net, n.UpdatedBy); err != nil {
+					s.logger.Warn("emcom: state resync failed", "slug", n.Slug, "error", err)
+					continue
+				}
+				if n.Level >= 1 {
+					if err := s.pub.PublishActive(emcomSource, emcomHazard(net, now)); err != nil {
+						s.logger.Warn("emcom: hazard resync failed", "slug", n.Slug, "error", err)
+					}
+				}
+			}
+		}
+	}
 }
 
 // emcomView is the /emcom page model.
@@ -472,16 +670,29 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 		s.renderEmcomError(w, r, http.StatusConflict, i18n.T(s.langFor(r), "emcom.err.exists"))
 		return
 	}
-	if s.pub == nil {
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			i18n.T(s.langFor(r), "emcom.err.no_broker"))
-		return
-	}
-	net := emcomNetwork{Slug: slug, Name: name, Level: 0}
-	if err := s.publishEmcomState(net, sess.username); err != nil {
-		s.logger.Warn("emcom: publish failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
-		return
+	net := emcomNetwork{Slug: slug, Name: name, Level: 0, UpdatedBy: sess.username, UpdatedAt: time.Now()}
+	if _, ok := s.users.(emcomStore); ok {
+		// LOCAL-FIRST: the local database row is the durable record; the
+		// retained MQTT document is only an asynchronous sync copy.
+		if err := s.saveEmcomNetwork(net); err != nil {
+			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
+			return
+		}
+		s.publishEmcomStateAsync(net, sess.username)
+	} else {
+		// Mirror-only installations keep the broker document as the
+		// record; publishing is required there.
+		if s.pub == nil {
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable,
+				i18n.T(s.langFor(r), "emcom.err.no_broker"))
+			return
+		}
+		if err := s.publishEmcomState(net, sess.username); err != nil {
+			s.logger.Warn("emcom: publish failed", "slug", slug, "error", err)
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
+			return
+		}
 	}
 	s.logger.Info("emcom: network added", "slug", slug, "name", name, "by", sess.username)
 	s.audit(sess.username, "emcom-add", slug)
@@ -508,47 +719,91 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "emcom.err.level_range"))
 		return
 	}
-	if s.pub == nil {
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			i18n.T(s.langFor(r), "emcom.err.no_broker"))
-		return
-	}
+
+	// The PREVIOUS level decides new vs updated vs expiry — captured
+	// before the local record changes.
+	wasActive := net.Level >= 1
 
 	net.Level = level
 	net.UpdatedBy = sess.username
-	if err := s.publishEmcomState(net, sess.username); err != nil {
-		s.logger.Warn("emcom: state publish failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
-		return
+	net.UpdatedAt = time.Now()
+	_, hasStore := s.users.(emcomStore)
+	if hasStore {
+		// LOCAL-FIRST: the local database row is the durable record; the
+		// retained MQTT document is only an asynchronous sync copy.
+		if err := s.saveEmcomNetwork(net); err != nil {
+			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
+			return
+		}
+	} else {
+		// Mirror-only installations keep the broker document as the
+		// record; publishing is required and synchronous there.
+		if s.pub == nil {
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable,
+				i18n.T(s.langFor(r), "emcom.err.no_broker"))
+			return
+		}
+		if err := s.publishEmcomState(net, sess.username); err != nil {
+			s.logger.Warn("emcom: state publish failed", "slug", slug, "error", err)
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
+			return
+		}
 	}
 
 	now := time.Now()
 	if level >= 1 {
 		h := emcomHazard(net, now)
-		if err := s.pub.PublishActive(emcomSource, h); err != nil {
+		typ := dispatch.TransitionNew
+		if wasActive {
+			typ = dispatch.TransitionUpdated
+		}
+		// The transition is durable and routed locally BEFORE any broker
+		// I/O — the panel never depends on the broker round-trip.
+		switch s.ingress.Enqueue(emcomTransition(h, typ)) {
+		case dispatch.Rejected:
+			s.logger.Warn("emcom: local dispatch rejected the transition", "slug", slug)
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.dispatch"))
+			return
+		case dispatch.AcceptedEmergency:
+			s.logger.Warn("emcom: transition accepted WITHOUT durable storage (emergency mode; lost on restart)", "slug", slug)
+		}
+		if hasStore {
+			// Broker sync: the state document and the retained hazard,
+			// best-effort (the resync hook republishes on reconnect).
+			s.publishEmcomStateAsync(net, sess.username)
+			if s.pub != nil {
+				go func() {
+					if err := s.pub.PublishActive(emcomSource, h); err != nil {
+						s.logger.Warn("emcom: broker hazard sync failed", "slug", slug, "error", err)
+					}
+				}()
+			}
+		} else if err := s.pub.PublishActive(emcomSource, h); err != nil {
 			s.logger.Warn("emcom: hazard publish failed", "slug", slug, "error", err)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.communication"))
 			return
 		}
-		typ := dispatch.TransitionNew
-		if s.emcomHazardInMirror(slug) {
-			typ = dispatch.TransitionUpdated
-		}
-		switch s.ingress.Enqueue(emcomTransition(h, typ)) {
-		case dispatch.Rejected:
-			s.logger.Warn("emcom: dispatch queue full, transition dropped", "slug", slug)
-		case dispatch.AcceptedEmergency:
-			s.logger.Warn("emcom: transition accepted WITHOUT durable storage (emergency mode; lost on restart)", "slug", slug)
-		}
-	} else if s.emcomHazardInMirror(slug) {
+	} else if wasActive {
 		// Back to monitoring: retire the hazard document; the expiry
 		// transition never starts the notification machine (like compose).
-		if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
+		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, now), dispatch.TransitionExpired)) == dispatch.Rejected {
+			s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
+		}
+		if hasStore {
+			s.publishEmcomStateAsync(net, sess.username)
+			if s.pub != nil {
+				go func() {
+					if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
+						s.logger.Warn("emcom: broker hazard retire failed", "slug", slug, "error", err)
+					}
+				}()
+			}
+		} else if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
 		}
-		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, now), dispatch.TransitionExpired)) == dispatch.Rejected {
-			s.logger.Warn("emcom: dispatch queue full, expiry transition dropped", "slug", slug)
-		}
+	} else if hasStore {
+		s.publishEmcomStateAsync(net, sess.username)
 	}
 	s.logger.Info("emcom: level changed", "slug", slug, "level", level, "by", sess.username)
 	s.audit(sess.username, "emcom-level", fmt.Sprintf("%s=%d", slug, level))
@@ -569,22 +824,51 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, i18n.T(s.langFor(r), "emcom.err.unknown"), http.StatusNotFound)
 		return
 	}
-	if s.pub == nil {
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-			i18n.T(s.langFor(r), "emcom.err.no_broker"))
-		return
+	wasActive := net.Level >= 1
+	_, hasStore := s.users.(emcomStore)
+	if hasStore {
+		// LOCAL-FIRST: the local database row is removed first; the
+		// broker documents follow asynchronously.
+		if err := s.deleteEmcomNetwork(slug); err != nil {
+			s.logger.Warn("emcom: local delete failed", "slug", slug, "error", err)
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.deleting"))
+			return
+		}
+	} else {
+		// Mirror-only installations keep the broker document as the
+		// record; the tombstone publish is required there.
+		if s.pub == nil {
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable,
+				i18n.T(s.langFor(r), "emcom.err.no_broker"))
+			return
+		}
+		if err := s.publishEmcomState(emcomNetwork{Slug: slug}, sess.username); err != nil {
+			s.logger.Warn("emcom: state delete failed", "slug", slug, "error", err)
+			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.deleting"))
+			return
+		}
 	}
-	if err := s.publishEmcomState(emcomNetwork{Slug: slug}, sess.username); err != nil {
-		s.logger.Warn("emcom: state delete failed", "slug", slug, "error", err)
-		s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.deleting"))
-		return
+	if wasActive {
+		// The expiry transition is durable and routed locally before any
+		// broker I/O.
+		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired)) == dispatch.Rejected {
+			s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
+		}
 	}
-	if s.emcomHazardInMirror(slug) {
+	if hasStore {
+		// Broker sync: tombstone the state document and retire the
+		// hazard, best-effort (the resync hook republishes on reconnect).
+		s.publishEmcomStateAsync(emcomNetwork{Slug: slug}, sess.username)
+		if wasActive && s.pub != nil {
+			go func() {
+				if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
+					s.logger.Warn("emcom: broker hazard retire failed", "slug", slug, "error", err)
+				}
+			}()
+		}
+	} else if wasActive {
 		if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
-		}
-		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired)) == dispatch.Rejected {
-			s.logger.Warn("emcom: dispatch queue full, expiry transition dropped", "slug", slug)
 		}
 	}
 	s.logger.Info("emcom: network deleted", "slug", slug, "name", net.Name, "by", sess.username)

@@ -21,6 +21,7 @@ type Manager struct {
 
 	mu      sync.Mutex
 	started bool
+	resync  func()
 }
 
 // NewManager builds one receiver per configured entry. Construction
@@ -44,6 +45,19 @@ func NewManager(cfgs []config.Receiver, st *state.State, ingress *dispatch.Ingre
 		m.receivers = append(m.receivers, r)
 	}
 	return m, nil
+}
+
+// SetResync installs the post-(re)connect state sync callback and
+// propagates it to every receiver: local-first producers re-publish their
+// current state after each successful (re)connect, so broker outages do
+// not lose panel/EMCOM documents permanently.
+func (m *Manager) SetResync(fn func()) {
+	m.mu.Lock()
+	m.resync = fn
+	for _, r := range m.receivers {
+		r.SetResync(fn)
+	}
+	m.mu.Unlock()
 }
 
 // StartAll launches a background connect attempt for every enabled

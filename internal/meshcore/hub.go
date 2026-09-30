@@ -106,6 +106,9 @@ type Hub struct {
 	// stationSink optionally publishes heard stations to MQTT as retained
 	// documents (nil payload + retained = topic delete).
 	stationSink func(ctx context.Context, topic string, retained bool, payload []byte) error
+	// messageSink optionally publishes rx/tx messages to MQTT
+	// (non-retained, one JSON document per message).
+	messageSink func(ctx context.Context, topic string, retained bool, payload []byte) error
 
 	// pendingAcks queues send-command acknowledgements: the device
 	// answers each host command in order with OK / SENT / ERR.
@@ -150,6 +153,15 @@ func (h *Hub) SetRecorder(r Recorder) { h.mu.Lock(); h.recorder = r; h.mu.Unlock
 func (h *Hub) SetStationSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
 	h.mu.Lock()
 	h.stationSink = fn
+	h.mu.Unlock()
+}
+
+// SetMessageSink attaches the MQTT message publisher (optional): every
+// received or sent message becomes one non-retained JSON document on
+// meshcore/messages.
+func (h *Hub) SetMessageSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
+	h.mu.Lock()
+	h.messageSink = fn
 	h.mu.Unlock()
 }
 
@@ -764,12 +776,31 @@ func (h *Hub) recordMessage(direction, sender, channel, text string) {
 		h.recent = h.recent[len(h.recent)-64:]
 	}
 	rec := h.recorder
+	mSink := h.messageSink
 	h.mu.Unlock()
 	if rec != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := rec.RecordMeshMessage(ctx, direction, sender, channel, text, now); err != nil && h.logger != nil {
 			h.logger.Debug("meshcore: message history record failed", "error", err)
+		}
+	}
+	if mSink != nil {
+		payload, err := json.Marshal(struct {
+			Direction string `json:"direction"`
+			Sender    string `json:"sender"`
+			Channel   string `json:"channel"`
+			Text      string `json:"text"`
+			At        string `json:"at"`
+		}{direction, sender, channel, text, now.UTC().Format(time.RFC3339)})
+		if err == nil {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := mSink(ctx, "meshcore/messages", false, payload); err != nil && h.logger != nil {
+					h.logger.Debug("meshcore: message publish failed", "error", err)
+				}
+			}()
 		}
 	}
 }

@@ -73,6 +73,8 @@ func TestHubSession(t *testing.T) {
 	}
 	rec := &fakeRecorder{}
 	hub.SetRecorder(rec)
+	msgCapture := &stationCapture{}
+	hub.SetMessageSink(msgCapture.publish)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -248,6 +250,24 @@ func TestHubSession(t *testing.T) {
 	got = rec.messages()
 	if len(got) != 2 || got[1].Text != "HELLO MESH" || got[1].Direction != "tx" {
 		t.Fatalf("recorded after tx = %+v", got)
+	}
+
+	// Both messages must also go out on the MQTT message feed.
+	pubDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(pubDeadline) && msgCapture.count() < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	msgCapture.mu.Lock()
+	pubs := append([]stationPub(nil), msgCapture.got...)
+	msgCapture.mu.Unlock()
+	if len(pubs) != 2 {
+		t.Fatalf("message publishes = %d, want 2: %+v", len(pubs), pubs)
+	}
+	if pubs[0].topic != "meshcore/messages" || pubs[0].retained || !bytes.Contains(pubs[0].payload, []byte("Test SOSNA")) {
+		t.Fatalf("rx publish = %+v", pubs[0])
+	}
+	if pubs[1].topic != "meshcore/messages" || pubs[1].retained || !bytes.Contains(pubs[1].payload, []byte("HELLO MESH")) || !bytes.Contains(pubs[1].payload, []byte(`"direction":"tx"`)) {
+		t.Fatalf("tx publish = %+v", pubs[1])
 	}
 
 	cancel()

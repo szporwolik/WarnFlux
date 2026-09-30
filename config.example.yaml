@@ -516,6 +516,14 @@ dispatch:
       connect_timeout: 10s
       keep_alive: 30s
 
+      # Session durability. false (default) = PERSISTENT session: the
+      # broker keeps the subscriptions and queues QoS≥1 messages while
+      # this receiver is disconnected, so the non-retained /events stream
+      # survives receiver outages (redelivered on reconnect; the routing
+      # ledger deduplicates repeats). true = clean session: missed
+      # messages while disconnected are gone forever.
+      clean_session: false
+
       # WarnFlux protocol mode: automatically subscribes
       # <prefix>/events, <prefix>/active/#, <prefix>/info/#, <prefix>/status
       # and parses them with the strict wire protocol.

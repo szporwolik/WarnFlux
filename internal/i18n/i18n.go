@@ -469,6 +469,7 @@ var en = map[string]string{
 	"compose.err.invalid_effective": "invalid effective time",
 	"compose.err.invalid_expires":   "invalid expires time",
 	"compose.err.no_publisher":      "publishing is unavailable: no broker publisher is configured",
+	"compose.err.dispatch":          "local dispatch rejected the communication; the intake is unavailable",
 	// EMCOM panel.
 	"emcom.title":             "EMCOM networks",
 	"emcom.intro":             "Situational crisis-communications networks. Each network's readiness level is published as a retained MQTT message and shown publicly in the home-page header.",
@@ -513,6 +514,8 @@ var en = map[string]string{
 	"emcom.err.deleting":      "Deleting from the broker failed.",
 	"emcom.err.level_range":   "Level must be a number 0-3.",
 	"emcom.err.unknown":       "unknown network",
+	"emcom.err.save":          "Saving the network locally failed.",
+	"emcom.err.dispatch":      "Local dispatch rejected the communication; the intake is unavailable.",
 
 	// Health page.
 	"health.title":              "System health",
@@ -1039,6 +1042,7 @@ var pl = map[string]string{
 	"compose.err.invalid_effective": "nieprawidłowy czas obowiązywania",
 	"compose.err.invalid_expires":   "nieprawidłowy czas wygaśnięcia",
 	"compose.err.no_publisher":      "publikowanie niedostępne: brak skonfigurowanego brokera",
+	"compose.err.dispatch":          "lokalny dyspozytor odrzucił komunikat; odbiór niedostępny",
 
 	"emcom.title":             "Sieci EMCOM",
 	"emcom.intro":             "Sytuacyjne sieci łączności kryzysowej. Poziom gotowości każdej sieci jest publikowany jako komunikat utrzymywany (retain) na MQTT i widoczny publicznie w nagłówku strony głównej.",
@@ -1083,6 +1087,8 @@ var pl = map[string]string{
 	"emcom.err.deleting":      "Usunięcie na brokerze nie powiodło się.",
 	"emcom.err.level_range":   "Poziom musi być liczbą 0-3.",
 	"emcom.err.unknown":       "nieznana sieć",
+	"emcom.err.save":          "Lokalny zapis sieci nie powiódł się.",
+	"emcom.err.dispatch":      "Lokalny dyspozytor odrzucił komunikat; odbiór niedostępny.",
 
 	"health.title":              "Stan systemu",
 	"health.ok":                 "ok",

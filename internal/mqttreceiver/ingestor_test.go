@@ -344,3 +344,58 @@ func TestWFDisabledTreatsPrefixAsGeneric(t *testing.T) {
 		t.Fatalf("kind = %q, want generic mqtt_message", ev.Kind)
 	}
 }
+
+// TestIngestorAckDecision pins the acknowledgment contract behind the
+// persistent receiver session: a message whose events were accepted (or
+// deliberately consumed) is ACKed; an event REJECTED by a full intake is
+// left unacknowledged so the broker redelivers it after the next
+// (re)connect.
+func TestIngestorAckDecision(t *testing.T) {
+	env := newIngestorEnv(t, "local", true, nil)
+	payload := []byte(`{
+		"schema_version": 1,
+		"change_id": 1,
+		"change_type": "new",
+		"event_key": "imgw-meteo:1",
+		"event": {
+			"source": "imgw-meteo",
+			"source_id": "1",
+			"event": "Storm",
+			"severity": "severe",
+			"headline": "Storm",
+			"status": "active",
+			"received_at": "2026-10-01T10:00:00Z",
+			"updated_at": "2026-10-01T10:05:00Z"
+		}
+	}`)
+
+	// Accepted: ack.
+	if ack := env.ingestor.HandleMessage(nil, &testMessage{topic: "warnflux/events", payload: payload}); !ack {
+		t.Fatal("accepted event must be acknowledged")
+	}
+	recv(t, env.ingress)
+
+	// A full intake with no inbox rejects: the message stays unacked so
+	// the broker redelivers it (persistent session).
+	blocked := NewIngestor("local", true, "warnflux", []string{"club/#"}, env.state,
+		func() *dispatch.Ingress {
+			g := dispatch.NewIngress(1)
+			return g
+		}(), env.stats, testLogger(), nil)
+	first := []byte(`{"schema_version":1,"change_id":2,"change_type":"new","event_key":"imgw-meteo:2","event":{"source":"imgw-meteo","source_id":"2","event":"Storm","severity":"severe","headline":"Storm","status":"active","received_at":"2026-10-01T10:00:00Z","updated_at":"2026-10-01T10:05:00Z"}}`)
+	if ack := blocked.HandleMessage(nil, &testMessage{topic: "warnflux/events", payload: first}); !ack {
+		t.Fatal("first event into a free queue must be acknowledged")
+	}
+	// The queue is now full: the next event is rejected and unacked.
+	if ack := blocked.HandleMessage(nil, &testMessage{topic: "warnflux/events", payload: payload}); ack {
+		t.Fatal("rejected event must NOT be acknowledged (broker must redeliver it)")
+	}
+	if env.stats.Dropped.Load() != 1 {
+		t.Fatalf("dropped = %d, want 1", env.stats.Dropped.Load())
+	}
+
+	// A rejected generic event behaves the same.
+	if ack := blocked.HandleMessage(nil, &testMessage{topic: "club/alarm/x", payload: []byte("x")}); ack {
+		t.Fatal("rejected generic event must NOT be acknowledged")
+	}
+}

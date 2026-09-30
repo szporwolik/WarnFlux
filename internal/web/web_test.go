@@ -2578,3 +2578,32 @@ func TestMeshcoreStationsAPI(t *testing.T) {
 		t.Fatalf("payload = %s, want nodes and nopos arrays", body)
 	}
 }
+
+// TestMessageListPartials pins the live-refresh fragments of the APRS and
+// MeshCore message lists: admin-only, filtered by dir, and always
+// rendering either the table or the empty-state marker.
+func TestMessageListPartials(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Unauthenticated: hard 401 so the poller redirects.
+	resp, _ := env.get("/partials/messages")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("GET /partials/messages anon = %d, want 401", resp.StatusCode)
+	}
+
+	env.login()
+	for _, p := range []string{
+		"/partials/messages",
+		"/partials/messages?dir=rx",
+		"/partials/meshcore?tab=messages",
+		"/partials/meshcore?tab=messages&dir=tx",
+	} {
+		resp, body := env.get(p)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d", p, resp.StatusCode)
+		}
+		if !strings.Contains(body, "home-none") && !strings.Contains(body, "msgs-table") {
+			t.Fatalf("GET %s missing list or empty-state: %.120s", p, body)
+		}
+	}
+}

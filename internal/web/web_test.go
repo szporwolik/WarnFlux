@@ -2619,8 +2619,8 @@ type fakeMeshMsgs struct {
 	rows []storage.MeshMessage
 }
 
-func (f *fakeMeshMsgs) RecordMeshMessage(_ context.Context, direction, sender, channel, text string, hops int, at time.Time) error {
-	f.rows = append(f.rows, storage.MeshMessage{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Text: text, At: at})
+func (f *fakeMeshMsgs) RecordMeshMessage(_ context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error {
+	f.rows = append(f.rows, storage.MeshMessage{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Operator: operator, Text: text, At: at})
 	return nil
 }
 
@@ -2669,7 +2669,7 @@ func TestMeshMessageChannelNames(t *testing.T) {
 	}
 	store := &fakeMeshMsgs{rows: []storage.MeshMessage{
 		{Direction: "rx", Channel: "ch0", Text: "hello", At: time.Now()},
-		{Direction: "tx", Channel: "ch2", Text: "73", At: time.Now()},
+		{Direction: "tx", Channel: "ch2", Operator: "admin", Text: "73", At: time.Now()},
 		{Direction: "rx", Sender: "abcd1234abcd", Channel: "direct", Hops: 3, Text: "ggg", At: time.Now()},
 	}}
 	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
@@ -2688,7 +2688,7 @@ func TestMeshMessageChannelNames(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("partial = %d", resp.StatusCode)
 	}
-	for _, want := range []string{"Public", "#sp9moa", "sp9kow", "abcd1234abcd", "via 3 hops"} {
+	for _, want := range []string{"Public", "#sp9moa", "sp9kow", "abcd1234abcd", "via 3 hops", "(admin)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("messages partial missing %q: %.300s", want, body)
 		}

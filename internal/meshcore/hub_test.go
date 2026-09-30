@@ -20,10 +20,10 @@ type fakeRecorder struct {
 	got []Message
 }
 
-func (f *fakeRecorder) RecordMeshMessage(_ context.Context, direction, sender, channel, text string, hops int, at time.Time) error {
+func (f *fakeRecorder) RecordMeshMessage(_ context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.got = append(f.got, Message{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Text: text, At: at})
+	f.got = append(f.got, Message{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Operator: operator, Text: text, At: at})
 	return nil
 }
 
@@ -233,7 +233,7 @@ func TestHubSession(t *testing.T) {
 	// acknowledges, so the hub records the tx. The frame uses host→device
 	// framing (0x3C header).
 	sendErr := make(chan error, 1)
-	go func() { sendErr <- hub.SendChannelMessage("HELLO MESH") }()
+	go func() { sendErr <- hub.SendChannelMessage("HELLO MESH", "admin") }()
 	buf := make([]byte, 128)
 	host.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := host.Read(buf)
@@ -258,7 +258,7 @@ func TestHubSession(t *testing.T) {
 		t.Fatal("SendChannelMessage did not finish after the device ack")
 	}
 	got = rec.messages()
-	if len(got) != 2 || got[1].Text != "HELLO MESH" || got[1].Direction != "tx" {
+	if len(got) != 2 || got[1].Text != "HELLO MESH" || got[1].Direction != "tx" || got[1].Operator != "admin" {
 		t.Fatalf("recorded after tx = %+v", got)
 	}
 
@@ -318,7 +318,7 @@ func TestPublicChannelBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hub.SendChannelMessage("must not go out"); err == nil {
+	if err := hub.SendChannelMessage("must not go out", "admin"); err == nil {
 		t.Fatal("SendChannelMessage on public channel 0 succeeded, want refusal")
 	}
 	if hub.Snapshot().ChannelIdx != 0 {
@@ -481,7 +481,7 @@ func TestHubSendRejected(t *testing.T) {
 		host.Write(encodeDeviceFrame([]byte{respErr, 2}))
 	}()
 
-	err = hub.SendContactMessage("abcd1234abcd", "hello")
+	err = hub.SendContactMessage("abcd1234abcd", "hello", "admin")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("SendContactMessage = %v, want device not-found error", err)
 	}
@@ -568,7 +568,7 @@ func TestHubSendAutoAdd(t *testing.T) {
 		host.Write(encodeDeviceFrame([]byte{respSent}))
 	}()
 
-	if err := hub.SendContactMessage(hex.EncodeToString(fullKey), "hello"); err != nil {
+	if err := hub.SendContactMessage(hex.EncodeToString(fullKey), "hello", "admin"); err != nil {
 		t.Fatalf("SendContactMessage = %v, want success after auto-add", err)
 	}
 	got := rec.messages()

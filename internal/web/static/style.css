@@ -2108,6 +2108,8 @@ tr.click-send:hover td { background: var(--surface-hi); }
   font-weight: 400;
   color: var(--muted);
 }
+/* Admin username behind a sent mesh message, next to the TX sender. */
+.op-name { font-weight: 500; font-size: 0.85em; }
 /* Compressed forecast strip on the report card: the next three days as
    icon + max-temperature chips (full forecast: title attributes). */
 .hw-fcast {

@@ -393,7 +393,7 @@ func (w *outputWorker) pollDeliveries(ctx context.Context) {
 // blocks this worker (never the application) and no further calls are made
 // to the plugin until the stuck call returns or shutdown abandons it.
 func (w *outputWorker) deliver(ctx context.Context, change storage.Change) bool {
-	eventChange := core.EventChange{ID: change.ID, Type: change.ChangeType, Event: change.Event.Clone()}
+	eventChange := core.EventChange{ID: change.ID, Type: change.ChangeType, Event: change.Event.Clone(), Publisher: change.Publisher}
 
 	callCtx, cancel := context.WithTimeout(ctx, w.timeout)
 	result := make(chan error, 1)

@@ -364,6 +364,7 @@ func EventFromWire(we *EventPayload, receiverID string, now time.Time) dispatch.
 			Key:       we.EventKey,
 			Source:    we.Event.Source,
 			ChangeID:  we.ChangeID,
+			Publisher: we.Publisher,
 			Timestamp: ts,
 			Hazard: dispatch.Hazard{
 				EventKey:         we.EventKey,

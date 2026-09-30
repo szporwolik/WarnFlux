@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,5 +258,29 @@ func TestInformationTopicMapping(t *testing.T) {
 	msg := core.InformationMessage{Source: "openmeteo", ProducerID: "weather-home", Key: "home", Kind: "weather"}
 	if got := o.informationTopic(msg); got != "warnflux/info/openmeteo/weather-home/home/weather" {
 		t.Errorf("topic = %q, want warnflux/info/openmeteo/weather-home/home/weather", got)
+	}
+}
+
+// TestWireEventPublisher pins the persistent publisher stamp on the
+// /events wire contract: the instance UUID rides along so independent
+// publishers can never collide in deduplication.
+func TestWireEventPublisher(t *testing.T) {
+	now := time.Now().UTC()
+	change := core.EventChange{
+		ID:        7,
+		Type:      core.ChangeNew,
+		Publisher: "0123456789abcdef0123456789abcdef",
+		Event: core.HazardEvent{
+			Source: "imgw-meteo", SourceID: "1", Event: "Storm",
+			Severity: "severe", Status: core.StatusActive,
+			ReceivedAt: now, UpdatedAt: now,
+		},
+	}
+	payload, err := json.Marshal(toWireEvent(change))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(payload), `"publisher":"0123456789abcdef0123456789abcdef"`) {
+		t.Errorf("wire event lacks the publisher stamp: %s", payload)
 	}
 }

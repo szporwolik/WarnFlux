@@ -34,6 +34,10 @@
       "home.stations.none": "No stations heard yet — ham stations beacon through APRS.",
       "home.meshcore.none": "No MeshCore nodes heard yet.",
       "home.meshcore.noloc": "Heard without position",
+      "meshcore.type.chat": "Chat",
+      "meshcore.type.repeater": "Repeater",
+      "meshcore.type.room": "Room",
+      "meshcore.type.node": "Node",
       "home.aircraft.none": "No aircraft in range right now.",
       "map.km": "km",
       "map.center": "Center the view",
@@ -96,6 +100,10 @@
       "home.stations.none": "Nie słychać jeszcze żadnych stacji — krótkofalowcy nadają przez APRS.",
       "home.meshcore.none": "Nie słychać jeszcze żadnych węzłów MeshCore.",
       "home.meshcore.noloc": "Słyszane bez pozycji",
+      "meshcore.type.chat": "Czat",
+      "meshcore.type.repeater": "Przemiennik",
+      "meshcore.type.room": "Pokój",
+      "meshcore.type.node": "Węzeł",
       "home.aircraft.none": "W tej chwili brak samolotów w zasięgu.",
       "map.km": "km",
       "map.center": "Wyśrodkuj widok",
@@ -807,6 +815,32 @@
       " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes());
   }
 
+  // fmtClock renders an RFC 3339 timestamp compactly in local browser
+  // time: HH:MM today, "MM-DD HH:MM" earlier this year, the full date
+  // otherwise.
+  function fmtClock(v) {
+    if (!v) {
+      return "";
+    }
+    var t = new Date(v);
+    if (isNaN(t.getTime())) {
+      return fmtTime(v);
+    }
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+    var now = new Date();
+    var hm = pad2(t.getHours()) + ":" + pad2(t.getMinutes());
+    if (t.getFullYear() === now.getFullYear() && t.getMonth() === now.getMonth() && t.getDate() === now.getDate()) {
+      return hm;
+    }
+    if (t.getFullYear() === now.getFullYear()) {
+      return pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) + " " + hm;
+    }
+    return fmtTime(v);
+  }
+
+  // MeshCore node-type glyphs for the no-position badge pills.
+  var MESH_TYPE_GLYPHS = { chat: "✉", repeater: "⇄", room: "⌂" };
+
   function loadScript(src, ok, fail) {
     var s = document.createElement("script");
     s.src = src;
@@ -1331,7 +1365,7 @@
       if (n.hops) {
         meta.push(tr("map.hops") + " " + n.hops);
       }
-      meta.push(tr("map.heard") + " " + fmtTime(n.last_seen));
+      meta.push(tr("map.heard") + " " + fmtClock(n.last_seen));
       body.appendChild(mk("span", "hw-meta", meta.join(" · ")));
       item.appendChild(body);
       item.title = trf("map.show_on_map", n.name || n.key.slice(0, 12));
@@ -1351,17 +1385,18 @@
       badges.appendChild(mk("span", "mc-noloc-title", tr("home.meshcore.noloc")));
       lastMeshNoPos.forEach(function (n) {
         var chip = mk("span", "mc-chip");
-        chip.title = n.key;
+        var label = n.name || n.key.slice(0, 12);
+        chip.title = label + " · " + fmtTime(n.last_seen) + " · " + n.key;
         chip.setAttribute("data-key", n.key);
-        chip.appendChild(mk("span", "mc-chip-name", n.name || n.key.slice(0, 12)));
-        var extra = [];
-        if (n.type && n.type !== "node") {
-          extra.push(n.type);
+        chip.appendChild(mk("span", "mc-chip-name", label));
+        if (n.type && n.type !== "node" && MESH_TYPE_GLYPHS[n.type]) {
+          chip.appendChild(mk("span", "mc-chip-type", MESH_TYPE_GLYPHS[n.type] + " " + tr("meshcore.type." + n.type)));
         }
+        var extra = [];
         if (n.hops) {
           extra.push(tr("map.hops") + " " + n.hops);
         }
-        extra.push(fmtTime(n.last_seen));
+        extra.push(fmtClock(n.last_seen));
         chip.appendChild(mk("span", "mc-chip-meta", extra.join(" · ")));
         badges.appendChild(chip);
       });

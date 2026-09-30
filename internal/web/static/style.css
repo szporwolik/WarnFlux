@@ -2057,8 +2057,8 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .mc-chip {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.4rem;
+  align-items: center;
+  gap: 0.35rem;
   padding: 0.14rem 0.55rem;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -2068,6 +2068,16 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .mc-chip:hover { border-color: var(--link); }
 .mc-chip-name { font-weight: 600; }
+.mc-chip-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.02rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(156, 77, 204, 0.12);
+  color: #7b1fa2;
+  font-size: 0.72rem;
+}
 .mc-chip-meta { color: var(--muted); font-size: 0.75rem; }
 .mc-chip.copied .mc-chip-name { color: var(--ok, #2e7d32); overflow-wrap: anywhere; }
 /* Copyable public key in the MeshCore nodes table: the short prefix with

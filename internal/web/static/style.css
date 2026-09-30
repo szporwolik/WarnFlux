@@ -794,6 +794,8 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .msgs-table .nowrap { white-space: nowrap; }
 .msgs-rx td { background: rgba(35, 209, 96, 0.04); }
 .msgs-tx td { background: rgba(90, 140, 190, 0.04); }
+#mesh-nodes tbody tr.node-row { cursor: pointer; }
+#mesh-nodes tbody tr.node-row:hover td { background: var(--surface-hi); }
 .mesh-forms { display: flex; gap: 0.5rem; margin-bottom: 0.9rem; }
 .mesh-send {
   display: flex;

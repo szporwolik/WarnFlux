@@ -133,6 +133,7 @@ var en = map[string]string{
 	"meshcore.node_hops":      "Hops",
 	"meshcore.node_pos":       "Position",
 	"meshcore.node_seen":      "Last seen",
+	"meshcore.click_to_send":  "Click to send a message",
 	"meshcore.no_nodes":       "No nodes heard yet.",
 
 	"messages.title":   "APRS",
@@ -693,6 +694,7 @@ var pl = map[string]string{
 	"meshcore.node_hops":      "Hopy",
 	"meshcore.node_pos":       "Pozycja",
 	"meshcore.node_seen":      "Ostatnio",
+	"meshcore.click_to_send":  "Kliknij, aby wysłać wiadomość",
 	"meshcore.no_nodes":       "Nie słychać jeszcze żadnych węzłów.",
 
 	"messages.title":   "APRS",

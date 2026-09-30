@@ -1250,3 +1250,31 @@ func TestHubChannelLabels(t *testing.T) {
 		}
 	}
 }
+
+// TestDirectMessageHopSentinel pins the 0xFF path normalization: the
+// device sends 0xFF as "no path info" on direct frames and the hub must
+// record 0 hops, never 255.
+func TestDirectMessageHopSentinel(t *testing.T) {
+	hub, host, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+
+	key := append([]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, make([]byte, 26)...)
+	frame := []byte{respContactMsgV3, 0x0C, 0x00, 0x00} // snr, reserved2
+	frame = append(frame, key[:6]...)
+	frame = append(frame, 0xFF, 0x01) // pathLen sentinel, txtType
+	frame = binary.LittleEndian.AppendUint32(frame, 1234567890)
+	frame = append(frame, []byte("tak")...)
+	go pumpDevice(host, [][]byte{frame})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(rec.messages()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	got := rec.messages()
+	if len(got) != 1 || got[0].Hops != 0 {
+		t.Fatalf("recorded = %+v, want hops normalized to 0", got)
+	}
+}

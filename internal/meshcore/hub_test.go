@@ -1278,3 +1278,75 @@ func TestDirectMessageHopSentinel(t *testing.T) {
 		t.Fatalf("recorded = %+v, want hops normalized to 0", got)
 	}
 }
+
+// TestHubQueryAckCannotConfirmSend pins the ack-isolation rework: the OK
+// reply to a contact lookup must be consumed by the query's own waiter,
+// never by a concurrent send — otherwise a rejected send would still be
+// recorded as TX.
+func TestHubQueryAckCannotConfirmSend(t *testing.T) {
+	hub, host, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+
+	// Stage one: handshake → drain NO_MORE, so the pump is running
+	// before the test commands hit the wire. No self info is sent — the
+	// hub proceeds without it (and the test finishes before the 10s
+	// handshake retry). Ordering matters: the device must answer the
+	// drain before writing anything itself (net.Pipe writes block).
+	devReady := make(chan struct{})
+	go func() {
+		defer close(devReady)
+		buf := make([]byte, 256)
+		host.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host.Read(buf); err != nil {
+			t.Logf("DEVICE: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+	}()
+
+	select {
+	case <-devReady:
+	case <-time.After(3 * time.Second):
+		hub.mu.Lock()
+		lastErr := hub.lastErr
+		hub.mu.Unlock()
+		t.Fatalf("device did not complete the startup choreography, hub err=%v", lastErr)
+	}
+
+	key := append([]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, make([]byte, 26)...)
+	hub.touchNode(key, "", 1, 0, 0, 0, time.Now())
+
+	// Stage two: the query gets OK, the send gets ERR — the send must
+	// fail and nothing may be recorded as TX.
+	go func() {
+		q, err := readHostFrame(host)
+		if err != nil || len(q) < 1 || q[0] != cmdGetContactByKey {
+			t.Logf("DEVICE: query frame = %x (%v)", q, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+		s, err := readHostFrame(host)
+		if err != nil || len(s) < 1 || s[0] != cmdSendChannelTxtMsg {
+			t.Logf("DEVICE: send frame = %x (%v)", s, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respErr, 2}))
+	}()
+
+	hub.maybeQueryContact(key)
+	if err := hub.SendChannelMessage("hello", "admin"); err == nil {
+		t.Fatal("send must fail when the device rejects it")
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := rec.messages(); len(got) != 0 {
+		t.Fatalf("rejected send recorded TX: %+v", got)
+	}
+}

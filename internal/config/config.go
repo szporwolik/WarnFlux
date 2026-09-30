@@ -203,6 +203,9 @@ type APRSConfig struct {
 	// StationTTL is how long a station stays in the retained MQTT state
 	// after its last packet.
 	StationTTL time.Duration
+	// BulletinTTL is how long a heard APRS bulletin stays in the
+	// retained MQTT state (aprs/bulletins/*); default 24h, max 24h.
+	BulletinTTL time.Duration
 	// ExcludeInfrastructure drops APRS objects, digipeaters, gateways and
 	// similar infrastructure from the station state, so the neighbourhood
 	// map shows actual ham stations only.
@@ -460,6 +463,7 @@ type fileAPRS struct {
 	AreaLongitude         *float64       `yaml:"area_longitude"`
 	AreaRadiusKM          *float64       `yaml:"area_radius_km"`
 	StationTTL            *time.Duration `yaml:"station_ttl"`
+	BulletinTTL           *time.Duration `yaml:"bulletin_ttl"`
 	ExcludeInfrastructure *bool          `yaml:"exclude_infrastructure"`
 	RouteMessages         *bool          `yaml:"route_messages"`
 }
@@ -894,7 +898,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.IngestHTTP = append(cfg.IngestHTTP, inst)
 	}
 
-	cfg.APRS = APRSConfig{RadiusKM: 60, StationTTL: 30 * time.Minute, ExcludeInfrastructure: true}
+	cfg.APRS = APRSConfig{RadiusKM: 60, StationTTL: 30 * time.Minute, BulletinTTL: 24 * time.Hour, ExcludeInfrastructure: true}
 	if f.APRS != nil {
 		cfg.APRS.Enabled = f.APRS.Enabled
 		cfg.APRS.Callsign = strings.ToUpper(strings.TrimSpace(f.APRS.Callsign))
@@ -912,6 +916,9 @@ func (f fileConfig) toConfig() Config {
 		}
 		if f.APRS.StationTTL != nil {
 			cfg.APRS.StationTTL = *f.APRS.StationTTL
+		}
+		if f.APRS.BulletinTTL != nil {
+			cfg.APRS.BulletinTTL = *f.APRS.BulletinTTL
 		}
 		if f.APRS.ExcludeInfrastructure != nil {
 			cfg.APRS.ExcludeInfrastructure = *f.APRS.ExcludeInfrastructure
@@ -1166,6 +1173,9 @@ func (c Config) Validate() error {
 		}
 		if c.APRS.StationTTL < time.Minute || c.APRS.StationTTL > 24*time.Hour {
 			return fmt.Errorf("aprs.station_ttl must be between 1m and 24h, got %s", c.APRS.StationTTL)
+		}
+		if c.APRS.BulletinTTL < time.Minute || c.APRS.BulletinTTL > 24*time.Hour {
+			return fmt.Errorf("aprs.bulletin_ttl must be between 1m and 24h, got %s", c.APRS.BulletinTTL)
 		}
 		if len(c.APRS.Icon) > 2 {
 			return fmt.Errorf("aprs.icon %q must be one or two characters (<code> or <table><code>)", c.APRS.Icon)

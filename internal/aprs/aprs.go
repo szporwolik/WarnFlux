@@ -20,11 +20,17 @@ package aprs
 // the Sink prepends the prefix):
 //
 //	aprs/stations/<CALLSIGN>   retained — merged state of one nearby station
+//	aprs/bulletins/<SRC>-<TS>  retained — heard bulletins (BLNn), deleted
+//	                           after bulletin_ttl (default 24h)
 //	aprs/packets               non-retained — one JSON document per packet
 //	aprs/messages              non-retained — APRS messages rx/tx
 const (
 	// StationsTopicPrefix is the retained per-station state namespace.
 	StationsTopicPrefix = "aprs/stations/"
+
+	// BulletinsTopicPrefix is the retained namespace of heard APRS
+	// bulletins (broadcast frames addressed to BLNn).
+	BulletinsTopicPrefix = "aprs/bulletins/"
 
 	// PacketsTopic carries the parsed packet feed.
 	PacketsTopic = "aprs/packets"

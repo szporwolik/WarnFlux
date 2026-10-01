@@ -128,6 +128,11 @@ type emcomNetwork struct {
 // stamp it onto the dispatched transition.
 type emcomStore interface {
 	SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) (int64, error)
+	// TombstoneEmcomNetwork atomically retires one network: tombstone +
+	// lifecycle + the expiry transition's durable inbox row commit in
+	// one transaction, so a crash or a refused live handoff can never
+	// leave an active lifecycle behind the deleted network.
+	TombstoneEmcomNetwork(ctx context.Context, slug string, ev dispatch.Event) (int64, int64, error)
 	DeleteEmcomNetwork(ctx context.Context, slug string) error
 	EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, error)
 	// InstanceID returns the persistent publisher UUID stamped onto
@@ -393,23 +398,6 @@ func (s *Server) saveEmcomNetwork(net emcomNetwork) (int64, error) {
 		Level:     net.Level,
 		UpdatedBy: net.UpdatedBy,
 		UpdatedAt: net.UpdatedAt,
-	})
-}
-
-// deleteEmcomNetwork tombstones one network in the local record (level
-// -1): the tombstone keeps a stale broker copy from reviving the network
-// and is pruned by maintenance. Mirror-only installations have no store.
-func (s *Server) deleteEmcomNetwork(slug string) (int64, error) {
-	st, ok := s.users.(emcomStore)
-	if !ok {
-		return 0, nil
-	}
-	return st.SaveEmcomNetwork(context.Background(), storage.EmcomNetwork{
-		Slug:      slug,
-		Name:      "",
-		Level:     -1,
-		UpdatedBy: "",
-		UpdatedAt: time.Now(),
 	})
 }
 
@@ -868,20 +856,33 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wasActive := net.Level >= 1
-	// The tombstone's lifecycle version comes from the store counter
-	// when attached (mirror-only falls back to the wall clock).
+	// The expiry transition is built ONCE: the store stamps its ChangeID
+	// with the allocated counter version inside the tombstone
+	// transaction, and the live handoff reuses the very same event (plus
+	// its committed inbox id), so the durable row and the live copy are
+	// identical.
 	version := time.Now().UnixMilli()
+	var expiryEv dispatch.Event
+	if wasActive {
+		expiryEv = emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired, s.emcomPublisher(), 0)
+	}
 	_, hasStore := s.users.(emcomStore)
 	if hasStore {
-		// LOCAL-FIRST: the local database row is removed first; the
-		// broker documents follow asynchronously.
-		v, err := s.deleteEmcomNetwork(slug)
+		// LOCAL-FIRST + ATOMIC (P1): the tombstone, the lifecycle record
+		// and the expiry transition's durable inbox row commit in ONE
+		// transaction — a crash between the deletion and the dispatch,
+		// or a refused live handoff, can never lose the cancellation.
+		st, _ := s.users.(emcomStore)
+		id, v, err := st.TombstoneEmcomNetwork(r.Context(), slug, expiryEv)
 		if err != nil {
 			s.logger.Warn("emcom: local delete failed", "slug", slug, "error", err)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.deleting"))
 			return
 		}
 		version = v
+		if wasActive {
+			expiryEv.InboxID = id
+		}
 	} else {
 		// Mirror-only installations keep the broker document as the
 		// record; the tombstone publish is required there.
@@ -897,10 +898,21 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if wasActive {
-		// The expiry transition is durable and routed locally before any
-		// broker I/O.
-		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired, s.emcomPublisher(), version)) == dispatch.Rejected {
-			s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
+		// The expiry transition is handed to the live worker after the
+		// commit; a refused handoff only defers it — the durable inbox
+		// row delivers it through recovery. The ChangeID is the version
+		// allocated (store counter) or the wall-clock fallback
+		// (mirror-only).
+		expiryEv.Hazard.ChangeID = version
+		switch s.ingress.Enqueue(expiryEv) {
+		case dispatch.Rejected:
+			if hasStore {
+				s.logger.Warn("emcom: live handoff refused; the expiry stays in the durable inbox", "slug", slug)
+			} else {
+				s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
+			}
+		case dispatch.AcceptedEmergency:
+			s.logger.Warn("emcom: transition accepted WITHOUT durable storage (emergency mode; lost on restart)", "slug", slug)
 		}
 	}
 	if hasStore {

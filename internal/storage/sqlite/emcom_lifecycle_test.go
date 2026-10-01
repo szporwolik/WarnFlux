@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -139,5 +140,80 @@ func TestEmcomVersionCounterIndependentOfClock(t *testing.T) {
 	blocked, err = store.LifecycleBlocks(ctx, publisher, key, vDrop)
 	if err != nil || !blocked {
 		t.Fatalf("gate for the drop version = (%v, %v), want blocked", blocked, err)
+	}
+}
+
+// TestEmcomTombstoneAtomic pins the reported P1 at the storage boundary:
+// deleting a network commits the tombstone, the lifecycle record and the
+// expiry transition's durable inbox row in ONE transaction — a crash
+// between the deletion and the dispatch can never lose the cancellation
+// (previously they were separate steps). The stored inbox row carries the
+// allocated version as its ChangeID, identical to the live handoff.
+func TestEmcomTombstoneAtomic(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "emcom-tombstone.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	publisher, err := store.InstanceID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "emcom:sp9moa"
+
+	raised := storage.EmcomNetwork{Slug: "sp9moa", Name: "SP9MOA", Level: 2, UpdatedAt: time.Now()}
+	vRaise, err := store.SaveEmcomNetwork(ctx, raised)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ev := dispatch.Event{
+		Kind:   dispatch.EventHazardTransition,
+		Origin: dispatch.Origin{Type: "web", ReceiverID: "emcom"},
+		Hazard: &dispatch.HazardTransition{
+			Type:      dispatch.TransitionExpired,
+			Key:       key,
+			Source:    "emcom",
+			Publisher: publisher,
+			Hazard:    dispatch.Hazard{EventKey: key},
+		},
+	}
+	inboxID, vTomb, err := store.TombstoneEmcomNetwork(ctx, "sp9moa", ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vTomb <= vRaise {
+		t.Fatalf("tombstone version = %d, want > %d", vTomb, vRaise)
+	}
+	if inboxID == 0 {
+		t.Fatal("the tombstone committed no inbox row for the expiry transition — a crash after the deletion would lose the cancellation")
+	}
+	// The caller's event was stamped with the allocated version (the live
+	// handoff reuses it, identical to the stored row).
+	if ev.Hazard.ChangeID != vTomb {
+		t.Fatalf("stamped ChangeID = %d, want the allocated version %d", ev.Hazard.ChangeID, vTomb)
+	}
+
+	// The network is tombstoned and the old activation is blocked.
+	nets, err := store.EmcomNetworks(ctx)
+	if err != nil || len(nets) != 1 || nets[0].Level != -1 {
+		t.Fatalf("networks after the tombstone = (%v, %v), want one level -1 tombstone", nets, err)
+	}
+	blocked, err := store.LifecycleBlocks(ctx, publisher, key, vRaise)
+	if err != nil || !blocked {
+		t.Fatalf("gate for the activation after the tombstone = (%v, %v), want blocked", blocked, err)
+	}
+
+	// The durable inbox holds the expiry transition with the SAME
+	// identity (publisher + allocated version).
+	rows, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("pending inbox after the tombstone = (%v, %v), want 1 durable row", rows, err)
+	}
+	stored := rows[0].Event
+	if stored.Hazard == nil || stored.Hazard.Type != dispatch.TransitionExpired || stored.Hazard.ChangeID != vTomb || stored.Hazard.Publisher != publisher {
+		t.Fatalf("stored expiry = %+v, want the identical transition (version %d, publisher %q)", stored.Hazard, vTomb, publisher)
 	}
 }

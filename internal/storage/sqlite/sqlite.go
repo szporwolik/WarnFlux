@@ -1345,6 +1345,75 @@ func (s *Store) DeleteEmcomNetwork(ctx context.Context, slug string) error {
 	return nil
 }
 
+// TombstoneEmcomNetwork atomically retires one EMCOM network: the
+// tombstone row (level -1), the lifecycle record (expired, counter
+// version) and — when the caller passes the expiry transition — its
+// durable inbox row commit in ONE transaction. A crash between the
+// deletion and the local dispatch can therefore never lose the
+// cancellation (reported P1: the tombstone and the enqueue used to be
+// separate steps). The expiry event's ChangeID is stamped with the
+// allocated version INSIDE the transaction, so the stored inbox row and
+// the live handoff are identical. It returns the inbox row id (0 when no
+// transition was passed) and the allocated version.
+func (s *Store) TombstoneEmcomNetwork(ctx context.Context, slug string, ev dispatch.Event) (int64, int64, error) {
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("publisher id for emcom tombstone %q: %w", slug, err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin emcom tombstone for %q: %w", slug, err)
+	}
+	defer tx.Rollback()
+
+	version, err := nextLifecycleVersionTx(tx, ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("lifecycle version for emcom tombstone %q: %w", slug, err)
+	}
+	nowMs := s.now().UnixMilli()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO emcom_networks (slug, name, level, updated_by, updated_at_ms)
+		VALUES (?, '', -1, '', ?)
+		ON CONFLICT(slug) DO UPDATE SET
+			name = '', level = -1,
+			updated_by = '', updated_at_ms = excluded.updated_at_ms`,
+		slug, nowMs); err != nil {
+		return 0, 0, fmt.Errorf("tombstone emcom network %q: %w", slug, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(publisher, event_key) DO UPDATE SET
+			version = excluded.version,
+			status = excluded.status,
+			updated_at_ms = excluded.updated_at_ms
+		WHERE excluded.version >= message_lifecycle.version`,
+		publisher, "emcom:"+slug, version, string(core.StatusExpired), nowMs); err != nil {
+		return 0, 0, fmt.Errorf("record emcom tombstone lifecycle %q: %w", slug, err)
+	}
+
+	var inboxID int64
+	if ev.Hazard != nil {
+		ev.Hazard.ChangeID = version
+		data, err := json.Marshal(ev)
+		if err != nil {
+			return 0, 0, fmt.Errorf("encode emcom expiry %q: %w", slug, err)
+		}
+		inboxID, err = insertInboxRow(tx, ctx, data, ev.Origin.ReceiverID, nowMs)
+		if err != nil {
+			return 0, 0, fmt.Errorf("inbox row for emcom expiry %q: %w", slug, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("commit emcom tombstone for %q: %w", slug, err)
+	}
+	return inboxID, version, nil
+}
+
 // EmcomNetworks returns the persisted readiness networks sorted by name.
 func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, error) {
 	rows, err := s.db.QueryContext(ctx, `
@@ -1370,9 +1439,24 @@ func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, erro
 // SaveComposeHazard upserts one panel-issued communication (the panel's
 // durable local record; the retained MQTT document is only a sync copy).
 // Expired rows stay as authoritative tombstones so a stale broker copy
-// can never revive them.
+// can never revive them. The record and its lifecycle state commit in
+// ONE transaction (reported P1: a failed lifecycle write used to leave
+// an expired record with an ACTIVE lifecycle — the delivery queue then
+// still allowed the retired message). The lifecycle version comes from
+// the database-owned monotonic counter, independent of the wall clock.
 func (s *Store) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) error {
-	if _, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin compose save for %q: %w", h.EventKey, err)
+	}
+	defer tx.Rollback()
+
+	version, err := nextLifecycleVersionTx(tx, ctx)
+	if err != nil {
+		return fmt.Errorf("lifecycle version for compose %q: %w", h.EventKey, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO compose_hazards (event_key, hazard_json, status, updated_at_ms)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(event_key) DO UPDATE SET
@@ -1381,10 +1465,11 @@ func (s *Store) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) 
 		h.EventKey, string(h.State), h.Status, h.UpdatedAt.UnixMilli()); err != nil {
 		return fmt.Errorf("save compose hazard %q: %w", h.EventKey, err)
 	}
-	// The same state joins the common lifecycle ledger (empty publisher,
-	// version = updated_at_ms), so a queued delivery of this message is
-	// blocked once the panel cancels or expires it.
-	if _, err := s.db.ExecContext(ctx, `
+	// The same state joins the common lifecycle ledger (empty publisher
+	// — panel jobs are versionless and judged by the CURRENT status), so
+	// a queued delivery of this message is blocked once the panel
+	// cancels or expires it.
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
 		VALUES ('', ?, ?, ?, ?)
 		ON CONFLICT(publisher, event_key) DO UPDATE SET
@@ -1392,8 +1477,12 @@ func (s *Store) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) 
 			status = excluded.status,
 			updated_at_ms = excluded.updated_at_ms
 		WHERE excluded.version >= message_lifecycle.version`,
-		h.EventKey, h.UpdatedAt.UnixMilli(), h.Status, h.UpdatedAt.UnixMilli()); err != nil {
+		h.EventKey, version, h.Status, h.UpdatedAt.UnixMilli()); err != nil {
 		return fmt.Errorf("record compose lifecycle %q: %w", h.EventKey, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit compose save for %q: %w", h.EventKey, err)
 	}
 	return nil
 }

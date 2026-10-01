@@ -575,14 +575,43 @@ func TestComposeLifecycleBlocksDelivery(t *testing.T) {
 	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || !blocked {
 		t.Fatalf("expired panel message blocked = (%v, %v), want (true, nil)", blocked, err)
 	}
-	// An older save (replayed form, stale request) cannot revive it.
+	// A re-posted form is a NEW transition: the lifecycle version comes
+	// from the database-owned counter (strictly increasing, independent
+	// of the form's timestamps), so the message is re-activated and the
+	// fresh state governs the delivery queue.
 	h.Status = "active"
 	h.UpdatedAt = base.Add(-time.Minute)
 	if err := store.SaveComposeHazard(ctx, h); err != nil {
 		t.Fatal(err)
 	}
-	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || !blocked {
-		t.Fatalf("revived panel message blocked = (%v, %v), want (true, nil — older saves never downgrade)", blocked, err)
+	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || blocked {
+		t.Fatalf("re-posted panel message blocked = (%v, %v), want (false, nil — a re-posted form is a newer transition)", blocked, err)
+	}
+}
+
+// TestComposeSaveAtomic pins the reported P1 at the storage boundary: the
+// compose record and its lifecycle state commit in ONE transaction — a
+// failed save writes NEITHER. Previously the expired record committed
+// first and a failed lifecycle write left the delivery queue open for a
+// message the panel just retired.
+func TestComposeSaveAtomic(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	// Break the lifecycle write the way the reported fault injection
+	// did: the ledger table is gone, so only a separate second write
+	// could have failed while the record survived.
+	if _, err := store.db.Exec(`DROP TABLE message_lifecycle`); err != nil {
+		t.Fatal(err)
+	}
+	h := storage.ComposeHazard{EventKey: "compose:1", State: []byte(`{"x":1}`), Status: "expired", UpdatedAt: time.Now()}
+	if err := store.SaveComposeHazard(ctx, h); err == nil {
+		t.Fatal("save with a broken lifecycle table succeeded, want failure")
+	}
+	// Nothing was accepted: the operation failed as a whole.
+	rows, err := store.ComposeHazards(ctx)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("compose record after the failed save = (%v, %v), want none (atomic rollback)", rows, err)
 	}
 }
 

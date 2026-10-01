@@ -3,11 +3,13 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 )
 
@@ -143,8 +145,24 @@ func (s *Server) handleMQTTBrowse(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "entries": []mqttreceiver.BrowseEntry{}})
+		msg := browseErrorText(s.langFor(r), err)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": msg, "entries": []mqttreceiver.BrowseEntry{}})
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"entries": entries})
+}
+
+// browseErrorText maps a Browse failure onto a translated message; the
+// raw technical detail rides along only in the generic fallback.
+func browseErrorText(lang string, err error) string {
+	var se *mqttreceiver.SubscribeError
+	switch {
+	case errors.As(err, &se):
+		return i18n.T(lang, "traffic.browse_subscribe_failed")
+	case strings.Contains(err.Error(), "not connected"),
+		strings.Contains(err.Error(), "no connected"),
+		strings.Contains(err.Error(), "not found or disabled"):
+		return i18n.T(lang, "traffic.browse_no_receiver")
+	}
+	return i18n.T(lang, "traffic.browse_failed_generic") + ": " + err.Error()
 }

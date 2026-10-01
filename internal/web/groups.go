@@ -201,7 +201,7 @@ func (s *Server) handleGroupsPage(w http.ResponseWriter, r *http.Request) {
 // edit_id turns the request into an update.
 func (s *Server) handleGroupSave(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -241,7 +241,7 @@ func (s *Server) handleGroupSave(w http.ResponseWriter, r *http.Request) {
 // are never touched.
 func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -300,7 +300,7 @@ func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) 
 // accepted, so stale form values can never land in the database.
 func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

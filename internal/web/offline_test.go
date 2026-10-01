@@ -31,6 +31,80 @@ func TestConfigPageAdminOnly(t *testing.T) {
 	}
 }
 
+// TestConfigEndpointsRequireCSRF pins the reported P2: the state-changing
+// config routes must reject requests without a valid CSRF token — and
+// with a foreign Origin header (a same-site sibling origin can submit a
+// form without ever reading the token) — instead of applying the change
+// and answering 303.
+func TestConfigEndpointsRequireCSRF(t *testing.T) {
+	oldMask := mqttpolicy.Mask()
+	t.Cleanup(func() { mqttpolicy.Set(oldMask) })
+
+	env := newTestEnv(t)
+	env.login()
+
+	// No token: rejected, nothing changes.
+	resp := env.postFormClose("/config/offline", url.Values{"offline": {"on"}}, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /config/offline without csrf = %d, want 403", resp.StatusCode)
+	}
+	if env.server.OfflineMode() {
+		t.Fatal("offline mode changed without a CSRF token")
+	}
+	resp = env.postFormClose("/config/mqtt", url.Values{"cat": {"events"}}, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /config/mqtt without csrf = %d, want 403", resp.StatusCode)
+	}
+	if !mqttpolicy.Allowed(mqttpolicy.CatEvents) || mqttpolicy.Mask() != oldMask {
+		t.Fatal("publish mask changed without a CSRF token")
+	}
+
+	// A wrong token is rejected too.
+	resp = env.postFormClose("/config/offline", url.Values{"csrf": {"bogus"}, "offline": {"on"}}, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /config/offline with a bogus csrf = %d, want 403", resp.StatusCode)
+	}
+	if env.server.OfflineMode() {
+		t.Fatal("offline mode changed with a bogus CSRF token")
+	}
+
+	// A valid token with a foreign Origin is rejected (complementary
+	// defense-in-depth for same-site sibling origins).
+	csrf := env.csrfFromPage("/config")
+	resp = env.postFormClose("/config/offline",
+		url.Values{"csrf": {csrf}, "offline": {"on"}},
+		map[string]string{"Origin": "http://evil.example"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /config/offline with a foreign Origin = %d, want 403", resp.StatusCode)
+	}
+	if env.server.OfflineMode() {
+		t.Fatal("offline mode changed from a foreign origin")
+	}
+
+	// A valid token from the same origin still works.
+	resp = env.postFormClose("/config/offline",
+		url.Values{"csrf": {csrf}, "offline": {"on"}},
+		map[string]string{"Origin": env.srv.URL})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/offline same-origin = %d, want 303", resp.StatusCode)
+	}
+	if !env.server.OfflineMode() {
+		t.Fatal("offline mode not enabled with a valid token and origin")
+	}
+
+	// And the MQTT mask route applies with a valid token.
+	csrf = env.csrfFromPage("/config")
+	resp = env.postFormClose("/config/mqtt",
+		url.Values{"csrf": {csrf}, "cat": {"events", "status"}},
+		map[string]string{"Origin": env.srv.URL})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/mqtt same-origin = %d, want 303", resp.StatusCode)
+	}
+	if mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		t.Fatal("publish mask not applied by the valid request")
+	}
+}
+
 // TestOfflineToggle flows through the whole switch: enable (banner on the
 // home page + state visible), idempotent re-enable, disable (banner gone).
 func TestOfflineToggle(t *testing.T) {

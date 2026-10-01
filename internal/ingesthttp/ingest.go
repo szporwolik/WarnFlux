@@ -8,13 +8,14 @@
 //     assembled into a proper /events wire payload with the instance ID as
 //     the event source.
 //
-// Accepted messages are published to <topic_prefix>/events on the
-// configured broker (the journal; feeds the routing engine) and mirrored
-// into the retained active view <prefix>/active/<source>/<hash> so they
-// appear on the public home page and map like source-plugin events. The
-// regular receiver → dispatch ingress → routing flow then treats them
-// exactly like messages from any upstream WarnFlux instance, and every
-// other consumer on the broker sees them too.
+// Accepted messages are dispatched into the LOCAL ingress first (the
+// durable inbox — SQLite + radio suffice, the endpoint never depends on
+// the broker round-trip), then published to <topic_prefix>/events on the
+// configured broker (the journal; feeds other consumers and the loopback
+// copy, which deduplicates) and mirrored into the retained active view
+// <prefix>/active/<source>/<hash>. The MQTT publish mask controls ONLY
+// the broker synchronization: a masked category silences the broker but
+// never the local delivery.
 package ingesthttp
 
 import (
@@ -37,6 +38,7 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/severity"
@@ -75,6 +77,32 @@ type Instance struct {
 	metrics     counters
 	started     atomic.Bool
 	initGuard   sync.Once
+
+	// ingress is the optional local dispatch ingress: accepted messages
+	// are dispatched into it (the durable inbox) BEFORE any broker I/O,
+	// so the MQTT publish mask and a broker outage never lose the local
+	// pipeline. Wired in main; nil in mirror-only constructions.
+	ingress *dispatch.Ingress
+}
+
+// SetIngress attaches the local-first dispatch ingress. It must be set
+// before the endpoint starts serving requests (wired in main).
+func (in *Instance) SetIngress(g *dispatch.Ingress) {
+	in.ingress = g
+}
+
+// Disabled returns the explicit-error handler for an ingest input the
+// operator disabled in the configuration: the route stays registered so
+// a misconfigured sender gets a clear answer instead of a misleading
+// 404 that hides the configuration mistake.
+func Disabled(logger *slog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger.Warn("ingest_http: request to a disabled input",
+			"method", r.Method, "remote", r.RemoteAddr, "path", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"ingest input disabled by configuration"}`))
+	})
 }
 
 // New reads the configured secret files and builds the instance without
@@ -324,9 +352,36 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// LOCAL-FIRST: the canonical transition is dispatched into the local
+	// ingress (durable inbox) BEFORE any broker I/O — SQLite + radio
+	// suffice and the publish mask never silences the local pipeline.
+	// The broker loopback copy carries the same publisher + change ID and
+	// deduplicates in the delivery ledger.
+	if in.ingress != nil {
+		we, err := mqttreceiver.ParseEventPayload(payload)
+		if err != nil {
+			// Impossible after buildPayload; defensive only.
+			in.metrics.rejected.Add(1)
+			in.fail(w, http.StatusBadRequest, "invalid event payload")
+			audit("rejected", http.StatusBadRequest, eventKey, len(body))
+			return
+		}
+		ev := mqttreceiver.EventFromWire(we, in.cfg.ID, time.Now())
+		switch in.ingress.Enqueue(ev) {
+		case dispatch.Rejected:
+			in.fail(w, http.StatusServiceUnavailable, "local dispatch is unavailable; retry later")
+			audit("local_dispatch_rejected", http.StatusServiceUnavailable, eventKey, len(body))
+			return
+		case dispatch.AcceptedEmergency:
+			in.logger.Warn("ingest_http: accepted WITHOUT durable storage (emergency mode; lost on restart)",
+				"instance", in.cfg.ID, "request_id", reqID, "event_key", eventKey)
+		}
+	}
+
 	// The publish policy may mask the broker mirror: the ingest endpoint
-	// then accepts the request but publishes nothing (the admin cut
-	// broker traffic on purpose).
+	// then accepts the request but publishes nothing to the broker (the
+	// admin cut broker traffic on purpose) — the local delivery above
+	// has already happened.
 	if mqttpolicy.Allowed(mqttpolicy.CatEvents) {
 		token := in.client.Publish(in.eventsTopic(), 1, false, payload)
 		if !token.WaitTimeout(publishTimeout) {

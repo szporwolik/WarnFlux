@@ -737,10 +737,14 @@ func run(configPath string, checkConfig bool) error {
 		}
 		// LOCAL-FIRST: the endpoint dispatches into the durable inbox
 		// before any broker I/O, so the MQTT publish mask can never
-		// lose an accepted message.
+		// lose an accepted message. The durable outbox records the
+		// broker publication before the 202, so a disconnected broker
+		// neither rejects the request nor loses its cross-instance
+		// sync.
 		inst.SetIngress(ingress)
+		inst.SetOutbox(store)
 		if err := inst.Start(); err != nil {
-			logger.Warn("ingest_http: initial broker connect failed (endpoint will answer 503 until connected)",
+			logger.Warn("ingest_http: initial broker connect failed (requests are accepted locally and synced once the broker returns)",
 				"instance", ing.ID, "error", err)
 		}
 		ingestInstances = append(ingestInstances, inst)
@@ -808,6 +812,14 @@ func run(configPath string, checkConfig bool) error {
 	// the plugin framework instead of terminating the process.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Durable HTTP-ingest broker sync: each endpoint's outbox worker
+	// publishes the accepted payloads whenever its broker connection is
+	// up (mask applied at publish time), so the endpoints accept locally
+	// regardless of the broker state.
+	for _, inst := range ingestInstances {
+		go inst.RunOutbox(ctx)
+	}
 
 	// Startup order: action workers → receivers → Router core → HTTP.
 	// The offline-mode switch rides on top: the startup state comes from

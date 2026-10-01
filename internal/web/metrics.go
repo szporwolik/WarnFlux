@@ -17,6 +17,7 @@ type storageProbe interface {
 	PendingStats(ctx context.Context) (pending int, oldest time.Duration, err error)
 	CountActive(ctx context.Context) (int, error)
 	InboxCount(ctx context.Context) (int, error)
+	OutboxCount(ctx context.Context) (int, error)
 	FreeBytes(ctx context.Context) (int64, error)
 }
 
@@ -83,6 +84,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "# TYPE warnflux_events_active gauge\n")
 	fmt.Fprintf(&b, "# HELP warnflux_inbox_backlog Durable dispatch-inbox rows awaiting routing evaluation.\n")
 	fmt.Fprintf(&b, "# TYPE warnflux_inbox_backlog gauge\n")
+	fmt.Fprintf(&b, "# HELP warnflux_ingest_outbox_backlog Durable HTTP-ingest rows awaiting broker publication.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_ingest_outbox_backlog gauge\n")
 	fmt.Fprintf(&b, "# HELP warnflux_storage_free_bytes Filesystem free bytes on the database volume.\n")
 	fmt.Fprintf(&b, "# TYPE warnflux_storage_free_bytes gauge\n")
 	if probe, ok := s.users.(storageProbe); ok {
@@ -95,6 +98,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 		if backlog, err := probe.InboxCount(ctx); err == nil {
 			fmt.Fprintf(&b, "warnflux_inbox_backlog %d\n", backlog)
+		}
+		if backlog, err := probe.OutboxCount(ctx); err == nil {
+			fmt.Fprintf(&b, "warnflux_ingest_outbox_backlog %d\n", backlog)
 		}
 		if free, err := probe.FreeBytes(ctx); err == nil {
 			fmt.Fprintf(&b, "warnflux_storage_free_bytes %d\n", free)

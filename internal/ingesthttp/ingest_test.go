@@ -3,11 +3,14 @@ package ingesthttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +22,8 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
+	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
 
 type fakeToken struct {
@@ -102,6 +107,68 @@ func lastPublish(t *testing.T, pub *fakePublisher) fakePublish {
 	return pub.published[len(pub.published)-1]
 }
 
+// fakeOutbox is an in-memory durable outbox; fail simulates a broken
+// database.
+type fakeOutbox struct {
+	mu     sync.Mutex
+	rows   []storage.OutboxItem
+	nextID int64
+	fail   bool
+}
+
+func (f *fakeOutbox) AppendOutbox(_ context.Context, _, topic string, payload []byte) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return 0, errors.New("db down")
+	}
+	f.nextID++
+	f.rows = append(f.rows, storage.OutboxItem{ID: f.nextID, Topic: topic, Payload: payload})
+	return f.nextID, nil
+}
+
+func (f *fakeOutbox) PendingOutbox(_ context.Context, _ string, limit int) ([]storage.OutboxItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit <= 0 || limit > len(f.rows) {
+		limit = len(f.rows)
+	}
+	return append([]storage.OutboxItem(nil), f.rows[:limit]...), nil
+}
+
+func (f *fakeOutbox) AckOutbox(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, it := range f.rows {
+		if it.ID == id {
+			f.rows = append(f.rows[:i], f.rows[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (f *fakeOutbox) OutboxCount(_ context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.rows), nil
+}
+
+func (f *fakeOutbox) pending() []storage.OutboxItem {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]storage.OutboxItem(nil), f.rows...)
+}
+
+// postAndSync posts and then runs one outbox pass, so publish-asserting
+// tests observe the durable sync worker's behavior deterministically.
+func postAndSync(t *testing.T, inst *Instance, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := post(t, inst, body)
+	inst.drainOutbox(context.Background())
+	return rec
+}
+
 func TestAuthRejectsMissingOrWrongKey(t *testing.T) {
 	pub := &fakePublisher{connected: true}
 	inst := testInstance(t, pub)
@@ -139,8 +206,9 @@ func TestMethodNotAllowed(t *testing.T) {
 func TestBuilderModePublishesCanonicalWireEvent(t *testing.T) {
 	pub := &fakePublisher{connected: true}
 	inst := testInstance(t, pub)
+	inst.SetOutbox(&fakeOutbox{})
 
-	rec := post(t, inst, `{"severity":"severe","headline":"Pożar w lesie","event":"Pożar","areas":["gmina Niepołomice"]}`)
+	rec := postAndSync(t, inst, `{"severity":"severe","headline":"Pożar w lesie","event":"Pożar","areas":["gmina Niepołomice"]}`)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("builder post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -188,13 +256,14 @@ func TestBuilderModePublishesCanonicalWireEvent(t *testing.T) {
 func TestBuilderDeduplicatesIdenticalPosts(t *testing.T) {
 	pub := &fakePublisher{connected: true}
 	inst := testInstance(t, pub)
+	inst.SetOutbox(&fakeOutbox{})
 	body := `{"severity":"moderate","headline":"Zalana droga","source_id":"scraper-7"}`
 
-	if rec := post(t, inst, body); rec.Code != http.StatusAccepted {
+	if rec := postAndSync(t, inst, body); rec.Code != http.StatusAccepted {
 		t.Fatalf("first post = %d", rec.Code)
 	}
 	first := lastPublish(t, pub)
-	if rec := post(t, inst, body); rec.Code != http.StatusAccepted {
+	if rec := postAndSync(t, inst, body); rec.Code != http.StatusAccepted {
 		t.Fatalf("second post = %d", rec.Code)
 	}
 	second := lastPublish(t, pub)
@@ -207,7 +276,7 @@ func TestBuilderDeduplicatesIdenticalPosts(t *testing.T) {
 	}
 
 	// A changed body without a source_id gets a fresh (hashed) key.
-	if rec := post(t, inst, `{"severity":"moderate","headline":"Zalana droga 2"}`); rec.Code != http.StatusAccepted {
+	if rec := postAndSync(t, inst, `{"severity":"moderate","headline":"Zalana droga 2"}`); rec.Code != http.StatusAccepted {
 		t.Fatalf("third post = %d", rec.Code)
 	}
 	var w3 mqttreceiver.EventPayload
@@ -249,9 +318,10 @@ func TestBuilderValidationErrors(t *testing.T) {
 func TestWireModePassThroughNormalized(t *testing.T) {
 	pub := &fakePublisher{connected: true}
 	inst := testInstance(t, pub)
+	inst.SetOutbox(&fakeOutbox{})
 
 	wire := `{"schema_version":1,"change_id":42,"change_type":"updated","event_key":"imgw-meteo:123","extra_junk":"dropped","event":{"source":"imgw-meteo","source_id":"123","event":"Wiatr","severity":"severe","status":"active","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`
-	rec := post(t, inst, wire)
+	rec := postAndSync(t, inst, wire)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("wire post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -282,9 +352,10 @@ func TestWireModePassThroughNormalized(t *testing.T) {
 func TestWireModeCancelledDeletesActiveView(t *testing.T) {
 	pub := &fakePublisher{connected: true}
 	inst := testInstance(t, pub)
+	inst.SetOutbox(&fakeOutbox{})
 
 	wire := `{"schema_version":1,"change_id":7,"change_type":"cancelled","event_key":"rso:99","event":{"source":"rso","source_id":"99","event":"Burze","severity":"moderate","status":"cancelled","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`
-	rec := post(t, inst, wire)
+	rec := postAndSync(t, inst, wire)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("cancelled wire post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -312,10 +383,10 @@ func (f *fakeInbox) AppendEvent(ctx context.Context, e dispatch.Event) (int64, e
 }
 
 // TestMaskedEventsStillIngestLocally pins the reported P1: the MQTT
-// publish mask must never lose the local pipeline. With events and
-// active both masked the endpoint still answers 202 with a DURABLE
-// local inbox row and publishes nothing; with only events masked the
-// active-view sync still runs — the mask governs broker sync alone.
+// publish mask must never lose the local pipeline. The mask now applies
+// at PUBLISH time in the outbox worker: a fully masked request answers
+// 202 with a durable local inbox row AND a durable (deferred) outbox
+// row; unmasking a category syncs the deferred rows.
 func TestMaskedEventsStillIngestLocally(t *testing.T) {
 	oldMask := mqttpolicy.Mask()
 	t.Cleanup(func() { mqttpolicy.Set(oldMask) })
@@ -326,13 +397,21 @@ func TestMaskedEventsStillIngestLocally(t *testing.T) {
 	g := dispatch.NewIngress(4)
 	g.SetInbox(inbox)
 	inst.SetIngress(g)
+	box := &fakeOutbox{}
+	inst.SetOutbox(box)
 
-	wire := `{"schema_version":1,"change_id":42,"change_type":"new","event_key":"imgw-meteo:123","event":{"source":"imgw-meteo","source_id":"123","event":"Wiatr","severity":"severe","status":"active","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`
+	wire := func(changeID int) string {
+		return `{"schema_version":1,"change_id":` + fmt.Sprintf("%d", changeID) +
+			`,"change_type":"new","event_key":"imgw-meteo:` + fmt.Sprintf("%d", changeID) +
+			`","event":{"source":"imgw-meteo","source_id":"` + fmt.Sprintf("%d", changeID) +
+			`","event":"Wiatr","severity":"severe","status":"active","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`
+	}
 
-	// Events + active masked: nothing reaches the broker, the local
-	// inbox still holds the transition durably.
+	// Events + active masked: nothing reaches the broker; the local
+	// inbox holds the transition durably and the outbox row is DEFERRED
+	// (not dropped) — the sync resumes when the mask allows.
 	mqttpolicy.Set(oldMask &^ uint32(mqttpolicy.CatEvents) &^ uint32(mqttpolicy.CatActive))
-	rec := post(t, inst, wire)
+	rec := post(t, inst, wire(42))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("masked wire post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -349,31 +428,69 @@ func TestMaskedEventsStillIngestLocally(t *testing.T) {
 		gotKey = inbox.events[0].Hazard.Key
 	}
 	inbox.mu.Unlock()
-	if n != 1 || gotKey != "imgw-meteo:123" {
-		t.Fatalf("local inbox = (%d, %q), want (1, imgw-meteo:123)", n, gotKey)
+	if n != 1 || gotKey != "imgw-meteo:42" {
+		t.Fatalf("local inbox = (%d, %q), want (1, imgw-meteo:42)", n, gotKey)
+	}
+	if pending := len(box.pending()); pending != 1 {
+		t.Fatalf("deferred outbox rows = %d, want 1", pending)
 	}
 
-	// Only events masked: the local inbox grows, the /events journal
-	// stays silent, the active-view mirror still syncs.
+	// Only events masked: the next outbox pass publishes the deferred
+	// active-view mirrors (the first row included — the mask is checked
+	// at publish time) and keeps /events silent. The allowed part of
+	// each row is published and acknowledged.
 	mqttpolicy.Set(oldMask &^ uint32(mqttpolicy.CatEvents))
-	rec = post(t, inst, `{"schema_version":1,"change_id":43,"change_type":"new","event_key":"imgw-meteo:124","event":{"source":"imgw-meteo","source_id":"124","event":"Wiatr","severity":"severe","status":"active","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`)
+	rec = post(t, inst, wire(43))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("events-masked wire post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
 	}
+	inst.drainOutbox(context.Background())
 	pub.mu.Lock()
 	var topics []string
 	for _, p := range pub.published {
 		topics = append(topics, p.topic)
 	}
 	pub.mu.Unlock()
-	if len(topics) != 1 || !strings.HasPrefix(topics[0], "warnflux/active/") {
-		t.Fatalf("broker topics = %v, want exactly the active-view mirror", topics)
+	if len(topics) != 2 {
+		t.Fatalf("broker topics = %v, want the two deferred active-view mirrors", topics)
+	}
+	for _, tp := range topics {
+		if !strings.HasPrefix(tp, "warnflux/active/") {
+			t.Errorf("broker topic %q, want the active-view mirror", tp)
+		}
 	}
 	inbox.mu.Lock()
 	n = len(inbox.events)
 	inbox.mu.Unlock()
 	if n != 2 {
 		t.Fatalf("local inbox rows = %d, want 2", n)
+	}
+	if pending := len(box.pending()); pending != 0 {
+		t.Fatalf("outbox rows after the allowed parts synced = %d, want 0", pending)
+	}
+
+	// Fully masked again: the row defers, and a later unmask drains it.
+	mqttpolicy.Set(oldMask &^ uint32(mqttpolicy.CatEvents) &^ uint32(mqttpolicy.CatActive))
+	if rec := post(t, inst, wire(44)); rec.Code != http.StatusAccepted {
+		t.Fatalf("second fully-masked post = %d", rec.Code)
+	}
+	inst.drainOutbox(context.Background())
+	if pending := len(box.pending()); pending != 1 {
+		t.Fatalf("deferred outbox rows = %d, want 1", pending)
+	}
+	mqttpolicy.Set(oldMask)
+	inst.drainOutbox(context.Background())
+	pub.mu.Lock()
+	topics = topics[:0]
+	for _, p := range pub.published {
+		topics = append(topics, p.topic)
+	}
+	pub.mu.Unlock()
+	if len(topics) != 4 || topics[2] != "warnflux/events" || !strings.HasPrefix(topics[3], "warnflux/active/") {
+		t.Fatalf("after the unmask topics = %v, want events + active for the deferred row", topics)
+	}
+	if pending := len(box.pending()); pending != 0 {
+		t.Fatalf("outbox rows after the unmask = %d, want 0", pending)
 	}
 }
 
@@ -412,25 +529,127 @@ func TestWireModeRejectsInvalid(t *testing.T) {
 	}
 }
 
-func TestBrokerUnavailable(t *testing.T) {
+// TestBrokerDownAcceptsLocallyAndSyncsWhenBack pins the reported P1: the
+// broker state must never gate local acceptance. With working SQLite and
+// a disconnected broker the endpoint answers 202 with a durable local
+// inbox row AND a durable outbox row (previously 503 with inbox=0); once
+// the broker reconnects, the outbox worker publishes the payload and the
+// backlog drains — even across a restart.
+func TestBrokerDownAcceptsLocallyAndSyncsWhenBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ingest.db")
+	store, _, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	pub := &fakePublisher{connected: false}
 	inst := testInstance(t, pub)
-	if rec := post(t, inst, `{"severity":"severe","headline":"x"}`); rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("disconnected broker = %d, want 503", rec.Code)
+	inst.SetOutbox(store)
+
+	g := dispatch.NewIngress(4)
+	g.SetInbox(store)
+	inst.SetIngress(g)
+
+	wire := `{"schema_version":1,"change_id":42,"change_type":"new","event_key":"imgw-meteo:123","event":{"source":"imgw-meteo","source_id":"123","event":"Wiatr","severity":"severe","status":"active","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`
+	rec := post(t, inst, wire)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("disconnected broker = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	if len(pub.published) != 0 {
+		t.Fatalf("publishes with a disconnected broker = %d, want 0", len(pub.published))
+	}
+
+	// Durable local acceptance AND durable broker sync, both persisted.
+	ctx := context.Background()
+	inbox, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil || len(inbox) != 1 {
+		t.Fatalf("local inbox = (%v, %v), want 1 durable row", inbox, err)
+	}
+	outbox, err := store.PendingOutbox(ctx, "news", 10)
+	if err != nil || len(outbox) != 1 {
+		t.Fatalf("outbox = (%v, %v), want 1 durable row", outbox, err)
+	}
+
+	// Restart simulation: a fresh handle over the same file still sees
+	// the pending outbox row, so the cross-instance sync survives.
+	store.Close()
+	restarted, _, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	if outbox, err = restarted.PendingOutbox(ctx, "news", 10); err != nil || len(outbox) != 1 {
+		t.Fatalf("outbox after restart = (%v, %v), want 1 pending row", outbox, err)
+	}
+	inst.SetOutbox(restarted)
+
+	// The broker returns: one outbox pass publishes /events + the
+	// active-view mirror and drains the backlog.
+	pub.mu.Lock()
+	pub.connected = true
+	pub.mu.Unlock()
+	inst.drainOutbox(ctx)
+	pub.mu.Lock()
+	publishes := len(pub.published)
+	pub.mu.Unlock()
+	if publishes != 2 {
+		t.Fatalf("publishes after the broker returned = %d, want 2 (events + active)", publishes)
+	}
+	if outbox, err = restarted.PendingOutbox(ctx, "news", 10); err != nil || len(outbox) != 0 {
+		t.Fatalf("outbox after sync = (%v, %v), want empty", outbox, err)
 	}
 }
 
-func TestPublishFailure(t *testing.T) {
+func TestOutboxUnavailableRejects(t *testing.T) {
+	inst := testInstance(t, &fakePublisher{connected: true})
+	box := &fakeOutbox{fail: true}
+	inst.SetOutbox(box)
+	rec := post(t, inst, `{"severity":"severe","headline":"x"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("post with a broken outbox = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "outbox") {
+		t.Fatalf("body = %s, want an outbox mention", rec.Body.String())
+	}
+}
+
+// TestOutboxRetriesFailedPublishes pins the at-least-once sync: a broker
+// that rejects (or times out) a publish leaves the row pending — the
+// endpoint has already answered 202 — and the next pass retries it. The
+// old contract (503 on a publish failure) is gone: acceptance is local.
+func TestOutboxRetriesFailedPublishes(t *testing.T) {
 	pub := &fakePublisher{connected: true, pubErr: io.ErrUnexpectedEOF}
 	inst := testInstance(t, pub)
-	if rec := post(t, inst, `{"severity":"severe","headline":"x"}`); rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("publish error = %d, want 503", rec.Code)
+	box := &fakeOutbox{}
+	inst.SetOutbox(box)
+
+	if rec := post(t, inst, `{"severity":"severe","headline":"x"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("post with a failing broker = %d, want 202 (local acceptance)", rec.Code)
+	}
+	inst.drainOutbox(context.Background())
+	if got := len(box.pending()); got != 1 {
+		t.Fatalf("outbox rows after a failed publish = %d, want 1 (retry pending)", got)
 	}
 
-	pub = &fakePublisher{connected: true, timeout: true}
-	inst = testInstance(t, pub)
-	if rec := post(t, inst, `{"severity":"severe","headline":"x"}`); rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("publish timeout = %d, want 503", rec.Code)
+	// Broker healed: the next pass publishes and acknowledges.
+	pub.mu.Lock()
+	pub.pubErr = nil
+	pub.mu.Unlock()
+	inst.drainOutbox(context.Background())
+	if got := len(box.pending()); got != 0 {
+		t.Fatalf("outbox rows after a successful retry = %d, want 0", got)
+	}
+
+	// Timeout flavor: the same at-least-once behavior.
+	inst2 := testInstance(t, &fakePublisher{connected: true, timeout: true})
+	box2 := &fakeOutbox{}
+	inst2.SetOutbox(box2)
+	if rec := post(t, inst2, `{"severity":"severe","headline":"x"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("post with a timing-out broker = %d, want 202", rec.Code)
+	}
+	inst2.drainOutbox(context.Background())
+	if got := len(box2.pending()); got != 1 {
+		t.Fatalf("outbox rows after a publish timeout = %d, want 1 (retry pending)", got)
 	}
 }
 

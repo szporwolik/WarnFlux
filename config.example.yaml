@@ -818,11 +818,17 @@ actions:
 #        {"severity":"severe","headline":"...","event":"Pożar",
 #         "urgency":"immediate","certainty":"observed","areas":["..."],
 #         "description":"...","source_id":"..."}
-# Accepted messages are published to <topic_prefix>/events on the broker;
-# the regular receiver -> routing matrix -> actions flow then handles them
-# like any upstream WarnFlux message. The instance id is the event source
-# stamped on builder-mode alerts (it shows up as a matrix source row in
-# the Groups page).
+# Accepted messages are dispatched into the LOCAL pipeline first (durable
+# inbox — the endpoint never depends on the broker connection) and their
+# broker publication is persisted into the durable outbox BEFORE the 202:
+# a background worker publishes them to <topic_prefix>/events whenever the
+# broker is connected (publish mask applied at publish time), with
+# at-least-once semantics. A broker outage therefore never rejects an
+# accepted request nor loses its cross-instance sync. The regular
+# receiver -> routing matrix -> actions flow then handles them like any
+# upstream WarnFlux message. The instance id is the event source stamped
+# on builder-mode alerts (it shows up as a matrix source row in the
+# Groups page).
 ingest_http:
 
   - id: news

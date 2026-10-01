@@ -1,6 +1,7 @@
 package ingesthttp
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -15,6 +16,8 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 )
 
@@ -292,6 +295,101 @@ func TestWireModeCancelledDeletesActiveView(t *testing.T) {
 	a := pub.published[1]
 	if a.topic != "warnflux/active/rso/"+mqttreceiver.TopicHash("rso:99") || !a.retained || a.payload != "" {
 		t.Errorf("cancelled active publish = %+v, want retained empty payload (delete)", a)
+	}
+}
+
+// fakeInbox is a minimal durable inbox for the local dispatch ingress.
+type fakeInbox struct {
+	mu     sync.Mutex
+	events []dispatch.Event
+}
+
+func (f *fakeInbox) AppendEvent(ctx context.Context, e dispatch.Event) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, e)
+	return int64(len(f.events)), nil
+}
+
+// TestMaskedEventsStillIngestLocally pins the reported P1: the MQTT
+// publish mask must never lose the local pipeline. With events and
+// active both masked the endpoint still answers 202 with a DURABLE
+// local inbox row and publishes nothing; with only events masked the
+// active-view sync still runs — the mask governs broker sync alone.
+func TestMaskedEventsStillIngestLocally(t *testing.T) {
+	oldMask := mqttpolicy.Mask()
+	t.Cleanup(func() { mqttpolicy.Set(oldMask) })
+
+	pub := &fakePublisher{connected: true}
+	inst := testInstance(t, pub)
+	inbox := &fakeInbox{}
+	g := dispatch.NewIngress(4)
+	g.SetInbox(inbox)
+	inst.SetIngress(g)
+
+	wire := `{"schema_version":1,"change_id":42,"change_type":"new","event_key":"imgw-meteo:123","event":{"source":"imgw-meteo","source_id":"123","event":"Wiatr","severity":"severe","status":"active","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`
+
+	// Events + active masked: nothing reaches the broker, the local
+	// inbox still holds the transition durably.
+	mqttpolicy.Set(oldMask &^ uint32(mqttpolicy.CatEvents) &^ uint32(mqttpolicy.CatActive))
+	rec := post(t, inst, wire)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("masked wire post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"accepted":true`) {
+		t.Fatalf("masked wire post body = %s, want accepted:true", rec.Body.String())
+	}
+	if len(pub.published) != 0 {
+		t.Fatalf("broker publishes = %d, want 0 (everything masked)", len(pub.published))
+	}
+	inbox.mu.Lock()
+	n := len(inbox.events)
+	var gotKey string
+	if n > 0 && inbox.events[0].Hazard != nil {
+		gotKey = inbox.events[0].Hazard.Key
+	}
+	inbox.mu.Unlock()
+	if n != 1 || gotKey != "imgw-meteo:123" {
+		t.Fatalf("local inbox = (%d, %q), want (1, imgw-meteo:123)", n, gotKey)
+	}
+
+	// Only events masked: the local inbox grows, the /events journal
+	// stays silent, the active-view mirror still syncs.
+	mqttpolicy.Set(oldMask &^ uint32(mqttpolicy.CatEvents))
+	rec = post(t, inst, `{"schema_version":1,"change_id":43,"change_type":"new","event_key":"imgw-meteo:124","event":{"source":"imgw-meteo","source_id":"124","event":"Wiatr","severity":"severe","status":"active","received_at":"2026-09-22T10:00:00Z","updated_at":"2026-09-22T10:05:00Z"}}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("events-masked wire post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+	pub.mu.Lock()
+	var topics []string
+	for _, p := range pub.published {
+		topics = append(topics, p.topic)
+	}
+	pub.mu.Unlock()
+	if len(topics) != 1 || !strings.HasPrefix(topics[0], "warnflux/active/") {
+		t.Fatalf("broker topics = %v, want exactly the active-view mirror", topics)
+	}
+	inbox.mu.Lock()
+	n = len(inbox.events)
+	inbox.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("local inbox rows = %d, want 2", n)
+	}
+}
+
+// TestDisabledInputExplicitError pins the deliberate-disable contract:
+// a configured-but-disabled ingest input answers with an explicit error
+// instead of a misleading 404.
+func TestDisabledInputExplicitError(t *testing.T) {
+	h := Disabled(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/news", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled input status = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "disabled") {
+		t.Fatalf("disabled input body = %s, want an explicit disable message", rec.Body.String())
 	}
 }
 

@@ -709,6 +709,9 @@ func run(configPath string, checkConfig bool) error {
 	ingestHandlers := make(map[string]http.Handler)
 	for _, ing := range cfg.IngestHTTP {
 		if !ing.Enabled {
+			// A deliberately disabled input answers with an explicit
+			// error instead of a misleading 404.
+			ingestHandlers[ing.ID] = ingesthttp.Disabled(logger)
 			continue
 		}
 		ing = ingesthttp.Resolve(ing, mainBroker)
@@ -723,6 +726,10 @@ func run(configPath string, checkConfig bool) error {
 		if err != nil {
 			return fmt.Errorf("configure ingest_http %q: %w", ing.ID, err)
 		}
+		// LOCAL-FIRST: the endpoint dispatches into the durable inbox
+		// before any broker I/O, so the MQTT publish mask can never
+		// lose an accepted message.
+		inst.SetIngress(ingress)
 		if err := inst.Start(); err != nil {
 			logger.Warn("ingest_http: initial broker connect failed (endpoint will answer 503 until connected)",
 				"instance", ing.ID, "error", err)

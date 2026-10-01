@@ -539,9 +539,10 @@ type weatherForecastDayView struct {
 // weatherForecastView is one multi-day forecast (one per provider and
 // location, the retained MQTT documents).
 type weatherForecastView struct {
-	Provider string                   `json:"provider"`
-	Name     string                   `json:"name"`
-	Daily    []weatherForecastDayView `json:"daily"`
+	Provider    string                   `json:"provider"`
+	Name        string                   `json:"name"`
+	GeneratedAt string                   `json:"generated_at,omitempty"`
+	Daily       []weatherForecastDayView `json:"daily"`
 }
 
 type weatherAPIView struct {
@@ -645,7 +646,12 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 					WindSpeedMaxKmh:    d.WindSpeedMaxKmh,
 				})
 			}
-			view.Forecasts = append(view.Forecasts, weatherForecastView{Provider: ww.ProviderName, Name: name, Daily: days})
+			view.Forecasts = append(view.Forecasts, weatherForecastView{
+				Provider:    ww.ProviderName,
+				Name:        name,
+				GeneratedAt: ww.GeneratedAt.UTC().Format(time.RFC3339),
+				Daily:       days,
+			})
 		}
 	}
 

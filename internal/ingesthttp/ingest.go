@@ -82,6 +82,15 @@ type Outbox interface {
 	OutboxCount(ctx context.Context) (int, error)
 }
 
+// Acceptor is the atomic local acceptance backend for HTTP ingest (the
+// SQLite store): one transaction persists the durable inbox row, the
+// lifecycle record and the durable outbox row together, so a rejected
+// commit accepts nothing and a crash can never leave an accepted local
+// notification without its MQTT sync.
+type Acceptor interface {
+	CommitIngest(ctx context.Context, instanceID, topic string, payload []byte, ev dispatch.Event) (int64, error)
+}
+
 // Instance is one configured HTTP ingest endpoint: an API-key check plus
 // a broker publisher. It is safe for concurrent use.
 type Instance struct {
@@ -109,6 +118,24 @@ type Instance struct {
 	// wake nudges the outbox worker right after an append so a connected
 	// broker receives the request without waiting for the tick.
 	wake chan struct{}
+
+	// acceptor is the optional ATOMIC acceptance backend: inbox row +
+	// lifecycle + outbox row commit in one transaction before the event
+	// is handed to the live worker (P1). Wired in main; nil falls back
+	// to the legacy two-step acceptance (mirror-only constructions and
+	// tests).
+	acceptor Acceptor
+
+	// publisherID is the persistent instance UUID stamped onto every
+	// builder-mode event (wired from the storage store): with it the
+	// routing engine records each transition in the lifecycle ledger
+	// and the pre-transmission gate blocks jobs a later cancellation
+	// supersedes. Empty = legacy publisher-less form (fail-open).
+	publisherID string
+	// lastChangeID is the monotonic version source for builder events:
+	// versions must strictly increase so a cancellation always
+	// supersedes the jobs it retires, even within one millisecond.
+	lastChangeID atomic.Int64
 }
 
 // SetIngress attaches the local-first dispatch ingress. It must be set
@@ -117,12 +144,45 @@ func (in *Instance) SetIngress(g *dispatch.Ingress) {
 	in.ingress = g
 }
 
+// SetAcceptor attaches the atomic acceptance backend (the SQLite
+// store). When set, every accepted request commits its inbox row, its
+// lifecycle record and its outbox row in ONE transaction before the
+// live handoff; without it the endpoint uses the legacy two-step
+// acceptance (ingress + outbox).
+func (in *Instance) SetAcceptor(a Acceptor) {
+	in.acceptor = a
+}
+
 // SetOutbox attaches the durable broker-sync backlog. It must be set
 // before the endpoint starts serving requests (wired in main).
 func (in *Instance) SetOutbox(o Outbox) {
 	in.outbox = o
 	if in.wake == nil {
 		in.wake = make(chan struct{}, 1)
+	}
+}
+
+// SetPublisherID attaches the persistent instance UUID stamped onto
+// builder-mode events (wired in main from the storage store). Without
+// it builder events stay publisher-less and version-less — the legacy
+// form routing skips in the lifecycle ledger.
+func (in *Instance) SetPublisherID(id string) {
+	in.publisherID = strings.TrimSpace(id)
+}
+
+// nextChangeID returns the next strictly-increasing version for a
+// builder event: wall-clock milliseconds, bumped past the last issued
+// value so two posts within the same millisecond still order correctly.
+func (in *Instance) nextChangeID() int64 {
+	for {
+		last := in.lastChangeID.Load()
+		next := time.Now().UnixMilli()
+		if next <= last {
+			next = last + 1
+		}
+		if in.lastChangeID.CompareAndSwap(last, next) {
+			return next
+		}
 	}
 }
 
@@ -383,12 +443,50 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// LOCAL-FIRST: the canonical transition is dispatched into the local
-	// ingress (durable inbox) BEFORE any broker I/O — SQLite + radio
-	// suffice, so a disconnected broker must never reject the request.
-	// The broker loopback copy carries the same publisher + change ID and
-	// deduplicates in the delivery ledger.
-	if in.ingress != nil {
+	// LOCAL-FIRST acceptance. With the atomic backend attached, the
+	// durable inbox row, the lifecycle record and the durable outbox row
+	// commit in ONE transaction (P1): a rejected commit accepts NOTHING
+	// (the 503 carries no side effects) and a crash can never leave an
+	// accepted local notification without its MQTT sync. After the
+	// commit the event is handed to the live worker with its inbox id —
+	// the ingress never re-appends it. Without the backend the legacy
+	// two-step acceptance applies (mirror-only constructions, tests).
+	if in.acceptor != nil {
+		we, err := mqttreceiver.ParseEventPayload(payload)
+		if err != nil {
+			// Impossible after buildPayload; defensive only.
+			in.metrics.rejected.Add(1)
+			in.fail(w, http.StatusBadRequest, "invalid event payload")
+			audit("rejected", http.StatusBadRequest, eventKey, len(body))
+			return
+		}
+		ev := mqttreceiver.EventFromWire(we, in.cfg.ID, time.Now())
+		inboxID, err := in.acceptor.CommitIngest(r.Context(), in.cfg.ID, in.eventsTopic(), payload, ev)
+		if err != nil {
+			in.metrics.rejected.Add(1)
+			in.fail(w, http.StatusServiceUnavailable, "local durable acceptance unavailable; retry later")
+			audit("accept_rejected", http.StatusServiceUnavailable, eventKey, len(body))
+			return
+		}
+		ev.InboxID = inboxID
+		if in.ingress != nil {
+			switch in.ingress.Enqueue(ev) {
+			case dispatch.Rejected:
+				// The durable row is committed: inbox recovery still
+				// delivers the event even though the live handoff was
+				// refused.
+				in.logger.Warn("ingest_http: live handoff refused; the event stays in the durable inbox",
+					"instance", in.cfg.ID, "request_id", reqID, "event_key", eventKey)
+			case dispatch.AcceptedEmergency:
+				// Unreachable with an inbox id attached; kept for
+				// completeness.
+				in.logger.Warn("ingest_http: accepted WITHOUT durable storage (emergency mode; lost on restart)",
+					"instance", in.cfg.ID, "request_id", reqID, "event_key", eventKey)
+			}
+		}
+		in.wakeOutbox()
+	} else if in.ingress != nil {
+		// LEGACY two-step acceptance (no atomic backend attached).
 		we, err := mqttreceiver.ParseEventPayload(payload)
 		if err != nil {
 			// Impossible after buildPayload; defensive only.
@@ -409,13 +507,14 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Durable broker sync: the outbox row records the intended /events
-	// publication (and the active-view mirror) BEFORE answering 202. The
-	// background worker publishes it whenever the broker is connected —
-	// the publish mask is applied at publish time — so acceptance never
-	// depends on the broker and an outage never loses the cross-instance
-	// sync of an accepted request.
-	if in.outbox != nil {
+	// Durable broker sync: the atomic path already committed the outbox
+	// row above; the legacy path records the intended /events
+	// publication (and the active-view mirror) here, BEFORE answering
+	// 202. The background worker publishes it whenever the broker is
+	// connected — the publish mask is applied at publish time — so
+	// acceptance never depends on the broker and an outage never loses
+	// the cross-instance sync of an accepted request.
+	if in.acceptor == nil && in.outbox != nil {
 		if _, err := in.outbox.AppendOutbox(r.Context(), in.cfg.ID, in.eventsTopic(), payload); err != nil {
 			in.metrics.rejected.Add(1)
 			in.fail(w, http.StatusServiceUnavailable, "durable outbox unavailable; retry later")
@@ -669,6 +768,18 @@ func (in *Instance) buildFromBuilder(body []byte) ([]byte, string, error) {
 			ReceivedAt:  now,
 			UpdatedAt:   now,
 		},
+	}
+
+	// Persistent identity + versioning (P1): builder events carry the
+	// instance UUID and a strictly increasing version, so the routing
+	// engine records every transition in the lifecycle ledger and the
+	// pre-transmission gate blocks jobs a later update or cancellation
+	// supersedes — previously builder events were publisher-less and
+	// version-less, and lifecycle skipped them entirely (an old alert
+	// stayed deliverable after its cancellation).
+	if in.publisherID != "" {
+		we.Publisher = in.publisherID
+		we.ChangeID = in.nextChangeID()
 	}
 
 	canonical, err := json.Marshal(we)

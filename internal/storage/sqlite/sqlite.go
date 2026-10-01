@@ -632,6 +632,24 @@ CREATE TABLE output_pending_deletes (
 );
 `,
 	},
+	{
+		// v32: the database-owned lifecycle version counter. EMCOM
+		// transitions allocate their lifecycle version from it inside
+		// the save transaction: a strictly monotonic sequence
+		// independent of the wall clock, so a backward clock correction
+		// can never make a level drop look "older" than the activation
+		// it must retire. The counter is seeded ABOVE every version
+		// already in the ledger (legacy wall-clock versions), so the
+		// first allocation always supersedes them.
+		SQL: `
+CREATE TABLE lifecycle_versions (
+	id   INTEGER PRIMARY KEY CHECK (id = 1),
+	next INTEGER NOT NULL
+);
+INSERT INTO lifecycle_versions (id, next)
+VALUES (1, 1 + COALESCE((SELECT MAX(version) FROM message_lifecycle), 0));
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1032,6 +1050,69 @@ func (s *Store) AppendEvent(ctx context.Context, ev dispatch.Event) (int64, erro
 	return insertInboxRow(s.db, ctx, data, ev.Origin.ReceiverID, s.now().UnixMilli())
 }
 
+// CommitIngest atomically persists one accepted HTTP-ingest request: the
+// durable inbox row (the routing engine evaluates it), the lifecycle
+// record (when the transition carries a publisher identity) and the
+// durable outbox row (the broker sync) commit in ONE transaction — a
+// rejected commit accepts NOTHING, and a crash can never leave a locally
+// accepted event without its MQTT sync (reported P1: previously the
+// inbox committed first, a failed outbox answered 503 although the local
+// notification was already accepted). It returns the inbox row ID the
+// caller stamps onto the event before the live handoff.
+func (s *Store) CommitIngest(ctx context.Context, instanceID, topic string, payload []byte, ev dispatch.Event) (int64, error) {
+	h := ev.Hazard
+	nowMs := s.now().UnixMilli()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin ingest acceptance for %q: %w", instanceID, err)
+	}
+	defer tx.Rollback()
+
+	// Lifecycle first: a cancellation must block previously queued jobs
+	// even while the inbox evaluation is still pending.
+	if h != nil && h.Publisher != "" {
+		status := string(core.StatusActive)
+		switch h.Type {
+		case dispatch.TransitionCancelled:
+			status = string(core.StatusCancelled)
+		case dispatch.TransitionExpired:
+			status = string(core.StatusExpired)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(publisher, event_key) DO UPDATE SET
+				version = excluded.version,
+				status = excluded.status,
+				updated_at_ms = excluded.updated_at_ms
+			WHERE excluded.version >= message_lifecycle.version`,
+			h.Publisher, h.Key, h.ChangeID, status, nowMs); err != nil {
+			return 0, fmt.Errorf("record lifecycle for %q: %w", h.Key, err)
+		}
+	}
+
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return 0, fmt.Errorf("encode inbox event: %w", err)
+	}
+	inboxID, err := insertInboxRow(tx, ctx, data, ev.Origin.ReceiverID, nowMs)
+	if err != nil {
+		return 0, fmt.Errorf("inbox row for ingest %q: %w", instanceID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms)
+		VALUES (?, ?, ?, ?)`, instanceID, topic, string(payload), nowMs); err != nil {
+		return 0, fmt.Errorf("outbox row for ingest %q: %w", instanceID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit ingest acceptance for %q: %w", instanceID, err)
+	}
+	return inboxID, nil
+}
+
 // FreeBytes reports the filesystem free space for the database
 // directory (the WAL and journal live next to the database file). It
 // feeds the low-disk alarm and the aggressive inbox retention policy.
@@ -1175,21 +1256,32 @@ func (s *Store) InstanceID(ctx context.Context) (string, error) {
 // SaveEmcomNetwork upserts one EMCOM readiness network (the panel's
 // durable local record; the retained MQTT document is only a sync copy).
 // The same state joins the common lifecycle ledger in the SAME
-// transaction (instance publisher, event key emcom:<slug>, version =
-// updated_at_ms): dropping a network back to monitoring records the
-// cancellation atomically with the network state, so the delivery gate
-// blocks a previously queued activation once the radio returns.
-func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) error {
+// transaction (instance publisher, event key emcom:<slug>): dropping a
+// network back to monitoring records the cancellation atomically with
+// the network state, so the delivery gate blocks a previously queued
+// activation once the radio returns.
+//
+// The version is allocated from the database-owned monotonic counter
+// (see lifecycle_versions), NOT the wall clock: after a backward clock
+// correction the level drop must still supersede — and block — the
+// activation it retires (reported P1). The allocated version is
+// returned so the caller can stamp it onto the dispatched transition.
+func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) (int64, error) {
 	publisher, err := s.instanceID(ctx)
 	if err != nil {
-		return fmt.Errorf("publisher id for emcom %q: %w", net.Slug, err)
+		return 0, fmt.Errorf("publisher id for emcom %q: %w", net.Slug, err)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin emcom save for %q: %w", net.Slug, err)
+		return 0, fmt.Errorf("begin emcom save for %q: %w", net.Slug, err)
 	}
 	defer tx.Rollback()
+
+	version, err := nextLifecycleVersionTx(tx, ctx)
+	if err != nil {
+		return 0, fmt.Errorf("lifecycle version for emcom %q: %w", net.Slug, err)
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO emcom_networks (slug, name, level, updated_by, updated_at_ms)
@@ -1198,11 +1290,12 @@ func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) 
 			name = excluded.name, level = excluded.level,
 			updated_by = excluded.updated_by, updated_at_ms = excluded.updated_at_ms`,
 		net.Slug, net.Name, net.Level, net.UpdatedBy, net.UpdatedAt.UnixMilli()); err != nil {
-		return fmt.Errorf("save emcom network %q: %w", net.Slug, err)
+		return 0, fmt.Errorf("save emcom network %q: %w", net.Slug, err)
 	}
 
 	// The lifecycle state of the EMCOM hazard (active above monitoring,
-	// expired below) commits with the network record.
+	// expired below) commits with the network record, under the
+	// counter-allocated version.
 	status := string(core.StatusActive)
 	if net.Level < 1 {
 		status = string(core.StatusExpired)
@@ -1215,14 +1308,32 @@ func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) 
 			status = excluded.status,
 			updated_at_ms = excluded.updated_at_ms
 		WHERE excluded.version >= message_lifecycle.version`,
-		publisher, "emcom:"+net.Slug, net.UpdatedAt.UnixMilli(), status, net.UpdatedAt.UnixMilli()); err != nil {
-		return fmt.Errorf("record emcom lifecycle %q: %w", net.Slug, err)
+		publisher, "emcom:"+net.Slug, version, status, net.UpdatedAt.UnixMilli()); err != nil {
+		return 0, fmt.Errorf("record emcom lifecycle %q: %w", net.Slug, err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit emcom save for %q: %w", net.Slug, err)
+		return 0, fmt.Errorf("commit emcom save for %q: %w", net.Slug, err)
 	}
-	return nil
+	return version, nil
+}
+
+// nextLifecycleVersionTx allocates the next lifecycle version INSIDE the
+// caller's transaction from the database-owned counter: strictly
+// monotonic and independent of the wall clock, so a backward clock
+// correction can never order a cancellation below the activation it must
+// retire. The single database connection serializes allocations.
+func nextLifecycleVersionTx(tx *sql.Tx, ctx context.Context) (int64, error) {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE lifecycle_versions SET next = next + 1 WHERE id = 1`); err != nil {
+		return 0, fmt.Errorf("bump lifecycle version: %w", err)
+	}
+	var v int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT next FROM lifecycle_versions WHERE id = 1`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("read lifecycle version: %w", err)
+	}
+	return v, nil
 }
 
 // DeleteEmcomNetwork removes one EMCOM readiness network.

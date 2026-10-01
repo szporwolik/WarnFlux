@@ -9,10 +9,13 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -224,8 +227,9 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 
 // noCacheStatic forces browsers to revalidate every embedded asset on
 // every request. The embedded files carry no ETag/Last-Modified, so
-// plain caching can serve stale app.js/style.css indefinitely; this
-// guarantees a rebuild is picked up on the next page load.
+// plain caching can serve stale app.js/style.css indefinitely; the
+// etagStatic wrapper below adds content hashes so the revalidation is a
+// cheap 304 instead of a re-download.
 func noCacheStatic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
@@ -233,8 +237,44 @@ func noCacheStatic(next http.Handler) http.Handler {
 	})
 }
 
+// etagStatic stamps every embedded asset with a strong ETag (a sha-256
+// prefix of its content, hashed once per file) and answers conditional
+// requests with 304. app.js, style.css, the fonts and the bundled
+// Leaflet add up to a few hundred KB per page load — revalidating them
+// instead of re-downloading on every navigation keeps the UI snappy on
+// a low-power station.
+func etagStatic(next http.Handler) http.Handler {
+	var hashes sync.Map // file path -> etag string
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		etag, ok := hashes.Load(path)
+		if !ok {
+			f, err := staticFS.Open("static/" + path)
+			if err != nil {
+				next.ServeHTTP(w, r) // 404 through the regular handler
+				return
+			}
+			h := sha256.New()
+			if _, err := io.Copy(h, f); err != nil {
+				f.Close()
+				next.ServeHTTP(w, r)
+				return
+			}
+			f.Close()
+			etag = `"` + hex.EncodeToString(h.Sum(nil)[:16]) + `"`
+			hashes.Store(path, etag)
+		}
+		w.Header().Set("ETag", etag.(string))
+		if inm := r.Header.Get("If-None-Match"); inm != "" && inm == etag.(string) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) routes(static http.Handler) {
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", noCacheStatic(static)))
+	s.mux.Handle("GET /static/", http.StripPrefix("/static/", etagStatic(noCacheStatic(static))))
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)

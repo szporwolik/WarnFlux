@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -51,14 +52,20 @@ func openSerial(device string, baud int) (conn, error) {
 		return nil, fmt.Errorf("set termios %s: %w", device, err)
 	}
 
-	f := os.NewFile(uintptr(fd), device)
-	return &serialConn{f: f}, nil
+	return &serialConn{fd: fd}, nil
 }
 
-// serialConn adapts a non-blocking serial fd to a deadline-aware conn.
+// serialConn adapts a raw non-blocking serial fd to a deadline-aware
+// conn. The descriptor is deliberately NOT wrapped in os.File: NewFile
+// hands it to the runtime poller, whose Read parks the goroutine with
+// nothing to wake it when the deadline passes — a silent device would
+// block the session initialization and shutdown forever. All I/O goes
+// through the raw descriptor with an explicit poll loop instead, so the
+// deadline is honored by construction.
 type serialConn struct {
-	f        *os.File
-	deadline time.Time
+	fd        int
+	deadline  time.Time
+	closeOnce sync.Once
 }
 
 func (c *serialConn) SetReadDeadline(t time.Time) error {
@@ -66,6 +73,11 @@ func (c *serialConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
+// Read reads from the raw descriptor, poll-waiting while it is not
+// readable. The deadline is honored exactly: a timeout returns
+// os.ErrDeadlineExceeded. A zero deadline means "block until data"
+// (matching os.File semantics); the session cancellation closes the
+// transport, which unblocks this read immediately.
 func (c *serialConn) Read(p []byte) (int, error) {
 	var timeout <-chan time.Time
 	if !c.deadline.IsZero() {
@@ -78,25 +90,16 @@ func (c *serialConn) Read(p []byte) (int, error) {
 		timeout = t.C
 	}
 	for {
-		n, err := c.f.Read(p)
+		n, err := unix.Read(c.fd, p)
 		if err == nil {
 			return n, nil
 		}
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
 		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
-			if timeout == nil {
+			if !c.awaitReadable(timeout) {
 				return 0, os.ErrDeadlineExceeded
-			}
-			select {
-			case <-timeout:
-				return 0, os.ErrDeadlineExceeded
-			default:
-			}
-			pfd := []unix.PollFd{{Fd: int32(c.f.Fd()), Events: unix.POLLIN}}
-			if _, err := unix.Poll(pfd, 50); err != nil {
-				if errors.Is(err, syscall.EINTR) {
-					continue
-				}
-				return 0, err
 			}
 			continue
 		}
@@ -104,8 +107,83 @@ func (c *serialConn) Read(p []byte) (int, error) {
 	}
 }
 
-func (c *serialConn) Write(p []byte) (int, error) { return c.f.Write(p) }
-func (c *serialConn) Close() error                { return c.f.Close() }
+// awaitReadable waits until the descriptor is readable (or closed).
+// false means the deadline timer won. Poll and syscall errors are
+// reported as readable: the following Read surfaces the real error.
+func (c *serialConn) awaitReadable(timeout <-chan time.Time) bool {
+	if timeout == nil {
+		// No deadline: an indefinite poll is exactly the blocking
+		// read the caller asked for. Close() makes the poll return
+		// and the next Read report the closed descriptor.
+		for {
+			pfd := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLIN}}
+			if _, err := unix.Poll(pfd, -1); err != nil {
+				if errors.Is(err, syscall.EINTR) {
+					continue
+				}
+				return true
+			}
+			return true
+		}
+	}
+	for {
+		select {
+		case <-timeout:
+			return false
+		default:
+		}
+		d := time.Until(c.deadline)
+		if d <= 0 {
+			return false
+		}
+		if d > 200*time.Millisecond {
+			d = 200 * time.Millisecond
+		}
+		pfd := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLIN}}
+		if _, err := unix.Poll(pfd, int(d.Milliseconds())); err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			return true
+		}
+		if pfd[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
+			return true
+		}
+	}
+}
+
+// Write writes to the raw descriptor, poll-waiting while the line
+// discipline buffer is full (EAGAIN). The hub bounds every command
+// write with its own timeout, and closing the transport unblocks a
+// stuck writer immediately.
+func (c *serialConn) Write(p []byte) (int, error) {
+	for {
+		n, err := unix.Write(c.fd, p)
+		if err == nil {
+			return n, nil
+		}
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+			pfd := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLOUT}}
+			if _, perr := unix.Poll(pfd, -1); perr != nil {
+				if errors.Is(perr, syscall.EINTR) {
+					continue
+				}
+				return 0, perr
+			}
+			continue
+		}
+		return n, err
+	}
+}
+
+func (c *serialConn) Close() error {
+	var err error
+	c.closeOnce.Do(func() { err = unix.Close(c.fd) })
+	return err
+}
 
 func baudToConst(baud int) uint32 {
 	switch baud {

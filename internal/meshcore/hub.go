@@ -337,6 +337,18 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.ready = make(chan struct{})
 	h.mu.Unlock()
 	defer conn.Close()
+	// Session cancellation closes the transport: a blocked Read or Write
+	// (silent device, full line buffer) unblocks immediately instead of
+	// waiting out its read deadline.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopWatch:
+		}
+	}()
 
 	if err := h.handshake(conn); err != nil {
 		return err

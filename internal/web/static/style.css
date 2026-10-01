@@ -2416,6 +2416,32 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .config-mqtt-row:hover { border-color: var(--accent); }
 .config-mqtt-form .btn-primary { justify-self: start; margin-top: 6px; }
 
+/* Config page: offline-mode toggle. */
+.config-offline-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 0.9rem;
+  margin-top: 0.6rem;
+}
+.config-offline-form .btn-primary,
+.config-offline-form .btn-danger {
+  width: auto;
+  flex: none;
+  padding: 0.45rem 1.4rem;
+}
+.config-offline-form .btn-danger {
+  background: var(--bad);
+  border: 1px solid transparent;
+  color: #fff;
+}
+.config-offline-form .btn-danger:hover {
+  background: var(--bad);
+  color: #fff;
+  filter: brightness(0.92);
+}
+
 /* EMCOM panel page. */
 .emcom-page { max-width: 900px; margin: 0 auto; display: grid; gap: 1rem; padding: 1rem; }
 .emcom-flash {

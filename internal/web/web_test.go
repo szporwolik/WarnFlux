@@ -1342,6 +1342,7 @@ func TestMetricsEndpoint(t *testing.T) {
 		`warnflux_pending_changes 3`,
 		`warnflux_events_active 4`,
 		`warnflux_inbox_backlog 7`,
+		`warnflux_ingest_outbox_backlog 2`,
 		`warnflux_storage_free_bytes 12884901888`,
 		`warnflux_ingest_http_requests_total{instance="news",result="accepted"} 5`,
 		`warnflux_ingest_http_requests_total{instance="news",result="auth_failed"} 1`,

@@ -100,6 +100,17 @@ type InboxItem struct {
 	Event dispatch.Event
 }
 
+// OutboxItem is one durable HTTP-ingest outbox row: an accepted request
+// whose broker publication is still pending. The outbox worker publishes
+// it (mask applied) and deletes the row only after the broker confirmed,
+// so a broker outage never loses the cross-instance sync of an accepted
+// request.
+type OutboxItem struct {
+	ID      int64
+	Topic   string
+	Payload []byte
+}
+
 // EmcomNetwork is one EMCOM operational-readiness network persisted
 // locally: the panel edits it without any broker dependency and the
 // retained MQTT document is only an asynchronous sync copy.

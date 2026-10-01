@@ -597,6 +597,25 @@ CREATE TABLE message_lifecycle (
 );
 `,
 	},
+	{
+		// v30: the durable HTTP-ingest outbox. An accepted ingest request
+		// persists its intended broker publication BEFORE answering 202:
+		// the endpoint therefore accepts locally even when the broker is
+		// down, and a background worker publishes the rows (mask applied
+		// at publish time) and deletes them only after the broker
+		// confirmed — at-least-once, so a broker outage never loses the
+		// cross-instance sync of an accepted request.
+		SQL: `
+CREATE TABLE ingest_outbox (
+	id             INTEGER PRIMARY KEY AUTOINCREMENT,
+	instance_id    TEXT NOT NULL,
+	topic          TEXT NOT NULL,
+	payload        TEXT NOT NULL,
+	created_at_ms  INTEGER NOT NULL
+);
+CREATE INDEX idx_ingest_outbox_instance ON ingest_outbox(instance_id, id);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1723,6 +1742,75 @@ func insertInboxRow(e execer, ctx context.Context, data []byte, receiver string,
 		return 0, fmt.Errorf("inbox event id: %w", err)
 	}
 	return id, nil
+}
+
+// AppendOutbox persists one accepted HTTP-ingest request as a durable
+// broker-publication record. The row is deleted only after the broker
+// confirmed the publish (AckOutbox), so an outage between acceptance and
+// publication never loses the cross-instance sync.
+func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payload []byte) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms)
+		VALUES (?, ?, ?, ?)`, instanceID, topic, string(payload), s.now().UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("append outbox row for %q: %w", instanceID, err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("outbox row id for %q: %w", instanceID, err)
+	}
+	return id, nil
+}
+
+// PendingOutbox returns the oldest unpublished outbox rows of one
+// ingest instance, in insertion order (at-least-once delivery).
+func (s *Store) PendingOutbox(ctx context.Context, instanceID string, limit int) ([]storage.OutboxItem, error) {
+	if limit <= 0 || limit > 256 {
+		limit = 256
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, topic, payload FROM ingest_outbox
+		WHERE instance_id = ?
+		ORDER BY id
+		LIMIT ?`, instanceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pending outbox for %q: %w", instanceID, err)
+	}
+	defer rows.Close()
+	var out []storage.OutboxItem
+	for rows.Next() {
+		var it storage.OutboxItem
+		var payload string
+		if err := rows.Scan(&it.ID, &it.Topic, &payload); err != nil {
+			return nil, fmt.Errorf("scan outbox row: %w", err)
+		}
+		it.Payload = []byte(payload)
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate outbox for %q: %w", instanceID, err)
+	}
+	return out, nil
+}
+
+// AckOutbox deletes one outbox row after the broker confirmed its
+// publication.
+func (s *Store) AckOutbox(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM ingest_outbox WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("ack outbox row %d: %w", id, err)
+	}
+	return nil
+}
+
+// OutboxCount reports the current durable HTTP-ingest outbox backlog
+// (rows awaiting broker publication), feeding the /metrics gauge and the
+// operator's visibility of a degraded broker sync.
+func (s *Store) OutboxCount(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ingest_outbox`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count outbox rows: %w", err)
+	}
+	return n, nil
 }
 
 func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {

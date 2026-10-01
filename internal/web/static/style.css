@@ -1952,6 +1952,9 @@ tr.click-send:hover td { background: var(--surface-hi); }
   background: rgba(255, 255, 255, 0.22);
 }
 .wf-pop-ico .wi { font-size: 1rem; line-height: 1; }
+/* The station's own APRS symbol inside the popup icon slot: a white
+   circular chip so the sprite reads on the colored banner. */
+.wf-pop-ico .aprs-sym-img { filter: brightness(0) invert(1); }
 .wf-pop-t { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
 .wf-pop-t strong { font-size: 0.92rem; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-pop-sub { font-size: 0.72rem; opacity: 0.9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -717,6 +717,13 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	nowMs := now.UnixMilli()
 	key := event.Key()
 
+	// The publisher identity is stamped at creation so the local-first
+	// dispatch and the broker loopback produce the SAME dedup identity.
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return 0, nil, fmt.Errorf("publisher id for ingest of %q: %w", key, err)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, nil, fmt.Errorf("begin ingest transaction for %q: %w", key, err)
@@ -746,7 +753,7 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 		if _, err := tx.ExecContext(ctx, insertSQL, insertArgs(event, fingerprint, now, now, event.UpdatedAt, expiryMs(event))...); err != nil {
 			return 0, nil, fmt.Errorf("insert event %q: %w", key, err)
 		}
-		change, err := insertChange(tx, ctx, changeType, key, nowMs, snapshot)
+		change, err := insertChange(tx, ctx, changeType, key, nowMs, snapshot, publisher)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -823,7 +830,7 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	if _, err := tx.ExecContext(ctx, updateSQL, updateArgs(event, fingerprint, now, expiryMs(event))...); err != nil {
 		return 0, nil, fmt.Errorf("update event %q: %w", key, err)
 	}
-	change, err := insertChange(tx, ctx, changeType, key, nowMs, snapshot)
+	change, err := insertChange(tx, ctx, changeType, key, nowMs, snapshot, publisher)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -844,6 +851,11 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 func (s *Store) Expire(ctx context.Context, now time.Time) ([]storage.Change, error) {
 	now = now.UTC()
 	nowMs := now.UnixMilli()
+
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("publisher id for expiration: %w", err)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -882,7 +894,7 @@ func (s *Store) Expire(ctx context.Context, now time.Time) ([]storage.Change, er
 		if err != nil {
 			return nil, err
 		}
-		change, err := insertChange(tx, ctx, core.ChangeExpired, key, nowMs, storage.SnapshotOf(event))
+		change, err := insertChange(tx, ctx, core.ChangeExpired, key, nowMs, storage.SnapshotOf(event), publisher)
 		if err != nil {
 			return nil, err
 		}
@@ -1502,8 +1514,8 @@ func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expir
 }
 
 // insertChange writes one journal record (with its immutable event
-// snapshot) and returns its stable ID.
-func insertChange(tx *sql.Tx, ctx context.Context, changeType core.ChangeType, key string, nowMs int64, snapshot storage.EventSnapshot) (*storage.Change, error) {
+// snapshot and the publisher identity) and returns its stable ID.
+func insertChange(tx *sql.Tx, ctx context.Context, changeType core.ChangeType, key string, nowMs int64, snapshot storage.EventSnapshot, publisher string) (*storage.Change, error) {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return nil, fmt.Errorf("marshal snapshot for %q: %w", key, err)
@@ -1518,7 +1530,7 @@ func insertChange(tx *sql.Tx, ctx context.Context, changeType core.ChangeType, k
 	if err != nil {
 		return nil, fmt.Errorf("journal change id for %q: %w", key, err)
 	}
-	return &storage.Change{ID: id, ChangeType: changeType}, nil
+	return &storage.Change{ID: id, ChangeType: changeType, Publisher: publisher}, nil
 }
 
 func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {

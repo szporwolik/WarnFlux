@@ -4,6 +4,41 @@ WarnFlux moves every alert through three stages with different durability
 semantics. This document states exactly what survives a crash or a broker
 outage at each stage — and what does not.
 
+## 0. Offline architecture (SQLite + radio suffice)
+
+The architectural invariant: **local SQLite and the local radio must
+suffice to accept, store, serve and transmit a communication. Internet
+and the MQTT broker EXTEND the station (remote instances, public feeds,
+WAN media); their outage must never interrupt the local path.**
+
+Concretely:
+
+- **Accept** — a receiver, the panel or a radio frame persists the
+  canonical event in SQLite before anything else (dispatch inbox rows,
+  `compose_hazards`, `emcom_networks`, the events table).
+- **Route** — every producer dispatches directly into the LOCAL ingress:
+  source ingests and expirations through the ingest dispatch sink
+  (`EventFromChange`, stamped with the publisher UUID and journal change
+  ID), panel communications and radio events through their local-first
+  paths. The broker loopback is only the asynchronous sync copy; the
+  identical dedup identity collapses the pair.
+- **Transmit** — action workers claim delivery jobs from SQLite and talk
+  to the radio (MeshCore serial, APRS KISS) directly. WAN media (SMTP,
+  Discord, APRS-IS) are additional actions whose failure is isolated per
+  action.
+- **Serve** — the public home page, the map endpoint and the admin
+  warnings panel read the active view from the LOCAL database first; the
+  MQTT mirror only fills documents the local record does not own (other
+  instances' publications).
+- **Sync** — the durable journal with per-output cursors, persistent
+  receiver sessions and the resync hook reconcile the broker whenever it
+  returns; missed documents are re-published (including tombstones), and
+  received `/events` are redelivered by the broker's session queue.
+
+Startup never requires the network: sources, outputs and receivers
+connect lazily and failures stay isolated; `/healthz` and `/readyz`
+report process and storage readiness only.
+
 ## 1. Output publishing (journal → MQTT)
 
 **Guarantee: at-least-once per output.**

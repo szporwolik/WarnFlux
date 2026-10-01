@@ -78,6 +78,16 @@
       "popup.not_found": "The message is not active anymore.",
       "notif.empty": "No notifications processed yet",
       "traffic.subscribing": "Subscribing to %s… (%s s)",
+      "traffic.browse_failed": "Browse failed.",
+      "traffic.browse_empty": "Browse failed (empty response).",
+      "traffic.browse_error": "Error: %s",
+      "traffic.messages_count": "%d message(s)",
+      "common.yes": "yes",
+      "common.no": "no",
+      "home.archive.loading": "Loading archive…",
+      "home.archive.failed": "Archive failed to load.",
+      "map.load_failed": "Map library failed to load (offline?).",
+      "map.loc_unavailable": "Location unavailable (permission denied or no signal)",
       "users.edit_title": "Edit user",
       "users.add_title": "Add user"
     },
@@ -145,6 +155,16 @@
       "popup.not_found": "Komunikat nie jest już aktywny.",
       "notif.empty": "Nie przetworzono jeszcze powiadomień",
       "traffic.subscribing": "Subskrybowanie %s… (%s s)",
+      "traffic.browse_failed": "Przeglądanie nie powiodło się.",
+      "traffic.browse_empty": "Przeglądanie nie powiodło się (pusta odpowiedź).",
+      "traffic.browse_error": "Błąd: %s",
+      "traffic.messages_count": "%d wiadomości",
+      "common.yes": "tak",
+      "common.no": "nie",
+      "home.archive.loading": "Wczytywanie archiwum…",
+      "home.archive.failed": "Nie udało się wczytać archiwum.",
+      "map.load_failed": "Nie udało się wczytać biblioteki mapy (offline?).",
+      "map.loc_unavailable": "Lokalizacja niedostępna (brak zgody lub sygnału)",
       "users.edit_title": "Edytuj użytkownika",
       "users.add_title": "Dodaj użytkownika"
     }
@@ -588,7 +608,7 @@
         return;
       }
       archiveBox.textContent = "";
-      archiveBox.appendChild(loadingNote("Loading archive…"));
+      archiveBox.appendChild(loadingNote(tr("home.archive.loading")));
       fetch(url || "/archive", { headers: { "Accept": "text/html" }, cache: "no-store" })
         .then(function (resp) { return resp.ok ? resp.text() : null; })
         .then(function (html) {
@@ -601,7 +621,7 @@
         .catch(function () {
           if (archiveBox) {
             archiveBox.textContent = "";
-            archiveBox.appendChild(loadingNote("Archive failed to load."));
+            archiveBox.appendChild(loadingNote(tr("home.archive.failed")));
           }
         });
     }
@@ -880,7 +900,7 @@
   }
 
   function mapLoadError() {
-    el.innerHTML = "<p class=\"muted\">Map library failed to load (offline?).</p>";
+    el.innerHTML = "<p class=\"muted\">" + esc(tr("map.load_failed")) + "</p>";
   }
 
   // Leaflet → MapLibre GL → the MapLibre Leaflet glue. Each step falls
@@ -2368,7 +2388,7 @@
   function bindLocate(map, btn) {
     function denied() {
       btn.classList.add("wf-locate-denied");
-      btn.title = "Location unavailable (permission denied or no signal)";
+      btn.title = tr("map.loc_unavailable");
       window.setTimeout(function () { btn.classList.remove("wf-locate-denied"); }, 2200);
     }
 
@@ -2898,11 +2918,11 @@
 
     function render(data) {
       if (!data) {
-        statusEl.textContent = "Browse failed (empty response).";
+        statusEl.textContent = tr("traffic.browse_empty");
         return;
       }
       if (data.error) {
-        statusEl.textContent = "Error: " + data.error;
+        statusEl.textContent = trf("traffic.browse_error", data.error);
         return;
       }
       var entries = data.entries || [];
@@ -2911,13 +2931,13 @@
         var tr = document.createElement("tr");
         tr.appendChild(cell(e.topic, "mono"));
         tr.appendChild(cell(String(e.qos)));
-        tr.appendChild(cell(e.retained ? "yes" : "no", e.retained ? "browse-ret" : ""));
+        tr.appendChild(cell(e.retained ? tr("common.yes") : tr("common.no"), e.retained ? "browse-ret" : ""));
         tr.appendChild(cell(e.size + " B"));
         tr.appendChild(payloadCell(e.payload || ""));
         rows.appendChild(tr);
       });
       results.hidden = false;
-      statusEl.textContent = entries.length + " message(s) · " +
+      statusEl.textContent = trf("traffic.messages_count", entries.length) + " · " +
         new Date().toLocaleTimeString();
     }
 
@@ -2944,7 +2964,7 @@
         })
         .then(render)
         .catch(function () {
-          statusEl.textContent = "Browse failed.";
+          statusEl.textContent = tr("traffic.browse_failed");
         });
     });
   }

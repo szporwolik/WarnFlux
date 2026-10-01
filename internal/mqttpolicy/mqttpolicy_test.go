@@ -33,6 +33,41 @@ func TestSetAndAllowed(t *testing.T) {
 	}
 }
 
+// TestSetOnChangeHook pins the mask-change notification contract: the
+// hook fires with (old, new) after every effective Set and never on a
+// no-op, and clearing the hook silences it.
+func TestSetOnChangeHook(t *testing.T) {
+	old := Mask()
+	t.Cleanup(func() {
+		SetOnChange(nil)
+		Set(old)
+	})
+
+	var got [][2]uint32
+	SetOnChange(func(o, n uint32) { got = append(got, [2]uint32{o, n}) })
+
+	Set(old) // no-op: no notification
+	next := old &^ uint32(CatActive)
+	Set(next)
+	Set(old)
+	if len(got) != 2 {
+		t.Fatalf("hook fired %d times, want 2", len(got))
+	}
+	if got[0][0] != old || got[0][1] != next {
+		t.Errorf("first hook = %#x → %#x, want %#x → %#x", got[0][0], got[0][1], old, next)
+	}
+	if got[1][0] != next || got[1][1] != old {
+		t.Errorf("second hook = %#x → %#x, want %#x → %#x", got[1][0], got[1][1], next, old)
+	}
+
+	SetOnChange(nil)
+	Set(next)
+	Set(old)
+	if len(got) != 2 {
+		t.Errorf("hook fired after clearing, want no more notifications")
+	}
+}
+
 func TestParseEnabledKeysRoundTrip(t *testing.T) {
 	names := []string{"events", "active", "aprs_bulletins", "meshcore_messages"}
 	mask := Parse(names)

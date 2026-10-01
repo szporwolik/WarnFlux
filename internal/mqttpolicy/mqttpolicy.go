@@ -73,6 +73,11 @@ var orderedNames = []struct {
 // publishes", so the package default must be explicit.
 var mask atomic.Uint32
 
+// onChange is the optional change hook: after every effective Set it
+// receives (old, new). Consumers that keep local state derived from the
+// mask (the MQTT output's active-view rehydration) use it to resync.
+var onChange atomic.Value // func(old, new uint32)
+
 func init() { mask.Store(uint32(CatAll)) }
 
 // Allowed reports whether the category may be published right now.
@@ -83,8 +88,21 @@ func Allowed(c Category) bool {
 // Mask returns the current mask.
 func Mask() uint32 { return mask.Load() }
 
+// SetOnChange registers the mask-change hook (nil clears it). The last
+// registration wins; the hook runs synchronously after every Set that
+// actually changes the mask.
+func SetOnChange(fn func(old, new uint32)) { onChange.Store(fn) }
+
 // Set replaces the mask atomically. Unknown bits are kept.
-func Set(m uint32) { mask.Store(m) }
+func Set(m uint32) {
+	old := mask.Swap(m)
+	if old == m {
+		return
+	}
+	if fn, _ := onChange.Load().(func(old, new uint32)); fn != nil {
+		fn(old, m)
+	}
+}
 
 // Key returns the config-file key of a category ("" for unknown bits).
 func Key(c Category) string {

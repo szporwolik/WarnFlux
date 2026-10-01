@@ -14,6 +14,7 @@ import (
 	paho "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 )
 
 // ---- fake MQTT transport ----
@@ -148,6 +149,18 @@ func newTestOutput(fc *fakeClient) *Output {
 	}
 }
 
+// updateActiveStateTest runs the combined track+publish path (the
+// production Handle split) for tests that drive the active state
+// directly.
+func updateActiveStateTest(t *testing.T, o *Output, ev core.HazardEvent) error {
+	t.Helper()
+	delSeq, err := o.trackActiveState(ev)
+	if err != nil {
+		return err
+	}
+	return o.publishActiveState(context.Background(), ev, delSeq)
+}
+
 func activeEvent() core.HazardEvent {
 	e := core.HazardEvent{
 		Source:   "meteoalarm",
@@ -177,6 +190,66 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 // TestActiveIDAndTopicMapping: the final topic level is always 64 lowercase
 // hex characters derived from the event key — raw keys never leak into the
 // topic and MQTT wildcards are impossible.
+// TestMaskedActiveTracksCancellation pins the reported P1: while the
+// active category is masked, the LOCAL target state is still tracked, so
+// unmasking + rehydrating publishes the cancellation DELETE — never the
+// stale active payload (which would resurrect a cancelled alert).
+func TestMaskedActiveTracksCancellation(t *testing.T) {
+	oldMask := mqttpolicy.Mask()
+	t.Cleanup(func() { mqttpolicy.Set(oldMask) })
+
+	fc := &fakeClient{connected: true}
+	o := newTestOutput(fc)
+
+	// The alert goes live with the active category on.
+	ev := activeEvent()
+	if err := o.Handle(context.Background(), core.EventChange{ID: 1, Type: core.ChangeNew, Event: ev}); err != nil {
+		t.Fatalf("Handle(active): %v", err)
+	}
+
+	// The admin masks the active category and the alert is cancelled
+	// while masked: the journal still flows, the active view stays
+	// silent — but the desired state MUST be tracked locally.
+	mqttpolicy.Set(oldMask &^ uint32(mqttpolicy.CatActive))
+	cancelled := ev
+	cancelled.Status = core.StatusCancelled
+	if err := o.Handle(context.Background(), core.EventChange{ID: 2, Type: core.ChangeCancelled, Event: cancelled}); err != nil {
+		t.Fatalf("Handle(cancelled, masked): %v", err)
+	}
+	o.activeMu.Lock()
+	_, stillCached := o.activeCache[ev.Key()]
+	_, pending := o.pendingDeletes[ev.Key()]
+	o.activeMu.Unlock()
+	if stillCached {
+		t.Fatal("cancelled hazard must leave the desired cache even while masked")
+	}
+	if !pending {
+		t.Fatal("the cancellation must register a pending delete even while masked")
+	}
+
+	// Unmask + reconnect: rehydration publishes the retained DELETE.
+	mqttpolicy.Set(oldMask)
+	baseline := fc.count()
+	o.RehydrateActiveState()
+	topic := o.activeTopic(ev.Source, ev.Key())
+	waitFor(t, 2*time.Second, func() bool {
+		for _, p := range fc.snapshot()[baseline:] {
+			if p.topic == topic && p.retained && len(p.payload) == 0 {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The broker must never see the stale ACTIVE payload after the
+	// unmask (the initial publish from before the masking is legitimate).
+	for _, p := range fc.snapshot()[baseline:] {
+		if p.topic == topic && len(p.payload) > 0 && p.retained {
+			t.Fatal("stale active payload republished after unmask — the cancelled alert was resurrected")
+		}
+	}
+}
+
 func TestActiveIDAndTopicMapping(t *testing.T) {
 	known := fmt.Sprintf("%x", sha256.Sum256([]byte("meteoalarm:warning-123")))
 	if got := activeID("meteoalarm:warning-123"); got != known {
@@ -559,7 +632,7 @@ func TestRehydrateConvergesAfterConcurrentUpdate(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool { return fc.count() == 1 }) // rehydration is inside publish v1
 
 	// Concurrent Handle-style update: cache and publish v2 (not gated).
-	if err := o.updateActiveState(context.Background(), v2); err != nil {
+	if err := updateActiveStateTest(t, o, v2); err != nil {
 		t.Fatalf("updateActiveState: %v", err)
 	}
 	close(gate.done)
@@ -609,7 +682,7 @@ func rehydrateDeleteRace(t *testing.T, status core.EventStatus) {
 	// While the stale publish is blocked, the event is cancelled/expired:
 	// cache removes it and the retained DELETE succeeds.
 	ev.Status = status
-	if err := o.updateActiveState(context.Background(), ev); err != nil {
+	if err := updateActiveStateTest(t, o, ev); err != nil {
 		t.Fatalf("updateActiveState(%s): %v", status, err)
 	}
 	if got := fc.count(); got != 2 {
@@ -681,7 +754,7 @@ func TestRehydrateCorrectiveDeleteFailurePersistsAndRetries(t *testing.T) {
 			// blocked: the NORMAL retained DELETE succeeds and clears the
 			// pending registration immediately.
 			ev.Status = status
-			if err := o.updateActiveState(context.Background(), ev); err != nil {
+			if err := updateActiveStateTest(t, o, ev); err != nil {
 				t.Fatalf("updateActiveState(%s): %v", name, err)
 			}
 			if got := fc.count(); got != 2 {

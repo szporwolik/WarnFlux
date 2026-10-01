@@ -319,14 +319,6 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	}
 	e.eventsSeen.Add(1)
 
-	// The common lifecycle ledger records EVERY observed transition —
-	// local, remote and panel — so the pre-transmission gate can block
-	// jobs superseded by a newer version, a remote cancellation or a
-	// panel expiry. Recording happens before the terminal-transition
-	// skip, so a remote 'cancelled' leaves durable knowledge even
-	// though it starts no notification machine.
-	e.recordLifecycle(ctx, ev)
-
 	key := ev.Hazard.Key
 	sev := strings.ToLower(strings.TrimSpace(ev.Hazard.Hazard.Severity))
 	rank, ok := severity.Rank(sev)
@@ -341,6 +333,27 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	// ones that end up skipped — "why was this alert not sent?" is the
 	// question the trail exists to answer.
 	e.trail.Receive(key, src, sev, ev.Hazard.Hazard.Event, ev.Hazard.Hazard.Headline, ev.Hazard.Timestamp)
+
+	// The common lifecycle ledger records EVERY observed transition —
+	// local, remote and panel — so the pre-transmission gate can block
+	// jobs superseded by a newer version, a remote cancellation or a
+	// panel expiry. Recording happens before the terminal-transition
+	// skip, so a remote 'cancelled' leaves durable knowledge even
+	// though it starts no notification machine. A FAILED record must
+	// never be followed by an inbox ack: the event stays pending and
+	// recovery retries the record, so a cancellation is never silently
+	// lost from the queue.
+	if err := e.recordLifecycle(ctx, ev); err != nil {
+		e.logger.Warn("routing: lifecycle record failed",
+			"event_key", key, "inbox_id", inboxID, "error", err)
+		if inboxID != 0 {
+			e.trail.Add(key, trail.StepSkipped,
+				"skipped: lifecycle record failed — event kept pending for retry", time.Now())
+			return
+		}
+		// Live-only events have no pending state: fail open like the
+		// rest of the engine's degraded modes.
+	}
 
 	// Cancellations and expirations only retire the active view (the
 	// dashboard hides the hazard); starting the notification machine for
@@ -585,17 +598,20 @@ func (e *Engine) consumeDeliberate(ctx context.Context, inboxID int64) {
 }
 
 // recordLifecycle feeds the observed transition into the shared
-// lifecycle ledger. Legacy payloads without a publisher identity are
-// skipped (fail-open: nothing to record against); the panel records its
-// own state through the compose store.
-func (e *Engine) recordLifecycle(ctx context.Context, ev dispatch.Event) {
+// lifecycle ledger and reports the write result: a FAILED record for a
+// durable inbox event leaves the event pending (the inbox row is not
+// consumed), so a terminal cancellation is never silently lost by an
+// ack. Legacy payloads without a publisher identity are skipped
+// (fail-open: nothing to record against); the panel records its own
+// state through the compose store.
+func (e *Engine) recordLifecycle(ctx context.Context, ev dispatch.Event) error {
 	h := ev.Hazard
 	if h == nil || h.Publisher == "" {
-		return
+		return nil
 	}
 	lr, ok := e.store.(LifecycleRecorder)
 	if !ok {
-		return
+		return nil
 	}
 	status := string(core.StatusActive)
 	switch h.Type {
@@ -604,10 +620,7 @@ func (e *Engine) recordLifecycle(ctx context.Context, ev dispatch.Event) {
 	case dispatch.TransitionExpired:
 		status = string(core.StatusExpired)
 	}
-	if err := lr.RecordLifecycle(ctx, h.Publisher, h.Key, h.ChangeID, status); err != nil {
-		e.logger.Warn("routing: lifecycle record failed",
-			"event_key", h.Key, "change_id", h.ChangeID, "error", err)
-	}
+	return lr.RecordLifecycle(ctx, h.Publisher, h.Key, h.ChangeID, status)
 }
 
 // hazardFresh is the scheduling-time staleness gate: the transition's

@@ -119,7 +119,13 @@ type Hub struct {
 	cfg    Config
 	logger *slog.Logger
 
-	mu        sync.Mutex
+	mu sync.Mutex
+	// writeMu is the single serializer for COMPLETE frame writes: the
+	// command worker and the frame pump (pushMsgWaiting tickles,
+	// handshake retries) both write to the transport, and a frame must
+	// never interleave with another — every complete-frame write goes
+	// through writeAllLocked.
+	writeMu   sync.Mutex
 	client    conn
 	self      *SelfInfo
 	device    *DeviceInfo
@@ -457,7 +463,10 @@ func (h *Hub) handshake(conn conn) error {
 	payload = append(payload, buildAppStart("warnflux")...)
 	payload = append(payload, buildDeviceQuery(3)...)
 	payload = append(payload, buildGetBattery()...)
-	if _, err := conn.Write(encodeFrame(payload)); err != nil {
+	// The retry path runs from the frame pump, concurrently with the
+	// command worker — the handshake frame shares the transport write
+	// serializer with every other complete frame.
+	if err := h.writeAllLocked(context.Background(), conn, payload); err != nil {
 		return fmt.Errorf("handshake write: %w", err)
 	}
 	return nil
@@ -645,7 +654,9 @@ func (h *Hub) syncChannel(conn conn) error {
 	}
 }
 
-// writeFrame encodes and writes one outgoing command.
+// writeFrame encodes and writes one outgoing command on the current
+// session connection (frame-pump paths: pushMsgWaiting tickles). The
+// whole frame is written under the shared transport write lock.
 func (h *Hub) writeFrame(payload []byte) error {
 	h.mu.Lock()
 	conn := h.client
@@ -653,12 +664,24 @@ func (h *Hub) writeFrame(payload []byte) error {
 	if conn == nil {
 		return errors.New("meshcore: device not connected")
 	}
-	return writeAll(context.Background(), conn, encodeFrame(payload), frameWriteTimeout)
+	return h.writeAllLocked(context.Background(), conn, payload)
 }
 
 // writeFrameOn encodes and writes one outgoing command on the given
-// connection (the command worker owns its session connection).
+// connection (the command worker owns its session connection), under
+// the shared transport write lock.
 func (h *Hub) writeFrameOn(ctx context.Context, c conn, payload []byte) error {
+	return h.writeAllLocked(ctx, c, payload)
+}
+
+// writeAllLocked writes one COMPLETE frame under the single transport
+// write serializer (Hub.writeMu): the command worker and the frame pump
+// both write to the same stream, and without the lock a pump tickle
+// could land in the middle of a command frame (reported P1). Every
+// complete-frame write in the hub goes through here.
+func (h *Hub) writeAllLocked(ctx context.Context, c conn, payload []byte) error {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
 	return writeAll(ctx, c, encodeFrame(payload), frameWriteTimeout)
 }
 
@@ -872,15 +895,25 @@ func (h *Hub) recreateAfterAmbiguousWait(c conn) {
 
 // settleOrRecreateSession keeps the session stream frame-consistent after
 // a caller cancelled a command mid-write: it waits a bounded grace for
-// the in-flight write to complete (a healthy serial write settles in
-// milliseconds), and closes the connection when the write is still stuck
-// — ending the session, so the next command runs on a freshly dialed one
-// and can never interleave with the abandoned frame.
+// the in-flight write to settle (a healthy serial write settles in
+// milliseconds) and then inspects the RESULT — a settled write that
+// failed (cancellation between chunks, transport error) left a PARTIAL
+// frame on the wire, so the session must end before the next command
+// can follow it; a fully written frame keeps the session. A write still
+// stuck past the grace also ends the session.
 func (h *Hub) settleOrRecreateSession(c conn, wdone <-chan writeResult) {
 	select {
-	case <-wdone:
-		// The frame completed (or failed cleanly): the stream is
-		// consistent and the next command is safe.
+	case wr := <-wdone:
+		if wr.err != nil {
+			// The abandoned write settled with an error: the frame is
+			// partial on the wire and the next command must never
+			// follow it (reported P1 — the old code ignored the
+			// result and left the transport open).
+			h.logger.Warn("meshcore: command frame write failed after cancellation; recreating the session", "error", wr.err)
+			_ = c.Close()
+		}
+		// wr.err == nil: the whole frame is on the wire and the
+		// session stays consistent.
 	case <-time.After(abandonedWriteGrace):
 		// Still mid-write: recreate the session.
 		h.logger.Warn("meshcore: command write abandoned; recreating the session")

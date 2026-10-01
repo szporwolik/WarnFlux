@@ -349,7 +349,7 @@ func (s *Server) handleMeshcoreAdvert(w http.ResponseWriter, r *http.Request) {
 	if r.PostFormValue("kind") == "zerohop" {
 		kind = mesh.AdvertZeroHop
 	}
-	if err := s.mesh.SendAdvert(kind); err != nil {
+	if err := s.mesh.SendAdvert(r.Context(), kind); err != nil {
 		s.logger.Warn("web: meshcore advert failed", "error", err)
 		http.Error(w, fmt.Sprintf(i18n.T(s.langFor(r), "meshcore.advert_failed"), err), http.StatusBadGateway)
 		return
@@ -395,9 +395,9 @@ func (s *Server) handleMeshcoreSend(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		err = s.mesh.SendContactMessage(addr, text, sess.username)
+		err = s.mesh.SendContactMessage(r.Context(), addr, text, sess.username)
 	} else {
-		err = s.mesh.SendChannelMessage(text, sess.username)
+		err = s.mesh.SendChannelMessage(r.Context(), text, sess.username)
 	}
 	if err != nil {
 		s.logger.Warn("web: meshcore send failed", "target", r.PostFormValue("target"), "error", err)

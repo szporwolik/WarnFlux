@@ -89,7 +89,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		case <-time.After(wait):
 		}
 	}
-	if err := a.hub.SendChannelMessage(text, "system"); err != nil {
+	if err := a.hub.SendChannelMessage(ctx, text, "system"); err != nil {
 		return fmt.Errorf("meshcore: %w", err)
 	}
 	a.last = time.Now()

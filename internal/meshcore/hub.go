@@ -188,6 +188,11 @@ type cmdReq struct {
 	payload []byte
 	expect  cmdExpect
 	timeout time.Duration // 0 = cmdReplyTimeout
+	// ctx is the CALLER's cancellation: the worker aborts the write and
+	// the ACK wait the moment it is done, so an unavailable device is a
+	// transient error the caller retries — never a hung plugin. nil for
+	// background commands (frame-pump paths).
+	ctx context.Context
 	// reply receives the result (buffered, size 1); background commands
 	// may leave it unread — the worker never blocks delivering to it.
 	reply chan error
@@ -674,6 +679,14 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 	if timeout <= 0 {
 		timeout = cmdReplyTimeout
 	}
+	// The caller's cancellation competes with the session context and
+	// the command timeout on every wait — an action whose context is
+	// done fails fast with a transient error instead of being mistaken
+	// for a hung plugin.
+	var callerDone <-chan struct{}
+	if req.ctx != nil {
+		callerDone = req.ctx.Done()
+	}
 	slot := &cmdSlot{expect: req.expect, done: make(chan error, 1)}
 	h.mu.Lock()
 	h.curCmd = slot
@@ -699,6 +712,10 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 			deliverErr(req.reply, wr.err)
 			return
 		}
+	case <-callerDone:
+		clear()
+		deliverErr(req.reply, req.ctx.Err())
+		return
 	case <-ctx.Done():
 		clear()
 		deliverErr(req.reply, errors.New("meshcore: session ended"))
@@ -714,6 +731,9 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 		// The frame pump routed this command's matching reply here.
 		clear()
 		deliverErr(req.reply, err)
+	case <-callerDone:
+		clear()
+		deliverErr(req.reply, req.ctx.Err())
 	case <-ctx.Done():
 		clear()
 		deliverErr(req.reply, errors.New("meshcore: session ended"))
@@ -737,8 +757,8 @@ func deliverErr(ch chan error, err error) {
 
 // submitCmd enqueues one command for the worker and waits until the
 // worker takes it (commands are strictly serialized). It fails fast
-// when no session is running.
-func (h *Hub) submitCmd(req cmdReq) error {
+// when no session is running and aborts on the caller's cancellation.
+func (h *Hub) submitCmd(ctx context.Context, req cmdReq) error {
 	h.mu.Lock()
 	sc := h.sessionCtx
 	h.mu.Unlock()
@@ -748,6 +768,8 @@ func (h *Hub) submitCmd(req cmdReq) error {
 	select {
 	case h.cmdCh <- req:
 		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-sc.Done():
 		return errors.New("meshcore: session ended")
 	}
@@ -830,14 +852,18 @@ func (e *DeviceErr) Error() string {
 
 // waitReady blocks until the current session finished its startup
 // handshake and queue drain, so sends are written after the startup
-// command stream instead of interleaving with SYNC_NEXT frames.
-func (h *Hub) waitReady() error {
+// command stream instead of interleaving with SYNC_NEXT frames. The
+// caller's cancellation aborts the wait immediately — an unavailable
+// device is a transient error, never a hung call.
+func (h *Hub) waitReady(ctx context.Context) error {
 	h.mu.Lock()
 	ready := h.ready
 	h.mu.Unlock()
 	select {
 	case <-ready:
 		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-time.After(12 * time.Second):
 		return errors.New("meshcore: device session is not ready")
 	}
@@ -846,11 +872,11 @@ func (h *Hub) waitReady() error {
 // SendChannelMessage sends one text message on the configured channel.
 // The Public channel (0) is refused: never transmit there. operator is
 // the username behind the send (admin panel) or "" for automation.
-func (h *Hub) SendChannelMessage(text, operator string) error {
+func (h *Hub) SendChannelMessage(ctx context.Context, text, operator string) error {
 	if h.cfg.ChannelIdx == PublicChannelIdx {
 		return errors.New("meshcore: refusing to transmit on public channel 0")
 	}
-	if err := h.waitReady(); err != nil {
+	if err := h.waitReady(ctx); err != nil {
 		return err
 	}
 	// One command through the serialized worker: only THIS command's
@@ -859,8 +885,9 @@ func (h *Hub) SendChannelMessage(text, operator string) error {
 		payload: buildSendChannelTxtMsg(byte(h.cfg.ChannelIdx), text),
 		expect:  expectAck,
 		reply:   make(chan error, 1),
+		ctx:     ctx,
 	}
-	if err := h.submitCmd(req); err != nil {
+	if err := h.submitCmd(ctx, req); err != nil {
 		return err
 	}
 	if err := <-req.reply; err != nil {
@@ -874,7 +901,7 @@ func (h *Hub) SendChannelMessage(text, operator string) error {
 // key prefix (12 hex chars) or full key (64 hex chars). When the full key
 // is given and the device does not know the contact yet, the contact is
 // added on the device and the send retried once.
-func (h *Hub) SendContactMessage(addr, text, operator string) error {
+func (h *Hub) SendContactMessage(ctx context.Context, addr, text, operator string) error {
 	b, err := hex.DecodeString(strings.TrimPrefix(addr, "0x"))
 	if err != nil || (len(b) != 6 && len(b) != 32) {
 		return fmt.Errorf("meshcore: contact address must be 12 or 64 hex chars")
@@ -884,7 +911,7 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 		fullKey = b
 	}
 	prefix := b[:6]
-	if err := h.waitReady(); err != nil {
+	if err := h.waitReady(ctx); err != nil {
 		return err
 	}
 	// The contact add/retry sequence and the send share one in-order
@@ -895,8 +922,8 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 		payload = binary.LittleEndian.AppendUint32(payload, uint32(nowUnix()))
 		payload = append(payload, prefix...)
 		payload = append(payload, []byte(text)...)
-		req := cmdReq{payload: payload, expect: expectAck, reply: make(chan error, 1)}
-		if err := h.submitCmd(req); err != nil {
+		req := cmdReq{payload: payload, expect: expectAck, reply: make(chan error, 1), ctx: ctx}
+		if err := h.submitCmd(ctx, req); err != nil {
 			return err
 		}
 		return <-req.reply
@@ -907,8 +934,8 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 			return err
 		}
 		// The device does not know this contact yet: add it and retry.
-		req := cmdReq{payload: buildAddUpdateContact(fullKey), expect: expectAck, reply: make(chan error, 1)}
-		if err := h.submitCmd(req); err != nil {
+		req := cmdReq{payload: buildAddUpdateContact(fullKey), expect: expectAck, reply: make(chan error, 1), ctx: ctx}
+		if err := h.submitCmd(ctx, req); err != nil {
 			return err
 		}
 		if err := <-req.reply; err != nil {
@@ -923,19 +950,20 @@ func (h *Hub) SendContactMessage(addr, text, operator string) error {
 }
 
 // SendAdvert triggers a manual advert (0 = zero-hop, 1 = flood).
-func (h *Hub) SendAdvert(kind int) error {
+func (h *Hub) SendAdvert(ctx context.Context, kind int) error {
 	if kind != AdvertZeroHop && kind != AdvertFlood {
 		return fmt.Errorf("meshcore: invalid advert kind %d", kind)
 	}
-	if err := h.waitReady(); err != nil {
+	if err := h.waitReady(ctx); err != nil {
 		return err
 	}
 	req := cmdReq{
 		payload: buildSendSelfAdvert(byte(kind)),
 		expect:  expectAck,
 		reply:   make(chan error, 1),
+		ctx:     ctx,
 	}
-	if err := h.submitCmd(req); err != nil {
+	if err := h.submitCmd(ctx, req); err != nil {
 		return err
 	}
 	return <-req.reply

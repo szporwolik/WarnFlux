@@ -2433,6 +2433,10 @@
       var box = L.DomUtil.create("div", "wf-map-ctl");
 
       LAYER_DEFS.forEach(function (def) {
+        // The radar is an internet feature: no toggle in offline mode.
+        if (OFFLINE && def[0] === "radar") {
+          return;
+        }
         // All layers on by default, except aircraft: planes are noisy on
         // the map, so they stay off until asked for.
         var on = def[0] !== "aircraft";

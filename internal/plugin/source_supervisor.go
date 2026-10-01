@@ -132,7 +132,11 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 	s.ctlMu.Lock()
 	s.root = ctx
 	s.ctlMu.Unlock()
-	s.tracker.markStarted(time.Now())
+
+	// markStarted is deferred until the first ACTUAL run: a source that
+	// boots suspended (offline mode) must keep StateSuspended, not flip
+	// to Starting.
+	marked := false
 	attempt := 0
 
 	for {
@@ -140,6 +144,10 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 		if !ok {
 			s.tracker.setState(StateStopped)
 			return
+		}
+		if !marked {
+			s.tracker.markStarted(time.Now())
+			marked = true
 		}
 		s.tracker.setState(StateStarting)
 		runDone := make(chan runResult, 1)

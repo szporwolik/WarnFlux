@@ -132,7 +132,7 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		v.Msg = i18n.T(s.langFor(r), "config.offline."+msg)
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "config", v)
+	s.renderL(w, r, "configpage", v)
 }
 
 // handleConfigOffline flips the offline-mode switch. Admin-only; the
@@ -141,6 +141,12 @@ func (s *Server) handleConfigOffline(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	switch strings.TrimSpace(r.PostFormValue("offline")) {
+	case "on", "off":
+	default:
+		http.Error(w, "invalid offline value", http.StatusBadRequest)
 		return
 	}
 	on := strings.TrimSpace(r.PostFormValue("offline")) == "on"

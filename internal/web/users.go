@@ -104,6 +104,7 @@ type usersView struct {
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
+	NavConfig        bool
 	NavCompose       bool
 	NavEmcom         bool
 	NavAccount       bool

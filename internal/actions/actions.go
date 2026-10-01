@@ -44,5 +44,12 @@ func RegisterAll(reg *action.Registry, hub *aprs.Hub, meshHub *meshcore.Hub) err
 	if err := meshaction.Register(reg, meshHub); err != nil {
 		return err
 	}
+	// Internet-backed actions: the admin offline-mode switch makes their
+	// workers hold queued requests (nothing executed, nothing lost) until
+	// the station is online again. Local actions (logger, aprs, aprsout,
+	// meshcore) keep running off-grid.
+	for _, internet := range []string{"smtp", "http_webhook", "discord"} {
+		reg.MarkInternet(internet)
+	}
 	return nil
 }

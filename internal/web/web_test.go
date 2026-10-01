@@ -227,7 +227,7 @@ func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectorySto
 	})
 
 	router := &fakeRouter{statuses: []plugin.PluginStatus{
-		{ID: "imgw-warnings", Type: "imgw", Kind: plugin.KindSource, State: plugin.StateRunning},
+		{ID: "imgw-warnings", Type: "imgw", Kind: plugin.KindSource, State: plugin.StateRunning, Internet: true},
 		{ID: "mqtt-main", Type: "mqtt", Kind: plugin.KindOutput, State: plugin.StateDegraded, LastError: "broker down"},
 	}}
 

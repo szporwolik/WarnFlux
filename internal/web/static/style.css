@@ -2389,6 +2389,12 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .emcom-chip-l1 { background: #b28704; }
 .emcom-chip-l2 { background: #e07b00; }
 .emcom-chip-l3 { background: #c62828; }
+/* Offline-mode banner: a calm indigo strip, clearly not an alert. */
+.emcom-chip-offline {
+  background: #303f9f;
+  white-space: normal;
+}
+.home-offline .emcom-chip-label { font-weight: 600; }
 
 /* EMCOM panel page. */
 .emcom-page { max-width: 900px; margin: 0 auto; display: grid; gap: 1rem; padding: 1rem; }

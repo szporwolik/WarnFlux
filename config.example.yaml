@@ -587,6 +587,24 @@ web:
   # email reset (recovery stays with an administrator on the machine).
   domain: "sosna.sp9moa.pl"
 
+  # Offline mode: the startup state of the station's offline switch (an
+  # admin toggles the same switch at runtime on the admin Config page,
+  # changes apply immediately). When on, WarnFlux suspends EVERY
+  # internet-backed source (imgw, openmeteo, rso, gios, giosaq, gddkia,
+  # metar, adsb, aprs-inet) and holds internet-backed actions (smtp,
+  # http_webhook, discord), and the maps use the local tile tree below.
+  # Local functions keep working off-grid: SQLite, the local MQTT broker,
+  # the APRS radio, MeshCore and the radio routing.
+  offline_mode: false
+
+  # Local map tiles for offline mode: a directory with a pre-generated
+  # Leaflet raster tile tree ({z}/{x}/{y}.jpg — e.g. the build/WF_Map
+  # bundle). The station serves it under /tiles/ and the maps use it
+  # while offline. Empty disables local tiles (maps then need internet).
+  # Point it at a mounted volume (e.g. /data/tiles) so every operator
+  # can drop in their own tiles without rebuilding the container.
+  tiles_dir: ""
+
   auth:
     # The admin account is ALWAYS configured here (or via password_file):
     # on startup WarnFlux seeds the read-only admin row in the user

@@ -58,6 +58,7 @@ type ManagerOptions struct {
 type Manager struct {
 	logger   *slog.Logger
 	statuses *StatusRegistry
+	reg      *Registry
 	ingestFn IngestFunc
 	expireFn ExpireFunc
 	store    storage.EventStore
@@ -79,6 +80,10 @@ type Manager struct {
 	// accepting is false once shutdown begins: Emit then rejects events
 	// instead of accepting ownership it can no longer honor.
 	accepting atomic.Bool
+
+	// offline tracks the offline-mode switch: internet-backed sources are
+	// suspended while it is on.
+	offline atomic.Bool
 }
 
 // NewManager builds the plugin instances from the configuration. Unknown
@@ -90,6 +95,7 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 	m := &Manager{
 		logger:     logger,
 		statuses:   newStatusRegistry(),
+		reg:        reg,
 		ingestFn:   ingestFn,
 		expireFn:   expireFn,
 		store:      store,
@@ -106,6 +112,7 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		if err != nil {
 			return nil, fmt.Errorf("source %q: %w", cfg.ID, err)
 		}
+		tracker.setInternet(reg.SourceInternet(cfg.Type))
 		if !cfg.Enabled {
 			tracker.setState(StateDisabled)
 			continue
@@ -238,6 +245,33 @@ func maxSourceShutdownTimeout(sources []*sourceSupervisor) time.Duration {
 
 // Statuses returns a snapshot of every configured plugin instance.
 func (m *Manager) Statuses() []PluginStatus { return m.statuses.Snapshot() }
+
+// Offline reports the current offline-mode state of the manager.
+func (m *Manager) Offline() bool { return m.offline.Load() }
+
+// SetOffline suspends (on=true) or resumes (on=false) every enabled
+// internet-backed source. Local sources (radio, serial, snapshot helpers)
+// keep running either way. Disabled sources stay disabled. The method is
+// idempotent and safe to call before Run: an early suspension means the
+// sources simply never start until the first resume.
+func (m *Manager) SetOffline(on bool) {
+	if m.offline.Swap(on) == on {
+		return
+	}
+	internet := 0
+	for _, s := range m.sources {
+		if !m.reg.SourceInternet(s.kind) {
+			continue
+		}
+		internet++
+		if on {
+			s.Suspend()
+		} else {
+			s.Resume()
+		}
+	}
+	m.logger.Info("offline mode sources toggled", "offline", on, "internet_sources", internet)
+}
 
 // Run starts all workers and blocks until ctx is cancelled, then shuts
 // everything down with bounded timeouts:

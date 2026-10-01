@@ -21,10 +21,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
     -o /out/warnflux ./cmd/warnflux
 
-# Prepare empty /data (SQLite) and /logs (optional log files) owned by
-# the runtime user so mounted volumes inherit writable permissions for
-# the non-root container.
-RUN mkdir -p /out/data /out/logs /out/config && chown 65532:65532 /out/data /out/logs /out/config
+# Prepare empty /data (SQLite), /logs (optional log files) and /config
+# owned by the runtime user so mounted volumes inherit writable
+# permissions for the non-root container. /data/tiles is the mount point
+# for the operator's offline Leaflet tile tree (see web.tiles_dir).
+RUN mkdir -p /out/data/tiles /out/logs /out/config && chown 65532:65532 /out/data /out/logs /out/config /out/data/tiles
 
 # ---- Runtime stage ---------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -52,6 +53,11 @@ USER nonroot:nonroot
 # WarnFlux is an MQTT client plus an authenticated web UI: the UI
 # listens on 8080 inside the container.
 EXPOSE 8080
+
+# Optional offline-map tiles (Leaflet {z}/{x}/{y}.jpg tree, served under
+# /tiles/ in offline mode): mount your own bundle here, e.g.
+#   -v ./WF_Map:/data/tiles:ro
+VOLUME ["/data/tiles"]
 
 # /config convention: mount ./config.yaml:/config/config.yaml:ro and
 # ./data:/data; the SQLite database path is then /data/warnflux.db.

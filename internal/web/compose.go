@@ -358,7 +358,21 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, hasStore := s.users.(composeStore)
-	if !hasStore {
+	if hasStore {
+		// LOCAL-FIRST + ATOMIC (P1): the local record and its lifecycle
+		// state commit in ONE transaction BEFORE the expiry transition
+		// is dispatched — a failed save rejects the operation (the form
+		// sees the failure instead of a silent success) and a crash can
+		// never leave an expired record with an active lifecycle that
+		// still allows the retired message through the delivery queue.
+		if err := s.users.(composeStore).SaveComposeHazard(context.Background(), storage.ComposeHazard{
+			EventKey: key, State: composeStateJSON(h), Status: "expired", UpdatedAt: time.Now(),
+		}); err != nil {
+			s.logger.Warn("compose: local expiry record failed", "event_key", key, "error", err)
+			http.Error(w, "local record save failed", http.StatusServiceUnavailable)
+			return
+		}
+	} else {
 		// Mirror-only: the broker document is the record; the tombstone
 		// publish is required and synchronous (the old contract).
 		if s.pub == nil {
@@ -374,7 +388,7 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// LOCAL-FIRST: the expiry transition is durable and routed locally
-	// before any broker I/O.
+	// after the acceptance above, before any broker I/O.
 	if s.ingress.Enqueue(composeTransition(h, dispatch.TransitionExpired)) == dispatch.Rejected {
 		s.logger.Warn("compose: local dispatch rejected the expiry transition", "event_key", key)
 		if hasStore {
@@ -383,11 +397,6 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hasStore {
-		if err := s.users.(composeStore).SaveComposeHazard(context.Background(), storage.ComposeHazard{
-			EventKey: key, State: composeStateJSON(h), Status: "expired", UpdatedAt: time.Now(),
-		}); err != nil {
-			s.logger.Warn("compose: local expiry record failed", "event_key", key, "error", err)
-		}
 		// Broker sync is asynchronous and best-effort (the resync hook
 		// republishes the current state on receiver reconnect).
 		if s.pub != nil {
@@ -423,16 +432,22 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard) {
 		if cur.ExpiresAt == nil || !cur.ExpiresAt.Equal(expires) {
 			return // re-published with a different expiry; that timer owns it
 		}
-		if s.ingress.Enqueue(composeTransition(cur, dispatch.TransitionExpired)) == dispatch.Rejected {
-			s.logger.Warn("compose: dispatch queue full, auto-expiry transition rejected", "event_key", key)
-			return
-		}
 		if _, hasStore := s.users.(composeStore); hasStore {
+			// The local record commits ATOMICALLY with the lifecycle
+			// state (one transaction): a failed save must not dispatch
+			// the expiry — the stale message stays active and the
+			// expiry-based suppression covers it; the manual expire
+			// remains available.
 			if err := s.users.(composeStore).SaveComposeHazard(context.Background(), storage.ComposeHazard{
 				EventKey: key, State: composeStateJSON(cur), Status: "expired", UpdatedAt: time.Now(),
 			}); err != nil {
-				s.logger.Warn("compose: auto-expiry local record failed", "event_key", key, "error", err)
+				s.logger.Warn("compose: auto-expiry local record failed; keeping the expiry transition unsent", "event_key", key, "error", err)
+				return
 			}
+		}
+		if s.ingress.Enqueue(composeTransition(cur, dispatch.TransitionExpired)) == dispatch.Rejected {
+			s.logger.Warn("compose: dispatch queue full, auto-expiry transition rejected", "event_key", key)
+			return
 		}
 		s.logger.Info("compose: communication auto-expired", "event_key", key)
 		if s.pub != nil {

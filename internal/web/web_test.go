@@ -2948,6 +2948,66 @@ func TestComposeLocalFirstNoBroker(t *testing.T) {
 	}
 }
 
+// brokenExpireStore is a store whose compose EXPIRY saves always fail:
+// the reported fault injection for the panel expiry path.
+type brokenExpireStore struct{ *sqlite.Store }
+
+func (b *brokenExpireStore) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) error {
+	if h.Status == "expired" {
+		return errors.New("disk broken")
+	}
+	return b.Store.SaveComposeHazard(ctx, h)
+}
+
+// TestComposeExpireSaveFailureRejects pins the reported P1 at the panel
+// boundary: expiring a message whose local record cannot be persisted
+// must fail the OPERATION — the form sees the failure and no expiry
+// transition is dispatched (previously the handler only logged the error
+// and answered success while the delivery queue stayed open for the
+// retired message).
+func TestComposeExpireSaveFailureRejects(t *testing.T) {
+	inner := newLocalPanelStore(t)
+	store := &brokenExpireStore{Store: inner}
+	env := newTestEnvWithUsers(t, store)
+	env.login()
+
+	// Publish through the healthy path so the record exists.
+	_, html := env.get("/compose")
+	csrf := extractCSRF(t, html)
+	resp, _ := env.postForm("/compose", url.Values{
+		"csrf":     {csrf},
+		"event":    {"Storm"},
+		"headline": {"Test storm"},
+		"severity": {"severe"},
+		"status":   {"active"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("compose save = %d, want 303", resp.StatusCode)
+	}
+	var ev dispatch.Event
+	select {
+	case ev = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no transition enqueued")
+	}
+	key := ev.Hazard.Key
+
+	// The expiry save fails: the operation must be REJECTED and no
+	// expiry transition may be dispatched.
+	resp, _ = env.postForm("/compose/expire", url.Values{"csrf": {csrf}, "event_key": {key}})
+	if resp.StatusCode == http.StatusSeeOther {
+		t.Fatalf("compose expire reported success while the local record could not be saved (status %d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("compose expire with a broken record = %d, want 503", resp.StatusCode)
+	}
+	select {
+	case ev := <-env.ingress.Events():
+		t.Fatalf("expiry transition dispatched despite the failed save: %+v", ev.Hazard)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 // TestEmcomLocalFirstNoBroker pins the P1 fix for the readiness panel:
 // networks are saved in the local database and level changes route
 // locally even when the broker is unreachable.
@@ -3064,6 +3124,67 @@ func TestEmcomLevelZeroBlocksQueuedActivation(t *testing.T) {
 	blocked, err = store.LifecycleBlocks(context.Background(), publisher, key, activation.Hazard.ChangeID)
 	if err != nil || !blocked {
 		t.Fatalf("gate for the queued activation after level 0 = (%v, %v), want blocked", blocked, err)
+	}
+}
+
+// TestEmcomDeleteBlocksQueuedActivation pins the reported P1 at the
+// panel boundary: deleting a network commits the tombstone, the
+// lifecycle record and the expiry transition's durable inbox row in ONE
+// transaction — the dispatched expiry carries the allocated version AND
+// its inbox id, so a crash between the deletion and the dispatch (or a
+// refused live handoff) can never lose the cancellation of a previously
+// queued activation.
+func TestEmcomDeleteBlocksQueuedActivation(t *testing.T) {
+	store := newLocalPanelStore(t)
+	env := newTestEnvWithUsers(t, store)
+	env.login()
+
+	_, html := env.get("/emcom")
+	csrf := extractCSRF(t, html)
+	if resp, _ := env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("add = %d, want 303", resp.StatusCode)
+	}
+	if resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("raise = %d, want 303", resp.StatusCode)
+	}
+	publisher, err := store.InstanceID(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activation dispatch.Event
+	select {
+	case activation = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no activation transition enqueued")
+	}
+	key := activation.Hazard.Key
+
+	// Delete: the expiry transition is dispatched with its committed
+	// inbox id and the allocated version — the cancellation is durable
+	// before the panel even answers.
+	if resp, _ := env.postForm("/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete = %d, want 303", resp.StatusCode)
+	}
+	var expiry dispatch.Event
+	select {
+	case expiry = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no expiry transition enqueued")
+	}
+	if expiry.Hazard == nil || expiry.Hazard.Type != dispatch.TransitionExpired {
+		t.Fatalf("expiry transition = %+v", expiry.Hazard)
+	}
+	if expiry.InboxID == 0 {
+		t.Error("expiry transition has no durable inbox row — a crash after the deletion would lose the cancellation")
+	}
+	if expiry.Hazard.ChangeID <= activation.Hazard.ChangeID {
+		t.Errorf("expiry ChangeID = %d, want > the activation version %d", expiry.Hazard.ChangeID, activation.Hazard.ChangeID)
+	}
+
+	// The previously queued activation is blocked.
+	blocked, err := store.LifecycleBlocks(context.Background(), publisher, key, activation.Hazard.ChangeID)
+	if err != nil || !blocked {
+		t.Fatalf("gate for the queued activation after delete = (%v, %v), want blocked", blocked, err)
 	}
 }
 

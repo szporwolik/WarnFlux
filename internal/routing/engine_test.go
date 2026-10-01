@@ -35,6 +35,8 @@ type fakeStore struct {
 	// version:status (the fake ignores the version guard; the SQLite
 	// store pins that).
 	lifecycle map[string]string
+	// lifecycleErr makes RecordLifecycle fail (a broken ledger).
+	lifecycleErr error
 	// hazardActiveFn is the staleness oracle; nil = always active.
 	hazardActiveFn func(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error)
 	err            error
@@ -44,6 +46,9 @@ type fakeStore struct {
 func (f *fakeStore) RecordLifecycle(ctx context.Context, publisher, eventKey string, version int64, status string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.lifecycleErr != nil {
+		return f.lifecycleErr
+	}
 	if f.lifecycle == nil {
 		f.lifecycle = map[string]string{}
 	}
@@ -517,6 +522,73 @@ func TestEngineRecordsRemoteLifecycle(t *testing.T) {
 	// lifecycle identity) — it just cannot be tracked or blocked.
 	if fired := store.payloadCount("log"); fired != 2 {
 		t.Errorf("delivery jobs = %d, want 2 (new + legacy replay; the cancellation never notifies)", fired)
+	}
+}
+
+// TestLifecycleFailureKeepsInboxPending pins the reported P1: a failed
+// lifecycle record must NOT be followed by an inbox ack — the terminal
+// transition stays PENDING and is re-evaluated (and recorded) once the
+// ledger heals, so a cancellation is never silently lost from the queue.
+func TestLifecycleFailureKeepsInboxPending(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+	in := &fakeInbox{}
+	e.SetInbox(in)
+
+	// The lifecycle ledger is broken.
+	store.mu.Lock()
+	store.lifecycleErr = errors.New("lifecycle ledger down")
+	store.mu.Unlock()
+
+	// A remote cancellation arrives as a durable inbox event: the record
+	// fails, so the row must stay PENDING — no ack, no jobs, and the
+	// pre-transmission gate must never see a half-known cancellation.
+	cancel := dispatch.Event{
+		Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Type:      dispatch.TransitionCancelled,
+			Key:       "imgw:1",
+			ChangeID:  5,
+			Publisher: "remote-pub",
+			Hazard: dispatch.Hazard{
+				EventKey: "imgw:1", Source: "imgw", SourceID: "1",
+				Event: "Storm", Severity: "severe",
+			},
+		},
+	}
+	cancel.InboxID = 11
+	feed <- cancel
+	time.Sleep(80 * time.Millisecond)
+	if got := len(store.inboxAcked()); got != 0 {
+		t.Fatalf("inbox consumed %d times after a failed lifecycle record, want 0 (event pending)", got)
+	}
+	if got := store.payloadCount("log"); got != 0 {
+		t.Fatalf("jobs queued = %d after a failed lifecycle record, want 0", got)
+	}
+
+	// The ledger heals: recovery re-evaluates the pending row, the
+	// cancellation is now recorded durably and the row is consumed
+	// deliberately (a terminal transition starts no notification
+	// machine).
+	store.mu.Lock()
+	store.lifecycleErr = nil
+	store.mu.Unlock()
+	in.mu.Lock()
+	in.pending = []storage.InboxItem{{ID: 11, Event: cancel}}
+	in.mu.Unlock()
+	e.recoverInbox(context.Background())
+	waitFor(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.lifecycle["remote-pub|imgw:1"] == "5:cancelled"
+	}, "cancellation recorded after the ledger heals")
+	acked := store.inboxAcked()
+	if len(acked) != 1 || acked[0] != 11 {
+		t.Fatalf("inbox ack = %v, want exactly [11] after the healed retry", acked)
 	}
 }
 

@@ -106,12 +106,17 @@ func dispatchLocalEvent(ingress *dispatch.Ingress, logger *slog.Logger, payload 
 // transition directly into the LOCAL ingress: SQLite and the radio
 // suffice to serve the communication, the broker loopback is only the
 // asynchronous sync copy for other instances (identical publisher +
-// change ID, so the delivery ledger deduplicates the pair).
-func dispatchLocalChange(ingress *dispatch.Ingress, logger *slog.Logger, change core.EventChange) {
+// change ID, so the delivery ledger deduplicates the pair). inboxID is
+// the durable inbox row the store committed in the same transaction as
+// the journal change: the enqueue reuses it, so a crash between the
+// commit and this dispatch leaves the row behind and inbox recovery
+// re-delivers the alert after a restart.
+func dispatchLocalChange(ingress *dispatch.Ingress, logger *slog.Logger, change core.EventChange, inboxID int64) {
 	if change.ID == 0 {
 		return // synthetic change without a journal record
 	}
 	ev := mqttreceiver.EventFromChange(change, "local", time.Now())
+	ev.InboxID = inboxID
 	switch ingress.Enqueue(ev) {
 	case dispatch.Rejected:
 		logger.Warn("local dispatch rejected a journal change", "change_id", change.ID, "event_key", ev.Hazard.Key)
@@ -581,10 +586,14 @@ func run(configPath string, checkConfig bool) error {
 
 	// LOCAL-FIRST source pipeline: every journal change (ingest or
 	// expiration) is dispatched into the local ingress directly — SQLite
-	// + radio suffice, no broker round-trip. The MQTT output keeps
-	// syncing the same change to the broker for other instances.
-	ingester.SetDispatchSink(func(change core.EventChange) {
-		dispatchLocalChange(ingress, logger, change)
+	// + radio suffice, no broker round-trip. The store committed the
+	// change's inbox row in the same transaction as the journal record,
+	// so the live enqueue reuses it (never writes a second row) and a
+	// crash between the commit and the dispatch is healed by inbox
+	// recovery. The MQTT output keeps syncing the same change to the
+	// broker for other instances.
+	ingester.SetDispatchSink(func(change core.EventChange, inboxID int64) {
+		dispatchLocalChange(ingress, logger, change, inboxID)
 	})
 
 	// Inbound MQTT traffic ring buffer: every frame the receivers ingest

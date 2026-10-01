@@ -125,6 +125,10 @@ func (g *Ingress) SetInboxWriteTimeout(d time.Duration) {
 // persisted (it will be delivered now or by inbox recovery),
 // AcceptedEmergency when the inbox write failed but the live queue took
 // it, and Rejected only when neither took it.
+//
+// An event that already carries an inbox row ID (e.InboxID != 0 — the
+// journal transaction wrote the acceptance row) skips the append: the
+// row already exists, so the live offer never duplicates it.
 func (g *Ingress) Enqueue(e Event) Acceptance {
 	g.mu.Lock()
 	closed := g.closed
@@ -138,8 +142,10 @@ func (g *Ingress) Enqueue(e Event) Acceptance {
 
 	// Durable acceptance first, bounded by the write deadline: a stuck
 	// database degrades to emergency acceptance instead of blocking the
-	// receiver callback.
-	if inbox != nil {
+	// receiver callback. Journal changes arrive with their inbox row
+	// already committed (same transaction as the journal record), so the
+	// append is skipped for them.
+	if inbox != nil && e.InboxID == 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 		id, err := inbox.AppendEvent(ctx, e)
 		cancel()

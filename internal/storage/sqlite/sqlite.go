@@ -786,6 +786,13 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 		if err != nil {
 			return 0, nil, err
 		}
+		// LOCAL-FIRST: the canonical transition lands in the durable
+		// inbox INSIDE the journal transaction, so a crash between the
+		// journal commit and the live dispatch can never strand the
+		// alert without a notification path.
+		if err := insertInboxChange(tx, ctx, change, event, nowMs); err != nil {
+			return 0, nil, err
+		}
 		if err := tx.Commit(); err != nil {
 			return 0, nil, fmt.Errorf("commit ingest of %q: %w", key, err)
 		}
@@ -863,6 +870,11 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	if err != nil {
 		return 0, nil, err
 	}
+	// LOCAL-FIRST: same atomicity as the new-event path — the inbox row
+	// commits with the journal record.
+	if err := insertInboxChange(tx, ctx, change, event, nowMs); err != nil {
+		return 0, nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, nil, fmt.Errorf("commit update of %q: %w", key, err)
 	}
@@ -928,6 +940,11 @@ func (s *Store) Expire(ctx context.Context, now time.Time) ([]storage.Change, er
 			return nil, err
 		}
 		change.Event = event
+		// LOCAL-FIRST: the expiry transition is accepted into the inbox
+		// in the same transaction as the journal record.
+		if err := insertInboxChange(tx, ctx, change, event, nowMs); err != nil {
+			return nil, err
+		}
 		changes = append(changes, *change)
 	}
 	if err := tx.Commit(); err != nil {
@@ -977,17 +994,7 @@ func (s *Store) AppendEvent(ctx context.Context, ev dispatch.Event) (int64, erro
 	if err != nil {
 		return 0, fmt.Errorf("encode inbox event: %w", err)
 	}
-	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO dispatch_inbox (event_json, received_at_ms, receiver)
-		VALUES (?, ?, ?)`, string(data), s.now().UnixMilli(), ev.Origin.ReceiverID)
-	if err != nil {
-		return 0, fmt.Errorf("append inbox event: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("inbox event id: %w", err)
-	}
-	return id, nil
+	return insertInboxRow(s.db, ctx, data, ev.Origin.ReceiverID, s.now().UnixMilli())
 }
 
 // FreeBytes reports the filesystem free space for the database
@@ -1674,6 +1681,48 @@ func insertChange(tx *sql.Tx, ctx context.Context, changeType core.ChangeType, k
 		return nil, fmt.Errorf("journal change id for %q: %w", key, err)
 	}
 	return &storage.Change{ID: id, ChangeType: changeType, Publisher: publisher}, nil
+}
+
+// insertInboxChange persists the canonical dispatch transition of one
+// journal change into the durable inbox INSIDE the caller's transaction:
+// the journal record and its local acceptance commit atomically, so a
+// crash between them can never strand a journaled alert without a
+// notification path (the inbox row is recovered after a restart). The
+// receiver identity is "local" — the same the live dispatch uses for
+// journal changes.
+func insertInboxChange(tx *sql.Tx, ctx context.Context, change *storage.Change, event core.HazardEvent, nowMs int64) error {
+	de := dispatch.EventForJournalChange(change.ChangeType, change.ID, change.Publisher, event, "local", time.UnixMilli(nowMs).UTC())
+	data, err := json.Marshal(de)
+	if err != nil {
+		return fmt.Errorf("encode inbox change %d: %w", change.ID, err)
+	}
+	id, err := insertInboxRow(tx, ctx, data, "local", nowMs)
+	if err != nil {
+		return fmt.Errorf("inbox row for change %d: %w", change.ID, err)
+	}
+	change.InboxID = id
+	return nil
+}
+
+// execer is the shared surface of *sql.DB and *sql.Tx used to insert
+// inbox rows (AppendEvent outside a transaction, insertInboxChange
+// inside one).
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func insertInboxRow(e execer, ctx context.Context, data []byte, receiver string, nowMs int64) (int64, error) {
+	res, err := e.ExecContext(ctx,
+		`INSERT INTO dispatch_inbox (event_json, received_at_ms, receiver) VALUES (?, ?, ?)`,
+		string(data), nowMs, receiver)
+	if err != nil {
+		return 0, fmt.Errorf("append inbox event: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("inbox event id: %w", err)
+	}
+	return id, nil
 }
 
 func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {

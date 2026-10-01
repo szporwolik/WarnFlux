@@ -84,6 +84,13 @@ type Change struct {
 	// produced this journal entry; it rides on the /events wire contract
 	// so independent publishers never collide in deduplication.
 	Publisher string
+	// InboxID is the durable dispatch-inbox row written for this change
+	// IN THE SAME TRANSACTION as the journal record (0 when the store
+	// has no inbox integration). It guarantees that a journaled alert
+	// always has a local acceptance row, so a crash between the journal
+	// commit and the live dispatch can never strand a notification: the
+	// inbox row is recovered and evaluated after a restart.
+	InboxID int64
 }
 
 // InboxItem is one durable dispatch-inbox row: a canonical event accepted
@@ -119,6 +126,14 @@ type ComposeHazard struct {
 // change journal. Implementations must be safe for concurrent use and must
 // make each Ingest / Expire call atomic (event state + journal record in
 // one transaction).
+//
+// LOCAL-FIRST CONTRACT: implementations with a dispatch inbox must write
+// the canonical transition of every journal change into the durable inbox
+// INSIDE the same transaction as the journal record (Change.InboxID holds
+// the row ID). A crash between the journal commit and the live dispatch
+// therefore leaves the inbox row behind, and inbox recovery re-delivers
+// the alert after a restart — a re-polled duplicate can never silently
+// strand a journaled notification.
 type EventStore interface {
 	// Ingest atomically classifies and persists one normalized event and,
 	// when meaningful, writes its change record in the same transaction.

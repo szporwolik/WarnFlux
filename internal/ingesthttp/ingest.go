@@ -10,15 +10,19 @@
 //
 // Accepted messages are dispatched into the LOCAL ingress first (the
 // durable inbox — SQLite + radio suffice, the endpoint never depends on
-// the broker round-trip), then published to <topic_prefix>/events on the
-// configured broker (the journal; feeds other consumers and the loopback
-// copy, which deduplicates) and mirrored into the retained active view
-// <prefix>/active/<source>/<hash>. The MQTT publish mask controls ONLY
-// the broker synchronization: a masked category silences the broker but
-// never the local delivery.
+// the broker connection) and their broker publication is persisted into
+// the durable OUTBOX before the 202: a background worker publishes the
+// rows to <topic_prefix>/events whenever the broker is connected and
+// mirrors the retained active view <prefix>/active/<source>/<hash>, with
+// at-least-once semantics. A broker outage therefore never rejects an
+// accepted request nor loses its cross-instance sync. The MQTT publish
+// mask controls ONLY the broker synchronization (applied at publish
+// time): a fully masked category defers the sync, never the local
+// delivery.
 package ingesthttp
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -42,6 +46,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/severity"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 const (
@@ -65,6 +70,18 @@ type publisher interface {
 	IsConnected() bool
 }
 
+// Outbox is the durable broker-sync backlog for HTTP ingest: an accepted
+// request persists its intended broker publication BEFORE answering 202,
+// and the background worker deletes the row only after the broker
+// confirmed it — so a broker outage never loses the cross-instance sync
+// of an accepted request. Implemented by the SQLite store.
+type Outbox interface {
+	AppendOutbox(ctx context.Context, instanceID, topic string, payload []byte) (int64, error)
+	PendingOutbox(ctx context.Context, instanceID string, limit int) ([]storage.OutboxItem, error)
+	AckOutbox(ctx context.Context, id int64) error
+	OutboxCount(ctx context.Context) (int, error)
+}
+
 // Instance is one configured HTTP ingest endpoint: an API-key check plus
 // a broker publisher. It is safe for concurrent use.
 type Instance struct {
@@ -83,12 +100,30 @@ type Instance struct {
 	// so the MQTT publish mask and a broker outage never lose the local
 	// pipeline. Wired in main; nil in mirror-only constructions.
 	ingress *dispatch.Ingress
+
+	// outbox is the optional durable broker-sync backlog: the accepted
+	// payload is persisted BEFORE the 202 and a background worker
+	// publishes it whenever the broker is connected (mask applied at
+	// publish time). nil disables the outbox (tests).
+	outbox Outbox
+	// wake nudges the outbox worker right after an append so a connected
+	// broker receives the request without waiting for the tick.
+	wake chan struct{}
 }
 
 // SetIngress attaches the local-first dispatch ingress. It must be set
 // before the endpoint starts serving requests (wired in main).
 func (in *Instance) SetIngress(g *dispatch.Ingress) {
 	in.ingress = g
+}
+
+// SetOutbox attaches the durable broker-sync backlog. It must be set
+// before the endpoint starts serving requests (wired in main).
+func (in *Instance) SetOutbox(o Outbox) {
+	in.outbox = o
+	if in.wake == nil {
+		in.wake = make(chan struct{}, 1)
+	}
 }
 
 // Disabled returns the explicit-error handler for an ingest input the
@@ -213,7 +248,9 @@ func Resolve(cfg config.IngestHTTP, fallback config.IngestHTTP) config.IngestHTT
 
 // Start connects to the broker (bounded by connectTimeout). A failed
 // initial attempt is a non-fatal error: paho keeps retrying in the
-// background and the endpoint answers 503 until the connection is up.
+// background and, until the connection is up, accepted requests pile up
+// in the durable outbox and are published by the outbox worker once the
+// broker returns.
 func (in *Instance) Start() error {
 	opts := mqtt.NewClientOptions().
 		AddBroker(in.cfg.Broker).
@@ -346,15 +383,9 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if in.client == nil || !in.client.IsConnected() {
-		in.fail(w, http.StatusServiceUnavailable, "broker is not connected; retry in a moment")
-		audit("broker_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
-		return
-	}
-
 	// LOCAL-FIRST: the canonical transition is dispatched into the local
 	// ingress (durable inbox) BEFORE any broker I/O — SQLite + radio
-	// suffice and the publish mask never silences the local pipeline.
+	// suffice, so a disconnected broker must never reject the request.
 	// The broker loopback copy carries the same publisher + change ID and
 	// deduplicates in the delivery ledger.
 	if in.ingress != nil {
@@ -378,35 +409,20 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The publish policy may mask the broker mirror: the ingest endpoint
-	// then accepts the request but publishes nothing to the broker (the
-	// admin cut broker traffic on purpose) — the local delivery above
-	// has already happened.
-	if mqttpolicy.Allowed(mqttpolicy.CatEvents) {
-		token := in.client.Publish(in.eventsTopic(), 1, false, payload)
-		if !token.WaitTimeout(publishTimeout) {
-			in.fail(w, http.StatusServiceUnavailable, "broker publish timed out")
-			audit("broker_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
+	// Durable broker sync: the outbox row records the intended /events
+	// publication (and the active-view mirror) BEFORE answering 202. The
+	// background worker publishes it whenever the broker is connected —
+	// the publish mask is applied at publish time — so acceptance never
+	// depends on the broker and an outage never loses the cross-instance
+	// sync of an accepted request.
+	if in.outbox != nil {
+		if _, err := in.outbox.AppendOutbox(r.Context(), in.cfg.ID, in.eventsTopic(), payload); err != nil {
+			in.metrics.rejected.Add(1)
+			in.fail(w, http.StatusServiceUnavailable, "durable outbox unavailable; retry later")
+			audit("outbox_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
 			return
 		}
-		if err := token.Error(); err != nil {
-			in.logger.Warn("ingest_http: publish failed", "instance", in.cfg.ID,
-				"request_id", reqID, "error", err)
-			in.fail(w, http.StatusServiceUnavailable, "broker publish failed")
-			audit("broker_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
-			return
-		}
-	}
-
-	// Maintain the retained active view so ingested hazards show on the
-	// public home page and map exactly like source-plugin events.
-	// Best-effort: the journal transition above is already delivered and
-	// the view is repaired by the next transition for this key.
-	if mqttpolicy.Allowed(mqttpolicy.CatActive) {
-		if err := in.publishActive(payload); err != nil {
-			in.logger.Warn("ingest_http: active view publish failed", "instance", in.cfg.ID,
-				"request_id", reqID, "event_key", eventKey, "error", err)
-		}
+		in.wakeOutbox()
 	}
 
 	in.metrics.accepted.Add(1)
@@ -414,6 +430,86 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"accepted":true,"topic":"` + in.eventsTopic() + `","event_key":"` + eventKey + `","request_id":"` + reqID + `"}`))
+}
+
+// RunOutbox drives the durable broker sync in the background: pending
+// rows are published (the publish mask applied at publish time) whenever
+// the broker is connected, and each row is deleted only after the broker
+// confirmed — at-least-once, retried on the next tick otherwise. Rows
+// whose categories are fully masked are deferred, not dropped: the mask
+// is an operational cut and the sync resumes when the admin re-enables
+// the category. It returns when ctx is done.
+func (in *Instance) RunOutbox(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			in.drainOutbox(ctx)
+		case <-in.wake:
+			in.drainOutbox(ctx)
+		}
+	}
+}
+
+// drainOutbox performs one bounded pass over the pending rows: a
+// disconnected broker, a failed publish or a failed acknowledgement stops
+// the pass — every unfinished row stays pending and is retried on the
+// next tick.
+func (in *Instance) drainOutbox(ctx context.Context) {
+	if in.outbox == nil || in.client == nil || !in.client.IsConnected() {
+		return // paho's background reconnect flips this
+	}
+	items, err := in.outbox.PendingOutbox(ctx, in.cfg.ID, 32)
+	if err != nil {
+		in.logger.Warn("ingest_http: outbox poll failed", "instance", in.cfg.ID, "error", err)
+		return
+	}
+	for _, it := range items {
+		eventsAllowed := mqttpolicy.Allowed(mqttpolicy.CatEvents)
+		activeAllowed := mqttpolicy.Allowed(mqttpolicy.CatActive)
+		if !eventsAllowed && !activeAllowed {
+			// Fully masked: the row waits for the mask instead of being
+			// dropped silently.
+			continue
+		}
+		if eventsAllowed {
+			token := in.client.Publish(it.Topic, 1, false, it.Payload)
+			if !token.WaitTimeout(publishTimeout) {
+				in.logger.Warn("ingest_http: outbox publish timed out", "instance", in.cfg.ID, "row", it.ID)
+				return
+			}
+			if err := token.Error(); err != nil {
+				in.logger.Warn("ingest_http: outbox publish failed", "instance", in.cfg.ID, "row", it.ID, "error", err)
+				return
+			}
+		}
+		if activeAllowed {
+			if err := in.publishActive(it.Payload); err != nil {
+				in.logger.Warn("ingest_http: outbox active publish failed",
+					"instance", in.cfg.ID, "row", it.ID, "error", err)
+				return
+			}
+		}
+		if err := in.outbox.AckOutbox(ctx, it.ID); err != nil {
+			in.logger.Warn("ingest_http: outbox ack failed", "instance", in.cfg.ID, "row", it.ID, "error", err)
+			return
+		}
+	}
+}
+
+// wakeOutbox nudges the outbox worker immediately after an append so a
+// connected broker receives the request without waiting for the tick.
+func (in *Instance) wakeOutbox() {
+	if in.wake == nil {
+		return
+	}
+	select {
+	case in.wake <- struct{}{}:
+	default:
+	}
 }
 
 // publishActive mirrors one accepted transition into the retained active

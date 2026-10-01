@@ -80,6 +80,22 @@ jobs exist durably and the row is gone, or neither happened.
 - A re-polled duplicate produces no journal change and therefore needs
   no repair: the first change is already durably accepted.
 
+**HTTP ingest (local-first + durable outbox):**
+
+- The endpoint accepts when the LOCAL pipeline accepted (durable inbox
+  row) AND the intended broker publication is persisted in the durable
+  outbox (`ingest_outbox`) — **the broker connection is never a
+  precondition**: a disconnected broker answers 202 with both rows
+  committed.
+- A background outbox worker publishes the rows to `<prefix>/events`
+  whenever the broker is connected and mirrors the retained active view;
+  a row is deleted only after the broker confirmed the publish
+  (at-least-once — a crash or a failure retries on the next tick, and
+  rows survive restarts). The publish mask is applied at publish time: a
+  fully masked category defers the row, never drops the local delivery.
+- `/metrics` exposes `warnflux_ingest_outbox_backlog` so a degraded
+  broker sync is visible to the operator.
+
 **Receiver recovery (the /events stream survives outages):**
 
 - Receivers use a **persistent MQTT session** by default

@@ -125,8 +125,16 @@ func TestProviderToActionE2E(t *testing.T) {
 	// Dates are anchored to the wall clock: the staleness gates
 	// (scheduling + pre-transmission) suppress hazards whose expiry has
 	// already passed, so a fixture that is live right now keeps testing
-	// the full delivery chain.
-	now := time.Now()
+	// the full delivery chain. IMGW timestamps are Europe/Warsaw wall
+	// time — render them in that zone so the adapter's parse round-trips
+	// to the intended instant on machines in ANY local zone (CI runners
+	// are UTC; the old time.Now().Format() rendering made the expiry land
+	// ~2h early there and the staleness gate skipped every delivery).
+	warsaw, err := time.LoadLocation("Europe/Warsaw")
+	if err != nil {
+		t.Fatalf("load Europe/Warsaw: %v", err)
+	}
+	now := time.Now().In(warsaw)
 	fixture := fmt.Sprintf(`[{
 			"id": "warn-1",
 			"nazwa_zdarzenia": "Silny wiatr",

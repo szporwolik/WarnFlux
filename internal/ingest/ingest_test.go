@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
@@ -47,8 +48,10 @@ func TestDispatchSink(t *testing.T) {
 	ctx := context.Background()
 
 	var got []core.EventChange
-	ing.SetDispatchSink(func(c core.EventChange) {
+	var inboxIDs []int64
+	ing.SetDispatchSink(func(c core.EventChange, inboxID int64) {
 		got = append(got, c)
+		inboxIDs = append(inboxIDs, inboxID)
 	})
 
 	event := baseEvent()
@@ -65,6 +68,11 @@ func TestDispatchSink(t *testing.T) {
 	if got[0].ID == 0 || got[0].Publisher == "" {
 		t.Errorf("sink change missing identity: %+v", got[0])
 	}
+	// The store committed the inbox row atomically with the journal: the
+	// sink must receive its ID so the live enqueue reuses the row.
+	if inboxIDs[0] == 0 {
+		t.Error("sink inboxID = 0, want the durable inbox row committed with the journal change")
+	}
 
 	// Expiration: a second event with a lapsed expiry is swept by the
 	// maintenance expiration and reaches the sink as ChangeExpired.
@@ -76,6 +84,7 @@ func TestDispatchSink(t *testing.T) {
 		t.Fatalf("expired ingest: %v", err)
 	}
 	got = got[:0]
+	inboxIDs = inboxIDs[:0]
 	changes, err := ing.Expire(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("Expire: %v", err)
@@ -86,9 +95,12 @@ func TestDispatchSink(t *testing.T) {
 	if len(got) != len(changes) {
 		t.Fatalf("sink calls = %d, want %d", len(got), len(changes))
 	}
-	for _, c := range got {
+	for i, c := range got {
 		if c.Type != core.ChangeExpired || c.ID == 0 {
 			t.Errorf("sink change = %+v, want journaled expired", c)
+		}
+		if inboxIDs[i] == 0 {
+			t.Errorf("sink inboxID for expired change %d = 0, want a durable inbox row", c.ID)
 		}
 	}
 	_ = store
@@ -473,3 +485,146 @@ func (failingStore) CountArchiveEvents(context.Context, time.Time) (int, error) 
 	return 0, nil
 }
 func (failingStore) Close() error { return nil }
+
+// TestJournalChangeCommitsInboxAtomically pins the P1: the durable inbox
+// row is committed in the SAME transaction as the journal change, so an
+// interruption between the journal commit and the live dispatch (no
+// dispatch sink at all here) can never strand an alert without a
+// notification path — the inbox row survives and is recovered after a
+// restart, while a re-polled duplicate cannot repair anything (and does
+// not need to).
+func TestJournalChangeCommitsInboxAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.db")
+	store, _, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ing := NewIngester(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx := context.Background()
+
+	// The crash window: no dispatch sink is installed, so the live
+	// dispatch never runs — exactly the interruption between the journal
+	// commit and the inbox write.
+	event := baseEvent()
+	_, change, err := ing.Ingest(ctx, event)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// The inbox row was committed with the journal change and carries
+	// the same journal identity.
+	items, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("PendingInboxEvents: %v", err)
+	}
+	var inboxRow int64
+	found := false
+	for _, it := range items {
+		if it.Event.Hazard == nil || it.Event.Hazard.ChangeID != change.ID {
+			continue
+		}
+		found = true
+		inboxRow = it.ID
+		if it.Event.Origin.ReceiverID != "local" {
+			t.Errorf("inbox receiver = %q, want local", it.Event.Origin.ReceiverID)
+		}
+		if it.Event.Hazard.Publisher != change.Publisher {
+			t.Errorf("inbox publisher = %q, want %q", it.Event.Hazard.Publisher, change.Publisher)
+		}
+	}
+	if !found {
+		t.Fatal("journal change committed without a durable inbox row")
+	}
+
+	// The provider re-poll is a duplicate (the reported symptom): it must
+	// not matter, because the first change is already durably accepted.
+	if result, _, err := ing.Ingest(ctx, event); err != nil || result != ResultDuplicate {
+		t.Fatalf("re-poll = %v, %v, want duplicate", result, err)
+	}
+
+	// Restart simulation: a fresh handle over the same file still sees
+	// the pending row, so inbox recovery evaluates the alert.
+	store.Close()
+	restarted, _, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	items, err = restarted.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("PendingInboxEvents after restart: %v", err)
+	}
+	found = false
+	for _, it := range items {
+		if it.Event.Hazard != nil && it.Event.Hazard.ChangeID == change.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("inbox row for change %d lost across the restart", change.ID)
+	}
+
+	// The engine acknowledges the row after evaluation.
+	if err := restarted.AckInboxEvent(ctx, inboxRow); err != nil {
+		t.Fatalf("AckInboxEvent: %v", err)
+	}
+	items, err = restarted.PendingInboxEvents(ctx, 10)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("inbox after ack = (%v, %v), want empty", items, err)
+	}
+}
+
+// TestExpirationCommitsInboxAtomically extends the same guarantee to the
+// maintenance expiration: every ChangeExpired journal record is accepted
+// into the inbox in the same transaction.
+func TestExpirationCommitsInboxAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.db")
+	store, _, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ing := NewIngester(store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx := context.Background()
+
+	event := baseEvent().Clone()
+	event.SourceID = "expire-me"
+	past := time.Now().Add(-time.Minute)
+	event.ExpiresAt = &past
+	if _, _, err := ing.Ingest(ctx, event); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// No dispatch sink: the expiry transition must still be durably
+	// accepted together with its journal record.
+	changes, err := ing.Expire(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expired changes = %d, want 1", len(changes))
+	}
+	change := changes[0]
+	if change.ID == 0 {
+		t.Fatal("expired change has no journal ID")
+	}
+	// The inbox row for the expired change is pending and durable.
+	items, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("PendingInboxEvents: %v", err)
+	}
+	found := false
+	for _, it := range items {
+		if it.Event.Hazard != nil && it.Event.Hazard.ChangeID == change.ID {
+			found = true
+			if it.Event.Hazard.Type != dispatch.TransitionExpired {
+				t.Errorf("inbox transition = %q, want expired", it.Event.Hazard.Type)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no inbox row for expired journal change %d", change.ID)
+	}
+}

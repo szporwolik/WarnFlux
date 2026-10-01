@@ -15,7 +15,11 @@ Concretely:
 
 - **Accept** — a receiver, the panel or a radio frame persists the
   canonical event in SQLite before anything else (dispatch inbox rows,
-  `compose_hazards`, `emcom_networks`, the events table).
+  `compose_hazards`, `emcom_networks`, the events table). A source
+  ingest commits its journal record and its dispatch inbox row **in one
+  transaction**: a crash between them can never strand a journaled
+  alert without a notification path — inbox recovery re-delivers it
+  after the restart.
 - **Route** — every producer dispatches directly into the LOCAL ingress:
   source ingests and expirations through the ingest dispatch sink
   (`EventFromChange`, stamped with the publisher UUID and journal change
@@ -65,6 +69,16 @@ the live queue. The inbox row is consumed **only** by
 `CommitInboxDelivery`, which persists every delivery job the evaluation
 produced and deletes the inbox row **in one transaction** — either all
 jobs exist durably and the row is gone, or neither happened.
+
+**Source pipeline (journal → local dispatch):**
+
+- A source ingest or expiration writes its inbox row **in the same
+  transaction as the journal record** (`Change.InboxID`). The live
+  enqueue reuses that row (never writes a second one), so a crash
+  between the commit and the dispatch leaves the row behind and inbox
+  recovery evaluates it after the restart.
+- A re-polled duplicate produces no journal change and therefore needs
+  no repair: the first change is already durably accepted.
 
 **Receiver recovery (the /events stream survives outages):**
 

@@ -38,7 +38,7 @@ type fakeStore struct {
 	// lifecycleErr makes RecordLifecycle fail (a broken ledger).
 	lifecycleErr error
 	// hazardActiveFn is the staleness oracle; nil = always active.
-	hazardActiveFn func(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error)
+	hazardActiveFn func(ctx context.Context, publisher, eventKey string, now time.Time) (storage.HazardVerdict, error)
 	err            error
 }
 
@@ -57,14 +57,14 @@ func (f *fakeStore) RecordLifecycle(ctx context.Context, publisher, eventKey str
 }
 
 // HazardActive implements the optional freshness oracle.
-func (f *fakeStore) HazardActive(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error) {
+func (f *fakeStore) HazardActive(ctx context.Context, publisher, eventKey string, now time.Time) (storage.HazardVerdict, error) {
 	f.mu.Lock()
 	fn := f.hazardActiveFn
 	f.mu.Unlock()
 	if fn == nil {
 		return storage.HazardActive, nil
 	}
-	return fn(ctx, eventKey, now)
+	return fn(ctx, publisher, eventKey, now)
 }
 
 func (f *fakeStore) ListGroupRoutings() ([]storage.GroupRouting, error) {
@@ -1317,7 +1317,7 @@ func TestEngineSupersededTransitionSkipped(t *testing.T) {
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
 	}}
 	store.mu.Lock()
-	store.hazardActiveFn = func(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error) {
+	store.hazardActiveFn = func(ctx context.Context, publisher, eventKey string, now time.Time) (storage.HazardVerdict, error) {
 		return storage.HazardInactive, nil // the store knows a newer cancellation
 	}
 	store.mu.Unlock()
@@ -1343,7 +1343,7 @@ func TestEngineFreshnessLookupFailureFires(t *testing.T) {
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
 	}}
 	store.mu.Lock()
-	store.hazardActiveFn = func(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error) {
+	store.hazardActiveFn = func(ctx context.Context, publisher, eventKey string, now time.Time) (storage.HazardVerdict, error) {
 		return storage.HazardUnknown, errors.New("directory unavailable")
 	}
 	store.mu.Unlock()
@@ -1354,4 +1354,46 @@ func TestEngineFreshnessLookupFailureFires(t *testing.T) {
 
 	feed <- hazardEvent("severe", dispatch.TransitionNew)
 	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "alert delivered despite oracle failure")
+}
+
+// TestRemoteActiveNotSuppressedByLocalCancellation pins the reported P1:
+// the freshness oracle must be asked with the PUBLISHER identity, so a
+// LOCAL cancellation of an event key never suppresses an INDEPENDENT
+// publisher's active transition for the same key.
+func TestRemoteActiveNotSuppressedByLocalCancellation(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	// The local events table knows imgw:1 as cancelled: identity-less
+	// (legacy/local) lookups answer inactive, a foreign publisher is
+	// unknown to the local record.
+	store.mu.Lock()
+	store.hazardActiveFn = func(ctx context.Context, publisher, eventKey string, now time.Time) (storage.HazardVerdict, error) {
+		if publisher == "" {
+			return storage.HazardInactive, nil
+		}
+		return storage.HazardActive, nil
+	}
+	store.mu.Unlock()
+
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+
+	remote := dispatch.Event{
+		Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Type: dispatch.TransitionUpdated, Key: "imgw:1", ChangeID: 9,
+			Publisher: "other-instance-uuid",
+			Hazard: dispatch.Hazard{
+				EventKey: "imgw:1", Source: "imgw", SourceID: "1",
+				Event: "Storm", Severity: "severe",
+			},
+		},
+	}
+	feed <- remote
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "remote active delivered despite the local cancellation")
+	if got := store.payloadCount("log"); got != 1 {
+		t.Fatalf("jobs queued = %d, want 1 for the remote publisher", got)
+	}
 }

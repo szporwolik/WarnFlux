@@ -249,7 +249,7 @@ func TestHazardActive(t *testing.T) {
 	now := time.Now()
 
 	// Unknown key: HazardUnknown (producers without local storage notify).
-	if verdict, err := store.HazardActive(ctx, "nope", now); err != nil || verdict != storage.HazardUnknown {
+	if verdict, err := store.HazardActive(ctx, "", "nope", now); err != nil || verdict != storage.HazardUnknown {
 		t.Fatalf("unknown key = (%v, %v), want (HazardUnknown, nil)", verdict, err)
 	}
 
@@ -262,7 +262,7 @@ func TestHazardActive(t *testing.T) {
 	if _, _, err := store.Ingest(ctx, ev, core.Fingerprint(ev)); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
-	if verdict, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || verdict != storage.HazardActive {
+	if verdict, err := store.HazardActive(ctx, "", "imgw-meteo:1", now); err != nil || verdict != storage.HazardActive {
 		t.Fatalf("live hazard = (%v, %v), want (HazardActive, nil)", verdict, err)
 	}
 
@@ -271,7 +271,7 @@ func TestHazardActive(t *testing.T) {
 	if _, err := store.db.Exec(`UPDATE events SET status = 'cancelled', expires_at_ms = NULL, expires_at = NULL WHERE event_key = 'imgw-meteo:1'`); err != nil {
 		t.Fatal(err)
 	}
-	if verdict, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
+	if verdict, err := store.HazardActive(ctx, "", "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
 		t.Fatalf("cancelled no-expiry hazard = (%v, %v), want (HazardInactive, nil)", verdict, err)
 	}
 
@@ -279,7 +279,7 @@ func TestHazardActive(t *testing.T) {
 	if _, err := store.db.Exec(`UPDATE events SET status = 'expired' WHERE event_key = 'imgw-meteo:1'`); err != nil {
 		t.Fatal(err)
 	}
-	if verdict, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
+	if verdict, err := store.HazardActive(ctx, "", "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
 		t.Fatalf("expired no-expiry hazard = (%v, %v), want (HazardInactive, nil)", verdict, err)
 	}
 
@@ -288,8 +288,49 @@ func TestHazardActive(t *testing.T) {
 		now.Add(-time.Minute).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	if verdict, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
+	if verdict, err := store.HazardActive(ctx, "", "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
 		t.Fatalf("time-expired hazard = (%v, %v), want (HazardInactive, nil)", verdict, err)
+	}
+}
+
+// TestHazardActivePublisherScoped pins the reported P1: the freshness
+// oracle must apply the SAME publisher identity as the lifecycle ledger.
+// A locally-cancelled event key must never suppress another publisher's
+// active transition for that key (independent publishers never collide),
+// while the local publisher and legacy payloads keep the key-only check.
+func TestHazardActivePublisherScoped(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	local, err := store.InstanceID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The local instance cancelled imgw-meteo:1 (status expired).
+	future := now.Add(time.Hour)
+	ev := core.HazardEvent{
+		Source: "imgw-meteo", SourceID: "1", Event: "Storm",
+		Severity: "moderate", Status: core.StatusExpired, ExpiresAt: &future,
+		ReceivedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := store.Ingest(ctx, ev, core.Fingerprint(ev)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if verdict, err := store.HazardActive(ctx, local, "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
+		t.Fatalf("local publisher = (%v, %v), want (HazardInactive, nil)", verdict, err)
+	}
+
+	// An INDEPENDENT publisher's transition for the same key must not be
+	// suppressed by the local row — the local record is not about it.
+	if verdict, err := store.HazardActive(ctx, "other-instance-uuid", "imgw-meteo:1", now); err != nil || verdict != storage.HazardUnknown {
+		t.Fatalf("foreign publisher = (%v, %v), want (HazardUnknown, nil)", verdict, err)
+	}
+
+	// Legacy payloads (empty publisher) keep the key-only check.
+	if verdict, err := store.HazardActive(ctx, "", "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
+		t.Fatalf("empty publisher = (%v, %v), want (HazardInactive, nil)", verdict, err)
 	}
 }
 

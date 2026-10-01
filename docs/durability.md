@@ -115,6 +115,11 @@ jobs exist durably and the row is gone, or neither happened.
   event stays PENDING — inbox recovery retries the record until the
   ledger accepts it, so a cancellation is never silently lost from the
   queue.
+- The freshness oracle (`HazardActive`) applies the **same publisher
+  identity** as the lifecycle ledger: a local cancellation of an event
+  key never suppresses an independent publisher's active transition for
+  that key — only this instance's own records (and legacy
+  identity-less payloads) are governed by the local events table.
 
 **Retained-view deletions survive restarts (MQTT /active/#):**
 

@@ -106,6 +106,11 @@ jobs exist durably and the row is gone, or neither happened.
   Dropping a network back to monitoring (or deleting it) therefore
   blocks a previously queued activation through the delivery gate — a
   radio that comes back can never transmit the stale raise.
+- A **failed lifecycle write never acks the inbox**: the engine records
+  the transition before any terminal skip, and on a write error the
+  event stays PENDING — inbox recovery retries the record until the
+  ledger accepts it, so a cancellation is never silently lost from the
+  queue.
 
 **Receiver recovery (the /events stream survives outages):**
 

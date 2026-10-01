@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sort"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
@@ -76,6 +77,10 @@ type outputWorker struct {
 	infoPending  map[string]core.InformationMessage
 	infoNotify   chan struct{}
 	infoDisabled bool // permanently true after a contract-violating callback
+
+	// pendingCache mirrors the last persisted unresolved-deletion set of
+	// a PendingDeleteTracker plugin (serial worker: no extra locking).
+	pendingCache []PendingDelete
 }
 
 func newOutputWorker(cfg config.Output, p OutputPlugin, store storage.EventStore, logger *slog.Logger, tracker *statusTracker) *outputWorker {
@@ -144,6 +149,28 @@ func infoKey(m core.InformationMessage) string {
 func (w *outputWorker) run(ctx context.Context) {
 	defer close(w.done)
 	w.tracker.setState(StateRunning)
+
+	// Restore the durably persisted retained deletions BEFORE the startup
+	// seeding: SeedActiveState removes a pending delete for a key that is
+	// active again, so the restored set always converges to the current
+	// state — and the rehydration pass deletes the retained topic of
+	// every still-retired key (a deletion collected while the category
+	// was masked must survive the restart).
+	if tracker, ok := w.plugin.(PendingDeleteTracker); ok {
+		if ps, ok := w.store.(storage.PendingDeleteStore); ok {
+			deletes, err := ps.LoadPendingDeletes(context.Background(), w.id)
+			if err != nil {
+				w.logger.Warn("pending delete restore failed", "plugin_id", w.id, "error", err)
+			} else if len(deletes) > 0 {
+				restored := make([]PendingDelete, 0, len(deletes))
+				for _, d := range deletes {
+					restored = append(restored, PendingDelete{Key: d.Key, Topic: d.Topic})
+				}
+				tracker.RestorePendingDeletes(restored)
+				w.pendingCache = restored
+			}
+		}
+	}
 
 	// Startup active-state reconstruction: seed the output's desired
 	// active cache from the authoritative SQLite current state (LOCAL
@@ -442,11 +469,69 @@ func (w *outputWorker) deliver(ctx context.Context, change storage.Change) bool 
 		w.onFailure(err)
 		return false
 	}
+	// Durable pending-delete persistence BEFORE the journal ack: once the
+	// change is acknowledged it will never be redelivered, so the
+	// plugin's unresolved retained deletions are the only memory of a
+	// masked/failed delete. A failed save keeps the change pending — the
+	// journal replays it and the save retries, so a restart can never
+	// lose a deletion the journal no longer remembers.
+	if err := w.persistPendingDeletes(ctx); err != nil {
+		w.onFailure(err)
+		return false
+	}
 	if err := w.store.AckChanges(ctx, w.id, change.ID); err != nil {
 		w.onFailure(fmt.Errorf("ack change %d: %w", change.ID, err))
 		return false
 	}
 	w.onSuccess()
+	return true
+}
+
+// persistPendingDeletes durably saves the plugin's unresolved retained
+// deletions (no-op for plugins without the capability or stores without
+// the durable surface). The save is skipped when the set did not change
+// since the last persistence, keeping the steady state write-free.
+func (w *outputWorker) persistPendingDeletes(ctx context.Context) error {
+	tracker, ok := w.plugin.(PendingDeleteTracker)
+	if !ok {
+		return nil
+	}
+	ps, ok := w.store.(storage.PendingDeleteStore)
+	if !ok {
+		// No durable surface: the plugin keeps its in-memory retries
+		// (degraded but functional).
+		return nil
+	}
+	current := tracker.PendingDeletes()
+	if pendingDeletesEqual(current, w.pendingCache) {
+		return nil
+	}
+	toSave := make([]storage.PendingDelete, 0, len(current))
+	for _, d := range current {
+		toSave = append(toSave, storage.PendingDelete{Key: d.Key, Topic: d.Topic})
+	}
+	if err := ps.SavePendingDeletes(ctx, w.id, toSave); err != nil {
+		return fmt.Errorf("persist pending deletes: %w", err)
+	}
+	w.pendingCache = current
+	return nil
+}
+
+// pendingDeletesEqual compares two unresolved-deletion sets regardless of
+// map iteration order.
+func pendingDeletesEqual(a, b []PendingDelete) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sortedA := append([]PendingDelete(nil), a...)
+	sortedB := append([]PendingDelete(nil), b...)
+	sort.Slice(sortedA, func(i, j int) bool { return sortedA[i].Key < sortedA[j].Key })
+	sort.Slice(sortedB, func(i, j int) bool { return sortedB[i].Key < sortedB[j].Key })
+	for i := range sortedA {
+		if sortedA[i] != sortedB[i] {
+			return false
+		}
+	}
 	return true
 }
 

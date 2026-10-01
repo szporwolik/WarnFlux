@@ -111,6 +111,29 @@ type OutboxItem struct {
 	Payload []byte
 }
 
+// PendingDelete is one durable unresolved retained-topic deletion of an
+// output: the retained broker document must not exist, but the confirming
+// DELETE has not happened yet (masked category, broker outage or a failed
+// publish). The output worker persists the set before the journal ack and
+// restores it on startup, so a restart can replay deletes the journal no
+// longer remembers.
+type PendingDelete struct {
+	Key   string
+	Topic string
+}
+
+// PendingDeleteStore is the OPTIONAL durable surface for outputs that
+// maintain retained broker documents (implemented by the SQLite store).
+type PendingDeleteStore interface {
+	// SavePendingDeletes atomically replaces the unresolved-deletion set
+	// of one output with the given snapshot (the plugin's in-memory map
+	// is authoritative; the rows are its durable mirror).
+	SavePendingDeletes(ctx context.Context, outputID string, deletes []PendingDelete) error
+	// LoadPendingDeletes returns the persisted unresolved deletions of
+	// one output (stable key order).
+	LoadPendingDeletes(ctx context.Context, outputID string) ([]PendingDelete, error)
+}
+
 // EmcomNetwork is one EMCOM operational-readiness network persisted
 // locally: the panel edits it without any broker dependency and the
 // retained MQTT document is only an asynchronous sync copy.

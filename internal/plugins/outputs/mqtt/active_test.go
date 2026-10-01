@@ -15,6 +15,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
 // ---- fake MQTT transport ----
@@ -1129,5 +1130,76 @@ func TestOldDeleteGenerationCannotClearNewerDelete(t *testing.T) {
 	o.activeMu.Unlock()
 	if ok {
 		t.Error("matching-generation delete did not clear the registration")
+	}
+}
+
+// TestRestoredPendingDeletesReplayedAfterRestart pins the P1 fix: a
+// deletion collected while the active category was masked is persisted by
+// the worker and replayed after a restart — the stale retained alert on
+// the broker is deleted by the rehydration pass, and a key that became
+// ACTIVE again never gets a stale delete.
+func TestRestoredPendingDeletesReplayedAfterRestart(t *testing.T) {
+	oldMask := mqttpolicy.Mask()
+	t.Cleanup(func() { mqttpolicy.Set(oldMask) })
+
+	fc := &fakeClient{connected: true}
+	cancelled := activeEvent()
+	cancelled.Status = core.StatusCancelled
+	cancelTopic := (&Output{cfg: Config{TopicPrefix: "warnflux"}}).activeTopic(cancelled.Source, cancelled.Key())
+
+	// Before the "restart": the cancellation is tracked while active is
+	// masked (no network) and handed to the worker for durable
+	// persistence.
+	out := newTestOutput(fc)
+	mqttpolicy.Set(oldMask &^ uint32(mqttpolicy.CatActive))
+	if _, err := out.trackActiveState(cancelled); err != nil {
+		t.Fatal(err)
+	}
+	persisted := out.PendingDeletes()
+	if len(persisted) != 1 || persisted[0].Topic != cancelTopic {
+		t.Fatalf("pending deletes = %+v, want the cancelled topic %q", persisted, cancelTopic)
+	}
+
+	// Restart: a fresh output restores the persisted set BEFORE the
+	// seeding and rehydrates — the stale retained topic must be deleted,
+	// even though the journal no longer remembers it.
+	mqttpolicy.Set(oldMask | uint32(mqttpolicy.CatActive))
+	out2 := newTestOutput(fc)
+	out2.RestorePendingDeletes(persisted)
+	other := activeEvent()
+	other.SourceID = "warning-other"
+	if err := out2.SeedActiveState(other); err != nil {
+		t.Fatal(err)
+	}
+	out2.rehydrateActive()
+
+	var sawDelete bool
+	for _, p := range fc.snapshot() {
+		if p.topic == cancelTopic && p.retained && len(p.payload) == 0 {
+			sawDelete = true
+		}
+		if p.topic == cancelTopic && len(p.payload) > 0 {
+			t.Errorf("stale retained payload republished for the cancelled key")
+		}
+	}
+	if !sawDelete {
+		t.Fatalf("no retained delete for the stale topic %q after the restart rehydration", cancelTopic)
+	}
+	if got := len(out2.PendingDeletes()); got != 0 {
+		t.Fatalf("pending deletes after a successful replay = %d, want 0", got)
+	}
+
+	// A key that became active again cleans its restored delete: the
+	// active document wins, never a stale tombstone.
+	out3 := newTestOutput(fc)
+	out3.RestorePendingDeletes([]plugin.PendingDelete{{
+		Key:   other.Key(),
+		Topic: (&Output{cfg: Config{TopicPrefix: "warnflux"}}).activeTopic(other.Source, other.Key()),
+	}})
+	if err := out3.SeedActiveState(other); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(out3.PendingDeletes()); got != 0 {
+		t.Fatalf("reactivated key kept its restored delete: %d pending", got)
 	}
 }

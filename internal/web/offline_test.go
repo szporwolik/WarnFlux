@@ -17,6 +17,16 @@ func TestConfigPageAdminOnly(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("GET /config unauthenticated = %d, want 303", resp.StatusCode)
 	}
+	env.login()
+	resp, page := env.get("/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /config = %d", resp.StatusCode)
+	}
+	// The page must be a full chrome document (topbar/sidebar), not the
+	// bare section fragment.
+	if !strings.Contains(page, "</html>") || !strings.Contains(page, "sidenav") {
+		t.Fatalf("config page lacks the chrome document: %.200s", page)
+	}
 }
 
 // TestOfflineToggle flows through the whole switch: enable (banner on the

@@ -88,6 +88,45 @@ func TestSupervisorSuspendResume(t *testing.T) {
 	}
 }
 
+// TestSupervisorBootSuspended proves a source suspended BEFORE the run
+// starts never flips to Starting/Running: it stays StateSuspended until
+// the first Resume (offline_mode at startup).
+func TestSupervisorBootSuspended(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	src := &runCountingSource{starts: make(chan struct{}, 4), exits: make(chan struct{}, 4)}
+	tracker := newStatusTracker("src", "test", KindSource)
+	s := newSourceSupervisor(testSourceCfg("src", true), src, noopEmitter(), testLogger(), tracker)
+	s.Suspend()
+	go s.run(ctx)
+
+	time.Sleep(100 * time.Millisecond)
+	if st := tracker.snapshot().State; st != StateSuspended {
+		t.Fatalf("boot-suspended state = %v, want suspended", st)
+	}
+	select {
+	case <-src.starts:
+		t.Fatal("boot-suspended source started before resume")
+	default:
+	}
+
+	s.Resume()
+	select {
+	case <-src.starts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source never started after resume")
+	}
+	waitFor(t, 2*time.Second, func() bool { return tracker.snapshot().State == StateRunning })
+
+	cancel()
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+}
+
 // TestManagerSetOfflineOnlyInternetSources proves the manager suspends
 // exactly the internet-classified sources; local sources stay untouched.
 func TestManagerSetOfflineOnlyInternetSources(t *testing.T) {

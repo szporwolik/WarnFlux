@@ -726,6 +726,36 @@ func (o *Output) pendingDeleteSnapshot() []activeDeleteEntry {
 	return out
 }
 
+// PendingDeletes implements plugin.PendingDeleteTracker: a snapshot of the
+// unresolved retained deletions. The output worker persists it durably
+// BEFORE acknowledging the journal change, so a restart can replay deletes
+// the journal no longer remembers (e.g. collected while the active
+// category was masked) and the stale retained alert cannot survive the
+// restart.
+func (o *Output) PendingDeletes() []plugin.PendingDelete {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	out := make([]plugin.PendingDelete, 0, len(o.pendingDeletes))
+	for _, d := range o.pendingDeletes {
+		out = append(out, plugin.PendingDelete{Key: d.key, Topic: d.topic})
+	}
+	return out
+}
+
+// RestorePendingDeletes implements plugin.PendingDeleteTracker: it replays
+// the durably persisted deletions. The worker calls it at startup BEFORE
+// the active seeding, so a key that is active again cleans its stale
+// deletion (SeedActiveState / trackActiveState remove the entry), and the
+// rehydration pass deletes the retained topic of every still-retired key.
+func (o *Output) RestorePendingDeletes(deletes []plugin.PendingDelete) {
+	o.activeMu.Lock()
+	defer o.activeMu.Unlock()
+	for _, d := range deletes {
+		o.activeSeq++
+		o.pendingDeletes[d.Key] = activeDeleteEntry{key: d.Key, topic: d.Topic, seq: o.activeSeq}
+	}
+}
+
 // activeSnapshot copies the desired active cache without holding the
 // active-state mutex during any network operation.
 func (o *Output) activeSnapshot() []activeCacheEntry {

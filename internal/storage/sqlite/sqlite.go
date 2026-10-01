@@ -616,6 +616,22 @@ CREATE TABLE ingest_outbox (
 CREATE INDEX idx_ingest_outbox_instance ON ingest_outbox(instance_id, id);
 `,
 	},
+	{
+		// v31: durable output pending-deletes. An output that maintains
+		// retained broker documents persists its unresolved deletions
+		// BEFORE the journal ack, so a restart can replay a delete the
+		// journal no longer remembers (e.g. a cancellation collected
+		// while the active category was masked — the retained doc would
+		// otherwise outlive the alert forever).
+		SQL: `
+CREATE TABLE output_pending_deletes (
+	output_id TEXT NOT NULL,
+	event_key TEXT NOT NULL,
+	topic     TEXT NOT NULL,
+	PRIMARY KEY (output_id, event_key)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1857,6 +1873,58 @@ func (s *Store) OutboxCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("count outbox rows: %w", err)
 	}
 	return n, nil
+}
+
+// SavePendingDeletes atomically replaces the durable unresolved-deletion
+// set of one output with the given snapshot: the plugin's in-memory map
+// is authoritative and the rows are its mirror. It runs in one
+// transaction so a reader never observes a half-replaced set.
+func (s *Store) SavePendingDeletes(ctx context.Context, outputID string, deletes []storage.PendingDelete) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin pending-delete save for %q: %w", outputID, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM output_pending_deletes WHERE output_id = ?`, outputID); err != nil {
+		return fmt.Errorf("clear pending deletes for %q: %w", outputID, err)
+	}
+	for _, d := range deletes {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO output_pending_deletes (output_id, event_key, topic)
+			VALUES (?, ?, ?)`, outputID, d.Key, d.Topic); err != nil {
+			return fmt.Errorf("save pending delete %q for %q: %w", d.Key, outputID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit pending-delete save for %q: %w", outputID, err)
+	}
+	return nil
+}
+
+// LoadPendingDeletes returns the persisted unresolved deletions of one
+// output in stable key order.
+func (s *Store) LoadPendingDeletes(ctx context.Context, outputID string) ([]storage.PendingDelete, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_key, topic FROM output_pending_deletes
+		WHERE output_id = ?
+		ORDER BY event_key`, outputID)
+	if err != nil {
+		return nil, fmt.Errorf("load pending deletes for %q: %w", outputID, err)
+	}
+	defer rows.Close()
+	var out []storage.PendingDelete
+	for rows.Next() {
+		var d storage.PendingDelete
+		if err := rows.Scan(&d.Key, &d.Topic); err != nil {
+			return nil, fmt.Errorf("scan pending delete for %q: %w", outputID, err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending deletes for %q: %w", outputID, err)
+	}
+	return out, nil
 }
 
 func (s *Store) cursor(ctx context.Context, outputID string) (int64, error) {

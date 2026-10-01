@@ -112,6 +112,17 @@ jobs exist durably and the row is gone, or neither happened.
   ledger accepts it, so a cancellation is never silently lost from the
   queue.
 
+**Retained-view deletions survive restarts (MQTT /active/#):**
+
+- An output that maintains retained broker documents persists its
+  unresolved deletions (`output_pending_deletes`) **before the journal
+  ack** — the acked change never replays, so the persisted set is the
+  only memory of a delete collected while the category was masked or
+  failed. On startup the worker restores the set before the active
+  seeding and the rehydration pass deletes every still-retired retained
+  topic; a key that is active again cleans its restored delete (the
+  active document wins).
+
 **Receiver recovery (the /events stream survives outages):**
 
 - Receivers use a **persistent MQTT session** by default

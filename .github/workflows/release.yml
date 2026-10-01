@@ -139,15 +139,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # gh CLI (no Node runtime) creates the release; when the run was
-          # triggered manually (workflow_dispatch) it also creates the
-          # missing v<version> tag pointing at this commit. Re-running the
-          # workflow for an already-published version is idempotent: the
-          # assets are uploaded (overwriting) to the existing release
-          # instead of failing with "already exists".
+          # gh CLI (no Node runtime) creates the release. The version is
+          # pinned to the EXACT commit this run built and tested: the tag
+          # (created with --target when missing) and any pre-existing
+          # release must point at $GITHUB_SHA — a version may never be
+          # overwritten with binaries from another commit.
           tag="v${{ steps.version.outputs.version }}"
+
+          # Verify the remote tag's commit (when the tag exists) matches
+          # the commit being published. The API dereferences annotated
+          # tags too.
+          if tag_sha="$(gh api "repos/${{ github.repository }}/commits/$tag" --jq .sha 2>/dev/null)"; then
+            if [ -z "$tag_sha" ] || [ "$tag_sha" != "$GITHUB_SHA" ]; then
+              echo "::error::version $tag is pinned to commit ${tag_sha:-<unknown>}, but this run builds commit $GITHUB_SHA — refusing to publish a different SHA under the same version"
+              exit 1
+            fi
+          fi
+
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists — uploading assets to it."
+            # Re-running the workflow for an already-published version is
+            # idempotent ONLY for the same commit (verified above): the
+            # assets are uploaded (overwriting) to the existing release.
+            echo "Release $tag already exists at $GITHUB_SHA — uploading assets to it."
             gh release upload "$tag" \
               dist/warnflux-linux-amd64 \
               dist/warnflux-linux-arm64 \
@@ -159,6 +172,7 @@ jobs:
               dist/warnflux-linux-arm64 \
               dist/warnflux-linux-armv7 \
               dist/SHA256SUMS \
+              --target "$GITHUB_SHA" \
               --title "WarnFlux v${{ steps.version.outputs.version }}" \
               --generate-notes
           fi

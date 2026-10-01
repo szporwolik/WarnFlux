@@ -37,6 +37,7 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 )
@@ -323,27 +324,34 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := in.client.Publish(in.eventsTopic(), 1, false, payload)
-	if !token.WaitTimeout(publishTimeout) {
-		in.fail(w, http.StatusServiceUnavailable, "broker publish timed out")
-		audit("broker_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
-		return
-	}
-	if err := token.Error(); err != nil {
-		in.logger.Warn("ingest_http: publish failed", "instance", in.cfg.ID,
-			"request_id", reqID, "error", err)
-		in.fail(w, http.StatusServiceUnavailable, "broker publish failed")
-		audit("broker_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
-		return
+	// The publish policy may mask the broker mirror: the ingest endpoint
+	// then accepts the request but publishes nothing (the admin cut
+	// broker traffic on purpose).
+	if mqttpolicy.Allowed(mqttpolicy.CatEvents) {
+		token := in.client.Publish(in.eventsTopic(), 1, false, payload)
+		if !token.WaitTimeout(publishTimeout) {
+			in.fail(w, http.StatusServiceUnavailable, "broker publish timed out")
+			audit("broker_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
+			return
+		}
+		if err := token.Error(); err != nil {
+			in.logger.Warn("ingest_http: publish failed", "instance", in.cfg.ID,
+				"request_id", reqID, "error", err)
+			in.fail(w, http.StatusServiceUnavailable, "broker publish failed")
+			audit("broker_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
+			return
+		}
 	}
 
 	// Maintain the retained active view so ingested hazards show on the
 	// public home page and map exactly like source-plugin events.
 	// Best-effort: the journal transition above is already delivered and
 	// the view is repaired by the next transition for this key.
-	if err := in.publishActive(payload); err != nil {
-		in.logger.Warn("ingest_http: active view publish failed", "instance", in.cfg.ID,
-			"request_id", reqID, "event_key", eventKey, "error", err)
+	if mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		if err := in.publishActive(payload); err != nil {
+			in.logger.Warn("ingest_http: active view publish failed", "instance", in.cfg.ID,
+				"request_id", reqID, "event_key", eventKey, "error", err)
+		}
 	}
 
 	in.metrics.accepted.Add(1)

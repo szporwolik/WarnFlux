@@ -36,6 +36,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/meshcore"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
@@ -388,6 +389,11 @@ func run(configPath string, checkConfig bool) error {
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
 	}
+
+	// Publish mask: which document families this station publishes to the
+	// MQTT broker. The admin Config page toggles the same mask at runtime;
+	// mqtt_publish in the config is the startup state.
+	mqttpolicy.Set(cfg.MQTTPublish.Mask())
 
 	logger, logCloser, err := newLogger(cfg.App, logs)
 	if err != nil {

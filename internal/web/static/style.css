@@ -2396,6 +2396,26 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .home-offline .emcom-chip-label { font-weight: 600; }
 
+/* Config page: MQTT publish-mask checkboxes. */
+.config-mqtt-form {
+  display: grid;
+  gap: 6px;
+  margin-top: 0.6rem;
+}
+.config-mqtt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.config-mqtt-row:hover { border-color: var(--accent); }
+.config-mqtt-form .btn-primary { justify-self: start; margin-top: 6px; }
+
 /* EMCOM panel page. */
 .emcom-page { max-width: 900px; margin: 0 auto; display: grid; gap: 1rem; padding: 1rem; }
 .emcom-flash {

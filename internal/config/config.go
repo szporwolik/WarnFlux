@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 )
 
 const (
@@ -83,15 +85,20 @@ var validGridSquare = regexp.MustCompile(`^[A-Ra-r]{2}[0-9]{2}(?:[A-Xa-x]{2}(?:[
 
 // Config is the fully defaulted, validated application configuration.
 type Config struct {
-	App        App
-	Storage    Storage
-	Sources    []Source
-	Outputs    []Output
-	Dispatch   Dispatch
-	Web        Web
-	Actions    []Action
-	IngestHTTP []IngestHTTP
-	APRS       APRSConfig
+	App      App
+	Storage  Storage
+	Sources  []Source
+	Outputs  []Output
+	Dispatch Dispatch
+	// MQTTPublish is the publish mask: which document families WarnFlux
+	// publishes to the MQTT broker (startup state; the admin Config page
+	// toggles the same mask at runtime). Disabling noisy categories cuts
+	// broker traffic and CPU.
+	MQTTPublish MQTTPublish
+	Web         Web
+	Actions     []Action
+	IngestHTTP  []IngestHTTP
+	APRS        APRSConfig
 	// MeshCore holds the Companion serial link settings (top-level
 	// "meshcore:"). The Heltec node plugs in over USB.
 	MeshCore MeshCoreConfig
@@ -327,6 +334,60 @@ type Dispatch struct {
 	Receivers []Receiver
 }
 
+// MQTTPublish is the station's publish mask: which document families
+// WarnFlux publishes to the MQTT broker. Every publisher consults the
+// runtime copy before each publish (the admin Config page toggles it
+// live); this section is the startup state. Disabling noisy categories
+// cuts broker traffic and CPU.
+type MQTTPublish struct {
+	Events           bool
+	Active           bool
+	Info             bool
+	Status           bool
+	APRSStations     bool
+	APRSBulletins    bool
+	APRSPackets      bool
+	APRSMessages     bool
+	MeshcoreStations bool
+	MeshcoreMessages bool
+}
+
+// Mask converts the section into the runtime publish mask.
+func (p MQTTPublish) Mask() uint32 {
+	var m uint32
+	if p.Events {
+		m |= uint32(mqttpolicy.CatEvents)
+	}
+	if p.Active {
+		m |= uint32(mqttpolicy.CatActive)
+	}
+	if p.Info {
+		m |= uint32(mqttpolicy.CatInfo)
+	}
+	if p.Status {
+		m |= uint32(mqttpolicy.CatStatus)
+	}
+	if p.APRSStations {
+		m |= uint32(mqttpolicy.CatAPRSStations)
+	}
+	if p.APRSBulletins {
+		m |= uint32(mqttpolicy.CatAPRSBulletins)
+	}
+	if p.APRSPackets {
+		m |= uint32(mqttpolicy.CatAPRSPackets)
+	}
+	if p.APRSMessages {
+		m |= uint32(mqttpolicy.CatAPRSMessages)
+	}
+	if p.MeshcoreStations {
+		m |= uint32(mqttpolicy.CatMeshcoreStations)
+	}
+	if p.MeshcoreMessages {
+		m |= uint32(mqttpolicy.CatMeshcoreMessages)
+	}
+	return m
+}
+
 // Receiver is one independent MQTT receiver connection.
 type Receiver struct {
 	ID           string
@@ -459,17 +520,34 @@ type ActionRuntime struct {
 
 // fileConfig mirrors the YAML layout.
 type fileConfig struct {
-	App        fileApp          `yaml:"app"`
-	Storage    fileStorage      `yaml:"storage"`
-	Sources    []fileSource     `yaml:"sources"`
-	Outputs    []fileOutput     `yaml:"outputs"`
-	Dispatch   *fileDispatch    `yaml:"dispatch"`
-	Web        *fileWeb         `yaml:"web"`
-	Actions    []fileAction     `yaml:"actions"`
-	IngestHTTP []fileIngestHTTP `yaml:"ingest_http"`
-	APRS       *fileAPRS        `yaml:"aprs"`
-	MeshCore   *fileMeshCore    `yaml:"meshcore"`
-	Geo        *fileGeo         `yaml:"geo"`
+	App         fileApp          `yaml:"app"`
+	Storage     fileStorage      `yaml:"storage"`
+	Sources     []fileSource     `yaml:"sources"`
+	Outputs     []fileOutput     `yaml:"outputs"`
+	Dispatch    *fileDispatch    `yaml:"dispatch"`
+	MQTTPublish *fileMQTTPublish `yaml:"mqtt_publish"`
+	Web         *fileWeb         `yaml:"web"`
+	Actions     []fileAction     `yaml:"actions"`
+	IngestHTTP  []fileIngestHTTP `yaml:"ingest_http"`
+	APRS        *fileAPRS        `yaml:"aprs"`
+	MeshCore    *fileMeshCore    `yaml:"meshcore"`
+	Geo         *fileGeo         `yaml:"geo"`
+}
+
+// fileMQTTPublish mirrors the mqtt_publish block. Pointer fields keep
+// omitted keys distinguishable from explicit false (the default is
+// everything enabled).
+type fileMQTTPublish struct {
+	Events           *bool `yaml:"events"`
+	Active           *bool `yaml:"active"`
+	Info             *bool `yaml:"info"`
+	Status           *bool `yaml:"status"`
+	APRSStations     *bool `yaml:"aprs_stations"`
+	APRSBulletins    *bool `yaml:"aprs_bulletins"`
+	APRSPackets      *bool `yaml:"aprs_packets"`
+	APRSMessages     *bool `yaml:"aprs_messages"`
+	MeshcoreStations *bool `yaml:"meshcore_stations"`
+	MeshcoreMessages *bool `yaml:"meshcore_messages"`
 }
 
 // fileMeshCore mirrors the top-level meshcore block (pointer fields keep
@@ -812,6 +890,51 @@ func (f fileConfig) toConfig() Config {
 		QueueSize:         defaultDispatchQueueSize,
 		InboxWriteTimeout: defaultInboxWriteTimeout,
 		InboxRetention:    defaultInboxRetention,
+	}
+	// mqtt_publish defaults to everything enabled.
+	cfg.MQTTPublish = MQTTPublish{
+		Events:           true,
+		Active:           true,
+		Info:             true,
+		Status:           true,
+		APRSStations:     true,
+		APRSBulletins:    true,
+		APRSPackets:      true,
+		APRSMessages:     true,
+		MeshcoreStations: true,
+		MeshcoreMessages: true,
+	}
+	if f.MQTTPublish != nil {
+		if v := f.MQTTPublish.Events; v != nil {
+			cfg.MQTTPublish.Events = *v
+		}
+		if v := f.MQTTPublish.Active; v != nil {
+			cfg.MQTTPublish.Active = *v
+		}
+		if v := f.MQTTPublish.Info; v != nil {
+			cfg.MQTTPublish.Info = *v
+		}
+		if v := f.MQTTPublish.Status; v != nil {
+			cfg.MQTTPublish.Status = *v
+		}
+		if v := f.MQTTPublish.APRSStations; v != nil {
+			cfg.MQTTPublish.APRSStations = *v
+		}
+		if v := f.MQTTPublish.APRSBulletins; v != nil {
+			cfg.MQTTPublish.APRSBulletins = *v
+		}
+		if v := f.MQTTPublish.APRSPackets; v != nil {
+			cfg.MQTTPublish.APRSPackets = *v
+		}
+		if v := f.MQTTPublish.APRSMessages; v != nil {
+			cfg.MQTTPublish.APRSMessages = *v
+		}
+		if v := f.MQTTPublish.MeshcoreStations; v != nil {
+			cfg.MQTTPublish.MeshcoreStations = *v
+		}
+		if v := f.MQTTPublish.MeshcoreMessages; v != nil {
+			cfg.MQTTPublish.MeshcoreMessages = *v
+		}
 	}
 	if f.Dispatch != nil {
 		if f.Dispatch.QueueSize != nil {

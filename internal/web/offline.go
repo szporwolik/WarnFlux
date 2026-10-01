@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
@@ -53,8 +54,17 @@ type configView struct {
 	// InternetSources lists the enabled internet-backed sources the
 	// switch suspends (id · type).
 	InternetSources []configSourceView
+	// MqttRows is the long checkbox list of the publish-mask
+	// categories (what WarnFlux may publish to the MQTT broker).
+	MqttRows []configMqttRow
 	// Msg is the flash message after a toggle.
 	Msg string
+}
+
+// configMqttRow is one checkbox row of the publish mask.
+type configMqttRow struct {
+	Key     string
+	Checked bool
 }
 
 // configSourceView is one row of the internet-backed source list.
@@ -107,6 +117,18 @@ func (s *Server) internetSources() []configSourceView {
 	return out
 }
 
+// mqttRows snapshots the publish mask as checkbox rows (UI order).
+func (s *Server) mqttRows() []configMqttRow {
+	rows := make([]configMqttRow, 0, 8)
+	for _, c := range mqttpolicy.List() {
+		rows = append(rows, configMqttRow{
+			Key:     mqttpolicy.Key(c),
+			Checked: mqttpolicy.Allowed(c),
+		})
+	}
+	return rows
+}
+
 // handleConfigPage renders the admin-only configuration page.
 func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
@@ -127,12 +149,44 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		TilesDir:        s.cfg.TilesDir,
 		TilesOK:         s.tilesAvailable(),
 		InternetSources: s.internetSources(),
+		MqttRows:        s.mqttRows(),
 	}
-	if msg := r.URL.Query().Get("msg"); msg == "on" || msg == "off" {
+	switch msg := r.URL.Query().Get("msg"); msg {
+	case "on", "off":
 		v.Msg = i18n.T(s.langFor(r), "config.offline."+msg)
+	case "mqtt":
+		v.Msg = i18n.T(s.langFor(r), "config.mqtt.saved")
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "configpage", v)
+}
+
+// handleConfigMqtt replaces the runtime publish mask. Checked categories
+// publish, unchecked ones are skipped by every publisher immediately —
+// the admin decides what reaches the broker to keep its traffic and CPU
+// down.
+func (s *Server) handleConfigMqtt(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	checked := make(map[string]bool, 8)
+	for _, k := range r.PostForm["cat"] {
+		checked[strings.TrimSpace(k)] = true
+	}
+	var mask uint32
+	for _, c := range mqttpolicy.List() {
+		if checked[mqttpolicy.Key(c)] {
+			mask |= uint32(c)
+		}
+	}
+	mqttpolicy.Set(mask)
+	s.audit(sess.username, "config-mqtt",
+		"publish mask: "+strings.Join(mqttpolicy.EnabledKeys(mask), ","))
+	s.logger.Info("mqtt publish mask updated by admin",
+		"user", sess.username, "categories", mqttpolicy.EnabledKeys(mask))
+	http.Redirect(w, r, "/config?msg=mqtt", http.StatusSeeOther)
 }
 
 // handleConfigOffline flips the offline-mode switch. Admin-only; the

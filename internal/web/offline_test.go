@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 )
 
 // TestConfigPageAdminOnly proves the config section is admin-only: an
@@ -164,5 +166,42 @@ func TestConfigPageListsInternetSources(t *testing.T) {
 	_, page := env.get("/config")
 	if !strings.Contains(page, "imgw-warnings") {
 		t.Errorf("config page misses the internet source list entry")
+	}
+}
+
+// TestConfigMqttMask flows the publish-mask section: the page lists all
+// categories and the POST replaces the runtime mask immediately.
+func TestConfigMqttMask(t *testing.T) {
+	t.Cleanup(func() { mqttpolicy.Set(uint32(mqttpolicy.CatAll)) })
+	env := newTestEnv(t)
+	env.login()
+
+	_, page := env.get("/config")
+	for _, key := range []string{"events", "active", "info", "status",
+		"aprs_stations", "aprs_bulletins", "aprs_packets", "aprs_messages",
+		"meshcore_stations", "meshcore_messages"} {
+		if !strings.Contains(page, `name="cat" value="`+key+`"`) {
+			t.Errorf("config page misses the %q publish checkbox", key)
+		}
+	}
+
+	// Uncheck everything except info + status: only those may publish.
+	csrf := env.csrfFromPage("/config")
+	resp, _ := env.postForm("/config/mqtt", url.Values{
+		"csrf": {csrf},
+		"cat":  {"info", "status"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/mqtt = %d, want 303", resp.StatusCode)
+	}
+	want := uint32(mqttpolicy.CatInfo) | uint32(mqttpolicy.CatStatus)
+	if got := mqttpolicy.Mask(); got != want {
+		t.Errorf("mask = %#x, want %#x", got, want)
+	}
+	if mqttpolicy.Allowed(mqttpolicy.CatEvents) {
+		t.Error("events must be masked after the POST")
+	}
+	if !mqttpolicy.Allowed(mqttpolicy.CatInfo) {
+		t.Error("info must stay allowed")
 	}
 }

@@ -993,18 +993,64 @@ func (s *Store) InboxCount(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// PruneInbox deletes durable inbox rows older than olderThan. Rows
-// pruned this way are dropped BEFORE routing evaluation: the controlled
-// auxiliary-data policy that keeps a full disk from growing the inbox
-// without bound (unevaluated rows older than the retention are stale
-// hazards anyway, and the staleness gates would suppress them).
+// PruneInbox applies the pending-message validity policy to the durable
+// inbox: a row older than olderThan is removed ONLY when its hazard
+// carries an authoritative expiry that has already passed. The
+// staleness gates would suppress such an event anyway, so removal
+// changes nothing about delivery — it is a deliberate, explicit outcome
+// the caller counts, logs and audits. Rows carrying no expiry, a future
+// expiry or a non-hazard event are pending messages and are NEVER aged
+// out by ordinary retention: unsent work must survive a long offline
+// stretch or a disabled action. Unreadable rows are kept (fail-open).
 func (s *Store) PruneInbox(ctx context.Context, olderThan time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM dispatch_inbox WHERE received_at_ms < ?`, olderThan.UnixMilli())
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, event_json FROM dispatch_inbox WHERE received_at_ms < ?`,
+		olderThan.UnixMilli())
 	if err != nil {
-		return 0, fmt.Errorf("prune inbox: %w", err)
+		return 0, fmt.Errorf("scan inbox rows for pruning: %w", err)
 	}
-	return res.RowsAffected()
+	now := s.now().UTC()
+	var expired []int64
+	for rows.Next() {
+		var id int64
+		var payload string
+		if err := rows.Scan(&id, &payload); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan inbox row: %w", err)
+		}
+		var ev dispatch.Event
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			continue // unreadable rows are kept (fail-open)
+		}
+		if ev.Kind != dispatch.EventHazardTransition || ev.Hazard == nil || ev.Hazard.Hazard.ExpiresAt == nil {
+			continue // no authoritative expiry: never age out
+		}
+		if ev.Hazard.Hazard.ExpiresAt.After(now) {
+			continue
+		}
+		expired = append(expired, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate inbox rows: %w", err)
+	}
+	if len(expired) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin inbox prune: %w", err)
+	}
+	defer tx.Rollback()
+	for _, id := range expired {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM dispatch_inbox WHERE id = ?`, id); err != nil {
+			return 0, fmt.Errorf("prune inbox row %d: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit inbox prune: %w", err)
+	}
+	return int64(len(expired)), nil
 }
 
 // SaveEmcomNetwork upserts one EMCOM readiness network (the panel's

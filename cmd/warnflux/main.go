@@ -830,9 +830,10 @@ func run(configPath string, checkConfig bool) error {
 		manager.Run(ctx)
 	}()
 
-	// Durable action-fire ledger maintenance: rows older than the
-	// configured retention are pruned at startup and then hourly.
-	// A negative retention disables pruning entirely.
+	// Durable action-fire ledger maintenance: COMPLETED delivery history
+	// older than the configured retention is pruned at startup and then
+	// hourly. Pending jobs (saved, running or a scheduled retry) never
+	// age out. A negative retention disables pruning entirely.
 	if cfg.App.NotificationRetention > 0 {
 		wg.Add(1)
 		go func() {
@@ -845,7 +846,7 @@ func run(configPath string, checkConfig bool) error {
 					return
 				}
 				if n > 0 {
-					logger.Debug("routing: fire ledger pruned", "removed", n)
+					logger.Debug("routing: fire ledger pruned (completed history)", "removed", n)
 				}
 			}
 			prune()
@@ -862,11 +863,14 @@ func run(configPath string, checkConfig bool) error {
 		}()
 	}
 
-	// Durable dispatch-inbox maintenance: unevaluated rows older than the
-	// configured retention are pruned (stale alerts the staleness gates
-	// would suppress anyway). Below the low-disk alarm threshold the
-	// cutoff shortens so auxiliary data stops competing with primary
-	// storage on a full card. A retention of 0 disables pruning.
+	// Durable dispatch-inbox maintenance: ordinary retention removes ONLY
+	// rows whose hazard carries an authoritative expiry that has already
+	// passed — the staleness gates would suppress them anyway. Pending
+	// messages (no expiry, future expiry) are never aged out by clock age
+	// alone, and every removal is an explicit outcome recorded in the
+	// audit log. Below the low-disk alarm threshold the cutoff shortens
+	// so auxiliary data stops competing with primary storage on a full
+	// card. A retention of 0 disables pruning.
 	if cfg.Dispatch.InboxRetention > 0 {
 		wg.Add(1)
 		go func() {
@@ -899,7 +903,12 @@ func run(configPath string, checkConfig bool) error {
 					return
 				}
 				if n > 0 {
-					logger.Info("dispatch: inbox pruned", "dropped_unevaluated", n, "low_disk", lowDisk)
+					logger.Info("dispatch: inbox pending-expiry prune",
+						"dropped_expired", n, "low_disk", lowDisk)
+					if err := store.RecordAudit("system", "inbox-expiry-prune",
+						fmt.Sprintf("%d expired pending inbox rows removed (validity policy)", n), now); err != nil {
+						logger.Warn("dispatch: inbox prune audit failed", "error", err)
+					}
 				}
 				// Panel tombstone pruning: expired compose communications
 				// and deleted EMCOM networks stop being useful once the

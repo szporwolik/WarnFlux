@@ -122,9 +122,12 @@ type emcomNetwork struct {
 // emcomStore is the optional local persistence surface for EMCOM
 // networks (satisfied by *sqlite.Store): the panel works without a
 // broker and the retained MQTT document is only an asynchronous sync
-// copy for other instances.
+// copy for other instances. SaveEmcomNetwork returns the lifecycle
+// version the store allocated for the transition (a database-owned
+// monotonic counter, independent of the wall clock) so the handler can
+// stamp it onto the dispatched transition.
 type emcomStore interface {
-	SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) error
+	SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) (int64, error)
 	DeleteEmcomNetwork(ctx context.Context, slug string) error
 	EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, error)
 	// InstanceID returns the persistent publisher UUID stamped onto
@@ -202,11 +205,12 @@ func emcomHazard(net emcomNetwork, now time.Time) state.Hazard {
 
 // emcomTransition builds the canonical ingress event for one level change
 // (new / updated / expired), mirroring the compose module. The transition
-// carries the instance's publisher identity and the network state version
-// (updated_at_ms) as its ChangeID, so the lifecycle ledger can identify
-// and version it — a level drop back to monitoring then blocks a
-// previously queued activation through the delivery gate.
-func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher string) dispatch.Event {
+// carries the instance's publisher identity and the version the store
+// allocated for the network state (a database-owned monotonic counter,
+// independent of the wall clock) as its ChangeID, so the lifecycle
+// ledger can identify and version it — a level drop back to monitoring
+// then blocks a previously queued activation through the delivery gate.
+func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher string, version int64) dispatch.Event {
 	now := time.Now()
 	return dispatch.Event{
 		Kind:       dispatch.EventHazardTransition,
@@ -216,7 +220,7 @@ func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher stri
 			Type:      typ,
 			Key:       h.EventKey,
 			Source:    emcomSource,
-			ChangeID:  h.UpdatedAt.UnixMilli(),
+			ChangeID:  version,
 			Publisher: publisher,
 			Timestamp: now,
 			Hazard: dispatch.Hazard{
@@ -374,13 +378,14 @@ func (s *Server) emcomHazardActive(slug string) bool {
 	return s.emcomHazardInMirror(slug)
 }
 
-// saveEmcomNetwork persists one network to the local record (nil when no
-// store is attached: mirror-only installations keep the broker document
-// as their record).
-func (s *Server) saveEmcomNetwork(net emcomNetwork) error {
+// saveEmcomNetwork persists one network to the local record and returns
+// the lifecycle version the store allocated for the transition (nil when
+// no store is attached: mirror-only installations keep the broker
+// document as their record).
+func (s *Server) saveEmcomNetwork(net emcomNetwork) (int64, error) {
 	st, ok := s.users.(emcomStore)
 	if !ok {
-		return nil
+		return 0, nil
 	}
 	return st.SaveEmcomNetwork(context.Background(), storage.EmcomNetwork{
 		Slug:      net.Slug,
@@ -394,10 +399,10 @@ func (s *Server) saveEmcomNetwork(net emcomNetwork) error {
 // deleteEmcomNetwork tombstones one network in the local record (level
 // -1): the tombstone keeps a stale broker copy from reviving the network
 // and is pruned by maintenance. Mirror-only installations have no store.
-func (s *Server) deleteEmcomNetwork(slug string) error {
+func (s *Server) deleteEmcomNetwork(slug string) (int64, error) {
 	st, ok := s.users.(emcomStore)
 	if !ok {
-		return nil
+		return 0, nil
 	}
 	return st.SaveEmcomNetwork(context.Background(), storage.EmcomNetwork{
 		Slug:      slug,
@@ -703,7 +708,7 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.users.(emcomStore); ok {
 		// LOCAL-FIRST: the local database row is the durable record; the
 		// retained MQTT document is only an asynchronous sync copy.
-		if err := s.saveEmcomNetwork(net); err != nil {
+		if _, err := s.saveEmcomNetwork(net); err != nil {
 			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
 			return
@@ -756,15 +761,21 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	net.Level = level
 	net.UpdatedBy = sess.username
 	net.UpdatedAt = time.Now()
+	// The lifecycle version comes from the store's clock-independent
+	// counter when a store is attached; mirror-only installations fall
+	// back to the wall clock (no durable jobs to gate there).
+	version := net.UpdatedAt.UnixMilli()
 	_, hasStore := s.users.(emcomStore)
 	if hasStore {
 		// LOCAL-FIRST: the local database row is the durable record; the
 		// retained MQTT document is only an asynchronous sync copy.
-		if err := s.saveEmcomNetwork(net); err != nil {
+		v, err := s.saveEmcomNetwork(net)
+		if err != nil {
 			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
 			return
 		}
+		version = v
 	} else {
 		// Mirror-only installations keep the broker document as the
 		// record; publishing is required and synchronous there.
@@ -792,7 +803,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		}
 		// The transition is durable and routed locally BEFORE any broker
 		// I/O — the panel never depends on the broker round-trip.
-		switch s.ingress.Enqueue(emcomTransition(h, typ, publisher)) {
+		switch s.ingress.Enqueue(emcomTransition(h, typ, publisher, version)) {
 		case dispatch.Rejected:
 			s.logger.Warn("emcom: local dispatch rejected the transition", "slug", slug)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.dispatch"))
@@ -819,7 +830,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	} else if wasActive {
 		// Back to monitoring: retire the hazard document; the expiry
 		// transition never starts the notification machine (like compose).
-		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, net.UpdatedAt), dispatch.TransitionExpired, publisher)) == dispatch.Rejected {
+		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, net.UpdatedAt), dispatch.TransitionExpired, publisher, version)) == dispatch.Rejected {
 			s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
 		}
 		if hasStore {
@@ -857,15 +868,20 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wasActive := net.Level >= 1
+	// The tombstone's lifecycle version comes from the store counter
+	// when attached (mirror-only falls back to the wall clock).
+	version := time.Now().UnixMilli()
 	_, hasStore := s.users.(emcomStore)
 	if hasStore {
 		// LOCAL-FIRST: the local database row is removed first; the
 		// broker documents follow asynchronously.
-		if err := s.deleteEmcomNetwork(slug); err != nil {
+		v, err := s.deleteEmcomNetwork(slug)
+		if err != nil {
 			s.logger.Warn("emcom: local delete failed", "slug", slug, "error", err)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.deleting"))
 			return
 		}
+		version = v
 	} else {
 		// Mirror-only installations keep the broker document as the
 		// record; the tombstone publish is required there.
@@ -883,7 +899,7 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 	if wasActive {
 		// The expiry transition is durable and routed locally before any
 		// broker I/O.
-		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired, s.emcomPublisher())) == dispatch.Rejected {
+		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired, s.emcomPublisher(), version)) == dispatch.Rejected {
 			s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
 		}
 	}

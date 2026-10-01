@@ -743,6 +743,23 @@ func run(configPath string, checkConfig bool) error {
 		// sync.
 		inst.SetIngress(ingress)
 		inst.SetOutbox(store)
+		// Atomic acceptance (P1): the inbox row, the lifecycle record
+		// and the outbox row commit in ONE transaction before the event
+		// is handed to the routing worker — a rejected commit accepts
+		// nothing, and a crash can never leave an accepted local
+		// notification without its MQTT sync.
+		inst.SetAcceptor(store)
+		// Builder-mode identity: stamp the persistent instance UUID and
+		// a monotonic version onto every builder event so the routing
+		// engine records them in the lifecycle ledger and the delivery
+		// gate blocks jobs a later cancellation supersedes. A missing
+		// ID (read failure) degrades to the legacy publisher-less form.
+		if pid, err := store.InstanceID(context.Background()); err != nil {
+			logger.Warn("ingest_http: publisher id unavailable; builder events run without lifecycle versioning",
+				"instance", ing.ID, "error", err)
+		} else {
+			inst.SetPublisherID(pid)
+		}
 		if err := inst.Start(); err != nil {
 			logger.Warn("ingest_http: initial broker connect failed (requests are accepted locally and synced once the broker returns)",
 				"instance", ing.ID, "error", err)

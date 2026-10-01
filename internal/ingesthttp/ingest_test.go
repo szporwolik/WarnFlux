@@ -18,10 +18,12 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
+	"github.com/szporwolik/WarnFlux/internal/routing"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
@@ -286,6 +288,185 @@ func TestBuilderDeduplicatesIdenticalPosts(t *testing.T) {
 	}
 }
 
+// TestBuilderStampsLifecycleIdentity pins the reported P1 at the wire
+// level: builder events carry the persistent instance UUID and a
+// strictly increasing version (change id), so the routing engine can
+// record them in the lifecycle ledger and the delivery gate can block
+// jobs a later cancellation supersedes.
+func TestBuilderStampsLifecycleIdentity(t *testing.T) {
+	pub := &fakePublisher{connected: true}
+	inst := testInstance(t, pub)
+	inst.SetOutbox(&fakeOutbox{})
+	inbox := &fakeInbox{}
+	g := dispatch.NewIngress(4)
+	g.SetInbox(inbox)
+	inst.SetIngress(g)
+	inst.SetPublisherID("instance-uuid-1234")
+
+	body := `{"severity":"severe","headline":"Burze","source_id":"s7"}`
+	if rec := postAndSync(t, inst, body); rec.Code != http.StatusAccepted {
+		t.Fatalf("new post = %d, want 202", rec.Code)
+	}
+	if rec := postAndSync(t, inst, `{"severity":"severe","headline":"Burze","source_id":"s7","transition":"cancelled"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("cancelled post = %d, want 202", rec.Code)
+	}
+
+	var w1, w2 mqttreceiver.EventPayload
+	_ = json.Unmarshal([]byte(pub.published[0].payload), &w1)
+	_ = json.Unmarshal([]byte(pub.published[2].payload), &w2)
+	if w1.Publisher != "instance-uuid-1234" || w1.ChangeID <= 0 {
+		t.Errorf("new event identity = publisher %q changeID %d, want the stamped instance identity", w1.Publisher, w1.ChangeID)
+	}
+	if w2.Publisher != w1.Publisher || w2.ChangeID <= w1.ChangeID {
+		t.Errorf("cancelled event identity = publisher %q changeID %d, want the same publisher and a strictly newer version than %d", w2.Publisher, w2.ChangeID, w1.ChangeID)
+	}
+	if w2.ChangeType != mqttreceiver.ChangeCancelled {
+		t.Errorf("cancelled event change type = %q, want cancelled", w2.ChangeType)
+	}
+
+	// The local ingress copy carries the same identity (it is what the
+	// routing engine records).
+	inbox.mu.Lock()
+	events := append([]dispatch.Event(nil), inbox.events...)
+	inbox.mu.Unlock()
+	if len(events) != 2 {
+		t.Fatalf("local inbox = %d events, want 2", len(events))
+	}
+	if h := events[0].Hazard; h == nil || h.Publisher != "instance-uuid-1234" || h.ChangeID != w1.ChangeID {
+		t.Errorf("local new event = publisher %q changeID %d, want the stamped identity", h.Publisher, h.ChangeID)
+	}
+	if h := events[1].Hazard; h == nil || h.Type != dispatch.TransitionCancelled || h.ChangeID != w2.ChangeID {
+		t.Errorf("local cancelled event = %+v, want the cancelled transition with the newer version", events[1].Hazard)
+	}
+}
+
+// TestBuilderCancellationBlocksQueuedDelivery pins the reported P1
+// end-to-end: a builder `new` and a later builder `cancelled` both get
+// 202 and both are processed, and the cancellation must BLOCK the old
+// alert at the pre-transmission gate — previously builder events were
+// publisher-less and version-less, the lifecycle ledger skipped them,
+// and the old job stayed deliverable.
+func TestBuilderCancellationBlocksQueuedDelivery(t *testing.T) {
+	ctx := context.Background()
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "wf.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	pid, err := store.InstanceID(ctx)
+	if err != nil {
+		t.Fatalf("InstanceID: %v", err)
+	}
+
+	// One group routes the builder alerts to a probe action.
+	g, err := store.CreateGroup("ops")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if err := store.SetGroupRouting(g.ID, []storage.ChannelAssignment{
+		{Source: "news", ID: "probe", MinSeverity: "moderate"},
+	}); err != nil {
+		t.Fatalf("SetGroupRouting: %v", err)
+	}
+
+	// The REAL local pipeline: durable-inbox ingress + routing engine.
+	ingress := dispatch.NewIngress(8)
+	ingress.SetInbox(store)
+	engine := routing.New(store, noopSubmitter{}, slog.New(slog.NewTextHandler(io.Discard, nil)), action.AppInfo{}, nil, nil)
+	engine.SetInbox(store)
+	engineCtx, engineCancel := context.WithCancel(ctx)
+	engineDone := make(chan struct{})
+	go func() { engine.Run(engineCtx, ingress.Events()); close(engineDone) }()
+	t.Cleanup(func() {
+		engineCancel()
+		select {
+		case <-engineDone:
+		case <-time.After(3 * time.Second):
+		}
+	})
+	waitFor(t, engine.Ready, "engine rules loaded")
+
+	inst := testInstance(t, &fakePublisher{connected: true})
+	inst.SetOutbox(&fakeOutbox{})
+	inst.SetIngress(ingress)
+	inst.SetAcceptor(store)
+	inst.SetPublisherID(pid)
+
+	if rec := post(t, inst, `{"severity":"severe","headline":"Burze","event":"Burze","source_id":"scraper-7"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("new post = %d, want 202", rec.Code)
+	}
+
+	// The engine persists the delivery job with the stamped identity.
+	var job storage.DeliveryJob
+	waitFor(t, func() bool {
+		var ok bool
+		job, ok, err = store.ClaimNextDelivery(ctx, "probe", 3, time.Now())
+		return err == nil && ok
+	}, "delivery job queued")
+
+	var req action.ActionRequest
+	if err := json.Unmarshal([]byte(job.Payload), &req); err != nil {
+		t.Fatalf("job payload: %v", err)
+	}
+	h := req.Event.Hazard
+	if h == nil {
+		t.Fatal("queued job carries no hazard")
+	}
+
+	// Before the cancellation the gate must NOT block this version.
+	if blocked, err := store.LifecycleBlocks(ctx, h.Publisher, h.Key, h.ChangeID); err != nil || blocked {
+		t.Fatalf("gate blocked the fresh job (blocked=%v, err=%v), want it deliverable", blocked, err)
+	}
+
+	// The cancellation: 202 and processed, and it must BLOCK the old
+	// job exactly like main's delivery gate checks it.
+	if rec := post(t, inst, `{"severity":"severe","headline":"Burze","event":"Burze","source_id":"scraper-7","transition":"cancelled"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("cancelled post = %d, want 202", rec.Code)
+	}
+	blocked := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := store.LifecycleBlocks(ctx, h.Publisher, h.Key, h.ChangeID); err == nil && b {
+			blocked = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !blocked {
+		t.Fatal("the old alert still passes the delivery gate after its cancellation — builder events carry no lifecycle identity")
+	}
+
+	// The stamped identity is the persistent instance UUID plus a
+	// strictly positive version.
+	if h.Publisher != pid || h.ChangeID <= 0 {
+		t.Fatalf("queued job identity = publisher %q changeID %d, want (%q, >0)", h.Publisher, h.ChangeID, pid)
+	}
+}
+
+// noopSubmitter is the action submitter for the engine in tests: the
+// durable path never calls Submit, so any call is a failure signal.
+func noopSubmitterFunc(string, action.ActionRequest) error { return errors.New("unexpected submit") }
+
+type noopSubmitter struct{}
+
+func (noopSubmitter) Submit(id string, req action.ActionRequest) error {
+	return noopSubmitterFunc(id, req)
+}
+
+// waitFor polls a condition with a bounded deadline.
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
 func TestBuilderValidationErrors(t *testing.T) {
 	pub := &fakePublisher{connected: true}
 	inst := testInstance(t, pub)
@@ -545,6 +726,7 @@ func TestBrokerDownAcceptsLocallyAndSyncsWhenBack(t *testing.T) {
 	pub := &fakePublisher{connected: false}
 	inst := testInstance(t, pub)
 	inst.SetOutbox(store)
+	inst.SetAcceptor(store)
 
 	g := dispatch.NewIngress(4)
 	g.SetInbox(store)
@@ -597,6 +779,146 @@ func TestBrokerDownAcceptsLocallyAndSyncsWhenBack(t *testing.T) {
 	}
 	if outbox, err = restarted.PendingOutbox(ctx, "news", 10); err != nil || len(outbox) != 0 {
 		t.Fatalf("outbox after sync = (%v, %v), want empty", outbox, err)
+	}
+}
+
+// TestAtomicAcceptanceCommitsInboxLifecycleOutbox pins the reported P1
+// fix end-to-end: with the atomic backend attached, one accepted
+// request commits the durable inbox row, the lifecycle record and the
+// durable outbox row in ONE transaction, and the live worker receives
+// the event with its inbox id attached (never re-appended).
+func TestAtomicAcceptanceCommitsInboxLifecycleOutbox(t *testing.T) {
+	ctx := context.Background()
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "atomic.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	pid, err := store.InstanceID(ctx)
+	if err != nil {
+		t.Fatalf("InstanceID: %v", err)
+	}
+
+	ingress := dispatch.NewIngress(8)
+	ingress.SetInbox(store)
+	live := make(chan dispatch.Event, 8)
+	go func() {
+		for ev := range ingress.Events() {
+			live <- ev
+		}
+	}()
+	t.Cleanup(ingress.StopIntake)
+
+	inst := testInstance(t, &fakePublisher{connected: true})
+	inst.SetIngress(ingress)
+	inst.SetOutbox(store)
+	inst.SetAcceptor(store)
+	inst.SetPublisherID(pid)
+
+	if rec := post(t, inst, `{"severity":"severe","headline":"Burze","source_id":"atomic-1"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("new post = %d, want 202 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// The live worker received the event with its committed inbox id.
+	var ev1 dispatch.Event
+	select {
+	case ev1 = <-live:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the live worker never received the accepted event")
+	}
+	if ev1.InboxID == 0 || ev1.Hazard == nil {
+		t.Fatalf("live event = inboxID %d, want the committed inbox id", ev1.InboxID)
+	}
+
+	inbox, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil || len(inbox) != 1 {
+		t.Fatalf("local inbox = (%v, %v), want 1 durable row", inbox, err)
+	}
+	outbox, err := store.PendingOutbox(ctx, "news", 10)
+	if err != nil || len(outbox) != 1 {
+		t.Fatalf("outbox = (%v, %v), want 1 durable row", outbox, err)
+	}
+
+	// The cancellation commits atomically too and lands in the ledger,
+	// so the delivery gate blocks the old version (changeID 0 probes the
+	// CURRENT state: a cancelled row must block).
+	if rec := post(t, inst, `{"severity":"severe","headline":"Burze","source_id":"atomic-1","transition":"cancelled"}`); rec.Code != http.StatusAccepted {
+		t.Fatalf("cancelled post = %d, want 202", rec.Code)
+	}
+	select {
+	case <-live:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the live worker never received the cancellation")
+	}
+	if blocked, err := store.LifecycleBlocks(ctx, pid, "news:atomic-1", 0); err != nil || !blocked {
+		t.Fatalf("lifecycle after the cancellation = (blocked %v, err %v), want blocked", blocked, err)
+	}
+}
+
+// TestAtomicAcceptanceRejectsWithoutSideEffects pins the reported P1
+// failure half: when the acceptance transaction fails, the response is
+// 503 AND nothing was accepted — no inbox row, no outbox row and the
+// live worker never sees the event. Previously the inbox row committed
+// first, the failed outbox answered 503, and the local notification was
+// already accepted (and handed to the worker).
+func TestAtomicAcceptanceRejectsWithoutSideEffects(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "atomic.db")
+	store, _, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	pid, err := store.InstanceID(ctx)
+	if err != nil {
+		t.Fatalf("InstanceID: %v", err)
+	}
+
+	ingress := dispatch.NewIngress(8)
+	ingress.SetInbox(store)
+	live := make(chan dispatch.Event, 8)
+	go func() {
+		for ev := range ingress.Events() {
+			live <- ev
+		}
+	}()
+	t.Cleanup(ingress.StopIntake)
+
+	inst := testInstance(t, &fakePublisher{connected: true})
+	inst.SetIngress(ingress)
+	inst.SetOutbox(store)
+	inst.SetAcceptor(store)
+	inst.SetPublisherID(pid)
+
+	// The whole storage backend goes down: the acceptance transaction
+	// must fail as one unit.
+	store.Close()
+	restored, _, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+
+	rec := post(t, inst, `{"severity":"severe","headline":"Burze","source_id":"atomic-2"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("post with broken storage = %d, want 503 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// Nothing was accepted: the worker must not see the event.
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case ev := <-live:
+		t.Fatalf("the request was rejected with 503 but the local worker already received the event (%s) — acceptance is not atomic", ev.Hazard.Key)
+	default:
+	}
+
+	inbox, err := restored.PendingInboxEvents(ctx, 10)
+	if err != nil || len(inbox) != 0 {
+		t.Fatalf("inbox after the rejected request = (%v, %v), want empty", inbox, err)
+	}
+	outbox, err := restored.PendingOutbox(ctx, "news", 10)
+	if err != nil || len(outbox) != 0 {
+		t.Fatalf("outbox after the rejected request = (%v, %v), want empty", outbox, err)
 	}
 }
 

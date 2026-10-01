@@ -337,7 +337,7 @@ func (s *Server) handlePartialMeshcore(w http.ResponseWriter, r *http.Request) {
 // handleMeshcoreAdvert triggers a manual flood advert on the node.
 func (s *Server) handleMeshcoreAdvert(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -362,7 +362,7 @@ func (s *Server) handleMeshcoreAdvert(w http.ResponseWriter, r *http.Request) {
 // contact prefix (user) from the admin panel.
 func (s *Server) handleMeshcoreSend(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

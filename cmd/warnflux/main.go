@@ -627,12 +627,12 @@ func run(configPath string, checkConfig bool) error {
 			if blocked {
 				return false
 			}
-			active, err := store.HazardActive(ctx, h.Key, time.Now())
+			verdict, err := store.HazardActive(ctx, h.Key, time.Now())
 			if err != nil {
 				logger.Warn("actions: delivery freshness lookup failed", "event_key", h.Key, "error", err)
-				return true // never suppress on a lookup failure
+				return true // read error: never suppress on a lookup failure
 			}
-			return active
+			return verdict != storage.HazardInactive
 		}
 		return true
 	})

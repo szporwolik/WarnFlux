@@ -238,17 +238,19 @@ func TestCommitInboxDeliveryAtomic(t *testing.T) {
 }
 
 // TestHazardActive pins the staleness oracle used by the routing engine
-// and the action workers: an active hazard with a future expiry counts
-// as active, a cancelled/expired row or a passed expiry counts as
-// inactive, and an unknown key counts as active (fail-open).
+// and the action workers: active with a future expiry = HazardActive,
+// cancelled/expired rows and passed expiry = HazardInactive, unknown
+// keys = HazardUnknown. A cancelled or expired event WITHOUT an expiry
+// must yield a clean verdict — scanning NULL into int64 used to fail
+// the whole check before the status was even read.
 func TestHazardActive(t *testing.T) {
 	store := newRoutingStore(t)
 	ctx := context.Background()
 	now := time.Now()
 
-	// Unknown key: active (producers without local storage still notify).
-	if active, err := store.HazardActive(ctx, "nope", now); err != nil || !active {
-		t.Fatalf("unknown key = (%v, %v), want (true, nil)", active, err)
+	// Unknown key: HazardUnknown (producers without local storage notify).
+	if verdict, err := store.HazardActive(ctx, "nope", now); err != nil || verdict != storage.HazardUnknown {
+		t.Fatalf("unknown key = (%v, %v), want (HazardUnknown, nil)", verdict, err)
 	}
 
 	future := now.Add(time.Hour)
@@ -260,25 +262,34 @@ func TestHazardActive(t *testing.T) {
 	if _, _, err := store.Ingest(ctx, ev, core.Fingerprint(ev)); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
-	if active, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || !active {
-		t.Fatalf("live hazard = (%v, %v), want (true, nil)", active, err)
+	if verdict, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || verdict != storage.HazardActive {
+		t.Fatalf("live hazard = (%v, %v), want (HazardActive, nil)", verdict, err)
 	}
 
-	// A newer cancellation: the stale update must not outrank it.
-	if _, err := store.db.Exec(`UPDATE events SET status = 'cancelled' WHERE event_key = 'imgw-meteo:1'`); err != nil {
+	// A cancellation WITHOUT an expiry: the reported P1 — the nullable
+	// expiry used to abort the scan before the status was evaluated.
+	if _, err := store.db.Exec(`UPDATE events SET status = 'cancelled', expires_at_ms = NULL, expires_at = NULL WHERE event_key = 'imgw-meteo:1'`); err != nil {
 		t.Fatal(err)
 	}
-	if active, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || active {
-		t.Fatalf("cancelled hazard = (%v, %v), want (false, nil)", active, err)
+	if verdict, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
+		t.Fatalf("cancelled no-expiry hazard = (%v, %v), want (HazardInactive, nil)", verdict, err)
 	}
 
-	// Back to active but with a passed expiry: inactive.
+	// Expired WITHOUT an expiry (internal lifecycle, no timestamp).
+	if _, err := store.db.Exec(`UPDATE events SET status = 'expired' WHERE event_key = 'imgw-meteo:1'`); err != nil {
+		t.Fatal(err)
+	}
+	if verdict, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
+		t.Fatalf("expired no-expiry hazard = (%v, %v), want (HazardInactive, nil)", verdict, err)
+	}
+
+	// Back to active with a passed expiry: HazardInactive.
 	if _, err := store.db.Exec(`UPDATE events SET status = 'active', expires_at_ms = ? WHERE event_key = 'imgw-meteo:1'`,
 		now.Add(-time.Minute).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	if active, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || active {
-		t.Fatalf("time-expired hazard = (%v, %v), want (false, nil)", active, err)
+	if verdict, err := store.HazardActive(ctx, "imgw-meteo:1", now); err != nil || verdict != storage.HazardInactive {
+		t.Fatalf("time-expired hazard = (%v, %v), want (HazardInactive, nil)", verdict, err)
 	}
 }
 

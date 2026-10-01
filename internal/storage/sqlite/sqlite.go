@@ -1558,30 +1558,33 @@ func (s *Store) CountActive(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// HazardActive reports whether a stored hazard is still worth notifying
-// for. An unknown key counts as active (the transition may come from a
-// producer without local storage); a known key counts as inactive when
+// HazardActive reports the local freshness verdict for one event key.
+// An unknown key is HazardUnknown (the transition may come from a
+// producer without local storage); a known key is HazardInactive when
 // its status is not active (cancelled/expired — an older update must
 // never outrank a known cancellation) or its expires_at_ms has passed.
-func (s *Store) HazardActive(ctx context.Context, eventKey string, now time.Time) (bool, error) {
+// The nullable expiry is read through sql.NullInt64, so a cancelled or
+// expired event WITHOUT an expiry still yields a clean verdict instead
+// of a scan error that callers would fail open on.
+func (s *Store) HazardActive(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error) {
 	var status string
-	var expiresMs int64
+	var expiresMs sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT status, expires_at_ms FROM events WHERE event_key = ?`, eventKey).
 		Scan(&status, &expiresMs)
 	if errors.Is(err, sql.ErrNoRows) {
-		return true, nil
+		return storage.HazardUnknown, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("hazard freshness for %q: %w", eventKey, err)
+		return 0, fmt.Errorf("hazard freshness for %q: %w", eventKey, err)
 	}
 	if status != string(core.StatusActive) {
-		return false, nil
+		return storage.HazardInactive, nil
 	}
-	if expiresMs > 0 && expiresMs <= now.UnixMilli() {
-		return false, nil
+	if expiresMs.Valid && expiresMs.Int64 > 0 && expiresMs.Int64 <= now.UnixMilli() {
+		return storage.HazardInactive, nil
 	}
-	return true, nil
+	return storage.HazardActive, nil
 }
 
 // ---- internals ----

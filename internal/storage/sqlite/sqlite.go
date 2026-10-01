@@ -579,6 +579,24 @@ CREATE INDEX idx_action_fires_claim ON action_fires(action_id, status, next_atte
 CREATE INDEX idx_action_fires_recover ON action_fires(status, next_attempt_at_ms);
 `,
 	},
+	{
+		// v29: the common message lifecycle ledger. Every observed hazard
+		// transition — local ingest, remote MQTT, the compose panel —
+		// records its latest version and state per (publisher, event_key),
+		// so a worker can refuse to transmit a job whose version was
+		// superseded, cancelled or expired, no matter where the message
+		// came from. Older versions never overwrite newer ones.
+		SQL: `
+CREATE TABLE message_lifecycle (
+	publisher     TEXT NOT NULL,
+	event_key     TEXT NOT NULL,
+	version       INTEGER NOT NULL,
+	status        TEXT NOT NULL,
+	updated_at_ms INTEGER NOT NULL,
+	PRIMARY KEY (publisher, event_key)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1053,6 +1071,57 @@ func (s *Store) PruneInbox(ctx context.Context, olderThan time.Time) (int64, err
 	return int64(len(expired)), nil
 }
 
+// RecordLifecycle upserts the latest observed lifecycle state of one
+// message (publisher + event key): the highest version wins, so a
+// replayed OLD transition can never downgrade a newer cancellation or
+// expiry. The compose panel records its state through the same ledger
+// (empty publisher, version = updated_at_ms), which makes the worker's
+// pre-transmission gate cover panel messages too.
+func (s *Store) RecordLifecycle(ctx context.Context, publisher, eventKey string, version int64, status string) error {
+	at := s.now().UTC().UnixMilli()
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(publisher, event_key) DO UPDATE SET
+			version = excluded.version,
+			status = excluded.status,
+			updated_at_ms = excluded.updated_at_ms
+		WHERE excluded.version >= message_lifecycle.version`,
+		publisher, eventKey, version, status, at); err != nil {
+		return fmt.Errorf("record lifecycle for %q: %w", eventKey, err)
+	}
+	return nil
+}
+
+// LifecycleBlocks reports whether a queued delivery for the given
+// message version must NOT be transmitted: a newer version is already
+// known, or exactly this version is cancelled/expired. Jobs without a
+// version identity (changeID 0 — panel messages) are judged by the
+// CURRENT state only. An unknown message never blocks (fail-open).
+func (s *Store) LifecycleBlocks(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error) {
+	var version int64
+	var status string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT version, status FROM message_lifecycle
+		WHERE publisher = ? AND event_key = ?`, publisher, eventKey).Scan(&version, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read lifecycle for %q: %w", eventKey, err)
+	}
+	if changeID > 0 {
+		if version > changeID {
+			return true, nil // a newer version supersedes this job
+		}
+		if version == changeID && status != string(core.StatusActive) {
+			return true, nil // exactly this version is terminal
+		}
+		return false, nil
+	}
+	return status != string(core.StatusActive), nil
+}
+
 // SaveEmcomNetwork upserts one EMCOM readiness network (the panel's
 // durable local record; the retained MQTT document is only a sync copy).
 func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) error {
@@ -1112,6 +1181,20 @@ func (s *Store) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) 
 			updated_at_ms = excluded.updated_at_ms`,
 		h.EventKey, string(h.State), h.Status, h.UpdatedAt.UnixMilli()); err != nil {
 		return fmt.Errorf("save compose hazard %q: %w", h.EventKey, err)
+	}
+	// The same state joins the common lifecycle ledger (empty publisher,
+	// version = updated_at_ms), so a queued delivery of this message is
+	// blocked once the panel cancels or expires it.
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
+		VALUES ('', ?, ?, ?, ?)
+		ON CONFLICT(publisher, event_key) DO UPDATE SET
+			version = excluded.version,
+			status = excluded.status,
+			updated_at_ms = excluded.updated_at_ms
+		WHERE excluded.version >= message_lifecycle.version`,
+		h.EventKey, h.UpdatedAt.UnixMilli(), h.Status, h.UpdatedAt.UnixMilli()); err != nil {
+		return fmt.Errorf("record compose lifecycle %q: %w", h.EventKey, err)
 	}
 	return nil
 }

@@ -443,6 +443,97 @@ func TestPruneKeepsPendingDeliveries(t *testing.T) {
 	}
 }
 
+// TestLifecycleBlocksVersionSemantics pins the shared lifecycle ledger:
+// unknown messages never block (fail-open), a newer version supersedes
+// earlier jobs, a terminal state of the exact version blocks, an older
+// replay never downgrades, and versionless jobs (the compose panel) are
+// judged by the current state only.
+func TestLifecycleBlocksVersionSemantics(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	if blocked, err := store.LifecycleBlocks(ctx, "pub", "k", 3); err != nil || blocked {
+		t.Fatalf("unknown message = (%v, %v), want (false, nil)", blocked, err)
+	}
+	if err := store.RecordLifecycle(ctx, "pub", "k", 3, "active"); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "pub", "k", 3); blocked {
+		t.Fatal("the current active version must not block")
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "pub", "k", 2); !blocked {
+		t.Fatal("an older job must be blocked by a newer version")
+	}
+	if err := store.RecordLifecycle(ctx, "pub", "k", 5, "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "pub", "k", 3); !blocked {
+		t.Fatal("a job superseded by a cancellation must block")
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "pub", "k", 5); !blocked {
+		t.Fatal("the cancelled version itself must block")
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "pub", "k", 6); blocked {
+		t.Fatal("a newer unknown version must not block")
+	}
+	// An older replay never downgrades the ledger.
+	if err := store.RecordLifecycle(ctx, "pub", "k", 4, "active"); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "pub", "k", 5); !blocked {
+		t.Fatal("replay must not revive a cancelled version")
+	}
+
+	// Versionless jobs (panel messages) are judged by the current state.
+	if err := store.RecordLifecycle(ctx, "", "panel:1", 100, "active"); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "", "panel:1", 0); blocked {
+		t.Fatal("an active panel message must not block")
+	}
+	if err := store.RecordLifecycle(ctx, "", "panel:1", 101, "expired"); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "", "panel:1", 0); !blocked {
+		t.Fatal("an expired panel message must block")
+	}
+}
+
+// TestComposeLifecycleBlocksDelivery pins the reported P1 end to end at
+// the store level: SaveComposeHazard feeds the lifecycle ledger, so an
+// expired panel message blocks its queued delivery and an older save can
+// never revive it.
+func TestComposeLifecycleBlocksDelivery(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+	h := storage.ComposeHazard{EventKey: "compose:1", State: []byte(`{"x":1}`), Status: "active", UpdatedAt: base}
+	if err := store.SaveComposeHazard(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || blocked {
+		t.Fatalf("active panel message blocked = (%v, %v), want (false, nil)", blocked, err)
+	}
+	h.Status = "expired"
+	h.UpdatedAt = base.Add(time.Minute)
+	if err := store.SaveComposeHazard(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || !blocked {
+		t.Fatalf("expired panel message blocked = (%v, %v), want (true, nil)", blocked, err)
+	}
+	// An older save (replayed form, stale request) cannot revive it.
+	h.Status = "active"
+	h.UpdatedAt = base.Add(-time.Minute)
+	if err := store.SaveComposeHazard(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || !blocked {
+		t.Fatalf("revived panel message blocked = (%v, %v), want (true, nil — older saves never downgrade)", blocked, err)
+	}
+}
+
 // TestDeliveryRetryScheduleAndReArm pins the scheduler contract: a
 // failed attempt schedules the next one at the given deadline, the
 // attempt budget caps claims, and a terminally failed job is re-armed

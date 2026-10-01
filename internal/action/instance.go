@@ -90,8 +90,10 @@ type Instance struct {
 	store storage.DeliveryStore
 
 	// gate is the optional staleness oracle consulted directly BEFORE a
-	// queued job is transmitted (see Manager.SetDeliveryGate).
-	gate func(ctx context.Context, eventKey string) bool
+	// queued job is transmitted (see Manager.SetDeliveryGate). It
+	// receives the full action request, so it can judge the SPECIFIC
+	// version (publisher + change ID) of the message, not only its key.
+	gate func(ctx context.Context, req ActionRequest) bool
 
 	// internet marks this instance as internet-backed: while the
 	// offline-mode switch is on, its worker holds queued work instead of
@@ -172,7 +174,7 @@ func (i *Instance) setDeliveryStore(st storage.DeliveryStore) {
 
 // setDeliveryGate attaches the staleness oracle (called by the manager
 // before Start when one is configured).
-func (i *Instance) setDeliveryGate(gate func(ctx context.Context, eventKey string) bool) {
+func (i *Instance) setDeliveryGate(gate func(ctx context.Context, req ActionRequest) bool) {
 	i.gate = gate
 }
 
@@ -290,7 +292,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 			return
 		}
 	}
-	if i.gate != nil && !i.gate(context.Background(), key) {
+	if i.gate != nil && !i.gate(context.Background(), req) {
 		i.logger.Info("action: queued alert superseded before transmission",
 			"action", i.id, "event_key", key)
 		i.settle(job, storage.DeliveryExpired, time.Time{})

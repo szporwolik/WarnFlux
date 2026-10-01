@@ -31,9 +31,24 @@ type fakeStore struct {
 	ackedInbox   []int64                           // inbox rows consumed by CommitInboxDelivery
 	commitErr    error                             // returned by CommitInboxDelivery
 	recipientErr error                             // returned by the recipient lookups
+	// lifecycle records every observed transition as publisher|key ->
+	// version:status (the fake ignores the version guard; the SQLite
+	// store pins that).
+	lifecycle map[string]string
 	// hazardActiveFn is the staleness oracle; nil = always active.
 	hazardActiveFn func(ctx context.Context, eventKey string, now time.Time) (bool, error)
 	err            error
+}
+
+// RecordLifecycle implements the optional lifecycle recorder.
+func (f *fakeStore) RecordLifecycle(ctx context.Context, publisher, eventKey string, version int64, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lifecycle == nil {
+		f.lifecycle = map[string]string{}
+	}
+	f.lifecycle[publisher+"|"+eventKey] = fmt.Sprintf("%d:%s", version, status)
+	return nil
 }
 
 // HazardActive implements the optional freshness oracle.
@@ -449,6 +464,59 @@ func TestEngineTerminalTransitionsDoNotFire(t *testing.T) {
 	s := e.Stats()
 	if s.EventsSeen != 3 || s.TransitionsSkipped != 2 || s.ActionsFired != 1 {
 		t.Errorf("stats = %+v, want 3 seen, 2 skipped, 1 fired", s)
+	}
+}
+
+// TestEngineRecordsRemoteLifecycle pins the reported P1: a REMOTE
+// cancellation must leave durable lifecycle knowledge, even though it
+// starts no notification machine — the pre-transmission gate blocks the
+// earlier job's version against it. Legacy publisherless payloads are
+// skipped (fail-open).
+func TestEngineRecordsRemoteLifecycle(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	_, feed := startEngine(t, store, acts)
+
+	remote := func(changeID int64, typ dispatch.TransitionType) dispatch.Event {
+		return dispatch.Event{
+			Kind: dispatch.EventHazardTransition,
+			Hazard: &dispatch.HazardTransition{
+				Type:      typ,
+				Key:       "imgw:1",
+				ChangeID:  changeID,
+				Publisher: "remote-pub",
+				Hazard: dispatch.Hazard{
+					EventKey: "imgw:1", Source: "imgw", SourceID: "1",
+					Event: "Storm", Severity: "severe",
+				},
+			},
+		}
+	}
+	feed <- remote(3, dispatch.TransitionNew)
+	feed <- remote(5, dispatch.TransitionCancelled)
+	// A legacy publisherless replay records nothing.
+	feed <- dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Type: dispatch.TransitionNew, Key: "imgw:1",
+			Hazard: dispatch.Hazard{EventKey: "imgw:1", Source: "imgw", SourceID: "1", Event: "Storm", Severity: "severe"}}}
+
+	waitFor(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.lifecycle["remote-pub|imgw:1"] == "5:cancelled"
+	}, "remote cancellation recorded in the lifecycle ledger")
+
+	store.mu.Lock()
+	entries := len(store.lifecycle)
+	store.mu.Unlock()
+	if entries != 1 {
+		t.Errorf("lifecycle entries = %d, want 1 (the legacy payload records nothing)", entries)
+	}
+	// The legacy publisherless replay still notifies (fail-open, no
+	// lifecycle identity) — it just cannot be tracked or blocked.
+	if fired := store.payloadCount("log"); fired != 2 {
+		t.Errorf("delivery jobs = %d, want 2 (new + legacy replay; the cancellation never notifies)", fired)
 	}
 }
 

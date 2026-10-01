@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/severity"
@@ -79,6 +80,17 @@ type Inbox interface {
 // an older update must never outrank a known cancellation.
 type HazardFreshness interface {
 	HazardActive(ctx context.Context, eventKey string, now time.Time) (bool, error)
+}
+
+// LifecycleRecorder is the optional storage-side message lifecycle
+// ledger: every observed transition records its latest version and
+// state per (publisher, event key), so later jobs — including ones
+// built from REMOTE events that never touch the local events table —
+// can be blocked by a superseding version, cancellation or expiry.
+// Messages without a publisher identity (legacy, panel) are left to
+// their own recorders.
+type LifecycleRecorder interface {
+	RecordLifecycle(ctx context.Context, publisher, eventKey string, version int64, status string) error
 }
 
 // inboxBatch bounds one recovery pass over the durable inbox.
@@ -304,6 +316,14 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		return
 	}
 	e.eventsSeen.Add(1)
+
+	// The common lifecycle ledger records EVERY observed transition —
+	// local, remote and panel — so the pre-transmission gate can block
+	// jobs superseded by a newer version, a remote cancellation or a
+	// panel expiry. Recording happens before the terminal-transition
+	// skip, so a remote 'cancelled' leaves durable knowledge even
+	// though it starts no notification machine.
+	e.recordLifecycle(ctx, ev)
 
 	key := ev.Hazard.Key
 	sev := strings.ToLower(strings.TrimSpace(ev.Hazard.Hazard.Severity))
@@ -559,6 +579,32 @@ func (e *Engine) consumeDeliberate(ctx context.Context, inboxID int64) {
 	if _, err := e.store.CommitInboxDelivery(ctx, inboxID, nil); err != nil {
 		e.logger.Warn("routing: inbox consume failed, event stays pending",
 			"id", inboxID, "error", err)
+	}
+}
+
+// recordLifecycle feeds the observed transition into the shared
+// lifecycle ledger. Legacy payloads without a publisher identity are
+// skipped (fail-open: nothing to record against); the panel records its
+// own state through the compose store.
+func (e *Engine) recordLifecycle(ctx context.Context, ev dispatch.Event) {
+	h := ev.Hazard
+	if h == nil || h.Publisher == "" {
+		return
+	}
+	lr, ok := e.store.(LifecycleRecorder)
+	if !ok {
+		return
+	}
+	status := string(core.StatusActive)
+	switch h.Type {
+	case dispatch.TransitionCancelled:
+		status = string(core.StatusCancelled)
+	case dispatch.TransitionExpired:
+		status = string(core.StatusExpired)
+	}
+	if err := lr.RecordLifecycle(ctx, h.Publisher, h.Key, h.ChangeID, status); err != nil {
+		e.logger.Warn("routing: lifecycle record failed",
+			"event_key", h.Key, "change_id", h.ChangeID, "error", err)
 	}
 }
 

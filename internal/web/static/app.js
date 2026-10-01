@@ -688,6 +688,38 @@
   var STATION_POLL_MS = 30 * 1000;
   var RADAR_REFRESH_MS = 10 * 60 * 1000;
 
+  // ---- marker staleness ------------------------------------------------
+  // Overlays without an authoritative expiry (weather, air quality,
+  // aircraft, radio stations, mesh nodes) hide their markers once no
+  // update arrived for a while: the map must never show stale data.
+  var MAX_AGE_WEATHER_MS = 60 * 60 * 1000;      // weather reports + air quality
+  var MAX_AGE_AIRCRAFT_MS = 15 * 60 * 1000;     // ADS-B: airborne positions age fast
+  var MAX_AGE_RADIO_MS = 60 * 60 * 1000;        // APRS stations + MeshCore nodes
+  var MAX_AGE_FORECAST_MS = 48 * 60 * 60 * 1000; // multi-day forecasts age slowly
+
+  // parseISO returns the epoch ms of an RFC 3339 timestamp; NaN when
+  // the value is missing or unparseable.
+  function parseISO(v) {
+    if (!v) { return NaN; }
+    var t = Date.parse(v);
+    return isNaN(t) ? NaN : t;
+  }
+
+  // isFresh reports whether a timestamp is missing/unparseable (kept —
+  // fail-open: without a timestamp there is nothing to judge) or younger
+  // than maxAgeMs.
+  function isFresh(v, maxAgeMs) {
+    var t = parseISO(v);
+    if (isNaN(t)) { return true; }
+    return Date.now() - t <= maxAgeMs;
+  }
+
+  // isFreshUnix is isFresh for unix-seconds timestamps (aircraft seen_at).
+  function isFreshUnix(v, maxAgeMs) {
+    if (!v) { return true; }
+    return Date.now() - v * 1000 <= maxAgeMs;
+  }
+
   var lat = parseFloat(el.getAttribute("data-lat"));
   var lon = parseFloat(el.getAttribute("data-lon"));
   var ownLatAttr = el.getAttribute("data-own-lat");
@@ -1255,7 +1287,11 @@
         if (!stationLayer) {
           return;
         }
-        lastStations = stations || [];
+        lastStations = (stations || []).filter(function (s) {
+          // Stations silent for a while are no longer where their pin
+          // claims: drop them from the map and the card list.
+          return isFresh(s.last_heard_at, MAX_AGE_RADIO_MS);
+        });
         stationLayer.clearLayers();
         stationMarkers = {};
         pinRegistry.stations = [];
@@ -1393,9 +1429,11 @@
         }
         if (block) { block.hidden = false; }
         lastMeshNodes = (data.nodes || []).filter(function (n) {
-          return n && n.latitude && n.longitude;
+          return n && n.latitude && n.longitude && isFresh(n.last_seen, MAX_AGE_RADIO_MS);
         });
-        lastMeshNoPos = data.nopos || [];
+        lastMeshNoPos = (data.nopos || []).filter(function (n) {
+          return isFresh(n.last_seen, MAX_AGE_RADIO_MS);
+        });
         meshLayer.clearLayers();
         meshMarkers = {};
         pinRegistry.meshcore = [];
@@ -2143,8 +2181,12 @@
         if (!data) {
           return;
         }
-        lastWeather = data.reports || [];
-        lastForecasts = data.forecasts || [];
+        lastWeather = (data.reports || []).filter(function (r) {
+          return isFresh(r.generated_at, MAX_AGE_WEATHER_MS);
+        });
+        lastForecasts = (data.forecasts || []).filter(function (f) {
+          return isFresh(f.generated_at, MAX_AGE_FORECAST_MS);
+        });
         renderReports();
         renderWeatherLayer();
         // Station popups embed weather blocks — rebuild them so new
@@ -2203,7 +2245,9 @@
         }
         aircraftLayer.clearLayers();
         pinRegistry.aircraft = [];
-        lastAircraft = (data && data.aircraft) || [];
+        lastAircraft = ((data && data.aircraft) || []).filter(function (a) {
+          return isFreshUnix(a.seen_at, MAX_AGE_AIRCRAFT_MS);
+        });
         lastAircraft.forEach(function (a) {
           if (!a.latitude || !a.longitude) {
             return;
@@ -2316,7 +2360,9 @@
         }
         aqLayer.clearLayers();
         pinRegistry.airquality = [];
-        ((data && data.stations) || []).forEach(function (station) {
+        ((data && data.stations) || []).filter(function (station) {
+          return isFresh(station.generated_at, MAX_AGE_WEATHER_MS);
+        }).forEach(function (station) {
           if (!station.latitude || !station.longitude) {
             return;
           }

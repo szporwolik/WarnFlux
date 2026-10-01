@@ -568,6 +568,17 @@ CREATE TABLE compose_hazards (
 );
 `,
 	},
+	{
+		// v28: delivery-scheduler indexes. Every action worker polls
+		// ClaimNextDelivery every 250 ms and the manager sweeps
+		// RecoverStaleClaims every second — without these the queries
+		// scan the whole action_fires history each time and the cost
+		// grows with the ledger.
+		SQL: `
+CREATE INDEX idx_action_fires_claim ON action_fires(action_id, status, next_attempt_at_ms);
+CREATE INDEX idx_action_fires_recover ON action_fires(status, next_attempt_at_ms);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

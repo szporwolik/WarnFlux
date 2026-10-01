@@ -212,10 +212,20 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePartialHome serves the public auto-refresh fragment of the active
-// hazard list (the home page polls it).
+// hazard list (the home page polls it every 5 s). It renders ONLY the
+// hazard fields — the channels/sources/EMCOM-chip reads of the full page
+// are skipped on this hottest endpoint.
 func (s *Server) handlePartialHome(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "home_alerts_section", s.buildHomeView())
+	s.renderL(w, r, "home_alerts_section", s.buildHomeAlertsView())
+}
+
+// buildHomeAlertsView assembles just the alerts-fragment fields
+// (hazards, counts and the client-side JSON payload).
+func (s *Server) buildHomeAlertsView() homeView {
+	v := homeView{}
+	s.fillHomeHazards(&v, nil)
+	return v
 }
 
 // buildHomeView assembles the public view, most severe first, then
@@ -235,7 +245,51 @@ func (s *Server) buildHomeView() homeView {
 		OfflineMode: s.OfflineMode(),
 	}
 
-	hazards := s.activeHazards()
+	// One EMCOM read serves both the hazard list and the header chips.
+	nets := s.emcomNetworks()
+	s.fillHomeHazards(&v, nets)
+
+	if s.aprs != nil && s.aprs.Enabled() {
+		v.AprsEnabled = true
+		// The map centers and the range circle follow the OPERATIONAL
+		// AREA (config territory center/radius); the station locator dot
+		// stays at the antenna position.
+		v.AprsCenterLat = s.aprs.AreaLat()
+		v.AprsCenterLon = s.aprs.AreaLon()
+		v.AprsOwnLat = s.aprs.OwnLat()
+		v.AprsOwnLon = s.aprs.OwnLon()
+		v.AprsRadiusKM = s.aprs.AreaRadius()
+		v.AprsCallsign = s.aprs.Callsign()
+	}
+	if s.actions != nil {
+		v.Channels = publicChannels(s.actions.Statuses())
+	}
+	if s.router != nil {
+		v.Sources = publicSources(s.router.Statuses())
+	}
+	for _, net := range nets {
+		// Monitoring (level 0) is the default, calm state of every
+		// network — the public header only announces networks that are
+		// actually raised.
+		if net.Level <= 0 {
+			continue
+		}
+		v.EmcomNetworks = append(v.EmcomNetworks, emcomChipView{
+			Network:    net.Name,
+			Level:      net.Level,
+			LevelName:  net.LevelName,
+			LevelClass: emcomLevelClass(net.Level),
+			UpdatedAt:  net.UpdatedAt,
+		})
+	}
+	return v
+}
+
+// fillHomeHazards fills the hazard-related fields of a home view:
+// severity-split cards, counts and the client-side JSON payload. nets
+// carries the already-read EMCOM network list (nil = read it here).
+func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
+	hazards := s.collectHazards(nets)
 	v.ActiveCount = len(hazards)
 	v.Hazards = make([]publicHazardView, 0, len(hazards))
 	v.MinorHazards = make([]publicHazardView, 0)
@@ -300,41 +354,6 @@ func (s *Server) buildHomeView() homeView {
 	v.MainCount = len(v.Hazards)
 	sortHazards(v.Hazards)
 	sortHazards(v.MinorHazards)
-
-	if s.aprs != nil && s.aprs.Enabled() {
-		v.AprsEnabled = true
-		// The map centers and the range circle follow the OPERATIONAL
-		// AREA (config territory center/radius); the station locator dot
-		// stays at the antenna position.
-		v.AprsCenterLat = s.aprs.AreaLat()
-		v.AprsCenterLon = s.aprs.AreaLon()
-		v.AprsOwnLat = s.aprs.OwnLat()
-		v.AprsOwnLon = s.aprs.OwnLon()
-		v.AprsRadiusKM = s.aprs.AreaRadius()
-		v.AprsCallsign = s.aprs.Callsign()
-	}
-	if s.actions != nil {
-		v.Channels = publicChannels(s.actions.Statuses())
-	}
-	if s.router != nil {
-		v.Sources = publicSources(s.router.Statuses())
-	}
-	for _, net := range s.emcomNetworks() {
-		// Monitoring (level 0) is the default, calm state of every
-		// network — the public header only announces networks that are
-		// actually raised.
-		if net.Level <= 0 {
-			continue
-		}
-		v.EmcomNetworks = append(v.EmcomNetworks, emcomChipView{
-			Network:    net.Name,
-			Level:      net.Level,
-			LevelName:  net.LevelName,
-			LevelClass: emcomLevelClass(net.Level),
-			UpdatedAt:  net.UpdatedAt,
-		})
-	}
-	return v
 }
 
 // activeHazards returns the current active communications for the public
@@ -345,6 +364,12 @@ func (s *Server) buildHomeView() homeView {
 // not own (other instances' documents; mirror-only installations behave
 // exactly as before).
 func (s *Server) activeHazards() []state.Hazard {
+	return s.collectHazards(nil)
+}
+
+// collectHazards assembles the merged hazard list. nets carries the
+// already-read EMCOM network list (nil = read it here).
+func (s *Server) collectHazards(nets []emcomNetwork) []state.Hazard {
 	var out []state.Hazard
 	seen := make(map[string]bool)
 	add := func(h state.Hazard) {
@@ -397,30 +422,15 @@ func (s *Server) activeHazards() []state.Hazard {
 		}
 	}
 
-	if es, ok := s.users.(emcomStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		nets, err := es.EmcomNetworks(ctx)
-		cancel()
-		if err != nil {
-			s.logger.Warn("home: emcom record read failed", "error", err)
-		} else {
-			now := time.Now()
-			for _, n := range nets {
-				if n.Level < 1 {
-					continue
-				}
-				lvl, _ := emcomLevelAt(n.Level)
-				net := emcomNetwork{
-					Slug:      n.Slug,
-					Name:      n.Name,
-					Level:     n.Level,
-					LevelName: lvl.Name,
-					UpdatedBy: n.UpdatedBy,
-					UpdatedAt: n.UpdatedAt,
-				}
-				add(emcomHazard(net, now))
-			}
+	if nets == nil {
+		nets = s.emcomNetworks()
+	}
+	now := time.Now()
+	for _, net := range nets {
+		if net.Level < 1 {
+			continue
 		}
+		add(emcomHazard(net, now))
 	}
 
 	for _, h := range s.st.Snapshot().Hazards {

@@ -34,7 +34,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
-	"github.com/szporwolik/WarnFlux/internal/meshcore"
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
@@ -125,29 +125,13 @@ func dispatchLocalChange(ingress *dispatch.Ingress, logger *slog.Logger, change 
 	}
 }
 
-// directoryHasMeshKey reports whether the given key (12-hex prefix or
-// full 64-hex, lowercase) sits on a user's registered mesh key list —
-// exact match first, then a prefix match either way.
-func directoryHasMeshKey(owners map[string]string, key string) bool {
-	key = strings.ToLower(key)
-	if _, ok := owners[key]; ok {
-		return true
-	}
-	for k := range owners {
-		if strings.HasPrefix(k, key) || strings.HasPrefix(key, k) {
-			return true
-		}
-	}
-	return false
-}
-
-// seedMeshcoreStations restores the heard-node list from the retained
-// meshcore/stations/# documents on the broker, so stations survive
+// seedMeshtasticStations restores the heard-node list from the retained
+// meshtastic/stations/# documents on the broker, so stations survive
 // restarts the same way the APRS retained station state does. It retries
 // with bounded backoff until a receiver connects or the context ends;
 // the hub merges fresh documents without publishing and tombstones
 // expired ones.
-func seedMeshcoreStations(ctx context.Context, meshHub *meshcore.Hub, receivers *mqttreceiver.Manager, cfg *config.Config, logger *slog.Logger) {
+func seedMeshtasticStations(ctx context.Context, meshtasticHub *meshtastic.Hub, receivers *mqttreceiver.Manager, cfg *config.Config, logger *slog.Logger) {
 	prefix := "warnflux"
 	for _, r := range cfg.Dispatch.Receivers {
 		if r.Enabled && r.WF.Enabled && r.WF.TopicPrefix != "" {
@@ -160,34 +144,32 @@ func seedMeshcoreStations(ctx context.Context, meshHub *meshcore.Hub, receivers 
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		entries, err := receivers.Browse(ctx, "", prefix+"/meshcore/stations/#",
+		entries, err := receivers.Browse(ctx, "", prefix+"/meshtastic/stations/#",
 			mqttreceiver.BrowseDefaultWindow, mqttreceiver.BrowseMaxEntries)
 		if err == nil {
 			seeded := 0
 			for _, e := range entries {
 				var doc struct {
-					Key      string  `json:"key"`
+					ID       string  `json:"id"`
 					Name     string  `json:"name"`
-					Type     byte    `json:"type"`
 					Lat      float64 `json:"lat"`
 					Lon      float64 `json:"lon"`
-					Hops     int     `json:"hops"`
 					LastSeen string  `json:"last_seen"`
 				}
-				if json.Unmarshal([]byte(e.Payload), &doc) != nil || doc.Key == "" {
+				if json.Unmarshal([]byte(e.Payload), &doc) != nil || doc.ID == "" {
 					continue
 				}
 				seen, err := time.Parse(time.RFC3339, doc.LastSeen)
 				if err != nil {
 					seen = time.Time{}
 				}
-				meshHub.SeedNode(doc.Key, doc.Name, doc.Type, doc.Lat, doc.Lon, doc.Hops, seen)
+				meshtasticHub.SeedNode(doc.ID, doc.Name, doc.Lat, doc.Lon, seen)
 				seeded++
 			}
-			logger.Info("meshcore: restored heard stations", "count", seeded)
+			logger.Info("meshtastic: restored heard stations", "count", seeded)
 			return
 		}
-		logger.Debug("meshcore: station restore retrying", "error", err)
+		logger.Debug("meshtastic: station restore retrying", "error", err)
 		select {
 		case <-ctx.Done():
 			return
@@ -271,21 +253,17 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 	if err != nil {
 		return fmt.Errorf("configure aprs hub: %w", err)
 	}
-	meshHub, err := meshcore.NewHub(meshcore.Config{
-		Enabled:         cfg.MeshCore.Enabled,
-		Device:          cfg.MeshCore.Device,
-		Baud:            cfg.MeshCore.Baud,
-		ChannelIdx:      cfg.MeshCore.ChannelIdx,
-		ChannelName:     cfg.MeshCore.ChannelName,
-		ChannelNames:    cfg.MeshCore.ChannelNames,
-		AutoAddContacts: cfg.MeshCore.AutoAddContacts,
-		RouteMessages:   cfg.MeshCore.RouteMessages,
-		NodeTTL:         cfg.MeshCore.NodeTTL,
+	meshtasticHub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled:       cfg.Meshtastic.Enabled,
+		Device:        cfg.Meshtastic.Device,
+		Baud:          cfg.Meshtastic.Baud,
+		RouteMessages: cfg.Meshtastic.RouteMessages,
+		NodeTTL:       cfg.Meshtastic.NodeTTL,
 	}, logger)
 	if err != nil {
-		return fmt.Errorf("configure meshcore hub: %w", err)
+		return fmt.Errorf("configure meshtastic hub: %w", err)
 	}
-	if err := plugins.RegisterBuiltins(registry, hub, meshHub); err != nil {
+	if err := plugins.RegisterBuiltins(registry, hub, meshtasticHub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
 	}
 	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs,
@@ -305,7 +283,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 	trails := trail.NewRecorder(trail.DefaultMaxTrails)
 
 	actionRegistry := action.NewRegistry()
-	if err := actions.RegisterAll(actionRegistry, hub, nil); err != nil {
+	if err := actions.RegisterAll(actionRegistry, hub, meshtasticHub); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
 	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)
@@ -350,7 +328,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 
 	if cfg.Web.Enabled {
 		if _, err := web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub,
-			nil, ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, nil, nil, traffic, trails, met); err != nil {
+			meshtasticHub, ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, nil, nil, traffic, trails, met); err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
 	}
@@ -491,44 +469,31 @@ func run(configPath string, checkConfig bool) error {
 	if err != nil {
 		return fmt.Errorf("configure aprs hub: %w", err)
 	}
-	// The MeshCore hub owns the Companion serial session to the Heltec
-	// node; the source plugin, the meshcore action and the admin page
+	// The Meshtastic hub owns the Companion serial session to the Heltec
+	// node; the source plugin, the meshtastic action and the admin page
 	// share it. History is persisted like APRS messages.
-	meshHub, err := meshcore.NewHub(meshcore.Config{
-		Enabled:         cfg.MeshCore.Enabled,
-		Device:          cfg.MeshCore.Device,
-		Baud:            cfg.MeshCore.Baud,
-		ChannelIdx:      cfg.MeshCore.ChannelIdx,
-		ChannelName:     cfg.MeshCore.ChannelName,
-		ChannelNames:    cfg.MeshCore.ChannelNames,
-		AutoAddContacts: cfg.MeshCore.AutoAddContacts,
-		RouteMessages:   cfg.MeshCore.RouteMessages,
-		NodeTTL:         cfg.MeshCore.NodeTTL,
+	meshtasticHub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled:       cfg.Meshtastic.Enabled,
+		Device:        cfg.Meshtastic.Device,
+		Baud:          cfg.Meshtastic.Baud,
+		RouteMessages: cfg.Meshtastic.RouteMessages,
+		NodeTTL:       cfg.Meshtastic.NodeTTL,
 	}, logger)
 	if err != nil {
-		return fmt.Errorf("configure meshcore hub: %w", err)
+		return fmt.Errorf("configure meshtastic hub: %w", err)
 	}
-	meshHub.SetRecorder(store)
-	// MeshCore direct-message routing trusts registered operators: the
-	// sender's 12-hex key prefix must belong to a user's registered mesh
-	// key list. Without the gate no mesh message becomes a hazard event.
-	meshHub.SetSenderGate(func(key string) bool {
-		owners, err := store.MeshKeyOwners()
+	meshtasticHub.SetRecorder(store)
+	// Meshtastic direct-message routing trusts registered operators: the
+	// sender's node id (8 hex) must belong to a user's registered mesh
+	// node list. Without the gate no mesh message becomes a hazard event.
+	meshtasticHub.SetSenderGate(func(id string) bool {
+		owners, err := store.MeshtasticOwners()
 		if err != nil {
-			logger.Warn("meshcore: sender allow-list load failed", "error", err)
+			logger.Warn("meshtastic: sender allow-list load failed", "error", err)
 			return false
 		}
-		return directoryHasMeshKey(owners, key)
-	})
-	// When the device's auto-add recycles its full contact table, a
-	// registered operator's key must not stay evicted: re-add it at once
-	// so direct messages keep decrypting.
-	meshHub.SetContactProtector(func(key string) bool {
-		owners, err := store.MeshKeyOwners()
-		if err != nil {
-			return false
-		}
-		return directoryHasMeshKey(owners, key)
+		_, ok := owners[id]
+		return ok
 	})
 	// APRS message routing only trusts registered operators: the sender's
 	// base callsign (SSID-insensitive) must appear on a user's APRS
@@ -547,7 +512,7 @@ func run(configPath string, checkConfig bool) error {
 		return false
 	})
 
-	if err := plugins.RegisterBuiltins(registry, hub, meshHub); err != nil {
+	if err := plugins.RegisterBuiltins(registry, hub, meshtasticHub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
 	}
 	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs,
@@ -608,7 +573,7 @@ func run(configPath string, checkConfig bool) error {
 	// ActionPlugins: explicit routing only. Unknown types fail here, before
 	// any worker starts (even for disabled entries).
 	actionRegistry := action.NewRegistry()
-	if err := actions.RegisterAll(actionRegistry, hub, meshHub); err != nil {
+	if err := actions.RegisterAll(actionRegistry, hub, meshtasticHub); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
 	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)
@@ -658,23 +623,23 @@ func run(configPath string, checkConfig bool) error {
 	// routed message events also dispatch locally first.
 	hub.SetSink(&aprsManagerSink{mgmt: receivers, ingress: ingress, logger: logger})
 
-	// Heard MeshCore nodes feed the broker as retained station documents
-	// under meshcore/stations/<key12>; expired nodes are tombstoned.
-	meshHub.SetStationSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
+	// Heard Meshtastic nodes feed the broker as retained station documents
+	// under meshtastic/stations/<key12>; expired nodes are tombstoned.
+	meshtasticHub.SetStationSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
 		return receivers.PublishRaw(topic, retained, payload)
 	})
 
-	// MeshCore rx/tx messages feed the broker as non-retained documents
-	// on meshcore/messages, mirroring the APRS message feed.
-	meshHub.SetMessageSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
+	// Meshtastic rx/tx messages feed the broker as non-retained documents
+	// on meshtastic/messages, mirroring the APRS message feed.
+	meshtasticHub.SetMessageSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
 		return receivers.PublishRaw(topic, retained, payload)
 	})
 
-	// MeshCore direct messages from registered operators feed the alarm
+	// Meshtastic direct messages from registered operators feed the alarm
 	// pipeline: canonical /events documents on the events stream. They
 	// dispatch locally FIRST (durable inbox, no broker dependency); the
 	// broker publish is the asynchronous sync copy for other instances.
-	meshHub.SetEventSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
+	meshtasticHub.SetEventSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
 		dispatchLocalEvent(ingress, logger, payload)
 		return receivers.PublishRaw(topic, retained, payload)
 	})
@@ -792,7 +757,7 @@ func run(configPath string, checkConfig bool) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username, adminPassword); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, meshHub, ingress, logger, resolvedVersion, commit, store, store, store, store, ingestHandlers, logs, traffic, trails, met)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, meshtasticHub, ingress, logger, resolvedVersion, commit, store, store, store, store, ingestHandlers, logs, traffic, trails, met)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
@@ -855,10 +820,10 @@ func run(configPath string, checkConfig bool) error {
 	}
 	actionsMgr.Start(ctx)
 	receivers.StartAll()
-	// Restore heard MeshCore nodes from the retained broker documents, so
+	// Restore heard Meshtastic nodes from the retained broker documents, so
 	// the station list survives restarts the same way the APRS retained
 	// station state does. Bounded retries until a receiver connects.
-	go seedMeshcoreStations(ctx, meshHub, receivers, cfg, logger)
+	go seedMeshtasticStations(ctx, meshtasticHub, receivers, cfg, logger)
 	if hub.Enabled() {
 		hub.Start(ctx)
 	}

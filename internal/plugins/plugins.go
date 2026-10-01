@@ -5,7 +5,7 @@ package plugins
 
 import (
 	"github.com/szporwolik/WarnFlux/internal/aprs"
-	"github.com/szporwolik/WarnFlux/internal/meshcore"
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/adsb"
@@ -15,7 +15,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/gios"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/giosaq"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/imgw"
-	meshsource "github.com/szporwolik/WarnFlux/internal/plugins/sources/meshcore"
+	meshtasticsource "github.com/szporwolik/WarnFlux/internal/plugins/sources/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/metar"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/openmeteo"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/rso"
@@ -23,16 +23,16 @@ import (
 
 // RegisterBuiltins registers every built-in plugin type. Registration is
 // explicit so it is easy to audit, test and search. hub is the shared APRS
-// hub and meshHub the shared MeshCore hub (each may be nil when its
+// hub and meshtasticHub the shared Meshtastic hub (each may be nil when its
 // integration is disabled; the affected plugins then fail fast).
-func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub, meshHub *meshcore.Hub) error {
+func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub, meshtasticHub *meshtastic.Hub) error {
 	if err := openmeteo.Register(reg); err != nil {
 		return err
 	}
 	if err := metar.Register(reg); err != nil {
 		return err
 	}
-	if err := meshsource.Register(reg, meshHub); err != nil {
+	if err := meshtasticsource.Register(reg, meshtasticHub); err != nil {
 		return err
 	}
 	if err := imgw.Register(reg); err != nil {
@@ -64,7 +64,7 @@ func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub, meshHub *meshcore.Hub
 	}
 	// Internet-backed sources: the admin offline-mode switch suspends
 	// these (and resumes them on exit from offline mode). Local-only
-	// sources — aprs-radio (KISS/TNC), meshcore (serial), snapshotutil —
+	// sources — aprs-radio (KISS/TNC), meshtastic (serial), snapshotutil —
 	// keep running off-grid.
 	for _, internet := range []string{
 		"openmeteo", "metar", "imgw", "rso", "gddkia",

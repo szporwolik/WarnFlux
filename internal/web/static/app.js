@@ -17,7 +17,7 @@
     en: {
       "map.layer.hazards": "Hazards",
       "map.layer.stations": "Stations",
-      "map.layer.meshcore": "MeshCore",
+      "map.layer.meshtastic": "Meshtastic",
       "map.layer.weather": "Weather",
       "map.layer.radar": "Radar",
       "map.layer.airquality": "Air quality",
@@ -42,12 +42,9 @@
       "home.weather.none": "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT.",
       "home.weather.forecast": "Forecast — next days",
       "home.stations.none": "No stations heard yet — ham stations beacon through APRS.",
-      "home.meshcore.none": "No MeshCore nodes heard yet.",
-      "home.meshcore.noloc": "Heard without position",
-      "meshcore.type.chat": "Chat",
-      "meshcore.type.repeater": "Repeater",
-      "meshcore.type.room": "Room",
-      "meshcore.type.node": "Node",
+      "home.meshtastic.none": "No Meshtastic nodes heard yet.",
+      "home.meshtastic.noloc": "Heard without position",
+      "meshtastic.type.node": "Node",
       "home.aircraft.none": "No aircraft in range right now.",
       "map.km": "km",
       "map.center": "Center the view",
@@ -94,7 +91,7 @@
     pl: {
       "map.layer.hazards": "Zagrożenia",
       "map.layer.stations": "Stacje",
-      "map.layer.meshcore": "MeshCore",
+      "map.layer.meshtastic": "Meshtastic",
       "map.layer.weather": "Pogoda",
       "map.layer.radar": "Radar",
       "map.layer.airquality": "Jakość powietrza",
@@ -119,12 +116,9 @@
       "home.weather.none": "Brak jeszcze raportów pogodowych — publikują je stacje pogodowe APRS i dostawcy prognoz przez MQTT.",
       "home.weather.forecast": "Prognoza — kolejne dni",
       "home.stations.none": "Nie słychać jeszcze żadnych stacji — krótkofalowcy nadają przez APRS.",
-      "home.meshcore.none": "Nie słychać jeszcze żadnych węzłów MeshCore.",
-      "home.meshcore.noloc": "Słyszane bez pozycji",
-      "meshcore.type.chat": "Czat",
-      "meshcore.type.repeater": "Przemiennik",
-      "meshcore.type.room": "Pokój",
-      "meshcore.type.node": "Węzeł",
+      "home.meshtastic.none": "Nie słychać jeszcze żadnych węzłów Meshtastic.",
+      "home.meshtastic.noloc": "Słyszane bez pozycji",
+      "meshtastic.type.node": "Węzeł",
       "home.aircraft.none": "W tej chwili brak samolotów w zasięgu.",
       "map.km": "km",
       "map.center": "Wyśrodkuj widok",
@@ -694,7 +688,7 @@
   // update arrived for a while: the map must never show stale data.
   var MAX_AGE_WEATHER_MS = 60 * 60 * 1000;      // weather reports + air quality
   var MAX_AGE_AIRCRAFT_MS = 15 * 60 * 1000;     // ADS-B: airborne positions age fast
-  var MAX_AGE_RADIO_MS = 60 * 60 * 1000;        // APRS stations + MeshCore nodes
+  var MAX_AGE_RADIO_MS = 60 * 60 * 1000;        // APRS stations + Meshtastic nodes
   var MAX_AGE_FORECAST_MS = 48 * 60 * 60 * 1000; // multi-day forecasts age slowly
 
   // parseISO returns the epoch ms of an RFC 3339 timestamp; NaN when
@@ -920,8 +914,7 @@
     return fmtTime(v);
   }
 
-  // MeshCore node-type glyphs for the no-position badge pills.
-  var MESH_TYPE_GLYPHS = { chat: "✉", repeater: "⇄", room: "⌂" };
+  // Meshtastic node-type glyphs for the no-position badge pills.
 
   function loadScript(src, ok, fail) {
     var s = document.createElement("script");
@@ -1221,28 +1214,20 @@
     });
   }
 
-  // MeshCore pin colors per node type — the same idea as the APRS
-  // static/moving split: repeaters (teal), chat rooms (rose) and chat
-  // devices (indigo) read apart from plain nodes (category purple).
-  var MESH_COLORS = {
-    node: "#8e24aa",
-    chat: "#283593",
-    repeater: "#00695c",
-    room: "#c2185b"
-  };
-
-  function meshColor(n) {
-    return MESH_COLORS[n.type] || MESH_COLORS.node;
+  // Meshtastic pin colors per node type — the same idea as the APRS
+  // static/moving split: Meshtastic pins all share the mesh purple.
+  function meshColor() {
+    return "#8e24aa";
   }
 
-  // meshBadge renders the MeshCore pin: the chat glyph in the node's
-  // type color with the node name as the halo label (unnamed nodes get
-  // the generic label; keys stay off the public map).
+  // meshBadge renders the Meshtastic pin: the chat glyph in the mesh
+  // color with the node name as the halo label (unnamed nodes get the
+  // generic label; ids stay off the public map).
   function meshBadge(n) {
     return wfBadge({
       color: meshColor(n),
       glyph: BADGE_GLYPHS.chat,
-      label: n.name || tr("meshcore.type.node")
+      label: n.name || tr("meshtastic.type.node")
     });
   }
 
@@ -1392,35 +1377,32 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
-  // meshPopup renders the unified popup for one MeshCore node: purple
-  // banner with the broadcast glyph, name, type chip, then distance,
-  // hops, last-heard time and the full key.
+  // meshPopup renders the unified popup for one Meshtastic node: purple
+  // banner with the broadcast glyph, name, then distance and last-heard
+  // time.
   function meshPopup(n) {
     var lines = [];
     lines.push(tr("map.heard") + ": " + fmtTime(n.last_seen));
     if (n.distance_km) {
       lines.push(Number(n.distance_km).toFixed(1) + " km");
     }
-    if (n.hops) {
-      lines.push(tr("map.hops") + ": " + n.hops);
-    }
     var body = lines.join("<br>");
     return wfPopup({
       color: meshColor(n),
       icon: BADGE_GLYPHS.chat,
-      title: esc(n.name || tr("meshcore.type.node")),
-      sub: "MeshCore",
-      value: tr("meshcore.type." + (n.type || "node")),
+      title: esc(n.name || tr("meshtastic.type.node")),
+      sub: "Meshtastic",
+      value: "!" + n.id,
       body: body
     });
   }
 
   // refreshMeshNodes pulls the heard-node list: located nodes inside the
-  // operational ring become map pins (the "meshcore" layer); nodes
+  // operational ring become map pins (the "meshtastic" layer); nodes
   // without a position render as a badge list below the cards.
   function refreshMeshNodes() {
     var block = document.getElementById("hw-mesh-block");
-    fetch("/api/meshcore/stations")
+    fetch("/api/meshtastic/stations")
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (!data || !meshLayer) {
@@ -1436,16 +1418,10 @@
         });
         meshLayer.clearLayers();
         meshMarkers = {};
-        pinRegistry.meshcore = [];
+        pinRegistry.meshtastic = [];
         lastMeshNodes.forEach(function (n) {
           var marker = L.marker([n.latitude, n.longitude], { icon: meshBadge(n), riseOnHover: true });
-          var hover = "<strong>" + esc(n.name || n.key.slice(0, 12)) + "</strong>";
-          if (n.type && n.type !== "node") {
-            hover += "<br>" + esc(n.type);
-          }
-          if (n.hops) {
-            hover += "<br>" + tr("map.hops") + ": " + n.hops;
-          }
+          var hover = "<strong>" + esc(n.name || "!" + n.id) + "</strong>";
           hover += "<br>" + tr("map.heard") + ": " + esc(fmtTime(n.last_seen));
           if (n.distance_km) {
             hover += "<br>" + Number(n.distance_km).toFixed(1) + " km";
@@ -1453,14 +1429,14 @@
           marker.bindTooltip(hover, { sticky: true, direction: "top" });
           marker.bindPopup(meshPopup(n));
           meshLayer.addLayer(marker);
-          meshMarkers[n.key] = marker;
-          registerPin("meshcore", {
+          meshMarkers[n.id] = marker;
+          registerPin("meshtastic", {
             group: meshLayer,
             marker: marker,
             latlng: [n.latitude, n.longitude],
-            markerKey: "M:" + n.key,
-            title: n.name || n.key.slice(0, 12),
-            kindLabel: tr("map.layer.meshcore")
+            markerKey: "M:" + n.id,
+            title: n.name || "!" + n.id,
+            kindLabel: tr("map.layer.meshtastic")
           });
         });
         renderMeshCards();
@@ -1470,7 +1446,7 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
-  // renderMeshCards builds the MeshCore cards below the map (located
+  // renderMeshCards builds the Meshtastic cards below the map (located
   // nodes, clickable like the station cards) and the badge list of
   // heard nodes that carry no position.
   function renderMeshCards() {
@@ -1485,7 +1461,7 @@
       countEl.textContent = lastMeshNodes.length ? "(" + lastMeshNodes.length + ")" : "";
     }
     if (!lastMeshNodes.length) {
-      container.appendChild(mk("p", "muted", tr("home.meshcore.none")));
+      container.appendChild(mk("p", "muted", tr("home.meshtastic.none")));
     }
     lastMeshNodes.forEach(function (n) {
       var item = mk("button", "hw-report");
@@ -1493,24 +1469,18 @@
       item.appendChild(mk("span", "hw-icon hw-mesh", "⌁"));
       var body = mk("span", "hw-body");
       var head = mk("span", "hw-head");
-      head.appendChild(mk("strong", null, n.name || tr("meshcore.type.node")));
-      if (n.type && n.type !== "node") {
-        head.appendChild(mk("span", "hw-provider", n.type));
-      }
+      head.appendChild(mk("strong", null, n.name || tr("meshtastic.type.node")));
       body.appendChild(head);
       var meta = [];
       if (n.distance_km) {
         meta.push(Number(n.distance_km).toFixed(1) + " km");
       }
-      if (n.hops) {
-        meta.push(tr("map.hops") + " " + n.hops);
-      }
       meta.push(tr("map.heard") + " " + fmtClock(n.last_seen));
       body.appendChild(mk("span", "hw-meta", meta.join(" · ")));
       item.appendChild(body);
-      item.title = trf("map.show_on_map", n.name || tr("meshcore.type.node"));
+      item.title = trf("map.show_on_map", n.name || tr("meshtastic.type.node"));
       item.addEventListener("click", function () {
-        focusMarker(meshMarkers[n.key]);
+        focusMarker(meshMarkers[n.id]);
       });
       container.appendChild(item);
     });
@@ -1522,19 +1492,13 @@
         return;
       }
       badges.hidden = false;
-      badges.appendChild(mk("span", "mc-noloc-title", tr("home.meshcore.noloc")));
+      badges.appendChild(mk("span", "mc-noloc-title", tr("home.meshtastic.noloc")));
       lastMeshNoPos.forEach(function (n) {
         var chip = mk("span", "mc-chip");
-        var label = n.name || tr("meshcore.type.node");
+        var label = n.name || tr("meshtastic.type.node");
         chip.title = label + " · " + fmtTime(n.last_seen);
         chip.appendChild(mk("span", "mc-chip-name", label));
-        if (n.type && n.type !== "node" && MESH_TYPE_GLYPHS[n.type]) {
-          chip.appendChild(mk("span", "mc-chip-type", MESH_TYPE_GLYPHS[n.type] + " " + tr("meshcore.type." + n.type)));
-        }
         var extra = [];
-        if (n.hops) {
-          extra.push(tr("map.hops") + " " + n.hops);
-        }
         extra.push(fmtClock(n.last_seen));
         chip.appendChild(mk("span", "mc-chip-meta", extra.join(" · ")));
         badges.appendChild(chip);
@@ -1925,7 +1889,7 @@
   // the visible pin lists everything underneath.
   var pinChipLayer = null;
   var pinRegistry = {}; // category -> [{marker, group, latlng, markerKey, title, kindLabel}]
-  var pinPriority = { hazards: 0, stations: 1, meshcore: 2, weather: 3, airquality: 4, aircraft: 5 };
+  var pinPriority = { hazards: 0, stations: 1, meshtastic: 2, weather: 3, airquality: 4, aircraft: 5 };
 
   function registerPin(category, entry) {
     entry.category = category;
@@ -2399,7 +2363,7 @@
   var MAP_CTRL_ICONS = {
     hazards: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
     stations: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/>',
-    meshcore: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 15h5"/>',
+    meshtastic: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 15h5"/>',
     weather: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
     radar: '<circle cx="12" cy="12" r="8"/><path d="M12 12V4"/><path d="M12 12l6-3.5"/>',
     airquality: '<path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/>',
@@ -2408,7 +2372,7 @@
   var MAP_CTRL_COLORS = {
     hazards: "#d32f2f",
     stations: "#1565c0",
-    meshcore: "#8e24aa",
+    meshtastic: "#8e24aa",
     weather: "#00897b",
     radar: "#00bcd4",
     airquality: "#43a047",
@@ -2483,7 +2447,7 @@
   var LAYER_DEFS = [
     ["hazards", tr("map.layer.hazards"), function () { return hazardLayer; }],
     ["stations", tr("map.layer.stations"), function () { return stationLayer; }],
-    ["meshcore", tr("map.layer.meshcore"), function () { return meshLayer; }],
+    ["meshtastic", tr("map.layer.meshtastic"), function () { return meshLayer; }],
     ["weather", tr("map.layer.weather"), function () { return weatherLayer; }],
     ["radar", tr("map.layer.radar"), function () {
       radarOn = !radarOn;
@@ -3383,7 +3347,7 @@
   }
 })();
 
-// Admin MeshCore page: poll the nodes-tab fragment while it is on screen.
+// Admin Meshtastic page: poll the nodes-tab fragment while it is on screen.
 (function () {
   "use strict";
 
@@ -3395,7 +3359,7 @@
     // Never replace the fragment while someone is typing in the send form.
     var active = document.activeElement;
     if (active && box.contains(active)) { return; }
-    fetch("/partials/meshcore", {
+    fetch("/partials/meshtastic", {
       headers: { "Accept": "text/html" },
       credentials: "same-origin",
       cache: "no-store"
@@ -3419,7 +3383,7 @@
   }
 })();
 
-// Clicking a heard-node row, a meshcore direct-message row or an APRS
+// Clicking a heard-node row, a meshtastic direct-message row or an APRS
 // message row prefills the send form and focuses the text field.
 (function () {
   "use strict";
@@ -3459,7 +3423,7 @@
 })();
 
 // Copying a heard node's full public key: the clipboard button on the
-// MeshCore nodes table (and the badge chips on the home page) copy the
+// Meshtastic nodes table (and the badge chips on the home page) copy the
 // full 64-hex key and flash it in place for a moment.
 (function () {
   "use strict";
@@ -3500,7 +3464,7 @@
   });
 })();
 
-// Live message lists: the APRS and MeshCore message panels poll their
+// Live message lists: the APRS and Meshtastic message panels poll their
 // server-rendered fragments and re-render only when the content changed,
 // so the admin watches new traffic arrive without losing text selection
 // or click targets in between polls.
@@ -3564,7 +3528,7 @@
     tickAprs();
     window.setInterval(tickAprs, MSGS_POLL_MS);
   }
-  var tickMesh = poll("mesh-msgs", "/partials/meshcore", "messages");
+  var tickMesh = poll("mesh-msgs", "/partials/meshtastic", "messages");
   if (tickMesh) {
     tickMesh();
     window.setInterval(tickMesh, MSGS_POLL_MS);

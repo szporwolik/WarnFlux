@@ -37,18 +37,18 @@ const (
 	// CatAPRSMessages is the non-retained APRS message feed
 	// (<prefix>/aprs/messages, rx and tx).
 	CatAPRSMessages
-	// CatMeshcoreStations is the retained MeshCore node feed
-	// (<prefix>/meshcore/stations/<key>).
-	CatMeshcoreStations
-	// CatMeshcoreMessages is the non-retained MeshCore message feed
-	// (<prefix>/meshcore/messages).
-	CatMeshcoreMessages
+	// CatMeshtasticStations is the retained Meshtastic node feed
+	// (<prefix>/meshtastic/stations/<key>).
+	CatMeshtasticStations
+	// CatMeshtasticMessages is the non-retained Meshtastic message feed
+	// (<prefix>/meshtastic/messages).
+	CatMeshtasticMessages
 )
 
 // CatAll is the default mask: everything publishes.
 const CatAll = CatEvents | CatActive | CatInfo | CatStatus |
 	CatAPRSStations | CatAPRSBulletins | CatAPRSPackets | CatAPRSMessages |
-	CatMeshcoreStations | CatMeshcoreMessages
+	CatMeshtasticStations | CatMeshtasticMessages
 
 // orderedNames maps the canonical config keys to their categories; the
 // order is the UI order.
@@ -65,8 +65,8 @@ var orderedNames = []struct {
 	{"aprs_bulletins", CatAPRSBulletins, "APRS bulletins"},
 	{"aprs_packets", CatAPRSPackets, "APRS packet feed"},
 	{"aprs_messages", CatAPRSMessages, "APRS message feed"},
-	{"meshcore_stations", CatMeshcoreStations, "MeshCore node feed"},
-	{"meshcore_messages", CatMeshcoreMessages, "MeshCore message feed"},
+	{"meshtastic_stations", CatMeshtasticStations, "Meshtastic node feed"},
+	{"meshtastic_messages", CatMeshtasticMessages, "Meshtastic message feed"},
 }
 
 // mask is the process-wide publish mask. The zero value means "nothing

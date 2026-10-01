@@ -12,17 +12,17 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/actions/discord"
 	httpwebhook "github.com/szporwolik/WarnFlux/internal/actions/httpwebhook"
 	"github.com/szporwolik/WarnFlux/internal/actions/logger"
-	meshaction "github.com/szporwolik/WarnFlux/internal/actions/meshcore"
+	meshtasticaction "github.com/szporwolik/WarnFlux/internal/actions/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
-	"github.com/szporwolik/WarnFlux/internal/meshcore"
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 )
 
 // RegisterAll registers every built-in action type. hub is the shared APRS
-// hub and meshHub the shared MeshCore hub (each may be nil when its
+// hub and meshtasticHub the shared Meshtastic hub (each may be nil when its
 // integration is disabled; the affected actions then fail fast when
 // configured).
-func RegisterAll(reg *action.Registry, hub *aprs.Hub, meshHub *meshcore.Hub) error {
+func RegisterAll(reg *action.Registry, hub *aprs.Hub, meshtasticHub *meshtastic.Hub) error {
 	if err := reg.Register("logger", logger.New); err != nil {
 		return err
 	}
@@ -41,13 +41,13 @@ func RegisterAll(reg *action.Registry, hub *aprs.Hub, meshHub *meshcore.Hub) err
 	if err := aprsout.Register(reg, hub); err != nil {
 		return err
 	}
-	if err := meshaction.Register(reg, meshHub); err != nil {
+	if err := meshtasticaction.Register(reg, meshtasticHub); err != nil {
 		return err
 	}
 	// Internet-backed actions: the admin offline-mode switch makes their
 	// workers hold queued requests (nothing executed, nothing lost) until
 	// the station is online again. Local actions (logger, aprs, aprsout,
-	// meshcore) keep running off-grid.
+	// meshtastic) keep running off-grid.
 	for _, internet := range []string{"smtp", "http_webhook", "discord"} {
 		reg.MarkInternet(internet)
 	}

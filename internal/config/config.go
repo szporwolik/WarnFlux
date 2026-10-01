@@ -99,9 +99,9 @@ type Config struct {
 	Actions     []Action
 	IngestHTTP  []IngestHTTP
 	APRS        APRSConfig
-	// MeshCore holds the Companion serial link settings (top-level
-	// "meshcore:"). The Heltec node plugs in over USB.
-	MeshCore MeshCoreConfig
+	// Meshtastic holds the Companion serial link settings (top-level
+	// "meshtastic:"). The Heltec node plugs in over USB.
+	Meshtastic MeshtasticConfig
 	// Geo extends the bundled TERYT table with installation-specific
 	// territorial units (any region of the country).
 	Geo Geo
@@ -146,31 +146,16 @@ type App struct {
 	LogMaxBackups int
 }
 
-// MeshCoreConfig holds the MeshCore Companion serial link settings
-// (top-level "meshcore:").
-type MeshCoreConfig struct {
+// MeshtasticConfig holds the Meshtastic Companion serial link settings
+// (top-level "meshtastic:").
+type MeshtasticConfig struct {
 	// Enabled switches the mesh integration on; a disabled mesh leaves
-	// the source plugin and the meshcore action inert.
+	// the source plugin and the meshtastic action inert.
 	Enabled bool
 	// Device is the serial device path (e.g. /dev/ttyACM0).
 	Device string
 	// Baud is the serial speed (default 115200).
 	Baud int
-	// ChannelIdx is the channel used for SOSNA group messages (0-7).
-	// Channel 0 is Public: the hub refuses to transmit on it.
-	ChannelIdx int
-	// ChannelName optionally pins the device slot's name (e.g. "#sp9moa"):
-	// the hub reads the slot at connect time and issues SET_CHANNEL when
-	// the name differs, preserving the channel secret.
-	ChannelName string
-	// ChannelNames optionally maps channel indices onto friendly display
-	// names (e.g. 0: "Public", 2: "#sp9moa"): recorded messages carry
-	// the friendly name instead of "ch0". The TX slot falls back to
-	// ChannelName when no map entry exists.
-	ChannelNames map[int]string
-	// AutoAddContacts makes the device auto-add unknown heard nodes to its
-	// contact list, so their adverts reach WarnFlux's node list.
-	AutoAddContacts bool
 	// RouteMessages re-publishes direct messages from directory-known
 	// senders as canonical /events documents (the alarm pipeline).
 	RouteMessages bool
@@ -340,16 +325,16 @@ type Dispatch struct {
 // live); this section is the startup state. Disabling noisy categories
 // cuts broker traffic and CPU.
 type MQTTPublish struct {
-	Events           bool
-	Active           bool
-	Info             bool
-	Status           bool
-	APRSStations     bool
-	APRSBulletins    bool
-	APRSPackets      bool
-	APRSMessages     bool
-	MeshcoreStations bool
-	MeshcoreMessages bool
+	Events             bool
+	Active             bool
+	Info               bool
+	Status             bool
+	APRSStations       bool
+	APRSBulletins      bool
+	APRSPackets        bool
+	APRSMessages       bool
+	MeshtasticStations bool
+	MeshtasticMessages bool
 }
 
 // Mask converts the section into the runtime publish mask.
@@ -379,11 +364,11 @@ func (p MQTTPublish) Mask() uint32 {
 	if p.APRSMessages {
 		m |= uint32(mqttpolicy.CatAPRSMessages)
 	}
-	if p.MeshcoreStations {
-		m |= uint32(mqttpolicy.CatMeshcoreStations)
+	if p.MeshtasticStations {
+		m |= uint32(mqttpolicy.CatMeshtasticStations)
 	}
-	if p.MeshcoreMessages {
-		m |= uint32(mqttpolicy.CatMeshcoreMessages)
+	if p.MeshtasticMessages {
+		m |= uint32(mqttpolicy.CatMeshtasticMessages)
 	}
 	return m
 }
@@ -530,7 +515,7 @@ type fileConfig struct {
 	Actions     []fileAction     `yaml:"actions"`
 	IngestHTTP  []fileIngestHTTP `yaml:"ingest_http"`
 	APRS        *fileAPRS        `yaml:"aprs"`
-	MeshCore    *fileMeshCore    `yaml:"meshcore"`
+	Meshtastic  *fileMeshtastic  `yaml:"meshtastic"`
 	Geo         *fileGeo         `yaml:"geo"`
 }
 
@@ -538,30 +523,26 @@ type fileConfig struct {
 // omitted keys distinguishable from explicit false (the default is
 // everything enabled).
 type fileMQTTPublish struct {
-	Events           *bool `yaml:"events"`
-	Active           *bool `yaml:"active"`
-	Info             *bool `yaml:"info"`
-	Status           *bool `yaml:"status"`
-	APRSStations     *bool `yaml:"aprs_stations"`
-	APRSBulletins    *bool `yaml:"aprs_bulletins"`
-	APRSPackets      *bool `yaml:"aprs_packets"`
-	APRSMessages     *bool `yaml:"aprs_messages"`
-	MeshcoreStations *bool `yaml:"meshcore_stations"`
-	MeshcoreMessages *bool `yaml:"meshcore_messages"`
+	Events             *bool `yaml:"events"`
+	Active             *bool `yaml:"active"`
+	Info               *bool `yaml:"info"`
+	Status             *bool `yaml:"status"`
+	APRSStations       *bool `yaml:"aprs_stations"`
+	APRSBulletins      *bool `yaml:"aprs_bulletins"`
+	APRSPackets        *bool `yaml:"aprs_packets"`
+	APRSMessages       *bool `yaml:"aprs_messages"`
+	MeshtasticStations *bool `yaml:"meshtastic_stations"`
+	MeshtasticMessages *bool `yaml:"meshtastic_messages"`
 }
 
-// fileMeshCore mirrors the top-level meshcore block (pointer fields keep
+// fileMeshtastic mirrors the top-level meshtastic block (pointer fields keep
 // omitted values distinguishable from explicit zeroes).
-type fileMeshCore struct {
-	Enabled         bool           `yaml:"enabled"`
-	Device          string         `yaml:"device"`
-	Baud            *int           `yaml:"baud"`
-	ChannelIdx      int            `yaml:"channel_idx"`
-	ChannelName     string         `yaml:"channel_name"`
-	ChannelNames    map[int]string `yaml:"channel_names"`
-	AutoAddContacts bool           `yaml:"auto_add_contacts"`
-	RouteMessages   bool           `yaml:"route_messages"`
-	NodeTTL         *time.Duration `yaml:"node_ttl"`
+type fileMeshtastic struct {
+	Enabled       bool           `yaml:"enabled"`
+	Device        string         `yaml:"device"`
+	Baud          *int           `yaml:"baud"`
+	RouteMessages bool           `yaml:"route_messages"`
+	NodeTTL       *time.Duration `yaml:"node_ttl"`
 }
 
 type fileGeo struct {
@@ -893,16 +874,16 @@ func (f fileConfig) toConfig() Config {
 	}
 	// mqtt_publish defaults to everything enabled.
 	cfg.MQTTPublish = MQTTPublish{
-		Events:           true,
-		Active:           true,
-		Info:             true,
-		Status:           true,
-		APRSStations:     true,
-		APRSBulletins:    true,
-		APRSPackets:      true,
-		APRSMessages:     true,
-		MeshcoreStations: true,
-		MeshcoreMessages: true,
+		Events:             true,
+		Active:             true,
+		Info:               true,
+		Status:             true,
+		APRSStations:       true,
+		APRSBulletins:      true,
+		APRSPackets:        true,
+		APRSMessages:       true,
+		MeshtasticStations: true,
+		MeshtasticMessages: true,
 	}
 	if f.MQTTPublish != nil {
 		if v := f.MQTTPublish.Events; v != nil {
@@ -929,11 +910,11 @@ func (f fileConfig) toConfig() Config {
 		if v := f.MQTTPublish.APRSMessages; v != nil {
 			cfg.MQTTPublish.APRSMessages = *v
 		}
-		if v := f.MQTTPublish.MeshcoreStations; v != nil {
-			cfg.MQTTPublish.MeshcoreStations = *v
+		if v := f.MQTTPublish.MeshtasticStations; v != nil {
+			cfg.MQTTPublish.MeshtasticStations = *v
 		}
-		if v := f.MQTTPublish.MeshcoreMessages; v != nil {
-			cfg.MQTTPublish.MeshcoreMessages = *v
+		if v := f.MQTTPublish.MeshtasticMessages; v != nil {
+			cfg.MQTTPublish.MeshtasticMessages = *v
 		}
 	}
 	if f.Dispatch != nil {
@@ -1119,20 +1100,16 @@ func (f fileConfig) toConfig() Config {
 			cfg.APRS.RouteMessages = *f.APRS.RouteMessages
 		}
 	}
-	cfg.MeshCore = MeshCoreConfig{Baud: 115200, NodeTTL: 30 * time.Minute}
-	if f.MeshCore != nil {
-		cfg.MeshCore.Enabled = f.MeshCore.Enabled
-		cfg.MeshCore.Device = strings.TrimSpace(f.MeshCore.Device)
-		cfg.MeshCore.ChannelIdx = f.MeshCore.ChannelIdx
-		cfg.MeshCore.ChannelName = f.MeshCore.ChannelName
-		cfg.MeshCore.ChannelNames = f.MeshCore.ChannelNames
-		cfg.MeshCore.AutoAddContacts = f.MeshCore.AutoAddContacts
-		cfg.MeshCore.RouteMessages = f.MeshCore.RouteMessages
-		if f.MeshCore.Baud != nil {
-			cfg.MeshCore.Baud = *f.MeshCore.Baud
+	cfg.Meshtastic = MeshtasticConfig{Baud: 115200, NodeTTL: 30 * time.Minute}
+	if f.Meshtastic != nil {
+		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
+		cfg.Meshtastic.Device = strings.TrimSpace(f.Meshtastic.Device)
+		cfg.Meshtastic.RouteMessages = f.Meshtastic.RouteMessages
+		if f.Meshtastic.Baud != nil {
+			cfg.Meshtastic.Baud = *f.Meshtastic.Baud
 		}
-		if f.MeshCore.NodeTTL != nil {
-			cfg.MeshCore.NodeTTL = *f.MeshCore.NodeTTL
+		if f.Meshtastic.NodeTTL != nil {
+			cfg.Meshtastic.NodeTTL = *f.Meshtastic.NodeTTL
 		}
 	}
 	if f.Geo != nil {

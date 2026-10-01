@@ -23,7 +23,7 @@ const (
 
 	// DeliveryConfirmed means the transport proved recipient-level
 	// confirmation. Terminal: replays deduplicate. Only channels whose
-	// protocol offers confirmations (e.g. MeshCore direct-message ACKs)
+	// protocol offers confirmations (e.g. Meshtastic direct-message ACKs)
 	// can reach it; others stay at accepted.
 	DeliveryConfirmed
 

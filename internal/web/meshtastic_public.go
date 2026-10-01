@@ -6,18 +6,16 @@ import (
 	"sort"
 	"time"
 
-	"github.com/szporwolik/WarnFlux/internal/meshcore"
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 )
 
-// meshNodeMapView is the public JSON shape of one heard MeshCore node
+// meshNodeMapView is the public JSON shape of one heard Meshtastic node
 // with a position, served to the home map.
 type meshNodeMapView struct {
-	Key        string  `json:"key"`
+	ID         string  `json:"id"`
 	Name       string  `json:"name"`
-	Type       string  `json:"type"`
 	Latitude   float64 `json:"latitude"`
 	Longitude  float64 `json:"longitude"`
-	Hops       int     `json:"hops"`
 	LastSeen   string  `json:"last_seen"`
 	DistanceKM float64 `json:"distance_km"`
 }
@@ -25,38 +23,23 @@ type meshNodeMapView struct {
 // meshNodeNoPosView is one heard node without a position: the home page
 // shows these as a badge list below the located-node cards.
 type meshNodeNoPosView struct {
-	Key      string `json:"key"`
+	ID       string `json:"id"`
 	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Hops     int    `json:"hops"`
 	LastSeen string `json:"last_seen"`
 }
 
-// meshNodeTypeName maps the device type byte onto the friendly label.
-func meshNodeTypeName(t byte) string {
-	switch t {
-	case 1:
-		return "chat"
-	case 2:
-		return "repeater"
-	case 3:
-		return "room"
-	}
-	return "node"
-}
-
-// handleMeshcoreStations serves the public node list for the home map:
+// handleMeshtasticStations serves the public node list for the home map:
 // located nodes inside the operational ring (the APRS area center and
 // radius) plus, separately, the heard nodes that carry no position —
 // the home page renders those as a badge list below the node cards.
-func (s *Server) handleMeshcoreStations(w http.ResponseWriter, r *http.Request) {
-	if s.mesh == nil || !s.mesh.Enabled() {
-		http.Error(w, "meshcore disabled", http.StatusNotFound)
+func (s *Server) handleMeshtasticStations(w http.ResponseWriter, r *http.Request) {
+	if s.meshtastic == nil || !s.meshtastic.Enabled() {
+		http.Error(w, "meshtastic disabled", http.StatusNotFound)
 		return
 	}
 	var owners map[string]string
 	if s.users != nil {
-		owners, _ = s.users.MeshKeyOwners()
+		owners, _ = s.users.MeshtasticOwners()
 	}
 	ringLat, ringLon, ringR := 0.0, 0.0, 0.0
 	if s.aprs != nil && s.aprs.Enabled() {
@@ -64,29 +47,28 @@ func (s *Server) handleMeshcoreStations(w http.ResponseWriter, r *http.Request) 
 	}
 	nodes := make([]meshNodeMapView, 0, 8)
 	nopos := make([]meshNodeNoPosView, 0, 8)
-	for _, n := range s.mesh.Snapshot().Nodes {
-		typ := meshNodeTypeName(n.Type)
+	for _, n := range s.meshtastic.Snapshot().Nodes {
 		name := n.Name
 		if name == "" {
-			name = meshOwnerFor(owners, n.PubKey)
+			name = meshtasticOwnerFor(owners, n.ID)
 		}
 		seen := n.LastSeen.UTC().Format(time.RFC3339)
 		if n.Lat == 0 && n.Lon == 0 {
 			nopos = append(nopos, meshNodeNoPosView{
-				Key: n.PubKey, Name: name, Type: typ, Hops: n.Hops, LastSeen: seen,
+				ID: n.ID, Name: name, LastSeen: seen,
 			})
 			continue
 		}
-		d := meshcore.DistanceKM(ringLat, ringLon, n.Lat, n.Lon)
+		d := meshtastic.DistanceKM(ringLat, ringLon, n.Lat, n.Lon)
 		if ringR > 0 && d > ringR {
 			// Outside the operation ring: the map is limited to the area
 			// we serve, so the node is deliberately not shown.
 			continue
 		}
 		nodes = append(nodes, meshNodeMapView{
-			Key: n.PubKey, Name: name, Type: typ,
+			ID: n.ID, Name: name,
 			Latitude: n.Lat, Longitude: n.Lon,
-			Hops: n.Hops, LastSeen: seen, DistanceKM: d,
+			LastSeen: seen, DistanceKM: d,
 		})
 	}
 	sort.Slice(nodes, func(i, j int) bool {
@@ -99,11 +81,11 @@ func (s *Server) handleMeshcoreStations(w http.ResponseWriter, r *http.Request) 
 		if nopos[i].Name != nopos[j].Name {
 			return nopos[i].Name < nopos[j].Name
 		}
-		return nopos[i].Key < nopos[j].Key
+		return nopos[i].ID < nopos[j].ID
 	})
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(map[string]any{"nodes": nodes, "nopos": nopos}); err != nil {
-		s.logger.Warn("web: encode meshcore stations failed", "error", err)
+		s.logger.Warn("web: encode meshtastic stations failed", "error", err)
 	}
 }

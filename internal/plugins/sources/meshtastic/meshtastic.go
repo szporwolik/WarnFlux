@@ -1,8 +1,8 @@
-// Package meshcore implements the built-in MeshCore source plugin: it runs
+// Package meshtastic implements the built-in Meshtastic source plugin: it runs
 // the shared mesh hub (the Companion serial session) and publishes mesh
 // node snapshots as informational messages so downstream layers can
 // consume them.
-package meshcore
+package meshtastic
 
 import (
 	"context"
@@ -13,14 +13,14 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
-	mesh "github.com/szporwolik/WarnFlux/internal/meshcore"
+	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
 // Type is the plugin type name used in the YAML configuration.
-const Type = "meshcore"
+const Type = "meshtastic"
 
-var errHubDisabled = errors.New("meshcore: hub is not configured")
+var errHubDisabled = errors.New("meshtastic: hub is not configured")
 
 // Source runs the hub and periodically publishes the node list.
 type Source struct {
@@ -66,7 +66,7 @@ func (s *Source) publishNodes(emit plugin.Emitter) {
 		return
 	}
 	_ = emit.EmitInformation(context.Background(), core.InformationMessage{
-		Source:      "meshcore",
+		Source:      "meshtastic",
 		Key:         "nodes",
 		Kind:        "mesh-nodes",
 		GeneratedAt: time.Now(),

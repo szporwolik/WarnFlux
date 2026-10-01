@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"strings"
@@ -240,7 +241,7 @@ func TestHubSession(t *testing.T) {
 	// acknowledges, so the hub records the tx. The frame uses host→device
 	// framing (0x3C header).
 	sendErr := make(chan error, 1)
-	go func() { sendErr <- hub.SendChannelMessage("HELLO MESH", "admin") }()
+	go func() { sendErr <- hub.SendChannelMessage(context.Background(), "HELLO MESH", "admin") }()
 	buf := make([]byte, 128)
 	host.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := host.Read(buf)
@@ -325,7 +326,7 @@ func TestPublicChannelBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hub.SendChannelMessage("must not go out", "admin"); err == nil {
+	if err := hub.SendChannelMessage(context.Background(), "must not go out", "admin"); err == nil {
 		t.Fatal("SendChannelMessage on public channel 0 succeeded, want refusal")
 	}
 	if hub.Snapshot().ChannelIdx != 0 {
@@ -488,7 +489,7 @@ func TestHubSendRejected(t *testing.T) {
 		host.Write(encodeDeviceFrame([]byte{respErr, 2}))
 	}()
 
-	err = hub.SendContactMessage("abcd1234abcd", "hello", "admin")
+	err = hub.SendContactMessage(context.Background(), "abcd1234abcd", "hello", "admin")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("SendContactMessage = %v, want device not-found error", err)
 	}
@@ -575,7 +576,7 @@ func TestHubSendAutoAdd(t *testing.T) {
 		host.Write(encodeDeviceFrame([]byte{respSent}))
 	}()
 
-	if err := hub.SendContactMessage(hex.EncodeToString(fullKey), "hello", "admin"); err != nil {
+	if err := hub.SendContactMessage(context.Background(), hex.EncodeToString(fullKey), "hello", "admin"); err != nil {
 		t.Fatalf("SendContactMessage = %v, want success after auto-add", err)
 	}
 	got := rec.messages()
@@ -1352,12 +1353,102 @@ func TestHubQueryAckCannotConfirmSend(t *testing.T) {
 	}()
 
 	hub.maybeQueryContact(key)
-	if err := hub.SendChannelMessage("hello", "admin"); err == nil {
+	if err := hub.SendChannelMessage(context.Background(), "hello", "admin"); err == nil {
 		t.Fatal("send must fail when the device rejects it")
 	}
 	time.Sleep(150 * time.Millisecond)
 	if got := rec.messages(); len(got) != 0 {
 		t.Fatalf("rejected send recorded TX: %+v", got)
+	}
+}
+
+// TestSendHonorsCallerCancellationWhileUnready pins the reported P1 half
+// one: a send whose caller context expires while the session is not yet
+// ready returns promptly with the context error — the old code ignored
+// the cancellation and blocked in waitReady for up to 12 s, which the
+// action wrapper (10 s default timeout) misread as a hung plugin and
+// permanently disabled the instance.
+func TestSendHonorsCallerCancellationWhileUnready(t *testing.T) {
+	hub, _, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+	// No device choreography: the session never becomes ready.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := hub.SendChannelMessage(ctx, "hello", "admin")
+	if err == nil {
+		t.Fatal("send succeeded without a ready session")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("send error = %v, want the caller's context deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("send took %v, want prompt cancellation (the old code waited up to 12 s)", elapsed)
+	}
+}
+
+// TestSendHonorsCallerCancellationWhileAwaitingAck pins the second half:
+// the ACK wait in the command worker also aborts on the caller's
+// context, so a silent device yields a transient error at the caller's
+// deadline — not at the worker's 5 s command timeout.
+func TestSendHonorsCallerCancellationWhileAwaitingAck(t *testing.T) {
+	hub, host, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+
+	// Startup choreography: handshake → drain NO_MORE, so the pump is
+	// running and the session is ready before the send.
+	devReady := make(chan struct{})
+	go func() {
+		defer close(devReady)
+		buf := make([]byte, 256)
+		host.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host.Read(buf); err != nil {
+			t.Logf("DEVICE: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+	}()
+	select {
+	case <-devReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device did not complete the startup choreography")
+	}
+
+	// The device reads the send frame and deliberately stays silent.
+	silent := make(chan struct{})
+	go func() {
+		defer close(silent)
+		s, err := readHostFrameWithin(host, 8*time.Second)
+		if err == nil && (len(s) < 1 || s[0] != cmdSendChannelTxtMsg) {
+			t.Logf("DEVICE: unexpected frame %x", s)
+		}
+		// No ACK — the caller's context must end the wait.
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := hub.SendChannelMessage(ctx, "hello", "admin")
+	if err == nil {
+		t.Fatal("send succeeded without an ACK")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("send error = %v, want the caller's context deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("send took %v, want prompt cancellation (the old code waited for the 5 s command timeout)", elapsed)
+	}
+	select {
+	case <-silent:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device never saw the send frame")
 	}
 }
 
@@ -1454,7 +1545,7 @@ func TestContactQueryDoesNotStealSendAck(t *testing.T) {
 		t.Fatal("device never received the contact query")
 	}
 
-	if err := hub.SendChannelMessage("hello", "admin"); err != nil {
+	if err := hub.SendChannelMessage(context.Background(), "hello", "admin"); err != nil {
 		t.Fatalf("SendChannelMessage = %v, want success (query must not steal the ack)", err)
 	}
 	select {
@@ -1540,7 +1631,7 @@ func TestQueryReplyTypeIsolation(t *testing.T) {
 	}
 
 	start := time.Now()
-	if err := hub.SendChannelMessage("hello", "admin"); err != nil {
+	if err := hub.SendChannelMessage(context.Background(), "hello", "admin"); err != nil {
 		t.Fatalf("SendChannelMessage = %v, want success despite the mismatched query reply", err)
 	}
 	if elapsed := time.Since(start); elapsed > 4*time.Second {
@@ -1596,7 +1687,7 @@ func TestSendFailsFastAfterSessionEnd(t *testing.T) {
 	}, "session ended after link close")
 
 	start := time.Now()
-	err := hub.SendChannelMessage("hello", "admin")
+	err := hub.SendChannelMessage(context.Background(), "hello", "admin")
 	if err == nil {
 		t.Fatal("send must fail after the session ended")
 	}

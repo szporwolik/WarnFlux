@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,6 +71,7 @@ type testEnv struct {
 // publishes; the test drives the state mirror itself to simulate the
 // broker loopback. fail simulates a down broker (every publish errors).
 type fakeComposePublisher struct {
+	mu        sync.Mutex
 	published []state.Hazard
 	expired   []string
 	raw       []fakeRawPublish
@@ -87,7 +89,9 @@ func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) erro
 	if f.fail {
 		return errors.New("broker down")
 	}
+	f.mu.Lock()
 	f.published = append(f.published, h)
+	f.mu.Unlock()
 	return nil
 }
 
@@ -95,7 +99,9 @@ func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
 	if f.fail {
 		return errors.New("broker down")
 	}
+	f.mu.Lock()
 	f.expired = append(f.expired, eventKey)
+	f.mu.Unlock()
 	return nil
 }
 
@@ -103,8 +109,32 @@ func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload 
 	if f.fail {
 		return errors.New("broker down")
 	}
+	f.mu.Lock()
 	f.raw = append(f.raw, fakeRawPublish{Suffix: suffix, Retained: retained, Payload: append([]byte(nil), payload...)})
+	f.mu.Unlock()
 	return nil
+}
+
+// publishedSnapshot returns a copy of the recorded hazard publications
+// (safe against the asynchronous publish goroutines).
+func (f *fakeComposePublisher) publishedSnapshot() []state.Hazard {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]state.Hazard(nil), f.published...)
+}
+
+// expiredSnapshot returns a copy of the recorded active-retire calls.
+func (f *fakeComposePublisher) expiredSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.expired...)
+}
+
+// rawSnapshot returns a copy of the recorded raw publications.
+func (f *fakeComposePublisher) rawSnapshot() []fakeRawPublish {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeRawPublish(nil), f.raw...)
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -1188,10 +1218,11 @@ func TestComposeFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose?msg=published" {
 		t.Fatalf("POST /compose = %d %q, want redirect to flash", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	if len(env.pub.published) != 1 {
-		t.Fatalf("publisher saw %d publishes, want 1", len(env.pub.published))
+	pub := env.pub.publishedSnapshot()
+	if len(pub) != 1 {
+		t.Fatalf("publisher saw %d publishes, want 1", len(pub))
 	}
-	h := env.pub.published[0]
+	h := pub[0]
 	if h.Source != "compose" || !strings.HasPrefix(h.EventKey, "compose:") {
 		t.Errorf("published hazard identity = %q / %q", h.Source, h.EventKey)
 	}
@@ -1270,8 +1301,9 @@ func TestComposeFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose?msg=updated" {
 		t.Fatalf("POST /compose update = %d %q, want updated flash", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	if len(env.pub.published) != 2 || env.pub.published[1].EventKey != h.EventKey {
-		t.Errorf("update did not reuse the event key: %+v", env.pub.published)
+	pub = env.pub.publishedSnapshot()
+	if len(pub) != 2 || pub[1].EventKey != h.EventKey {
+		t.Errorf("update did not reuse the event key: %+v", pub)
 	}
 	if ev := drainIngress(env); ev == nil || ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionUpdated {
 		t.Fatalf("compose update did not enqueue an updated transition: %+v", ev)
@@ -1283,8 +1315,9 @@ func TestComposeFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/compose?msg=expired" {
 		t.Fatalf("POST /compose/expire = %d %q, want expired flash", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	if len(env.pub.expired) != 1 || env.pub.expired[0] != h.EventKey {
-		t.Errorf("expire did not target the event key: %v", env.pub.expired)
+	exp := env.pub.expiredSnapshot()
+	if len(exp) != 1 || exp[0] != h.EventKey {
+		t.Errorf("expire did not target the event key: %v", exp)
 	}
 	if ev := drainIngress(env); ev == nil || ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionExpired {
 		t.Fatalf("compose expire did not enqueue an expired transition: %+v", ev)
@@ -2713,24 +2746,26 @@ func TestEmcomPanelFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST /emcom = %d, want 303", resp.StatusCode)
 	}
-	if len(env.pub.raw) != 1 || env.pub.raw[0].Suffix != "info/emcom/emcom/sp9moa-emcom/emcom" || !env.pub.raw[0].Retained {
-		t.Fatalf("raw publish = %+v", env.pub.raw)
+	raw := env.pub.rawSnapshot()
+	if len(raw) != 1 || raw[0].Suffix != "info/emcom/emcom/sp9moa-emcom/emcom" || !raw[0].Retained {
+		t.Fatalf("raw publish = %+v", raw)
 	}
 	var wire struct {
 		Network string `json:"network"`
 		Slug    string `json:"slug"`
 		Level   int    `json:"level"`
 	}
-	if err := json.Unmarshal(env.pub.raw[0].Payload, &wire); err != nil || wire.Slug != "sp9moa-emcom" || wire.Level != 0 {
-		t.Fatalf("state payload = %s (%v)", env.pub.raw[0].Payload, err)
+	if err := json.Unmarshal(raw[0].Payload, &wire); err != nil || wire.Slug != "sp9moa-emcom" || wire.Level != 0 {
+		t.Fatalf("state payload = %s (%v)", raw[0].Payload, err)
 	}
 
 	// The fake publisher does not echo: mirror the broker loopback into
 	// the state like the receiver would.
 	mirrorInfo := func(i int) {
+		raw := env.pub.rawSnapshot()
 		env.state.AddOrUpdateInfo("local", "warnflux/info/emcom/emcom/sp9moa-emcom/emcom", state.InfoEntry{
 			Source: "emcom", ProducerID: "emcom", Key: "sp9moa-emcom", Kind: "emcom",
-			ReceivedAt: time.Now(), Payload: env.pub.raw[i].Payload,
+			ReceivedAt: time.Now(), Payload: raw[i].Payload,
 		})
 	}
 	mirrorInfo(0)
@@ -2749,10 +2784,11 @@ func TestEmcomPanelFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST level 2 = %d, want 303", resp.StatusCode)
 	}
-	if len(env.pub.published) != 1 {
-		t.Fatalf("published hazards = %d, want 1", len(env.pub.published))
+	pub := env.pub.publishedSnapshot()
+	if len(pub) != 1 {
+		t.Fatalf("published hazards = %d, want 1", len(pub))
 	}
-	h := env.pub.published[0]
+	h := pub[0]
 	if h.EventKey != "emcom:sp9moa-emcom" || h.Severity != "severe" || h.Urgency != "immediate" ||
 		!strings.Contains(h.Headline, "level 2 – Local activation") || !strings.Contains(h.Headline, "SP9MOA EMCOM") {
 		t.Errorf("hazard = %+v", h)
@@ -2801,8 +2837,9 @@ func TestEmcomPanelFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST level 0 = %d, want 303", resp.StatusCode)
 	}
-	if len(env.pub.expired) != 1 || env.pub.expired[0] != "emcom:sp9moa-emcom" {
-		t.Fatalf("expired = %v", env.pub.expired)
+	exp := env.pub.expiredSnapshot()
+	if len(exp) != 1 || exp[0] != "emcom:sp9moa-emcom" {
+		t.Fatalf("expired = %v", exp)
 	}
 	select {
 	case ev = <-env.ingress.Events():
@@ -2827,9 +2864,10 @@ func TestEmcomPanelFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST delete = %d, want 303", resp.StatusCode)
 	}
-	last := env.pub.raw[len(env.pub.raw)-1]
-	if !last.Retained || len(last.Payload) != 0 {
-		t.Errorf("delete publish = %+v, want retained empty payload", last)
+	last := env.pub.rawSnapshot()
+	lastRaw := last[len(last)-1]
+	if !lastRaw.Retained || len(lastRaw.Payload) != 0 {
+		t.Errorf("delete publish = %+v, want retained empty payload", lastRaw)
 	}
 
 	// Unauthenticated access redirects to the login page.
@@ -2956,6 +2994,76 @@ func TestEmcomLocalFirstNoBroker(t *testing.T) {
 	_, html = env.get("/emcom")
 	if strings.Contains(html, `data-slug="sp9moa-emcom"`) {
 		t.Errorf("deleted network still listed: %s", html)
+	}
+}
+
+// TestEmcomLevelZeroBlocksQueuedActivation pins the P1 at the panel
+// boundary: EMCOM transitions carry the instance publisher and the
+// network state version, and dropping a network back to monitoring
+// records the cancellation atomically with the network state — the
+// delivery gate then blocks the previously queued activation, so a
+// returning radio cannot transmit the stale raise.
+func TestEmcomLevelZeroBlocksQueuedActivation(t *testing.T) {
+	store := newLocalPanelStore(t)
+	env := newTestEnvWithUsers(t, store)
+	env.login()
+
+	_, html := env.get("/emcom")
+	csrf := extractCSRF(t, html)
+	if resp, _ := env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("add = %d, want 303", resp.StatusCode)
+	}
+
+	publisher, err := store.InstanceID(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Raise: the activation carries the instance publisher and the
+	// network state version as its ChangeID.
+	if resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("raise = %d, want 303", resp.StatusCode)
+	}
+	var activation dispatch.Event
+	select {
+	case activation = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no activation transition enqueued")
+	}
+	if activation.Hazard == nil {
+		t.Fatal("activation without hazard")
+	}
+	if activation.Hazard.Publisher != publisher {
+		t.Errorf("activation publisher = %q, want the instance id %q", activation.Hazard.Publisher, publisher)
+	}
+	if activation.Hazard.ChangeID == 0 {
+		t.Error("activation ChangeID = 0, want the network state version")
+	}
+	key := activation.Hazard.Key
+
+	// The fresh activation passes the delivery gate right now.
+	blocked, err := store.LifecycleBlocks(context.Background(), publisher, key, activation.Hazard.ChangeID)
+	if err != nil || blocked {
+		t.Fatalf("gate for the fresh activation = (%v, %v), want allowed", blocked, err)
+	}
+
+	// Drop back to monitoring: the cancellation is recorded with the
+	// network state, and the queued activation is now blocked.
+	if resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"0"}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("drop = %d, want 303", resp.StatusCode)
+	}
+	var expiry dispatch.Event
+	select {
+	case expiry = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no expiry transition enqueued")
+	}
+	if expiry.Hazard == nil || expiry.Hazard.Type != dispatch.TransitionExpired {
+		t.Fatalf("expiry transition = %+v", expiry)
+	}
+	blocked, err = store.LifecycleBlocks(context.Background(), publisher, key, activation.Hazard.ChangeID)
+	if err != nil || !blocked {
+		t.Fatalf("gate for the queued activation after level 0 = (%v, %v), want blocked", blocked, err)
 	}
 }
 

@@ -31,7 +31,7 @@
     <div class="health-row">
       <span class="badge {{if .Offline}}bad{{else}}ok{{end}}">{{if .Offline}}{{tr .Lang "config.offline.state.on"}}{{else}}{{tr .Lang "config.offline.state.off"}}{{end}}</span>
     </div>
-    <form method="post" action="/config/offline" class="emcom-add">
+    <form method="post" action="/config/offline" class="config-offline-form">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="offline" value="{{if .Offline}}off{{else}}on{{end}}">
       {{if .Offline}}

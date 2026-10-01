@@ -1563,6 +1563,43 @@ func (s *scriptedConn) Close() error                     { s.closed.Store(true);
 func (s *scriptedConn) SetReadDeadline(time.Time) error  { return nil }
 func (s *scriptedConn) SetWriteDeadline(time.Time) error { return nil }
 
+// trickleConn accepts ONE byte per Write with a small delay and records
+// the complete byte stream — the deterministic window to interleave two
+// concurrent frame writes.
+type trickleConn struct {
+	mu    sync.Mutex
+	got   []byte
+	bytes int
+}
+
+func (t *trickleConn) Read([]byte) (int, error) { return 0, errors.New("unexpected read") }
+func (t *trickleConn) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	time.Sleep(2 * time.Millisecond)
+	t.mu.Lock()
+	t.got = append(t.got, p[0])
+	t.bytes++
+	t.mu.Unlock()
+	return 1, nil
+}
+func (t *trickleConn) Close() error                     { return nil }
+func (t *trickleConn) SetReadDeadline(time.Time) error  { return nil }
+func (t *trickleConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (t *trickleConn) written() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.bytes
+}
+
+func (t *trickleConn) stream() []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]byte(nil), t.got...)
+}
+
 // shortWriter accepts at most ONE byte per Write call — the reported P2
 // reproduction ("a transport accepting one byte is enough to reproduce
 // the error"). It accumulates everything it received.
@@ -1770,6 +1807,100 @@ func TestLateAckAfterTimeoutNeverConfirmsNextCommand(t *testing.T) {
 	}
 	if err := <-replyB; err == nil {
 		t.Fatal("command B was confirmed by command A's late reply — the session was not recreated after the ambiguous timeout")
+	}
+}
+
+// TestPushMsgWaitingNeverInterleavesFrames pins the reported P1: the
+// pushMsgWaiting handler writes the SYNC_NEXT tickle directly to the
+// transport from the frame pump, in parallel with the command worker —
+// the tickle bytes could land in the MIDDLE of an in-flight command
+// frame (a fetch frame inside an alert frame). Every complete frame now
+// goes through one write serializer: the tickle waits for the command
+// frame to finish and the wire carries whole frames only.
+func TestPushMsgWaitingNeverInterleavesFrames(t *testing.T) {
+	hub, err := NewHub(Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &trickleConn{}
+	// The frame-pump path resolves the connection through the hub.
+	hub.mu.Lock()
+	hub.client = c
+	hub.mu.Unlock()
+
+	// A long send command starts writing (the worker's path); the
+	// transport trickles one byte per 2 ms, so the frame is on the wire
+	// for ~50 ms.
+	sendPayload := buildSendChannelTxtMsg(2, "ALERT ALERT ALERT")
+	reply := make(chan error, 1)
+	go hub.runCommand(context.Background(), c, cmdReq{
+		payload: sendPayload,
+		expect:  expectAck,
+		timeout: 500 * time.Millisecond,
+		reply:   reply,
+	})
+
+	// Wait until the send frame is mid-write, then fire the pump's
+	// pushMsgWaiting tickle — the exact interleave window.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && c.written() < 3 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := c.written(); got < 3 {
+		t.Fatalf("send frame never started writing (%d bytes)", got)
+	}
+	if err := hub.writeFrame(buildSyncNextMessage()); err != nil {
+		t.Fatalf("pushMsgWaiting tickle failed: %v", err)
+	}
+
+	// The wire must carry two COMPLETE frames, in order: the whole send
+	// frame first, then the whole SYNC_NEXT tickle — nothing in
+	// between, nothing interleaved.
+	want := append(encodeFrame(sendPayload), encodeFrame(buildSyncNextMessage())...)
+	if got := c.stream(); !bytes.Equal(got, want) {
+		t.Fatalf("transport stream interleaved frames:\n got %x\nwant %x", got, want)
+	}
+
+	// The send itself finishes with its acknowledgement timeout (no
+	// device here); the stream assertion above is the pin.
+	if err := <-reply; err == nil {
+		t.Fatal("send succeeded without any reply, want the acknowledgement timeout")
+	}
+}
+
+// TestSettleRecreateOnlyAfterPartialWrite pins the reported P1:
+// settleOrRecreateSession must inspect the settled write's RESULT — a
+// cancelled write that failed mid-frame (one byte already on the wire)
+// leaves a partial frame, and the transport must be recreated; a fully
+// written frame keeps the session.
+func TestSettleRecreateOnlyAfterPartialWrite(t *testing.T) {
+	hub, err := NewHub(Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A settled write WITH an error = partial frame on the wire: the
+	// transport must be closed so the next command cannot follow it.
+	c1 := &scriptedConn{}
+	done1 := make(chan writeResult, 1)
+	done1 <- writeResult{err: context.Canceled}
+	hub.settleOrRecreateSession(c1, done1)
+	if !c1.closed.Load() {
+		t.Fatal("a cancelled write that failed mid-frame left the transport open for the next command")
+	}
+
+	// A settled write WITHOUT an error = the whole frame is on the
+	// wire: the session must survive.
+	c2 := &scriptedConn{}
+	done2 := make(chan writeResult, 1)
+	done2 <- writeResult{}
+	hub.settleOrRecreateSession(c2, done2)
+	if c2.closed.Load() {
+		t.Fatal("a fully written frame recreated the session needlessly")
 	}
 }
 

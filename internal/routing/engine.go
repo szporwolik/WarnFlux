@@ -79,9 +79,11 @@ type Inbox interface {
 // notifications for hazards that already expired or were cancelled —
 // an older update must never outrank a known cancellation. The verdict
 // separates active / inactive / unknown; read errors are reported and
-// handled fail-open by the engine.
+// handled fail-open by the engine. The check is scoped to the
+// PUBLISHER identity: a local cancellation of an event key must never
+// suppress another publisher's active transition for the same key.
 type HazardFreshness interface {
-	HazardActive(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error)
+	HazardActive(ctx context.Context, publisher, eventKey string, now time.Time) (storage.HazardVerdict, error)
 }
 
 // LifecycleRecorder is the optional storage-side message lifecycle
@@ -636,7 +638,7 @@ func (e *Engine) hazardFresh(ctx context.Context, ev dispatch.Event) bool {
 	if !ok {
 		return true // no oracle: the expiry check above is all we have
 	}
-	verdict, err := fh.HazardActive(ctx, ev.Hazard.Key, time.Now())
+	verdict, err := fh.HazardActive(ctx, ev.Hazard.Publisher, ev.Hazard.Key, time.Now())
 	if err != nil {
 		e.logger.Warn("routing: hazard freshness lookup failed",
 			"event_key", ev.Hazard.Key, "error", err)

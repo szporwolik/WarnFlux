@@ -1646,7 +1646,13 @@ func (s *Store) CountActive(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// HazardActive reports the local freshness verdict for one event key.
+// HazardActive reports the local freshness verdict for one event key,
+// scoped to the PUBLISHER identity. The events table holds THIS
+// instance's current-state records: a transition stamped with a
+// different publisher is not governed by our local row (independent
+// publishers never collide), so it answers HazardUnknown (fail-open) —
+// a local cancellation can never suppress another instance's alert.
+// An empty publisher (legacy, panel) keeps the key-only check.
 // An unknown key is HazardUnknown (the transition may come from a
 // producer without local storage); a known key is HazardInactive when
 // its status is not active (cancelled/expired — an older update must
@@ -1654,7 +1660,19 @@ func (s *Store) CountActive(ctx context.Context) (int, error) {
 // The nullable expiry is read through sql.NullInt64, so a cancelled or
 // expired event WITHOUT an expiry still yields a clean verdict instead
 // of a scan error that callers would fail open on.
-func (s *Store) HazardActive(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error) {
+func (s *Store) HazardActive(ctx context.Context, publisher, eventKey string, now time.Time) (storage.HazardVerdict, error) {
+	if publisher != "" {
+		local, err := s.instanceID(ctx)
+		if err != nil {
+			return storage.HazardUnknown, fmt.Errorf("publisher id for hazard freshness of %q: %w", eventKey, err)
+		}
+		if publisher != local {
+			// A remote publisher's hazard: the local events table has no
+			// authority over it. The publisher-scoped lifecycle ledger
+			// remains the gate for remote transitions.
+			return storage.HazardUnknown, nil
+		}
+	}
 	var status string
 	var expiresMs sql.NullInt64
 	err := s.db.QueryRowContext(ctx,

@@ -60,6 +60,37 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Verify the published tag's commit (before any publication)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The image and the binaries must never be overwritten under a
+          # version pinned to a different commit: this compatibility
+          # check runs BEFORE any publication. A MISSING tag (the API
+          # answers "Not Found") is fine — the release will create it
+          # with --target below; any OTHER API failure is fatal and must
+          # not be mistaken for "no tag".
+          tag="v${{ steps.version.outputs.version }}"
+
+          set +e
+          tag_sha="$(gh api "repos/${{ github.repository }}/commits/$tag" --jq .sha 2>/tmp/gh-api-err)"
+          api_code=$?
+          set -e
+
+          if [ "$api_code" -ne 0 ]; then
+            if grep -q "Not Found" /tmp/gh-api-err; then
+              echo "Tag $tag does not exist yet — the release will create it at $GITHUB_SHA."
+            else
+              echo "::error::cannot verify tag $tag: $(cat /tmp/gh-api-err)"
+              exit 1
+            fi
+          elif [ -z "$tag_sha" ] || [ "$tag_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::version $tag is pinned to commit ${tag_sha:-<unknown>}, but this run builds commit $GITHUB_SHA — refusing to publish anything for this version"
+            exit 1
+          else
+            echo "Tag $tag points at $GITHUB_SHA — all publications for this version are safe."
+          fi
+
       - name: Vet and test
         run: go vet ./... && go test -count=1 ./...
 
@@ -139,22 +170,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # gh CLI (no Node runtime) creates the release. The version is
-          # pinned to the EXACT commit this run built and tested: the tag
-          # (created with --target when missing) and any pre-existing
-          # release must point at $GITHUB_SHA — a version may never be
-          # overwritten with binaries from another commit.
+          # gh CLI (no Node runtime) creates the release. The early
+          # "Verify the published tag's commit" step already pinned the
+          # version to $GITHUB_SHA (or confirmed the tag is absent), so
+          # every publication here is for the exact commit this run
+          # built and tested.
           tag="v${{ steps.version.outputs.version }}"
-
-          # Verify the remote tag's commit (when the tag exists) matches
-          # the commit being published. The API dereferences annotated
-          # tags too.
-          if tag_sha="$(gh api "repos/${{ github.repository }}/commits/$tag" --jq .sha 2>/dev/null)"; then
-            if [ -z "$tag_sha" ] || [ "$tag_sha" != "$GITHUB_SHA" ]; then
-              echo "::error::version $tag is pinned to commit ${tag_sha:-<unknown>}, but this run builds commit $GITHUB_SHA — refusing to publish a different SHA under the same version"
-              exit 1
-            fi
-          fi
 
           if gh release view "$tag" >/dev/null 2>&1; then
             # Re-running the workflow for an already-published version is

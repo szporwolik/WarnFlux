@@ -1133,12 +1133,26 @@
     });
   }
 
-  // meshBadge renders the MeshCore pin: the chat glyph in the category
-  // color with the node name as the halo label (unnamed nodes get the
-  // generic label; keys stay off the public map).
+  // MeshCore pin colors per node type — the same idea as the APRS
+  // static/moving split: repeaters (teal), chat rooms (rose) and chat
+  // devices (indigo) read apart from plain nodes (category purple).
+  var MESH_COLORS = {
+    node: "#8e24aa",
+    chat: "#283593",
+    repeater: "#00695c",
+    room: "#c2185b"
+  };
+
+  function meshColor(n) {
+    return MESH_COLORS[n.type] || MESH_COLORS.node;
+  }
+
+  // meshBadge renders the MeshCore pin: the chat glyph in the node's
+  // type color with the node name as the halo label (unnamed nodes get
+  // the generic label; keys stay off the public map).
   function meshBadge(n) {
     return wfBadge({
-      color: "#8e24aa",
+      color: meshColor(n),
       glyph: BADGE_GLYPHS.chat,
       label: n.name || tr("meshcore.type.node")
     });
@@ -1300,11 +1314,11 @@
     }
     var body = lines.join("<br>");
     return wfPopup({
-      color: "#8e24aa",
+      color: meshColor(n),
       icon: BADGE_GLYPHS.chat,
       title: esc(n.name || tr("meshcore.type.node")),
       sub: "MeshCore",
-      value: esc(n.type || "node"),
+      value: tr("meshcore.type." + (n.type || "node")),
       body: body
     });
   }

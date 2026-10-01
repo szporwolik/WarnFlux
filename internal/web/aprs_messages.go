@@ -1,12 +1,14 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 )
 
 // aprsMessagesPageSize bounds one page of the admin APRS message history.
@@ -240,13 +242,14 @@ func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.aprs == nil {
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape("APRS hub not configured"), http.StatusSeeOther)
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape(i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
 		return
 	}
 	to := strings.TrimSpace(r.PostFormValue("to"))
 	text := strings.TrimSpace(r.PostFormValue("text"))
 	if err := s.aprs.SendMessage(r.Context(), to, text); err != nil {
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		flash := fmt.Sprintf(i18n.T(s.langFor(r), "messages.send_failed"), err)
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "aprs-send", to)
@@ -262,11 +265,12 @@ func (s *Server) handleAPRSBeacon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.aprs == nil {
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape("APRS hub not configured"), http.StatusSeeOther)
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape(i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
 		return
 	}
 	if err := s.aprs.SendBeacon(r.Context()); err != nil {
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		flash := fmt.Sprintf(i18n.T(s.langFor(r), "messages.beacon_failed"), err)
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "aprs-beacon", "")

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	mesh "github.com/szporwolik/WarnFlux/internal/meshcore"
+
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 )
 
 // meshMessagesPageSize bounds one page of the admin mesh message history.
@@ -340,7 +342,7 @@ func (s *Server) handleMeshcoreAdvert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.mesh == nil {
-		http.Error(w, "meshcore hub not configured", http.StatusBadGateway)
+		http.Error(w, i18n.T(s.langFor(r), "meshcore.hub_not_configured"), http.StatusBadGateway)
 		return
 	}
 	kind := mesh.AdvertFlood
@@ -349,7 +351,7 @@ func (s *Server) handleMeshcoreAdvert(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.mesh.SendAdvert(kind); err != nil {
 		s.logger.Warn("web: meshcore advert failed", "error", err)
-		http.Error(w, "advert failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf(i18n.T(s.langFor(r), "meshcore.advert_failed"), err), http.StatusBadGateway)
 		return
 	}
 	s.audit(sess.username, "meshcore-advert", "manual advert")
@@ -365,19 +367,19 @@ func (s *Server) handleMeshcoreSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.mesh == nil {
-		http.Error(w, "meshcore hub not configured", http.StatusBadGateway)
+		http.Error(w, i18n.T(s.langFor(r), "meshcore.hub_not_configured"), http.StatusBadGateway)
 		return
 	}
 	text := strings.TrimSpace(r.PostFormValue("text"))
 	if text == "" {
-		http.Error(w, "message text is required", http.StatusBadRequest)
+		http.Error(w, i18n.T(s.langFor(r), "meshcore.text_required"), http.StatusBadRequest)
 		return
 	}
 	var err error
 	if r.PostFormValue("target") == "contact" {
 		prefix := strings.TrimPrefix(strings.TrimSpace(r.PostFormValue("contact")), "0x")
 		if _, hexErr := hex.DecodeString(prefix); hexErr != nil || len(prefix) != 12 {
-			http.Error(w, "contact prefix must be 12 hex characters", http.StatusBadRequest)
+			http.Error(w, i18n.T(s.langFor(r), "meshcore.bad_prefix"), http.StatusBadRequest)
 			return
 		}
 		// Prefer the full key from the directory: the hub can then add the
@@ -399,7 +401,7 @@ func (s *Server) handleMeshcoreSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.logger.Warn("web: meshcore send failed", "target", r.PostFormValue("target"), "error", err)
-		http.Error(w, "send failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf(i18n.T(s.langFor(r), "meshcore.send_failed"), err), http.StatusBadGateway)
 		return
 	}
 	s.audit(sess.username, "meshcore-send", text)

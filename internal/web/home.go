@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"html/template"
 	"net/http"
@@ -9,8 +10,11 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/severity"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // publicHazardView is one active hazard as shown on the public home page:
@@ -158,7 +162,7 @@ type homeHazardJSON struct {
 // coordinates, so the home map can draw them as icons.
 func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 	events := make([]mapEventView, 0, 16)
-	for _, h := range s.st.Snapshot().Hazards {
+	for _, h := range s.activeHazards() {
 		if h.Latitude == nil || h.Longitude == nil {
 			continue
 		}
@@ -210,8 +214,9 @@ func (s *Server) handlePartialHome(w http.ResponseWriter, r *http.Request) {
 	s.renderL(w, r, "home_alerts_section", s.buildHomeView())
 }
 
-// buildHomeView assembles the public view from the mirrored MQTT state,
-// most severe first, then newest.
+// buildHomeView assembles the public view, most severe first, then
+// newest. Hazards come from activeHazards: the LOCAL database first, the
+// MQTT mirror only fills documents the local record does not own.
 func (s *Server) buildHomeView() homeView {
 	v := homeView{
 		AppTitle:   s.cfg.Title,
@@ -225,19 +230,19 @@ func (s *Server) buildHomeView() homeView {
 		RepoURL:    repoURL,
 	}
 
-	snap := s.st.Snapshot()
-	v.ActiveCount = len(snap.Hazards)
-	v.Hazards = make([]publicHazardView, 0, len(snap.Hazards))
+	hazards := s.activeHazards()
+	v.ActiveCount = len(hazards)
+	v.Hazards = make([]publicHazardView, 0, len(hazards))
 	v.MinorHazards = make([]publicHazardView, 0)
 	minorRank, _ := severity.Rank(severity.Minor)
-	hazardsJSON := make([]homeHazardJSON, 0, len(snap.Hazards))
+	hazardsJSON := make([]homeHazardJSON, 0, len(hazards))
 	jsonTime := func(t *time.Time) string {
 		if t == nil {
 			return ""
 		}
 		return t.Format(time.RFC3339)
 	}
-	for _, h := range snap.Hazards {
+	for _, h := range hazards {
 		view := publicHazardView{
 			EventKey:    h.EventKey,
 			Severity:    h.Severity,
@@ -325,6 +330,124 @@ func (s *Server) buildHomeView() homeView {
 		})
 	}
 	return v
+}
+
+// activeHazards returns the current active communications for the public
+// views. The LOCAL database is authoritative — active events from the
+// current-state table, active panel communications and raised EMCOM
+// networks: SQLite alone must suffice to serve them after a restart
+// without a broker. The MQTT mirror only fills keys the local record does
+// not own (other instances' documents; mirror-only installations behave
+// exactly as before).
+func (s *Server) activeHazards() []state.Hazard {
+	var out []state.Hazard
+	seen := make(map[string]bool)
+	add := func(h state.Hazard) {
+		if h.EventKey == "" || seen[h.EventKey] {
+			return
+		}
+		seen[h.EventKey] = true
+		out = append(out, h)
+	}
+
+	if s.events != nil {
+		if lister, ok := s.events.(storage.ActiveEventLister); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			after := ""
+			for {
+				page, err := lister.ListActiveEvents(ctx, after, 256)
+				if err != nil {
+					s.logger.Warn("home: active events read failed", "error", err)
+					break
+				}
+				for _, ev := range page {
+					add(hazardFromCore(ev))
+				}
+				if len(page) < 256 {
+					break
+				}
+				after = page[len(page)-1].Key()
+			}
+			cancel()
+		}
+	}
+
+	if cs, ok := s.users.(composeStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		rows, err := cs.ComposeHazards(ctx)
+		cancel()
+		if err != nil {
+			s.logger.Warn("home: compose record read failed", "error", err)
+		} else {
+			for _, row := range rows {
+				if row.Status != "active" {
+					continue
+				}
+				var h state.Hazard
+				if err := json.Unmarshal(row.State, &h); err != nil {
+					continue
+				}
+				add(h)
+			}
+		}
+	}
+
+	if es, ok := s.users.(emcomStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		nets, err := es.EmcomNetworks(ctx)
+		cancel()
+		if err != nil {
+			s.logger.Warn("home: emcom record read failed", "error", err)
+		} else {
+			now := time.Now()
+			for _, n := range nets {
+				if n.Level < 1 {
+					continue
+				}
+				lvl, _ := emcomLevelAt(n.Level)
+				net := emcomNetwork{
+					Slug:      n.Slug,
+					Name:      n.Name,
+					Level:     n.Level,
+					LevelName: lvl.Name,
+					UpdatedBy: n.UpdatedBy,
+					UpdatedAt: n.UpdatedAt,
+				}
+				add(emcomHazard(net, now))
+			}
+		}
+	}
+
+	for _, h := range s.st.Snapshot().Hazards {
+		add(h)
+	}
+	return out
+}
+
+// hazardFromCore projects one current-state event onto the public hazard
+// shape (the same shape the MQTT mirror carries).
+func hazardFromCore(ev core.HazardEvent) state.Hazard {
+	return state.Hazard{
+		EventKey:    ev.Key(),
+		Source:      ev.Source,
+		SourceID:    ev.SourceID,
+		Category:    ev.Category,
+		Event:       ev.Event,
+		Severity:    ev.Severity,
+		Urgency:     ev.Urgency,
+		Certainty:   ev.Certainty,
+		Headline:    ev.Headline,
+		Description: ev.Description,
+		Instruction: ev.Instruction,
+		Areas:       ev.Areas,
+		Status:      string(ev.Status),
+		Latitude:    ev.Latitude,
+		Longitude:   ev.Longitude,
+		EffectiveAt: ev.EffectiveAt,
+		ExpiresAt:   ev.ExpiresAt,
+		ReceivedAt:  ev.ReceivedAt,
+		UpdatedAt:   ev.UpdatedAt,
+	}
 }
 
 // sortHazards orders a hazard slice most severe first; within one

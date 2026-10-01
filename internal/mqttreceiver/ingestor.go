@@ -10,6 +10,7 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 )
@@ -414,6 +415,60 @@ func EventFromWire(we *EventPayload, receiverID string, now time.Time) dispatch.
 				ExpiresAt:   optTime(we.Event.ExpiresAt),
 				ReceivedAt:  parseTime(we.Event.ReceivedAt),
 				UpdatedAt:   parseTime(we.Event.UpdatedAt),
+			},
+		},
+	}
+}
+
+// EventFromChange converts one journal change into the canonical dispatch
+// transition — the SAME shape the receiver would parse from the /events
+// stream. The local-first dispatch path uses it, so the direct local copy
+// and the broker loopback carry identical dedup identities
+// (publisher + change ID).
+func EventFromChange(change core.EventChange, receiverID string, now time.Time) dispatch.Event {
+	var typ dispatch.TransitionType
+	switch change.Type {
+	case core.ChangeNew:
+		typ = dispatch.TransitionNew
+	case core.ChangeUpdated:
+		typ = dispatch.TransitionUpdated
+	case core.ChangeCancelled:
+		typ = dispatch.TransitionCancelled
+	case core.ChangeExpired:
+		typ = dispatch.TransitionExpired
+	}
+
+	ev := change.Event
+	return dispatch.Event{
+		Kind:       dispatch.EventHazardTransition,
+		ReceivedAt: now,
+		Origin:     dispatch.Origin{Type: "local", ReceiverID: receiverID},
+		Hazard: &dispatch.HazardTransition{
+			Type:      typ,
+			Key:       ev.Key(),
+			Source:    ev.Source,
+			ChangeID:  change.ID,
+			Publisher: change.Publisher,
+			Timestamp: ev.UpdatedAt,
+			Hazard: dispatch.Hazard{
+				EventKey:         ev.Key(),
+				Source:           ev.Source,
+				SourceID:         ev.SourceID,
+				Event:            ev.Event,
+				Severity:         ev.Severity,
+				ProviderSeverity: ev.ProviderSeverity,
+				Urgency:          ev.Urgency,
+				Certainty:        ev.Certainty,
+				Headline:         ev.Headline,
+				Description:      ev.Description,
+				Instruction:      ev.Instruction,
+				Areas:            append([]string(nil), ev.Areas...),
+				Latitude:         ev.Latitude,
+				Longitude:        ev.Longitude,
+				EffectiveAt:      ev.EffectiveAt,
+				ExpiresAt:        ev.ExpiresAt,
+				ReceivedAt:       ev.ReceivedAt,
+				UpdatedAt:        ev.UpdatedAt,
 			},
 		},
 	}

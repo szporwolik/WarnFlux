@@ -542,7 +542,8 @@ dispatch:
 # the startup state. Default: everything enabled. The topic families:
 #   events            — <prefix>/events hazard-transition journal
 #   active            — <prefix>/active/<source>/<hash> + <prefix>/active-list
-#   info              — <prefix>/info/... (source information, EMCOM states)
+#   info              — <prefix>/info/... (source information messages:
+#                       forecasts and observations (weather), EMCOM states)
 #   status            — <prefix>/status station heartbeat (the last-will
 #                       "offline" message always stays on — it is the
 #                       broker-side crash detector)

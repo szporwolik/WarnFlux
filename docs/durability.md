@@ -33,7 +33,10 @@ Concretely:
   before any I/O (nothing reaches the serial wire), and a write that is
   in flight when the cancellation lands is never abandoned mid-frame:
   it settles within a bounded grace or the session is recreated, so the
-  next command can never interleave with a stray frame.
+  next command can never interleave with a stray frame. A SHORT write
+  is never success either: the remainder of the frame is written in a
+  loop bounded by the transport write deadline, and any failed or
+  partial frame recreates the session before the next command.
 - **Serve** — the public home page, the map endpoint and the admin
   warnings panel read the active view from the LOCAL database first; the
   MQTT mirror only fills documents the local record does not own (other

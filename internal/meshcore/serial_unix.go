@@ -20,6 +20,7 @@ type conn interface {
 	Write(p []byte) (int, error)
 	Close() error
 	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
 }
 
 // openSerial opens the MeshCore device in raw 8N1 mode at the configured
@@ -63,13 +64,22 @@ func openSerial(device string, baud int) (conn, error) {
 // through the raw descriptor with an explicit poll loop instead, so the
 // deadline is honored by construction.
 type serialConn struct {
-	fd        int
-	deadline  time.Time
-	closeOnce sync.Once
+	fd            int
+	deadline      time.Time
+	writeDeadline time.Time
+	closeOnce     sync.Once
 }
 
 func (c *serialConn) SetReadDeadline(t time.Time) error {
 	c.deadline = t
+	return nil
+}
+
+// SetWriteDeadline bounds the next Write calls: a stalled line buffer
+// aborts the frame with os.ErrDeadlineExceeded instead of blocking
+// forever (the session is recreated by the caller).
+func (c *serialConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
 	return nil
 }
 
@@ -153,10 +163,20 @@ func (c *serialConn) awaitReadable(timeout <-chan time.Time) bool {
 }
 
 // Write writes to the raw descriptor, poll-waiting while the line
-// discipline buffer is full (EAGAIN). The hub bounds every command
-// write with its own timeout, and closing the transport unblocks a
-// stuck writer immediately.
+// discipline buffer is full (EAGAIN). The write deadline (when set)
+// aborts the frame: a stalled buffer returns os.ErrDeadlineExceeded;
+// closing the transport also unblocks a stuck writer immediately.
 func (c *serialConn) Write(p []byte) (int, error) {
+	var timeout <-chan time.Time
+	if !c.writeDeadline.IsZero() {
+		d := time.Until(c.writeDeadline)
+		if d <= 0 {
+			return 0, os.ErrDeadlineExceeded
+		}
+		t := time.NewTimer(d)
+		defer t.Stop()
+		timeout = t.C
+	}
 	for {
 		n, err := unix.Write(c.fd, p)
 		if err == nil {
@@ -166,16 +186,57 @@ func (c *serialConn) Write(p []byte) (int, error) {
 			continue
 		}
 		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
-			pfd := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLOUT}}
-			if _, perr := unix.Poll(pfd, -1); perr != nil {
-				if errors.Is(perr, syscall.EINTR) {
-					continue
-				}
-				return 0, perr
+			if !c.awaitWritable(timeout) {
+				return 0, os.ErrDeadlineExceeded
 			}
 			continue
 		}
 		return n, err
+	}
+}
+
+// awaitWritable waits until the descriptor is writable (or closed).
+// false means the write deadline won. Poll and syscall errors are
+// reported as writable: the following Write surfaces the real error.
+func (c *serialConn) awaitWritable(timeout <-chan time.Time) bool {
+	if timeout == nil {
+		// No deadline: an indefinite poll is exactly the blocking
+		// write the caller asked for. Close() makes the poll return
+		// and the next Write report the closed descriptor.
+		for {
+			pfd := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLOUT}}
+			if _, err := unix.Poll(pfd, -1); err != nil {
+				if errors.Is(err, syscall.EINTR) {
+					continue
+				}
+				return true
+			}
+			return true
+		}
+	}
+	for {
+		select {
+		case <-timeout:
+			return false
+		default:
+		}
+		d := time.Until(c.writeDeadline)
+		if d <= 0 {
+			return false
+		}
+		if d > 200*time.Millisecond {
+			d = 200 * time.Millisecond
+		}
+		pfd := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLOUT}}
+		if _, err := unix.Poll(pfd, int(d.Milliseconds())); err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			return true
+		}
+		if pfd[0].Revents&(unix.POLLOUT|unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
+			return true
+		}
 	}
 }
 

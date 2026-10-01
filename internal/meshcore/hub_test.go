@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1462,8 +1463,48 @@ func (c *countingConn) Write(p []byte) (int, error) {
 	c.writes.Add(1)
 	return len(p), nil
 }
-func (c *countingConn) Close() error                    { return nil }
-func (c *countingConn) SetReadDeadline(time.Time) error { return nil }
+func (c *countingConn) Close() error                     { return nil }
+func (c *countingConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *countingConn) SetWriteDeadline(time.Time) error { return nil }
+
+// shortWriter accepts at most ONE byte per Write call — the reported P2
+// reproduction ("a transport accepting one byte is enough to reproduce
+// the error"). It accumulates everything it received.
+type shortWriter struct {
+	mu  sync.Mutex
+	got []byte
+}
+
+func (s *shortWriter) Read([]byte) (int, error) { return 0, errors.New("unexpected read") }
+func (s *shortWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(p) == 0 {
+		return 0, nil
+	}
+	s.got = append(s.got, p[0])
+	return 1, nil
+}
+func (s *shortWriter) Close() error                     { return nil }
+func (s *shortWriter) SetReadDeadline(time.Time) error  { return nil }
+func (s *shortWriter) SetWriteDeadline(time.Time) error { return nil }
+func (s *shortWriter) received() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.got...)
+}
+
+// failingWriter rejects every write and records that it was closed (the
+// session-recreation trigger).
+type failingWriter struct{ closed atomic.Bool }
+
+func (f *failingWriter) Read([]byte) (int, error) { return 0, errors.New("unexpected read") }
+func (f *failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("line down")
+}
+func (f *failingWriter) Close() error                     { f.closed.Store(true); return nil }
+func (f *failingWriter) SetReadDeadline(time.Time) error  { return nil }
+func (f *failingWriter) SetWriteDeadline(time.Time) error { return nil }
 
 // TestCancelledCommandNeverReachesTransport pins the reported P1 half
 // one: a command whose caller context is ALREADY cancelled must be
@@ -1493,6 +1534,86 @@ func TestCancelledCommandNeverReachesTransport(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if got := c.writes.Load(); got != 0 {
 		t.Fatalf("already-cancelled command wrote %d frames to the transport, want 0", got)
+	}
+}
+
+// TestShortWriteIsCompleted pins the reported P2: a transport that
+// accepts only ONE byte per Write must never be mistaken for success —
+// the hub writes the remainder until the whole frame is on the wire.
+func TestShortWriteIsCompleted(t *testing.T) {
+	hub, err := NewHub(Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw := &shortWriter{}
+	payload := buildSendChannelTxtMsg(2, "hello")
+	frame := encodeFrame(payload)
+	if err := hub.writeFrameOn(context.Background(), sw, payload); err != nil {
+		t.Fatalf("writeFrameOn = %v, want the whole frame written", err)
+	}
+	if got := sw.received(); !bytes.Equal(got, frame) {
+		t.Fatalf("transport received %x (%d bytes), want the complete frame %x", got, len(got), frame)
+	}
+}
+
+// TestWriteAllHonorsCancellation pins the cancellation handling of the
+// remainder loop: a cancelled context aborts before any chunk is
+// written.
+func TestWriteAllHonorsCancellation(t *testing.T) {
+	sw := &shortWriter{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := writeAll(ctx, sw, []byte{1, 2, 3}, frameWriteTimeout)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("writeAll = %v, want context.Canceled", err)
+	}
+	if got := len(sw.received()); got != 0 {
+		t.Fatalf("cancelled write reached the transport: %x", sw.received())
+	}
+}
+
+// TestWriteDeadlineAborts pins the deadline handling: a stalled line
+// buffer aborts the frame instead of blocking forever.
+func TestWriteDeadlineAborts(t *testing.T) {
+	// net.Pipe with no reader: Write blocks until the deadline that
+	// writeAll sets through SetWriteDeadline.
+	_, host := net.Pipe()
+	defer host.Close()
+	start := time.Now()
+	err := writeAll(context.Background(), host, []byte{1, 2, 3, 4}, 100*time.Millisecond)
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("writeAll = %v, want the transport write deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("deadline abort took %v, want the bounded write", elapsed)
+	}
+}
+
+// TestCommandWriteErrorRecreatesSession pins the partial-frame rule at
+// the worker level: a failed frame write must never leave the stream
+// usable — the connection is closed, so the next command runs on a
+// freshly dialed session instead of following a partial frame.
+func TestCommandWriteErrorRecreatesSession(t *testing.T) {
+	hub, err := NewHub(Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &failingWriter{}
+	reply := make(chan error, 1)
+	hub.runCommand(context.Background(), c, cmdReq{
+		payload: buildSendChannelTxtMsg(2, "hello"),
+		expect:  expectAck,
+		reply:   reply,
+	})
+	if err := <-reply; err == nil {
+		t.Fatal("a failed frame write reported success")
+	}
+	if !c.closed.Load() {
+		t.Fatal("the connection was not closed after a failed frame write; the next command could follow a partial frame")
 	}
 }
 

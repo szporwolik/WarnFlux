@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -187,6 +188,11 @@ const (
 	// a healthy serial write completes in milliseconds, and a stuck one
 	// must end the session instead of letting the next command race it.
 	abandonedWriteGrace = 500 * time.Millisecond
+
+	// frameWriteTimeout bounds one whole frame write through the
+	// transport's write deadline: a stalled line buffer aborts the frame
+	// instead of blocking forever (the session is recreated afterwards).
+	frameWriteTimeout = 2 * time.Second
 )
 
 // cmdReq is one device command the worker executes.
@@ -647,17 +653,41 @@ func (h *Hub) writeFrame(payload []byte) error {
 	if conn == nil {
 		return errors.New("meshcore: device not connected")
 	}
-	if _, err := conn.Write(encodeFrame(payload)); err != nil {
-		return fmt.Errorf("meshcore: write: %w", err)
-	}
-	return nil
+	return writeAll(context.Background(), conn, encodeFrame(payload), frameWriteTimeout)
 }
 
 // writeFrameOn encodes and writes one outgoing command on the given
 // connection (the command worker owns its session connection).
-func (h *Hub) writeFrameOn(c conn, payload []byte) error {
-	if _, err := c.Write(encodeFrame(payload)); err != nil {
-		return fmt.Errorf("meshcore: write: %w", err)
+func (h *Hub) writeFrameOn(ctx context.Context, c conn, payload []byte) error {
+	return writeAll(ctx, c, encodeFrame(payload), frameWriteTimeout)
+}
+
+// writeAll writes the WHOLE frame, looping over short writes: a
+// transport that accepts only part of the buffer must never be mistaken
+// for success — the remainder is written until the frame is complete.
+// The transport's write deadline bounds every chunk (a stalled line
+// buffer aborts the frame instead of blocking forever), and the
+// caller's cancellation is honored between chunks; either failure
+// leaves a possibly-partial frame, and the caller must recreate the
+// session before the next command.
+func writeAll(ctx context.Context, c conn, frame []byte, timeout time.Duration) error {
+	if err := c.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
+	defer func() { _ = c.SetWriteDeadline(time.Time{}) }()
+	remaining := frame
+	for len(remaining) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := c.Write(remaining)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		remaining = remaining[n:]
 	}
 	return nil
 }
@@ -738,14 +768,25 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 	// hold the worker (and every queued command) hostage. Once STARTED,
 	// a write is never abandoned on the live stream (see the contract
 	// above); the session teardown closes the connection, which unblocks
-	// a stray write.
+	// a stray write. The caller's cancellation also flows into the write
+	// loop, aborting it between chunks.
+	wctx := ctx
+	if req.ctx != nil {
+		wctx = req.ctx
+	}
 	wdone := make(chan writeResult, 1)
-	go func() { wdone <- writeResult{h.writeFrameOn(c, req.payload)} }()
+	go func() { wdone <- writeResult{h.writeFrameOn(wctx, c, req.payload)} }()
 	select {
 	case wr := <-wdone:
 		if wr.err != nil {
 			clear()
 			deliverErr(req.reply, wr.err)
+			// The frame may be incomplete on the stream (deadline abort,
+			// failed chunk, cancellation between chunks): recreate the
+			// session so the next command can never follow a partial
+			// frame.
+			h.logger.Warn("meshcore: command frame write failed; recreating the session", "error", wr.err)
+			_ = c.Close()
 			return
 		}
 	case <-ctx.Done():

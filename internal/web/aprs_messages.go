@@ -237,7 +237,7 @@ func (s *Server) handlePartialMessages(w http.ResponseWriter, r *http.Request) {
 // page flash.
 func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -260,7 +260,7 @@ func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 // backend (the manual "send beacon now" button above the page tabs).
 func (s *Server) handleAPRSBeacon(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

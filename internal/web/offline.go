@@ -167,7 +167,10 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 // down.
 func (s *Server) handleConfigMqtt(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		if err == nil {
+			return
+		}
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
@@ -193,7 +196,10 @@ func (s *Server) handleConfigMqtt(w http.ResponseWriter, r *http.Request) {
 // action lands in the audit log.
 func (s *Server) handleConfigOffline(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		if err == nil {
+			return
+		}
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}

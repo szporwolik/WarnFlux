@@ -616,8 +616,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Session-bound CSRF token protects the state-changing logout route.
-	if !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if !s.requireStateChange(w, r, sess) {
 		return
 	}
 	if cookie, err := r.Cookie(sessionCookie); err == nil {

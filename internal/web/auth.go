@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -216,6 +218,37 @@ func csrfOK(got, want string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// requireStateChange is the common gate for every state-changing POST:
+// the session must exist, the CSRF token must match in constant time,
+// and — when the browser sends an Origin header — it must match the
+// request's own host. The token stops the classical cross-site POST;
+// the Origin check additionally stops same-site sibling origins that
+// could submit a form without ever being able to read the token. On
+// failure the response is written and false is returned.
+func (s *Server) requireStateChange(w http.ResponseWriter, r *http.Request, sess *session) bool {
+	if sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" && !sameOriginHost(origin, r.Host) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// sameOriginHost reports whether the Origin header's host matches the
+// request's own host. Scheme-agnostic: reverse proxies may terminate
+// TLS, so only the host part is compared (a same-site different-origin
+// request carries a DIFFERENT host and is rejected).
+func sameOriginHost(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, host)
 }
 
 // loginLimiter slows brute-force guessing of the admin/directory

@@ -642,7 +642,7 @@ func (s *Server) renderEmcomError(w http.ResponseWriter, r *http.Request, status
 // a network that is only monitoring.
 func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -705,7 +705,7 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 // level 0 retires the hazard document (monitoring continues silently).
 func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
@@ -815,7 +815,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 // deleted and a still-active hazard document is retired.
 func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf) {
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}

@@ -1590,8 +1590,34 @@
     return html;
   }
 
+  // aprsSymbolIcon renders one APRS symbol code as a small sprite icon
+  // cropped from the aprs.fi symbol sheet (the same sprite the compose
+  // map picker uses). table is the symbol table ('/' primary, '\'
+  // alternate); returns null for empty/out-of-range codes.
+  function aprsSymbolIcon(table, code) {
+    if (!code) {
+      return null;
+    }
+    var cell = 20; // px per symbol in the popup icon slot
+    var sheetW = cell * 16; // 16 columns
+    var sheetH = cell * 6; // 6 rows
+    var tableIdx = table === "\\" ? 1 : 0;
+    var idx = code.charCodeAt(0) - 0x21; // '!' is the first glyph
+    if (idx < 0 || idx >= 96) {
+      return null;
+    }
+    var col = idx % 16;
+    var row = Math.floor(idx / 16);
+    return '<span class="aprs-sym-img" style="' +
+      'background-image:url(\'/static/aprs-symbols/aprs-symbols-24-' + tableIdx + '@2x.png\');' +
+      'background-position:-' + (col * cell) + 'px -' + (row * cell) + 'px;' +
+      'background-size:' + sheetW + 'px ' + sheetH + 'px;' +
+      'width:' + cell + 'px;height:' + cell + 'px"></span>';
+  }
+
   // stationPopup renders the unified popup for one station: blue banner
-  // with the antenna glyph and callsign, details in the body.
+  // with the station's own APRS symbol (the waves glyph when the packet
+  // carried none) and callsign, details in the body.
   function stationPopup(s) {
     var body = "";
     if (s.comment) {
@@ -1618,7 +1644,7 @@
     body += stationWeatherBlock(s.callsign);
     return wfPopup({
       color: "#1565c0",
-      icon: BADGE_GLYPHS.waves,
+      icon: aprsSymbolIcon(s.symbol_table || "/", s.symbol) || BADGE_GLYPHS.waves,
       title: esc(s.callsign),
       body: body
     });

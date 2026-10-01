@@ -536,6 +536,35 @@ dispatch:
         - topic: "home/#"
           qos: 1
 
+# Publish mask: which document families WarnFlux publishes to the MQTT
+# broker. Uncheck noisy families to cut broker traffic and CPU. Changes
+# on the admin Config page apply IMMEDIATELY at runtime; this block is
+# the startup state. Default: everything enabled. The topic families:
+#   events            — <prefix>/events hazard-transition journal
+#   active            — <prefix>/active/<source>/<hash> + <prefix>/active-list
+#   info              — <prefix>/info/... (source information, EMCOM states)
+#   status            — <prefix>/status station heartbeat (the last-will
+#                       "offline" message always stays on — it is the
+#                       broker-side crash detector)
+#   aprs_stations     — <prefix>/aprs/stations/<callsign>
+#   aprs_bulletins    — <prefix>/aprs/bulletins/...
+#   aprs_packets      — <prefix>/aprs/packets (the noisiest feed: one
+#                       document per received packet)
+#   aprs_messages     — <prefix>/aprs/messages (rx and tx)
+#   meshcore_stations — <prefix>/meshcore/stations/<key>
+#   meshcore_messages — <prefix>/meshcore/messages
+mqtt_publish:
+  events: true
+  active: true
+  info: true
+  status: true
+  aprs_stations: true
+  aprs_bulletins: true
+  aprs_packets: true
+  aprs_messages: true
+  meshcore_stations: true
+  meshcore_messages: true
+
 # Authenticated admin web UI (server-rendered, embedded assets, no CDN).
 web:
   enabled: true

@@ -63,5 +63,17 @@
       {{end}}
     </div>
   </div>
+
+  <div class="health-group">
+    <h3>{{tr .Lang "config.mqtt.head"}}</h3>
+    <p class="muted">{{tr .Lang "config.mqtt.desc"}}</p>
+    <form method="post" action="/config/mqtt" class="config-mqtt-form">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      {{range .MqttRows}}
+      <label class="config-mqtt-row"><input type="checkbox" name="cat" value="{{.Key}}"{{if .Checked}} checked{{end}}><span>{{tr $.Lang (printf "config.mqtt.%s" .Key)}}</span></label>
+      {{end}}
+      <button type="submit" class="btn-primary">{{tr .Lang "config.mqtt.save"}}</button>
+    </form>
+  </div>
 </section>
 {{end}}

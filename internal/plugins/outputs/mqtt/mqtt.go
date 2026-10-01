@@ -21,6 +21,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
@@ -271,6 +272,12 @@ func (o *Output) StatusInterval() time.Duration { return o.cfg.HeartbeatInterval
 // deliberately explicit (see wireEvent): internal Go structs are never
 // marshaled directly.
 func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
+	// Publish policy: when both categories are masked, the change is
+	// consumed without any broker work (the admin reduced traffic on
+	// purpose). When only one is on, the other is skipped silently.
+	if !mqttpolicy.Allowed(mqttpolicy.CatEvents) && !mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		return nil
+	}
 	if err := o.ensureConnected(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -280,15 +287,17 @@ func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 		return fmt.Errorf("marshal change: %w", err)
 	}
 
-	topic := o.cfg.TopicPrefix + "/events"
-	token := o.client.Publish(topic, o.qos, false, payload)
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-token.Done():
-	}
-	if err := token.Error(); err != nil {
-		return fmt.Errorf("publish to %s: %w", topic, err)
+	if mqttpolicy.Allowed(mqttpolicy.CatEvents) {
+		topic := o.cfg.TopicPrefix + "/events"
+		token := o.client.Publish(topic, o.qos, false, payload)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-token.Done():
+		}
+		if err := token.Error(); err != nil {
+			return fmt.Errorf("publish to %s: %w", topic, err)
+		}
 	}
 
 	// The current event status is the authoritative decision for the
@@ -297,6 +306,9 @@ func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 	// After the per-event topic, the consolidated retained active list is
 	// republished so subscribers can fetch the whole active set from ONE
 	// topic instead of reconstructing it from /active/#.
+	if !mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		return nil
+	}
 	if err := o.updateActiveState(ctx, change.Event); err != nil {
 		return fmt.Errorf("active state: %w", err)
 	}
@@ -516,6 +528,11 @@ func (o *Output) rehydrateOnConnect() {
 // the stale publish — a cancelled hazard can never be resurrected by a
 // stale snapshot, and a failed delete is never forgotten.
 func (o *Output) rehydrateActive() {
+	// Masked: keep the desired state and the pending deletes in memory;
+	// the next reconnect after re-enabling rehydrates everything.
+	if !mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		return
+	}
 	o.rehydrateMu.Lock()
 	defer o.rehydrateMu.Unlock()
 	for pass := 0; pass < maxRehydratePasses; pass++ {
@@ -579,6 +596,9 @@ func (o *Output) rehydrateActive() {
 // with a bounded timeout; failures are logged (a later Handle or reconnect
 // retries), never fatal to rehydration.
 func (o *Output) publishActiveListBestEffort() {
+	if !mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), activeRehydrateTimeout)
 	if err := o.publishActiveList(ctx); err != nil {
 		slog.Warn("active list republish failed", "topic", o.activeListTopic(), "error", err)
@@ -670,6 +690,9 @@ func (o *Output) activeSnapshot() []activeCacheEntry {
 // (<topic_prefix>/status). Retention means the latest known status is
 // available to new subscribers.
 func (o *Output) PublishStatus(ctx context.Context, status plugin.Status) error {
+	if !mqttpolicy.Allowed(mqttpolicy.CatStatus) {
+		return nil // masked by the publish policy
+	}
 	if err := o.ensureConnected(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -709,6 +732,9 @@ func (o *Output) informationTopic(message core.InformationMessage) string {
 // counters. The payload is the message's complete wire document (already
 // normalized by the producer); nothing is wrapped or re-marshaled here.
 func (o *Output) PublishInformation(ctx context.Context, message core.InformationMessage) error {
+	if !mqttpolicy.Allowed(mqttpolicy.CatInfo) {
+		return nil // masked by the publish policy
+	}
 	if err := message.Validate(); err != nil {
 		return fmt.Errorf("invalid information message: %w", err)
 	}
@@ -737,7 +763,7 @@ func (o *Output) PublishInformation(ctx context.Context, message core.Informatio
 func (o *Output) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.client.IsConnectionOpen() {
+	if o.client.IsConnectionOpen() && mqttpolicy.Allowed(mqttpolicy.CatStatus) {
 		topic := o.cfg.TopicPrefix + "/status"
 		payload, err := json.Marshal(offlineWireStatus(time.Now()))
 		if err != nil {

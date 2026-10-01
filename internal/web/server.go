@@ -350,9 +350,11 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /users/{id}/delete", s.requireAdmin(s.handleUserDelete))
 	s.mux.Handle("POST /users/{id}/prefs", s.requireAdmin(s.handleUserPrefs))
 	s.mux.Handle("POST /users/{id}/reset", s.requireAdmin(s.handleUserResetPassword))
-	// Config: the offline-mode switch and the local map tile tree.
+	// Config: the offline-mode switch, the local map tile tree and the
+	// MQTT publish mask.
 	s.mux.Handle("GET /config", s.requireAdmin(s.handleConfigPage))
 	s.mux.Handle("POST /config/offline", s.requireAdmin(s.handleConfigOffline))
+	s.mux.Handle("POST /config/mqtt", s.requireAdmin(s.handleConfigMqtt))
 	// Local map tiles ({z}/{x}/{y}.jpg under web.tiles_dir) for offline
 	// mode. Registered unconditionally; empty tiles_dir yields 404s.
 	s.mux.HandleFunc("GET /tiles/{z}/{x}/{y}", s.handleTile)

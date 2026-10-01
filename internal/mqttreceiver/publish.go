@@ -3,9 +3,12 @@ package mqttreceiver
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 )
 
 // publishTimeout bounds a single broker publish (connect-level recovery is
@@ -18,6 +21,9 @@ const publishTimeout = 10 * time.Second
 // receiving ingestor (usually this same broker, via the subscription)
 // mirrors the document into the active state.
 func (m *Manager) PublishActive(source string, h state.Hazard) error {
+	if !mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		return nil // masked by the publish policy
+	}
 	r, err := m.publishReceiver()
 	if err != nil {
 		return err
@@ -66,6 +72,9 @@ func (m *Manager) PublishActive(source string, h state.Hazard) error {
 // ExpireActive removes a retained active hazard by publishing an empty
 // retained payload on its topic — the protocol's delete operation.
 func (m *Manager) ExpireActive(source, eventKey string) error {
+	if !mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		return nil // masked by the publish policy
+	}
 	r, err := m.publishReceiver()
 	if err != nil {
 		return err
@@ -83,12 +92,44 @@ func activeTopic(prefix, source, eventKey string) string {
 // payload with retained=true is the retained-topic delete. The suffix must
 // be a plain topic path (no wildcards); callers build their own layout —
 // the APRS hub publishes its station/packet/message feeds through it.
+// The suffix also picks the publish-mask category: a masked family is
+// skipped without an error (the policy, not the publisher, decides).
 func (m *Manager) PublishRaw(suffix string, retained bool, payload []byte) error {
+	if cat := rawCategory(suffix); cat != 0 && !mqttpolicy.Allowed(cat) {
+		slog.Debug("mqtt publish masked by policy", "suffix", suffix)
+		return nil
+	}
 	r, err := m.publishReceiver()
 	if err != nil {
 		return err
 	}
 	return r.publish(r.cfg.WF.TopicPrefix+"/"+suffix, 1, retained, payload)
+}
+
+// rawCategory maps a PublishRaw suffix onto its publish-mask category;
+// 0 means "not classified" (always allowed — unknown future feeds stay
+// on until explicitly categorized).
+func rawCategory(suffix string) mqttpolicy.Category {
+	switch {
+	case suffix == "events":
+		// Routed APRS/MeshCore messages republished as canonical events.
+		return mqttpolicy.CatEvents
+	case strings.HasPrefix(suffix, "aprs/stations/"):
+		return mqttpolicy.CatAPRSStations
+	case strings.HasPrefix(suffix, "aprs/bulletins/"):
+		return mqttpolicy.CatAPRSBulletins
+	case suffix == "aprs/packets":
+		return mqttpolicy.CatAPRSPackets
+	case suffix == "aprs/messages":
+		return mqttpolicy.CatAPRSMessages
+	case strings.HasPrefix(suffix, "meshcore/stations/"):
+		return mqttpolicy.CatMeshcoreStations
+	case suffix == "meshcore/messages":
+		return mqttpolicy.CatMeshcoreMessages
+	case strings.HasPrefix(suffix, "info/"):
+		return mqttpolicy.CatInfo
+	}
+	return 0
 }
 
 // wireTimePtr renders an optional time as an RFC 3339 wire string.

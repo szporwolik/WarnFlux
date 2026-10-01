@@ -96,6 +96,17 @@ jobs exist durably and the row is gone, or neither happened.
 - `/metrics` exposes `warnflux_ingest_outbox_backlog` so a degraded
   broker sync is visible to the operator.
 
+**Panel lifecycle (EMCOM / compose):**
+
+- Panel-issued transitions carry an identity and a version: EMCOM
+  transitions are stamped with the instance's publisher UUID and the
+  network state version (`updated_at_ms`) as their change ID, and
+  `SaveEmcomNetwork` records the lifecycle row **in the same transaction
+  as the network state** (compose mirrors its state the same way).
+  Dropping a network back to monitoring (or deleting it) therefore
+  blocks a previously queued activation through the delivery gate — a
+  radio that comes back can never transmit the stale raise.
+
 **Receiver recovery (the /events stream survives outages):**
 
 - Receivers use a **persistent MQTT session** by default

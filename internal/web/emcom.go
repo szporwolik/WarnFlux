@@ -127,6 +127,10 @@ type emcomStore interface {
 	SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) error
 	DeleteEmcomNetwork(ctx context.Context, slug string) error
 	EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, error)
+	// InstanceID returns the persistent publisher UUID stamped onto
+	// EMCOM transitions, so the lifecycle ledger can identify and
+	// version them (a later level drop blocks a queued activation).
+	InstanceID(ctx context.Context) (string, error)
 }
 
 // emcomSlugify builds a topic-safe slug from a network display name
@@ -197,8 +201,12 @@ func emcomHazard(net emcomNetwork, now time.Time) state.Hazard {
 }
 
 // emcomTransition builds the canonical ingress event for one level change
-// (new / updated / expired), mirroring the compose module.
-func emcomTransition(h state.Hazard, typ dispatch.TransitionType) dispatch.Event {
+// (new / updated / expired), mirroring the compose module. The transition
+// carries the instance's publisher identity and the network state version
+// (updated_at_ms) as its ChangeID, so the lifecycle ledger can identify
+// and version it — a level drop back to monitoring then blocks a
+// previously queued activation through the delivery gate.
+func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher string) dispatch.Event {
 	now := time.Now()
 	return dispatch.Event{
 		Kind:       dispatch.EventHazardTransition,
@@ -208,6 +216,8 @@ func emcomTransition(h state.Hazard, typ dispatch.TransitionType) dispatch.Event
 			Type:      typ,
 			Key:       h.EventKey,
 			Source:    emcomSource,
+			ChangeID:  h.UpdatedAt.UnixMilli(),
+			Publisher: publisher,
 			Timestamp: now,
 			Hazard: dispatch.Hazard{
 				EventKey:    h.EventKey,
@@ -228,6 +238,24 @@ func emcomTransition(h state.Hazard, typ dispatch.TransitionType) dispatch.Event
 			},
 		},
 	}
+}
+
+// emcomPublisher returns the persistent instance UUID stamped onto EMCOM
+// transitions (empty for mirror-only installations without a local store:
+// there are no durable delivery jobs to gate there).
+func (s *Server) emcomPublisher() string {
+	st, ok := s.users.(emcomStore)
+	if !ok {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	id, err := st.InstanceID(ctx)
+	if err != nil {
+		s.logger.Warn("emcom: publisher id lookup failed", "error", err)
+		return ""
+	}
+	return id
 }
 
 // emcomNetworks reads the networks from the LOCAL database record
@@ -752,16 +780,19 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	now := time.Now()
+	publisher := s.emcomPublisher()
 	if level >= 1 {
-		h := emcomHazard(net, now)
+		// The hazard carries the SAVED network timestamp: the transition
+		// ChangeID (updated_at_ms) then equals the lifecycle version the
+		// store committed with the network state.
+		h := emcomHazard(net, net.UpdatedAt)
 		typ := dispatch.TransitionNew
 		if wasActive {
 			typ = dispatch.TransitionUpdated
 		}
 		// The transition is durable and routed locally BEFORE any broker
 		// I/O — the panel never depends on the broker round-trip.
-		switch s.ingress.Enqueue(emcomTransition(h, typ)) {
+		switch s.ingress.Enqueue(emcomTransition(h, typ, publisher)) {
 		case dispatch.Rejected:
 			s.logger.Warn("emcom: local dispatch rejected the transition", "slug", slug)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.dispatch"))
@@ -788,7 +819,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	} else if wasActive {
 		// Back to monitoring: retire the hazard document; the expiry
 		// transition never starts the notification machine (like compose).
-		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, now), dispatch.TransitionExpired)) == dispatch.Rejected {
+		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, net.UpdatedAt), dispatch.TransitionExpired, publisher)) == dispatch.Rejected {
 			s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
 		}
 		if hasStore {
@@ -852,7 +883,7 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 	if wasActive {
 		// The expiry transition is durable and routed locally before any
 		// broker I/O.
-		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired)) == dispatch.Rejected {
+		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired, s.emcomPublisher())) == dispatch.Rejected {
 			s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
 		}
 	}

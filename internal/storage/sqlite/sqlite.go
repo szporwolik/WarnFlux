@@ -1148,10 +1148,34 @@ func (s *Store) LifecycleBlocks(ctx context.Context, publisher, eventKey string,
 	return status != string(core.StatusActive), nil
 }
 
+// InstanceID returns the persistent publisher UUID of this WarnFlux
+// database (created on first use). Panel-issued messages stamp it onto
+// their transitions so the lifecycle ledger can identify and version
+// them.
+func (s *Store) InstanceID(ctx context.Context) (string, error) {
+	return s.instanceID(ctx)
+}
+
 // SaveEmcomNetwork upserts one EMCOM readiness network (the panel's
 // durable local record; the retained MQTT document is only a sync copy).
+// The same state joins the common lifecycle ledger in the SAME
+// transaction (instance publisher, event key emcom:<slug>, version =
+// updated_at_ms): dropping a network back to monitoring records the
+// cancellation atomically with the network state, so the delivery gate
+// blocks a previously queued activation once the radio returns.
 func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) error {
-	if _, err := s.db.ExecContext(ctx, `
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return fmt.Errorf("publisher id for emcom %q: %w", net.Slug, err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin emcom save for %q: %w", net.Slug, err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO emcom_networks (slug, name, level, updated_by, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(slug) DO UPDATE SET
@@ -1159,6 +1183,28 @@ func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) 
 			updated_by = excluded.updated_by, updated_at_ms = excluded.updated_at_ms`,
 		net.Slug, net.Name, net.Level, net.UpdatedBy, net.UpdatedAt.UnixMilli()); err != nil {
 		return fmt.Errorf("save emcom network %q: %w", net.Slug, err)
+	}
+
+	// The lifecycle state of the EMCOM hazard (active above monitoring,
+	// expired below) commits with the network record.
+	status := string(core.StatusActive)
+	if net.Level < 1 {
+		status = string(core.StatusExpired)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(publisher, event_key) DO UPDATE SET
+			version = excluded.version,
+			status = excluded.status,
+			updated_at_ms = excluded.updated_at_ms
+		WHERE excluded.version >= message_lifecycle.version`,
+		publisher, "emcom:"+net.Slug, net.UpdatedAt.UnixMilli(), status, net.UpdatedAt.UnixMilli()); err != nil {
+		return fmt.Errorf("record emcom lifecycle %q: %w", net.Slug, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit emcom save for %q: %w", net.Slug, err)
 	}
 	return nil
 }

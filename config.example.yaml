@@ -46,9 +46,11 @@ app:
   # Archive tab). Active events are never cleaned.
   event_retention: 4320h
 
-  # How long action-fire ledger rows are kept before pruning. They bound
-  # the dedup window: a replayed event can fire again only after its row
-  # expires. Negative = never prune (ledger grows forever).
+  # How long action-fire ledger rows are kept before pruning. Only
+  # COMPLETED delivery history ages out: pending jobs (saved, running,
+  # scheduled retries) survive retention — they bound the dedup window
+  # and a replayed event can fire again only after its row expires.
+  # Negative = never prune (ledger grows forever).
   notification_retention: 720h
 
 storage:
@@ -491,10 +493,12 @@ dispatch:
   # restart) instead of blocking the receiver callback.
   inbox_write_timeout: 2s
 
-  # Unevaluated inbox rows older than this are pruned by maintenance
-  # (stale alerts the staleness gates would suppress anyway). Below
-  # storage.min_free_mb the cutoff shortens to 5 minutes. 0 disables
-  # pruning.
+  # Pending-message validity policy for the durable inbox: rows older
+  # than this are removed ONLY when their hazard's authoritative expiry
+  # has already passed (the staleness gates would suppress them anyway);
+  # every removal is an explicit audited outcome. Messages without an
+  # expiry are never aged out. Below storage.min_free_mb the cutoff
+  # shortens to 5 minutes. 0 disables pruning.
   inbox_retention: 24h
 
   mqtt_receivers:

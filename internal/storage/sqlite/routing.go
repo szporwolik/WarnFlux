@@ -402,10 +402,20 @@ func (s *Store) PendingDeliveries(ctx context.Context, actionID string) (int, er
 	return n, nil
 }
 
-// PruneActionFires deletes ledger rows older than the cutoff and returns
-// how many rows were removed.
+// PruneActionFires deletes COMPLETED ledger rows older than the cutoff
+// and returns how many rows were removed. Pending work never ages out:
+// 'saved' (never executed), 'running' (claimed) and 'failed' rows that
+// still carry a scheduled retry are unsent notifications and must
+// survive retention — a long offline stretch, a disabled action or a
+// paused system must not lose them. Removing a pending job would need a
+// separate validity policy with an explicit outcome and an audit trail.
 func (s *Store) PruneActionFires(cutoff time.Time) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM action_fires WHERE fired_at_ms < ?`, cutoff.UnixMilli())
+	res, err := s.db.Exec(`
+		DELETE FROM action_fires
+		WHERE fired_at_ms < ?
+		  AND (status IN ('accepted','confirmed','expired','succeeded')
+		       OR (status = 'failed' AND next_attempt_at_ms = 0))`,
+		cutoff.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("prune action fires: %w", err)
 	}

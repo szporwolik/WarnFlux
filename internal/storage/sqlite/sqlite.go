@@ -457,7 +457,7 @@ CREATE INDEX idx_aprs_messages_created ON aprs_messages(created_at_ms);
 `,
 	},
 	{
-		// v19: per-user MeshCore public keys: one user may own several
+		// v19: per-user Meshtastic public keys: one user may own several
 		// mesh nodes; the keys feed the room-server ACL (setperm).
 		SQL: `
 CREATE TABLE user_meshkeys (
@@ -470,8 +470,8 @@ CREATE UNIQUE INDEX idx_user_meshkeys_unique ON user_meshkeys(user_id, pubkey CO
 `,
 	},
 	{
-		// v20: durable MeshCore message history (received and sent),
-		// surfacing on the admin /meshcore page; survives restarts.
+		// v20: durable Meshtastic message history (received and sent),
+		// surfacing on the admin /meshtastic page; survives restarts.
 		SQL: `
 CREATE TABLE meshcore_messages (
 	id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -648,6 +648,18 @@ CREATE TABLE lifecycle_versions (
 );
 INSERT INTO lifecycle_versions (id, next)
 VALUES (1, 1 + COALESCE((SELECT MAX(version) FROM message_lifecycle), 0));
+`,
+	},
+	{
+		// v33: the MeshCore integration is retired in favour of Meshtastic:
+		// the durable message history table and the per-user mesh key table
+		// follow the rename, so existing databases keep their rows (fresh
+		// databases create the legacy names at v19/v20 and land here too).
+		// SQLite renames the tables' indexes along with the tables.
+		SQL: `
+ALTER TABLE meshcore_messages RENAME TO meshtastic_messages;
+ALTER TABLE user_meshkeys RENAME TO user_meshtastic_ids;
+ALTER TABLE user_meshtastic_ids RENAME COLUMN pubkey TO node_id;
 `,
 	},
 }

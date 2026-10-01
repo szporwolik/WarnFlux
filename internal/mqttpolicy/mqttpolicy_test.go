@@ -69,7 +69,7 @@ func TestSetOnChangeHook(t *testing.T) {
 }
 
 func TestParseEnabledKeysRoundTrip(t *testing.T) {
-	names := []string{"events", "active", "aprs_bulletins", "meshcore_messages"}
+	names := []string{"events", "active", "aprs_bulletins", "meshtastic_messages"}
 	mask := Parse(names)
 	if got := EnabledKeys(mask); !reflect.DeepEqual(got, names) {
 		t.Errorf("round trip = %v, want %v", got, names)

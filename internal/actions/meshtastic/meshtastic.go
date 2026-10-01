@@ -1,7 +1,7 @@
-// Package meshcore implements the built-in meshcore outbound action: it
-// sends SOSNA alerts as MeshCore channel text messages through the shared
+// Package meshtastic implements the built-in meshtastic outbound action: it
+// sends SOSNA alerts as Meshtastic channel text messages through the shared
 // mesh hub (the Companion serial link).
-package meshcore
+package meshtastic
 
 import (
 	"context"
@@ -14,15 +14,15 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
-	mesh "github.com/szporwolik/WarnFlux/internal/meshcore"
+	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/sanity"
 )
 
 // Type is the action type name used in the YAML configuration.
-const Type = "meshcore"
+const Type = "meshtastic"
 
 // maxMeshMessageChars bounds one channel message (133 chars per the
-// MeshCore spec).
+// Meshtastic spec).
 const maxMeshMessageChars = 133
 
 // Config is the action-specific configuration.
@@ -34,7 +34,7 @@ type Config struct {
 	TxInterval time.Duration `yaml:"tx_interval"`
 }
 
-var errHubDisabled = errors.New("meshcore: hub is not configured")
+var errHubDisabled = errors.New("meshtastic: hub is not configured")
 
 // Action sends channel text messages through the hub.
 type Action struct {
@@ -90,7 +90,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		}
 	}
 	if err := a.hub.SendChannelMessage(ctx, text, "system"); err != nil {
-		return fmt.Errorf("meshcore: %w", err)
+		return fmt.Errorf("meshtastic: %w", err)
 	}
 	a.last = time.Now()
 	return nil

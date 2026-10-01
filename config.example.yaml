@@ -556,8 +556,8 @@ dispatch:
 #   aprs_packets      — <prefix>/aprs/packets (the noisiest feed: one
 #                       document per received packet)
 #   aprs_messages     — <prefix>/aprs/messages (rx and tx)
-#   meshcore_stations — <prefix>/meshcore/stations/<key>
-#   meshcore_messages — <prefix>/meshcore/messages
+#   meshtastic_stations — <prefix>/meshtastic/stations/<node-id>
+#   meshtastic_messages — <prefix>/meshtastic/messages
 mqtt_publish:
   events: true
   active: true
@@ -567,8 +567,8 @@ mqtt_publish:
   aprs_bulletins: true
   aprs_packets: true
   aprs_messages: true
-  meshcore_stations: true
-  meshcore_messages: true
+  meshtastic_stations: true
+  meshtastic_messages: true
 
 # Authenticated admin web UI (server-rendered, embedded assets, no CDN).
 web:
@@ -628,7 +628,7 @@ web:
   # metar, adsb, aprs-inet) and holds internet-backed actions (smtp,
   # http_webhook, discord), and the maps use the local tile tree below.
   # Local functions keep working off-grid: SQLite, the local MQTT broker,
-  # the APRS radio, MeshCore and the radio routing.
+  # the APRS radio, Meshtastic and the radio routing.
   offline_mode: false
 
   # Local map tiles for offline mode: a directory with a pre-generated
@@ -933,26 +933,16 @@ aprs:
   # the radio or via APRS-IS alike.
   route_messages: false
 
-# MeshCore Companion serial link (Heltec V4 over USB). When enabled,
+# Meshtastic Companion serial link (Heltec V4 over USB). When enabled,
 # WarnFlux speaks the Companion protocol: adverts populate the admin
-# /meshcore "heard nodes" tab, channel/contact messages land in the
-# durable history, and the "meshcore" action pushes SOSNA alerts onto
+# /meshtastic "heard nodes" tab, channel/contact messages land in the
+# durable history, and the "meshtastic" action pushes SOSNA alerts onto
 # the mesh.
-# meshcore:
+# meshtastic:
 #   enabled: true
-#   device: /dev/ttyACM0
+#   device: /dev/ttyACM0   # the node plugs in over USB serial
 #   baud: 115200
-#   channel_idx: 2        # group channel used for SOSNA messages;
-#                         # 0 is Public — transmissions are refused
-#   channel_name: "#sp9moa"  # pinned slot name: SET_CHANNEL is issued
-#                         # at connect time when the device differs
-#   channel_names: {0: Public}  # friendly names shown in the message
-#                         # history instead of "ch0" (the TX slot above
-#                         # falls back to channel_name automatically)
-#   auto_add_contacts: true  # device auto-adds unknown heard nodes
-#                         # (chat/repeater/room/sensor, ≤8 hops) so their
-#                         # adverts reach WarnFlux
 #   route_messages: false  # direct messages from directory-registered
-#                         # operators become canonical /events documents
+#                         # node IDs become canonical /events documents
 #                         # (alarm pipeline), like APRS messages
 #   node_ttl: 30m

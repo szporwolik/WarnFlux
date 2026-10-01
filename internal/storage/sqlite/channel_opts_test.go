@@ -237,9 +237,9 @@ func TestUserChannelOptOuts(t *testing.T) {
 	}
 }
 
-// TestMeshKeyOwners pins the pubkey -> username mapping used to label
-// heard MeshCore nodes on the admin page.
-func TestMeshKeyOwners(t *testing.T) {
+// TestMeshtasticOwners pins the pubkey -> username mapping used to label
+// heard Meshtastic nodes on the admin page.
+func TestMeshtasticOwners(t *testing.T) {
 	store, _, err := Open(filepath.Join(t.TempDir(), "owners.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -258,14 +258,14 @@ func TestMeshKeyOwners(t *testing.T) {
 	}
 	keyA := "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"
 	keyB := "1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd"
-	if err := store.SetUserMeshKeys(bea.ID, []string{keyA}); err != nil {
+	if err := store.SetUserMeshtasticIDs(bea.ID, []string{keyA}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetUserMeshKeys(kow.ID, []string{keyB}); err != nil {
+	if err := store.SetUserMeshtasticIDs(kow.ID, []string{keyB}); err != nil {
 		t.Fatal(err)
 	}
 
-	owners, err := store.MeshKeyOwners()
+	owners, err := store.MeshtasticOwners()
 	if err != nil {
 		t.Fatal(err)
 	}

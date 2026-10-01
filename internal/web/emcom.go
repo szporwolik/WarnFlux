@@ -554,7 +554,7 @@ type emcomView struct {
 	NavLogs          bool
 	NavAudit         bool
 	NavMessages      bool
-	NavMeshcore      bool
+	NavMeshtastic    bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool

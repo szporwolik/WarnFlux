@@ -112,7 +112,7 @@ func (m *Manager) PublishRaw(suffix string, retained bool, payload []byte) error
 func rawCategory(suffix string) mqttpolicy.Category {
 	switch {
 	case suffix == "events":
-		// Routed APRS/MeshCore messages republished as canonical events.
+		// Routed APRS/Meshtastic messages republished as canonical events.
 		return mqttpolicy.CatEvents
 	case strings.HasPrefix(suffix, "aprs/stations/"):
 		return mqttpolicy.CatAPRSStations
@@ -122,10 +122,10 @@ func rawCategory(suffix string) mqttpolicy.Category {
 		return mqttpolicy.CatAPRSPackets
 	case suffix == "aprs/messages":
 		return mqttpolicy.CatAPRSMessages
-	case strings.HasPrefix(suffix, "meshcore/stations/"):
-		return mqttpolicy.CatMeshcoreStations
-	case suffix == "meshcore/messages":
-		return mqttpolicy.CatMeshcoreMessages
+	case strings.HasPrefix(suffix, "meshtastic/stations/"):
+		return mqttpolicy.CatMeshtasticStations
+	case suffix == "meshtastic/messages":
+		return mqttpolicy.CatMeshtasticMessages
 	case strings.HasPrefix(suffix, "info/"):
 		return mqttpolicy.CatInfo
 	}

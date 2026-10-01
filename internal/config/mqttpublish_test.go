@@ -28,7 +28,7 @@ app:
 mqtt_publish:
   events: true
   status: false
-  meshcore_messages: false
+  meshtastic_messages: false
 `))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -40,8 +40,8 @@ mqtt_publish:
 	if mask&uint32(mqttpolicy.CatStatus) != 0 {
 		t.Error("status must be disabled")
 	}
-	if mask&uint32(mqttpolicy.CatMeshcoreMessages) != 0 {
-		t.Error("meshcore_messages must be disabled")
+	if mask&uint32(mqttpolicy.CatMeshtasticMessages) != 0 {
+		t.Error("meshtastic_messages must be disabled")
 	}
 	if mask&uint32(mqttpolicy.CatActive) == 0 {
 		t.Error("omitted active must default to enabled")

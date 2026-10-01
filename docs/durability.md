@@ -27,9 +27,9 @@ Concretely:
   paths. The broker loopback is only the asynchronous sync copy; the
   identical dedup identity collapses the pair.
 - **Transmit** — action workers claim delivery jobs from SQLite and talk
-  to the radio (MeshCore serial, APRS KISS) directly. WAN media (SMTP,
+  to the radio (Meshtastic serial, APRS KISS) directly. WAN media (SMTP,
   Discord, APRS-IS) are additional actions whose failure is isolated per
-  action. A MeshCore command whose caller was cancelled is rejected
+  action. A Meshtastic command whose caller was cancelled is rejected
   before any I/O (nothing reaches the serial wire), and a write that is
   in flight when the cancellation lands is never abandoned mid-frame:
   it settles within a bounded grace or the session is recreated, so the
@@ -203,7 +203,7 @@ instead of hanging MQTT ingestion.
 delivery):**
 
 Panel communications (compose), EMCOM readiness levels and routed
-APRS/MeshCore messages are **saved to the local database first**
+APRS/Meshtastic messages are **saved to the local database first**
 (`compose_hazards`, `emcom_networks` or the dispatch inbox row) and
 **dispatched directly into the local ingress** — the radio TX and local
 notifications work even when the broker is unreachable. The MQTT
@@ -243,7 +243,7 @@ of truth:
 A power loss between "job queued" and "transmitted" therefore retries on
 restart, and an execution that burns all attempts is retried by the next
 replay of the transition. Channel floods without delivery
-acknowledgements (e.g. MeshCore group messages) stop at `accepted` — the
+acknowledgements (e.g. Meshtastic group messages) stop at `accepted` — the
 device took the message, the protocol has no stronger signal.
 
 **Staleness policy (recovered alerts must not hit the radio):**

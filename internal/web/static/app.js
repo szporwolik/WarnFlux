@@ -52,6 +52,7 @@
       "map.to": "To:",
       "map.via.radio": "Via: radio (APRS)",
       "map.via.internet": "Via: internet (APRS-IS)",
+      "map.moving": "moving",
       "warnings.source": "Source:",
       "popup.event": "Event:",
       "popup.status": "Status:",
@@ -118,6 +119,7 @@
       "map.to": "Do:",
       "map.via.radio": "Przez: radio (APRS)",
       "map.via.internet": "Przez: internet (APRS-IS)",
+      "map.moving": "w ruchu",
       "warnings.source": "Źródło:",
       "popup.event": "Zdarzenie:",
       "popup.status": "Status:",
@@ -1093,9 +1095,39 @@
     });
   }
 
+  // APRS station pin colors: STATIC stations (houses, digis, fixed
+  // installations) stay blue; MOVING operators (cars, horses, people
+  // with radios) get the amber color so the two kinds read apart at a
+  // glance.
+  var STATION_COLORS = { static: "#1565c0", moving: "#e65100" };
+
+  // stationIsMoving reports whether the station's retained state shows
+  // movement: a reported speed or course, or a track tail with distinct
+  // positions.
+  function stationIsMoving(s) {
+    if (s.speed_kmh > 0 || s.course_deg) {
+      return true;
+    }
+    var t = s.track || [];
+    if (t.length > 1) {
+      var a = t[0];
+      var b = t[t.length - 1];
+      if (a && b && a.latitude && b.latitude &&
+        (Math.abs(a.latitude - b.latitude) > 0.00005 ||
+          Math.abs(a.longitude - b.longitude) > 0.00005)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function stationColor(s) {
+    return stationIsMoving(s) ? STATION_COLORS.moving : STATION_COLORS.static;
+  }
+
   function stationBadge(s) {
     return wfBadge({
-      color: "#1565c0",
+      color: stationColor(s),
       glyph: BADGE_GLYPHS.waves,
       label: s.callsign
     });
@@ -1633,6 +1665,9 @@
     if (s.distance_km) {
       lines.push(Number(s.distance_km).toFixed(1) + " km");
     }
+    if (stationIsMoving(s)) {
+      lines.push(tr("map.moving"));
+    }
     // How the frame reached us: over the radio via an i-gate, or
     // injected directly from the internet.
     if (s.origin === "rf") {
@@ -1643,7 +1678,7 @@
     body += lines.join("<br>");
     body += stationWeatherBlock(s.callsign);
     return wfPopup({
-      color: "#1565c0",
+      color: stationColor(s),
       icon: aprsSymbolIcon(s.symbol_table || "/", s.symbol) || BADGE_GLYPHS.waves,
       title: esc(s.callsign),
       body: body

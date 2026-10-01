@@ -68,6 +68,7 @@ type accountView struct {
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
+	NavConfig        bool
 }
 
 // landingForRole maps an authenticated session's role to its landing page:

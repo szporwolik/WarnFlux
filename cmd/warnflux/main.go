@@ -774,6 +774,20 @@ func run(configPath string, checkConfig bool) error {
 	defer stop()
 
 	// Startup order: action workers → receivers → Router core → HTTP.
+	// The offline-mode switch rides on top: the startup state comes from
+	// web.offline_mode and the admin Config page toggles it at runtime.
+	// Applying it BEFORE Start means internet sources never even start
+	// while the station is offline.
+	if cfg.Web.OfflineMode {
+		manager.SetOffline(true)
+		actionsMgr.SetOffline(true)
+	}
+	if webSrv != nil {
+		webSrv.SetOfflineHandler(func(on bool) {
+			manager.SetOffline(on)
+			actionsMgr.SetOffline(on)
+		})
+	}
 	actionsMgr.Start(ctx)
 	receivers.StartAll()
 	// Restore heard MeshCore nodes from the retained broker documents, so

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
@@ -35,6 +36,16 @@ type sourceSupervisor struct {
 	backoffMax    time.Duration
 	backoffReset  time.Duration
 	waitBackoffFn func(ctx context.Context, delay time.Duration) bool
+
+	// Offline-mode suspension: suspend cancels the current run context
+	// and resume wakes the loop with a fresh child context. ctlMu guards
+	// root/ctl/ctlCancel/suspended/resumeCh.
+	ctlMu     sync.Mutex
+	root      context.Context
+	ctl       context.Context
+	ctlCancel context.CancelFunc
+	suspended bool
+	resumeCh  chan struct{}
 }
 
 func newSourceSupervisor(cfg config.Source, p SourcePlugin, emit Emitter, logger *slog.Logger, tracker *statusTracker) *sourceSupervisor {
@@ -54,6 +65,60 @@ func newSourceSupervisor(cfg config.Source, p SourcePlugin, emit Emitter, logger
 	}
 }
 
+// Suspend pauses the source (offline mode): the current run is cancelled,
+// no restart is scheduled and the state is marked suspended. It is a no-op
+// when already suspended.
+func (s *sourceSupervisor) Suspend() {
+	s.ctlMu.Lock()
+	defer s.ctlMu.Unlock()
+	if s.suspended {
+		return
+	}
+	s.suspended = true
+	s.resumeCh = make(chan struct{})
+	if s.ctlCancel != nil {
+		s.ctlCancel()
+	}
+	s.tracker.setState(StateSuspended)
+}
+
+// Resume wakes a suspended source: the loop re-derives its run context and
+// starts the plugin again. It is a no-op when not suspended.
+func (s *sourceSupervisor) Resume() {
+	s.ctlMu.Lock()
+	defer s.ctlMu.Unlock()
+	if !s.suspended {
+		return
+	}
+	s.suspended = false
+	close(s.resumeCh)
+}
+
+// acquire returns the current run context for the next attempt, blocking
+// while the source is suspended. ok=false means the root context is done
+// (application shutdown) — the loop must then exit.
+func (s *sourceSupervisor) acquire() (ctl context.Context, cancel context.CancelFunc, ok bool) {
+	for {
+		s.ctlMu.Lock()
+		if s.suspended {
+			ch, root := s.resumeCh, s.root
+			s.ctlMu.Unlock()
+			select {
+			case <-ch:
+				continue
+			case <-root.Done():
+				return nil, nil, false
+			}
+		}
+		if s.ctl == nil || s.ctl.Err() != nil {
+			s.ctl, s.ctlCancel = context.WithCancel(s.root)
+		}
+		ctl, cancel = s.ctl, s.ctlCancel
+		s.ctlMu.Unlock()
+		return ctl, cancel, true
+	}
+}
+
 // run executes the plugin until ctx is cancelled. The plugin is always
 // invoked in its own goroutine under recover(), so a panic becomes a logged
 // failure of this plugin only. There is no readiness contract: once the
@@ -64,15 +129,22 @@ func newSourceSupervisor(cfg config.Source, p SourcePlugin, emit Emitter, logger
 func (s *sourceSupervisor) run(ctx context.Context) {
 	defer close(s.done)
 
+	s.ctlMu.Lock()
+	s.root = ctx
+	s.ctlMu.Unlock()
 	s.tracker.markStarted(time.Now())
 	attempt := 0
 
 	for {
+		ctl, cancel, ok := s.acquire()
+		if !ok {
+			s.tracker.setState(StateStopped)
+			return
+		}
 		s.tracker.setState(StateStarting)
-		runCtx, cancel := context.WithCancel(ctx)
 		runDone := make(chan runResult, 1)
 		go func() {
-			runDone <- invokeSource(s.plugin, runCtx, s.emit)
+			runDone <- invokeSource(s.plugin, ctl, s.emit)
 		}()
 
 		// No readiness contract exists: the plugin is running.
@@ -85,6 +157,11 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 			case <-ctx.Done():
 				s.shutdown(cancel, runDone)
 				return
+			case <-ctl.Done():
+				// Suspended while running (offline mode): drain and wait
+				// for the resume at the top of the loop.
+				s.drainRun(cancel, runDone)
+				continue
 			case result := <-runDone:
 				cancel()
 				s.recordExit(result)
@@ -95,7 +172,7 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 
 		// Restart enabled: wait for exit, reset backoff after a healthy
 		// stretch, and restart with bounded backoff afterwards.
-		_, shutdown := s.waitForExit(ctx, cancel, runDone, &attempt)
+		exited, shutdown := s.waitForExit(ctx, ctl, cancel, runDone, &attempt)
 		if shutdown {
 			return
 		}
@@ -103,6 +180,11 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			s.tracker.setState(StateStopped)
 			return
+		}
+		if !exited {
+			// Suspended while running: back to acquire(), which blocks
+			// until the resume.
+			continue
 		}
 		next, ok := s.restart(ctx, attempt)
 		if !ok {
@@ -114,9 +196,19 @@ func (s *sourceSupervisor) run(ctx context.Context) {
 	}
 }
 
-// waitForExit waits until the running plugin exits or the application shuts
-// down. A plugin that runs healthily for backoffReset resets the backoff.
-func (s *sourceSupervisor) waitForExit(ctx context.Context, cancel context.CancelFunc, runDone <-chan runResult, attempt *int) (bool, bool) {
+// drainRun waits (bounded) for a cancelled run to finish without touching
+// the tracker state — the suspend/resume transition owns the state.
+func (s *sourceSupervisor) drainRun(cancel context.CancelFunc, runDone <-chan runResult) {
+	if !waitChannel(runDone, s.runtime.ShutdownTimeout) {
+		s.logger.Warn("source plugin failed to stop cleanly during suspension",
+			"plugin_id", s.id, "plugin_type", s.kind, "timeout", s.runtime.ShutdownTimeout)
+	}
+}
+
+// waitForExit waits until the running plugin exits, the application shuts
+// down or the run is suspended (ctl cancelled). exited reports a plugin
+// exit; shutdown reports the root context going down.
+func (s *sourceSupervisor) waitForExit(ctx context.Context, ctl context.Context, cancel context.CancelFunc, runDone <-chan runResult, attempt *int) (exited, shutdown bool) {
 	reset := time.NewTimer(s.backoffReset)
 	defer reset.Stop()
 	for {
@@ -124,6 +216,9 @@ func (s *sourceSupervisor) waitForExit(ctx context.Context, cancel context.Cance
 		case <-ctx.Done():
 			s.shutdown(cancel, runDone)
 			return false, true
+		case <-ctl.Done():
+			s.drainRun(cancel, runDone)
+			return false, false
 		case <-reset.C:
 			// Healthy for a full reset period: start fresh next time.
 			*attempt = 0

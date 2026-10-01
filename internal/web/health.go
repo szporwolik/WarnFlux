@@ -85,6 +85,7 @@ type healthView struct {
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
+	NavConfig        bool
 	NavCompose       bool
 	NavEmcom         bool
 	NavAccount       bool
@@ -138,7 +139,10 @@ func (s *Server) buildHealthView(lang string) healthView {
 			if st.LastSummary != "" {
 				row.Detail = st.LastSummary + " · " + row.Detail
 			}
-		case plugin.StateDegraded, plugin.StateSuspended, plugin.StateStarting, plugin.StateStopping:
+		case plugin.StateSuspended:
+			// Suspended is deliberate (offline mode) — amber, not red.
+			row.BadgeClass, row.BadgeText = "warn", strings.ToUpper(string(st.State))
+		case plugin.StateDegraded, plugin.StateStarting, plugin.StateStopping:
 			row.BadgeClass, row.BadgeText = "bad", strings.ToUpper(string(st.State))
 			bad = true
 			if st.LastError != "" {

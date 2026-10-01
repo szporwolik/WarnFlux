@@ -1,0 +1,67 @@
+{{define "configpage"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{tr .Lang "config.title"}} · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    {{template "config" .}}
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
+</body>
+</html>
+{{end}}
+
+{{define "config"}}<section class="card health-card" id="config-section">
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-gear"></use></svg>{{tr .Lang "config.title"}}</h2>
+  <p class="muted log-hint">{{tr .Lang "config.intro"}}</p>
+  {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
+
+  <div class="health-group">
+    <h3>{{tr .Lang "config.offline.head"}}</h3>
+    <p class="muted">{{tr .Lang "config.offline.desc"}}</p>
+    <div class="health-row">
+      <span class="badge {{if .Offline}}bad{{else}}ok{{end}}">{{if .Offline}}{{tr .Lang "config.offline.state.on"}}{{else}}{{tr .Lang "config.offline.state.off"}}{{end}}</span>
+    </div>
+    <form method="post" action="/config/offline" class="emcom-add">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="offline" value="{{if .Offline}}off{{else}}on{{end}}">
+      {{if .Offline}}
+      <button type="submit" class="btn-primary">{{tr .Lang "config.offline.disable"}}</button>
+      {{else}}
+      <button type="submit" class="btn-danger">{{tr .Lang "config.offline.enable"}}</button>
+      {{end}}
+    </form>
+  </div>
+
+  <div class="health-group">
+    <h3>{{tr .Lang "config.sources.head"}}</h3>
+    <p class="muted">{{tr .Lang "config.sources.desc"}}</p>
+    {{range .InternetSources}}<div class="health-row">
+      <span class="health-name"><strong>{{.ID}}</strong></span>
+      <span class="badge muted">{{.Type}}</span>
+    </div>{{else}}<p class="empty">{{tr $.Lang "config.sources.none"}}</p>{{end}}
+  </div>
+
+  <div class="health-group">
+    <h3>{{tr .Lang "config.tiles.head"}}</h3>
+    <p class="muted">{{tr .Lang "config.tiles.desc"}}</p>
+    <div class="health-row">
+      {{if .TilesDir}}
+      <span class="health-name"><code>{{.TilesDir}}</code></span>
+      <span class="badge {{if .TilesOK}}ok{{else}}warn{{end}}">{{if .TilesOK}}{{tr .Lang "config.tiles.ok"}}{{else}}{{tr .Lang "config.tiles.missing"}}{{end}}</span>
+      {{else}}
+      <span class="badge muted">{{tr .Lang "config.tiles.none"}}</span>
+      {{end}}
+    </div>
+  </div>
+</section>
+{{end}}

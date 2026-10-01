@@ -163,6 +163,9 @@ type composeView struct {
 	AprsLat float64
 	AprsLon float64
 
+	// OfflineMode switches the picker map to the local tile tree.
+	OfflineMode bool
+
 	NavDashboard     bool
 	NavUsers         bool
 	NavGroups        bool
@@ -176,6 +179,7 @@ type composeView struct {
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
+	NavConfig        bool
 }
 
 // composeFlashKey maps the post-action redirect marker to the banner
@@ -782,6 +786,7 @@ func (s *Server) buildComposeView(lang string, form composeForm) composeView {
 		Certainties: optionList(lang, testCertaintyValues),
 		Statuses:    composeStatusesFor(lang),
 		NavCompose:  true,
+		OfflineMode: s.OfflineMode(),
 	}
 	// The map picker centers on the operational area (the territory we
 	// serve); 0 = no picker (APRS hub disabled).

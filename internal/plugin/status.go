@@ -47,6 +47,9 @@ type PluginStatus struct {
 	Filtered            int64
 	ConsecutiveFailures int
 	RestartCount        int
+	// Internet marks a source classified as internet-backed: the
+	// offline-mode switch suspends it.
+	Internet bool
 }
 
 // statusTracker guards the mutable status of one plugin instance.
@@ -91,6 +94,13 @@ func (t *statusTracker) countPollError() {
 func (t *statusTracker) countFiltered(n int) {
 	t.mu.Lock()
 	t.s.Filtered += int64(n)
+	t.mu.Unlock()
+}
+
+// setInternet marks the instance as internet-backed (offline mode).
+func (t *statusTracker) setInternet(internet bool) {
+	t.mu.Lock()
+	t.s.Internet = internet
 	t.mu.Unlock()
 }
 

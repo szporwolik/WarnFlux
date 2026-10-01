@@ -402,7 +402,19 @@ type Web struct {
 	// empty disables links. No scheme required — https is assumed when
 	// absent. No path.
 	Domain string
-	Auth   WebAuth
+	// OfflineMode is the startup state of the offline switch (an admin
+	// toggles the same switch at runtime on the admin Config page). When
+	// on, every internet-backed source and action is suspended and the
+	// maps use the local tile tree — the station works off-grid on its
+	// own resources (SQLite, local MQTT, radio).
+	OfflineMode bool
+	// TilesDir is the directory of a pre-generated Leaflet raster tile
+	// tree ({z}/{x}/{y}.jpg) served under /tiles/ and used by the maps
+	// in offline mode. Empty disables local tiles (the maps then stay on
+	// the operator-configured tile directory only when online). Intended
+	// for a Docker volume so each operator drops in its own tiles.
+	TilesDir string
+	Auth     WebAuth
 }
 
 // WebAuth holds the single admin account for the web UI. Password and
@@ -546,17 +558,19 @@ type fileReceiverSubscription struct {
 }
 
 type fileWeb struct {
-	Enabled    bool         `yaml:"enabled"`
-	Listen     string       `yaml:"listen"`
-	Title      string       `yaml:"title"`
-	Name       string       `yaml:"name"`
-	Header1    string       `yaml:"header1"`
-	Header2    string       `yaml:"header2"`
-	Tagline    string       `yaml:"tagline"`
-	About      string       `yaml:"about"`
-	Disclaimer string       `yaml:"disclaimer"`
-	Domain     string       `yaml:"domain"`
-	Auth       *fileWebAuth `yaml:"auth"`
+	Enabled     bool         `yaml:"enabled"`
+	Listen      string       `yaml:"listen"`
+	Title       string       `yaml:"title"`
+	Name        string       `yaml:"name"`
+	Header1     string       `yaml:"header1"`
+	Header2     string       `yaml:"header2"`
+	Tagline     string       `yaml:"tagline"`
+	About       string       `yaml:"about"`
+	Disclaimer  string       `yaml:"disclaimer"`
+	Domain      string       `yaml:"domain"`
+	OfflineMode bool         `yaml:"offline_mode"`
+	TilesDir    string       `yaml:"tiles_dir"`
+	Auth        *fileWebAuth `yaml:"auth"`
 }
 
 type fileWebAuth struct {
@@ -882,6 +896,8 @@ func (f fileConfig) toConfig() Config {
 		cfg.Web.About = strings.TrimSpace(f.Web.About)
 		cfg.Web.Disclaimer = strings.TrimSpace(f.Web.Disclaimer)
 		cfg.Web.Domain = strings.TrimSuffix(strings.TrimSpace(f.Web.Domain), "/")
+		cfg.Web.OfflineMode = f.Web.OfflineMode
+		cfg.Web.TilesDir = strings.TrimSpace(f.Web.TilesDir)
 		if f.Web.Auth != nil {
 			cfg.Web.Auth = WebAuth{
 				Username:       f.Web.Auth.Username,

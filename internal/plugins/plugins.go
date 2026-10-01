@@ -62,5 +62,15 @@ func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub, meshHub *meshcore.Hub
 	if err := mqtt.Register(reg); err != nil {
 		return err
 	}
+	// Internet-backed sources: the admin offline-mode switch suspends
+	// these (and resumes them on exit from offline mode). Local-only
+	// sources — aprs-radio (KISS/TNC), meshcore (serial), snapshotutil —
+	// keep running off-grid.
+	for _, internet := range []string{
+		"openmeteo", "metar", "imgw", "rso", "gddkia",
+		"gios", "giosaq", "adsb", "aprs-inet",
+	} {
+		reg.MarkSourceInternet(internet)
+	}
 	return nil
 }

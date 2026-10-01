@@ -9,16 +9,18 @@ import (
 // is explicit (no magic reflection); a contributor searches for
 // RegisterSource / RegisterOutput to see how integrations are wired.
 type Registry struct {
-	mu      sync.Mutex
-	sources map[string]SourceFactory
-	outputs map[string]OutputFactory
+	mu       sync.Mutex
+	sources  map[string]SourceFactory
+	outputs  map[string]OutputFactory
+	internet map[string]bool
 }
 
 // NewRegistry creates an empty plugin registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		sources: make(map[string]SourceFactory),
-		outputs: make(map[string]OutputFactory),
+		sources:  make(map[string]SourceFactory),
+		outputs:  make(map[string]OutputFactory),
+		internet: make(map[string]bool),
 	}
 }
 
@@ -67,6 +69,23 @@ func (r *Registry) Source(name string) (SourceFactory, error) {
 		return nil, fmt.Errorf("unknown source plugin type %q", name)
 	}
 	return factory, nil
+}
+
+// MarkSourceInternet classifies a source type as internet-backed: the
+// offline-mode switch suspends every enabled instance of such types and
+// resumes them when the station goes online again.
+func (r *Registry) MarkSourceInternet(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.internet[name] = true
+}
+
+// SourceInternet reports whether the source type was classified as
+// internet-backed.
+func (r *Registry) SourceInternet(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.internet[name]
 }
 
 // Output returns the factory for the named output plugin type.

@@ -162,10 +162,12 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	// public domain, never from the request Host — a spoofed Host header
 	// must not redirect the victim to a foreign domain. Without the
 	// canonical domain (or without a mailer) the flow stays offline:
-	// recovery goes through an administrator on the machine.
+	// recovery goes through an administrator on the machine. The same
+	// applies while the offline-mode switch is on: no email leaves the
+	// station.
 	origin := s.resetOrigin()
-	if origin == "" || s.resetMailer == nil {
-		s.logger.Warn("web: password reset offline (web.domain not configured or no mailer)", "username", username)
+	if origin == "" || s.resetMailer == nil || s.OfflineMode() {
+		s.logger.Warn("web: password reset offline (web.domain not configured, no mailer, or offline mode)", "username", username)
 		s.loginLimiter.recordCooldown(limiterKey, forgotSendCooldown)
 		view("", i18n.T(lang, "forgot.offline"))
 		return

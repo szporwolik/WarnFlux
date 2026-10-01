@@ -220,6 +220,19 @@ func New(node *yaml.Node) (plugin.OutputPlugin, error) {
 	}
 
 	out := &Output{cfg: cfg, qos: qos, activeCache: make(map[string]activeCacheEntry), pendingDeletes: make(map[string]activeDeleteEntry)}
+	// When the admin re-enables the active category at runtime, the
+	// retained view must resync immediately: cancellations that happened
+	// while active was masked were tracked locally (cache + pending
+	// deletes) and are published now. The resync runs only on a LIVE
+	// connection (a reconnect rehydrates anyway, and this keeps the hook
+	// free of any network side effects on unconnected instances). The
+	// last constructed output wins the single global hook.
+	mqttpolicy.SetOnChange(func(old, newMask uint32) {
+		if old&uint32(mqttpolicy.CatActive) == 0 && newMask&uint32(mqttpolicy.CatActive) != 0 &&
+			out.client != nil && out.client.IsConnectionOpen() {
+			out.rehydrateOnConnect()
+		}
+	})
 	// The on-connect hook MUST be installed in the options BEFORE
 	// paho.NewClient: paho copies the ClientOptions struct by value
 	// (c.options = *o), so mutating the options afterwards never reaches
@@ -272,10 +285,23 @@ func (o *Output) StatusInterval() time.Duration { return o.cfg.HeartbeatInterval
 // deliberately explicit (see wireEvent): internal Go structs are never
 // marshaled directly.
 func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
+	eventsOn := mqttpolicy.Allowed(mqttpolicy.CatEvents)
+	activeOn := mqttpolicy.Allowed(mqttpolicy.CatActive)
+
+	// The local active-view state is tracked ALWAYS — the mask blocks
+	// broker traffic only, never the target-state bookkeeping. Skipping
+	// it would leave a stale payload in the cache when a hazard is
+	// cancelled while active is masked, and the next unmask + reconnect
+	// would resurrect the cancelled alert on the broker.
+	delSeq, err := o.trackActiveState(change.Event)
+	if err != nil {
+		return fmt.Errorf("active state: %w", err)
+	}
+
 	// Publish policy: when both categories are masked, the change is
 	// consumed without any broker work (the admin reduced traffic on
 	// purpose). When only one is on, the other is skipped silently.
-	if !mqttpolicy.Allowed(mqttpolicy.CatEvents) && !mqttpolicy.Allowed(mqttpolicy.CatActive) {
+	if !eventsOn && !activeOn {
 		return nil
 	}
 	if err := o.ensureConnected(ctx); err != nil {
@@ -287,7 +313,7 @@ func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 		return fmt.Errorf("marshal change: %w", err)
 	}
 
-	if mqttpolicy.Allowed(mqttpolicy.CatEvents) {
+	if eventsOn {
 		topic := o.cfg.TopicPrefix + "/events"
 		token := o.client.Publish(topic, o.qos, false, payload)
 		select {
@@ -306,11 +332,11 @@ func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 	// After the per-event topic, the consolidated retained active list is
 	// republished so subscribers can fetch the whole active set from ONE
 	// topic instead of reconstructing it from /active/#.
-	if !mqttpolicy.Allowed(mqttpolicy.CatActive) {
+	if !activeOn {
 		return nil
 	}
-	if err := o.updateActiveState(ctx, change.Event); err != nil {
-		return fmt.Errorf("active state: %w", err)
+	if err := o.publishActiveState(ctx, change.Event, delSeq); err != nil {
+		return fmt.Errorf("active state publish: %w", err)
 	}
 	if err := o.publishActiveList(ctx); err != nil {
 		return fmt.Errorf("active list: %w", err)
@@ -318,17 +344,19 @@ func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
 	return nil
 }
 
-// updateActiveState materializes one event's active-view state. It runs
-// only after the /events publish succeeded. The desired cache is updated
-// BEFORE the network publish so a reconnect in the middle of the operation
-// rehydrates what SHOULD exist.
-func (o *Output) updateActiveState(ctx context.Context, event core.HazardEvent) error {
+// trackActiveState updates the LOCAL desired active-view state (cache +
+// pending-delete queue) without any network I/O: it runs on every change,
+// even while the active category is masked, so the bookkeeping can never
+// diverge from the journal. It returns the generation of a registered
+// pending delete (0 otherwise), which publishActiveState uses for its
+// stale-safe cleanup.
+func (o *Output) trackActiveState(event core.HazardEvent) (uint64, error) {
 	topic := o.activeTopic(event.Source, event.Key())
 	switch event.Status {
 	case core.StatusActive:
 		payload, err := o.activePayload(event)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		o.activeMu.Lock()
 		o.activeSeq++
@@ -338,23 +366,50 @@ func (o *Output) updateActiveState(ctx context.Context, event core.HazardEvent) 
 		// Reactivation: any older pending delete for this key is stale.
 		delete(o.pendingDeletes, event.Key())
 		o.activeMu.Unlock()
-		return o.publishActive(ctx, topic, payload)
+		return 0, nil
 	case core.StatusCancelled, core.StatusExpired:
-		// Register the desired ABSENCE before the network publish: if the
-		// DELETE fails, a later reconnect rehydrates from pendingDeletes
-		// and the deletion is never forgotten.
+		// Register the desired ABSENCE before any network publish: if the
+		// DELETE never happens (masked, disconnected, publish failure), a
+		// later unmask/reconnect rehydrates from pendingDeletes and the
+		// deletion is never forgotten.
 		o.activeMu.Lock()
 		delete(o.activeCache, event.Key())
 		o.activeSeq++
 		delSeq := o.activeSeq
 		o.pendingDeletes[event.Key()] = activeDeleteEntry{key: event.Key(), topic: topic, seq: delSeq}
 		o.activeMu.Unlock()
+		return delSeq, nil
+	default:
+		// Unknown lifecycle state: /events already carried the
+		// transition; the active view only models the three known states.
+		return 0, nil
+	}
+}
+
+// publishActiveState performs the NETWORK half of one event's
+// active-view state: the retained document for an active hazard, the
+// retained delete for a cancelled/expired one. The pending delete is
+// dropped only when the delete publish succeeded AND the registration
+// still carries the same generation.
+func (o *Output) publishActiveState(ctx context.Context, event core.HazardEvent, delSeq uint64) error {
+	topic := o.activeTopic(event.Source, event.Key())
+	switch event.Status {
+	case core.StatusActive:
+		payload, err := o.activePayload(event)
+		if err != nil {
+			return err
+		}
+		return o.publishActive(ctx, topic, payload)
+	case core.StatusCancelled, core.StatusExpired:
 		// A zero-length retained payload deletes the retained topic, so
 		// late subscribers never see this hazard under /active/# again.
 		if err := o.publishActive(ctx, topic, []byte{}); err != nil {
 			// The pending delete stays registered for later recovery; the
 			// error keeps the journal change unacknowledged upstream.
 			return err
+		}
+		if delSeq == 0 {
+			return nil
 		}
 		o.activeMu.Lock()
 		if cur, ok := o.pendingDeletes[event.Key()]; ok && cur.seq == delSeq {
@@ -363,8 +418,6 @@ func (o *Output) updateActiveState(ctx context.Context, event core.HazardEvent) 
 		o.activeMu.Unlock()
 		return nil
 	default:
-		// Unknown lifecycle state: /events already carried the
-		// transition; the active view only models the three known states.
 		return nil
 	}
 }

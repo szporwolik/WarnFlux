@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
@@ -48,6 +49,11 @@ type Manager struct {
 	// settles the job as expired instead of executing it.
 	deliveryGate func(ctx context.Context, eventKey string) bool
 
+	// offline is the offline-mode switch: internet-backed actions hold
+	// their queued requests (nothing executed, nothing lost) while it is
+	// on.
+	offline atomic.Bool
+
 	cancel   context.CancelFunc
 	cancelMu sync.Mutex
 }
@@ -85,6 +91,7 @@ func NewManager(cfgs []config.Action, reg *Registry, logger *slog.Logger, trail 
 		inst := NewInstance(cfg.ID, cfg.Type, p, cfg.Runtime.QueueSize,
 			cfg.Runtime.CallTimeout, cfg.Runtime.ShutdownTimeout, logger,
 			m.trail, cfg.Runtime.Retries, m.reg)
+		inst.internet = reg.Internet(cfg.Type)
 		m.instances = append(m.instances, inst)
 		m.byID[cfg.ID] = inst
 	}
@@ -109,6 +116,7 @@ func (m *Manager) Start(ctx context.Context) {
 		if m.deliveryGate != nil {
 			inst.setDeliveryGate(m.deliveryGate)
 		}
+		inst.setOfflineFn(m.Offline)
 		inst.Start(mgrCtx)
 	}
 	if m.store != nil {
@@ -131,6 +139,19 @@ func (m *Manager) SetDeliveryStore(st storage.DeliveryStore) {
 func (m *Manager) SetDeliveryGate(gate func(ctx context.Context, eventKey string) bool) {
 	m.deliveryGate = gate
 }
+
+// SetOffline toggles the offline-mode switch for the actions. Internet-
+// backed actions (smtp, http_webhook, discord) hold their queued work
+// while offline; local actions keep running. Idempotent.
+func (m *Manager) SetOffline(on bool) {
+	if m.offline.Swap(on) == on {
+		return
+	}
+	m.logger.Info("offline mode actions toggled", "offline", on)
+}
+
+// Offline reports the current offline-mode state of the actions.
+func (m *Manager) Offline() bool { return m.offline.Load() }
 
 // recoverStaleClaims re-queues jobs a previous process claimed but never
 // settled (crash between claim and execution). One immediate pass runs

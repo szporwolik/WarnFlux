@@ -10,7 +10,7 @@
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
 </head>
-<body class="home">
+<body class="home" data-offline="{{if .OfflineMode}}1{{else}}0{{end}}">
   <header class="home-top">
     <div class="home-brand">
       <img class="home-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
@@ -50,6 +50,13 @@
       <span class="emcom-chip-label">{{tr $.Lang (printf "emcom.levels.%d" .Level)}}</span>
     </span>
     {{end}}
+  </div>{{end}}
+
+  {{if .OfflineMode}}<div class="home-emcom home-offline" role="status" aria-label="{{tr .Lang "home.offline.aria"}}">
+    <span class="emcom-chip emcom-chip-offline">
+      <svg class="icon emcom-chip-icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-slash"></use></svg>
+      <span class="emcom-chip-label">{{tr .Lang "home.offline.banner"}}</span>
+    </span>
   </div>{{end}}
 
   {{if .Disclaimer}}<p class="home-disclaimer" role="note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Disclaimer}}</span></p>{{end}}

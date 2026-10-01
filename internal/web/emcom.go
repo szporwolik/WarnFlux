@@ -537,6 +537,7 @@ type emcomView struct {
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool
+	NavConfig        bool
 }
 
 // emcomNetworkView is one managed network for the panel.

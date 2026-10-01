@@ -131,6 +131,7 @@ limit per instance.
 - [docs/plugins.md](docs/plugins.md) — plugin contracts and rules
 - [docs/weather-schema.md](docs/weather-schema.md) — weather wire format
 - [docs/durability.md](docs/durability.md) — delivery & durability guarantees
+- [docs/offline-mode.md](docs/offline-mode.md) — off-grid operation and the internet audit
 - per-plugin READMEs under `internal/plugins/`
 
 Plugins are compiled-in Go packages registered in

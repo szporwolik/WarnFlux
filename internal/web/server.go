@@ -92,6 +92,12 @@ type Server struct {
 	// DB row turns red and the retention policy shortens (0 = disabled).
 	minFreeBytes int64
 
+	// offline is the runtime offline-mode switch (startup value from the
+	// config; an admin toggles it on the Config page). offlineOn is the
+	// hook that propagates a toggle to the plugin and action managers.
+	offline   atomic.Bool
+	offlineOn func(on bool)
+
 	// resetMailer delivers password-reset emails. nil = email delivery
 	// unavailable (the self-service flow degrades gracefully).
 	resetMailer func(to, subject, text string) error
@@ -202,6 +208,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	if err != nil {
 		return nil, fmt.Errorf("web: static assets: %w", err)
 	}
+	s.offline.Store(cfg.OfflineMode)
 	s.routes(http.FileServerFS(static))
 	s.httpSrv = &http.Server{
 		Handler:           securityHeaders(s.mux),
@@ -303,6 +310,12 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /users/{id}/delete", s.requireAdmin(s.handleUserDelete))
 	s.mux.Handle("POST /users/{id}/prefs", s.requireAdmin(s.handleUserPrefs))
 	s.mux.Handle("POST /users/{id}/reset", s.requireAdmin(s.handleUserResetPassword))
+	// Config: the offline-mode switch and the local map tile tree.
+	s.mux.Handle("GET /config", s.requireAdmin(s.handleConfigPage))
+	s.mux.Handle("POST /config/offline", s.requireAdmin(s.handleConfigOffline))
+	// Local map tiles ({z}/{x}/{y}.jpg under web.tiles_dir) for offline
+	// mode. Registered unconditionally; empty tiles_dir yields 404s.
+	s.mux.HandleFunc("GET /tiles/{z}/{x}/{y}", s.handleTile)
 	s.mux.Handle("GET /groups", s.requireAdmin(s.handleGroupsPage))
 	s.mux.Handle("POST /groups", s.requireAdmin(s.handleGroupSave))
 	s.mux.Handle("POST /groups/{id}/delete", s.requireAdmin(s.handleGroupDelete))

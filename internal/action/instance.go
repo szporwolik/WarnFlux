@@ -93,6 +93,15 @@ type Instance struct {
 	// queued job is transmitted (see Manager.SetDeliveryGate).
 	gate func(ctx context.Context, eventKey string) bool
 
+	// internet marks this instance as internet-backed: while the
+	// offline-mode switch is on, its worker holds queued work instead of
+	// executing it (nothing is executed, nothing is lost).
+	internet bool
+
+	// offlineFn is the offline-mode oracle consulted by internet-backed
+	// instances before each execution.
+	offlineFn func() bool
+
 	// metric cells (optional, nil-safe).
 	metricDelivered func(int64)
 	metricFailed    func(int64)
@@ -167,8 +176,21 @@ func (i *Instance) setDeliveryGate(gate func(ctx context.Context, eventKey strin
 	i.gate = gate
 }
 
+// setOfflineFn attaches the offline-mode oracle (called by the manager
+// before Start).
+func (i *Instance) setOfflineFn(fn func() bool) {
+	i.offlineFn = fn
+}
+
+// blocked reports whether this instance must hold its work right now:
+// the offline-mode switch is on and the action is internet-backed.
+func (i *Instance) blocked() bool {
+	return i.internet && i.offlineFn != nil && i.offlineFn()
+}
+
 // run is the worker loop. Durable jobs from the queue take priority;
-// between polls the in-memory fallback queue is drained.
+// between polls the in-memory fallback queue is drained. Internet-backed
+// instances hold their work while the offline-mode switch is on.
 func (i *Instance) run(ctx context.Context) {
 	defer i.wg.Done()
 	for {
@@ -177,6 +199,15 @@ func (i *Instance) run(ctx context.Context) {
 			i.drainAndClose()
 			return
 		default:
+		}
+		if i.blocked() {
+			select {
+			case <-ctx.Done():
+				i.drainAndClose()
+				return
+			case <-time.After(DeliveryPollInterval):
+			}
+			continue
 		}
 		if i.store != nil && i.runNextJob(ctx) {
 			continue
@@ -198,7 +229,12 @@ func (i *Instance) run(ctx context.Context) {
 
 // runNextJob claims and executes one due durable job. It reports whether
 // a job ran. Claim errors are logged, never fatal: the next poll retries.
+// While the offline switch is on for an internet-backed instance, no job
+// is claimed — nothing executes, the attempt budget stays untouched.
 func (i *Instance) runNextJob(ctx context.Context) bool {
+	if i.blocked() {
+		return false
+	}
 	job, ok, err := i.store.ClaimNextDelivery(ctx, i.id, i.retries+1, time.Now())
 	if err != nil {
 		i.logger.Warn("action: delivery claim failed", "action", i.id, "error", err)
@@ -374,6 +410,15 @@ func (i *Instance) handle(req ActionRequest) {
 	key := ""
 	if req.Event.Hazard != nil {
 		key = req.Event.Hazard.Key
+	}
+
+	// Offline mode: an internet-backed instance must never execute while
+	// the switch is on (this also covers the shutdown drain, which calls
+	// handle directly).
+	if i.blocked() {
+		i.trail.Add(key, trail.StepSkipped,
+			"skipped: offline mode (internet actions suspended)", time.Now())
+		return
 	}
 
 	total := i.retries + 1

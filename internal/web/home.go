@@ -100,6 +100,10 @@ type homeView struct {
 	// EmcomNetworks carries the current readiness level of every EMCOM
 	// network (retained MQTT state) for the colored header chips.
 	EmcomNetworks []emcomChipView
+
+	// OfflineMode turns the header banner on and tells the map to use
+	// the station's local tile tree instead of internet providers.
+	OfflineMode bool
 }
 
 // emcomChipView is one EMCOM network's readiness status as shown in the
@@ -219,15 +223,16 @@ func (s *Server) handlePartialHome(w http.ResponseWriter, r *http.Request) {
 // MQTT mirror only fills documents the local record does not own.
 func (s *Server) buildHomeView() homeView {
 	v := homeView{
-		AppTitle:   s.cfg.Title,
-		Header1:    s.displayHeader1(),
-		Header2:    s.cfg.Header2,
-		Tagline:    s.cfg.Tagline,
-		About:      template.HTML(s.cfg.About),
-		Disclaimer: s.cfg.Disclaimer,
-		Version:    s.version,
-		Commit:     s.commit,
-		RepoURL:    repoURL,
+		AppTitle:    s.cfg.Title,
+		Header1:     s.displayHeader1(),
+		Header2:     s.cfg.Header2,
+		Tagline:     s.cfg.Tagline,
+		About:       template.HTML(s.cfg.About),
+		Disclaimer:  s.cfg.Disclaimer,
+		Version:     s.version,
+		Commit:      s.commit,
+		RepoURL:     repoURL,
+		OfflineMode: s.OfflineMode(),
 	}
 
 	hazards := s.activeHazards()

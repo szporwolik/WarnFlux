@@ -1,6 +1,16 @@
 // WarnFlux dashboard poller — no external dependencies.
 // Refreshes the dashboard sections every 5 seconds via fetch.
 // On session expiry (401) the browser is sent back to the login page.
+
+  // Offline mode (server-side switch): the home page stamps the flag on
+  // <body data-offline>, admin pages (compose picker) expose it as
+  // window.WF_OFFLINE. While on, the maps never contact a CDN or a tile
+  // provider — only the station itself.
+  function wfOffline() {
+    return document.body.getAttribute("data-offline") === "1" ||
+      window.WF_OFFLINE === true;
+  }
+
   // Client-side UI strings, keyed like internal/i18n. The server stamps
   // <html lang> on every page, so table = I18N[lang] works everywhere.
   var I18N = {
@@ -650,6 +660,11 @@
     return;
   }
 
+  // Offline mode (server-side switch, body data-offline=1): the map uses
+  // the station's own Leaflet copy and the local tile tree — nothing is
+  // ever requested from a CDN or a tile provider.
+  var OFFLINE = wfOffline();
+
   var STATION_POLL_MS = 30 * 1000;
   var RADAR_REFRESH_MS = 10 * 60 * 1000;
 
@@ -695,6 +710,19 @@
   // light theme, Esri World Dark Gray for the dark theme.
   function tilesForTheme() {
     var theme = document.documentElement.getAttribute("data-theme");
+    // Offline mode: the operator-provided tile tree served by the
+    // station itself (web.tiles_dir). No internet provider is ever
+    // contacted.
+    if (OFFLINE) {
+      var localLabel = "WarnFlux (local tiles)";
+      return {
+        style: null,
+        raster: "/tiles/{z}/{x}/{y}.jpg",
+        glLabel: localLabel,
+        rasterLabel: localLabel,
+        marker: { color: "#1565c0", fillColor: "#64b5f6" }
+      };
+    }
     // One tile server (OpenFreeMap); OpenMapTiles/OpenStreetMap are data
     // attributions, not additional tile sources.
     var glLabel = '<a href="https://openfreemap.org" target="_blank" rel="noopener noreferrer">OpenFreeMap</a> (data: <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener noreferrer">OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>)';
@@ -735,7 +763,7 @@
     var t = tilesForTheme();
     var mode = "raster";
     var layer = null;
-    if (typeof L.maplibreGL === "function" && webglAvailable()) {
+    if (t.style && typeof L.maplibreGL === "function" && webglAvailable()) {
       try {
         var gl = L.maplibreGL({ style: t.style, attributionControl: false, pane: "aprsBase" });
         var m = gl.getMaplibreMap && gl.getMaplibreMap();
@@ -865,12 +893,17 @@
     }
     var css = document.createElement("link");
     css.rel = "stylesheet";
-    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    css.href = "/static/leaflet/leaflet.css";
     document.head.appendChild(css);
-    loadScript("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js", cb, mapLoadError);
+    loadScript("/static/leaflet/leaflet.js", cb, mapLoadError);
   }
 
   function loadMapLibre(cb) {
+    if (OFFLINE) {
+      // Offline mode: MapLibre (vector styles) is an internet feature.
+      cb();
+      return;
+    }
     var css = document.createElement("link");
     css.rel = "stylesheet";
     css.href = "https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css";
@@ -883,7 +916,7 @@
   }
 
   function loadMapLibreGlue(cb) {
-    if (window.L && typeof L.maplibreGL === "function") {
+    if (OFFLINE || (window.L && typeof L.maplibreGL === "function")) {
       cb();
       return;
     }
@@ -1017,6 +1050,9 @@
   }
 
   function enableRadar() {
+    if (OFFLINE) {
+      return; // radar frames come from RainViewer — an internet feature
+    }
     try {
       fetch("https://api.rainviewer.com/public/weather-maps.json")
         .then(function (r) { return r.ok ? r.json() : null; })
@@ -2613,6 +2649,10 @@
   }
 
   function tileURL() {
+    // Offline mode: the station's own tile tree, no internet providers.
+    if (wfOffline()) {
+      return "/tiles/{z}/{x}/{y}.jpg";
+    }
     var dark = document.documentElement.getAttribute("data-theme") !== "light";
     return dark
       ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
@@ -2626,12 +2666,12 @@
     }
     var css = document.createElement("link");
     css.rel = "stylesheet";
-    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    css.href = "/static/leaflet/leaflet.css";
     document.head.appendChild(css);
     var s = document.createElement("script");
-    s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    s.src = "/static/leaflet/leaflet.js";
     s.onload = function () { cb(); };
-    s.onerror = function () { /* offline: the lat/lon inputs still work */ };
+    s.onerror = function () { /* the lat/lon inputs still work */ };
     document.body.appendChild(s);
   }
 

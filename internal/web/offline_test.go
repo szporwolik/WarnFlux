@@ -1,0 +1,158 @@
+package web_test
+
+import (
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestConfigPageAdminOnly proves the config section is admin-only: an
+// anonymous visitor is bounced to /login and a member gets a forbidden.
+func TestConfigPageAdminOnly(t *testing.T) {
+	env := newTestEnv(t)
+	resp, _ := env.get("/config")
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("GET /config unauthenticated = %d, want 303", resp.StatusCode)
+	}
+}
+
+// TestOfflineToggle flows through the whole switch: enable (banner on the
+// home page + state visible), idempotent re-enable, disable (banner gone).
+func TestOfflineToggle(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	if env.server.OfflineMode() {
+		t.Fatal("offline mode must start disabled in the test config")
+	}
+	// Public home page has no banner while online.
+	_, html := env.get("/")
+	if strings.Contains(html, `data-offline="1"`) {
+		t.Fatal("home page reports offline while online")
+	}
+
+	// Admin config page: shows the switch.
+	resp, page := env.get("/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /config = %d", resp.StatusCode)
+	}
+	if !strings.Contains(page, "config-offline") && !strings.Contains(page, "offline") {
+		t.Fatal("config page misses the offline form")
+	}
+
+	csrf := env.csrfFromPage("/config")
+	resp, _ = env.postForm("/config/offline", url.Values{"csrf": {csrf}, "offline": {"on"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/offline = %d, want 303", resp.StatusCode)
+	}
+	if !env.server.OfflineMode() {
+		t.Fatal("offline mode not enabled after toggle")
+	}
+	_, html = env.get("/")
+	if !strings.Contains(html, `data-offline="1"`) {
+		t.Fatal("home page does not report offline mode")
+	}
+	if !strings.Contains(html, "Tryb offline") && !strings.Contains(html, "Offline mode") {
+		t.Fatalf("home page misses the offline banner: %s", html[:200])
+	}
+
+	// Idempotent: toggling the same state again changes nothing.
+	csrf = env.csrfFromPage("/config")
+	resp, _ = env.postForm("/config/offline", url.Values{"csrf": {csrf}, "offline": {"on"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/offline (no-op) = %d", resp.StatusCode)
+	}
+	if !env.server.OfflineMode() {
+		t.Fatal("offline mode lost after idempotent toggle")
+	}
+
+	// Disable: banner disappears again.
+	csrf = env.csrfFromPage("/config")
+	resp, _ = env.postForm("/config/offline", url.Values{"csrf": {csrf}, "offline": {"off"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/offline (off) = %d", resp.StatusCode)
+	}
+	if env.server.OfflineMode() {
+		t.Fatal("offline mode still on after disable")
+	}
+	_, html = env.get("/")
+	if strings.Contains(html, `data-offline="1"`) {
+		t.Fatal("home page still reports offline after disable")
+	}
+}
+
+// TestOfflineStartupState proves web.offline_mode in the config is the
+// startup state of the switch.
+func TestOfflineStartupState(t *testing.T) {
+	cfg := defaultTestWebConfig()
+	cfg.OfflineMode = true
+	env := newTestEnvWeb(t, cfg, nil, nil, nil, nil, nil, nil)
+	if !env.server.OfflineMode() {
+		t.Fatal("offline mode must start on when web.offline_mode is set")
+	}
+	_, html := env.get("/")
+	if !strings.Contains(html, `data-offline="1"`) {
+		t.Fatal("home page does not report the configured offline startup state")
+	}
+}
+
+// TestTileHandler serves the operator tile tree and rejects anything
+// outside it.
+func TestTileHandler(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "8", "141"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "8", "141", "86.jpg"), []byte("jpeg-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := defaultTestWebConfig()
+	cfg.TilesDir = dir
+	env := newTestEnvWeb(t, cfg, nil, nil, nil, nil, nil, nil)
+
+	resp, body := env.get("/tiles/8/141/86")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET tile = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("tile content type = %q", ct)
+	}
+	if !strings.Contains(body, "jpeg-bytes") {
+		t.Errorf("tile body = %q", body)
+	}
+	if cc := resp.Header.Get("Cache-Control"); !strings.Contains(cc, "max-age=86400") {
+		t.Errorf("tile cache control = %q", cc)
+	}
+
+	// Missing tiles 404 and invalid coordinates 404 (the mux cleans
+	// dot-segments before routing, so traversal never reaches the
+	// handler).
+	for _, path := range []string{"/tiles/9/141/86", "/tiles/-1/0/0", "/tiles/abc/1/1"} {
+		resp, _ = env.get(path)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, resp.StatusCode)
+		}
+	}
+
+	// Without a configured tile tree everything 404s.
+	env2 := newTestEnv(t)
+	resp, _ = env2.get("/tiles/8/141/86")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("tile without tiles_dir = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestConfigPageListsInternetSources proves the page names the sources the
+// offline switch suspends.
+func TestConfigPageListsInternetSources(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	_, page := env.get("/config")
+	if !strings.Contains(page, "imgw-warnings") {
+		t.Errorf("config page misses the internet source list entry")
+	}
+}

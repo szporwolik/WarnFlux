@@ -104,17 +104,31 @@ type ConfirmingPlugin interface {
 	ExecuteStage(ctx context.Context, request ActionRequest) (DeliveryStage, error)
 }
 
+// MarkInternet classifies an action type as internet-backed: the
+// offline-mode switch makes its worker hold queued requests (nothing is
+// executed, nothing is lost) until the station goes online again.
+func (r *Registry) MarkInternet(name string) {
+	r.internet[name] = true
+}
+
+// Internet reports whether the action type was classified as
+// internet-backed.
+func (r *Registry) Internet(name string) bool {
+	return r.internet[name]
+}
+
 // Factory builds one action instance from its raw YAML configuration node.
 type Factory func(node *yaml.Node) (Plugin, error)
 
 // Registry maps action type names to factories.
 type Registry struct {
 	factories map[string]Factory
+	internet  map[string]bool
 }
 
 // NewRegistry returns an empty action registry.
 func NewRegistry() *Registry {
-	return &Registry{factories: make(map[string]Factory)}
+	return &Registry{factories: make(map[string]Factory), internet: make(map[string]bool)}
 }
 
 // Register adds a factory for an action type. Duplicate types are rejected.

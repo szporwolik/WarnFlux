@@ -46,8 +46,10 @@ type Manager struct {
 	// deliveryGate is the optional staleness oracle consulted directly
 	// BEFORE a queued job is transmitted: false means the hazard has
 	// expired or was cancelled while the job waited, and the worker
-	// settles the job as expired instead of executing it.
-	deliveryGate func(ctx context.Context, eventKey string) bool
+	// settles the job as expired instead of executing it. It receives
+	// the full action request so it can judge the specific message
+	// version (publisher + change ID), not merely the event key.
+	deliveryGate func(ctx context.Context, req ActionRequest) bool
 
 	// offline is the offline-mode switch: internet-backed actions hold
 	// their queued requests (nothing executed, nothing lost) while it is
@@ -134,9 +136,11 @@ func (m *Manager) SetDeliveryStore(st storage.DeliveryStore) {
 }
 
 // SetDeliveryGate attaches the staleness oracle consulted directly
-// before a queued job is transmitted (see DeliveryGate). It must be
-// called before Start.
-func (m *Manager) SetDeliveryGate(gate func(ctx context.Context, eventKey string) bool) {
+// before a queued job is transmitted (see DeliveryGate). It receives
+// the full action request — the gate judges the specific message
+// version (publisher + change ID), not merely its event key. It must
+// be called before Start.
+func (m *Manager) SetDeliveryGate(gate func(ctx context.Context, req ActionRequest) bool) {
 	m.deliveryGate = gate
 }
 

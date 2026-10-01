@@ -360,12 +360,14 @@ func TestInstanceDurableExpiredPayloadSkipped(t *testing.T) {
 func TestInstanceDurableGateSkips(t *testing.T) {
 	p := &deliveryPlugin{}
 	inst, ms := newDeliveryInstance(t, p, 1)
-	inst.setDeliveryGate(func(ctx context.Context, eventKey string) bool {
+	var gated ActionRequest
+	inst.setDeliveryGate(func(ctx context.Context, req ActionRequest) bool {
+		gated = req
 		return false
 	})
 
 	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
-		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw", ChangeID: 42, Publisher: "pub-1"}}
 	payload, _ := json.Marshal(ActionRequest{ID: "imgw:1/log", Event: ev})
 	enqueueOne(t, ms, payload)
 
@@ -374,6 +376,9 @@ func TestInstanceDurableGateSkips(t *testing.T) {
 	}, "gated payload settled as expired")
 	if got := p.handled.Load(); got != 0 {
 		t.Errorf("plugin invoked %d times for a gated hazard, want 0", got)
+	}
+	if gated.Event.Hazard == nil || gated.Event.Hazard.ChangeID != 42 || gated.Event.Hazard.Publisher != "pub-1" {
+		t.Errorf("gate received %+v, want the full request with version identity (changeID 42, pub-1)", gated.Event.Hazard)
 	}
 }
 

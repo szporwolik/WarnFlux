@@ -181,6 +181,12 @@ const (
 const (
 	cmdReplyTimeout   = 5 * time.Second
 	queryReplyTimeout = 2 * time.Second
+
+	// abandonedWriteGrace bounds how long the command worker waits for a
+	// caller-cancelled write to settle before it recreates the session:
+	// a healthy serial write completes in milliseconds, and a stuck one
+	// must end the session instead of letting the next command race it.
+	abandonedWriteGrace = 500 * time.Millisecond
 )
 
 // cmdReq is one device command the worker executes.
@@ -669,11 +675,22 @@ func (h *Hub) commandWorker(ctx context.Context, c conn) {
 	}
 }
 
+// writeResult reports one completed writeFrameOn attempt.
+type writeResult struct{ err error }
+
 // runCommand writes one command and waits for its MATCHING reply. The
 // expectation slot is published before the write so the frame pump can
 // route the reply the instant it arrives; every exit path (write
 // failure, session end, timeout) clears the slot — no stale waiter can
 // ever consume a later command's reply.
+//
+// Cancellation contract (P1): a command whose caller is ALREADY
+// cancelled is rejected BEFORE any I/O — nothing reaches the transport.
+// A write that is in flight when the cancellation lands is never
+// abandoned mid-frame on the live stream: the worker waits a bounded
+// grace for it to settle and then recreates the session (two concurrent
+// writes would interleave frames), and a write that stalls past the
+// command timeout does the same at once.
 func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 	timeout := req.timeout
 	if timeout <= 0 {
@@ -687,6 +704,24 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 	if req.ctx != nil {
 		callerDone = req.ctx.Done()
 	}
+
+	// Cancel-check BEFORE any I/O: an already-cancelled command must
+	// never reach the transport.
+	if req.ctx != nil {
+		select {
+		case <-callerDone:
+			deliverErr(req.reply, req.ctx.Err())
+			return
+		default:
+		}
+	}
+	select {
+	case <-ctx.Done():
+		deliverErr(req.reply, errors.New("meshcore: session ended"))
+		return
+	default:
+	}
+
 	slot := &cmdSlot{expect: req.expect, done: make(chan error, 1)}
 	h.mu.Lock()
 	h.curCmd = slot
@@ -700,9 +735,10 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 	}
 
 	// The write itself is bounded too: a stalled transport must never
-	// hold the worker (and every queued command) hostage. The session
-	// teardown closes the connection, which unblocks a stray write.
-	type writeResult struct{ err error }
+	// hold the worker (and every queued command) hostage. Once STARTED,
+	// a write is never abandoned on the live stream (see the contract
+	// above); the session teardown closes the connection, which unblocks
+	// a stray write.
 	wdone := make(chan writeResult, 1)
 	go func() { wdone <- writeResult{h.writeFrameOn(c, req.payload)} }()
 	select {
@@ -712,17 +748,26 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 			deliverErr(req.reply, wr.err)
 			return
 		}
-	case <-callerDone:
-		clear()
-		deliverErr(req.reply, req.ctx.Err())
-		return
 	case <-ctx.Done():
+		// Session ending: the teardown closes the connection and the
+		// next session is a fresh one — no stream corruption possible.
 		clear()
 		deliverErr(req.reply, errors.New("meshcore: session ended"))
 		return
+	case <-callerDone:
+		clear()
+		deliverErr(req.reply, req.ctx.Err())
+		h.settleOrRecreateSession(c, wdone)
+		return
 	case <-time.After(timeout):
+		// The WRITE itself stalled (full line buffer): the stream is
+		// unusable — recreate the session instead of letting the next
+		// command race the stuck write.
 		clear()
 		deliverErr(req.reply, errors.New("meshcore: device did not acknowledge the command"))
+		h.logger.Warn("meshcore: command write stalled; recreating the session")
+		_ = c.Close()
+		<-wdone // bounded: Close unblocks the write
 		return
 	}
 
@@ -740,6 +785,25 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 	case <-time.After(timeout):
 		clear()
 		deliverErr(req.reply, errors.New("meshcore: device did not acknowledge the command"))
+	}
+}
+
+// settleOrRecreateSession keeps the session stream frame-consistent after
+// a caller cancelled a command mid-write: it waits a bounded grace for
+// the in-flight write to complete (a healthy serial write settles in
+// milliseconds), and closes the connection when the write is still stuck
+// — ending the session, so the next command runs on a freshly dialed one
+// and can never interleave with the abandoned frame.
+func (h *Hub) settleOrRecreateSession(c conn, wdone <-chan writeResult) {
+	select {
+	case <-wdone:
+		// The frame completed (or failed cleanly): the stream is
+		// consistent and the next command is safe.
+	case <-time.After(abandonedWriteGrace):
+		// Still mid-write: recreate the session.
+		h.logger.Warn("meshcore: command write abandoned; recreating the session")
+		_ = c.Close()
+		<-wdone // bounded: Close unblocks the write
 	}
 }
 

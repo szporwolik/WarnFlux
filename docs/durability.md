@@ -29,7 +29,11 @@ Concretely:
 - **Transmit** — action workers claim delivery jobs from SQLite and talk
   to the radio (MeshCore serial, APRS KISS) directly. WAN media (SMTP,
   Discord, APRS-IS) are additional actions whose failure is isolated per
-  action.
+  action. A MeshCore command whose caller was cancelled is rejected
+  before any I/O (nothing reaches the serial wire), and a write that is
+  in flight when the cancellation lands is never abandoned mid-frame:
+  it settles within a bounded grace or the session is recreated, so the
+  next command can never interleave with a stray frame.
 - **Serve** — the public home page, the map endpoint and the admin
   warnings panel read the active view from the LOCAL database first; the
   MQTT mirror only fills documents the local record does not own (other

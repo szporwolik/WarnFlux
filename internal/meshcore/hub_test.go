@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1449,6 +1450,182 @@ func TestSendHonorsCallerCancellationWhileAwaitingAck(t *testing.T) {
 	case <-silent:
 	case <-time.After(3 * time.Second):
 		t.Fatal("device never saw the send frame")
+	}
+}
+
+// countingConn records every Write without ever delivering it — the
+// deterministic "did this reach the transport" probe.
+type countingConn struct{ writes atomic.Int32 }
+
+func (c *countingConn) Read([]byte) (int, error) { return 0, errors.New("unexpected read") }
+func (c *countingConn) Write(p []byte) (int, error) {
+	c.writes.Add(1)
+	return len(p), nil
+}
+func (c *countingConn) Close() error                    { return nil }
+func (c *countingConn) SetReadDeadline(time.Time) error { return nil }
+
+// TestCancelledCommandNeverReachesTransport pins the reported P1 half
+// one: a command whose caller context is ALREADY cancelled must be
+// rejected before any I/O — the old code started the write first, so a
+// cancelled command still leaked its frame onto the wire (6 bytes).
+func TestCancelledCommandNeverReachesTransport(t *testing.T) {
+	hub, err := NewHub(Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &countingConn{}
+	reqCtx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled BEFORE the worker starts the command
+	reply := make(chan error, 1)
+	hub.runCommand(context.Background(), c, cmdReq{
+		payload: buildSendChannelTxtMsg(2, "hello"),
+		expect:  expectAck,
+		reply:   reply,
+		ctx:     reqCtx,
+	})
+	if err := <-reply; !errors.Is(err, context.Canceled) {
+		t.Fatalf("reply = %v, want context.Canceled", err)
+	}
+	// Give a stray write goroutine (the old behavior) time to surface.
+	time.Sleep(150 * time.Millisecond)
+	if got := c.writes.Load(); got != 0 {
+		t.Fatalf("already-cancelled command wrote %d frames to the transport, want 0", got)
+	}
+}
+
+// TestCancellationMidWriteRecreatesSession pins the second half: a write
+// that is in flight when the caller cancels is never abandoned
+// mid-frame on the live stream — the worker waits a bounded grace and
+// then recreates the session, so the next command can never interleave
+// with the abandoned frame.
+func TestCancellationMidWriteRecreatesSession(t *testing.T) {
+	hub, host, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+
+	// Startup choreography; afterwards the device STOPS reading, so the
+	// next write blocks on the pipe.
+	devReady := make(chan struct{})
+	go func() {
+		defer close(devReady)
+		buf := make([]byte, 256)
+		host.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host.Read(buf); err != nil {
+			t.Logf("DEVICE: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+	}()
+	select {
+	case <-devReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device did not complete the startup choreography")
+	}
+
+	// The device never reads the send frame: the write blocks until the
+	// session recreation closes the connection.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := hub.SendChannelMessage(ctx, "hello", "admin")
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("send error = %v, want the caller's context deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("send took %v, want prompt cancellation (grace + close)", elapsed)
+	}
+
+	// The session must end: the abandoned frame is gone with it and the
+	// next command runs on a freshly dialed connection.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && hub.Connected() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hub.Connected() {
+		t.Fatal("session survived a write abandoned mid-frame; a next command would interleave")
+	}
+}
+
+// TestCancellationMidWriteSettlesCleanly pins the grace path: when the
+// abandoned write completes within the grace (a healthy transport), the
+// session survives and the next command works on the same stream.
+func TestCancellationMidWriteSettlesCleanly(t *testing.T) {
+	hub, host, _ := startEventTestHub(t, Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	})
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+
+	// Startup choreography.
+	devReady := make(chan struct{})
+	go func() {
+		defer close(devReady)
+		buf := make([]byte, 256)
+		host.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host.Read(buf); err != nil {
+			t.Logf("DEVICE: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+	}()
+	select {
+	case <-devReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("device did not complete the startup choreography")
+	}
+
+	// The device reads the abandoned send frame 200 ms late — within the
+	// 500 ms grace — then answers and handles the follow-up send.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		f1, err := readHostFrameWithin(host, 5*time.Second)
+		if err != nil || len(f1) < 1 || f1[0] != cmdSendChannelTxtMsg {
+			t.Logf("DEVICE: first send frame = %x (%v)", f1, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+		f2, err := readHostFrameWithin(host, 5*time.Second)
+		if err != nil || len(f2) < 1 || f2[0] != cmdSendChannelTxtMsg {
+			t.Logf("DEVICE: second send frame = %x (%v)", f2, err)
+			return
+		}
+		host.Write(encodeDeviceFrame([]byte{respOK}))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	err := hub.SendChannelMessage(ctx, "hello", "admin")
+	cancel()
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled send error = %v, want the caller's deadline", err)
+	}
+
+	// The write settled cleanly: the session survives and the follow-up
+	// send is transmitted and recorded.
+	if !hub.Connected() {
+		t.Fatal("session was recreated even though the write settled within the grace")
+	}
+	if err := hub.SendChannelMessage(context.Background(), "again", "admin"); err != nil {
+		t.Fatalf("follow-up send on the surviving session failed: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(rec.messages()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := rec.messages(); len(got) != 1 {
+		t.Fatalf("recorded TX = %d, want exactly the follow-up send", len(got))
 	}
 }
 

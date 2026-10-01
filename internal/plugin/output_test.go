@@ -21,6 +21,13 @@ type memStore struct {
 	changes []storage.Change
 	cursors map[string]int64
 	events  map[string]*storage.StoredEvent
+
+	// PendingDeleteStore surface: savedDeletes mirrors the last saved
+	// set per output, loadDeletes preloads the restore path, saveErr
+	// simulates a broken persistence layer.
+	savedDeletes map[string][]storage.PendingDelete
+	loadDeletes  map[string][]storage.PendingDelete
+	saveErr      error
 }
 
 func newMemStore() *memStore {
@@ -108,6 +115,35 @@ func (m *memStore) cursor(outputID string) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cursors[outputID]
+}
+
+// SavePendingDeletes implements storage.PendingDeleteStore for the worker
+// persistence tests (replace-all mirror of the plugin's set).
+func (m *memStore) SavePendingDeletes(_ context.Context, outputID string, deletes []storage.PendingDelete) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	if m.savedDeletes == nil {
+		m.savedDeletes = map[string][]storage.PendingDelete{}
+	}
+	m.savedDeletes[outputID] = append([]storage.PendingDelete(nil), deletes...)
+	return nil
+}
+
+// LoadPendingDeletes implements storage.PendingDeleteStore (preloaded by
+// the test).
+func (m *memStore) LoadPendingDeletes(_ context.Context, outputID string) ([]storage.PendingDelete, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]storage.PendingDelete(nil), m.loadDeletes[outputID]...), nil
+}
+
+func (m *memStore) savedSnapshot(outputID string) []storage.PendingDelete {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]storage.PendingDelete(nil), m.savedDeletes[outputID]...)
 }
 
 // recOutput records delivered changes; behavior driven by fields.
@@ -643,4 +679,131 @@ func TestOutputWorkerStatusHangDisablesStatus(t *testing.T) {
 
 	// Release the abandoned goroutine for a clean test exit.
 	close(out.gate)
+}
+
+// trackOut is a PendingDeleteTracker output: the test drives its
+// unresolved-deletion set directly.
+type trackOut struct {
+	mu       sync.Mutex
+	deletes  []PendingDelete
+	restored []PendingDelete
+}
+
+func (o *trackOut) Name() string                                   { return "track" }
+func (o *trackOut) Handle(context.Context, core.EventChange) error { return nil }
+func (o *trackOut) PendingDeletes() []PendingDelete {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]PendingDelete(nil), o.deletes...)
+}
+func (o *trackOut) RestorePendingDeletes(d []PendingDelete) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.restored = append([]PendingDelete(nil), d...)
+}
+func (o *trackOut) setDeletes(d ...PendingDelete) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.deletes = append([]PendingDelete(nil), d...)
+}
+func (o *trackOut) restoredSnapshot() []PendingDelete {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]PendingDelete(nil), o.restored...)
+}
+
+// TestWorkerPersistsPendingDeletesBeforeAck pins the P1 fix at the worker
+// boundary: the plugin's unresolved retained deletions are saved durably
+// BEFORE the journal ack (the acked change never replays, so the persisted
+// set is the only memory of a masked/failed delete), and the persisted set
+// follows every change of the plugin's state.
+func TestWorkerPersistsPendingDeletesBeforeAck(t *testing.T) {
+	store := newMemStore()
+	store.addChange(core.ChangeNew, sampleChange().Event)
+	store.addChange(core.ChangeUpdated, sampleChange().Event)
+
+	out := &trackOut{}
+	out.setDeletes(PendingDelete{Key: "k1", Topic: "t1"})
+	w := newOutputWorker(testOutputCfg("out", time.Second, 3), out, store, testLogger(), newStatusTracker("out", "track", KindOutput))
+
+	if !w.deliver(context.Background(), storage.Change{ID: 1, ChangeType: core.ChangeNew, Event: sampleChange().Event}) {
+		t.Fatal("first deliver failed")
+	}
+	saved := store.savedSnapshot("out")
+	if len(saved) != 1 || saved[0].Key != "k1" || saved[0].Topic != "t1" {
+		t.Fatalf("saved deletes = %+v, want the plugin's set [k1/t1]", saved)
+	}
+	if got := store.cursor("out"); got != 1 {
+		t.Fatalf("cursor = %d, want 1 (acked after the durable save)", got)
+	}
+
+	// The plugin confirmed the deletion: the persisted set follows.
+	out.setDeletes()
+	if !w.deliver(context.Background(), storage.Change{ID: 2, ChangeType: core.ChangeUpdated, Event: sampleChange().Event}) {
+		t.Fatal("second deliver failed")
+	}
+	if saved = store.savedSnapshot("out"); len(saved) != 0 {
+		t.Fatalf("saved deletes after confirmation = %+v, want empty", saved)
+	}
+	if got := store.cursor("out"); got != 2 {
+		t.Fatalf("cursor = %d, want 2", got)
+	}
+}
+
+// TestWorkerPendingDeleteSaveFailureKeepsChangePending pins the ordering
+// guarantee: a failed durable save keeps the journal change UNACKED, so
+// the change replays and the save retries — a restart can never lose a
+// deletion the journal no longer remembers.
+func TestWorkerPendingDeleteSaveFailureKeepsChangePending(t *testing.T) {
+	store := newMemStore()
+	store.addChange(core.ChangeCancelled, sampleChange().Event)
+	store.saveErr = errors.New("persistence down")
+
+	out := &trackOut{}
+	out.setDeletes(PendingDelete{Key: "k1", Topic: "t1"})
+	w := newOutputWorker(testOutputCfg("out", time.Second, 3), out, store, testLogger(), newStatusTracker("out", "track", KindOutput))
+
+	if w.deliver(context.Background(), storage.Change{ID: 1, ChangeType: core.ChangeCancelled, Event: sampleChange().Event}) {
+		t.Fatal("deliver succeeded despite the failed pending-delete save")
+	}
+	if got := store.cursor("out"); got != 0 {
+		t.Fatalf("cursor = %d, want 0 (change stays pending)", got)
+	}
+
+	// The persistence layer heals: the retry saves and acks.
+	store.saveErr = nil
+	if !w.deliver(context.Background(), storage.Change{ID: 1, ChangeType: core.ChangeCancelled, Event: sampleChange().Event}) {
+		t.Fatal("retry deliver failed after the persistence healed")
+	}
+	if saved := store.savedSnapshot("out"); len(saved) != 1 {
+		t.Fatalf("saved deletes after heal = %+v, want the plugin's set", saved)
+	}
+	if got := store.cursor("out"); got != 1 {
+		t.Fatalf("cursor = %d, want 1 after the healed retry", got)
+	}
+}
+
+// TestWorkerRestoresPendingDeletesOnStart pins the restart replay: the
+// durably persisted deletions reach the plugin BEFORE the startup
+// seeding, so the plugin's rehydration can delete the stale retained
+// topics the journal no longer remembers.
+func TestWorkerRestoresPendingDeletesOnStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := newMemStore()
+	store.loadDeletes = map[string][]storage.PendingDelete{
+		"out": {{Key: "k1", Topic: "t1"}, {Key: "k2", Topic: "t2"}},
+	}
+	out := &trackOut{}
+	tracker := newStatusTracker("out", "track", KindOutput)
+	w := newOutputWorker(testOutputCfg("out", time.Second, 3), out, store, testLogger(), tracker)
+	w.pollInterval = time.Hour // no journal delivery needed
+	go w.run(ctx)
+
+	waitFor(t, 2*time.Second, func() bool { return len(out.restoredSnapshot()) == 2 })
+	restored := out.restoredSnapshot()
+	if restored[0].Key != "k1" || restored[0].Topic != "t1" || restored[1].Key != "k2" {
+		t.Fatalf("restored deletes = %+v, want the persisted [k1/t1 k2/t2]", restored)
+	}
 }

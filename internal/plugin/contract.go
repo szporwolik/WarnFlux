@@ -135,6 +135,28 @@ type ActiveStateRehydrater interface {
 	RehydrateActiveState()
 }
 
+// PendingDelete is one unresolved retained-topic deletion of an output
+// plugin: the retained document on the broker must not exist, but the
+// confirming DELETE has not happened yet (masked category, broker
+// outage or a failed publish).
+type PendingDelete struct {
+	Key   string
+	Topic string
+}
+
+// PendingDeleteTracker is an OPTIONAL output capability for plugins that
+// maintain retained broker documents. The output worker persists the
+// current unresolved deletions BEFORE acknowledging the journal change
+// (a restart can then replay deletes the journal no longer remembers —
+// e.g. collected while the category was masked) and restores them before
+// the startup seeding, so a reactivated key cleans its stale deletion.
+type PendingDeleteTracker interface {
+	// PendingDeletes returns a snapshot of the unresolved deletions.
+	PendingDeletes() []PendingDelete
+	// RestorePendingDeletes replays the durably persisted deletions.
+	RestorePendingDeletes(deletes []PendingDelete)
+}
+
 // OutputFactory builds an OutputPlugin from its raw plugin-specific
 // configuration.
 type OutputFactory func(config *yaml.Node) (OutputPlugin, error)

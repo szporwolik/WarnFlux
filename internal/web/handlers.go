@@ -333,8 +333,8 @@ func buildWeatherView(snap state.Snapshot) weatherView {
 	return v
 }
 
-func buildWarningsView(snap state.Snapshot, page int) warningsView {
-	total := len(snap.Hazards)
+func buildWarningsView(hazards []state.Hazard, page int) warningsView {
+	total := len(hazards)
 	pages := 1
 	if total > warningsPerPage {
 		pages = (total + warningsPerPage - 1) / warningsPerPage
@@ -367,7 +367,7 @@ func buildWarningsView(snap state.Snapshot, page int) warningsView {
 		v.From, v.To = 0, 0
 	}
 	v.Hazards = make([]hazardView, 0, to-from)
-	for _, h := range snap.Hazards[from:to] {
+	for _, h := range hazards[from:to] {
 		hv := hazardView{
 			Key:         h.EventKey,
 			Severity:    h.Severity,
@@ -668,7 +668,7 @@ func (s *Server) handlePartialWeather(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePartialWarnings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "warnings", buildWarningsView(s.st.Snapshot(), pageParam(r, "page")))
+	s.renderL(w, r, "warnings", buildWarningsView(s.activeHazards(), pageParam(r, "page")))
 }
 
 func (s *Server) handlePartialPlugins(w http.ResponseWriter, r *http.Request) {

@@ -26,6 +26,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
@@ -648,6 +649,50 @@ func TestHealthIngestRow(t *testing.T) {
 // TestPublicHomePage pins the public landing page: header1/header2 and the
 // active-hazard list without any session; the login form lives behind the
 // icon button at /login. The partial is public too (auto-refresh).
+// TestPublicHomeServedFromStore pins the offline serving surface: the
+// public home page and the map endpoint read active hazards from the
+// LOCAL database — the MQTT mirror is empty (broker down) and the
+// communication is still served.
+func TestPublicHomeServedFromStore(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "home.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	now := time.Now()
+	expires := now.Add(time.Hour)
+	lat, lon := 49.98, 20.06
+	ev := core.HazardEvent{
+		Source: "imgw-meteo", SourceID: "warn-1", Event: "Storm",
+		Severity: "severe", Headline: "Offline storm",
+		Status: core.StatusActive, ExpiresAt: &expires,
+		Latitude: &lat, Longitude: &lon,
+		ReceivedAt: now, UpdatedAt: now,
+	}
+	if _, _, err := store.Ingest(context.Background(), ev, core.Fingerprint(ev)); err != nil {
+		t.Fatal(err)
+	}
+
+	// events=store (active hazards served from SQLite); the mirror is
+	// deliberately EMPTY — no broker ever delivered anything.
+	env := newTestEnvFull(t, nil, nil, store, nil)
+
+	_, html := env.get("/")
+	if !strings.Contains(html, "Offline storm") || !strings.Contains(html, "imgw-meteo") {
+		t.Errorf("home page missing the offline communication: %s", html)
+	}
+
+	resp, body := env.get("/api/events")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/events = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, `"event_key":"imgw-meteo:warn-1"`) ||
+		!strings.Contains(body, `"latitude":49.98`) {
+		t.Errorf("map endpoint missing the offline communication: %s", body)
+	}
+}
+
 func TestPublicHomePage(t *testing.T) {
 	env := newTestEnv(t)
 

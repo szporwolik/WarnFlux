@@ -37,6 +37,63 @@ func baseEvent() core.HazardEvent {
 	}
 }
 
+// TestDispatchSink pins the local-first source pipeline: every journal
+// change produced by a successful ingest or expiration reaches the
+// dispatch sink (the application routes it into the local ingress), with
+// the publisher identity stamped; duplicates and empty expirations never
+// fire it.
+func TestDispatchSink(t *testing.T) {
+	ing, store := newTestIngester(t)
+	ctx := context.Background()
+
+	var got []core.EventChange
+	ing.SetDispatchSink(func(c core.EventChange) {
+		got = append(got, c)
+	})
+
+	event := baseEvent()
+	if _, change, err := ing.Ingest(ctx, event); err != nil || change.Type != core.ChangeNew {
+		t.Fatalf("first Ingest = %+v, %v", change, err)
+	}
+	// Duplicate: no sink call.
+	if _, _, err := ing.Ingest(ctx, event); err != nil {
+		t.Fatalf("duplicate Ingest: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("sink calls after new+duplicate = %d, want 1", len(got))
+	}
+	if got[0].ID == 0 || got[0].Publisher == "" {
+		t.Errorf("sink change missing identity: %+v", got[0])
+	}
+
+	// Expiration: a second event with a lapsed expiry is swept by the
+	// maintenance expiration and reaches the sink as ChangeExpired.
+	expired := baseEvent().Clone()
+	expired.SourceID = "expired-1"
+	past := time.Now().Add(-time.Minute)
+	expired.ExpiresAt = &past
+	if _, _, err := ing.Ingest(ctx, expired); err != nil {
+		t.Fatalf("expired ingest: %v", err)
+	}
+	got = got[:0]
+	changes, err := ing.Expire(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+	if len(changes) == 0 {
+		t.Fatal("Expire produced no changes, want at least one expired event")
+	}
+	if len(got) != len(changes) {
+		t.Fatalf("sink calls = %d, want %d", len(got), len(changes))
+	}
+	for _, c := range got {
+		if c.Type != core.ChangeExpired || c.ID == 0 {
+			t.Errorf("sink change = %+v, want journaled expired", c)
+		}
+	}
+	_ = store
+}
+
 func TestIngestLifecycle(t *testing.T) {
 	ing, _ := newTestIngester(t)
 	ctx := context.Background()

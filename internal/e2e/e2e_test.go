@@ -28,6 +28,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/actions"
 	"github.com/szporwolik/WarnFlux/internal/config"
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
@@ -295,6 +296,102 @@ func TestProviderToActionE2E(t *testing.T) {
 	})
 	if got := actionsMgr.Statuses()[0].Handled; got != 1 {
 		t.Errorf("logger handled %d deliveries, want 1 (replay must dedupe)", got)
+	}
+}
+
+// TestLocalPathWithoutBroker pins the offline architecture: SQLite and
+// local dispatch suffice to accept, store and serve a communication — no
+// broker, no receiver, no network round-trip anywhere in the path. A
+// source ingest produces a journal change that the local dispatch sink
+// enqueues directly into the ingress; the routing engine evaluates it,
+// the logger action executes and the current-state table serves the
+// active view.
+func TestLocalPathWithoutBroker(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	met := metrics.New()
+	rec := trail.NewRecorder(trail.DefaultMaxTrails)
+	ing := ingest.NewIngester(store, testLogger(), met)
+
+	areg := action.NewRegistry()
+	if err := actions.RegisterAll(areg, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	actionsMgr, err := action.NewManager([]config.Action{{
+		ID: "logger-a", Type: "logger", Enabled: true,
+		Config: node(t, map[string]any{"level": "info"}),
+	}}, areg, testLogger(), rec, met)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actionsMgr.SetDeliveryStore(store)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	actionsMgr.Start(ctx)
+	t.Cleanup(func() {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutCancel()
+		_ = actionsMgr.Shutdown(shutCtx)
+	})
+
+	group, err := store.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGroupRouting(group.ID, []storage.ChannelAssignment{
+		{ID: "logger-a", MinSeverity: severity.Moderate},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := routing.New(store, actionsMgr, testLogger(), action.AppInfo{}, rec, met)
+	events := make(chan dispatch.Event, 8)
+	engCtx, engCancel := context.WithCancel(context.Background())
+	defer engCancel()
+	go engine.Run(engCtx, events)
+	waitFor(t, "routing rules loaded", engine.Ready)
+
+	// The local dispatch sink — exactly what main wires: every journal
+	// change goes into the local ingress directly.
+	ing.SetDispatchSink(func(change core.EventChange) {
+		events <- mqttreceiver.EventFromChange(change, "local", time.Now())
+	})
+
+	// A source-style ingestion: local SQLite only, no broker anywhere.
+	now := time.Now()
+	expires := now.Add(time.Hour)
+	ev := core.HazardEvent{
+		Source: "imgw-meteo", SourceID: "warn-1", Event: "Storm",
+		Severity: severity.Severe, Headline: "Offline storm",
+		Status: core.StatusActive, ExpiresAt: &expires,
+		ReceivedAt: now, UpdatedAt: now,
+	}
+	result, _, err := ing.Ingest(ctx, ev)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if result != ingest.ResultNew {
+		t.Fatalf("result = %v, want new", result)
+	}
+
+	key := ev.Key()
+	waitFor(t, "notification delivered without any broker", func() bool {
+		tr, _ := rec.Get(key)
+		return tr.Outcome == trail.OutcomeDelivered
+	})
+	if got := actionsMgr.Statuses()[0].Handled; got != 1 {
+		t.Errorf("logger handled %d deliveries, want 1", got)
+	}
+
+	// The active view is served from SQLite: the current-state table has
+	// the event — no mirror involved.
+	active, err := store.ListActiveEvents(ctx, "", 10)
+	if err != nil || len(active) != 1 || active[0].Key() != key {
+		t.Fatalf("active events = (%v, %v), want the offline event", active, err)
 	}
 }
 

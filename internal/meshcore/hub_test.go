@@ -1292,13 +1292,47 @@ func TestDirectMessageHopSentinel(t *testing.T) {
 // TestHubQueryAckCannotConfirmSend pins the ack-isolation rework: the OK
 // reply to a contact lookup must be consumed by the query's own waiter,
 // never by a concurrent send — otherwise a rejected send would still be
-// recorded as TX.
+// recorded as TX. With the ambiguous-timeout contract the mismatched OK
+// lets the query run out its budget, the worker ends the session, and
+// the send runs on a freshly dialed session — where the device's ERR
+// rejects it, so nothing is recorded as TX.
 func TestHubQueryAckCannotConfirmSend(t *testing.T) {
-	hub, host, _ := startEventTestHub(t, Config{
+	dev1, host1 := net.Pipe()
+	dev2, host2 := net.Pipe()
+	t.Cleanup(func() { dev1.Close(); host1.Close(); dev2.Close(); host2.Close() })
+
+	pipes := make(chan net.Conn, 2)
+	pipes <- dev1
+	pipes <- dev2
+	origDial := Dial
+	Dial = func(Config) (conn, error) {
+		select {
+		case c := <-pipes:
+			return c, nil
+		default:
+			return nil, errors.New("no pipe left for another session")
+		}
+	}
+
+	hub, err := NewHub(Config{
 		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
-	})
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
 	rec := &fakeRecorder{}
 	hub.SetRecorder(rec)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { hub.Run(ctx); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+		Dial = origDial
+	})
 
 	// Stage one: handshake → drain NO_MORE, so the pump is running
 	// before the test commands hit the wire. No self info is sent — the
@@ -1309,19 +1343,18 @@ func TestHubQueryAckCannotConfirmSend(t *testing.T) {
 	go func() {
 		defer close(devReady)
 		buf := make([]byte, 256)
-		host.SetReadDeadline(time.Now().Add(3 * time.Second))
-		if _, err := host.Read(buf); err != nil {
-			t.Logf("DEVICE: handshake read: %v", err)
+		host1.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host1.Read(buf); err != nil {
+			t.Logf("DEVICE1: handshake read: %v", err)
 			return
 		}
-		sync, err := readHostFrame(host)
+		sync, err := readHostFrame(host1)
 		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
-			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
+			t.Logf("DEVICE1: drain frame = %x (%v)", sync, err)
 			return
 		}
-		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+		host1.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
 	}()
-
 	select {
 	case <-devReady:
 	case <-time.After(3 * time.Second):
@@ -1331,32 +1364,64 @@ func TestHubQueryAckCannotConfirmSend(t *testing.T) {
 		t.Fatalf("device did not complete the startup choreography, hub err=%v", lastErr)
 	}
 
+	// Session two answers the handshake and rejects the send.
+	devDone2 := make(chan struct{})
+	go func() {
+		defer close(devDone2)
+		buf := make([]byte, 256)
+		host2.SetReadDeadline(time.Now().Add(8 * time.Second))
+		if _, err := host2.Read(buf); err != nil {
+			t.Logf("DEVICE2: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host2)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE2: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host2.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+		s, err := readHostFrameWithin(host2, 8*time.Second)
+		if err != nil || len(s) < 1 || s[0] != cmdSendChannelTxtMsg {
+			t.Logf("DEVICE2: send frame = %x (%v)", s, err)
+			return
+		}
+		host2.Write(encodeDeviceFrame([]byte{respErr, 2}))
+	}()
+
+	// Wait until the first session's command stream exists, then queue
+	// the query — deterministically BEFORE the send (the old test could
+	// drop the query when it raced the session becoming ready, which
+	// masked the ambiguous-timeout path).
+	waitForMesh(t, func() bool {
+		hub.mu.Lock()
+		sc := hub.sessionCtx
+		hub.mu.Unlock()
+		return sc != nil
+	}, "session command stream")
+
 	key := append([]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, make([]byte, 26)...)
 	hub.touchNode(key, "", 1, 0, 0, 0, time.Now())
 
-	// Stage two: the query gets OK, the send gets ERR — the send must
-	// fail and nothing may be recorded as TX.
+	// Stage one reply: the query gets a MISMATCHED OK — it must not
+	// satisfy the query, whose own budget then expires (the worker ends
+	// the session).
 	go func() {
-		q, err := readHostFrame(host)
-		if err != nil || len(q) < 1 || q[0] != cmdGetContactByKey {
-			t.Logf("DEVICE: query frame = %x (%v)", q, err)
+		q, err := readHostFrame(host1)
+		if err != nil || len(q) != 33 || q[0] != cmdGetContactByKey {
+			t.Logf("DEVICE1: query frame = %x (%v)", q, err)
 			return
 		}
-		host.Write(encodeDeviceFrame([]byte{respOK}))
-		// The mismatched OK does not satisfy the query: the send is
-		// written only after the query's own budget (2s) expires, so
-		// this read needs a longer window than the default.
-		s, err := readHostFrameWithin(host, 8*time.Second)
-		if err != nil || len(s) < 1 || s[0] != cmdSendChannelTxtMsg {
-			t.Logf("DEVICE: send frame = %x (%v)", s, err)
-			return
-		}
-		host.Write(encodeDeviceFrame([]byte{respErr, 2}))
+		host1.Write(encodeDeviceFrame([]byte{respOK}))
 	}()
 
 	hub.maybeQueryContact(key)
 	if err := hub.SendChannelMessage(context.Background(), "hello", "admin"); err == nil {
 		t.Fatal("send must fail when the device rejects it")
+	}
+	select {
+	case <-devDone2:
+	case <-time.After(8 * time.Second):
+		t.Fatal("device two choreography did not complete")
 	}
 	time.Sleep(150 * time.Millisecond)
 	if got := rec.messages(); len(got) != 0 {
@@ -1452,6 +1517,17 @@ func TestSendHonorsCallerCancellationWhileAwaitingAck(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("device never saw the send frame")
 	}
+
+	// Ambiguous exit (P1): the device may still answer the cancelled
+	// send, and its late reply would otherwise satisfy the next command
+	// by type alone — the worker ends the session instead.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && hub.Connected() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hub.Connected() {
+		t.Fatal("session survived an ambiguous cancellation; a late reply could confirm the next command")
+	}
 }
 
 // countingConn records every Write without ever delivering it — the
@@ -1466,6 +1542,26 @@ func (c *countingConn) Write(p []byte) (int, error) {
 func (c *countingConn) Close() error                     { return nil }
 func (c *countingConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *countingConn) SetWriteDeadline(time.Time) error { return nil }
+
+// scriptedConn accepts every write while open and rejects writes after
+// Close — the "device reachable but silent" probe that honors the
+// session-recreation contract.
+type scriptedConn struct {
+	writes atomic.Int32
+	closed atomic.Bool
+}
+
+func (s *scriptedConn) Read([]byte) (int, error) { return 0, errors.New("unexpected read") }
+func (s *scriptedConn) Write(p []byte) (int, error) {
+	if s.closed.Load() {
+		return 0, errors.New("transport closed")
+	}
+	s.writes.Add(1)
+	return len(p), nil
+}
+func (s *scriptedConn) Close() error                     { s.closed.Store(true); return nil }
+func (s *scriptedConn) SetReadDeadline(time.Time) error  { return nil }
+func (s *scriptedConn) SetWriteDeadline(time.Time) error { return nil }
 
 // shortWriter accepts at most ONE byte per Write call — the reported P2
 // reproduction ("a transport accepting one byte is enough to reproduce
@@ -1614,6 +1710,66 @@ func TestCommandWriteErrorRecreatesSession(t *testing.T) {
 	}
 	if !c.closed.Load() {
 		t.Fatal("the connection was not closed after a failed frame write; the next command could follow a partial frame")
+	}
+}
+
+// TestLateAckAfterTimeoutNeverConfirmsNextCommand pins the reported P1:
+// after command A's ACK wait times out the device may still answer, and
+// the old code routed that late OK/SENT by reply TYPE alone — satisfying
+// command B, which then reported success for a send the device never
+// confirmed. The worker now ends the session at the ambiguous timeout:
+// the late reply dies with the connection and B can never be confirmed
+// by it.
+func TestLateAckAfterTimeoutNeverConfirmsNextCommand(t *testing.T) {
+	hub, err := NewHub(Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &scriptedConn{}
+
+	// Command A: the transport accepts the frame but the device stays
+	// silent — the ACK wait times out.
+	replyA := make(chan error, 1)
+	hub.runCommand(context.Background(), c, cmdReq{
+		payload: buildSendChannelTxtMsg(2, "one"),
+		expect:  expectAck,
+		timeout: 100 * time.Millisecond,
+		reply:   replyA,
+	})
+	if err := <-replyA; err == nil {
+		t.Fatal("command A succeeded without any reply, want the acknowledgement timeout")
+	}
+	if !c.closed.Load() {
+		t.Fatal("the connection survived an ambiguous timeout; a late reply could confirm the next command")
+	}
+
+	// Command B starts while the device's LATE reply to A is still on
+	// its way. On the fixed worker B fails fast on the closed transport;
+	// on the old worker B writes successfully and waits — the moment to
+	// deliver the late reply and watch it mis-satisfy B.
+	replyB := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.runCommand(context.Background(), c, cmdReq{
+			payload: buildSendChannelTxtMsg(2, "two"),
+			expect:  expectAck,
+			reply:   replyB,
+		})
+	}()
+	select {
+	case <-done:
+		// Fixed path: B failed fast on the closed transport.
+	case <-time.After(500 * time.Millisecond):
+		// Old path: B is waiting on the live transport — A's late
+		// reply arrives now.
+		hub.handleFrame([]byte{respOK})
+		<-done
+	}
+	if err := <-replyB; err == nil {
+		t.Fatal("command B was confirmed by command A's late reply — the session was not recreated after the ambiguous timeout")
 	}
 }
 
@@ -1860,66 +2016,84 @@ func TestContactQueryDoesNotStealSendAck(t *testing.T) {
 	}, "contact record applied")
 }
 
-// TestQueryReplyTypeIsolation pins the explicit-expected-reply design: an
-// ack frame that arrives while a contact query is in flight does NOT
-// satisfy the query (wrong type). The query times out on its own budget
-// and the send that follows gets its own ack — delayed replies never
-// cross commands.
-func TestQueryReplyTypeIsolation(t *testing.T) {
-	hub, host, _ := startEventTestHub(t, Config{
-		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
-	})
-	rec := &fakeRecorder{}
-	hub.SetRecorder(rec)
+// TestQueryTimeoutRecreatesSession pins the query half of the reported
+// P1: a contact query whose budget expires leaves the reply stream
+// ambiguous (the device may still answer it), so the worker ends the
+// session — a late query reply can never cross into a later command.
+// The next command then runs on a FRESHLY dialed session and succeeds
+// with its own ack. The mismatched reply also proves the immediate
+// window still matches by type: a bare OK never satisfies a contact
+// query (the query runs out its own budget instead of completing).
+func TestQueryTimeoutRecreatesSession(t *testing.T) {
+	dev1, host1 := net.Pipe()
+	dev2, host2 := net.Pipe()
+	t.Cleanup(func() { dev1.Close(); host1.Close(); dev2.Close(); host2.Close() })
 
-	// Stage one: startup choreography only (handshake → drain NO_MORE).
-	devReady := make(chan struct{})
-	go func() {
-		defer close(devReady)
-		buf := make([]byte, 256)
-		host.SetReadDeadline(time.Now().Add(3 * time.Second))
-		if _, err := host.Read(buf); err != nil {
-			t.Logf("DEVICE: handshake read: %v", err)
-			return
+	// Dial returns a fresh pipe per session so the recreated session
+	// gets its own transport.
+	pipes := make(chan net.Conn, 2)
+	pipes <- dev1
+	pipes <- dev2
+	origDial := Dial
+	Dial = func(Config) (conn, error) {
+		select {
+		case c := <-pipes:
+			return c, nil
+		default:
+			return nil, errors.New("no pipe left for another session")
 		}
-		sync, err := readHostFrame(host)
-		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
-			t.Logf("DEVICE: drain frame = %x (%v)", sync, err)
-			return
-		}
-		host.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
-	}()
-	select {
-	case <-devReady:
-	case <-time.After(3 * time.Second):
-		t.Fatal("device did not complete the startup choreography")
 	}
 
-	// Stage two: advert → query → MISMATCHED reply → send → OK.
-	key := bytes.Repeat([]byte{0xCD}, 32)
-	devDone := make(chan struct{})
+	hub, err := NewHub(Config{
+		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &fakeRecorder{}
+	hub.SetRecorder(rec)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { hub.Run(ctx); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+		Dial = origDial
+	})
+
+	// Session one: startup choreography, then advert → query → a
+	// MISMATCHED reply (bare OK: the query expects a contact record).
 	queryRead := make(chan struct{})
+	devDone1 := make(chan struct{})
 	go func() {
-		defer close(devDone)
-		host.Write(encodeDeviceFrame(append([]byte{pushAdvert}, key...)))
-		q, err := readHostFrame(host)
-		if err != nil || len(q) != 33 || q[0] != cmdGetContactByKey {
-			t.Logf("DEVICE: query frame = %x (%v)", q, err)
+		defer close(devDone1)
+		buf := make([]byte, 256)
+		host1.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := host1.Read(buf); err != nil {
+			t.Logf("DEVICE1: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host1)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE1: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host1.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+
+		key := bytes.Repeat([]byte{0xEF}, 32)
+		host1.Write(encodeDeviceFrame(append([]byte{pushAdvert}, key...)))
+		q, err := readHostFrame(host1)
+		if err != nil || len(q) != 33 || q[0] != cmdGetContactByKey || !bytes.Equal(q[1:], key) {
+			t.Logf("DEVICE1: query frame = %x (%v)", q, err)
 			return
 		}
 		close(queryRead)
-		// A MISMATCHED reply: the query expects a contact record, but
-		// the device sends a bare OK. It must not satisfy the query.
-		host.Write(encodeDeviceFrame([]byte{respOK}))
-
-		// The send follows only after the query's own budget (2s)
-		// expires, so this read needs a longer window than the default.
-		s, err := readHostFrameWithin(host, 8*time.Second)
-		if err != nil || len(s) < 1 || s[0] != cmdSendChannelTxtMsg {
-			t.Logf("DEVICE: send frame = %x (%v)", s, err)
-			return
-		}
-		host.Write(encodeDeviceFrame([]byte{respOK}))
+		// The mismatched reply must not satisfy the query — the query's
+		// own budget expires and the session ends.
+		host1.Write(encodeDeviceFrame([]byte{respOK}))
 	}()
 
 	select {
@@ -1928,20 +2102,53 @@ func TestQueryReplyTypeIsolation(t *testing.T) {
 		t.Fatal("device never received the contact query")
 	}
 
+	// Session two answers the handshake and acks the send.
+	devDone2 := make(chan struct{})
+	go func() {
+		defer close(devDone2)
+		buf := make([]byte, 256)
+		host2.SetReadDeadline(time.Now().Add(8 * time.Second))
+		if _, err := host2.Read(buf); err != nil {
+			t.Logf("DEVICE2: handshake read: %v", err)
+			return
+		}
+		sync, err := readHostFrame(host2)
+		if err != nil || len(sync) != 1 || sync[0] != cmdSyncNextMessage {
+			t.Logf("DEVICE2: drain frame = %x (%v)", sync, err)
+			return
+		}
+		host2.Write(encodeDeviceFrame([]byte{respNoMoreMessages}))
+		s, err := readHostFrameWithin(host2, 8*time.Second)
+		if err != nil || len(s) < 1 || s[0] != cmdSendChannelTxtMsg {
+			t.Logf("DEVICE2: send frame = %x (%v)", s, err)
+			return
+		}
+		host2.Write(encodeDeviceFrame([]byte{respOK}))
+	}()
+
+	// The send queues behind the query. The query times out (2 s), the
+	// worker recreates the session, and the send succeeds on the fresh
+	// session's own stream — where its ack unambiguously belongs to it.
 	start := time.Now()
 	if err := hub.SendChannelMessage(context.Background(), "hello", "admin"); err != nil {
-		t.Fatalf("SendChannelMessage = %v, want success despite the mismatched query reply", err)
+		t.Fatalf("SendChannelMessage = %v, want success on the recreated session", err)
 	}
-	if elapsed := time.Since(start); elapsed > 4*time.Second {
-		t.Errorf("send took %v, want ≤ query budget + margin", elapsed)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("send took %v, want query budget + reconnect + fresh session", elapsed)
+	}
+
+	select {
+	case <-devDone1:
+	case <-time.After(8 * time.Second):
+		t.Fatal("device one choreography did not complete")
 	}
 	select {
-	case <-devDone:
+	case <-devDone2:
 	case <-time.After(8 * time.Second):
-		t.Fatal("device choreography did not complete")
+		t.Fatal("device two choreography did not complete")
 	}
-	if got := rec.messages(); len(got) != 1 || got[0].Direction != "tx" {
-		t.Fatalf("recorded = %+v, want exactly one TX", got)
+	if got := rec.messages(); len(got) != 1 || got[0].Direction != "tx" || got[0].Text != "hello" {
+		t.Fatalf("recorded = %+v, want exactly one TX on the recreated session", got)
 	}
 }
 

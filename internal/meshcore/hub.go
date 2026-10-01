@@ -693,9 +693,15 @@ func writeAll(ctx context.Context, c conn, frame []byte, timeout time.Duration) 
 }
 
 // commandWorker is the single goroutine executing every reply-expecting
-// host command, strictly one at a time.
+// host command, strictly one at a time. When a command ended the session
+// (ambiguous timeout, failed write) the worker must prefer the dying
+// session's context over the queued commands: the next command belongs on
+// the freshly dialed session.
 func (h *Hub) commandWorker(ctx context.Context, c conn) {
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -710,9 +716,12 @@ type writeResult struct{ err error }
 
 // runCommand writes one command and waits for its MATCHING reply. The
 // expectation slot is published before the write so the frame pump can
-// route the reply the instant it arrives; every exit path (write
-// failure, session end, timeout) clears the slot — no stale waiter can
-// ever consume a later command's reply.
+// route the reply the instant it arrives; every exit path clears the
+// slot, and every exit that leaves the reply stream AMBIGUOUS (a fully
+// written command whose reply was never correlated) recreates the
+// session — the device may still answer at any moment and OK/SENT/ERR
+// frames carry no correlation id, so the only stream where a reply
+// unambiguously belongs to the command in flight is a fresh one (P1).
 //
 // Cancellation contract (P1): a command whose caller is ALREADY
 // cancelled is rejected BEFORE any I/O — nothing reaches the transport.
@@ -818,15 +827,47 @@ func (h *Hub) runCommand(ctx context.Context, c conn, req cmdReq) {
 		clear()
 		deliverErr(req.reply, err)
 	case <-callerDone:
+		// Ambiguous exit (P1): the command is fully written and the
+		// device may still answer. Its late reply must never satisfy
+		// the next command — end the session so the next command runs
+		// on a fresh stream.
 		clear()
 		deliverErr(req.reply, req.ctx.Err())
+		h.recreateAfterAmbiguousWait(c)
 	case <-ctx.Done():
+		// The session is ending anyway: the teardown closes the
+		// connection and the next session is a fresh one.
 		clear()
 		deliverErr(req.reply, errors.New("meshcore: session ended"))
 	case <-time.After(timeout):
+		// Ambiguous exit (P1): the command timed out waiting for its
+		// reply, which may arrive at any moment and would otherwise be
+		// routed to the next command by type alone (a late ACK
+		// confirming the wrong command). Recreate the session.
 		clear()
 		deliverErr(req.reply, errors.New("meshcore: device did not acknowledge the command"))
+		h.recreateAfterAmbiguousWait(c)
 	}
+}
+
+// recreateAfterAmbiguousWait closes the transport after the worker gave
+// up on a reply it can never correlate: the command is fully written and
+// the device may answer at any moment, while OK/SENT/ERR frames carry no
+// command id — a late reply routed to the next command would confirm (or
+// fail) the WRONG command. The reconnect loop dials a fresh session, on
+// which every reply unambiguously belongs to the command in flight.
+func (h *Hub) recreateAfterAmbiguousWait(c conn) {
+	h.logger.Warn("meshcore: reply never correlated with its command; recreating the session")
+	// Stop the command worker FIRST: queued commands belong on the
+	// freshly dialed session, not on the dying one (the worker would
+	// otherwise race the teardown and fail them on the closed
+	// transport).
+	h.mu.Lock()
+	if h.sessionCancel != nil {
+		h.sessionCancel()
+	}
+	h.mu.Unlock()
+	_ = c.Close()
 }
 
 // settleOrRecreateSession keeps the session stream frame-consistent after
@@ -1225,10 +1266,11 @@ func (h *Hub) handleFrame(frame []byte) {
 			h.logger.Warn("meshcore: device error", "code", code)
 		}
 	case respOK, respSent:
-		// Satisfy an in-flight ack-expecting command. A late reply for a
-		// timed-out command (or a reply to a command that never expected
-		// an ack) matches no slot and is dropped — it can never satisfy
-		// a different command.
+		// Satisfy the in-flight ack-expecting command. Any exit that
+		// could leave a reply outstanding also ended the session (see
+		// runCommand), so an ack can never be a late reply to an earlier
+		// command: the slot it satisfies is exactly the command it
+		// answers.
 		if ch := h.takeSlot(expectAck); ch != nil {
 			deliverErr(ch, nil)
 		} else if h.logger != nil {

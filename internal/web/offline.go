@@ -234,7 +234,10 @@ func (s *Server) handleTile(w http.ResponseWriter, r *http.Request) {
 	}
 	z, errZ := strconv.Atoi(r.PathValue("z"))
 	x, errX := strconv.Atoi(r.PathValue("x"))
-	y, errY := strconv.Atoi(r.PathValue("y"))
+	// The frontend requests {z}/{x}/{y}.jpg and the mux wildcard captures
+	// the whole segment including the extension, so strip it before parsing.
+	yStr := strings.TrimSuffix(r.PathValue("y"), ".jpg")
+	y, errY := strconv.Atoi(yStr)
 	if errZ != nil || errX != nil || errY != nil || z < 0 || z > 25 || x < 0 || y < 0 {
 		http.NotFound(w, r)
 		return

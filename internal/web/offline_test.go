@@ -140,6 +140,19 @@ func TestTileHandler(t *testing.T) {
 		t.Errorf("tile cache control = %q", cc)
 	}
 
+	// The frontend requests {z}/{x}/{y}.jpg — the extension rides inside
+	// the path segment and must be served, not 404.
+	resp, body = env.get("/tiles/8/141/86.jpg")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET tile with .jpg suffix = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("tile .jpg content type = %q", ct)
+	}
+	if !strings.Contains(body, "jpeg-bytes") {
+		t.Errorf("tile .jpg body = %q", body)
+	}
+
 	// Missing tiles 404 and invalid coordinates 404 (the mux cleans
 	// dot-segments before routing, so traversal never reaches the
 	// handler).

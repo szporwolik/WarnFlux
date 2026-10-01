@@ -129,9 +129,9 @@ var sourceKinds = map[string]channelKind{
 		Name:        "APRS network",
 		Description: "Radio amateurs' stations and messages heard over the air.",
 	},
-	"meshcore": {
+	"meshtastic": {
 		Icon:        "i-broadcast",
-		Name:        "MeshCore network",
+		Name:        "Meshtastic network",
 		Description: "Community LoRa mesh: heard nodes, stations and direct messages from registered operators.",
 	},
 	"openmeteo": {
@@ -167,7 +167,7 @@ func sourceRank(v publicChannelView) int {
 		return 5
 	case "APRS network":
 		return 6
-	case "MeshCore network":
+	case "Meshtastic network":
 		return 7
 	case "Open-Meteo":
 		return 8

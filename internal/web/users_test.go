@@ -260,9 +260,9 @@ func (f *fakeUsers) SetUserAPRS(userID int64, callsigns []string) error {
 	return storage.ErrUserNotFound
 }
 
-// SetUserMeshKeys replaces the user's registered MeshCore public keys
+// SetUserMeshtasticIDs replaces the user's registered Meshtastic public keys
 // (lowercase 64-hex, de-duplicated, sorted).
-func (f *fakeUsers) SetUserMeshKeys(userID int64, keys []string) error {
+func (f *fakeUsers) SetUserMeshtasticIDs(userID int64, keys []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	seen := make(map[string]bool, len(keys))
@@ -283,7 +283,7 @@ func (f *fakeUsers) SetUserMeshKeys(userID int64, keys []string) error {
 		if f.rows[i].IsAdmin {
 			return storage.ErrUserProtected
 		}
-		f.rows[i].MeshKeys = clean
+		f.rows[i].MeshtasticIDs = clean
 		f.rows[i].UpdatedAt = time.Now()
 		return nil
 	}
@@ -313,14 +313,14 @@ func (f *fakeUsers) AllAPRSCallsigns() ([]string, error) {
 	return out, nil
 }
 
-// MeshKeyOwners returns each registered MeshCore public key mapped to the
+// MeshtasticOwners returns each registered Meshtastic public key mapped to the
 // owning username.
-func (f *fakeUsers) MeshKeyOwners() (map[string]string, error) {
+func (f *fakeUsers) MeshtasticOwners() (map[string]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	owners := make(map[string]string)
 	for _, u := range f.rows {
-		for _, k := range u.MeshKeys {
+		for _, k := range u.MeshtasticIDs {
 			owners[k] = u.Username
 		}
 	}

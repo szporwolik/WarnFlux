@@ -105,7 +105,7 @@ func (s *Store) ListUsers(page, perPage int) ([]storage.User, int, error) {
 	}
 	out, err = s.attachAPRS(out)
 	if err == nil {
-		out, err = s.attachMeshKeys(out)
+		out, err = s.attachMeshtasticIDs(out)
 	}
 	if err != nil {
 		return nil, 0, err
@@ -414,10 +414,10 @@ func (s *Store) SetUserAPRS(userID int64, callsigns []string) error {
 	return nil
 }
 
-// SetUserMeshKeys replaces the user's registered MeshCore public keys
+// SetUserMeshtasticIDs replaces the user's registered Meshtastic node ids
 // (lowercase 64-hex, de-duplicated). The admin row reports
 // storage.ErrUserProtected.
-func (s *Store) SetUserMeshKeys(userID int64, keys []string) error {
+func (s *Store) SetUserMeshtasticIDs(userID int64, keys []string) error {
 	var isAdmin int
 	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -433,6 +433,7 @@ func (s *Store) SetUserMeshKeys(userID int64, keys []string) error {
 	var clean []string
 	for _, k := range keys {
 		k = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(k), "0x"))
+		k = strings.TrimPrefix(k, "!")
 		if k == "" || seen[k] {
 			continue
 		}
@@ -442,46 +443,46 @@ func (s *Store) SetUserMeshKeys(userID int64, keys []string) error {
 	now := s.now().UnixMilli()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin meshkeys update: %w", err)
+		return fmt.Errorf("begin meshtastic ids update: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM user_meshkeys WHERE user_id = ?`, userID); err != nil {
-		return fmt.Errorf("clear user %d meshkeys: %w", userID, err)
+	if _, err := tx.Exec(`DELETE FROM user_meshtastic_ids WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("clear user %d meshtastic ids: %w", userID, err)
 	}
 	for _, k := range clean {
-		if _, err := tx.Exec(`INSERT INTO user_meshkeys (user_id, pubkey, created_at_ms) VALUES (?, ?, ?)`,
+		if _, err := tx.Exec(`INSERT INTO user_meshtastic_ids (user_id, node_id, created_at_ms) VALUES (?, ?, ?)`,
 			userID, k, now); err != nil {
-			return fmt.Errorf("insert user %d meshkey: %w", userID, err)
+			return fmt.Errorf("insert user %d meshtastic id: %w", userID, err)
 		}
 	}
 	if _, err := tx.Exec(`UPDATE users SET updated_at_ms = ? WHERE id = ?`, now, userID); err != nil {
 		return fmt.Errorf("touch user %d: %w", userID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit meshkeys update: %w", err)
+		return fmt.Errorf("commit meshtastic ids update: %w", err)
 	}
 	return nil
 }
 
-// MeshKeyOwners returns every registered MeshCore public key mapped to
+// MeshtasticOwners returns every registered Meshtastic node id mapped to
 // the username that registered it.
-func (s *Store) MeshKeyOwners() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT m.pubkey, u.username FROM user_meshkeys m
+func (s *Store) MeshtasticOwners() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT m.node_id, u.username FROM user_meshtastic_ids m
 		JOIN users u ON u.id = m.user_id`)
 	if err != nil {
-		return nil, fmt.Errorf("query meshkey owners: %w", err)
+		return nil, fmt.Errorf("query meshtastic id owners: %w", err)
 	}
 	defer rows.Close()
 	owners := make(map[string]string)
 	for rows.Next() {
 		var key, username string
 		if err := rows.Scan(&key, &username); err != nil {
-			return nil, fmt.Errorf("scan meshkey owner: %w", err)
+			return nil, fmt.Errorf("scan meshtastic id owner: %w", err)
 		}
 		owners[key] = username
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate meshkey owners: %w", err)
+		return nil, fmt.Errorf("iterate meshtastic id owners: %w", err)
 	}
 	return owners, nil
 }
@@ -763,9 +764,9 @@ func (s *Store) attachAPRS(users []storage.User) ([]storage.User, error) {
 	return users, nil
 }
 
-// attachMeshKeys fills MeshKeys on the given users with one grouped query
+// attachMeshtasticIDs fills MeshtasticIDs on the given users with one grouped query
 // and returns the updated slice (the input elements are copies).
-func (s *Store) attachMeshKeys(users []storage.User) ([]storage.User, error) {
+func (s *Store) attachMeshtasticIDs(users []storage.User) ([]storage.User, error) {
 	if len(users) == 0 {
 		return users, nil
 	}
@@ -776,19 +777,19 @@ func (s *Store) attachMeshKeys(users []storage.User) ([]storage.User, error) {
 		byID[u.ID] = i
 	}
 	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	rows, err := s.db.Query(`SELECT user_id, pubkey FROM user_meshkeys WHERE user_id IN (`+ph+`) ORDER BY pubkey COLLATE NOCASE ASC`, ids...)
+	rows, err := s.db.Query(`SELECT user_id, node_id FROM user_meshtastic_ids WHERE user_id IN (`+ph+`) ORDER BY node_id COLLATE NOCASE ASC`, ids...)
 	if err != nil {
-		return nil, fmt.Errorf("list user meshkeys: %w", err)
+		return nil, fmt.Errorf("list user meshtastic ids: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var userID int64
-		var pubkey string
-		if err := rows.Scan(&userID, &pubkey); err != nil {
-			return nil, fmt.Errorf("scan user meshkey: %w", err)
+		var nodeID string
+		if err := rows.Scan(&userID, &nodeID); err != nil {
+			return nil, fmt.Errorf("scan user meshtastic id: %w", err)
 		}
 		if i, ok := byID[userID]; ok {
-			users[i].MeshKeys = append(users[i].MeshKeys, pubkey)
+			users[i].MeshtasticIDs = append(users[i].MeshtasticIDs, nodeID)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -808,7 +809,7 @@ func (s *Store) userByID(id int64) (storage.User, error) {
 	if err != nil {
 		return storage.User{}, err
 	}
-	users, err = s.attachMeshKeys(users)
+	users, err = s.attachMeshtasticIDs(users)
 	if err != nil {
 		return storage.User{}, err
 	}

@@ -266,7 +266,7 @@ func TestConfigMqttMask(t *testing.T) {
 	_, page := env.get("/config")
 	for _, key := range []string{"events", "active", "info", "status",
 		"aprs_stations", "aprs_bulletins", "aprs_packets", "aprs_messages",
-		"meshcore_stations", "meshcore_messages"} {
+		"meshtastic_stations", "meshtastic_messages"} {
 		if !strings.Contains(page, `name="cat" value="`+key+`"`) {
 			t.Errorf("config page misses the %q publish checkbox", key)
 		}

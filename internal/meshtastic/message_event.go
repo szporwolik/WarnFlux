@@ -1,9 +1,9 @@
-package meshcore
+package meshtastic
 
-// MeshCore-message routing wire documents: a direct message from a
+// Meshtastic-message routing wire documents: a direct message from a
 // directory-known sender is re-published as a canonical /events payload
 // on the WarnFlux topic prefix, so it enters the normal MQTT → routing
-// matrix flow as the "meshcore" source (groups can forward it to
+// matrix flow as the "meshtastic" source (groups can forward it to
 // Discord, SMTP, ...). The schema mirrors mqttreceiver.WireSchemaVersion
 // (both live on the same /events stream, so the version must never
 // drift).

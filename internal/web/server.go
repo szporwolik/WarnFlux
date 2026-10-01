@@ -35,7 +35,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
-	"github.com/szporwolik/WarnFlux/internal/meshcore"
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
@@ -58,16 +58,16 @@ type RouterStatuses interface {
 
 // Server is the HTTP layer of the merged application.
 type Server struct {
-	cfg       config.Web
-	st        *state.State
-	receivers *mqttreceiver.Manager
-	pub       composePublisher
-	router    RouterStatuses
-	actions   *action.Manager
-	aprs      *aprs.Hub
-	mesh      *meshcore.Hub
-	ingress   *dispatch.Ingress
-	users     storage.DirectoryStore
+	cfg        config.Web
+	st         *state.State
+	receivers  *mqttreceiver.Manager
+	pub        composePublisher
+	router     RouterStatuses
+	actions    *action.Manager
+	aprs       *aprs.Hub
+	meshtastic *meshtastic.Hub
+	ingress    *dispatch.Ingress
+	users      storage.DirectoryStore
 	// events backs the public archive (180-day history of communications).
 	// nil in minimal constructions (the archive tab then shows an empty
 	// state).
@@ -75,17 +75,17 @@ type Server struct {
 	// aprsMsgs backs the admin APRS message history page; nil in minimal
 	// constructions (the page then shows an empty state).
 	aprsMsgs storage.APRSMessageStore
-	// meshMsgs backs the admin MeshCore message history page; nil in
+	// meshtasticMsgs backs the admin Meshtastic message history page; nil in
 	// minimal constructions (the page then shows an empty state).
-	meshMsgs     storage.MeshMessageStore
-	logger       *slog.Logger
-	sessions     *sessionStore
-	loginLimiter *loginLimiter
-	logs         *LogBuffer
-	traffic      *mqttreceiver.TrafficBuffer
-	auditLog     *AuditBuffer
-	trails       *trail.Recorder
-	metrics      *metrics.Registry
+	meshtasticMsgs storage.MeshtasticMessageStore
+	logger         *slog.Logger
+	sessions       *sessionStore
+	loginLimiter   *loginLimiter
+	logs           *LogBuffer
+	traffic        *mqttreceiver.TrafficBuffer
+	auditLog       *AuditBuffer
+	trails         *trail.Recorder
+	metrics        *metrics.Registry
 
 	// sys samples host CPU/memory utilization for the System card;
 	// nil in minimal constructions (the view degrades to n/a).
@@ -142,9 +142,9 @@ const repoURL = appinfo.RepoURL
 // by /metrics.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	pub composePublisher, router RouterStatuses, actions *action.Manager,
-	aprsHub *aprs.Hub, meshHub *meshcore.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
+	aprsHub *aprs.Hub, meshtasticHub *meshtastic.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
 	users storage.DirectoryStore, events storage.EventStore, aprsMsgs storage.APRSMessageStore,
-	meshMsgs storage.MeshMessageStore, ingest map[string]http.Handler,
+	meshtasticMsgs storage.MeshtasticMessageStore, ingest map[string]http.Handler,
 	logs *LogBuffer, traffic *mqttreceiver.TrafficBuffer,
 	trails *trail.Recorder, metricsReg *metrics.Registry) (*Server, error) {
 
@@ -183,12 +183,12 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		router:         router,
 		actions:        actions,
 		aprs:           aprsHub,
-		mesh:           meshHub,
+		meshtastic:     meshtasticHub,
 		ingress:        ingress,
 		users:          users,
 		events:         events,
 		aprsMsgs:       aprsMsgs,
-		meshMsgs:       meshMsgs,
+		meshtasticMsgs: meshtasticMsgs,
 		logger:         logger,
 		sessions:       newSessionStore(cfg.Auth.SecureCookie),
 		loginLimiter:   newLoginLimiter(),
@@ -295,7 +295,7 @@ func (s *Server) routes(static http.Handler) {
 	// UI language switch: stores the choice in a cookie and returns.
 	s.mux.HandleFunc("GET /lang/{code}", s.handleLanguage)
 	s.mux.HandleFunc("GET /api/aprs/stations", s.handleAPRSStations)
-	s.mux.HandleFunc("GET /api/meshcore/stations", s.handleMeshcoreStations)
+	s.mux.HandleFunc("GET /api/meshtastic/stations", s.handleMeshtasticStations)
 	s.mux.HandleFunc("GET /api/events", s.handleEventsMap)
 	s.mux.HandleFunc("GET /api/weather", s.handleWeather)
 	s.mux.HandleFunc("GET /api/aircraft", s.handleAircraft)
@@ -311,11 +311,10 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /messages", s.requireAdmin(s.handleAPRSMessagesPage))
 	s.mux.Handle("POST /messages/send", s.requireAdmin(s.handleAPRSSend))
 	s.mux.Handle("POST /messages/beacon", s.requireAdmin(s.handleAPRSBeacon))
-	s.mux.Handle("GET /meshcore", s.requireAdmin(s.handleMeshcorePage))
-	s.mux.Handle("GET /partials/meshcore", s.requireAdminPartial(s.handlePartialMeshcore))
+	s.mux.Handle("GET /meshtastic", s.requireAdmin(s.handleMeshtasticPage))
+	s.mux.Handle("GET /partials/meshtastic", s.requireAdminPartial(s.handlePartialMeshtastic))
 	s.mux.Handle("GET /partials/messages", s.requireAdminPartial(s.handlePartialMessages))
-	s.mux.Handle("POST /meshcore/advert", s.requireAdmin(s.handleMeshcoreAdvert))
-	s.mux.Handle("POST /meshcore/send", s.requireAdmin(s.handleMeshcoreSend))
+	s.mux.Handle("POST /meshtastic/send", s.requireAdmin(s.handleMeshtasticSend))
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))
 	s.mux.Handle("GET /notifications", s.requireAdmin(s.handleNotificationsPage))
 	s.mux.Handle("GET /partials/notifications", s.requireAdminPartial(s.handlePartialNotifications))

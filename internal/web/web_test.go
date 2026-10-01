@@ -31,7 +31,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
-	"github.com/szporwolik/WarnFlux/internal/meshcore"
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
@@ -151,10 +151,10 @@ func newTestEnvWithHub(t *testing.T, hub *aprs.Hub) *testEnv {
 	return newTestEnvFull(t, nil, hub, nil, nil)
 }
 
-// newTestEnvWithMesh builds the test environment with a MeshCore hub
+// newTestEnvWithMesh builds the test environment with a Meshtastic hub
 // wired into the web server (the home-page map reads its nodes).
-func newTestEnvWithMesh(t *testing.T, meshHub *meshcore.Hub) *testEnv {
-	return newTestEnvFull(t, nil, nil, nil, meshHub)
+func newTestEnvWithMesh(t *testing.T, meshtasticHub *meshtastic.Hub) *testEnv {
+	return newTestEnvFull(t, nil, nil, nil, meshtasticHub)
 }
 
 // newTestEnvWithStore builds the test environment with an event store
@@ -163,8 +163,8 @@ func newTestEnvWithStore(t *testing.T, events storage.EventStore) *testEnv {
 	return newTestEnvFull(t, nil, nil, events, nil)
 }
 
-func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub) *testEnv {
-	return newTestEnvAll(t, ingest, hub, events, meshHub, nil, nil)
+func newTestEnvFull(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshtasticHub *meshtastic.Hub) *testEnv {
+	return newTestEnvAll(t, ingest, hub, events, meshtasticHub, nil, nil)
 }
 
 // defaultTestWebConfig is the shared web configuration for test
@@ -193,13 +193,13 @@ func newTestEnvWithAuth(t *testing.T, auth config.WebAuth) *testEnv {
 
 // newTestEnvAll is newTestEnvFull plus explicit APRS/mesh message stores
 // (nil leaves the corresponding admin history empty).
-func newTestEnvAll(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
-	return newTestEnvWeb(t, defaultTestWebConfig(), ingest, hub, events, meshHub, aprsMsgs, meshMsgs)
+func newTestEnvAll(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshtasticHub *meshtastic.Hub, aprsMsgs storage.APRSMessageStore, meshtasticMsgs storage.MeshtasticMessageStore) *testEnv {
+	return newTestEnvWeb(t, defaultTestWebConfig(), ingest, hub, events, meshtasticHub, aprsMsgs, meshtasticMsgs)
 }
 
 // newTestEnvWeb builds the environment with an explicit web config.
-func newTestEnvWeb(t *testing.T, cfg config.Web, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
-	return newTestEnvWebUsers(t, cfg, nil, ingest, hub, events, meshHub, aprsMsgs, meshMsgs)
+func newTestEnvWeb(t *testing.T, cfg config.Web, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshtasticHub *meshtastic.Hub, aprsMsgs storage.APRSMessageStore, meshtasticMsgs storage.MeshtasticMessageStore) *testEnv {
+	return newTestEnvWebUsers(t, cfg, nil, ingest, hub, events, meshtasticHub, aprsMsgs, meshtasticMsgs)
 }
 
 // newTestEnvWithUsers builds the environment with an explicit directory
@@ -211,7 +211,7 @@ func newTestEnvWithUsers(t *testing.T, users storage.DirectoryStore) *testEnv {
 
 // newTestEnvWebUsers builds the environment with an explicit web config
 // and directory store.
-func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectoryStore, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshHub *meshcore.Hub, aprsMsgs storage.APRSMessageStore, meshMsgs storage.MeshMessageStore) *testEnv {
+func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectoryStore, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshtasticHub *meshtastic.Hub, aprsMsgs storage.APRSMessageStore, meshtasticMsgs storage.MeshtasticMessageStore) *testEnv {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -271,7 +271,7 @@ func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectorySto
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshHub, ingress, logger, "test-version", "abc1234", users2, events, aprsMsgs, meshMsgs, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshtasticHub, ingress, logger, "test-version", "abc1234", users2, events, aprsMsgs, meshtasticMsgs, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1811,7 +1811,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/messages", "/meshcore"}
+	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/messages", "/meshtastic"}
 	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications", "/partials/health"}
 	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions"}
 	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing"}
@@ -3219,8 +3219,8 @@ func TestAPRSMessagesPage(t *testing.T) {
 }
 
 // TestContactPickers pins the recipient pickers: the APRS send form
-// offers registered user callsigns and the MeshCore send form offers the
-// registered public-key prefixes.
+// offers registered user callsigns and the Meshtastic send form offers the
+// registered node ids.
 func TestContactPickers(t *testing.T) {
 	env := newTestEnv(t)
 	u, err := env.users.CreateUser("sp9kow", "600111222", "", "", "member", "pw1")
@@ -3230,7 +3230,7 @@ func TestContactPickers(t *testing.T) {
 	if err := env.users.SetUserAPRS(u.ID, []string{"sp9kow-7"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.users.SetUserMeshKeys(u.ID, []string{"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"}); err != nil {
+	if err := env.users.SetUserMeshtasticIDs(u.ID, []string{"abcd1234"}); err != nil {
 		t.Fatal(err)
 	}
 	env.login()
@@ -3240,9 +3240,9 @@ func TestContactPickers(t *testing.T) {
 		t.Errorf("APRS page missing callsign picker: %s", html)
 	}
 
-	_, html = env.get("/meshcore")
-	if !strings.Contains(html, `list="mesh-contacts"`) || !strings.Contains(html, `<datalist id="mesh-contacts"><option value="abcd1234abcd">sp9kow</option>`) {
-		t.Errorf("meshcore page missing contact picker: %s", html)
+	_, html = env.get("/meshtastic")
+	if !strings.Contains(html, `list="mesh-contacts"`) || !strings.Contains(html, `<datalist id="mesh-contacts"><option value="abcd1234">sp9kow</option>`) {
+		t.Errorf("meshtastic page missing contact picker: %s", html)
 	}
 }
 
@@ -3306,36 +3306,36 @@ func TestAPRSBeaconValidation(t *testing.T) {
 	}
 }
 
-func TestMeshcoreStationsAPI(t *testing.T) {
+func TestMeshtasticStationsAPI(t *testing.T) {
 	// Without a mesh hub the public endpoint is absent.
 	env := newTestEnv(t)
-	resp, _ := env.get("/api/meshcore/stations")
+	resp, _ := env.get("/api/meshtastic/stations")
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET /api/meshcore/stations without mesh = %d, want 404", resp.StatusCode)
+		t.Fatalf("GET /api/meshtastic/stations without mesh = %d, want 404", resp.StatusCode)
 	}
 
 	// With a mesh hub configured the endpoint serves the two lists
 	// (located nodes and the position-less badge list).
-	meshHub, err := meshcore.NewHub(meshcore.Config{
-		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	meshtasticHub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	env = newTestEnvWithMesh(t, meshHub)
-	resp, body := env.get("/api/meshcore/stations")
+	env = newTestEnvWithMesh(t, meshtasticHub)
+	resp, body := env.get("/api/meshtastic/stations")
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/meshcore/stations = %d", resp.StatusCode)
+		t.Fatalf("GET /api/meshtastic/stations = %d", resp.StatusCode)
 	}
 	var view struct {
 		Nodes []struct {
-			Key  string  `json:"key"`
+			ID   string  `json:"id"`
 			Name string  `json:"name"`
 			Lat  float64 `json:"latitude"`
 			Lon  float64 `json:"longitude"`
 		} `json:"nodes"`
 		NoPos []struct {
-			Key string `json:"key"`
+			ID string `json:"id"`
 		} `json:"nopos"`
 	}
 	if err := json.Unmarshal([]byte(body), &view); err != nil {
@@ -3347,7 +3347,7 @@ func TestMeshcoreStationsAPI(t *testing.T) {
 }
 
 // TestMessageListPartials pins the live-refresh fragments of the APRS and
-// MeshCore message lists: admin-only, filtered by dir, and always
+// Meshtastic message lists: admin-only, filtered by dir, and always
 // rendering either the table or the empty-state marker.
 func TestMessageListPartials(t *testing.T) {
 	env := newTestEnv(t)
@@ -3362,8 +3362,8 @@ func TestMessageListPartials(t *testing.T) {
 	for _, p := range []string{
 		"/partials/messages",
 		"/partials/messages?dir=rx",
-		"/partials/meshcore?tab=messages",
-		"/partials/meshcore?tab=messages&dir=tx",
+		"/partials/meshtastic?tab=messages",
+		"/partials/meshtastic?tab=messages&dir=tx",
 	} {
 		resp, body := env.get(p)
 		if resp.StatusCode != http.StatusOK {
@@ -3375,17 +3375,17 @@ func TestMessageListPartials(t *testing.T) {
 	}
 }
 
-// fakeMeshMsgs is an in-memory MeshMessageStore for the admin history.
+// fakeMeshMsgs is an in-memory MeshtasticMessageStore for the admin history.
 type fakeMeshMsgs struct {
 	rows []storage.MeshMessage
 }
 
-func (f *fakeMeshMsgs) RecordMeshMessage(_ context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error {
+func (f *fakeMeshMsgs) RecordMeshtasticMessage(_ context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error {
 	f.rows = append(f.rows, storage.MeshMessage{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Operator: operator, Text: text, At: at})
 	return nil
 }
 
-func (f *fakeMeshMsgs) ListMeshMessages(_ context.Context, direction string, limit, offset int) ([]storage.MeshMessage, error) {
+func (f *fakeMeshMsgs) ListMeshtasticMessages(_ context.Context, direction string, limit, offset int) ([]storage.MeshMessage, error) {
 	var out []storage.MeshMessage
 	for _, m := range f.rows {
 		if direction == "" || m.Direction == direction {
@@ -3402,7 +3402,7 @@ func (f *fakeMeshMsgs) ListMeshMessages(_ context.Context, direction string, lim
 	return out, nil
 }
 
-func (f *fakeMeshMsgs) CountMeshMessages(_ context.Context, direction string) (int, error) {
+func (f *fakeMeshMsgs) CountMeshtasticMessages(_ context.Context, direction string) (int, error) {
 	n := 0
 	for _, m := range f.rows {
 		if direction == "" || m.Direction == direction {
@@ -3412,50 +3412,44 @@ func (f *fakeMeshMsgs) CountMeshMessages(_ context.Context, direction string) (i
 	return n, nil
 }
 
-// TestMeshMessageChannelNames pins the friendly channel display: legacy
-// "ch0" rows resolve through the hub's configured channel_names map, and
-// direct-message senders registered in the directory show their username
-// with the hop count.
+// TestMeshMessageChannelNames pins the channel display: legacy "ch0" rows
+// keep the raw label (the device provides friendly names when
+// connected), and direct-message senders registered in the directory
+// show their username with the hop count.
 func TestMeshMessageChannelNames(t *testing.T) {
-	hub, err := meshcore.NewHub(meshcore.Config{
-		Enabled:      true,
-		Device:       "/dev/fake",
-		ChannelIdx:   2,
-		ChannelName:  "#sp9moa",
-		ChannelNames: map[int]string{0: "Public"},
-		NodeTTL:      time.Hour,
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
 	}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &fakeMeshMsgs{rows: []storage.MeshMessage{
 		{Direction: "rx", Channel: "ch0", Text: "hello", At: time.Now()},
-		{Direction: "tx", Channel: "ch2", Operator: "admin", Text: "73", At: time.Now()},
-		{Direction: "rx", Sender: "abcd1234abcd", Channel: "direct", Hops: 3, Text: "ggg", At: time.Now()},
+		{Direction: "tx", Channel: "LongFast", Operator: "admin", Text: "73", At: time.Now()},
+		{Direction: "rx", Sender: "abcd1234", Channel: "dm", Hops: 3, Text: "ggg", At: time.Now()},
 	}}
 	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
-	// Register the sender's key in the directory so the history can show
-	// the username next to the raw prefix.
+	// Register the sender's node id in the directory so the history can
+	// show the username next to the raw id.
 	u, err := env.users.CreateUser("sp9kow", "600111222", "", "", "member", "pw1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.users.SetUserMeshKeys(u.ID, []string{"abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"}); err != nil {
+	if err := env.users.SetUserMeshtasticIDs(u.ID, []string{"abcd1234"}); err != nil {
 		t.Fatal(err)
 	}
 	env.login()
 
-	resp, body := env.get("/partials/meshcore?tab=messages")
+	resp, body := env.get("/partials/meshtastic?tab=messages")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("partial = %d", resp.StatusCode)
 	}
-	for _, want := range []string{"Public", "#sp9moa", "sp9kow", "abcd1234abcd", "via 3 hops", "(admin)"} {
+	for _, want := range []string{"ch0", "LongFast", "sp9kow", "!abcd1234", "via 3 hops", "(admin)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("messages partial missing %q: %.300s", want, body)
 		}
-	}
-	if strings.Contains(body, "ch0") || strings.Contains(body, "ch2") {
-		t.Errorf("messages partial still shows raw channel ids: %.300s", body)
 	}
 }
 
@@ -3516,28 +3510,28 @@ func TestAPRSBulletinBadge(t *testing.T) {
 }
 
 // TestMeshNodeOwnerLabel pins the admin-only directory match: a node
-// whose public key belongs to a registered user shows the username next
-// to the advert name on the nodes tab (the public home page never does).
+// whose id belongs to a registered user shows the username next to the
+// node name on the nodes tab (the public home page never does).
 func TestMeshNodeOwnerLabel(t *testing.T) {
-	hub, err := meshcore.NewHub(meshcore.Config{
-		Enabled: true, Device: "/dev/fake", ChannelIdx: 2, NodeTTL: time.Hour,
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
 	}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"
-	hub.SeedNode(key, "RKSR-TN-R3", 2, 50.02, 20.0, 2, time.Now())
+	id := "abcd1234"
+	hub.SeedNode(id, "RKSR-TN-R3", 50.02, 20.0, time.Now())
 	env := newTestEnvWithMesh(t, hub)
 	u, err := env.users.CreateUser("sp9kow", "600111222", "", "", "member", "pw1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.users.SetUserMeshKeys(u.ID, []string{key}); err != nil {
+	if err := env.users.SetUserMeshtasticIDs(u.ID, []string{id}); err != nil {
 		t.Fatal(err)
 	}
 	env.login()
 
-	resp, body := env.get("/partials/meshcore?tab=nodes")
+	resp, body := env.get("/partials/meshtastic?tab=nodes")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("nodes partial = %d", resp.StatusCode)
 	}

@@ -19,8 +19,8 @@ func TestRawCategoryClassification(t *testing.T) {
 		{"aprs/packets", mqttpolicy.CatAPRSPackets},
 		{"aprs/messages", mqttpolicy.CatAPRSMessages},
 		{"events", mqttpolicy.CatEvents},
-		{"meshcore/stations/d1e51b043a9c", mqttpolicy.CatMeshcoreStations},
-		{"meshcore/messages", mqttpolicy.CatMeshcoreMessages},
+		{"meshtastic/stations/d1e51b043a9c", mqttpolicy.CatMeshtasticStations},
+		{"meshtastic/messages", mqttpolicy.CatMeshtasticMessages},
 		{"info/emcom/emcom/sp9moa/emcom", mqttpolicy.CatInfo},
 		{"anything/else", 0}, // unclassified = always allowed
 	}
@@ -52,7 +52,7 @@ func TestPublishMaskShortCircuits(t *testing.T) {
 	}
 
 	// Unmasked category still tries the transport and reports the error.
-	if err := m.PublishRaw("meshcore/messages", false, []byte("{}")); err == nil {
+	if err := m.PublishRaw("meshtastic/messages", false, []byte("{}")); err == nil {
 		t.Error("unmasked PublishRaw with no receivers must fail, got nil")
 	}
 }

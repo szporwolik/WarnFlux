@@ -9,7 +9,11 @@
 // rules, action jobs, deduplication and retry are a later task.
 package dispatch
 
-import "time"
+import (
+	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/core"
+)
 
 // EventKind classifies a canonical dispatch event.
 type EventKind string
@@ -118,6 +122,62 @@ type Event struct {
 	// the event has been evaluated, so a crash between acceptance and
 	// evaluation re-delivers the event after a restart.
 	InboxID int64
+}
+
+// EventForJournalChange converts one journal change into the canonical
+// dispatch transition — the SAME shape the MQTT receiver parses from the
+// /events stream, so the direct local copy and the broker loopback carry
+// identical dedup identities (publisher + change ID). It is the single
+// constructor shared by the receiver conversion (EventFromChange) and by
+// storage, which persists the canonical transition into the durable inbox
+// INSIDE the journal transaction.
+func EventForJournalChange(changeType core.ChangeType, changeID int64, publisher string, event core.HazardEvent, receiverID string, now time.Time) Event {
+	var typ TransitionType
+	switch changeType {
+	case core.ChangeNew:
+		typ = TransitionNew
+	case core.ChangeUpdated:
+		typ = TransitionUpdated
+	case core.ChangeCancelled:
+		typ = TransitionCancelled
+	case core.ChangeExpired:
+		typ = TransitionExpired
+	}
+
+	ev := event
+	return Event{
+		Kind:       EventHazardTransition,
+		ReceivedAt: now,
+		Origin:     Origin{Type: "local", ReceiverID: receiverID},
+		Hazard: &HazardTransition{
+			Type:      typ,
+			Key:       ev.Key(),
+			Source:    ev.Source,
+			ChangeID:  changeID,
+			Publisher: publisher,
+			Timestamp: ev.UpdatedAt,
+			Hazard: Hazard{
+				EventKey:         ev.Key(),
+				Source:           ev.Source,
+				SourceID:         ev.SourceID,
+				Event:            ev.Event,
+				Severity:         ev.Severity,
+				ProviderSeverity: ev.ProviderSeverity,
+				Urgency:          ev.Urgency,
+				Certainty:        ev.Certainty,
+				Headline:         ev.Headline,
+				Description:      ev.Description,
+				Instruction:      ev.Instruction,
+				Areas:            append([]string(nil), ev.Areas...),
+				Latitude:         ev.Latitude,
+				Longitude:        ev.Longitude,
+				EffectiveAt:      ev.EffectiveAt,
+				ExpiresAt:        ev.ExpiresAt,
+				ReceivedAt:       ev.ReceivedAt,
+				UpdatedAt:        ev.UpdatedAt,
+			},
+		},
+	}
 }
 
 // Clone returns a deep copy of the event (payload included).

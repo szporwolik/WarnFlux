@@ -60,8 +60,12 @@ type Ingester struct {
 	// ingest or expiration for LOCAL-FIRST dispatch: the canonical
 	// transition is routed through the dispatch ingress directly (SQLite
 	// + local radio suffice), the broker loopback remains only the
-	// asynchronous sync copy for other instances. Wired in main.
-	dispatchSink func(change core.EventChange)
+	// asynchronous sync copy for other instances. The inboxID is the
+	// durable inbox row the store committed IN THE SAME TRANSACTION as
+	// the journal change (0 when the store has no inbox): the live
+	// enqueue reuses that row instead of writing a second one. Wired in
+	// main.
+	dispatchSink func(change core.EventChange, inboxID int64)
 
 	// metric cells (optional, nil-safe).
 	ingested   func(delta int64)
@@ -86,9 +90,11 @@ func NewIngester(store storage.EventStore, logger *slog.Logger, regs ...*metrics
 }
 
 // SetDispatchSink installs the local-first dispatch sink: it is called
-// with every journal change a successful ingest or expiration produces.
-// It must be set before any ingestion starts (wired in main at startup).
-func (s *Ingester) SetDispatchSink(fn func(change core.EventChange)) {
+// with every journal change a successful ingest or expiration produces,
+// together with the durable inbox row ID the store committed in the same
+// transaction (0 when the store has no inbox). It must be set before any
+// ingestion starts (wired in main at startup).
+func (s *Ingester) SetDispatchSink(fn func(change core.EventChange, inboxID int64)) {
 	s.dispatchSink = fn
 }
 
@@ -113,7 +119,9 @@ func (s *Ingester) Ingest(ctx context.Context, event core.HazardEvent) (Result, 
 	if change != nil && s.dispatchSink != nil {
 		// LOCAL-FIRST: the journal change is dispatched into the local
 		// ingress before any broker I/O; the loopback copy deduplicates.
-		s.dispatchSink(changeToEventChange(change))
+		// The durable inbox row (committed with the journal record) rides
+		// along so the live enqueue reuses it.
+		s.dispatchSink(changeToEventChange(change), change.InboxID)
 	}
 
 	key := event.Key()
@@ -162,7 +170,7 @@ func (s *Ingester) Expire(ctx context.Context, now time.Time) ([]core.EventChang
 			"change_type", core.ChangeExpired,
 			"source", c.Event.Source, "source_id", c.Event.SourceID, "event_key", c.Event.Key())
 		if s.dispatchSink != nil {
-			s.dispatchSink(storageChangeToEventChange(c))
+			s.dispatchSink(storageChangeToEventChange(c), c.InboxID)
 		}
 		out = append(out, storageChangeToEventChange(c))
 	}

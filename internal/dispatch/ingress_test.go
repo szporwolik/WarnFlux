@@ -234,3 +234,39 @@ func TestIngressWriteDeadline(t *testing.T) {
 		t.Fatalf("inbox failures = %d, want 1", g.InboxFailures())
 	}
 }
+
+// TestEnqueueReusesCommittedInboxRow pins the journal-transaction path:
+// an event that already carries an inbox row ID (the store committed the
+// row with the journal change) skips the append entirely — a broken
+// backend must not matter, and a full live queue still counts durable
+// (the row exists for inbox recovery).
+func TestEnqueueReusesCommittedInboxRow(t *testing.T) {
+	g := NewIngress(1)
+	in := &fakeInbox{fail: true} // a broken backend must never be touched
+	g.SetInbox(in)
+
+	res := g.Enqueue(Event{Kind: EventMQTTMessage, InboxID: 42})
+	if res != AcceptedDurable {
+		t.Fatalf("enqueue with a committed inbox row = %v, want durable", res)
+	}
+	if g.InboxFailures() != 0 {
+		t.Fatalf("inbox failures = %d, want 0 (append must be skipped)", g.InboxFailures())
+	}
+	in.mu.Lock()
+	got := len(in.items)
+	in.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("inbox appended %d events, want 0", got)
+	}
+
+	// Live queue full: still durable — the committed row survives and
+	// inbox recovery re-delivers the event.
+	res = g.Enqueue(Event{Kind: EventMQTTMessage, InboxID: 43})
+	if res != AcceptedDurable {
+		t.Fatalf("full queue with a committed inbox row = %v, want durable", res)
+	}
+	if g.DurableAccepted() != 2 || g.EmergencyAccepted() != 0 {
+		t.Errorf("accepts = (%d durable, %d emergency), want (2, 0)",
+			g.DurableAccepted(), g.EmergencyAccepted())
+	}
+}

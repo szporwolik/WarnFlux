@@ -364,9 +364,12 @@ func TestLocalPathWithoutBroker(t *testing.T) {
 	waitFor(t, "routing rules loaded", engine.Ready)
 
 	// The local dispatch sink — exactly what main wires: every journal
-	// change goes into the local ingress directly.
-	ing.SetDispatchSink(func(change core.EventChange) {
-		events <- mqttreceiver.EventFromChange(change, "local", time.Now())
+	// change goes into the local ingress directly. The inbox row was
+	// committed with the journal record, so the event carries its ID.
+	ing.SetDispatchSink(func(change core.EventChange, inboxID int64) {
+		ev := mqttreceiver.EventFromChange(change, "local", time.Now())
+		ev.InboxID = inboxID
+		events <- ev
 	})
 
 	// A source-style ingestion: local SQLite only, no broker anywhere.
@@ -400,6 +403,99 @@ func TestLocalPathWithoutBroker(t *testing.T) {
 	active, err := store.ListActiveEvents(ctx, "", 10)
 	if err != nil || len(active) != 1 || active[0].Key() != key {
 		t.Fatalf("active events = (%v, %v), want the offline event", active, err)
+	}
+}
+
+// TestCrashBetweenJournalAndDispatchStillDelivers pins the P1 fix
+// end-to-end: the inbox row commits in the same transaction as the
+// journal record, so even when the live dispatch NEVER runs (the crash
+// window between the journal commit and the inbox write), inbox recovery
+// delivers the alert after a restart — and the re-polled duplicate, the
+// reported symptom, changes nothing.
+func TestCrashBetweenJournalAndDispatchStillDelivers(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "crash.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	met := metrics.New()
+	rec := trail.NewRecorder(trail.DefaultMaxTrails)
+	ing := ingest.NewIngester(store, testLogger(), met)
+	// NO dispatch sink is installed: the journal change commits but the
+	// live dispatch is interrupted before it ever runs — the exact P1
+	// window.
+
+	areg := action.NewRegistry()
+	if err := actions.RegisterAll(areg, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	actionsMgr, err := action.NewManager([]config.Action{{
+		ID: "logger-a", Type: "logger", Enabled: true,
+		Config: node(t, map[string]any{"level": "info"}),
+	}}, areg, testLogger(), rec, met)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actionsMgr.SetDeliveryStore(store)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	actionsMgr.Start(ctx)
+	t.Cleanup(func() {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutCancel()
+		_ = actionsMgr.Shutdown(shutCtx)
+	})
+
+	group, err := store.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGroupRouting(group.ID, []storage.ChannelAssignment{
+		{ID: "logger-a", MinSeverity: severity.Moderate},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The crash happened while the process was down: ingest persists
+	// journal + inbox atomically, the provider re-poll is a duplicate.
+	now := time.Now()
+	expires := now.Add(time.Hour)
+	ev := core.HazardEvent{
+		Source: "imgw-meteo", SourceID: "crash-1", Event: "Storm",
+		Severity: severity.Severe, Headline: "Crash window alert",
+		Status: core.StatusActive, ExpiresAt: &expires,
+		ReceivedAt: now, UpdatedAt: now,
+	}
+	if result, _, err := ing.Ingest(ctx, ev); err != nil || result != ingest.ResultNew {
+		t.Fatalf("Ingest = %v, %v", result, err)
+	}
+	if result, _, err := ing.Ingest(ctx, ev); err != nil || result != ingest.ResultDuplicate {
+		t.Fatalf("re-poll = %v, %v, want duplicate", result, err)
+	}
+
+	// "Restart": a routing engine with the durable inbox attached — no
+	// live event is ever fed. Inbox recovery on the refresh tick must
+	// deliver the alert from the committed inbox row.
+	engine := routing.New(store, actionsMgr, testLogger(), action.AppInfo{}, rec, met)
+	engine.SetInbox(store)
+	events := make(chan dispatch.Event, 8)
+	engCtx, engCancel := context.WithCancel(context.Background())
+	defer engCancel()
+	go engine.Run(engCtx, events)
+
+	key := ev.Key()
+	waitFor(t, "inbox-recovered alert delivered", func() bool {
+		tr, _ := rec.Get(key)
+		return tr.Outcome == trail.OutcomeDelivered
+	})
+	if got := actionsMgr.Statuses()[0].Handled; got != 1 {
+		t.Errorf("logger handled %d deliveries, want exactly 1", got)
+	}
+	// The recovered row was acknowledged: the backlog is empty.
+	items, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil || len(items) != 0 {
+		t.Errorf("inbox backlog after recovery = (%v, %v), want empty", items, err)
 	}
 }
 

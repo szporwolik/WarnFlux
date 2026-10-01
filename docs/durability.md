@@ -105,11 +105,15 @@ instead of hanging MQTT ingestion.
 
 **Auxiliary-data policy (a full card must not kill acceptance silently):**
 
-- `dispatch.inbox_retention` (default 24 h) prunes unevaluated inbox rows
-  older than the cutoff — stale alerts the staleness gates would suppress
-  anyway. Below the `storage.min_free_mb` alarm threshold the cutoff
-  shortens to 5 minutes, so auxiliary data stops competing with primary
-  storage.
+- `dispatch.inbox_retention` (default 24 h) is the pending-message
+  validity policy, not an age-based reaper: rows older than the cutoff
+  are removed ONLY when their hazard carries an authoritative expiry
+  that has already passed (the staleness gates would suppress it
+  anyway). Each removal is an explicit, audited outcome (`system` /
+  `inbox-expiry-prune` in the dashboard audit log). Messages without an
+  expiry never age out. Below the `storage.min_free_mb` alarm threshold
+  the cutoff shortens to 5 minutes, so auxiliary data stops competing
+  with primary storage.
 - The health page reports the free space on the database filesystem and
   turns the Database row red below the threshold; `/metrics` exposes
   `warnflux_storage_free_bytes` and `warnflux_inbox_backlog`.

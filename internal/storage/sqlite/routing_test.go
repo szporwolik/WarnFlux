@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,28 +92,47 @@ func TestInboxPruneAndBacklog(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 	ctx := context.Background()
 
-	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+	expired := now.Add(-2 * time.Hour)
+	future := now.Add(2 * time.Hour)
+	noExpiry := dispatch.Event{Kind: dispatch.EventHazardTransition,
 		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
-	if _, err := store.AppendEvent(ctx, ev); err != nil {
-		t.Fatalf("AppendEvent: %v", err)
+	expiredEv := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:2", Source: "imgw",
+			Hazard: dispatch.Hazard{ExpiresAt: &expired}}}
+	futureEv := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:3", Source: "imgw",
+			Hazard: dispatch.Hazard{ExpiresAt: &future}}}
+	for _, ev := range []dispatch.Event{noExpiry, expiredEv, futureEv} {
+		if _, err := store.AppendEvent(ctx, ev); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
 	}
-	if _, err := store.AppendEvent(ctx, ev); err != nil {
-		t.Fatalf("AppendEvent 2: %v", err)
-	}
-	if n, err := store.InboxCount(ctx); err != nil || n != 2 {
-		t.Fatalf("backlog = (%d, %v), want (2, nil)", n, err)
+	if n, err := store.InboxCount(ctx); err != nil || n != 3 {
+		t.Fatalf("backlog = (%d, %v), want (3, nil)", n, err)
 	}
 
-	// A cutoff before both rows removes nothing.
+	// A cutoff before the rows removes nothing.
 	if n, err := store.PruneInbox(ctx, now.Add(-time.Hour)); err != nil || n != 0 {
 		t.Fatalf("prune past = (%d, %v), want (0, nil)", n, err)
 	}
-	// A cutoff after both rows removes everything.
-	if n, err := store.PruneInbox(ctx, now.Add(time.Hour)); err != nil || n != 2 {
-		t.Fatalf("prune future = (%d, %v), want (2, nil)", n, err)
+	// A cutoff after every row removes ONLY the expired hazard: the
+	// no-expiry and future-expiry rows are pending messages that must
+	// survive ordinary retention.
+	if n, err := store.PruneInbox(ctx, now.Add(time.Hour)); err != nil || n != 1 {
+		t.Fatalf("prune future = (%d, %v), want (1, nil)", n, err)
 	}
-	if n, err := store.InboxCount(ctx); err != nil || n != 0 {
-		t.Fatalf("backlog after prune = (%d, %v), want (0, nil)", n, err)
+	if n, err := store.InboxCount(ctx); err != nil || n != 2 {
+		t.Fatalf("backlog after prune = (%d, %v), want (2, nil)", n, err)
+	}
+	// An unreadable row is kept too (fail-open), even past the cutoff.
+	if _, err := store.db.Exec(`INSERT INTO dispatch_inbox (event_json, received_at_ms, receiver) VALUES ('not-json', ?, 'x')`, now.Add(-time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.PruneInbox(ctx, now.Add(2*time.Hour)); err != nil || n != 0 {
+		t.Fatalf("garbage prune = (%d, %v), want (0, nil)", n, err)
+	}
+	if n, err := store.InboxCount(ctx); err != nil || n != 3 {
+		t.Fatalf("backlog with garbage = (%d, %v), want (3, nil)", n, err)
 	}
 
 	free, err := store.FreeBytes(ctx)
@@ -333,20 +353,93 @@ func TestDeliveryJobs(t *testing.T) {
 	if err != nil || st != storage.DeliverySaved || !queued {
 		t.Fatalf("fresh change job = (%v, %v, %v), want (saved, true, nil)", st, queued, err)
 	}
-	// Cutoff after the first rows but before the fresh change: exactly
-	// the old rows go.
+	// Cutoff after the first rows but before the fresh change: ONLY the
+	// completed row ages out — the saved jobs (sms, rsp) are pending
+	// work and survive retention.
 	n, err = store.PruneActionFires(at.Add(30 * time.Minute))
-	if err != nil || n != 3 {
-		t.Fatalf("partial prune = (%d, %v), want (3, nil)", n, err)
-	}
-	// Pruning everything: the ledger is empty and dedup resets.
-	n, err = store.PruneActionFires(at.Add(2 * time.Hour))
 	if err != nil || n != 1 {
-		t.Fatalf("full prune = (%d, %v), want (1, nil)", n, err)
+		t.Fatalf("partial prune = (%d, %v), want (1, nil — only completed history)", n, err)
 	}
+	// A far-future cutoff still keeps every pending job.
+	n, err = store.PruneActionFires(at.Add(2 * time.Hour))
+	if err != nil || n != 0 {
+		t.Fatalf("full prune = (%d, %v), want (0, nil — pending jobs never age out)", n, err)
+	}
+	// The unsent sms job survived the pruning and is still claimable.
+	if job, ok, err := store.ClaimNextDelivery(ctx, "sms", 3, at.Add(3*time.Hour)); err != nil || !ok || job.EventKey != "imgw:1" {
+		t.Fatalf("pending job after prune = (%+v, %v, %v), want claimable imgw:1", job, ok, err)
+	}
+	// The completed c:1 row is gone: its dedup window is over.
 	st, queued, err = store.EnqueueDelivery(ctx, mk("c:1", at))
 	if err != nil || st != storage.DeliverySaved || !queued {
 		t.Fatalf("job after prune = (%v, %v, %v), want (saved, true, nil)", st, queued, err)
+	}
+}
+
+// TestPruneKeepsPendingDeliveries pins the reported P1: retention removes
+// ONLY completed history. A job never executed (saved), a claimed job
+// (running) and a failed job with a scheduled retry all survive any
+// cutoff; terminal rows (accepted, retries spent) age out.
+func TestPruneKeepsPendingDeliveries(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	payload := []byte(`{"id":"x"}`)
+	mk := func(dedup string) storage.DeliveryJob {
+		return storage.DeliveryJob{GroupID: g.ID, ActionID: "log", EventKey: "imgw:1", DedupKey: dedup, Payload: payload, FiredAt: at}
+	}
+	for _, d := range []string{"accepted", "terminal-failed", "retry-failed", "running", "saved"} {
+		if _, queued, err := store.EnqueueDelivery(ctx, mk(d)); err != nil || !queued {
+			t.Fatalf("enqueue %s = (%v, %v), want queued", d, queued, err)
+		}
+	}
+	// Terminal accepted.
+	if err := store.SettleDelivery(ctx, g.ID, "log", "accepted", storage.DeliveryAccepted, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	// Terminal failed: retry budget spent (zero next attempt).
+	if err := store.SettleDelivery(ctx, g.ID, "log", "terminal-failed", storage.DeliveryFailed, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	// Transient failed: a retry is scheduled — still pending work.
+	if err := store.SettleDelivery(ctx, g.ID, "log", "retry-failed", storage.DeliveryFailed, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// Claimed but never settled: drive the row state directly so the
+	// claim cannot steal a neighbouring pending row (claim order ties on
+	// next_attempt_at_ms).
+	if _, err := store.db.Exec(`UPDATE action_fires SET status = 'running', attempts = 1, next_attempt_at_ms = ? WHERE dedup_key = 'running'`,
+		at.Add(5*time.Minute).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := store.PruneActionFires(at.Add(24 * time.Hour))
+	if err != nil || n != 2 {
+		t.Fatalf("prune = (%d, %v), want (2, nil — accepted + terminal-failed only)", n, err)
+	}
+	if n, err := store.PendingDeliveries(ctx, "log"); err != nil || n != 3 {
+		t.Fatalf("pending after prune = (%d, %v), want (3, nil — saved, running, retry-failed)", n, err)
+	}
+	rows, err := store.db.Query(`SELECT status FROM action_fires ORDER BY status`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var statuses []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		statuses = append(statuses, s)
+	}
+	if got := strings.Join(statuses, ","); got != "failed,running,saved" {
+		t.Fatalf("surviving statuses = %q, want %q", got, "failed,running,saved")
 	}
 }
 

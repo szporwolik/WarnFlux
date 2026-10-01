@@ -77,9 +77,11 @@ type Inbox interface {
 // HazardFreshness is the optional storage-side staleness oracle: a
 // store that implements it lets the engine refuse to schedule
 // notifications for hazards that already expired or were cancelled —
-// an older update must never outrank a known cancellation.
+// an older update must never outrank a known cancellation. The verdict
+// separates active / inactive / unknown; read errors are reported and
+// handled fail-open by the engine.
 type HazardFreshness interface {
-	HazardActive(ctx context.Context, eventKey string, now time.Time) (bool, error)
+	HazardActive(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error)
 }
 
 // LifecycleRecorder is the optional storage-side message lifecycle
@@ -621,13 +623,13 @@ func (e *Engine) hazardFresh(ctx context.Context, ev dispatch.Event) bool {
 	if !ok {
 		return true // no oracle: the expiry check above is all we have
 	}
-	active, err := fh.HazardActive(ctx, ev.Hazard.Key, time.Now())
+	verdict, err := fh.HazardActive(ctx, ev.Hazard.Key, time.Now())
 	if err != nil {
 		e.logger.Warn("routing: hazard freshness lookup failed",
 			"event_key", ev.Hazard.Key, "error", err)
-		return true
+		return true // read error: fail-open, never suppress
 	}
-	return active
+	return verdict != storage.HazardInactive
 }
 
 // meetsThreshold reports whether an event rank satisfies a channel's

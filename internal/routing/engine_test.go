@@ -36,7 +36,7 @@ type fakeStore struct {
 	// store pins that).
 	lifecycle map[string]string
 	// hazardActiveFn is the staleness oracle; nil = always active.
-	hazardActiveFn func(ctx context.Context, eventKey string, now time.Time) (bool, error)
+	hazardActiveFn func(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error)
 	err            error
 }
 
@@ -52,12 +52,12 @@ func (f *fakeStore) RecordLifecycle(ctx context.Context, publisher, eventKey str
 }
 
 // HazardActive implements the optional freshness oracle.
-func (f *fakeStore) HazardActive(ctx context.Context, eventKey string, now time.Time) (bool, error) {
+func (f *fakeStore) HazardActive(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error) {
 	f.mu.Lock()
 	fn := f.hazardActiveFn
 	f.mu.Unlock()
 	if fn == nil {
-		return true, nil
+		return storage.HazardActive, nil
 	}
 	return fn(ctx, eventKey, now)
 }
@@ -1245,8 +1245,8 @@ func TestEngineSupersededTransitionSkipped(t *testing.T) {
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
 	}}
 	store.mu.Lock()
-	store.hazardActiveFn = func(ctx context.Context, eventKey string, now time.Time) (bool, error) {
-		return false, nil // the store knows a newer cancellation
+	store.hazardActiveFn = func(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error) {
+		return storage.HazardInactive, nil // the store knows a newer cancellation
 	}
 	store.mu.Unlock()
 
@@ -1271,8 +1271,8 @@ func TestEngineFreshnessLookupFailureFires(t *testing.T) {
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
 	}}
 	store.mu.Lock()
-	store.hazardActiveFn = func(ctx context.Context, eventKey string, now time.Time) (bool, error) {
-		return false, errors.New("directory unavailable")
+	store.hazardActiveFn = func(ctx context.Context, eventKey string, now time.Time) (storage.HazardVerdict, error) {
+		return storage.HazardUnknown, errors.New("directory unavailable")
 	}
 	store.mu.Unlock()
 

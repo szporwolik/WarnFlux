@@ -736,22 +736,27 @@ func TestHubRadioCLI(t *testing.T) {
 		t.Fatalf("debug reply = %v, want the confirmation", sends[1])
 	}
 
-	// A plain message still routes and gets no reply.
+	// A plain message never routes to an alarm: the standard
+	// installation banner answers instead.
 	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:plain alarm"), "aprs-inet")
-	waitFor(t, func() bool { return len(sink.payloads("events")) == 2 })
-	if len(tx.sends()) != 2 {
-		t.Fatalf("plain message produced a reply: %v", tx.sends())
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	sends = tx.sends()
+	if !strings.Contains(sends[2][1], "WarnFlux v1.0 - SOSNA") {
+		t.Fatalf("plain reply = %v, want the standard banner", sends[2])
+	}
+	if got := len(sink.payloads("events")); got != 1 {
+		t.Fatalf("plain message produced %d alarm events, want 1 (debug only)", got)
 	}
 
 	// Unauthorized senders: commands never run and never alarm — a
 	// slash attempt only gets the public installation banner.
 	hub.Observe(testPacket("SP9ZZZ>APRS,TCPIP*::SP9MOA-10:/debug"), "aprs-inet")
-	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	waitFor(t, func() bool { return len(tx.sends()) == 4 })
 	sends = tx.sends()
-	if !strings.Contains(sends[2][1], "WarnFlux v1.0 - SOSNA") {
-		t.Fatalf("unauthorized slash reply = %v, want the identity banner", sends[2])
+	if !strings.Contains(sends[3][1], "WarnFlux v1.0 - SOSNA") {
+		t.Fatalf("unauthorized slash reply = %v, want the identity banner", sends[3])
 	}
-	if got := len(sink.payloads("events")); got != 2 {
+	if got := len(sink.payloads("events")); got != 1 {
 		t.Fatalf("unauthorized /debug produced alarm events (%d total)", got)
 	}
 }

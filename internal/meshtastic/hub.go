@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,13 +58,26 @@ type Recorder interface {
 	RecordMeshtasticMessage(ctx context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error
 }
 
+// Node signal kinds observed in packets from the node (shown as badges
+// on the admin page and the home map).
+const (
+	SignalTelemetry = "telemetry"
+	SignalPosition  = "position"
+	SignalText      = "text"
+)
+
 // Node is one neighbour heard through the mesh.
 type Node struct {
 	// ID is the node's 8-hex identifier (without the leading '!').
 	ID   string
 	Name string
-	Lat  float64
-	Lon  float64
+	// Short is the node's short name from the device directory.
+	Short string
+	// Sends lists the observed packet kinds from this node
+	// (telemetry, position, text), stable order.
+	Sends []string
+	Lat   float64
+	Lon   float64
 	// DistKM and BearingDeg are computed relative to our station's
 	// position in Snapshot (0 when either position is unknown).
 	DistKM     float64
@@ -157,8 +171,11 @@ type Hub struct {
 	recorder    Recorder
 	stationSink func(ctx context.Context, topic string, retained bool, payload []byte) error
 	messageSink func(ctx context.Context, topic string, retained bool, payload []byte) error
-	senderGate  func(id string) bool
-	eventSink   func(ctx context.Context, topic string, retained bool, payload []byte) error
+	// senderGate resolves the direct-message sender's node id onto the
+	// directory username that registered it; empty = not registered (the
+	// message stays off the alarm pipeline).
+	senderGate func(id string) string
+	eventSink  func(ctx context.Context, topic string, retained bool, payload []byte) error
 
 	sendMu sync.Mutex
 }
@@ -217,11 +234,11 @@ func (h *Hub) SetMessageSink(fn func(ctx context.Context, topic string, retained
 	h.mu.Unlock()
 }
 
-// SetSenderGate installs the direct-message sender allow-list check. The
-// gate receives the sender's lowercase 8-hex node id and reports whether
-// it belongs to a registered WarnFlux user. Without the gate no mesh
-// message becomes a hazard event.
-func (h *Hub) SetSenderGate(fn func(id string) bool) {
+// SetSenderGate installs the direct-message sender resolution. The gate
+// receives the sender's lowercase 8-hex node id and returns the
+// directory username that registered it ("" = nobody: no mesh message
+// becomes a hazard event).
+func (h *Hub) SetSenderGate(fn func(id string) string) {
 	h.mu.Lock()
 	h.senderGate = fn
 	h.mu.Unlock()
@@ -380,6 +397,9 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 		if name != "" {
 			n.Name = name
 		}
+		if sn := strings.TrimSpace(user.GetShortName()); sn != "" {
+			n.Short = sn
+		}
 		// The device node DB carries the last known position.
 		if pos := ni.GetPosition(); pos != nil {
 			if lat, lon := positionDeg(pos); lat != 0 || lon != 0 {
@@ -462,7 +482,33 @@ func (h *Hub) handlePacket(pkt *pb.MeshPacket) {
 		h.receivePosition(pkt, decoded)
 	case pb.PortNum_NODEINFO_APP:
 		h.receiveNodeInfo(pkt, decoded)
+	case pb.PortNum_TELEMETRY_APP:
+		// No content we surface, but the sender is now known to
+		// broadcast telemetry — recorded for the badges.
+		h.recordSignal(pkt.GetFrom(), SignalTelemetry)
 	}
+}
+
+// recordSignal marks one observed packet kind on the sender's node and
+// refreshes its last-seen time (any packet means the node is alive).
+// The node is created when it is not in the directory yet.
+func (h *Hub) recordSignal(from uint32, signal string) {
+	id := fmt.Sprintf("%08x", from)
+	h.mu.Lock()
+	if h.self != nil && id == h.self.ID {
+		h.mu.Unlock()
+		return
+	}
+	n := h.nodes[id]
+	if n == nil {
+		n = &Node{ID: id}
+		h.nodes[id] = n
+	}
+	if !slices.Contains(n.Sends, signal) {
+		n.Sends = append(n.Sends, signal)
+	}
+	n.LastSeen = time.Now()
+	h.mu.Unlock()
 }
 
 // receiveNodeInfo applies a nodeinfo broadcast (name only; positions
@@ -492,6 +538,9 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	if name != "" {
 		n.Name = name
+	}
+	if sn := strings.TrimSpace(user.GetShortName()); sn != "" {
+		n.Short = sn
 	}
 	n.LastSeen = time.Now()
 	copyN := *n
@@ -523,6 +572,9 @@ func (h *Hub) receivePosition(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	n.Lat, n.Lon = lat, lon
 	n.LastSeen = time.Now()
+	if !slices.Contains(n.Sends, SignalPosition) {
+		n.Sends = append(n.Sends, SignalPosition)
+	}
 	copyN := *n
 	h.mu.Unlock()
 	h.publishStation(&copyN)
@@ -541,11 +593,13 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	if selfID != "" && id == selfID {
 		return // our own transmission echoed by the radio
 	}
+	h.recordSignal(pkt.GetFrom(), SignalText)
 	channel := h.channelNameFor(pkt)
 	h.recordMessage("rx", id, channel, string(decoded.GetPayload()), "", int(pkt.GetHopStart()), time.Now())
 
 	// Only DIRECT messages to our node route (broadcasts stay on the
-	// feed): the gate approves the sender's registered id.
+	// feed): the gate resolves the sender's registered directory user;
+	// unknown senders stay off the alarm pipeline.
 	h.mu.Lock()
 	selfID = ""
 	if h.self != nil {
@@ -560,10 +614,11 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	if pkt.GetTo() != 0 && fmt.Sprintf("%08x", pkt.GetTo()) != selfID {
 		return // not addressed to us
 	}
-	if !gate(id) {
+	owner := gate(id)
+	if owner == "" {
 		return
 	}
-	h.publishRoutedEvent(id, string(decoded.GetPayload()))
+	h.publishRoutedEvent(id, owner, string(decoded.GetPayload()))
 }
 
 // channelNameFor resolves the display channel for a packet: the channel
@@ -586,8 +641,9 @@ func (h *Hub) ChannelLabel(idx int) string {
 }
 
 // publishRoutedEvent bridges one approved direct message into the /events
-// stream as a canonical hazard transition.
-func (h *Hub) publishRoutedEvent(senderID, text string) {
+// stream as a canonical hazard transition. The directory owner travels
+// in the headline and description so operators see WHO is speaking.
+func (h *Hub) publishRoutedEvent(senderID, owner, text string) {
 	h.mu.Lock()
 	name := ""
 	if n := h.nodes[senderID]; n != nil && n.Name != "" {
@@ -616,8 +672,8 @@ func (h *Hub) publishRoutedEvent(senderID, text string) {
 			Severity:    "severe",
 			Urgency:     "immediate",
 			Certainty:   "observed",
-			Headline:    fmt.Sprintf("Message from: %s: %s", from, text),
-			Description: "Direct message routed from the Meshtastic network.",
+			Headline:    fmt.Sprintf("Message from: %s (%s): %s", owner, from, text),
+			Description: fmt.Sprintf("Direct message routed from the Meshtastic network (sender: %s).", owner),
 			Status:      "active",
 			ReceivedAt:  now.Format(time.RFC3339),
 			UpdatedAt:   now.Format(time.RFC3339),
@@ -735,6 +791,8 @@ func (h *Hub) publishStation(n *Node) {
 	doc, err := json.Marshal(map[string]any{
 		"id":        n.ID,
 		"name":      n.Name,
+		"short":     n.Short,
+		"sends":     n.Sends,
 		"lat":       n.Lat,
 		"lon":       n.Lon,
 		"last_seen": n.LastSeen.UTC().Format(time.RFC3339),
@@ -752,7 +810,7 @@ func (h *Hub) publishStation(n *Node) {
 // SeedNode merges one retained station document restored from the broker
 // (the startup seeding path): fresh documents restore the node; expired
 // ones are tombstoned.
-func (h *Hub) SeedNode(id, name string, lat, lon float64, lastSeen time.Time) {
+func (h *Hub) SeedNode(id, name, short string, lat, lon float64, lastSeen time.Time, sends []string) {
 	id = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "!"))
 	if len(id) != 8 {
 		return
@@ -770,6 +828,12 @@ func (h *Hub) SeedNode(id, name string, lat, lon float64, lastSeen time.Time) {
 	}
 	if name != "" {
 		n.Name = name
+	}
+	if short != "" {
+		n.Short = short
+	}
+	if len(sends) > 0 && n.Sends == nil {
+		n.Sends = append([]string(nil), sends...)
 	}
 	if lat != 0 || lon != 0 {
 		n.Lat, n.Lon = lat, lon
@@ -793,6 +857,7 @@ func (h *Hub) Snapshot() Snapshot {
 	snap.Nodes = make([]Node, 0, len(h.nodes))
 	for _, n := range h.nodes {
 		c := *n
+		c.Sends = append([]string(nil), n.Sends...)
 		if h.self != nil && h.self.Lat != 0 || h.self != nil && h.self.Lon != 0 {
 			if c.Lat != 0 || c.Lon != 0 {
 				c.DistKM = DistanceKM(h.self.Lat, h.self.Lon, c.Lat, c.Lon)

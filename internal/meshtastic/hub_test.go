@@ -202,6 +202,9 @@ func TestHubConnect(t *testing.T) {
 			t.Fatalf("node %s name = %q, want %q", n.ID, n.Name, want[n.ID])
 		}
 		if n.ID == "ef010203" {
+			if n.Short != "R3" {
+				t.Fatalf("node ef010203 short = %q, want R3", n.Short)
+			}
 			if n.Lat != 50.02 || n.Lon != 20.0 {
 				t.Fatalf("node ef010203 pos = (%v, %v), want (50.02, 20)", n.Lat, n.Lon)
 			}
@@ -273,6 +276,43 @@ func TestHubPreconnectedTransport(t *testing.T) {
 	}
 	if len(snap.Nodes) != 2 {
 		t.Fatalf("nodes = %d, want 2 from the handshake directory", len(snap.Nodes))
+	}
+}
+
+// TestHubNodeSignals pins the observed packet kinds: telemetry and text
+// packets mark the sender's node, surfaced as the admin/map badges.
+func TestHubNodeSignals(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+
+	dispatch(t, radio, &pb.MeshPacket{
+		From: 0xdeadbeef,
+		To:   core.BroadcastNodeID.Uint32(),
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TELEMETRY_APP, Payload: []byte{1}},
+		},
+	})
+	waitFor := func(id string) []string {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, n := range radio.hub.Snapshot().Nodes {
+				if n.ID == id && len(n.Sends) > 0 {
+					return n.Sends
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		return nil
+	}
+	sends := waitFor("deadbeef")
+	if len(sends) != 1 || sends[0] != SignalTelemetry {
+		t.Fatalf("deadbeef sends = %v, want [telemetry]", sends)
+	}
+
+	dispatch(t, radio, textPacket(0x12345678, core.BroadcastNodeID.Uint32(), "hi"))
+	sends = waitFor("12345678")
+	if len(sends) != 1 || sends[0] != SignalText {
+		t.Fatalf("12345678 sends = %v, want [text]", sends)
 	}
 }
 
@@ -483,7 +523,12 @@ func TestHubEventBridge(t *testing.T) {
 		mu     sync.Mutex
 		events []string
 	)
-	radio.hub.SetSenderGate(func(id string) bool { return id == "deadbeef" })
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
 	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
 		mu.Lock()
 		events = append(events, string(payload))
@@ -521,8 +566,17 @@ func TestHubEventBridge(t *testing.T) {
 	if we.Event.Source != "meshtastic" || we.Event.SourceID != "deadbeef" {
 		t.Fatalf("event = %+v, want source meshtastic from deadbeef", we.Event)
 	}
+	if !strings.Contains(we.Event.Headline, "sp9kow") {
+		t.Fatalf("headline = %q, want the directory owner sp9kow", we.Event.Headline)
+	}
+	if !strings.Contains(we.Event.Headline, "PL-KR-MAKI") {
+		t.Fatalf("headline = %q, want the node name", we.Event.Headline)
+	}
 	if !strings.Contains(we.Event.Headline, "powodz w krakowie") {
 		t.Fatalf("headline = %q, want the message text", we.Event.Headline)
+	}
+	if !strings.Contains(we.Event.Description, "sp9kow") {
+		t.Fatalf("description = %q, want the sender", we.Event.Description)
 	}
 }
 

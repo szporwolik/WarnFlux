@@ -79,6 +79,7 @@
       <tr>
         <th>{{tr .Lang "meshtastic.node_name"}}</th>
         <th>{{tr .Lang "meshtastic.node_id"}}</th>
+        <th>{{tr .Lang "meshtastic.node_sends"}}</th>
         <th>{{tr .Lang "meshtastic.node_pos"}}</th>
         <th>{{tr .Lang "meshtastic.node_seen"}}</th>
       </tr>
@@ -86,13 +87,14 @@
     <tbody>
       {{range .Nodes}}
       <tr class="click-send" data-key="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">
-        <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}{{if and .Name .Owner}} <span class="muted op-name">({{.Owner}})</span>{{end}}</strong></td>
+        <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}{{if .Short}} <span class="muted short-name">({{.Short}})</span>{{end}}{{if and .Name .Owner}} <span class="muted op-name">({{.Owner}})</span>{{end}}</strong></td>
         <td class="muted nowrap">
           <button type="button" class="key-copy" data-key="{{.ID}}" title="{{tr $.Lang "meshtastic.copy_id"}}">
             <span class="key-short">!{{.ID}}</span>
             <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-clipboard"></use></svg>
           </button>
         </td>
+        <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}</td>
       </tr>

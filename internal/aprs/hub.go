@@ -737,6 +737,16 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	}
 	if routed {
 		h.routeOrCLI(p)
+	} else {
+		// Unauthorized senders never run commands and never raise
+		// alarms; a slash-prefixed attempt still gets the public
+		// installation banner.
+		h.mu.Lock()
+		cli := h.cli
+		h.mu.Unlock()
+		if cli != nil && strings.HasPrefix(strings.TrimSpace(p.Message.Text), "/") {
+			h.sendCLIReply(p.Src, cli.Identity())
+		}
 	}
 
 	// Signal the ack waiter only after the rx document is on the message

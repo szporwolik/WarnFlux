@@ -714,13 +714,13 @@ func TestHubRadioCLI(t *testing.T) {
 	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
 	hub.AddTransmitter("aprs-inet", tx)
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
-	hub.SetCLI(radiocli.New())
+	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
 
 	// /help: answered in-band, no alarm event.
 	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/help"), "aprs-inet")
 	waitFor(t, func() bool { return len(tx.sends()) == 1 })
 	sends := tx.sends()
-	if sends[0][0] != "SP9XYZ" || !strings.Contains(sends[0][1], "Komendy") {
+	if sends[0][0] != "SP9XYZ" || !strings.Contains(sends[0][1], "Commands") {
 		t.Fatalf("help reply = %v, want the command list to SP9XYZ", sends[0])
 	}
 	if got := len(sink.payloads("events")); got != 0 {
@@ -732,7 +732,7 @@ func TestHubRadioCLI(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.payloads("events")) == 1 })
 	waitFor(t, func() bool { return len(tx.sends()) == 2 })
 	sends = tx.sends()
-	if !strings.Contains(sends[1][1], "alarm testowy") {
+	if !strings.Contains(sends[1][1], "debug alarm") {
 		t.Fatalf("debug reply = %v, want the confirmation", sends[1])
 	}
 
@@ -741,6 +741,18 @@ func TestHubRadioCLI(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.payloads("events")) == 2 })
 	if len(tx.sends()) != 2 {
 		t.Fatalf("plain message produced a reply: %v", tx.sends())
+	}
+
+	// Unauthorized senders: commands never run and never alarm — a
+	// slash attempt only gets the public installation banner.
+	hub.Observe(testPacket("SP9ZZZ>APRS,TCPIP*::SP9MOA-10:/debug"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	sends = tx.sends()
+	if !strings.Contains(sends[2][1], "WarnFlux v1.0 - SOSNA") {
+		t.Fatalf("unauthorized slash reply = %v, want the identity banner", sends[2])
+	}
+	if got := len(sink.payloads("events")); got != 2 {
+		t.Fatalf("unauthorized /debug produced alarm events (%d total)", got)
 	}
 }
 

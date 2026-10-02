@@ -26,23 +26,27 @@ type Handler func(args string) Result
 
 // Bot interprets slash commands over any radio channel.
 type Bot struct {
+	identity string
 	handlers map[string]Handler
 	descs    map[string]string
 	order    []string
 }
 
-// New builds a bot with the built-in commands (/help, /debug). Further
-// topics register through Register as the need arises.
-func New() *Bot {
+// New builds a bot with the built-in commands (/help, /debug). identity
+// is the one-line installation banner (version, installation name,
+// public domain) answered to any slash-prefixed message that is not a
+// recognized command. Further topics register through Register.
+func New(identity string) *Bot {
 	b := &Bot{
+		identity: identity,
 		handlers: map[string]Handler{},
 		descs:    map[string]string{},
 	}
-	b.Register("help", "ta lista", func(string) Result {
+	b.Register("help", "this list", func(string) Result {
 		return Result{Handled: true, Reply: b.helpText()}
 	})
-	b.Register("debug", "alarm testowy", func(string) Result {
-		return Result{Handled: true, Debug: true, Reply: "OK: alarm testowy wygenerowany"}
+	b.Register("debug", "debug alarm", func(string) Result {
+		return Result{Handled: true, Debug: true, Reply: "OK: debug alarm generated"}
 	})
 	return b
 }
@@ -60,6 +64,11 @@ func (b *Bot) Register(name, description string, h Handler) {
 	b.descs[key] = description
 }
 
+// Identity returns the installation banner answered to unknown
+// slash-prefixed messages (public information: version, installation
+// name and public domain).
+func (b *Bot) Identity() string { return b.identity }
+
 // Handle evaluates one inbound text. Non-commands return Handled=false
 // so the channel applies its normal routing.
 func (b *Bot) Handle(text string) Result {
@@ -76,7 +85,9 @@ func (b *Bot) Handle(text string) Result {
 	if h, ok := b.handlers[name]; ok {
 		return h(args)
 	}
-	return Result{Handled: true, Reply: "Nieznana komenda: " + name + ". /help"}
+	// Any other slash-prefixed message is not a command: answer with the
+	// installation banner so the sender knows what they reached.
+	return Result{Handled: true, Reply: b.identity}
 }
 
 // helpText renders the command list. Kept short on purpose: APRS
@@ -86,5 +97,5 @@ func (b *Bot) helpText() string {
 	for _, key := range b.order {
 		parts = append(parts, "/"+key+" - "+b.descs[key])
 	}
-	return "Komendy: " + strings.Join(parts, "; ")
+	return "Commands: " + strings.Join(parts, "; ")
 }

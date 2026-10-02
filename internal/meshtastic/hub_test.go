@@ -883,7 +883,7 @@ func TestHubRadioCLI(t *testing.T) {
 		mu.Unlock()
 		return nil
 	})
-	radio.hub.SetCLI(radiocli.New())
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
 
 	// /help: answered, no alarm.
 	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/help"))
@@ -891,7 +891,7 @@ func TestHubRadioCLI(t *testing.T) {
 	if reply[0].GetTo() != 0xdeadbeef {
 		t.Fatalf("help reply to = %08x, want deadbeef", reply[0].GetTo())
 	}
-	if got := string(reply[0].GetDecoded().GetPayload()); !strings.Contains(got, "Komendy") {
+	if got := string(reply[0].GetDecoded().GetPayload()); !strings.Contains(got, "Commands") {
 		t.Fatalf("help reply = %q, want the command list", got)
 	}
 	mu.Lock()
@@ -915,7 +915,8 @@ func TestHubRadioCLI(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	mu.Lock()
-	defer mu.Unlock()
+	n = len(events)
+	mu.Unlock()
 	if n != 1 {
 		t.Fatalf("events after /debug = %d, want 1", n)
 	}
@@ -924,8 +925,27 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 	radio.waitOutbound(t, before+1)
 	out := radio.outbound()
-	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "alarm testowy") {
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "debug alarm") {
 		t.Fatalf("debug reply = %q, want the confirmation", got)
+	}
+
+	// Unauthorized senders: commands never run and never alarm — a
+	// slash attempt only gets the public installation banner.
+	before = len(radio.outbound())
+	dispatch(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/debug"))
+	radio.waitOutbound(t, before+1)
+	out = radio.outbound()
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") {
+		t.Fatalf("unauthorized slash reply = %q, want the identity banner", got)
+	}
+	if out[len(out)-1].GetTo() != 0xcafebabe {
+		t.Fatalf("unauthorized reply to = %08x, want cafebabe", out[len(out)-1].GetTo())
+	}
+	mu.Lock()
+	n = len(events)
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("events after unauthorized /debug = %d, want still 1", n)
 	}
 }
 

@@ -765,6 +765,21 @@ func TestHubRadioCLI(t *testing.T) {
 	if got := len(sink.payloads("events")); got != 1 {
 		t.Fatalf("unauthorized /debug produced alarm events (%d total)", got)
 	}
+
+	// /help is public: an unregistered sender still gets the command
+	// list — but only of the commands they may run (no /debug).
+	hub.Observe(testPacket("SP9ZZZ>APRS,TCPIP*::SP9MOA-10:/help"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 5 })
+	sends = tx.sends()
+	if !strings.Contains(sends[4][1], "Commands:") || !strings.Contains(sends[4][1], "/help") {
+		t.Fatalf("public /help reply = %v, want the public command list", sends[4])
+	}
+	if strings.Contains(sends[4][1], "/debug") {
+		t.Fatalf("public /help reply = %v, must not list restricted commands", sends[4])
+	}
+	if got := len(sink.payloads("events")); got != 1 {
+		t.Fatalf("public /help produced alarm events (%d total)", got)
+	}
 }
 
 // TestBulletinExpiry pins the bounded retention: after the bulletin TTL

@@ -1146,15 +1146,11 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	text := string(decoded.GetPayload())
 
 	// Radio CLI: slash-prefixed messages are command attempts and never
-	// become alarms. Commands run only for directory-registered senders;
-	// unauthorized senders still get the installation banner (it is
-	// public information).
+	// become alarms on their own. Public commands (/help) run for
+	// everyone; restricted commands (/debug) run only for
+	// directory-registered senders — the shared interpreter decides.
 	if cli != nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
-		if owner == "" {
-			h.sendCLIReply(id, cli.Banner())
-			return
-		}
-		res := cli.Handle(text)
+		res := cli.Handle(text, owner != "")
 		if res.Handled {
 			if res.Debug {
 				h.publishRoutedEvent(id, owner, text)

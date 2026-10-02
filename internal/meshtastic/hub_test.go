@@ -845,9 +845,10 @@ func TestHubReceive(t *testing.T) {
 	}
 }
 
-// TestHubEventBridge pins the direct-message routing: a DM to our node
-// from a gate-approved sender becomes a /events document; unapproved or
-// non-direct packets stay off the events stream.
+// TestHubEventBridge pins the command-only alarm policy: a /debug DM to
+// our node from a gate-approved sender becomes a /events document, while
+// plain DMs, broadcasts and unapproved senders stay off the events
+// stream.
 func TestHubEventBridge(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
 	radio.waitConnected(t)
@@ -867,8 +868,11 @@ func TestHubEventBridge(t *testing.T) {
 		mu.Unlock()
 		return nil
 	})
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
 
-	// DM to us from the approved node.
+	// /debug DM to us from the approved node.
+	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
+	// Plain DM from the approved node: stays off /events.
 	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "powodz w krakowie"))
 	// Broadcast from the approved node: stays off /events.
 	dispatch(t, radio, textPacket(0xdeadbeef, core.BroadcastNodeID.Uint32(), "broadcast"))
@@ -889,7 +893,7 @@ func TestHubEventBridge(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(events) != 1 {
-		t.Fatalf("events = %d, want exactly 1", len(events))
+		t.Fatalf("events = %d, want exactly 1 (the /debug command only)", len(events))
 	}
 	var we MessageEventWire
 	if err := json.Unmarshal([]byte(events[0]), &we); err != nil {
@@ -904,8 +908,8 @@ func TestHubEventBridge(t *testing.T) {
 	if !strings.Contains(we.Event.Headline, "PL-KR-MAKI") {
 		t.Fatalf("headline = %q, want the node name", we.Event.Headline)
 	}
-	if !strings.Contains(we.Event.Headline, "powodz w krakowie") {
-		t.Fatalf("headline = %q, want the message text", we.Event.Headline)
+	if !strings.Contains(we.Event.Headline, "/debug") {
+		t.Fatalf("headline = %q, want the command text", we.Event.Headline)
 	}
 	if !strings.Contains(we.Event.Description, "sp9kow") {
 		t.Fatalf("description = %q, want the sender", we.Event.Description)
@@ -997,6 +1001,22 @@ func TestHubRadioCLI(t *testing.T) {
 	mu.Unlock()
 	if n != 1 {
 		t.Fatalf("events after unauthorized /debug = %d, want still 1", n)
+	}
+
+	// A plain direct message never becomes an alarm: the standard
+	// installation banner answers instead.
+	before = len(radio.outbound())
+	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "plain hello"))
+	radio.waitOutbound(t, before+1)
+	out = radio.outbound()
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") {
+		t.Fatalf("plain reply = %q, want the standard banner", got)
+	}
+	mu.Lock()
+	n = len(events)
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("events after plain hello = %d, want still 1", n)
 	}
 }
 

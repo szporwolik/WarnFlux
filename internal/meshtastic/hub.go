@@ -1159,10 +1159,12 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 		}
 		return
 	}
-	if owner == "" {
-		return
+	// Plain (non-command) direct messages never become alarms: the
+	// standard installation banner answers instead, and the message
+	// stays in the history and the message feed.
+	if cli != nil {
+		h.sendCLIReply(id, cli.Identity())
 	}
-	h.publishRoutedEvent(id, owner, text)
 }
 
 // sendCLIReply answers one radio command with a direct message back to

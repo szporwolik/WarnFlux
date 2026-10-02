@@ -735,16 +735,22 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 		h.logger.Info("aprs: message received",
 			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "bulletin", IsBulletin(p.Message.To), "routed", routed)
 	}
-	if routed {
-		h.routeOrCLI(p)
-	} else {
-		// Unauthorized senders never run commands and never raise
-		// alarms; a slash-prefixed attempt still gets the public
-		// installation banner.
-		h.mu.Lock()
-		cli := h.cli
-		h.mu.Unlock()
-		if cli != nil && strings.HasPrefix(strings.TrimSpace(p.Message.Text), "/") {
+	h.mu.Lock()
+	cli := h.cli
+	h.mu.Unlock()
+	if cli != nil && h.cfg.RouteMessages && h.routableMessage(p) {
+		text := strings.TrimSpace(p.Message.Text)
+		if strings.HasPrefix(text, "/") {
+			if routed {
+				h.routeOrCLI(p)
+			} else {
+				// Unauthorized slash attempt: the public banner, never a
+				// command.
+				h.sendCLIReply(p.Src, cli.Identity())
+			}
+		} else {
+			// Plain messages never become alarms — the standard
+			// installation banner answers instead.
 			h.sendCLIReply(p.Src, cli.Identity())
 		}
 	}
@@ -759,26 +765,26 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 }
 
 // routeOrCLI handles one routed message: slash commands are answered
-// in-band by the shared CLI (and /debug additionally fires the alarm
-// exactly like a plain message does); everything else feeds the alarm
-// pipeline as before.
+// in-band by the shared CLI (and /debug additionally fires the alarm);
+// plain messages never become alarms — they stay in the history and the
+// message feed.
 func (h *Hub) routeOrCLI(p Packet) {
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
-	if cli != nil {
-		res := cli.Handle(strings.TrimSpace(p.Message.Text))
-		if res.Handled {
-			if res.Debug {
-				h.publishMessageEvent(p)
-			}
-			if res.Reply != "" {
-				h.sendCLIReply(p.Src, res.Reply)
-			}
-			return
-		}
+	if cli == nil {
+		return
 	}
-	h.publishMessageEvent(p)
+	res := cli.Handle(strings.TrimSpace(p.Message.Text))
+	if !res.Handled {
+		return
+	}
+	if res.Debug {
+		h.publishMessageEvent(p)
+	}
+	if res.Reply != "" {
+		h.sendCLIReply(p.Src, res.Reply)
+	}
 }
 
 // sendCLIReply answers one radio command over the first ready APRS

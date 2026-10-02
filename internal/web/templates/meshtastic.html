@@ -12,17 +12,25 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
+    {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
+    {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "meshtastic.sent"}}</span></div>{{end}}
     <div class="mesh-toolbar">
       <form method="post" action="/meshtastic/send" class="mesh-send">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <select name="target">
-          <option value="channel">{{tr .Lang "meshtastic.send_channel"}}</option>
-          <option value="contact">{{tr .Lang "meshtastic.send_contact"}}</option>
+        <input type="hidden" name="target" value="channel">
+        <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}">
+          {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
         </select>
-        <input type="text" name="contact" placeholder="{{tr .Lang "meshtastic.contact_ph"}}" maxlength="8" list="mesh-contacts">
+        <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
+        <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send_channel"}}</button>
+      </form>
+      <form method="post" action="/meshtastic/send" class="mesh-send">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="target" value="contact">
+        <input type="text" name="contact" id="mesh-contact" placeholder="{{tr .Lang "meshtastic.contact_ph"}}" maxlength="8" list="mesh-contacts">
         <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">{{.Username}}</option>{{end}}</datalist>
         <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
-        <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send"}}</button>
+        <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send_contact"}}</button>
       </form>
     </div>
     <div class="page-tabs" role="tablist">
@@ -124,7 +132,7 @@
       {{range .Messages}}
       <tr class="msgs-{{.Direction}}{{if .ID}} click-send{{end}}"{{if .ID}} data-key="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}"{{end}}>
         <td class="muted nowrap">{{timeFull .At}}</td>
-        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
+        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span>{{if eq .Direction "tx"}}{{if eq .Status "delivered"}} <span class="badge ok">✓ {{tr $.Lang "meshtastic.st_delivered"}}</span>{{else if eq .Status "sent"}} <span class="badge muted">{{tr $.Lang "meshtastic.st_sent"}}</span>{{else if eq .Status "failed"}} <span class="badge bad">{{tr $.Lang "meshtastic.st_failed"}}</span>{{end}}{{end}}</td>
         <td><strong>{{if .SenderName}}{{.SenderName}}<span class="muted short-key"> !{{.Sender}}</span>{{else}}{{if .Sender}}!{{.Sender}}{{else}}—{{end}}{{end}}{{if .Operator}} <span class="muted op-name">({{.Operator}})</span>{{end}}</strong></td>
         <td>{{.Channel}}{{if gt .Hops 0}} <span class="muted">· {{trf $.Lang "meshtastic.hops" .Hops}}</span>{{end}}</td>
         <td class="msgs-text">{{.Text}}</td>

@@ -365,6 +365,11 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 			if sn := strings.TrimSpace(user.GetShortName()); sn != "" {
 				h.self.ShortName = sn
 			}
+			if pos := ni.GetPosition(); pos != nil {
+				if lat, lon := positionDeg(pos); lat != 0 || lon != 0 {
+					h.self.Lat, h.self.Lon = lat, lon
+				}
+			}
 			continue
 		}
 		n := h.nodes[id]
@@ -374,6 +379,19 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 		}
 		if name != "" {
 			n.Name = name
+		}
+		// The device node DB carries the last known position.
+		if pos := ni.GetPosition(); pos != nil {
+			if lat, lon := positionDeg(pos); lat != 0 || lon != 0 {
+				n.Lat, n.Lon = lat, lon
+			}
+		}
+		// last_heard (epoch seconds of the last packet from this node)
+		// is the honest freshness signal; fall back to now when absent.
+		if heard := ni.GetLastHeard(); heard > 0 {
+			if t := time.Unix(int64(heard), 0); t.After(n.LastSeen) {
+				n.LastSeen = t
+			}
 		}
 		if n.LastSeen.IsZero() {
 			n.LastSeen = time.Now()
@@ -398,6 +416,14 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 	}
 }
 
+// positionDeg converts the 1e-7 scaled Position coordinates to degrees.
+func positionDeg(pos *pb.Position) (lat, lon float64) {
+	if pos == nil {
+		return 0, 0
+	}
+	return float64(pos.GetLatitudeI()) / 1e7, float64(pos.GetLongitudeI()) / 1e7
+}
+
 // expireNodes tombstones neighbours unheard for longer than NodeTTL.
 func (h *Hub) expireNodes() {
 	h.mu.Lock()
@@ -420,7 +446,7 @@ func (h *Hub) expireNodes() {
 	}
 }
 
-// expireNodes tombstones neighbours unheard for longer than NodeTTL.
+// handlePacket consumes one mesh packet delivered from the radio.
 func (h *Hub) handlePacket(pkt *pb.MeshPacket) {
 	if pkt == nil {
 		return
@@ -479,7 +505,7 @@ func (h *Hub) receivePosition(pkt *pb.MeshPacket, decoded *pb.Data) {
 	if err := proto.Unmarshal(decoded.GetPayload(), pos); err != nil {
 		return
 	}
-	lat, lon := float64(pos.GetLatitudeI())/1e7, float64(pos.GetLongitudeI())/1e7
+	lat, lon := positionDeg(pos)
 	if lat == 0 && lon == 0 {
 		return
 	}

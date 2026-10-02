@@ -741,13 +741,10 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	if cli != nil && h.routableMessage(p) {
 		text := strings.TrimSpace(p.Message.Text)
 		if strings.HasPrefix(text, "/") {
-			if h.senderApproved(p.Src) {
-				h.routeOrCLI(p)
-			} else {
-				// Unauthorized slash attempt: the public banner, never a
-				// command.
-				h.sendCLIReply(p.Src, cli.Banner())
-			}
+			// The shared interpreter decides: public commands (/help)
+			// run for everyone, restricted ones (/debug) only for
+			// allow-listed senders.
+			h.routeOrCLI(p)
 		} else {
 			// Plain messages never become alarms — the standard
 			// installation banner answers instead.
@@ -764,9 +761,10 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	}
 }
 
-// routeOrCLI handles one routed message: slash commands are answered
-// in-band by the shared CLI (and /debug additionally fires the alarm);
-// plain messages never become alarms — they stay in the history and the
+// routeOrCLI handles one slash message: the shared interpreter runs
+// public commands for everyone and restricted commands for allow-listed
+// senders; /debug additionally fires the alarm for authorized senders.
+// Plain messages never become alarms — they stay in the history and the
 // message feed.
 func (h *Hub) routeOrCLI(p Packet) {
 	h.mu.Lock()
@@ -775,7 +773,7 @@ func (h *Hub) routeOrCLI(p Packet) {
 	if cli == nil {
 		return
 	}
-	res := cli.Handle(strings.TrimSpace(p.Message.Text))
+	res := cli.Handle(strings.TrimSpace(p.Message.Text), h.senderApproved(p.Src))
 	if !res.Handled {
 		return
 	}

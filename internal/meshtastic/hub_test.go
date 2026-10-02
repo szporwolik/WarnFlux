@@ -559,11 +559,17 @@ func TestHubEmcomBeacon(t *testing.T) {
 		EmcomIdentity: "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"})
 	radio.waitConnected(t)
 
-	radio.hub.mu.Lock()
-	radio.hub.emcomNext = time.Now().Add(-time.Second)
-	radio.hub.mu.Unlock()
-
-	out := radio.waitOutbound(t, 1)
+	// The startup beacon fires on the first maintenance tick (no manual
+	// scheduling). Poll with a generous deadline: the ticker interval is
+	// 5s and -race runs are slow.
+	deadline := time.Now().Add(10 * time.Second)
+	var out []*pb.MeshPacket
+	for time.Now().Before(deadline) {
+		if out = radio.outbound(); len(out) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(out) != 1 {
 		t.Fatalf("outbound = %v, want one beacon", out)
 	}
@@ -578,6 +584,45 @@ func TestHubEmcomBeacon(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("beacon text = %q, missing %q", text, want)
 		}
+	}
+}
+
+// TestHubEmcomBeaconAtStartup pins the restart requirement: the first
+// session schedules the presence beacon for now, so it fires on the
+// first maintenance tick — no one-minute warm-up.
+func TestHubEmcomBeaconAtStartup(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		EmcomChannel: 1, EmcomInterval: time.Hour, EmcomIdentity: "WarnFlux v1.0"})
+	radio.waitConnected(t)
+
+	var next time.Time
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		radio.hub.mu.Lock()
+		next = radio.hub.emcomNext
+		radio.hub.mu.Unlock()
+		if !next.IsZero() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if next.IsZero() {
+		t.Fatal("startup beacon not scheduled")
+	}
+	if next.After(time.Now()) {
+		t.Fatalf("startup beacon scheduled in %s, want it due immediately", time.Until(next))
+	}
+}
+
+// TestHubEmcomDefaults pins the default beacon spacing (4 hours).
+func TestHubEmcomDefaults(t *testing.T) {
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hub.cfg.EmcomInterval != 4*time.Hour {
+		t.Fatalf("default EmcomInterval = %s, want 4h", hub.cfg.EmcomInterval)
 	}
 }
 

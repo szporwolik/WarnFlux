@@ -89,8 +89,9 @@ type HubConfig struct {
 	// Name is the optional display name of our own station (e.g. the
 	// installation display name); it rides along in routed APRS messages.
 	Name string
-	// RouteMessages turns APRS messages addressed to us and heard over
-	// the radio (KISS) into routable events (source "aprs").
+	// RouteMessages is legacy: message handling now mirrors the
+	// Meshtastic hub — answers and alarms key off the sender allow-list
+	// only. Kept for configuration compatibility.
 	RouteMessages bool
 	// Version is the WarnFlux version (used in the APRS-IS login).
 	Version string

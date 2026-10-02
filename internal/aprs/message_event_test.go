@@ -153,8 +153,11 @@ func TestRoutedMessageEventNoGate(t *testing.T) {
 	}
 }
 
-// TestRoutedMessageEventDisabled: route_messages off → no events.
-func TestRoutedMessageEventDisabled(t *testing.T) {
+// TestCommandsWorkWithRouteMessagesOff pins the Meshtastic parity: the
+// radio CLI does not depend on the legacy route_messages flag — plain
+// messages stay off the alarm pipeline, while an allow-listed sender's
+// /debug fires the alarm regardless.
+func TestCommandsWorkWithRouteMessagesOff(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled:    true,
 		Callsign:   "SP9MOA-10",
@@ -167,10 +170,23 @@ func TestRoutedMessageEventDisabled(t *testing.T) {
 	hub.Start(ctx)
 	defer cancel()
 
-	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:hello", time.Now()), BackendRadio)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	// Plain message without a CLI-visible sender gate approval: no
+	// events.
+	hub.Observe(ParseFeedLine("SP9ZZZ-7>APRS,WIDE1-1*::SP9MOA-10:hello", time.Now()), BackendRadio)
 	time.Sleep(150 * time.Millisecond)
 	if got := len(sink.payloads("events")); got != 0 {
-		t.Fatalf("route_messages disabled but %d events published", got)
+		t.Fatalf("plain message produced %d events", got)
+	}
+
+	// /debug from an allow-listed sender fires the alarm even though
+	// route_messages is off.
+	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:/debug", time.Now()), BackendRadio)
+	waitFor(t, func() bool { return len(sink.payloads("events")) >= 1 })
+	if got := len(sink.payloads("events")); got != 1 {
+		t.Fatalf("events after /debug = %d, want 1", got)
 	}
 }
 

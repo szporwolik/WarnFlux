@@ -472,6 +472,11 @@ func run(configPath string, checkConfig bool) error {
 	if err != nil {
 		return fmt.Errorf("configure aprs hub: %w", err)
 	}
+	// The installation banner answers unknown slash commands on the radio
+	// CLI and rides the periodic emcom presence beacon.
+	identity := fmt.Sprintf("WarnFlux v%s - %s - %s",
+		resolvedVersion, cfg.Web.Header1, cfg.Web.Domain)
+
 	// The Meshtastic hub owns the Companion serial session to the Heltec
 	// node; the source plugin, the meshtastic action and the admin page
 	// share it. History is persisted like APRS messages.
@@ -481,6 +486,9 @@ func run(configPath string, checkConfig bool) error {
 		Baud:          cfg.Meshtastic.Baud,
 		RouteMessages: cfg.Meshtastic.RouteMessages,
 		NodeTTL:       cfg.Meshtastic.NodeTTL,
+		EmcomChannel:  cfg.Meshtastic.EmcomChannel,
+		EmcomInterval: cfg.Meshtastic.EmcomInterval,
+		EmcomIdentity: identity,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
@@ -521,8 +529,7 @@ func run(configPath string, checkConfig bool) error {
 	// debug alarm; both APRS messages and Meshtastic direct messages
 	// answer through the same interpreter (future topics plug in here).
 	// Unknown slash messages answer with the installation banner.
-	radioCLI := radiocli.New(fmt.Sprintf("WarnFlux v%s - %s - %s",
-		version, cfg.Web.Header1, cfg.Web.Domain))
+	radioCLI := radiocli.New(identity)
 	hub.SetCLI(radioCLI)
 	meshtasticHub.SetCLI(radioCLI)
 

@@ -273,14 +273,17 @@ func (s *Server) fillMeshtasticNodes(v *meshtasticView) {
 	}
 	v.Snap = s.meshtastic.Snapshot()
 	// The send form offers the device channel table (the node is the
-	// source of truth); before the first handshake fall back to the
-	// primary channel.
+	// source of truth); the default PRIMARY channel (0) is receive-only
+	// by policy and is never offered.
 	v.Channels = make([]meshtasticChannelOption, 0, len(v.Snap.Channels))
 	for i, name := range v.Snap.Channels {
+		if i == 0 {
+			continue
+		}
 		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: i, Label: name})
 	}
 	if len(v.Channels) == 0 {
-		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: 0})
+		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: 1})
 	}
 	// Directory match: any user who registered a node's id labels it (as
 	// the name when the node carries none, and next to the name
@@ -392,10 +395,10 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 		}
 		err = s.meshtastic.SendContactMessage(r.Context(), id, text, sess.username)
 	} else {
-		idx := 0
+		idx := 1
 		if raw := strings.TrimSpace(r.PostFormValue("channel_idx")); raw != "" {
 			parsed, parseErr := strconv.Atoi(raw)
-			if parseErr != nil || parsed < 0 || parsed > 7 {
+			if parseErr != nil || parsed < 1 || parsed > 7 {
 				http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_channel")), http.StatusSeeOther)
 				return
 			}

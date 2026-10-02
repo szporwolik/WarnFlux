@@ -232,7 +232,11 @@ func (s *Server) requireStateChange(w http.ResponseWriter, r *http.Request, sess
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return false
 	}
-	if origin := r.Header.Get("Origin"); origin != "" && !sameOriginHost(origin, r.Host) {
+	// "null" is the opaque origin of sandboxed contexts (e.g. embedded
+	// webviews): it carries no cross-site information, so it is treated
+	// like an absent Origin header. The CSRF token — which a cross-site
+	// form can never read — remains the primary gate.
+	if origin := r.Header.Get("Origin"); origin != "" && origin != "null" && !sameOriginHost(origin, r.Host) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return false
 	}

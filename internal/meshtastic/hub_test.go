@@ -39,6 +39,14 @@ func nodeInfo(num uint32, long, short string) *pb.NodeInfo {
 	}
 }
 
+// nodeInfoPos adds a device node-DB position (1e-7 scaled) and last_heard.
+func nodeInfoPos(num uint32, long, short string, latI, lonI int32, lastHeard uint32) *pb.NodeInfo {
+	ni := nodeInfo(num, long, short)
+	ni.Position = &pb.Position{LatitudeI: &latI, LongitudeI: &lonI}
+	ni.LastHeard = lastHeard
+	return ni
+}
+
 // testRadio wires a hub onto the library's in-memory client API server:
 // real protocol over net.Pipe, no serial hardware.
 type testRadio struct {
@@ -52,10 +60,12 @@ type testRadio struct {
 
 // newTestTable is the handshake node directory used by the test radio.
 func newTestTable() *testNodeTable {
+	lat := int32(500200000) // 50.02
+	lon := int32(200000000) // 20.00
 	return &testNodeTable{
 		self: nodeInfo(0xabcd1234, "RKSR-OWN", "OWN"),
 		all: []*pb.NodeInfo{
-			nodeInfo(0xef010203, "RKSR-TN-R3", "R3"),
+			nodeInfoPos(0xef010203, "RKSR-TN-R3", "R3", lat, lon, 1790900000),
 			nodeInfo(0xdeadbeef, "PL-KR-MAKI", "MK"),
 		},
 	}
@@ -131,6 +141,19 @@ func (r *testRadio) outbound() []*pb.MeshPacket {
 	return append([]*pb.MeshPacket(nil), r.rx...)
 }
 
+// waitOutbound blocks until the server captured n outbound packets.
+func (r *testRadio) waitOutbound(t *testing.T, n int) []*pb.MeshPacket {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if out := r.outbound(); len(out) >= n {
+			return out
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return r.outbound()
+}
+
 func textPacket(from, to uint32, text string) *pb.MeshPacket {
 	return &pb.MeshPacket{
 		From: from,
@@ -177,6 +200,14 @@ func TestHubConnect(t *testing.T) {
 	for _, n := range snap.Nodes {
 		if want[n.ID] != n.Name {
 			t.Fatalf("node %s name = %q, want %q", n.ID, n.Name, want[n.ID])
+		}
+		if n.ID == "ef010203" {
+			if n.Lat != 50.02 || n.Lon != 20.0 {
+				t.Fatalf("node ef010203 pos = (%v, %v), want (50.02, 20)", n.Lat, n.Lon)
+			}
+			if n.LastSeen.IsZero() {
+				t.Fatal("node ef010203 last seen empty, want the device last_heard")
+			}
 		}
 	}
 }
@@ -276,7 +307,7 @@ func TestHubSendBroadcast(t *testing.T) {
 	if err := radio.hub.SendChannelMessage(ctx, "test broadcast", "admin"); err != nil {
 		t.Fatalf("SendChannelMessage: %v", err)
 	}
-	out := radio.outbound()
+	out := radio.waitOutbound(t, 1)
 	if len(out) != 1 {
 		t.Fatalf("outbound packets = %d, want 1", len(out))
 	}
@@ -313,7 +344,7 @@ func TestHubSendDirect(t *testing.T) {
 	if err := radio.hub.SendContactMessage(ctx, "!ef010203", "direct hi", "admin"); err != nil {
 		t.Fatalf("SendContactMessage: %v", err)
 	}
-	out := radio.outbound()
+	out := radio.waitOutbound(t, 1)
 	if len(out) != 1 || out[0].GetTo() != 0xef010203 {
 		t.Fatalf("outbound = %v, want direct to ef010203", out)
 	}

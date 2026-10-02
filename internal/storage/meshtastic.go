@@ -39,3 +39,23 @@ type MeshtasticMessageStore interface {
 	ListMeshtasticMessages(ctx context.Context, direction string, limit, offset int) ([]MeshMessage, error)
 	CountMeshtasticMessages(ctx context.Context, direction string) (int, error)
 }
+
+// MeshtasticNode is one persisted heard node from the node directory.
+type MeshtasticNode struct {
+	ID       string
+	Name     string
+	Short    string
+	Lat      float64
+	Lon      float64
+	LastSeen time.Time
+	Sends    []string
+}
+
+// MeshtasticNodeStore persists the heard-node directory across restarts:
+// the hub merges it with live observations (the device node DB and fresh
+// packets) and rewrites it on change, so the admin page and the map keep
+// nodes that went quiet long ago.
+type MeshtasticNodeStore interface {
+	LoadMeshtasticNodes(ctx context.Context) ([]MeshtasticNode, error)
+	SaveMeshtasticNodes(ctx context.Context, nodes []MeshtasticNode) error
+}

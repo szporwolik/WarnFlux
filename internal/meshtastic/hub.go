@@ -29,6 +29,8 @@ import (
 	"github.com/kabili207/meshtastic-go/transport/client"
 	"github.com/kabili207/meshtastic-go/transport/serial"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // Defaults applied when the configuration omits values.
@@ -70,6 +72,13 @@ type Recorder interface {
 	// UpdateMeshtasticMessageStatus marks the tx delivery state of the
 	// matching row (created at + text).
 	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
+}
+
+// NodeStore persists the heard-node directory (implemented by storage
+// stores). Optional: a hub without a store keeps the directory in RAM.
+type NodeStore interface {
+	LoadMeshtasticNodes(ctx context.Context) ([]storage.MeshtasticNode, error)
+	SaveMeshtasticNodes(ctx context.Context, nodes []storage.MeshtasticNode) error
 }
 
 // Tx delivery states.
@@ -138,6 +147,9 @@ type Node struct {
 	DistKM     float64
 	BearingDeg float64
 	LastSeen   time.Time
+	// tombstoned records that the node's retained station document was
+	// already removed (the node itself stays in the persistent directory).
+	tombstoned bool
 }
 
 // SelfInfo describes our own node.
@@ -157,7 +169,12 @@ type Snapshot struct {
 	Self      SelfInfo
 	// Channels are the device channel names by index.
 	Channels []string
-	Nodes    []Node
+	// Nodes is the full node directory (recent and long-gone alike);
+	// LastSeen distinguishes them. The MQTT station feed only carries
+	// nodes heard within NodeTTL.
+	Nodes []Node
+	// NodeTTL is the freshness bound used to filter the live feed.
+	NodeTTL time.Duration
 }
 
 // Message is one received or sent text message.
@@ -245,6 +262,12 @@ type Hub struct {
 	// message; the session is declared dead after cfg.SilenceTimeout
 	// (defaultSilenceTimeout) of total radio silence.
 	lastRadio atomic.Int64
+
+	// nodeStore persists the heard-node directory across restarts
+	// (optional; nil = directory lives in RAM only).
+	nodeStore   NodeStore
+	nodesDirty  bool
+	lastPersist time.Time
 }
 
 // NewHub validates the config and builds the hub.
@@ -288,6 +311,11 @@ func (h *Hub) Connected() bool {
 // SetRecorder attaches the durable message history store (optional).
 func (h *Hub) SetRecorder(r Recorder) { h.mu.Lock(); h.recorder = r; h.mu.Unlock() }
 
+// SetNodeStore attaches the persistent heard-node directory (optional):
+// the hub restores it at startup and rewrites it whenever a node is
+// learned or updated.
+func (h *Hub) SetNodeStore(store NodeStore) { h.mu.Lock(); h.nodeStore = store; h.mu.Unlock() }
+
 // SetStationSink attaches the MQTT station publisher (optional): every
 // heard node becomes a retained document under meshtastic/stations/<id>
 // and is tombstoned when its NodeTTL expires.
@@ -328,6 +356,7 @@ func (h *Hub) SetEventSink(fn func(ctx context.Context, topic string, retained b
 // messages until ctx is cancelled. It reconnects with bounded backoff so
 // transient USB hiccups never kill the plugin permanently.
 func (h *Hub) Run(ctx context.Context) error {
+	h.restoreNodes(ctx)
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -431,8 +460,83 @@ func (h *Hub) runSession(ctx context.Context) error {
 			}
 			h.expireNodes()
 			h.retryPending(time.Now())
+			h.persistNodes()
 		}
 	}
+}
+
+// restoreNodes loads the persisted node directory into the hub (once, at
+// startup, before the first session).
+func (h *Hub) restoreNodes(ctx context.Context) {
+	h.mu.Lock()
+	store := h.nodeStore
+	h.mu.Unlock()
+	if store == nil {
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	nodes, err := store.LoadMeshtasticNodes(rctx)
+	if err != nil {
+		h.logger.Warn("meshtastic: node directory load failed", "error", err)
+		return
+	}
+	h.mu.Lock()
+	for _, n := range nodes {
+		if cur := h.nodes[n.ID]; cur != nil {
+			continue // live knowledge wins
+		}
+		h.nodes[n.ID] = &Node{
+			ID:       n.ID,
+			Name:     n.Name,
+			Short:    n.Short,
+			Lat:      n.Lat,
+			Lon:      n.Lon,
+			LastSeen: n.LastSeen,
+			Sends:    append([]string(nil), n.Sends...),
+		}
+	}
+	h.mu.Unlock()
+	if len(nodes) > 0 {
+		h.logger.Info("meshtastic: restored node directory", "nodes", len(nodes))
+	}
+}
+
+// persistNodes rewrites the node directory when it changed (at most once
+// per 30 seconds; saves run on a background goroutine so a slow disk can
+// never stall the session).
+func (h *Hub) persistNodes() {
+	h.mu.Lock()
+	store := h.nodeStore
+	if store == nil || !h.nodesDirty || time.Since(h.lastPersist) < 30*time.Second {
+		h.mu.Unlock()
+		return
+	}
+	nodes := make([]storage.MeshtasticNode, 0, len(h.nodes))
+	for _, n := range h.nodes {
+		nodes = append(nodes, storage.MeshtasticNode{
+			ID:       n.ID,
+			Name:     n.Name,
+			Short:    n.Short,
+			Lat:      n.Lat,
+			Lon:      n.Lon,
+			LastSeen: n.LastSeen,
+			Sends:    append([]string(nil), n.Sends...),
+		})
+	}
+	h.lastPersist = time.Now()
+	h.nodesDirty = false
+	h.mu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := store.SaveMeshtasticNodes(ctx, nodes); err != nil {
+			h.logger.Warn("meshtastic: node directory save failed", "error", err)
+			h.mu.Lock()
+			h.nodesDirty = true
+			h.mu.Unlock()
+		}
+	}()
 }
 
 // populateFromState copies the handshake device state into the hub: our
@@ -488,6 +592,7 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 		if n == nil {
 			n = &Node{ID: id}
 			h.nodes[id] = n
+			h.nodesDirty = true
 		}
 		if name != "" {
 			n.Name = name
@@ -539,20 +644,23 @@ func positionDeg(pos *pb.Position) (lat, lon float64) {
 	return float64(pos.GetLatitudeI()) / 1e7, float64(pos.GetLongitudeI()) / 1e7
 }
 
-// expireNodes tombstones neighbours unheard for longer than NodeTTL.
+// expireNodes cleans the MQTT station feed: nodes unheard for longer
+// than NodeTTL get their retained document tombstoned (once). The nodes
+// themselves stay in the persistent directory — the list only ever
+// grows, like the device's own node database.
 func (h *Hub) expireNodes() {
 	h.mu.Lock()
 	now := time.Now()
-	var expired []*Node
-	for id, n := range h.nodes {
-		if now.Sub(n.LastSeen) > h.cfg.NodeTTL {
-			expired = append(expired, n)
-			delete(h.nodes, id)
+	var stale []*Node
+	for _, n := range h.nodes {
+		if !n.tombstoned && now.Sub(n.LastSeen) > h.cfg.NodeTTL {
+			n.tombstoned = true
+			stale = append(stale, n)
 		}
 	}
 	sink := h.stationSink
 	h.mu.Unlock()
-	for _, n := range expired {
+	for _, n := range stale {
 		if sink != nil {
 			if err := sink(context.Background(), "meshtastic/stations/"+n.ID, true, nil); err != nil && h.logger != nil {
 				h.logger.Warn("meshtastic: station tombstone failed", "id", n.ID, "error", err)
@@ -841,9 +949,11 @@ func (h *Hub) recordSignal(from uint32, signal string) {
 	if n == nil {
 		n = &Node{ID: id}
 		h.nodes[id] = n
+		h.nodesDirty = true
 	}
 	if !slices.Contains(n.Sends, signal) {
 		n.Sends = append(n.Sends, signal)
+		h.nodesDirty = true
 	}
 	n.LastSeen = time.Now()
 	h.mu.Unlock()
@@ -873,6 +983,7 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	if n == nil {
 		n = &Node{ID: id}
 		h.nodes[id] = n
+		h.nodesDirty = true
 	}
 	if name != "" {
 		n.Name = name
@@ -907,11 +1018,13 @@ func (h *Hub) receivePosition(pkt *pb.MeshPacket, decoded *pb.Data) {
 	if n == nil {
 		n = &Node{ID: id}
 		h.nodes[id] = n
+		h.nodesDirty = true
 	}
 	n.Lat, n.Lon = lat, lon
 	n.LastSeen = time.Now()
 	if !slices.Contains(n.Sends, SignalPosition) {
 		n.Sends = append(n.Sends, SignalPosition)
+		h.nodesDirty = true
 	}
 	copyN := *n
 	h.mu.Unlock()
@@ -1183,19 +1296,15 @@ func (h *Hub) publishStation(n *Node) {
 }
 
 // SeedNode merges one retained station document restored from the broker
-// (the startup seeding path): fresh documents restore the node; expired
-// ones are tombstoned.
+// (the startup seeding path) into the node directory. Stale documents
+// also restore: the directory is a history, the MQTT feed freshness is
+// governed by NodeTTL tombstones alone.
 func (h *Hub) SeedNode(id, name, short string, lat, lon float64, lastSeen time.Time, sends []string) {
 	id = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(id), "!"))
 	if len(id) != 8 {
 		return
 	}
 	h.mu.Lock()
-	if time.Since(lastSeen) > h.cfg.NodeTTL {
-		h.mu.Unlock()
-		h.publishStation(&Node{ID: id})
-		return
-	}
 	n := h.nodes[id]
 	if n == nil {
 		n = &Node{ID: id}
@@ -1216,6 +1325,7 @@ func (h *Hub) SeedNode(id, name, short string, lat, lon float64, lastSeen time.T
 	if lastSeen.After(n.LastSeen) {
 		n.LastSeen = lastSeen
 	}
+	h.nodesDirty = true
 	h.mu.Unlock()
 }
 
@@ -1224,7 +1334,7 @@ func (h *Hub) SeedNode(id, name, short string, lat, lon float64, lastSeen time.T
 func (h *Hub) Snapshot() Snapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	snap := Snapshot{Connected: h.connected}
+	snap := Snapshot{Connected: h.connected, NodeTTL: h.cfg.NodeTTL}
 	if h.self != nil {
 		snap.Self = *h.self
 	}

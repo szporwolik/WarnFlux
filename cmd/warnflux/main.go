@@ -485,6 +485,9 @@ func run(configPath string, checkConfig bool) error {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
 	}
 	meshtasticHub.SetRecorder(store)
+	// The heard-node directory persists in SQLite so restarts and quiet
+	// periods do not empty the node list.
+	meshtasticHub.SetNodeStore(store)
 	// Meshtastic direct-message routing trusts registered operators: the
 	// sender's node id (8 hex) must belong to a user's registered mesh
 	// node list. Without the gate no mesh message becomes a hazard event.

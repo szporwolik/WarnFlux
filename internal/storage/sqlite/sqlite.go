@@ -671,6 +671,23 @@ ALTER TABLE user_meshtastic_ids RENAME COLUMN pubkey TO node_id;
 ALTER TABLE meshtastic_messages ADD COLUMN status TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v35: the persistent Meshtastic heard-node directory: the hub
+		// keeps every node it ever learned (the device node DB plus live
+		// packets) so restarts and quiet periods do not empty the node
+		// list; last_seen_ms drives the freshness display.
+		SQL: `
+CREATE TABLE meshtastic_nodes (
+	id           TEXT PRIMARY KEY,
+	name         TEXT NOT NULL DEFAULT '',
+	short        TEXT NOT NULL DEFAULT '',
+	lat          REAL NOT NULL DEFAULT 0,
+	lon          REAL NOT NULL DEFAULT 0,
+	last_seen_ms INTEGER NOT NULL DEFAULT 0,
+	sends        TEXT NOT NULL DEFAULT ''
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

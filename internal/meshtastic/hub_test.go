@@ -17,6 +17,8 @@ import (
 	"github.com/kabili207/meshtastic-go/transport/client"
 	"github.com/kabili207/meshtastic-go/transport/stream"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // testNodeTable serves the handshake node directory.
@@ -470,6 +472,79 @@ func TestHubNoResendOnceDeviceConfirms(t *testing.T) {
 	}
 	if out := radio.outbound(); len(out) != 1 {
 		t.Fatalf("outbound transmissions = %d, want exactly 1 (no client-side resend)", len(out))
+	}
+}
+
+// memNodeStore is an in-memory NodeStore for directory persistence tests.
+type memNodeStore struct {
+	mu    sync.Mutex
+	nodes []storage.MeshtasticNode
+}
+
+func (m *memNodeStore) LoadMeshtasticNodes(_ context.Context) ([]storage.MeshtasticNode, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]storage.MeshtasticNode(nil), m.nodes...), nil
+}
+
+func (m *memNodeStore) SaveMeshtasticNodes(_ context.Context, nodes []storage.MeshtasticNode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nodes = append([]storage.MeshtasticNode(nil), nodes...)
+	return nil
+}
+
+// TestHubNodeDirectoryPersists pins the persistent directory: a node
+// learned by one hub survives into a fresh hub through the store.
+func TestHubNodeDirectoryPersists(t *testing.T) {
+	store := &memNodeStore{}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	radio.hub.SetNodeStore(store)
+
+	// Learn a node from a live packet, then force a directory save.
+	dispatch(t, radio, &pb.MeshPacket{
+		From: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TELEMETRY_APP},
+		},
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		radio.hub.mu.Lock()
+		has := radio.hub.nodes["ef010203"] != nil
+		radio.hub.mu.Unlock()
+		if has {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	radio.hub.mu.Lock()
+	radio.hub.lastPersist = time.Time{} // defeat the 30s throttle
+	radio.hub.mu.Unlock()
+	radio.hub.persistNodes()
+	// The save runs on a background goroutine; wait for the store.
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, _ := store.LoadMeshtasticNodes(context.Background()); len(got) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// A fresh hub restores the directory from the same store.
+	hub2, err := NewHub(Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub2.SetNodeStore(store)
+	hub2.restoreNodes(context.Background())
+	hub2.mu.Lock()
+	n := hub2.nodes["ef010203"]
+	hub2.mu.Unlock()
+	if n == nil || n.ID != "ef010203" {
+		t.Fatalf("restored node = %+v, want ef010203", n)
 	}
 }
 

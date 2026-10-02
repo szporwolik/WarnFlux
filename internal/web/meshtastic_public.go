@@ -49,9 +49,15 @@ func (s *Server) handleMeshtasticStations(w http.ResponseWriter, r *http.Request
 	if s.aprs != nil && s.aprs.Enabled() {
 		ringLat, ringLon, ringR = s.aprs.AreaLat(), s.aprs.AreaLon(), s.aprs.AreaRadius()
 	}
+	snap := s.meshtastic.Snapshot()
 	nodes := make([]meshNodeMapView, 0, 8)
 	nopos := make([]meshNodeNoPosView, 0, 8)
-	for _, n := range s.meshtastic.Snapshot().Nodes {
+	for _, n := range snap.Nodes {
+		// The public map shows the live network: nodes unheard for
+		// longer than the node TTL stay only in the admin directory.
+		if snap.NodeTTL > 0 && time.Since(n.LastSeen) > snap.NodeTTL {
+			continue
+		}
 		name := n.Name
 		if name == "" {
 			name = meshtasticOwnerFor(owners, n.ID)

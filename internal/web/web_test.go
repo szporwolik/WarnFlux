@@ -2138,10 +2138,34 @@ func TestWrongPasswordRejected(t *testing.T) {
 
 func TestCSRFRequiredForLogin(t *testing.T) {
 	env := newTestEnv(t)
+
+	// No cookie at all (the 15-minute token expired while the page was
+	// open): the server must hand back a fresh form instead of a bare 403.
 	form := url.Values{"username": {testUsername}, "password": {testPassword}}
-	resp, _ := env.postForm("/login", form)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST /login without csrf = %d, want 403", resp.StatusCode)
+	resp, html := env.postForm("/login", form)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /login without csrf = %d, want 200 (self-healed form)", resp.StatusCode)
+	}
+	if !strings.Contains(html, "session expired") {
+		t.Errorf("self-healed login form should explain the expiry: %s", html)
+	}
+	csrf := extractCSRF(t, html)
+	if csrf == "" {
+		t.Fatal("self-healed login form missing its csrf token")
+	}
+	// The fresh token must actually log in (the jar keeps the new cookie).
+	resp2, _ := env.postForm("/login", url.Values{"csrf": {csrf}, "username": {testUsername}, "password": {testPassword}})
+	if resp2.StatusCode != http.StatusSeeOther {
+		t.Fatalf("login with the refreshed token = %d, want 303", resp2.StatusCode)
+	}
+
+	// A present but wrong token self-heals the same way.
+	env.logout()
+	_, html2 := env.get("/login")
+	csrf2 := extractCSRF(t, html2)
+	resp3, _ := env.postForm("/login", url.Values{"csrf": {csrf2 + "x"}, "username": {testUsername}, "password": {testPassword}})
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("POST /login with a wrong csrf = %d, want 200 with a fresh form", resp3.StatusCode)
 	}
 }
 

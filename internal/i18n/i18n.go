@@ -667,6 +667,7 @@ var en = map[string]string{
 	"login.disabled": "Account creation is disabled.",
 	"login.back":     "← Back to the public page",
 	"login.error":    "Invalid username or password.",
+	"login.expired":  "Your session expired — please sign in again.",
 	"login.tagline":  "Alerts in. Action out.",
 	"login.reset_ok": "Password updated — sign in with your new password.",
 
@@ -1285,6 +1286,7 @@ var pl = map[string]string{
 	"login.disabled": "Tworzenie kont jest wyłączone.",
 	"login.back":     "← Wróć do strony publicznej",
 	"login.error":    "Nieprawidłowa nazwa użytkownika lub hasło.",
+	"login.expired":  "Twoja sesja wygasła — zaloguj się ponownie.",
 	"login.tagline":  "Alerty wchodzą. Akcja rusza.",
 	"login.reset_ok": "Hasło zaktualizowane — zaloguj się nowym hasłem.",
 

@@ -126,7 +126,9 @@ func (a *clientAdapter) SetPacketHandler(fn func(*pb.MeshPacket)) {
 }
 func (a *clientAdapter) SendToRadio(msg *pb.ToRadio) error { return a.t.SendToRadio(msg) }
 
-// Dial opens the device transport (the seam for tests).
+// Dial opens the device transport (the seam for tests). Production dials
+// through serial.Connect, which performs the client handshake itself and
+// returns a transport that is already connected.
 var Dial = func(ctx context.Context, cfg Config) (transportConn, error) {
 	t, err := serial.Connect(ctx, serial.Config{Port: cfg.Device, BaudRate: cfg.Baud})
 	if err != nil {
@@ -278,8 +280,15 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.mu.Unlock()
 
 	conn.SetPacketHandler(h.handlePacket)
-	if err := conn.Connect(ctx); err != nil {
-		return err
+	// The production dial (serial.Connect) already ran the handshake and
+	// returns a connected transport; in-memory test transports need the
+	// handshake here. A second Connect on an already-complete transport
+	// would block forever (its state is already Complete, so the
+	// config-complete signal never fires again) — never call it twice.
+	if !conn.IsConnected() {
+		if err := conn.Connect(ctx); err != nil {
+			return err
+		}
 	}
 	h.mu.Lock()
 	h.connected = true

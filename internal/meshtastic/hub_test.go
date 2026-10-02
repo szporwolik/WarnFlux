@@ -50,15 +50,20 @@ type testRadio struct {
 	rx     []*pb.MeshPacket // outbound packets captured via OnOutboundPacket
 }
 
-func newTestRadio(t *testing.T, cfg Config) *testRadio {
-	t.Helper()
-	table := &testNodeTable{
+// newTestTable is the handshake node directory used by the test radio.
+func newTestTable() *testNodeTable {
+	return &testNodeTable{
 		self: nodeInfo(0xabcd1234, "RKSR-OWN", "OWN"),
 		all: []*pb.NodeInfo{
 			nodeInfo(0xef010203, "RKSR-TN-R3", "R3"),
 			nodeInfo(0xdeadbeef, "PL-KR-MAKI", "MK"),
 		},
 	}
+}
+
+func newTestRadio(t *testing.T, cfg Config) *testRadio {
+	t.Helper()
+	table := newTestTable()
 	radio := &testRadio{}
 	ctx, cancel := context.WithCancel(context.Background())
 	radio.cancel = cancel
@@ -173,6 +178,70 @@ func TestHubConnect(t *testing.T) {
 		if want[n.ID] != n.Name {
 			t.Fatalf("node %s name = %q, want %q", n.ID, n.Name, want[n.ID])
 		}
+	}
+}
+
+// TestHubPreconnectedTransport pins the production dial path: the
+// transport arrives ALREADY handshaken (serial.Connect performs the
+// handshake before returning), so the hub must adopt it without calling
+// Connect again — a second Connect on a complete state blocks forever
+// (the config-complete signal never fires twice).
+func TestHubPreconnectedTransport(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := clientapi.New(clientapi.Config{
+		NodeID:    core.NodeID(0xabcd1234),
+		LongName:  "RKSR-OWN",
+		ShortName: "OWN",
+		Nodes:     newTestTable(),
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	go srv.Start(ctx)
+
+	oldDial := Dial
+	Dial = func(dctx context.Context, _ Config) (transportConn, error) {
+		sc, err := stream.NewClientConn(srv.Conn(dctx))
+		if err != nil {
+			return nil, err
+		}
+		c := client.NewTransport(sc, client.TransportConfig{
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+		// serial.Connect semantics: handshake completes before return.
+		if err := c.Connect(dctx); err != nil {
+			return nil, err
+		}
+		return &clientAdapter{t: c}, nil
+	}
+	t.Cleanup(func() { Dial = oldDial })
+
+	hub, err := NewHub(Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, stopRun := context.WithCancel(context.Background())
+	defer stopRun()
+	go func() { _ = hub.Run(runCtx) }()
+
+	// The old code called Connect again and hung forever — this wait
+	// bounds the regression to a hard failure.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if hub.Connected() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !hub.Connected() {
+		t.Fatal("hub did not adopt the pre-connected transport in time")
+	}
+	snap := hub.Snapshot()
+	if snap.Self.ID != "abcd1234" || snap.Self.LongName != "RKSR-OWN" {
+		t.Fatalf("self = %+v, want abcd1234 RKSR-OWN", snap.Self)
+	}
+	if len(snap.Nodes) != 2 {
+		t.Fatalf("nodes = %d, want 2 from the handshake directory", len(snap.Nodes))
 	}
 }
 

@@ -26,11 +26,25 @@ func (s *Store) RecordMeshtasticMessage(ctx context.Context, direction, sender, 
 	return nil
 }
 
+// UpdateMeshtasticMessageStatus marks the delivery state of the matching
+// TX row (created_at_ms + text): the hub stamps "sent" when the radio
+// transmits the frame, "delivered" on the recipient's acknowledgment,
+// "failed" when the acknowledgment never arrives.
+func (s *Store) UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error {
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE meshtastic_messages SET status = ?
+		WHERE direction = 'tx' AND created_at_ms = ? AND text = ?`,
+		status, at.UnixMilli(), text); err != nil {
+		return fmt.Errorf("update mesh message status: %w", err)
+	}
+	return nil
+}
+
 // ListMeshtasticMessages returns history rows newest first. direction is "rx",
 // "tx" or "" (both).
 func (s *Store) ListMeshtasticMessages(ctx context.Context, direction string, limit, offset int) ([]storage.MeshMessage, error) {
 	query := `
-		SELECT id, direction, sender, channel, hops, operator, text, created_at_ms
+		SELECT id, direction, sender, channel, hops, operator, text, status, created_at_ms
 		FROM meshtastic_messages`
 	args := []any{}
 	if direction == "rx" || direction == "tx" {
@@ -50,7 +64,7 @@ func (s *Store) ListMeshtasticMessages(ctx context.Context, direction string, li
 	for rows.Next() {
 		var m storage.MeshMessage
 		var atMs int64
-		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Channel, &m.Hops, &m.Operator, &m.Text, &atMs); err != nil {
+		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Channel, &m.Hops, &m.Operator, &m.Text, &m.Status, &atMs); err != nil {
 			return nil, fmt.Errorf("scan mesh message: %w", err)
 		}
 		m.At = time.UnixMilli(atMs)

@@ -56,6 +56,38 @@ type Config struct {
 // keeps running.
 type Recorder interface {
 	RecordMeshtasticMessage(ctx context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error
+	// UpdateMeshtasticMessageStatus marks the tx delivery state of the
+	// matching row (created at + text).
+	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
+}
+
+// Tx delivery states.
+const (
+	TxSent      = "sent"      // the radio transmitted the frame
+	TxDelivered = "delivered" // the recipient acknowledged the DM
+	TxFailed    = "failed"    // no acknowledgment after the retries
+)
+
+// Delivery timers for direct messages (the channel broadcasts carry no
+// acknowledgment by design).
+const (
+	dmAckTimeout    = 10 * time.Second
+	dmMaxRetries    = 2
+	dmRetryInterval = 5 * time.Second
+)
+
+// pendingSend tracks one sent message until its delivery state settles.
+type pendingSend struct {
+	id      uint32 // packet id assigned by the device (echo or queueStatus)
+	to      uint32
+	at      time.Time // history-row timestamp (the DB match key)
+	lastTry time.Time // last transmit attempt (retry window anchor)
+	text    string
+	channel string // recorded channel label
+	wantAck bool   // direct messages want an acknowledgment
+	echoed  bool   // the id is known (echo or queueStatus paired)
+	status  string
+	retries int
 }
 
 // Node signal kinds observed in packets from the node (shown as badges
@@ -113,6 +145,7 @@ type Message struct {
 	Hops      int    // radio path length from the packet (0 = unknown/ours)
 	Operator  string // admin username behind a tx (rx rows are empty)
 	Text      string
+	Status    string // delivery state (sent | delivered | failed)
 	At        time.Time
 }
 
@@ -125,6 +158,7 @@ type transportConn interface {
 	Stop() error
 	State() *client.DeviceState
 	SetPacketHandler(fn func(*pb.MeshPacket))
+	Handle(kind proto.Message, fn func(proto.Message) error)
 	SendToRadio(msg *pb.ToRadio) error
 }
 
@@ -137,6 +171,9 @@ func (a *clientAdapter) Stop() error                       { return a.t.Stop() }
 func (a *clientAdapter) State() *client.DeviceState        { return a.t.State() }
 func (a *clientAdapter) SetPacketHandler(fn func(*pb.MeshPacket)) {
 	a.t.SetPacketHandler(func(np transport.NetworkPacket) { fn(np.Packet) })
+}
+func (a *clientAdapter) Handle(kind proto.Message, fn func(proto.Message) error) {
+	a.t.Handle(kind, client.MessageHandler(fn))
 }
 func (a *clientAdapter) SendToRadio(msg *pb.ToRadio) error { return a.t.SendToRadio(msg) }
 
@@ -177,7 +214,9 @@ type Hub struct {
 	senderGate func(id string) string
 	eventSink  func(ctx context.Context, topic string, retained bool, payload []byte) error
 
-	sendMu sync.Mutex
+	sendMu    sync.Mutex
+	pending   map[uint32]*pendingSend // by device-assigned packet id
+	echoQueue []*pendingSend          // sent but the echo (id) not seen yet
 }
 
 // NewHub validates the config and builds the hub.
@@ -191,15 +230,17 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
-		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node)}, nil
+		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node),
+			pending: make(map[uint32]*pendingSend)}, nil
 	}
 	if cfg.Device == "" {
 		return nil, errors.New("meshtastic: device path is required")
 	}
 	return &Hub{
-		cfg:    cfg,
-		logger: logger,
-		nodes:  make(map[string]*Node),
+		cfg:     cfg,
+		logger:  logger,
+		nodes:   make(map[string]*Node),
+		pending: make(map[uint32]*pendingSend),
 	}, nil
 }
 
@@ -297,6 +338,15 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.mu.Unlock()
 
 	conn.SetPacketHandler(h.handlePacket)
+	// The device answers every client send with a queueStatus carrying the
+	// assigned mesh packet id — the key that later pairs the recipient's
+	// ROUTING_APP acknowledgment with our send.
+	conn.Handle(&pb.QueueStatus{}, func(msg proto.Message) error {
+		if qs, ok := msg.(*pb.QueueStatus); ok {
+			h.pairQueueStatus(qs.GetMeshPacketId())
+		}
+		return nil
+	})
 	// The production dial (serial.Connect) already ran the handshake and
 	// returns a connected transport; in-memory test transports need the
 	// handshake here. A second Connect on an already-complete transport
@@ -325,7 +375,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 	}
 
 	// Maintenance: expire unheard neighbours and watch the transport.
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(dmRetryInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -336,6 +386,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 				return errors.New("device disconnected")
 			}
 			h.expireNodes()
+			h.retryPending(time.Now())
 		}
 	}
 }
@@ -477,6 +528,10 @@ func (h *Hub) handlePacket(pkt *pb.MeshPacket) {
 	}
 	switch decoded.GetPortnum() {
 	case pb.PortNum_TEXT_MESSAGE_APP:
+		if h.selfID() != "" && fmt.Sprintf("%08x", pkt.GetFrom()) == h.selfID() {
+			h.handleOwnEcho(pkt, decoded)
+			return
+		}
 		h.receiveText(pkt, decoded)
 	case pb.PortNum_POSITION_APP:
 		h.receivePosition(pkt, decoded)
@@ -486,6 +541,241 @@ func (h *Hub) handlePacket(pkt *pb.MeshPacket) {
 		// No content we surface, but the sender is now known to
 		// broadcast telemetry — recorded for the badges.
 		h.recordSignal(pkt.GetFrom(), SignalTelemetry)
+	case pb.PortNum_ROUTING_APP:
+		h.handleRoutingAck(pkt, decoded)
+	}
+}
+
+// selfID returns our node id without holding the lock longer than needed.
+func (h *Hub) selfID() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.self == nil {
+		return ""
+	}
+	return h.self.ID
+}
+
+// handleOwnEcho pairs the device's echo of our own transmission with the
+// pending send: the echo carries the device-assigned packet id (needed to
+// match the recipient's acknowledgment) and proves the radio transmitted
+// the frame.
+func (h *Hub) handleOwnEcho(pkt *pb.MeshPacket, decoded *pb.Data) {
+	text := string(decoded.GetPayload())
+	h.sendMu.Lock()
+	var ps *pendingSend
+	for i, q := range h.echoQueue {
+		if !q.echoed && q.text == text {
+			ps = q
+			h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+			break
+		}
+	}
+	if ps == nil {
+		h.sendMu.Unlock()
+		return
+	}
+	ps.echoed = true
+	ps.id = pkt.GetId()
+	if ps.id != 0 {
+		h.pending[ps.id] = ps
+	}
+	h.sendMu.Unlock()
+	h.markStatus(ps, TxSent)
+}
+
+// pairQueueStatus learns the device-assigned packet id from a queueStatus
+// answer: the device replies to every client send with the mesh packet id
+// that send was given. The oldest unpaired send within the pairing window
+// wins (the queue is FIFO).
+func (h *Hub) pairQueueStatus(id uint32) {
+	if id == 0 {
+		return
+	}
+	now := time.Now()
+	h.sendMu.Lock()
+	for i, q := range h.echoQueue {
+		if q.echoed || q.id != 0 || now.Sub(q.lastTry) > 2*dmAckTimeout {
+			continue
+		}
+		h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+		q.echoed = true
+		q.id = id
+		h.pending[id] = q
+		h.sendMu.Unlock()
+		h.markStatus(q, TxSent)
+		return
+	}
+	h.sendMu.Unlock()
+}
+
+// pairByRoutingLocked recovers the send behind a ROUTING_APP frame whose
+// request id we could not match (firmwares that never announce the id):
+// a self-addressed frame confirms a device-originated transmit (the
+// broadcast "sent" confirmation), an external frame acknowledges the
+// oldest direct message to that sender.
+func (h *Hub) pairByRoutingLocked(rid, from uint32, fromSelf bool) *pendingSend {
+	for i, q := range h.echoQueue {
+		if q.echoed || q.id != 0 {
+			continue
+		}
+		if !fromSelf && !(q.wantAck && q.to == from) {
+			continue
+		}
+		h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+		q.echoed = true
+		q.id = rid
+		h.pending[rid] = q
+		return q
+	}
+	return nil
+}
+
+// handleRoutingAck processes a ROUTING_APP frame: the recipient of a
+// direct message answers with a routing packet whose request_id matches
+// our packet id and whose error reason tells whether it was delivered;
+// the device itself answers broadcasts with a self-addressed frame (the
+// "sent" confirmation).
+func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
+	rid := decoded.GetRequestId()
+	if rid == 0 {
+		return
+	}
+	var routing pb.Routing
+	if err := proto.Unmarshal(decoded.GetPayload(), &routing); err != nil {
+		return
+	}
+	fromSelf := fmt.Sprintf("%08x", pkt.GetFrom()) == h.selfID()
+	h.sendMu.Lock()
+	ps := h.pending[rid]
+	if ps == nil {
+		ps = h.pairByRoutingLocked(rid, pkt.GetFrom(), fromSelf)
+	}
+	if ps == nil {
+		h.sendMu.Unlock()
+		return
+	}
+	delete(h.pending, rid)
+	h.sendMu.Unlock()
+	status := TxDelivered
+	if fromSelf {
+		status = TxSent
+	} else if er := routing.GetErrorReason(); er != pb.Routing_NONE {
+		status = TxFailed
+	}
+	h.markStatus(ps, status)
+}
+
+// retryPending re-transmits direct messages whose acknowledgment never
+// arrived (up to dmMaxRetries), per the client API contract; exhausted
+// budgets settle as failed. Unpaired broadcasts older than the purge age
+// are dropped (a broadcast has no end-to-end acknowledgment, so nothing
+// can ever settle them).
+func (h *Hub) retryPending(now time.Time) {
+	h.sendMu.Lock()
+	var resend []*pendingSend
+	for id, ps := range h.pending {
+		if !ps.wantAck || ps.status != TxSent || now.Sub(ps.lastTry) < dmAckTimeout {
+			continue
+		}
+		delete(h.pending, id)
+		if ps.retries >= dmMaxRetries {
+			h.markStatus(ps, TxFailed)
+			continue
+		}
+		ps.retries++
+		ps.echoed = false
+		ps.id = 0
+		resend = append(resend, ps)
+	}
+	// Direct messages whose id never arrived (the device may have been
+	// busy) are retransmitted the same way.
+	for i := 0; i < len(h.echoQueue); {
+		q := h.echoQueue[i]
+		if !q.echoed && !q.wantAck && now.Sub(q.lastTry) > 5*time.Minute {
+			h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+			continue
+		}
+		if !q.wantAck || q.echoed || now.Sub(q.lastTry) < dmAckTimeout {
+			i++
+			continue
+		}
+		h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+		if q.retries >= dmMaxRetries {
+			h.markStatus(q, TxFailed)
+			continue
+		}
+		q.retries++
+		resend = append(resend, q)
+	}
+	h.sendMu.Unlock()
+	for _, ps := range resend {
+		h.resend(ps)
+	}
+}
+
+// resend transmits one retry of a pending direct message.
+func (h *Hub) resend(ps *pendingSend) {
+	h.mu.Lock()
+	conn := h.conn
+	h.mu.Unlock()
+	if conn == nil || !conn.IsConnected() {
+		h.dropPending(ps)
+		return
+	}
+	pkt := &pb.MeshPacket{
+		To:      ps.to,
+		WantAck: true,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{
+				Portnum: pb.PortNum_TEXT_MESSAGE_APP,
+				Payload: []byte(ps.text),
+			},
+		},
+	}
+	ps.lastTry = time.Now()
+	h.sendMu.Lock()
+	h.echoQueue = append(h.echoQueue, ps)
+	h.sendMu.Unlock()
+	if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: pkt}}); err != nil {
+		h.dropPending(ps)
+	}
+}
+
+// dropPending removes a never-transmitted send from the queues.
+func (h *Hub) dropPending(ps *pendingSend) {
+	h.sendMu.Lock()
+	h.dropPendingLocked(ps)
+	h.sendMu.Unlock()
+}
+
+// dropPendingLocked assumes sendMu is already held.
+func (h *Hub) dropPendingLocked(ps *pendingSend) {
+	if ps.id != 0 {
+		delete(h.pending, ps.id)
+	}
+	for i, q := range h.echoQueue {
+		if q == ps {
+			h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+			break
+		}
+	}
+}
+
+// markStatus stamps one pending send's delivery state into the durable
+// history.
+func (h *Hub) markStatus(ps *pendingSend, status string) {
+	ps.status = status
+	h.mu.Lock()
+	rec := h.recorder
+	h.mu.Unlock()
+	if rec == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rec.UpdateMeshtasticMessageStatus(ctx, status, ps.at, ps.text); err != nil && h.logger != nil {
+		h.logger.Warn("meshtastic: message status update failed", "status", status, "error", err)
 	}
 }
 
@@ -688,9 +978,20 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text string) {
 	}
 }
 
-// SendChannelMessage broadcasts one text message on the primary channel.
+// SendChannelMessage broadcasts one text message on the primary channel
+// (channel 0).
 func (h *Hub) SendChannelMessage(ctx context.Context, text, operator string) error {
-	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), "", text, operator)
+	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), 0, h.ChannelLabel(0), text, operator)
+}
+
+// SendChannelText broadcasts one text message on the given channel index
+// (0-7) of the device channel table, so the admin panel can target the
+// channels configured on the node.
+func (h *Hub) SendChannelText(ctx context.Context, idx int, text, operator string) error {
+	if idx < 0 || idx > 7 {
+		return fmt.Errorf("meshtastic: channel index must be 0-7, got %d", idx)
+	}
+	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), idx, h.ChannelLabel(idx), text, operator)
 }
 
 // SendContactMessage sends one direct text message to a node id (8 hex
@@ -704,11 +1005,13 @@ func (h *Hub) SendContactMessage(ctx context.Context, addr, text, operator strin
 	if err != nil {
 		return fmt.Errorf("meshtastic: node id must be 8 hex characters, got %q", addr)
 	}
-	return h.sendText(ctx, uint32(n), "dm", text, operator)
+	return h.sendText(ctx, uint32(n), 0, "dm", text, operator)
 }
 
-// sendText transmits one text message and records it as TX.
-func (h *Hub) sendText(ctx context.Context, to uint32, channel, text, operator string) error {
+// sendText transmits one text message and records it as TX. Broadcasts
+// carry the target channel index; direct messages leave the channel to
+// the device.
+func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLabel, text, operator string) error {
 	h.sendMu.Lock()
 	defer h.sendMu.Unlock()
 	h.mu.Lock()
@@ -718,24 +1021,48 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channel, text, operator s
 		return errors.New("meshtastic: device not connected")
 	}
 	wantAck := to != core.BroadcastNodeID.Uint32()
-	msg := &pb.ToRadio{
-		PayloadVariant: &pb.ToRadio_Packet{
-			Packet: &pb.MeshPacket{
-				To:      to,
-				WantAck: wantAck,
-				PayloadVariant: &pb.MeshPacket_Decoded{
-					Decoded: &pb.Data{
-						Portnum: pb.PortNum_TEXT_MESSAGE_APP,
-						Payload: []byte(text),
-					},
-				},
+	pkt := &pb.MeshPacket{
+		To:      to,
+		WantAck: wantAck,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{
+				Portnum: pb.PortNum_TEXT_MESSAGE_APP,
+				Payload: []byte(text),
 			},
 		},
 	}
+	if to == core.BroadcastNodeID.Uint32() {
+		pkt.Channel = uint32(channelIdx)
+	}
+	msg := &pb.ToRadio{
+		PayloadVariant: &pb.ToRadio_Packet{Packet: pkt},
+	}
+	// Track the delivery state: the device answers with a queueStatus (or,
+	// on older firmware, echoes the frame) carrying the assigned packet id,
+	// and direct messages additionally carry a ROUTING_APP acknowledgment
+	// from the recipient. The timestamp is shared with the history row so
+	// status updates can pin the exact row.
+	at := time.Now()
+	ps := &pendingSend{
+		to:      to,
+		at:      at,
+		lastTry: at,
+		text:    text,
+		channel: channelLabel,
+		wantAck: wantAck,
+	}
+	// sendMu is held by the defer above; the echo must be queued before
+	// the frame goes out so a fast device echo can never miss its entry.
+	h.echoQueue = append(h.echoQueue, ps)
+	// The history row is written first so the device echo (which can race
+	// back immediately) always finds its row to stamp.
+	h.recordMessage("tx", "", channelLabel, text, operator, 0, at)
+
 	if err := conn.SendToRadio(msg); err != nil {
+		h.dropPendingLocked(ps)
+		h.markStatus(ps, TxFailed)
 		return fmt.Errorf("meshtastic: send failed: %w", err)
 	}
-	h.recordMessage("tx", "", channel, text, operator, 0, time.Now())
 	return nil
 }
 

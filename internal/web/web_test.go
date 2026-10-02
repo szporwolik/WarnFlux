@@ -3385,6 +3385,15 @@ func (f *fakeMeshMsgs) RecordMeshtasticMessage(_ context.Context, direction, sen
 	return nil
 }
 
+func (f *fakeMeshMsgs) UpdateMeshtasticMessageStatus(_ context.Context, status string, at time.Time, text string) error {
+	for i := range f.rows {
+		if f.rows[i].Direction == "tx" && f.rows[i].At.Equal(at) && f.rows[i].Text == text {
+			f.rows[i].Status = status
+		}
+	}
+	return nil
+}
+
 func (f *fakeMeshMsgs) ListMeshtasticMessages(_ context.Context, direction string, limit, offset int) ([]storage.MeshMessage, error) {
 	var out []storage.MeshMessage
 	for _, m := range f.rows {

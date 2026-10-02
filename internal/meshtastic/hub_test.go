@@ -279,6 +279,134 @@ func TestHubPreconnectedTransport(t *testing.T) {
 	}
 }
 
+// TestHubSendChannelText pins a broadcast on a specific device channel:
+// the packet carries the channel index and the history row carries the
+// channel label.
+func TestHubSendChannelText(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendChannelText(ctx, 2, "channel two", "admin"); err != nil {
+		t.Fatalf("SendChannelText: %v", err)
+	}
+	out := radio.waitOutbound(t, 1)
+	if len(out) != 1 || out[0].GetChannel() != 2 {
+		t.Fatalf("outbound = %v, want one packet on channel 2", out)
+	}
+	if out[0].GetTo() != core.BroadcastNodeID.Uint32() || out[0].GetWantAck() {
+		t.Fatalf("packet = %v, want broadcast without ack", out[0])
+	}
+	msgs := rec.messages()
+	if len(msgs) != 1 || msgs[0].Direction != "tx" || msgs[0].Channel != "ch2" {
+		t.Fatalf("recorded tx = %v, want a ch2 row", msgs)
+	}
+
+	if err := radio.hub.SendChannelText(ctx, 8, "x", "admin"); err == nil {
+		t.Fatal("channel 8 accepted, want 0-7 validation")
+	}
+	if err := radio.hub.SendChannelText(ctx, -1, "x", "admin"); err == nil {
+		t.Fatal("channel -1 accepted, want 0-7 validation")
+	}
+}
+
+// TestHubAckWithoutEcho pins the 2.7.x firmware behavior: the device does
+// not echo direct messages, but the recipient's ROUTING_APP alone must
+// still settle the tx (paired by recipient, FIFO).
+func TestHubAckWithoutEcho(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "ef010203", "no echo", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+
+	routing, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_ErrorReason{ErrorReason: pb.Routing_NONE}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch(t, radio, &pb.MeshPacket{
+		From: 0xef010203, To: 0xabcd1234,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 999, Payload: routing},
+		},
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := rec.messages()
+		if len(msgs) == 1 && msgs[0].Status == TxDelivered {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	msgs := rec.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("recorded = %v, want one tx row", msgs)
+	}
+	if msgs[0].Status != TxDelivered {
+		t.Fatalf("tx status = %q, want delivered", msgs[0].Status)
+	}
+}
+
+// TestHubSendAckFlow pins the delivery tracking: the device echo marks
+// the tx "sent", and the recipient's ROUTING_APP acknowledgment marks it
+// "delivered".
+func TestHubSendAckFlow(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "ef010203", "ack me", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+
+	// The device echoes our frame back with the assigned packet id.
+	dispatch(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, Id: 4242, To: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("ack me")},
+		},
+	})
+	// The recipient acknowledges with a routing frame.
+	routing, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_ErrorReason{ErrorReason: pb.Routing_NONE}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch(t, radio, &pb.MeshPacket{
+		From: 0xef010203, To: 0xabcd1234,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: routing},
+		},
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := rec.messages()
+		if len(msgs) == 1 && msgs[0].Status == TxDelivered {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	msgs := rec.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("recorded = %v, want one tx row", msgs)
+	}
+	if msgs[0].Status != TxDelivered {
+		t.Fatalf("tx status = %q, want delivered", msgs[0].Status)
+	}
+}
+
 // TestHubNodeSignals pins the observed packet kinds: telemetry and text
 // packets mark the sender's node, surfaced as the admin/map badges.
 func TestHubNodeSignals(t *testing.T) {
@@ -327,6 +455,17 @@ func (c *captureRecorder) RecordMeshtasticMessage(_ context.Context, direction, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.got = append(c.got, Message{Direction: direction, Sender: sender, Channel: channel, Text: text, Operator: operator, Hops: hops, At: at})
+	return nil
+}
+
+func (c *captureRecorder) UpdateMeshtasticMessageStatus(_ context.Context, status string, at time.Time, text string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.got {
+		if c.got[i].Direction == "tx" && c.got[i].At.Equal(at) && c.got[i].Text == text {
+			c.got[i].Status = status
+		}
+	}
 	return nil
 }
 

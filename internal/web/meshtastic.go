@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,7 +32,9 @@ type meshtasticMessageView struct {
 	// Operator is the admin username behind a tx row (rx rows empty).
 	Operator string
 	Text     string
-	At       time.Time
+	// Status is the tx delivery state ("", sent, delivered, failed).
+	Status string
+	At     time.Time
 	// ID is the sender's node id when the row can prefill the send form
 	// (direct messages), empty otherwise.
 	ID string
@@ -60,6 +64,12 @@ type meshtasticNodeView struct {
 type meshtasticContactView struct {
 	Username string
 	ID       string // 8-hex node id
+}
+
+// meshtasticChannelOption is one device channel offered by the send form.
+type meshtasticChannelOption struct {
+	Idx   int
+	Label string
 }
 
 // meshtasticView is the admin Meshtastic page model.
@@ -103,10 +113,16 @@ type meshtasticView struct {
 	To       int
 	Total    int
 
+	// Send-form feedback (query flashes).
+	Error string
+	Sent  bool
+
 	// nodes tab
 	Snap     mesh.Snapshot
 	Nodes    []meshtasticNodeView
 	Contacts []meshtasticContactView
+	// Channels are the device channel options for the send form.
+	Channels []meshtasticChannelOption
 }
 
 // handleMeshtasticPage renders the admin Meshtastic page.
@@ -131,6 +147,8 @@ func (s *Server) handleMeshtasticPage(w http.ResponseWriter, r *http.Request) {
 	if tab := r.URL.Query().Get("tab"); tab == "nodes" {
 		v.Tab = "nodes"
 	}
+	v.Sent = r.URL.Query().Get("sent") == "1"
+	v.Error = r.URL.Query().Get("err")
 	w.Header().Set("Cache-Control", "no-store")
 
 	// Both panels render at once; the tab strip toggles them client-side
@@ -204,6 +222,7 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 			Hops:      hops,
 			Operator:  m.Operator,
 			Text:      m.Text,
+			Status:    m.Status,
 			At:        m.At,
 		}
 		if id := meshtasticNormalizeID(m.Sender); id != "" {
@@ -253,6 +272,16 @@ func (s *Server) fillMeshtasticNodes(v *meshtasticView) {
 		return
 	}
 	v.Snap = s.meshtastic.Snapshot()
+	// The send form offers the device channel table (the node is the
+	// source of truth); before the first handshake fall back to the
+	// primary channel.
+	v.Channels = make([]meshtasticChannelOption, 0, len(v.Snap.Channels))
+	for i, name := range v.Snap.Channels {
+		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: i, Label: name})
+	}
+	if len(v.Channels) == 0 {
+		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: 0})
+	}
 	// Directory match: any user who registered a node's id labels it (as
 	// the name when the node carries none, and next to the name
 	// otherwise). The public home page never sees this.
@@ -351,25 +380,35 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 	}
 	text := strings.TrimSpace(r.PostFormValue("text"))
 	if text == "" {
-		http.Error(w, i18n.T(s.langFor(r), "meshtastic.text_required"), http.StatusBadRequest)
+		http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.text_required")), http.StatusSeeOther)
 		return
 	}
 	var err error
 	if r.PostFormValue("target") == "contact" {
 		id := meshtasticNormalizeID(r.PostFormValue("contact"))
 		if id == "" {
-			http.Error(w, i18n.T(s.langFor(r), "meshtastic.bad_node_id"), http.StatusBadRequest)
+			http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_node_id")), http.StatusSeeOther)
 			return
 		}
 		err = s.meshtastic.SendContactMessage(r.Context(), id, text, sess.username)
 	} else {
-		err = s.meshtastic.SendChannelMessage(r.Context(), text, sess.username)
+		idx := 0
+		if raw := strings.TrimSpace(r.PostFormValue("channel_idx")); raw != "" {
+			parsed, parseErr := strconv.Atoi(raw)
+			if parseErr != nil || parsed < 0 || parsed > 7 {
+				http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_channel")), http.StatusSeeOther)
+				return
+			}
+			idx = parsed
+		}
+		err = s.meshtastic.SendChannelText(r.Context(), idx, text, sess.username)
 	}
 	if err != nil {
 		s.logger.Warn("web: meshtastic send failed", "target", r.PostFormValue("target"), "error", err)
-		http.Error(w, fmt.Sprintf(i18n.T(s.langFor(r), "meshtastic.send_failed"), err), http.StatusBadGateway)
+		flash := fmt.Sprintf(i18n.T(s.langFor(r), "meshtastic.send_failed"), err)
+		http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "meshtastic-send", text)
-	http.Redirect(w, r, "/meshtastic", http.StatusSeeOther)
+	http.Redirect(w, r, "/meshtastic?sent=1", http.StatusSeeOther)
 }

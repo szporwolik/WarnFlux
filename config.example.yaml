@@ -968,4 +968,4 @@ aprs:
 #   # community channel. The default PRIMARY channel is receive-only:
 #   # broadcasts there are blocked by policy.
 #   emcom_channel: 1      # 0 = beacon disabled
-#   emcom_interval: 8h    # default
+#   emcom_interval: 4h    # default; the first beacon fires at startup

@@ -151,6 +151,74 @@ const (
 	SignalText      = "text"
 )
 
+// Telemetry is the latest telemetry data observed in a node's
+// TELEMETRY_APP broadcasts: device, environment, air-quality and power
+// metrics. Fields keep their previous value until the node reports a
+// fresh section; zero never means "measured zero" unless the device
+// really sends it every time.
+type Telemetry struct {
+	// Device metrics.
+	BatteryLevel uint32  `json:"battery_level,omitempty"`
+	Voltage      float32 `json:"voltage,omitempty"`
+	ChannelUtil  float32 `json:"channel_util,omitempty"`
+	AirUtilTx    float32 `json:"air_util_tx,omitempty"`
+	UptimeSecs   uint32  `json:"uptime_secs,omitempty"`
+	// Environment metrics.
+	Temperature float32 `json:"temperature,omitempty"`
+	Humidity    float32 `json:"humidity,omitempty"`
+	Pressure    float32 `json:"pressure,omitempty"`
+	GasResist   float32 `json:"gas_resistance,omitempty"`
+	EnvVoltage  float32 `json:"env_voltage,omitempty"`
+	EnvCurrent  float32 `json:"env_current,omitempty"`
+	IAQ         uint32  `json:"iaq,omitempty"`
+	Lux         float32 `json:"lux,omitempty"`
+	WhiteLux    float32 `json:"white_lux,omitempty"`
+	IRLux       float32 `json:"ir_lux,omitempty"`
+	UVLux       float32 `json:"uv_lux,omitempty"`
+	WindDir     uint32  `json:"wind_direction,omitempty"`
+	WindSpeed   float32 `json:"wind_speed,omitempty"`
+	WindGust    float32 `json:"wind_gust,omitempty"`
+	WindLull    float32 `json:"wind_lull,omitempty"`
+	Weight      float32 `json:"weight,omitempty"`
+	Radiation   float32 `json:"radiation,omitempty"`
+	Rainfall1H  float32 `json:"rainfall_1h,omitempty"`
+	Rainfall24H float32 `json:"rainfall_24h,omitempty"`
+	SoilMoist   uint32  `json:"soil_moisture,omitempty"`
+	SoilTemp    float32 `json:"soil_temperature,omitempty"`
+	// Air quality metrics (standard and environmental scales).
+	PM10Std      uint32  `json:"pm10_standard,omitempty"`
+	PM25Std      uint32  `json:"pm25_standard,omitempty"`
+	PM100Std     uint32  `json:"pm100_standard,omitempty"`
+	PM40Std      uint32  `json:"pm40_standard,omitempty"`
+	PM10Env      uint32  `json:"pm10_environmental,omitempty"`
+	PM25Env      uint32  `json:"pm25_environmental,omitempty"`
+	PM100Env     uint32  `json:"pm100_environmental,omitempty"`
+	Particles03  uint32  `json:"particles_03um,omitempty"`
+	Particles05  uint32  `json:"particles_05um,omitempty"`
+	Particles10  uint32  `json:"particles_10um,omitempty"`
+	Particles25  uint32  `json:"particles_25um,omitempty"`
+	Particles40  uint32  `json:"particles_40um,omitempty"`
+	Particles50  uint32  `json:"particles_50um,omitempty"`
+	Particles100 uint32  `json:"particles_100um,omitempty"`
+	ParticlesTPS float32 `json:"particles_tps,omitempty"`
+	CO2          uint32  `json:"co2,omitempty"`
+	CO2Temp      float32 `json:"co2_temperature,omitempty"`
+	CO2Hum       float32 `json:"co2_humidity,omitempty"`
+	FormForm     float32 `json:"form_formaldehyde,omitempty"`
+	FormHum      float32 `json:"form_humidity,omitempty"`
+	FormTemp     float32 `json:"form_temperature,omitempty"`
+	PMTemp       float32 `json:"pm_temperature,omitempty"`
+	PMHum        float32 `json:"pm_humidity,omitempty"`
+	PMVOCIdx     float32 `json:"pm_voc_idx,omitempty"`
+	PMNOxIdx     float32 `json:"pm_nox_idx,omitempty"`
+	// Power metrics: eight measurement channels (voltage in volts,
+	// current in milliamps).
+	PowerVoltage []float32 `json:"power_voltage,omitempty"`
+	PowerCurrent []float32 `json:"power_current,omitempty"`
+	// At is when this telemetry was received.
+	At time.Time `json:"at,omitempty"`
+}
+
 // Node is one neighbour heard through the mesh.
 type Node struct {
 	// ID is the node's 8-hex identifier (without the leading '!').
@@ -163,6 +231,9 @@ type Node struct {
 	Sends []string
 	Lat   float64
 	Lon   float64
+	// Telemetry is the latest telemetry the node broadcast (nil when
+	// the node never sent any).
+	Telemetry *Telemetry
 	// DistKM and BearingDeg are computed relative to our station's
 	// position in Snapshot (0 when either position is unknown).
 	DistKM     float64
@@ -692,7 +763,9 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 		if n.LastSeen.IsZero() {
 			n.LastSeen = time.Now()
 		}
-		publish = append(publish, *n)
+		c := *n
+		c.Telemetry = cloneTelemetry(n.Telemetry)
+		publish = append(publish, c)
 	}
 	for _, ch := range st.Channels() {
 		if ch == nil {
@@ -767,9 +840,7 @@ func (h *Hub) handlePacket(pkt *pb.MeshPacket) {
 	case pb.PortNum_NODEINFO_APP:
 		h.receiveNodeInfo(pkt, decoded)
 	case pb.PortNum_TELEMETRY_APP:
-		// No content we surface, but the sender is now known to
-		// broadcast telemetry — recorded for the badges.
-		h.recordSignal(pkt.GetFrom(), SignalTelemetry)
+		h.receiveTelemetry(pkt, decoded)
 	case pb.PortNum_ROUTING_APP:
 		h.handleRoutingAck(pkt, decoded)
 	}
@@ -1035,6 +1106,125 @@ func (h *Hub) recordSignal(from uint32, signal string) {
 	h.mu.Unlock()
 }
 
+// cloneTelemetry deep-copies one telemetry snapshot. Publishers and
+// snapshots marshal it without the hub lock, so later telemetry updates
+// must never race them through the shared pointer.
+func cloneTelemetry(t *Telemetry) *Telemetry {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	c.PowerVoltage = append([]float32(nil), t.PowerVoltage...)
+	c.PowerCurrent = append([]float32(nil), t.PowerCurrent...)
+	return &c
+}
+
+// receiveTelemetry applies one TELEMETRY_APP broadcast to the sender's
+// node: the signal badge, the full metric set (device, environment,
+// air-quality, power) and the refreshed last-seen time. The node is
+// created when it is not in the directory yet.
+func (h *Hub) receiveTelemetry(pkt *pb.MeshPacket, decoded *pb.Data) {
+	tele := &pb.Telemetry{}
+	if err := proto.Unmarshal(decoded.GetPayload(), tele); err != nil {
+		// Undecodable telemetry still proves the node broadcasts it.
+		h.recordSignal(pkt.GetFrom(), SignalTelemetry)
+		return
+	}
+	id := fmt.Sprintf("%08x", pkt.GetFrom())
+	h.mu.Lock()
+	if h.self != nil && id == h.self.ID {
+		h.mu.Unlock()
+		return
+	}
+	n := h.nodes[id]
+	if n == nil {
+		n = &Node{ID: id}
+		h.nodes[id] = n
+		h.nodesDirty = true
+	}
+	if !slices.Contains(n.Sends, SignalTelemetry) {
+		n.Sends = append(n.Sends, SignalTelemetry)
+		h.nodesDirty = true
+	}
+	if n.Telemetry == nil {
+		n.Telemetry = &Telemetry{}
+	}
+	t := n.Telemetry
+	if m := tele.GetDeviceMetrics(); m != nil {
+		t.BatteryLevel = m.GetBatteryLevel()
+		t.Voltage = m.GetVoltage()
+		t.ChannelUtil = m.GetChannelUtilization()
+		t.AirUtilTx = m.GetAirUtilTx()
+		t.UptimeSecs = m.GetUptimeSeconds()
+	}
+	if m := tele.GetEnvironmentMetrics(); m != nil {
+		t.Temperature = m.GetTemperature()
+		t.Humidity = m.GetRelativeHumidity()
+		t.Pressure = m.GetBarometricPressure()
+		t.GasResist = m.GetGasResistance()
+		t.EnvVoltage = m.GetVoltage()
+		t.EnvCurrent = m.GetCurrent()
+		t.IAQ = m.GetIaq()
+		t.Lux = m.GetLux()
+		t.WhiteLux = m.GetWhiteLux()
+		t.IRLux = m.GetIrLux()
+		t.UVLux = m.GetUvLux()
+		t.WindDir = m.GetWindDirection()
+		t.WindSpeed = m.GetWindSpeed()
+		t.WindGust = m.GetWindGust()
+		t.WindLull = m.GetWindLull()
+		t.Weight = m.GetWeight()
+		t.Radiation = m.GetRadiation()
+		t.Rainfall1H = m.GetRainfall_1H()
+		t.Rainfall24H = m.GetRainfall_24H()
+		t.SoilMoist = m.GetSoilMoisture()
+		t.SoilTemp = m.GetSoilTemperature()
+	}
+	if m := tele.GetAirQualityMetrics(); m != nil {
+		t.PM10Std = m.GetPm10Standard()
+		t.PM25Std = m.GetPm25Standard()
+		t.PM100Std = m.GetPm100Standard()
+		t.PM40Std = m.GetPm40Standard()
+		t.PM10Env = m.GetPm10Environmental()
+		t.PM25Env = m.GetPm25Environmental()
+		t.PM100Env = m.GetPm100Environmental()
+		t.Particles03 = m.GetParticles_03Um()
+		t.Particles05 = m.GetParticles_05Um()
+		t.Particles10 = m.GetParticles_10Um()
+		t.Particles25 = m.GetParticles_25Um()
+		t.Particles40 = m.GetParticles_40Um()
+		t.Particles50 = m.GetParticles_50Um()
+		t.Particles100 = m.GetParticles_100Um()
+		t.ParticlesTPS = m.GetParticlesTps()
+		t.CO2 = m.GetCo2()
+		t.CO2Temp = m.GetCo2Temperature()
+		t.CO2Hum = m.GetCo2Humidity()
+		t.FormForm = m.GetFormFormaldehyde()
+		t.FormHum = m.GetFormHumidity()
+		t.FormTemp = m.GetFormTemperature()
+		t.PMTemp = m.GetPmTemperature()
+		t.PMHum = m.GetPmHumidity()
+		t.PMVOCIdx = m.GetPmVocIdx()
+		t.PMNOxIdx = m.GetPmNoxIdx()
+	}
+	if m := tele.GetPowerMetrics(); m != nil {
+		t.PowerVoltage = []float32{
+			m.GetCh1Voltage(), m.GetCh2Voltage(), m.GetCh3Voltage(), m.GetCh4Voltage(),
+			m.GetCh5Voltage(), m.GetCh6Voltage(), m.GetCh7Voltage(), m.GetCh8Voltage(),
+		}
+		t.PowerCurrent = []float32{
+			m.GetCh1Current(), m.GetCh2Current(), m.GetCh3Current(), m.GetCh4Current(),
+			m.GetCh5Current(), m.GetCh6Current(), m.GetCh7Current(), m.GetCh8Current(),
+		}
+	}
+	t.At = time.Now()
+	n.LastSeen = time.Now()
+	copyN := *n
+	copyN.Telemetry = cloneTelemetry(n.Telemetry)
+	h.mu.Unlock()
+	h.publishStation(&copyN)
+}
+
 // receiveNodeInfo applies a nodeinfo broadcast (name only; positions
 // arrive through POSITION_APP).
 func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
@@ -1069,6 +1259,7 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	n.LastSeen = time.Now()
 	copyN := *n
+	copyN.Telemetry = cloneTelemetry(n.Telemetry)
 	h.mu.Unlock()
 	h.publishStation(&copyN)
 }
@@ -1103,6 +1294,7 @@ func (h *Hub) receivePosition(pkt *pb.MeshPacket, decoded *pb.Data) {
 		h.nodesDirty = true
 	}
 	copyN := *n
+	copyN.Telemetry = cloneTelemetry(n.Telemetry)
 	h.mu.Unlock()
 	h.publishStation(&copyN)
 }
@@ -1390,7 +1582,7 @@ func (h *Hub) publishStation(n *Node) {
 	if sink == nil {
 		return
 	}
-	doc, err := json.Marshal(map[string]any{
+	doc := map[string]any{
 		"id":        n.ID,
 		"name":      n.Name,
 		"short":     n.Short,
@@ -1398,13 +1590,17 @@ func (h *Hub) publishStation(n *Node) {
 		"lat":       n.Lat,
 		"lon":       n.Lon,
 		"last_seen": n.LastSeen.UTC().Format(time.RFC3339),
-	})
+	}
+	if n.Telemetry != nil {
+		doc["telemetry"] = n.Telemetry
+	}
+	payload, err := json.Marshal(doc)
 	if err != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := sink(ctx, "meshtastic/stations/"+n.ID, true, doc); err != nil && h.logger != nil {
+	if err := sink(ctx, "meshtastic/stations/"+n.ID, true, payload); err != nil && h.logger != nil {
 		h.logger.Warn("meshtastic: station publish failed", "id", n.ID, "error", err)
 	}
 }
@@ -1457,6 +1653,10 @@ func (h *Hub) Snapshot() Snapshot {
 	for _, n := range h.nodes {
 		c := *n
 		c.Sends = append([]string(nil), n.Sends...)
+		// Deep-copy the telemetry: the live object keeps mutating under
+		// the hub lock after this snapshot is released, and readers
+		// (the public map API, the admin page) must never race it.
+		c.Telemetry = cloneTelemetry(n.Telemetry)
 		if h.self != nil && h.self.Lat != 0 || h.self != nil && h.self.Lon != 0 {
 			if c.Lat != 0 || c.Lon != 0 {
 				c.DistKM = DistanceKM(h.self.Lat, h.self.Lon, c.Lat, c.Lon)

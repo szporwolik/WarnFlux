@@ -680,6 +680,115 @@ func TestHubNodeSignals(t *testing.T) {
 	}
 }
 
+// TestHubTelemetryStored pins the full telemetry capture: device,
+// environment and air-quality sections accumulate on the node and ride
+// along in the retained station document.
+func TestHubTelemetryStored(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+
+	docs := make(chan []byte, 8)
+	radio.hub.SetStationSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		if topic == "meshtastic/stations/deadbeef" {
+			docs <- append([]byte(nil), payload...)
+		}
+		return nil
+	})
+
+	telePacket := func(tele *pb.Telemetry) *pb.MeshPacket {
+		payload, err := proto.Marshal(tele)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &pb.MeshPacket{
+			From: 0xdeadbeef,
+			To:   core.BroadcastNodeID.Uint32(),
+			PayloadVariant: &pb.MeshPacket_Decoded{
+				Decoded: &pb.Data{Portnum: pb.PortNum_TELEMETRY_APP, Payload: payload},
+			},
+		}
+	}
+
+	dispatch(t, radio, telePacket(&pb.Telemetry{
+		Variant: &pb.Telemetry_DeviceMetrics{DeviceMetrics: &pb.DeviceMetrics{
+			BatteryLevel: proto.Uint32(87), Voltage: proto.Float32(4.1),
+			ChannelUtilization: proto.Float32(12.5), AirUtilTx: proto.Float32(1.5),
+			UptimeSeconds: proto.Uint32(12345),
+		}},
+	}))
+	dispatch(t, radio, telePacket(&pb.Telemetry{
+		Variant: &pb.Telemetry_EnvironmentMetrics{EnvironmentMetrics: &pb.EnvironmentMetrics{
+			Temperature: proto.Float32(21.5), RelativeHumidity: proto.Float32(55),
+			BarometricPressure: proto.Float32(1013), Iaq: proto.Uint32(42),
+		}},
+	}))
+	dispatch(t, radio, telePacket(&pb.Telemetry{
+		Variant: &pb.Telemetry_AirQualityMetrics{AirQualityMetrics: &pb.AirQualityMetrics{
+			Pm25Standard: proto.Uint32(13), Pm10Standard: proto.Uint32(20), Co2: proto.Uint32(510),
+		}},
+	}))
+
+	var n *Node
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, sn := range radio.hub.Snapshot().Nodes {
+			if sn.ID == "deadbeef" && sn.Telemetry != nil && sn.Telemetry.CO2 > 0 {
+				n = &sn
+				break
+			}
+		}
+		if n != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n == nil {
+		t.Fatal("deadbeef telemetry never accumulated")
+	}
+	tel := n.Telemetry
+	if tel.BatteryLevel != 87 || tel.Voltage != 4.1 || tel.ChannelUtil != 12.5 || tel.UptimeSecs != 12345 {
+		t.Fatalf("device metrics = %+v, want battery 87 / 4.1V / 12.5%% / 12345s", tel)
+	}
+	if tel.Temperature != 21.5 || tel.Humidity != 55 || tel.Pressure != 1013 || tel.IAQ != 42 {
+		t.Fatalf("environment metrics = %+v, want 21.5°C / 55%% / 1013 hPa / iaq 42", tel)
+	}
+	if tel.PM25Std != 13 || tel.PM10Std != 20 || tel.CO2 != 510 {
+		t.Fatalf("air quality metrics = %+v, want pm2.5 13 / pm10 20 / co2 510", tel)
+	}
+	if !tel.At.After(time.Now().Add(-time.Minute)) {
+		t.Fatalf("telemetry At = %v, want a fresh receipt time", tel.At)
+	}
+
+	// The sink receives one document per telemetry section; keep the
+	// LAST one (it carries the full accumulated set).
+	deadline = time.Now().Add(5 * time.Second)
+	var wire struct {
+		Telemetry struct {
+			BatteryLevel uint32  `json:"battery_level"`
+			Temperature  float32 `json:"temperature"`
+			Pm25Standard uint32  `json:"pm25_standard"`
+			Co2          uint32  `json:"co2"`
+		} `json:"telemetry"`
+	}
+	for {
+		select {
+		case doc := <-docs:
+			if err := json.Unmarshal(doc, &wire); err != nil {
+				t.Fatalf("station doc: %v", err)
+			}
+			if wire.Telemetry.Co2 > 0 {
+				if wire.Telemetry.BatteryLevel != 87 || wire.Telemetry.Temperature != 21.5 ||
+					wire.Telemetry.Pm25Standard != 13 || wire.Telemetry.Co2 != 510 {
+					t.Fatalf("station doc telemetry = %+v, want the full accumulated set", wire.Telemetry)
+				}
+				return
+			}
+		case <-time.After(time.Until(deadline)):
+			t.Fatal("station document with the full telemetry never published")
+		}
+	}
+}
+
 // TestHubSendBroadcast pins a broadcast transmission: To is the broadcast
 // id, the port is TEXT_MESSAGE_APP and the tx lands in the history.
 type captureRecorder struct {

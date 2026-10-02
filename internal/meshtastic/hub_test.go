@@ -429,6 +429,50 @@ func TestHubSilentDeviceReconnects(t *testing.T) {
 	}
 }
 
+// TestHubNoResendOnceDeviceConfirms pins the duplicate-message fix: the
+// firmware retransmits want_ack frames itself, so a direct message whose
+// id the device already confirmed must never be client-side resent —
+// it only waits for the recipient's acknowledgment and then settles.
+func TestHubNoResendOnceDeviceConfirms(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: 300 * time.Millisecond})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "ef010203", "only once", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+
+	// The device confirms the send (echo with the assigned packet id).
+	dispatch(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, Id: 77, To: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("only once")},
+		},
+	})
+
+	// Wait past the settle window (and one maintenance tick): the send
+	// must settle failed WITHOUT ever being re-transmitted.
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := rec.messages()
+		if len(msgs) == 1 && msgs[0].Status == TxFailed {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	msgs := rec.messages()
+	if len(msgs) != 1 || msgs[0].Status != TxFailed {
+		t.Fatalf("tx = %+v, want one failed row", msgs)
+	}
+	if out := radio.outbound(); len(out) != 1 {
+		t.Fatalf("outbound transmissions = %d, want exactly 1 (no client-side resend)", len(out))
+	}
+}
+
 // TestHubNodeSignals pins the observed packet kinds: telemetry and text
 // packets mark the sender's node, surfaced as the admin/map badges.
 func TestHubNodeSignals(t *testing.T) {

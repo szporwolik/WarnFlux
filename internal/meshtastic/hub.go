@@ -54,6 +54,12 @@ type Config struct {
 	// FromRadio traffic (defaultSilenceTimeout when unset). Tests shorten
 	// it; production runs with the default.
 	SilenceTimeout time.Duration
+	// AckSettleTimeout is how long a device-confirmed direct message
+	// waits for the recipient's acknowledgment before settling failed
+	// (defaultAckSettleTimeout when unset). The firmware retransmits
+	// want_ack frames itself, so this window is generous — client-side
+	// resends here would only duplicate the message.
+	AckSettleTimeout time.Duration
 }
 
 // Recorder persists the meshtastic message history (implemented by
@@ -86,6 +92,12 @@ const (
 // and reconnected. A healthy node emits queueStatus/telemetry well
 // within this window.
 const defaultSilenceTimeout = 2 * time.Minute
+
+// defaultAckSettleTimeout is how long a device-confirmed direct message
+// waits for the recipient's acknowledgment. The device firmware
+// retransmits want_ack frames on the mesh itself, so the ack can arrive
+// late; there is no client-side resend in this window.
+const defaultAckSettleTimeout = 2 * time.Minute
 
 // pendingSend tracks one sent message until its delivery state settles.
 type pendingSend struct {
@@ -242,6 +254,9 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	}
 	if cfg.NodeTTL <= 0 {
 		cfg.NodeTTL = DefaultNodeTTL
+	}
+	if cfg.AckSettleTimeout <= 0 {
+		cfg.AckSettleTimeout = defaultAckSettleTimeout
 	}
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
@@ -696,30 +711,33 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	h.markStatus(ps, status)
 }
 
-// retryPending re-transmits direct messages whose acknowledgment never
-// arrived (up to dmMaxRetries), per the client API contract; exhausted
-// budgets settle as failed. Unpaired broadcasts older than the purge age
-// are dropped (a broadcast has no end-to-end acknowledgment, so nothing
-// can ever settle them).
+// retryPending settles or re-transmits sends that got no answer:
+//
+//   - Once the device has CONFIRMED the send (queueStatus/echo paired the
+//     packet id), the firmware owns the transmission — the mesh layer
+//     retransmits want_ack frames itself, so a client-side resend would
+//     only duplicate the message. Such sends just wait dmAckSettle for
+//     the recipient's acknowledgment and settle failed without it.
+//   - Sends the device never confirmed (no id known) were possibly never
+//     queued, so they are re-transmitted up to dmMaxRetries, but only
+//     while the device is demonstrably alive: retrying into radio
+//     silence multiplies duplicates when the device was in fact
+//     transmitting (the session watchdog reconnects it instead).
 func (h *Hub) retryPending(now time.Time) {
+	if now.Sub(time.Unix(0, h.lastRadio.Load())) > 30*time.Second {
+		return // device silent: the session watchdog will reconnect
+	}
 	h.sendMu.Lock()
 	var resend []*pendingSend
 	for id, ps := range h.pending {
-		if !ps.wantAck || ps.status != TxSent || now.Sub(ps.lastTry) < dmAckTimeout {
+		if !ps.wantAck || ps.status != TxSent || now.Sub(ps.lastTry) < h.cfg.AckSettleTimeout {
 			continue
 		}
 		delete(h.pending, id)
-		if ps.retries >= dmMaxRetries {
-			h.markStatus(ps, TxFailed)
-			continue
-		}
-		ps.retries++
-		ps.echoed = false
-		ps.id = 0
-		resend = append(resend, ps)
+		h.markStatus(ps, TxFailed)
 	}
-	// Direct messages whose id never arrived (the device may have been
-	// busy) are retransmitted the same way.
+	// Unpaired direct messages whose id never arrived (the device may
+	// have been busy) are retransmitted.
 	for i := 0; i < len(h.echoQueue); {
 		q := h.echoQueue[i]
 		if !q.echoed && !q.wantAck && now.Sub(q.lastTry) > 5*time.Minute {

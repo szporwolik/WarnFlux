@@ -33,17 +33,20 @@ func TestHandle(t *testing.T) {
 		t.Fatalf("/DEBUG = %+v, want debug with a confirmation", res)
 	}
 
-	// Unknown slash messages answer with the installation banner, not a
-	// command hint.
+	// Unknown slash messages answer with the installation banner plus
+	// the /help hint, not a command list.
 	res = b.Handle("/nope")
 	if !res.Handled || res.Debug {
 		t.Fatalf("/nope = %+v, want handled without debug", res)
 	}
-	if res.Reply != "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl" {
-		t.Fatalf("/nope reply = %q, want the identity banner", res.Reply)
+	if res.Reply != "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl | type /help for help" {
+		t.Fatalf("/nope reply = %q, want the identity banner with the /help hint", res.Reply)
 	}
 	if b.Identity() != "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl" {
 		t.Fatalf("Identity() = %q, want the banner", b.Identity())
+	}
+	if b.Banner() != "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl | type /help for help" {
+		t.Fatalf("Banner() = %q, want identity + /help hint", b.Banner())
 	}
 
 	// Future topics plug in through Register.
@@ -57,5 +60,17 @@ func TestHandle(t *testing.T) {
 	}
 	if res := b.Handle("/help"); !strings.Contains(res.Reply, "/test") {
 		t.Fatalf("help reply = %q, missing the registered command", res.Reply)
+	}
+}
+
+// TestBannerCapped keeps the banner within the 67-character APRS
+// message limit even for a very long installation identity.
+func TestBannerCapped(t *testing.T) {
+	b := New(strings.Repeat("x", 80))
+	if got := b.Banner(); len([]rune(got)) != 67 {
+		t.Fatalf("Banner() = %d runes, want 67", len([]rune(got)))
+	}
+	if !strings.Contains(b.Banner(), HelpHint) {
+		t.Fatalf("Banner() = %q, missing the /help hint", b.Banner())
 	}
 }

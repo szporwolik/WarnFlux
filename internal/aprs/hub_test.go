@@ -737,12 +737,15 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 
 	// A plain message never routes to an alarm: the standard
-	// installation banner answers instead.
+	// installation banner (with the /help hint) answers instead.
 	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:plain alarm"), "aprs-inet")
 	waitFor(t, func() bool { return len(tx.sends()) == 3 })
 	sends = tx.sends()
 	if !strings.Contains(sends[2][1], "WarnFlux v1.0 - SOSNA") {
 		t.Fatalf("plain reply = %v, want the standard banner", sends[2])
+	}
+	if !strings.Contains(sends[2][1], "type /help for help") {
+		t.Fatalf("plain reply = %v, missing the /help hint", sends[2])
 	}
 	if got := len(sink.payloads("events")); got != 1 {
 		t.Fatalf("plain message produced %d alarm events, want 1 (debug only)", got)
@@ -755,6 +758,9 @@ func TestHubRadioCLI(t *testing.T) {
 	sends = tx.sends()
 	if !strings.Contains(sends[3][1], "WarnFlux v1.0 - SOSNA") {
 		t.Fatalf("unauthorized slash reply = %v, want the identity banner", sends[3])
+	}
+	if !strings.Contains(sends[3][1], "type /help for help") {
+		t.Fatalf("unauthorized slash reply = %v, missing the /help hint", sends[3])
 	}
 	if got := len(sink.payloads("events")); got != 1 {
 		t.Fatalf("unauthorized /debug produced alarm events (%d total)", got)

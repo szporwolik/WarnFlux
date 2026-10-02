@@ -746,12 +746,12 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 			} else {
 				// Unauthorized slash attempt: the public banner, never a
 				// command.
-				h.sendCLIReply(p.Src, cli.Identity())
+				h.sendCLIReply(p.Src, cli.Banner())
 			}
 		} else {
 			// Plain messages never become alarms — the standard
 			// installation banner answers instead.
-			h.sendCLIReply(p.Src, cli.Identity())
+			h.sendCLIReply(p.Src, cli.Banner())
 		}
 	}
 

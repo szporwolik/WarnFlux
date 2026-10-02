@@ -1038,6 +1038,9 @@ func TestHubRadioCLI(t *testing.T) {
 	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") {
 		t.Fatalf("unauthorized slash reply = %q, want the identity banner", got)
 	}
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "type /help for help") {
+		t.Fatalf("unauthorized slash reply = %q, missing the /help hint", got)
+	}
 	if out[len(out)-1].GetTo() != 0xcafebabe {
 		t.Fatalf("unauthorized reply to = %08x, want cafebabe", out[len(out)-1].GetTo())
 	}
@@ -1049,13 +1052,16 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 
 	// A plain direct message never becomes an alarm: the standard
-	// installation banner answers instead.
+	// installation banner (with the /help hint) answers instead.
 	before = len(radio.outbound())
 	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "plain hello"))
 	radio.waitOutbound(t, before+1)
 	out = radio.outbound()
 	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") {
 		t.Fatalf("plain reply = %q, want the standard banner", got)
+	}
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "type /help for help") {
+		t.Fatalf("plain reply = %q, missing the /help hint", got)
 	}
 	mu.Lock()
 	n = len(events)

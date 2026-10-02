@@ -1151,7 +1151,7 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// public information).
 	if cli != nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
 		if owner == "" {
-			h.sendCLIReply(id, cli.Identity())
+			h.sendCLIReply(id, cli.Banner())
 			return
 		}
 		res := cli.Handle(text)
@@ -1169,7 +1169,7 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// standard installation banner answers instead, and the message
 	// stays in the history and the message feed.
 	if cli != nil {
-		h.sendCLIReply(id, cli.Identity())
+		h.sendCLIReply(id, cli.Banner())
 	}
 }
 

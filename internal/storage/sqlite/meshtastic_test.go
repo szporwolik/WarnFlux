@@ -4,7 +4,50 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
+
+// TestMeshtasticNodesPersist pins the heard-node directory round trip:
+// save, load, restart persistence and the sends slice.
+func TestMeshtasticNodesPersist(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	seen := time.Now().Truncate(time.Millisecond)
+
+	nodes := []storage.MeshtasticNode{
+		{ID: "a0a85934", Name: "Meshtastic 5934", Short: "SPM", Lat: 50.02, Lon: 20.0, LastSeen: seen, Sends: []string{"telemetry", "text"}},
+		{ID: "b0b85934", Name: "Other", LastSeen: seen.Add(-time.Hour)},
+	}
+	if err := s.SaveMeshtasticNodes(ctx, nodes); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := s.LoadMeshtasticNodes(ctx)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" {
+		t.Fatalf("nodes = %+v, want both ids", got)
+	}
+	if got[0].Name != "Meshtastic 5934" || got[0].Short != "SPM" || got[0].Lat != 50.02 {
+		t.Fatalf("first node = %+v", got[0])
+	}
+	if len(got[0].Sends) != 2 || got[0].Sends[1] != "text" {
+		t.Fatalf("sends = %v, want [telemetry text]", got[0].Sends)
+	}
+	if !got[0].LastSeen.Equal(seen) {
+		t.Fatalf("last seen = %v, want %v", got[0].LastSeen, seen)
+	}
+
+	// Replace semantics: saving an empty list clears the directory.
+	if err := s.SaveMeshtasticNodes(ctx, nil); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	got, err = s.LoadMeshtasticNodes(ctx)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("after clear = %+v, %v", got, err)
+	}
+}
 
 // TestMeshtasticMessageStatus pins the delivery lifecycle: a tx row starts
 // empty and the hub stamps sent/delivered/failed onto it, matching only the

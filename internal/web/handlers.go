@@ -486,6 +486,12 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	s.renderLoginForm(w, r, "", csrf, r.URL.Query().Get("reset") == "1")
+}
+
+// renderLoginForm draws the sign-in page with the given error message
+// ("" = none) and CSRF token for the hidden field.
+func (s *Server) renderLoginForm(w http.ResponseWriter, r *http.Request, errMsg, csrf string, reset bool) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "login", map[string]any{
 		"AppTitle": s.cfg.Title,
@@ -499,8 +505,8 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		"RepoURL":  repoURL,
 		"Lang":     s.langFor(r),
 		"CSRF":     csrf,
-		"Error":    "",
-		"Reset":    r.URL.Query().Get("reset") == "1",
+		"Error":    errMsg,
+		"Reset":    reset,
 	})
 }
 
@@ -509,10 +515,19 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	// Double-submit CSRF check for the login form.
+	// Double-submit CSRF check for the login form. A stale page (the
+	// token cookie expires after 15 minutes) must self-heal: hand back a
+	// fresh form with a new token instead of a bare 403.
 	cookie, _ := r.Cookie(csrfCookie)
 	if cookie == nil || !csrfOK(r.PostFormValue("csrf"), cookie.Value) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		s.logger.Warn("web: login csrf mismatch", "remote", r.RemoteAddr)
+		csrf, err := newCSRFCookie(w, s.cfg.Auth.SecureCookie)
+		if err != nil {
+			s.logger.Error("web: csrf token generation failed", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		s.renderLoginForm(w, r, i18n.T(s.langFor(r), "login.expired"), csrf, false)
 		return
 	}
 
@@ -570,22 +585,8 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.loginLimiter.recordGlobalFailure()
 		s.audit(username, "login-failed", r.RemoteAddr)
 		s.logger.Warn("web: failed login attempt", "remote", r.RemoteAddr)
-		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusUnauthorized)
-		s.renderL(w, r, "login", map[string]any{
-			"AppTitle": s.cfg.Title,
-			"Name":     s.displayName(),
-			"Header1":  s.displayHeader1(),
-			"Header2":  s.cfg.Header2,
-			"Tagline":  s.cfg.Tagline,
-			"About":    template.HTML(s.cfg.About),
-			"Version":  s.version,
-			"Commit":   s.commit,
-			"RepoURL":  repoURL,
-			"Lang":     s.langFor(r),
-			"CSRF":     cookie.Value,
-			"Error":    i18n.T(s.langFor(r), "login.error"),
-		})
+		s.renderLoginForm(w, r, i18n.T(s.langFor(r), "login.error"), cookie.Value, false)
 		return
 	}
 

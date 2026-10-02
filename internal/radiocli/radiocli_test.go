@@ -38,6 +38,9 @@ func TestHandle(t *testing.T) {
 	if !res.Handled || !strings.Contains(res.Reply, "/debug") {
 		t.Fatalf("authorized /help = %+v, want the full list including /debug", res)
 	}
+	if len(res.Reply) > 67 {
+		t.Fatalf("authorized /help = %q, %d chars — over the APRS limit", res.Reply, len(res.Reply))
+	}
 
 	// /debug is restricted: authorized senders fire the debug alarm,
 	// everyone else gets the public banner.

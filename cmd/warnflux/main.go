@@ -46,6 +46,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 	"github.com/szporwolik/WarnFlux/internal/trail"
+	"github.com/szporwolik/WarnFlux/internal/weatherreport"
 	"github.com/szporwolik/WarnFlux/internal/web"
 )
 
@@ -124,6 +125,75 @@ func dispatchLocalChange(ingress *dispatch.Ingress, logger *slog.Logger, change 
 	case dispatch.AcceptedEmergency:
 		logger.Warn("journal change accepted WITHOUT durable storage (emergency mode; lost on restart)", "change_id", change.ID, "event_key", ev.Hazard.Key)
 	}
+}
+
+// weatherForRadio snapshots every current weather source — APRS weather
+// stations plus the retained internet-provider state — into the shared
+// weatherreport aggregation for the public /weather command. APRS
+// stations echo back into the info state through the broker; those
+// echoes are skipped so a station never counts twice.
+func weatherForRadio(hub *aprs.Hub, mirror *state.State, now time.Time) weatherreport.Report {
+	var readings []weatherreport.Reading
+	var forecasts []weatherreport.Forecast
+	aprsSeen := make(map[string]bool)
+	if hub != nil {
+		for _, doc := range hub.Stations() {
+			w := doc.Weather
+			if w == nil {
+				continue
+			}
+			aprsSeen[strings.ToLower(doc.Callsign)] = true
+			r := weatherreport.Reading{At: w.Time, Source: doc.Callsign}
+			if w.TemperatureC != nil {
+				r.TempC = *w.TemperatureC
+				r.HasTemp = true
+			}
+			if w.HumidityPct != nil {
+				r.HumPct = *w.HumidityPct
+				r.HasHum = true
+			}
+			readings = append(readings, r)
+		}
+	}
+	if mirror != nil {
+		for _, e := range mirror.Snapshot().Weather {
+			ww := e.Weather
+			if ww == nil {
+				continue
+			}
+			name := ww.LocationName
+			if name == "" {
+				name = ww.LocationID
+			}
+			if aprsSeen[strings.ToLower(name)] {
+				continue // APRS echo off the broker
+			}
+			r := weatherreport.Reading{At: ww.GeneratedAt, Source: ww.ProviderName}
+			if ww.TemperatureC != nil {
+				r.TempC = *ww.TemperatureC
+				r.HasTemp = true
+			}
+			if ww.HumidityPct != nil {
+				r.HumPct = *ww.HumidityPct
+				r.HasHum = true
+			}
+			readings = append(readings, r)
+			if len(ww.Daily) > 0 {
+				d := ww.Daily[0]
+				f := weatherreport.Forecast{At: ww.GeneratedAt, Source: ww.ProviderName}
+				if d.TemperatureMaxC != nil {
+					f.TempMaxC = *d.TemperatureMaxC
+					f.HasMax = true
+				}
+				if d.TemperatureMinC != nil {
+					f.TempMinC = *d.TemperatureMinC
+					f.HasMin = true
+				}
+				forecasts = append(forecasts, f)
+			}
+		}
+	}
+	return weatherreport.Summarize(now, readings, forecasts)
 }
 
 // seedMeshtasticStations restores the heard-node list from the retained
@@ -569,6 +639,13 @@ func run(configPath string, checkConfig bool) error {
 	ingress.SetInboxWriteTimeout(cfg.Dispatch.InboxWriteTimeout)
 	ingress.SetInbox(store)
 	mirror := state.New()
+	// /weather: a public command — the region average of every current
+	// weather reading (APRS stations + internet providers, gross errors
+	// rejected) plus the averaged forecast when one is held. Built for
+	// EMCOM: it scales from many sources down to a single station.
+	radioCLI.Register("weather", "weather", func(string) radiocli.Result {
+		return radiocli.Result{Handled: true, Reply: weatherForRadio(hub, mirror, time.Now()).Text()}
+	})
 
 	// LOCAL-FIRST source pipeline: every journal change (ingest or
 	// expiration) is dispatched into the local ingress directly — SQLite

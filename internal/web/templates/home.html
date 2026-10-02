@@ -59,7 +59,7 @@
     </span>
   </div>{{end}}
 
-  {{if .Disclaimer}}<p class="home-disclaimer" role="note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Disclaimer}}</span></p>{{end}}
+  {{if .Disclaimer}}<p class="home-disclaimer" role="note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-info-circle"></use></svg><span>{{.Disclaimer}}</span></p>{{end}}
 
   <nav class="home-tabs" role="tablist" aria-label="{{tr .Lang "home.tabs.aria"}}">
     <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">{{tr .Lang "home.tab.alerts"}}</button>
@@ -73,35 +73,47 @@
       {{template "home_alerts_section" .}}
     </section>
     <section class="home-panel" id="panel-tab-radio" data-panel="tab-radio" hidden>
-      {{if .AprsEnabled}}
-      <div class="aprs-map-wrap">
-        <div id="aprs-map" data-lat="{{.AprsCenterLat}}" data-lon="{{.AprsCenterLon}}" data-own-lat="{{.AprsOwnLat}}" data-own-lon="{{.AprsOwnLon}}" data-radius="{{.AprsRadiusKM}}" data-callsign="{{.AprsCallsign}}"></div>
-        <p class="aprs-map-attrib">{{tr .Lang "home.attrib.map"}} <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a> · {{tr .Lang "home.attrib.tiles"}} <span id="aprs-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · {{tr .Lang "home.attrib.radar"}} <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> · {{tr .Lang "home.attrib.symbols"}} <a href="https://github.com/hessu/aprs-symbols" target="_blank" rel="noopener noreferrer">aprs.fi (OH7LZB)</a> · {{tr .Lang "home.attrib.stations"}} WarnFlux (MQTT)</p>
-      </div>
-      {{else}}
-      <div class="home-empty">
-        <p>{{trh .Lang "home.map.aprs_disabled"}}</p>
-      </div>
-      {{end}}
-      <h2 class="hw-title">{{tr .Lang "home.weather.title"}} <span class="count" id="hw-report-count"></span></h2>
-      <div class="hw-reports" id="hw-reports">
-        <p class="muted">{{tr .Lang "home.weather.loading"}}</p>
-      </div>
-      <p class="hw-attrib">{{tr .Lang "home.attrib.wicons"}} <a href="https://erikflowers.github.io/weather-icons/" target="_blank" rel="noopener noreferrer">Weather Icons by Erik Flowers</a> (SIL OFL 1.1 / MIT)</p>
-      <h2 class="hw-title">{{tr .Lang "home.stations.title"}} <span class="count" id="hw-station-count"></span></h2>
-      <div class="hw-reports" id="hw-stations">
-        <p class="muted">{{tr .Lang "home.stations.loading"}}</p>
-      </div>
-      <div id="hw-mesh-block" hidden>
-        <h2 class="hw-title">{{tr .Lang "home.meshtastic.title"}} <span class="count" id="hw-mesh-count"></span></h2>
-        <div class="hw-reports" id="hw-mesh">
-          <p class="muted">{{tr .Lang "home.meshtastic.loading"}}</p>
+      <div class="home-radio-layout">
+        <div class="home-map-col">
+          {{if .AprsEnabled}}
+          <div class="aprs-map-wrap">
+            <div id="aprs-map" data-lat="{{.AprsCenterLat}}" data-lon="{{.AprsCenterLon}}" data-own-lat="{{.AprsOwnLat}}" data-own-lon="{{.AprsOwnLon}}" data-radius="{{.AprsRadiusKM}}" data-callsign="{{.AprsCallsign}}"></div>
+            <p class="aprs-map-attrib">{{tr .Lang "home.attrib.map"}} <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a> · {{tr .Lang "home.attrib.tiles"}} <span id="aprs-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · {{tr .Lang "home.attrib.radar"}} <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> · {{tr .Lang "home.attrib.symbols"}} <a href="https://github.com/hessu/aprs-symbols" target="_blank" rel="noopener noreferrer">aprs.fi (OH7LZB)</a> · {{tr .Lang "home.attrib.stations"}} WarnFlux (MQTT)</p>
+          </div>
+          {{else}}
+          <div class="home-empty">
+            <p>{{trh .Lang "home.map.aprs_disabled"}}</p>
+          </div>
+          {{end}}
         </div>
-        <div class="home-mesh-noloc" id="hw-mesh-nopos" hidden></div>
-      </div>
-      <h2 class="hw-title">{{tr .Lang "home.aircraft.title"}} <span class="count" id="hw-aircraft-count"></span></h2>
-      <div class="hw-reports" id="hw-aircraft">
-        <p class="muted">{{tr .Lang "home.aircraft.loading"}}</p>
+        <div class="home-side-col">
+          <details class="hw-group" open>
+            <summary class="hw-title">{{tr .Lang "home.weather.title"}} <span class="count" id="hw-report-count"></span></summary>
+            <div class="hw-reports" id="hw-reports">
+              <p class="muted">{{tr .Lang "home.weather.loading"}}</p>
+            </div>
+            <p class="hw-attrib">{{tr .Lang "home.attrib.wicons"}} <a href="https://erikflowers.github.io/weather-icons/" target="_blank" rel="noopener noreferrer">Weather Icons by Erik Flowers</a> (SIL OFL 1.1 / MIT)</p>
+          </details>
+          <details class="hw-group" open>
+            <summary class="hw-title">{{tr .Lang "home.stations.title"}} <span class="count" id="hw-station-count"></span></summary>
+            <div class="hw-reports" id="hw-stations">
+              <p class="muted">{{tr .Lang "home.stations.loading"}}</p>
+            </div>
+          </details>
+          <details class="hw-group" id="hw-mesh-block" open hidden>
+            <summary class="hw-title">{{tr .Lang "home.meshtastic.title"}} <span class="count" id="hw-mesh-count"></span></summary>
+            <div class="hw-reports" id="hw-mesh">
+              <p class="muted">{{tr .Lang "home.meshtastic.loading"}}</p>
+            </div>
+            <div class="home-mesh-noloc" id="hw-mesh-nopos" hidden></div>
+          </details>
+          <details class="hw-group" open>
+            <summary class="hw-title">{{tr .Lang "home.aircraft.title"}} <span class="count" id="hw-aircraft-count"></span></summary>
+            <div class="hw-reports" id="hw-aircraft">
+              <p class="muted">{{tr .Lang "home.aircraft.loading"}}</p>
+            </div>
+          </details>
+        </div>
       </div>
     </section>
     <section class="home-panel" id="panel-tab-archive" data-panel="tab-archive" hidden>

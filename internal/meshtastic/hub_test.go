@@ -18,6 +18,7 @@ import (
 	"github.com/kabili207/meshtastic-go/transport/stream"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -857,6 +858,74 @@ func TestHubEventBridge(t *testing.T) {
 	}
 	if !strings.Contains(we.Event.Description, "sp9kow") {
 		t.Fatalf("description = %q, want the sender", we.Event.Description)
+	}
+}
+
+// TestHubRadioCLI pins the radio-command interpreter: /help is answered
+// in-band and stays off the alarm pipeline, /debug fires the alarm like
+// a plain message plus a confirmation, and plain messages still route.
+func TestHubRadioCLI(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	var (
+		mu     sync.Mutex
+		events []string
+	)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		mu.Lock()
+		events = append(events, string(payload))
+		mu.Unlock()
+		return nil
+	})
+	radio.hub.SetCLI(radiocli.New())
+
+	// /help: answered, no alarm.
+	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/help"))
+	reply := radio.waitOutbound(t, 1)
+	if reply[0].GetTo() != 0xdeadbeef {
+		t.Fatalf("help reply to = %08x, want deadbeef", reply[0].GetTo())
+	}
+	if got := string(reply[0].GetDecoded().GetPayload()); !strings.Contains(got, "Komendy") {
+		t.Fatalf("help reply = %q, want the command list", got)
+	}
+	mu.Lock()
+	n := len(events)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("events after /help = %d, want 0", n)
+	}
+
+	// /debug: alarm + confirmation.
+	before := len(radio.outbound())
+	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n = len(events)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 1 {
+		t.Fatalf("events after /debug = %d, want 1", n)
+	}
+	if !strings.Contains(events[0], "/debug") {
+		t.Fatalf("debug event = %q, want the command text", events[0])
+	}
+	radio.waitOutbound(t, before+1)
+	out := radio.outbound()
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "alarm testowy") {
+		t.Fatalf("debug reply = %q, want the confirmation", got)
 	}
 }
 

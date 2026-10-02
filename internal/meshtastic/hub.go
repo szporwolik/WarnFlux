@@ -30,6 +30,7 @@ import (
 	"github.com/kabili207/meshtastic-go/transport/serial"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -253,6 +254,7 @@ type Hub struct {
 	// message stays off the alarm pipeline).
 	senderGate func(id string) string
 	eventSink  func(ctx context.Context, topic string, retained bool, payload []byte) error
+	cli        *radiocli.Bot
 
 	sendMu    sync.Mutex
 	pending   map[uint32]*pendingSend // by device-assigned packet id
@@ -351,6 +353,11 @@ func (h *Hub) SetEventSink(fn func(ctx context.Context, topic string, retained b
 	h.eventSink = fn
 	h.mu.Unlock()
 }
+
+// SetCLI attaches the shared radio-command interpreter (optional): a
+// direct message that parses as a command is answered in-band and
+// (except /debug) stays off the alarm pipeline.
+func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
 
 // Run dials the device, performs the client handshake and pumps incoming
 // messages until ctx is cancelled. It reconnects with bounded backoff so
@@ -1069,7 +1076,33 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	if owner == "" {
 		return
 	}
+	// Radio CLI: slash commands are answered in-band and stay off the
+	// alarm pipeline; /debug additionally fires the alarm exactly like
+	// a plain message does.
+	if h.cli != nil {
+		res := h.cli.Handle(string(decoded.GetPayload()))
+		if res.Handled {
+			if res.Debug {
+				h.publishRoutedEvent(id, owner, string(decoded.GetPayload()))
+			}
+			if res.Reply != "" {
+				h.sendCLIReply(id, res.Reply)
+			}
+			return
+		}
+	}
 	h.publishRoutedEvent(id, owner, string(decoded.GetPayload()))
+}
+
+// sendCLIReply answers one radio command with a direct message back to
+// the sender (best-effort; the reply lands in the durable TX history
+// with its delivery tracking).
+func (h *Hub) sendCLIReply(id, text string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := h.SendContactMessage(ctx, id, text, "system"); err != nil && h.logger != nil {
+		h.logger.Warn("meshtastic: cli reply failed", "to", id, "error", err)
+	}
 }
 
 // channelNameFor resolves the display channel for a packet: the channel

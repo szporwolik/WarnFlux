@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/sanity"
 )
 
@@ -159,6 +160,11 @@ type Hub struct {
 	// the configured allow-list (SSIDs may differ).
 	senderGate func(base string) bool
 
+	// cli is the shared radio-command interpreter (optional): a message
+	// that parses as a command is answered in-band and (except /debug)
+	// stays off the alarm pipeline; guarded by mu.
+	cli *radiocli.Bot
+
 	// bulletins maps retained bulletin topic ids onto their receipt
 	// unix time; maintenance deletes them after BulletinTTL.
 	bulletins map[string]int64
@@ -302,6 +308,11 @@ func (h *Hub) SetSenderGate(fn func(base string) bool) {
 	h.senderGate = fn
 	h.mu.Unlock()
 }
+
+// SetCLI attaches the shared radio-command interpreter (optional): a
+// routed message that parses as a command is answered in-band and
+// (except /debug) stays off the alarm pipeline.
+func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
 
 // Name returns the display name of our station (falls back to the
 // callsign).
@@ -725,7 +736,7 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "bulletin", IsBulletin(p.Message.To), "routed", routed)
 	}
 	if routed {
-		h.publishMessageEvent(p)
+		h.routeOrCLI(p)
 	}
 
 	// Signal the ack waiter only after the rx document is on the message
@@ -734,6 +745,39 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 		if kind := ackKind(p.Message.Text); kind != "" {
 			h.signalAck(p.Message.ID, kind)
 		}
+	}
+}
+
+// routeOrCLI handles one routed message: slash commands are answered
+// in-band by the shared CLI (and /debug additionally fires the alarm
+// exactly like a plain message does); everything else feeds the alarm
+// pipeline as before.
+func (h *Hub) routeOrCLI(p Packet) {
+	h.mu.Lock()
+	cli := h.cli
+	h.mu.Unlock()
+	if cli != nil {
+		res := cli.Handle(strings.TrimSpace(p.Message.Text))
+		if res.Handled {
+			if res.Debug {
+				h.publishMessageEvent(p)
+			}
+			if res.Reply != "" {
+				h.sendCLIReply(p.Src, res.Reply)
+			}
+			return
+		}
+	}
+	h.publishMessageEvent(p)
+}
+
+// sendCLIReply answers one radio command over the first ready APRS
+// transmitter (best-effort; the reply lands in the durable TX history).
+func (h *Hub) sendCLIReply(to, text string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := h.SendMessage(ctx, to, text); err != nil && h.logger != nil {
+		h.logger.Warn("aprs: cli reply failed", "to", to, "error", err)
 	}
 }
 

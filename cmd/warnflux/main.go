@@ -41,6 +41,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
 	mqttout "github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/routing"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
@@ -515,6 +516,13 @@ func run(configPath string, checkConfig bool) error {
 		}
 		return false
 	})
+
+	// The shared radio CLI: /help lists the commands, /debug fires the
+	// debug alarm; both APRS messages and Meshtastic direct messages
+	// answer through the same interpreter (future topics plug in here).
+	radioCLI := radiocli.New()
+	hub.SetCLI(radioCLI)
+	meshtasticHub.SetCLI(radioCLI)
 
 	if err := plugins.RegisterBuiltins(registry, hub, meshtasticHub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)

@@ -147,6 +147,10 @@ type GroupStore interface {
 	// handles of the group's members, sorted. The rule engine hands them
 	// to Discord-capable actions.
 	GroupRecipientDiscord(groupID int64) ([]string, error)
+	// GroupRecipientMeshIDs returns the distinct non-empty Meshtastic
+	// node IDs registered for the group's members, sorted. The rule
+	// engine hands them to Meshtastic-capable actions.
+	GroupRecipientMeshIDs(groupID int64) ([]string, error)
 }
 
 // DirectoryStore combines the user and group administration stores; the

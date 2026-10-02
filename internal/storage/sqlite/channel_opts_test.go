@@ -237,6 +237,81 @@ func TestUserChannelOptOuts(t *testing.T) {
 	}
 }
 
+// TestGroupRecipientMeshIDs pins the Meshtastic recipient list: distinct
+// node IDs across the group's members, per-channel opt-out honored,
+// missing groups empty.
+func TestGroupRecipientMeshIDs(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "mesh-recipients.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	ada, err := store.CreateUser("ada", "", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bea, err := store.CreateUser("bea", "", "", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := store.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserGroups(ada.ID, []int64{g.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserGroups(bea.ID, []int64{g.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserMeshtasticIDs(ada.ID, []string{"a0a85934"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserMeshtasticIDs(bea.ID, []string{"b0b85934", "a0a85934"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Duplicates collapse and the list is sorted.
+	ids, err := store.GroupRecipientMeshIDs(g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a0a85934", "b0b85934"}
+	if len(ids) != len(want) {
+		t.Fatalf("node ids = %v, want %v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("node ids = %v, want %v", ids, want)
+		}
+	}
+
+	// Opting bea out of the meshtastic channel drops both her IDs.
+	if err := store.SetUserChannelOptOuts(bea.ID, []string{"meshtastic"}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err = store.GroupRecipientMeshIDs(g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "a0a85934" {
+		t.Fatalf("node ids after opt-out = %v, want [a0a85934]", ids)
+	}
+
+	// A group without mesh-registered members yields an empty list.
+	empty, err := store.CreateGroup("nobody")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err = store.GroupRecipientMeshIDs(empty.ID)
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("empty group node ids = %v, %v", ids, err)
+	}
+}
+
 // TestMeshtasticOwners pins the pubkey -> username mapping used to label
 // heard Meshtastic nodes on the admin page.
 func TestMeshtasticOwners(t *testing.T) {

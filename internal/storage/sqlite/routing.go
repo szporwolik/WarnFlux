@@ -517,3 +517,37 @@ func (s *Store) GroupRecipientDiscord(groupID int64) ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// GroupRecipientMeshIDs returns the distinct, non-empty Meshtastic node
+// IDs (8 hex) registered for the group's members, sorted. Missing groups
+// yield an empty list.
+func (s *Store) GroupRecipientMeshIDs(groupID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT umi.node_id
+		FROM user_meshtastic_ids umi
+		JOIN user_groups ug ON ug.user_id = umi.user_id
+		WHERE ug.group_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM user_channel_opts uco
+			WHERE uco.user_id = umi.user_id AND uco.channel = 'meshtastic')
+		ORDER BY umi.node_id COLLATE NOCASE ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d meshtastic recipients: %w", groupID, err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	var out []string
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			return nil, fmt.Errorf("scan group %d meshtastic recipient: %w", groupID, err)
+		}
+		key := strings.ToLower(nodeID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, nodeID)
+	}
+	return out, rows.Err()
+}

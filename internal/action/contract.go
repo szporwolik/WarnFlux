@@ -62,6 +62,10 @@ type ActionRequest struct {
 	// the rule engine and used by Discord-capable actions to address
 	// outbound messages.
 	DiscordHandles []string `json:"discord_handles"`
+	// MeshNodeIDs carries the matched group's members' registered
+	// Meshtastic node IDs (8 hex). It is populated by the rule engine
+	// and used by Meshtastic-capable actions to address direct messages.
+	MeshNodeIDs []string `json:"mesh_node_ids"`
 	// App identifies the running application (version, domain, repo);
 	// populated by the rule engine.
 	App AppInfo `json:"app"`

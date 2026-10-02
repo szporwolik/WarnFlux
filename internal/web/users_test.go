@@ -479,6 +479,29 @@ func (f *fakeUsers) GroupRecipientDiscord(groupID int64) ([]string, error) {
 	return out, nil
 }
 
+// GroupRecipientMeshIDs returns the distinct Meshtastic node IDs of the
+// group's members (minus users who opted out of the meshtastic channel),
+// sorted.
+func (f *fakeUsers) GroupRecipientMeshIDs(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := make(map[string]bool)
+	var out []string
+	for _, u := range f.rows {
+		if !f.membership[u.ID][groupID] || f.channelOpts[u.ID]["meshtastic"] {
+			continue
+		}
+		for _, id := range u.MeshtasticIDs {
+			if !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func sortUsers(rows []storage.User) {
 	for i := 1; i < len(rows); i++ {
 		for j := i; j > 0 && userBefore(rows[j], rows[j-1]); j-- {

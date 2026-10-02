@@ -166,7 +166,8 @@ type MeshtasticConfig struct {
 	// presence beacon; 0 disables the beacon. The default PRIMARY
 	// channel is never used for broadcasts.
 	EmcomChannel int
-	// EmcomInterval is the beacon spacing (default 8 hours).
+	// EmcomInterval is the beacon spacing (default 4 hours); the first
+	// beacon fires at server start/restart.
 	EmcomInterval time.Duration
 }
 
@@ -553,7 +554,7 @@ type fileMeshtastic struct {
 	// presence beacon; 0 disables the beacon. The default PRIMARY
 	// channel is never used for broadcasts.
 	EmcomChannel int `yaml:"emcom_channel"`
-	// EmcomInterval is the beacon spacing (default 8h).
+	// EmcomInterval is the beacon spacing (default 4h).
 	EmcomInterval *time.Duration `yaml:"emcom_interval"`
 }
 
@@ -1112,7 +1113,7 @@ func (f fileConfig) toConfig() Config {
 			cfg.APRS.RouteMessages = *f.APRS.RouteMessages
 		}
 	}
-	cfg.Meshtastic = MeshtasticConfig{Baud: 115200, NodeTTL: 30 * time.Minute, EmcomInterval: 8 * time.Hour}
+	cfg.Meshtastic = MeshtasticConfig{Baud: 115200, NodeTTL: 30 * time.Minute, EmcomInterval: 4 * time.Hour}
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
 		cfg.Meshtastic.Device = strings.TrimSpace(f.Meshtastic.Device)

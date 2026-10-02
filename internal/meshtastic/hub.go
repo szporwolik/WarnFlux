@@ -68,7 +68,9 @@ type Config struct {
 	// PRIMARY channel) is never used for broadcasts — broadcasts there
 	// are blocked.
 	EmcomChannel int
-	// EmcomInterval is the beacon spacing (default 8 hours).
+	// EmcomInterval is the beacon spacing (default 4 hours). The first
+	// beacon fires as soon as the first session comes up (server
+	// start/restart).
 	EmcomInterval time.Duration
 	// EmcomIdentity is the one-line installation banner sent by the
 	// beacon (version, installation name, public domain) — set by main.
@@ -115,7 +117,7 @@ const defaultSilenceTimeout = 2 * time.Minute
 
 // defaultEmcomInterval is the spacing between presence beacons on the
 // emcom channel.
-const defaultEmcomInterval = 8 * time.Hour
+const defaultEmcomInterval = 4 * time.Hour
 
 // meshTextMaxRunes bounds one outbound channel text message (133 chars
 // per the Meshtastic spec).
@@ -459,11 +461,15 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.connected = true
 	h.mu.Unlock()
 	h.lastRadio.Store(time.Now().UnixNano())
-	// First presence beacon shortly after the session is up; afterwards
-	// on the configured interval.
+	// The presence beacon fires immediately at server start: the first
+	// session schedules it for now, so the first maintenance tick sends
+	// it. Later sessions are device reconnects and must not reschedule
+	// the cadence — it belongs to the process, not the session.
 	if h.cfg.EmcomChannel > 0 && h.cfg.EmcomIdentity != "" {
 		h.mu.Lock()
-		h.emcomNext = time.Now().Add(time.Minute)
+		if h.emcomNext.IsZero() {
+			h.emcomNext = time.Now()
+		}
 		h.mu.Unlock()
 	}
 	h.populateFromState(conn.State())

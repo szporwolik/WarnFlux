@@ -69,6 +69,28 @@ func (b *Bot) Register(name, description string, h Handler) {
 // name and public domain).
 func (b *Bot) Identity() string { return b.identity }
 
+// HelpHint is appended to the banner replies, so whoever reached the
+// station learns the one command that lists the rest.
+const HelpHint = "type /help for help"
+
+// maxBannerRunes keeps the banner within the APRS message limit (67
+// characters). Meshtastic reuses the same string for consistency.
+const maxBannerRunes = 67
+
+// Banner returns the installation banner with the /help hint — the
+// reply for plain messages and unknown slash attempts. The hint always
+// survives: the identity is truncated instead, so the whole banner fits
+// the 67-character APRS message limit (Meshtastic reuses the string).
+func (b *Bot) Banner() string {
+	hint := " | " + HelpHint
+	maxIdentity := maxBannerRunes - len([]rune(hint))
+	id := []rune(b.identity)
+	if len(id) > maxIdentity {
+		id = id[:maxIdentity]
+	}
+	return string(id) + hint
+}
+
 // Handle evaluates one inbound text. Non-commands return Handled=false
 // so the channel applies its normal routing.
 func (b *Bot) Handle(text string) Result {
@@ -86,8 +108,9 @@ func (b *Bot) Handle(text string) Result {
 		return h(args)
 	}
 	// Any other slash-prefixed message is not a command: answer with the
-	// installation banner so the sender knows what they reached.
-	return Result{Handled: true, Reply: b.identity}
+	// installation banner (plus the /help hint) so the sender knows what
+	// they reached and how to list the commands.
+	return Result{Handled: true, Reply: b.Banner()}
 }
 
 // helpText renders the command list. Kept short on purpose: APRS

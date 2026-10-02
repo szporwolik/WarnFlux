@@ -25,6 +25,7 @@ type fakeStore struct {
 	bcc          map[int64][]string
 	aprsBcc      map[int64][]string
 	discordBcc   map[int64][]string
+	meshBcc      map[int64][]string
 	jobs         map[string]storage.DeliveryStatus // group|action|dedupKey -> status
 	payloads     map[string][]byte                 // group|action|dedupKey -> JSON payload
 	payloadOrder []string                          // insertion order of payload keys
@@ -103,6 +104,15 @@ func (f *fakeStore) GroupRecipientDiscord(groupID int64) ([]string, error) {
 		return nil, f.recipientErr
 	}
 	return append([]string(nil), f.discordBcc[groupID]...), f.err
+}
+
+func (f *fakeStore) GroupRecipientMeshIDs(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recipientErr != nil {
+		return nil, f.recipientErr
+	}
+	return append([]string(nil), f.meshBcc[groupID]...), f.err
 }
 
 // enqueueLocked applies one job with the same semantics as the SQLite
@@ -636,6 +646,38 @@ func TestEnginePassesGroupDiscordHandles(t *testing.T) {
 	}
 	if len(handles) != 2 || handles[0] != "alice#1234" || handles[1] != "@bob" {
 		t.Errorf("discord handles = %v, want [alice#1234 @bob]", handles)
+	}
+}
+
+// TestEnginePassesGroupMeshNodeIDs pins the Meshtastic part of the
+// recipient plumbing: the engine hands each group's subscribed members'
+// node IDs to the action request.
+func TestEnginePassesGroupMeshNodeIDs(t *testing.T) {
+	store := &fakeStore{
+		rules: []storage.GroupRouting{
+			{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("meshtastic", "unknown")}},
+		},
+		meshBcc: map[int64][]string{
+			1: {"a0a85934", "b0b85934"},
+		},
+	}
+	acts := &fakeActions{}
+	_, feed := startEngine(t, store, acts)
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+
+	waitFor(t, func() bool { return store.payloadCount("meshtastic") == 1 }, "meshtastic action fired")
+
+	var ids []string
+	for _, p := range store.payloadsFor("meshtastic") {
+		var req action.ActionRequest
+		if err := json.Unmarshal(p, &req); err != nil {
+			t.Fatalf("payload decode: %v", err)
+		}
+		ids = append(ids, req.MeshNodeIDs...)
+	}
+	if len(ids) != 2 || ids[0] != "a0a85934" || ids[1] != "b0b85934" {
+		t.Errorf("mesh node ids = %v, want [a0a85934 b0b85934]", ids)
 	}
 }
 

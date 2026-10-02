@@ -808,6 +808,24 @@ actions:
   #     # own name).
   #     username: "WarnFlux"
   #     # Per-request timeout; 0 = default (10s).
+  #
+  # Meshtastic action: SOSNA alerts as direct messages to the routed
+  # group members' registered node IDs; a group without any falls back
+  # to one channel broadcast. The hub tracks each transmission's
+  # delivery state (sent/delivered/failed) in the durable history.
+  # - id: meshtastic-alerts
+  #   type: meshtastic
+  #   enabled: false
+  #
+  #   runtime:
+  #     queue_size: 128
+  #     call_timeout: 30s
+  #     shutdown_timeout: 10s
+  #     retries: 1
+  #
+  #   config:
+  #     prefix: "SOSNA"
+  #     tx_interval: 5s
   #     timeout: 10s
 
 # Public HTTP ingest endpoints: POST /api/v1/ingest/<id>, protected by an

@@ -22,6 +22,7 @@ var Channels = []ChannelDef{
 	{Kind: "aprs", Label: "APRS (radio)"},
 	{Kind: "smtp", Label: "Email (SMTP)"},
 	{Kind: "discord", Label: "Discord"},
+	{Kind: "meshtastic", Label: "Meshtastic"},
 }
 
 // Known reports whether kind is one of the registered channels.

@@ -36,10 +36,20 @@ type Config struct {
 
 var errHubDisabled = errors.New("meshtastic: hub is not configured")
 
-// Action sends channel text messages through the hub.
+// sender is the hub seam the action transmits through: direct messages
+// to the routed group members' node IDs, or a channel broadcast when the
+// group has none. *mesh.Hub satisfies it; tests use a stub.
+type sender interface {
+	SendContactMessage(ctx context.Context, addr, text, operator string) error
+	SendChannelMessage(ctx context.Context, text, operator string) error
+}
+
+// Action sends SOSNA alerts as direct messages to the routed group
+// members' node IDs; a group without any registered node IDs falls back
+// to one channel broadcast (channel 0).
 type Action struct {
 	cfg  Config
-	hub  *mesh.Hub
+	hub  sender
 	last time.Time
 }
 
@@ -64,12 +74,40 @@ func Register(reg *action.Registry, hub *mesh.Hub) error {
 
 func (a *Action) Name() string { return Type }
 
-// Execute formats the routed hazard as one channel message and hands it to
-// the hub. The hub records the tx in the durable history.
+// Execute formats the routed hazard as one message and delivers it to
+// every routed group member's registered node ID (direct message), or —
+// when the group has none — as one channel broadcast. The hub records
+// each transmission in the durable history and tracks its delivery
+// state (sent/delivered/failed).
 func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if req.Event.Kind != dispatch.EventHazardTransition || req.Event.Hazard == nil {
 		return nil // nothing to say for non-hazard events
 	}
+	text := a.textFor(ctx, req)
+	if len(req.MeshNodeIDs) == 0 {
+		if err := a.pace(ctx); err != nil {
+			return err
+		}
+		if err := a.hub.SendChannelMessage(ctx, text, "system"); err != nil {
+			return fmt.Errorf("meshtastic: %w", err)
+		}
+		a.last = time.Now()
+		return nil
+	}
+	for _, id := range req.MeshNodeIDs {
+		if err := a.pace(ctx); err != nil {
+			return err
+		}
+		if err := a.hub.SendContactMessage(ctx, id, text, "system"); err != nil {
+			return fmt.Errorf("meshtastic: %s: %w", id, err)
+		}
+		a.last = time.Now()
+	}
+	return nil
+}
+
+// textFor builds the bounded outbound message for one routed hazard.
+func (a *Action) textFor(ctx context.Context, req action.ActionRequest) string {
 	h := req.Event.Hazard.Hazard
 	text := strings.TrimSpace(h.Headline)
 	if text == "" {
@@ -80,8 +118,12 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if len([]rune(text)) > maxMeshMessageChars {
 		text = string([]rune(text)[:maxMeshMessageChars])
 	}
+	return text
+}
 
-	// Pace transmissions: the mesh channel is shared airtime.
+// pace waits out the minimum spacing between transmissions; the mesh
+// channel is shared airtime.
+func (a *Action) pace(ctx context.Context) error {
 	if wait := a.cfg.TxInterval - time.Since(a.last); wait > 0 {
 		select {
 		case <-ctx.Done():
@@ -89,10 +131,6 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		case <-time.After(wait):
 		}
 	}
-	if err := a.hub.SendChannelMessage(ctx, text, "system"); err != nil {
-		return fmt.Errorf("meshtastic: %w", err)
-	}
-	a.last = time.Now()
 	return nil
 }
 

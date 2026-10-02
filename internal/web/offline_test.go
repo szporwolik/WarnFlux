@@ -92,6 +92,17 @@ func TestConfigEndpointsRequireCSRF(t *testing.T) {
 		t.Fatal("offline mode not enabled with a valid token and origin")
 	}
 
+	// A "null" origin (sandboxed webviews) is treated like no Origin:
+	// the CSRF token remains the gate. This pins the embedded-browser
+	// regression where saving users/config forms was rejected.
+	csrf = env.csrfFromPage("/config")
+	resp = env.postFormClose("/config/mqtt",
+		url.Values{"csrf": {csrf}, "cat": {"events", "status", "active"}},
+		map[string]string{"Origin": "null"})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/mqtt with a null Origin = %d, want 303", resp.StatusCode)
+	}
+
 	// And the MQTT mask route applies with a valid token.
 	csrf = env.csrfFromPage("/config")
 	resp = env.postFormClose("/config/mqtt",

@@ -32,16 +32,20 @@ type Config struct {
 	// TxInterval is the minimum spacing between two transmissions of this
 	// action (default 5s) — the LoRa channel is shared.
 	TxInterval time.Duration `yaml:"tx_interval"`
+	// Channel is the device channel index (1-7) for the no-recipient
+	// fallback broadcast. 0 = disabled: groups without registered node
+	// IDs receive nothing (the primary channel is never used).
+	Channel int `yaml:"channel"`
 }
 
 var errHubDisabled = errors.New("meshtastic: hub is not configured")
 
 // sender is the hub seam the action transmits through: direct messages
-// to the routed group members' node IDs, or a channel broadcast when the
-// group has none. *mesh.Hub satisfies it; tests use a stub.
+// to the routed group members' node IDs, or a channel broadcast on the
+// configured fallback channel. *mesh.Hub satisfies it; tests use a stub.
 type sender interface {
 	SendContactMessage(ctx context.Context, addr, text, operator string) error
-	SendChannelMessage(ctx context.Context, text, operator string) error
+	SendChannelText(ctx context.Context, idx int, text, operator string) error
 }
 
 // Action sends SOSNA alerts as direct messages to the routed group
@@ -85,10 +89,13 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	}
 	text := a.textFor(ctx, req)
 	if len(req.MeshNodeIDs) == 0 {
+		if a.cfg.Channel <= 0 {
+			return nil // no recipients and no fallback channel: nothing to send
+		}
 		if err := a.pace(ctx); err != nil {
 			return err
 		}
-		if err := a.hub.SendChannelMessage(ctx, text, "system"); err != nil {
+		if err := a.hub.SendChannelText(ctx, a.cfg.Channel, text, "system"); err != nil {
 			return fmt.Errorf("meshtastic: %w", err)
 		}
 		a.last = time.Now()

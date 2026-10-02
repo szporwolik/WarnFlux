@@ -162,6 +162,12 @@ type MeshtasticConfig struct {
 	// NodeTTL bounds how long an unheard neighbour stays in the node
 	// list.
 	NodeTTL time.Duration
+	// EmcomChannel is the device channel index (1-7) for the periodic
+	// presence beacon; 0 disables the beacon. The default PRIMARY
+	// channel is never used for broadcasts.
+	EmcomChannel int
+	// EmcomInterval is the beacon spacing (default 8 hours).
+	EmcomInterval time.Duration
 }
 
 // APRSConfig holds the shared APRS hub settings (top-level "aprs:"). The
@@ -543,6 +549,12 @@ type fileMeshtastic struct {
 	Baud          *int           `yaml:"baud"`
 	RouteMessages bool           `yaml:"route_messages"`
 	NodeTTL       *time.Duration `yaml:"node_ttl"`
+	// EmcomChannel is the device channel index (1-7) for the periodic
+	// presence beacon; 0 disables the beacon. The default PRIMARY
+	// channel is never used for broadcasts.
+	EmcomChannel int `yaml:"emcom_channel"`
+	// EmcomInterval is the beacon spacing (default 8h).
+	EmcomInterval *time.Duration `yaml:"emcom_interval"`
 }
 
 type fileGeo struct {
@@ -1100,16 +1112,20 @@ func (f fileConfig) toConfig() Config {
 			cfg.APRS.RouteMessages = *f.APRS.RouteMessages
 		}
 	}
-	cfg.Meshtastic = MeshtasticConfig{Baud: 115200, NodeTTL: 30 * time.Minute}
+	cfg.Meshtastic = MeshtasticConfig{Baud: 115200, NodeTTL: 30 * time.Minute, EmcomInterval: 8 * time.Hour}
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
 		cfg.Meshtastic.Device = strings.TrimSpace(f.Meshtastic.Device)
 		cfg.Meshtastic.RouteMessages = f.Meshtastic.RouteMessages
+		cfg.Meshtastic.EmcomChannel = f.Meshtastic.EmcomChannel
 		if f.Meshtastic.Baud != nil {
 			cfg.Meshtastic.Baud = *f.Meshtastic.Baud
 		}
 		if f.Meshtastic.NodeTTL != nil {
 			cfg.Meshtastic.NodeTTL = *f.Meshtastic.NodeTTL
+		}
+		if f.Meshtastic.EmcomInterval != nil {
+			cfg.Meshtastic.EmcomInterval = *f.Meshtastic.EmcomInterval
 		}
 	}
 	if f.Geo != nil {
@@ -1368,6 +1384,13 @@ func (c Config) Validate() error {
 				return fmt.Errorf("aprs.longitude must be between -180 and 180, got %v", *c.APRS.Longitude)
 			}
 		}
+	}
+	if c.Meshtastic.EmcomChannel < 0 || c.Meshtastic.EmcomChannel > 7 {
+		return fmt.Errorf("meshtastic.emcom_channel must be 0-7, got %d", c.Meshtastic.EmcomChannel)
+	}
+	if c.Meshtastic.EmcomInterval != 0 &&
+		(c.Meshtastic.EmcomInterval < time.Minute || c.Meshtastic.EmcomInterval > 30*24*time.Hour) {
+		return fmt.Errorf("meshtastic.emcom_interval must be between 1m and 720h, got %s", c.Meshtastic.EmcomInterval)
 	}
 	return nil
 }

@@ -6,12 +6,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 )
 
-// TestRoutedMessageEvent pins the APRS-message → /events bridge: a message
-// addressed to us, sent by an operator on the sender allow-list (base
-// callsign match, any SSID), is re-published on the events stream with the
-// "aprs" source, the "Message from: <CALL>" prefix and severe severity.
+// TestRoutedMessageEvent pins the APRS command → /events bridge: a /debug
+// command addressed to us, sent by an operator on the sender allow-list
+// (base callsign match, any SSID), is re-published on the events stream
+// with the "aprs" source, the "Message from: <CALL>" prefix and severe
+// severity. Plain messages never become events.
 func TestRoutedMessageEvent(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled:       true,
@@ -30,7 +33,8 @@ func TestRoutedMessageEvent(t *testing.T) {
 	// The operator is registered as SP9XYZ-4; the message arrives from
 	// SP9XYZ-7 — the base callsign matches, so it routes.
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
-	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:hello ops", time.Now()), BackendRadio)
+	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:/debug", time.Now()), BackendRadio)
 
 	waitFor(t, func() bool { return len(sink.payloads("events")) >= 1 })
 	var ev MessageEventWire
@@ -50,8 +54,8 @@ func TestRoutedMessageEvent(t *testing.T) {
 	if h.Severity != "severe" {
 		t.Fatalf("severity = %q, want severe", h.Severity)
 	}
-	if h.Headline != "Message from: SP9XYZ-7: hello ops" {
-		t.Fatalf("headline = %q, want the required prefix + text", h.Headline)
+	if h.Headline != "Message from: SP9XYZ-7: /debug" {
+		t.Fatalf("headline = %q, want the required prefix + command", h.Headline)
 	}
 	if !strings.Contains(h.Description, "SOSNA Test (SP9MOA-10)") {
 		t.Fatalf("description = %q, want station name context", h.Description)
@@ -85,6 +89,9 @@ func TestRoutedMessageEventExclusions(t *testing.T) {
 	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:rej00002", time.Now()), BackendRadio)
 	hub.Observe(ParseFeedLine("SP9MOA-10>APRS,WIDE1-1*::SP9MOA-10:self test", time.Now()), BackendRadio)
 	hub.Observe(ParseFeedLine("SQ9UNK-1>APRS,WIDE1-1*::SP9MOA-10:not on the list", time.Now()), BackendRadio)
+	// Plain chat from an ALLOWED sender never becomes an event either:
+	// alarms come from commands only.
+	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:plain hello", time.Now()), BackendRadio)
 
 	time.Sleep(150 * time.Millisecond)
 	if got := len(sink.payloads("events")); got != 0 {
@@ -110,7 +117,8 @@ func TestRoutedMessageEventInternetDelivery(t *testing.T) {
 	defer cancel()
 
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
-	hub.Observe(ParseFeedLine("SP9XYZ-2>APRS,TCPIP*,qAO::SP9MOA-10:internet alert", time.Now()), BackendInternet)
+	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+	hub.Observe(ParseFeedLine("SP9XYZ-2>APRS,TCPIP*,qAO::SP9MOA-10:/debug", time.Now()), BackendInternet)
 
 	waitFor(t, func() bool { return len(sink.payloads("events")) >= 1 })
 	var ev MessageEventWire

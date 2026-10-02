@@ -62,6 +62,7 @@
       "map.to": "To:",
       "map.via.radio": "Via: radio (APRS)",
       "map.via.internet": "Via: internet (APRS-IS)",
+      "map.via.both": "Via: APRS-IS + radio",
       "map.moving": "moving",
       "warnings.source": "Source:",
       "popup.event": "Event:",
@@ -139,6 +140,7 @@
       "map.to": "Do:",
       "map.via.radio": "Przez: radio (APRS)",
       "map.via.internet": "Przez: internet (APRS-IS)",
+      "map.via.both": "Przez: APRS-IS + radio",
       "map.moving": "w ruchu",
       "warnings.source": "Źródło:",
       "popup.event": "Zdarzenie:",
@@ -1208,6 +1210,30 @@
     return false;
   }
 
+  // stationVia renders the delivery backend line: the hub merges every
+  // backend into one station document and tracks which of them actually
+  // delivered packets (received_via). Fall back to the APRS-IS path
+  // classification for legacy documents without received_via.
+  function stationVia(s) {
+    var via = s.received_via || [];
+    if (via.indexOf("aprs-radio") >= 0 && via.indexOf("aprs-inet") >= 0) {
+      return tr("map.via.both");
+    }
+    if (via.indexOf("aprs-radio") >= 0) {
+      return tr("map.via.radio");
+    }
+    if (via.indexOf("aprs-inet") >= 0) {
+      return tr("map.via.internet");
+    }
+    if (s.origin === "rf") {
+      return tr("map.via.radio");
+    }
+    if (s.origin === "internet") {
+      return tr("map.via.internet");
+    }
+    return "";
+  }
+
   function stationColor(s) {
     return stationIsMoving(s) ? STATION_COLORS.moving : STATION_COLORS.static;
   }
@@ -1309,6 +1335,9 @@
           }
           if (s.status) {
             hover += '<br><span class="muted">' + esc(s.status) + "</span>";
+          }
+          if (stationVia(s)) {
+            hover += "<br>" + esc(stationVia(s));
           }
           hover += "<br>" + tr("map.heard") + ": " + esc(fmtTime(s.last_heard_at));
           if (s.distance_km) {
@@ -1770,12 +1799,10 @@
     if (stationIsMoving(s)) {
       lines.push(tr("map.moving"));
     }
-    // How the frame reached us: over the radio via an i-gate, or
-    // injected directly from the internet.
-    if (s.origin === "rf") {
-      lines.push(tr("map.via.radio"));
-    } else if (s.origin === "internet") {
-      lines.push(tr("map.via.internet"));
+    // Which backend delivered this station's packets: APRS-IS
+    // (internet), our own radio, or both.
+    if (stationVia(s)) {
+      lines.push(stationVia(s));
     }
     body += lines.join("<br>");
     body += stationWeatherBlock(s.callsign);
@@ -3439,16 +3466,19 @@
       }
     }
 
-    var form = document.querySelector("form.mesh-send");
-    if (!form) { return; }
-    var select = form.querySelector("select[name='target']");
-    var contact = form.querySelector("input[name='contact']");
-    var text = form.querySelector("input[name='text']");
-    if (!select || !contact || !text) { return; }
-    select.value = "contact";
+    var contact = null;
+    var text = null;
+    document.querySelectorAll("form.mesh-send").forEach(function (f) {
+      var c = f.querySelector("input[name='contact']");
+      if (c) {
+        contact = c;
+        text = f.querySelector("input[name='text']");
+      }
+    });
+    if (!contact || !text) { return; }
     contact.value = row.getAttribute("data-key");
+    contact.scrollIntoView({ block: "nearest" });
     text.focus();
-    text.scrollIntoView({ block: "nearest" });
   });
 })();
 

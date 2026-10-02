@@ -662,6 +662,15 @@ ALTER TABLE user_meshkeys RENAME TO user_meshtastic_ids;
 ALTER TABLE user_meshtastic_ids RENAME COLUMN pubkey TO node_id;
 `,
 	},
+	{
+		// v34: the tx delivery state of Meshtastic messages: "" (legacy),
+		// "sent" (the radio transmitted the frame), "delivered" (the
+		// recipient acknowledged the direct message) or "failed" (no
+		// acknowledgment after the retries).
+		SQL: `
+ALTER TABLE meshtastic_messages ADD COLUMN status TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

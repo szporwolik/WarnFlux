@@ -63,6 +63,16 @@ type Config struct {
 	// want_ack frames itself, so this window is generous — client-side
 	// resends here would only duplicate the message.
 	AckSettleTimeout time.Duration
+	// EmcomChannel is the device channel index (1-7) for the periodic
+	// presence beacon. 0 disables the beacon. Channel 0 (the default
+	// PRIMARY channel) is never used for broadcasts — broadcasts there
+	// are blocked.
+	EmcomChannel int
+	// EmcomInterval is the beacon spacing (default 8 hours).
+	EmcomInterval time.Duration
+	// EmcomIdentity is the one-line installation banner sent by the
+	// beacon (version, installation name, public domain) — set by main.
+	EmcomIdentity string
 }
 
 // Recorder persists the meshtastic message history (implemented by
@@ -102,6 +112,14 @@ const (
 // and reconnected. A healthy node emits queueStatus/telemetry well
 // within this window.
 const defaultSilenceTimeout = 2 * time.Minute
+
+// defaultEmcomInterval is the spacing between presence beacons on the
+// emcom channel.
+const defaultEmcomInterval = 8 * time.Hour
+
+// meshTextMaxRunes bounds one outbound channel text message (133 chars
+// per the Meshtastic spec).
+const meshTextMaxRunes = 133
 
 // defaultAckSettleTimeout is how long a device-confirmed direct message
 // waits for the recipient's acknowledgment. The device firmware
@@ -270,6 +288,11 @@ type Hub struct {
 	nodeStore   NodeStore
 	nodesDirty  bool
 	lastPersist time.Time
+
+	// startedAt anchors the beacon uptime; emcomNext schedules the next
+	// presence beacon on the emcom channel.
+	startedAt time.Time
+	emcomNext time.Time
 }
 
 // NewHub validates the config and builds the hub.
@@ -283,20 +306,27 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if cfg.AckSettleTimeout <= 0 {
 		cfg.AckSettleTimeout = defaultAckSettleTimeout
 	}
+	if cfg.EmcomInterval <= 0 {
+		cfg.EmcomInterval = defaultEmcomInterval
+	}
+	if cfg.EmcomChannel < 0 || cfg.EmcomChannel > 7 {
+		return nil, errors.New("meshtastic: emcom channel must be 0-7")
+	}
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
 		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node),
-			pending: make(map[uint32]*pendingSend)}, nil
+			pending: make(map[uint32]*pendingSend), startedAt: time.Now()}, nil
 	}
 	if cfg.Device == "" {
 		return nil, errors.New("meshtastic: device path is required")
 	}
 	return &Hub{
-		cfg:     cfg,
-		logger:  logger,
-		nodes:   make(map[string]*Node),
-		pending: make(map[uint32]*pendingSend),
+		cfg:       cfg,
+		logger:    logger,
+		nodes:     make(map[string]*Node),
+		pending:   make(map[uint32]*pendingSend),
+		startedAt: time.Now(),
 	}, nil
 }
 
@@ -429,6 +459,13 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.connected = true
 	h.mu.Unlock()
 	h.lastRadio.Store(time.Now().UnixNano())
+	// First presence beacon shortly after the session is up; afterwards
+	// on the configured interval.
+	if h.cfg.EmcomChannel > 0 && h.cfg.EmcomIdentity != "" {
+		h.mu.Lock()
+		h.emcomNext = time.Now().Add(time.Minute)
+		h.mu.Unlock()
+	}
 	h.populateFromState(conn.State())
 
 	if h.logger != nil {
@@ -468,7 +505,33 @@ func (h *Hub) runSession(ctx context.Context) error {
 			h.expireNodes()
 			h.retryPending(time.Now())
 			h.persistNodes()
+			h.beaconTick()
 		}
+	}
+}
+
+// beaconTick sends the periodic presence beacon on the emcom channel
+// (identity + uptime + node count). The PRIMARY channel is never used.
+func (h *Hub) beaconTick() {
+	h.mu.Lock()
+	next := h.emcomNext
+	h.mu.Unlock()
+	if next.IsZero() || time.Now().Before(next) {
+		return
+	}
+	h.mu.Lock()
+	h.emcomNext = time.Now().Add(h.cfg.EmcomInterval)
+	nodes := len(h.nodes)
+	up := time.Since(h.startedAt).Round(time.Minute)
+	h.mu.Unlock()
+	text := fmt.Sprintf("%s | up %s | nodes %d", h.cfg.EmcomIdentity, up, nodes)
+	if r := []rune(text); len(r) > meshTextMaxRunes {
+		text = string(r[:meshTextMaxRunes])
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, text, "system"); err != nil && h.logger != nil {
+		h.logger.Warn("meshtastic: emcom beacon failed", "error", err)
 	}
 }
 
@@ -1180,18 +1243,24 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text string) {
 	}
 }
 
+// ErrPrimaryChannelBlocked reports an attempt to broadcast on the
+// default PRIMARY channel (channel 0): broadcasts there are disabled by
+// policy — the primary channel is receive-only for this station.
+var ErrPrimaryChannelBlocked = errors.New("meshtastic: broadcasts on the primary channel (0) are disabled")
+
 // SendChannelMessage broadcasts one text message on the primary channel
-// (channel 0).
+// (channel 0) — blocked by policy: the station never transmits on the
+// default public channel.
 func (h *Hub) SendChannelMessage(ctx context.Context, text, operator string) error {
-	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), 0, h.ChannelLabel(0), text, operator)
+	return ErrPrimaryChannelBlocked
 }
 
 // SendChannelText broadcasts one text message on the given channel index
-// (0-7) of the device channel table, so the admin panel can target the
-// channels configured on the node.
+// (1-7) of the device channel table. Channel 0 (the default PRIMARY
+// channel) is blocked by policy.
 func (h *Hub) SendChannelText(ctx context.Context, idx int, text, operator string) error {
-	if idx < 0 || idx > 7 {
-		return fmt.Errorf("meshtastic: channel index must be 0-7, got %d", idx)
+	if idx < 1 || idx > 7 {
+		return ErrPrimaryChannelBlocked
 	}
 	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), idx, h.ChannelLabel(idx), text, operator)
 }

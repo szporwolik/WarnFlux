@@ -964,3 +964,8 @@ aprs:
 #                         # node IDs become canonical /events documents
 #                         # (alarm pipeline), like APRS messages
 #   node_ttl: 30m
+#   # Periodic presence beacon (identity + uptime + node count) on a
+#   # community channel. The default PRIMARY channel is receive-only:
+#   # broadcasts there are blocked by policy.
+#   emcom_channel: 1      # 0 = beacon disabled
+#   emcom_interval: 8h    # default

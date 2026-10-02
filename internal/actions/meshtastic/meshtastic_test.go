@@ -14,7 +14,7 @@ import (
 // stubSender records every transmission the action hands to the hub.
 type stubSender struct {
 	contacts []string
-	channels []string
+	channels []int
 	texts    []string
 	err      error
 }
@@ -25,8 +25,8 @@ func (s *stubSender) SendContactMessage(_ context.Context, addr, text, operator 
 	return s.err
 }
 
-func (s *stubSender) SendChannelMessage(_ context.Context, text, operator string) error {
-	s.channels = append(s.channels, text)
+func (s *stubSender) SendChannelText(_ context.Context, idx int, text, operator string) error {
+	s.channels = append(s.channels, idx)
 	return s.err
 }
 
@@ -66,14 +66,24 @@ func TestExecuteDMsEveryMember(t *testing.T) {
 		}
 	}
 
-	// No node IDs: one channel broadcast instead.
+	// No node IDs and no fallback channel: nothing is transmitted.
 	stub2 := &stubSender{}
 	a2 := &Action{cfg: Config{Prefix: "SOSNA"}, hub: stub2}
 	if err := a2.Execute(context.Background(), hazardReq(nil, "Flood alert")); err != nil {
+		t.Fatalf("Execute skip: %v", err)
+	}
+	if len(stub2.channels) != 0 || len(stub2.contacts) != 0 {
+		t.Fatalf("skip = contacts %v broadcasts %v, want none", stub2.contacts, stub2.channels)
+	}
+
+	// No node IDs with a fallback channel: one broadcast on that channel.
+	stub3 := &stubSender{}
+	a3 := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub3}
+	if err := a3.Execute(context.Background(), hazardReq(nil, "Flood alert")); err != nil {
 		t.Fatalf("Execute fallback: %v", err)
 	}
-	if len(stub2.channels) != 1 || len(stub2.contacts) != 0 {
-		t.Fatalf("fallback = contacts %v broadcasts %v, want one broadcast", stub2.contacts, stub2.channels)
+	if len(stub3.channels) != 1 || stub3.channels[0] != 1 || len(stub3.contacts) != 0 {
+		t.Fatalf("fallback = contacts %v broadcasts %v, want one broadcast on channel 1", stub3.contacts, stub3.channels)
 	}
 }
 

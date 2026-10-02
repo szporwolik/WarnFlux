@@ -3,6 +3,7 @@ package meshtastic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -549,6 +550,54 @@ func TestHubNodeDirectoryPersists(t *testing.T) {
 	}
 }
 
+// TestHubEmcomBeacon pins the periodic presence beacon: identity,
+// uptime and node count broadcast on the configured emcom channel — and
+// never on the PRIMARY channel.
+func TestHubEmcomBeacon(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		EmcomChannel: 1, EmcomInterval: time.Hour,
+		EmcomIdentity: "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"})
+	radio.waitConnected(t)
+
+	radio.hub.mu.Lock()
+	radio.hub.emcomNext = time.Now().Add(-time.Second)
+	radio.hub.mu.Unlock()
+
+	out := radio.waitOutbound(t, 1)
+	if len(out) != 1 {
+		t.Fatalf("outbound = %v, want one beacon", out)
+	}
+	if out[0].GetChannel() != 1 {
+		t.Fatalf("beacon channel = %d, want 1 (never the primary)", out[0].GetChannel())
+	}
+	if out[0].GetTo() != core.BroadcastNodeID.Uint32() {
+		t.Fatalf("beacon to = %v, want a broadcast", out[0].GetTo())
+	}
+	text := string(out[0].GetDecoded().GetPayload())
+	for _, want := range []string{"WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl", "up ", "nodes "} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("beacon text = %q, missing %q", text, want)
+		}
+	}
+}
+
+// TestHubChannelZeroBlocked pins the policy guard: broadcasts on the
+// default PRIMARY channel are refused.
+func TestHubChannelZeroBlocked(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	ctx := context.Background()
+	if err := radio.hub.SendChannelText(ctx, 0, "x", "admin"); !errors.Is(err, ErrPrimaryChannelBlocked) {
+		t.Fatalf("SendChannelText(0) = %v, want ErrPrimaryChannelBlocked", err)
+	}
+	if err := radio.hub.SendChannelMessage(ctx, "x", "admin"); !errors.Is(err, ErrPrimaryChannelBlocked) {
+		t.Fatalf("SendChannelMessage = %v, want ErrPrimaryChannelBlocked", err)
+	}
+	if out := radio.outbound(); len(out) != 0 {
+		t.Fatalf("outbound after blocked sends = %v, want none", out)
+	}
+}
+
 // TestHubNodeSignals pins the observed packet kinds: telemetry and text
 // packets mark the sender's node, surfaced as the admin/map badges.
 func TestHubNodeSignals(t *testing.T) {
@@ -625,8 +674,10 @@ func TestHubSendBroadcast(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := radio.hub.SendChannelMessage(ctx, "test broadcast", "admin"); err != nil {
-		t.Fatalf("SendChannelMessage: %v", err)
+	// Broadcasts happen on a configured secondary channel; the PRIMARY
+	// channel (0) is blocked by policy.
+	if err := radio.hub.SendChannelText(ctx, 2, "test broadcast", "admin"); err != nil {
+		t.Fatalf("SendChannelText: %v", err)
 	}
 	out := radio.waitOutbound(t, 1)
 	if len(out) != 1 {

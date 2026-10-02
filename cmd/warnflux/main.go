@@ -150,11 +150,13 @@ func seedMeshtasticStations(ctx context.Context, meshtasticHub *meshtastic.Hub, 
 			seeded := 0
 			for _, e := range entries {
 				var doc struct {
-					ID       string  `json:"id"`
-					Name     string  `json:"name"`
-					Lat      float64 `json:"lat"`
-					Lon      float64 `json:"lon"`
-					LastSeen string  `json:"last_seen"`
+					ID       string   `json:"id"`
+					Name     string   `json:"name"`
+					Short    string   `json:"short"`
+					Sends    []string `json:"sends"`
+					Lat      float64  `json:"lat"`
+					Lon      float64  `json:"lon"`
+					LastSeen string   `json:"last_seen"`
 				}
 				if json.Unmarshal([]byte(e.Payload), &doc) != nil || doc.ID == "" {
 					continue
@@ -163,7 +165,7 @@ func seedMeshtasticStations(ctx context.Context, meshtasticHub *meshtastic.Hub, 
 				if err != nil {
 					seen = time.Time{}
 				}
-				meshtasticHub.SeedNode(doc.ID, doc.Name, doc.Lat, doc.Lon, seen)
+				meshtasticHub.SeedNode(doc.ID, doc.Name, doc.Short, doc.Lat, doc.Lon, seen, doc.Sends)
 				seeded++
 			}
 			logger.Info("meshtastic: restored heard stations", "count", seeded)
@@ -486,14 +488,13 @@ func run(configPath string, checkConfig bool) error {
 	// Meshtastic direct-message routing trusts registered operators: the
 	// sender's node id (8 hex) must belong to a user's registered mesh
 	// node list. Without the gate no mesh message becomes a hazard event.
-	meshtasticHub.SetSenderGate(func(id string) bool {
+	meshtasticHub.SetSenderGate(func(id string) string {
 		owners, err := store.MeshtasticOwners()
 		if err != nil {
 			logger.Warn("meshtastic: sender allow-list load failed", "error", err)
-			return false
+			return ""
 		}
-		_, ok := owners[id]
-		return ok
+		return owners[id]
 	})
 	// APRS message routing only trusts registered operators: the sender's
 	// base callsign (SSID-insensitive) must appear on a user's APRS

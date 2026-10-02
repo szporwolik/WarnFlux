@@ -38,6 +38,30 @@
       "map.wind": "wind",
       "map.gusts": "gusts",
       "map.pressure": "hPa",
+      "map.tel.battery": "battery",
+      "map.tel.voltage": "voltage",
+      "map.tel.channel_util": "channel util",
+      "map.tel.air_util_tx": "air util tx",
+      "map.tel.uptime": "uptime",
+      "map.tel.temperature": "temp",
+      "map.tel.humidity": "humidity",
+      "map.tel.pressure": "pressure",
+      "map.tel.gas": "gas resistance",
+      "map.tel.env_voltage": "sensor voltage",
+      "map.tel.env_current": "sensor current",
+      "map.tel.iaq": "IAQ",
+      "map.tel.lux": "light",
+      "map.tel.wind_dir": "wind dir",
+      "map.tel.wind_speed": "wind",
+      "map.tel.wind_gust": "gusts",
+      "map.tel.wind_lull": "min wind",
+      "map.tel.weight": "weight",
+      "map.tel.radiation": "radiation",
+      "map.tel.rain_1h": "rain 1h",
+      "map.tel.rain_24h": "rain 24h",
+      "map.tel.soil_moist": "soil moisture",
+      "map.tel.soil_temp": "soil temp",
+      "map.tel.co2": "CO₂",
       "map.updated": "updated",
       "home.weather.none": "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT.",
       "home.weather.forecast": "Forecast — next days",
@@ -116,6 +140,30 @@
       "map.wind": "wiatr",
       "map.gusts": "porywy",
       "map.pressure": "hPa",
+      "map.tel.battery": "bateria",
+      "map.tel.voltage": "napięcie",
+      "map.tel.channel_util": "wykorzystanie kanału",
+      "map.tel.air_util_tx": "air util tx",
+      "map.tel.uptime": "czas pracy",
+      "map.tel.temperature": "temperatura",
+      "map.tel.humidity": "wilgotność",
+      "map.tel.pressure": "ciśnienie",
+      "map.tel.gas": "rezystancja gazu",
+      "map.tel.env_voltage": "napięcie czujnika",
+      "map.tel.env_current": "prąd czujnika",
+      "map.tel.iaq": "IAQ",
+      "map.tel.lux": "natężenie światła",
+      "map.tel.wind_dir": "kierunek wiatru",
+      "map.tel.wind_speed": "wiatr",
+      "map.tel.wind_gust": "porywy",
+      "map.tel.wind_lull": "min. wiatr",
+      "map.tel.weight": "waga",
+      "map.tel.radiation": "promieniowanie",
+      "map.tel.rain_1h": "deszcz 1h",
+      "map.tel.rain_24h": "deszcz 24h",
+      "map.tel.soil_moist": "wilgotność gleby",
+      "map.tel.soil_temp": "temperatura gleby",
+      "map.tel.co2": "CO₂",
       "map.updated": "aktualizacja",
       "home.weather.none": "Brak jeszcze raportów pogodowych — publikują je stacje pogodowe APRS i dostawcy prognoz przez MQTT.",
       "home.weather.forecast": "Prognoza — kolejne dni",
@@ -1418,15 +1466,117 @@
   }
 
   // meshPopup renders the unified popup for one Meshtastic node: purple
-  // banner with the broadcast glyph, name, then observed signals and
-  // last-heard time (no distance — it is just a map, and the viewer
-  // does not know where our node sits).
+  // banner with the broadcast glyph, name, then observed signals,
+  // every telemetry value we hold and the last-heard time (no distance
+  // — it is just a map, and the viewer does not know where our node
+  // sits).
+
+  // MESH_TEL_ROWS maps a telemetry field onto a label (i18n key or a
+  // raw technical name), a unit and the decimal places (0 = integer).
+  var MESH_TEL_ROWS = [
+    { k: "battery_level", l: "map.tel.battery", u: "%", d: 0 },
+    { k: "voltage", l: "map.tel.voltage", u: " V", d: 2 },
+    { k: "channel_util", l: "map.tel.channel_util", u: "%", d: 0 },
+    { k: "air_util_tx", l: "map.tel.air_util_tx", u: "%", d: 0 },
+    { k: "uptime_secs", l: "map.tel.uptime", u: "", d: -1 },
+    { k: "temperature", l: "map.tel.temperature", u: " °C", d: 1 },
+    { k: "humidity", l: "map.tel.humidity", u: "%", d: 0 },
+    { k: "pressure", l: "map.tel.pressure", u: " hPa", d: 0 },
+    { k: "gas_resistance", l: "map.tel.gas", u: " Ω", d: 0 },
+    { k: "env_voltage", l: "map.tel.env_voltage", u: " V", d: 2 },
+    { k: "env_current", l: "map.tel.env_current", u: " mA", d: 1 },
+    { k: "iaq", l: "map.tel.iaq", u: "", d: 0 },
+    { k: "lux", l: "map.tel.lux", u: " lx", d: 0 },
+    { k: "white_lux", l: "White lux", u: " lx", d: 0 },
+    { k: "ir_lux", l: "IR lux", u: " lx", d: 0 },
+    { k: "uv_lux", l: "UV lux", u: " lx", d: 0 },
+    { k: "wind_direction", l: "map.tel.wind_dir", u: "°", d: 0 },
+    { k: "wind_speed", l: "map.tel.wind_speed", u: " m/s", d: 1 },
+    { k: "wind_gust", l: "map.tel.wind_gust", u: " m/s", d: 1 },
+    { k: "wind_lull", l: "map.tel.wind_lull", u: " m/s", d: 1 },
+    { k: "weight", l: "map.tel.weight", u: " kg", d: 1 },
+    { k: "radiation", l: "map.tel.radiation", u: " µR/h", d: 1 },
+    { k: "rainfall_1h", l: "map.tel.rain_1h", u: " mm", d: 1 },
+    { k: "rainfall_24h", l: "map.tel.rain_24h", u: " mm", d: 1 },
+    { k: "soil_moisture", l: "map.tel.soil_moist", u: "%", d: 0 },
+    { k: "soil_temperature", l: "map.tel.soil_temp", u: " °C", d: 1 },
+    { k: "co2", l: "map.tel.co2", u: " ppm", d: 0 },
+    { k: "co2_temperature", l: "CO₂ temp", u: " °C", d: 1 },
+    { k: "co2_humidity", l: "CO₂ hum", u: "%", d: 0 },
+    { k: "form_formaldehyde", l: "Formaldehyde", u: " mg/m³", d: 2 },
+    { k: "form_temperature", l: "Form temp", u: " °C", d: 1 },
+    { k: "form_humidity", l: "Form hum", u: "%", d: 0 },
+    { k: "pm_temperature", l: "PM temp", u: " °C", d: 1 },
+    { k: "pm_humidity", l: "PM hum", u: "%", d: 0 },
+    { k: "pm_voc_idx", l: "VOC index", u: "", d: 0 },
+    { k: "pm_nox_idx", l: "NOx index", u: "", d: 0 },
+    { k: "particles_tps", l: "Particles TPS", u: "", d: 0 },
+    { k: "pm25_standard", l: "PM2.5", u: " µg/m³", d: 0 },
+    { k: "pm10_standard", l: "PM10", u: " µg/m³", d: 0 },
+    { k: "pm100_standard", l: "PM100", u: " µg/m³", d: 0 },
+    { k: "pm40_standard", l: "PM4.0", u: " µg/m³", d: 0 },
+    { k: "pm25_environmental", l: "PM2.5 env", u: " µg/m³", d: 0 },
+    { k: "pm10_environmental", l: "PM10 env", u: " µg/m³", d: 0 },
+    { k: "pm100_environmental", l: "PM100 env", u: " µg/m³", d: 0 },
+    { k: "particles_03um", l: "Particles 0.3µm", u: "", d: 0 },
+    { k: "particles_05um", l: "Particles 0.5µm", u: "", d: 0 },
+    { k: "particles_10um", l: "Particles 1µm", u: "", d: 0 },
+    { k: "particles_25um", l: "Particles 2.5µm", u: "", d: 0 },
+    { k: "particles_40um", l: "Particles 4µm", u: "", d: 0 },
+    { k: "particles_50um", l: "Particles 5µm", u: "", d: 0 },
+    { k: "particles_100um", l: "Particles 10µm", u: "", d: 0 }
+  ];
+
+  // meshTelemetryLines renders every telemetry value we hold for a node
+  // as labeled popup lines (unreported fields are skipped).
+  function meshTelemetryLines(t) {
+    if (!t) { return []; }
+    var lines = [];
+    MESH_TEL_ROWS.forEach(function (row) {
+      var v = t[row.k];
+      if (v === undefined || v === null || v === 0) { return; }
+      var label = row.l.indexOf("map.") === 0 ? tr(row.l) : row.l;
+      var text;
+      if (row.d === -1) {
+        text = fmtDurationSec(v);
+      } else if (typeof v === "number") {
+        text = (row.d === 0 ? String(Math.round(v)) : v.toFixed(row.d)) + row.u;
+      } else {
+        text = String(v) + row.u;
+      }
+      lines.push(esc(label) + ": " + esc(text));
+    });
+    (t.power_voltage || []).forEach(function (v, i) {
+      if (v) { lines.push(esc("Ch" + (i + 1) + " V") + ": " + esc(v.toFixed(2))); }
+    });
+    (t.power_current || []).forEach(function (v, i) {
+      if (v) { lines.push(esc("Ch" + (i + 1) + " I") + ": " + esc(v.toFixed(1) + " mA")); }
+    });
+    return lines;
+  }
+
+  // fmtDurationSec renders a second count as a compact "1d 2h 3m" form.
+  function fmtDurationSec(secs) {
+    secs = Math.max(0, Math.round(secs));
+    var d = Math.floor(secs / 86400);
+    var h = Math.floor((secs % 86400) / 3600);
+    var m = Math.floor((secs % 3600) / 60);
+    var s = secs % 60;
+    var parts = [];
+    if (d) { parts.push(d + "d"); }
+    if (h || d) { parts.push(h + "h"); }
+    parts.push(m + "m");
+    if (!d && !h) { parts.push(s + "s"); }
+    return parts.join(" ");
+  }
+
   function meshPopup(n) {
     var lines = [];
     var sigs = meshSignals(n);
     if (sigs) {
       lines.push(sigs);
     }
+    lines = lines.concat(meshTelemetryLines(n.telemetry));
     lines.push(tr("map.heard") + ": " + fmtTime(n.last_seen));
     var body = lines.join("<br>");
     return wfPopup({
@@ -1919,9 +2069,14 @@
 
   // focusMarker centers the map on any pin and opens its popup. A pin
   // stashed by the overlap handling is re-attached to its layer first.
+  // The page also scrolls the map into view, so clicking a card below
+  // the map never leaves the opened popup off-screen.
   function focusMarker(m) {
     if (!map || !m) {
       return;
+    }
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     if (!m._map && m._wfGroup) {
       m.addTo(m._wfGroup);

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,6 +57,7 @@ type testRadio struct {
 	runErr chan error
 	mu     sync.Mutex
 	rx     []*pb.MeshPacket // outbound packets captured via OnOutboundPacket
+	dials  atomic.Int32     // transport dials through the seam
 }
 
 // newTestTable is the handshake node directory used by the test radio.
@@ -95,6 +97,7 @@ func newTestRadio(t *testing.T, cfg Config) *testRadio {
 	// Override the dial seam with the in-memory client transport.
 	oldDial := Dial
 	Dial = func(_ context.Context, _ Config) (transportConn, error) {
+		radio.dials.Add(1)
 		conn := radio.srv.Conn(ctx)
 		sc, err := stream.NewClientConn(conn)
 		if err != nil {
@@ -404,6 +407,25 @@ func TestHubSendAckFlow(t *testing.T) {
 	}
 	if msgs[0].Status != TxDelivered {
 		t.Fatalf("tx status = %q, want delivered", msgs[0].Status)
+	}
+}
+
+// TestHubSilentDeviceReconnects pins the radio-silence watchdog: a
+// session with no FromRadio traffic for longer than the silence timeout
+// is torn down and redialed instead of hanging forever.
+func TestHubSilentDeviceReconnects(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		SilenceTimeout: 150 * time.Millisecond})
+	radio.waitConnected(t)
+
+	// The watchdog must tear the silent session down and dial a fresh
+	// one (the replacement is silent too, so the loop keeps cycling).
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) && radio.dials.Load() < 2 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if radio.dials.Load() < 2 {
+		t.Fatalf("dial calls = %d, want the silent session to be reconnected", radio.dials.Load())
 	}
 }
 

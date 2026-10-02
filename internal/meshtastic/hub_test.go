@@ -1051,6 +1051,29 @@ func TestHubRadioCLI(t *testing.T) {
 		t.Fatalf("events after unauthorized /debug = %d, want still 1", n)
 	}
 
+	// /help is public: an unregistered sender still gets the command
+	// list — but only of the commands they may run (no /debug).
+	before = len(radio.outbound())
+	dispatch(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/help"))
+	radio.waitOutbound(t, before+1)
+	out = radio.outbound()
+	got := string(out[len(out)-1].GetDecoded().GetPayload())
+	if !strings.Contains(got, "Commands:") || !strings.Contains(got, "/help") {
+		t.Fatalf("unauthorized /help reply = %q, want the public command list", got)
+	}
+	if strings.Contains(got, "/debug") {
+		t.Fatalf("unauthorized /help reply = %q, must not list restricted commands", got)
+	}
+	if out[len(out)-1].GetTo() != 0xcafebabe {
+		t.Fatalf("public /help reply to = %08x, want cafebabe", out[len(out)-1].GetTo())
+	}
+	mu.Lock()
+	n = len(events)
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("events after public /help = %d, want still 1", n)
+	}
+
 	// A plain direct message never becomes an alarm: the standard
 	// installation banner (with the /help hint) answers instead.
 	before = len(radio.outbound())

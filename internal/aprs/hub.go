@@ -726,22 +726,22 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 		h.publishBulletin(p, via)
 	}
 
-	// Routing: APRS messages addressed to us become routable events on
-	// the /events stream (the "aprs" source in the routing matrix) when
-	// the sender's base callsign is on the registered-user allow-list —
-	// SSIDs may differ, and both radio and APRS-IS delivery qualify.
-	routed := h.cfg.RouteMessages && h.routableMessage(p) && h.senderApproved(p.Src)
+	// The radio CLI mirrors the Meshtastic hub: every message addressed
+	// to us is answered, commands run only for allow-listed senders and
+	// alarms fire only from explicit commands (/debug). Plain messages
+	// never enter the alarm pipeline.
+	approved := h.routableMessage(p) && h.senderApproved(p.Src)
 	if h.logger != nil {
 		h.logger.Info("aprs: message received",
-			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "bulletin", IsBulletin(p.Message.To), "routed", routed)
+			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "bulletin", IsBulletin(p.Message.To), "approved", approved)
 	}
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
-	if cli != nil && h.cfg.RouteMessages && h.routableMessage(p) {
+	if cli != nil && h.routableMessage(p) {
 		text := strings.TrimSpace(p.Message.Text)
 		if strings.HasPrefix(text, "/") {
-			if routed {
+			if h.senderApproved(p.Src) {
 				h.routeOrCLI(p)
 			} else {
 				// Unauthorized slash attempt: the public banner, never a

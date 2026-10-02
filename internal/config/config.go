@@ -216,11 +216,11 @@ type APRSConfig struct {
 	// Name is the optional display name of our own APRS station (e.g.
 	// the installation display name); it rides along in routed APRS messages.
 	Name string
-	// RouteMessages turns APRS messages addressed to us that were heard
-	// over the radio (KISS) into routable events: they flow into the
-	// routing matrix as the "aprs" source, so groups can forward them to
-	// Discord, SMTP and friends. Internet-injected messages are excluded
-	// (anyone can spoof those).
+	// RouteMessages is legacy: radio message handling now mirrors the
+	// Meshtastic hub — plain messages answer with the installation
+	// banner, commands run for allow-listed senders and alarms fire
+	// only from explicit commands. Kept for configuration
+	// compatibility.
 	RouteMessages bool
 }
 

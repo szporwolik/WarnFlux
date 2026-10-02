@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 )
 
 // fakeSink records publications per suffix.
@@ -693,6 +695,52 @@ func TestBulletinRetainedFeed(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if got := len(sink.payloads("events")); got != 0 {
 		t.Fatalf("bulletin produced %d routed events", got)
+	}
+}
+
+// TestHubRadioCLI pins the radio-command interpreter on the APRS side:
+// /help is answered in-band and stays off the alarm pipeline, /debug
+// fires the alarm like a plain message plus a confirmation, and plain
+// messages still route.
+func TestHubRadioCLI(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	hub.SetCLI(radiocli.New())
+
+	// /help: answered in-band, no alarm event.
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/help"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	sends := tx.sends()
+	if sends[0][0] != "SP9XYZ" || !strings.Contains(sends[0][1], "Komendy") {
+		t.Fatalf("help reply = %v, want the command list to SP9XYZ", sends[0])
+	}
+	if got := len(sink.payloads("events")); got != 0 {
+		t.Fatalf("/help produced %d alarm events", got)
+	}
+
+	// /debug: alarm event + confirmation reply.
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/debug"), "aprs-inet")
+	waitFor(t, func() bool { return len(sink.payloads("events")) == 1 })
+	waitFor(t, func() bool { return len(tx.sends()) == 2 })
+	sends = tx.sends()
+	if !strings.Contains(sends[1][1], "alarm testowy") {
+		t.Fatalf("debug reply = %v, want the confirmation", sends[1])
+	}
+
+	// A plain message still routes and gets no reply.
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:plain alarm"), "aprs-inet")
+	waitFor(t, func() bool { return len(sink.payloads("events")) == 2 })
+	if len(tx.sends()) != 2 {
+		t.Fatalf("plain message produced a reply: %v", tx.sends())
 	}
 }
 

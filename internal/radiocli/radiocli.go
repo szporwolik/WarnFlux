@@ -53,7 +53,7 @@ func New(identity string) *Bot {
 	b.order = append(b.order, "help")
 	b.descs["help"] = "this list"
 	b.public["help"] = true
-	b.RegisterRestricted("debug", "debug alarm", func(string) Result {
+	b.RegisterRestricted("debug", "alarm test", func(string) Result {
 		return Result{Handled: true, Debug: true, Reply: "OK: debug alarm generated"}
 	})
 	return b

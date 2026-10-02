@@ -40,6 +40,10 @@ type meshtasticMessageView struct {
 type meshtasticNodeView struct {
 	ID   string
 	Name string
+	// Short is the node's short name from the device directory.
+	Short string
+	// Sends lists the observed packet kinds (telemetry/position/text).
+	Sends []string
 	// Owner is the directory username whose registered node id matches
 	// the node's id (empty when nobody registered it).
 	Owner      string
@@ -262,6 +266,8 @@ func (s *Server) fillMeshtasticNodes(v *meshtasticView) {
 		v.Nodes = append(v.Nodes, meshtasticNodeView{
 			ID:         n.ID,
 			Name:       name,
+			Short:      n.Short,
+			Sends:      n.Sends,
 			Owner:      owner,
 			Lat:        n.Lat,
 			Lon:        n.Lon,

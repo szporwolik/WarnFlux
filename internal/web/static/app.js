@@ -44,6 +44,9 @@
       "home.stations.none": "No stations heard yet — ham stations beacon through APRS.",
       "home.meshtastic.none": "No Meshtastic nodes heard yet.",
       "home.meshtastic.noloc": "Heard without position",
+      "map.mesh.telemetry": "Telemetry",
+      "map.mesh.position": "Position",
+      "map.mesh.text": "Messages",
       "meshtastic.type.node": "Node",
       "home.aircraft.none": "No aircraft in range right now.",
       "map.km": "km",
@@ -118,6 +121,9 @@
       "home.stations.none": "Nie słychać jeszcze żadnych stacji — krótkofalowcy nadają przez APRS.",
       "home.meshtastic.none": "Nie słychać jeszcze żadnych węzłów Meshtastic.",
       "home.meshtastic.noloc": "Słyszane bez pozycji",
+      "map.mesh.telemetry": "Telemetria",
+      "map.mesh.position": "Pozycja",
+      "map.mesh.text": "Wiadomości",
       "meshtastic.type.node": "Węzeł",
       "home.aircraft.none": "W tej chwili brak samolotów w zasięgu.",
       "map.km": "km",
@@ -1377,11 +1383,20 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
+  // meshSignals renders the observed packet kinds as translated labels.
+  function meshSignals(n) {
+    return (n.sends || []).map(function (s) { return tr("map.mesh." + s); }).join(" · ");
+  }
+
   // meshPopup renders the unified popup for one Meshtastic node: purple
   // banner with the broadcast glyph, name, then distance and last-heard
   // time.
   function meshPopup(n) {
     var lines = [];
+    var sigs = meshSignals(n);
+    if (sigs) {
+      lines.push(sigs);
+    }
     lines.push(tr("map.heard") + ": " + fmtTime(n.last_seen));
     if (n.distance_km) {
       lines.push(Number(n.distance_km).toFixed(1) + " km");
@@ -1391,7 +1406,7 @@
       color: meshColor(n),
       icon: BADGE_GLYPHS.chat,
       title: esc(n.name || tr("meshtastic.type.node")),
-      sub: "Meshtastic",
+      sub: "Meshtastic" + (n.short_name ? " · " + n.short_name : ""),
       value: "!" + n.id,
       body: body
     });
@@ -1422,6 +1437,12 @@
         lastMeshNodes.forEach(function (n) {
           var marker = L.marker([n.latitude, n.longitude], { icon: meshBadge(n), riseOnHover: true });
           var hover = "<strong>" + esc(n.name || "!" + n.id) + "</strong>";
+          if (n.short_name) {
+            hover += " <span class=\"muted\">(" + esc(n.short_name) + ")</span>";
+          }
+          if (meshSignals(n)) {
+            hover += "<br>" + esc(meshSignals(n));
+          }
           hover += "<br>" + tr("map.heard") + ": " + esc(fmtTime(n.last_seen));
           if (n.distance_km) {
             hover += "<br>" + Number(n.distance_km).toFixed(1) + " km";
@@ -1470,8 +1491,14 @@
       var body = mk("span", "hw-body");
       var head = mk("span", "hw-head");
       head.appendChild(mk("strong", null, n.name || tr("meshtastic.type.node")));
+      if (n.short_name) {
+        head.appendChild(mk("span", "hw-provider", n.short_name));
+      }
       body.appendChild(head);
       var meta = [];
+      if (meshSignals(n)) {
+        meta.push(meshSignals(n));
+      }
       if (n.distance_km) {
         meta.push(Number(n.distance_km).toFixed(1) + " km");
       }
@@ -1496,9 +1523,12 @@
       lastMeshNoPos.forEach(function (n) {
         var chip = mk("span", "mc-chip");
         var label = n.name || tr("meshtastic.type.node");
-        chip.title = label + " · " + fmtTime(n.last_seen);
+        chip.title = label + (n.short_name ? " (" + n.short_name + ")" : "") + " · " + fmtTime(n.last_seen);
         chip.appendChild(mk("span", "mc-chip-name", label));
         var extra = [];
+        if (meshSignals(n)) {
+          extra.push(meshSignals(n));
+        }
         extra.push(fmtClock(n.last_seen));
         chip.appendChild(mk("span", "mc-chip-meta", extra.join(" · ")));
         badges.appendChild(chip);

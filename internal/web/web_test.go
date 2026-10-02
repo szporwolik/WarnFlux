@@ -3520,7 +3520,7 @@ func TestMeshNodeOwnerLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "abcd1234"
-	hub.SeedNode(id, "RKSR-TN-R3", 50.02, 20.0, time.Now())
+	hub.SeedNode(id, "RKSR-TN-R3", "R3", 50.02, 20.0, time.Now(), []string{"telemetry"})
 	env := newTestEnvWithMesh(t, hub)
 	u, err := env.users.CreateUser("sp9kow", "600111222", "", "", "member", "pw1")
 	if err != nil {

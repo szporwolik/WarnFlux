@@ -12,20 +12,24 @@ import (
 // meshNodeMapView is the public JSON shape of one heard Meshtastic node
 // with a position, served to the home map.
 type meshNodeMapView struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Latitude   float64 `json:"latitude"`
-	Longitude  float64 `json:"longitude"`
-	LastSeen   string  `json:"last_seen"`
-	DistanceKM float64 `json:"distance_km"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	ShortName  string   `json:"short_name"`
+	Sends      []string `json:"sends"`
+	Latitude   float64  `json:"latitude"`
+	Longitude  float64  `json:"longitude"`
+	LastSeen   string   `json:"last_seen"`
+	DistanceKM float64  `json:"distance_km"`
 }
 
 // meshNodeNoPosView is one heard node without a position: the home page
 // shows these as a badge list below the located-node cards.
 type meshNodeNoPosView struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	LastSeen string `json:"last_seen"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	ShortName string   `json:"short_name"`
+	Sends     []string `json:"sends"`
+	LastSeen  string   `json:"last_seen"`
 }
 
 // handleMeshtasticStations serves the public node list for the home map:
@@ -55,7 +59,7 @@ func (s *Server) handleMeshtasticStations(w http.ResponseWriter, r *http.Request
 		seen := n.LastSeen.UTC().Format(time.RFC3339)
 		if n.Lat == 0 && n.Lon == 0 {
 			nopos = append(nopos, meshNodeNoPosView{
-				ID: n.ID, Name: name, LastSeen: seen,
+				ID: n.ID, Name: name, ShortName: n.Short, Sends: n.Sends, LastSeen: seen,
 			})
 			continue
 		}
@@ -66,7 +70,7 @@ func (s *Server) handleMeshtasticStations(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		nodes = append(nodes, meshNodeMapView{
-			ID: n.ID, Name: name,
+			ID: n.ID, Name: name, ShortName: n.Short, Sends: n.Sends,
 			Latitude: n.Lat, Longitude: n.Lon,
 			LastSeen: seen, DistanceKM: d,
 		})

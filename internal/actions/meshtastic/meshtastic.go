@@ -32,9 +32,10 @@ type Config struct {
 	// TxInterval is the minimum spacing between two transmissions of this
 	// action (default 5s) — the LoRa channel is shared.
 	TxInterval time.Duration `yaml:"tx_interval"`
-	// Channel is the device channel index (1-7) for the no-recipient
-	// fallback broadcast. 0 = disabled: groups without registered node
-	// IDs receive nothing (the primary channel is never used).
+	// Channel is the group channel index (1-7) every alert is published
+	// on — the base delivery, whether or not any user registered a node
+	// ID. 0 = off: only direct messages to registered node IDs go out
+	// (the PRIMARY channel is never used).
 	Channel int `yaml:"channel"`
 }
 
@@ -49,8 +50,10 @@ type sender interface {
 }
 
 // Action sends SOSNA alerts as direct messages to the routed group
-// members' node IDs; a group without any registered node IDs falls back
-// to one channel broadcast (channel 0).
+// members' node IDs and publishes every alert on the configured group
+// channel (the base delivery — it reaches listeners without accounts
+// too). The hub records each transmission in the durable history and
+// tracks its delivery state (sent/delivered/failed).
 type Action struct {
 	cfg  Config
 	hub  sender
@@ -79,19 +82,19 @@ func Register(reg *action.Registry, hub *mesh.Hub) error {
 func (a *Action) Name() string { return Type }
 
 // Execute formats the routed hazard as one message and delivers it to
-// every routed group member's registered node ID (direct message), or —
-// when the group has none — as one channel broadcast. The hub records
-// each transmission in the durable history and tracks its delivery
-// state (sent/delivered/failed).
+// every routed group member's registered node ID (direct message), and
+// publishes it on the configured group channel whenever one is set —
+// the channel broadcast goes out even when no member registered a node
+// ID.
 func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if req.Event.Kind != dispatch.EventHazardTransition || req.Event.Hazard == nil {
 		return nil // nothing to say for non-hazard events
 	}
 	text := a.textFor(ctx, req)
-	if len(req.MeshNodeIDs) == 0 {
-		if a.cfg.Channel <= 0 {
-			return nil // no recipients and no fallback channel: nothing to send
-		}
+
+	// The group channel is the base delivery: every alert is published
+	// there when configured, with or without registered node IDs.
+	if a.cfg.Channel > 0 {
 		if err := a.pace(ctx); err != nil {
 			return err
 		}
@@ -99,8 +102,10 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 			return fmt.Errorf("meshtastic: %w", err)
 		}
 		a.last = time.Now()
-		return nil
 	}
+
+	// Registered node IDs additionally get a direct message with
+	// per-recipient delivery tracking.
 	for _, id := range req.MeshNodeIDs {
 		if err := a.pace(ctx); err != nil {
 			return err

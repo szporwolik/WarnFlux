@@ -1533,18 +1533,18 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .channel-icon { width: 1.4rem; height: 1.4rem; flex-shrink: 0; color: var(--brand); margin-top: 0.1rem; }
 .channel-body h3 { font-size: 1rem; margin: 0 0 0.2rem; }
 .channel-body p { margin: 0; font-size: 0.85rem; }
-/* Unofficial-system notice above the tabs (web.disclaimer). */
+/* Unofficial-system notice above the tabs (web.disclaimer): a discreet
+   informational line, not a warning. */
 .home-disclaimer {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
   margin: 0.5rem 0 0;
-  padding: 0.55rem 0.8rem;
-  border: 1px solid var(--warn-border);
-  border-radius: var(--radius);
-  background: var(--warn-bg);
-  color: var(--text);
-  font-size: 0.85rem;
+  padding: 0.35rem 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
   line-height: 1.5;
   white-space: pre-line;
 }
@@ -1553,7 +1553,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
   width: 1rem;
   height: 1rem;
   margin-top: 0.1rem;
-  fill: var(--warn);
+  fill: var(--muted);
 }
 .home-alerts {
   /* One column on phones, up to ~3 on desktop. */
@@ -1731,6 +1731,71 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .aprs-map-attrib a {
   color: var(--muted);
   text-decoration: underline;
+}
+/* Wide screens: the category lists collapse into a 1/4 column on the
+   left while the map takes the remaining 3/4 and stays pinned while the
+   lists scroll. Narrow screens keep the stacked flow (map on top). */
+@media (min-width: 1100px) {
+  .home-radio-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
+    gap: 1rem;
+    align-items: start;
+  }
+  .home-map-col {
+    grid-column: 2;
+    grid-row: 1;
+    position: sticky;
+    top: 0.5rem;
+  }
+  .home-side-col {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .home-side-col .hw-reports {
+    grid-template-columns: 1fr;
+  }
+  #aprs-map {
+    aspect-ratio: auto;
+    height: min(calc(100dvh - 12rem), 50rem);
+    min-height: 26rem;
+    max-height: none;
+  }
+  .home-empty { margin-top: 0; }
+}
+/* Collapsible category groups (weather, stations, mesh, aircraft): the
+   title doubles as the toggle; the chevron shows the open state. */
+.hw-group {
+  border-bottom: 1px solid var(--border);
+}
+.hw-group:last-child {
+  border-bottom: none;
+}
+.hw-group summary.hw-title {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  margin: 0;
+  padding: 0.6rem 0;
+}
+.hw-group summary.hw-title::-webkit-details-marker {
+  display: none;
+}
+.hw-group summary.hw-title::before {
+  content: "▾";
+  order: 1;
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.hw-group:not([open]) summary.hw-title::before {
+  transform: rotate(-90deg);
+}
+.hw-group[open] > .hw-reports,
+.hw-group[open] > .home-mesh-noloc,
+.hw-group[open] > .hw-attrib {
+  margin-bottom: 0.6rem;
 }
 /* APRS station markers: 28px cells cropped from the 48px @2x aprs.fi
    sprites (the divIcon wrapper carries the background-position). */

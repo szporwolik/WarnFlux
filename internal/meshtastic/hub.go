@@ -1065,6 +1065,7 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	gate := h.senderGate
 	eventSink := h.eventSink
+	cli := h.cli
 	h.mu.Unlock()
 	if gate == nil || eventSink == nil || selfID == "" {
 		return
@@ -1073,25 +1074,32 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 		return // not addressed to us
 	}
 	owner := gate(id)
-	if owner == "" {
-		return
-	}
-	// Radio CLI: slash commands are answered in-band and stay off the
-	// alarm pipeline; /debug additionally fires the alarm exactly like
-	// a plain message does.
-	if h.cli != nil {
-		res := h.cli.Handle(string(decoded.GetPayload()))
+	text := string(decoded.GetPayload())
+
+	// Radio CLI: slash-prefixed messages are command attempts and never
+	// become alarms. Commands run only for directory-registered senders;
+	// unauthorized senders still get the installation banner (it is
+	// public information).
+	if cli != nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
+		if owner == "" {
+			h.sendCLIReply(id, cli.Identity())
+			return
+		}
+		res := cli.Handle(text)
 		if res.Handled {
 			if res.Debug {
-				h.publishRoutedEvent(id, owner, string(decoded.GetPayload()))
+				h.publishRoutedEvent(id, owner, text)
 			}
 			if res.Reply != "" {
 				h.sendCLIReply(id, res.Reply)
 			}
-			return
 		}
+		return
 	}
-	h.publishRoutedEvent(id, owner, string(decoded.GetPayload()))
+	if owner == "" {
+		return
+	}
+	h.publishRoutedEvent(id, owner, text)
 }
 
 // sendCLIReply answers one radio command with a direct message back to

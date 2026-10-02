@@ -520,7 +520,9 @@ func run(configPath string, checkConfig bool) error {
 	// The shared radio CLI: /help lists the commands, /debug fires the
 	// debug alarm; both APRS messages and Meshtastic direct messages
 	// answer through the same interpreter (future topics plug in here).
-	radioCLI := radiocli.New()
+	// Unknown slash messages answer with the installation banner.
+	radioCLI := radiocli.New(fmt.Sprintf("WarnFlux v%s - %s - %s",
+		version, cfg.Web.Header1, cfg.Web.Domain))
 	hub.SetCLI(radioCLI)
 	meshtasticHub.SetCLI(radioCLI)
 

@@ -1418,8 +1418,9 @@
   }
 
   // meshPopup renders the unified popup for one Meshtastic node: purple
-  // banner with the broadcast glyph, name, then distance and last-heard
-  // time.
+  // banner with the broadcast glyph, name, then observed signals and
+  // last-heard time (no distance — it is just a map, and the viewer
+  // does not know where our node sits).
   function meshPopup(n) {
     var lines = [];
     var sigs = meshSignals(n);
@@ -1427,9 +1428,6 @@
       lines.push(sigs);
     }
     lines.push(tr("map.heard") + ": " + fmtTime(n.last_seen));
-    if (n.distance_km) {
-      lines.push(Number(n.distance_km).toFixed(1) + " km");
-    }
     var body = lines.join("<br>");
     return wfPopup({
       color: meshColor(n),
@@ -1473,9 +1471,6 @@
             hover += "<br>" + esc(meshSignals(n));
           }
           hover += "<br>" + tr("map.heard") + ": " + esc(fmtTime(n.last_seen));
-          if (n.distance_km) {
-            hover += "<br>" + Number(n.distance_km).toFixed(1) + " km";
-          }
           marker.bindTooltip(hover, { sticky: true, direction: "top" });
           marker.bindPopup(meshPopup(n));
           meshLayer.addLayer(marker);
@@ -1527,9 +1522,6 @@
       var meta = [];
       if (meshSignals(n)) {
         meta.push(meshSignals(n));
-      }
-      if (n.distance_km) {
-        meta.push(Number(n.distance_km).toFixed(1) + " km");
       }
       meta.push(tr("map.heard") + " " + fmtClock(n.last_seen));
       body.appendChild(mk("span", "hw-meta", meta.join(" · ")));

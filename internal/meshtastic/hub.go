@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kabili207/meshtastic-go/core"
@@ -49,6 +50,10 @@ type Config struct {
 	RouteMessages bool
 	// NodeTTL bounds how long an unheard neighbour stays in the node list.
 	NodeTTL time.Duration
+	// SilenceTimeout declares a session dead after this long without ANY
+	// FromRadio traffic (defaultSilenceTimeout when unset). Tests shorten
+	// it; production runs with the default.
+	SilenceTimeout time.Duration
 }
 
 // Recorder persists the meshtastic message history (implemented by
@@ -75,6 +80,12 @@ const (
 	dmMaxRetries    = 2
 	dmRetryInterval = 5 * time.Second
 )
+
+// defaultSilenceTimeout is how long the session tolerates a completely
+// silent device (no FromRadio traffic at all) before it is declared dead
+// and reconnected. A healthy node emits queueStatus/telemetry well
+// within this window.
+const defaultSilenceTimeout = 2 * time.Minute
 
 // pendingSend tracks one sent message until its delivery state settles.
 type pendingSend struct {
@@ -217,6 +228,11 @@ type Hub struct {
 	sendMu    sync.Mutex
 	pending   map[uint32]*pendingSend // by device-assigned packet id
 	echoQueue []*pendingSend          // sent but the echo (id) not seen yet
+
+	// lastRadio is the unix-nano time of the most recent FromRadio
+	// message; the session is declared dead after cfg.SilenceTimeout
+	// (defaultSilenceTimeout) of total radio silence.
+	lastRadio atomic.Int64
 }
 
 // NewHub validates the config and builds the hub.
@@ -342,6 +358,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 	// assigned mesh packet id — the key that later pairs the recipient's
 	// ROUTING_APP acknowledgment with our send.
 	conn.Handle(&pb.QueueStatus{}, func(msg proto.Message) error {
+		h.lastRadio.Store(time.Now().UnixNano())
 		if qs, ok := msg.(*pb.QueueStatus); ok {
 			h.pairQueueStatus(qs.GetMeshPacketId())
 		}
@@ -360,6 +377,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.mu.Lock()
 	h.connected = true
 	h.mu.Unlock()
+	h.lastRadio.Store(time.Now().UnixNano())
 	h.populateFromState(conn.State())
 
 	if h.logger != nil {
@@ -384,6 +402,17 @@ func (h *Hub) runSession(ctx context.Context) error {
 		case <-ticker.C:
 			if !conn.IsConnected() {
 				return errors.New("device disconnected")
+			}
+			// A healthy node emits FromRadio traffic (queueStatus,
+			// telemetry) constantly; total silence means the serial
+			// session stalled without an error — reconnect.
+			timeout := h.cfg.SilenceTimeout
+			if timeout <= 0 {
+				timeout = defaultSilenceTimeout
+			}
+			if since := time.Since(time.Unix(0, h.lastRadio.Load())); since > timeout {
+				h.logger.Warn("meshtastic: device radio silent, reconnecting", "silent_for", since)
+				return errors.New("device radio silent")
 			}
 			h.expireNodes()
 			h.retryPending(time.Now())
@@ -522,6 +551,7 @@ func (h *Hub) handlePacket(pkt *pb.MeshPacket) {
 	if pkt == nil {
 		return
 	}
+	h.lastRadio.Store(time.Now().UnixNano())
 	decoded := pkt.GetDecoded()
 	if decoded == nil {
 		return

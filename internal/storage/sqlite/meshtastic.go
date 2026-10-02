@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -101,4 +102,60 @@ func (s *Store) PruneMeshtasticMessages(ctx context.Context, keep int) (int64, e
 		return 0, fmt.Errorf("prune mesh messages: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+// LoadMeshtasticNodes returns the persisted heard-node directory.
+func (s *Store) LoadMeshtasticNodes(ctx context.Context) ([]storage.MeshtasticNode, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, short, lat, lon, last_seen_ms, sends
+		FROM meshtastic_nodes ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("load meshtastic nodes: %w", err)
+	}
+	defer rows.Close()
+	var out []storage.MeshtasticNode
+	for rows.Next() {
+		var n storage.MeshtasticNode
+		var seenMs int64
+		var sends string
+		if err := rows.Scan(&n.ID, &n.Name, &n.Short, &n.Lat, &n.Lon, &seenMs, &sends); err != nil {
+			return nil, fmt.Errorf("scan meshtastic node: %w", err)
+		}
+		n.LastSeen = time.UnixMilli(seenMs)
+		if sends != "" {
+			n.Sends = strings.Split(sends, ",")
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// SaveMeshtasticNodes replaces the heard-node directory with the given
+// snapshot (one transaction; the directory is a single small table).
+func (s *Store) SaveMeshtasticNodes(ctx context.Context, nodes []storage.MeshtasticNode) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save meshtastic nodes: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM meshtastic_nodes`); err != nil {
+		return fmt.Errorf("save meshtastic nodes: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO meshtastic_nodes (id, name, short, lat, lon, last_seen_ms, sends)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("save meshtastic nodes: %w", err)
+	}
+	defer stmt.Close()
+	for _, n := range nodes {
+		if _, err := stmt.ExecContext(ctx, n.ID, n.Name, n.Short, n.Lat, n.Lon,
+			n.LastSeen.UnixMilli(), strings.Join(n.Sends, ",")); err != nil {
+			return fmt.Errorf("save meshtastic node %s: %w", n.ID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("save meshtastic nodes: %w", err)
+	}
+	return nil
 }

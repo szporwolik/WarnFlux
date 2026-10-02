@@ -810,9 +810,12 @@ actions:
   #     # Per-request timeout; 0 = default (10s).
   #
   # Meshtastic action: SOSNA alerts as direct messages to the routed
-  # group members' registered node IDs; a group without any falls back
-  # to one channel broadcast. The hub tracks each transmission's
-  # delivery state (sent/delivered/failed) in the durable history.
+  # group members' registered node IDs, plus a broadcast on the
+  # configured group channel — the channel broadcast is the base
+  # delivery and goes out even when no member registered a node ID
+  # (it reaches listeners without accounts). The hub tracks each
+  # transmission's delivery state (sent/delivered/failed) in the
+  # durable history.
   # - id: meshtastic-alerts
   #   type: meshtastic
   #   enabled: false
@@ -827,6 +830,8 @@ actions:
   #     prefix: "SOSNA"
   #     tx_interval: 5s
   #     timeout: 10s
+  #     channel: 1   # group channel (1-7) every alert is published on;
+  #                  # 0 = off (direct messages only, never PRIMARY)
 
 # Public HTTP ingest endpoints: POST /api/v1/ingest/<id>, protected by an
 # API key. Accepts hazard messages in two shapes:

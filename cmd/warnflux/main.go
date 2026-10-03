@@ -27,6 +27,7 @@ import (
 	smtp "github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/aprspresence"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
@@ -910,6 +911,26 @@ func run(configPath string, checkConfig bool) error {
 	// the plugin framework instead of terminating the process.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Mobile APRS stations crossing the operational range announce on
+	// the meshtastic group channel (the emcom channel — only when one
+	// is configured). The watcher starts with a silent baseline and
+	// announces transitions afterwards, debounced against edge
+	// flapping.
+	if hub != nil && meshtasticHub.Enabled() && cfg.Meshtastic.EmcomChannel > 0 {
+		presence := aprspresence.New(aprspresence.Options{
+			Channel: cfg.Meshtastic.EmcomChannel,
+			Send: func(ctx context.Context, text string) error {
+				return meshtasticHub.SendChannelText(ctx, cfg.Meshtastic.EmcomChannel, text, "system")
+			},
+			Stations: hub.Stations,
+			Lat:      hub.AreaLat(),
+			Lon:      hub.AreaLon(),
+			RadiusKM: hub.AreaRadius(),
+			Logger:   logger,
+		})
+		go presence.Run(ctx)
+	}
 
 	// Durable HTTP-ingest broker sync: each endpoint's outbox worker
 	// publishes the accepted payloads whenever its broker connection is

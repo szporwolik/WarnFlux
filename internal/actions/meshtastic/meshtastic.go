@@ -118,19 +118,116 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	return nil
 }
 
-// textFor builds the bounded outbound message for one routed hazard.
+// textFor builds the bounded outbound message for one routed hazard:
+// prefix + severity + headline first, the LOCATION whenever the hazard
+// carries coordinates or areas (the headline gives up space first, so
+// the title and the location survive together), then the event type and
+// the description fill whatever room is left. Worst case the text is cut
+// hard at the channel limit — the prefix and severity are never
+// sacrificed.
 func (a *Action) textFor(ctx context.Context, req action.ActionRequest) string {
 	h := req.Event.Hazard.Hazard
-	text := strings.TrimSpace(h.Headline)
-	if text == "" {
-		text = h.Event
+	norm := func(s string) string {
+		s = sanity.NormalizeText(ctx, sanity.ChannelAPRS, s)
+		return strings.Join(strings.Fields(s), " ")
 	}
-	text = fmt.Sprintf("%s %s %s", a.cfg.Prefix, strings.ToUpper(h.Severity), text)
-	text = sanity.NormalizeText(ctx, sanity.ChannelAPRS, text)
-	if len([]rune(text)) > maxMeshMessageChars {
-		text = string([]rune(text)[:maxMeshMessageChars])
+
+	sev := strings.ToUpper(strings.TrimSpace(h.Severity))
+	headline := norm(h.Headline)
+	if headline == "" {
+		headline = norm(h.Event)
 	}
-	return text
+	event := norm(h.Event)
+	if event == headline {
+		event = "" // the headline already carries the event name
+	}
+	desc := norm(h.Description)
+
+	// Location: exact coordinates first, the area list otherwise.
+	var loc string
+	switch {
+	case h.Latitude != nil && h.Longitude != nil:
+		loc = fmt.Sprintf("%.3f,%.3f", *h.Latitude, *h.Longitude)
+	case len(h.Areas) > 0:
+		loc = norm(strings.Join(h.Areas, ", "))
+	}
+
+	head := strings.TrimSpace(a.cfg.Prefix)
+	if sev != "" {
+		if head != "" {
+			head += " "
+		}
+		head += sev
+	}
+	withHead := func(s string) string {
+		if head == "" {
+			return s
+		}
+		return head + " " + s
+	}
+	over := func(s string) int { return len([]rune(s)) - maxMeshMessageChars }
+	cut := func(s string) string {
+		s = norm(s)
+		r := []rune(s)
+		if len(r) > maxMeshMessageChars {
+			return string(r[:maxMeshMessageChars])
+		}
+		return s
+	}
+
+	base := withHead(headline)
+	// The location always rides along when present: the headline gives
+	// up space first (the fixed part — prefix, severity and location —
+	// never does), even when the headline alone would already overflow
+	// the channel limit.
+	if loc != "" {
+		// The empty-headline base is the exact formula below with an
+		// empty title, so the computed room never loses a rune to a
+		// separator mismatch.
+		fixed := withHead("") + " | " + loc
+		if over(fixed) > 0 {
+			return cut(fixed)
+		}
+		room := maxMeshMessageChars - len([]rune(fixed))
+		hs := []rune(headline)
+		if len(hs) > room {
+			hs = hs[:room]
+		}
+		base = withHead(string(hs)) + " | " + loc
+	} else if over(base) > 0 {
+		return cut(base)
+	}
+	if event != "" {
+		if b, ok := appendFit(base, event); ok {
+			base = b
+		}
+	}
+	if desc != "" {
+		base, _ = appendFit(base, desc)
+	}
+	return cut(base)
+}
+
+// appendFit appends extra to base with the " | " separator when it fits;
+// otherwise it appends the truncated prefix of extra marked with "..."
+// and reports false (the channel limit is hard).
+func appendFit(base, extra string) (string, bool) {
+	const sep = " | "
+	if len([]rune(base))+len([]rune(sep))+len([]rune(extra)) <= maxMeshMessageChars {
+		return base + sep + extra, true
+	}
+	room := maxMeshMessageChars - len([]rune(base)) - len([]rune(sep))
+	if room <= 0 {
+		return base, false
+	}
+	ex := []rune(extra)
+	if room >= len(ex) {
+		return base + sep + extra, true
+	}
+	if room <= 3 {
+		return base + sep + string(ex[:room]), false
+	}
+	return base + sep + string(ex[:room-3]) + "...", false
 }
 
 // pace waits out the minimum spacing between transmissions; the mesh

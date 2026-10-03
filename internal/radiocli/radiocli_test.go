@@ -43,17 +43,23 @@ func TestHandle(t *testing.T) {
 	}
 
 	// /debug is restricted: authorized senders fire the debug alarm,
-	// everyone else gets the public banner.
+	// everyone else gets an explicit denial.
 	res = b.Handle("/DEBUG", true)
 	if !res.Handled || !res.Debug || res.Reply == "" {
 		t.Fatalf("/DEBUG = %+v, want debug with a confirmation", res)
 	}
 	res = b.Handle("/debug", false)
 	if !res.Handled || res.Debug || res.Reply == "" {
-		t.Fatalf("unauthorized /debug = %+v, want the public banner without debug", res)
+		t.Fatalf("unauthorized /debug = %+v, want a denial without debug", res)
 	}
-	if !strings.Contains(res.Reply, HelpHint) {
-		t.Fatalf("unauthorized /debug reply = %q, want the banner with the /help hint", res.Reply)
+	if !strings.Contains(res.Reply, "WarnFlux v1.0 - SOSNA") || !strings.Contains(res.Reply, DeniedText) {
+		t.Fatalf("unauthorized /debug reply = %q, want the banner with the denial", res.Reply)
+	}
+	if len(res.Reply) > 67 {
+		t.Fatalf("unauthorized /debug reply = %q, %d chars — over the APRS limit", res.Reply, len(res.Reply))
+	}
+	if b.Denied() != "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl - You are not authorized" {
+		t.Fatalf("Denied() = %q, want identity + denial", b.Denied())
 	}
 
 	// Unknown slash messages answer with the installation banner plus
@@ -87,8 +93,8 @@ func TestHandle(t *testing.T) {
 		opCalled = true
 		return Result{Handled: true, Reply: "op ok"}
 	})
-	if res := b.Handle("/op", false); !res.Handled || opCalled || !strings.Contains(res.Reply, HelpHint) {
-		t.Fatalf("unauthorized /op = %+v (called=%v), want the public banner", res, opCalled)
+	if res := b.Handle("/op", false); !res.Handled || opCalled || !strings.Contains(res.Reply, DeniedText) {
+		t.Fatalf("unauthorized /op = %+v (called=%v), want the denial", res, opCalled)
 	}
 	if res := b.Handle("/op", true); !res.Handled || !opCalled || res.Reply != "op ok" {
 		t.Fatalf("authorized /op = %+v (called=%v), want it to run", res, opCalled)
@@ -110,5 +116,17 @@ func TestBannerCapped(t *testing.T) {
 	}
 	if !strings.Contains(b.Banner(), HelpHint) {
 		t.Fatalf("Banner() = %q, missing the /help hint", b.Banner())
+	}
+}
+
+// TestDeniedCapped keeps the denial within the APRS message limit: the
+// identity truncates, the denial always survives.
+func TestDeniedCapped(t *testing.T) {
+	b := New(strings.Repeat("x", 80))
+	if got := b.Denied(); len([]rune(got)) > 67 {
+		t.Fatalf("Denied() = %d runes, want <= 67", len([]rune(got)))
+	}
+	if !strings.Contains(b.Denied(), DeniedText) {
+		t.Fatalf("Denied() = %q, missing the denial", b.Denied())
 	}
 }

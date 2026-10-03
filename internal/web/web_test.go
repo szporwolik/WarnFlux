@@ -1163,14 +1163,22 @@ func TestComposeFlow(t *testing.T) {
 
 	env.login()
 	_, html := env.get("/compose")
-	if !strings.Contains(html, "Compose communication") {
-		t.Errorf("compose page missing form heading: %s", html)
+	if !strings.Contains(html, "Communications") {
+		t.Errorf("compose page missing the heading: %s", html)
 	}
-	if !strings.Contains(html, `<span class="nav-label">Compose</span>`) {
+	if !strings.Contains(html, `<span class="nav-label">Communications</span>`) {
 		t.Errorf("compose page missing sidebar entry: %s", html)
 	}
 	if !strings.Contains(html, "Issued communications") {
 		t.Errorf("compose page missing issued list: %s", html)
+	}
+	if !strings.Contains(html, `id="compose-new"`) {
+		t.Errorf("compose page missing the compose button: %s", html)
+	}
+	// The form panel starts COLLAPSED on a fresh page (the issued list
+	// is the initial view).
+	if !strings.Contains(html, `<details class="compose-panel" id="compose-panel">`) {
+		t.Errorf("compose panel must be collapsed by default: %s", html)
 	}
 	if !strings.Contains(html, `id="compose-debug-fill"`) {
 		t.Errorf("compose page missing debug fill button: %s", html)
@@ -1280,6 +1288,10 @@ func TestComposeFlow(t *testing.T) {
 	_, html = env.get("/compose?edit=" + h.EventKey)
 	if !strings.Contains(html, `value="Flood warning for the Raba river"`) {
 		t.Errorf("edit page missing prefilled headline: %s", html)
+	}
+	// Editing opens the compose panel on the initial render.
+	if !strings.Contains(html, `<details class="compose-panel" id="compose-panel" open>`) {
+		t.Errorf("edit page must render the compose panel open: %s", html)
 	}
 	if !strings.Contains(html, `value="49.98500"`) || !strings.Contains(html, `value="20.06500"`) {
 		t.Errorf("edit page missing prefilled coordinates: %s", html)
@@ -1465,8 +1477,8 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `<span class="nav-label">Dashboard</span>`) {
 		t.Error("emcom must see the Dashboard nav entry")
 	}
-	if !strings.Contains(html, `<span class="nav-label">Compose</span>`) {
-		t.Error("compose page missing Compose nav entry")
+	if !strings.Contains(html, `<span class="nav-label">Communications</span>`) {
+		t.Error("compose page missing Communications nav entry")
 	}
 	if !strings.Contains(html, `href="/account"`) {
 		t.Error("emcom must see the Account entry in the user menu")

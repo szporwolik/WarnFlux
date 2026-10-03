@@ -14,18 +14,23 @@
   {{template "sidebar" .}}
   <main class="users-main">
     <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "compose.title"}}</h2>
-      <p class="page-info">{{tr .Lang "compose.intro"}}</p>
+      <div class="compose-head">
+        <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "compose.title"}}</h2>
+        <button type="button" class="btn-primary btn-small" id="compose-new" aria-controls="compose-panel" aria-expanded="{{if .ShowForm}}true{{else}}false{{end}}">{{tr .Lang "compose.new"}}</button>
+      </div>
       {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
-      <div class="compose-templates">
-        <span class="compose-templates-label">{{tr .Lang "compose.templates"}}</span>
-        <button type="button" class="btn-ghost btn-small" data-tpl="information">{{tr .Lang "compose.tpl.information"}}</button>
-        <button type="button" class="btn-ghost btn-small" data-tpl="urgent">{{tr .Lang "compose.tpl.urgent"}}</button>
-        <button type="button" class="btn-ghost btn-small" data-tpl="weather">{{tr .Lang "compose.tpl.weather"}}</button>
-        <button type="button" class="btn-ghost btn-small" data-tpl="test">{{tr .Lang "compose.tpl.test"}}</button>
-      </div>
-      <form method="post" action="/compose" class="test-form">
+      <details class="compose-panel" id="compose-panel"{{if .ShowForm}} open{{end}}>
+        <summary><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "compose.new"}}</summary>
+        <p class="page-info">{{tr .Lang "compose.intro"}}</p>
+        <div class="compose-templates">
+          <span class="compose-templates-label">{{tr .Lang "compose.templates"}}</span>
+          <button type="button" class="btn-ghost btn-small" data-tpl="information">{{tr .Lang "compose.tpl.information"}}</button>
+          <button type="button" class="btn-ghost btn-small" data-tpl="urgent">{{tr .Lang "compose.tpl.urgent"}}</button>
+          <button type="button" class="btn-ghost btn-small" data-tpl="weather">{{tr .Lang "compose.tpl.weather"}}</button>
+          <button type="button" class="btn-ghost btn-small" data-tpl="test">{{tr .Lang "compose.tpl.test"}}</button>
+        </div>
+        <form method="post" action="/compose" class="test-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <input type="hidden" name="event_key" value="{{.Form.EventKey}}">
         <input type="hidden" name="received_at" value="{{.Form.ReceivedAt}}">
@@ -109,11 +114,9 @@
           {{if .Form.EventKey}}<a class="btn-ghost" href="/compose">{{tr .Lang "compose.discard"}}</a>{{end}}
           <button type="button" class="btn-ghost" id="compose-debug-fill">{{tr .Lang "compose.debug"}}</button>
         </div>
-      </form>
-    </section>
-
-    <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "compose.issued"}}</h2>
+        </form>
+      </details>
+      <h2 class="compose-issued-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "compose.issued"}}</h2>
       {{if .Items}}
       <div class="table-wrap">
         <table class="plugins">
@@ -152,6 +155,23 @@
   {{template "footer" .}}
   <script src="/static/app.js?v={{.Commit}}" defer></script>
   <script>
+  // The small compose button toggles the collapsible form panel; the
+  // native <summary> remains the no-JS fallback.
+  (function () {
+    "use strict";
+    var btn = document.getElementById("compose-new");
+    var panel = document.getElementById("compose-panel");
+    if (btn && panel) {
+      btn.addEventListener("click", function () {
+        panel.open = !panel.open;
+        btn.setAttribute("aria-expanded", panel.open ? "true" : "false");
+        if (panel.open) { panel.scrollIntoView({ behavior: "smooth", block: "start" }); }
+      });
+      panel.addEventListener("toggle", function () {
+        btn.setAttribute("aria-expanded", panel.open ? "true" : "false");
+      });
+    }
+  })();
   // Message templates: prefill the compose form with a typical
   // combination of event type, severity, urgency and certainty. The
   // operator still writes the headline and the details.

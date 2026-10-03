@@ -3563,6 +3563,33 @@
   }
 })();
 
+// Small interaction guards:
+// - edit links pointing at the CURRENT url (e.g. clicking "Edit" for the
+//   row that is already being edited) would be a no-op navigation; force
+//   a reload instead so the form state refreshes;
+// - forms carrying data-confirm-msg ask for confirmation before the
+//   submit (the message is a data attribute, so names with quotes can
+//   never break out of the script).
+(function () {
+  "use strict";
+  document.addEventListener("click", function (e) {
+    var a = e.target && e.target.closest ? e.target.closest("a[data-force-nav]") : null;
+    if (!a) { return; }
+    var href = a.getAttribute("href") || "";
+    if (href === window.location.pathname + window.location.search) {
+      e.preventDefault();
+      window.location.reload();
+    }
+  });
+  document.addEventListener("submit", function (e) {
+    var form = e.target && e.target.closest ? e.target.closest("form[data-confirm-msg]") : null;
+    if (!form) { return; }
+    if (!window.confirm(form.getAttribute("data-confirm-msg"))) {
+      e.preventDefault();
+    }
+  });
+})();
+
 // Admin Meshtastic page: poll the nodes-tab fragment while it is on screen.
 (function () {
   "use strict";

@@ -127,6 +127,10 @@ func dispatchLocalChange(ingress *dispatch.Ingress, logger *slog.Logger, change 
 	}
 }
 
+// radioAlertTTL bounds a radio-raised /alert hazard (4 hours by
+// default).
+const radioAlertTTL = 4 * time.Hour
+
 // weatherForRadio snapshots every current weather source — APRS weather
 // stations plus the retained internet-provider state — into the shared
 // weatherreport aggregation for the public /weather command. APRS
@@ -645,6 +649,20 @@ func run(configPath string, checkConfig bool) error {
 	// EMCOM: it scales from many sources down to a single station.
 	radioCLI.Register("weather", "weather", func(string) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: weatherForRadio(hub, mirror, time.Now()).Text()}
+	})
+	// /alert: authorized operators raise a severe hazard straight from
+	// the radio — "severe alert with the information", default 4-hour
+	// expiry, distributed through the standard routing matrix.
+	radioCLI.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		headline := strings.TrimSpace(args)
+		if headline == "" {
+			return radiocli.Result{Handled: true, Reply: "Missing parameter: /alert <text>"}
+		}
+		return radiocli.Result{
+			Handled: true,
+			Alert:   &radiocli.AlertSpec{Headline: headline, TTL: radioAlertTTL},
+			Reply:   "OK: alert raised",
+		}
 	})
 
 	// LOCAL-FIRST source pipeline: every journal change (ingest or

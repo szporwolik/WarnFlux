@@ -1347,6 +1347,9 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 			if res.Debug {
 				h.publishRoutedEvent(id, owner, text)
 			}
+			if res.Alert != nil {
+				h.publishAlertEvent(id, owner, res.Alert)
+			}
 			if res.Reply != "" {
 				h.sendCLIReply(id, res.Reply)
 			}
@@ -1363,8 +1366,16 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 
 // sendCLIReply answers one radio command with a direct message back to
 // the sender (best-effort; the reply lands in the durable TX history
-// with its delivery tracking).
+// with its delivery tracking). The reply is fitted to the mesh text
+// limit through the shared CLI mechanism (identity shortens
+// progressively, payload truncates last).
 func (h *Hub) sendCLIReply(id, text string) {
+	h.mu.Lock()
+	cli := h.cli
+	h.mu.Unlock()
+	if cli != nil {
+		text = cli.Fit(text, meshTextMaxRunes)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := h.SendContactMessage(ctx, id, text, "system"); err != nil && h.logger != nil {
@@ -1436,6 +1447,66 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text string) {
 	}
 	if err := sink(context.Background(), "events", false, payload); err != nil && h.logger != nil {
 		h.logger.Warn("meshtastic: routed message event publish failed", "error", err)
+	}
+}
+
+// publishAlertEvent raises one operator-requested hazard (/alert) into
+// the /events stream: severe, bounded by the requested TTL (4 hours by
+// default).
+func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec) {
+	if spec == nil {
+		return
+	}
+	h.mu.Lock()
+	name := ""
+	if n := h.nodes[senderID]; n != nil && n.Name != "" {
+		name = n.Name
+	}
+	sink := h.eventSink
+	h.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	now := time.Now().UTC()
+	ttl := spec.TTL
+	if ttl <= 0 {
+		ttl = 4 * time.Hour
+	}
+	nowS := now.Format(time.RFC3339)
+	expires := now.Add(ttl).Format(time.RFC3339)
+	from := name
+	if from == "" {
+		from = "!" + senderID
+	}
+	we := MessageEventWire{
+		SchemaVersion: meshMessageEventSchemaVersion,
+		ChangeID:      now.UnixMilli(),
+		ChangeType:    "new",
+		EventKey:      fmt.Sprintf("meshtastic:alert:%s-%d", senderID, now.UnixMilli()),
+		Event: MessageEventHazard{
+			Source:      "meshtastic",
+			SourceID:    senderID,
+			Category:    "meshtastic",
+			Event:       "Meshtastic alert",
+			Severity:    "severe",
+			Urgency:     "immediate",
+			Certainty:   "observed",
+			Headline:    spec.Headline,
+			Description: fmt.Sprintf("Alert raised by %s (%s) over the mesh.", owner, from),
+			EffectiveAt: &nowS,
+			ExpiresAt:   &expires,
+			Areas:       []string{},
+			Status:      "active",
+			ReceivedAt:  nowS,
+			UpdatedAt:   nowS,
+		},
+	}
+	payload, err := json.Marshal(we)
+	if err != nil {
+		return
+	}
+	if err := sink(context.Background(), "events", false, payload); err != nil && h.logger != nil {
+		h.logger.Warn("meshtastic: alert event publish failed", "error", err)
 	}
 }
 

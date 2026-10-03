@@ -560,6 +560,142 @@ func TestHubModemRejectsDelivery(t *testing.T) {
 	}
 }
 
+// TestHubModemAckKeepsRecipientWait pins the conditional P2 fix: a
+// self-addressed routing frame WITHOUT an error is the modem's
+// acceptance of a direct message, NOT its final result. The wait must
+// stay registered so a later recipient ack still lifts the status to
+// delivered (the synthetic "own ack, then recipient ack" sequence).
+func TestHubModemAckKeepsRecipientWait(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: 10 * time.Second})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "ef010203", "synthetic seq", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+
+	// The device echo pairs the packet id (modem acceptance: TxSent).
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, Id: 4242, To: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("synthetic seq")},
+		},
+	})
+	waitSent := func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxSent {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("tx never reached sent: %v", rec.messages())
+	}
+	waitSent()
+
+	// The modem's own routing frame (no error) confirms the acceptance
+	// but must NOT consume the wait for the recipient's ack.
+	routing, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_ErrorReason{ErrorReason: pb.Routing_NONE}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, To: 0xabcd1234, Id: 4242,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: routing},
+		},
+	})
+	time.Sleep(150 * time.Millisecond)
+	if msgs := rec.messages(); len(msgs) != 1 || msgs[0].Status != TxSent {
+		t.Fatalf("after own ack = %v, want still TxSent (the wait must survive)", msgs)
+	}
+	radio.hub.sendMu.Lock()
+	kept := radio.hub.pending[4242] != nil
+	radio.hub.sendMu.Unlock()
+	if !kept {
+		t.Fatal("own ack consumed the pending wait; the recipient's ack could never deliver")
+	}
+
+	// The recipient's ack is the FINAL result: delivered.
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xef010203, To: 0xabcd1234,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: routing},
+		},
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxDelivered {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	msgs := rec.messages()
+	if len(msgs) != 1 || msgs[0].Status != TxDelivered {
+		t.Fatalf("after own ack + recipient ack = %v, want TxDelivered", msgs)
+	}
+}
+
+// TestHubModemAckStillSettlesUnanswered pins the kept wait's final
+// result: a modem-confirmed direct message whose recipient never acks
+// settles failed through the settle window — the wait does not linger
+// forever.
+func TestHubModemAckStillSettlesUnanswered(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: 250 * time.Millisecond})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "ef010203", "never acked", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, Id: 4242, To: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("never acked")},
+		},
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxSent {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	routing, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_ErrorReason{ErrorReason: pb.Routing_NONE}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, To: 0xabcd1234, Id: 4242,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: routing},
+		},
+	})
+
+	// The settle window (retryPending tick) resolves the unanswered wait
+	// to failed — never an eternal "sent".
+	deadline = time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxFailed {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	msgs := rec.messages()
+	if len(msgs) != 1 || msgs[0].Status != TxFailed {
+		t.Fatalf("unanswered modem-confirmed dm = %v, want the settle to failed", msgs)
+	}
+}
+
 // TestHubSilentDeviceReconnects pins the radio-silence watchdog: a
 // session with no FromRadio traffic for longer than the silence timeout
 // is torn down and redialed instead of hanging forever.

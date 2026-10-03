@@ -3,6 +3,7 @@ package radiocli
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestHandle pins the command interpreter: case-insensitive commands,
@@ -99,34 +100,80 @@ func TestHandle(t *testing.T) {
 	if res := b.Handle("/op", true); !res.Handled || !opCalled || res.Reply != "op ok" {
 		t.Fatalf("authorized /op = %+v (called=%v), want it to run", res, opCalled)
 	}
+
+	// /alert (registered restricted, like main wires it): a missing
+	// parameter answers with the usage, a real text carries the
+	// AlertSpec back to the channel.
+	b.RegisterRestricted("alert", "alert", func(args string) Result {
+		headline := strings.TrimSpace(args)
+		if headline == "" {
+			return Result{Handled: true, Reply: "Missing parameter: /alert <text>"}
+		}
+		return Result{Handled: true, Alert: &AlertSpec{Headline: headline, TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	if res := b.Handle("/alert", false); !res.Handled || res.Alert != nil || !strings.Contains(res.Reply, DeniedText) {
+		t.Fatalf("unauthorized /alert = %+v, want the denial without an alert", res)
+	}
+	if res := b.Handle("/alert", true); !res.Handled || res.Alert != nil || !strings.Contains(res.Reply, "Missing parameter") {
+		t.Fatalf("authorized no-arg /alert = %+v, want the usage reply", res)
+	}
+	if res := b.Handle("/alert pozar lasu", true); !res.Handled || res.Alert == nil ||
+		res.Alert.Headline != "pozar lasu" || res.Alert.TTL != 4*time.Hour || !strings.Contains(res.Reply, "OK") {
+		t.Fatalf("authorized /alert = %+v, want the AlertSpec with the 4h TTL", res)
+	}
 	if res := b.Handle("/help", false); !strings.Contains(res.Reply, "/test") || strings.Contains(res.Reply, "/op") {
 		t.Fatalf("public help reply = %q, want /test but not /op", res.Reply)
 	}
-	if res := b.Handle("/help", true); !strings.Contains(res.Reply, "/test") || !strings.Contains(res.Reply, "/op") {
-		t.Fatalf("authorized help reply = %q, want /test and /op", res.Reply)
+	if res := b.Handle("/help", true); !strings.Contains(res.Reply, "/test") || !strings.Contains(res.Reply, "/op") || !strings.Contains(res.Reply, "/alert") {
+		t.Fatalf("authorized help reply = %q, want /test, /op and /alert", res.Reply)
+	}
+	if len(res.Reply) > 67 {
+		t.Fatalf("authorized help reply = %q, %d chars — over the APRS limit", res.Reply, len(res.Reply))
 	}
 }
 
-// TestBannerCapped keeps the banner within the 67-character APRS
-// message limit even for a very long installation identity.
-func TestBannerCapped(t *testing.T) {
-	b := New(strings.Repeat("x", 80))
-	if got := b.Banner(); len([]rune(got)) != 67 {
-		t.Fatalf("Banner() = %d runes, want 67", len([]rune(got)))
-	}
-	if !strings.Contains(b.Banner(), HelpHint) {
-		t.Fatalf("Banner() = %q, missing the /help hint", b.Banner())
-	}
-}
+// TestFitProgressive pins the shared channel fitting: the identity
+// shortens progressively (domain → installation name → the WarnFlux
+// word) and only as the very last resort the payload end is cut.
+func TestFitProgressive(t *testing.T) {
+	b := New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
 
-// TestDeniedCapped keeps the denial within the APRS message limit: the
-// identity truncates, the denial always survives.
-func TestDeniedCapped(t *testing.T) {
-	b := New(strings.Repeat("x", 80))
-	if got := b.Denied(); len([]rune(got)) > 67 {
-		t.Fatalf("Denied() = %d runes, want <= 67", len([]rune(got)))
+	// Fits as-is: untouched.
+	if got := b.Fit(b.Banner(), 67); got != b.Banner() {
+		t.Fatalf("Fit(banner,67) = %q, want it unchanged", got)
 	}
-	if !strings.Contains(b.Denied(), DeniedText) {
-		t.Fatalf("Denied() = %q, missing the denial", b.Denied())
+
+	// Domain first: a very long address drops, the installation name
+	// survives.
+	long := New("WarnFlux v1.0 - SOSNA - a.very.long.domain.example.org")
+	if got := long.Fit(long.Banner(), 67); got != "WarnFlux v1.0 - SOSNA | type /help for help" {
+		t.Fatalf("Fit = %q, want the domain dropped", got)
+	}
+
+	// Instance next: a long installation name leaves only the WarnFlux
+	// word.
+	longInst := New("WarnFlux v1.0 - " + strings.Repeat("x", 60))
+	if got := longInst.Fit(longInst.Banner(), 67); got != "WarnFlux v1.0 | type /help for help" {
+		t.Fatalf("Fit = %q, want the instance dropped", got)
+	}
+
+	// The denial shortens the same way.
+	if got := long.Fit(long.Denied(), 40); got != "WarnFlux v1.0 - You are not authorized" {
+		t.Fatalf("Fit(denied,40) = %q, want instance+domain dropped, denial kept", got)
+	}
+
+	// The WarnFlux word itself drops before the payload is cut.
+	if got := b.Fit(b.Banner(), 20); got != "type /help for help" {
+		t.Fatalf("Fit(banner,20) = %q, want only the hint", got)
+	}
+
+	// Last resort: the payload end is truncated.
+	if got := b.Fit(b.Banner(), 10); len([]rune(got)) != 10 || !strings.HasPrefix(got, "type /hel") {
+		t.Fatalf("Fit(banner,10) = %q, want the payload truncated at 10 runes", got)
+	}
+
+	// Texts without the identity are simply truncated at the end.
+	if got := b.Fit("T 7.5C / RH 86% (29 st) | fcst 22/6C", 12); got != "T 7.5C / RH " {
+		t.Fatalf("Fit(weather,12) = %q, want the end cut", got)
 	}
 }

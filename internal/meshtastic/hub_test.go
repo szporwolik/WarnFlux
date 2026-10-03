@@ -1200,6 +1200,140 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 }
 
+// TestHubAlertCommand pins the operator /alert command: an authorized
+// sender raises a severe hazard with a ~4-hour expiry through the event
+// bridge; a missing parameter answers with the usage; an unauthorized
+// sender gets the denial.
+func TestHubAlertCommand(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	var (
+		mu     sync.Mutex
+		events []string
+	)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		mu.Lock()
+		events = append(events, string(payload))
+		mu.Unlock()
+		return nil
+	})
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		headline := strings.TrimSpace(args)
+		if headline == "" {
+			return radiocli.Result{Handled: true, Reply: "Missing parameter: /alert <text>"}
+		}
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: headline, TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	radio.hub.SetCLI(cli)
+
+	// /alert with text: severe event + confirmation reply.
+	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu"))
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 {
+		t.Fatalf("events after /alert = %d, want 1", len(events))
+	}
+	var we MessageEventWire
+	if err := json.Unmarshal([]byte(events[0]), &we); err != nil {
+		t.Fatalf("alert payload: %v", err)
+	}
+	if we.Event.Source != "meshtastic" || we.Event.Severity != "severe" {
+		t.Fatalf("alert event = %+v, want severe from meshtastic", we.Event)
+	}
+	if we.Event.Headline != "pozar lasu" {
+		t.Fatalf("headline = %q, want the operator text", we.Event.Headline)
+	}
+	if we.Event.ExpiresAt == nil {
+		t.Fatal("alert event has no expiry")
+	}
+	exp, err := time.Parse(time.RFC3339, *we.Event.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expiry = %q: %v", *we.Event.ExpiresAt, err)
+	}
+	if d := exp.Sub(time.Now()); d < 3*time.Hour+45*time.Minute || d > 4*time.Hour+15*time.Minute {
+		t.Fatalf("expiry in %s, want ~4h", d)
+	}
+	radio.waitOutbound(t, 1)
+	out := radio.outbound()
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "OK: alert raised") {
+		t.Fatalf("alert reply = %q, want the confirmation", got)
+	}
+
+	// /alert without text: usage reply, no new event.
+	before := len(radio.outbound())
+	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert"))
+	radio.waitOutbound(t, before+1)
+	out = radio.outbound()
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "Missing parameter") {
+		t.Fatalf("no-arg /alert reply = %q, want the usage", got)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events after no-arg /alert = %d, want still 1", len(events))
+	}
+
+	// Unauthorized sender: denial, no event.
+	before = len(radio.outbound())
+	dispatch(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/alert x"))
+	radio.waitOutbound(t, before+1)
+	out = radio.outbound()
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "You are not authorized") {
+		t.Fatalf("unauthorized /alert reply = %q, want the denial", got)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events after unauthorized /alert = %d, want still 1", len(events))
+	}
+}
+
+// TestHubReplyFitsChannelLimit pins the shared fitting at the gateway:
+// replies within the mesh limit pass unchanged, and a very long
+// installation identity shortens progressively instead of overflowing.
+func TestHubReplyFitsChannelLimit(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	radio.hub.SetSenderGate(func(id string) string { return "sp9kow" })
+	radio.hub.SetEventSink(func(_ context.Context, _ string, _ bool, _ []byte) error { return nil })
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - a.very.long.domain.example.org"))
+
+	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello"))
+	radio.waitOutbound(t, 1)
+	out := radio.outbound()
+	if got := string(out[0].GetDecoded().GetPayload()); got != "WarnFlux v1.0 - SOSNA - a.very.long.domain.example.org | type /help for help" {
+		t.Fatalf("reply = %q, want the full banner (it fits the mesh limit)", got)
+	}
+
+	// An identity that cannot fit shortens progressively: the domain
+	// and the installation name drop, the payload survives.
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - " + strings.Repeat("x", 110)))
+	before := len(radio.outbound())
+	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello"))
+	radio.waitOutbound(t, before+1)
+	out = radio.outbound()
+	got := string(out[len(out)-1].GetDecoded().GetPayload())
+	if len([]rune(got)) > meshTextMaxRunes {
+		t.Fatalf("reply = %q, %d runes — over the mesh limit", got, len([]rune(got)))
+	}
+	if got != "WarnFlux v1.0 | type /help for help" {
+		t.Fatalf("reply = %q, want the instance dropped", got)
+	}
+}
+
 // TestHubSendWithoutDevice pins the disconnected send failure: an
 // unconnected hub refuses transmissions instead of panicking.
 func TestHubSendWithoutDevice(t *testing.T) {

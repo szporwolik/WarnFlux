@@ -780,6 +780,9 @@ func (h *Hub) routeOrCLI(p Packet) {
 	if res.Debug {
 		h.publishMessageEvent(p)
 	}
+	if res.Alert != nil {
+		h.publishAlertEvent(p, res.Alert)
+	}
 	if res.Reply != "" {
 		h.sendCLIReply(p.Src, res.Reply)
 	}
@@ -787,7 +790,15 @@ func (h *Hub) routeOrCLI(p Packet) {
 
 // sendCLIReply answers one radio command over the first ready APRS
 // transmitter (best-effort; the reply lands in the durable TX history).
+// The reply is fitted to the APRS message limit through the shared CLI
+// mechanism (identity shortens progressively, payload truncates last).
 func (h *Hub) sendCLIReply(to, text string) {
+	h.mu.Lock()
+	cli := h.cli
+	h.mu.Unlock()
+	if cli != nil {
+		text = cli.Fit(text, MaxMessageText)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := h.SendMessage(ctx, to, text); err != nil && h.logger != nil {
@@ -896,6 +907,55 @@ func (h *Hub) publishMessageEvent(p Packet) {
 	}
 	if err := h.publishWithTimeout("events", false, payload); err != nil {
 		h.logger.Warn("aprs: routed message publish failed", "callsign", from, "error", err)
+	}
+}
+
+// publishAlertEvent raises one operator-requested hazard (/alert) into
+// the /events stream: severe, bounded by the requested TTL (4 hours by
+// default). The event identity follows the same timestamp-keyed scheme
+// as publishMessageEvent.
+func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) {
+	if spec == nil {
+		return
+	}
+	now := time.Now().UTC()
+	id := now.UnixNano()
+	ttl := spec.TTL
+	if ttl <= 0 {
+		ttl = 4 * time.Hour
+	}
+	nowS := now.Format(time.RFC3339)
+	expires := now.Add(ttl).Format(time.RFC3339)
+	from := p.Src
+	doc := MessageEventWire{
+		SchemaVersion: messageEventSchemaVersion,
+		ChangeID:      id,
+		ChangeType:    "new",
+		EventKey:      "aprs:" + from + ":alert:" + strconv.FormatInt(id, 10),
+		Event: MessageEventHazard{
+			Source:      "aprs",
+			SourceID:    from,
+			Event:       "APRS alert",
+			Severity:    "severe",
+			Urgency:     "immediate",
+			Certainty:   "observed",
+			Headline:    spec.Headline,
+			Description: "Alert raised by " + from + " over APRS",
+			EffectiveAt: &nowS,
+			ExpiresAt:   &expires,
+			Areas:       []string{},
+			Status:      "active",
+			ReceivedAt:  nowS,
+			UpdatedAt:   nowS,
+		},
+	}
+	payload, err := json.Marshal(doc)
+	if err != nil {
+		h.logger.Warn("aprs: alert marshal failed", "error", err)
+		return
+	}
+	if err := h.publishWithTimeout("events", false, payload); err != nil {
+		h.logger.Warn("aprs: alert publish failed", "callsign", from, "error", err)
 	}
 }
 

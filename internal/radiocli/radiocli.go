@@ -5,7 +5,10 @@
 // into the normal alarm pipeline, so the CLI is purely additive.
 package radiocli
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Result is the outcome of one command evaluation.
 type Result struct {
@@ -18,6 +21,19 @@ type Result struct {
 	// Debug asks the channel to generate the debug alarm exactly like
 	// the current default behavior for any inbound message.
 	Debug bool
+	// Alert asks the channel to raise a hazard through its normal
+	// routing pipeline (the /alert command).
+	Alert *AlertSpec
+}
+
+// AlertSpec is a command-requested hazard: the channel raises it as a
+// severe event with the requested TTL (its own default applies when
+// TTL is zero).
+type AlertSpec struct {
+	// Headline is the alert text (trimmed, non-empty).
+	Headline string
+	// TTL bounds how long the alert stays active.
+	TTL time.Duration
 }
 
 // Handler executes one radio command. args is the text after the
@@ -98,35 +114,68 @@ const HelpHint = "type /help for help"
 // characters). Meshtastic reuses the same string for consistency.
 const maxBannerRunes = 67
 
-// Banner returns the installation banner with the /help hint — the
-// reply for plain messages and unknown slash attempts. The hint always
-// survives: the identity is truncated instead, so the whole banner fits
-// the 67-character APRS message limit (Meshtastic reuses the string).
+// Banner returns the full installation banner with the /help hint —
+// the reply for plain messages and unknown slash attempts. The channel
+// fits it to its message limit through Fit.
 func (b *Bot) Banner() string {
-	hint := " | " + HelpHint
-	maxIdentity := maxBannerRunes - len([]rune(hint))
-	id := []rune(b.identity)
-	if len(id) > maxIdentity {
-		id = id[:maxIdentity]
-	}
-	return string(id) + hint
+	return b.identity + " | " + HelpHint
 }
 
 // DeniedText answers an unauthorized attempt to run a restricted
 // command. English on purpose: radio replies are English-only.
 const DeniedText = "You are not authorized"
 
-// Denied returns the installation banner plus the denial — the reply
-// for a restricted command fired by an unauthorized sender. Capped at
-// the APRS message limit: the identity truncates, the denial survives.
+// Denied returns the full installation banner plus the denial — the
+// reply for a restricted command fired by an unauthorized sender. The
+// channel fits it to its message limit through Fit.
 func (b *Bot) Denied() string {
-	sep := " - "
-	budget := maxBannerRunes - len([]rune(DeniedText)) - len([]rune(sep))
-	id := []rune(b.identity)
-	if len(id) > budget {
-		id = id[:budget]
+	return b.identity + " - " + DeniedText
+}
+
+// identityVariants returns the progressively shorter identity forms:
+// the full banner, the banner without the domain (address), the
+// "WarnFlux vX.Y.Z" word alone, and finally nothing.
+func (b *Bot) identityVariants() []string {
+	variants := []string{b.identity}
+	parts := strings.SplitN(b.identity, " - ", 3)
+	if len(parts) >= 3 {
+		variants = append(variants, parts[0]+" - "+parts[1]) // no domain
 	}
-	return strings.TrimRight(string(id), " -") + sep + DeniedText
+	if len(parts) >= 2 {
+		variants = append(variants, parts[0]) // the WarnFlux word only
+	}
+	return variants
+}
+
+// Fit renders one reply for a channel limit. When the text exceeds
+// maxRunes, the identity prefix shortens progressively — first the
+// domain goes, then the installation name, then the "WarnFlux" word
+// itself — and only as the very last resort the payload end is cut.
+// Texts without the identity prefix are simply truncated at the end.
+func (b *Bot) Fit(text string, maxRunes int) string {
+	r := []rune(text)
+	if len(r) <= maxRunes {
+		return text
+	}
+	rest := strings.TrimPrefix(text, b.identity)
+	if rest == text || b.identity == "" {
+		return string(r[:maxRunes])
+	}
+	for _, variant := range b.identityVariants() {
+		if variant == "" {
+			continue
+		}
+		if candidate := variant + rest; len([]rune(candidate)) <= maxRunes {
+			return candidate
+		}
+	}
+	// Everything but the payload went away: keep as much of it as
+	// fits, cutting the end.
+	trimmed := strings.TrimLeft(rest, " -|")
+	if len([]rune(trimmed)) <= maxRunes {
+		return trimmed
+	}
+	return string([]rune(trimmed)[:maxRunes])
 }
 
 // Handle evaluates one inbound text. authorized reports whether the
@@ -165,14 +214,28 @@ func (b *Bot) Handle(text string, authorized bool) Result {
 }
 
 // helpText renders the command list available to the sender. Kept short
-// on purpose: APRS messages carry at most 67 characters.
+// on purpose: APRS messages carry at most 67 characters — when the full
+// "/name - description" form would not fit, it falls back to a compact
+// name-only list.
 func (b *Bot) helpText(authorized bool) string {
-	parts := make([]string, 0, len(b.order))
+	names := make([]string, 0, len(b.order))
 	for _, key := range b.order {
 		if !authorized && !b.public[key] {
 			continue
 		}
+		names = append(names, key)
+	}
+	parts := make([]string, 0, len(names))
+	for _, key := range names {
 		parts = append(parts, "/"+key+" - "+b.descs[key])
 	}
-	return "Commands: " + strings.Join(parts, "; ")
+	full := "Commands: " + strings.Join(parts, "; ")
+	if len([]rune(full)) <= maxBannerRunes {
+		return full
+	}
+	compact := make([]string, 0, len(names))
+	for _, key := range names {
+		compact = append(compact, "/"+key)
+	}
+	return "Commands: " + strings.Join(compact, " ")
 }

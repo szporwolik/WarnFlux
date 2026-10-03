@@ -96,7 +96,7 @@ var en = map[string]string{
 
 	// Sidebar navigation.
 	"nav.dashboard":     "Dashboard",
-	"nav.compose":       "Compose",
+	"nav.compose":       "Communications",
 	"nav.emcom":         "EMCOM",
 	"nav.account":       "Account",
 	"nav.notifications": "Notifications",
@@ -482,7 +482,8 @@ var en = map[string]string{
 	"groups.routing.sev_extreme":  "extreme only",
 
 	// Compose page.
-	"compose.title":                 "Compose communication",
+	"compose.title":                 "Communications",
+	"compose.new":                   "New communication",
 	"compose.templates":             "Templates:",
 	"compose.source":                "Source",
 	"compose.event":                 "Event",
@@ -1144,7 +1145,8 @@ var pl = map[string]string{
 	"groups.routing.sev_severe":   "severe i wyżej",
 	"groups.routing.sev_extreme":  "tylko extreme",
 
-	"compose.title":                 "Nowy komunikat",
+	"compose.title":                 "Komunikaty",
+	"compose.new":                   "Nowy komunikat",
 	"compose.templates":             "Szablony:",
 	"compose.source":                "Źródło",
 	"compose.event":                 "Zdarzenie",

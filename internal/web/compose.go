@@ -153,6 +153,12 @@ type composeView struct {
 	Msg    string
 	Error  string
 
+	// ShowForm opens the collapsible compose panel on the initial
+	// render: editing an existing communication or re-rendering after
+	// a validation error. The default view is the issued list with the
+	// panel closed.
+	ShowForm bool
+
 	Severities  []option
 	Urgencies   []option
 	Certainties []option
@@ -802,6 +808,9 @@ func (s *Server) buildComposeView(lang string, form composeForm) composeView {
 		Statuses:    composeStatusesFor(lang),
 		NavCompose:  true,
 		OfflineMode: s.OfflineMode(),
+		// Editing opens the panel on the initial render; a fresh page
+		// starts with the issued list and a collapsed panel.
+		ShowForm: form.EventKey != "",
 	}
 	// The map picker centers on the operational area (the territory we
 	// serve); 0 = no picker (APRS hub disabled).
@@ -820,6 +829,7 @@ func (s *Server) renderComposeError(w http.ResponseWriter, r *http.Request, stat
 	view.Username = sess.username
 	view.Role = sess.role
 	view.Error = msg
+	view.ShowForm = true // keep the form visible so the operator sees what failed
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	s.renderL(w, r, "compose", view)

@@ -986,6 +986,19 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .test-actions .btn-primary { width: auto; }
 .compose-actions { grid-column: 1 / -1; display: flex; gap: 0.6rem; align-items: center; margin-top: 0.4rem; }
 .compose-actions .btn-primary { width: auto; }
+.compose-head { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; flex-wrap: wrap; }
+.compose-head h2 { margin: 0; }
+.compose-panel { margin: 1rem 0 0; border: 1px solid var(--input-border); border-radius: var(--radius); background: var(--card); }
+.compose-panel summary {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.7rem 1rem; cursor: pointer; font-weight: 600;
+  list-style: none;
+}
+.compose-panel summary::-webkit-details-marker { display: none; }
+.compose-panel summary .icon { order: -1; }
+.compose-panel[open] summary { border-bottom: 1px solid var(--input-border); }
+.compose-panel .page-info, .compose-panel .compose-templates, .compose-panel .test-form { margin: 1rem; }
+.compose-issued-head { margin-top: 1.6rem; }
 .compose-area {
   width: 100%;
   background: var(--input-bg);

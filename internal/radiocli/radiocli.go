@@ -67,7 +67,7 @@ func (b *Bot) Register(name, description string, h Handler) {
 
 // RegisterRestricted installs one command reserved for authorized
 // senders (the channel's sender allow-list decides). Unauthorized
-// senders get the public banner instead.
+// senders get an explicit denial instead.
 func (b *Bot) RegisterRestricted(name, description string, h Handler) {
 	b.register(name, description, false, h)
 }
@@ -112,6 +112,23 @@ func (b *Bot) Banner() string {
 	return string(id) + hint
 }
 
+// DeniedText answers an unauthorized attempt to run a restricted
+// command. English on purpose: radio replies are English-only.
+const DeniedText = "You are not authorized"
+
+// Denied returns the installation banner plus the denial — the reply
+// for a restricted command fired by an unauthorized sender. Capped at
+// the APRS message limit: the identity truncates, the denial survives.
+func (b *Bot) Denied() string {
+	sep := " - "
+	budget := maxBannerRunes - len([]rune(DeniedText)) - len([]rune(sep))
+	id := []rune(b.identity)
+	if len(id) > budget {
+		id = id[:budget]
+	}
+	return strings.TrimRight(string(id), " -") + sep + DeniedText
+}
+
 // Handle evaluates one inbound text. authorized reports whether the
 // sender sits on the channel's allow-list: public commands run for
 // everyone, restricted commands run for authorized senders only (others
@@ -140,9 +157,9 @@ func (b *Bot) Handle(text string, authorized bool) Result {
 		return Result{Handled: true, Reply: b.Banner()}
 	}
 	if !b.public[name] && !authorized {
-		// Restricted command from an unauthorized sender: the public
-		// banner, never the command.
-		return Result{Handled: true, Reply: b.Banner()}
+		// Restricted command from an unauthorized sender: a clear
+		// denial, never the command.
+		return Result{Handled: true, Reply: b.Denied()}
 	}
 	return h(args)
 }

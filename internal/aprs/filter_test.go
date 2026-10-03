@@ -40,3 +40,30 @@ func TestIsInfrastructure(t *testing.T) {
 		}
 	}
 }
+
+// TestStationDocumentPredicates pins the station-document helpers used
+// by the presence bridge: infrastructure symbols and movement signals.
+func TestStationDocumentPredicates(t *testing.T) {
+	if got := (StationDocument{SymbolTable: "/", Symbol: "#"}).IsInfrastructure(); !got {
+		t.Fatal("digipeater document must be infrastructure")
+	}
+	if got := (StationDocument{SymbolTable: "/", Symbol: ">"}).IsInfrastructure(); got {
+		t.Fatal("car document must not be infrastructure")
+	}
+	if got := (StationDocument{}).IsInfrastructure(); got {
+		t.Fatal("symbol-less document must not be infrastructure")
+	}
+
+	if got := (StationDocument{}).IsMobile(); got {
+		t.Fatal("empty document must not be mobile")
+	}
+	for _, d := range []StationDocument{
+		{SpeedKMH: 10},
+		{CourseDeg: 90},
+		{Track: []TrackWire{{Latitude: 50.1, Longitude: 20.1}}},
+	} {
+		if !d.IsMobile() {
+			t.Fatalf("document %+v must be mobile", d)
+		}
+	}
+}

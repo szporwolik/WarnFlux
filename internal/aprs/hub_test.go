@@ -771,11 +771,117 @@ func TestHubRadioCLI(t *testing.T) {
 	if !strings.Contains(sends[4][1], "Commands:") || !strings.Contains(sends[4][1], "/help") {
 		t.Fatalf("public /help reply = %v, want the public command list", sends[4])
 	}
-	if strings.Contains(sends[4][1], "/debug") {
+	if strings.Contains(sends[4][1], "/debug") || strings.Contains(sends[4][1], "/alert") {
 		t.Fatalf("public /help reply = %v, must not list restricted commands", sends[4])
 	}
 	if got := len(sink.payloads("events")); got != 1 {
 		t.Fatalf("public /help produced alarm events (%d total)", got)
+	}
+}
+
+// TestHubAlertCommand pins the operator /alert command: an authorized
+// sender raises a severe hazard with a ~4-hour expiry through the event
+// bridge; a missing parameter answers with the usage; an unauthorized
+// sender gets the denial.
+func TestHubAlertCommand(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		headline := strings.TrimSpace(args)
+		if headline == "" {
+			return radiocli.Result{Handled: true, Reply: "Missing parameter: /alert <text>"}
+		}
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: headline, TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	hub.SetCLI(cli)
+
+	// /alert with text: severe event + confirmation reply.
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu"), "aprs-inet")
+	waitFor(t, func() bool { return len(sink.payloads("events")) >= 1 })
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	var we MessageEventWire
+	if err := json.Unmarshal(sink.payloads("events")[0], &we); err != nil {
+		t.Fatalf("alert payload: %v", err)
+	}
+	if we.Event.Source != "aprs" || we.Event.Severity != "severe" {
+		t.Fatalf("alert event = %+v, want severe from aprs", we.Event)
+	}
+	if we.Event.Headline != "pozar lasu" {
+		t.Fatalf("headline = %q, want the operator text", we.Event.Headline)
+	}
+	if we.Event.ExpiresAt == nil {
+		t.Fatal("alert event has no expiry")
+	}
+	exp, err := time.Parse(time.RFC3339, *we.Event.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expiry = %q: %v", *we.Event.ExpiresAt, err)
+	}
+	if d := exp.Sub(time.Now()); d < 3*time.Hour+45*time.Minute || d > 4*time.Hour+15*time.Minute {
+		t.Fatalf("expiry in %s, want ~4h", d)
+	}
+	sends := tx.sends()
+	if !strings.Contains(sends[0][1], "OK: alert raised") {
+		t.Fatalf("alert reply = %v, want the confirmation", sends[0])
+	}
+
+	// /alert without text: usage reply, no new event.
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 2 })
+	sends = tx.sends()
+	if !strings.Contains(sends[1][1], "Missing parameter") {
+		t.Fatalf("no-arg /alert reply = %v, want the usage", sends[1])
+	}
+	if got := len(sink.payloads("events")); got != 1 {
+		t.Fatalf("events after no-arg /alert = %d, want still 1", got)
+	}
+
+	// Unauthorized sender: denial, no event.
+	hub.Observe(testPacket("SP9ZZZ>APRS,TCPIP*::SP9MOA-10:/alert x"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	sends = tx.sends()
+	if !strings.Contains(sends[2][1], "You are not authorized") {
+		t.Fatalf("unauthorized /alert reply = %v, want the denial", sends[2])
+	}
+	if got := len(sink.payloads("events")); got != 1 {
+		t.Fatalf("events after unauthorized /alert = %d, want still 1", got)
+	}
+}
+
+// TestHubReplyFitsChannelLimit pins the shared fitting at the gateway:
+// a very long installation identity shortens progressively instead of
+// overflowing the 67-character APRS message limit.
+func TestHubReplyFitsChannelLimit(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - a.very.long.domain.example.org"))
+
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:hello"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	sends := tx.sends()
+	if got := sends[0][1]; len([]rune(got)) > MaxMessageText {
+		t.Fatalf("reply = %q, %d runes — over the APRS limit", got, len([]rune(got)))
+	}
+	if got := sends[0][1]; got != "WarnFlux v1.0 - SOSNA | type /help for help" {
+		t.Fatalf("reply = %q, want the domain dropped", got)
 	}
 }
 

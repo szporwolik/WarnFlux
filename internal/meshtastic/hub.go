@@ -1118,6 +1118,14 @@ func (h *Hub) pairByRoutingLocked(rid, from uint32, fromSelf bool) *pendingSend 
 // node's routing frame never settles our wait. Modem acceptance and
 // final delivery stay distinct: a self frame with an error reason means
 // the modem accepted the message but could NOT deliver it.
+//
+// A self-addressed frame WITHOUT an error is the modem's acceptance of
+// a DIRECT message, NOT its final result: the recipient's acknowledgment
+// may still arrive and lift the status to delivered. The wait therefore
+// STAYS registered (the settle window resolves it to failed when the
+// recipient keeps silent), so a synthetic "own ack, then recipient ack"
+// sequence still ends delivered. Broadcast confirmations and every
+// error frame are final and consume the wait.
 func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	rid := decoded.GetRequestId()
 	if rid == 0 {
@@ -1143,8 +1151,6 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 		h.sendMu.Unlock()
 		return
 	}
-	delete(h.pending, rid)
-	h.sendMu.Unlock()
 	status := TxDelivered
 	switch {
 	case routing.GetErrorReason() != pb.Routing_NONE:
@@ -1152,6 +1158,23 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	case fromSelf:
 		status = TxSent // modem accepted the frame (broadcast "sent" confirmation)
 	}
+	// A modem-accepted DIRECT message keeps its wait for the recipient's
+	// ack — the settle window is the final result when none comes.
+	// (Logging makes the occurrence of this sequence observable on the
+	// live firmware: it is expected on some device builds and absent on
+	// others — the keep is correct either way.)
+	final := true
+	if fromSelf && routing.GetErrorReason() == pb.Routing_NONE && ps.wantAck {
+		final = false
+		if h.logger != nil {
+			h.logger.Info("meshtastic: modem ack for direct message, recipient ack still expected",
+				"request_id", rid, "to", fmt.Sprintf("%08x", ps.to))
+		}
+	}
+	if final {
+		delete(h.pending, rid)
+	}
+	h.sendMu.Unlock()
 	h.markStatus(ps, status)
 }
 

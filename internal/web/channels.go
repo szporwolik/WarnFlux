@@ -4,58 +4,48 @@ import (
 	"sort"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
-// channelKind describes one delivery medium in plain language. The
-// internal "logger" action is never shown to the public.
+// channelKind describes one delivery medium's presentation: the icon and
+// the i18n key prefix for its name and description. The internal
+// "logger" action is never shown to the public.
 type channelKind struct {
-	Icon        string
-	Name        string
-	Description string
+	Icon string
+	Key  string
 }
 
-// channelKinds maps action types onto their public presentation.
+// channelKinds maps action types onto their public presentation. Several
+// types share one key when they are the same medium to the public
+// ("aprs" and "aprs-out" are both APRS radio).
 var channelKinds = map[string]channelKind{
-	"smtp": {
-		Icon:        "i-box-arrow-right",
-		Name:        "Email",
-		Description: "Hazard alerts land in the mailboxes of the group members.",
-	},
-	"aprs": {
-		Icon:        "i-broadcast-pin",
-		Name:        "APRS radio",
-		Description: "Alerts go out as text messages to ham radio operators over the air.",
-	},
-	"aprs-out": {
-		Icon:        "i-broadcast-pin",
-		Name:        "APRS radio",
-		Description: "Alerts go out as text messages to ham radio operators over the air.",
-	},
-	"meshtastic": {
-		Icon:        "i-broadcast",
-		Name:        "Meshtastic radio",
-		Description: "Alerts go out as text messages over the community LoRa mesh (channel broadcasts and direct messages to registered node owners).",
-	},
-	"discord": {
-		Icon:        "i-people",
-		Name:        "Discord",
-		Description: "Alerts are posted on the community Discord channel.",
-	},
-	"http_webhook": {
-		Icon:        "i-puzzle",
-		Name:        "Webhook",
-		Description: "Alerts are delivered to an external system.",
-	},
+	"smtp":         {Icon: "i-box-arrow-right", Key: "channels.email"},
+	"aprs":         {Icon: "i-broadcast-pin", Key: "channels.aprs"},
+	"aprs-out":     {Icon: "i-broadcast-pin", Key: "channels.aprs"},
+	"meshtastic":   {Icon: "i-broadcast", Key: "channels.meshtastic"},
+	"discord":      {Icon: "i-people", Key: "channels.discord"},
+	"http_webhook": {Icon: "i-puzzle", Key: "channels.webhook"},
+}
+
+// channelRank orders the rendered view rows: email first, then radio
+// (APRS, then mesh), then chat, then generic integrations.
+var channelRank = map[string]int{
+	"smtp": 1, "aprs": 2, "aprs-out": 2, "meshtastic": 3, "discord": 4, "http_webhook": 5,
 }
 
 // publicChannels builds the friendly public channel list from action
 // statuses: enabled instances only, one row per medium (duplicate
 // instances of one type collapse), internal types hidden, in a stable
-// friendly order.
-func publicChannels(statuses []action.Status) []publicChannelView {
+// friendly order. Names and descriptions come from the page language
+// catalog.
+func publicChannels(statuses []action.Status, lang string) []publicChannelView {
 	seen := make(map[string]bool, len(statuses))
-	var out []publicChannelView
+	type ranked struct {
+		view publicChannelView
+		rank int
+	}
+	var out []ranked
 	for _, st := range statuses {
 		if !st.Enabled || seen[st.Type] {
 			continue
@@ -65,35 +55,23 @@ func publicChannels(statuses []action.Status) []publicChannelView {
 			continue
 		}
 		seen[st.Type] = true
-		out = append(out, publicChannelView{
-			Icon:        kind.Icon,
-			Name:        kind.Name,
-			Description: kind.Description,
+		out = append(out, ranked{
+			view: publicChannelView{
+				Icon:        kind.Icon,
+				Name:        i18n.T(lang, kind.Key+".name"),
+				Description: i18n.T(lang, kind.Key+".desc"),
+			},
+			rank: channelRank[st.Type],
 		})
 	}
 	// The statuses arrive sorted by instance ID, not by medium priority:
 	// re-sort by the fixed friendly order.
-	sort.SliceStable(out, func(i, j int) bool {
-		return typeRank(out[i]) < typeRank(out[j])
-	})
-	return out
-}
-
-// typeRank orders the rendered view rows: email first, then radio
-// (APRS, then mesh), then chat, then generic integrations.
-func typeRank(v publicChannelView) int {
-	switch v.Name {
-	case "Email":
-		return 1
-	case "APRS radio":
-		return 2
-	case "Meshtastic radio":
-		return 3
-	case "Discord":
-		return 4
-	default:
-		return 5
+	sort.SliceStable(out, func(i, j int) bool { return out[i].rank < out[j].rank })
+	views := make([]publicChannelView, len(out))
+	for i, r := range out {
+		views[i] = r.view
 	}
+	return views
 }
 
 // sourceKinds maps source plugin types onto their public presentation
@@ -101,99 +79,39 @@ func typeRank(v publicChannelView) int {
 // aircraft) are listed too — they enrich the map, but the descriptions
 // say so.
 var sourceKinds = map[string]channelKind{
-	"rso": {
-		Icon:        "i-exclamation-triangle",
-		Name:        "RSO / Alert RCB",
-		Description: "Official government emergency alerts (Alert RCB) from the RSO service.",
-	},
-	"imgw": {
-		Icon:        "i-cloud-sun",
-		Name:        "IMGW-PIB",
-		Description: "Official weather and hydrological warnings from the Polish meteo service.",
-	},
-	"gddkia": {
-		Icon:        "i-speedometer2",
-		Name:        "GDDKiA",
-		Description: "Road works, closures and difficulties on national roads.",
-	},
-	"gios": {
-		Icon:        "i-shield-lock",
-		Name:        "GIOŚ (industrial accidents)",
-		Description: "Serious industrial accidents reported to the environmental inspectorate.",
-	},
-	"giosaq": {
-		Icon:        "i-heart-pulse",
-		Name:        "GIOŚ (air quality)",
-		Description: "Official air-pollution exceedances: PM10, PM2.5, ozone and more.",
-	},
-	"aprs-inet": {
-		Icon:        "i-broadcast-pin",
-		Name:        "APRS network",
-		Description: "Radio amateurs' stations and messages heard over the air.",
-	},
-	"aprs-radio": {
-		Icon:        "i-broadcast-pin",
-		Name:        "APRS network",
-		Description: "Radio amateurs' stations and messages heard over the air.",
-	},
-	"meshtastic": {
-		Icon:        "i-broadcast",
-		Name:        "Meshtastic network",
-		Description: "Community LoRa mesh: heard nodes, stations and direct messages from registered operators.",
-	},
-	"openmeteo": {
-		Icon:        "i-sun",
-		Name:        "Open-Meteo",
-		Description: "Weather forecasts for the region (informational).",
-	},
-	"metar": {
-		Icon:        "i-cloud-sun",
-		Name:        "Aviation weather (METAR)",
-		Description: "Current weather at regional airports (informational).",
-	},
-	"adsb": {
-		Icon:        "i-lightning-charge",
-		Name:        "ADS-B aircraft",
-		Description: "Aircraft traffic over the area (informational).",
-	},
+	"rso":        {Icon: "i-exclamation-triangle", Key: "sources.rso"},
+	"imgw":       {Icon: "i-cloud-sun", Key: "sources.imgw"},
+	"gddkia":     {Icon: "i-speedometer2", Key: "sources.gddkia"},
+	"gios":       {Icon: "i-shield-lock", Key: "sources.gios"},
+	"giosaq":     {Icon: "i-heart-pulse", Key: "sources.giosaq"},
+	"aprs-inet":  {Icon: "i-broadcast-pin", Key: "sources.aprs"},
+	"aprs-radio": {Icon: "i-broadcast-pin", Key: "sources.aprs"},
+	"meshtastic": {Icon: "i-broadcast", Key: "sources.meshtastic"},
+	"openmeteo":  {Icon: "i-sun", Key: "sources.openmeteo"},
+	"metar":      {Icon: "i-cloud-sun", Key: "sources.metar"},
+	"adsb":       {Icon: "i-lightning-charge", Key: "sources.adsb"},
 }
 
 // sourceRank orders the public source list: official alert feeds first,
 // informational feeds last.
-func sourceRank(v publicChannelView) int {
-	switch v.Name {
-	case "RSO / Alert RCB":
-		return 1
-	case "IMGW-PIB":
-		return 2
-	case "GDDKiA":
-		return 3
-	case "GIOŚ (industrial accidents)":
-		return 4
-	case "GIOŚ (air quality)":
-		return 5
-	case "APRS network":
-		return 6
-	case "Meshtastic network":
-		return 7
-	case "Open-Meteo":
-		return 8
-	case "ADS-B aircraft":
-		return 9
-	case "Aviation weather (METAR)":
-		return 10
-	default:
-		return 11
-	}
+var sourceRank = map[string]int{
+	"rso": 1, "imgw": 2, "gddkia": 3, "gios": 4, "giosaq": 5,
+	"aprs-inet": 6, "aprs-radio": 6, "meshtastic": 7, "openmeteo": 8,
+	"adsb": 9, "metar": 10,
 }
 
 // publicSources builds the friendly public source list from plugin
 // statuses: enabled SOURCE instances only, one row per feed (duplicate
 // instances of one type collapse), unknown types hidden, in a stable
-// friendly order.
-func publicSources(statuses []plugin.PluginStatus) []publicChannelView {
+// friendly order. Names and descriptions come from the page language
+// catalog.
+func publicSources(statuses []plugin.PluginStatus, lang string) []publicChannelView {
 	seen := make(map[string]bool, len(statuses))
-	var out []publicChannelView
+	type ranked struct {
+		view publicChannelView
+		rank int
+	}
+	var out []ranked
 	for _, st := range statuses {
 		if st.Kind != plugin.KindSource || st.State == plugin.StateDisabled || seen[st.Type] {
 			continue
@@ -203,14 +121,19 @@ func publicSources(statuses []plugin.PluginStatus) []publicChannelView {
 			continue
 		}
 		seen[st.Type] = true
-		out = append(out, publicChannelView{
-			Icon:        kind.Icon,
-			Name:        kind.Name,
-			Description: kind.Description,
+		out = append(out, ranked{
+			view: publicChannelView{
+				Icon:        kind.Icon,
+				Name:        i18n.T(lang, kind.Key+".name"),
+				Description: i18n.T(lang, kind.Key+".desc"),
+			},
+			rank: sourceRank[st.Type],
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return sourceRank(out[i]) < sourceRank(out[j])
-	})
-	return out
+	sort.SliceStable(out, func(i, j int) bool { return out[i].rank < out[j].rank })
+	views := make([]publicChannelView, len(out))
+	for i, r := range out {
+		views[i] = r.view
+	}
+	return views
 }

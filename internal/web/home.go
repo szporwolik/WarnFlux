@@ -199,8 +199,8 @@ func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 // current active hazards. No session is required; a logged-in operator
 // sees a Dashboard entry in the header instead of the sign-in icon.
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	v := s.buildHomeView()
 	lang := s.langFor(r)
+	v := s.buildHomeView(lang)
 	if sess := s.sessions.currentSession(r); sess != nil {
 		v.LoggedIn = true
 		v.Username = sess.username
@@ -230,8 +230,9 @@ func (s *Server) buildHomeAlertsView() homeView {
 
 // buildHomeView assembles the public view, most severe first, then
 // newest. Hazards come from activeHazards: the LOCAL database first, the
-// MQTT mirror only fills documents the local record does not own.
-func (s *Server) buildHomeView() homeView {
+// MQTT mirror only fills documents the local record does not own. lang
+// picks the page language for the channel/source names and descriptions.
+func (s *Server) buildHomeView(lang string) homeView {
 	v := homeView{
 		AppTitle:    s.cfg.Title,
 		Header1:     s.displayHeader1(),
@@ -262,10 +263,10 @@ func (s *Server) buildHomeView() homeView {
 		v.AprsCallsign = s.aprs.Callsign()
 	}
 	if s.actions != nil {
-		v.Channels = publicChannels(s.actions.Statuses())
+		v.Channels = publicChannels(s.actions.Statuses(), lang)
 	}
 	if s.router != nil {
-		v.Sources = publicSources(s.router.Statuses())
+		v.Sources = publicSources(s.router.Statuses(), lang)
 	}
 	for _, net := range nets {
 		// Monitoring (level 0) is the default, calm state of every

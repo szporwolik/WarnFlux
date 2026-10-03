@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
@@ -21,7 +22,7 @@ func TestPublicChannels(t *testing.T) {
 		{ID: "smtp-backup", Type: "smtp", Enabled: true, State: action.StateHealthy},
 		{ID: "custom-thing", Type: "mystery", Enabled: true, State: action.StateHealthy},
 	}
-	got := publicChannels(statuses)
+	got := publicChannels(statuses, i18n.LangEN)
 	want := []string{"Email", "APRS radio", "Meshtastic radio", "Discord"}
 	if len(got) != len(want) {
 		t.Fatalf("channels = %+v, want %v", got, want)
@@ -32,6 +33,21 @@ func TestPublicChannels(t *testing.T) {
 		}
 		if got[i].Icon == "" || got[i].Description == "" {
 			t.Errorf("channel %s lacks icon/description: %+v", name, got[i])
+		}
+	}
+
+	// Polish: names and descriptions come from the page catalog.
+	gotPL := publicChannels(statuses, i18n.LangPL)
+	wantPL := []string{"E-mail", "Radio APRS", "Radio Meshtastic", "Discord"}
+	if len(gotPL) != len(wantPL) {
+		t.Fatalf("pl channels = %+v, want %v", gotPL, wantPL)
+	}
+	for i, name := range wantPL {
+		if gotPL[i].Name != name {
+			t.Errorf("pl channel %d = %s, want %s", i, gotPL[i].Name, name)
+		}
+		if gotPL[i].Description == "" || gotPL[i].Description == got[i].Description {
+			t.Errorf("pl channel %s leaks the English description: %+v", name, gotPL[i])
 		}
 	}
 }
@@ -49,7 +65,7 @@ func TestPublicSources(t *testing.T) {
 		{ID: "rso-main", Type: "rso", Kind: plugin.KindSource, State: plugin.StateRunning},
 		{ID: "future-x", Type: "something-new", Kind: plugin.KindSource, State: plugin.StateRunning},
 	}
-	got := publicSources(statuses)
+	got := publicSources(statuses, i18n.LangEN)
 	want := []string{"RSO / Alert RCB", "IMGW-PIB", "GIOŚ (air quality)", "ADS-B aircraft"}
 	if len(got) != len(want) {
 		t.Fatalf("sources = %+v, want %v", got, want)
@@ -60,6 +76,21 @@ func TestPublicSources(t *testing.T) {
 		}
 		if got[i].Icon == "" || got[i].Description == "" {
 			t.Errorf("source %s lacks icon/description: %+v", name, got[i])
+		}
+	}
+
+	// Polish: names and descriptions come from the page catalog.
+	gotPL := publicSources(statuses, i18n.LangPL)
+	wantPL := []string{"RSO / Alert RCB", "IMGW-PIB", "GIOŚ (jakość powietrza)", "Samoloty ADS-B"}
+	if len(gotPL) != len(wantPL) {
+		t.Fatalf("pl sources = %+v, want %v", gotPL, wantPL)
+	}
+	for i, name := range wantPL {
+		if gotPL[i].Name != name {
+			t.Errorf("pl source %d = %s, want %s", i, gotPL[i].Name, name)
+		}
+		if gotPL[i].Description == "" || gotPL[i].Description == got[i].Description {
+			t.Errorf("pl source %s leaks the English description: %+v", name, gotPL[i])
 		}
 	}
 }

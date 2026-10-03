@@ -14,6 +14,7 @@ func TestPublicChannels(t *testing.T) {
 	statuses := []action.Status{
 		{ID: "wh-discord", Type: "http_webhook", Enabled: false, State: action.StateDisabled},
 		{ID: "logger-a", Type: "logger", Enabled: true, State: action.StateHealthy},
+		{ID: "mesh-main", Type: "meshtastic", Enabled: true, State: action.StateHealthy},
 		{ID: "aprs-hams-rf", Type: "aprs-out", Enabled: true, State: action.StateHealthy},
 		{ID: "discord-alerts", Type: "discord", Enabled: true, State: action.StateHealthy},
 		{ID: "smtp-alerts", Type: "smtp", Enabled: true, State: action.StateHealthy},
@@ -21,7 +22,7 @@ func TestPublicChannels(t *testing.T) {
 		{ID: "custom-thing", Type: "mystery", Enabled: true, State: action.StateHealthy},
 	}
 	got := publicChannels(statuses)
-	want := []string{"Email", "APRS radio", "Discord"}
+	want := []string{"Email", "APRS radio", "Meshtastic radio", "Discord"}
 	if len(got) != len(want) {
 		t.Fatalf("channels = %+v, want %v", got, want)
 	}

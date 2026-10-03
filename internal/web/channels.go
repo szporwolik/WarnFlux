@@ -32,6 +32,11 @@ var channelKinds = map[string]channelKind{
 		Name:        "APRS radio",
 		Description: "Alerts go out as text messages to ham radio operators over the air.",
 	},
+	"meshtastic": {
+		Icon:        "i-broadcast",
+		Name:        "Meshtastic radio",
+		Description: "Alerts go out as text messages over the community LoRa mesh (channel broadcasts and direct messages to registered node owners).",
+	},
 	"discord": {
 		Icon:        "i-people",
 		Name:        "Discord",
@@ -74,18 +79,20 @@ func publicChannels(statuses []action.Status) []publicChannelView {
 	return out
 }
 
-// typeRank orders the rendered view rows: email first, then radio, then
-// chat, then generic integrations.
+// typeRank orders the rendered view rows: email first, then radio
+// (APRS, then mesh), then chat, then generic integrations.
 func typeRank(v publicChannelView) int {
 	switch v.Name {
 	case "Email":
 		return 1
 	case "APRS radio":
 		return 2
-	case "Discord":
+	case "Meshtastic radio":
 		return 3
-	default:
+	case "Discord":
 		return 4
+	default:
+		return 5
 	}
 }
 

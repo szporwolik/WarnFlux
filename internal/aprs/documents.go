@@ -54,6 +54,27 @@ type StationDocument struct {
 	Weather *WeatherReport `json:"weather,omitempty"`
 }
 
+// IsInfrastructure reports whether the station uses an infrastructure
+// symbol (digipeater, repeater, gateway, ...) rather than an actual
+// operator symbol.
+func (d StationDocument) IsInfrastructure() bool {
+	if d.Symbol == "" {
+		return false
+	}
+	b := d.Symbol[0]
+	if d.SymbolTable == "\\" {
+		return alternateInfrastructureSymbols[b]
+	}
+	return primaryInfrastructureSymbols[b]
+}
+
+// IsMobile reports whether the station is a moving operator: it
+// announced a speed, a course, or a movement track (track points only
+// accumulate on ≥30 m displacement, so GPS noise never counts).
+func (d StationDocument) IsMobile() bool {
+	return d.SpeedKMH > 0 || d.CourseDeg != 0 || len(d.Track) > 0
+}
+
 // PacketDocument is the non-retained MQTT document of one parsed packet.
 type PacketDocument struct {
 	SchemaVersion  int           `json:"schema_version"`

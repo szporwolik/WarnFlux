@@ -180,12 +180,12 @@ var en = map[string]string{
 	"home.no_active":     "No active messages.",
 	"home.sources.head":  "Where the data comes from",
 	"home.sources.note":  "The alerts are collected from these official feeds and networks.",
-	"home.channels.head": "How alerts reach you",
+	"home.channels.head": "Notification channels",
 	"home.channels.note": "When an alert is issued, the system reaches people through these channels.",
 	"home.no_sources":    "No data sources are configured yet.",
 	"home.no_channels":   "No delivery channels are configured yet.",
 
-	// Public delivery channels (the "How alerts reach you" list).
+	// Public delivery channels (the "Notification channels" list).
 	"channels.email.name":      "Email",
 	"channels.email.desc":      "Hazard alerts land in the mailboxes of the group members.",
 	"channels.aprs.name":       "APRS radio",
@@ -847,12 +847,12 @@ var pl = map[string]string{
 	"home.no_active":     "Brak aktywnych komunikatów.",
 	"home.sources.head":  "Skąd pochodzą dane",
 	"home.sources.note":  "Alerty są zbierane z tych oficjalnych źródeł i sieci.",
-	"home.channels.head": "Jak docierają do Ciebie alerty",
+	"home.channels.head": "Kanały powiadomień",
 	"home.channels.note": "Po wydaniu alertu system dociera do ludzi tymi kanałami.",
 	"home.no_sources":    "Nie skonfigurowano jeszcze żadnych źródeł danych.",
 	"home.no_channels":   "Nie skonfigurowano jeszcze kanałów dostarczania.",
 
-	// Publiczne kanały dostarczania (lista „Jak docierają do Ciebie alerty”).
+	// Publiczne kanały dostarczania (lista „Kanały powiadomień”).
 	"channels.email.name":      "E-mail",
 	"channels.email.desc":      "Alerty o zagrożeniach trafiają do skrzynek członków grupy.",
 	"channels.aprs.name":       "Radio APRS",

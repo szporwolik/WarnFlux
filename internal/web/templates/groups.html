@@ -49,8 +49,8 @@
               <td>
                 <div class="row-actions">
                 <a class="btn-ghost btn-small" href="/groups/{{.ID}}/routing"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr $.Lang "common.routing"}}</a>
-                <a class="btn-ghost btn-small" href="/groups?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr $.Lang "common.edit"}}</a>
-                <form method="post" action="/groups/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('{{trf $.Lang "groups.confirm.delete" .Name}}');">
+                <a class="btn-ghost btn-small" href="/groups?edit={{.ID}}" data-force-nav><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr $.Lang "common.edit"}}</a>
+                <form method="post" action="/groups/{{.ID}}/delete" class="inline-form" data-confirm-msg="{{trf $.Lang "groups.confirm.delete" .Name}}">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
                   <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>{{tr $.Lang "common.delete"}}</button>
                 </form>

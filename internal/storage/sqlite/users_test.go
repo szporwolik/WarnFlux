@@ -128,9 +128,20 @@ func TestUsersCRUDAndProtection(t *testing.T) {
 		t.Fatalf("updated user = %+v", alice)
 	}
 
-	// Admin row is protected.
-	if _, err := store.UpdateUser(1, "admin", "x", "", "", "", ""); !errors.Is(err, storage.ErrUserProtected) {
-		t.Fatalf("admin update = %v, want ErrUserProtected", err)
+	// Admin contact fields update, but the identity is config-owned and
+	// never changes here.
+	admin, err := store.UpdateUser(1, "admin", "x", "", "", "", "")
+	if err != nil {
+		t.Fatalf("admin contact update = %v, want success", err)
+	}
+	if admin.Phone != "x" || admin.Username != "admin" || admin.Role != "" || admin.IsAdmin == false {
+		t.Fatalf("admin after update = %+v, want phone updated and identity untouched", admin)
+	}
+	if _, err := store.UpdateUser(1, "hijack", "x", "", "", "emcom", "password123"); err != nil {
+		t.Fatalf("admin second update = %v", err)
+	}
+	if got, _ := store.GetUser(1); got.Username != "admin" || got.Role != "" {
+		t.Fatalf("admin identity changed = %+v", got)
 	}
 	if err := store.DeleteUser(1); !errors.Is(err, storage.ErrUserProtected) {
 		t.Fatalf("admin delete = %v, want ErrUserProtected", err)
@@ -298,9 +309,12 @@ func TestUserAPRSCallsigns(t *testing.T) {
 		t.Fatalf("unknown group = %v, %v", calls, err)
 	}
 
-	// Protected and missing users.
-	if err := store.SetUserAPRS(1, []string{"SP9MOA-16"}); !errors.Is(err, storage.ErrUserProtected) {
-		t.Fatalf("admin SetUserAPRS = %v, want ErrUserProtected", err)
+	// The admin may register its own callsigns; missing users still fail.
+	if err := store.SetUserAPRS(1, []string{"SP9MOA-16"}); err != nil {
+		t.Fatalf("admin SetUserAPRS = %v, want success", err)
+	}
+	if got, _ := store.GetUser(1); len(got.APRSCallsigns) != 1 || got.APRSCallsigns[0] != "SP9MOA-16" {
+		t.Fatalf("admin callsigns = %v", got.APRSCallsigns)
 	}
 	if err := store.SetUserAPRS(999, []string{"SP9MOA-16"}); !errors.Is(err, storage.ErrUserNotFound) {
 		t.Fatalf("missing SetUserAPRS = %v, want ErrUserNotFound", err)

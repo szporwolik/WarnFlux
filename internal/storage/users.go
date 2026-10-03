@@ -183,17 +183,20 @@ type UserStore interface {
 	// CreateUser inserts a new regular user.
 	CreateUser(username, phone, email, discord, role, password string) (User, error)
 	// UpdateUser replaces the contact fields, role and (optionally) the
-	// password of a regular user.
+	// password of a regular user. The admin row's identity (username,
+	// role, password) is config-owned and never changes here; only its
+	// contact fields (phone, email, discord) update.
 	UpdateUser(id int64, username, phone, email, discord, role, password string) (User, error)
 	// DeleteUser removes a regular user.
 	DeleteUser(id int64) error
 	// SetUserAPRS replaces the user's registered APRS callsigns (with
 	// optional -SSID). The store normalizes (uppercase) and de-duplicates
-	// them; a missing or protected user reports the usual errors.
+	// them; the admin row may register its own callsigns like any other
+	// user.
 	SetUserAPRS(userID int64, callsigns []string) error
 	// SetUserMeshtasticIDs replaces the user's registered Meshtastic public keys
-	// (lowercase 64-hex). The store de-duplicates; a missing or protected
-	// user reports the usual errors.
+	// (lowercase 64-hex). The store de-duplicates; the admin row may
+	// register its own keys like any other user.
 	SetUserMeshtasticIDs(userID int64, keys []string) error
 	// MeshtasticOwners returns every registered Meshtastic public key mapped
 	// to the username that registered it. The admin meshtastic page uses
@@ -213,6 +216,7 @@ type UserStore interface {
 	UserChannelOptOuts(userID int64) (map[string]bool, error)
 	// SetUserChannelOptOuts replaces the user's delivery-channel
 	// opt-outs: listed kinds are disabled, every other channel stays on.
+	// The admin row may set its own opt-outs like any other user.
 	SetUserChannelOptOuts(userID int64, kinds []string) error
 	// SetUserPassword replaces a regular user's password. The admin row
 	// reports ErrUserProtected (its password lives in configuration).

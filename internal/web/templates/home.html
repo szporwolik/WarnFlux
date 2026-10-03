@@ -187,7 +187,7 @@
 {{end}}
 
 {{define "home_alerts_section"}}<section class="home-alerts-wrap" id="home-alerts">
-  <h2 class="home-alerts-head">{{tr .Lang "home.alerts.head"}} <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span></h2>
+  <h2 class="home-alerts-head">{{tr .Lang "home.alerts.head"}} <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span>{{if .EmcomRaised}}<button type="button" class="emcom-info" data-emcom-info aria-label="{{tr .Lang "home.emcom.info.aria"}}" title="{{tr .Lang "home.emcom.info.aria"}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-info-circle"></use></svg></button>{{end}}</h2>
 
   <details class="home-section home-important" open>
     <summary>{{tr .Lang "home.important"}} <span class="count{{if gt .MainCount 0}} count-live{{end}}">{{.MainCount}}</span></summary>
@@ -237,5 +237,22 @@
   </details>
   {{end}}
   <script type="application/json" id="home-hazards-data">{{.HazardsJSON}}</script>
+  {{if .EmcomRaised}}
+  <template id="emcom-info-tpl">
+    <h3 id="hz-title">{{tr .Lang "emcom.levels.title"}}</h3>
+    <div class="emcom-levels">
+      {{range .EmcomLevels}}
+      <article class="emcom-level">
+        <div class="emcom-level-head">
+          <span class="emcom-level-num emcom-num-{{.Class}}">{{trf $.Lang "emcom.level" .Level}}</span>
+          <strong>{{.Name}}</strong>
+        </div>
+        <p class="muted">{{.Description}}</p>
+      </article>
+      {{end}}
+    </div>
+    <p class="muted small">{{tr .Lang "emcom.dispatch_note"}}</p>
+  </template>
+  {{end}}
 </section>
 {{end}}

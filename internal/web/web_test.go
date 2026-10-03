@@ -2867,6 +2867,14 @@ func TestEmcomPanelFlow(t *testing.T) {
 	if !strings.Contains(homeHTML, "level 2 – Local activation") {
 		t.Errorf("active communication missing on home page: %s", homeHTML)
 	}
+	// While raised, the communications heading carries the readiness
+	// info icon and the shared levels legend.
+	if !strings.Contains(homeHTML, `data-emcom-info`) || !strings.Contains(homeHTML, `id="emcom-info-tpl"`) {
+		t.Errorf("raised home page missing the readiness info popup: %s", homeHTML)
+	}
+	if !strings.Contains(homeHTML, "Operational readiness levels") {
+		t.Errorf("raised home page missing the shared levels legend: %s", homeHTML)
+	}
 
 	// Back to monitoring: the hazard is retired and the chip drops to l0.
 	resp, _ = env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"0"}})
@@ -2891,6 +2899,9 @@ func TestEmcomPanelFlow(t *testing.T) {
 	// the public header entirely.
 	if strings.Contains(homeHTML, "emcom-chip") || strings.Contains(homeHTML, "Monitoring") {
 		t.Errorf("monitoring network still shown on the home header: %s", homeHTML)
+	}
+	if strings.Contains(homeHTML, "data-emcom-info") {
+		t.Errorf("readiness info icon must disappear at level 0: %s", homeHTML)
 	}
 
 	// Deleting the network clears the retained document.

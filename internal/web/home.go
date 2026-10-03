@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"net/http"
 	"sort"
@@ -100,6 +101,16 @@ type homeView struct {
 	// EmcomNetworks carries the current readiness level of every EMCOM
 	// network (retained MQTT state) for the colored header chips.
 	EmcomNetworks []emcomChipView
+
+	// EmcomRaised reports whether ANY EMCOM network is above the
+	// default monitoring level: the communications heading then shows
+	// the readiness info icon opening the shared levels legend.
+	EmcomRaised bool
+
+	// EmcomLevels carries the shared operational-readiness legend (the
+	// same data the EMCOM panel shows) for the popup on the public
+	// page.
+	EmcomLevels []emcomLevelView
 
 	// OfflineMode turns the header banner on and tells the map to use
 	// the station's local tile tree instead of internet providers.
@@ -214,17 +225,20 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 // handlePartialHome serves the public auto-refresh fragment of the active
 // hazard list (the home page polls it every 5 s). It renders ONLY the
 // hazard fields — the channels/sources/EMCOM-chip reads of the full page
-// are skipped on this hottest endpoint.
+// are skipped on this hottest endpoint. The EMCOM levels legend rides
+// along so the readiness info icon survives the poll.
 func (s *Server) handlePartialHome(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "home_alerts_section", s.buildHomeAlertsView())
+	s.renderL(w, r, "home_alerts_section", s.buildHomeAlertsView(s.langFor(r)))
 }
 
 // buildHomeAlertsView assembles just the alerts-fragment fields
-// (hazards, counts and the client-side JSON payload).
-func (s *Server) buildHomeAlertsView() homeView {
+// (hazards, counts, the client-side JSON payload and the EMCOM legend).
+func (s *Server) buildHomeAlertsView(lang string) homeView {
 	v := homeView{}
-	s.fillHomeHazards(&v, nil)
+	nets := s.emcomNetworks()
+	s.fillHomeHazards(&v, nets)
+	s.fillHomeEmcomState(&v, lang, nets)
 	return v
 }
 
@@ -268,6 +282,24 @@ func (s *Server) buildHomeView(lang string) homeView {
 	if s.router != nil {
 		v.Sources = publicSources(s.router.Statuses(), lang)
 	}
+	s.fillHomeEmcomState(&v, lang, nets)
+	return v
+}
+
+// fillHomeEmcomState fills the EMCOM-related fields of a home view: the
+// raised-network header chips, the raised flag (drives the readiness
+// info icon) and the shared readiness-level legend. The FULL page and
+// the 5-second partial share this helper, so the icon and its popup
+// survive the poll.
+func (s *Server) fillHomeEmcomState(v *homeView, lang string, nets []emcomNetwork) {
+	for _, l := range emcomLevels {
+		v.EmcomLevels = append(v.EmcomLevels, emcomLevelView{
+			Level:       l.Level,
+			Name:        i18n.T(lang, fmt.Sprintf("emcom.levels.%d", l.Level)),
+			Description: i18n.T(lang, fmt.Sprintf("emcom.desc.%d", l.Level)),
+			Class:       emcomLevelClass(l.Level),
+		})
+	}
 	for _, net := range nets {
 		// Monitoring (level 0) is the default, calm state of every
 		// network — the public header only announces networks that are
@@ -283,7 +315,7 @@ func (s *Server) buildHomeView(lang string) homeView {
 			UpdatedAt:  net.UpdatedAt,
 		})
 	}
-	return v
+	v.EmcomRaised = len(v.EmcomNetworks) > 0
 }
 
 // fillHomeHazards fills the hazard-related fields of a home view:

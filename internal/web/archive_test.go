@@ -17,14 +17,22 @@ func archiveEvent(id, headline string) core.HazardEvent {
 		SourceID: id,
 		Event:    "Test event",
 		Severity: "moderate",
-		Status:   core.StatusActive,
+		Status:   core.StatusExpired,
 		Headline: headline,
 		Areas:    []string{"gmina:test"},
 	}
 }
 
+func archiveActiveEvent(id, headline string) core.HazardEvent {
+	e := archiveEvent(id, headline)
+	e.Status = core.StatusActive
+	return e
+}
+
 // TestArchiveFragment pins the public archive: newest-first ordering,
-// active/ended badges, the 180-day window and the total count line.
+// ended-status badges, the 180-day window, the total count line — and the
+// ACTIVE exclusion: currently active communications live in the Active
+// hazards section and must never be listed again here.
 func TestArchiveFragment(t *testing.T) {
 	clock := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	now := clock
@@ -34,8 +42,9 @@ func TestArchiveFragment(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	// One event beyond the 180-day window, two inside it (storm older,
-	// flood newest).
+	// One ended event beyond the 180-day window, two ended inside it
+	// (storm older, flood newest) and one ACTIVE event that must not
+	// appear in the archive.
 	now = clock.AddDate(0, 0, -200)
 	if _, _, err := store.Ingest(context.Background(), archiveEvent("old", "Ancient snow"), "fp-old"); err != nil {
 		t.Fatal(err)
@@ -48,20 +57,25 @@ func TestArchiveFragment(t *testing.T) {
 	if _, _, err := store.Ingest(context.Background(), archiveEvent("flood", "Flood alert"), "fp-flood"); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := store.Ingest(context.Background(), archiveActiveEvent("live", "Live now"), "fp-live"); err != nil {
+		t.Fatal(err)
+	}
 
 	env := newTestEnvWithStore(t, store)
 	_, html := env.get("/archive")
 
 	for _, want := range []string{
 		"Archive", "1–2 of 2", "Storm warning", "Flood alert",
-		`class="badge ok">active`, "Source:", "last seen:",
+		`class="badge muted">ended`, "Source:", "last seen:",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("archive fragment missing %q:\n%s", want, html)
 		}
 	}
-	if strings.Contains(html, "Ancient snow") {
-		t.Errorf("event outside the 180-day window leaked into the archive:\n%s", html)
+	for _, absent := range []string{"Ancient snow", "Live now", `class="badge ok">active`} {
+		if strings.Contains(html, absent) {
+			t.Errorf("archive fragment must not contain %q:\n%s", absent, html)
+		}
 	}
 	if strings.Index(html, "Flood alert") > strings.Index(html, "Storm warning") {
 		t.Errorf("archive order = not newest-first:\n%s", html)

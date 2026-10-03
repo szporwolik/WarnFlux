@@ -169,7 +169,13 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 			continue
 		}
 		if f.rows[i].IsAdmin {
-			return storage.User{}, storage.ErrUserProtected
+			// The admin row's identity is config-owned; only contact
+			// fields update (mirrors the SQLite store).
+			f.rows[i].Phone = phone
+			f.rows[i].Email = email
+			f.rows[i].Discord = discord
+			f.rows[i].UpdatedAt = time.Now()
+			return f.rows[i], nil
 		}
 		for j := range f.rows {
 			if f.rows[j].ID != id && strings.EqualFold(f.rows[j].Username, username) {
@@ -250,9 +256,6 @@ func (f *fakeUsers) SetUserAPRS(userID int64, callsigns []string) error {
 		if f.rows[i].ID != userID {
 			continue
 		}
-		if f.rows[i].IsAdmin {
-			return storage.ErrUserProtected
-		}
 		f.rows[i].APRSCallsigns = clean
 		f.rows[i].UpdatedAt = time.Now()
 		return nil
@@ -279,9 +282,6 @@ func (f *fakeUsers) SetUserMeshtasticIDs(userID int64, keys []string) error {
 	for i := range f.rows {
 		if f.rows[i].ID != userID {
 			continue
-		}
-		if f.rows[i].IsAdmin {
-			return storage.ErrUserProtected
 		}
 		f.rows[i].MeshtasticIDs = clean
 		f.rows[i].UpdatedAt = time.Now()
@@ -787,7 +787,7 @@ func TestUsersAPRSCallsignValidation(t *testing.T) {
 	}
 }
 
-func TestUsersPageListsAdminReadOnly(t *testing.T) {
+func TestUsersPageListsAdminEditable(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()
 
@@ -798,11 +798,12 @@ func TestUsersPageListsAdminReadOnly(t *testing.T) {
 	if !strings.Contains(html, testUsername) {
 		t.Fatalf("admin user not listed: %s", html)
 	}
-	if !strings.Contains(html, "read-only") {
-		t.Errorf("admin row should be read-only: %s", html)
+	// The admin row offers contact/prefs editing but no delete/reset.
+	if !strings.Contains(html, `/users?edit=1`) {
+		t.Errorf("admin row must offer edit: %s", html)
 	}
-	if strings.Contains(html, "/users/1/delete") {
-		t.Errorf("admin row must not offer delete: %s", html)
+	if strings.Contains(html, "/users/1/delete") || strings.Contains(html, "/users/1/reset") {
+		t.Errorf("admin row must not offer delete or reset: %s", html)
 	}
 }
 
@@ -945,7 +946,7 @@ func TestUsersCRUDFlow(t *testing.T) {
 	}
 }
 
-func TestUsersAdminCannotBeDeletedOrEdited(t *testing.T) {
+func TestUsersAdminCannotBeDeletedButMayBeEdited(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()
 	csrf := env.csrfFromPage("/users")
@@ -955,9 +956,62 @@ func TestUsersAdminCannotBeDeletedOrEdited(t *testing.T) {
 		t.Fatalf("admin delete = %d %s, want 403 read-only", resp.StatusCode, html)
 	}
 
-	resp, html = env.postForm("/users", url.Values{"csrf": {csrf}, "edit_id": {"1"}, "username": {"admin"}, "phone": {"x"}})
-	if resp.StatusCode != http.StatusForbidden || !strings.Contains(html, "read-only") {
-		t.Fatalf("admin edit = %d %s, want 403 read-only", resp.StatusCode, html)
+	// Editing the admin updates contact fields only; submitted identity
+	// changes are ignored because the identity is config-owned.
+	group, err := env.users.CreateGroup("hams")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The admin edit dialog opens with the identity locked and the
+	// password field hidden.
+	_, html = env.get("/users?edit=1")
+	for _, want := range []string{
+		`id="user-edit-dialog" open`,
+		`name="edit_id" value="1"`,
+		`name="username" id="user-edit-username" value="admin" required maxlength="64" pattern="[a-z0-9._-]+" readonly`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("admin edit dialog missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, `name="password"`) {
+		t.Errorf("admin dialog must hide the password field: %s", html)
+	}
+	if strings.Contains(html, `<select name="role"`) {
+		t.Errorf("admin dialog must not offer the role select: %s", html)
+	}
+
+	meshKey := strings.Repeat("a", 8)
+	resp, _ = env.postForm("/users", url.Values{
+		"csrf": {csrf}, "edit_id": {"1"}, "username": {"hijack"}, "role": {"emcom"},
+		"phone": {"x"}, "email": {"admin@example.com"}, "discord": {"admin#0001"},
+		"password": {"newpass123"}, "prefs": {"1"},
+		"aprs_callsigns": {"SP9MOA-16"}, "meshtastic_ids": {meshKey},
+		"groups": {strconv.FormatInt(group.ID, 10)},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("admin edit = %d, want redirect", resp.StatusCode)
+	}
+	u, err := env.users.GetUser(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Phone != "x" || u.Email != "admin@example.com" || u.Discord != "admin#0001" {
+		t.Fatalf("admin contact fields not updated: %+v", u)
+	}
+	if u.Username != testUsername || u.Role != "" || !u.IsAdmin {
+		t.Fatalf("admin identity changed: %+v", u)
+	}
+	if len(u.APRSCallsigns) != 1 || u.APRSCallsigns[0] != "SP9MOA-16" {
+		t.Fatalf("admin callsigns = %v", u.APRSCallsigns)
+	}
+	if len(u.MeshtasticIDs) != 1 || u.MeshtasticIDs[0] != meshKey {
+		t.Fatalf("admin meshtastic ids = %v", u.MeshtasticIDs)
+	}
+	ids, err := env.users.GroupIDsForUser(1)
+	if err != nil || len(ids) != 1 || ids[0] != group.ID {
+		t.Fatalf("admin membership = %v, %v", ids, err)
 	}
 }
 

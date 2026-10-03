@@ -63,6 +63,10 @@ const (
 	// bannerGlobalInterval is the global pacing of banner replies: the
 	// automatic-answer path never hogs the channel.
 	bannerGlobalInterval = 10 * time.Second
+	// weatherCacheAge bounds the local weather cache: /weather reads it
+	// directly (off-grid operation), matching the aggregation freshness
+	// window.
+	weatherCacheAge = 3 * time.Hour
 	// replyBurstDefault / replyBurstWindowDefault bound EVERY automatic
 	// reply per sender (command answers, retransmission replays, /help,
 	// denials, banners): a flooding sender cannot make the station
@@ -147,6 +151,12 @@ type cmdRecord struct {
 type replyWindow struct {
 	start time.Time
 	count int
+}
+
+// weatherEntry is one cached station weather observation.
+type weatherEntry struct {
+	at     time.Time
+	report WeatherReport
 }
 
 // ackWait is one in-flight outbound message awaiting its ack/rej. The
@@ -248,6 +258,12 @@ type Hub struct {
 	// answers, replays, /help, denials, banners); guarded by mu.
 	replyLast map[string]replyWindow
 
+	// weatherCache keeps the latest observed weather report per station
+	// (RF or APRS-IS), updated BEFORE the infrastructure filter and any
+	// broker publication: /weather stays honest even when the broker is
+	// down; guarded by mu.
+	weatherCache map[string]weatherEntry
+
 	// eventTimes resolves the durable lifecycle anchor (effective /
 	// expires) of an already-accepted command event; guarded by mu. It
 	// is the restart-proof half of the command registry: the durable
@@ -338,6 +354,7 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 		cmds:         make(map[string]*cmdRecord),
 		bannerLast:   make(map[string]time.Time),
 		replyLast:    make(map[string]replyWindow),
+		weatherCache: make(map[string]weatherEntry),
 		transmitters: make(map[string]Transmitter),
 		seenDigests:  make(map[string]int64),
 		ops:          make(chan hubOp, opsQueueSize),
@@ -551,6 +568,25 @@ func (h *Hub) Start(ctx context.Context) {
 	go h.run(ctx)
 }
 
+// WeatherSnapshot returns every weather observation the hub cached
+// within the freshness window — REGARDLESS of the infrastructure filter
+// and the broker state. /weather reads it first, so off-grid operation
+// (RF reception with a dead broker) never loses a measurement. Reports
+// are unsorted; the aggregation layer does not care about order.
+func (h *Hub) WeatherSnapshot(now time.Time) []WeatherReport {
+	cutoff := now.Add(-weatherCacheAge)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]WeatherReport, 0, len(h.weatherCache))
+	for _, e := range h.weatherCache {
+		if e.at.Before(cutoff) {
+			continue
+		}
+		out = append(out, e.report)
+	}
+	return out
+}
+
 func (h *Hub) run(ctx context.Context) {
 	// The MQTT sink needs a moment after startup: publishing while the
 	// receiver's connection is still coming up stalls for the whole
@@ -597,6 +633,13 @@ func (h *Hub) apply(op hubOp) {
 				w.Longitude = rec.state.position.Longitude
 			}
 		}
+		// Local cache first: /weather reads it directly, so a broker
+		// outage (off-grid) never hides a measurement the radio heard.
+		at := w.Time
+		if at.IsZero() {
+			at = h.now()
+		}
+		h.weatherCache[p.Src] = weatherEntry{at: at, report: *w}
 		h.mu.Unlock()
 		weather = w
 	}
@@ -630,10 +673,26 @@ func (h *Hub) apply(op hubOp) {
 		rec = &stationRecord{callsign: p.Src, state: stationState{via: make(map[string]bool)}}
 		h.stations[p.Src] = rec
 	}
-	// Duplicate observation (same content, same receiver): skip.
+	// Duplicate observation (same content, same receiver): the telemetry
+	// merge, station document and packet feed are skipped.
 	digest := packetDigest(p)
 	if digest == rec.lastDigest && rec.state.via[op.via] {
 		h.mu.Unlock()
+		// Command handling is NOT deduplicated here: a retransmitted
+		// slash command must reach the command machinery, which
+		// remembers the previous result and applies the retry policy
+		// (a transient rejection retries after the cooldown). Without
+		// this a rejected /alert could never be retried over the same
+		// receiver.
+		if p.Message != nil && (p.Message.To == h.cfg.Callsign || IsBulletin(p.Message.To)) &&
+			strings.HasPrefix(strings.TrimSpace(p.Message.Text), "/") {
+			h.mu.Lock()
+			cli := h.cli
+			h.mu.Unlock()
+			if cli != nil && h.routableMessage(p) {
+				h.routeOrCLI(p)
+			}
+		}
 		return
 	}
 	rec.lastDigest = digest
@@ -1606,6 +1665,13 @@ func (h *Hub) maintenance() {
 	for id, w := range h.pending {
 		if w.at.Before(ackCutoff) {
 			delete(h.pending, id)
+		}
+	}
+	// The weather cache ages out with the /weather freshness window.
+	wCutoff := now.Add(-weatherCacheAge)
+	for call, e := range h.weatherCache {
+		if e.at.Before(wCutoff) {
+			delete(h.weatherCache, call)
 		}
 	}
 	dirty := make([]*stationRecord, 0, len(h.stations))

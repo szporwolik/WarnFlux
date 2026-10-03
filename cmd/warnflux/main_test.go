@@ -1,16 +1,56 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/weatherreport"
 )
 
 func testResolverLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestWeatherForRadioOffGrid pins the off-grid /weather path: the local
+// hub cache (updated before the infrastructure filter and without any
+// broker) is the primary APRS source — with an EMPTY mirror the radio
+// aggregation still reports the RF-observed measurement.
+func TestWeatherForRadioOffGrid(t *testing.T) {
+	hub, err := aprs.NewHub(aprs.HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", Icon: "/j", GridSquare: "JO90WW",
+		RadiusKM: aprs.DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		ExcludeInfrastructure: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hub.Observe(aprs.ParseFeedLine("SP9WX>APRS,TCPIP*:!5056.25N/01952.50E_220/004g005t077r000p000P000h50b09900", time.Now()), "aprs-inet")
+
+	mirror := state.New() // no broker loopback at all
+	var rep weatherreport.Report
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rep = weatherForRadio(hub, mirror, time.Now())
+		if rep.HasTemp {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !rep.HasTemp || rep.TempC != 25.0 {
+		t.Fatalf("off-grid /weather = %+v, want temp 25 from the RF-observed WX report", rep)
+	}
 }
 
 func TestResolveStoragePathExplicit(t *testing.T) {

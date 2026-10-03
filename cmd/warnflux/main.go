@@ -313,6 +313,11 @@ const (
 	// rows the broker could not confirm for this long are pruned, so a
 	// prolonged outage cannot grow the database without bound.
 	outboxRetention = 24 * time.Hour
+	// commandRegistryRetention bounds the durable radio-command
+	// registry: anchors older than this are pruned, so a command
+	// retransmitted later starts its lifecycle fresh (a legitimate new
+	// command, not a replay) and the table cannot grow without bound.
+	commandRegistryRetention = 24 * time.Hour
 )
 
 // validateConfiguration mirrors run()'s static construction phase for
@@ -768,16 +773,25 @@ func run(configPath string, checkConfig bool) error {
 	}
 	hub.SetEventAcceptor(eventAcceptor)
 
-	// Restart-proof command dedup: the durable event row is the command
-	// registry. A retransmitted command reuses the stored lifecycle
-	// anchor, so its event content is byte-identical and the store
-	// collapses it into the original delivery (never a second one).
-	eventTimes := func(ctx context.Context, key string) (time.Time, time.Time, bool) {
-		eff, exp, ok, err := store.EventTimes(ctx, key)
-		if err != nil && logger != nil {
+	// Restart-proof command registry: the durable anchor row (written
+	// transactionally with the inbox acceptance) holds the lifecycle
+	// times AND the recorded result of a previously accepted command.
+	// The events table is the provider-ingest registry — radio command
+	// acceptance never writes it — so it is consulted first for legacy
+	// anchors and the command registry follows. A stored result proves
+	// the job executed before: the hub replays it instead of executing
+	// the command again, and the original TTL is recovered.
+	eventTimes := func(ctx context.Context, key string) (time.Time, time.Time, string, bool) {
+		if eff, exp, ok, err := store.EventTimes(ctx, key); err == nil && ok {
+			return eff, exp, "", true
+		} else if err != nil && logger != nil {
 			logger.Debug("radio event times lookup failed", "key", key, "error", err)
 		}
-		return eff, exp, ok
+		eff, exp, result, ok, err := store.CommandTimes(ctx, key)
+		if err != nil && logger != nil {
+			logger.Debug("radio command registry lookup failed", "key", key, "error", err)
+		}
+		return eff, exp, result, ok
 	}
 	hub.SetEventTimesResolver(eventTimes)
 	meshtasticHub.SetEventTimesResolver(eventTimes)
@@ -1192,6 +1206,38 @@ func run(configPath string, checkConfig bool) error {
 				}
 				if n > 0 {
 					logger.Info("ingest_http: outbox aged rows pruned", "removed", n)
+				}
+			}
+			prune()
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					prune()
+				}
+			}
+		}()
+	}
+
+	// Durable radio-command registry: anchors older than the retention
+	// window are pruned at startup and then hourly, so the registry
+	// cannot grow without bound while replays (short retransmission
+	// windows) always find their anchor.
+	{
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prune := func() {
+				n, err := store.PruneCommandEvents(ctx, time.Now().Add(-commandRegistryRetention))
+				if err != nil {
+					logger.Warn("radio: command registry prune failed", "error", err)
+					return
+				}
+				if n > 0 {
+					logger.Debug("radio: command registry pruned", "removed", n)
 				}
 			}
 			prune()

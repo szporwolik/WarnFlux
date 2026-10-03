@@ -699,6 +699,24 @@ ALTER TABLE ingest_outbox ADD COLUMN status TEXT NOT NULL DEFAULT '';
 ALTER TABLE ingest_outbox ADD COLUMN expires_at_ms INTEGER;
 `,
 	},
+	{
+		// v37: the durable radio-command registry. A command accepted
+		// through the dispatch inbox records its lifecycle anchor AND
+		// its result IN THE SAME TRANSACTION as the inbox row, so a
+		// post-restart retransmission recovers the original TTL and —
+		// when a result is stored — replays it instead of executing the
+		// job again (the events table is the provider-ingest registry;
+		// radio command acceptance never writes it).
+		SQL: `
+CREATE TABLE command_events (
+	event_key      TEXT PRIMARY KEY,
+	effective_at   TEXT NOT NULL,
+	expires_at     TEXT,
+	result         TEXT NOT NULL DEFAULT '',
+	accepted_at_ms INTEGER NOT NULL
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1091,12 +1109,88 @@ func (s *Store) instanceID(ctx context.Context) (string, error) {
 // AppendEvent persists one canonical dispatch event into the durable
 // inbox (dispatch acceptance): it returns the inbox row ID that the
 // routing engine must acknowledge once the event has been evaluated.
+// Radio command events additionally record their lifecycle anchor and
+// result (the command registry) IN THE SAME TRANSACTION, so a restart
+// can never strand a durably accepted command without its registry row.
 func (s *Store) AppendEvent(ctx context.Context, ev dispatch.Event) (int64, error) {
 	data, err := json.Marshal(ev)
 	if err != nil {
 		return 0, fmt.Errorf("encode inbox event: %w", err)
 	}
-	return insertInboxRow(s.db, ctx, data, ev.Origin.ReceiverID, s.now().UnixMilli())
+	nowMs := s.now().UnixMilli()
+	// The command registry anchor: only radio command events carry a
+	// result; provider events keep the events table as their registry.
+	anchor := ev.CommandResult != "" && ev.Kind == dispatch.EventHazardTransition &&
+		ev.Hazard != nil && ev.Hazard.Key != "" && ev.Hazard.Hazard.EffectiveAt != nil
+	if !anchor {
+		return insertInboxRow(s.db, ctx, data, ev.Origin.ReceiverID, nowMs)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin inbox acceptance for command %q: %w", ev.Hazard.Key, err)
+	}
+	defer tx.Rollback()
+	id, err := insertInboxRow(tx, ctx, data, ev.Origin.ReceiverID, nowMs)
+	if err != nil {
+		return 0, err
+	}
+	var exp any
+	if ev.Hazard.Hazard.ExpiresAt != nil {
+		exp = ev.Hazard.Hazard.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	// The FIRST acceptance wins: a replayed copy of the same command
+	// must never rewrite the original TTL with a fresh one.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO command_events (event_key, effective_at, expires_at, result, accepted_at_ms)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(event_key) DO NOTHING`,
+		ev.Hazard.Key, ev.Hazard.Hazard.EffectiveAt.UTC().Format(time.RFC3339Nano),
+		exp, ev.CommandResult, nowMs); err != nil {
+		return 0, fmt.Errorf("anchor command %q: %w", ev.Hazard.Key, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit inbox acceptance for command %q: %w", ev.Hazard.Key, err)
+	}
+	return id, nil
+}
+
+// CommandTimes returns the stored lifecycle anchor and result of one
+// radio command, or ok=false when the command was never durably
+// accepted (or its anchor aged out).
+func (s *Store) CommandTimes(ctx context.Context, key string) (eff, exp time.Time, result string, ok bool, err error) {
+	var effS string
+	var expS sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT effective_at, expires_at, result FROM command_events WHERE event_key = ?", key,
+	).Scan(&effS, &expS, &result); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, time.Time{}, "", false, nil
+		}
+		return time.Time{}, time.Time{}, "", false, fmt.Errorf("command times %q: %w", key, err)
+	}
+	eff, err = time.Parse(time.RFC3339Nano, effS)
+	if err != nil {
+		return time.Time{}, time.Time{}, "", false, fmt.Errorf("command %q has invalid effective_at: %w", key, err)
+	}
+	if expS.Valid {
+		if exp, err = time.Parse(time.RFC3339Nano, expS.String); err != nil {
+			return time.Time{}, time.Time{}, "", false, fmt.Errorf("command %q has invalid expires_at: %w", key, err)
+		}
+	}
+	return eff, exp, result, true, nil
+}
+
+// PruneCommandEvents deletes command-registry anchors older than the
+// cutoff: a command retransmitted later than the retention window starts
+// its lifecycle fresh (a legitimate new command, not a replay).
+func (s *Store) PruneCommandEvents(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM command_events WHERE accepted_at_ms < ?`, olderThan.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("prune command events: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // CommitIngest atomically persists one accepted HTTP-ingest request: the

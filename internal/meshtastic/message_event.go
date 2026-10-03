@@ -16,6 +16,11 @@ type MessageEventWire struct {
 	ChangeType    string             `json:"change_type"`
 	EventKey      string             `json:"event_key"`
 	Event         MessageEventHazard `json:"event"`
+	// CommandResult carries the in-band confirmation this command
+	// produced; the durable inbox acceptance records it together with
+	// the lifecycle anchor, so a post-restart retransmission replays
+	// the result instead of re-executing the job.
+	CommandResult string `json:"command_result,omitempty"`
 }
 
 // MessageEventHazard is the hazard block: the forwarded content starts

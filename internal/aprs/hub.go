@@ -264,11 +264,14 @@ type Hub struct {
 	// down; guarded by mu.
 	weatherCache map[string]weatherEntry
 
-	// eventTimes resolves the durable lifecycle anchor (effective /
-	// expires) of an already-accepted command event; guarded by mu. It
-	// is the restart-proof half of the command registry: the durable
-	// event row written by ingestion.
-	eventTimes func(ctx context.Context, key string) (eff, exp time.Time, ok bool)
+	// eventTimes resolves the durable command registry for one command
+	// key: the lifecycle anchor (effective / expires) AND the recorded
+	// result of a previously accepted command; guarded by mu. It is the
+	// restart-proof half of the registry: the durable anchor row is
+	// written transactionally with the inbox acceptance, so a re-issued
+	// command recovers the original TTL and — when a result is stored —
+	// replays it instead of executing the job again.
+	eventTimes func(ctx context.Context, key string) (eff, exp time.Time, result string, ok bool)
 }
 
 // NewHub validates the hub identity and returns the hub. The hub is
@@ -439,12 +442,14 @@ func (h *Hub) SetEventAcceptor(fn func(payload []byte) dispatch.Acceptance) {
 	h.mu.Unlock()
 }
 
-// SetEventTimesResolver installs the durable lifecycle-anchor lookup
-// for command events: it returns the stored effective/expires times of
-// an already-accepted event, so a re-issued command produces
-// byte-identical content and the store deduplicates it (one delivery
-// across restarts). nil disables the lookup (tests, legacy wiring).
-func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (eff, exp time.Time, ok bool)) {
+// SetEventTimesResolver installs the durable command-registry lookup
+// for command events: it returns the stored effective/expires times
+// and the recorded result of an already-accepted command. A stored
+// result proves the job executed before — the retransmission replays
+// it; times without a result make a re-issued command byte-identical
+// so the store deduplicates it (one delivery across restarts). nil
+// disables the lookup (tests, legacy wiring).
+func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (eff, exp time.Time, result string, ok bool)) {
 	h.mu.Lock()
 	h.eventTimes = fn
 	h.mu.Unlock()
@@ -1003,18 +1008,37 @@ func (h *Hub) routeOrCLI(p Packet) {
 	// The stored reply is the FINAL confirmation (post-acceptance), so a
 	// retransmission replays exactly the previous result. Both commands
 	// share the same confirmation path. A rejection is transient:
-	// remembered as retryable instead of final.
+	// remembered as retryable instead of final. A durable registry hit
+	// (stored result) proves the job executed before — the
+	// retransmission replays the result and never re-executes it, even
+	// across a restart.
 	reply := res.Reply
 	retryable := false
 	if res.Debug {
-		acc := h.publishMessageEvent(p)
-		reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
-		retryable = acc == dispatch.Rejected
+		key := "aprs:" + p.Src + ":msg:" + msgIdentity(p)
+		eff, exp, prev := h.resolveCommand(key, time.Hour)
+		if prev != "" {
+			reply = prev
+		} else {
+			acc := h.publishMessageEvent(p, eff, exp, res.Reply)
+			reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
+			retryable = acc == dispatch.Rejected
+		}
 	}
 	if res.Alert != nil {
-		acc := h.publishAlertEvent(p, res.Alert)
-		reply = confirmation(res.Reply, "FAILED: alert rejected", acc)
-		retryable = retryable || acc == dispatch.Rejected
+		ttl := res.Alert.TTL
+		if ttl <= 0 {
+			ttl = 4 * time.Hour
+		}
+		key := "aprs:" + p.Src + ":alert:" + msgIdentity(p)
+		eff, exp, prev := h.resolveCommand(key, ttl)
+		if prev != "" {
+			reply = prev
+		} else {
+			acc := h.publishAlertEvent(p, res.Alert, eff, exp, res.Reply)
+			reply = confirmation(res.Reply, "FAILED: alert rejected", acc)
+			retryable = retryable || acc == dispatch.Rejected
+		}
 	}
 	h.mu.Lock()
 	h.pruneCmds(now)
@@ -1207,24 +1231,26 @@ func (h *Hub) replyAllowed(from string) bool {
 	return true
 }
 
-// resolveTimes returns the event lifecycle anchor for one command key:
-// the resolver reuses the durable event row's times when it exists (a
-// re-issued command then produces byte-identical content and the store
-// deduplicates it); otherwise now / now+ttl start the lifecycle.
-func (h *Hub) resolveTimes(key string, ttl time.Duration) (eff, exp time.Time) {
+// resolveCommand returns the durable command-registry entry for one
+// command key: the lifecycle anchor (effective / expires) and the
+// recorded result of a previous durable acceptance. The resolver is
+// the inbox-transaction half of the registry; on a miss (or without a
+// resolver) the command starts its lifecycle fresh at now / now+ttl
+// with no stored result.
+func (h *Hub) resolveCommand(key string, ttl time.Duration) (eff, exp time.Time, result string) {
 	h.mu.Lock()
 	resolver := h.eventTimes
 	h.mu.Unlock()
 	if resolver != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		eff, exp, ok := resolver(ctx, key)
+		eff, exp, result, ok := resolver(ctx, key)
 		cancel()
 		if ok {
-			return eff, exp
+			return eff, exp, result
 		}
 	}
 	eff = time.Now().UTC()
-	return eff, eff.Add(ttl)
+	return eff, eff.Add(ttl), ""
 }
 
 // publishMessageEvent re-publishes one APRS message as a canonical
@@ -1235,19 +1261,20 @@ func (h *Hub) resolveTimes(key string, ttl time.Duration) (eff, exp time.Time) {
 //
 // The event identity (event key + source id) is stable per message:
 // sender + message identity (ack id or content digest). Lifecycle times
-// reuse the durable event row through the resolver when it exists and
+// come from the durable registry (resolveCommand) when it exists and
 // the ChangeID derives from the content, so a retransmitted copy maps
 // to byte-identical content: the storage deduplication collapses it
-// into one alarm and one delivery even after a restart — the durable
-// event row is the command registry. The command cache in routeOrCLI
-// additionally stops re-execution in-process.
+// into one alarm and one delivery even after a restart. The result
+// (commandResult) travels on the wire document so the durable inbox
+// acceptance records it transactionally with the lifecycle anchor —
+// that anchor is the restart-proof command registry; the in-RAM cache
+// in routeOrCLI additionally stops re-execution in-process.
 //
 // The returned acceptance reports how the LOCAL pipeline took the event
 // (durable, emergency or rejected); the /debug confirmation follows it.
-func (h *Hub) publishMessageEvent(p Packet) dispatch.Acceptance {
-	eff, expires := h.resolveTimes("aprs:"+p.Src+":msg:"+msgIdentity(p), time.Hour)
+func (h *Hub) publishMessageEvent(p Packet, eff, exp time.Time, commandResult string) dispatch.Acceptance {
 	nowS := eff.Format(time.RFC3339)
-	expS := expires.Format(time.RFC3339)
+	expS := exp.Format(time.RFC3339)
 	from := p.Src
 	// Stable identity: sender + message identity. The RF copy and the
 	// APRS-IS copy of the same packet map to the same event, so the
@@ -1261,6 +1288,7 @@ func (h *Hub) publishMessageEvent(p Packet) dispatch.Acceptance {
 		ChangeID:      radiocli.StableID("aprs:msg", sourceID, text),
 		ChangeType:    "new",
 		EventKey:      "aprs:" + sourceID,
+		CommandResult: commandResult,
 		Event: MessageEventHazard{
 			Source:      "aprs",
 			SourceID:    sourceID,
@@ -1300,31 +1328,27 @@ func (h *Hub) publishMessageEvent(p Packet) dispatch.Acceptance {
 // publishAlertEvent raises one operator-requested hazard (/alert) into
 // the /events stream: severe, bounded by the requested TTL (4 hours by
 // default). The event identity follows the same stable per-message
-// scheme as publishMessageEvent. The returned acceptance reports how
-// the LOCAL pipeline took the alert (durable, emergency or rejected);
-// the confirmation reply must follow it. A broker failure alone never
-// downgrades the local acceptance.
-func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) dispatch.Acceptance {
+// scheme as publishMessageEvent; lifecycle times come from the durable
+// registry (resolveCommand) and the result travels on the wire document
+// for the transactional inbox anchor. The returned acceptance reports
+// how the LOCAL pipeline took the alert (durable, emergency or
+// rejected); the confirmation reply must follow it. A broker failure
+// alone never downgrades the local acceptance.
+func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec, eff, exp time.Time, commandResult string) dispatch.Acceptance {
 	if spec == nil {
 		return dispatch.Rejected
-	}
-	ttl := spec.TTL
-	if ttl <= 0 {
-		ttl = 4 * time.Hour
 	}
 	from := p.Src
 	// Stable identity: sender + message identity (see publishMessageEvent).
 	sourceID := from + ":alert:" + msgIdentity(p)
-	// Durable times: reuse the stored row when it exists, so a re-issued
-	// command produces byte-identical content (see publishMessageEvent).
-	eff, expires := h.resolveTimes("aprs:"+sourceID, ttl)
 	nowS := eff.Format(time.RFC3339)
-	expS := expires.Format(time.RFC3339)
+	expS := exp.Format(time.RFC3339)
 	doc := MessageEventWire{
 		SchemaVersion: messageEventSchemaVersion,
 		ChangeID:      radiocli.StableID("aprs:alert", sourceID, spec.Headline),
 		ChangeType:    "new",
 		EventKey:      "aprs:" + sourceID,
+		CommandResult: commandResult,
 		Event: MessageEventHazard{
 			Source:      "aprs",
 			SourceID:    sourceID,

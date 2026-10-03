@@ -388,9 +388,10 @@ func EventFromWire(we *EventPayload, receiverID string, now time.Time) dispatch.
 	}
 
 	return dispatch.Event{
-		Kind:       dispatch.EventHazardTransition,
-		ReceivedAt: now,
-		Origin:     dispatch.Origin{Type: "mqtt", ReceiverID: receiverID},
+		Kind:          dispatch.EventHazardTransition,
+		ReceivedAt:    now,
+		Origin:        dispatch.Origin{Type: "mqtt", ReceiverID: receiverID},
+		CommandResult: we.CommandResult,
 		Hazard: &dispatch.HazardTransition{
 			Type:      typ,
 			Key:       we.EventKey,

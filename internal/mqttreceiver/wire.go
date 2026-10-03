@@ -103,6 +103,10 @@ type EventPayload struct {
 	// it, so independent instances never collide.
 	Publisher string        `json:"publisher,omitempty"`
 	Event     HazardPayload `json:"event"`
+	// CommandResult is the optional in-band confirmation text a radio
+	// command producer carries (never validated, purely informational
+	// for the receiver-side durable anchor).
+	CommandResult string `json:"command_result,omitempty"`
 }
 
 // ParseEventPayload validates one /events wire payload: JSON shape,

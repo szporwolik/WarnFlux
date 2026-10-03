@@ -476,11 +476,14 @@ type Hub struct {
 	// answers, replays, /help, denials, banners); guarded by mu.
 	replyLast map[string]replyWindow
 
-	// eventTimes resolves the durable lifecycle anchor (effective /
-	// expires) of an already-accepted command event; guarded by mu. It
-	// is the restart-proof half of the command registry: the durable
-	// event row written by ingestion.
-	eventTimes func(ctx context.Context, key string) (eff, exp time.Time, ok bool)
+	// eventTimes resolves the durable command registry for one command
+	// key: the lifecycle anchor (effective / expires) AND the recorded
+	// result of a previously accepted command; guarded by mu. It is the
+	// restart-proof half of the registry: the durable anchor row is
+	// written transactionally with the inbox acceptance, so a re-issued
+	// command recovers the original TTL and — when a result is stored —
+	// replays it instead of executing the job again.
+	eventTimes func(ctx context.Context, key string) (eff, exp time.Time, result string, ok bool)
 }
 
 // NewHub validates the config and builds the hub.
@@ -603,12 +606,14 @@ func (h *Hub) SetEventAcceptor(fn func(payload []byte) dispatch.Acceptance) {
 	h.mu.Unlock()
 }
 
-// SetEventTimesResolver installs the durable lifecycle-anchor lookup
-// for command events: it returns the stored effective/expires times of
-// an already-accepted event, so a re-issued command produces
-// byte-identical content and the store deduplicates it (one delivery
-// across restarts). nil disables the lookup (tests, legacy wiring).
-func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (eff, exp time.Time, ok bool)) {
+// SetEventTimesResolver installs the durable command-registry lookup
+// for command events: it returns the stored effective/expires times
+// and the recorded result of an already-accepted command. A stored
+// result proves the job executed before — the retransmission replays
+// it; times without a result make a re-issued command byte-identical
+// so the store deduplicates it (one delivery across restarts). nil
+// disables the lookup (tests, legacy wiring).
+func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (eff, exp time.Time, result string, ok bool)) {
 	h.mu.Lock()
 	h.eventTimes = fn
 	h.mu.Unlock()
@@ -1557,18 +1562,37 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 		// The stored reply is the FINAL confirmation (post-acceptance),
 		// so a redelivery replays exactly the previous result. Both
 		// commands share the same confirmation path. A rejection is
-		// transient: remembered as retryable instead of final.
+		// transient: remembered as retryable instead of final. A durable
+		// registry hit (stored result) proves the job executed before —
+		// the redelivery replays the result and never re-executes it,
+		// even across a restart.
 		reply = res.Reply
 		retryable := false
 		if res.Debug {
-			acc := h.publishRoutedEvent(id, owner, text, mid)
-			reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
-			retryable = acc == dispatch.Rejected
+			key := "meshtastic:" + id + ":msg:" + mid
+			eff, exp, prev := h.resolveCommand(key, time.Hour)
+			if prev != "" {
+				reply = prev
+			} else {
+				acc := h.publishRoutedEvent(id, owner, text, mid, eff, exp, res.Reply)
+				reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
+				retryable = acc == dispatch.Rejected
+			}
 		}
 		if res.Alert != nil {
-			acc := h.publishAlertEvent(id, owner, res.Alert, mid)
-			reply = confirmation(res.Reply, "FAILED: alert rejected", acc)
-			retryable = retryable || acc == dispatch.Rejected
+			ttl := res.Alert.TTL
+			if ttl <= 0 {
+				ttl = 4 * time.Hour
+			}
+			key := "meshtastic:" + id + ":alert:" + mid
+			eff, exp, prev := h.resolveCommand(key, ttl)
+			if prev != "" {
+				reply = prev
+			} else {
+				acc := h.publishAlertEvent(id, owner, res.Alert, mid, eff, exp, res.Reply)
+				reply = confirmation(res.Reply, "FAILED: alert rejected", acc)
+				retryable = retryable || acc == dispatch.Rejected
+			}
 		}
 		h.mu.Lock()
 		h.pruneCmds(now)
@@ -1746,24 +1770,26 @@ func (h *Hub) ChannelLabel(idx int) string {
 	return fmt.Sprintf("ch%d", idx)
 }
 
-// resolveTimes returns the event lifecycle anchor for one command key:
-// the resolver reuses the durable event row's times when it exists (a
-// re-issued command then produces byte-identical content and the store
-// deduplicates it); otherwise now / now+ttl start the lifecycle.
-func (h *Hub) resolveTimes(key string, ttl time.Duration) (eff, exp time.Time) {
+// resolveCommand returns the durable command-registry entry for one
+// command key: the lifecycle anchor (effective / expires) and the
+// recorded result of a previous durable acceptance. The resolver is
+// the inbox-transaction half of the registry; on a miss (or without a
+// resolver) the command starts its lifecycle fresh at now / now+ttl
+// with no stored result.
+func (h *Hub) resolveCommand(key string, ttl time.Duration) (eff, exp time.Time, result string) {
 	h.mu.Lock()
 	resolver := h.eventTimes
 	h.mu.Unlock()
 	if resolver != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		eff, exp, ok := resolver(ctx, key)
+		eff, exp, result, ok := resolver(ctx, key)
 		cancel()
 		if ok {
-			return eff, exp
+			return eff, exp, result
 		}
 	}
 	eff = time.Now().UTC()
-	return eff, eff.Add(ttl)
+	return eff, eff.Add(ttl), ""
 }
 
 // publishRoutedEvent bridges one approved direct message into the /events
@@ -1772,10 +1798,13 @@ func (h *Hub) resolveTimes(key string, ttl time.Duration) (eff, exp time.Time) {
 // is the per-packet identity (msgIdentity) that keeps the event key
 // stable across redeliveries, so the storage deduplication collapses
 // rebroadcasts into one alarm. The ChangeID is content-derived: a
-// retransmitted packet never becomes a second delivery. The returned
-// acceptance reports how the LOCAL pipeline took the event; the /debug
+// retransmitted packet never becomes a second delivery. Lifecycle times
+// come from the durable registry (resolveCommand); the result travels
+// on the wire document so the durable inbox acceptance records it
+// transactionally with the lifecycle anchor. The returned acceptance
+// reports how the LOCAL pipeline took the event; the /debug
 // confirmation follows it.
-func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string) dispatch.Acceptance {
+func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string, eff, exp time.Time, commandResult string) dispatch.Acceptance {
 	h.mu.Lock()
 	name := ""
 	if n := h.nodes[senderID]; n != nil && n.Name != "" {
@@ -1784,17 +1813,19 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string) dispatch.Acc
 	sink := h.eventSink
 	acceptor := h.eventAcceptor
 	h.mu.Unlock()
-	now := time.Now().UTC()
 	from := name
 	if from == "" {
 		from = "!" + senderID
 	}
 	sourceID := senderID + ":msg:" + mid
+	nowS := eff.Format(time.RFC3339)
+	expS := exp.Format(time.RFC3339)
 	we := MessageEventWire{
 		SchemaVersion: meshMessageEventSchemaVersion,
 		ChangeID:      radiocli.StableID("meshtastic:msg", sourceID, text),
 		ChangeType:    "new",
 		EventKey:      "meshtastic:" + sourceID,
+		CommandResult: commandResult,
 		Event: MessageEventHazard{
 			Source:      "meshtastic",
 			SourceID:    sourceID,
@@ -1805,9 +1836,11 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string) dispatch.Acc
 			Certainty:   "observed",
 			Headline:    fmt.Sprintf("Message from: %s (%s): %s", owner, from, text),
 			Description: fmt.Sprintf("Direct message routed from the Meshtastic network (sender: %s).", owner),
+			EffectiveAt: &nowS,
+			ExpiresAt:   &expS,
 			Status:      "active",
-			ReceivedAt:  now.Format(time.RFC3339),
-			UpdatedAt:   now.Format(time.RFC3339),
+			ReceivedAt:  nowS,
+			UpdatedAt:   nowS,
 		},
 	}
 	payload, err := json.Marshal(we)
@@ -1847,14 +1880,15 @@ func confirmation(base, failure string, acc dispatch.Acceptance) string {
 // publishAlertEvent raises one operator-requested hazard (/alert) into
 // the /events stream: severe, bounded by the requested TTL (4 hours by
 // default). mid keeps the event identity stable across redeliveries
-// (see publishRoutedEvent); lifecycle times reuse the durable event row
-// through the resolver and the ChangeID derives from the content, so a
-// retransmitted copy is byte-identical and deduplicates across
-// restarts. The returned acceptance reports how the LOCAL pipeline took
-// the alert (durable, emergency or rejected); the confirmation reply
-// must follow it. A broker failure alone never downgrades the local
-// acceptance.
-func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec, mid string) dispatch.Acceptance {
+// (see publishRoutedEvent); lifecycle times come from the durable
+// registry (resolveCommand) and the ChangeID derives from the content,
+// so a retransmitted copy is byte-identical and deduplicates across
+// restarts. The result travels on the wire document for the
+// transactional inbox anchor. The returned acceptance reports how the
+// LOCAL pipeline took the alert (durable, emergency or rejected); the
+// confirmation reply must follow it. A broker failure alone never
+// downgrades the local acceptance.
+func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec, mid string, eff, exp time.Time, commandResult string) dispatch.Acceptance {
 	if spec == nil {
 		return dispatch.Rejected
 	}
@@ -1866,14 +1900,9 @@ func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec
 	sink := h.eventSink
 	acceptor := h.eventAcceptor
 	h.mu.Unlock()
-	ttl := spec.TTL
-	if ttl <= 0 {
-		ttl = 4 * time.Hour
-	}
 	sourceID := senderID + ":alert:" + mid
-	eff, expires := h.resolveTimes("meshtastic:"+sourceID, ttl)
 	nowS := eff.Format(time.RFC3339)
-	expS := expires.Format(time.RFC3339)
+	expS := exp.Format(time.RFC3339)
 	from := name
 	if from == "" {
 		from = "!" + senderID
@@ -1883,6 +1912,7 @@ func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec
 		ChangeID:      radiocli.StableID("meshtastic:alert", sourceID, spec.Headline),
 		ChangeType:    "new",
 		EventKey:      "meshtastic:" + sourceID,
+		CommandResult: commandResult,
 		Event: MessageEventHazard{
 			Source:      "meshtastic",
 			SourceID:    sourceID,

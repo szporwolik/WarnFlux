@@ -1433,8 +1433,8 @@ func TestRadioEventContentDeterministic(t *testing.T) {
 	// stored lifecycle anchor (here a fixed one), so a re-issued command
 	// maps to byte-identical content.
 	fixed := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
-	radio.hub.SetEventTimesResolver(func(ctx context.Context, key string) (time.Time, time.Time, bool) {
-		return fixed, fixed.Add(time.Hour), true
+	radio.hub.SetEventTimesResolver(func(ctx context.Context, key string) (time.Time, time.Time, string, bool) {
+		return fixed, fixed.Add(time.Hour), "", true
 	})
 
 	pkt := textPacket(0xdeadbeef, 0xabcd1234, "/debug")
@@ -1474,6 +1474,89 @@ func TestRadioEventContentDeterministic(t *testing.T) {
 	}
 	if events[0] != events[1] {
 		t.Fatalf("replayed /debug content differs:\n%q\n%q", events[0], events[1])
+	}
+}
+
+// TestHubCommandRegistryResultReplay pins the durable command registry:
+// a command whose acceptance recorded its result (transactionally with
+// the inbox row) is NEVER re-executed after a restart — the
+// redelivery replays the stored result. The ChangeID dedup alone could
+// not prove this: it only suppresses the second DELIVERY, while the job
+// itself still ran. Here the job does not run twice.
+func TestHubCommandRegistryResultReplay(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	radio.hub.SetCLI(cli)
+	// The command path gates on a non-nil event sink; the acceptor is
+	// the recording half of the registry.
+	radio.hub.SetEventSink(func(_ context.Context, _ string, _ bool, _ []byte) error { return nil })
+
+	// A miniature durable registry: the acceptor records the result per
+	// event key exactly like the transactional inbox anchor; the
+	// resolver reads it back.
+	var (
+		mu       sync.Mutex
+		registry = make(map[string]string)
+		calls    int
+	)
+	radio.hub.SetEventAcceptor(func(payload []byte) dispatch.Acceptance {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		var we MessageEventWire
+		if err := json.Unmarshal(payload, &we); err == nil {
+			registry[we.EventKey] = we.CommandResult
+		}
+		return dispatch.AcceptedDurable
+	})
+	fixed := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	radio.hub.SetEventTimesResolver(func(ctx context.Context, key string) (time.Time, time.Time, string, bool) {
+		mu.Lock()
+		res, ok := registry[key]
+		mu.Unlock()
+		if !ok {
+			return time.Time{}, time.Time{}, "", false
+		}
+		return fixed, fixed.Add(4 * time.Hour), res, true
+	})
+
+	// First execution: registry miss, the job runs once.
+	pkt := textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu")
+	pkt.Id = 4242
+	dispatchPkt(t, radio, pkt)
+	radio.waitOutbound(t, 1)
+	out := radio.outbound()
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); got != "OK: alert raised" {
+		t.Fatalf("first confirmation = %q, want the handler reply", got)
+	}
+
+	// Simulated restart: the RAM command cache is gone.
+	radio.hub.mu.Lock()
+	radio.hub.cmds = make(map[string]*cmdRecord)
+	radio.hub.mu.Unlock()
+
+	// The redelivery finds the stored result: NO re-execution, the
+	// stored confirmation is replayed.
+	dispatchPkt(t, radio, pkt)
+	radio.waitOutbound(t, 2)
+	out = radio.outbound()
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); got != "OK: alert raised" {
+		t.Fatalf("replayed confirmation = %q, want the stored result", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("acceptor calls = %d, want 1 (the stored result must stop re-execution)", calls)
 	}
 }
 

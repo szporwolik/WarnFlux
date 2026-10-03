@@ -867,6 +867,137 @@ func TestEventTimes(t *testing.T) {
 	}
 }
 
+// TestAppendEventAnchorsCommandRegistry pins the transactional command
+// anchor: a radio command event accepted through the inbox records its
+// lifecycle times AND result in the same transaction, so the resolver
+// recovers the ORIGINAL TTL after a restart. The first acceptance wins;
+// provider events (no command result) never write an anchor.
+func TestAppendEventAnchorsCommandRegistry(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	eff := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	exp := eff.Add(4 * time.Hour)
+	cmd := dispatch.Event{
+		Kind:          dispatch.EventHazardTransition,
+		ReceivedAt:    eff,
+		Origin:        dispatch.Origin{Type: "mqtt", ReceiverID: "local"},
+		CommandResult: "OK: alert raised",
+		Hazard: &dispatch.HazardTransition{
+			Key: "aprs:SP9XYZ:alert:0042",
+			Hazard: dispatch.Hazard{
+				EffectiveAt: &eff, ExpiresAt: &exp,
+			},
+		},
+	}
+	if _, err := store.AppendEvent(ctx, cmd); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	gotEff, gotExp, gotRes, ok, err := store.CommandTimes(ctx, "aprs:SP9XYZ:alert:0042")
+	if err != nil || !ok {
+		t.Fatalf("CommandTimes = (%v, %v, %q, %v, %v), want the anchor", gotEff, gotExp, gotRes, ok, err)
+	}
+	if !gotEff.Equal(eff) || !gotExp.Equal(exp) || gotRes != "OK: alert raised" {
+		t.Fatalf("CommandTimes = %v / %v / %q, want %v / %v / OK: alert raised",
+			gotEff, gotExp, gotRes, eff, exp)
+	}
+
+	// A replayed copy with fresh times must NOT rewrite the anchor: the
+	// original TTL survives.
+	laterEff := eff.Add(time.Hour)
+	cmd2 := cmd
+	cmd2.Hazard = &dispatch.HazardTransition{
+		Key:    "aprs:SP9XYZ:alert:0042",
+		Hazard: dispatch.Hazard{EffectiveAt: &laterEff, ExpiresAt: &laterEff},
+	}
+	if _, err := store.AppendEvent(ctx, cmd2); err != nil {
+		t.Fatalf("second AppendEvent: %v", err)
+	}
+	gotEff, gotExp, _, _, err = store.CommandTimes(ctx, "aprs:SP9XYZ:alert:0042")
+	if err != nil {
+		t.Fatalf("CommandTimes after replay: %v", err)
+	}
+	if !gotEff.Equal(eff) || !gotExp.Equal(exp) {
+		t.Fatalf("replayed anchor = %v / %v, want the ORIGINAL %v / %v", gotEff, gotExp, eff, exp)
+	}
+
+	// A provider event (no command result) is never an anchor.
+	prov := dispatch.Event{
+		Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Key:    "aprs:IMG:1",
+			Hazard: dispatch.Hazard{EffectiveAt: &eff},
+		},
+	}
+	if _, err := store.AppendEvent(ctx, prov); err != nil {
+		t.Fatalf("provider AppendEvent: %v", err)
+	}
+	if _, _, _, ok, err := store.CommandTimes(ctx, "aprs:IMG:1"); err != nil || ok {
+		t.Fatalf("provider anchor = ok=%v err=%v, want none", ok, err)
+	}
+}
+
+// TestPruneCommandEvents pins the registry bound: anchors older than the
+// cutoff are removed (a later retransmission starts its lifecycle
+// fresh), fresher anchors survive.
+func TestPruneCommandEvents(t *testing.T) {
+	var (
+		mu  sync.Mutex
+		cur = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	)
+	store := openTemp(t, WithClock(func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return cur
+	}))
+	ctx := context.Background()
+
+	eff := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	exp := eff.Add(4 * time.Hour)
+	cmd := func(key string) dispatch.Event {
+		return dispatch.Event{
+			Kind:          dispatch.EventHazardTransition,
+			ReceivedAt:    eff,
+			Origin:        dispatch.Origin{Type: "mqtt", ReceiverID: "local"},
+			CommandResult: "OK: alert raised",
+			Hazard: &dispatch.HazardTransition{
+				Key:    key,
+				Hazard: dispatch.Hazard{EffectiveAt: &eff, ExpiresAt: &exp},
+			},
+		}
+	}
+	mu.Lock()
+	cur = cur.Add(-2 * time.Hour)
+	mu.Unlock()
+	if _, err := store.AppendEvent(ctx, cmd("aprs:A:1")); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	cur = cur.Add(2 * time.Hour)
+	mu.Unlock()
+	if _, err := store.AppendEvent(ctx, cmd("aprs:B:2")); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	cutoff := cur.Add(-time.Hour)
+	mu.Unlock()
+	n, err := store.PruneCommandEvents(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("PruneCommandEvents: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned = %d, want exactly the one old anchor", n)
+	}
+	if _, _, _, ok, err := store.CommandTimes(ctx, "aprs:A:1"); err != nil || ok {
+		t.Fatalf("old anchor after prune = ok=%v err=%v, want removed", ok, err)
+	}
+	if _, _, _, ok, err := store.CommandTimes(ctx, "aprs:B:2"); err != nil || !ok {
+		t.Fatalf("fresh anchor after prune = ok=%v err=%v, want preserved", ok, err)
+	}
+}
+
 // ---- regression tests: cursor configuration semantics ----
 
 func cursorRow(t *testing.T, s *Store, outputID string) (exists bool, lastAcked int64) {

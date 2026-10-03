@@ -117,6 +117,13 @@ type Event struct {
 	Hazard *HazardTransition
 	MQTT   *MQTTMessage
 
+	// CommandResult is the in-band confirmation a radio command
+	// produced (set by the radio hubs for /alert and /debug). The
+	// durable inbox write records it transactionally with the event's
+	// lifecycle anchor, so a post-restart retransmission replays the
+	// result instead of executing the job again.
+	CommandResult string
+
 	// InboxID is the durable inbox row this event was accepted through
 	// (0 = no inbox attached): the routing engine acknowledges it once
 	// the event has been evaluated, so a crash between acceptance and

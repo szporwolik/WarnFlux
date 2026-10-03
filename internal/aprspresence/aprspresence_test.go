@@ -129,6 +129,7 @@ func TestStaticAndInfrastructureIgnored(t *testing.T) {
 		docAt("SP9FIX-1", false, 50.1, 20.1), // static operator
 		{SymbolTable: "/", Symbol: "#", Position: &aprs.PositionWire{Latitude: 50.1, Longitude: 20.1}}, // digi
 		{SymbolTable: "/", Symbol: "r", Position: &aprs.PositionWire{Latitude: 50.1, Longitude: 20.1}}, // repeater
+		{SymbolTable: "/", Symbol: "_", Position: &aprs.PositionWire{Latitude: 50.1, Longitude: 20.1}}, // WX station
 	}
 	w := newWatcher(func() []aprs.StationDocument { return state }, f)
 	now := time.Now()

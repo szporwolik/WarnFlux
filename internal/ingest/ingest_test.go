@@ -475,6 +475,9 @@ func (failingStore) CleanupChanges(context.Context, time.Time) (int64, error) {
 }
 func (failingStore) CleanupEvents(context.Context, time.Time) (int64, error) { return 0, nil }
 func (failingStore) Count(context.Context) (int, error)                      { return 0, nil }
+func (failingStore) EventTimes(context.Context, string) (time.Time, time.Time, bool, error) {
+	return time.Time{}, time.Time{}, false, nil
+}
 func (failingStore) PendingStats(context.Context) (int, time.Duration, error) {
 	return 0, 0, nil
 }

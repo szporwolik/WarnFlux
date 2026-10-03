@@ -235,6 +235,19 @@ type EventStore interface {
 	Close() error
 }
 
+// DeliveryRecord is one action-fire ledger row for the notification
+// details view: which action attempted one event's delivery, with what
+// result, how many attempts and when. The ledger rows are the durable
+// half of the delivery history; retention applies via PruneActionFires.
+type DeliveryRecord struct {
+	EventKey      string
+	ActionID      string
+	Status        string
+	Attempts      int
+	FiredAt       time.Time
+	NextAttemptAt time.Time
+}
+
 // ActiveEventLister is an OPTIONAL EventStore capability: enumerating the
 // CURRENT active events directly from the authoritative current-state
 // table (NOT by replaying the historical change journal). It exists for

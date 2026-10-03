@@ -520,6 +520,17 @@ func TestNotificationsFlow(t *testing.T) {
 	if !strings.Contains(html, "Gale warning") || !strings.Contains(html, `id="notif-imgw:1"`) {
 		t.Errorf("notifications page missing trail header: %s", html)
 	}
+	// The details block collapses behind a click: the steps render but
+	// live inside the details element, and the retention hint is shown.
+	if !strings.Contains(html, `class="nt-details"`) || !strings.Contains(html, "Details") {
+		t.Errorf("notifications page missing the details toggle: %s", html)
+	}
+	if !strings.Contains(html, "retention period") {
+		t.Errorf("notifications page missing the retention hint: %s", html)
+	}
+	if !strings.Contains(html, "No delivery attempts recorded") {
+		t.Errorf("notifications page missing the empty deliveries state: %s", html)
+	}
 
 	// JSON feed for the poller.
 	resp, body := env.get("/partials/notifications")
@@ -551,10 +562,14 @@ func TestNotificationsFlow(t *testing.T) {
 		t.Errorf("feed step kinds = %q", kinds)
 	}
 
-	// Focus deep link (?key=…) renders the same trail.
+	// Focus deep link (?key=…) renders the same trail with the details
+	// block OPEN.
 	_, html = env.get("/notifications?key=imgw:1")
 	if !strings.Contains(html, `id="notif-imgw:1"`) {
 		t.Errorf("focused page missing trail: %s", html)
+	}
+	if !strings.Contains(html, `<details class="nt-details" open>`) {
+		t.Errorf("focused page must render the details block open: %s", html)
 	}
 }
 

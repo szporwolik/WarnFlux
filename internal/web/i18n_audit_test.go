@@ -50,6 +50,7 @@ func TestTemplateKeysTranslated(t *testing.T) {
 	strVariants := map[string][]string{
 		"compose.status": {"active", "expired"},
 		"notif.outcome":  {"delivered", "failed", "skipped", "submitted"},
+		"notif.status":   {"saved", "running", "failed", "succeeded", "accepted", "confirmed", "expired"},
 		"config.mqtt":    {"events", "active", "info", "status", "save"},
 	}
 	for _, e := range entries {

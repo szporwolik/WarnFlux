@@ -1495,6 +1495,40 @@ func TestEmcomRoleFlow(t *testing.T) {
 		t.Errorf("GET /dashboard as emcom = %d, want 200", resp.StatusCode)
 	}
 
+	// The EMCOM panel is the emcom operator's surface: the level slider
+	// is present, but adding and deleting networks is admin-only — the
+	// controls are hidden and the endpoints redirect to the dashboard.
+	resp, html = env.get("/emcom")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /emcom as emcom = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(html, "data-emcom-slider") || !strings.Contains(html, "data-emcom-save") {
+		t.Errorf("emcom operator must see the level controls: %s", html)
+	}
+	if strings.Contains(html, "emcom-add") {
+		t.Errorf("emcom operator must not see the add-network form: %s", html)
+	}
+	// The exact button markup (the page script keeps the bare JS
+	// selector, which must not count).
+	if strings.Contains(html, `btn-danger btn-small" data-emcom-delete`) {
+		t.Errorf("emcom operator must not see the delete buttons: %s", html)
+	}
+	csrf = extractCSRF(t, html)
+	resp, _ = env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"ROGUE"}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Errorf("POST /emcom as emcom = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	resp, _ = env.postForm("/emcom/nope/delete", url.Values{"csrf": {csrf}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Errorf("POST delete as emcom = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// Changing the level stays open to the emcom operator: the handler is
+	// reached (unknown slug answers 404, not a permission redirect).
+	resp, _ = env.postForm("/emcom/nope/level", url.Values{"csrf": {csrf}, "level": {"2"}})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("POST level as emcom = %d, want 404 from the handler (not a redirect)", resp.StatusCode)
+	}
+
 	for _, path := range []string{"/users", "/groups", "/health", "/logs", "/traffic", "/notifications"} {
 		resp, _ := env.get(path)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {

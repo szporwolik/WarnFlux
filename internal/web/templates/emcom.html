@@ -45,7 +45,7 @@
               </span>
               <span class="emcom-card-btns">
                 <button type="submit" class="btn-primary btn-small" data-emcom-save>{{tr $.Lang "emcom.save"}}</button>
-                <button type="button" class="btn-danger btn-small" data-emcom-delete data-slug="{{.Slug}}" data-name="{{.Name}}">{{tr $.Lang "emcom.delete"}}</button>
+	                {{if eq $.Role "admin"}}<button type="button" class="btn-danger btn-small" data-emcom-delete data-slug="{{.Slug}}" data-name="{{.Name}}">{{tr $.Lang "emcom.delete"}}</button>{{end}}
               </span>
             </div>
           </form>
@@ -55,6 +55,7 @@
         {{end}}
       </div>
 
+      {{if eq .Role "admin"}}
       <form method="post" action="/emcom" class="emcom-add">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <label class="emcom-add-label" for="emcom-name">{{tr .Lang "emcom.add_label"}}</label>
@@ -64,6 +65,7 @@
         </div>
         <p class="muted small">{{tr .Lang "emcom.add_note"}}</p>
       </form>
+      {{end}}
     </section>
 
     <section class="card">

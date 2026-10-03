@@ -3517,6 +3517,18 @@
       });
     }
 
+    // EMCOM readiness info icon on the public page: opens the shared
+    // readiness-levels legend in the same dialog (the hidden template
+    // arrives with the 5 s poll, so the handler resolves it at click).
+    document.addEventListener("click", function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest("[data-emcom-info]") : null;
+      if (!btn || !content) { return; }
+      var tpl = document.getElementById("emcom-info-tpl");
+      if (!tpl) { return; }
+      content.innerHTML = tpl.innerHTML;
+      showModal();
+    });
+
     document.addEventListener("click", function (e) {
       var card = e.target && e.target.closest ? e.target.closest(".hazard-click") : null;
       if (card) { openKey(card.getAttribute("data-key")); }

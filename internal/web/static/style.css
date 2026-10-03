@@ -1524,6 +1524,21 @@ tr.click-send:hover td { background: var(--surface-hi); }
   font-size: 1rem;
   margin: 0 0 0.9rem;
 }
+.home-alerts-head .emcom-info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 1px solid var(--input-border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.home-alerts-head .emcom-info:hover { color: var(--link); border-color: var(--link); }
+.home-alerts-head .emcom-info .icon { width: 0.85rem; height: 0.85rem; }
 .home-archive .home-alerts { display: grid; gap: 0.6rem; }
 .home-archive .pager { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; }
 .home-archive-window { color: var(--muted); font-size: 0.8rem; font-weight: 500; }

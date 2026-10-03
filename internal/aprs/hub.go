@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/sanity"
 )
@@ -41,6 +41,24 @@ const (
 	// ackWaitDefault is the fallback ack wait when the caller does not
 	// ask for a specific one.
 	ackWaitDefault = 30 * time.Second
+	// ackWaitMaxAge is the hard validity window of one pending ack wait:
+	// maintenance drops older registrations so a late ack can never
+	// confirm an exchange whose validity already lapsed.
+	ackWaitMaxAge = 10 * time.Minute
+	// cmdDedupWindow is how long a command identity stays remembered:
+	// a retransmission of the same packet (RF copy + APRS-IS copy)
+	// within this window re-sends the previous reply instead of
+	// executing the command again.
+	cmdDedupWindow = 10 * time.Minute
+	// cmdDedupCap bounds the remembered command outcomes.
+	cmdDedupCap = 256
+	// bannerMinInterval is the per-sender spacing of automatic banner
+	// replies: a sender gets at most one banner per window, so
+	// answering bots cannot loop each other.
+	bannerMinInterval = 5 * time.Minute
+	// bannerGlobalInterval is the global pacing of banner replies: the
+	// automatic-answer path never hogs the channel.
+	bannerGlobalInterval = 10 * time.Second
 )
 
 // BackendRadio is the via label of the KISS radio backend; frames coming
@@ -102,6 +120,26 @@ type trackPoint struct {
 	at       int64
 }
 
+// cmdRecord is the remembered outcome of one radio command, keyed by
+// sender + message identity: a retransmitted packet (the RF copy and
+// the APRS-IS copy of the same message) re-sends the previous reply and
+// never re-executes the command.
+type cmdRecord struct {
+	at    int64 // first execution, unix seconds
+	reply string
+}
+
+// ackWait is one in-flight outbound message awaiting its ack/rej. The
+// ack must carry the registered message id AND come from the addressee
+// the message was sent to (addressed back to us): a foreign station's
+// ack never confirms someone else's wait.
+type ackWait struct {
+	from string // our callsign (the ack addressee)
+	to   string // the addressee (the expected ack sender)
+	at   time.Time
+	ch   chan string
+}
+
 // pushTrack records one position into the movement tail (bounded,
 // oldest-first). Sub-trackMoveMinM displacement is treated as noise.
 func (st *stationState) pushTrack(lat, lon float64, at int64) {
@@ -151,8 +189,8 @@ type Hub struct {
 	// msgSeq numbers outbound message ids (the {id} ack suffix).
 	msgSeq atomic.Int64
 	// pending holds one result channel per in-flight message id; guarded
-	// by mu.
-	pending map[string]chan string
+	// by mu. Each entry remembers whom the ack must come from.
+	pending map[string]*ackWait
 
 	// senderGate approves the base callsign of a message sender for the
 	// notification routing bridge; guarded by mu. nil disables message
@@ -168,6 +206,23 @@ type Hub struct {
 	// bulletins maps retained bulletin topic ids onto their receipt
 	// unix time; maintenance deletes them after BulletinTTL.
 	bulletins map[string]int64
+
+	// cmds remembers executed radio commands by sender + message
+	// identity; guarded by mu. A retransmitted packet is answered with
+	// the previous result instead of re-executing the command.
+	cmds map[string]*cmdRecord
+
+	// alertAcceptor accepts a marshalled /alert event into the LOCAL
+	// pipeline and reports how it was accepted (durable inbox,
+	// emergency RAM fallback or rejection); guarded by mu. nil falls
+	// back to the generic sink (tests, legacy wiring).
+	alertAcceptor func(payload []byte) dispatch.Acceptance
+
+	// banner rate limiting: automatic banner answers to plain messages
+	// are spaced per sender and globally, so answering bots cannot loop
+	// each other or hog the channel; guarded by mu.
+	bannerLast map[string]time.Time // sender -> last banner answer
+	bannerNext time.Time            // global pacing: next allowed banner
 }
 
 // NewHub validates the hub identity and returns the hub. The hub is
@@ -241,12 +296,14 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 		now:          time.Now,
 		stations:     make(map[string]*stationRecord),
 		bulletins:    make(map[string]int64),
+		cmds:         make(map[string]*cmdRecord),
+		bannerLast:   make(map[string]time.Time),
 		transmitters: make(map[string]Transmitter),
 		seenDigests:  make(map[string]int64),
 		ops:          make(chan hubOp, opsQueueSize),
 		tick:         tickInterval,
 		selfDelay:    startupPublishDelay,
-		pending:      make(map[string]chan string),
+		pending:      make(map[string]*ackWait),
 	}, nil
 }
 
@@ -313,6 +370,17 @@ func (h *Hub) SetSenderGate(fn func(base string) bool) {
 // routed message that parses as a command is answered in-band and
 // (except /debug) stays off the alarm pipeline.
 func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
+
+// SetAlertAcceptor installs the LOCAL acceptance path for /alert
+// events: the callback enqueues a marshalled alert into the local
+// pipeline and reports how it was accepted (durable inbox, emergency
+// RAM fallback or rejection). Without it the hub falls back to the
+// generic sink (tests, legacy wiring).
+func (h *Hub) SetAlertAcceptor(fn func(payload []byte) dispatch.Acceptance) {
+	h.mu.Lock()
+	h.alertAcceptor = fn
+	h.mu.Unlock()
+}
 
 // Name returns the display name of our station (falls back to the
 // callsign).
@@ -745,9 +813,10 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 			// run for everyone, restricted ones (/debug) only for
 			// allow-listed senders.
 			h.routeOrCLI(p)
-		} else {
+		} else if h.bannerAllowed(p.Src) {
 			// Plain messages never become alarms — the standard
-			// installation banner answers instead.
+			// installation banner answers instead, rate-limited per
+			// sender and globally so answering bots cannot loop.
 			h.sendCLIReply(p.Src, cli.Banner())
 		}
 	}
@@ -756,7 +825,7 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	// feed: callers that learn about the ack must also see its document.
 	if p.Message.ID != "" && len(p.Message.Text) >= 3 {
 		if kind := ackKind(p.Message.Text); kind != "" {
-			h.signalAck(p.Message.ID, kind)
+			h.signalAck(p, kind)
 		}
 	}
 }
@@ -765,7 +834,9 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 // public commands for everyone and restricted commands for allow-listed
 // senders; /debug additionally fires the alarm for authorized senders.
 // Plain messages never become alarms — they stay in the history and the
-// message feed.
+// message feed. A retransmitted packet (the same message heard through
+// RF and APRS-IS) re-sends the previous reply instead of executing the
+// command again.
 func (h *Hub) routeOrCLI(p Packet) {
 	h.mu.Lock()
 	cli := h.cli
@@ -773,18 +844,94 @@ func (h *Hub) routeOrCLI(p Packet) {
 	if cli == nil {
 		return
 	}
+	cid := p.Src + ":" + msgIdentity(p)
+	now := h.now().Unix()
+	h.mu.Lock()
+	rec := h.cmds[cid]
+	fresh := rec != nil && now-rec.at < int64(cmdDedupWindow.Seconds())
+	reply := ""
+	if fresh {
+		reply = rec.reply
+	}
+	h.mu.Unlock()
+	if fresh {
+		if reply != "" {
+			h.sendCLIReply(p.Src, reply)
+		}
+		return
+	}
 	res := cli.Handle(strings.TrimSpace(p.Message.Text), h.senderApproved(p.Src))
+	// The stored reply is the FINAL confirmation (post-acceptance), so a
+	// retransmission replays exactly the previous result.
+	reply = res.Reply
+	if res.Alert != nil {
+		reply = alertReply(res.Reply, h.publishAlertEvent(p, res.Alert))
+	}
+	h.mu.Lock()
+	h.pruneCmds(now)
+	h.cmds[cid] = &cmdRecord{at: now, reply: reply}
+	h.mu.Unlock()
 	if !res.Handled {
 		return
 	}
 	if res.Debug {
 		h.publishMessageEvent(p)
 	}
-	if res.Alert != nil {
-		h.publishAlertEvent(p, res.Alert)
+	if reply != "" {
+		h.sendCLIReply(p.Src, reply)
 	}
-	if res.Reply != "" {
-		h.sendCLIReply(p.Src, res.Reply)
+}
+
+// alertReply maps the local acceptance of a /alert event onto the
+// in-band confirmation: durable acceptance answers with the handler
+// confirmation, the emergency fallback says so explicitly, and a
+// rejection never claims success.
+func alertReply(base string, acc dispatch.Acceptance) string {
+	switch acc {
+	case dispatch.Rejected:
+		return "FAILED: alert rejected"
+	case dispatch.AcceptedEmergency:
+		if base == "" {
+			return "OK: alert raised (failover mode)"
+		}
+		return base + " (failover mode)"
+	default:
+		if base == "" {
+			return "OK: alert raised"
+		}
+		return base
+	}
+}
+
+// msgIdentity is the stable per-message identity used for command
+// deduplication: the message number when the sender requested an ack
+// ({id} suffix), otherwise a short content digest — a retransmitted
+// copy of the same packet produces the same identity.
+func msgIdentity(p Packet) string {
+	if p.Message != nil && p.Message.ID != "" {
+		return p.Message.ID
+	}
+	return "h" + radiocli.ContentID(p.Src, p.Message.To, p.Message.Text)
+}
+
+// pruneCmds drops expired command records and bounds the map. The
+// caller holds mu.
+func (h *Hub) pruneCmds(now int64) {
+	cutoff := now - int64(cmdDedupWindow.Seconds())
+	for k, rec := range h.cmds {
+		if rec.at < cutoff {
+			delete(h.cmds, k)
+		}
+	}
+	for len(h.cmds) > cmdDedupCap {
+		var oldestK string
+		var oldestAt int64
+		for k, rec := range h.cmds {
+			if oldestK == "" || rec.at < oldestAt {
+				oldestK, oldestAt = k, rec.at
+			}
+		}
+		delete(h.cmds, oldestK)
 	}
 }
 
@@ -859,33 +1006,67 @@ func (h *Hub) senderApproved(callsign string) bool {
 	return gate != nil && gate(BaseCallsign(callsign))
 }
 
+// bannerAllowed reports whether an automatic banner answer may go out
+// now: at most one banner per sender per window and one banner per
+// global interval. The answer path for plain messages therefore stays
+// strictly rate-limited — answering bots cannot loop each other or hog
+// the channel.
+func (h *Hub) bannerAllowed(from string) bool {
+	now := h.now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.bannerNext.IsZero() && now.Before(h.bannerNext) {
+		return false
+	}
+	if last, ok := h.bannerLast[from]; ok && now.Sub(last) < bannerMinInterval {
+		return false
+	}
+	h.bannerLast[from] = now
+	h.bannerNext = now.Add(bannerGlobalInterval)
+	if len(h.bannerLast) > 256 {
+		cutoff := now.Add(-bannerMinInterval)
+		for k, at := range h.bannerLast {
+			if at.Before(cutoff) {
+				delete(h.bannerLast, k)
+			}
+		}
+	}
+	return true
+}
+
 // publishMessageEvent re-publishes one APRS message as a canonical
 // /events payload. The forwarded content starts with
 // "Message from: <callsign with SSID>", the text follows, and our
 // station name is carried as context. Messages from trusted operators
 // are alerts by nature: the default severity is severe.
 //
-// The event identity (ChangeID + event key) is derived from the receipt
-// timestamp, not from a per-process counter: the routing engine persists
-// delivery claims keyed by source/key/ChangeID, and a counter that
-// restarts with the process would let a message collide with a past
-// claim and be silently dropped as a duplicate.
+// The event identity (event key + source id) is stable per message:
+// sender + message identity (ack id or content digest). The RF copy
+// and the APRS-IS copy of the same packet therefore map to the same
+// event and the storage deduplication collapses them into one alarm;
+// the command cache in routeOrCLI additionally stops re-execution
+// in-process. ChangeID remains the delivery instance id.
 func (h *Hub) publishMessageEvent(p Packet) {
 	now := time.Now().UTC()
 	id := now.UnixNano()
 	nowS := now.Format(time.RFC3339)
 	expires := now.Add(time.Hour).Format(time.RFC3339)
 	from := p.Src
+	// Stable identity: sender + message identity. The RF copy and the
+	// APRS-IS copy of the same packet map to the same event, so the
+	// storage deduplication collapses them into one alarm; the command
+	// cache in routeOrCLI already stops re-execution in-process.
+	sourceID := from + ":msg:" + msgIdentity(p)
 	text := strings.TrimSpace(p.Message.Text)
 
 	doc := MessageEventWire{
 		SchemaVersion: messageEventSchemaVersion,
 		ChangeID:      id,
 		ChangeType:    "new",
-		EventKey:      "aprs:" + from + ":" + strconv.FormatInt(id, 10),
+		EventKey:      "aprs:" + sourceID,
 		Event: MessageEventHazard{
 			Source:      "aprs",
-			SourceID:    from,
+			SourceID:    sourceID,
 			Event:       "APRS message",
 			Severity:    "severe",
 			Urgency:     "unknown",
@@ -912,11 +1093,14 @@ func (h *Hub) publishMessageEvent(p Packet) {
 
 // publishAlertEvent raises one operator-requested hazard (/alert) into
 // the /events stream: severe, bounded by the requested TTL (4 hours by
-// default). The event identity follows the same timestamp-keyed scheme
-// as publishMessageEvent.
-func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) {
+// default). The event identity follows the same stable per-message
+// scheme as publishMessageEvent. The returned acceptance reports how
+// the LOCAL pipeline took the alert (durable, emergency or rejected);
+// the confirmation reply must follow it. A broker failure alone never
+// downgrades the local acceptance.
+func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) dispatch.Acceptance {
 	if spec == nil {
-		return
+		return dispatch.Rejected
 	}
 	now := time.Now().UTC()
 	id := now.UnixNano()
@@ -927,14 +1111,16 @@ func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) {
 	nowS := now.Format(time.RFC3339)
 	expires := now.Add(ttl).Format(time.RFC3339)
 	from := p.Src
+	// Stable identity: sender + message identity (see publishMessageEvent).
+	sourceID := from + ":alert:" + msgIdentity(p)
 	doc := MessageEventWire{
 		SchemaVersion: messageEventSchemaVersion,
 		ChangeID:      id,
 		ChangeType:    "new",
-		EventKey:      "aprs:" + from + ":alert:" + strconv.FormatInt(id, 10),
+		EventKey:      "aprs:" + sourceID,
 		Event: MessageEventHazard{
 			Source:      "aprs",
-			SourceID:    from,
+			SourceID:    sourceID,
 			Event:       "APRS alert",
 			Severity:    "severe",
 			Urgency:     "immediate",
@@ -952,11 +1138,20 @@ func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) {
 	payload, err := json.Marshal(doc)
 	if err != nil {
 		h.logger.Warn("aprs: alert marshal failed", "error", err)
-		return
+		return dispatch.Rejected
 	}
+	h.mu.Lock()
+	acceptor := h.alertAcceptor
+	h.mu.Unlock()
+	if acceptor != nil {
+		return acceptor(payload)
+	}
+	// Legacy path (no acceptor installed): best-effort through the
+	// generic sink; the hub cannot distinguish local acceptance here.
 	if err := h.publishWithTimeout("events", false, payload); err != nil {
 		h.logger.Warn("aprs: alert publish failed", "callsign", from, "error", err)
 	}
+	return dispatch.AcceptedDurable
 }
 
 // ackKind reports whether a received message text is an ack/rej reply.
@@ -970,19 +1165,25 @@ func ackKind(text string) string {
 	return ""
 }
 
-// signalAck wakes the waiter registered for msgid, if any.
-func (h *Hub) signalAck(msgid, kind string) {
+// signalAck wakes the waiter registered for this ack frame — but only
+// when the ack really belongs to the pending exchange: the message id
+// must be in flight AND the ack must come from the addressee the
+// message was sent to, addressed back to our callsign. A foreign or
+// stale ack is ignored and leaves the wait intact, so it can never
+// confirm someone else's exchange (or a recycled id).
+func (h *Hub) signalAck(p Packet, kind string) {
 	h.mu.Lock()
-	ch, ok := h.pending[msgid]
-	if ok {
-		delete(h.pending, msgid)
+	w, ok := h.pending[p.Message.ID]
+	if !ok || w.to != p.Src || w.from != p.Message.To {
+		h.mu.Unlock()
+		return
 	}
+	delete(h.pending, p.Message.ID)
+	ch := w.ch
 	h.mu.Unlock()
-	if ok {
-		select {
-		case ch <- kind:
-		default:
-		}
+	select {
+	case ch <- kind:
+	default:
 	}
 }
 
@@ -1064,7 +1265,16 @@ func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout t
 		h.mu.Unlock()
 		return false, fmt.Errorf("aprs: %d messages already awaiting acks", ackPendingCap)
 	}
-	h.pending[msgid] = ch
+	// ID reuse guard: the sequence wraps after 100000 messages. An id
+	// still in flight is never re-registered, so a late ack of a
+	// previous cycle cannot collide with a live wait.
+	for {
+		if _, busy := h.pending[msgid]; !busy {
+			break
+		}
+		msgid = fmt.Sprintf("%05d", h.msgSeq.Add(1)%100000)
+	}
+	h.pending[msgid] = &ackWait{from: h.cfg.Callsign, to: to, at: h.now(), ch: ch}
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
@@ -1240,6 +1450,14 @@ func (h *Hub) maintenance() {
 		if at < bulletCutoff {
 			staleBulletins = append(staleBulletins, id)
 			delete(h.bulletins, id)
+		}
+	}
+	// Ack waits beyond the hard validity window are dropped: their acks
+	// can never confirm an exchange whose validity already lapsed.
+	ackCutoff := now.Add(-ackWaitMaxAge)
+	for id, w := range h.pending {
+		if w.at.Before(ackCutoff) {
+			delete(h.pending, id)
 		}
 	}
 	dirty := make([]*stationRecord, 0, len(h.stations))

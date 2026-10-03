@@ -91,17 +91,23 @@ func (s *aprsManagerSink) PublishRaw(suffix string, retained bool, payload []byt
 // LOCAL ingress before the broker publish: local routing (the durable
 // inbox row) never depends on the broker round-trip. The loopback copy
 // arriving through the receiver deduplicates at the delivery ledger.
-func dispatchLocalEvent(ingress *dispatch.Ingress, logger *slog.Logger, payload []byte) {
+// The explicit acceptance is returned so callers can confirm durable
+// acceptance, report the emergency fallback and rejections separately.
+func dispatchLocalEvent(ingress *dispatch.Ingress, logger *slog.Logger, payload []byte) dispatch.Acceptance {
 	we, err := mqttreceiver.ParseEventPayload(payload)
 	if err != nil {
-		return // hub-built payloads always parse; defensive only
+		return dispatch.Rejected // hub-built payloads always parse; defensive only
 	}
 	ev := mqttreceiver.EventFromWire(we, "local", time.Now())
-	switch ingress.Enqueue(ev) {
+	switch acc := ingress.Enqueue(ev); acc {
 	case dispatch.Rejected:
 		logger.Warn("local dispatch rejected a radio event", "event_key", ev.Hazard.Key)
+		return acc
 	case dispatch.AcceptedEmergency:
 		logger.Warn("radio event accepted WITHOUT durable storage (emergency mode; lost on restart)", "event_key", ev.Hazard.Key)
+		return acc
+	default:
+		return acc
 	}
 }
 
@@ -740,6 +746,23 @@ func run(configPath string, checkConfig bool) error {
 	// routed message events also dispatch locally first.
 	hub.SetSink(&aprsManagerSink{mgmt: receivers, ingress: ingress, logger: logger})
 
+	// /alert commands confirm what the LOCAL pipeline accepted: durable
+	// (inbox row), emergency (RAM-only fallback) or rejection. The broker
+	// publish is only the asynchronous sync copy — its failure never
+	// downgrades a durably accepted local alert, and a locally rejected
+	// alert never syncs.
+	alertAcceptor := func(payload []byte) dispatch.Acceptance {
+		acc := dispatchLocalEvent(ingress, logger, payload)
+		if acc == dispatch.Rejected {
+			return acc
+		}
+		if err := receivers.PublishRaw("events", false, payload); err != nil && logger != nil {
+			logger.Warn("alert broker sync failed (local acceptance unaffected)", "error", err)
+		}
+		return acc
+	}
+	hub.SetAlertAcceptor(alertAcceptor)
+
 	// Heard Meshtastic nodes feed the broker as retained station documents
 	// under meshtastic/stations/<key12>; expired nodes are tombstoned.
 	meshtasticHub.SetStationSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
@@ -760,6 +783,9 @@ func run(configPath string, checkConfig bool) error {
 		dispatchLocalEvent(ingress, logger, payload)
 		return receivers.PublishRaw(topic, retained, payload)
 	})
+
+	// /alert confirmations track the local acceptance exactly like APRS.
+	meshtasticHub.SetAlertAcceptor(alertAcceptor)
 
 	// APRS weather stations feed the canonical weather pipeline: every
 	// decoded weather report becomes a retained info/<prefix> topic and a

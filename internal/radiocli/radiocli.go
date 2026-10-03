@@ -6,6 +6,8 @@
 package radiocli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"time"
 )
@@ -39,6 +41,21 @@ type AlertSpec struct {
 // Handler executes one radio command. args is the text after the
 // command name (trimmed, possibly empty).
 type Handler func(args string) Result
+
+// ContentID returns a short stable fingerprint (16 hex chars) of the
+// given parts. The gateways use it to identify a retransmitted message
+// when the transport carries no message/packet id: two copies of the
+// same message produce the same ContentID.
+func ContentID(parts ...string) string {
+	h := sha256.New()
+	for i, p := range parts {
+		if i > 0 {
+			h.Write([]byte{0})
+		}
+		h.Write([]byte(p))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
 
 // Bot interprets slash commands over any radio channel.
 type Bot struct {

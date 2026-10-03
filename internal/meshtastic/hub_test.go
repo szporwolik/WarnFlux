@@ -19,6 +19,7 @@ import (
 	"github.com/kabili207/meshtastic-go/transport/stream"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -174,7 +175,7 @@ func textPacket(from, to uint32, text string) *pb.MeshPacket {
 	}
 }
 
-func dispatch(t *testing.T, r *testRadio, pkt *pb.MeshPacket) {
+func dispatchPkt(t *testing.T, r *testRadio, pkt *pb.MeshPacket) {
 	t.Helper()
 	r.srv.DispatchToClients(&pb.FromRadio{
 		PayloadVariant: &pb.FromRadio_Packet{Packet: pkt},
@@ -339,7 +340,7 @@ func TestHubAckWithoutEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dispatch(t, radio, &pb.MeshPacket{
+	dispatchPkt(t, radio, &pb.MeshPacket{
 		From: 0xef010203, To: 0xabcd1234,
 		PayloadVariant: &pb.MeshPacket_Decoded{
 			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 999, Payload: routing},
@@ -379,7 +380,7 @@ func TestHubSendAckFlow(t *testing.T) {
 	}
 
 	// The device echoes our frame back with the assigned packet id.
-	dispatch(t, radio, &pb.MeshPacket{
+	dispatchPkt(t, radio, &pb.MeshPacket{
 		From: 0xabcd1234, Id: 4242, To: 0xef010203,
 		PayloadVariant: &pb.MeshPacket_Decoded{
 			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("ack me")},
@@ -390,7 +391,7 @@ func TestHubSendAckFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dispatch(t, radio, &pb.MeshPacket{
+	dispatchPkt(t, radio, &pb.MeshPacket{
 		From: 0xef010203, To: 0xabcd1234,
 		PayloadVariant: &pb.MeshPacket_Decoded{
 			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: routing},
@@ -451,7 +452,7 @@ func TestHubNoResendOnceDeviceConfirms(t *testing.T) {
 	}
 
 	// The device confirms the send (echo with the assigned packet id).
-	dispatch(t, radio, &pb.MeshPacket{
+	dispatchPkt(t, radio, &pb.MeshPacket{
 		From: 0xabcd1234, Id: 77, To: 0xef010203,
 		PayloadVariant: &pb.MeshPacket_Decoded{
 			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("only once")},
@@ -505,7 +506,7 @@ func TestHubNodeDirectoryPersists(t *testing.T) {
 	radio.hub.SetNodeStore(store)
 
 	// Learn a node from a live packet, then force a directory save.
-	dispatch(t, radio, &pb.MeshPacket{
+	dispatchPkt(t, radio, &pb.MeshPacket{
 		From: 0xef010203,
 		PayloadVariant: &pb.MeshPacket_Decoded{
 			Decoded: &pb.Data{Portnum: pb.PortNum_TELEMETRY_APP},
@@ -649,7 +650,7 @@ func TestHubNodeSignals(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
 	radio.waitConnected(t)
 
-	dispatch(t, radio, &pb.MeshPacket{
+	dispatchPkt(t, radio, &pb.MeshPacket{
 		From: 0xdeadbeef,
 		To:   core.BroadcastNodeID.Uint32(),
 		PayloadVariant: &pb.MeshPacket_Decoded{
@@ -673,7 +674,7 @@ func TestHubNodeSignals(t *testing.T) {
 		t.Fatalf("deadbeef sends = %v, want [telemetry]", sends)
 	}
 
-	dispatch(t, radio, textPacket(0x12345678, core.BroadcastNodeID.Uint32(), "hi"))
+	dispatchPkt(t, radio, textPacket(0x12345678, core.BroadcastNodeID.Uint32(), "hi"))
 	sends = waitFor("12345678")
 	if len(sends) != 1 || sends[0] != SignalText {
 		t.Fatalf("12345678 sends = %v, want [text]", sends)
@@ -709,20 +710,20 @@ func TestHubTelemetryStored(t *testing.T) {
 		}
 	}
 
-	dispatch(t, radio, telePacket(&pb.Telemetry{
+	dispatchPkt(t, radio, telePacket(&pb.Telemetry{
 		Variant: &pb.Telemetry_DeviceMetrics{DeviceMetrics: &pb.DeviceMetrics{
 			BatteryLevel: proto.Uint32(87), Voltage: proto.Float32(4.1),
 			ChannelUtilization: proto.Float32(12.5), AirUtilTx: proto.Float32(1.5),
 			UptimeSeconds: proto.Uint32(12345),
 		}},
 	}))
-	dispatch(t, radio, telePacket(&pb.Telemetry{
+	dispatchPkt(t, radio, telePacket(&pb.Telemetry{
 		Variant: &pb.Telemetry_EnvironmentMetrics{EnvironmentMetrics: &pb.EnvironmentMetrics{
 			Temperature: proto.Float32(21.5), RelativeHumidity: proto.Float32(55),
 			BarometricPressure: proto.Float32(1013), Iaq: proto.Uint32(42),
 		}},
 	}))
-	dispatch(t, radio, telePacket(&pb.Telemetry{
+	dispatchPkt(t, radio, telePacket(&pb.Telemetry{
 		Variant: &pb.Telemetry_AirQualityMetrics{AirQualityMetrics: &pb.AirQualityMetrics{
 			Pm25Standard: proto.Uint32(13), Pm10Standard: proto.Uint32(20), Co2: proto.Uint32(510),
 		}},
@@ -922,7 +923,7 @@ func TestHubReceive(t *testing.T) {
 		return nil
 	})
 
-	dispatch(t, radio, textPacket(0xdeadbeef, core.BroadcastNodeID.Uint32(), "hello mesh"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, core.BroadcastNodeID.Uint32(), "hello mesh"))
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -959,7 +960,7 @@ func TestHubReceive(t *testing.T) {
 	// A position update from an unknown node creates a station document.
 	lat := int32(500200000)
 	lon := int32(200000000)
-	dispatch(t, radio, &pb.MeshPacket{
+	dispatchPkt(t, radio, &pb.MeshPacket{
 		From: 0x12345678,
 		To:   core.BroadcastNodeID.Uint32(),
 		PayloadVariant: &pb.MeshPacket_Decoded{
@@ -1025,13 +1026,13 @@ func TestHubEventBridge(t *testing.T) {
 	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
 
 	// /debug DM to us from the approved node.
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
 	// Plain DM from the approved node: stays off /events.
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "powodz w krakowie"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "powodz w krakowie"))
 	// Broadcast from the approved node: stays off /events.
-	dispatch(t, radio, textPacket(0xdeadbeef, core.BroadcastNodeID.Uint32(), "broadcast"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, core.BroadcastNodeID.Uint32(), "broadcast"))
 	// DM from an unapproved node.
-	dispatch(t, radio, textPacket(0x12345678, 0xabcd1234, "spam"))
+	dispatchPkt(t, radio, textPacket(0x12345678, 0xabcd1234, "spam"))
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1053,7 +1054,7 @@ func TestHubEventBridge(t *testing.T) {
 	if err := json.Unmarshal([]byte(events[0]), &we); err != nil {
 		t.Fatalf("event payload: %v", err)
 	}
-	if we.Event.Source != "meshtastic" || we.Event.SourceID != "deadbeef" {
+	if we.Event.Source != "meshtastic" || !strings.HasPrefix(we.Event.SourceID, "deadbeef:msg:") {
 		t.Fatalf("event = %+v, want source meshtastic from deadbeef", we.Event)
 	}
 	if !strings.Contains(we.Event.Headline, "sp9kow") {
@@ -1095,7 +1096,7 @@ func TestHubRadioCLI(t *testing.T) {
 	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
 
 	// /help: answered, no alarm.
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/help"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/help"))
 	reply := radio.waitOutbound(t, 1)
 	if reply[0].GetTo() != 0xdeadbeef {
 		t.Fatalf("help reply to = %08x, want deadbeef", reply[0].GetTo())
@@ -1112,7 +1113,7 @@ func TestHubRadioCLI(t *testing.T) {
 
 	// /debug: alarm + confirmation.
 	before := len(radio.outbound())
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
@@ -1141,7 +1142,7 @@ func TestHubRadioCLI(t *testing.T) {
 	// Unauthorized senders: commands never run and never alarm — a
 	// restricted command gets an explicit denial.
 	before = len(radio.outbound())
-	dispatch(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/debug"))
+	dispatchPkt(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/debug"))
 	radio.waitOutbound(t, before+1)
 	out = radio.outbound()
 	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") || !strings.Contains(got, "You are not authorized") {
@@ -1160,7 +1161,7 @@ func TestHubRadioCLI(t *testing.T) {
 	// /help is public: an unregistered sender still gets the command
 	// list — but only of the commands they may run (no /debug).
 	before = len(radio.outbound())
-	dispatch(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/help"))
+	dispatchPkt(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/help"))
 	radio.waitOutbound(t, before+1)
 	out = radio.outbound()
 	got := string(out[len(out)-1].GetDecoded().GetPayload())
@@ -1183,7 +1184,7 @@ func TestHubRadioCLI(t *testing.T) {
 	// A plain direct message never becomes an alarm: the standard
 	// installation banner (with the /help hint) answers instead.
 	before = len(radio.outbound())
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "plain hello"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "plain hello"))
 	radio.waitOutbound(t, before+1)
 	out = radio.outbound()
 	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") {
@@ -1197,6 +1198,299 @@ func TestHubRadioCLI(t *testing.T) {
 	mu.Unlock()
 	if n != 1 {
 		t.Fatalf("events after plain hello = %d, want still 1", n)
+	}
+}
+
+// TestHubCommandsRequireExactAddressee pins the address gate: /debug
+// with To=0 (unset) or as a broadcast never executes — only a direct
+// message addressed exactly to our node reaches the command interpreter.
+func TestHubCommandsRequireExactAddressee(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	var (
+		mu     sync.Mutex
+		events []string
+	)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		mu.Lock()
+		events = append(events, string(payload))
+		mu.Unlock()
+		return nil
+	})
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	// To=0 (unset) and broadcasts: never executed, never answered.
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0, "/debug"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, core.BroadcastNodeID.Uint32(), "/debug"))
+	time.Sleep(150 * time.Millisecond)
+	mu.Lock()
+	n := len(events)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("events after non-addressed commands = %d, want 0", n)
+	}
+	if out := radio.outbound(); len(out) != 0 {
+		t.Fatalf("outbound after non-addressed commands = %d, want 0", len(out))
+	}
+
+	// An exact DM executes.
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n = len(events)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	n = len(events)
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("events after exact DM /debug = %d, want 1", n)
+	}
+}
+
+// TestHubCommandDedup pins the retransmission guard: the same /debug
+// packet delivered twice raises ONE alarm, and the redelivery gets the
+// previous reply instead of executing the command again. The event
+// identity is stable (sender + packet id), so the storage deduplication
+// collapses late redeliveries too.
+func TestHubCommandDedup(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	var (
+		mu     sync.Mutex
+		events []string
+	)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		mu.Lock()
+		events = append(events, string(payload))
+		mu.Unlock()
+		return nil
+	})
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	// The same packet (same device-assigned id) is delivered twice.
+	pkt := textPacket(0xdeadbeef, 0xabcd1234, "/debug")
+	pkt.Id = 4242
+	dispatchPkt(t, radio, pkt)
+	dispatchPkt(t, radio, pkt)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 1 && len(radio.outbound()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // settle: no second event may appear
+	mu.Lock()
+	if len(events) != 1 {
+		mu.Unlock()
+		t.Fatalf("events after redelivered /debug = %d, want 1", len(events))
+	}
+	var we MessageEventWire
+	if err := json.Unmarshal([]byte(events[0]), &we); err != nil {
+		mu.Unlock()
+		t.Fatalf("event payload: %v", err)
+	}
+	mu.Unlock()
+	if we.Event.SourceID != "deadbeef:msg:4242" {
+		t.Fatalf("event source id = %q, want the stable packet identity deadbeef:msg:4242", we.Event.SourceID)
+	}
+	out := radio.outbound()
+	if len(out) < 2 {
+		t.Fatalf("replies = %d, want 2 (initial + previous result)", len(out))
+	}
+	for _, o := range out[len(out)-2:] {
+		if got := string(o.GetDecoded().GetPayload()); !strings.Contains(got, "debug alarm") {
+			t.Fatalf("reply = %q, want the previous result on both deliveries", got)
+		}
+	}
+
+	// The digest fallback: two id-less packets with the same content are
+	// one command too.
+	plain := textPacket(0xdeadbeef, 0xabcd1234, "/debug now")
+	dispatchPkt(t, radio, plain)
+	dispatchPkt(t, radio, plain)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	n := len(events)
+	mu.Unlock()
+	if n != 2 {
+		t.Fatalf("events after id-less redelivery = %d, want 2 total", n)
+	}
+
+	// A distinct packet executes again: its own event.
+	pkt2 := textPacket(0xdeadbeef, 0xabcd1234, "/debug")
+	pkt2.Id = 4243
+	dispatchPkt(t, radio, pkt2)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n = len(events)
+		mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	n = len(events)
+	mu.Unlock()
+	if n != 3 {
+		t.Fatalf("events after a distinct packet = %d, want 3 total", n)
+	}
+}
+
+// TestHubAlertConfirmationTracksAcceptance pins the honest /alert
+// confirmation: the reply follows the LOCAL acceptance — durable keeps
+// the handler confirmation, the emergency fallback is reported as such,
+// and a rejection never claims success. The acceptor replaces the event
+// sink here, so its calls double as the event capture.
+func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	// The event sink gates the whole command path; the acceptor replaces
+	// it for /alert payloads, so a no-op sink is enough here.
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		return nil
+	})
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	radio.hub.SetCLI(cli)
+
+	acceptor := func(a dispatch.Acceptance) func([]byte) dispatch.Acceptance {
+		return func([]byte) dispatch.Acceptance { return a }
+	}
+
+	// Durable acceptance: the plain handler confirmation.
+	radio.hub.SetAlertAcceptor(acceptor(dispatch.AcceptedDurable))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu"))
+	radio.waitOutbound(t, 1)
+	if got := string(radio.outbound()[0].GetDecoded().GetPayload()); got != "OK: alert raised" {
+		t.Fatalf("durable confirmation = %q, want the plain handler reply", got)
+	}
+
+	// Emergency acceptance: the fallback is reported explicitly.
+	radio.hub.SetAlertAcceptor(acceptor(dispatch.AcceptedEmergency))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu 2"))
+	radio.waitOutbound(t, 2)
+	if got := string(radio.outbound()[1].GetDecoded().GetPayload()); !strings.Contains(got, "OK: alert raised") || !strings.Contains(got, "failover") {
+		t.Fatalf("emergency confirmation = %q, want the explicit failover note", got)
+	}
+
+	// Rejection: never claim success.
+	radio.hub.SetAlertAcceptor(acceptor(dispatch.Rejected))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu 3"))
+	radio.waitOutbound(t, 3)
+	if got := string(radio.outbound()[2].GetDecoded().GetPayload()); got != "FAILED: alert rejected" {
+		t.Fatalf("rejected confirmation = %q, want the explicit failure", got)
+	}
+}
+
+// TestHubBannerRateLimits pins the automatic-answer guards: a sender
+// gets at most one banner per window, the whole banner path is globally
+// paced, and queued banners yield to direct alarm replies.
+func TestHubBannerRateLimits(t *testing.T) {
+	radio := newTestRadio(t, Config{
+		Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		BannerMinInterval: time.Second, BannerGlobalInterval: 500 * time.Millisecond,
+	})
+	radio.waitConnected(t)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		return nil
+	})
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	// First plain DM: one banner.
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello one"))
+	radio.waitOutbound(t, 1)
+
+	// Second plain DM from the SAME sender within the window: silence.
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello two"))
+	time.Sleep(300 * time.Millisecond)
+	if n := len(radio.outbound()); n != 1 {
+		t.Fatalf("second banner within the per-sender window: outbound = %d, want 1", n)
+	}
+
+	// A different sender gets a banner once the global pacing allows it.
+	dispatchPkt(t, radio, textPacket(0xcafebabe, 0xabcd1234, "hello three"))
+	radio.waitOutbound(t, 2)
+
+	// A banner queued while the global window is closed must yield to
+	// direct replies: /debug answers immediately, the queued banner
+	// follows only on later traffic.
+	dispatchPkt(t, radio, textPacket(0xdead1234, 0xabcd1234, "hello four"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
+	radio.waitOutbound(t, 3)
+	out := radio.outbound()
+	if got := string(out[2].GetDecoded().GetPayload()); !strings.Contains(got, "debug alarm") {
+		t.Fatalf("alarm reply = %q, want the direct /debug confirmation BEFORE any banner", got)
+	}
+
+	// After the global window, the next inbound packet drains the queued
+	// banner.
+	time.Sleep(600 * time.Millisecond)
+	dispatchPkt(t, radio, textPacket(0xbeef0000, core.BroadcastNodeID.Uint32(), "unrelated broadcast"))
+	radio.waitOutbound(t, 4)
+	out = radio.outbound()
+	if out[3].GetTo() != 0xdead1234 {
+		t.Fatalf("drained banner to = %08x, want dead1234", out[3].GetTo())
+	}
+	if got := string(out[3].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") {
+		t.Fatalf("drained banner = %q, want the standard banner", got)
+	}
+
+	// After the per-sender window the same sender is answered again.
+	time.Sleep(1100 * time.Millisecond)
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello five"))
+	radio.waitOutbound(t, 5)
+	out = radio.outbound()
+	if got := string(out[4].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") {
+		t.Fatalf("post-window banner = %q, want the standard banner", got)
 	}
 }
 
@@ -1234,7 +1528,7 @@ func TestHubAlertCommand(t *testing.T) {
 	radio.hub.SetCLI(cli)
 
 	// /alert with text: severe event + confirmation reply.
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu"))
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
@@ -1278,7 +1572,7 @@ func TestHubAlertCommand(t *testing.T) {
 
 	// /alert without text: usage reply, no new event.
 	before := len(radio.outbound())
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert"))
 	radio.waitOutbound(t, before+1)
 	out = radio.outbound()
 	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "Missing parameter") {
@@ -1290,7 +1584,7 @@ func TestHubAlertCommand(t *testing.T) {
 
 	// Unauthorized sender: denial, no event.
 	before = len(radio.outbound())
-	dispatch(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/alert x"))
+	dispatchPkt(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/alert x"))
 	radio.waitOutbound(t, before+1)
 	out = radio.outbound()
 	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "You are not authorized") {
@@ -1305,13 +1599,16 @@ func TestHubAlertCommand(t *testing.T) {
 // replies within the mesh limit pass unchanged, and a very long
 // installation identity shortens progressively instead of overflowing.
 func TestHubReplyFitsChannelLimit(t *testing.T) {
-	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		// Tiny banner windows: this test pins the fitting, not the
+		// rate limiting (covered by TestHubBannerRateLimits).
+		BannerMinInterval: time.Millisecond, BannerGlobalInterval: time.Millisecond})
 	radio.waitConnected(t)
 	radio.hub.SetSenderGate(func(id string) string { return "sp9kow" })
 	radio.hub.SetEventSink(func(_ context.Context, _ string, _ bool, _ []byte) error { return nil })
 	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - a.very.long.domain.example.org"))
 
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello"))
 	radio.waitOutbound(t, 1)
 	out := radio.outbound()
 	if got := string(out[0].GetDecoded().GetPayload()); got != "WarnFlux v1.0 - SOSNA - a.very.long.domain.example.org | type /help for help" {
@@ -1322,7 +1619,7 @@ func TestHubReplyFitsChannelLimit(t *testing.T) {
 	// and the installation name drop, the payload survives.
 	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - " + strings.Repeat("x", 110)))
 	before := len(radio.outbound())
-	dispatch(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello"))
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "hello"))
 	radio.waitOutbound(t, before+1)
 	out = radio.outbound()
 	got := string(out[len(out)-1].GetDecoded().GetPayload())

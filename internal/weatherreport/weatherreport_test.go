@@ -60,6 +60,37 @@ func TestSummarizeRejectsGrossError(t *testing.T) {
 	}
 }
 
+// TestSummarizeZeroMADConsensus pins the zero-MAD rule: when at least
+// half the sensors agree exactly, the consensus cluster wins and gross
+// outliers never dilute it (20, 20, 59 → 20, not 33).
+func TestSummarizeZeroMADConsensus(t *testing.T) {
+	now := time.Now()
+	rep := Summarize(now, []Reading{
+		reading(20.0, 50, true, true),
+		reading(20.0, 50, true, true),
+		reading(59.0, 50, true, true), // broken sensor
+	}, nil)
+	if rep.TempC != 20 {
+		t.Fatalf("temp = %v, want 20 (the 59C outlier dropped by the consensus rule)", rep.TempC)
+	}
+	if rep.Stations != 3 {
+		t.Fatalf("stations = %d, want 3 (all fresh readings are counted; the outlier just never dilutes the mean)", rep.Stations)
+	}
+	if rep.HumPct != 50 {
+		t.Fatalf("hum = %v, want 50", rep.HumPct)
+	}
+
+	// Full exact consensus is the mean of the cluster (all of them).
+	rep = Summarize(now, []Reading{
+		reading(20.0, 50, true, true),
+		reading(20.0, 50, true, true),
+		reading(20.0, 50, true, true),
+	}, nil)
+	if rep.TempC != 20 || rep.Stations != 3 {
+		t.Fatalf("full consensus = %+v, want 20 / 3 stations", rep)
+	}
+}
+
 // TestSummarizeIgnoresStaleAndInvalid drops readings outside the
 // freshness window and physically impossible values.
 func TestSummarizeIgnoresStaleAndInvalid(t *testing.T) {

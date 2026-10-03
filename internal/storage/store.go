@@ -206,6 +206,13 @@ type EventStore interface {
 	// Get returns the stored event for key, or ErrNotFound.
 	Get(ctx context.Context, key string) (*StoredEvent, error)
 
+	// EventTimes returns the stored lifecycle anchor (effective /
+	// expires) of one event, if the row exists and carries one. Radio
+	// gateways use it to re-publish a retransmitted command with
+	// byte-identical content, so the store deduplicates it into a
+	// single delivery across restarts.
+	EventTimes(ctx context.Context, key string) (eff, exp time.Time, ok bool, err error)
+
 	// Count returns the number of stored events.
 	Count(ctx context.Context) (int, error)
 

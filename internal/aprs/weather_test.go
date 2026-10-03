@@ -139,6 +139,48 @@ func TestHubWeatherSinkAndStationDoc(t *testing.T) {
 	}
 }
 
+// TestHubWeatherSurvivesInfraFilter pins the infra/weather split: APRS
+// weather stations ARE infrastructure (never map state, never presence
+// announcements), but their reports still reach the canonical weather
+// pipeline — /weather must keep working.
+func TestHubWeatherSurvivesInfraFilter(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:               true,
+		Callsign:              "SP9MOA-10",
+		Icon:                  "/j",
+		GridSquare:            "JO90WW",
+		RadiusKM:              DefaultRadiusKM,
+		StationTTL:            30 * time.Minute,
+		ExcludeInfrastructure: true,
+	})
+	gotCh := make(chan WeatherReport, 4)
+	hub.SetWeatherSink(func(_ context.Context, w WeatherReport) error {
+		gotCh <- w
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hub.Observe(ParseFeedLine("SP9WX>APRS,TCPIP*:!5056.25N/01952.50E_220/004g005t077r000p000P000h50b09900", time.Now()), "aprs-inet")
+
+	// The report reaches the canonical weather pipeline...
+	waitFor(t, func() bool { return len(gotCh) >= 1 })
+	got := <-gotCh
+	if got.Callsign != "SP9WX" || got.TemperatureC == nil || *got.TemperatureC != 25.0 {
+		t.Fatalf("weather pipeline report = %+v, want the WX station reading", got)
+	}
+
+	// ...but the weather station never becomes map state.
+	time.Sleep(150 * time.Millisecond)
+	if docs := hub.Stations(); len(docs) != 0 {
+		t.Fatalf("weather station leaked into the station map: %+v", docs)
+	}
+	if n := len(sink.payloads(StationsTopicPrefix + "SP9WX")); n != 0 {
+		t.Fatalf("weather station document published %d times, want 0", n)
+	}
+}
+
 func checkFloat(t *testing.T, field string, got *float64, want float64) {
 	t.Helper()
 	if got == nil {

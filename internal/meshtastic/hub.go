@@ -85,6 +85,18 @@ type Config struct {
 	// hogs the channel, and queued banners always yield to alarm and
 	// command replies.
 	BannerGlobalInterval time.Duration
+	// CmdRetryCooldown is the retry pacing of a TRANSIENTLY failed
+	// command (the local pipeline rejected the alert): a redelivery
+	// within the cooldown replays the failure, after it the command is
+	// executed again (default cmdRetryCooldownDefault).
+	CmdRetryCooldown time.Duration
+	// ReplyBurst / ReplyBurstWindow bound EVERY automatic reply per
+	// sender (command answers, redelivery replays, /help, denials,
+	// banners): at most ReplyBurst replies per ReplyBurstWindow per
+	// sender, so a flooding sender cannot make the station chatter
+	// (defaults: 5 per minute).
+	ReplyBurst       int
+	ReplyBurstWindow time.Duration
 }
 
 // Recorder persists the meshtastic message history (implemented by
@@ -125,6 +137,12 @@ const (
 // within this window.
 const defaultSilenceTimeout = 2 * time.Minute
 
+// nodeDirRetention bounds the heard-node directory: nodes unheard for
+// this long are dropped from memory and persistence, so 24/7/365
+// operation never accumulates an unbounded directory of transient
+// visitors (active mesh members are re-heard well within it).
+const nodeDirRetention = 30 * 24 * time.Hour
+
 // defaultEmcomInterval is the spacing between presence beacons on the
 // emcom channel.
 const defaultEmcomInterval = 4 * time.Hour
@@ -153,6 +171,19 @@ const (
 	bannerGlobalInterval = 10 * time.Second
 	// bannerQueueCap bounds queued banner replies.
 	bannerQueueCap = 32
+)
+
+// cmdRetryCooldownDefault paces retries of transiently failed commands:
+// within the cooldown a redelivery replays the failure; after it the
+// command executes again.
+const cmdRetryCooldownDefault = 15 * time.Second
+
+// replyBurstDefault / replyBurstWindowDefault bound EVERY automatic
+// reply per sender (command answers, redelivery replays, /help,
+// denials, banners): a flooding sender cannot make the station chatter.
+const (
+	replyBurstDefault       = 5
+	replyBurstWindowDefault = time.Minute
 )
 
 // defaultAckSettleTimeout is how long a device-confirmed direct message
@@ -279,15 +310,25 @@ type Node struct {
 // cmdRecord is the remembered outcome of one radio command, keyed by
 // sender + packet identity: a redelivered packet (rebroadcast, router
 // retry) re-sends the previous reply and never re-executes the command.
+// A transient failure (retryable) admits controlled retries after the
+// cooldown instead of replaying the stale failure forever.
 type cmdRecord struct {
-	at    time.Time
-	reply string
+	at        time.Time
+	reply     string
+	retryable bool
 }
 
 // bannerReply is one queued low-priority banner answer.
 type bannerReply struct {
 	id   string
 	text string
+}
+
+// replyWindow is one sender's sliding burst window for automatic
+// replies.
+type replyWindow struct {
+	start time.Time
+	count int
 }
 
 // SelfInfo describes our own node.
@@ -418,11 +459,11 @@ type Hub struct {
 	// the previous result instead of re-executing the command.
 	cmds map[string]*cmdRecord
 
-	// alertAcceptor accepts a marshalled /alert event into the LOCAL
-	// pipeline and reports how it was accepted (durable inbox,
-	// emergency RAM fallback or rejection); guarded by mu. nil falls
-	// back to the event sink (tests, legacy wiring).
-	alertAcceptor func(payload []byte) dispatch.Acceptance
+	// eventAcceptor accepts a marshalled COMMAND event (/alert and
+	// /debug) into the LOCAL pipeline and reports how it was accepted
+	// (durable inbox, emergency RAM fallback or rejection); guarded by
+	// mu. nil falls back to the event sink (tests, legacy wiring).
+	eventAcceptor func(payload []byte) dispatch.Acceptance
 
 	// banners queues low-priority automatic banner replies; guarded by
 	// mu. They drain one per drain call (inbound packet / session
@@ -430,6 +471,16 @@ type Hub struct {
 	banners    []bannerReply
 	bannerLast map[string]time.Time // sender -> last banner answer
 	bannerNext time.Time            // global pacing: next allowed banner
+
+	// replyLast bounds ALL automatic replies per sender (command
+	// answers, replays, /help, denials, banners); guarded by mu.
+	replyLast map[string]replyWindow
+
+	// eventTimes resolves the durable lifecycle anchor (effective /
+	// expires) of an already-accepted command event; guarded by mu. It
+	// is the restart-proof half of the command registry: the durable
+	// event row written by ingestion.
+	eventTimes func(ctx context.Context, key string) (eff, exp time.Time, ok bool)
 }
 
 // NewHub validates the config and builds the hub.
@@ -455,12 +506,22 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if cfg.BannerGlobalInterval <= 0 {
 		cfg.BannerGlobalInterval = bannerGlobalInterval
 	}
+	if cfg.CmdRetryCooldown <= 0 {
+		cfg.CmdRetryCooldown = cmdRetryCooldownDefault
+	}
+	if cfg.ReplyBurst <= 0 {
+		cfg.ReplyBurst = replyBurstDefault
+	}
+	if cfg.ReplyBurstWindow <= 0 {
+		cfg.ReplyBurstWindow = replyBurstWindowDefault
+	}
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
 		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node),
 			pending: make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
-			bannerLast: make(map[string]time.Time), startedAt: time.Now()}, nil
+			bannerLast: make(map[string]time.Time), replyLast: make(map[string]replyWindow),
+			startedAt: time.Now()}, nil
 	}
 	if cfg.Device == "" {
 		return nil, errors.New("meshtastic: device path is required")
@@ -472,6 +533,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		pending:    make(map[uint32]*pendingSend),
 		cmds:       make(map[string]*cmdRecord),
 		bannerLast: make(map[string]time.Time),
+		replyLast:  make(map[string]replyWindow),
 		startedAt:  time.Now(),
 	}, nil
 }
@@ -530,14 +592,25 @@ func (h *Hub) SetEventSink(fn func(ctx context.Context, topic string, retained b
 	h.mu.Unlock()
 }
 
-// SetAlertAcceptor installs the LOCAL acceptance path for /alert
-// events: the callback enqueues a marshalled alert into the local
-// pipeline and reports how it was accepted (durable inbox, emergency
-// RAM fallback or rejection). Without it the hub falls back to the
-// event sink (tests, legacy wiring).
-func (h *Hub) SetAlertAcceptor(fn func(payload []byte) dispatch.Acceptance) {
+// SetEventAcceptor installs the LOCAL acceptance path for command
+// events (/alert and /debug): the callback enqueues a marshalled event
+// into the local pipeline and reports how it was accepted (durable
+// inbox, emergency RAM fallback or rejection). Without it the hub falls
+// back to the event sink (tests, legacy wiring).
+func (h *Hub) SetEventAcceptor(fn func(payload []byte) dispatch.Acceptance) {
 	h.mu.Lock()
-	h.alertAcceptor = fn
+	h.eventAcceptor = fn
+	h.mu.Unlock()
+}
+
+// SetEventTimesResolver installs the durable lifecycle-anchor lookup
+// for command events: it returns the stored effective/expires times of
+// an already-accepted event, so a re-issued command produces
+// byte-identical content and the store deduplicates it (one delivery
+// across restarts). nil disables the lookup (tests, legacy wiring).
+func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (eff, exp time.Time, ok bool)) {
+	h.mu.Lock()
+	h.eventTimes = fn
 	h.mu.Unlock()
 }
 
@@ -745,7 +818,13 @@ func (h *Hub) persistNodes() {
 		return
 	}
 	nodes := make([]storage.MeshtasticNode, 0, len(h.nodes))
+	cutoff := time.Now().Add(-nodeDirRetention)
 	for _, n := range h.nodes {
+		// Defense in depth: the directory prune in expireNodes already
+		// dropped these, but a persisted save must never resurrect them.
+		if n.LastSeen.Before(cutoff) {
+			continue
+		}
 		nodes = append(nodes, storage.MeshtasticNode{
 			ID:       n.ID,
 			Name:     n.Name,
@@ -879,9 +958,9 @@ func positionDeg(pos *pb.Position) (lat, lon float64) {
 }
 
 // expireNodes cleans the MQTT station feed: nodes unheard for longer
-// than NodeTTL get their retained document tombstoned (once). The nodes
-// themselves stay in the persistent directory — the list only ever
-// grows, like the device's own node database.
+// than NodeTTL get their retained document tombstoned (once). Nodes
+// unheard for longer than nodeDirRetention are dropped from the
+// directory entirely, so memory and the persisted table stay bounded.
 func (h *Hub) expireNodes() {
 	h.mu.Lock()
 	now := time.Now()
@@ -890,6 +969,12 @@ func (h *Hub) expireNodes() {
 		if !n.tombstoned && now.Sub(n.LastSeen) > h.cfg.NodeTTL {
 			n.tombstoned = true
 			stale = append(stale, n)
+		}
+	}
+	for id, n := range h.nodes {
+		if now.Sub(n.LastSeen) > nodeDirRetention {
+			delete(h.nodes, id)
+			h.nodesDirty = true
 		}
 	}
 	sink := h.stationSink
@@ -1023,7 +1108,11 @@ func (h *Hub) pairByRoutingLocked(rid, from uint32, fromSelf bool) *pendingSend 
 // direct message answers with a routing packet whose request_id matches
 // our packet id and whose error reason tells whether it was delivered;
 // the device itself answers broadcasts with a self-addressed frame (the
-// "sent" confirmation).
+// "sent" confirmation). The ack is bound to BOTH sides of the exchange:
+// the request id (our packet id) and the expected recipient — a foreign
+// node's routing frame never settles our wait. Modem acceptance and
+// final delivery stay distinct: a self frame with an error reason means
+// the modem accepted the message but could NOT deliver it.
 func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	rid := decoded.GetRequestId()
 	if rid == 0 {
@@ -1036,6 +1125,12 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	fromSelf := fmt.Sprintf("%08x", pkt.GetFrom()) == h.selfID()
 	h.sendMu.Lock()
 	ps := h.pending[rid]
+	if ps != nil && !fromSelf && ps.to != pkt.GetFrom() {
+		// A foreign node's routing frame (same request id, wrong
+		// sender): never settles our exchange, never consumes it.
+		h.sendMu.Unlock()
+		return
+	}
 	if ps == nil {
 		ps = h.pairByRoutingLocked(rid, pkt.GetFrom(), fromSelf)
 	}
@@ -1046,10 +1141,11 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	delete(h.pending, rid)
 	h.sendMu.Unlock()
 	status := TxDelivered
-	if fromSelf {
-		status = TxSent
-	} else if er := routing.GetErrorReason(); er != pb.Routing_NONE {
-		status = TxFailed
+	switch {
+	case routing.GetErrorReason() != pb.Routing_NONE:
+		status = TxFailed // the modem (self) or an intermediate node reports failed delivery
+	case fromSelf:
+		status = TxSent // modem accepted the frame (broadcast "sent" confirmation)
 	}
 	h.markStatus(ps, status)
 }
@@ -1442,32 +1538,44 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 		rec := h.cmds[cid]
 		fresh := rec != nil && now.Sub(rec.at) < cmdDedupWindow
 		reply := ""
+		retry := false
 		if fresh {
 			reply = rec.reply
+			// A transiently failed command admits controlled retries:
+			// after the cooldown a redelivery executes again instead of
+			// replaying the stale failure.
+			retry = rec.retryable && now.Sub(rec.at) >= h.cfg.CmdRetryCooldown
 		}
 		h.mu.Unlock()
-		if fresh {
-			if reply != "" {
+		if fresh && !retry {
+			if reply != "" && h.replyAllowed(id) {
 				h.sendCLIReply(id, reply)
 			}
 			return
 		}
 		res := cli.Handle(text, owner != "")
 		// The stored reply is the FINAL confirmation (post-acceptance),
-		// so a redelivery replays exactly the previous result.
+		// so a redelivery replays exactly the previous result. Both
+		// commands share the same confirmation path. A rejection is
+		// transient: remembered as retryable instead of final.
 		reply = res.Reply
+		retryable := false
+		if res.Debug {
+			acc := h.publishRoutedEvent(id, owner, text, mid)
+			reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
+			retryable = acc == dispatch.Rejected
+		}
 		if res.Alert != nil {
-			reply = alertReply(res.Reply, h.publishAlertEvent(id, owner, res.Alert, mid))
+			acc := h.publishAlertEvent(id, owner, res.Alert, mid)
+			reply = confirmation(res.Reply, "FAILED: alert rejected", acc)
+			retryable = retryable || acc == dispatch.Rejected
 		}
 		h.mu.Lock()
 		h.pruneCmds(now)
-		h.cmds[cid] = &cmdRecord{at: now, reply: reply}
+		h.cmds[cid] = &cmdRecord{at: now, reply: reply, retryable: retryable}
 		h.mu.Unlock()
 		if res.Handled {
-			if res.Debug {
-				h.publishRoutedEvent(id, owner, text, mid)
-			}
-			if reply != "" {
+			if reply != "" && h.replyAllowed(id) {
 				h.sendCLIReply(id, reply)
 			}
 		}
@@ -1482,6 +1590,38 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 }
 
+// replyAllowed reports whether ONE automatic reply may go out to the
+// sender now. Every automatic answer — command confirmations,
+// redelivery replays, /help, denials and banners — shares one per-sender
+// burst window, so a flooding sender (or a stuck device repeating
+// /unknown) cannot make the station chatter.
+func (h *Hub) replyAllowed(id string) bool {
+	now := time.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	w := h.replyLast[id]
+	if now.Sub(w.start) >= h.cfg.ReplyBurstWindow {
+		w = replyWindow{}
+	}
+	if w.count >= h.cfg.ReplyBurst {
+		return false
+	}
+	if w.start.IsZero() {
+		w.start = now
+	}
+	w.count++
+	h.replyLast[id] = w
+	if len(h.replyLast) > 256 {
+		cutoff := now.Add(-h.cfg.ReplyBurstWindow)
+		for k, rw := range h.replyLast {
+			if rw.start.Before(cutoff) {
+				delete(h.replyLast, k)
+			}
+		}
+	}
+	return true
+}
+
 // queueBanner enqueues one banner answer as low-priority traffic. The
 // per-sender window stops answering bots from looping each other; the
 // global pacing and the one-at-a-time drain keep the automatic-answer
@@ -1489,6 +1629,9 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 // starts when the banner is queued, so dropped (coalesced) replies
 // never reset it.
 func (h *Hub) queueBanner(id, text string) {
+	if !h.replyAllowed(id) {
+		return
+	}
 	now := time.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1603,23 +1746,44 @@ func (h *Hub) ChannelLabel(idx int) string {
 	return fmt.Sprintf("ch%d", idx)
 }
 
+// resolveTimes returns the event lifecycle anchor for one command key:
+// the resolver reuses the durable event row's times when it exists (a
+// re-issued command then produces byte-identical content and the store
+// deduplicates it); otherwise now / now+ttl start the lifecycle.
+func (h *Hub) resolveTimes(key string, ttl time.Duration) (eff, exp time.Time) {
+	h.mu.Lock()
+	resolver := h.eventTimes
+	h.mu.Unlock()
+	if resolver != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		eff, exp, ok := resolver(ctx, key)
+		cancel()
+		if ok {
+			return eff, exp
+		}
+	}
+	eff = time.Now().UTC()
+	return eff, eff.Add(ttl)
+}
+
 // publishRoutedEvent bridges one approved direct message into the /events
 // stream as a canonical hazard transition. The directory owner travels
 // in the headline and description so operators see WHO is speaking. mid
 // is the per-packet identity (msgIdentity) that keeps the event key
 // stable across redeliveries, so the storage deduplication collapses
-// rebroadcasts into one alarm.
-func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string) {
+// rebroadcasts into one alarm. The ChangeID is content-derived: a
+// retransmitted packet never becomes a second delivery. The returned
+// acceptance reports how the LOCAL pipeline took the event; the /debug
+// confirmation follows it.
+func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string) dispatch.Acceptance {
 	h.mu.Lock()
 	name := ""
 	if n := h.nodes[senderID]; n != nil && n.Name != "" {
 		name = n.Name
 	}
 	sink := h.eventSink
+	acceptor := h.eventAcceptor
 	h.mu.Unlock()
-	if sink == nil {
-		return
-	}
 	now := time.Now().UTC()
 	from := name
 	if from == "" {
@@ -1628,7 +1792,7 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string) {
 	sourceID := senderID + ":msg:" + mid
 	we := MessageEventWire{
 		SchemaVersion: meshMessageEventSchemaVersion,
-		ChangeID:      now.UnixMilli(),
+		ChangeID:      radiocli.StableID("meshtastic:msg", sourceID, text),
 		ChangeType:    "new",
 		EventKey:      "meshtastic:" + sourceID,
 		Event: MessageEventHazard{
@@ -1648,41 +1812,48 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string) {
 	}
 	payload, err := json.Marshal(we)
 	if err != nil {
-		return
+		return dispatch.Rejected
+	}
+	if acceptor != nil {
+		return acceptor(payload)
+	}
+	// Legacy path (no acceptor installed): best-effort through the
+	// event sink; the hub cannot distinguish local acceptance here.
+	if sink == nil {
+		return dispatch.AcceptedDurable
 	}
 	if err := sink(context.Background(), "events", false, payload); err != nil && h.logger != nil {
 		h.logger.Warn("meshtastic: routed message event publish failed", "error", err)
 	}
+	return dispatch.AcceptedDurable
 }
 
-// alertReply maps the local acceptance of a /alert event onto the
+// confirmation maps the local acceptance of a command event onto the
 // in-band confirmation: durable acceptance answers with the handler
 // confirmation, the emergency fallback says so explicitly, and a
-// rejection never claims success.
-func alertReply(base string, acc dispatch.Acceptance) string {
+// rejection answers with the given failure text — never a false "OK".
+func confirmation(base, failure string, acc dispatch.Acceptance) string {
 	switch acc {
 	case dispatch.Rejected:
-		return "FAILED: alert rejected"
+		return failure
 	case dispatch.AcceptedEmergency:
-		if base == "" {
-			return "OK: alert raised (failover mode)"
+		if base != "" {
+			return base + " (failover mode)"
 		}
-		return base + " (failover mode)"
-	default:
-		if base == "" {
-			return "OK: alert raised"
-		}
-		return base
 	}
+	return base
 }
 
 // publishAlertEvent raises one operator-requested hazard (/alert) into
 // the /events stream: severe, bounded by the requested TTL (4 hours by
 // default). mid keeps the event identity stable across redeliveries
-// (see publishRoutedEvent). The returned acceptance reports how the
-// LOCAL pipeline took the alert (durable, emergency or rejected); the
-// confirmation reply must follow it. A broker failure alone never
-// downgrades the local acceptance.
+// (see publishRoutedEvent); lifecycle times reuse the durable event row
+// through the resolver and the ChangeID derives from the content, so a
+// retransmitted copy is byte-identical and deduplicates across
+// restarts. The returned acceptance reports how the LOCAL pipeline took
+// the alert (durable, emergency or rejected); the confirmation reply
+// must follow it. A broker failure alone never downgrades the local
+// acceptance.
 func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec, mid string) dispatch.Acceptance {
 	if spec == nil {
 		return dispatch.Rejected
@@ -1693,23 +1864,23 @@ func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec
 		name = n.Name
 	}
 	sink := h.eventSink
-	acceptor := h.alertAcceptor
+	acceptor := h.eventAcceptor
 	h.mu.Unlock()
-	now := time.Now().UTC()
 	ttl := spec.TTL
 	if ttl <= 0 {
 		ttl = 4 * time.Hour
 	}
-	nowS := now.Format(time.RFC3339)
-	expires := now.Add(ttl).Format(time.RFC3339)
+	sourceID := senderID + ":alert:" + mid
+	eff, expires := h.resolveTimes("meshtastic:"+sourceID, ttl)
+	nowS := eff.Format(time.RFC3339)
+	expS := expires.Format(time.RFC3339)
 	from := name
 	if from == "" {
 		from = "!" + senderID
 	}
-	sourceID := senderID + ":alert:" + mid
 	we := MessageEventWire{
 		SchemaVersion: meshMessageEventSchemaVersion,
-		ChangeID:      now.UnixMilli(),
+		ChangeID:      radiocli.StableID("meshtastic:alert", sourceID, spec.Headline),
 		ChangeType:    "new",
 		EventKey:      "meshtastic:" + sourceID,
 		Event: MessageEventHazard{
@@ -1723,7 +1894,7 @@ func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec
 			Headline:    spec.Headline,
 			Description: fmt.Sprintf("Alert raised by %s (%s) over the mesh.", owner, from),
 			EffectiveAt: &nowS,
-			ExpiresAt:   &expires,
+			ExpiresAt:   &expS,
 			Areas:       []string{},
 			Status:      "active",
 			ReceivedAt:  nowS,

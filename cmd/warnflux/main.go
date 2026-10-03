@@ -308,6 +308,10 @@ const (
 	httpShutdownWait  = 5 * time.Second
 	dispatchDrainWait = 5 * time.Second
 	actionShutdownMax = 30 * time.Second
+	// outboxRetention bounds the durable HTTP-ingest broker-sync backlog:
+	// rows the broker could not confirm for this long are pruned, so a
+	// prolonged outage cannot grow the database without bound.
+	outboxRetention = 24 * time.Hour
 )
 
 // validateConfiguration mirrors run()'s static construction phase for
@@ -746,22 +750,36 @@ func run(configPath string, checkConfig bool) error {
 	// routed message events also dispatch locally first.
 	hub.SetSink(&aprsManagerSink{mgmt: receivers, ingress: ingress, logger: logger})
 
-	// /alert commands confirm what the LOCAL pipeline accepted: durable
-	// (inbox row), emergency (RAM-only fallback) or rejection. The broker
-	// publish is only the asynchronous sync copy — its failure never
-	// downgrades a durably accepted local alert, and a locally rejected
-	// alert never syncs.
-	alertAcceptor := func(payload []byte) dispatch.Acceptance {
+	// /alert and /debug confirm what the LOCAL pipeline accepted:
+	// durable (inbox row), emergency (RAM-only fallback) or rejection.
+	// The broker publish is only the asynchronous sync copy — its
+	// failure never downgrades a durably accepted local event, and a
+	// locally rejected event never syncs.
+	eventAcceptor := func(payload []byte) dispatch.Acceptance {
 		acc := dispatchLocalEvent(ingress, logger, payload)
 		if acc == dispatch.Rejected {
 			return acc
 		}
 		if err := receivers.PublishRaw("events", false, payload); err != nil && logger != nil {
-			logger.Warn("alert broker sync failed (local acceptance unaffected)", "error", err)
+			logger.Warn("command event broker sync failed (local acceptance unaffected)", "error", err)
 		}
 		return acc
 	}
-	hub.SetAlertAcceptor(alertAcceptor)
+	hub.SetEventAcceptor(eventAcceptor)
+
+	// Restart-proof command dedup: the durable event row is the command
+	// registry. A retransmitted command reuses the stored lifecycle
+	// anchor, so its event content is byte-identical and the store
+	// collapses it into the original delivery (never a second one).
+	eventTimes := func(ctx context.Context, key string) (time.Time, time.Time, bool) {
+		eff, exp, ok, err := store.EventTimes(ctx, key)
+		if err != nil && logger != nil {
+			logger.Debug("radio event times lookup failed", "key", key, "error", err)
+		}
+		return eff, exp, ok
+	}
+	hub.SetEventTimesResolver(eventTimes)
+	meshtasticHub.SetEventTimesResolver(eventTimes)
 
 	// Heard Meshtastic nodes feed the broker as retained station documents
 	// under meshtastic/stations/<key12>; expired nodes are tombstoned.
@@ -784,8 +802,9 @@ func run(configPath string, checkConfig bool) error {
 		return receivers.PublishRaw(topic, retained, payload)
 	})
 
-	// /alert confirmations track the local acceptance exactly like APRS.
-	meshtasticHub.SetAlertAcceptor(alertAcceptor)
+	// /alert and /debug confirmations track the local acceptance exactly
+	// like APRS.
+	meshtasticHub.SetEventAcceptor(eventAcceptor)
 
 	// APRS weather stations feed the canonical weather pipeline: every
 	// decoded weather report becomes a retained info/<prefix> topic and a
@@ -1139,6 +1158,39 @@ func run(configPath string, checkConfig bool) error {
 				}
 				if n > 0 {
 					logger.Debug("aprs: message history pruned", "removed", n)
+				}
+			}
+			prune()
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					prune()
+				}
+			}
+		}()
+	}
+
+	// Durable HTTP-ingest outbox: rows the broker could not confirm for
+	// longer than outboxRetention are pruned hourly, so a prolonged
+	// broker outage cannot grow the database without bound. The local
+	// delivery already happened; only the cross-instance sync of stale
+	// requests is dropped.
+	{
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prune := func() {
+				n, err := store.PruneOutbox(ctx, time.Now().Add(-outboxRetention))
+				if err != nil {
+					logger.Warn("ingest_http: outbox prune failed", "error", err)
+					return
+				}
+				if n > 0 {
+					logger.Info("ingest_http: outbox aged rows pruned", "removed", n)
 				}
 			}
 			prune()

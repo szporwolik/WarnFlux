@@ -18,10 +18,13 @@ func TestIsInfrastructure(t *testing.T) {
 		// Real ham stations.
 		{"SP9OK>APRS:!5056.25N/01952.50E-", false}, // house
 		{"SP9OK>APRS:!5056.25N/01952.50E>", false}, // car
-		{"SP9OK>APRS:!5056.25N/01952.50E_", false}, // WX station
 		{"SP9OK>APRS:>hello there", false},         // status
 		// Alternate-table person markers stay visible (overlayed car).
 		{"SP9OK>APRS:!5056.25N\\01952.50E>", false},
+		// Weather stations are infrastructure (map/presence), but their
+		// reports still feed /weather.
+		{"SP9WX>APRS:!5056.25N/01952.50E_", true},                  // WX position report
+		{"SP9WX>APRS:_050/006g005t022r000p000P000h50b10130", true}, // weather report
 		// Infrastructure.
 		{"SR9NR>APRS:!5056.25N/01952.50E#", true},                 // digipeater
 		{"SR9IG>APRS:!5056.25N/01952.50EI", true},                 // TCP/IP node
@@ -46,6 +49,9 @@ func TestIsInfrastructure(t *testing.T) {
 func TestStationDocumentPredicates(t *testing.T) {
 	if got := (StationDocument{SymbolTable: "/", Symbol: "#"}).IsInfrastructure(); !got {
 		t.Fatal("digipeater document must be infrastructure")
+	}
+	if got := (StationDocument{SymbolTable: "/", Symbol: "_"}).IsInfrastructure(); !got {
+		t.Fatal("weather station document must be infrastructure")
 	}
 	if got := (StationDocument{SymbolTable: "/", Symbol: ">"}).IsInfrastructure(); got {
 		t.Fatal("car document must not be infrastructure")

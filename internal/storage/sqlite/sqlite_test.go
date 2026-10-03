@@ -766,6 +766,63 @@ func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
+// TestPruneOutbox pins the outbox bound: rows older than the cutoff are
+// pruned, so a prolonged broker outage cannot grow the database without
+// bound.
+func TestPruneOutbox(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+	if _, err := store.AppendOutbox(ctx, "news", "t/old", []byte(`{"x":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendOutbox(ctx, "news", "t/fresh", []byte(`{"x":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour).UnixMilli()
+	if _, err := store.db.Exec(`UPDATE ingest_outbox SET created_at_ms = ? WHERE topic = 't/old'`, old); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := store.PruneOutbox(ctx, time.Now().Add(-24*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("PruneOutbox = (%d, %v), want 1 removed row", n, err)
+	}
+	if got, err := store.OutboxCount(ctx); err != nil || got != 1 {
+		t.Fatalf("OutboxCount = (%d, %v), want 1 fresh row left", got, err)
+	}
+}
+
+// TestEventTimes pins the durable lifecycle-anchor lookup: the stored
+// row reports its effective/expires times, a missing row reports
+// ok=false (never an error).
+func TestEventTimes(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	eff := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	exp := eff.Add(4 * time.Hour)
+	event := core.HazardEvent{
+		Source: "aprs", SourceID: "SP9XYZ:alert:0042", Event: "APRS alert",
+		Severity: "severe", Status: core.StatusActive,
+		EffectiveAt: &eff, ExpiresAt: &exp,
+	}
+	if _, _, err := store.Ingest(ctx, event, core.Fingerprint(event)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	gotEff, gotExp, ok, err := store.EventTimes(ctx, "aprs:SP9XYZ:alert:0042")
+	if err != nil || !ok {
+		t.Fatalf("EventTimes = (%v, %v, %v, %v), want the stored anchor", gotEff, gotExp, ok, err)
+	}
+	if !gotEff.Equal(eff) || !gotExp.Equal(exp) {
+		t.Fatalf("EventTimes = %v / %v, want %v / %v", gotEff, gotExp, eff, exp)
+	}
+
+	if _, _, ok, err := store.EventTimes(ctx, "aprs:nope:1"); err != nil || ok {
+		t.Fatalf("EventTimes missing = (%v, %v), want ok=false, no error", ok, err)
+	}
+}
+
 // ---- regression tests: cursor configuration semantics ----
 
 func cursorRow(t *testing.T, s *Store, outputID string) (exists bool, lastAcked int64) {

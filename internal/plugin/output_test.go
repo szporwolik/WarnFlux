@@ -99,6 +99,9 @@ func (m *memStore) CleanupEvents(_ context.Context, _ time.Time) (int64, error) 
 func (m *memStore) Get(_ context.Context, key string) (*storage.StoredEvent, error) {
 	return nil, storage.ErrNotFound
 }
+func (m *memStore) EventTimes(_ context.Context, _ string) (time.Time, time.Time, bool, error) {
+	return time.Time{}, time.Time{}, false, nil
+}
 func (m *memStore) Count(context.Context) (int, error) { return 0, nil }
 func (m *memStore) PendingStats(context.Context) (int, time.Duration, error) {
 	return 0, 0, nil

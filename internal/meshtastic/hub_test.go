@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -321,6 +322,30 @@ func TestHubSendChannelText(t *testing.T) {
 	}
 }
 
+// TestHubNodeDirectoryRetention pins the 24/7/365 bound: nodes unheard
+// for longer than nodeDirRetention are dropped from the directory, so
+// memory and the persisted table never grow without bound.
+func TestHubNodeDirectoryRetention(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	radio.hub.SeedNode("11111111", "old visitor", "old", 0, 0, time.Now().Add(-31*24*time.Hour), nil)
+	radio.hub.SeedNode("22222222", "active member", "act", 0, 0, time.Now(), nil)
+
+	radio.hub.expireNodes()
+
+	snap := radio.hub.Snapshot()
+	ids := make(map[string]bool, len(snap.Nodes))
+	for _, n := range snap.Nodes {
+		ids[n.ID] = true
+	}
+	if ids["11111111"] {
+		t.Fatal("node unheard for 31 days still in the directory")
+	}
+	if !ids["22222222"] {
+		t.Fatal("recent node dropped from the directory")
+	}
+}
+
 // TestHubAckWithoutEcho pins the 2.7.x firmware behavior: the device does
 // not echo direct messages, but the recipient's ROUTING_APP alone must
 // still settle the tx (paired by recipient, FIFO).
@@ -412,6 +437,126 @@ func TestHubSendAckFlow(t *testing.T) {
 	}
 	if msgs[0].Status != TxDelivered {
 		t.Fatalf("tx status = %q, want delivered", msgs[0].Status)
+	}
+}
+
+// TestHubAckForeignNodeIgnored pins the ack binding: a routing frame
+// from a node that is NOT the recipient (same request id) never settles
+// the exchange — the wait stays pending and the real recipient's ack
+// still delivers it.
+func TestHubAckForeignNodeIgnored(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "ef010203", "ack me", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+
+	// The device echo pairs the packet id (modem acceptance: TxSent).
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, Id: 4242, To: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("ack me")},
+		},
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxSent {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	routing, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_ErrorReason{ErrorReason: pb.Routing_NONE}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A FOREIGN node's routing frame with the right id: ignored.
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xcafebabe, To: 0xabcd1234,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: routing},
+		},
+	})
+	time.Sleep(150 * time.Millisecond)
+	if msgs := rec.messages(); len(msgs) != 1 || msgs[0].Status != TxSent {
+		t.Fatalf("after foreign ack = %v, want still TxSent", msgs)
+	}
+
+	// The real recipient's ack settles the exchange.
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xef010203, To: 0xabcd1234,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: routing},
+		},
+	})
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxDelivered {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	msgs := rec.messages()
+	if len(msgs) != 1 || msgs[0].Status != TxDelivered {
+		t.Fatalf("after recipient ack = %v, want TxDelivered", msgs)
+	}
+}
+
+// TestHubModemRejectsDelivery pins the modem/delivery distinction: a
+// self-addressed routing frame WITH an error reason means the modem
+// accepted the message but could not deliver it — the tx fails instead
+// of staying "sent".
+func TestHubModemRejectsDelivery(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "ef010203", "ack me", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, Id: 4242, To: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("ack me")},
+		},
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxSent {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The modem reports it could not deliver (self-addressed, error set).
+	fail, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_ErrorReason{ErrorReason: pb.Routing_MAX_RETRANSMIT}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, To: 0xabcd1234, Id: 4242,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: fail},
+		},
+	})
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxFailed {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	msgs := rec.messages()
+	if len(msgs) != 1 || msgs[0].Status != TxFailed {
+		t.Fatalf("after modem rejection = %v, want TxFailed", msgs)
 	}
 }
 
@@ -1259,6 +1404,79 @@ func TestHubCommandsRequireExactAddressee(t *testing.T) {
 	}
 }
 
+// TestRadioEventContentDeterministic pins the restart-proof dedup: the
+// event content (lifecycle anchor from the durable registry resolver,
+// content-derived ChangeID) is byte-identical for two deliveries of the
+// same packet, so the store classifies a post-restart replay as a
+// duplicate and never issues a second delivery.
+func TestRadioEventContentDeterministic(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	var (
+		mu     sync.Mutex
+		events []string
+	)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		mu.Lock()
+		events = append(events, string(payload))
+		mu.Unlock()
+		return nil
+	})
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+	// The resolver is the durable-registry half: it hands back the
+	// stored lifecycle anchor (here a fixed one), so a re-issued command
+	// maps to byte-identical content.
+	fixed := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	radio.hub.SetEventTimesResolver(func(ctx context.Context, key string) (time.Time, time.Time, bool) {
+		return fixed, fixed.Add(time.Hour), true
+	})
+
+	pkt := textPacket(0xdeadbeef, 0xabcd1234, "/debug")
+	pkt.Id = 4242
+	dispatchPkt(t, radio, pkt)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Simulated restart: the RAM cache is gone, the packet is delivered
+	// again — the published content must be byte-identical.
+	radio.hub.mu.Lock()
+	radio.hub.cmds = make(map[string]*cmdRecord)
+	radio.hub.mu.Unlock()
+	dispatchPkt(t, radio, pkt)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
+	}
+	if events[0] != events[1] {
+		t.Fatalf("replayed /debug content differs:\n%q\n%q", events[0], events[1])
+	}
+}
+
 // TestHubCommandDedup pins the retransmission guard: the same /debug
 // packet delivered twice raises ONE alarm, and the redelivery gets the
 // previous reply instead of executing the command again. The event
@@ -1374,10 +1592,14 @@ func TestHubCommandDedup(t *testing.T) {
 // TestHubAlertConfirmationTracksAcceptance pins the honest /alert
 // confirmation: the reply follows the LOCAL acceptance — durable keeps
 // the handler confirmation, the emergency fallback is reported as such,
-// and a rejection never claims success. The acceptor replaces the event
-// sink here, so its calls double as the event capture.
+// and a rejection never claims success. A rejection is TRANSIENT: the
+// failure is replayed within the retry cooldown, and after it a
+// redelivery executes the command again (controlled retry). The
+// acceptor replaces the event sink here, so its calls double as the
+// event capture.
 func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
-	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		CmdRetryCooldown: 500 * time.Millisecond})
 	radio.waitConnected(t)
 	radio.hub.SetSenderGate(func(id string) string {
 		if id == "deadbeef" {
@@ -1396,12 +1618,19 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	})
 	radio.hub.SetCLI(cli)
 
-	acceptor := func(a dispatch.Acceptance) func([]byte) dispatch.Acceptance {
-		return func([]byte) dispatch.Acceptance { return a }
-	}
+	var (
+		mu       sync.Mutex
+		accepted []dispatch.Acceptance
+		accValue = dispatch.AcceptedDurable
+	)
+	radio.hub.SetEventAcceptor(func([]byte) dispatch.Acceptance {
+		mu.Lock()
+		defer mu.Unlock()
+		accepted = append(accepted, accValue)
+		return accValue
+	})
 
 	// Durable acceptance: the plain handler confirmation.
-	radio.hub.SetAlertAcceptor(acceptor(dispatch.AcceptedDurable))
 	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu"))
 	radio.waitOutbound(t, 1)
 	if got := string(radio.outbound()[0].GetDecoded().GetPayload()); got != "OK: alert raised" {
@@ -1409,7 +1638,7 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	}
 
 	// Emergency acceptance: the fallback is reported explicitly.
-	radio.hub.SetAlertAcceptor(acceptor(dispatch.AcceptedEmergency))
+	accValue = dispatch.AcceptedEmergency
 	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu 2"))
 	radio.waitOutbound(t, 2)
 	if got := string(radio.outbound()[1].GetDecoded().GetPayload()); !strings.Contains(got, "OK: alert raised") || !strings.Contains(got, "failover") {
@@ -1417,11 +1646,155 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	}
 
 	// Rejection: never claim success.
-	radio.hub.SetAlertAcceptor(acceptor(dispatch.Rejected))
-	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu 3"))
+	accValue = dispatch.Rejected
+	rejPkt := textPacket(0xdeadbeef, 0xabcd1234, "/alert pozar lasu 3")
+	dispatchPkt(t, radio, rejPkt)
 	radio.waitOutbound(t, 3)
 	if got := string(radio.outbound()[2].GetDecoded().GetPayload()); got != "FAILED: alert rejected" {
 		t.Fatalf("rejected confirmation = %q, want the explicit failure", got)
+	}
+
+	// A redelivery within the cooldown replays the failure WITHOUT
+	// re-executing (no new acceptor call).
+	dispatchPkt(t, radio, rejPkt)
+	radio.waitOutbound(t, 4)
+	if got := string(radio.outbound()[3].GetDecoded().GetPayload()); got != "FAILED: alert rejected" {
+		t.Fatalf("in-cooldown redelivery = %q, want the replayed failure", got)
+	}
+	mu.Lock()
+	n := len(accepted)
+	mu.Unlock()
+	if n != 3 {
+		t.Fatalf("acceptor called %d times, want 3 (no re-execution within the cooldown)", n)
+	}
+
+	// After the cooldown the same packet executes again: the recovered
+	// pipeline accepts it durably.
+	time.Sleep(600 * time.Millisecond)
+	accValue = dispatch.AcceptedDurable
+	dispatchPkt(t, radio, rejPkt)
+	radio.waitOutbound(t, 5)
+	if got := string(radio.outbound()[4].GetDecoded().GetPayload()); got != "OK: alert raised" {
+		t.Fatalf("post-recovery retry = %q, want the success confirmation", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(accepted) != 4 {
+		t.Fatalf("acceptor called %d times, want 4 (the post-cooldown retry)", len(accepted))
+	}
+}
+
+// TestHubDebugConfirmationTracksAcceptance pins the SHARED confirmation
+// path: /debug follows the local acceptance exactly like /alert —
+// durable keeps the handler confirmation, the emergency fallback is
+// reported as such, a rejection answers FAILED and admits controlled
+// retries after the cooldown.
+func TestHubDebugConfirmationTracksAcceptance(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		CmdRetryCooldown: 500 * time.Millisecond})
+	radio.waitConnected(t)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" || id == "dead0001" || id == "dead0002" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		return nil
+	})
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	var (
+		mu       sync.Mutex
+		accepted []dispatch.Acceptance
+		accValue = dispatch.AcceptedDurable
+	)
+	radio.hub.SetEventAcceptor(func([]byte) dispatch.Acceptance {
+		mu.Lock()
+		defer mu.Unlock()
+		accepted = append(accepted, accValue)
+		return accValue
+	})
+
+	// Durable acceptance: the plain handler confirmation. Distinct
+	// senders keep each execution a distinct command.
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/debug"))
+	radio.waitOutbound(t, 1)
+	if got := string(radio.outbound()[0].GetDecoded().GetPayload()); got != "OK: debug alarm generated" {
+		t.Fatalf("durable confirmation = %q, want the plain handler reply", got)
+	}
+
+	// Emergency acceptance: the fallback is reported explicitly.
+	accValue = dispatch.AcceptedEmergency
+	dispatchPkt(t, radio, textPacket(0xdead0001, 0xabcd1234, "/debug"))
+	radio.waitOutbound(t, 2)
+	if got := string(radio.outbound()[1].GetDecoded().GetPayload()); !strings.Contains(got, "OK: debug alarm generated") || !strings.Contains(got, "failover") {
+		t.Fatalf("emergency confirmation = %q, want the explicit failover note", got)
+	}
+
+	// Rejection: never claim success.
+	accValue = dispatch.Rejected
+	rejPkt := textPacket(0xdead0002, 0xabcd1234, "/debug")
+	dispatchPkt(t, radio, rejPkt)
+	radio.waitOutbound(t, 3)
+	if got := string(radio.outbound()[2].GetDecoded().GetPayload()); got != "FAILED: debug alarm rejected" {
+		t.Fatalf("rejected confirmation = %q, want the explicit failure", got)
+	}
+
+	// In-cooldown redelivery: replayed failure, no re-execution.
+	dispatchPkt(t, radio, rejPkt)
+	radio.waitOutbound(t, 4)
+	if got := string(radio.outbound()[3].GetDecoded().GetPayload()); got != "FAILED: debug alarm rejected" {
+		t.Fatalf("in-cooldown redelivery = %q, want the replayed failure", got)
+	}
+	mu.Lock()
+	n := len(accepted)
+	mu.Unlock()
+	if n != 3 {
+		t.Fatalf("acceptor called %d times, want 3 (no re-execution within the cooldown)", n)
+	}
+
+	// After the cooldown the same packet executes again.
+	time.Sleep(600 * time.Millisecond)
+	accValue = dispatch.AcceptedDurable
+	dispatchPkt(t, radio, rejPkt)
+	radio.waitOutbound(t, 5)
+	if got := string(radio.outbound()[4].GetDecoded().GetPayload()); got != "OK: debug alarm generated" {
+		t.Fatalf("post-recovery retry = %q, want the success confirmation", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(accepted) != 4 {
+		t.Fatalf("acceptor called %d times, want 4 (the post-cooldown retry)", len(accepted))
+	}
+}
+
+// TestHubReplyBurstLimit pins the shared output limit: a flooding sender
+// (ten distinct /unknown commands) gets at most ReplyBurst automatic
+// replies per window — slash commands can no longer bypass the banner
+// limits.
+func TestHubReplyBurstLimit(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		ReplyBurst: 3})
+	radio.waitConnected(t)
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, topic string, _ bool, payload []byte) error {
+		return nil
+	})
+	radio.hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	for i := 0; i < 10; i++ {
+		dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, fmt.Sprintf("/unknown %d", i)))
+	}
+	radio.waitOutbound(t, 3)
+	time.Sleep(150 * time.Millisecond) // settle: no further replies
+	if got := len(radio.outbound()); got != 3 {
+		t.Fatalf("automatic replies after a 10-command flood = %d, want exactly ReplyBurst (3)", got)
 	}
 }
 

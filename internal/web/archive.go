@@ -38,9 +38,11 @@ type archiveView struct {
 	Days   int
 }
 
-// handleArchive serves the public archive fragment: the communications of
-// the last archiveDays days, newest first, paginated. The fragment is
-// loaded into the Archive tab of the home page; pagination links reload it
+// handleArchive serves the public archive fragment: the ENDED
+// communications of the last archiveDays days, newest first, paginated.
+// Currently active communications are deliberately absent — they are
+// already listed in the Active hazards section of the home page. The
+// fragment is loaded into the Archive tab; pagination links reload it
 // in place.
 func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

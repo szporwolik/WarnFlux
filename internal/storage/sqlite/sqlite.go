@@ -2445,15 +2445,16 @@ func (s *Store) ListActiveEvents(ctx context.Context, afterKey string, limit int
 
 // ListArchiveEvents implements the public archive query: every
 // current-state event last seen on or after since, newest first, as one
-// bounded page (offset/limit). The archive spans statuses — active events
-// appear with their current state, ended events with their final one.
+// bounded page (offset/limit). ACTIVE events are excluded — they already
+// live in the public Active hazards section, so the archive spans only
+// ended states (expired/cancelled) with their final state.
 func (s *Store) ListArchiveEvents(ctx context.Context, since time.Time, offset, limit int) ([]storage.StoredEvent, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("limit must be positive, got %d", limit)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT "+eventColumns+" FROM events WHERE last_seen_at_ms >= ? ORDER BY last_seen_at_ms DESC, event_key ASC LIMIT ? OFFSET ?",
-		since.UnixMilli(), limit, offset)
+		"SELECT "+eventColumns+" FROM events WHERE last_seen_at_ms >= ? AND status != ? ORDER BY last_seen_at_ms DESC, event_key ASC LIMIT ? OFFSET ?",
+		since.UnixMilli(), string(core.StatusActive), limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("query archive events: %w", err)
 	}
@@ -2475,12 +2476,14 @@ func (s *Store) ListArchiveEvents(ctx context.Context, since time.Time, offset, 
 	return out, nil
 }
 
-// CountArchiveEvents reports how many current-state events were last seen
-// on or after since (the archive total used for pagination).
+// CountArchiveEvents reports how many ENDED current-state events were
+// last seen on or after since (the archive total used for pagination;
+// active events are excluded — see ListArchiveEvents).
 func (s *Store) CountArchiveEvents(ctx context.Context, since time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM events WHERE last_seen_at_ms >= ?", since.UnixMilli()).Scan(&n)
+		"SELECT COUNT(*) FROM events WHERE last_seen_at_ms >= ? AND status != ?",
+		since.UnixMilli(), string(core.StatusActive)).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count archive events: %w", err)
 	}

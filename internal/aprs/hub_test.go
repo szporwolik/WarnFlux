@@ -1,8 +1,10 @@
 package aprs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -565,12 +567,14 @@ func TestStationTrackTail(t *testing.T) {
 	hub.Observe(testPacket("SP9MOV>APRS:!5056.50N/01953.50E>"), "aprs-inet")  // exact duplicate
 	hub.Observe(testPacket("SP9MOV>APRS:!5056.51N/01953.51E>"), "aprs-radio") // ~20 m: noise
 
+	// The track tail carries positions 2-4 and the current position is
+	// the noise-adjusted 4th one — wait for the FULL tail, not just the
+	// first position (the worker applies packets one by one).
 	waitFor(t, func() bool {
 		docs := hub.Stations()
-		// Wait for the FULL tail (not just the first position): the
-		// worker applies packets one by one, and asserting the track
-		// before it finished flakes under load.
-		return len(docs) == 1 && docs[0].Position != nil && len(docs[0].Track) == 3
+		return len(docs) == 1 && docs[0].Position != nil &&
+			mathAbs(docs[0].Position.Latitude-50.941833) < 0.0001 &&
+			len(docs[0].Track) == 3
 	})
 	docs := hub.Stations()
 	doc := docs[0]
@@ -849,13 +853,16 @@ func TestHubCommandDedup(t *testing.T) {
 // TestHubAlertConfirmationTracksAcceptance pins the honest /alert
 // confirmation: the reply follows the LOCAL acceptance — durable keeps
 // the handler confirmation, the emergency fallback is reported as such,
-// and a rejection never claims success. The acceptor replaces the
-// generic sink here, so its calls double as the event capture.
+// and a rejection never claims success. A rejection is TRANSIENT: the
+// failure is replayed within the retry cooldown, and after it a
+// retransmission executes the command again (controlled retry). The
+// acceptor replaces the generic sink here, so its calls double as the
+// event capture.
 func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
 		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
-		RouteMessages: true,
+		RouteMessages: true, CmdRetryCooldown: 500 * time.Millisecond,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	hub.Start(ctx)
@@ -872,18 +879,16 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	var (
 		mu       sync.Mutex
 		accepted []dispatch.Acceptance
+		accValue = dispatch.AcceptedDurable
 	)
-	acceptor := func(a dispatch.Acceptance) func([]byte) dispatch.Acceptance {
-		return func([]byte) dispatch.Acceptance {
-			mu.Lock()
-			accepted = append(accepted, a)
-			mu.Unlock()
-			return a
-		}
-	}
+	hub.SetEventAcceptor(func([]byte) dispatch.Acceptance {
+		mu.Lock()
+		defer mu.Unlock()
+		accepted = append(accepted, accValue)
+		return accValue
+	})
 
 	// Durable acceptance: the plain handler confirmation.
-	hub.SetAlertAcceptor(acceptor(dispatch.AcceptedDurable))
 	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu"), "aprs-inet")
 	waitFor(t, func() bool { return len(tx.sends()) == 1 })
 	if got := tx.sends()[0][1]; got != "OK: alert raised" {
@@ -891,7 +896,7 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	}
 
 	// Emergency acceptance: the fallback is reported explicitly.
-	hub.SetAlertAcceptor(acceptor(dispatch.AcceptedEmergency))
+	accValue = dispatch.AcceptedEmergency
 	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu 2"), "aprs-inet")
 	waitFor(t, func() bool { return len(tx.sends()) == 2 })
 	if got := tx.sends()[1][1]; !strings.Contains(got, "OK: alert raised") || !strings.Contains(got, "failover") {
@@ -899,19 +904,44 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	}
 
 	// Rejection: never claim success.
-	hub.SetAlertAcceptor(acceptor(dispatch.Rejected))
-	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu 3"), "aprs-inet")
+	accValue = dispatch.Rejected
+	rejPkt := testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu 3")
+	hub.Observe(rejPkt, "aprs-inet")
 	waitFor(t, func() bool { return len(tx.sends()) == 3 })
 	if got := tx.sends()[2][1]; got != "FAILED: alert rejected" {
 		t.Fatalf("rejected confirmation = %q, want the explicit failure", got)
 	}
-	if got := len(sink.payloads("events")); got != 0 {
-		t.Fatalf("acceptor path leaked %d events through the generic sink", got)
+
+	// A retransmission within the cooldown replays the failure WITHOUT
+	// re-executing (no new acceptor call).
+	hub.Observe(rejPkt, "aprs-radio")
+	waitFor(t, func() bool { return len(tx.sends()) == 4 })
+	if got := tx.sends()[3][1]; got != "FAILED: alert rejected" {
+		t.Fatalf("in-cooldown retransmission = %q, want the replayed failure", got)
+	}
+	mu.Lock()
+	n := len(accepted)
+	mu.Unlock()
+	if n != 3 {
+		t.Fatalf("acceptor called %d times, want 3 (no re-execution within the cooldown)", n)
+	}
+
+	// After the cooldown the same packet executes again: the recovered
+	// pipeline accepts it durably.
+	time.Sleep(600 * time.Millisecond)
+	accValue = dispatch.AcceptedDurable
+	hub.Observe(rejPkt, "aprs-replay")
+	waitFor(t, func() bool { return len(tx.sends()) == 5 })
+	if got := tx.sends()[4][1]; got != "OK: alert raised" {
+		t.Fatalf("post-recovery retry = %q, want the success confirmation", got)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(accepted) != 3 {
-		t.Fatalf("acceptor called %d times, want 3", len(accepted))
+	if len(accepted) != 4 {
+		t.Fatalf("acceptor called %d times, want 4 (the post-cooldown retry)", len(accepted))
+	}
+	if got := len(sink.payloads("events")); got != 0 {
+		t.Fatalf("acceptor path leaked %d events through the generic sink", got)
 	}
 }
 
@@ -950,6 +980,181 @@ func TestHubBannerRateLimits(t *testing.T) {
 	offset = 6 * time.Minute // both windows passed
 	if !hub.bannerAllowed("SP9XYZ") {
 		t.Fatal("sender must be answered again after the window")
+	}
+}
+
+// TestRadioEventContentDeterministic pins the restart-proof dedup: the
+// event content (lifecycle anchor from the durable registry resolver,
+// content-derived ChangeID) is byte-identical for two copies of the same
+// packet, so the store classifies a post-restart replay as a duplicate
+// and never issues a second delivery.
+func TestRadioEventContentDeterministic(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	hub.SetCLI(cli)
+	// The resolver is the durable-registry half: it hands back the
+	// stored lifecycle anchor (here a fixed one), so a re-issued command
+	// maps to byte-identical content.
+	fixed := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	hub.SetEventTimesResolver(func(ctx context.Context, key string) (time.Time, time.Time, bool) {
+		return fixed, fixed.Add(time.Hour), true
+	})
+
+	// /debug, then a post-restart replay (RAM cache cleared, another
+	// backend) publishes byte-identical content.
+	pkt := testPacket("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:/debug")
+	hub.Observe(pkt, BackendRadio)
+	waitFor(t, func() bool { return len(sink.payloads("events")) == 1 })
+	hub.mu.Lock()
+	hub.cmds = make(map[string]*cmdRecord) // simulated restart
+	hub.mu.Unlock()
+	hub.Observe(pkt, "aprs-other")
+	waitFor(t, func() bool { return len(sink.payloads("events")) == 2 })
+	pubs := sink.payloads("events")
+	if !bytes.Equal(pubs[0], pubs[1]) {
+		t.Fatalf("replayed /debug content differs:\n%q\n%q", pubs[0], pubs[1])
+	}
+
+	// Same for /alert with its 4h TTL. A fresh backend label keeps the
+	// observation-level digest guard (which remembers receivers, not
+	// digests) from swallowing the replay.
+	apkt := testPacket("SP9XYZ-7>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu")
+	hub.Observe(apkt, BackendRadio)
+	waitFor(t, func() bool { return len(sink.payloads("events")) == 3 })
+	hub.mu.Lock()
+	hub.cmds = make(map[string]*cmdRecord)
+	hub.mu.Unlock()
+	hub.Observe(apkt, "aprs-replay")
+	waitFor(t, func() bool { return len(sink.payloads("events")) == 4 })
+	pubs = sink.payloads("events")
+	if !bytes.Equal(pubs[2], pubs[3]) {
+		t.Fatalf("replayed /alert content differs:\n%q\n%q", pubs[2], pubs[3])
+	}
+}
+
+// TestHubDebugConfirmationTracksAcceptance pins the SHARED confirmation
+// path: /debug follows the local acceptance exactly like /alert —
+// durable keeps the handler confirmation, the emergency fallback is
+// reported as such, a rejection answers FAILED and admits controlled
+// retries after the cooldown.
+func TestHubDebugConfirmationTracksAcceptance(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true, CmdRetryCooldown: 500 * time.Millisecond,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	var (
+		mu       sync.Mutex
+		accepted []dispatch.Acceptance
+		accValue = dispatch.AcceptedDurable
+	)
+	hub.SetEventAcceptor(func([]byte) dispatch.Acceptance {
+		mu.Lock()
+		defer mu.Unlock()
+		accepted = append(accepted, accValue)
+		return accValue
+	})
+
+	// Durable acceptance: the plain handler confirmation. Distinct
+	// senders keep each execution a distinct command.
+	hub.Observe(testPacket("SP9XYZ-1>APRS,TCPIP*::SP9MOA-10:/debug"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	if got := tx.sends()[0][1]; got != "OK: debug alarm generated" {
+		t.Fatalf("durable confirmation = %q, want the plain handler reply", got)
+	}
+
+	// Emergency acceptance: the fallback is reported explicitly.
+	accValue = dispatch.AcceptedEmergency
+	hub.Observe(testPacket("SP9XYZ-2>APRS,TCPIP*::SP9MOA-10:/debug"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 2 })
+	if got := tx.sends()[1][1]; !strings.Contains(got, "OK: debug alarm generated") || !strings.Contains(got, "failover") {
+		t.Fatalf("emergency confirmation = %q, want the explicit failover note", got)
+	}
+
+	// Rejection: never claim success.
+	accValue = dispatch.Rejected
+	rejPkt := testPacket("SP9XYZ-3>APRS,TCPIP*::SP9MOA-10:/debug")
+	hub.Observe(rejPkt, "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	if got := tx.sends()[2][1]; got != "FAILED: debug alarm rejected" {
+		t.Fatalf("rejected confirmation = %q, want the explicit failure", got)
+	}
+
+	// In-cooldown retransmission: replayed failure, no re-execution.
+	hub.Observe(rejPkt, "aprs-radio")
+	waitFor(t, func() bool { return len(tx.sends()) == 4 })
+	if got := tx.sends()[3][1]; got != "FAILED: debug alarm rejected" {
+		t.Fatalf("in-cooldown retransmission = %q, want the replayed failure", got)
+	}
+	mu.Lock()
+	n := len(accepted)
+	mu.Unlock()
+	if n != 3 {
+		t.Fatalf("acceptor called %d times, want 3 (no re-execution within the cooldown)", n)
+	}
+
+	// After the cooldown the same packet executes again.
+	time.Sleep(600 * time.Millisecond)
+	accValue = dispatch.AcceptedDurable
+	hub.Observe(rejPkt, "aprs-replay")
+	waitFor(t, func() bool { return len(tx.sends()) == 5 })
+	if got := tx.sends()[4][1]; got != "OK: debug alarm generated" {
+		t.Fatalf("post-recovery retry = %q, want the success confirmation", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(accepted) != 4 {
+		t.Fatalf("acceptor called %d times, want 4 (the post-cooldown retry)", len(accepted))
+	}
+	if got := len(sink.payloads("events")); got != 0 {
+		t.Fatalf("acceptor path leaked %d events through the generic sink", got)
+	}
+}
+
+// TestHubReplyBurstLimit pins the shared output limit: a flooding sender
+// (ten distinct /unknown commands) gets at most ReplyBurst automatic
+// replies per window — slash commands can no longer bypass the banner
+// limits.
+func TestHubReplyBurstLimit(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true, ReplyBurst: 3,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	for i := 0; i < 10; i++ {
+		hub.Observe(testPacket(fmt.Sprintf("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/unknown %d", i)), "aprs-inet")
+	}
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	time.Sleep(150 * time.Millisecond) // settle: no further replies
+	if got := len(tx.sends()); got != 3 {
+		t.Fatalf("automatic replies after a 10-command flood = %d, want exactly ReplyBurst (3)", got)
 	}
 }
 

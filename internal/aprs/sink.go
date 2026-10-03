@@ -96,6 +96,19 @@ type HubConfig struct {
 	// Version is the WarnFlux version (used in the APRS-IS login).
 	Version string
 
+	// CmdRetryCooldown is the retry pacing of a TRANSIENTLY failed
+	// command (the local pipeline rejected the alert): a retransmission
+	// within the cooldown replays the failure, after it the command is
+	// executed again (default cmdRetryCooldownDefault).
+	CmdRetryCooldown time.Duration
+	// ReplyBurst / ReplyBurstWindow bound EVERY automatic reply per
+	// sender (command answers, retransmission replays, /help, denials,
+	// banners): at most ReplyBurst replies per ReplyBurstWindow per
+	// sender, so a flooding sender cannot make the station chatter
+	// (defaults: 5 per minute).
+	ReplyBurst       int
+	ReplyBurstWindow time.Duration
+
 	// MessageRecorder optionally persists the APRS message history
 	// (received and sent) for the admin /messages page; nil disables it.
 	MessageRecorder MessageRecorder

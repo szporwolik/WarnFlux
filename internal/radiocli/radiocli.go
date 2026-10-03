@@ -7,6 +7,7 @@ package radiocli
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"strings"
 	"time"
@@ -55,6 +56,21 @@ func ContentID(parts ...string) string {
 		h.Write([]byte(p))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// StableID returns a non-negative, content-derived delivery identifier:
+// the same command content always yields the same identifier, so a
+// retransmitted packet carries a stable ChangeID across restarts and
+// never becomes a second delivery.
+func StableID(parts ...string) int64 {
+	h := sha256.New()
+	for i, p := range parts {
+		if i > 0 {
+			h.Write([]byte{0})
+		}
+		h.Write([]byte(p))
+	}
+	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8]) & (1<<63 - 1))
 }
 
 // Bot interprets slash commands over any radio channel.

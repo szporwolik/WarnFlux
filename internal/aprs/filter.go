@@ -17,6 +17,7 @@ var primaryInfrastructureSymbols = map[byte]bool{
 	'W': true, // national weather service site
 	'8': true, // 802.11 / WiFi node
 	'0': true, // circle (obsolete)
+	'_': true, // weather station (WX)
 }
 
 // alternateInfrastructureSymbols are the ALTERNATE table (\) codes of
@@ -35,15 +36,16 @@ var alternateInfrastructureSymbols = map[byte]bool{
 	'W': true, // NWS site
 	'8': true, // 802.11 / WiFi node
 	'0': true, // IRLP / Echolink / WIRES circle
+	'_': true, // weather station (WX)
 }
 
 // IsInfrastructure reports whether a packet belongs to APRS infrastructure
 // rather than an actual ham station: objects/items (repeater or event
-// announcements), queries, and stations using infrastructure symbols in
-// their own symbol table.
+// announcements), queries, weather stations (WX) and stations using
+// infrastructure symbols in their own symbol table.
 func IsInfrastructure(p Packet) bool {
 	switch p.Kind {
-	case KindObject, KindQuery:
+	case KindObject, KindQuery, KindWeather:
 		return true
 	}
 	if p.Symbol == 0 {

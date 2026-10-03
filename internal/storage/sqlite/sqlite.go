@@ -1873,6 +1873,36 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// EventTimes returns the stored lifecycle anchor of one event. A
+// missing row or a NULL effective_at reports ok=false (the caller
+// starts the lifecycle fresh).
+func (s *Store) EventTimes(ctx context.Context, key string) (eff, exp time.Time, ok bool, err error) {
+	var effS, expS sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT effective_at, expires_at FROM events WHERE event_key = ?", key,
+	).Scan(&effS, &expS); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, time.Time{}, false, nil
+		}
+		return time.Time{}, time.Time{}, false, fmt.Errorf("event times %q: %w", key, err)
+	}
+	if !effS.Valid {
+		return time.Time{}, time.Time{}, false, nil
+	}
+	eff, err = time.Parse(time.RFC3339Nano, effS.String)
+	if err != nil {
+		return time.Time{}, time.Time{}, false, fmt.Errorf("event %q has invalid effective_at: %w", key, err)
+	}
+	if expS.Valid {
+		if exp, err = time.Parse(time.RFC3339Nano, expS.String); err != nil {
+			return time.Time{}, time.Time{}, false, fmt.Errorf("event %q has invalid expires_at: %w", key, err)
+		}
+	} else {
+		exp = time.Time{}
+	}
+	return eff, exp, true, nil
+}
+
 // CountActive returns the number of currently active events (the
 // warnflux_events_active gauge).
 func (s *Store) CountActive(ctx context.Context) (int, error) {
@@ -2129,6 +2159,19 @@ func (s *Store) OutboxCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("count outbox rows: %w", err)
 	}
 	return n, nil
+}
+
+// PruneOutbox deletes outbox rows older than the cutoff. The outbox is a
+// broker-sync backlog: a prolonged broker outage would otherwise grow it
+// without bound. The local delivery already happened (the inbox row and
+// the live dispatch), so an aged-out row only loses the cross-instance
+// sync of a stale request — the right trade for 24/7/365 operation.
+func (s *Store) PruneOutbox(ctx context.Context, olderThan time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM ingest_outbox WHERE created_at_ms < ?`, olderThan.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("prune outbox rows: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // SavePendingDeletes atomically replaces the durable unresolved-deletion

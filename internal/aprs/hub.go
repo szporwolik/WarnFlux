@@ -52,6 +52,10 @@ const (
 	cmdDedupWindow = 10 * time.Minute
 	// cmdDedupCap bounds the remembered command outcomes.
 	cmdDedupCap = 256
+	// cmdRetryCooldownDefault paces retries of transiently failed
+	// commands: within the cooldown a retransmission replays the
+	// failure; after it the command executes again.
+	cmdRetryCooldownDefault = 15 * time.Second
 	// bannerMinInterval is the per-sender spacing of automatic banner
 	// replies: a sender gets at most one banner per window, so
 	// answering bots cannot loop each other.
@@ -59,6 +63,12 @@ const (
 	// bannerGlobalInterval is the global pacing of banner replies: the
 	// automatic-answer path never hogs the channel.
 	bannerGlobalInterval = 10 * time.Second
+	// replyBurstDefault / replyBurstWindowDefault bound EVERY automatic
+	// reply per sender (command answers, retransmission replays, /help,
+	// denials, banners): a flooding sender cannot make the station
+	// chatter.
+	replyBurstDefault       = 5
+	replyBurstWindowDefault = time.Minute
 )
 
 // BackendRadio is the via label of the KISS radio backend; frames coming
@@ -123,10 +133,20 @@ type trackPoint struct {
 // cmdRecord is the remembered outcome of one radio command, keyed by
 // sender + message identity: a retransmitted packet (the RF copy and
 // the APRS-IS copy of the same message) re-sends the previous reply and
-// never re-executes the command.
+// never re-executes the command. A transient failure (retryable) admits
+// controlled retries after the cooldown instead of replaying the stale
+// failure forever.
 type cmdRecord struct {
-	at    int64 // first execution, unix seconds
-	reply string
+	at        time.Time
+	reply     string
+	retryable bool
+}
+
+// replyWindow is one sender's sliding burst window for automatic
+// replies.
+type replyWindow struct {
+	start time.Time
+	count int
 }
 
 // ackWait is one in-flight outbound message awaiting its ack/rej. The
@@ -212,17 +232,27 @@ type Hub struct {
 	// the previous result instead of re-executing the command.
 	cmds map[string]*cmdRecord
 
-	// alertAcceptor accepts a marshalled /alert event into the LOCAL
-	// pipeline and reports how it was accepted (durable inbox,
-	// emergency RAM fallback or rejection); guarded by mu. nil falls
-	// back to the generic sink (tests, legacy wiring).
-	alertAcceptor func(payload []byte) dispatch.Acceptance
+	// alertAcceptor accepts a marshalled COMMAND event (/alert and
+	// /debug) into the LOCAL pipeline and reports how it was accepted
+	// (durable inbox, emergency RAM fallback or rejection); guarded by
+	// mu. nil falls back to the generic sink (tests, legacy wiring).
+	eventAcceptor func(payload []byte) dispatch.Acceptance
 
 	// banner rate limiting: automatic banner answers to plain messages
 	// are spaced per sender and globally, so answering bots cannot loop
 	// each other or hog the channel; guarded by mu.
 	bannerLast map[string]time.Time // sender -> last banner answer
 	bannerNext time.Time            // global pacing: next allowed banner
+
+	// replyLast bounds ALL automatic replies per sender (command
+	// answers, replays, /help, denials, banners); guarded by mu.
+	replyLast map[string]replyWindow
+
+	// eventTimes resolves the durable lifecycle anchor (effective /
+	// expires) of an already-accepted command event; guarded by mu. It
+	// is the restart-proof half of the command registry: the durable
+	// event row written by ingestion.
+	eventTimes func(ctx context.Context, key string) (eff, exp time.Time, ok bool)
 }
 
 // NewHub validates the hub identity and returns the hub. The hub is
@@ -236,6 +266,15 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 	}
 	if cfg.BulletinTTL == 0 {
 		cfg.BulletinTTL = DefaultBulletinTTL
+	}
+	if cfg.CmdRetryCooldown <= 0 {
+		cfg.CmdRetryCooldown = cmdRetryCooldownDefault
+	}
+	if cfg.ReplyBurst <= 0 {
+		cfg.ReplyBurst = replyBurstDefault
+	}
+	if cfg.ReplyBurstWindow <= 0 {
+		cfg.ReplyBurstWindow = replyBurstWindowDefault
 	}
 	cfg.Callsign = NormalizeCallsign(cfg.Callsign)
 
@@ -298,6 +337,7 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 		bulletins:    make(map[string]int64),
 		cmds:         make(map[string]*cmdRecord),
 		bannerLast:   make(map[string]time.Time),
+		replyLast:    make(map[string]replyWindow),
 		transmitters: make(map[string]Transmitter),
 		seenDigests:  make(map[string]int64),
 		ops:          make(chan hubOp, opsQueueSize),
@@ -371,14 +411,25 @@ func (h *Hub) SetSenderGate(fn func(base string) bool) {
 // (except /debug) stays off the alarm pipeline.
 func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
 
-// SetAlertAcceptor installs the LOCAL acceptance path for /alert
-// events: the callback enqueues a marshalled alert into the local
-// pipeline and reports how it was accepted (durable inbox, emergency
-// RAM fallback or rejection). Without it the hub falls back to the
-// generic sink (tests, legacy wiring).
-func (h *Hub) SetAlertAcceptor(fn func(payload []byte) dispatch.Acceptance) {
+// SetEventAcceptor installs the LOCAL acceptance path for command
+// events (/alert and /debug): the callback enqueues a marshalled event
+// into the local pipeline and reports how it was accepted (durable
+// inbox, emergency RAM fallback or rejection). Without it the hub falls
+// back to the generic sink (tests, legacy wiring).
+func (h *Hub) SetEventAcceptor(fn func(payload []byte) dispatch.Acceptance) {
 	h.mu.Lock()
-	h.alertAcceptor = fn
+	h.eventAcceptor = fn
+	h.mu.Unlock()
+}
+
+// SetEventTimesResolver installs the durable lifecycle-anchor lookup
+// for command events: it returns the stored effective/expires times of
+// an already-accepted event, so a re-issued command produces
+// byte-identical content and the store deduplicates it (one delivery
+// across restarts). nil disables the lookup (tests, legacy wiring).
+func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (eff, exp time.Time, ok bool)) {
+	h.mu.Lock()
+	h.eventTimes = fn
 	h.mu.Unlock()
 }
 
@@ -533,10 +584,31 @@ func (h *Hub) apply(op hubOp) {
 	}
 	h.accepted.Add(1)
 
-	// Infrastructure filter: objects, digipeaters, gateways and similar
-	// never become station state (they are not ham operators).
+	// Weather extraction comes FIRST: APRS weather stations are
+	// infrastructure and are filtered below when the option is on, but
+	// their readings are the /weather data source and must never starve.
+	var weather *WeatherReport
+	if w := ParseWeather(&p); w != nil {
+		w.Callsign = p.Src
+		h.mu.Lock()
+		if w.Latitude == 0 && w.Longitude == 0 {
+			if rec := h.stations[p.Src]; rec != nil && rec.state.position != nil {
+				w.Latitude = rec.state.position.Latitude
+				w.Longitude = rec.state.position.Longitude
+			}
+		}
+		h.mu.Unlock()
+		weather = w
+	}
+
+	// Infrastructure filter: objects, digipeaters, gateways, weather
+	// stations and similar never become station state (they are not ham
+	// operators). Their weather reports still reach the pipeline.
 	if h.cfg.ExcludeInfrastructure && IsInfrastructure(p) {
 		h.filtered.Add(1)
+		if weather != nil {
+			h.deliverWeather(weather)
+		}
 		return
 	}
 
@@ -573,24 +645,13 @@ func (h *Hub) apply(op hubOp) {
 	h.seenDigests[digest] = now
 	h.mu.Unlock()
 
-	// Weather reports feed the canonical weather pipeline in addition to
-	// the station document: positionless reports fall back to the merged
-	// station position.
-	if w := ParseWeather(&p); w != nil {
-		w.Callsign = p.Src
+	// Weather reports feed the station document too (positionless
+	// reports fall back to the merged station position).
+	if weather != nil {
 		h.mu.Lock()
-		if w.Latitude == 0 && w.Longitude == 0 && rec.state.position != nil {
-			w.Latitude = rec.state.position.Latitude
-			w.Longitude = rec.state.position.Longitude
-		}
-		rec.state.weather = w
-		sink := h.weatherSink
+		rec.state.weather = weather
 		h.mu.Unlock()
-		if sink != nil {
-			if err := sink(context.Background(), *w); err != nil {
-				h.logger.Debug("aprs: weather sink failed", "callsign", p.Src, "error", err)
-			}
-		}
+		h.deliverWeather(weather)
 	}
 
 	h.publishStation(rec)
@@ -599,6 +660,20 @@ func (h *Hub) apply(op hubOp) {
 	}
 	if p.Message != nil && (p.Message.To == h.cfg.Callsign || IsBulletin(p.Message.To)) {
 		h.receiveMessage(p, op.via)
+	}
+}
+
+// deliverWeather hands one weather report to the canonical weather
+// pipeline (best-effort; the aggregation survives lost reports).
+func (h *Hub) deliverWeather(w *WeatherReport) {
+	h.mu.Lock()
+	sink := h.weatherSink
+	h.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	if err := sink(context.Background(), *w); err != nil {
+		h.logger.Debug("aprs: weather sink failed", "callsign", w.Callsign, "error", err)
 	}
 }
 
@@ -813,7 +888,7 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 			// run for everyone, restricted ones (/debug) only for
 			// allow-listed senders.
 			h.routeOrCLI(p)
-		} else if h.bannerAllowed(p.Src) {
+		} else if h.bannerAllowed(p.Src) && h.replyAllowed(p.Src) {
 			// Plain messages never become alarms — the standard
 			// installation banner answers instead, rate-limited per
 			// sender and globally so answering bots cannot loop.
@@ -845,62 +920,69 @@ func (h *Hub) routeOrCLI(p Packet) {
 		return
 	}
 	cid := p.Src + ":" + msgIdentity(p)
-	now := h.now().Unix()
+	now := h.now()
 	h.mu.Lock()
 	rec := h.cmds[cid]
-	fresh := rec != nil && now-rec.at < int64(cmdDedupWindow.Seconds())
-	reply := ""
+	fresh := rec != nil && now.Sub(rec.at) < cmdDedupWindow
+	recReply := ""
+	retry := false
 	if fresh {
-		reply = rec.reply
+		recReply = rec.reply
+		// A transiently failed command admits controlled retries: after
+		// the cooldown a retransmission executes again instead of
+		// replaying the stale failure.
+		retry = rec.retryable && now.Sub(rec.at) >= h.cfg.CmdRetryCooldown
 	}
 	h.mu.Unlock()
-	if fresh {
-		if reply != "" {
-			h.sendCLIReply(p.Src, reply)
+	if fresh && !retry {
+		if recReply != "" && h.replyAllowed(p.Src) {
+			h.sendCLIReply(p.Src, recReply)
 		}
 		return
 	}
 	res := cli.Handle(strings.TrimSpace(p.Message.Text), h.senderApproved(p.Src))
 	// The stored reply is the FINAL confirmation (post-acceptance), so a
-	// retransmission replays exactly the previous result.
-	reply = res.Reply
+	// retransmission replays exactly the previous result. Both commands
+	// share the same confirmation path. A rejection is transient:
+	// remembered as retryable instead of final.
+	reply := res.Reply
+	retryable := false
+	if res.Debug {
+		acc := h.publishMessageEvent(p)
+		reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
+		retryable = acc == dispatch.Rejected
+	}
 	if res.Alert != nil {
-		reply = alertReply(res.Reply, h.publishAlertEvent(p, res.Alert))
+		acc := h.publishAlertEvent(p, res.Alert)
+		reply = confirmation(res.Reply, "FAILED: alert rejected", acc)
+		retryable = retryable || acc == dispatch.Rejected
 	}
 	h.mu.Lock()
 	h.pruneCmds(now)
-	h.cmds[cid] = &cmdRecord{at: now, reply: reply}
+	h.cmds[cid] = &cmdRecord{at: now, reply: reply, retryable: retryable}
 	h.mu.Unlock()
 	if !res.Handled {
 		return
 	}
-	if res.Debug {
-		h.publishMessageEvent(p)
-	}
-	if reply != "" {
+	if reply != "" && h.replyAllowed(p.Src) {
 		h.sendCLIReply(p.Src, reply)
 	}
 }
 
-// alertReply maps the local acceptance of a /alert event onto the
+// confirmation maps the local acceptance of a command event onto the
 // in-band confirmation: durable acceptance answers with the handler
 // confirmation, the emergency fallback says so explicitly, and a
-// rejection never claims success.
-func alertReply(base string, acc dispatch.Acceptance) string {
+// rejection answers with the given failure text — never a false "OK".
+func confirmation(base, failure string, acc dispatch.Acceptance) string {
 	switch acc {
 	case dispatch.Rejected:
-		return "FAILED: alert rejected"
+		return failure
 	case dispatch.AcceptedEmergency:
-		if base == "" {
-			return "OK: alert raised (failover mode)"
+		if base != "" {
+			return base + " (failover mode)"
 		}
-		return base + " (failover mode)"
-	default:
-		if base == "" {
-			return "OK: alert raised"
-		}
-		return base
 	}
+	return base
 }
 
 // msgIdentity is the stable per-message identity used for command
@@ -916,18 +998,18 @@ func msgIdentity(p Packet) string {
 
 // pruneCmds drops expired command records and bounds the map. The
 // caller holds mu.
-func (h *Hub) pruneCmds(now int64) {
-	cutoff := now - int64(cmdDedupWindow.Seconds())
+func (h *Hub) pruneCmds(now time.Time) {
+	cutoff := now.Add(-cmdDedupWindow)
 	for k, rec := range h.cmds {
-		if rec.at < cutoff {
+		if rec.at.Before(cutoff) {
 			delete(h.cmds, k)
 		}
 	}
 	for len(h.cmds) > cmdDedupCap {
 		var oldestK string
-		var oldestAt int64
+		var oldestAt time.Time
 		for k, rec := range h.cmds {
-			if oldestK == "" || rec.at < oldestAt {
+			if oldestK == "" || rec.at.Before(oldestAt) {
 				oldestK, oldestAt = k, rec.at
 			}
 		}
@@ -1034,6 +1116,58 @@ func (h *Hub) bannerAllowed(from string) bool {
 	return true
 }
 
+// replyAllowed reports whether ONE automatic reply may go out to the
+// sender now. Every automatic answer — command confirmations,
+// retransmission replays, /help, denials and banners — shares one
+// per-sender burst window, so a flooding sender (or a stuck device
+// repeating /unknown) cannot make the station chatter.
+func (h *Hub) replyAllowed(from string) bool {
+	now := h.now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	w := h.replyLast[from]
+	if now.Sub(w.start) >= h.cfg.ReplyBurstWindow {
+		w = replyWindow{}
+	}
+	if w.count >= h.cfg.ReplyBurst {
+		return false
+	}
+	if w.start.IsZero() {
+		w.start = now
+	}
+	w.count++
+	h.replyLast[from] = w
+	if len(h.replyLast) > 256 {
+		cutoff := now.Add(-h.cfg.ReplyBurstWindow)
+		for k, rw := range h.replyLast {
+			if rw.start.Before(cutoff) {
+				delete(h.replyLast, k)
+			}
+		}
+	}
+	return true
+}
+
+// resolveTimes returns the event lifecycle anchor for one command key:
+// the resolver reuses the durable event row's times when it exists (a
+// re-issued command then produces byte-identical content and the store
+// deduplicates it); otherwise now / now+ttl start the lifecycle.
+func (h *Hub) resolveTimes(key string, ttl time.Duration) (eff, exp time.Time) {
+	h.mu.Lock()
+	resolver := h.eventTimes
+	h.mu.Unlock()
+	if resolver != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		eff, exp, ok := resolver(ctx, key)
+		cancel()
+		if ok {
+			return eff, exp
+		}
+	}
+	eff = time.Now().UTC()
+	return eff, eff.Add(ttl)
+}
+
 // publishMessageEvent re-publishes one APRS message as a canonical
 // /events payload. The forwarded content starts with
 // "Message from: <callsign with SSID>", the text follows, and our
@@ -1041,16 +1175,20 @@ func (h *Hub) bannerAllowed(from string) bool {
 // are alerts by nature: the default severity is severe.
 //
 // The event identity (event key + source id) is stable per message:
-// sender + message identity (ack id or content digest). The RF copy
-// and the APRS-IS copy of the same packet therefore map to the same
-// event and the storage deduplication collapses them into one alarm;
-// the command cache in routeOrCLI additionally stops re-execution
-// in-process. ChangeID remains the delivery instance id.
-func (h *Hub) publishMessageEvent(p Packet) {
-	now := time.Now().UTC()
-	id := now.UnixNano()
-	nowS := now.Format(time.RFC3339)
-	expires := now.Add(time.Hour).Format(time.RFC3339)
+// sender + message identity (ack id or content digest). Lifecycle times
+// reuse the durable event row through the resolver when it exists and
+// the ChangeID derives from the content, so a retransmitted copy maps
+// to byte-identical content: the storage deduplication collapses it
+// into one alarm and one delivery even after a restart — the durable
+// event row is the command registry. The command cache in routeOrCLI
+// additionally stops re-execution in-process.
+//
+// The returned acceptance reports how the LOCAL pipeline took the event
+// (durable, emergency or rejected); the /debug confirmation follows it.
+func (h *Hub) publishMessageEvent(p Packet) dispatch.Acceptance {
+	eff, expires := h.resolveTimes("aprs:"+p.Src+":msg:"+msgIdentity(p), time.Hour)
+	nowS := eff.Format(time.RFC3339)
+	expS := expires.Format(time.RFC3339)
 	from := p.Src
 	// Stable identity: sender + message identity. The RF copy and the
 	// APRS-IS copy of the same packet map to the same event, so the
@@ -1061,7 +1199,7 @@ func (h *Hub) publishMessageEvent(p Packet) {
 
 	doc := MessageEventWire{
 		SchemaVersion: messageEventSchemaVersion,
-		ChangeID:      id,
+		ChangeID:      radiocli.StableID("aprs:msg", sourceID, text),
 		ChangeType:    "new",
 		EventKey:      "aprs:" + sourceID,
 		Event: MessageEventHazard{
@@ -1074,7 +1212,7 @@ func (h *Hub) publishMessageEvent(p Packet) {
 			Headline:    "Message from: " + from + ": " + text,
 			Description: "Received by " + h.Name() + " (" + h.cfg.Callsign + ")",
 			EffectiveAt: &nowS,
-			ExpiresAt:   &expires,
+			ExpiresAt:   &expS,
 			Areas:       []string{},
 			Status:      "active",
 			ReceivedAt:  nowS,
@@ -1084,11 +1222,20 @@ func (h *Hub) publishMessageEvent(p Packet) {
 	payload, err := json.Marshal(doc)
 	if err != nil {
 		h.logger.Warn("aprs: routed message marshal failed", "error", err)
-		return
+		return dispatch.Rejected
 	}
+	h.mu.Lock()
+	acceptor := h.eventAcceptor
+	h.mu.Unlock()
+	if acceptor != nil {
+		return acceptor(payload)
+	}
+	// Legacy path (no acceptor installed): best-effort through the
+	// generic sink; the hub cannot distinguish local acceptance here.
 	if err := h.publishWithTimeout("events", false, payload); err != nil {
 		h.logger.Warn("aprs: routed message publish failed", "callsign", from, "error", err)
 	}
+	return dispatch.AcceptedDurable
 }
 
 // publishAlertEvent raises one operator-requested hazard (/alert) into
@@ -1102,20 +1249,21 @@ func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) dispatch.Acc
 	if spec == nil {
 		return dispatch.Rejected
 	}
-	now := time.Now().UTC()
-	id := now.UnixNano()
 	ttl := spec.TTL
 	if ttl <= 0 {
 		ttl = 4 * time.Hour
 	}
-	nowS := now.Format(time.RFC3339)
-	expires := now.Add(ttl).Format(time.RFC3339)
 	from := p.Src
 	// Stable identity: sender + message identity (see publishMessageEvent).
 	sourceID := from + ":alert:" + msgIdentity(p)
+	// Durable times: reuse the stored row when it exists, so a re-issued
+	// command produces byte-identical content (see publishMessageEvent).
+	eff, expires := h.resolveTimes("aprs:"+sourceID, ttl)
+	nowS := eff.Format(time.RFC3339)
+	expS := expires.Format(time.RFC3339)
 	doc := MessageEventWire{
 		SchemaVersion: messageEventSchemaVersion,
-		ChangeID:      id,
+		ChangeID:      radiocli.StableID("aprs:alert", sourceID, spec.Headline),
 		ChangeType:    "new",
 		EventKey:      "aprs:" + sourceID,
 		Event: MessageEventHazard{
@@ -1128,7 +1276,7 @@ func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) dispatch.Acc
 			Headline:    spec.Headline,
 			Description: "Alert raised by " + from + " over APRS",
 			EffectiveAt: &nowS,
-			ExpiresAt:   &expires,
+			ExpiresAt:   &expS,
 			Areas:       []string{},
 			Status:      "active",
 			ReceivedAt:  nowS,
@@ -1141,7 +1289,7 @@ func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec) dispatch.Acc
 		return dispatch.Rejected
 	}
 	h.mu.Lock()
-	acceptor := h.alertAcceptor
+	acceptor := h.eventAcceptor
 	h.mu.Unlock()
 	if acceptor != nil {
 		return acceptor(payload)

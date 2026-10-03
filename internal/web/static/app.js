@@ -143,7 +143,7 @@
       "map.tel.battery": "bateria",
       "map.tel.voltage": "napięcie",
       "map.tel.channel_util": "wykorzystanie kanału",
-      "map.tel.air_util_tx": "air util tx",
+      "map.tel.air_util_tx": "wykorzystanie eteru (tx)",
       "map.tel.uptime": "czas pracy",
       "map.tel.temperature": "temperatura",
       "map.tel.humidity": "wilgotność",

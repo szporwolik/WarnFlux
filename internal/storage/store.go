@@ -220,14 +220,15 @@ type EventStore interface {
 	// the oldest one.
 	PendingStats(ctx context.Context) (pending int, oldest time.Duration, err error)
 
-	// ListArchiveEvents returns current-state events last seen on or after
-	// since (any status), newest first, as one page (offset/limit). The
-	// public home-page archive browses the history of communications
+	// ListArchiveEvents returns current-state ENDED events last seen on or
+	// after since (active events excluded — they are the Active hazards
+	// section), newest first, as one page (offset/limit). The public
+	// home-page archive browses the history of ended communications
 	// through it.
 	ListArchiveEvents(ctx context.Context, since time.Time, offset, limit int) ([]StoredEvent, error)
 
-	// CountArchiveEvents reports how many current-state events were last
-	// seen on or after since (the archive total for pagination).
+	// CountArchiveEvents reports how many current-state ENDED events were
+	// last seen on or after since (the archive total for pagination).
 	CountArchiveEvents(ctx context.Context, since time.Time) (int, error)
 
 	// Close releases the underlying resources.

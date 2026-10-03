@@ -1139,16 +1139,13 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 
 	// Unauthorized senders: commands never run and never alarm — a
-	// slash attempt only gets the public installation banner.
+	// restricted command gets an explicit denial.
 	before = len(radio.outbound())
 	dispatch(t, radio, textPacket(0xcafebabe, 0xabcd1234, "/debug"))
 	radio.waitOutbound(t, before+1)
 	out = radio.outbound()
-	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") {
-		t.Fatalf("unauthorized slash reply = %q, want the identity banner", got)
-	}
-	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "type /help for help") {
-		t.Fatalf("unauthorized slash reply = %q, missing the /help hint", got)
+	if got := string(out[len(out)-1].GetDecoded().GetPayload()); !strings.Contains(got, "WarnFlux v1.0 - SOSNA") || !strings.Contains(got, "You are not authorized") {
+		t.Fatalf("unauthorized /debug reply = %q, want the banner with the denial", got)
 	}
 	if out[len(out)-1].GetTo() != 0xcafebabe {
 		t.Fatalf("unauthorized reply to = %08x, want cafebabe", out[len(out)-1].GetTo())

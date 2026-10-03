@@ -752,15 +752,12 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 
 	// Unauthorized senders: commands never run and never alarm — a
-	// slash attempt only gets the public installation banner.
+	// restricted command gets an explicit denial.
 	hub.Observe(testPacket("SP9ZZZ>APRS,TCPIP*::SP9MOA-10:/debug"), "aprs-inet")
 	waitFor(t, func() bool { return len(tx.sends()) == 4 })
 	sends = tx.sends()
-	if !strings.Contains(sends[3][1], "WarnFlux v1.0 - SOSNA") {
-		t.Fatalf("unauthorized slash reply = %v, want the identity banner", sends[3])
-	}
-	if !strings.Contains(sends[3][1], "type /help for help") {
-		t.Fatalf("unauthorized slash reply = %v, missing the /help hint", sends[3])
+	if !strings.Contains(sends[3][1], "WarnFlux v1.0 - SOSNA") || !strings.Contains(sends[3][1], "You are not authorized") {
+		t.Fatalf("unauthorized /debug reply = %v, want the banner with the denial", sends[3])
 	}
 	if got := len(sink.payloads("events")); got != 1 {
 		t.Fatalf("unauthorized /debug produced alarm events (%d total)", got)

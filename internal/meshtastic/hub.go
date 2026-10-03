@@ -30,6 +30,7 @@ import (
 	"github.com/kabili207/meshtastic-go/transport/serial"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -75,6 +76,15 @@ type Config struct {
 	// EmcomIdentity is the one-line installation banner sent by the
 	// beacon (version, installation name, public domain) — set by main.
 	EmcomIdentity string
+	// BannerMinInterval is the per-sender spacing of automatic banner
+	// replies (default bannerMinInterval): a sender gets at most one
+	// banner per window, so answering bots cannot loop each other.
+	BannerMinInterval time.Duration
+	// BannerGlobalInterval is the global pacing of banner replies
+	// (default bannerGlobalInterval): the automatic-answer path never
+	// hogs the channel, and queued banners always yield to alarm and
+	// command replies.
+	BannerGlobalInterval time.Duration
 }
 
 // Recorder persists the meshtastic message history (implemented by
@@ -122,6 +132,28 @@ const defaultEmcomInterval = 4 * time.Hour
 // meshTextMaxRunes bounds one outbound channel text message (133 chars
 // per the Meshtastic spec).
 const meshTextMaxRunes = 133
+
+// cmdDedupWindow is how long a command identity stays remembered: the
+// same packet delivered again by the mesh (rebroadcast, router retry)
+// within this window re-sends the previous reply instead of executing
+// the command again.
+const cmdDedupWindow = 10 * time.Minute
+
+// cmdDedupCap bounds the remembered command outcomes.
+const cmdDedupCap = 256
+
+// Automatic banner answers are low-priority traffic: a sender gets at
+// most one banner per window (answering bots cannot loop each other),
+// the whole path is globally paced, and queued banners drain one at a
+// time so alarm replies always go first.
+const (
+	// bannerMinInterval is the default per-sender banner spacing.
+	bannerMinInterval = 5 * time.Minute
+	// bannerGlobalInterval is the default global banner pacing.
+	bannerGlobalInterval = 10 * time.Second
+	// bannerQueueCap bounds queued banner replies.
+	bannerQueueCap = 32
+)
 
 // defaultAckSettleTimeout is how long a device-confirmed direct message
 // waits for the recipient's acknowledgment. The device firmware
@@ -242,6 +274,20 @@ type Node struct {
 	// tombstoned records that the node's retained station document was
 	// already removed (the node itself stays in the persistent directory).
 	tombstoned bool
+}
+
+// cmdRecord is the remembered outcome of one radio command, keyed by
+// sender + packet identity: a redelivered packet (rebroadcast, router
+// retry) re-sends the previous reply and never re-executes the command.
+type cmdRecord struct {
+	at    time.Time
+	reply string
+}
+
+// bannerReply is one queued low-priority banner answer.
+type bannerReply struct {
+	id   string
+	text string
 }
 
 // SelfInfo describes our own node.
@@ -366,6 +412,24 @@ type Hub struct {
 	// presence beacon on the emcom channel.
 	startedAt time.Time
 	emcomNext time.Time
+
+	// cmds remembers executed radio commands by sender + packet
+	// identity; guarded by mu. A redelivered packet is answered with
+	// the previous result instead of re-executing the command.
+	cmds map[string]*cmdRecord
+
+	// alertAcceptor accepts a marshalled /alert event into the LOCAL
+	// pipeline and reports how it was accepted (durable inbox,
+	// emergency RAM fallback or rejection); guarded by mu. nil falls
+	// back to the event sink (tests, legacy wiring).
+	alertAcceptor func(payload []byte) dispatch.Acceptance
+
+	// banners queues low-priority automatic banner replies; guarded by
+	// mu. They drain one per drain call (inbound packet / session
+	// tick), so direct alarm and command replies always go first.
+	banners    []bannerReply
+	bannerLast map[string]time.Time // sender -> last banner answer
+	bannerNext time.Time            // global pacing: next allowed banner
 }
 
 // NewHub validates the config and builds the hub.
@@ -385,21 +449,30 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if cfg.EmcomChannel < 0 || cfg.EmcomChannel > 7 {
 		return nil, errors.New("meshtastic: emcom channel must be 0-7")
 	}
+	if cfg.BannerMinInterval <= 0 {
+		cfg.BannerMinInterval = bannerMinInterval
+	}
+	if cfg.BannerGlobalInterval <= 0 {
+		cfg.BannerGlobalInterval = bannerGlobalInterval
+	}
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
 		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node),
-			pending: make(map[uint32]*pendingSend), startedAt: time.Now()}, nil
+			pending: make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
+			bannerLast: make(map[string]time.Time), startedAt: time.Now()}, nil
 	}
 	if cfg.Device == "" {
 		return nil, errors.New("meshtastic: device path is required")
 	}
 	return &Hub{
-		cfg:       cfg,
-		logger:    logger,
-		nodes:     make(map[string]*Node),
-		pending:   make(map[uint32]*pendingSend),
-		startedAt: time.Now(),
+		cfg:        cfg,
+		logger:     logger,
+		nodes:      make(map[string]*Node),
+		pending:    make(map[uint32]*pendingSend),
+		cmds:       make(map[string]*cmdRecord),
+		bannerLast: make(map[string]time.Time),
+		startedAt:  time.Now(),
 	}, nil
 }
 
@@ -454,6 +527,17 @@ func (h *Hub) SetSenderGate(fn func(id string) string) {
 func (h *Hub) SetEventSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
 	h.mu.Lock()
 	h.eventSink = fn
+	h.mu.Unlock()
+}
+
+// SetAlertAcceptor installs the LOCAL acceptance path for /alert
+// events: the callback enqueues a marshalled alert into the local
+// pipeline and reports how it was accepted (durable inbox, emergency
+// RAM fallback or rejection). Without it the hub falls back to the
+// event sink (tests, legacy wiring).
+func (h *Hub) SetAlertAcceptor(fn func(payload []byte) dispatch.Acceptance) {
+	h.mu.Lock()
+	h.alertAcceptor = fn
 	h.mu.Unlock()
 }
 
@@ -583,6 +667,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 			h.retryPending(time.Now())
 			h.persistNodes()
 			h.beaconTick()
+			h.drainBanner()
 		}
 	}
 }
@@ -844,6 +929,9 @@ func (h *Hub) handlePacket(pkt *pb.MeshPacket) {
 	case pb.PortNum_ROUTING_APP:
 		h.handleRoutingAck(pkt, decoded)
 	}
+	// Low-priority banner traffic drains AFTER this packet's direct
+	// replies: alarm and command answers always go out first.
+	h.drainBanner()
 }
 
 // selfID returns our node id without holding the lock longer than needed.
@@ -1316,9 +1404,11 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	channel := h.channelNameFor(pkt)
 	h.recordMessage("rx", id, channel, string(decoded.GetPayload()), "", int(pkt.GetHopStart()), time.Now())
 
-	// Only DIRECT messages to our node route (broadcasts stay on the
-	// feed): the gate resolves the sender's registered directory user;
-	// unknown senders stay off the alarm pipeline.
+	// Only messages addressed EXACTLY to our node route (broadcasts,
+	// To=0 packets and third-party traffic stay on the feed): the gate
+	// resolves the sender's registered directory user; unknown senders
+	// stay off the alarm pipeline. The address match is exact on
+	// purpose — a To=0 packet must never reach the command interpreter.
 	h.mu.Lock()
 	selfID = ""
 	if h.self != nil {
@@ -1331,8 +1421,8 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	if gate == nil || eventSink == nil || selfID == "" {
 		return
 	}
-	if pkt.GetTo() != 0 && fmt.Sprintf("%08x", pkt.GetTo()) != selfID {
-		return // not addressed to us
+	if fmt.Sprintf("%08x", pkt.GetTo()) != selfID {
+		return // not addressed exactly to us
 	}
 	owner := gate(id)
 	text := string(decoded.GetPayload())
@@ -1341,26 +1431,137 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// become alarms on their own. Public commands (/help) run for
 	// everyone; restricted commands (/debug) run only for
 	// directory-registered senders — the shared interpreter decides.
+	// The same packet delivered again by the mesh (rebroadcast, router
+	// retry) re-sends the previous reply instead of executing the
+	// command again.
 	if cli != nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
+		mid := msgIdentity(pkt, text)
+		cid := id + ":" + mid
+		now := time.Now()
+		h.mu.Lock()
+		rec := h.cmds[cid]
+		fresh := rec != nil && now.Sub(rec.at) < cmdDedupWindow
+		reply := ""
+		if fresh {
+			reply = rec.reply
+		}
+		h.mu.Unlock()
+		if fresh {
+			if reply != "" {
+				h.sendCLIReply(id, reply)
+			}
+			return
+		}
 		res := cli.Handle(text, owner != "")
+		// The stored reply is the FINAL confirmation (post-acceptance),
+		// so a redelivery replays exactly the previous result.
+		reply = res.Reply
+		if res.Alert != nil {
+			reply = alertReply(res.Reply, h.publishAlertEvent(id, owner, res.Alert, mid))
+		}
+		h.mu.Lock()
+		h.pruneCmds(now)
+		h.cmds[cid] = &cmdRecord{at: now, reply: reply}
+		h.mu.Unlock()
 		if res.Handled {
 			if res.Debug {
-				h.publishRoutedEvent(id, owner, text)
+				h.publishRoutedEvent(id, owner, text, mid)
 			}
-			if res.Alert != nil {
-				h.publishAlertEvent(id, owner, res.Alert)
-			}
-			if res.Reply != "" {
-				h.sendCLIReply(id, res.Reply)
+			if reply != "" {
+				h.sendCLIReply(id, reply)
 			}
 		}
 		return
 	}
 	// Plain (non-command) direct messages never become alarms: the
-	// standard installation banner answers instead, and the message
-	// stays in the history and the message feed.
+	// standard installation banner answers instead (rate-limited,
+	// low-priority), and the message stays in the history and the
+	// message feed.
 	if cli != nil {
-		h.sendCLIReply(id, cli.Banner())
+		h.queueBanner(id, cli.Banner())
+	}
+}
+
+// queueBanner enqueues one banner answer as low-priority traffic. The
+// per-sender window stops answering bots from looping each other; the
+// global pacing and the one-at-a-time drain keep the automatic-answer
+// path behind direct alarm and command replies. The sender's window
+// starts when the banner is queued, so dropped (coalesced) replies
+// never reset it.
+func (h *Hub) queueBanner(id, text string) {
+	now := time.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if last, ok := h.bannerLast[id]; ok && now.Sub(last) < h.cfg.BannerMinInterval {
+		return // already answered recently
+	}
+	for _, r := range h.banners {
+		if r.id == id {
+			return // one queued banner per sender
+		}
+	}
+	if len(h.banners) >= bannerQueueCap {
+		return // bounded: drop under pressure
+	}
+	h.bannerLast[id] = now
+	if len(h.bannerLast) > 4*bannerQueueCap {
+		cutoff := now.Add(-h.cfg.BannerMinInterval)
+		for k, at := range h.bannerLast {
+			if at.Before(cutoff) {
+				delete(h.bannerLast, k)
+			}
+		}
+	}
+	h.banners = append(h.banners, bannerReply{id: id, text: text})
+}
+
+// drainBanner sends at most one queued banner reply, paced by the global
+// interval. It runs after inbound traffic and on the session tick, so
+// banners strictly yield to direct replies sent while a packet is
+// handled.
+func (h *Hub) drainBanner() {
+	now := time.Now()
+	h.mu.Lock()
+	if len(h.banners) == 0 || now.Before(h.bannerNext) {
+		h.mu.Unlock()
+		return
+	}
+	r := h.banners[0]
+	h.banners = h.banners[1:]
+	h.bannerNext = now.Add(h.cfg.BannerGlobalInterval)
+	h.mu.Unlock()
+	h.sendCLIReply(r.id, r.text)
+}
+
+// msgIdentity is the stable per-packet identity used for command
+// deduplication: the device-assigned packet id when present, otherwise
+// a short content digest — a redelivered copy of the same packet
+// produces the same identity.
+func msgIdentity(pkt *pb.MeshPacket, text string) string {
+	if pid := pkt.GetId(); pid != 0 {
+		return strconv.FormatUint(uint64(pid), 10)
+	}
+	return "h" + radiocli.ContentID(fmt.Sprintf("%08x", pkt.GetFrom()), text)
+}
+
+// pruneCmds drops expired command records and bounds the map. The
+// caller holds mu.
+func (h *Hub) pruneCmds(now time.Time) {
+	cutoff := now.Add(-cmdDedupWindow)
+	for k, rec := range h.cmds {
+		if rec.at.Before(cutoff) {
+			delete(h.cmds, k)
+		}
+	}
+	for len(h.cmds) > cmdDedupCap {
+		var oldestK string
+		var oldestAt time.Time
+		for k, rec := range h.cmds {
+			if oldestK == "" || rec.at.Before(oldestAt) {
+				oldestK, oldestAt = k, rec.at
+			}
+		}
+		delete(h.cmds, oldestK)
 	}
 }
 
@@ -1404,8 +1605,11 @@ func (h *Hub) ChannelLabel(idx int) string {
 
 // publishRoutedEvent bridges one approved direct message into the /events
 // stream as a canonical hazard transition. The directory owner travels
-// in the headline and description so operators see WHO is speaking.
-func (h *Hub) publishRoutedEvent(senderID, owner, text string) {
+// in the headline and description so operators see WHO is speaking. mid
+// is the per-packet identity (msgIdentity) that keeps the event key
+// stable across redeliveries, so the storage deduplication collapses
+// rebroadcasts into one alarm.
+func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string) {
 	h.mu.Lock()
 	name := ""
 	if n := h.nodes[senderID]; n != nil && n.Name != "" {
@@ -1421,14 +1625,15 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text string) {
 	if from == "" {
 		from = "!" + senderID
 	}
+	sourceID := senderID + ":msg:" + mid
 	we := MessageEventWire{
 		SchemaVersion: meshMessageEventSchemaVersion,
 		ChangeID:      now.UnixMilli(),
 		ChangeType:    "new",
-		EventKey:      fmt.Sprintf("meshtastic:%s-%d", senderID, now.UnixMilli()),
+		EventKey:      "meshtastic:" + sourceID,
 		Event: MessageEventHazard{
 			Source:      "meshtastic",
-			SourceID:    senderID,
+			SourceID:    sourceID,
 			Category:    "meshtastic",
 			Event:       "Meshtastic message",
 			Severity:    "severe",
@@ -1450,12 +1655,37 @@ func (h *Hub) publishRoutedEvent(senderID, owner, text string) {
 	}
 }
 
+// alertReply maps the local acceptance of a /alert event onto the
+// in-band confirmation: durable acceptance answers with the handler
+// confirmation, the emergency fallback says so explicitly, and a
+// rejection never claims success.
+func alertReply(base string, acc dispatch.Acceptance) string {
+	switch acc {
+	case dispatch.Rejected:
+		return "FAILED: alert rejected"
+	case dispatch.AcceptedEmergency:
+		if base == "" {
+			return "OK: alert raised (failover mode)"
+		}
+		return base + " (failover mode)"
+	default:
+		if base == "" {
+			return "OK: alert raised"
+		}
+		return base
+	}
+}
+
 // publishAlertEvent raises one operator-requested hazard (/alert) into
 // the /events stream: severe, bounded by the requested TTL (4 hours by
-// default).
-func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec) {
+// default). mid keeps the event identity stable across redeliveries
+// (see publishRoutedEvent). The returned acceptance reports how the
+// LOCAL pipeline took the alert (durable, emergency or rejected); the
+// confirmation reply must follow it. A broker failure alone never
+// downgrades the local acceptance.
+func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec, mid string) dispatch.Acceptance {
 	if spec == nil {
-		return
+		return dispatch.Rejected
 	}
 	h.mu.Lock()
 	name := ""
@@ -1463,10 +1693,8 @@ func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec
 		name = n.Name
 	}
 	sink := h.eventSink
+	acceptor := h.alertAcceptor
 	h.mu.Unlock()
-	if sink == nil {
-		return
-	}
 	now := time.Now().UTC()
 	ttl := spec.TTL
 	if ttl <= 0 {
@@ -1478,14 +1706,15 @@ func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec
 	if from == "" {
 		from = "!" + senderID
 	}
+	sourceID := senderID + ":alert:" + mid
 	we := MessageEventWire{
 		SchemaVersion: meshMessageEventSchemaVersion,
 		ChangeID:      now.UnixMilli(),
 		ChangeType:    "new",
-		EventKey:      fmt.Sprintf("meshtastic:alert:%s-%d", senderID, now.UnixMilli()),
+		EventKey:      "meshtastic:" + sourceID,
 		Event: MessageEventHazard{
 			Source:      "meshtastic",
-			SourceID:    senderID,
+			SourceID:    sourceID,
 			Category:    "meshtastic",
 			Event:       "Meshtastic alert",
 			Severity:    "severe",
@@ -1503,11 +1732,20 @@ func (h *Hub) publishAlertEvent(senderID, owner string, spec *radiocli.AlertSpec
 	}
 	payload, err := json.Marshal(we)
 	if err != nil {
-		return
+		return dispatch.Rejected
+	}
+	if acceptor != nil {
+		return acceptor(payload)
+	}
+	// Legacy path (no acceptor installed): best-effort through the
+	// event sink; the hub cannot distinguish local acceptance here.
+	if sink == nil {
+		return dispatch.AcceptedDurable
 	}
 	if err := sink(context.Background(), "events", false, payload); err != nil && h.logger != nil {
 		h.logger.Warn("meshtastic: alert event publish failed", "error", err)
 	}
+	return dispatch.AcceptedDurable
 }
 
 // ErrPrimaryChannelBlocked reports an attempt to broadcast on the

@@ -115,7 +115,10 @@ func Summarize(now time.Time, readings []Reading, forecasts []Forecast) Report {
 // robustMean averages values after dropping gross outliers (values more
 // than 3 MADs off the median). With fewer than three values every value
 // counts; if the filter would drop everything, the median survives —
-// EMCOM: one value is better than none.
+// EMCOM: one value is better than none. Zero MAD means at least half the
+// values exactly agree with the median: the consensus cluster wins and
+// the remaining values are dropped as gross outliers (a plain mean would
+// let one broken sensor dilute the consensus, e.g. 20, 20, 59 → 33).
 func robustMean(values []float64) (float64, int) {
 	if len(values) == 0 {
 		return 0, 0
@@ -137,11 +140,15 @@ func robustMean(values []float64) (float64, int) {
 	sort.Float64s(devs)
 	mad := devs[len(devs)/2]
 	if mad == 0 {
-		sum := 0.0
+		// Exact consensus: keep only the values that equal the median.
+		sum, kept := 0.0, 0
 		for _, v := range values {
-			sum += v
+			if v == median {
+				sum += v
+				kept++
+			}
 		}
-		return sum / float64(len(values)), len(values)
+		return sum / float64(kept), kept
 	}
 	sum, kept := 0.0, 0
 	for _, v := range values {

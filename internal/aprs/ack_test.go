@@ -123,6 +123,103 @@ func TestSendMessageWaitAckReject(t *testing.T) {
 	}
 }
 
+// TestSendMessageWaitAckForeignAckIgnored pins the ack binding: an ack
+// from an unrelated station (even with the right message id) never
+// confirms the wait — only the addressee's ack does.
+func TestSendMessageWaitAckForeignAckIgnored(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	tx := &fakeTransmitter{name: BackendRadio, ready: true}
+	hub.AddTransmitter(BackendRadio, tx)
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	type result struct {
+		ack bool
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ack, err := hub.SendMessageWaitAck(context.Background(), "SP9XYZ-7", "hello", 5*time.Second)
+		done <- result{ack, err}
+	}()
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+
+	// A foreign station acks with the right id: the wait stays intact.
+	hub.Observe(testPacket("SP9QQQ-9>APRS,WIDE1-1*::SP9MOA-10:ack00001"), BackendRadio)
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case r := <-done:
+		t.Fatalf("foreign ack completed the wait: %v", r)
+	default:
+	}
+
+	// The real addressee acks: the wait completes now.
+	hub.Observe(testPacket("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:ack00001"), BackendRadio)
+	select {
+	case r := <-done:
+		if !r.ack || r.err != nil {
+			t.Fatalf("addressee ack wait = %v, %v", r.ack, r.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("addressee ack never delivered")
+	}
+}
+
+// TestSendMessageWaitAckIDReuseBumped pins the id-reuse guard: an id
+// still in flight is never re-registered — the next outbound message
+// takes a fresh id, so late acks of a previous cycle cannot collide.
+func TestSendMessageWaitAckIDReuseBumped(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+	})
+	tx := &fakeTransmitter{name: BackendRadio, ready: true}
+	hub.AddTransmitter(BackendRadio, tx)
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// Simulate a previous cycle: id 00001 is still in flight.
+	hub.mu.Lock()
+	hub.pending["00001"] = &ackWait{from: "SP9MOA-10", to: "SP9OLD-1", at: time.Now(), ch: make(chan string, 1)}
+	hub.mu.Unlock()
+
+	done := make(chan result2, 1)
+	go func() {
+		ack, err := hub.SendMessageWaitAck(context.Background(), "SP9XYZ-7", "hello", 5*time.Second)
+		done <- result2{ack, err}
+	}()
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	if sent := tx.sends()[0][1]; !strings.HasSuffix(sent, "{00002}") {
+		t.Fatalf("sent = %q, want a fresh id (00002), never the busy 00001", sent)
+	}
+
+	hub.Observe(testPacket("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:ack00002"), BackendRadio)
+	select {
+	case r := <-done:
+		if !r.ack || r.err != nil {
+			t.Fatalf("reuse-guarded wait = %v, %v", r.ack, r.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ack for the fresh id never delivered")
+	}
+}
+
+type result2 struct {
+	ack bool
+	err error
+}
+
 func TestSendMessageWaitAckNoTransmitter(t *testing.T) {
 	hub, _ := testHub(t, HubConfig{
 		Enabled:    true,

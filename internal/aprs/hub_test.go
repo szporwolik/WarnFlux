@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
 )
 
@@ -566,7 +567,10 @@ func TestStationTrackTail(t *testing.T) {
 
 	waitFor(t, func() bool {
 		docs := hub.Stations()
-		return len(docs) == 1 && docs[0].Position != nil
+		// Wait for the FULL tail (not just the first position): the
+		// worker applies packets one by one, and asserting the track
+		// before it finished flakes under load.
+		return len(docs) == 1 && docs[0].Position != nil && len(docs[0].Track) == 3
 	})
 	docs := hub.Stations()
 	doc := docs[0]
@@ -776,6 +780,176 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 	if got := len(sink.payloads("events")); got != 1 {
 		t.Fatalf("public /help produced alarm events (%d total)", got)
+	}
+}
+
+// TestHubCommandDedup pins the retransmission guard: the same packet
+// heard twice — once over the radio and once through APRS-IS — raises
+// ONE alarm, and the retransmission gets the previous reply instead of
+// executing the command again. The event identity is stable (sender +
+// message identity), so the storage deduplication collapses late
+// redeliveries too.
+func TestHubCommandDedup(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+
+	// The same /debug packet (no ack id) arrives through both backends:
+	// the content digest identifies it as one command.
+	hub.Observe(testPacket("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:/debug"), BackendRadio)
+	hub.Observe(testPacket("SP9XYZ-7>APRS,TCPIP*,qAO::SP9MOA-10:/debug"), BackendInternet)
+
+	waitFor(t, func() bool { return len(sink.payloads("events")) == 1 })
+	waitFor(t, func() bool { return len(tx.sends()) == 2 })
+	time.Sleep(150 * time.Millisecond) // settle: no second event may appear
+	if got := len(sink.payloads("events")); got != 1 {
+		t.Fatalf("retransmission raised %d events, want 1", got)
+	}
+	sends := tx.sends()
+	if !strings.Contains(sends[0][1], "debug alarm") || !strings.Contains(sends[1][1], "debug alarm") {
+		t.Fatalf("retransmission replies = %v, want the previous result on both deliveries", sends)
+	}
+	var ev MessageEventWire
+	if err := json.Unmarshal(sink.payloads("events")[0], &ev); err != nil {
+		t.Fatalf("event payload: %v", err)
+	}
+	if !strings.HasPrefix(ev.EventKey, "aprs:SP9XYZ-7:msg:") {
+		t.Fatalf("event key = %q, want the stable sender+message identity", ev.EventKey)
+	}
+
+	// A packet with an ack id deduplicates by that id, and the event
+	// identity carries it. The observation-level digest guard already
+	// swallows a repeated Internet copy of the same packet, so only the
+	// radio copy gets the reply.
+	hub.Observe(testPacket("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:/debug{0042"), BackendRadio)
+	hub.Observe(testPacket("SP9XYZ-7>APRS,TCPIP*,qAO::SP9MOA-10:/debug{0042"), BackendInternet)
+	waitFor(t, func() bool { return len(sink.payloads("events")) == 2 })
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	time.Sleep(150 * time.Millisecond)
+	if got := len(sink.payloads("events")); got != 2 {
+		t.Fatalf("id-carrying retransmission raised %d events, want 2 total", got)
+	}
+	if err := json.Unmarshal(sink.payloads("events")[1], &ev); err != nil {
+		t.Fatalf("event payload: %v", err)
+	}
+	if ev.EventKey != "aprs:SP9XYZ-7:msg:0042" {
+		t.Fatalf("event key = %q, want aprs:SP9XYZ-7:msg:0042", ev.EventKey)
+	}
+}
+
+// TestHubAlertConfirmationTracksAcceptance pins the honest /alert
+// confirmation: the reply follows the LOCAL acceptance — durable keeps
+// the handler confirmation, the emergency fallback is reported as such,
+// and a rejection never claims success. The acceptor replaces the
+// generic sink here, so its calls double as the event capture.
+func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	hub.SetCLI(cli)
+
+	var (
+		mu       sync.Mutex
+		accepted []dispatch.Acceptance
+	)
+	acceptor := func(a dispatch.Acceptance) func([]byte) dispatch.Acceptance {
+		return func([]byte) dispatch.Acceptance {
+			mu.Lock()
+			accepted = append(accepted, a)
+			mu.Unlock()
+			return a
+		}
+	}
+
+	// Durable acceptance: the plain handler confirmation.
+	hub.SetAlertAcceptor(acceptor(dispatch.AcceptedDurable))
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	if got := tx.sends()[0][1]; got != "OK: alert raised" {
+		t.Fatalf("durable confirmation = %q, want the plain handler reply", got)
+	}
+
+	// Emergency acceptance: the fallback is reported explicitly.
+	hub.SetAlertAcceptor(acceptor(dispatch.AcceptedEmergency))
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu 2"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 2 })
+	if got := tx.sends()[1][1]; !strings.Contains(got, "OK: alert raised") || !strings.Contains(got, "failover") {
+		t.Fatalf("emergency confirmation = %q, want the explicit failover note", got)
+	}
+
+	// Rejection: never claim success.
+	hub.SetAlertAcceptor(acceptor(dispatch.Rejected))
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu 3"), "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	if got := tx.sends()[2][1]; got != "FAILED: alert rejected" {
+		t.Fatalf("rejected confirmation = %q, want the explicit failure", got)
+	}
+	if got := len(sink.payloads("events")); got != 0 {
+		t.Fatalf("acceptor path leaked %d events through the generic sink", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(accepted) != 3 {
+		t.Fatalf("acceptor called %d times, want 3", len(accepted))
+	}
+}
+
+// TestHubBannerRateLimits pins the automatic-answer guards over APRS: a
+// sender gets at most one banner per window and the whole answer path
+// is globally paced, so answering bots cannot loop each other or hog
+// the channel.
+func TestHubBannerRateLimits(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	// No worker started: the limiter is exercised directly against a
+	// synthetic clock (single-threaded).
+	base := time.Now()
+	var offset time.Duration
+	hub.now = func() time.Time { return base.Add(offset) }
+
+	if !hub.bannerAllowed("SP9XYZ") {
+		t.Fatal("first banner must be allowed")
+	}
+	if hub.bannerAllowed("SP9XYZ") {
+		t.Fatal("second banner from the same sender within the window must be denied")
+	}
+	if hub.bannerAllowed("SP9QQQ") {
+		t.Fatal("banner for another sender within the global window must be denied")
+	}
+	offset = 30 * time.Second // global pacing passed, per-sender window still active
+	if !hub.bannerAllowed("SP9QQQ") {
+		t.Fatal("banner for another sender after the global window must be allowed")
+	}
+	if hub.bannerAllowed("SP9XYZ") {
+		t.Fatal("same sender must stay blocked within the per-sender window")
+	}
+	offset = 6 * time.Minute // both windows passed
+	if !hub.bannerAllowed("SP9XYZ") {
+		t.Fatal("sender must be answered again after the window")
 	}
 }
 

@@ -48,7 +48,7 @@ func TestRoutedMessageEvent(t *testing.T) {
 		t.Fatalf("event key = %q", ev.EventKey)
 	}
 	h := ev.Event
-	if h.Source != "aprs" || h.SourceID != "SP9XYZ-7" || h.Event != "APRS message" {
+	if h.Source != "aprs" || !strings.HasPrefix(h.SourceID, "SP9XYZ-7:msg:") || h.Event != "APRS message" {
 		t.Fatalf("hazard identity = %+v", h)
 	}
 	if h.Severity != "severe" {
@@ -125,7 +125,7 @@ func TestRoutedMessageEventInternetDelivery(t *testing.T) {
 	if err := json.Unmarshal(sink.payloads("events")[0], &ev); err != nil {
 		t.Fatalf("event payload: %v", err)
 	}
-	if ev.Event.SourceID != "SP9XYZ-2" || ev.Event.Severity != "severe" {
+	if !strings.HasPrefix(ev.Event.SourceID, "SP9XYZ-2:msg:") || ev.Event.Severity != "severe" {
 		t.Fatalf("event = %+v", ev.Event)
 	}
 }

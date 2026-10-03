@@ -15,6 +15,7 @@
     <section class="card nt-card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "notif.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "notif.hint"}}</p>
+      <p class="muted log-hint">{{tr .Lang "notif.retention"}}</p>
       <div id="notif-list" class="notif-list">
         {{range .Trails}}{{template "notif-item" .}}{{else}}<p class="empty">{{tr $.Lang "notif.empty"}}</p>{{end}}
       </div>
@@ -34,8 +35,30 @@
     <span class="muted nt-time">{{timeFullStr .Trail.ReceivedAt}}</span>
     <span class="badge nt-outcome nt-outcome-{{.Trail.Outcome}}">{{tr .Lang (printf "notif.outcome.%s" .Trail.Outcome)}}</span>
   </div>
-  <ol class="nt-steps">
-    {{range .Trail.Steps}}<li class="nt-step nt-{{.Kind}}"><span class="nt-at">{{timeHMS .At}}</span><span class="nt-text">{{.Text}}</span></li>{{end}}
-  </ol>
+  <details class="nt-details"{{if .Focus}} open{{end}}>
+    <summary>{{tr .Lang "notif.details"}} {{if .Deliveries}}({{len .Deliveries}}){{end}}</summary>
+    {{if .Deliveries}}
+    <table class="plugins nt-deliveries">
+      <thead>
+        <tr><th>{{tr .Lang "notif.action"}}</th><th>{{tr .Lang "notif.status"}}</th><th>{{tr .Lang "notif.attempts"}}</th><th>{{tr .Lang "notif.at"}}</th></tr>
+      </thead>
+      <tbody>
+        {{range .Deliveries}}
+        <tr>
+          <td class="mono">{{.ActionID}}</td>
+          <td><span class="badge nt-status-{{.Status}}">{{tr $.Lang (printf "notif.status.%s" .Status)}}</span></td>
+          <td>{{.Attempts}}</td>
+          <td class="muted">{{timeHMS .FiredAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="muted">{{tr .Lang "notif.no_deliveries"}}</p>
+    {{end}}
+    <ol class="nt-steps">
+      {{range .Trail.Steps}}<li class="nt-step nt-{{.Kind}}"><span class="nt-at">{{timeHMS .At}}</span><span class="nt-text">{{.Text}}</span></li>{{end}}
+    </ol>
+  </details>
 </article>
 {{end}}

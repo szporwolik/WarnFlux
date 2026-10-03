@@ -402,6 +402,42 @@ func (s *Store) PendingDeliveries(ctx context.Context, actionID string) (int, er
 	return n, nil
 }
 
+// RecentDeliveries returns the newest action-fire ledger rows (any
+// status, bounded by limit) for the notification details view — the
+// durable delivery history behind the in-memory routing trails. The
+// caller must bound the page display itself; the table's retention is
+// PruneActionFires.
+func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]storage.DeliveryRecord, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive, got %d", limit)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_key, action_id, status, attempts, fired_at_ms, next_attempt_at_ms
+		FROM action_fires ORDER BY fired_at_ms DESC, event_key ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []storage.DeliveryRecord
+	for rows.Next() {
+		var r storage.DeliveryRecord
+		var firedMs, nextMs int64
+		if err := rows.Scan(&r.EventKey, &r.ActionID, &r.Status, &r.Attempts, &firedMs, &nextMs); err != nil {
+			return nil, fmt.Errorf("scan delivery record: %w", err)
+		}
+		r.FiredAt = time.UnixMilli(firedMs).UTC()
+		if nextMs > 0 {
+			r.NextAttemptAt = time.UnixMilli(nextMs).UTC()
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate deliveries: %w", err)
+	}
+	return out, nil
+}
+
 // PruneActionFires deletes COMPLETED ledger rows older than the cutoff
 // and returns how many rows were removed. Pending work never ages out:
 // 'saved' (never executed), 'running' (claimed) and 'failed' rows that

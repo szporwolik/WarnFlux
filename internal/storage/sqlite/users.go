@@ -179,9 +179,29 @@ func (s *Store) CreateUser(username, phone, email, discord, role, password strin
 }
 
 // UpdateUser replaces the contact fields, role and (when password is
-// non-empty) the password of a regular user. The admin row reports
-// storage.ErrUserProtected and never changes.
+// non-empty) the password of a regular user. The admin row's identity is
+// config-owned (username, role and password never change here), but its
+// contact fields (phone, email, discord) still update.
 func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, password string) (storage.User, error) {
+	var isAdmin int
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, id).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.User{}, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return storage.User{}, fmt.Errorf("inspect user %d: %w", id, err)
+	}
+	if isAdmin != 0 {
+		res, err := s.db.Exec(`
+			UPDATE users SET phone = ?, email = ?, discord = ?, updated_at_ms = ?
+			WHERE id = ? AND is_admin = 1`,
+			phone, email, discord, s.now().UnixMilli(), id)
+		if err != nil {
+			return storage.User{}, fmt.Errorf("update admin contact fields: %w", err)
+		}
+		return s.afterUpdate(res, id)
+	}
+
 	taken, err := s.usernameTaken(username, id)
 	if err != nil {
 		return storage.User{}, err
@@ -367,18 +387,16 @@ func (s *Store) usernameTaken(username string, excludeID int64) (bool, error) {
 }
 
 // SetUserAPRS replaces the user's registered APRS callsigns (uppercase,
-// de-duplicated). The admin row reports storage.ErrUserProtected.
+// de-duplicated). The admin row may register its own callsigns like any
+// other user.
 func (s *Store) SetUserAPRS(userID int64, callsigns []string) error {
-	var isAdmin int
-	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM users WHERE id = ?`, userID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.ErrUserNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("inspect user %d: %w", userID, err)
-	}
-	if isAdmin != 0 {
-		return storage.ErrUserProtected
 	}
 	seen := make(map[string]bool, len(callsigns))
 	var clean []string
@@ -415,19 +433,16 @@ func (s *Store) SetUserAPRS(userID int64, callsigns []string) error {
 }
 
 // SetUserMeshtasticIDs replaces the user's registered Meshtastic node ids
-// (lowercase 64-hex, de-duplicated). The admin row reports
-// storage.ErrUserProtected.
+// (lowercase 64-hex, de-duplicated). The admin row may register its own
+// node ids like any other user.
 func (s *Store) SetUserMeshtasticIDs(userID int64, keys []string) error {
-	var isAdmin int
-	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM users WHERE id = ?`, userID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.ErrUserNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("inspect user %d: %w", userID, err)
-	}
-	if isAdmin != 0 {
-		return storage.ErrUserProtected
 	}
 	seen := make(map[string]bool, len(keys))
 	var clean []string
@@ -509,18 +524,16 @@ func (s *Store) UserChannelOptOuts(userID int64) (map[string]bool, error) {
 // SetUserChannelOptOuts replaces the user's delivery-channel opt-outs in
 // one transaction: listed kinds are disabled, every other channel stays
 // on. Unknown kinds are stored as-is so future channels degrade
-// gracefully. The admin row reports storage.ErrUserProtected.
+// gracefully. The admin row may set its own opt-outs like any other
+// user.
 func (s *Store) SetUserChannelOptOuts(userID int64, kinds []string) error {
-	var isAdmin int
-	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM users WHERE id = ?`, userID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.ErrUserNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("inspect user %d: %w", userID, err)
-	}
-	if isAdmin != 0 {
-		return storage.ErrUserProtected
 	}
 
 	seen := make(map[string]bool, len(kinds))

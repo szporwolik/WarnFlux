@@ -228,9 +228,12 @@ func TestUserChannelOptOuts(t *testing.T) {
 		t.Fatalf("emails after clear = %v, %v", emails, err)
 	}
 
-	// Protected and missing users.
-	if err := store.SetUserChannelOptOuts(1, []string{"smtp"}); !errors.Is(err, storage.ErrUserProtected) {
-		t.Fatalf("admin opt-outs = %v, want ErrUserProtected", err)
+	// The admin may set its own opt-outs; missing users still fail.
+	if err := store.SetUserChannelOptOuts(1, []string{"smtp"}); err != nil {
+		t.Fatalf("admin opt-outs = %v, want success", err)
+	}
+	if opts, _ := store.UserChannelOptOuts(1); !opts["smtp"] {
+		t.Fatalf("admin opt-outs after set = %v", opts)
 	}
 	if err := store.SetUserChannelOptOuts(999, []string{"smtp"}); !errors.Is(err, storage.ErrUserNotFound) {
 		t.Fatalf("missing opt-outs = %v, want ErrUserNotFound", err)

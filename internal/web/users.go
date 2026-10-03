@@ -83,6 +83,10 @@ type usersView struct {
 	Channels []notify.ChannelDef
 	Form     userForm
 	EditID   int64
+	// AdminEdit marks the dialog editing the configured admin row:
+	// identity fields (username, role, password) are shown read-only and
+	// only contact data plus delivery preferences are editable.
+	AdminEdit bool
 	// DialogOpen re-renders the add/edit dialog already open (an edit via
 	// ?edit=, or a failed add/edit submit that echoes the form back).
 	DialogOpen bool
@@ -123,6 +127,7 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
 			if u, err := s.users.GetUser(id); err == nil {
 				view.EditID = u.ID
+				view.AdminEdit = u.IsAdmin
 				view.DialogOpen = true
 				view.Form = userForm{
 					Username:      u.Username,
@@ -209,7 +214,11 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit(sess.username, "user-update", form.Username)
-		if form.Password != "" || oldErr != nil || old.Role != form.Role || old.Username != form.Username {
+		// Identity-relevant edits (password, role, username) revoke every
+		// live session of the user: a demoted or re-passworded account
+		// must not keep its old sessions authorized. The admin row's
+		// identity is config-owned and never changes here.
+		if !old.IsAdmin && (form.Password != "" || oldErr != nil || old.Role != form.Role || old.Username != form.Username) {
 			if n := s.sessions.revokeUser(editID); n > 0 {
 				s.audit(sess.username, "sessions-revoked", fmt.Sprintf("user %s sessions=%d", form.Username, n))
 			}

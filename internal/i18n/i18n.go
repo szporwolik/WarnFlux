@@ -430,6 +430,7 @@ var en = map[string]string{
 	"groups.err.not_found":        "group not found",
 	"groups.err.internal":         "internal error",
 	"groups.routing_title":        "Routing · %s",
+	"groups.matrix_corner":        "source \\ action",
 	"groups.routing_hint":         `Pick the minimum severity that fires each action, per input plugin. "any source" is the fallback when no specific row matches. "—" leaves the cell off.`,
 	"groups.routing.save":         "Save routing",
 	"groups.routing.back":         "Back to groups",
@@ -684,6 +685,7 @@ var en = map[string]string{
 	// Reset page.
 	"reset.title":    "Set a new password",
 	"reset.hint":     "Choose a new password for your account.",
+	"reset.invalid":  "This link is invalid or has expired — request a new one.",
 	"reset.password": "New password",
 	"reset.save":     "Set password",
 	"reset.new_link": "Request a new reset link",
@@ -1057,6 +1059,7 @@ var pl = map[string]string{
 	"groups.err.not_found":        "nie znaleziono grupy",
 	"groups.err.internal":         "błąd wewnętrzny",
 	"groups.routing_title":        "Routing · %s",
+	"groups.matrix_corner":        "źródło \\ akcja",
 	"groups.routing_hint":         `Wybierz minimalny poziom ważności, przy którym uruchamiana jest każda akcja, w podziale na źródła. "any source" to reguła domyślna, gdy nie ma konkretnego wiersza. "—" wyłącza komórkę.`,
 	"groups.routing.save":         "Zapisz routing",
 	"groups.routing.back":         "Wróć do grup",
@@ -1303,6 +1306,7 @@ var pl = map[string]string{
 
 	"reset.title":    "Ustaw nowe hasło",
 	"reset.hint":     "Wybierz nowe hasło dla swojego konta.",
+	"reset.invalid":  "Ten link jest nieprawidłowy lub wygasł — poproś o nowy.",
 	"reset.password": "Nowe hasło",
 	"reset.save":     "Ustaw hasło",
 	"reset.new_link": "Poproś o nowy link resetujący",

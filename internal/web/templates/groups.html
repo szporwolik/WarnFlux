@@ -99,7 +99,7 @@
       <form method="post" action="/groups/{{.RoutingID}}/routing" class="routing-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <div class="matrix-grid" style="grid-template-columns:max-content repeat({{len .Actions}}, minmax(0, 1fr))">
-          <span class="matrix-head matrix-corner">source \ action</span>
+	        <span class="matrix-head matrix-corner">{{tr .Lang "groups.matrix_corner"}}</span>
           {{range .Actions}}<span class="matrix-head" title="{{.ID}}">{{.ID}}</span>{{end}}
           {{range .RoutingMatrix}}
           <span class="matrix-src">{{.Label}}</span>

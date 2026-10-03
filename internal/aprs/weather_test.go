@@ -181,6 +181,52 @@ func TestHubWeatherSurvivesInfraFilter(t *testing.T) {
 	}
 }
 
+// TestHubWeatherSnapshotOffGrid pins the local weather cache: a WX
+// report observed over RF lands in the hub's cache BEFORE the
+// infrastructure filter and without any broker, so /weather can read it
+// directly when the loopback is down.
+func TestHubWeatherSnapshotOffGrid(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled:               true,
+		Callsign:              "SP9MOA-10",
+		Icon:                  "/j",
+		GridSquare:            "JO90WW",
+		RadiusKM:              DefaultRadiusKM,
+		StationTTL:            30 * time.Minute,
+		ExcludeInfrastructure: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// NO weather sink: the broker pipeline is completely absent.
+	hub.Observe(ParseFeedLine("SP9WX>APRS,TCPIP*:!5056.25N/01952.50E_220/004g005t077r000p000P000h50b09900", time.Now()), "aprs-inet")
+	waitFor(t, func() bool {
+		for _, w := range hub.WeatherSnapshot(time.Now()) {
+			if w.Callsign == "SP9WX" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The report is fresh and carries the reading.
+	for _, w := range hub.WeatherSnapshot(time.Now()) {
+		if w.Callsign == "SP9WX" && (w.TemperatureC == nil || *w.TemperatureC != 25.0) {
+			t.Fatalf("cached report = %+v, want temperature 25", w)
+		}
+	}
+
+	// A stale observation (outside the freshness window) never counts.
+	hub.Observe(ParseFeedLine("SP9OLD>APRS,TCPIP*:!5056.25N/01952.50E_220/004g005t077r000p000P000h50b09900", time.Now().Add(-4*time.Hour)), "aprs-inet")
+	time.Sleep(100 * time.Millisecond)
+	for _, w := range hub.WeatherSnapshot(time.Now()) {
+		if w.Callsign == "SP9OLD" {
+			t.Fatalf("stale report leaked into the snapshot: %+v", w)
+		}
+	}
+}
+
 func checkFloat(t *testing.T, field string, got *float64, want float64) {
 	t.Helper()
 	if got == nil {

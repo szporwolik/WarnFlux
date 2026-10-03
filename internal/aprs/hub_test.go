@@ -831,13 +831,13 @@ func TestHubCommandDedup(t *testing.T) {
 	}
 
 	// A packet with an ack id deduplicates by that id, and the event
-	// identity carries it. The observation-level digest guard already
-	// swallows a repeated Internet copy of the same packet, so only the
-	// radio copy gets the reply.
+	// identity carries it. The repeated Internet copy is telemetry-
+	// deduplicated, but the command still reaches the machinery and gets
+	// the previous result replayed — one event, two replies.
 	hub.Observe(testPacket("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:/debug{0042"), BackendRadio)
 	hub.Observe(testPacket("SP9XYZ-7>APRS,TCPIP*,qAO::SP9MOA-10:/debug{0042"), BackendInternet)
 	waitFor(t, func() bool { return len(sink.payloads("events")) == 2 })
-	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	waitFor(t, func() bool { return len(tx.sends()) == 4 })
 	time.Sleep(150 * time.Millisecond)
 	if got := len(sink.payloads("events")); got != 2 {
 		t.Fatalf("id-carrying retransmission raised %d events, want 2 total", got)
@@ -1155,6 +1155,78 @@ func TestHubReplyBurstLimit(t *testing.T) {
 	time.Sleep(150 * time.Millisecond) // settle: no further replies
 	if got := len(tx.sends()); got != 3 {
 		t.Fatalf("automatic replies after a 10-command flood = %d, want exactly ReplyBurst (3)", got)
+	}
+}
+
+// TestHubCommandRetrySurvivesPacketDedup pins the retry path through the
+// REAL apply entry: the observation-level dedup skips telemetry for a
+// repeated packet, but a retransmitted command still reaches the command
+// machinery — the transient rejection is replayed within the cooldown
+// and re-executed after it, even over the SAME receiver.
+func TestHubCommandRetrySurvivesPacketDedup(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true, CmdRetryCooldown: 300 * time.Millisecond,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	hub.SetCLI(cli)
+
+	var (
+		mu       sync.Mutex
+		accepted []dispatch.Acceptance
+		accValue = dispatch.Rejected
+	)
+	hub.SetEventAcceptor(func([]byte) dispatch.Acceptance {
+		mu.Lock()
+		defer mu.Unlock()
+		accepted = append(accepted, accValue)
+		return accValue
+	})
+
+	pkt := testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu")
+	hub.Observe(pkt, "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	if got := tx.sends()[0][1]; got != "FAILED: alert rejected" {
+		t.Fatalf("first attempt = %q, want the transient rejection", got)
+	}
+
+	// Same packet, SAME receiver, within the cooldown: replayed failure,
+	// no new acceptance attempt.
+	hub.Observe(pkt, "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 2 })
+	if got := tx.sends()[1][1]; got != "FAILED: alert rejected" {
+		t.Fatalf("in-cooldown retransmission = %q, want the replayed failure", got)
+	}
+	mu.Lock()
+	n := len(accepted)
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("acceptor called %d times, want 1 (no re-execution within the cooldown)", n)
+	}
+
+	// Past the cooldown the same packet re-executes — the alert is
+	// raised after the pipeline recovered.
+	time.Sleep(350 * time.Millisecond)
+	accValue = dispatch.AcceptedDurable
+	hub.Observe(pkt, "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	if got := tx.sends()[2][1]; got != "OK: alert raised" {
+		t.Fatalf("post-recovery retry = %q, want the success confirmation", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(accepted) != 2 {
+		t.Fatalf("acceptor called %d times, want 2 (the post-cooldown retry)", len(accepted))
 	}
 }
 

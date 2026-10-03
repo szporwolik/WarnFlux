@@ -148,13 +148,14 @@ func weatherForRadio(hub *aprs.Hub, mirror *state.State, now time.Time) weatherr
 	var forecasts []weatherreport.Forecast
 	aprsSeen := make(map[string]bool)
 	if hub != nil {
-		for _, doc := range hub.Stations() {
-			w := doc.Weather
-			if w == nil {
-				continue
-			}
-			aprsSeen[strings.ToLower(doc.Callsign)] = true
-			r := weatherreport.Reading{At: w.Time, Source: doc.Callsign}
+		// The LOCAL hub cache is the primary APRS source: it is updated
+		// before the infrastructure filter and before any broker
+		// publication, so /weather stays honest off-grid (RF reception
+		// with a dead broker). The mirror copy below only adds the
+		// internet providers.
+		for _, w := range hub.WeatherSnapshot(now) {
+			aprsSeen[strings.ToLower(w.Callsign)] = true
+			r := weatherreport.Reading{At: w.Time, Source: w.Callsign}
 			if w.TemperatureC != nil {
 				r.TempC = *w.TemperatureC
 				r.HasTemp = true

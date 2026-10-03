@@ -688,6 +688,17 @@ CREATE TABLE meshtastic_nodes (
 );
 `,
 	},
+	{
+		// v36: outbox lifecycle metadata. The durable HTTP-ingest outbox
+		// must never age out corrective sync (cancellations/expirations)
+		// or still-valid alarms: the appended row carries the hazard
+		// status and expiry so the prune can tell them apart from stale
+		// active rows.
+		SQL: `
+ALTER TABLE ingest_outbox ADD COLUMN status TEXT NOT NULL DEFAULT '';
+ALTER TABLE ingest_outbox ADD COLUMN expires_at_ms INTEGER;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -2095,11 +2106,19 @@ func insertInboxRow(e execer, ctx context.Context, data []byte, receiver string,
 // AppendOutbox persists one accepted HTTP-ingest request as a durable
 // broker-publication record. The row is deleted only after the broker
 // confirmed the publish (AckOutbox), so an outage between acceptance and
-// publication never loses the cross-instance sync.
+// publication never loses the cross-instance sync. Pending rows of the
+// same topic are MERGED into the newest state: the broker only needs the
+// final document, and the merge bounds the queue per topic.
 func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payload []byte) (int64, error) {
+	status, expiresMs := outboxLifecycle(payload)
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM ingest_outbox WHERE instance_id = ? AND topic = ?`, instanceID, topic); err != nil {
+		return 0, fmt.Errorf("merge outbox rows for %q: %w", instanceID, err)
+	}
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms)
-		VALUES (?, ?, ?, ?)`, instanceID, topic, string(payload), s.now().UnixMilli())
+		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		instanceID, topic, string(payload), s.now().UnixMilli(), status, expiresMs)
 	if err != nil {
 		return 0, fmt.Errorf("append outbox row for %q: %w", instanceID, err)
 	}
@@ -2108,6 +2127,33 @@ func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payl
 		return 0, fmt.Errorf("outbox row id for %q: %w", instanceID, err)
 	}
 	return id, nil
+}
+
+// outboxHazard is the minimal wire decode of an outbox payload: the
+// lifecycle status and expiry decide how the row may be pruned.
+// Unparseable payloads get an empty status and are only ever removed by
+// the capacity bound.
+type outboxHazard struct {
+	Event struct {
+		Status    string  `json:"status"`
+		ExpiresAt *string `json:"expires_at"`
+	} `json:"event"`
+}
+
+// outboxLifecycle extracts the lifecycle metadata of one outbox payload.
+func outboxLifecycle(payload []byte) (status string, expiresMs *int64) {
+	var h outboxHazard
+	if err := json.Unmarshal(payload, &h); err != nil || h.Event.Status == "" {
+		return "", nil
+	}
+	status = h.Event.Status
+	if h.Event.ExpiresAt != nil {
+		if t, err := time.Parse(time.RFC3339Nano, *h.Event.ExpiresAt); err == nil {
+			ms := t.UnixMilli()
+			return status, &ms
+		}
+	}
+	return status, nil
 }
 
 // PendingOutbox returns the oldest unpublished outbox rows of one
@@ -2161,18 +2207,47 @@ func (s *Store) OutboxCount(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// PruneOutbox deletes outbox rows older than the cutoff. The outbox is a
-// broker-sync backlog: a prolonged broker outage would otherwise grow it
-// without bound. The local delivery already happened (the inbox row and
-// the live dispatch), so an aged-out row only loses the cross-instance
-// sync of a stale request — the right trade for 24/7/365 operation.
+// PruneOutbox bounds the durable outbox WITHOUT losing corrective sync:
+//   - AGE: only STALE ACTIVE rows (their expiry already passed) age out.
+//     Cancellations, expirations and still-valid alarms are current or
+//     corrective sync — the broker may still hold an old active document
+//     they must retire — and never age out.
+//   - CAPACITY: beyond outboxRowCap the oldest rows go regardless of
+//     status (a hard bound for 24/7/365 operation; append-time merging
+//     already collapsed repeated transitions of one topic).
 func (s *Store) PruneOutbox(ctx context.Context, olderThan time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM ingest_outbox WHERE created_at_ms < ?`, olderThan.UnixMilli())
+	cutoff := olderThan.UnixMilli()
+	nowMs := s.now().UnixMilli()
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM ingest_outbox
+		WHERE created_at_ms < ?
+		  AND status = 'active'
+		  AND expires_at_ms IS NOT NULL
+		  AND expires_at_ms <= ?`, cutoff, nowMs)
 	if err != nil {
-		return 0, fmt.Errorf("prune outbox rows: %w", err)
+		return 0, fmt.Errorf("prune stale outbox rows: %w", err)
 	}
-	return res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune stale outbox rows count: %w", err)
+	}
+	res2, err := s.db.ExecContext(ctx, `
+		DELETE FROM ingest_outbox WHERE id IN (
+			SELECT id FROM ingest_outbox ORDER BY id DESC LIMIT -1 OFFSET ?
+		)`, outboxRowCap)
+	if err != nil {
+		return 0, fmt.Errorf("prune outbox over capacity: %w", err)
+	}
+	n2, err := res2.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune outbox over capacity count: %w", err)
+	}
+	return n + n2, nil
 }
+
+// outboxRowCap hard-bounds the durable outbox: beyond it the oldest rows
+// are dropped (the append-time merge keeps the newest state per topic).
+const outboxRowCap = 10000
 
 // SavePendingDeletes atomically replaces the durable unresolved-deletion
 // set of one output with the given snapshot: the plugin's in-memory map

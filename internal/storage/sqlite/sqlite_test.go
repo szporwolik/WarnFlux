@@ -766,29 +766,73 @@ func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-// TestPruneOutbox pins the outbox bound: rows older than the cutoff are
-// pruned, so a prolonged broker outage cannot grow the database without
-// bound.
+// TestPruneOutbox pins the outbox bound WITH corrective-sync semantics:
+// stale active rows (expiry passed) age out, still-valid alarms and
+// cancellations never do — the broker may still hold an old active
+// document the cancellation must retire.
 func TestPruneOutbox(t *testing.T) {
 	store := openTemp(t)
 	ctx := context.Background()
-	if _, err := store.AppendOutbox(ctx, "news", "t/old", []byte(`{"x":1}`)); err != nil {
+	payload := func(status string, expiry time.Duration) []byte {
+		b, err := json.Marshal(map[string]any{"event": map[string]any{
+			"status": status, "expires_at": time.Now().Add(expiry).UTC().Format(time.RFC3339),
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+
+	if _, err := store.AppendOutbox(ctx, "news", "t/stale", payload("active", -time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendOutbox(ctx, "news", "t/fresh", []byte(`{"x":2}`)); err != nil {
+	if _, err := store.AppendOutbox(ctx, "news", "t/valid", payload("active", time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendOutbox(ctx, "news", "t/cancel", payload("cancelled", -time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-48 * time.Hour).UnixMilli()
-	if _, err := store.db.Exec(`UPDATE ingest_outbox SET created_at_ms = ? WHERE topic = 't/old'`, old); err != nil {
+	if _, err := store.db.Exec(`UPDATE ingest_outbox SET created_at_ms = ? WHERE topic IN ('t/stale','t/cancel','t/valid')`, old); err != nil {
 		t.Fatal(err)
 	}
 
 	n, err := store.PruneOutbox(ctx, time.Now().Add(-24*time.Hour))
 	if err != nil || n != 1 {
-		t.Fatalf("PruneOutbox = (%d, %v), want 1 removed row", n, err)
+		t.Fatalf("PruneOutbox = (%d, %v), want exactly the stale active row removed", n, err)
 	}
-	if got, err := store.OutboxCount(ctx); err != nil || got != 1 {
-		t.Fatalf("OutboxCount = (%d, %v), want 1 fresh row left", got, err)
+	rows, err := store.db.Query(`SELECT topic FROM ingest_outbox ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var topics []string
+	for rows.Next() {
+		var topic string
+		if err := rows.Scan(&topic); err != nil {
+			t.Fatal(err)
+		}
+		topics = append(topics, topic)
+	}
+	if len(topics) != 2 || topics[0] != "t/valid" || topics[1] != "t/cancel" {
+		t.Fatalf("topics after prune = %v, want [t/valid t/cancel]", topics)
+	}
+
+	// Append-time merge: the newest transition of one topic supersedes
+	// pending older rows.
+	if _, err := store.AppendOutbox(ctx, "news", "t/merge", payload("active", time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendOutbox(ctx, "news", "t/merge", payload("cancelled", -time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var status string
+	if err := store.db.QueryRow(`SELECT COUNT(*), MAX(status) FROM ingest_outbox WHERE topic = 't/merge'`).Scan(&count, &status); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || status != "cancelled" {
+		t.Fatalf("merge result = (%d rows, status %q), want 1 row carrying the newest cancelled state", count, status)
 	}
 }
 

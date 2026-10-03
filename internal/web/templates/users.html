@@ -48,12 +48,12 @@
                 <div class="row-actions">
                 {{if .IsAdmin}}<span class="muted">{{tr $.Lang "users.read_only"}}</span>
                 {{else}}
-                <a class="btn-ghost btn-small" href="/users?edit={{.ID}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr $.Lang "common.edit"}}</a>
-                <form method="post" action="/users/{{.ID}}/reset" class="inline-form" onsubmit="return confirm('{{trf $.Lang "users.confirm.reset" .Username}}');">
+                <a class="btn-ghost btn-small" href="/users?edit={{.ID}}" data-force-nav><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr $.Lang "common.edit"}}</a>
+                <form method="post" action="/users/{{.ID}}/reset" class="inline-form" data-confirm-msg="{{trf $.Lang "users.confirm.reset" .Username}}">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
                   <button type="submit" class="btn-ghost btn-small"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>{{tr $.Lang "users.reset"}}</button>
                 </form>
-                <form method="post" action="/users/{{.ID}}/delete" class="inline-form" onsubmit="return confirm('{{trf $.Lang "users.confirm.delete" .Username}}');">
+                <form method="post" action="/users/{{.ID}}/delete" class="inline-form" data-confirm-msg="{{trf $.Lang "users.confirm.delete" .Username}}">
                   <input type="hidden" name="csrf" value="{{$.CSRF}}">
                   <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>{{tr $.Lang "common.delete"}}</button>
                 </form>

@@ -264,10 +264,10 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if token == "" {
 		view.Expired = true
-		view.Error = "This link is invalid or has expired — request a new one."
+		view.Error = i18n.T(s.langFor(r), "reset.invalid")
 	} else if err := s.users.PeekPasswordReset(token); errors.Is(err, storage.ErrPasswordResetInvalid) {
 		view.Expired = true
-		view.Error = "This link is invalid or has expired — request a new one."
+		view.Error = i18n.T(s.langFor(r), "reset.invalid")
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "reset", view)

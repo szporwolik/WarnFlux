@@ -495,6 +495,47 @@ func TestPruneKeepsPendingDeliveries(t *testing.T) {
 	}
 }
 
+// TestRecentDeliveries pins the notification-details reader: the newest
+// ledger rows come back bounded, newest first, with their event key,
+// action, status, attempts and times.
+func TestRecentDeliveries(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	payload := []byte(`{"id":"x"}`)
+	g, err := store.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, d := range []string{"a", "b", "c"} {
+		job := storage.DeliveryJob{GroupID: g.ID, ActionID: "mesh-main", EventKey: "imgw:" + d, DedupKey: d, Payload: payload, FiredAt: at.Add(time.Duration(i) * time.Minute)}
+		if _, queued, err := store.EnqueueDelivery(ctx, job); err != nil || !queued {
+			t.Fatalf("enqueue %s = (%v, %v)", d, queued, err)
+		}
+	}
+
+	got, err := store.RecentDeliveries(ctx, 2)
+	if err != nil {
+		t.Fatalf("RecentDeliveries: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("rows = %d, want the bounded 2", len(got))
+	}
+	// Newest first: imgw:c, then imgw:b.
+	if got[0].EventKey != "imgw:c" || got[1].EventKey != "imgw:b" {
+		t.Fatalf("order = %s, %s — want newest first", got[0].EventKey, got[1].EventKey)
+	}
+	if got[0].ActionID != "mesh-main" || got[0].Status != "saved" || got[0].Attempts != 0 {
+		t.Fatalf("row = %+v, want the action id, saved status and zero attempts", got[0])
+	}
+	if got[0].FiredAt.IsZero() || got[0].FiredAt.Before(at) {
+		t.Fatalf("fired_at = %v, want the enqueue time", got[0].FiredAt)
+	}
+	if !got[0].NextAttemptAt.IsZero() {
+		t.Fatalf("next attempt = %v, want zero for a queued job", got[0].NextAttemptAt)
+	}
+}
+
 // TestLifecycleBlocksVersionSemantics pins the shared lifecycle ledger:
 // unknown messages never block (fail-open), a newer version supersedes
 // earlier jobs, a terminal state of the exact version blocks, an older

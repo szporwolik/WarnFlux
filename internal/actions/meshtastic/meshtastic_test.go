@@ -133,3 +133,93 @@ func TestExecuteNonHazardNoop(t *testing.T) {
 		t.Fatalf("non-hazard event transmitted: %v %v", stub.contacts, stub.channels)
 	}
 }
+
+// fullReq builds one hazard request with every text-relevant field set.
+// lat/lon are only attached when at least one is non-zero, so a zero
+// pair means "no coordinates" (areas may still carry a location).
+func fullReq(headline, event, desc string, lat, lon float64, areas []string) action.ActionRequest {
+	var latP, lonP *float64
+	if lat != 0 || lon != 0 {
+		latP, lonP = &lat, &lon
+	}
+	return action.ActionRequest{
+		ID:        "k",
+		CreatedAt: time.Now(),
+		Event: dispatch.Event{
+			Kind: dispatch.EventHazardTransition,
+			Hazard: &dispatch.HazardTransition{
+				Hazard: dispatch.Hazard{
+					Event: event, Severity: "severe", Headline: headline,
+					Description: desc, Areas: areas,
+					Latitude: latP, Longitude: lonP,
+				},
+			},
+		},
+	}
+}
+
+// TestTextForLocationRidesAlong pins the enriched message: coordinates,
+// event type and description squeeze into the channel limit behind the
+// title (APRS normalization transliterates diacritics).
+func TestTextForLocationRidesAlong(t *testing.T) {
+	a := &Action{cfg: Config{Prefix: "SOSNA"}}
+	got := a.textFor(context.Background(), fullReq("Powódź na Rabie", "Flood", "Unikaj brzegów rzeki.", 49.985, 20.065, nil))
+	if len([]rune(got)) > maxMeshMessageChars {
+		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
+	}
+	for _, want := range []string{"SOSNA SEVERE Powodz na Rabie", "49.985,20.065", "Flood", "Unikaj brzegow rzeki"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("text = %q, missing %q", got, want)
+		}
+	}
+}
+
+// TestTextForTitleAndLocationSurvive pins the worst case: a gigantic
+// headline gives up space so the LOCATION and the prefix/severity always
+// survive — the title is trimmed, never the fixed parts.
+func TestTextForTitleAndLocationSurvive(t *testing.T) {
+	a := &Action{cfg: Config{Prefix: "SOSNA"}}
+	huge := strings.Repeat("uwaga ", 80)
+	got := a.textFor(context.Background(), fullReq(huge, "Flood", "", 49.985, 20.065, nil))
+	if len([]rune(got)) > maxMeshMessageChars {
+		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
+	}
+	if !strings.HasPrefix(got, "SOSNA SEVERE ") {
+		t.Errorf("text = %q, prefix/severity must survive", got)
+	}
+	if !strings.HasSuffix(got, "49.985,20.065") {
+		t.Errorf("text = %q, the location must survive whole", got)
+	}
+	if !strings.Contains(got, "uwaga") {
+		t.Errorf("text = %q, the trimmed title must still be present", got)
+	}
+}
+
+// TestTextForHardCutNoLocation pins the no-location worst case: the
+// text is cut hard at the limit with the prefix and severity intact.
+func TestTextForHardCutNoLocation(t *testing.T) {
+	a := &Action{cfg: Config{Prefix: "SOSNA"}}
+	got := a.textFor(context.Background(), fullReq(strings.Repeat("abcdefghij", 30), "", "", 0, 0, nil))
+	if len([]rune(got)) != maxMeshMessageChars {
+		t.Fatalf("text = %d runes, want the hard cut at %d", len([]rune(got)), maxMeshMessageChars)
+	}
+	if !strings.HasPrefix(got, "SOSNA SEVERE ") {
+		t.Errorf("text = %q, prefix/severity must survive the hard cut", got)
+	}
+}
+
+// TestTextForDescriptionTail pins the leftover budget: the description
+// fills the remaining space and a cut is marked with "...".
+func TestTextForDescriptionTail(t *testing.T) {
+	a := &Action{cfg: Config{Prefix: "SOSNA"}}
+	got := a.textFor(context.Background(), fullReq("Krótki tytuł", "", strings.Repeat("opis ", 80), 0, 0, nil))
+	if len([]rune(got)) > maxMeshMessageChars {
+		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("text = %q, a cut description must end with ...", got)
+	}
+	if !strings.Contains(got, "Krotki tytul") || !strings.Contains(got, "opis") {
+		t.Errorf("text = %q, the title and the description tail must be present", got)
+	}
+}

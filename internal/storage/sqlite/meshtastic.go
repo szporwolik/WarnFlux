@@ -41,19 +41,15 @@ func (s *Store) UpdateMeshtasticMessageStatus(ctx context.Context, status string
 	return nil
 }
 
-// ListMeshtasticMessages returns history rows newest first. direction is "rx",
-// "tx" or "" (both).
-func (s *Store) ListMeshtasticMessages(ctx context.Context, direction string, limit, offset int) ([]storage.MeshMessage, error) {
+// ListMeshtasticMessages returns history rows newest first. The filter
+// narrows by direction ("rx", "tx" or "" for both) and by exact channel
+// label (Channel; Exclude inverts it).
+func (s *Store) ListMeshtasticMessages(ctx context.Context, f storage.MeshtasticMessageFilter, limit, offset int) ([]storage.MeshMessage, error) {
 	query := `
 		SELECT id, direction, sender, channel, hops, operator, text, status, created_at_ms
-		FROM meshtastic_messages`
-	args := []any{}
-	if direction == "rx" || direction == "tx" {
-		query += ` WHERE direction = ?`
-		args = append(args, direction)
-	}
+		FROM meshtastic_messages` + meshMessageWhere(f)
 	query += ` ORDER BY id DESC LIMIT ? OFFSET ?`
-	args = append(args, limit, offset)
+	args := append(meshMessageArgs(f), limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -74,16 +70,45 @@ func (s *Store) ListMeshtasticMessages(ctx context.Context, direction string, li
 	return out, rows.Err()
 }
 
-// CountMeshtasticMessages counts history rows, optionally filtered by direction.
-func (s *Store) CountMeshtasticMessages(ctx context.Context, direction string) (int, error) {
-	query := `SELECT COUNT(*) FROM meshtastic_messages`
-	args := []any{}
-	if direction == "rx" || direction == "tx" {
-		query += ` WHERE direction = ?`
-		args = append(args, direction)
+// meshMessageWhere builds the shared WHERE clause (direction and/or
+// channel condition) for the message history queries.
+func meshMessageWhere(f storage.MeshtasticMessageFilter) string {
+	conds := make([]string, 0, 2)
+	if f.Direction == "rx" || f.Direction == "tx" {
+		conds = append(conds, `direction = ?`)
 	}
+	if f.Channel != "" {
+		if f.Exclude {
+			conds = append(conds, `channel != ?`)
+		} else {
+			conds = append(conds, `channel = ?`)
+		}
+	}
+	if len(conds) == 0 {
+		return ""
+	}
+	return ` WHERE ` + strings.Join(conds, " AND ")
+}
+
+// meshMessageArgs returns the filter's bind values in the same order the
+// conditions appear in meshMessageWhere.
+func meshMessageArgs(f storage.MeshtasticMessageFilter) []any {
+	var args []any
+	if f.Direction == "rx" || f.Direction == "tx" {
+		args = append(args, f.Direction)
+	}
+	if f.Channel != "" {
+		args = append(args, f.Channel)
+	}
+	return args
+}
+
+// CountMeshtasticMessages counts history rows under the same filter as
+// ListMeshtasticMessages.
+func (s *Store) CountMeshtasticMessages(ctx context.Context, f storage.MeshtasticMessageFilter) (int, error) {
+	query := `SELECT COUNT(*) FROM meshtastic_messages` + meshMessageWhere(f)
 	var n int
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, meshMessageArgs(f)...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count mesh messages: %w", err)
 	}
 	return n, nil

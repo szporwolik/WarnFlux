@@ -278,19 +278,22 @@ device took the message, the protocol has no stronger signal.
   it — a failed send stays retryable and a historical delivered message
   with the same text never suppresses a NEW alert version.
 - The async modem result is tied back to the **durable delivery job**,
-  not only to the progress entry: a `failed` result sets a failure
-  marker and re-arms an already-settled job through the hub's delivery
-  sink — both scoped to the specific ACTION, so a Mesh failure never
-  re-sends another action's (e.g. SMTP) already-accepted job of the
-  same event. The settlement itself is **atomic and guarded**: the
-  worker's accepted write carries the attempt generation and the
-  action-scoped version guard, so a `TxFailed` landing between the
-  pre-transmission checks and the settlement downgrades it to a
-  scheduled retry — the async failure can never be overwritten by a
-  stale accepted write. The retry runs within the attempt budget; a
-  spent budget ends the job explicitly failed (a replayed transition
-  re-arms it with a fresh budget). A bare progress revoke alone
-  schedules nothing.
+  not only to the progress entry: a `failed` result revokes the progress,
+  records the failure marker and re-arms the already-settled job **in
+  one transaction** — a crash can never leave an accepted job with a
+  durable marker and no retry. A startup (and hourly) sweep re-arms any
+  marked accepted job as a safety net, and everything is scoped to the
+  specific JOB (action + group + dedup key), so a Mesh failure never
+  re-sends another action's (e.g. SMTP) or another group's
+  already-accepted job of the same event — the progress ledger stays
+  version-keyed and shared across groups, while the failure bookkeeping
+  is per-job. The settlement
+  itself is **atomic and guarded**: the worker's accepted write carries
+  the attempt generation and the job-scoped version guard, so a
+  `TxFailed` landing between the pre-transmission checks and the
+  settlement downgrades it to a scheduled retry. The retry runs within
+  the attempt budget; a spent budget ends the job explicitly failed (a
+  replayed transition re-arms it with a fresh budget).
 - A retry skips the broadcast and every recipient whose exact version
   already has a progress row and transmits only the unfinished sends:
   early recipients are never repeated, and the last member is reached

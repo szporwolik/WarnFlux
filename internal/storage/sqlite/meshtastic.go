@@ -81,22 +81,73 @@ func (s *Store) DeleteMeshActionProgress(ctx context.Context, publisher, eventKe
 	return nil
 }
 
+// RecordMeshFailureAndRequeue applies the async TxFailed outcome in ONE
+// transaction: it revokes the progress entry, records the failure marker
+// and re-arms the already-settled delivery job of the concrete job
+// identity (action + group + dedup key) as failed due now. A crash
+// between these steps used to leave an accepted job with a durable
+// marker and no retry (reported P1), and a version-only match used to
+// re-arm OTHER groups' jobs of the same action (reported P2) — now
+// either all of it lands for exactly this job, or none. Returns the
+// number of re-armed jobs.
+func (s *Store) RecordMeshFailureAndRequeue(ctx context.Context, actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64, recipient string, channel int, now time.Time) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin mesh failure record for %q: %w", eventKey, err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM mesh_action_progress
+		WHERE publisher = ? AND event_key = ? AND change_id = ? AND recipient = ? AND channel = ?`,
+		publisher, eventKey, changeID, recipient, channel); err != nil {
+		return 0, fmt.Errorf("revoke mesh action progress: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO mesh_action_failures (action_id, group_id, dedup_key, publisher, event_key, change_id, recipient, channel, created_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		actionID, groupID, dedupKey, publisher, eventKey, changeID, recipient, channel, now.UnixMilli()); err != nil {
+		return 0, fmt.Errorf("mark mesh action failure: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM mesh_action_failures WHERE created_at_ms < ?`,
+		now.Add(-meshProgressRetention).UnixMilli()); err != nil {
+		return 0, fmt.Errorf("prune mesh action failures: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE action_fires
+		SET status = 'failed', next_attempt_at_ms = ?
+		WHERE action_id = ? AND group_id = ? AND dedup_key = ?
+		  AND status IN ('accepted', 'confirmed')`,
+		now.UnixMilli(), actionID, groupID, dedupKey)
+	if err != nil {
+		return 0, fmt.Errorf("re-arm delivery job for %q: %w", eventKey, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("re-arm delivery job count for %q: %w", eventKey, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit mesh failure record for %q: %w", eventKey, err)
+	}
+	return n, nil
+}
+
 // SetMeshActionFailed marks (or clears) the durable failure marker of
-// one versioned transmission of ONE ACTION. The marker is what ties the
-// ASYNC modem result to the durable delivery job: the worker consults
-// MeshActionFailed before settling a job as accepted, and the hub's
-// re-arm callback revives an already-settled job. The action scope
-// keeps one action's failure from touching other actions' jobs of the
-// same event (reported P2). A successful retransmission clears the
-// marker. Failure rows age out on the same retention bound as the
-// progress rows.
-func (s *Store) SetMeshActionFailed(ctx context.Context, actionID, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error {
+// one versioned transmission of ONE CONCRETE JOB (action + group + dedup
+// key). The marker ties the ASYNC modem result to that job: the worker
+// consults MeshActionFailed before settling it as accepted, and the
+// atomic failure record re-arms exactly that job. The job scope keeps
+// one group's failure from touching another group's job of the same
+// action (reported P2). A successful retransmission clears the marker.
+// Failure rows age out on the same retention bound as the progress rows.
+func (s *Store) SetMeshActionFailed(ctx context.Context, actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error {
 	if failed {
 		now := s.now().UnixMilli()
 		if _, err := s.db.ExecContext(ctx, `
-			INSERT OR IGNORE INTO mesh_action_failures (action_id, publisher, event_key, change_id, recipient, channel, created_at_ms)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			actionID, publisher, eventKey, changeID, recipient, channel, now); err != nil {
+			INSERT OR IGNORE INTO mesh_action_failures (action_id, group_id, dedup_key, publisher, event_key, change_id, recipient, channel, created_at_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			actionID, groupID, dedupKey, publisher, eventKey, changeID, recipient, channel, now); err != nil {
 			return fmt.Errorf("mark mesh action failure: %w", err)
 		}
 		if _, err := s.db.ExecContext(ctx,
@@ -108,23 +159,23 @@ func (s *Store) SetMeshActionFailed(ctx context.Context, actionID, publisher, ev
 	}
 	if _, err := s.db.ExecContext(ctx, `
 		DELETE FROM mesh_action_failures
-		WHERE action_id = ? AND publisher = ? AND event_key = ? AND change_id = ? AND recipient = ? AND channel = ?`,
-		actionID, publisher, eventKey, changeID, recipient, channel); err != nil {
+		WHERE action_id = ? AND group_id = ? AND dedup_key = ? AND publisher = ? AND event_key = ? AND change_id = ? AND recipient = ? AND channel = ?`,
+		actionID, groupID, dedupKey, publisher, eventKey, changeID, recipient, channel); err != nil {
 		return fmt.Errorf("clear mesh action failure: %w", err)
 	}
 	return nil
 }
 
 // MeshActionFailed reports whether ANY transmission of the message
-// version of ONE ACTION carries a failure marker (the retry re-sends
-// only the failed recipients; the job-level check is version-wide
-// within the action).
-func (s *Store) MeshActionFailed(ctx context.Context, actionID, publisher, eventKey string, changeID int64) (bool, error) {
+// version of ONE CONCRETE JOB carries a failure marker (the retry
+// re-sends only the failed recipients; the job-level check is
+// version-wide within the job).
+func (s *Store) MeshActionFailed(ctx context.Context, actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64) (bool, error) {
 	var failed int
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM mesh_action_failures
-		WHERE action_id = ? AND publisher = ? AND event_key = ? AND change_id = ?`,
-		actionID, publisher, eventKey, changeID).Scan(&failed); err != nil {
+		WHERE action_id = ? AND group_id = ? AND dedup_key = ? AND publisher = ? AND event_key = ? AND change_id = ?`,
+		actionID, groupID, dedupKey, publisher, eventKey, changeID).Scan(&failed); err != nil {
 		return false, fmt.Errorf("query mesh action failures: %w", err)
 	}
 	return failed > 0, nil

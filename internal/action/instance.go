@@ -301,6 +301,13 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		return
 	}
 
+	// Stamp the concrete delivery-job identity onto the request before
+	// execution: the meshtastic async-failure callback scopes its marker
+	// and re-arm to THIS job (reported P2). The stamp is in-memory only
+	// — the fields are json:"-" and never reach the persisted payload.
+	req.JobGroupID = job.GroupID
+	req.JobDedupKey = job.DedupKey
+
 	stage, err := i.executeOnce(req)
 	if err == nil {
 		terminal := storage.DeliveryAccepted

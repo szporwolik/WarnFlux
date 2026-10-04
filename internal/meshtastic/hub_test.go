@@ -1078,6 +1078,7 @@ type captureRecorder struct {
 	got      []Message
 	progress map[string]bool
 	failures map[string]bool
+	rearmed  int
 }
 
 func (c *captureRecorder) RecordMeshtasticMessage(_ context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error {
@@ -1126,13 +1127,17 @@ func (c *captureRecorder) DeleteMeshActionProgress(_ context.Context, publisher,
 	return nil
 }
 
-func (c *captureRecorder) SetMeshActionFailed(_ context.Context, actionID, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error {
+func (c *captureRecorder) failureKey(actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64, recipient string, channel int) string {
+	return fmt.Sprintf("%s|%d|%s|%s|%s|%d|%s|%d", actionID, groupID, dedupKey, publisher, eventKey, changeID, recipient, channel)
+}
+
+func (c *captureRecorder) SetMeshActionFailed(_ context.Context, actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.failures == nil {
 		c.failures = map[string]bool{}
 	}
-	k := actionID + "|" + c.progressKey(publisher, eventKey, changeID, recipient, channel)
+	k := c.failureKey(actionID, groupID, dedupKey, publisher, eventKey, changeID, recipient, channel)
 	if failed {
 		c.failures[k] = true
 	} else {
@@ -1141,16 +1146,30 @@ func (c *captureRecorder) SetMeshActionFailed(_ context.Context, actionID, publi
 	return nil
 }
 
-func (c *captureRecorder) MeshActionFailed(_ context.Context, actionID, publisher, eventKey string, changeID int64) (bool, error) {
+func (c *captureRecorder) MeshActionFailed(_ context.Context, actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	prefix := actionID + "|" + fmt.Sprintf("%s|%s|%d|", publisher, eventKey, changeID)
+	prefix := fmt.Sprintf("%s|%d|%s|%s|%s|%d|", actionID, groupID, dedupKey, publisher, eventKey, changeID)
 	for k := range c.failures {
 		if strings.HasPrefix(k, prefix) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// RecordMeshFailureAndRequeue mirrors the atomic store call: progress
+// revoked, marker recorded, re-armed jobs counted — all under one lock.
+func (c *captureRecorder) RecordMeshFailureAndRequeue(_ context.Context, actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64, recipient string, channel int, _ time.Time) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.progress, c.progressKey(publisher, eventKey, changeID, recipient, channel))
+	if c.failures == nil {
+		c.failures = map[string]bool{}
+	}
+	c.failures[c.failureKey(actionID, groupID, dedupKey, publisher, eventKey, changeID, recipient, channel)] = true
+	c.rearmed++
+	return 1, nil
 }
 
 func (c *captureRecorder) messages() []Message {
@@ -1222,7 +1241,7 @@ func TestHubProgressFollowsTransmissionOutcome(t *testing.T) {
 	ps := &pendingSend{
 		at:   time.Now().Truncate(time.Millisecond),
 		text: "alarm",
-		prog: progressRef{actionID: "mesh-main", publisher: "p1", eventKey: "k", changeID: 1, recipient: "a0a85934", channel: 0},
+		prog: ProgressRef{ActionID: "mesh-main", GroupID: 7, DedupKey: "c:1", Publisher: "p1", EventKey: "k", ChangeID: 1, recipient: "a0a85934", channel: 0},
 	}
 
 	// Before the radio result nothing is recorded.
@@ -1236,27 +1255,26 @@ func TestHubProgressFollowsTransmissionOutcome(t *testing.T) {
 		t.Fatal("TxSent did not record the progress entry")
 	}
 
-	// The delivery ultimately failed: the entry is revoked, the durable
-	// failure marker is set and the re-arm sink fires with the identity.
-	var sinkAction, sinkPub, sinkKey string
-	var sinkVer int64
-	sinkCalls := 0
-	h.meshDeliverySink = func(_ context.Context, actionID, publisher, eventKey string, changeID int64) {
-		sinkCalls++
-		sinkAction, sinkPub, sinkKey, sinkVer = actionID, publisher, eventKey, changeID
-	}
+	// The delivery ultimately failed: the progress entry is revoked, the
+	// durable failure marker is set and the settled jobs are re-armed —
+	// all in ONE atomic recorder call.
 	h.markStatus(ps, TxFailed)
 	if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); done {
 		t.Fatal("TxFailed did not revoke the progress entry")
 	}
-	if failed, _ := rec.MeshActionFailed(ctx, "mesh-main", "p1", "k", 1); !failed {
+	if failed, _ := rec.MeshActionFailed(ctx, "mesh-main", 7, "c:1", "p1", "k", 1); !failed {
 		t.Fatal("TxFailed did not set the failure marker")
 	}
-	if failed, _ := rec.MeshActionFailed(ctx, "other-action", "p1", "k", 1); failed {
+	if failed, _ := rec.MeshActionFailed(ctx, "other-action", 7, "c:1", "p1", "k", 1); failed {
 		t.Fatal("the failure marker leaked into another action")
 	}
-	if sinkCalls != 1 || sinkAction != "mesh-main" || sinkPub != "p1" || sinkKey != "k" || sinkVer != 1 {
-		t.Fatalf("sink = (%d, %q, %q, %q, %d), want one call with the action+version identity", sinkCalls, sinkAction, sinkPub, sinkKey, sinkVer)
+	// P2: the marker is job-scoped — another GROUP's job of the same
+	// action+version stays clean.
+	if failed, _ := rec.MeshActionFailed(ctx, "mesh-main", 8, "c:2", "p1", "k", 1); failed {
+		t.Fatal("the failure marker leaked into another group's job of the same action")
+	}
+	if rec.rearmed != 1 {
+		t.Fatalf("re-armed calls = %d, want 1 (the atomic failure record)", rec.rearmed)
 	}
 
 	// A retransmit that gets the ack records again (delivered) and
@@ -1265,11 +1283,11 @@ func TestHubProgressFollowsTransmissionOutcome(t *testing.T) {
 	if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); !done {
 		t.Fatal("TxDelivered did not record the progress entry")
 	}
-	if failed, _ := rec.MeshActionFailed(ctx, "mesh-main", "p1", "k", 1); failed {
+	if failed, _ := rec.MeshActionFailed(ctx, "mesh-main", 7, "c:1", "p1", "k", 1); failed {
 		t.Fatal("TxDelivered did not clear the failure marker")
 	}
-	if sinkCalls != 1 {
-		t.Fatalf("sink calls = %d, want 1 (only the failure fires the re-arm)", sinkCalls)
+	if rec.rearmed != 1 {
+		t.Fatalf("re-armed calls = %d, want 1 (only the failure re-arms)", rec.rearmed)
 	}
 
 	// A send without a progress identity never touches the ledger.
@@ -1297,7 +1315,8 @@ func TestHubVersionedSendProgressFollowsEcho(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := radio.hub.SendContactMessageVersioned(ctx, "ef010203", "ack me", "system", "mesh-main", "p1", "k", 1); err != nil {
+	if err := radio.hub.SendContactMessageVersioned(ctx, "ef010203", "ack me", "system",
+		ProgressRef{ActionID: "mesh-main", GroupID: 7, DedupKey: "c:1", Publisher: "p1", EventKey: "k", ChangeID: 1}); err != nil {
 		t.Fatalf("versioned send: %v", err)
 	}
 

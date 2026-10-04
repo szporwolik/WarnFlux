@@ -51,11 +51,13 @@ type sender interface {
 	// to the durable action-progress ledger: the hub records the
 	// progress when the radio actually transmitted (sent/delivered)
 	// and REVOKES it when the transmission ultimately failed — a
-	// failed send stays retryable. The action id scopes the failure
-	// marker and the re-arm to THIS action's jobs.
-	SendContactMessageVersioned(ctx context.Context, addr, text, operator, actionID, publisher, eventKey string, changeID int64) error
+	// failed send stays retryable. The progress reference carries the
+	// concrete JOB identity (action + group + dedup key): the failure
+	// marker and the re-arm hit exactly this job's group, never
+	// another group sharing the action (reported P2).
+	SendContactMessageVersioned(ctx context.Context, addr, text, operator string, prog mesh.ProgressRef) error
 	// SendChannelTextVersioned is the same for the group broadcast.
-	SendChannelTextVersioned(ctx context.Context, idx int, text, operator, actionID, publisher, eventKey string, changeID int64) error
+	SendChannelTextVersioned(ctx context.Context, idx int, text, operator string, prog mesh.ProgressRef) error
 	// MeshActionProgressDone reports whether the exact versioned
 	// transmission (publisher + event key + change id + recipient +
 	// channel) already succeeded — the durable resume ledger of the
@@ -130,6 +132,12 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	}
 	actionID := action.RequestActionID(req)
 	ledger := actionID != "" && pub != "" && ver > 0
+	// The failure marker and the re-arm are scoped to the CONCRETE JOB
+	// the worker claimed (group + dedup key), stamped onto the request
+	// by the delivery path. The ledger itself stays version-keyed, so
+	// the resume dedup is shared across groups by design while the
+	// failure bookkeeping is per-job.
+	prog := mesh.ProgressRef{ActionID: actionID, GroupID: req.JobGroupID, DedupKey: req.JobDedupKey, Publisher: pub, EventKey: key, ChangeID: ver}
 	done := func(recipient string, channel int) bool {
 		if !ledger {
 			return false
@@ -152,7 +160,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 			}
 			var err error
 			if ledger {
-				err = a.hub.SendChannelTextVersioned(ctx, a.cfg.Channel, text, "system", actionID, pub, key, ver)
+				err = a.hub.SendChannelTextVersioned(ctx, a.cfg.Channel, text, "system", prog)
 			} else {
 				err = a.hub.SendChannelText(ctx, a.cfg.Channel, text, "system")
 			}
@@ -177,7 +185,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		}
 		var err error
 		if ledger {
-			err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", actionID, pub, key, ver)
+			err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", prog)
 		} else {
 			err = a.hub.SendContactMessage(ctx, id, text, "system")
 		}

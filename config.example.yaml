@@ -661,8 +661,11 @@ web:
 
     # Trusted reverse proxies (single IPs or CIDRs). Only requests whose
     # direct peer matches one of these may carry X-Forwarded-For: the
-    # client IP used by the login rate limiters comes from the header
-    # only then. Empty = direct exposure, proxy headers are ignored.
+    # client IP used by the rate limiters then comes from the header,
+    # analyzed from the RIGHT (the proxy appends the client it saw last,
+    # so a client-controlled prefix never wins). Empty = direct exposure,
+    # proxy headers are ignored. Proxies may append or overwrite the
+    # header; both work, appending only risks an extra unused prefix.
     trusted_proxies: []
 
 # ActionPlugins: explicitly invoked by the group routing rule engine

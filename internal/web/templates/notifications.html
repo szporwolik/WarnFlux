@@ -15,7 +15,7 @@
     <section class="card nt-card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "notif.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "notif.hint"}}</p>
-      <p class="muted log-hint">{{tr .Lang "notif.retention"}}</p>
+      {{template "flash-note" (tr .Lang "notif.retention")}}
       <div id="notif-list" class="notif-list">
         {{range .Trails}}{{template "notif-item" .}}{{else}}<p class="empty">{{tr $.Lang "notif.empty"}}</p>{{end}}
       </div>

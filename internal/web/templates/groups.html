@@ -15,7 +15,7 @@
   <main class="users-main">
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>{{tr .Lang "groups.title"}}</h2>
-      {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+      {{if .Error}}{{template "flash-err" .Error}}{{end}}
       <form method="post" action="/groups" class="user-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <input type="hidden" name="edit_id" value="{{.EditID}}">
@@ -94,7 +94,7 @@
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{trf .Lang "groups.routing_title" .RoutingName}}</h2>
       <p class="page-info">{{tr .Lang "groups.routing_hint"}}</p>
-      {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+      {{if .Error}}{{template "flash-err" .Error}}{{end}}
       {{if .Actions}}
       <form method="post" action="/groups/{{.RoutingID}}/routing" class="routing-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">

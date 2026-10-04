@@ -15,7 +15,7 @@
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>{{tr .Lang "users.title"}}</h2>
       {{if .Notice}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Notice}}</p>{{end}}
-      {{if .Error}}{{if not .DialogOpen}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
+      {{if .Error}}{{if not .DialogOpen}}{{template "flash-err" .Error}}{{end}}{{end}}
       <div class="user-toolbar">
         <button type="button" class="btn-primary btn-add" id="user-add-btn">
           <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-plus"></use></svg>{{tr .Lang "users.add"}}
@@ -82,8 +82,8 @@
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="edit_id" value="{{if gt .EditID 0}}{{.EditID}}{{else}}0{{end}}" id="user-edit-id">
       <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span id="user-edit-title">{{if gt .EditID 0}}{{tr .Lang "users.edit_title"}}{{else}}{{tr .Lang "users.add_title"}}{{end}}</span></h3>
-      {{if .Error}}{{if .DialogOpen}}<p class="login-error">{{.Error}}</p>{{end}}{{end}}
-      {{if .AdminEdit}}<p class="muted modal-note">{{tr .Lang "users.admin_note"}}</p>{{end}}
+      {{if .Error}}{{if .DialogOpen}}{{template "flash-err" .Error}}{{end}}{{end}}
+      {{if .AdminEdit}}{{template "flash-note" (tr .Lang "users.admin_note")}}{{end}}
       <label class="modal-field">{{tr .Lang "users.username"}}
         <input type="text" name="username" id="user-edit-username" value="{{.Form.Username}}" required maxlength="64" pattern="[a-z0-9._-]+"{{if .AdminEdit}} readonly{{end}}>
       </label>

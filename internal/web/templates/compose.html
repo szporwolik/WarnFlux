@@ -18,7 +18,7 @@
         <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "compose.title"}}</h2>
         <button type="button" class="btn-primary btn-small" id="compose-new" aria-controls="compose-panel" aria-expanded="{{if .ShowForm}}true{{else}}false{{end}}">{{tr .Lang "compose.new"}}</button>
       </div>
-      {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+      {{if .Error}}{{template "flash-err" .Error}}{{end}}
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
       <details class="compose-panel" id="compose-panel"{{if .ShowForm}} open{{end}}>
         <summary><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "compose.new"}}</summary>

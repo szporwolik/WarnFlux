@@ -913,14 +913,19 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .login-card input:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
 .login-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
   background: var(--bad-bg);
   border: 1px solid var(--bad-border);
+  border-left: 3px solid var(--bad);
   color: var(--bad);
   border-radius: var(--radius);
   padding: 0.5rem 0.75rem;
   font-size: 0.85rem;
   margin-top: 1rem;
 }
+.login-error .icon { flex: none; margin-top: 0.1rem; }
 .login-note {
   margin: 0.9rem 0 0;
   text-align: center;
@@ -2268,8 +2273,10 @@ tr.click-send:hover td { background: var(--surface-hi); }
   background: var(--surface-hi);
   color: var(--brand);
 }
-/* Info banner for configuration-managed accounts (read-only form). */
-.account-note {
+/* Info banner for configuration-managed accounts (read-only form) and
+   other informational notes (retention, admin dialog notes...). */
+.account-note,
+.info-note {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
@@ -2282,7 +2289,8 @@ tr.click-send:hover td { background: var(--surface-hi); }
   font-size: 0.82rem;
   color: var(--muted);
 }
-.account-note .icon { flex: none; color: var(--warn); }
+.account-note .icon,
+.info-note .icon { flex: none; color: var(--warn); margin-top: 0.1rem; }
 .account-title { margin: 0 0 0.15rem; font-size: 1.3rem; font-weight: 600; }
 .account-role {
   display: inline-block;
@@ -2584,6 +2592,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
   background: var(--ok-bg, #e8f5e9);
   color: var(--ok-fg, #1b5e20);
   border: 1px solid var(--ok-bd, #a5d6a7);
+  border-left: 3px solid var(--ok);
   animation: emcom-pop 0.45s ease-out;
 }
 .emcom-flash .icon { width: 16px; height: 16px; flex: none; }
@@ -2591,6 +2600,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
   background: var(--warn-bg, #fff3e0);
   color: var(--warn-fg, #b71c1c);
   border-color: var(--warn-bd, #ffcc80);
+  border-left-color: var(--bad);
 }
 @keyframes emcom-pop {
   0% { opacity: 0; transform: translateY(-6px); }

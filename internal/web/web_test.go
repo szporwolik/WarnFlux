@@ -2033,6 +2033,12 @@ func TestMemberRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `id="user-menu-panel"`) {
 		t.Error("account page missing the user menu panel")
 	}
+	if strings.Contains(html, `class="user-menu-item" role="menuitem" href="/"`) {
+		t.Error("user menu must not offer the public page (the topbar button covers it)")
+	}
+	if !strings.Contains(html, `class="topbar-home" href="/"`) {
+		t.Error("topbar missing the public page button")
+	}
 	if !strings.Contains(html, `name="phone"`) || !strings.Contains(html, `name="email"`) {
 		t.Error("account page missing the self-service contact form")
 	}

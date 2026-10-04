@@ -7,15 +7,21 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 )
 
-// TestMQTTPublishDefaults: an omitted mqtt_publish block enables every
-// category (backwards compatible).
+// TestMQTTPublishDefaults: an omitted mqtt_publish block enables the
+// canonical stream and the retained current-state documents; the noisy
+// per-packet/per-message mirrors stay off.
 func TestMQTTPublishDefaults(t *testing.T) {
 	cfg, err := Load(writeTempConfig(t, "app:\n  log_level: info\n"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.MQTTPublish.Mask() != uint32(mqttpolicy.CatAll) {
-		t.Errorf("default mask = %#x, want all categories", cfg.MQTTPublish.Mask())
+	want := uint32(mqttpolicy.CatAll) &^
+		uint32(mqttpolicy.CatAPRSPackets|mqttpolicy.CatAPRSMessages|mqttpolicy.CatMeshtasticMessages)
+	if cfg.MQTTPublish.Mask() != want {
+		t.Errorf("default mask = %#x, want quiet mask %#x", cfg.MQTTPublish.Mask(), want)
+	}
+	if cfg.MQTTPublish.Mask()&uint32(mqttpolicy.CatEvents) == 0 {
+		t.Error("events must stay enabled by default (canonical integration stream)")
 	}
 }
 
@@ -45,6 +51,12 @@ mqtt_publish:
 	}
 	if mask&uint32(mqttpolicy.CatActive) == 0 {
 		t.Error("omitted active must default to enabled")
+	}
+	if mask&uint32(mqttpolicy.CatAPRSPackets) != 0 {
+		t.Error("omitted aprs_packets must default to disabled")
+	}
+	if mask&uint32(mqttpolicy.CatAPRSMessages) != 0 {
+		t.Error("omitted aprs_messages must default to disabled")
 	}
 }
 

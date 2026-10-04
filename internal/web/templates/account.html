@@ -23,7 +23,7 @@
       </div>
 
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
-      {{if .Error}}<p class="login-error">{{.Error}}</p>{{end}}
+      {{if .Error}}{{template "flash-err" .Error}}{{end}}
       {{if .ManagedAccount}}
       <p class="account-note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-shield-lock"></use></svg>{{tr .Lang "account.config_note"}}</p>
       {{end}}

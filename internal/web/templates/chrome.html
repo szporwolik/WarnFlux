@@ -1,3 +1,5 @@
+{{define "flash-err"}}<p class="login-error" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.}}</span></p>{{end}}
+{{define "flash-note"}}<p class="info-note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-info-circle"></use></svg><span>{{.}}</span></p>{{end}}
 {{define "topbar"}}<script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>

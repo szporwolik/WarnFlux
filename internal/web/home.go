@@ -318,6 +318,21 @@ func (s *Server) fillHomeEmcomState(v *homeView, lang string, nets []emcomNetwor
 	v.EmcomRaised = len(v.EmcomNetworks) > 0
 }
 
+// displayAreas renders the areas of a PUBLIC hazard card: type:slug
+// tokens pass through, teryt: codes are dropped — a wall of hundreds of
+// TERYT codes says nothing to a resident and reads like noise (the
+// powiat:/gmina: entries already carry the geography).
+func displayAreas(tokens []string) []string {
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if strings.HasPrefix(t, "teryt:") {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // fillHomeHazards fills the hazard-related fields of a home view:
 // severity-split cards, counts and the client-side JSON payload. nets
 // carries the already-read EMCOM network list (nil = read it here).
@@ -341,7 +356,7 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 			Headline:    h.Headline,
 			Event:       h.Event,
 			Source:      h.Source,
-			Areas:       strings.Join(h.Areas, ", "),
+			Areas:       strings.Join(displayAreas(h.Areas), ", "),
 			Description: h.Description,
 			Instruction: h.Instruction,
 			Status:      h.Status,

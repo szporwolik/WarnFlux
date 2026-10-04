@@ -780,6 +780,20 @@ func TestPublicHomePage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// A TERYT-heavy message: the raw code wall must never reach the
+	// public card (the named tokens already carry the geography).
+	if err := env.state.AddOrUpdateActive("local", "warnflux/active/imgw-meteo/dddd", state.Hazard{
+		EventKey:  "imgw-meteo:4",
+		Source:    "imgw-meteo",
+		Event:     "Mgła",
+		Severity:  "moderate",
+		Headline:  "Gęsta mgła",
+		Areas:     []string{"powiat:krakowski", "teryt:0201", "teryt:0202", "gmina:skawina"},
+		Status:    "active",
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Unauthenticated: the home page is public.
 	resp, html := env.get("/")
@@ -853,6 +867,21 @@ func TestPublicHomePage(t *testing.T) {
 	}
 	if !strings.Contains(html, `class="count">1</span>`) {
 		t.Error("minor section should carry its own count badge of 1")
+	}
+
+	// The TERYT code wall is filtered from the public card: the named
+	// tokens stay, the raw teryt: codes never reach the page (neither
+	// the card nor the embedded JSON for the popup).
+	if !strings.Contains(html, "Gęsta mgła") ||
+		!strings.Contains(html, "powiat:krakowski") ||
+		!strings.Contains(html, "gmina:skawina") {
+		t.Error("home page missing the TERYT-heavy card or its named areas")
+	}
+	if strings.Contains(html, "teryt:0201") || strings.Contains(html, "teryt:0202") {
+		t.Error("home page renders raw teryt: codes")
+	}
+	if !strings.Contains(html, `"areas":"powiat:krakowski, gmina:skawina"`) {
+		t.Error("embedded hazard JSON must carry the filtered areas")
 	}
 
 	// The auto-refresh fragment is public as well.

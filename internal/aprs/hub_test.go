@@ -845,8 +845,9 @@ func TestHubCommandDedup(t *testing.T) {
 	if err := json.Unmarshal(sink.payloads("events")[1], &ev); err != nil {
 		t.Fatalf("event payload: %v", err)
 	}
-	if ev.EventKey != "aprs:SP9XYZ-7:msg:0042" {
-		t.Fatalf("event key = %q, want aprs:SP9XYZ-7:msg:0042", ev.EventKey)
+	want := "aprs:SP9XYZ-7:msg:0042:h" + radiocli.ContentID("SP9XYZ-7", "SP9MOA-10", "/debug")
+	if ev.EventKey != want {
+		t.Fatalf("event key = %q, want %q (message number + content fingerprint)", ev.EventKey, want)
 	}
 }
 
@@ -1120,6 +1121,90 @@ func TestHubCommandRegistryResultReplay(t *testing.T) {
 	defer mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("acceptor calls = %d, want 1 (the stored result must stop re-execution)", calls)
+	}
+}
+
+// TestHubReusedMessageNumberRunsNewAlert pins the P1 guard: a reused
+// message number with DIFFERENT content is a different command. The
+// durable registry must not replay the old result — the new alarm runs
+// and is accepted; only a byte-identical retransmission replays.
+func TestHubReusedMessageNumberRunsNewAlert(t *testing.T) {
+	hub, _ := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
+	})
+	hub.SetCLI(cli)
+
+	// Miniature durable registry, mirroring the transactional anchor.
+	var (
+		mu       sync.Mutex
+		registry = make(map[string]string)
+		calls    int
+	)
+	hub.SetEventAcceptor(func(payload []byte) dispatch.Acceptance {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		var we MessageEventWire
+		if err := json.Unmarshal(payload, &we); err == nil {
+			registry[we.EventKey] = we.CommandResult
+		}
+		return dispatch.AcceptedDurable
+	})
+	hub.SetEventTimesResolver(func(ctx context.Context, key string) (time.Time, time.Time, string, bool) {
+		mu.Lock()
+		res, ok := registry[key]
+		mu.Unlock()
+		if !ok {
+			return time.Time{}, time.Time{}, "", false
+		}
+		return time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC), time.Date(2026, 9, 23, 16, 0, 0, 0, time.UTC), res, true
+	})
+
+	// First alarm under message number {123}.
+	p1 := testPacket("SP9XYZ-7>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu{123")
+	hub.Observe(p1, "aprs-inet")
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	if got := tx.sends()[0][1]; got != "OK: alert raised" {
+		t.Fatalf("first confirmation = %q, want the handler reply", got)
+	}
+
+	// Simulated restart: RAM cache gone, the durable registry stays.
+	hub.mu.Lock()
+	hub.cmds = make(map[string]*cmdRecord)
+	hub.mu.Unlock()
+
+	// The same number with different content: a NEW alarm, never the
+	// old result.
+	p2 := testPacket("SP9XYZ-7>APRS,TCPIP*::SP9MOA-10:/alert powodz miasto{123")
+	hub.Observe(p2, "aprs-other")
+	waitFor(t, func() bool { mu.Lock(); n := calls; mu.Unlock(); return n == 2 })
+	if got := tx.sends()[len(tx.sends())-1][1]; got != "OK: alert raised" {
+		t.Fatalf("second confirmation = %q, want the new handler reply", got)
+	}
+
+	// A byte-identical retransmission of the FIRST alarm still replays
+	// its stored result without re-running.
+	hub.mu.Lock()
+	hub.cmds = make(map[string]*cmdRecord)
+	hub.mu.Unlock()
+	hub.Observe(p1, "aprs-replay")
+	waitFor(t, func() bool { return len(tx.sends()) == 3 })
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("acceptor calls = %d, want 2 (new content runs, the retransmission replays)", calls)
 	}
 }
 

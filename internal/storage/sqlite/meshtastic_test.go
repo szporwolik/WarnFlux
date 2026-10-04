@@ -186,37 +186,41 @@ func TestMeshActionFailures(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 
-	if failed, err := s.MeshActionFailed(ctx, "p1", "k", 1); err != nil || failed {
+	if failed, err := s.MeshActionFailed(ctx, "mesh", "p1", "k", 1); err != nil || failed {
 		t.Fatalf("empty = (%v, %v), want false", failed, err)
 	}
-	if err := s.SetMeshActionFailed(ctx, "p1", "k", 1, "a0a85934", 0, true); err != nil {
+	if err := s.SetMeshActionFailed(ctx, "mesh", "p1", "k", 1, "a0a85934", 0, true); err != nil {
 		t.Fatal(err)
 	}
-	// The query is version-wide: any recipient's failure marks the job.
-	if failed, err := s.MeshActionFailed(ctx, "p1", "k", 1); err != nil || !failed {
+	// The query is version-wide WITHIN the action: any recipient's
+	// failure marks the job; another action never matches (reported P2).
+	if failed, err := s.MeshActionFailed(ctx, "mesh", "p1", "k", 1); err != nil || !failed {
 		t.Fatalf("marked = (%v, %v), want true", failed, err)
 	}
+	if failed, err := s.MeshActionFailed(ctx, "smtp", "p1", "k", 1); err != nil || failed {
+		t.Fatalf("other action = (%v, %v), want false", failed, err)
+	}
 	// Another version is independent.
-	if failed, err := s.MeshActionFailed(ctx, "p1", "k", 2); err != nil || failed {
+	if failed, err := s.MeshActionFailed(ctx, "mesh", "p1", "k", 2); err != nil || failed {
 		t.Fatalf("other version = (%v, %v), want false", failed, err)
 	}
 
 	// A successful retransmission clears its own marker.
-	if err := s.SetMeshActionFailed(ctx, "p1", "k", 1, "a0a85934", 0, false); err != nil {
+	if err := s.SetMeshActionFailed(ctx, "mesh", "p1", "k", 1, "a0a85934", 0, false); err != nil {
 		t.Fatal(err)
 	}
-	if failed, err := s.MeshActionFailed(ctx, "p1", "k", 1); err != nil || failed {
+	if failed, err := s.MeshActionFailed(ctx, "mesh", "p1", "k", 1); err != nil || failed {
 		t.Fatalf("cleared = (%v, %v), want false", failed, err)
 	}
 
 	// Failure rows age out on the retention bound.
 	old := time.Now().Add(-40 * 24 * time.Hour)
-	if _, err := s.db.Exec(`INSERT INTO mesh_action_failures (publisher, event_key, change_id, recipient, channel, created_at_ms)
-		VALUES ('p1', 'old', 1, 'a0a85934', 0, ?)`, old.UnixMilli()); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO mesh_action_failures (action_id, publisher, event_key, change_id, recipient, channel, created_at_ms)
+		VALUES ('mesh', 'p1', 'old', 1, 'a0a85934', 0, ?)`, old.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	// A fresh mark prunes the stale row.
-	if err := s.SetMeshActionFailed(ctx, "p1", "new", 1, "a0a85934", 0, true); err != nil {
+	if err := s.SetMeshActionFailed(ctx, "mesh", "p1", "new", 1, "a0a85934", 0, true); err != nil {
 		t.Fatal(err)
 	}
 	var stale int

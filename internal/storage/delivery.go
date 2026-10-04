@@ -84,6 +84,39 @@ type DeliveryResult struct {
 	Queued bool
 }
 
+// DeliveryVersion identifies the message version of one job — the
+// failure-marker guard key. The guard is ACTION-SCOPED: a Mesh TxFailed
+// must never re-arm or downgrade other actions' jobs of the same event
+// (reported P2).
+type DeliveryVersion struct {
+	ActionID  string
+	Publisher string
+	EventKey  string
+	ChangeID  int64
+}
+
+// DeliverySettle is one guarded settlement of a job attempt.
+type DeliverySettle struct {
+	GroupID  int64
+	ActionID string
+	DedupKey string
+	// Stage is the requested post-execution stage.
+	Stage DeliveryStatus
+	// NextAttempt is the retry deadline applied when the settlement
+	// ends (or is downgraded to) a transient failure; zero = terminal.
+	NextAttempt time.Time
+	// Attempts is the generation captured at claim time (zero skips
+	// the check). A row whose counter already moved on belongs to a
+	// newer attempt and must ignore this settlement.
+	Attempts int
+	// Version guards accepted/confirmed settlements: when the version
+	// carries a durable failure marker, the settlement is downgraded
+	// to a transient failure ATOMICALLY with the marker read — a
+	// TxFailed landing between the worker's pre-check and the write
+	// can never be lost (reported P1).
+	Version *DeliveryVersion
+}
+
 // InboxDeliveryStore atomically persists delivery jobs and consumes the
 // inbox row they came from: either every job exists durably AND the
 // inbox row is gone, or neither happened. This is the only way the
@@ -120,6 +153,12 @@ type DeliveryStore interface {
 	// SettleDelivery records the post-execution stage. A non-terminal
 	// failure carries the deadline of the next attempt.
 	SettleDelivery(ctx context.Context, groupID int64, actionID, dedupKey string, stage DeliveryStatus, nextAttempt time.Time) error
+
+	// SettleDeliveryGuarded applies one settlement atomically: the
+	// attempt generation and the failure-marker guard are checked in
+	// the same transaction as the write. It returns the stage ACTUALLY
+	// applied (a downgraded failure included).
+	SettleDeliveryGuarded(ctx context.Context, settle DeliverySettle) (DeliveryStatus, error)
 
 	// RecoverStaleClaims resets running jobs whose claim deadline has
 	// passed (the process crashed between claim and settlement) back to

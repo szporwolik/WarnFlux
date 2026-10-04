@@ -27,6 +27,9 @@ const runningStatus storage.DeliveryStatus = 99
 type memDeliveryStore struct {
 	mu   sync.Mutex
 	jobs map[string]*memJob
+	// versionFailed simulates the durable failure-marker read of the
+	// guarded settlement (nil = never failed).
+	versionFailed func(actionID, publisher, eventKey string, changeID int64) bool
 }
 
 type memJob struct {
@@ -106,6 +109,35 @@ func (m *memDeliveryStore) SettleDelivery(ctx context.Context, groupID int64, ac
 		j.next = nextAttempt
 	}
 	return nil
+}
+
+// SettleDeliveryGuarded mirrors the SQLite guarded settlement: the
+// attempt generation must match, and an accepted/confirmed settlement
+// of a version with a failure marker is downgraded to failed with the
+// retry deadline.
+func (m *memDeliveryStore) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySettle) (storage.DeliveryStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[m.key(d.GroupID, d.ActionID, d.DedupKey)]
+	if !ok {
+		return d.Stage, nil
+	}
+	if d.Attempts > 0 && j.job.Attempts != d.Attempts {
+		return d.Stage, nil // a newer attempt owns the row
+	}
+	stage := d.Stage
+	if (stage == storage.DeliveryAccepted || stage == storage.DeliveryConfirmed) &&
+		d.Version != nil && d.Version.ActionID != "" && d.Version.Publisher != "" && d.Version.ChangeID > 0 &&
+		m.versionFailed != nil && m.versionFailed(d.Version.ActionID, d.Version.Publisher, d.Version.EventKey, d.Version.ChangeID) {
+		stage = storage.DeliveryFailed
+	}
+	j.status = stage
+	if stage == storage.DeliveryFailed {
+		j.next = d.NextAttempt
+	} else {
+		j.next = time.Time{}
+	}
+	return stage, nil
 }
 
 func (m *memDeliveryStore) RecoverStaleClaims(ctx context.Context, now time.Time) (int64, error) {
@@ -382,47 +414,44 @@ func TestInstanceDurableGateSkips(t *testing.T) {
 	}
 }
 
-// TestInstanceDurableAsyncFailureCheck pins the post-execution oracle:
-// a job whose transport reported the transmission failed asynchronously
-// is NOT settled as accepted — the worker schedules a retry within the
-// budget; once the failure clears (the retransmission succeeded), the
-// retry settles accepted.
+// TestInstanceDurableAsyncFailureCheck pins the guarded settlement: the
+// failure marker read and the accepted write happen ATOMICALLY in the
+// store. The first settlement sees the marker (the async TxFailed) and
+// is downgraded to a scheduled retry — a later accepted can never
+// overwrite it. Once the retransmission succeeded the marker is gone
+// and the retry settles accepted.
 func TestInstanceDurableAsyncFailureCheck(t *testing.T) {
 	p := &deliveryPlugin{}
-	inst, ms := newDeliveryInstance(t, p, 2) // 3 attempts total
-	// The oracle reports the async failure for the FIRST execution only
-	// (the retransmission of the retry succeeds): attempt 1 must not
-	// settle as accepted, attempt 2 settles accepted. Deterministic —
-	// no polling-based flag flips.
+	_, ms := newDeliveryInstance(t, p, 2) // 3 attempts total
 	var calls atomic.Int32
-	inst.setMeshFailureCheck(func(ctx context.Context, req ActionRequest) bool {
-		return calls.Add(1) == 1
-	})
+	ms.versionFailed = func(actionID, publisher, eventKey string, changeID int64) bool {
+		return calls.Add(1) == 1 // only the first settlement sees the marker
+	}
 
 	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
 		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw", ChangeID: 7, Publisher: "pub-1"}}
 	payload, _ := json.Marshal(ActionRequest{ID: "imgw:1/log", Event: ev})
 	enqueueOne(t, ms, payload)
 
-	// Had attempt 1 settled as accepted, no retry would exist and this
-	// wait would time out.
+	// Had the first attempt settled accepted, no retry would exist and
+	// this wait would time out.
 	waitForDelivery(t, func() bool {
 		return p.handled.Load() == 2 && ms.statusOf(1, "log", "c:1") == storage.DeliveryAccepted
-	}, "async failure settled as retry, then accepted after the retransmission")
+	}, "async failure downgraded the settlement to a retry, then accepted")
 	if got := p.handled.Load(); got != 2 {
 		t.Errorf("executions = %d, want 2 (retry after the async failure)", got)
 	}
 }
 
 // TestInstanceDurableAsyncFailureBudgetExhausted pins the budget side:
-// with no attempts left, the async failure turns the success into a
-// terminal failed instead of a stuck accepted.
+// with no attempts left, the guarded settlement downgrades the success
+// to a terminal failed instead of a stuck accepted.
 func TestInstanceDurableAsyncFailureBudgetExhausted(t *testing.T) {
 	p := &deliveryPlugin{}
-	inst, ms := newDeliveryInstance(t, p, 0) // 1 attempt total
-	inst.setMeshFailureCheck(func(ctx context.Context, req ActionRequest) bool {
+	_, ms := newDeliveryInstance(t, p, 0) // 1 attempt total
+	ms.versionFailed = func(actionID, publisher, eventKey string, changeID int64) bool {
 		return true
-	})
+	}
 
 	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
 		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw", ChangeID: 7, Publisher: "pub-1"}}

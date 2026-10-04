@@ -51,10 +51,11 @@ type sender interface {
 	// to the durable action-progress ledger: the hub records the
 	// progress when the radio actually transmitted (sent/delivered)
 	// and REVOKES it when the transmission ultimately failed — a
-	// failed send stays retryable.
-	SendContactMessageVersioned(ctx context.Context, addr, text, operator, publisher, eventKey string, changeID int64) error
+	// failed send stays retryable. The action id scopes the failure
+	// marker and the re-arm to THIS action's jobs.
+	SendContactMessageVersioned(ctx context.Context, addr, text, operator, actionID, publisher, eventKey string, changeID int64) error
 	// SendChannelTextVersioned is the same for the group broadcast.
-	SendChannelTextVersioned(ctx context.Context, idx int, text, operator, publisher, eventKey string, changeID int64) error
+	SendChannelTextVersioned(ctx context.Context, idx int, text, operator, actionID, publisher, eventKey string, changeID int64) error
 	// MeshActionProgressDone reports whether the exact versioned
 	// transmission (publisher + event key + change id + recipient +
 	// channel) already succeeded — the durable resume ledger of the
@@ -127,7 +128,8 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if req.Event.Hazard != nil {
 		pub, key, ver = req.Event.Hazard.Publisher, req.Event.Hazard.Key, req.Event.Hazard.ChangeID
 	}
-	ledger := pub != "" && ver > 0
+	actionID := action.RequestActionID(req)
+	ledger := actionID != "" && pub != "" && ver > 0
 	done := func(recipient string, channel int) bool {
 		if !ledger {
 			return false
@@ -150,7 +152,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 			}
 			var err error
 			if ledger {
-				err = a.hub.SendChannelTextVersioned(ctx, a.cfg.Channel, text, "system", pub, key, ver)
+				err = a.hub.SendChannelTextVersioned(ctx, a.cfg.Channel, text, "system", actionID, pub, key, ver)
 			} else {
 				err = a.hub.SendChannelText(ctx, a.cfg.Channel, text, "system")
 			}
@@ -175,7 +177,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		}
 		var err error
 		if ledger {
-			err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", pub, key, ver)
+			err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", actionID, pub, key, ver)
 		} else {
 			err = a.hub.SendContactMessage(ctx, id, text, "system")
 		}

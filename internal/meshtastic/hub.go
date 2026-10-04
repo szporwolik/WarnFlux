@@ -119,12 +119,12 @@ type Recorder interface {
 	// transmission ultimately failed: the next attempt sends again.
 	DeleteMeshActionProgress(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) error
 	// SetMeshActionFailed marks (or clears) the durable failure marker
-	// of one versioned transmission: the marker ties the async modem
-	// result to the durable delivery job.
-	SetMeshActionFailed(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error
+	// of one versioned transmission of ONE ACTION: the marker ties the
+	// async modem result to the durable delivery job.
+	SetMeshActionFailed(ctx context.Context, actionID, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error
 	// MeshActionFailed reports whether ANY transmission of the version
-	// carries a failure marker.
-	MeshActionFailed(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error)
+	// of one action carries a failure marker.
+	MeshActionFailed(ctx context.Context, actionID, publisher, eventKey string, changeID int64) (bool, error)
 }
 
 // NodeStore persists the heard-node directory (implemented by storage
@@ -233,14 +233,16 @@ type pendingSend struct {
 // an action transmission ultimately FAILS: the durable delivery job was
 // likely already settled as accepted, and only this callback schedules
 // the retry (a bare progress revoke schedules nothing — reported P1).
-// Wired by the application to the delivery store; nil keeps the
-// progress-only behavior.
-type meshDeliverySinkFunc func(ctx context.Context, publisher, eventKey string, changeID int64)
+// The action id keeps the re-arm from touching other actions' jobs of
+// the same event (reported P2). Wired by the application to the
+// delivery store; nil keeps the progress-only behavior.
+type meshDeliverySinkFunc func(ctx context.Context, actionID, publisher, eventKey string, changeID int64)
 
 // progressRef identifies one durable action-progress entry (the
 // versioned resume ledger of the meshtastic action). The zero value
 // attaches no ledger.
 type progressRef struct {
+	actionID  string
 	publisher string
 	eventKey  string
 	changeID  int64
@@ -250,7 +252,7 @@ type progressRef struct {
 
 // active reports whether the reference attaches the ledger.
 func (p progressRef) active() bool {
-	return p.publisher != "" && p.changeID > 0
+	return p.actionID != "" && p.publisher != "" && p.changeID > 0
 }
 
 // Node signal kinds observed in packets from the node (shown as badges
@@ -1373,18 +1375,18 @@ func (h *Hub) markStatus(ps *pendingSend, status string) {
 		if err := rec.RecordMeshActionProgress(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel, time.Now()); err != nil && h.logger != nil {
 			h.logger.Warn("meshtastic: action progress record failed", "error", err)
 		}
-		if err := rec.SetMeshActionFailed(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel, false); err != nil && h.logger != nil {
+		if err := rec.SetMeshActionFailed(ctx, ps.prog.actionID, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel, false); err != nil && h.logger != nil {
 			h.logger.Warn("meshtastic: action failure marker clear failed", "error", err)
 		}
 	case TxFailed:
 		if err := rec.DeleteMeshActionProgress(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel); err != nil && h.logger != nil {
 			h.logger.Warn("meshtastic: action progress revoke failed", "error", err)
 		}
-		if err := rec.SetMeshActionFailed(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel, true); err != nil && h.logger != nil {
+		if err := rec.SetMeshActionFailed(ctx, ps.prog.actionID, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel, true); err != nil && h.logger != nil {
 			h.logger.Warn("meshtastic: action failure marker record failed", "error", err)
 		}
 		if sink != nil {
-			sink(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID)
+			sink(ctx, ps.prog.actionID, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID)
 		}
 	}
 }
@@ -2102,12 +2104,12 @@ func (h *Hub) SendChannelText(ctx context.Context, idx int, text, operator strin
 // SendChannelTextVersioned is SendChannelText with the durable
 // action-progress identity attached: the ledger follows the transmission
 // outcome (recorded on sent/delivered, revoked on failed).
-func (h *Hub) SendChannelTextVersioned(ctx context.Context, idx int, text, operator, publisher, eventKey string, changeID int64) error {
+func (h *Hub) SendChannelTextVersioned(ctx context.Context, idx int, text, operator, actionID, publisher, eventKey string, changeID int64) error {
 	if idx < 1 || idx > 7 {
 		return ErrPrimaryChannelBlocked
 	}
 	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), idx, h.ChannelLabel(idx), text, operator,
-		progressRef{publisher: publisher, eventKey: eventKey, changeID: changeID, recipient: "", channel: idx})
+		progressRef{actionID: actionID, publisher: publisher, eventKey: eventKey, changeID: changeID, recipient: "", channel: idx})
 }
 
 // SendContactMessage sends one direct text message to a node id (8 hex
@@ -2119,10 +2121,10 @@ func (h *Hub) SendContactMessage(ctx context.Context, addr, text, operator strin
 // SendContactMessageVersioned is SendContactMessage with the durable
 // action-progress identity attached: the ledger follows the transmission
 // outcome (recorded on sent/delivered, revoked on failed).
-func (h *Hub) SendContactMessageVersioned(ctx context.Context, addr, text, operator, publisher, eventKey string, changeID int64) error {
+func (h *Hub) SendContactMessageVersioned(ctx context.Context, addr, text, operator, actionID, publisher, eventKey string, changeID int64) error {
 	idStr := normalizeMeshID(addr)
 	return h.sendContact(ctx, addr, text, operator,
-		progressRef{publisher: publisher, eventKey: eventKey, changeID: changeID, recipient: idStr, channel: 0})
+		progressRef{actionID: actionID, publisher: publisher, eventKey: eventKey, changeID: changeID, recipient: idStr, channel: 0})
 }
 
 func (h *Hub) sendContact(ctx context.Context, addr, text, operator string, prog progressRef) error {

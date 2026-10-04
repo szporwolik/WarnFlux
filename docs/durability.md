@@ -279,11 +279,18 @@ device took the message, the protocol has no stronger signal.
   with the same text never suppresses a NEW alert version.
 - The async modem result is tied back to the **durable delivery job**,
   not only to the progress entry: a `failed` result sets a failure
-  marker (the worker consults it before settling a job as accepted) and
-  re-arms an already-settled job through the hub's delivery sink. The
-  retry runs within the attempt budget; a spent budget ends the job
-  explicitly failed (a replayed transition re-arms it with a fresh
-  budget). A bare progress revoke alone schedules nothing.
+  marker and re-arms an already-settled job through the hub's delivery
+  sink — both scoped to the specific ACTION, so a Mesh failure never
+  re-sends another action's (e.g. SMTP) already-accepted job of the
+  same event. The settlement itself is **atomic and guarded**: the
+  worker's accepted write carries the attempt generation and the
+  action-scoped version guard, so a `TxFailed` landing between the
+  pre-transmission checks and the settlement downgrades it to a
+  scheduled retry — the async failure can never be overwritten by a
+  stale accepted write. The retry runs within the attempt budget; a
+  spent budget ends the job explicitly failed (a replayed transition
+  re-arms it with a fresh budget). A bare progress revoke alone
+  schedules nothing.
 - A retry skips the broadcast and every recipient whose exact version
   already has a progress row and transmits only the unfinished sends:
   early recipients are never repeated, and the last member is reached

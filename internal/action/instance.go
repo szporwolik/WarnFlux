@@ -95,12 +95,6 @@ type Instance struct {
 	// version (publisher + change ID) of the message, not only its key.
 	gate func(ctx context.Context, req ActionRequest) bool
 
-	// failCheck is the optional failure oracle consulted AFTER a
-	// successful execution and BEFORE the accepted settlement (see
-	// Manager.SetMeshFailureCheck): an asynchronous transport failure
-	// turns the success into a scheduled retry.
-	failCheck func(ctx context.Context, req ActionRequest) bool
-
 	// internet marks this instance as internet-backed: while the
 	// offline-mode switch is on, its worker holds queued work instead of
 	// executing it (nothing is executed, nothing is lost).
@@ -182,12 +176,6 @@ func (i *Instance) setDeliveryStore(st storage.DeliveryStore) {
 // before Start when one is configured).
 func (i *Instance) setDeliveryGate(gate func(ctx context.Context, req ActionRequest) bool) {
 	i.gate = gate
-}
-
-// setMeshFailureCheck attaches the post-execution failure oracle (called
-// by the manager before Start when one is configured).
-func (i *Instance) setMeshFailureCheck(check func(ctx context.Context, req ActionRequest) bool) {
-	i.failCheck = check
 }
 
 // setOfflineFn attaches the offline-mode oracle (called by the manager
@@ -276,14 +264,14 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	if len(job.Payload) == 0 {
 		i.logger.Warn("action: delivery job without payload settled as accepted",
 			"action", i.id, "event_key", key)
-		i.settle(job, storage.DeliveryAccepted, time.Time{})
+		i.settleGuarded(job, storage.DeliveryAccepted, time.Time{}, ActionRequest{})
 		return
 	}
 	var req ActionRequest
 	if err := json.Unmarshal(job.Payload, &req); err != nil {
 		i.logger.Error("action: delivery payload corrupt",
 			"action", i.id, "event_key", key, "error", err)
-		i.settle(job, storage.DeliveryFailed, time.Time{})
+		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req)
 		i.trail.Add(key, trail.StepFailed, "job payload corrupt", time.Now())
 		i.trail.SetOutcome(key, trail.OutcomeFailed)
 		return
@@ -298,7 +286,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		if exp := req.Event.Hazard.Hazard.ExpiresAt; exp != nil && !exp.After(time.Now()) {
 			i.logger.Info("action: queued alert expired before transmission",
 				"action", i.id, "event_key", key)
-			i.settle(job, storage.DeliveryExpired, time.Time{})
+			i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req)
 			i.trail.Add(key, trail.StepSkipped,
 				"skipped: hazard expired before transmission", time.Now())
 			return
@@ -307,7 +295,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	if i.gate != nil && !i.gate(context.Background(), req) {
 		i.logger.Info("action: queued alert superseded before transmission",
 			"action", i.id, "event_key", key)
-		i.settle(job, storage.DeliveryExpired, time.Time{})
+		i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req)
 		i.trail.Add(key, trail.StepSkipped,
 			"skipped: hazard no longer active before transmission", time.Now())
 		return
@@ -315,12 +303,22 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 
 	stage, err := i.executeOnce(req)
 	if err == nil {
-		// The transport accepted the frames, but an ASYNC result may
-		// already report a failure: the failure oracle turns the success
-		// into a scheduled retry (within the attempt budget) instead of
-		// a terminal accepted — the late case is re-armed by the hub's
-		// own delivery sink (reported P1).
-		if i.failCheck != nil && i.failCheck(context.Background(), req) {
+		terminal := storage.DeliveryAccepted
+		if stage == StageConfirmed {
+			terminal = storage.DeliveryConfirmed
+		}
+		// The settlement is GUARDED: the store applies it atomically
+		// with the attempt generation and the failure-marker check. A
+		// TxFailed landing between the pre-transmission checks and this
+		// write downgrades the settlement to a scheduled retry — the
+		// async failure can never be overwritten by a later accepted
+		// (reported P1).
+		next := time.Time{}
+		if job.Attempts < max {
+			next = time.Now().Add(RetryBackoff)
+		}
+		applied := i.settleGuarded(job, terminal, next, req)
+		if applied == storage.DeliveryFailed {
 			i.metricFailed(1)
 			i.trail.Add(key, trail.StepFailed,
 				fmt.Sprintf("attempt %d/%d failed: transmission reported failed after execution", job.Attempts, max), time.Now())
@@ -328,18 +326,11 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 				i.metricRetry(1)
 				i.trail.Add(key, trail.StepRetry,
 					fmt.Sprintf("retrying in %s", RetryBackoff), time.Now())
-				i.settle(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff))
 			} else {
-				i.settle(job, storage.DeliveryFailed, time.Time{})
 				i.trail.SetOutcome(key, trail.OutcomeFailed)
 			}
 			return
 		}
-		terminal := storage.DeliveryAccepted
-		if stage == StageConfirmed {
-			terminal = storage.DeliveryConfirmed
-		}
-		i.settle(job, terminal, time.Time{})
 		i.metricDelivered(1)
 		if job.Attempts > 1 {
 			i.trail.Add(key, trail.StepDelivered,
@@ -356,7 +347,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		fmt.Sprintf("attempt %d/%d failed: %v", job.Attempts, max, err), time.Now())
 	if i.disabled.Load() {
 		// A hung plugin was disabled mid-attempt: never re-invoke it.
-		i.settle(job, storage.DeliveryFailed, time.Time{})
+		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req)
 		i.trail.SetOutcome(key, trail.OutcomeFailed)
 		return
 	}
@@ -364,23 +355,45 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		i.metricRetry(1)
 		i.trail.Add(key, trail.StepRetry,
 			fmt.Sprintf("retrying in %s", RetryBackoff), time.Now())
-		i.settle(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff))
+		i.settleGuarded(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff), req)
 		return
 	}
 	// Budget spent: terminal failure. A replayed transition re-arms the
 	// job instead of suppressing the alert.
-	i.settle(job, storage.DeliveryFailed, time.Time{})
+	i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req)
 	i.trail.SetOutcome(key, trail.OutcomeFailed)
 }
 
-// settle records the post-execution stage of a durable job. Settlement
-// errors only log: the job stays running and the stale-claim recovery
+// settleGuarded applies one settlement with the attempt generation and
+// (for accepted/confirmed stages of a versioned hazard) the
+// failure-marker guard — atomically in the store. It returns the stage
+// actually applied (a downgraded failure included). Settlement errors
+// only log: the job stays running and the stale-claim recovery
 // re-queues it (at-least-once).
-func (i *Instance) settle(job storage.DeliveryJob, stage storage.DeliveryStatus, next time.Time) {
-	if err := i.store.SettleDelivery(context.Background(), job.GroupID, job.ActionID, job.DedupKey, stage, next); err != nil {
+func (i *Instance) settleGuarded(job storage.DeliveryJob, stage storage.DeliveryStatus, next time.Time, req ActionRequest) storage.DeliveryStatus {
+	d := storage.DeliverySettle{
+		GroupID:     job.GroupID,
+		ActionID:    job.ActionID,
+		DedupKey:    job.DedupKey,
+		Stage:       stage,
+		NextAttempt: next,
+		Attempts:    job.Attempts,
+	}
+	if h := req.Event.Hazard; h != nil && h.Publisher != "" && h.ChangeID > 0 {
+		d.Version = &storage.DeliveryVersion{
+			ActionID:  RequestActionID(req),
+			Publisher: h.Publisher,
+			EventKey:  h.Key,
+			ChangeID:  h.ChangeID,
+		}
+	}
+	applied, err := i.store.SettleDeliveryGuarded(context.Background(), d)
+	if err != nil {
 		i.logger.Warn("action: delivery settle failed",
 			"action", i.id, "event_key", job.EventKey, "stage", stage, "error", err)
+		return stage
 	}
+	return applied
 }
 
 // drainAndClose processes already-queued requests within the bounded

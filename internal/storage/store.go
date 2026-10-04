@@ -16,6 +16,12 @@ import (
 // ErrNotFound is returned by EventStore.Get when no event matches the key.
 var ErrNotFound = errors.New("event not found")
 
+// ErrOutboxFull reports that the durable ingest outbox has no room left:
+// corrective-sync rows (cancellations/expirations) are never evicted, so
+// when they alone exceed the capacity bound the append fails explicitly
+// instead of dropping them (explicit backpressure).
+var ErrOutboxFull = errors.New("outbox full: corrective sync cannot be evicted")
+
 // OutputRef identifies one enabled output instance. The durable journal
 // consumer identity is the (ID, Type) pair: changing the plugin type under
 // the same ID resets the cursor — a new consumer that replays retained

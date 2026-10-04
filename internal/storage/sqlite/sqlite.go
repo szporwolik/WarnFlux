@@ -726,6 +726,16 @@ CREATE TABLE command_events (
 ALTER TABLE meshtastic_messages ADD COLUMN recipient TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v39: durable outbox event identity. The outbox merges repeated
+		// transitions of one EVENT (publisher + event key), never by
+		// topic: one MQTT topic carries many independent events, so a
+		// topic-level merge removed independent alarms.
+		SQL: `
+ALTER TABLE ingest_outbox ADD COLUMN event_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE ingest_outbox ADD COLUMN publisher TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1253,10 +1263,24 @@ func (s *Store) CommitIngest(ctx context.Context, instanceID, topic string, payl
 		return 0, fmt.Errorf("inbox row for ingest %q: %w", instanceID, err)
 	}
 
+	// The outbox row mirrors AppendOutbox: repeated transitions of one
+	// EVENT (publisher + event key — never the topic) merge into the
+	// newest state, and the row carries the lifecycle metadata so
+	// age-pruning recognizes stale rows and corrective sync
+	// (cancellations/expirations) is never evicted.
+	status, expiresMs := outboxLifecycle(payload)
+	eventKey, publisher := outboxIdentity(payload)
+	if err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher); err != nil {
+		return 0, fmt.Errorf("merge outbox rows for %q: %w", instanceID, err)
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms)
-		VALUES (?, ?, ?, ?)`, instanceID, topic, string(payload), nowMs); err != nil {
+		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		instanceID, topic, string(payload), nowMs, status, expiresMs, eventKey, publisher); err != nil {
 		return 0, fmt.Errorf("outbox row for ingest %q: %w", instanceID, err)
+	}
+	if err := enforceOutboxCap(ctx, tx); err != nil {
+		return 0, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2210,24 +2234,39 @@ func insertInboxRow(e execer, ctx context.Context, data []byte, receiver string,
 // broker-publication record. The row is deleted only after the broker
 // confirmed the publish (AckOutbox), so an outage between acceptance and
 // publication never loses the cross-instance sync. Pending rows of the
-// same topic are MERGED into the newest state: the broker only needs the
-// final document, and the merge bounds the queue per topic.
+// SAME EVENT (publisher + event key — never the topic) are MERGED into
+// the newest state: the broker only needs the final document per event,
+// while independent alarms sharing one topic all survive. The append
+// runs in one transaction together with the capacity enforcement, so a
+// full outbox either evicts only evictable rows or fails with
+// storage.ErrOutboxFull — corrective sync is never silently dropped.
 func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payload []byte) (int64, error) {
 	status, expiresMs := outboxLifecycle(payload)
-	if _, err := s.db.ExecContext(ctx,
-		`DELETE FROM ingest_outbox WHERE instance_id = ? AND topic = ?`, instanceID, topic); err != nil {
+	eventKey, publisher := outboxIdentity(payload)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin outbox append: %w", err)
+	}
+	defer tx.Rollback()
+	if err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher); err != nil {
 		return 0, fmt.Errorf("merge outbox rows for %q: %w", instanceID, err)
 	}
-	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		instanceID, topic, string(payload), s.now().UnixMilli(), status, expiresMs)
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		instanceID, topic, string(payload), s.now().UnixMilli(), status, expiresMs, eventKey, publisher)
 	if err != nil {
 		return 0, fmt.Errorf("append outbox row for %q: %w", instanceID, err)
+	}
+	if err := enforceOutboxCap(ctx, tx); err != nil {
+		return 0, err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("outbox row id for %q: %w", instanceID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit outbox append for %q: %w", instanceID, err)
 	}
 	return id, nil
 }
@@ -2241,6 +2280,37 @@ type outboxHazard struct {
 		Status    string  `json:"status"`
 		ExpiresAt *string `json:"expires_at"`
 	} `json:"event"`
+}
+
+// outboxIdentity extracts the event identity of one outbox payload:
+// publisher + event key. A payload without a recognizable event key has
+// no identity ("", "") — such rows are never merged.
+func outboxIdentity(payload []byte) (eventKey, publisher string) {
+	var we struct {
+		EventKey  string `json:"event_key"`
+		Publisher string `json:"publisher"`
+	}
+	if err := json.Unmarshal(payload, &we); err != nil || we.EventKey == "" {
+		return "", ""
+	}
+	return we.EventKey, we.Publisher
+}
+
+// mergeOutboxRows removes, inside the append transaction, the pending
+// rows of the SAME EVENT (identity merge): the broker only needs the
+// final document per event. Rows without an identity are never merged —
+// one MQTT topic carries many independent events, so merging by topic
+// removed independent alarms (reported P2).
+func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publisher string) error {
+	if eventKey == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM ingest_outbox WHERE instance_id = ? AND event_key = ? AND publisher = ?`,
+		instanceID, eventKey, publisher); err != nil {
+		return err
+	}
+	return nil
 }
 
 // outboxLifecycle extracts the lifecycle metadata of one outbox payload.
@@ -2315,9 +2385,12 @@ func (s *Store) OutboxCount(ctx context.Context) (int, error) {
 //     Cancellations, expirations and still-valid alarms are current or
 //     corrective sync — the broker may still hold an old active document
 //     they must retire — and never age out.
-//   - CAPACITY: beyond outboxRowCap the oldest rows go regardless of
-//     status (a hard bound for 24/7/365 operation; append-time merging
-//     already collapsed repeated transitions of one topic).
+//   - CAPACITY: beyond outboxRowCap the oldest EVICTABLE rows (empty or
+//     active status) go — a hard bound for 24/7/365 operation.
+//     Corrective rows (cancelled/expired) are NEVER capacity-evicted:
+//     dropping them would leave a stale active document on the broker
+//     forever. When corrective rows alone exceed the cap, appends fail
+//     with storage.ErrOutboxFull (explicit backpressure) instead.
 func (s *Store) PruneOutbox(ctx context.Context, olderThan time.Time) (int64, error) {
 	cutoff := olderThan.UnixMilli()
 	nowMs := s.now().UnixMilli()
@@ -2336,7 +2409,9 @@ func (s *Store) PruneOutbox(ctx context.Context, olderThan time.Time) (int64, er
 	}
 	res2, err := s.db.ExecContext(ctx, `
 		DELETE FROM ingest_outbox WHERE id IN (
-			SELECT id FROM ingest_outbox ORDER BY id DESC LIMIT -1 OFFSET ?
+			SELECT id FROM ingest_outbox
+			WHERE status IN ('', 'active')
+			ORDER BY id DESC LIMIT -1 OFFSET ?
 		)`, outboxRowCap)
 	if err != nil {
 		return 0, fmt.Errorf("prune outbox over capacity: %w", err)
@@ -2348,9 +2423,36 @@ func (s *Store) PruneOutbox(ctx context.Context, olderThan time.Time) (int64, er
 	return n + n2, nil
 }
 
-// outboxRowCap hard-bounds the durable outbox: beyond it the oldest rows
-// are dropped (the append-time merge keeps the newest state per topic).
+// outboxRowCap hard-bounds the EVICTABLE durable outbox rows: beyond it
+// the oldest empty/active rows are dropped (the append-time merge keeps
+// the newest state per topic). Corrective rows (cancelled/expired) sit
+// outside the bound and are never evicted.
 const outboxRowCap = 10000
+
+// enforceOutboxCap runs inside the append transaction: it evicts the
+// oldest EVICTABLE rows beyond outboxRowCap and then verifies that the
+// corrective backlog alone does not exceed the bound — in that case
+// there is nothing left to evict and storage.ErrOutboxFull is the
+// explicit backpressure.
+func enforceOutboxCap(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM ingest_outbox WHERE id IN (
+			SELECT id FROM ingest_outbox
+			WHERE status IN ('', 'active')
+			ORDER BY id DESC LIMIT -1 OFFSET ?
+		)`, outboxRowCap); err != nil {
+		return fmt.Errorf("evict outbox overflow: %w", err)
+	}
+	var corrective int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM ingest_outbox WHERE status NOT IN ('', 'active')`).Scan(&corrective); err != nil {
+		return fmt.Errorf("count corrective outbox rows: %w", err)
+	}
+	if corrective > outboxRowCap {
+		return storage.ErrOutboxFull
+	}
+	return nil
+}
 
 // SavePendingDeletes atomically replaces the durable unresolved-deletion
 // set of one output with the given snapshot: the plugin's in-memory map

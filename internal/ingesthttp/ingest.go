@@ -772,7 +772,7 @@ func (in *Instance) buildFromBuilder(body []byte) ([]byte, string, error) {
 			Latitude:    b.Latitude,
 			Longitude:   b.Longitude,
 			Areas:       b.Areas,
-			Status:      "active",
+			Status:      builderEventStatus(b.Transition),
 			SourceURL:   strings.TrimSpace(b.SourceURL),
 			ReceivedAt:  now,
 			UpdatedAt:   now,
@@ -834,4 +834,19 @@ func validateBuilder(b *builderPayload) error {
 		return fmt.Errorf("source_id must not have leading or trailing whitespace")
 	}
 	return nil
+}
+
+// builderEventStatus maps the canonical transition onto the wire event
+// status, so the outbox retention can trust event.status again — the
+// simplified form previously wrote "active" even for cancellations and
+// retention read exactly that field (reported P1).
+func builderEventStatus(transition string) string {
+	switch transition {
+	case mqttreceiver.ChangeCancelled:
+		return "cancelled"
+	case mqttreceiver.ChangeExpired:
+		return "expired"
+	default:
+		return "active"
+	}
 }

@@ -107,6 +107,11 @@ type Recorder interface {
 	// UpdateMeshtasticMessageStatus marks the tx delivery state of the
 	// matching row (created at + text).
 	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
+	// ListMeshtasticMessages reads the persisted history (newest
+	// first). The hub uses it as the durable delivery-progress ledger
+	// for the meshtastic action: a retry resumes only the transmissions
+	// without a successful row yet.
+	ListMeshtasticMessages(ctx context.Context, f storage.MeshtasticMessageFilter, limit, offset int) ([]storage.MeshMessage, error)
 }
 
 // NodeStore persists the heard-node directory (implemented by storage
@@ -2024,6 +2029,49 @@ func (h *Hub) SendContactMessage(ctx context.Context, addr, text, operator strin
 		return fmt.Errorf("meshtastic: node id must be 8 hex characters, got %q", addr)
 	}
 	return h.sendText(ctx, uint32(n), 0, "dm", text, operator)
+}
+
+// ContactDelivered reports whether the exact text was already
+// transmitted to the node with a successful state (sent or delivered).
+// It is the durable progress ledger of the meshtastic action: a retry
+// must only resume transmissions without a successful row, never repeat
+// completed ones. With no recorder attached nothing can be proven and
+// the query reports false (fail-open: a re-send is safer than a lost
+// alert).
+func (h *Hub) ContactDelivered(ctx context.Context, addr, text string) (bool, error) {
+	idStr := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(addr), "!"))
+	return h.txDelivered(ctx, "dm", idStr, text)
+}
+
+// ChannelTextDelivered reports whether the exact text was already
+// broadcast on the channel with a successful state — the same durable
+// progress ledger for the group broadcast part of an alert.
+func (h *Hub) ChannelTextDelivered(ctx context.Context, idx int, text string) (bool, error) {
+	return h.txDelivered(ctx, h.ChannelLabel(idx), "", text)
+}
+
+// txDelivered resolves one exact (channel, recipient, text)
+// transmission in the persisted tx history: the newest matching row
+// proves success when the radio transmitted it (sent) or the recipient
+// acknowledged it (delivered). Rows still unstamped or failed are NOT
+// success — the send is retried (at-least-once).
+func (h *Hub) txDelivered(ctx context.Context, channel, recipient, text string) (bool, error) {
+	h.mu.Lock()
+	rec := h.recorder
+	h.mu.Unlock()
+	if rec == nil {
+		return false, nil
+	}
+	rows, err := rec.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{
+		Direction: "tx", Channel: channel, Peer: recipient, Text: text,
+	}, 1, 0)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 {
+		return false, nil
+	}
+	return rows[0].Status == TxSent || rows[0].Status == TxDelivered, nil
 }
 
 // sendText transmits one text message and records it as TX. Broadcasts

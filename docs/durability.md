@@ -246,6 +246,20 @@ replay of the transition. Channel floods without delivery
 acknowledgements (e.g. Meshtastic group messages) stop at `accepted` — the
 device took the message, the protocol has no stronger signal.
 
+**Group retries resume, never restart (Meshtastic):**
+
+- The Meshtastic action paces one alert to the whole routed group under
+  a single bounded call deadline — a large group can exceed it mid-list.
+- Every successful transmission (the channel broadcast and each direct
+  message) is written to the durable message history **before** the send
+  call returns, so the history doubles as the delivery-progress ledger.
+- A retry skips the broadcast and every recipient whose exact message
+  text already has a `sent`/`delivered` row and transmits only the
+  unfinished sends: early recipients are never repeated, and the last
+  member is reached instead of being starved by the deadline.
+- An unreadable ledger fails open (the send goes out again): a repeated
+  alert is always safer than a lost one.
+
 **Staleness policy (recovered alerts must not hit the radio):**
 
 - At scheduling time the engine refuses to start the notification

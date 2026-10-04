@@ -1096,10 +1096,130 @@ func (c *captureRecorder) UpdateMeshtasticMessageStatus(_ context.Context, statu
 	return nil
 }
 
+// ListMeshtasticMessages mirrors the store query over the captured rows
+// (newest first).
+func (c *captureRecorder) ListMeshtasticMessages(_ context.Context, f storage.MeshtasticMessageFilter, limit, offset int) ([]storage.MeshMessage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []storage.MeshMessage
+	for i := len(c.got) - 1; i >= 0; i-- {
+		m := c.got[i]
+		if f.Direction != "" && m.Direction != f.Direction {
+			continue
+		}
+		if f.Channel != "" {
+			if f.Exclude && m.Channel == f.Channel {
+				continue
+			}
+			if !f.Exclude && m.Channel != f.Channel {
+				continue
+			}
+		}
+		if f.Peer != "" {
+			ok := (m.Direction == "rx" && m.Sender == f.Peer) ||
+				(m.Direction == "tx" && m.Recipient == f.Peer)
+			if !ok {
+				continue
+			}
+		}
+		if f.Text != "" && m.Text != f.Text {
+			continue
+		}
+		out = append(out, storage.MeshMessage{
+			ID: int64(len(c.got) - i), Direction: m.Direction, Sender: m.Sender,
+			Recipient: m.Recipient, Channel: m.Channel, Hops: m.Hops,
+			Operator: m.Operator, Text: m.Text, Status: m.Status, At: m.At,
+		})
+	}
+	if offset > len(out) {
+		offset = len(out)
+	}
+	out = out[offset:]
+	if limit < len(out) {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (c *captureRecorder) messages() []Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]Message(nil), c.got...)
+}
+
+// TestHubTxDeliveredLedger pins the durable delivery-progress query: a
+// tx row proves success only once the radio transmitted it (sent) or the
+// recipient acknowledged it (delivered); unstamped and failed rows mean
+// the send must be retried. The exact (channel, recipient, text)
+// identity is matched, and a hub without a recorder reports no progress
+// (fail-open).
+func TestHubTxDeliveredLedger(t *testing.T) {
+	rec := &captureRecorder{}
+	h := &Hub{recorder: rec}
+	ctx := context.Background()
+	at := time.Now().Truncate(time.Millisecond)
+
+	// Nothing recorded yet: no progress.
+	if done, err := h.ContactDelivered(ctx, "a0a85934", "alarm"); err != nil || done {
+		t.Fatalf("empty ledger = (%v, %v), want false", done, err)
+	}
+
+	// A DM row exists but is still unstamped: not proven, retry.
+	if err := rec.RecordMeshtasticMessage(ctx, "tx", "", "a0a85934", "dm", "alarm", "system", 0, at); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := h.ContactDelivered(ctx, "a0a85934", "alarm"); err != nil || done {
+		t.Fatalf("unstamped row = (%v, %v), want false", done, err)
+	}
+
+	// The same text to another recipient does not count for this one.
+	if done, err := h.ContactDelivered(ctx, "b0b85934", "alarm"); err != nil || done {
+		t.Fatalf("other recipient = (%v, %v), want false", done, err)
+	}
+
+	// Sent: proven. The id spelling variants resolve to the same node.
+	if err := rec.UpdateMeshtasticMessageStatus(ctx, TxSent, at, "alarm"); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := h.ContactDelivered(ctx, "!A0A85934", "alarm"); err != nil || !done {
+		t.Fatalf("sent row = (%v, %v), want true", done, err)
+	}
+
+	// A different text is a different progress entry.
+	if done, err := h.ContactDelivered(ctx, "a0a85934", "other"); err != nil || done {
+		t.Fatalf("other text = (%v, %v), want false", done, err)
+	}
+
+	// The channel broadcast has its own ledger key (channel label,
+	// no recipient).
+	at2 := at.Add(time.Second)
+	if err := rec.RecordMeshtasticMessage(ctx, "tx", "", "", "ch1", "alarm", "system", 0, at2); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := h.ChannelTextDelivered(ctx, 1, "alarm"); err != nil || done {
+		t.Fatalf("unstamped broadcast = (%v, %v), want false", done, err)
+	}
+	if err := rec.UpdateMeshtasticMessageStatus(ctx, TxDelivered, at2, "alarm"); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := h.ChannelTextDelivered(ctx, 1, "alarm"); err != nil || !done {
+		t.Fatalf("delivered broadcast = (%v, %v), want true", done, err)
+	}
+
+	// A failed newest row revokes the proof: the send must be retried
+	// (at-least-once) — the earlier sent row no longer counts.
+	if err := rec.UpdateMeshtasticMessageStatus(ctx, TxFailed, at, "alarm"); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := h.ContactDelivered(ctx, "a0a85934", "alarm"); err != nil || done {
+		t.Fatalf("failed newest row = (%v, %v), want false", done, err)
+	}
+
+	// No recorder: fail-open, never claim progress.
+	empty := &Hub{}
+	if done, err := empty.ContactDelivered(ctx, "a0a85934", "alarm"); err != nil || done {
+		t.Fatalf("no recorder = (%v, %v), want false", done, err)
+	}
 }
 
 func TestHubSendBroadcast(t *testing.T) {

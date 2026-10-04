@@ -47,6 +47,12 @@ var errHubDisabled = errors.New("meshtastic: hub is not configured")
 type sender interface {
 	SendContactMessage(ctx context.Context, addr, text, operator string) error
 	SendChannelText(ctx context.Context, idx int, text, operator string) error
+	// ContactDelivered reports whether the exact text was already
+	// transmitted to addr with a successful state (sent/delivered) —
+	// the durable progress ledger the action resumes from.
+	ContactDelivered(ctx context.Context, addr, text string) (bool, error)
+	// ChannelTextDelivered is the same ledger for the group broadcast.
+	ChannelTextDelivered(ctx context.Context, idx int, text string) (bool, error)
 }
 
 // Action sends SOSNA alerts as direct messages to the routed group
@@ -86,6 +92,15 @@ func (a *Action) Name() string { return Type }
 // publishes it on the configured group channel whenever one is set —
 // the channel broadcast goes out even when no member registered a node
 // ID.
+//
+// The whole group shares one bounded call deadline, so a large group can
+// exceed it mid-list. Every transmission is recorded durably by the hub
+// (the tx history) BEFORE the call returns: a retry therefore resumes
+// exactly where the previous attempt stopped — recipients and the
+// channel broadcast already transmitted successfully are skipped, only
+// the unfinished sends go out again (reported P1: with a whole-group
+// retry restart, early recipients received repeated alerts and the last
+// one never got any).
 func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if req.Event.Kind != dispatch.EventHazardTransition || req.Event.Hazard == nil {
 		return nil // nothing to say for non-hazard events
@@ -93,20 +108,38 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	text := a.textFor(ctx, req)
 
 	// The group channel is the base delivery: every alert is published
-	// there when configured, with or without registered node IDs.
+	// there when configured, with or without registered node IDs. The
+	// durable ledger skips a broadcast an earlier attempt already got
+	// out successfully.
 	if a.cfg.Channel > 0 {
-		if err := a.pace(ctx); err != nil {
-			return err
+		done, err := a.hub.ChannelTextDelivered(ctx, a.cfg.Channel, text)
+		if err != nil {
+			done = false // ledger unreadable: fail-open, deliver again
 		}
-		if err := a.hub.SendChannelText(ctx, a.cfg.Channel, text, "system"); err != nil {
-			return fmt.Errorf("meshtastic: %w", err)
+		if !done {
+			if err := a.pace(ctx); err != nil {
+				return err
+			}
+			if err := a.hub.SendChannelText(ctx, a.cfg.Channel, text, "system"); err != nil {
+				return fmt.Errorf("meshtastic: %w", err)
+			}
+			a.last = time.Now()
 		}
-		a.last = time.Now()
 	}
 
 	// Registered node IDs additionally get a direct message with
-	// per-recipient delivery tracking.
+	// per-recipient delivery tracking. Recipients whose exact message
+	// already has a successful tx row are skipped: only the unfinished
+	// sends are retried, so every member is reached exactly once across
+	// attempts.
 	for _, id := range req.MeshNodeIDs {
+		done, err := a.hub.ContactDelivered(ctx, id, text)
+		if err != nil {
+			done = false // ledger unreadable: fail-open, deliver again
+		}
+		if done {
+			continue
+		}
 		if err := a.pace(ctx); err != nil {
 			return err
 		}

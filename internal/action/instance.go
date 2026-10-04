@@ -95,6 +95,12 @@ type Instance struct {
 	// version (publisher + change ID) of the message, not only its key.
 	gate func(ctx context.Context, req ActionRequest) bool
 
+	// failCheck is the optional failure oracle consulted AFTER a
+	// successful execution and BEFORE the accepted settlement (see
+	// Manager.SetMeshFailureCheck): an asynchronous transport failure
+	// turns the success into a scheduled retry.
+	failCheck func(ctx context.Context, req ActionRequest) bool
+
 	// internet marks this instance as internet-backed: while the
 	// offline-mode switch is on, its worker holds queued work instead of
 	// executing it (nothing is executed, nothing is lost).
@@ -176,6 +182,12 @@ func (i *Instance) setDeliveryStore(st storage.DeliveryStore) {
 // before Start when one is configured).
 func (i *Instance) setDeliveryGate(gate func(ctx context.Context, req ActionRequest) bool) {
 	i.gate = gate
+}
+
+// setMeshFailureCheck attaches the post-execution failure oracle (called
+// by the manager before Start when one is configured).
+func (i *Instance) setMeshFailureCheck(check func(ctx context.Context, req ActionRequest) bool) {
+	i.failCheck = check
 }
 
 // setOfflineFn attaches the offline-mode oracle (called by the manager
@@ -303,6 +315,26 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 
 	stage, err := i.executeOnce(req)
 	if err == nil {
+		// The transport accepted the frames, but an ASYNC result may
+		// already report a failure: the failure oracle turns the success
+		// into a scheduled retry (within the attempt budget) instead of
+		// a terminal accepted — the late case is re-armed by the hub's
+		// own delivery sink (reported P1).
+		if i.failCheck != nil && i.failCheck(context.Background(), req) {
+			i.metricFailed(1)
+			i.trail.Add(key, trail.StepFailed,
+				fmt.Sprintf("attempt %d/%d failed: transmission reported failed after execution", job.Attempts, max), time.Now())
+			if job.Attempts < max {
+				i.metricRetry(1)
+				i.trail.Add(key, trail.StepRetry,
+					fmt.Sprintf("retrying in %s", RetryBackoff), time.Now())
+				i.settle(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff))
+			} else {
+				i.settle(job, storage.DeliveryFailed, time.Time{})
+				i.trail.SetOutcome(key, trail.OutcomeFailed)
+			}
+			return
+		}
 		terminal := storage.DeliveryAccepted
 		if stage == StageConfirmed {
 			terminal = storage.DeliveryConfirmed

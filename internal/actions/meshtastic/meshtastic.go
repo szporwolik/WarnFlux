@@ -47,14 +47,19 @@ var errHubDisabled = errors.New("meshtastic: hub is not configured")
 type sender interface {
 	SendContactMessage(ctx context.Context, addr, text, operator string) error
 	SendChannelText(ctx context.Context, idx int, text, operator string) error
+	// SendContactMessageVersioned sends the direct message and ties it
+	// to the durable action-progress ledger: the hub records the
+	// progress when the radio actually transmitted (sent/delivered)
+	// and REVOKES it when the transmission ultimately failed — a
+	// failed send stays retryable.
+	SendContactMessageVersioned(ctx context.Context, addr, text, operator, publisher, eventKey string, changeID int64) error
+	// SendChannelTextVersioned is the same for the group broadcast.
+	SendChannelTextVersioned(ctx context.Context, idx int, text, operator, publisher, eventKey string, changeID int64) error
 	// MeshActionProgressDone reports whether the exact versioned
 	// transmission (publisher + event key + change id + recipient +
 	// channel) already succeeded — the durable resume ledger of the
 	// action, independent of the message history.
 	MeshActionProgressDone(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error)
-	// RecordMeshActionProgress durably marks one successful
-	// transmission of the exact versioned entry.
-	RecordMeshActionProgress(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) error
 }
 
 // Action sends SOSNA alerts as direct messages to the routed group
@@ -96,13 +101,16 @@ func (a *Action) Name() string { return Type }
 // ID.
 //
 // The whole group shares one bounded call deadline, so a large group can
-// exceed it mid-list. Every successful transmission is recorded durably
-// in a per-VERSION progress ledger (publisher + event key + change id +
-// recipient): a retry therefore resumes exactly where the previous
+// exceed it mid-list. Every transmission is tied to a durable per-VERSION
+// progress entry (publisher + event key + change id + recipient) that
+// follows the TRANSMISSION OUTCOME: the hub records it when the radio
+// actually transmitted (sent/delivered) and revokes it when the send
+// ultimately failed, so a retry resumes exactly where the previous
 // attempt stopped — recipients and the channel broadcast already
-// transmitted are skipped, only the unfinished sends go out again
-// (reported P1: with a whole-group retry restart, early recipients
-// received repeated alerts and the last one never got any). The ledger
+// transmitted are skipped, only the unfinished (or failed) sends go out
+// again (reported P1: with a whole-group retry restart, early
+// recipients received repeated alerts and the last one never got any;
+// a failed transmission must stay retryable, reported P1). The ledger
 // is keyed by the message VERSION, never by the text: a NEW alert whose
 // text matches a historical message still transmits (reported P1).
 func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
@@ -130,12 +138,6 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		}
 		return d
 	}
-	mark := func(recipient string, channel int) {
-		if !ledger {
-			return
-		}
-		_ = a.hub.RecordMeshActionProgress(ctx, pub, key, ver, recipient, channel)
-	}
 
 	// The group channel is the base delivery: every alert is published
 	// there when configured, with or without registered node IDs. The
@@ -146,11 +148,16 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 			if err := a.pace(ctx); err != nil {
 				return err
 			}
-			if err := a.hub.SendChannelText(ctx, a.cfg.Channel, text, "system"); err != nil {
+			var err error
+			if ledger {
+				err = a.hub.SendChannelTextVersioned(ctx, a.cfg.Channel, text, "system", pub, key, ver)
+			} else {
+				err = a.hub.SendChannelText(ctx, a.cfg.Channel, text, "system")
+			}
+			if err != nil {
 				return fmt.Errorf("meshtastic: %w", err)
 			}
 			a.last = time.Now()
-			mark("", a.cfg.Channel)
 		}
 	}
 
@@ -166,11 +173,16 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		if err := a.pace(ctx); err != nil {
 			return err
 		}
-		if err := a.hub.SendContactMessage(ctx, id, text, "system"); err != nil {
+		var err error
+		if ledger {
+			err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", pub, key, ver)
+		} else {
+			err = a.hub.SendContactMessage(ctx, id, text, "system")
+		}
+		if err != nil {
 			return fmt.Errorf("meshtastic: %s: %w", id, err)
 		}
 		a.last = time.Now()
-		mark(id, 0)
 	}
 	return nil
 }

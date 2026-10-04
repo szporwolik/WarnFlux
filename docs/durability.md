@@ -116,8 +116,10 @@ jobs exist durably and the row is gone, or neither happened.
   outlives the queue rows: a cancellation that was published and
   acknowledged still blocks a delayed older version from re-publishing
   the alert (the queue-drain comparison alone would let it through).
-  The watermark lives until the event's own expiry passes (then the
-  broker mirror is self-expired and the guard is pointless).
+  The replay-protection retention is a wall-clock bound, INDEPENDENT of
+  the alarm's expiry: the input format does not guarantee a delayed
+  stale version carries its own expiry, so the guard must outlive even
+  an expired cancellation.
 - `/metrics` exposes `warnflux_ingest_outbox_backlog` so a degraded
   broker sync is visible to the operator.
 
@@ -268,12 +270,20 @@ device took the message, the protocol has no stronger signal.
 
 - The Meshtastic action paces one alert to the whole routed group under
   a single bounded call deadline — a large group can exceed it mid-list.
-- Every successful transmission (the channel broadcast and each direct
-  message) is recorded in a durable, **version-keyed progress ledger**
-  (`publisher + event key + change id + recipient + channel`) before the
-  action moves on, so the ledger is independent of the message history:
-  a historical delivered message with the same text never suppresses a
-  NEW alert version.
+- Every transmission is tied to a durable, **version-keyed progress
+  entry** (`publisher + event key + change id + recipient + channel`)
+  that follows the **transmission outcome**, independent of the message
+  history: the radio transmitting the frame (sent) or the recipient's
+  ack (delivered) records the entry, and a later `failed` result REVOKES
+  it — a failed send stays retryable and a historical delivered message
+  with the same text never suppresses a NEW alert version.
+- The async modem result is tied back to the **durable delivery job**,
+  not only to the progress entry: a `failed` result sets a failure
+  marker (the worker consults it before settling a job as accepted) and
+  re-arms an already-settled job through the hub's delivery sink. The
+  retry runs within the attempt budget; a spent budget ends the job
+  explicitly failed (a replayed transition re-arms it with a fresh
+  budget). A bare progress revoke alone schedules nothing.
 - A retry skips the broadcast and every recipient whose exact version
   already has a progress row and transmits only the unfinished sends:
   early recipients are never repeated, and the last member is reached

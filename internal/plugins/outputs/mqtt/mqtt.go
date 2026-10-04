@@ -23,6 +23,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 // Type is the plugin type name used in the YAML configuration.
@@ -110,6 +111,20 @@ type Output struct {
 	// rehydrateMu serializes active-state rehydration passes (at most one
 	// runs at a time per output).
 	rehydrateMu sync.Mutex
+
+	// trail is the optional per-alert audit recorder: successful and
+	// failed publishes of hazard events land in the /notifications
+	// delivery history so the MQTT stream is accounted for like any
+	// routed action. The worker owns the Handle goroutine; the recorder
+	// is set once at construction (plugin.TrailAware) before any Handle
+	// call, so no extra synchronization is needed.
+	trail *trail.Recorder
+}
+
+// SetTrailRecorder implements plugin.TrailAware: the output records its
+// publish attempts in the shared per-alert audit trail.
+func (o *Output) SetTrailRecorder(rec *trail.Recorder) {
+	o.trail = rec
 }
 
 // activeCacheEntry is one desired retained active payload plus the cache
@@ -275,7 +290,48 @@ func (o *Output) Name() string { return Type }
 // StatusInterval reports the heartbeat interval (zero disables it).
 func (o *Output) StatusInterval() time.Duration { return o.cfg.HeartbeatInterval }
 
-// Handle publishes the change as JSON to <topic_prefix>/events with
+// Handle publishes the change and records the attempt in the per-alert
+// audit trail (when a recorder is attached): the MQTT stream is a
+// first-class notification path next to the routed actions.
+func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
+	err := o.handle(ctx, change)
+	o.recordTrail(change, err)
+	return err
+}
+
+// recordTrail appends one audit step for the MQTT publish path. Unknown
+// trail keys (events that never opened a routing trail) are ignored by
+// the recorder, and a masked publish (a deliberate policy silence)
+// records nothing.
+func (o *Output) recordTrail(change core.EventChange, err error) {
+	if o.trail == nil {
+		return
+	}
+	key := change.Event.Key()
+	if key == "" {
+		return
+	}
+	if err != nil {
+		o.trail.Add(key, trail.StepFailed, "mqtt publish failed: "+err.Error(), time.Now())
+		return
+	}
+	var topics []string
+	if mqttpolicy.Allowed(mqttpolicy.CatEvents) {
+		topics = append(topics, o.cfg.TopicPrefix+"/events")
+	}
+	if mqttpolicy.Allowed(mqttpolicy.CatActive) {
+		topics = append(topics, o.cfg.TopicPrefix+"/active")
+	}
+	if len(topics) == 0 {
+		return // both categories masked: nothing was published on purpose
+	}
+	o.trail.Add(key, trail.StepDelivered,
+		"mqtt publish: "+strings.Join(topics, " + "), time.Now())
+}
+
+// handle implements the publishing logic of Handle.
+//
+// The change is published as JSON to <topic_prefix>/events with
 // retain=false and the configured QoS, and then materializes the retained
 // active view (<topic_prefix>/active/...). Both MQTT operations must
 // succeed before nil is returned: the output worker acknowledges the
@@ -284,7 +340,7 @@ func (o *Output) StatusInterval() time.Duration { return o.cfg.HeartbeatInterval
 // instead of silently diverging the retained view. The wire schema is
 // deliberately explicit (see wireEvent): internal Go structs are never
 // marshaled directly.
-func (o *Output) Handle(ctx context.Context, change core.EventChange) error {
+func (o *Output) handle(ctx context.Context, change core.EventChange) error {
 	eventsOn := mqttpolicy.Allowed(mqttpolicy.CatEvents)
 	activeOn := mqttpolicy.Allowed(mqttpolicy.CatActive)
 

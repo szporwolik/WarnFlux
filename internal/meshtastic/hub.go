@@ -77,6 +77,11 @@ type Config struct {
 	// beacon fires as soon as the first session comes up (server
 	// start/restart).
 	EmcomInterval time.Duration
+	// EmcomHazardsInterval is the spacing of the periodic active-hazard
+	// digest broadcast on the emcom channel (default 1 hour). 0 disables
+	// the digest; the presence beacon stays on its own cadence. The
+	// digest is sent only when at least one hazard is active.
+	EmcomHazardsInterval time.Duration
 	// EmcomIdentity is the one-line installation banner sent by the
 	// beacon (version, installation name, public domain) — set by main.
 	EmcomIdentity string
@@ -170,6 +175,11 @@ const nodeDirRetention = 30 * 24 * time.Hour
 // defaultEmcomInterval is the spacing between presence beacons on the
 // emcom channel.
 const defaultEmcomInterval = 4 * time.Hour
+
+// maxHazardDigestLines bounds one hourly digest broadcast: the header
+// message plus at most this many hazard lines, so a busy day can never
+// flood the emcom channel.
+const maxHazardDigestLines = 12
 
 // meshTextMaxRunes bounds one outbound channel text message (133 chars
 // per the Meshtastic spec).
@@ -538,9 +548,16 @@ type Hub struct {
 	lastPersist time.Time
 
 	// startedAt anchors the beacon uptime; emcomNext schedules the next
-	// presence beacon on the emcom channel.
-	startedAt time.Time
-	emcomNext time.Time
+	// presence beacon on the emcom channel; hazardsNext schedules the
+	// next active-hazard digest (same channel).
+	startedAt   time.Time
+	emcomNext   time.Time
+	hazardsNext time.Time
+
+	// activeHazards supplies the current active hazards for the periodic
+	// digest (set by the application from the dispatch state mirror);
+	// nil disables the digest.
+	activeHazards func() []ActiveHazard
 
 	// cmds remembers executed radio commands by sender + packet
 	// identity; guarded by mu. A redelivered packet is answered with
@@ -591,6 +608,9 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if cfg.EmcomChannel < 0 || cfg.EmcomChannel > 7 {
 		return nil, errors.New("meshtastic: emcom channel must be 0-7")
 	}
+	if cfg.EmcomHazardsInterval < 0 {
+		return nil, errors.New("meshtastic: emcom hazards interval must not be negative (0 disables)")
+	}
 	if cfg.BannerMinInterval <= 0 {
 		cfg.BannerMinInterval = bannerMinInterval
 	}
@@ -631,6 +651,24 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 
 // Enabled reports whether the meshtastic integration is configured.
 func (h *Hub) Enabled() bool { return h.cfg.Enabled }
+
+// ActiveHazard is the minimal summary of one active hazard for the
+// periodic channel digest.
+type ActiveHazard struct {
+	Headline    string
+	Description string
+	EffectiveAt *time.Time
+	ExpiresAt   *time.Time
+}
+
+// SetActiveHazardSource attaches the active-hazard supplier for the
+// periodic emcom-channel digest (nil disables the digest). The callback
+// must return the current active hazards, most severe first.
+func (h *Hub) SetActiveHazardSource(fn func() []ActiveHazard) {
+	h.mu.Lock()
+	h.activeHazards = fn
+	h.mu.Unlock()
+}
 
 // EmcomChannel reports the configured presence-beacon channel index
 // (1-7; 0 = beacon disabled). The admin message history uses it for the
@@ -798,6 +836,16 @@ func (h *Hub) runSession(ctx context.Context) error {
 		}
 		h.mu.Unlock()
 	}
+	// The active-hazard digest follows the same rule: the first session
+	// schedules it for now so a restart resyncs the mesh promptly; the
+	// hourly cadence survives device reconnects.
+	if h.cfg.EmcomChannel > 0 && h.cfg.EmcomHazardsInterval > 0 {
+		h.mu.Lock()
+		if h.hazardsNext.IsZero() {
+			h.hazardsNext = time.Now()
+		}
+		h.mu.Unlock()
+	}
 	h.populateFromState(conn.State())
 
 	if h.logger != nil {
@@ -838,6 +886,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 			h.retryPending(time.Now())
 			h.persistNodes()
 			h.beaconTick()
+			h.hazardsTick()
 			h.drainBanner()
 		}
 	}
@@ -866,6 +915,89 @@ func (h *Hub) beaconTick() {
 	if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, text, "system"); err != nil && h.logger != nil {
 		h.logger.Warn("meshtastic: emcom beacon failed", "error", err)
 	}
+}
+
+// hazardsTick sends the periodic active-hazard digest on the emcom
+// channel: a short header message plus one line per active hazard
+// (bounded by maxHazardDigestLines). Nothing is sent while no hazard is
+// active. The digest is disabled when the emcom channel is off, the
+// interval is 0 or no hazard source is attached.
+func (h *Hub) hazardsTick() {
+	if h.cfg.EmcomChannel <= 0 || h.cfg.EmcomHazardsInterval <= 0 {
+		return
+	}
+	h.mu.Lock()
+	next := h.hazardsNext
+	src := h.activeHazards
+	h.mu.Unlock()
+	if next.IsZero() || time.Now().Before(next) || src == nil {
+		return
+	}
+	// Advance the cadence BEFORE reading the source: a slow callback or
+	// a failed send must never fire the digest twice per window.
+	h.mu.Lock()
+	h.hazardsNext = time.Now().Add(h.cfg.EmcomHazardsInterval)
+	h.mu.Unlock()
+
+	hazards := src()
+	if len(hazards) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	header := fmt.Sprintf("WarnFlux active hazards: %d", len(hazards))
+	if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, header, "system"); err != nil && h.logger != nil {
+		h.logger.Warn("meshtastic: hazard digest header failed", "error", err)
+	}
+	if len(hazards) > maxHazardDigestLines {
+		hazards = hazards[:maxHazardDigestLines]
+	}
+	for _, hz := range hazards {
+		if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, hazardDigestLine(hz), "system"); err != nil && h.logger != nil {
+			h.logger.Warn("meshtastic: hazard digest line failed", "error", err)
+		}
+	}
+}
+
+// hazardDigestLine renders one hazard as a single channel line: the Zulu
+// validity window, the headline and as much of the description as fits
+// the Meshtastic text limit.
+func hazardDigestLine(hz ActiveHazard) string {
+	var b strings.Builder
+	b.WriteString(zuluShort(hz.EffectiveAt))
+	b.WriteString("-")
+	b.WriteString(zuluShort(hz.ExpiresAt))
+	headline := strings.TrimSpace(hz.Headline)
+	if headline == "" {
+		headline = "?"
+	}
+	b.WriteString(" ")
+	b.WriteString(headline)
+	if desc := strings.TrimSpace(hz.Description); desc != "" {
+		b.WriteString(" — ")
+		b.WriteString(desc)
+	}
+	r := []rune(b.String())
+	if len(r) > meshTextMaxRunes {
+		return string(r[:meshTextMaxRunes])
+	}
+	return string(r)
+}
+
+// HazardDigestLine is the shared one-line formatter for active hazards:
+// the hourly emcom-channel digest broadcasts it and the public /hazard
+// radio command answers with the same lines.
+func HazardDigestLine(hz ActiveHazard) string {
+	return hazardDigestLine(hz)
+}
+
+// zuluShort renders an optional time as a compact Zulu timestamp
+// (UTC date + time); a missing timestamp renders as "?".
+func zuluShort(t *time.Time) string {
+	if t == nil {
+		return "?"
+	}
+	return t.UTC().Format("2006-01-02 15:04Z")
 }
 
 // restoreNodes loads the persisted node directory into the hub (once, at
@@ -1889,18 +2021,21 @@ func (h *Hub) pruneCmds(now time.Time) {
 // the sender (best-effort; the reply lands in the durable TX history
 // with its delivery tracking). The reply is fitted to the mesh text
 // limit through the shared CLI mechanism (identity shortens
-// progressively, payload truncates last).
+// progressively, payload truncates last); multi-line replies (the
+// /hazard list) send one message per line.
 func (h *Hub) sendCLIReply(id, text string) {
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
-	if cli != nil {
-		text = cli.Fit(text, meshTextMaxRunes)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := h.SendContactMessage(ctx, id, text, "system"); err != nil && h.logger != nil {
-		h.logger.Warn("meshtastic: cli reply failed", "to", id, "error", err)
+	for _, line := range radiocli.ReplyLines(text, radiocli.MaxReplyLines) {
+		if cli != nil {
+			line = cli.Fit(line, meshTextMaxRunes)
+		}
+		if err := h.SendContactMessage(ctx, id, line, "system"); err != nil && h.logger != nil {
+			h.logger.Warn("meshtastic: cli reply failed", "to", id, "error", err)
+		}
 	}
 }
 

@@ -961,7 +961,9 @@ aprs:
   # banner, /help lists the commands, and /debug (allow-listed senders
   # only) fires the debug alarm. Only senders whose BASE callsign
   # (SSID-insensitive) is registered on one of the directory users may
-  # run commands, over the radio or via APRS-IS alike.
+  # run commands. Only messages heard by OUR radio (the KISS backend)
+  # react: APRS-IS-delivered copies are recorded and displayed, never
+  # answered — an internet-injected message can't raise an alarm.
   # route_messages: false
 
 # Meshtastic Companion serial link (Heltec V4 over USB). When enabled,
@@ -986,3 +988,8 @@ aprs:
 #   # broadcasts there are blocked by policy.
 #   emcom_channel: 1      # 0 = beacon disabled
 #   emcom_interval: 4h    # default; the first beacon fires at startup
+#   # Periodic active-hazard digest on the same emcom channel: a short
+#   # header plus one line per active hazard (Zulu validity window +
+#   # headline + description, capped at 12 lines). Sent only when at
+#   # least one hazard is active; the first digest fires at startup.
+#   emcom_hazards_interval: 1h  # default; 0 = digest disabled

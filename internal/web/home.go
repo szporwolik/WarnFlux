@@ -343,12 +343,6 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 	v.MinorHazards = make([]publicHazardView, 0)
 	minorRank, _ := severity.Rank(severity.Minor)
 	hazardsJSON := make([]homeHazardJSON, 0, len(hazards))
-	jsonTime := func(t *time.Time) string {
-		if t == nil {
-			return ""
-		}
-		return t.Format(time.RFC3339)
-	}
 	for _, h := range hazards {
 		view := publicHazardView{
 			EventKey:    h.EventKey,
@@ -374,24 +368,7 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 		} else {
 			v.MinorHazards = append(v.MinorHazards, view)
 		}
-		hazardsJSON = append(hazardsJSON, homeHazardJSON{
-			EventKey:    h.EventKey,
-			Severity:    h.Severity,
-			Headline:    h.Headline,
-			Event:       h.Event,
-			Source:      h.Source,
-			Areas:       view.Areas,
-			Description: h.Description,
-			Instruction: h.Instruction,
-			Status:      h.Status,
-			Urgency:     h.Urgency,
-			Certainty:   h.Certainty,
-			EffectiveAt: jsonTime(h.EffectiveAt),
-			ExpiresAt:   jsonTime(h.ExpiresAt),
-			UpdatedAt:   h.UpdatedAt.Format(time.RFC3339),
-			Latitude:    h.Latitude,
-			Longitude:   h.Longitude,
-		})
+		hazardsJSON = append(hazardsJSON, hazardJSONFromState(h, view.Areas))
 	}
 	if b, err := json.Marshal(hazardsJSON); err == nil {
 		v.HazardsJSON = template.JS(b)
@@ -402,6 +379,102 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 	v.MainCount = len(v.Hazards)
 	sortHazards(v.Hazards)
 	sortHazards(v.MinorHazards)
+}
+
+// hazardTime renders an optional time as RFC3339 (empty for nil) for the
+// client-side JSON payloads.
+func hazardTime(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+// hazardJSONFromState builds the client-side detail payload from one
+// state hazard; areas carries the pre-joined display form.
+func hazardJSONFromState(h state.Hazard, areas string) homeHazardJSON {
+	return homeHazardJSON{
+		EventKey:    h.EventKey,
+		Severity:    h.Severity,
+		Headline:    h.Headline,
+		Event:       h.Event,
+		Source:      h.Source,
+		Areas:       areas,
+		Description: h.Description,
+		Instruction: h.Instruction,
+		Status:      h.Status,
+		Urgency:     h.Urgency,
+		Certainty:   h.Certainty,
+		EffectiveAt: hazardTime(h.EffectiveAt),
+		ExpiresAt:   hazardTime(h.ExpiresAt),
+		UpdatedAt:   h.UpdatedAt.Format(time.RFC3339),
+		Latitude:    h.Latitude,
+		Longitude:   h.Longitude,
+	}
+}
+
+// hazardJSONFromEvent builds the same payload from one persisted
+// HazardEvent (the current-state table keeps ended events for the
+// retention window, so mail deep links can still render them).
+func hazardJSONFromEvent(ev core.HazardEvent) homeHazardJSON {
+	return homeHazardJSON{
+		EventKey:    ev.Key(),
+		Severity:    ev.Severity,
+		Headline:    ev.Headline,
+		Event:       ev.Event,
+		Source:      ev.Source,
+		Areas:       strings.Join(displayAreas(ev.Areas), ", "),
+		Description: ev.Description,
+		Instruction: ev.Instruction,
+		Status:      string(ev.Status),
+		Urgency:     ev.Urgency,
+		Certainty:   ev.Certainty,
+		EffectiveAt: hazardTime(ev.EffectiveAt),
+		ExpiresAt:   hazardTime(ev.ExpiresAt),
+		UpdatedAt:   ev.UpdatedAt.Format(time.RFC3339),
+		Latitude:    ev.Latitude,
+		Longitude:   ev.Longitude,
+	}
+}
+
+// handleHazardByKey serves one hazard by event key, including ended ones
+// (expired/cancelled): notification deep links must show what the message
+// was about even after the hazard left the active list. Lookup order:
+// the active views, the local compose record (expired tombstones
+// included), then the current-state table.
+func (s *Server) handleHazardByKey(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if key == "" {
+		http.Error(w, "missing event key", http.StatusBadRequest)
+		return
+	}
+	for _, h := range s.activeHazards() {
+		if h.EventKey == key {
+			writeHazardJSON(w, hazardJSONFromState(h, strings.Join(displayAreas(h.Areas), ", ")))
+			return
+		}
+	}
+	if h, ok := s.composeHazard(key); ok {
+		writeHazardJSON(w, hazardJSONFromState(h, strings.Join(displayAreas(h.Areas), ", ")))
+		return
+	}
+	if s.events != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		ev, err := s.events.Get(ctx, key)
+		cancel()
+		if err == nil && ev != nil {
+			writeHazardJSON(w, hazardJSONFromEvent(ev.Event))
+			return
+		}
+	}
+	http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+}
+
+// writeHazardJSON emits one hazard detail payload.
+func writeHazardJSON(w http.ResponseWriter, hz homeHazardJSON) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(hz)
 }
 
 // activeHazards returns the current active communications for the public
@@ -557,11 +630,14 @@ func (s *Server) handleAPRSStations(w http.ResponseWriter, r *http.Request) {
 // map: internet providers (retained info topics) and APRS weather
 // stations heard in range.
 type weatherReportView struct {
-	Provider         string   `json:"provider"`
-	Name             string   `json:"name"`
-	Latitude         float64  `json:"latitude"`
-	Longitude        float64  `json:"longitude"`
-	Via              string   `json:"via"` // "internet" or "aprs"
+	Provider  string  `json:"provider"`
+	Name      string  `json:"name"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Via       string  `json:"via"` // "internet" or "aprs"
+	// Origin classifies APRS reports: "rf" (heard by our radio),
+	// "internet" (APRS-IS only) or "" (unknown).
+	Origin           string   `json:"origin,omitempty"`
 	Condition        string   `json:"condition"`
 	TemperatureC     *float64 `json:"temperature_c,omitempty"`
 	HumidityPct      *float64 `json:"humidity_pct,omitempty"`
@@ -629,6 +705,7 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 				Latitude:         lat,
 				Longitude:        lon,
 				Via:              "aprs",
+				Origin:           doc.Origin,
 				Condition:        aprsWeatherCondition(doc.Weather),
 				TemperatureC:     doc.Weather.TemperatureC,
 				HumidityPct:      doc.Weather.HumidityPct,

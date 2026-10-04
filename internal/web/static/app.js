@@ -101,7 +101,22 @@
       "popup.location": "Location:",
       "popup.show_map": "Show on map",
       "popup.not_found": "The message is not active anymore.",
+      "popup.expired_note": "This alert has expired.",
+      "popup.cancelled_note": "This alert has been cancelled.",
       "notif.empty": "No notifications processed yet",
+      "notif.details": "Details",
+      "notif.action": "Action",
+      "notif.status": "Status",
+      "notif.attempts": "attempts",
+      "notif.at": "at",
+      "notif.no_deliveries": "No delivery attempts recorded.",
+      "notif.status.saved": "queued",
+      "notif.status.running": "in progress",
+      "notif.status.failed": "failed",
+      "notif.status.succeeded": "delivered",
+      "notif.status.accepted": "accepted",
+      "notif.status.confirmed": "confirmed",
+      "notif.status.expired": "expired",
       "traffic.subscribing": "Subscribing to %s… (%s s)",
       "traffic.browse_failed": "Browse failed.",
       "traffic.browse_empty": "Browse failed (empty response).",
@@ -197,13 +212,28 @@
       "popup.certainty": "Pewność:",
       "popup.areas": "Obszary:",
       "popup.description": "Opis",
-      "popup.instruction": "Polecenie",
+      "popup.instruction": "instrukcja",
       "popup.updated": "Zaktualizowano:",
       "popup.valid_until": "Ważne do:",
       "popup.location": "Położenie:",
       "popup.show_map": "Pokaż na mapie",
       "popup.not_found": "Komunikat nie jest już aktywny.",
+      "popup.expired_note": "Ten alert wygasł.",
+      "popup.cancelled_note": "Ten alert został anulowany.",
       "notif.empty": "Nie przetworzono jeszcze powiadomień",
+      "notif.details": "Szczegóły",
+      "notif.action": "Akcja",
+      "notif.status": "Status",
+      "notif.attempts": "próby",
+      "notif.at": "o",
+      "notif.no_deliveries": "Brak zarejestrowanych prób dostarczenia.",
+      "notif.status.saved": "w kolejce",
+      "notif.status.running": "w trakcie",
+      "notif.status.failed": "niepowodzenie",
+      "notif.status.succeeded": "dostarczono",
+      "notif.status.accepted": "przyjęto",
+      "notif.status.confirmed": "potwierdzono",
+      "notif.status.expired": "wygasło",
       "traffic.subscribing": "Subskrybowanie %s… (%s s)",
       "traffic.browse_failed": "Przeglądanie nie powiodło się.",
       "traffic.browse_empty": "Przeglądanie nie powiodło się (pusta odpowiedź).",
@@ -497,7 +527,7 @@
     return pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + ":" + pad2(t.getSeconds());
   }
 
-  function itemFor(trail) {
+  function itemFor(trail, deliveries) {
     var art = document.createElement("article");
     art.className = "notif";
     art.id = "notif-" + trail.key;
@@ -537,12 +567,74 @@
     }
     art.appendChild(head);
 
+    // Details block mirroring the server template: the durable delivery
+    // ledger rows (one per action path: smtp, discord, aprs, meshtastic,
+    // webhook, …) above the audit steps. Rendering it client-side keeps
+    // the table alive across polls instead of replacing the list with
+    // head-only articles.
+    var details = document.createElement("details");
+    details.className = "nt-details";
+    if (trail.key === focusKey()) {
+      details.open = true;
+    }
+    var sum = document.createElement("summary");
+    sum.textContent = tr("notif.details") +
+      (deliveries && deliveries.length ? " (" + deliveries.length + ")" : "");
+    details.appendChild(sum);
+
+    if (deliveries && deliveries.length) {
+      var table = document.createElement("table");
+      table.className = "plugins nt-deliveries";
+      var thead = document.createElement("thead");
+      var hr = document.createElement("tr");
+      [tr("notif.action"), tr("notif.status"), tr("notif.attempts"), tr("notif.at")].forEach(function (h) {
+        var th = document.createElement("th");
+        th.textContent = h;
+        hr.appendChild(th);
+      });
+      thead.appendChild(hr);
+      table.appendChild(thead);
+      var tbody = document.createElement("tbody");
+      deliveries.forEach(function (d) {
+        var row = document.createElement("tr");
+        var c1 = document.createElement("td");
+        c1.className = "mono";
+        c1.textContent = d.action_id;
+        row.appendChild(c1);
+        var c2 = document.createElement("td");
+        var badge = document.createElement("span");
+        badge.className = "badge nt-status-" + d.status;
+        var statusKey = "notif.status." + d.status;
+        var statusText = tr(statusKey);
+        if (statusText === statusKey) { statusText = d.status; }
+        badge.textContent = statusText;
+        c2.appendChild(badge);
+        row.appendChild(c2);
+        var c3 = document.createElement("td");
+        c3.textContent = String(d.attempts);
+        row.appendChild(c3);
+        var c4 = document.createElement("td");
+        c4.className = "muted";
+        c4.textContent = hhmmss(d.fired_at);
+        row.appendChild(c4);
+        tbody.appendChild(row);
+      });
+      table.appendChild(tbody);
+      details.appendChild(table);
+    } else {
+      var noDel = document.createElement("p");
+      noDel.className = "muted";
+      noDel.textContent = tr("notif.no_deliveries");
+      details.appendChild(noDel);
+    }
+
     var steps = document.createElement("ol");
     steps.className = "nt-steps";
     (trail.steps || []).forEach(function (s) {
       steps.appendChild(stepLine(s));
     });
-    art.appendChild(steps);
+    details.appendChild(steps);
+    art.appendChild(details);
     return art;
   }
 
@@ -568,11 +660,11 @@
     }
     var lastJSON = "";
 
-    function render(trails) {
+    function render(trails, deliveries) {
       var frag = document.createDocumentFragment();
       var fk = focusKey();
       (trails || []).forEach(function (t) {
-        var item = itemFor(t);
+        var item = itemFor(t, (deliveries || {})[t.key]);
         if (fk && t.key === fk) {
           item.classList.add("notif-focus");
         }
@@ -607,12 +699,14 @@
           if (!data || !data.trails) {
             return;
           }
-          var cur = JSON.stringify(data.trails);
+          // Delivery rows are part of the identity: attempt progress and
+          // new paths must trigger a re-render too.
+          var cur = JSON.stringify({ t: data.trails, d: data.deliveries });
           if (cur === lastJSON) {
             return;
           }
           lastJSON = cur;
-          render(data.trails);
+          render(data.trails, data.deliveries);
         })
         .catch(function () {
           // Network hiccup: keep the last rendered list and try again.
@@ -885,7 +979,7 @@
       }
     }
     if (!layer) {
-      layer = L.tileLayer(t.raster, { maxZoom: 18, pane: "aprsBase" }).addTo(map);
+      layer = L.tileLayer(t.raster, { maxZoom: 19, pane: "aprsBase" }).addTo(map);
       mode = "raster";
     }
     return { layer: layer, mode: mode };
@@ -1982,6 +2076,10 @@
     if (r.pressure_hpa != null) { meta.push(fmtNum(r.pressure_hpa, 0) + " hPa"); }
     if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
     if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
+    if (r.via === "aprs" && r.origin) {
+      var viaLabel = r.origin === "rf" ? tr("map.via.radio") : r.origin === "internet" ? tr("map.via.internet") : "";
+      if (viaLabel) { meta.push(viaLabel); }
+    }
     if (meta.length) { body += '<div class="wf-pop-meta">' + meta.join(" · ") + '</div>'; }
     var f = forecastKey()[r.provider + "\x00" + r.name];
     if (f && f.daily && f.daily.length) {
@@ -2207,6 +2305,12 @@
       if (r.pressure_hpa != null) { meta.push(fmtNum(r.pressure_hpa, 0) + " hPa"); }
       if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
       if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
+      // APRS reports say where the data came from: our radio or the
+      // internet feed — the same labels the station popups use.
+      if (r.via === "aprs" && r.origin) {
+        var viaLabel = r.origin === "rf" ? tr("map.via.radio") : r.origin === "internet" ? tr("map.via.internet") : "";
+        if (viaLabel) { meta.push(viaLabel); }
+      }
       if (meta.length) { body.appendChild(mk("span", "hw-meta", meta.join(" · "))); }
 
       var f = fk[r.provider + "\x00" + r.name];
@@ -2929,7 +3033,7 @@
       return;
     }
     map = L.map(mapEl, { attributionControl: false }).setView(center, 11);
-    L.tileLayer(tileURL(), { maxZoom: 18 }).addTo(map);
+    L.tileLayer(tileURL(), { maxZoom: 19 }).addTo(map);
     map.on("click", function (e) { dropMarker(e.latlng); });
 
     // Edit flow: an existing location prefills the marker.
@@ -3427,6 +3531,11 @@
       html += '<span class="wf-pop-val">' + hzEsc(h.severity) + "</span>";
     }
     html += '</div><div class="wf-pop-body hz-body">';
+    if (h.status === "expired" || h.status === "cancelled") {
+      html += '<div class="hz-ended">' +
+        hzEsc(h.status === "cancelled" ? tr("popup.cancelled_note") : tr("popup.expired_note")) +
+        "</div>";
+    }
     html += hzRow(tr("popup.event"), h.event);
     html += hzRow(tr("popup.status"), h.status);
     html += hzRow(tr("popup.urgency"), h.urgency);
@@ -3487,7 +3596,10 @@
     }
 
     // Deep link: /message/<event-key> opens this hazard's popup. The
-    // hazard data lands with the 5 s poll, so retry briefly.
+    // hazard data lands with the 5 s poll, so retry briefly — and when
+    // it already ended (expired/cancelled), the hazard API still serves
+    // it so the mail link shows WHAT the message was about, with the
+    // ended note on top.
     var deepLink = /^\/message\/(.+)$/.exec(window.location.pathname);
     if (deepLink) {
       var key = decodeURIComponent(deepLink[1]);
@@ -3495,12 +3607,35 @@
       (function waitOpen() {
         tries++;
         if (openKey(key)) { return; }
-        if (tries < 8) {
-          window.setTimeout(waitOpen, 2500);
-        } else {
-          content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.not_found") + "</p></div>";
-          showModal();
-        }
+        fetch("/api/hazard/" + encodeURIComponent(key), {
+          headers: { "Accept": "application/json" },
+          cache: "no-store"
+        })
+          .then(function (res) {
+            if (!res.ok) { return null; }
+            return res.json();
+          })
+          .then(function (data) {
+            if (data && data.event_key) {
+              content.innerHTML = hzRender(data);
+              showModal();
+              return;
+            }
+            if (tries < 8) {
+              window.setTimeout(waitOpen, 2500);
+            } else {
+              content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.not_found") + "</p></div>";
+              showModal();
+            }
+          })
+          .catch(function () {
+            if (tries < 8) {
+              window.setTimeout(waitOpen, 2500);
+            } else {
+              content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.not_found") + "</p></div>";
+              showModal();
+            }
+          });
       })();
     }
 

@@ -522,67 +522,75 @@ func messageURL(req action.ActionRequest, key string) string {
 	return scheme + domain + "/message/" + url.PathEscape(key)
 }
 
+// humanTime renders one event timestamp in the local wall-clock style
+// (no RFC3339 zone noise) for the human-readable bodies.
+func humanTime(t time.Time) string {
+	return t.Format("2006-01-02 15:04")
+}
+
+// defaultInstruction is the fallback instruction section text for
+// hazards that carry none: every alert mail answers the reader's first
+// question — what am I supposed to do.
+const defaultInstruction = "Follow official communications and obey the instructions of emergency services."
+
+// effectiveInstruction returns the hazard's own instruction or the
+// default when none was provided.
+func effectiveInstruction(h dispatch.Hazard) string {
+	if instr := strings.TrimSpace(h.Instruction); instr != "" {
+		return instr
+	}
+	return defaultInstruction
+}
+
+// bodyOfPlain renders the human-first plain text: severity and headline
+// up front, then the description, the instruction, the areas and the
+// validity window — no transport metadata, no raw keys.
 func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 	var b strings.Builder
 	b.WriteString("WarnFlux notification\n")
-	fmt.Fprintf(&b, "Time: %s\n\n", now.Format(time.RFC3339))
+	fmt.Fprintf(&b, "Time: %s\n\n", humanTime(now))
 
 	ev := req.Event
-	fmt.Fprintf(&b, "Kind: %s\n", ev.Kind)
-	if ev.Origin.ReceiverID != "" {
-		fmt.Fprintf(&b, "Receiver: %s\n", ev.Origin.ReceiverID)
-	}
-
 	switch ev.Kind {
 	case dispatch.EventHazardTransition:
 		h := ev.Hazard
 		if h == nil {
-			b.WriteString("Hazard: <empty transition>\n")
+			b.WriteString("Hazard: <empty change>\n")
 			break
 		}
-		fmt.Fprintf(&b, "Transition: %s\n", h.Type)
-		fmt.Fprintf(&b, "Source: %s\n", h.Source)
-		fmt.Fprintf(&b, "Event key: %s\n", h.Key)
-		if link := messageURL(req, h.Key); link != "" {
-			fmt.Fprintf(&b, "Details: %s\n", link)
+		event := strings.TrimSpace(h.Hazard.Event)
+		headline := strings.TrimSpace(h.Hazard.Headline)
+		if headline == "" {
+			headline = event
 		}
-		fmt.Fprintf(&b, "Event: %s\n", h.Hazard.Event)
-		fmt.Fprintf(&b, "Severity: %s\n", h.Hazard.Severity)
-		if h.Hazard.Urgency != "" {
-			fmt.Fprintf(&b, "Urgency: %s\n", h.Hazard.Urgency)
+		fmt.Fprintf(&b, "Hazard: %s · %s\n", strings.ToUpper(h.Hazard.Severity), event)
+		if headline != event {
+			fmt.Fprintf(&b, "Headline: %s\n", headline)
 		}
-		if h.Hazard.Certainty != "" {
-			fmt.Fprintf(&b, "Certainty: %s\n", h.Hazard.Certainty)
+		if src := strings.TrimSpace(h.Source); src != "" {
+			fmt.Fprintf(&b, "source: %s\n", src)
 		}
-		if h.Hazard.Headline != "" {
-			fmt.Fprintf(&b, "Headline: %s\n", h.Hazard.Headline)
+		if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
+			fmt.Fprintf(&b, "description: %s\n", desc)
+		}
+		fmt.Fprintf(&b, "instruction: %s\n", effectiveInstruction(h.Hazard))
+		if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
+			fmt.Fprintf(&b, "roads: %s\n", strings.Join(roads, ", "))
+		}
+		if rest := nonRoadAreas(h.Hazard.Areas); len(rest) > 0 {
+			fmt.Fprintf(&b, "areas: %s\n", strings.Join(geo.DisplayAreas(rest), ", "))
 		}
 		if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
-			fmt.Fprintf(&b, "Coordinates: %.5f, %.5f\n", *h.Hazard.Latitude, *h.Hazard.Longitude)
-		}
-		if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
-			label := "Road"
-			if len(roads) > 1 {
-				label = "Roads"
-			}
-			fmt.Fprintf(&b, "%s: %s\n", label, strings.Join(roads, ", "))
-		}
-		if h.Hazard.Description != "" {
-			fmt.Fprintf(&b, "Description: %s\n", h.Hazard.Description)
-		}
-		if h.Hazard.Instruction != "" {
-			fmt.Fprintf(&b, "Instruction: %s\n", h.Hazard.Instruction)
-		}
-		if len(h.Hazard.Areas) > 0 {
-			if rest := nonRoadAreas(h.Hazard.Areas); len(rest) > 0 {
-				fmt.Fprintf(&b, "Areas: %s\n", strings.Join(geo.DisplayAreas(rest), ", "))
-			}
+			fmt.Fprintf(&b, "location: %.5f, %.5f\n", *h.Hazard.Latitude, *h.Hazard.Longitude)
 		}
 		if h.Hazard.EffectiveAt != nil {
-			fmt.Fprintf(&b, "Effective: %s\n", h.Hazard.EffectiveAt.Format(time.RFC3339))
+			fmt.Fprintf(&b, "effective from: %s\n", humanTime(*h.Hazard.EffectiveAt))
 		}
 		if h.Hazard.ExpiresAt != nil {
-			fmt.Fprintf(&b, "Expires: %s\n", h.Hazard.ExpiresAt.Format(time.RFC3339))
+			fmt.Fprintf(&b, "valid until: %s\n", humanTime(*h.Hazard.ExpiresAt))
+		}
+		if link := messageURL(req, h.Key); link != "" {
+			fmt.Fprintf(&b, "details: %s\n", link)
 		}
 	case dispatch.EventMQTTMessage:
 		m := ev.MQTT
@@ -648,16 +656,14 @@ func severityColor(severity string) (bg, fg string) {
 }
 
 // bodyOfHTML renders a styled, human-first HTML version of the event: a
-// focused summary for the reader on top, the technical metadata in a table
-// below, and a branded footer. The card carries a severity-colored accent
-// (the same palette as the web dashboard), so the alert level is visible
-// at a glance.
+// focused summary for the reader and a branded footer. The card carries
+// a severity-colored accent (the same palette as the web dashboard), so
+// the alert level is visible at a glance. No transport metadata — the
+// reader sees only what a human needs.
 func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 	accent := "#303c46"
-	sevFG := ""
 	if ev := req.Event; ev.Kind == dispatch.EventHazardTransition && ev.Hazard != nil {
-		_, sevFG = severityColor(ev.Hazard.Hazard.Severity)
-		accent = sevFG
+		_, accent = severityColor(ev.Hazard.Hazard.Severity)
 	}
 
 	var b strings.Builder
@@ -676,7 +682,7 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 </tr></table>`,
 		logoCID, htmlEscaper(brand), htmlEscaper(brand))
 
-	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">WarnFlux hazard alert</div>`)
+	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">Hazard notification</div>`)
 
 	ev := req.Event
 	switch ev.Kind {
@@ -696,11 +702,7 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 		b.WriteString(`<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Dispatch event</div>`)
 	}
 
-	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #303c46;padding-top:16px;">
-<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;margin-bottom:8px;">Technical details</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">`)
-	b.WriteString(technicalRows(req, now, sevFG))
-	b.WriteString(`</table></div>`)
+	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">Updated: %s</div>`, htmlEscaper(humanTime(now)))
 
 	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #303c46;padding-top:14px;font-size:12px;color:#87939e;">`)
 	b.WriteString(footerHTML(req))
@@ -714,12 +716,12 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 func hazardHTML(ev dispatch.Event, link string) string {
 	h := ev.Hazard
 	if h == nil {
-		return `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Hazard transition</div>`
+		return `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Hazard</div>`
 	}
 	var b strings.Builder
 	bg, fg := severityColor(h.Hazard.Severity)
-	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="background:%s;color:%s;padding:4px 14px;border-radius:999px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span> <span style="color:#87939e;font-size:12px;margin-left:8px;">%s</span></div>`,
-		bg, fg, htmlEscaper(strings.ToUpper(h.Hazard.Severity)), htmlEscaper(string(h.Type)))
+	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="background:%s;color:%s;padding:4px 14px;border-radius:999px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span></div>`,
+		bg, fg, htmlEscaper(strings.ToUpper(h.Hazard.Severity)))
 
 	headline := strings.TrimSpace(h.Hazard.Headline)
 	if headline == "" {
@@ -730,17 +732,15 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
 	}
 	if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
-		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Description</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(desc))
+		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">description</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(desc))
 	}
-	if instr := strings.TrimSpace(h.Hazard.Instruction); instr != "" {
-		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Instruction</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(instr))
-	}
+	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">instruction</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(effectiveInstruction(h.Hazard)))
 	if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">Location: <span style="color:#eef2f5;">%.5f, %.5f</span></div>`, *h.Hazard.Latitude, *h.Hazard.Longitude)
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">location: <span style="color:#eef2f5;">%.5f, %.5f</span></div>`, *h.Hazard.Latitude, *h.Hazard.Longitude)
 	}
 
 	if areas := nonRoadAreas(h.Hazard.Areas); len(areas) > 0 {
-		b.WriteString(`<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">Areas</div>`)
+		b.WriteString(`<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">areas</div>`)
 		var chips strings.Builder
 		for _, a := range geo.DisplayAreas(areas) {
 			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#1b232b;border:1px solid #303c46;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(a))
@@ -748,9 +748,9 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		b.WriteString(chips.String())
 	}
 	if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
-		label := "Road"
+		label := "road"
 		if len(roads) > 1 {
-			label = "Roads"
+			label = "roads"
 		}
 		var chips strings.Builder
 		for _, r := range roads {
@@ -760,72 +760,15 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		b.WriteString(chips.String())
 	}
 	if h.Hazard.EffectiveAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">Effective: <span style="color:#eef2f5;">%s</span></div>`, h.Hazard.EffectiveAt.Format(time.RFC3339))
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">effective from: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(humanTime(*h.Hazard.EffectiveAt)))
 	}
 	if h.Hazard.ExpiresAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">Expires: <span style="color:#eef2f5;">%s</span></div>`, h.Hazard.ExpiresAt.Format(time.RFC3339))
+		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">valid until: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(humanTime(*h.Hazard.ExpiresAt)))
 	}
 	if link != "" {
-		fmt.Fprintf(&b, `<div style="margin-top:20px;"><a href="%s" style="display:inline-block;background:#1f6feb;color:#fff;text-decoration:none;padding:9px 18px;border-radius:8px;font-weight:600;font-size:13px;">View details</a></div>`, htmlEscaper(link))
-	}
-	return b.String()
-}
-
-// technicalRows renders the metadata table rows for any event kind. The
-// severity value is tinted with the application's severity palette.
-func technicalRows(req action.ActionRequest, now time.Time, sevFG string) string {
-	row := func(k, v string) string {
-		if v == "" {
-			return ""
-		}
-		return fmt.Sprintf(`<tr><td style="padding:5px 8px;color:#87939e;white-space:nowrap;vertical-align:top;">%s</td><td style="padding:5px 8px;color:#eef2f5;">%s</td></tr>`,
-			htmlEscaper(k), htmlEscaper(v))
-	}
-	var b strings.Builder
-	ev := req.Event
-	b.WriteString(row("Time", now.Format(time.RFC3339)))
-	b.WriteString(row("Kind", string(ev.Kind)))
-	if ev.Origin.ReceiverID != "" {
-		b.WriteString(row("Receiver", ev.Origin.ReceiverID))
-	}
-	switch ev.Kind {
-	case dispatch.EventHazardTransition:
-		h := ev.Hazard
-		if h == nil {
-			break
-		}
-		b.WriteString(row("Transition", string(h.Type)))
-		b.WriteString(row("Source", h.Source))
-		b.WriteString(row("Event key", h.Key))
-		b.WriteString(row("Event", h.Hazard.Event))
-		if sevFG != "" {
-			fmt.Fprintf(&b, `<tr><td style="padding:5px 8px;color:#87939e;white-space:nowrap;vertical-align:top;">Severity</td><td style="padding:5px 8px;"><span style="color:%s;font-weight:600;">%s</span></td></tr>`,
-				sevFG, htmlEscaper(h.Hazard.Severity))
-		} else {
-			b.WriteString(row("Severity", h.Hazard.Severity))
-		}
-		b.WriteString(row("Urgency", h.Hazard.Urgency))
-		b.WriteString(row("Certainty", h.Hazard.Certainty))
-		b.WriteString(row("Headline", h.Hazard.Headline))
-		if len(h.Hazard.Areas) > 0 {
-			b.WriteString(row("Areas", strings.Join(h.Hazard.Areas, ", ")))
-		}
-		if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
-			b.WriteString(row("Coordinates", fmt.Sprintf("%.5f, %.5f", *h.Hazard.Latitude, *h.Hazard.Longitude)))
-		}
-		if h.Hazard.EffectiveAt != nil {
-			b.WriteString(row("Effective", h.Hazard.EffectiveAt.Format(time.RFC3339)))
-		}
-		if h.Hazard.ExpiresAt != nil {
-			b.WriteString(row("Expires", h.Hazard.ExpiresAt.Format(time.RFC3339)))
-		}
-	case dispatch.EventMQTTMessage:
-		m := ev.MQTT
-		if m != nil {
-			b.WriteString(row("Topic", m.Topic))
-			b.WriteString(row("QoS", fmt.Sprintf("%d", m.QoS)))
-			b.WriteString(row("Payload bytes", fmt.Sprintf("%d", len(m.Payload))))
-		}
+		// background-color (never the background shorthand) so Gmail and
+		// Outlook both render the call-to-action as a solid button.
+		fmt.Fprintf(&b, `<div style="margin-top:20px;"><a href="%s" style="display:inline-block;background-color:#1f6feb;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:8px;font-weight:600;font-size:13px;border:0;">View details</a></div>`, htmlEscaper(link))
 	}
 	return b.String()
 }

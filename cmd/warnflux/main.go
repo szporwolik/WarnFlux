@@ -138,6 +138,23 @@ func dispatchLocalChange(ingress *dispatch.Ingress, logger *slog.Logger, change 
 // default).
 const radioAlertTTL = 4 * time.Hour
 
+// hazardsForRadio renders the active-hazard list for the public /hazard
+// radio command: a header plus one Zulu-windowed line per hazard — the
+// same lines the hourly emcom-channel digest broadcasts, so the command
+// and the digest never disagree.
+func hazardsForRadio(hazards []meshtastic.ActiveHazard) string {
+	if len(hazards) == 0 {
+		return "No active hazards"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Active hazards: %d", len(hazards))
+	for _, hz := range hazards {
+		b.WriteByte('\n')
+		b.WriteString(meshtastic.HazardDigestLine(hz))
+	}
+	return b.String()
+}
+
 // weatherForRadio snapshots every current weather source — APRS weather
 // stations plus the retained internet-provider state — into the shared
 // weatherreport aggregation for the public /weather command. APRS
@@ -572,14 +589,15 @@ func run(configPath string, checkConfig bool) error {
 	// node; the source plugin, the meshtastic action and the admin page
 	// share it. History is persisted like APRS messages.
 	meshtasticHub, err := meshtastic.NewHub(meshtastic.Config{
-		Enabled:       cfg.Meshtastic.Enabled,
-		Device:        cfg.Meshtastic.Device,
-		Baud:          cfg.Meshtastic.Baud,
-		RouteMessages: cfg.Meshtastic.RouteMessages,
-		NodeTTL:       cfg.Meshtastic.NodeTTL,
-		EmcomChannel:  cfg.Meshtastic.EmcomChannel,
-		EmcomInterval: cfg.Meshtastic.EmcomInterval,
-		EmcomIdentity: identity,
+		Enabled:              cfg.Meshtastic.Enabled,
+		Device:               cfg.Meshtastic.Device,
+		Baud:                 cfg.Meshtastic.Baud,
+		RouteMessages:        cfg.Meshtastic.RouteMessages,
+		NodeTTL:              cfg.Meshtastic.NodeTTL,
+		EmcomChannel:         cfg.Meshtastic.EmcomChannel,
+		EmcomInterval:        cfg.Meshtastic.EmcomInterval,
+		EmcomHazardsInterval: cfg.Meshtastic.EmcomHazardsInterval,
+		EmcomIdentity:        identity,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
@@ -627,12 +645,18 @@ func run(configPath string, checkConfig bool) error {
 	if err := plugins.RegisterBuiltins(registry, hub, meshtasticHub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
 	}
+	// Per-alert notification audit trail: the routing engine, the action
+	// workers and TrailAware outputs (the MQTT event stream) record why
+	// each alert was or was not delivered; the web UI serves it on
+	// /notifications. Created before the manager so outputs receive it.
+	trails := trail.NewRecorder(trail.DefaultMaxTrails)
 	manager, err := plugin.NewManager(registry, cfg.Sources, cfg.Outputs,
 		ingester.Ingest, ingester.Expire, store, plugin.ManagerOptions{
 			ExpirationInterval: cfg.App.ExpirationInterval,
 			ChangeRetention:    cfg.App.ChangeRetention,
 			EventRetention:     cfg.App.EventRetention,
 			Version:            resolvedVersion,
+			TrailRecorder:      trails,
 		}, logger)
 	if err != nil {
 		return fmt.Errorf("configure plugins: %w", err)
@@ -660,6 +684,30 @@ func run(configPath string, checkConfig bool) error {
 	ingress.SetInboxWriteTimeout(cfg.Dispatch.InboxWriteTimeout)
 	ingress.SetInbox(store)
 	mirror := state.New()
+	// The active hazards from the dispatch state mirror, most severe
+	// first (Snapshot sorts them), one Zulu-windowed line per hazard.
+	// Shared by the hourly emcom-channel digest and the public /hazard
+	// radio command, so both always speak the same list.
+	hazardSource := func() []meshtastic.ActiveHazard {
+		snap := mirror.Snapshot()
+		out := make([]meshtastic.ActiveHazard, 0, len(snap.Hazards))
+		for _, h := range snap.Hazards {
+			out = append(out, meshtastic.ActiveHazard{
+				Headline:    h.Headline,
+				Description: h.Description,
+				EffectiveAt: h.EffectiveAt,
+				ExpiresAt:   h.ExpiresAt,
+			})
+		}
+		return out
+	}
+	meshtasticHub.SetActiveHazardSource(hazardSource)
+	// /hazard: a public command — every active hazard, one Zulu-windowed
+	// line each (the same form the hourly digest broadcasts). The
+	// channels split the reply into one message per line.
+	radioCLI.Register("hazard", "active hazards", func(string) radiocli.Result {
+		return radiocli.Result{Handled: true, Reply: hazardsForRadio(hazardSource())}
+	})
 	// /weather: a public command — the region average of every current
 	// weather reading (APRS stations + internet providers, gross errors
 	// rejected) plus the averaged forecast when one is held. Built for
@@ -697,11 +745,6 @@ func run(configPath string, checkConfig bool) error {
 	// Inbound MQTT traffic ring buffer: every frame the receivers ingest
 	// lands here and is served by the web UI's /traffic viewer.
 	traffic := mqttreceiver.NewTrafficBuffer(mqttreceiver.DefaultTrafficEntries)
-
-	// Per-alert notification audit trail: the routing engine and the
-	// action workers record why each alert was or was not delivered;
-	// the web UI serves it on /notifications.
-	trails := trail.NewRecorder(trail.DefaultMaxTrails)
 
 	// ActionPlugins: explicit routing only. Unknown types fail here, before
 	// any worker starts (even for disabled entries).

@@ -177,3 +177,26 @@ func TestFitProgressive(t *testing.T) {
 		t.Fatalf("Fit(weather,12) = %q, want the end cut", got)
 	}
 }
+
+// TestReplyLines pins the multi-line reply splitting used by both radio
+// channels for the /hazard list: one message per line, CRLF tolerated,
+// blank lines dropped, and the cap closed with a "+N more" marker.
+func TestReplyLines(t *testing.T) {
+	if got := ReplyLines("header\nline one\nline two", 12); len(got) != 3 ||
+		got[0] != "header" || got[1] != "line one" || got[2] != "line two" {
+		t.Fatalf("ReplyLines = %v", got)
+	}
+	if got := ReplyLines("a\r\nb\n\nc\r", 12); len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("ReplyLines(CRLF) = %v", got)
+	}
+	got := ReplyLines("h\n1\n2\n3", 2)
+	if len(got) != 3 || got[0] != "h" || got[1] != "1" || got[2] != "+2 more" {
+		t.Fatalf("ReplyLines(cap) = %v, want h, 1, +2 more", got)
+	}
+	if got := ReplyLines("only", 12); len(got) != 1 || got[0] != "only" {
+		t.Fatalf("ReplyLines(single) = %v", got)
+	}
+	if got := ReplyLines("", 12); len(got) != 0 {
+		t.Fatalf("ReplyLines(empty) = %v, want none", got)
+	}
+}

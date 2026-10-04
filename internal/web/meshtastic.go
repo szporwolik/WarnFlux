@@ -275,11 +275,18 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 		return
 	}
 	v.Messages = make([]meshtasticMessageView, 0, len(stored))
-	// Resolve directory usernames for direct-message senders so the
-	// history shows names instead of raw node ids.
+	// Resolve display names for senders so the history shows names
+	// instead of raw node ids: the directory username wins, then the
+	// heard node name from the device, then the bare id stays visible.
 	var owners map[string]string
 	if s.users != nil {
 		owners, _ = s.users.MeshtasticOwners()
+	}
+	nodeNames := make(map[string]string, len(stored))
+	if s.meshtastic != nil {
+		for _, n := range s.meshtastic.Snapshot().Nodes {
+			nodeNames[strings.ToLower(n.ID)] = n.Name
+		}
 	}
 	for _, m := range stored {
 		// The device uses 0xFF as the "no path info" sentinel; treat it
@@ -301,6 +308,9 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 		if id := meshtasticNormalizeID(m.Sender); id != "" {
 			view.ID = id
 			view.SenderName = meshtasticOwnerFor(owners, id)
+			if view.SenderName == "" {
+				view.SenderName = nodeNames[id]
+			}
 		}
 		v.Messages = append(v.Messages, view)
 	}

@@ -17,6 +17,7 @@ import (
 	pb "github.com/kabili207/meshtastic-go/core/proto"
 	"github.com/kabili207/meshtastic-go/device/clientapi"
 	"github.com/kabili207/meshtastic-go/transport/client"
+	"github.com/kabili207/meshtastic-go/transport/serial"
 	"github.com/kabili207/meshtastic-go/transport/stream"
 	"google.golang.org/protobuf/proto"
 
@@ -181,6 +182,85 @@ func dispatchPkt(t *testing.T, r *testRadio, pkt *pb.MeshPacket) {
 	r.srv.DispatchToClients(&pb.FromRadio{
 		PayloadVariant: &pb.FromRadio_Packet{Packet: pkt},
 	})
+}
+
+// fakeTransportConn is a minimal transportConn stand-in for the dial
+// candidate tests: nothing about the session is exercised, only WHICH
+// serial path the dial ended up opening.
+type fakeTransportConn struct{ port string }
+
+func (f *fakeTransportConn) Connect(context.Context) error { return nil }
+func (f *fakeTransportConn) IsConnected() bool             { return true }
+func (f *fakeTransportConn) Stop() error                   { return nil }
+func (f *fakeTransportConn) State() *client.DeviceState    { return nil }
+func (f *fakeTransportConn) SetPacketHandler(func(*pb.MeshPacket)) {
+}
+func (f *fakeTransportConn) Handle(proto.Message, func(proto.Message) error) {}
+func (f *fakeTransportConn) SendToRadio(*pb.ToRadio) error                   { return nil }
+
+// TestDeviceCandidates pins the parsing of the comma-separated device
+// field: entries are trimmed and empty ones dropped.
+func TestDeviceCandidates(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{"/dev/ttyACM0", []string{"/dev/ttyACM0"}},
+		{"/dev/ttyACM0, /dev/ttyACM1", []string{"/dev/ttyACM0", "/dev/ttyACM1"}},
+		{"/dev/ttyACM1,/dev/ttyACM0", []string{"/dev/ttyACM1", "/dev/ttyACM0"}},
+		{", /dev/ttyACM0,", []string{"/dev/ttyACM0"}},
+		{" , ", nil},
+		{"", nil},
+	} {
+		got := deviceCandidates(tc.in)
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("deviceCandidates(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestDialTriesDeviceCandidates pins the reconnect self-healing: the hub
+// dials the configured paths IN ORDER and connects to the first one that
+// opens, so a node that re-enumerated onto another port number is found
+// without a config edit (reported dev pain: ttyACM0 <-> ttyACM1 flips).
+func TestDialTriesDeviceCandidates(t *testing.T) {
+	old := serialDial
+	t.Cleanup(func() { serialDial = old })
+
+	var tried []string
+	serialDial = func(_ context.Context, cfg serial.Config) (transportConn, error) {
+		tried = append(tried, cfg.Port)
+		if cfg.Port == "/dev/ttyACM1" {
+			return &fakeTransportConn{port: cfg.Port}, nil
+		}
+		return nil, errors.New("no such file or directory")
+	}
+
+	conn, err := Dial(context.Background(), Config{Device: "/dev/ttyACM0, /dev/ttyACM1", Baud: 115200})
+	if err != nil {
+		t.Fatalf("Dial = %v, want the second candidate", err)
+	}
+	if fc, ok := conn.(*fakeTransportConn); !ok || fc.port != "/dev/ttyACM1" {
+		t.Fatalf("connected via %v, want the /dev/ttyACM1 candidate", conn)
+	}
+	if len(tried) != 2 || tried[0] != "/dev/ttyACM0" || tried[1] != "/dev/ttyACM1" {
+		t.Fatalf("tried %v, want [/dev/ttyACM0 /dev/ttyACM1] in order", tried)
+	}
+
+	// Every candidate failing: the error names all of them.
+	tried = nil
+	serialDial = func(_ context.Context, cfg serial.Config) (transportConn, error) {
+		tried = append(tried, cfg.Port)
+		return nil, errors.New("no such file or directory")
+	}
+	if _, err := Dial(context.Background(), Config{Device: "/dev/ttyACM0,/dev/ttyACM1"}); err == nil {
+		t.Fatal("Dial with all candidates failing = nil, want error")
+	} else if !strings.Contains(err.Error(), "/dev/ttyACM0") || !strings.Contains(err.Error(), "/dev/ttyACM1") {
+		t.Fatalf("error %q, want both candidate paths named", err)
+	}
+	if len(tried) != 2 {
+		t.Fatalf("tried %v, want both candidates attempted", tried)
+	}
 }
 
 // TestHubConnect pins the handshake: the hub learns its identity, the

@@ -558,6 +558,12 @@ dispatch:
 #   aprs_messages     — <prefix>/aprs/messages (rx and tx)
 #   meshtastic_stations — <prefix>/meshtastic/stations/<node-id>
 #   meshtastic_messages — <prefix>/meshtastic/messages
+#
+# The default is the QUIET mask: the hazard-transition stream (/events)
+# plus every retained current-state document. The per-packet and
+# per-message mirrors are opt-in — the dispatch pipeline consumes those
+# internally and the admin history pages read the database, so nothing
+# local depends on them reaching the broker.
 mqtt_publish:
   events: true
   active: true
@@ -565,10 +571,10 @@ mqtt_publish:
   status: true
   aprs_stations: true
   aprs_bulletins: true
-  aprs_packets: true
-  aprs_messages: true
+  aprs_packets: false
+  aprs_messages: false
   meshtastic_stations: true
-  meshtastic_messages: true
+  meshtastic_messages: false
 
 # Authenticated admin web UI (server-rendered, embedded assets, no CDN).
 web:

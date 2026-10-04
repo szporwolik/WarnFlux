@@ -50,6 +50,7 @@
         <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/meshtastic?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
         <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/meshtastic?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
         <a class="page-tab{{if eq .Dir "ch0"}} active{{end}}" href="/meshtastic?dir=ch0">ch0</a>
+        {{if .EmcomDir}}<a class="page-tab{{if eq .Dir .EmcomDir}} active{{end}}" href="/meshtastic?dir={{.EmcomDir}}">{{.EmcomTab}}</a>{{end}}
       </div>
       <div id="mesh-msgs">{{template "mesh_msgs" .}}</div>
     </section>

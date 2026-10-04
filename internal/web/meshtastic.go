@@ -108,6 +108,11 @@ type meshtasticView struct {
 	// messages tab
 	Messages []meshtasticMessageView
 	Dir      string
+	// EmcomDir / EmcomTab carry the configured emcom-channel tab (empty
+	// when the channel is not configured): the dir value ("ch1") and the
+	// display label ("ch1 · SP9MOA" once the device names the channel).
+	EmcomDir string
+	EmcomTab string
 	Page     int
 	Pages    int
 	From     int
@@ -163,16 +168,41 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 	if s.meshtasticMsgs == nil {
 		return
 	}
+	// The configured emcom channel (meshtastic.emcom_channel in the
+	// YAML) owns a dedicated tab next to ch0; 0 = not configured.
+	emcomIdx := 0
+	if s.meshtastic != nil {
+		emcomIdx = s.meshtastic.EmcomChannel()
+	}
+	emcomDir := ""
+	if emcomIdx > 0 {
+		emcomDir = "ch" + strconv.Itoa(emcomIdx)
+	}
 	switch d := r.URL.Query().Get("dir"); d {
 	case "rx", "tx", "ch0":
 		v.Dir = d
+	default:
+		if d == emcomDir && emcomDir != "" {
+			v.Dir = d
+		}
 	}
-	// The primary channel (0) owns the dedicated "ch0" tab; every other
-	// view (all, rx, tx) hides it. The label comes from the hub's
-	// channel table ("ch0" unless the device names the primary channel).
+	// Channel labels come from the hub's channel table ("ch<N>" until
+	// the device names them). The primary channel (0) owns the "ch0"
+	// tab; every other view (all, rx, tx) hides it.
 	primary := "ch0"
+	emcomLabel := ""
 	if s.meshtastic != nil {
 		primary = s.meshtastic.ChannelLabel(0)
+		if emcomIdx > 0 {
+			emcomLabel = s.meshtastic.ChannelLabel(emcomIdx)
+		}
+	}
+	if emcomDir != "" {
+		v.EmcomDir = emcomDir
+		v.EmcomTab = emcomDir
+		if emcomLabel != "" && emcomLabel != emcomDir {
+			v.EmcomTab = emcomDir + " · " + emcomLabel
+		}
 	}
 	filter := storage.MeshtasticMessageFilter{Channel: primary, Exclude: true}
 	switch v.Dir {
@@ -180,6 +210,14 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 		filter = storage.MeshtasticMessageFilter{Channel: primary}
 	case "rx", "tx":
 		filter.Direction = v.Dir
+	default:
+		if v.Dir == emcomDir && emcomDir != "" {
+			label := emcomLabel
+			if label == "" {
+				label = emcomDir
+			}
+			filter = storage.MeshtasticMessageFilter{Channel: label}
+		}
 	}
 	total, err := s.meshtasticMsgs.CountMeshtasticMessages(r.Context(), filter)
 	if err != nil {

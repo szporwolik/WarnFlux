@@ -28,7 +28,6 @@
           </span>
         </div>
         <a class="user-menu-item" role="menuitem" href="/account"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>{{tr .Lang "nav.account"}}</a>
-        <a class="user-menu-item" role="menuitem" href="/" title="{{tr .Lang "common.public_page"}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>{{tr .Lang "common.public_page"}}</a>
         <form method="post" action="/logout" class="user-menu-logout">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <button type="submit" class="user-menu-item" role="menuitem"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-box-arrow-right"></use></svg>{{tr .Lang "common.sign_out"}}</button>

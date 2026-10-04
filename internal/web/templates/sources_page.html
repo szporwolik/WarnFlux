@@ -1,0 +1,53 @@
+{{define "sources_page"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  {{template "public-head" .}}
+</head>
+<body class="home" data-offline="{{if .OfflineMode}}1{{else}}0{{end}}">
+  {{template "public-top" .}}
+  {{template "public-banners" .}}
+  <main class="home-main home-single">
+    <section class="home-panel">
+      <p class="home-back"><a class="home-sub-link" href="/">← {{tr .Lang "sources.back"}}</a></p>
+
+      {{if .Sources}}
+      <h2 class="home-alerts-head">{{tr .Lang "home.sources.head"}}</h2>
+      <p class="muted home-channels-note">{{tr .Lang "home.sources.note"}}</p>
+      <div class="channels-list">
+        {{range .Sources}}
+        <article class="channel-row">
+          <svg class="icon channel-icon" aria-hidden="true"><use href="/static/icons.svg#{{.Icon}}"></use></svg>
+          <div class="channel-body">
+            <h3>{{.Name}}</h3>
+            <p class="muted">{{.Description}}</p>
+          </div>
+        </article>
+        {{end}}
+      </div>
+      {{else}}
+      <p class="home-none">{{tr .Lang "home.no_sources"}}</p>
+      {{end}}
+
+      {{if .Channels}}
+      <h2 class="home-alerts-head home-channels-head">{{tr .Lang "home.channels.head"}}</h2>
+      <p class="muted home-channels-note">{{tr .Lang "home.channels.note"}}</p>
+      <div class="channels-list">
+        {{range .Channels}}
+        <article class="channel-row">
+          <svg class="icon channel-icon" aria-hidden="true"><use href="/static/icons.svg#{{.Icon}}"></use></svg>
+          <div class="channel-body">
+            <h3>{{.Name}}</h3>
+            <p class="muted">{{.Description}}</p>
+          </div>
+        </article>
+        {{end}}
+      </div>
+      {{else}}
+      <p class="home-none">{{tr .Lang "home.no_channels"}}</p>
+      {{end}}
+    </section>
+  </main>
+  {{template "public-foot" .}}
+</body>
+</html>
+{{end}}

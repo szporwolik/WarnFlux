@@ -123,4 +123,11 @@ func TestArchiveWithoutStore(t *testing.T) {
 	if !strings.Contains(html, "No communications recorded") {
 		t.Errorf("empty archive state missing:\n%s", html)
 	}
+	// The archive is a standalone public page now: shared chrome plus a
+	// back link to the communications.
+	for _, want := range []string{`class="home-top"`, `class="home-foot"`, "Back to communications"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("archive page missing %q:\n%s", want, html)
+		}
+	}
 }

@@ -602,14 +602,23 @@ web:
   # Optional one-line motto rendered in the footer on every page.
   tagline: "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo"
 
-  # Optional longer text shown on the public home page above the active
-  # hazard list — a short intro about the system and its scope of
-  # operation. Line breaks are preserved; limited HTML is allowed
-  # (links). Leave empty to hide.
+  # Optional longer text shown on the public page as a one-time popup
+  # (re-opened any time from the question-mark button in the top bar).
+  # Markdown subset: headings (#), emphasis (**bold**, *italic*),
+  # lists (-), fenced code (```) and links [text](https://…) — links
+  # always open in a new tab. Leave empty to hide the popup and the
+  # button.
   about: |
+    # SOSNA — Społeczny Otwarty System Notyfikacji i Alertów
+
     Krótka informacja o systemie: czym jest, jaki jest zakres
     działania, skąd pochodzą komunikaty i jak je interpretować.
-    Więcej: <a href="https://sp9moa.pl">sp9moa.pl</a>
+
+    - Zbieramy komunikaty z oficjalnych źródeł (IMGW, RSO, GDDKiA).
+    - Porządkujemy je i pokazujemy na liście oraz na mapie sytuacyjnej.
+    - Rozsyłamy alerty e-mailem, przez APRS i sieć Meshtastic.
+
+    Więcej: [sp9moa.pl](https://sp9moa.pl)
 
   # Optional notice rendered prominently above the public hazard list,
   # e.g. that the system is unofficial and does not replace official

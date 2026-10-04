@@ -89,6 +89,9 @@ func meshMessageWhere(f storage.MeshtasticMessageFilter) string {
 	if f.Peer != "" {
 		conds = append(conds, `((direction = 'rx' AND sender = ?) OR (direction = 'tx' AND recipient = ?))`)
 	}
+	if f.Text != "" {
+		conds = append(conds, `text = ?`)
+	}
 	if len(conds) == 0 {
 		return ""
 	}
@@ -107,6 +110,9 @@ func meshMessageArgs(f storage.MeshtasticMessageFilter) []any {
 	}
 	if f.Peer != "" {
 		args = append(args, f.Peer, f.Peer)
+	}
+	if f.Text != "" {
+		args = append(args, f.Text)
 	}
 	return args
 }

@@ -178,6 +178,43 @@ func TestMeshtasticMessageChannelFilter(t *testing.T) {
 	}
 }
 
+// TestMeshtasticMessageTextFilter pins the exact-text narrowing used by
+// the meshtastic action as its durable delivery-progress ledger: only
+// rows with the exact message text match, combined freely with the
+// direction, channel and peer conditions.
+func TestMeshtasticMessageTextFilter(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	at := time.Now().Truncate(time.Millisecond)
+
+	for i, text := range []string{"alarm-a", "alarm-b", "alarm-a"} {
+		if err := s.RecordMeshtasticMessage(ctx, "tx", "", "a0a85934", "dm",
+			text, "system", 0, at.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatalf("record %s: %v", text, err)
+		}
+	}
+
+	got, err := s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx", Text: "alarm-a"}, 10, 0)
+	if err != nil {
+		t.Fatalf("text filter: %v", err)
+	}
+	if len(got) != 2 || got[0].Text != "alarm-a" || got[1].Text != "alarm-a" {
+		t.Fatalf("text-filtered rows = %+v, want the two alarm-a rows newest first", got)
+	}
+
+	// Combined with the peer condition.
+	got, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{
+		Direction: "tx", Peer: "a0a85934", Text: "alarm-b",
+	}, 10, 0)
+	if err != nil || len(got) != 1 || got[0].Text != "alarm-b" {
+		t.Fatalf("peer+text rows = %+v, %v; want exactly the alarm-b row", got, err)
+	}
+
+	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Text: "alarm-a"}); err != nil || n != 2 {
+		t.Fatalf("count = (%d, %v), want 2", n, err)
+	}
+}
+
 // TestMeshtasticMessagePeerFilter pins the DM conversation filter: one
 // peer's rx rows plus the tx rows addressed to them, combined with the
 // dm-channel base and the direction narrowing.

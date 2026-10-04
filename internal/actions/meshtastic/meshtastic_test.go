@@ -11,23 +11,59 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 )
 
-// stubSender records every transmission the action hands to the hub.
+// stubSender records every transmission the action hands to the hub and
+// keeps the durable progress ledger: every successful send marks the
+// exact (addr|channel, text) entry as delivered. Pre-seeding the maps
+// simulates the tx history rows a previous attempt recorded.
 type stubSender struct {
 	contacts []string
 	channels []int
 	texts    []string
 	err      error
+	// ledgerErr makes both progress queries fail (unreadable ledger).
+	ledgerErr error
+	// sentContacts keys are addr+"|"+text.
+	sentContacts map[string]bool
+	sentChannels map[int]bool
 }
 
 func (s *stubSender) SendContactMessage(_ context.Context, addr, text, operator string) error {
+	if s.err != nil {
+		return s.err
+	}
 	s.contacts = append(s.contacts, addr)
 	s.texts = append(s.texts, text)
-	return s.err
+	if s.sentContacts == nil {
+		s.sentContacts = map[string]bool{}
+	}
+	s.sentContacts[addr+"|"+text] = true
+	return nil
 }
 
 func (s *stubSender) SendChannelText(_ context.Context, idx int, text, operator string) error {
+	if s.err != nil {
+		return s.err
+	}
 	s.channels = append(s.channels, idx)
-	return s.err
+	if s.sentChannels == nil {
+		s.sentChannels = map[int]bool{}
+	}
+	s.sentChannels[idx] = true
+	return nil
+}
+
+func (s *stubSender) ContactDelivered(_ context.Context, addr, text string) (bool, error) {
+	if s.ledgerErr != nil {
+		return false, s.ledgerErr
+	}
+	return s.sentContacts[addr+"|"+text], nil
+}
+
+func (s *stubSender) ChannelTextDelivered(_ context.Context, idx int, text string) (bool, error) {
+	if s.ledgerErr != nil {
+		return false, s.ledgerErr
+	}
+	return s.sentChannels[idx], nil
 }
 
 func hazardReq(nodeIDs []string, headline string) action.ActionRequest {
@@ -119,6 +155,90 @@ func TestExecuteFailurePropagates(t *testing.T) {
 	}
 	if len(stub2.texts) != 1 || !strings.HasPrefix(stub2.texts[0], "SOSNA SEVERE Storm") {
 		t.Fatalf("text = %v, want the event-name fallback", stub2.texts)
+	}
+}
+
+// TestExecuteResumesUnfinishedSends pins the P1 fix: the whole group
+// shares one bounded call deadline, so a large group is cut mid-list —
+// but the durable progress ledger lets the next attempt skip every
+// completed transmission and finish only the remaining ones. Across the
+// attempts every recipient is reached exactly once and the broadcast
+// goes out exactly once.
+func TestExecuteResumesUnfinishedSends(t *testing.T) {
+	stub := &stubSender{}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1, TxInterval: 40 * time.Millisecond}, hub: stub}
+	req := hazardReq([]string{"a0a85934", "b0b85934", "c0c85934"}, "Big storm coming")
+
+	// Attempt 1: four paced transmissions (broadcast + 3 DMs) need at
+	// least 120 ms; the deadline grants 70 ms — the call fails
+	// mid-list no matter how the scheduler interleaves.
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Millisecond)
+	defer cancel()
+	if err := a.Execute(ctx, req); err == nil {
+		t.Fatalf("attempt 1 = nil, want the deadline to cut the group")
+	}
+	if len(stub.channels) != 1 || stub.channels[0] != 1 {
+		t.Fatalf("attempt 1 broadcasts = %v, want exactly one on channel 1", stub.channels)
+	}
+
+	// Attempt 2 resumes the SAME request: the ledger skips the
+	// broadcast and every recipient attempt 1 already completed; only
+	// the unfinished sends go out.
+	if err := a.Execute(context.Background(), req); err != nil {
+		t.Fatalf("attempt 2: %v", err)
+	}
+	if len(stub.channels) != 1 {
+		t.Fatalf("broadcasts after resume = %v, want exactly one on channel 1", stub.channels)
+	}
+	seen := map[string]int{}
+	for _, id := range stub.contacts {
+		seen[id]++
+	}
+	if len(stub.contacts) != 3 || seen["a0a85934"] != 1 || seen["b0b85934"] != 1 || seen["c0c85934"] != 1 {
+		t.Fatalf("contacts after resume = %v (%v), want each of a/b/c exactly once",
+			stub.contacts, seen)
+	}
+}
+
+// TestExecuteSkipsLedgerCompleted pins the progress reads themselves: a
+// retry of an already partially-delivered group transmits only the
+// entries without a successful ledger row.
+func TestExecuteSkipsLedgerCompleted(t *testing.T) {
+	stub := &stubSender{}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 2}, hub: stub}
+	req := hazardReq([]string{"a0a85934"}, "Flood alert")
+
+	// A previous attempt delivered the broadcast and recipient a.
+	if err := a.Execute(context.Background(), req); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	// Reset the call log, keep the ledger (the durable state).
+	stub.contacts, stub.texts, stub.channels = nil, nil, nil
+
+	// The full group retry: broadcast and a are skipped, only b goes out.
+	if err := a.Execute(context.Background(), hazardReq([]string{"a0a85934", "b0b85934"}, "Flood alert")); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if len(stub.channels) != 0 {
+		t.Fatalf("broadcasts on retry = %v, want none (already broadcast)", stub.channels)
+	}
+	if len(stub.contacts) != 1 || stub.contacts[0] != "b0b85934" {
+		t.Fatalf("contacts on retry = %v, want only the unfinished b0b85934", stub.contacts)
+	}
+}
+
+// TestExecuteLedgerFailureFailsOpen pins the at-least-once behavior: an
+// unreadable progress ledger must never suppress a transmission — the
+// alert goes out again instead of being skipped by an unavailable store.
+func TestExecuteLedgerFailureFailsOpen(t *testing.T) {
+	stub := &stubSender{ledgerErr: errors.New("db down")}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
+	if err := a.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "x")); err != nil {
+		t.Fatalf("Execute with broken ledger: %v", err)
+	}
+	if len(stub.channels) != 1 || len(stub.contacts) != 1 {
+		t.Fatalf("transmissions = broadcast %v contacts %v, want both delivered (fail-open)",
+			stub.channels, stub.contacts)
 	}
 }
 

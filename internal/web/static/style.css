@@ -414,6 +414,7 @@ a:hover { text-decoration: underline; }
 
 /* ---- theme toggle (sun in dark, moon in light) ---- */
 .theme-toggle,
+.about-help,
 .topbar-home {
   display: inline-flex;
   align-items: center;
@@ -428,6 +429,7 @@ a:hover { text-decoration: underline; }
   flex: none;
 }
 .theme-toggle:hover,
+.about-help:hover,
 .topbar-home:hover { color: var(--text); border-color: var(--focus); text-decoration: none; }
 .theme-toggle .ico-moon { display: none; }
 html[data-theme="light"] .theme-toggle .ico-sun { display: none; }
@@ -1538,6 +1540,13 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .about-dialog-text::first-line { color: var(--text); font-weight: 600; }
 .about-dialog-text a { color: var(--link); }
+.about-dialog-text h4 { margin: 0.9rem 0 0.4rem; font-size: 0.95rem; }
+.about-dialog-text p { margin: 0.4rem 0; }
+.about-dialog-text ul { margin: 0.4rem 0 0.4rem 1.2rem; padding: 0; }
+.about-dialog-text li { margin: 0.15rem 0; }
+.about-dialog-text code { background: var(--surface-hi); border: 1px solid var(--border); border-radius: 4px; padding: 0.05rem 0.35rem; font-size: 0.85em; }
+.about-dialog-text pre { background: var(--surface-hi); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem; overflow: auto; margin: 0.6rem 0; }
+.about-dialog-text pre code { border: 0; background: transparent; padding: 0; }
 .about-dialog .btn-primary { display: block; flex: none; margin: 0.9rem 0 0 auto; }
 .home-alerts-head {
   display: flex;
@@ -1546,6 +1555,26 @@ tr.click-send:hover td { background: var(--surface-hi); }
   font-size: 1rem;
   margin: 0 0 0.9rem;
 }
+.home-alerts-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.home-alerts-top .home-alerts-head { margin: 0; }
+.home-sub-link {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.home-sub-link:hover { color: var(--link); }
+.home-back { margin: 0 0 1rem; }
+.home-single { max-width: 56rem; margin: 0 auto; padding: 0 1rem 2rem; width: 100%; }
+.home-single .home-panel { display: block; }
+.home-foot-link { color: var(--muted); text-decoration: none; }
+.home-foot-link:hover { color: var(--link); text-decoration: underline; }
 .home-alerts-head .emcom-info {
   display: inline-flex;
   align-items: center;

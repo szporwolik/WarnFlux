@@ -177,7 +177,7 @@ func defaultTestWebConfig() config.Web {
 		Title:      "WarnFlux Test",
 		Header2:    "Test platform",
 		Tagline:    "Test tagline",
-		About:      "Test info text. <a href=\"https://sp9moa.pl\">sp9moa.pl</a>",
+		About:      "Test info text. [sp9moa.pl](https://sp9moa.pl)",
 		Disclaimer: "Test disclaimer text.",
 		Domain:     "spok.example.com",
 		Auth:       config.WebAuth{Username: testUsername, Password: testPassword},
@@ -919,17 +919,18 @@ func TestPublicHomePage(t *testing.T) {
 		t.Fatalf("GET / = %d, want 200 without login", resp.StatusCode)
 	}
 	for _, want := range []string{
-		"WarnFlux Test",            // header1
-		"Test platform",            // header2
-		"Test info text.",          // configurable about text (one-time popup)
-		`href="https://sp9moa.pl"`, // HTML links are allowed in the about text
-		`id="about-dialog"`,        // one-time about popup
-		`class="home-disclaimer"`,  // unofficial-system notice
+		"WarnFlux Test",                  // header1
+		"Test platform",                  // header2
+		"Test info text.",                // configurable about text (one-time popup)
+		`[sp9moa.pl](https://sp9moa.pl)`, // markdown link in the about text
+		`id="about-dialog"`,              // one-time about popup
+		`id="about-help"`,                // the top-bar question-mark reopens it
+		`class="home-disclaimer"`,        // unofficial-system notice
 		"Test disclaimer text.",
 		"Ekstremalny wiatr", // most severe first
 		`href="/login"`,     // sign-in behind the icon button
 		"Active hazards",
-		"Map", // combined stations + weather tab
+		"Situation map", // combined stations + weather tab
 		`id="home-alerts"`,
 		`class="theme-toggle"`, // light/dark switch
 	} {
@@ -954,6 +955,20 @@ func TestPublicHomePage(t *testing.T) {
 	}
 	if !strings.Contains(html, "Radio stations are not enabled") {
 		t.Error("home page should explain that radio stations are disabled: " + html)
+	}
+	// Clean public shell: archive and sources are NOT tabs anymore — the
+	// archive lives behind the alerts-section link, sources behind the
+	// footer link.
+	for _, absent := range []string{`data-tab="tab-archive"`, `data-tab="tab-channels"`} {
+		if strings.Contains(html, absent) {
+			t.Errorf("home page still exposes %q as a tab: %s", absent, html)
+		}
+	}
+	if !strings.Contains(html, `class="home-sub-link" href="/archive"`) {
+		t.Errorf("home alerts section missing the archive entry link: %s", html)
+	}
+	if !strings.Contains(html, `class="home-foot-link" href="/sources"`) {
+		t.Errorf("home footer missing the sources link: %s", html)
 	}
 	extremeAt := strings.Index(html, "Ekstremalny wiatr")
 	moderateAt := strings.Index(html, "Umiarkowane burze")
@@ -1027,6 +1042,31 @@ func TestPublicHomePage(t *testing.T) {
 	}
 	if strings.Contains(html, `href="/login"`) {
 		t.Errorf("home header must drop the sign-in icon when logged in: %s", html)
+	}
+}
+
+// TestPublicSourcesPage pins the standalone sources page: the feed list
+// and the notification channels live behind the footer link, not on the
+// home tabs.
+func TestPublicSourcesPage(t *testing.T) {
+	env := newTestEnv(t)
+	resp, html := env.get("/sources")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sources = %d", resp.StatusCode)
+	}
+	for _, want := range []string{
+		"Where the data comes from",
+		`class="home-top"`,
+		"Back to home",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("sources page missing %q:\n%s", want, html)
+		}
+	}
+	// The channels section renders either its list or the explicit empty
+	// state (the test env has no channel-mapped action types).
+	if !strings.Contains(html, "channels-list") && !strings.Contains(html, "Notification channels are not configured") {
+		t.Errorf("sources page missing the channels section:\n%s", html)
 	}
 }
 

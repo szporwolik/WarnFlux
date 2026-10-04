@@ -1,17 +1,13 @@
-{{define "home"}}<!doctype html>
-<html lang="{{.Lang}}">
-<head>
-  <meta charset="utf-8">
+{{define "public-head"}}<meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Header1}} · {{.Header2}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="stylesheet" href="/static/weather-icons.css">
   <script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
-  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
-</head>
-<body class="home" data-offline="{{if .OfflineMode}}1{{else}}0{{end}}">
-  <header class="home-top">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">{{end}}
+
+{{define "public-top"}}<header class="home-top">
     <div class="home-brand">
       <img class="home-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
       <div class="home-brand-text">
@@ -24,6 +20,7 @@
         <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
         <svg class="icon ico-moon" aria-hidden="true"><use href="/static/icons.svg#i-moon"></use></svg>
       </button>
+      {{if .About}}<button type="button" class="about-help" id="about-help" aria-label="{{tr .Lang "home.about.help"}}" title="{{tr .Lang "home.about.help"}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-question-circle"></use></svg></button>{{end}}
       <div class="lang-switch" role="group" aria-label="{{tr .Lang "common.language"}}">
         <a class="lang-opt{{if eq .Lang "en"}} active{{end}}" href="/lang/en" hreflang="en" lang="en" title="English" onclick="this.href='/lang/en?next='+encodeURIComponent(location.pathname+location.search)">EN</a>
         <a class="lang-opt{{if eq .Lang "pl"}} active{{end}}" href="/lang/pl" hreflang="pl" lang="pl" title="Polski" onclick="this.href='/lang/pl?next='+encodeURIComponent(location.pathname+location.search)">PL</a>
@@ -39,7 +36,43 @@
       </a>
       {{end}}
     </div>
-  </header>
+  </header>{{end}}
+
+{{define "public-banners"}}{{if .OfflineMode}}<div class="home-emcom home-offline" role="status" aria-label="{{tr .Lang "home.offline.aria"}}">
+    <span class="emcom-chip emcom-chip-offline">
+      <svg class="icon emcom-chip-icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-slash"></use></svg>
+      <span class="emcom-chip-label">{{tr .Lang "home.offline.banner"}}</span>
+    </span>
+  </div>{{end}}
+
+  {{if .Disclaimer}}<p class="home-disclaimer" role="note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-info-circle"></use></svg><span>{{.Disclaimer}}</span></p>{{end}}{{end}}
+
+{{define "public-foot"}}<footer class="home-foot">
+    <span>{{.AppTitle}}</span>
+    {{if .Tagline}}<span class="sep">·</span><span>{{.Tagline}}</span>{{end}}
+    {{if ne .AppTitle "WarnFlux"}}<span class="sep">·</span><span>WarnFlux</span>{{end}}
+    <span class="sep">·</span>
+    <span>{{.Version}}</span>
+    {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{shortCommit .Commit}}</a>{{end}}
+    <span class="sep">·</span>
+    <a class="home-foot-link" href="/sources">{{tr .Lang "home.tab.sources"}}</a>
+    <a class="home-git" href="https://github.com/szporwolik/WarnFlux" target="_blank" rel="noopener noreferrer" title="{{tr .Lang "common.source_code"}}" aria-label="{{tr .Lang "common.source_code"}}">
+      <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
+    </a>
+  </footer>
+  {{if .About}}<dialog id="about-dialog" class="about-dialog">
+    <button type="button" class="about-close" aria-label="{{tr .Lang "home.about.close"}}">×</button>
+    <div class="about-dialog-text">{{.About}}</div>
+    <button type="button" class="about-ok btn-primary">{{tr .Lang "home.about.ok"}}</button>
+  </dialog>{{end}}{{end}}
+
+{{define "home"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  {{template "public-head" .}}
+</head>
+<body class="home" data-offline="{{if .OfflineMode}}1{{else}}0{{end}}">
+  {{template "public-top" .}}
 
   {{if .EmcomNetworks}}<div class="home-emcom" role="status" aria-label="{{tr .Lang "home.emcom.aria"}}">
     {{range .EmcomNetworks}}
@@ -52,20 +85,11 @@
     {{end}}
   </div>{{end}}
 
-  {{if .OfflineMode}}<div class="home-emcom home-offline" role="status" aria-label="{{tr .Lang "home.offline.aria"}}">
-    <span class="emcom-chip emcom-chip-offline">
-      <svg class="icon emcom-chip-icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-slash"></use></svg>
-      <span class="emcom-chip-label">{{tr .Lang "home.offline.banner"}}</span>
-    </span>
-  </div>{{end}}
-
-  {{if .Disclaimer}}<p class="home-disclaimer" role="note"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-info-circle"></use></svg><span>{{.Disclaimer}}</span></p>{{end}}
+  {{template "public-banners" .}}
 
   <nav class="home-tabs" role="tablist" aria-label="{{tr .Lang "home.tabs.aria"}}">
     <button type="button" class="home-tab active" role="tab" aria-selected="true" data-tab="tab-alerts">{{tr .Lang "home.tab.alerts"}}</button>
     <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-radio">{{tr .Lang "home.tab.map"}}</button>
-    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-archive">{{tr .Lang "home.tab.archive"}}</button>
-    <button type="button" class="home-tab" role="tab" aria-selected="false" data-tab="tab-channels">{{tr .Lang "home.tab.sources"}}</button>
   </nav>
 
   <main class="home-main">
@@ -116,65 +140,10 @@
         </div>
       </div>
     </section>
-    <section class="home-panel" id="panel-tab-archive" data-panel="tab-archive" hidden>
-      <div id="archive-box"><p class="muted">{{tr .Lang "home.archive.loading"}}</p></div>
-    </section>
-    <section class="home-panel" id="panel-tab-channels" data-panel="tab-channels" hidden>
-      {{if .Sources}}
-      <h2 class="home-alerts-head">{{tr .Lang "home.sources.head"}}</h2>
-      <p class="muted home-channels-note">{{tr .Lang "home.sources.note"}}</p>
-      <div class="channels-list">
-        {{range .Sources}}
-        <article class="channel-row">
-          <svg class="icon channel-icon" aria-hidden="true"><use href="/static/icons.svg#{{.Icon}}"></use></svg>
-          <div class="channel-body">
-            <h3>{{.Name}}</h3>
-            <p class="muted">{{.Description}}</p>
-          </div>
-        </article>
-        {{end}}
-      </div>
-      {{else}}
-      <p class="home-none">{{tr .Lang "home.no_sources"}}</p>
-      {{end}}
-
-      {{if .Channels}}
-      <h2 class="home-alerts-head home-channels-head">{{tr .Lang "home.channels.head"}}</h2>
-      <p class="muted home-channels-note">{{tr .Lang "home.channels.note"}}</p>
-      <div class="channels-list">
-        {{range .Channels}}
-        <article class="channel-row">
-          <svg class="icon channel-icon" aria-hidden="true"><use href="/static/icons.svg#{{.Icon}}"></use></svg>
-          <div class="channel-body">
-            <h3>{{.Name}}</h3>
-            <p class="muted">{{.Description}}</p>
-          </div>
-        </article>
-        {{end}}
-      </div>
-      {{else}}
-      <p class="home-none">{{tr .Lang "home.no_channels"}}</p>
-      {{end}}
     </section>
   </main>
 
-  {{if .About}}<dialog id="about-dialog" class="about-dialog">
-    <button type="button" class="about-close" aria-label="{{tr .Lang "home.about.close"}}">×</button>
-    <div class="about-dialog-text">{{.About}}</div>
-    <button type="button" class="about-ok btn-primary">{{tr .Lang "home.about.ok"}}</button>
-  </dialog>{{end}}
-
-  <footer class="home-foot">
-    <span>{{.AppTitle}}</span>
-    {{if .Tagline}}<span class="sep">·</span><span>{{.Tagline}}</span>{{end}}
-    {{if ne .AppTitle "WarnFlux"}}<span class="sep">·</span><span>WarnFlux</span>{{end}}
-    <span class="sep">·</span>
-    <span>{{.Version}}</span>
-    {{if ne .Commit "unknown"}}<span class="sep">·</span><a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{shortCommit .Commit}}</a>{{end}}
-    <a class="home-git" href="https://github.com/szporwolik/WarnFlux" target="_blank" rel="noopener noreferrer" title="{{tr .Lang "common.source_code"}}" aria-label="{{tr .Lang "common.source_code"}}">
-      <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
-    </a>
-  </footer>
+  {{template "public-foot" .}}
   <dialog class="modal hz-modal" id="hz-dialog" aria-labelledby="hz-title">
     <div id="hz-content"></div>
     <div class="modal-actions hz-actions">
@@ -187,7 +156,10 @@
 {{end}}
 
 {{define "home_alerts_section"}}<section class="home-alerts-wrap" id="home-alerts">
-  <h2 class="home-alerts-head">{{tr .Lang "home.alerts.head"}} <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span>{{if .EmcomRaised}}<button type="button" class="emcom-info" data-emcom-info aria-label="{{tr .Lang "home.emcom.info.aria"}}" title="{{tr .Lang "home.emcom.info.aria"}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-info-circle"></use></svg></button>{{end}}</h2>
+  <div class="home-alerts-top">
+    <h2 class="home-alerts-head">{{tr .Lang "home.alerts.head"}} <span class="count{{if gt .ActiveCount 0}} count-live{{end}}">{{.ActiveCount}}</span>{{if .EmcomRaised}}<button type="button" class="emcom-info" data-emcom-info aria-label="{{tr .Lang "home.emcom.info.aria"}}" title="{{tr .Lang "home.emcom.info.aria"}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-info-circle"></use></svg></button>{{end}}</h2>
+    <a class="home-sub-link" href="/archive">{{tr .Lang "home.tab.archive"}} →</a>
+  </div>
 
   <details class="home-section home-important" open>
     <summary>{{tr .Lang "home.important"}} <span class="count{{if gt .MainCount 0}} count-live{{end}}">{{.MainCount}}</span></summary>

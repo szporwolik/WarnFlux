@@ -276,12 +276,6 @@ func (s *Server) buildHomeView(lang string) homeView {
 		v.AprsRadiusKM = s.aprs.AreaRadius()
 		v.AprsCallsign = s.aprs.Callsign()
 	}
-	if s.actions != nil {
-		v.Channels = publicChannels(s.actions.Statuses(), lang)
-	}
-	if s.router != nil {
-		v.Sources = publicSources(s.router.Statuses(), lang)
-	}
 	s.fillHomeEmcomState(&v, lang, nets)
 	return v
 }

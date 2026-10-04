@@ -965,91 +965,6 @@ func TestGroupRecipientDiscord(t *testing.T) {
 	}
 }
 
-// TestRequeueDeliveryByVersion pins the async-failure re-arm: a job the
-// worker already settled as accepted is revived as failed due NOW when
-// the modem reports TxFailed for its version — a bare progress revoke
-// schedules nothing. Only accepted/confirmed jobs of the exact version
-// move, and the attempt counter stays spent (the budget still applies).
-func TestRequeueDeliveryByVersion(t *testing.T) {
-	store := newRoutingStore(t)
-	ctx := context.Background()
-
-	g, err := store.CreateGroup("mesh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := func(changeID int64, publisher string) []byte {
-		ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
-			Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw",
-				ChangeID: changeID, Publisher: publisher}}
-		b, err := json.Marshal(action.ActionRequest{ID: "imgw:1/mesh", Event: ev})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
-	}
-	at := time.Now()
-	for _, spec := range []struct {
-		dedup, pub, action string
-		changeID           int64
-		status             string
-	}{
-		{"c:v2", "pub-1", "mesh", 2, "accepted"},   // the settled version: re-armed
-		{"c:v3", "pub-1", "mesh", 3, "accepted"},   // a different version: untouched
-		{"c:s", "pub-1", "mesh", 2, "saved"},       // not settled yet: untouched
-		{"c:o", "pub-2", "mesh", 2, "accepted"},    // another publisher: untouched
-		{"c:smtp", "pub-1", "smtp", 2, "accepted"}, // another ACTION, same version: untouched (P2)
-	} {
-		st, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
-			GroupID: g.ID, ActionID: spec.action, EventKey: "imgw:1",
-			DedupKey: spec.dedup, Payload: payload(spec.changeID, spec.pub), FiredAt: at,
-		})
-		if err != nil || !queued || st != storage.DeliverySaved {
-			t.Fatalf("enqueue %s = (%v, %v, %v)", spec.dedup, st, queued, err)
-		}
-		if spec.status == "accepted" {
-			if err := store.SettleDelivery(ctx, g.ID, spec.action, spec.dedup, storage.DeliveryAccepted, time.Time{}); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-
-	n, err := store.RequeueDeliveryByVersion(ctx, "mesh", "pub-1", "imgw:1", 2, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("re-armed %d jobs, want exactly 1", n)
-	}
-	var status string
-	var attempts int
-	var nextMs int64
-	if err := store.db.QueryRow(
-		`SELECT status, attempts, next_attempt_at_ms FROM action_fires WHERE dedup_key = 'c:v2'`).
-		Scan(&status, &attempts, &nextMs); err != nil {
-		t.Fatal(err)
-	}
-	if status != "failed" || attempts != 0 || nextMs == 0 {
-		t.Fatalf("re-armed job = (%q, attempts %d, next %d), want failed with the retry deadline now", status, attempts, nextMs)
-	}
-	for _, dedup := range []string{"c:v3", "c:o", "c:smtp"} {
-		var st string
-		if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = ?`, dedup).Scan(&st); err != nil {
-			t.Fatal(err)
-		}
-		if st != "accepted" {
-			t.Fatalf("job %s = %q, want untouched accepted", dedup, st)
-		}
-	}
-	var st string
-	if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = 'c:s'`).Scan(&st); err != nil {
-		t.Fatal(err)
-	}
-	if st != "saved" {
-		t.Fatalf("job c:s = %q, want untouched saved", st)
-	}
-}
-
 // TestSettleDeliveryGuarded pins the atomic settlement: a failure marker
 // landing while the job was still running downgrades the later accepted
 // settlement to a scheduled retry — the async failure can never be
@@ -1059,7 +974,14 @@ func TestSettleDeliveryGuarded(t *testing.T) {
 	store := newRoutingStore(t)
 	ctx := context.Background()
 
-	g, err := store.CreateGroup("mesh")
+	// TWO groups route the SAME action for the SAME event version: the
+	// failure marker is job-scoped, so one group's TxFailed must not
+	// downgrade the other group's settlement (reported P2).
+	gA, err := store.CreateGroup("mesh-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gB, err := store.CreateGroup("mesh-b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1069,32 +991,39 @@ func TestSettleDeliveryGuarded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	at := time.Now()
 	if st, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
-		GroupID: g.ID, ActionID: "mesh", EventKey: "imgw:1",
-		DedupKey: "c:1", Payload: payload, FiredAt: time.Now(),
+		GroupID: gA.ID, ActionID: "mesh", EventKey: "imgw:1",
+		DedupKey: "c:a", Payload: payload, FiredAt: at,
 	}); err != nil || !queued || st != storage.DeliverySaved {
-		t.Fatalf("enqueue = (%v, %v, %v)", st, queued, err)
+		t.Fatalf("enqueue a = (%v, %v, %v)", st, queued, err)
+	}
+	if st, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
+		GroupID: gB.ID, ActionID: "mesh", EventKey: "imgw:1",
+		DedupKey: "c:b", Payload: payload, FiredAt: at.Add(time.Second),
+	}); err != nil || !queued || st != storage.DeliverySaved {
+		t.Fatalf("enqueue b = (%v, %v, %v)", st, queued, err)
 	}
 
-	// The worker claims the job (generation 1) and executes.
+	// The worker claims group A's job (generation 1) and executes.
 	job, ok, err := store.ClaimNextDelivery(ctx, "mesh", 3, time.Now())
-	if err != nil || !ok || job.Attempts != 1 {
-		t.Fatalf("claim = (%+v, %v, %v), want attempts 1", job, ok, err)
+	if err != nil || !ok || job.Attempts != 1 || job.DedupKey != "c:a" || job.GroupID != gA.ID {
+		t.Fatalf("claim a = (%+v, %v, %v), want the group-a job at attempts 1", job, ok, err)
 	}
 
-	// TxFailed arrives while the job is still running: the marker lands;
-	// the hub's re-arm sink is a NO-OP on running rows (the settlement
-	// itself must guard).
-	if err := store.SetMeshActionFailed(ctx, "mesh", "pub-1", "imgw:1", 7, "a0a85934", 0, true); err != nil {
+	// TxFailed for group A's job arrives while it is still running: the
+	// marker lands and the atomic record re-arms nothing (the row is
+	// running — the settlement itself must guard).
+	if err := store.SetMeshActionFailed(ctx, "mesh", gA.ID, "c:a", "pub-1", "imgw:1", 7, "a0a85934", 0, true); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := store.RequeueDeliveryByVersion(ctx, "mesh", "pub-1", "imgw:1", 7, time.Now()); err != nil || n != 0 {
+	if n, err := store.RecordMeshFailureAndRequeue(ctx, "mesh", gA.ID, "c:a", "pub-1", "imgw:1", 7, "a0a85934", 0, time.Now()); err != nil || n != 0 {
 		t.Fatalf("re-arm on running = (%d, %v), want 0 (the guarded settle covers it)", n, err)
 	}
 
 	// The worker settles accepted: the guard downgrades atomically.
 	applied, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
-		GroupID: g.ID, ActionID: "mesh", DedupKey: "c:1",
+		GroupID: gA.ID, ActionID: "mesh", DedupKey: "c:a",
 		Stage: storage.DeliveryAccepted, NextAttempt: time.Now().Add(time.Minute),
 		Attempts: 1,
 		Version:  &storage.DeliveryVersion{ActionID: "mesh", Publisher: "pub-1", EventKey: "imgw:1", ChangeID: 7},
@@ -1104,36 +1033,27 @@ func TestSettleDeliveryGuarded(t *testing.T) {
 	}
 	var status string
 	var next int64
-	if err := store.db.QueryRow(`SELECT status, next_attempt_at_ms FROM action_fires WHERE dedup_key = 'c:1'`).
+	if err := store.db.QueryRow(`SELECT status, next_attempt_at_ms FROM action_fires WHERE dedup_key = 'c:a'`).
 		Scan(&status, &next); err != nil {
 		t.Fatal(err)
 	}
 	if status != "failed" || next == 0 {
-		t.Fatalf("row = (%q, next %d), want failed with the retry deadline", status, next)
+		t.Fatalf("row a = (%q, next %d), want failed with the retry deadline", status, next)
 	}
 
-	// P2: another ACTION's accepted job of the same version is NOT
-	// downgraded by the mesh failure marker (the guard is action-scoped).
-	smtpPayload, err := json.Marshal(action.ActionRequest{ID: "imgw:1/smtp", Event: ev})
-	if err != nil {
-		t.Fatal(err)
+	// P2: group B's accepted job of the SAME action+version is NOT
+	// downgraded by group A's failure marker — the guard is job-scoped.
+	jobB, ok, err := store.ClaimNextDelivery(ctx, "mesh", 3, time.Now())
+	if err != nil || !ok || jobB.Attempts != 1 || jobB.DedupKey != "c:b" || jobB.GroupID != gB.ID {
+		t.Fatalf("claim b = (%+v, %v, %v), want the group-b job at attempts 1", jobB, ok, err)
 	}
-	if st, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
-		GroupID: g.ID, ActionID: "smtp", EventKey: "imgw:1",
-		DedupKey: "c:smtp", Payload: smtpPayload, FiredAt: time.Now(),
-	}); err != nil || !queued || st != storage.DeliverySaved {
-		t.Fatalf("enqueue smtp = (%v, %v, %v)", st, queued, err)
-	}
-	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, time.Now()); err != nil || !ok {
-		t.Fatalf("smtp claim = (%v, %v)", ok, err)
-	}
-	smtpApplied, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
-		GroupID: g.ID, ActionID: "smtp", DedupKey: "c:smtp",
+	appliedB, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
+		GroupID: gB.ID, ActionID: "mesh", DedupKey: "c:b",
 		Stage: storage.DeliveryAccepted, Attempts: 1,
-		Version: &storage.DeliveryVersion{ActionID: "smtp", Publisher: "pub-1", EventKey: "imgw:1", ChangeID: 7},
+		Version: &storage.DeliveryVersion{ActionID: "mesh", Publisher: "pub-1", EventKey: "imgw:1", ChangeID: 7},
 	})
-	if err != nil || smtpApplied != storage.DeliveryAccepted {
-		t.Fatalf("smtp settle = (%v, %v), want accepted (the mesh marker is action-scoped)", smtpApplied, err)
+	if err != nil || appliedB != storage.DeliveryAccepted {
+		t.Fatalf("group-b settle = (%v, %v), want accepted (the marker is job-scoped)", appliedB, err)
 	}
 
 	// A newer claim (the retry, generation 2) and a STALE settlement
@@ -1142,13 +1062,13 @@ func TestSettleDeliveryGuarded(t *testing.T) {
 		t.Fatalf("retry claim = (%v, %v)", ok, err)
 	}
 	if _, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
-		GroupID: g.ID, ActionID: "mesh", DedupKey: "c:1",
+		GroupID: gA.ID, ActionID: "mesh", DedupKey: "c:a",
 		Stage: storage.DeliveryAccepted, Attempts: 1,
 		Version: &storage.DeliveryVersion{ActionID: "mesh", Publisher: "pub-1", EventKey: "imgw:1", ChangeID: 7},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = 'c:1'`).Scan(&status); err != nil {
+	if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = 'c:a'`).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != "running" {
@@ -1157,15 +1077,174 @@ func TestSettleDeliveryGuarded(t *testing.T) {
 
 	// The retransmission succeeded (marker cleared): the generation-2
 	// settlement lands accepted.
-	if err := store.SetMeshActionFailed(ctx, "mesh", "pub-1", "imgw:1", 7, "a0a85934", 0, false); err != nil {
+	if err := store.SetMeshActionFailed(ctx, "mesh", gA.ID, "c:a", "pub-1", "imgw:1", 7, "a0a85934", 0, false); err != nil {
 		t.Fatal(err)
 	}
 	applied, err = store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
-		GroupID: g.ID, ActionID: "mesh", DedupKey: "c:1",
+		GroupID: gA.ID, ActionID: "mesh", DedupKey: "c:a",
 		Stage: storage.DeliveryAccepted, Attempts: 2,
 		Version: &storage.DeliveryVersion{ActionID: "mesh", Publisher: "pub-1", EventKey: "imgw:1", ChangeID: 7},
 	})
 	if err != nil || applied != storage.DeliveryAccepted {
 		t.Fatalf("cleared-marker settle = (%v, %v), want accepted", applied, err)
+	}
+}
+
+// TestRecordMeshFailureAndRequeue pins the atomic async-failure outcome:
+// ONE call revokes the progress entry, records the failure marker and
+// re-arms the settled delivery JOB of the concrete job identity — a
+// crash between those steps is impossible (single transaction, reported
+// P1) and other groups' jobs of the same action stay untouched (P2).
+func TestRecordMeshFailureAndRequeue(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	// TWO groups route the same action for the same version; the failure
+	// of group A's job must re-arm only that job.
+	gA, err := store.CreateGroup("mesh-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gB, err := store.CreateGroup("mesh-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw", ChangeID: 7, Publisher: "pub-1"}}
+	meshPayload, err := json.Marshal(action.ActionRequest{ID: "imgw:1/mesh", Event: ev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	smtpPayload, err := json.Marshal(action.ActionRequest{ID: "imgw:1/smtp", Event: ev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	for _, spec := range []struct {
+		groupID int64
+		action  string
+		dedup   string
+		payload []byte
+	}{
+		{gA.ID, "mesh", "c:a", meshPayload}, // the failing job: re-armed
+		{gB.ID, "mesh", "c:b", meshPayload}, // another GROUP, same action+version: untouched (P2)
+		{gA.ID, "smtp", "c:s", smtpPayload}, // another ACTION of the same group: untouched
+	} {
+		if st, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
+			GroupID: spec.groupID, ActionID: spec.action, EventKey: "imgw:1",
+			DedupKey: spec.dedup, Payload: spec.payload, FiredAt: at,
+		}); err != nil || !queued || st != storage.DeliverySaved {
+			t.Fatalf("enqueue %s = (%v, %v, %v)", spec.dedup, st, queued, err)
+		}
+		if err := store.SettleDelivery(ctx, spec.groupID, spec.action, spec.dedup, storage.DeliveryAccepted, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.RecordMeshActionProgress(ctx, "pub-1", "imgw:1", 7, "a0a85934", 0, at); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := store.RecordMeshFailureAndRequeue(ctx, "mesh", gA.ID, "c:a", "pub-1", "imgw:1", 7, "a0a85934", 0, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("re-armed %d jobs, want exactly the group-a mesh job", n)
+	}
+	var status string
+	var nextMs int64
+	if err := store.db.QueryRow(`SELECT status, next_attempt_at_ms FROM action_fires WHERE dedup_key = 'c:a'`).
+		Scan(&status, &nextMs); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || nextMs == 0 {
+		t.Fatalf("group-a mesh job = (%q, next %d), want failed due now", status, nextMs)
+	}
+	for _, dedup := range []string{"c:b", "c:s"} {
+		if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = ?`, dedup).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != "accepted" {
+			t.Fatalf("job %s = %q, want untouched accepted", dedup, status)
+		}
+	}
+	if done, err := store.MeshActionProgressDone(ctx, "pub-1", "imgw:1", 7, "a0a85934", 0); err != nil || done {
+		t.Fatalf("progress after failure = (%v, %v), want revoked", done, err)
+	}
+	if failed, err := store.MeshActionFailed(ctx, "mesh", gA.ID, "c:a", "pub-1", "imgw:1", 7); err != nil || !failed {
+		t.Fatalf("marker = (%v, %v), want set", failed, err)
+	}
+	if failed, err := store.MeshActionFailed(ctx, "mesh", gB.ID, "c:b", "pub-1", "imgw:1", 7); err != nil || failed {
+		t.Fatalf("group-b marker = (%v, %v), want unset", failed, err)
+	}
+}
+
+// TestRequeueMarkedDeliveries pins the startup sweep: the inconsistent
+// state a crash could leave behind (accepted job + durable marker, set
+// separately) is re-armed for exactly the marked job; other groups and
+// actions stay untouched.
+func TestRequeueMarkedDeliveries(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	gA, err := store.CreateGroup("mesh-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gB, err := store.CreateGroup("mesh-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw", ChangeID: 7, Publisher: "pub-1"}}
+	meshPayload, _ := json.Marshal(action.ActionRequest{ID: "imgw:1/mesh", Event: ev})
+	smtpPayload, _ := json.Marshal(action.ActionRequest{ID: "imgw:1/smtp", Event: ev})
+	at := time.Now()
+	for _, spec := range []struct {
+		groupID int64
+		action  string
+		dedup   string
+		payload []byte
+	}{
+		{gA.ID, "mesh", "c:a", meshPayload}, // the marked job: re-armed
+		{gB.ID, "mesh", "c:b", meshPayload}, // same action+version, other group: untouched (P2)
+		{gA.ID, "smtp", "c:s", smtpPayload},
+	} {
+		if st, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
+			GroupID: spec.groupID, ActionID: spec.action, EventKey: "imgw:1",
+			DedupKey: spec.dedup, Payload: spec.payload, FiredAt: at,
+		}); err != nil || !queued || st != storage.DeliverySaved {
+			t.Fatalf("enqueue %s = (%v, %v, %v)", spec.dedup, st, queued, err)
+		}
+		if err := store.SettleDelivery(ctx, spec.groupID, spec.action, spec.dedup, storage.DeliveryAccepted, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The crash state: the marker exists, the job is still accepted.
+	if err := store.SetMeshActionFailed(ctx, "mesh", gA.ID, "c:a", "pub-1", "imgw:1", 7, "a0a85934", 0, true); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := store.RequeueMarkedDeliveries(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("sweep re-armed %d jobs, want exactly the group-a mesh job", n)
+	}
+	var status string
+	if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = 'c:a'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("group-a mesh job = %q, want re-armed failed", status)
+	}
+	for _, dedup := range []string{"c:b", "c:s"} {
+		if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = ?`, dedup).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != "accepted" {
+			t.Fatalf("job %s = %q, want untouched accepted", dedup, status)
+		}
 	}
 }

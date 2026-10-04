@@ -10,6 +10,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 )
 
 // stubSender records every transmission the action hands to the hub and
@@ -26,6 +27,8 @@ type stubSender struct {
 	ledgerErr error
 	// progress keys: "publisher|eventKey|changeID|recipient|channel".
 	progress map[string]bool
+	// progs records the progress references of the versioned sends.
+	progs []mesh.ProgressRef
 }
 
 func (s *stubSender) SendContactMessage(_ context.Context, addr, text, operator string) error {
@@ -67,19 +70,21 @@ func (s *stubSender) revokeProgress(publisher, eventKey string, changeID int64, 
 	delete(s.progress, progressKey(publisher, eventKey, changeID, recipient, channel))
 }
 
-func (s *stubSender) SendContactMessageVersioned(_ context.Context, addr, text, operator, actionID, publisher, eventKey string, changeID int64) error {
+func (s *stubSender) SendContactMessageVersioned(_ context.Context, addr, text, operator string, prog mesh.ProgressRef) error {
 	if err := s.SendContactMessage(nil, addr, text, operator); err != nil {
 		return err
 	}
-	s.recordProgress(publisher, eventKey, changeID, addr, 0)
+	s.progs = append(s.progs, prog)
+	s.recordProgress(prog.Publisher, prog.EventKey, prog.ChangeID, addr, 0)
 	return nil
 }
 
-func (s *stubSender) SendChannelTextVersioned(_ context.Context, idx int, text, operator, actionID, publisher, eventKey string, changeID int64) error {
+func (s *stubSender) SendChannelTextVersioned(_ context.Context, idx int, text, operator string, prog mesh.ProgressRef) error {
 	if err := s.SendChannelText(nil, idx, text, operator); err != nil {
 		return err
 	}
-	s.recordProgress(publisher, eventKey, changeID, "", idx)
+	s.progs = append(s.progs, prog)
+	s.recordProgress(prog.Publisher, prog.EventKey, prog.ChangeID, "", idx)
 	return nil
 }
 
@@ -352,6 +357,31 @@ func TestExecuteLedgerFailureFailsOpen(t *testing.T) {
 	if len(stub.channels) != 1 || len(stub.contacts) != 1 {
 		t.Fatalf("transmissions = broadcast %v contacts %v, want both delivered (fail-open)",
 			stub.channels, stub.contacts)
+	}
+}
+
+// TestExecutePassesJobIdentityToVersionedSends pins the P2 plumbing: the
+// action hands the concrete job identity (group + dedup key stamped onto
+// the request by the worker) to every versioned send, so the hub's async
+// failure marker and re-arm scope to THIS job and never to another
+// group sharing the action.
+func TestExecutePassesJobIdentityToVersionedSends(t *testing.T) {
+	stub := &stubSender{}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
+	req := versionedReq([]string{"a0a85934"}, "x", 3)
+	req.JobGroupID = 42
+	req.JobDedupKey = "c:42"
+	if err := a.Execute(context.Background(), req); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(stub.progs) != 2 {
+		t.Fatalf("versioned sends = %d, want 2 (broadcast + dm)", len(stub.progs))
+	}
+	for i, prog := range stub.progs {
+		if prog.ActionID != "mesh-main" || prog.GroupID != 42 || prog.DedupKey != "c:42" ||
+			prog.Publisher != "publisher-1" || prog.ChangeID != 3 {
+			t.Fatalf("send %d prog = %+v, want the job identity (group 42, dedup c:42) + version", i, prog)
+		}
 	}
 }
 

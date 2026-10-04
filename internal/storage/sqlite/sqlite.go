@@ -862,6 +862,28 @@ CREATE TABLE mesh_action_failures (
 );
 `,
 	},
+	{
+		// v47: job-scoped mesh failures. The action scope still let one
+		// GROUP's failure re-arm another group's accepted job of the
+		// same action+version (reported P2). The marker now carries the
+		// concrete delivery-job identity (group + dedup key); existing
+		// transient markers are dropped.
+		SQL: `
+DROP TABLE mesh_action_failures;
+CREATE TABLE mesh_action_failures (
+	action_id     TEXT NOT NULL,
+	group_id      INTEGER NOT NULL,
+	dedup_key     TEXT NOT NULL,
+	publisher     TEXT NOT NULL,
+	event_key     TEXT NOT NULL,
+	change_id     INTEGER NOT NULL,
+	recipient     TEXT NOT NULL,
+	channel       INTEGER NOT NULL,
+	created_at_ms INTEGER NOT NULL,
+	PRIMARY KEY (action_id, group_id, dedup_key, publisher, event_key, change_id, recipient, channel)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

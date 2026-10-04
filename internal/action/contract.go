@@ -70,6 +70,14 @@ type ActionRequest struct {
 	// App identifies the running application (version, domain, repo);
 	// populated by the rule engine.
 	App AppInfo `json:"app"`
+
+	// JobGroupID and JobDedupKey carry the concrete delivery-job
+	// identity the request was claimed for. The worker stamps them on
+	// the durable path only and they are never persisted (json:"-"): the
+	// async transmission callback uses them to scope its failure marker
+	// and re-arm to THIS job, not the whole action+version.
+	JobGroupID  int64  `json:"-"`
+	JobDedupKey string `json:"-"`
 }
 
 // DeliveryStage reports how far one execution got down the transport.

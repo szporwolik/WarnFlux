@@ -1360,7 +1360,8 @@ tr.click-send:hover td { background: var(--surface-hi); }
   padding: 0.4rem 0 1rem;
   border-bottom: 1px solid var(--border);
 }
-.home-brand { display: flex; align-items: center; gap: 0.9rem; min-width: 0; }
+.home-brand { display: flex; align-items: center; gap: 0.9rem; min-width: 0; text-decoration: none; color: inherit; }
+.home-brand:hover { text-decoration: none; color: inherit; }
 .home-logo { width: 3rem; height: 3rem; border-radius: var(--radius); box-shadow: var(--logo-glow); }
 .home-brand-text h1 { margin: 0; font-size: 1.45rem; letter-spacing: 0.02em; }
 .home-codename {
@@ -1387,6 +1388,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .home-login:hover { border-color: var(--link); color: var(--link); }
 .home-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 .home-actions .theme-toggle { width: 2.4rem; height: 2.4rem; }
+.home-actions .about-help { width: 2.4rem; height: 2.4rem; }
 /* The language switch matches the larger home-header controls. */
 .home-actions .lang-opt { height: 2.4rem; min-width: 2.4rem; font-size: 0.78rem; }
 .home-dash {

@@ -945,7 +945,7 @@ func (h *Hub) hazardsTick() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	header := fmt.Sprintf("WarnFlux active hazards: %d", len(hazards))
+	header := fmt.Sprintf("WarnFlux active messages: %d", len(hazards))
 	if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, header, "system"); err != nil && h.logger != nil {
 		h.logger.Warn("meshtastic: hazard digest header failed", "error", err)
 	}

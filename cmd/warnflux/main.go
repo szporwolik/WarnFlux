@@ -144,10 +144,10 @@ const radioAlertTTL = 4 * time.Hour
 // and the digest never disagree.
 func hazardsForRadio(hazards []meshtastic.ActiveHazard) string {
 	if len(hazards) == 0 {
-		return "No active hazards"
+		return "No active messages"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Active hazards: %d", len(hazards))
+	fmt.Fprintf(&b, "Active messages: %d", len(hazards))
 	for _, hz := range hazards {
 		b.WriteByte('\n')
 		b.WriteString(meshtastic.HazardDigestLine(hz))
@@ -705,7 +705,7 @@ func run(configPath string, checkConfig bool) error {
 	// /hazard: a public command — every active hazard, one Zulu-windowed
 	// line each (the same form the hourly digest broadcasts). The
 	// channels split the reply into one message per line.
-	radioCLI.Register("hazard", "active hazards", func(string) radiocli.Result {
+	radioCLI.Register("hazard", "active messages", func(string) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: hazardsForRadio(hazardSource())}
 	})
 	// /weather: a public command — the region average of every current

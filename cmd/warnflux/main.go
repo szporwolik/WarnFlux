@@ -1193,7 +1193,10 @@ func run(configPath string, checkConfig bool) error {
 	// longer than outboxRetention are pruned hourly, so a prolonged
 	// broker outage cannot grow the database without bound. The local
 	// delivery already happened; only the cross-instance sync of stale
-	// requests is dropped.
+	// requests is dropped. Still-valid rows are never pruned: beyond
+	// the capacity bound appends are rejected with an explicit 503
+	// until publishing drains the queue, and the fullness alarm below
+	// warns before that happens.
 	{
 		wg.Add(1)
 		go func() {
@@ -1206,6 +1209,12 @@ func run(configPath string, checkConfig bool) error {
 				}
 				if n > 0 {
 					logger.Info("ingest_http: outbox aged rows pruned", "removed", n)
+				}
+				// Fullness alarm: a still-valid backlog near the bound is
+				// about to turn every append into an explicit 503.
+				if backlog, err := store.OutboxCount(ctx); err == nil && backlog >= storage.OutboxCapacity*9/10 {
+					logger.Warn("ingest_http: outbox backlog high — still-valid rows near capacity; appends are rejected with 503 until publishing drains",
+						"backlog", backlog, "capacity", storage.OutboxCapacity)
 				}
 			}
 			prune()

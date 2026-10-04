@@ -2526,31 +2526,51 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .config-mqtt-row:hover { border-color: var(--accent); }
 .config-mqtt-form .btn-primary { justify-self: start; margin-top: 6px; }
 
-/* Config page: offline-mode toggle. */
+/* Config page: offline-mode switch. */
 .config-offline-form {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 0.5rem;
   border-top: 1px solid var(--border);
   padding-top: 0.9rem;
   margin-top: 0.6rem;
 }
-.config-offline-form .btn-primary,
-.config-offline-form .btn-danger {
-  width: auto;
+.config-offline-form .health-row {
+  cursor: pointer;
+  justify-content: space-between;
+  user-select: none;
+}
+.config-offline-form .health-row:hover { border-color: var(--accent); }
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 50px;
+  height: 26px;
   flex: none;
-  padding: 0.45rem 1.4rem;
 }
-.config-offline-form .btn-danger {
-  background: var(--bad);
-  border: 1px solid transparent;
-  color: #fff;
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider {
+  position: absolute;
+  inset: 0;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  transition: background 0.2s, border-color 0.2s;
 }
-.config-offline-form .btn-danger:hover {
-  background: var(--bad);
-  color: #fff;
-  filter: brightness(0.92);
+.switch .slider::before {
+  content: "";
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  top: 3px;
+  background: var(--muted);
+  border-radius: 50%;
+  transition: transform 0.2s, background 0.2s;
 }
+.switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(24px); background: #fff; }
+.switch input:focus-visible + .slider { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* EMCOM panel page. */
 .emcom-page { max-width: 900px; margin: 0 auto; display: grid; gap: 1rem; padding: 1rem; }

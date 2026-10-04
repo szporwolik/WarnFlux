@@ -103,7 +103,7 @@ type Config struct {
 // storage stores). Best-effort: the hub logs recording failures and
 // keeps running.
 type Recorder interface {
-	RecordMeshtasticMessage(ctx context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error
+	RecordMeshtasticMessage(ctx context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error
 	// UpdateMeshtasticMessageStatus marks the tx delivery state of the
 	// matching row (created at + text).
 	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
@@ -360,6 +360,9 @@ type Snapshot struct {
 type Message struct {
 	Direction string // rx | tx
 	Sender    string // node id (8 hex) for rx; "" for tx
+	// Recipient is the target node id (8 hex) of a tx direct message;
+	// empty for broadcasts and rx rows.
+	Recipient string
 	Channel   string // channel name or "dm"
 	Hops      int    // radio path length from the packet (0 = unknown/ours)
 	Operator  string // admin username behind a tx (rx rows are empty)
@@ -1531,7 +1534,7 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	h.recordSignal(pkt.GetFrom(), SignalText)
 	channel := h.channelNameFor(pkt)
-	h.recordMessage("rx", id, channel, string(decoded.GetPayload()), "", int(pkt.GetHopStart()), time.Now())
+	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", int(pkt.GetHopStart()), time.Now())
 
 	// Only messages addressed EXACTLY to our node route (broadcasts,
 	// To=0 packets and third-party traffic stay on the feed): the gate
@@ -2060,8 +2063,13 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 	// the frame goes out so a fast device echo can never miss its entry.
 	h.echoQueue = append(h.echoQueue, ps)
 	// The history row is written first so the device echo (which can race
-	// back immediately) always finds its row to stamp.
-	h.recordMessage("tx", "", channelLabel, text, operator, 0, at)
+	// back immediately) always finds its row to stamp. Direct messages
+	// carry the recipient node id so the DM tab can pair the conversation.
+	recipient := ""
+	if wantAck {
+		recipient = fmt.Sprintf("%08x", to)
+	}
+	h.recordMessage("tx", "", recipient, channelLabel, text, operator, 0, at)
 
 	if err := conn.SendToRadio(msg); err != nil {
 		h.dropPendingLocked(ps)
@@ -2073,8 +2081,8 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 
 // recordMessage appends one message to the recent list, the durable
 // history and the MQTT feed.
-func (h *Hub) recordMessage(direction, sender, channel, text, operator string, hops int, at time.Time) {
-	msg := Message{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Operator: operator, Text: text, At: at}
+func (h *Hub) recordMessage(direction, sender, recipient, channel, text, operator string, hops int, at time.Time) {
+	msg := Message{Direction: direction, Sender: sender, Recipient: recipient, Channel: channel, Hops: hops, Operator: operator, Text: text, At: at}
 	h.mu.Lock()
 	h.recent = append(h.recent, msg)
 	if len(h.recent) > 64 {
@@ -2085,7 +2093,7 @@ func (h *Hub) recordMessage(direction, sender, channel, text, operator string, h
 	h.mu.Unlock()
 	if rec != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := rec.RecordMeshtasticMessage(ctx, direction, sender, channel, text, operator, hops, at)
+		err := rec.RecordMeshtasticMessage(ctx, direction, sender, recipient, channel, text, operator, hops, at)
 		cancel()
 		if err != nil && h.logger != nil {
 			h.logger.Warn("meshtastic: message history record failed", "error", err)
@@ -2095,6 +2103,7 @@ func (h *Hub) recordMessage(direction, sender, channel, text, operator string, h
 		payload, _ := json.Marshal(map[string]any{
 			"direction": direction,
 			"sender":    sender,
+			"recipient": recipient,
 			"channel":   channel,
 			"hops":      hops,
 			"operator":  operator,

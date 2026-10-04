@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,14 +12,14 @@ import (
 
 // RecordMeshtasticMessage appends one Meshtastic message and prunes the table back
 // to storage.MeshMessageRetentionEntries newest rows.
-func (s *Store) RecordMeshtasticMessage(ctx context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error {
+func (s *Store) RecordMeshtasticMessage(ctx context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error {
 	if direction != "rx" && direction != "tx" {
 		return fmt.Errorf("mesh message: invalid direction %q", direction)
 	}
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO meshtastic_messages (direction, sender, channel, hops, operator, text, created_at_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		direction, sender, channel, hops, operator, text, at.UnixMilli()); err != nil {
+		INSERT INTO meshtastic_messages (direction, sender, recipient, channel, hops, operator, text, created_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		direction, sender, recipient, channel, hops, operator, text, at.UnixMilli()); err != nil {
 		return fmt.Errorf("insert mesh message: %w", err)
 	}
 	if _, err := s.PruneMeshtasticMessages(ctx, storage.MeshMessageRetentionEntries); err != nil {
@@ -42,11 +43,12 @@ func (s *Store) UpdateMeshtasticMessageStatus(ctx context.Context, status string
 }
 
 // ListMeshtasticMessages returns history rows newest first. The filter
-// narrows by direction ("rx", "tx" or "" for both) and by exact channel
-// label (Channel; Exclude inverts it).
+// narrows by direction ("rx", "tx" or "" for both), by exact channel
+// label (Channel; Exclude inverts it) and by conversation peer (rx sent
+// by the node, tx addressed to it).
 func (s *Store) ListMeshtasticMessages(ctx context.Context, f storage.MeshtasticMessageFilter, limit, offset int) ([]storage.MeshMessage, error) {
 	query := `
-		SELECT id, direction, sender, channel, hops, operator, text, status, created_at_ms
+		SELECT id, direction, sender, recipient, channel, hops, operator, text, status, created_at_ms
 		FROM meshtastic_messages` + meshMessageWhere(f)
 	query += ` ORDER BY id DESC LIMIT ? OFFSET ?`
 	args := append(meshMessageArgs(f), limit, offset)
@@ -61,7 +63,7 @@ func (s *Store) ListMeshtasticMessages(ctx context.Context, f storage.Meshtastic
 	for rows.Next() {
 		var m storage.MeshMessage
 		var atMs int64
-		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Channel, &m.Hops, &m.Operator, &m.Text, &m.Status, &atMs); err != nil {
+		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Recipient, &m.Channel, &m.Hops, &m.Operator, &m.Text, &m.Status, &atMs); err != nil {
 			return nil, fmt.Errorf("scan mesh message: %w", err)
 		}
 		m.At = time.UnixMilli(atMs)
@@ -70,10 +72,10 @@ func (s *Store) ListMeshtasticMessages(ctx context.Context, f storage.Meshtastic
 	return out, rows.Err()
 }
 
-// meshMessageWhere builds the shared WHERE clause (direction and/or
-// channel condition) for the message history queries.
+// meshMessageWhere builds the shared WHERE clause (direction, channel
+// and/or peer conditions) for the message history queries.
 func meshMessageWhere(f storage.MeshtasticMessageFilter) string {
-	conds := make([]string, 0, 2)
+	conds := make([]string, 0, 3)
 	if f.Direction == "rx" || f.Direction == "tx" {
 		conds = append(conds, `direction = ?`)
 	}
@@ -83,6 +85,9 @@ func meshMessageWhere(f storage.MeshtasticMessageFilter) string {
 		} else {
 			conds = append(conds, `channel = ?`)
 		}
+	}
+	if f.Peer != "" {
+		conds = append(conds, `((direction = 'rx' AND sender = ?) OR (direction = 'tx' AND recipient = ?))`)
 	}
 	if len(conds) == 0 {
 		return ""
@@ -100,6 +105,9 @@ func meshMessageArgs(f storage.MeshtasticMessageFilter) []any {
 	if f.Channel != "" {
 		args = append(args, f.Channel)
 	}
+	if f.Peer != "" {
+		args = append(args, f.Peer, f.Peer)
+	}
 	return args
 }
 
@@ -112,6 +120,34 @@ func (s *Store) CountMeshtasticMessages(ctx context.Context, f storage.Meshtasti
 		return 0, fmt.Errorf("count mesh messages: %w", err)
 	}
 	return n, nil
+}
+
+// MeshtasticPeers returns the distinct node ids appearing in direct
+// messages (rx senders and tx recipients), sorted.
+func (s *Store) MeshtasticPeers(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT sender FROM meshtastic_messages
+		WHERE channel = 'dm' AND direction = 'rx' AND sender != ''
+		UNION
+		SELECT recipient FROM meshtastic_messages
+		WHERE channel = 'dm' AND direction = 'tx' AND recipient != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("list mesh peers: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan mesh peer: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mesh peers: %w", err)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // PruneMeshtasticMessages deletes all but the newest keep rows.

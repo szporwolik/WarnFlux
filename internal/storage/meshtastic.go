@@ -21,6 +21,9 @@ type MeshMessage struct {
 	ID        int64
 	Direction string
 	Sender    string
+	// Recipient is the target node id of a tx direct message (empty for
+	// broadcasts and rx rows). It backs the DM conversation view.
+	Recipient string
 	Channel   string
 	Hops      int
 	Operator  string
@@ -39,17 +42,24 @@ type MeshtasticMessageFilter struct {
 	// Exclude inverts the channel condition: every channel except
 	// Channel. Ignored when Channel is empty.
 	Exclude bool
+	// Peer is a node id whose conversation to show: rx rows sent BY the
+	// node plus tx rows addressed TO it. Empty = no peer condition.
+	Peer string
 }
 
 // MeshtasticMessageStore persists Meshtastic message history. Implementations
 // bound retention to MeshMessageRetentionEntries.
 type MeshtasticMessageStore interface {
-	RecordMeshtasticMessage(ctx context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error
+	RecordMeshtasticMessage(ctx context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error
 	// UpdateMeshtasticMessageStatus marks the delivery state of the
 	// matching TX row (created at + text).
 	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
 	ListMeshtasticMessages(ctx context.Context, f MeshtasticMessageFilter, limit, offset int) ([]MeshMessage, error)
 	CountMeshtasticMessages(ctx context.Context, f MeshtasticMessageFilter) (int, error)
+	// MeshtasticPeers returns the distinct node ids that appear in direct
+	// messages (rx senders and tx recipients), sorted. The admin DM tab
+	// builds its conversation filter dropdown from it.
+	MeshtasticPeers(ctx context.Context) ([]string, error)
 }
 
 // MeshtasticNode is one persisted heard node from the node directory.

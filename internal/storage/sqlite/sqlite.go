@@ -736,6 +736,35 @@ ALTER TABLE ingest_outbox ADD COLUMN event_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE ingest_outbox ADD COLUMN publisher TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v40: repair outbox lifecycle statuses. Rows whose payload
+		// carries a corrective transition (cancelled/expired) but were
+		// stored with an empty or active status (the simplified builder
+		// wrote event.status="active" for every transition) age out
+		// under retention — the repair re-derives the status from the
+		// canonical change_type.
+		SQL: `
+UPDATE ingest_outbox SET status = 'cancelled'
+WHERE status IN ('', 'active')
+  AND json_valid(payload)
+  AND json_extract(payload, '$.change_type') = 'cancelled';
+UPDATE ingest_outbox SET status = 'expired'
+WHERE status IN ('', 'active')
+  AND json_valid(payload)
+  AND json_extract(payload, '$.change_type') = 'expired';
+`,
+	},
+	{
+		// v41: outbox versions. The version-aware merge needs the
+		// change id ON THE ROW: a delayed older transition must never
+		// replace a newer pending state (reported P1). Existing rows are
+		// backfilled from their payload; version-less payloads stay 0.
+		SQL: `
+ALTER TABLE ingest_outbox ADD COLUMN change_id INTEGER NOT NULL DEFAULT 0;
+UPDATE ingest_outbox SET change_id = COALESCE(json_extract(payload, '$.change_id'), 0)
+WHERE json_valid(payload) AND json_extract(payload, '$.change_id') IS NOT NULL;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1267,20 +1296,25 @@ func (s *Store) CommitIngest(ctx context.Context, instanceID, topic string, payl
 	// EVENT (publisher + event key — never the topic) merge into the
 	// newest state, and the row carries the lifecycle metadata so
 	// age-pruning recognizes stale rows and corrective sync
-	// (cancellations/expirations) is never evicted.
+	// (cancellations/expirations) is never evicted. A delayed OLDER
+	// version can never replace a newer pending state (reported P1):
+	// the version comparison happens inside this transaction.
 	status, expiresMs := outboxLifecycle(payload)
-	eventKey, publisher := outboxIdentity(payload)
-	if err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher); err != nil {
+	eventKey, publisher, changeID := outboxIdentity(payload)
+	proceed, err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher, changeID)
+	if err != nil {
 		return 0, fmt.Errorf("merge outbox rows for %q: %w", instanceID, err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		instanceID, topic, string(payload), nowMs, status, expiresMs, eventKey, publisher); err != nil {
-		return 0, fmt.Errorf("outbox row for ingest %q: %w", instanceID, err)
-	}
-	if err := enforceOutboxCap(ctx, tx); err != nil {
-		return 0, err
+	if proceed {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher, change_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			instanceID, topic, string(payload), nowMs, status, expiresMs, eventKey, publisher, changeID); err != nil {
+			return 0, fmt.Errorf("outbox row for ingest %q: %w", instanceID, err)
+		}
+		if err := enforceOutboxCap(ctx, tx); err != nil {
+			return 0, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2242,33 +2276,43 @@ func insertInboxRow(e execer, ctx context.Context, data []byte, receiver string,
 // storage.ErrOutboxFull — corrective sync is never silently dropped.
 func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payload []byte) (int64, error) {
 	status, expiresMs := outboxLifecycle(payload)
-	eventKey, publisher := outboxIdentity(payload)
+	eventKey, publisher, changeID := outboxIdentity(payload)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin outbox append: %w", err)
 	}
 	defer tx.Rollback()
-	if err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher); err != nil {
+	proceed, err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher, changeID)
+	if err != nil {
 		return 0, fmt.Errorf("merge outbox rows for %q: %w", instanceID, err)
 	}
-	res, err := tx.ExecContext(ctx, `
-		INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		instanceID, topic, string(payload), s.now().UnixMilli(), status, expiresMs, eventKey, publisher)
-	if err != nil {
-		return 0, fmt.Errorf("append outbox row for %q: %w", instanceID, err)
+	if proceed {
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher, change_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			instanceID, topic, string(payload), s.now().UnixMilli(), status, expiresMs, eventKey, publisher, changeID)
+		if err != nil {
+			return 0, fmt.Errorf("append outbox row for %q: %w", instanceID, err)
+		}
+		if err := enforceOutboxCap(ctx, tx); err != nil {
+			return 0, err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return 0, fmt.Errorf("outbox row id for %q: %w", instanceID, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit outbox append for %q: %w", instanceID, err)
+		}
+		return id, nil
 	}
-	if err := enforceOutboxCap(ctx, tx); err != nil {
-		return 0, err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("outbox row id for %q: %w", instanceID, err)
-	}
+	// A newer pending state already exists for this event: the incoming
+	// payload is stale and must not replace it. The append is a no-op
+	// (the local dispatch already handled it under lifecycle protection).
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit outbox append for %q: %w", instanceID, err)
+		return 0, fmt.Errorf("commit outbox append (stale skip) for %q: %w", instanceID, err)
 	}
-	return id, nil
+	return 0, nil
 }
 
 // outboxHazard is the minimal wire decode of an outbox payload: the
@@ -2276,50 +2320,90 @@ func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payl
 // Unparseable payloads get an empty status and are only ever removed by
 // the capacity bound.
 type outboxHazard struct {
-	Event struct {
+	ChangeType string `json:"change_type"`
+	Event      struct {
 		Status    string  `json:"status"`
 		ExpiresAt *string `json:"expires_at"`
 	} `json:"event"`
 }
 
 // outboxIdentity extracts the event identity of one outbox payload:
-// publisher + event key. A payload without a recognizable event key has
-// no identity ("", "") — such rows are never merged.
-func outboxIdentity(payload []byte) (eventKey, publisher string) {
+// publisher + event key + version (change id). A payload without a
+// recognizable event key has no identity ("", "", 0) — such rows are
+// never merged.
+func outboxIdentity(payload []byte) (eventKey, publisher string, changeID int64) {
 	var we struct {
 		EventKey  string `json:"event_key"`
 		Publisher string `json:"publisher"`
+		ChangeID  int64  `json:"change_id"`
 	}
 	if err := json.Unmarshal(payload, &we); err != nil || we.EventKey == "" {
-		return "", ""
+		return "", "", 0
 	}
-	return we.EventKey, we.Publisher
+	return we.EventKey, we.Publisher, we.ChangeID
 }
 
-// mergeOutboxRows removes, inside the append transaction, the pending
-// rows of the SAME EVENT (identity merge): the broker only needs the
-// final document per event. Rows without an identity are never merged —
-// one MQTT topic carries many independent events, so merging by topic
-// removed independent alarms (reported P2).
-func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publisher string) error {
+// mergeOutboxRows resolves the pending rows of the SAME EVENT inside the
+// append transaction: the broker only needs the final document per
+// event. Identity merge only — one MQTT topic carries many independent
+// events, so merging by topic removed independent alarms (reported P2).
+//
+// The version comparison is the P1 guard: when a pending row carries a
+// NEWER version (change id) than the incoming payload, the incoming
+// document is stale and must not replace the newer state — proceed is
+// false and the append skips its row. A delayed older transition can
+// therefore never resurrect an already-cancelled alarm on the broker.
+// Payloads without a version (change id 0) keep the legacy
+// delete-and-replace semantics.
+func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publisher string, changeID int64) (bool, error) {
 	if eventKey == "" {
-		return nil
+		return true, nil
+	}
+	if changeID > 0 {
+		var stored int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COALESCE(MAX(change_id), 0) FROM ingest_outbox
+			WHERE instance_id = ? AND event_key = ? AND publisher = ?`,
+			instanceID, eventKey, publisher).Scan(&stored); err != nil {
+			return false, err
+		}
+		if stored > changeID {
+			return false, nil
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM ingest_outbox WHERE instance_id = ? AND event_key = ? AND publisher = ?`,
 		instanceID, eventKey, publisher); err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
 // outboxLifecycle extracts the lifecycle metadata of one outbox payload.
+// The queue status derives from the CANONICAL transition type
+// (change_type), never from the wire event.status: the simplified
+// builder form wrote "active" even for cancellations and retention read
+// exactly that field, so an accepted cancellation could age out and
+// vanish (reported P1). Legacy payloads without a change_type fall back
+// to event.status.
 func outboxLifecycle(payload []byte) (status string, expiresMs *int64) {
 	var h outboxHazard
-	if err := json.Unmarshal(payload, &h); err != nil || h.Event.Status == "" {
+	if err := json.Unmarshal(payload, &h); err != nil {
 		return "", nil
 	}
-	status = h.Event.Status
+	switch h.ChangeType {
+	case "cancelled":
+		status = string(core.StatusCancelled)
+	case "expired":
+		status = string(core.StatusExpired)
+	case "new", "updated":
+		status = string(core.StatusActive)
+	default:
+		if h.Event.Status == "" {
+			return "", nil
+		}
+		status = h.Event.Status
+	}
 	if h.Event.ExpiresAt != nil {
 		if t, err := time.Parse(time.RFC3339Nano, *h.Event.ExpiresAt); err == nil {
 			ms := t.UnixMilli()

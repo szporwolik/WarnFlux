@@ -323,6 +323,9 @@ func TestBuilderStampsLifecycleIdentity(t *testing.T) {
 	if w2.ChangeType != mqttreceiver.ChangeCancelled {
 		t.Errorf("cancelled event change type = %q, want cancelled", w2.ChangeType)
 	}
+	if w2.Event.Status != "cancelled" {
+		t.Errorf("cancelled event status = %q, want cancelled (the retention reads it)", w2.Event.Status)
+	}
 
 	// The local ingress copy carries the same identity (it is what the
 	// routing engine records).

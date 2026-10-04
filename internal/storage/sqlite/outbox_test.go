@@ -275,6 +275,171 @@ func TestOutboxMergeVersionGuard(t *testing.T) {
 	}
 }
 
+// TestOutboxVersionWatermarkSurvivesAck pins the P1: the version guard
+// must survive the queue drain. The v2 cancellation is published and
+// ACKed (the row is gone) — a delayed older v1 still finds the durable
+// watermark and is skipped, so it can never resurrect the cancelled
+// alarm in the broker's active view.
+func TestOutboxVersionWatermarkSurvivesAck(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	// The newer cancellation is accepted and fully published.
+	id, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("cancelled", 2, time.Hour))
+	if err != nil || id == 0 {
+		t.Fatalf("AppendOutbox v2 = (%d, %v)", id, err)
+	}
+	if err := store.AckOutbox(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n != 0 {
+		t.Fatalf("OutboxCount after ack = (%d, %v), want 0", n, err)
+	}
+
+	// The delayed older version arrives AFTER the ack: the watermark
+	// still guards — a stale skip, the queue stays empty.
+	if id, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("active", 1, time.Hour)); err != nil || id != 0 {
+		t.Fatalf("stale AppendOutbox v1 after ack = (%d, %v), want (0, nil)", id, err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n != 0 {
+		t.Fatalf("OutboxCount after stale v1 = (%d, %v), want 0", n, err)
+	}
+
+	// The CommitIngest path applies the same surviving guard.
+	if _, err := store.CommitIngest(ctx, "news", "warnflux/events",
+		wireVersioned("active", 1, time.Hour), commitEvent("v", dispatch.TransitionNew)); err != nil {
+		t.Fatalf("stale CommitIngest v1 after ack: %v", err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n != 0 {
+		t.Fatalf("OutboxCount after stale CommitIngest v1 = (%d, %v), want 0", n, err)
+	}
+
+	// A newer version still replaces the watermark and publishes.
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("active", 3, time.Hour)); err != nil {
+		t.Fatalf("AppendOutbox v3: %v", err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n != 1 {
+		t.Fatalf("OutboxCount after v3 = (%d, %v), want 1", n, err)
+	}
+}
+
+// TestOutboxWatermarkExpiryPrune pins the watermark lifetime: once the
+// event's own expiry passed, the guard is gone too — a later transition
+// is harmless (the broker's document is self-expired) and is accepted
+// again instead of being skipped forever.
+func TestOutboxWatermarkExpiryPrune(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	// The v2 cancellation's hazard is already expired: the watermark is
+	// pruned on the next sweep.
+	id, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("cancelled", 2, -time.Hour))
+	if err != nil || id == 0 {
+		t.Fatalf("AppendOutbox expired v2 = (%d, %v)", id, err)
+	}
+	if err := store.AckOutbox(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	var watermark int
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*) FROM ingest_outbox_watermark WHERE event_key = 'aprs:v'`).Scan(&watermark); err != nil {
+		t.Fatal(err)
+	}
+	if watermark != 0 {
+		t.Fatalf("expired watermark rows = %d, want 0 (pruned with its expiry)", watermark)
+	}
+
+	// No guard left: the (equally expired) older version is accepted.
+	if id, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("active", 1, -time.Hour)); err != nil || id == 0 {
+		t.Fatalf("AppendOutbox v1 after watermark expiry = (%d, %v), want accepted", id, err)
+	}
+}
+
+// TestOutboxCapacityProtectsExpiredCorrective pins the P1: a corrective
+// row's expiry does NOT prove the broker retired the earlier active
+// document — cancellations/expirations are only ever removed by the ACK
+// or by a newer version of the same identity. An overflow of EXPIRED
+// corrective rows is therefore explicit backpressure (ErrOutboxFull),
+// never a silent eviction.
+func TestOutboxCapacityProtectsExpiredCorrective(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour).UnixMilli()
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < outboxRowCap+5; i++ {
+		if _, err := tx.Exec(
+			`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms)
+			 VALUES ('news', ?, '{}', 1, 'cancelled', ?)`,
+			fmt.Sprintf("t/cancel-%d", i), past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both append paths reject and drop NOTHING: the expired
+	// cancellations stay queued for the broker.
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events",
+		wirePayload("active", time.Hour)); !errors.Is(err, storage.ErrOutboxFull) {
+		t.Fatalf("AppendOutbox on expired corrective backlog = %v, want ErrOutboxFull", err)
+	}
+	if _, err := store.CommitIngest(ctx, "news", "warnflux/events",
+		wirePayload("active", time.Hour), commitEvent("k2", dispatch.TransitionNew)); !errors.Is(err, storage.ErrOutboxFull) {
+		t.Fatalf("CommitIngest on expired corrective backlog = %v, want ErrOutboxFull", err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n != outboxRowCap+5 {
+		t.Fatalf("OutboxCount after rejected appends = (%d, %v), want %d (nothing dropped)",
+			n, err, outboxRowCap+5)
+	}
+
+	// The periodic prune keeps them too.
+	if n, err := store.PruneOutbox(ctx, time.Now().Add(-24*time.Hour)); err != nil || n != 0 {
+		t.Fatalf("PruneOutbox = (%d, %v), want 0 (expired corrective rows are protected)", n, err)
+	}
+
+	// A NEWER version of the same identity still replaces them (the one
+	// allowed removal): stamp the backlog with a version and add the
+	// newer row — the append evicts the superseded rows and succeeds.
+	store2 := openTemp(t)
+	tx2, err := store2.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < outboxRowCap+5; i++ {
+		if _, err := tx2.Exec(
+			`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher, change_id)
+			 VALUES ('news', ?, '{}', 1, 'cancelled', ?, 'aprs:k', 'publisher-1', 1)`,
+			fmt.Sprintf("t/old-%d", i), past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx2.Exec(
+		`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher, change_id)
+		 VALUES ('news', 't/new', '{}', 1, 'active', ?, 'aprs:k', 'publisher-1', 2)`,
+		time.Now().Add(time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx2.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store2.AppendOutbox(ctx, "news", "warnflux/events", []byte(`{"x":1}`)); err != nil {
+		t.Fatalf("AppendOutbox with superseded expired corrective backlog: %v", err)
+	}
+	var old int
+	if err := store2.db.QueryRow(
+		`SELECT COUNT(*) FROM ingest_outbox WHERE event_key = 'aprs:k' AND change_id = 1`).Scan(&old); err != nil {
+		t.Fatal(err)
+	}
+	if old != 0 {
+		t.Fatalf("superseded corrective rows = %d, want 0 (replaced by the newer version)", old)
+	}
+}
+
 // TestOutboxCapacityProtectsCorrective pins the P1 half: the capacity
 // bound may only evict empty/active rows; a cancellation in the overflow
 // zone survives pruning (the broker may still hold an old active

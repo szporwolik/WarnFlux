@@ -107,11 +107,14 @@ type Recorder interface {
 	// UpdateMeshtasticMessageStatus marks the tx delivery state of the
 	// matching row (created at + text).
 	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
-	// ListMeshtasticMessages reads the persisted history (newest
-	// first). The hub uses it as the durable delivery-progress ledger
-	// for the meshtastic action: a retry resumes only the transmissions
-	// without a successful row yet.
-	ListMeshtasticMessages(ctx context.Context, f storage.MeshtasticMessageFilter, limit, offset int) ([]storage.MeshMessage, error)
+	// RecordMeshActionProgress durably marks one successful meshtastic
+	// action transmission keyed by the message VERSION (publisher +
+	// event key + change id) and recipient. It is the action's resume
+	// ledger — independent of the message history.
+	RecordMeshActionProgress(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int, at time.Time) error
+	// MeshActionProgressDone reports whether the exact versioned
+	// transmission already has a progress row.
+	MeshActionProgressDone(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error)
 }
 
 // NodeStore persists the heard-node directory (implemented by storage
@@ -2031,47 +2034,43 @@ func (h *Hub) SendContactMessage(ctx context.Context, addr, text, operator strin
 	return h.sendText(ctx, uint32(n), 0, "dm", text, operator)
 }
 
-// ContactDelivered reports whether the exact text was already
-// transmitted to the node with a successful state (sent or delivered).
-// It is the durable progress ledger of the meshtastic action: a retry
-// must only resume transmissions without a successful row, never repeat
-// completed ones. With no recorder attached nothing can be proven and
-// the query reports false (fail-open: a re-send is safer than a lost
-// alert).
-func (h *Hub) ContactDelivered(ctx context.Context, addr, text string) (bool, error) {
-	idStr := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(addr), "!"))
-	return h.txDelivered(ctx, "dm", idStr, text)
-}
-
-// ChannelTextDelivered reports whether the exact text was already
-// broadcast on the channel with a successful state — the same durable
-// progress ledger for the group broadcast part of an alert.
-func (h *Hub) ChannelTextDelivered(ctx context.Context, idx int, text string) (bool, error) {
-	return h.txDelivered(ctx, h.ChannelLabel(idx), "", text)
-}
-
-// txDelivered resolves one exact (channel, recipient, text)
-// transmission in the persisted tx history: the newest matching row
-// proves success when the radio transmitted it (sent) or the recipient
-// acknowledged it (delivered). Rows still unstamped or failed are NOT
-// success — the send is retried (at-least-once).
-func (h *Hub) txDelivered(ctx context.Context, channel, recipient, text string) (bool, error) {
+// MeshActionProgressDone reports whether the exact versioned
+// transmission (publisher + event key + change id + recipient + channel)
+// already has a durable progress row: the resume ledger of the
+// meshtastic action. It is INDEPENDENT of the message history — a
+// historical delivered message with the same text never suppresses a
+// NEW alert version (reported P1). With no recorder attached nothing
+// can be proven and the query reports false (fail-open: a re-send is
+// safer than a lost alert).
+func (h *Hub) MeshActionProgressDone(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error) {
 	h.mu.Lock()
 	rec := h.recorder
 	h.mu.Unlock()
 	if rec == nil {
 		return false, nil
 	}
-	rows, err := rec.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{
-		Direction: "tx", Channel: channel, Peer: recipient, Text: text,
-	}, 1, 0)
-	if err != nil {
-		return false, err
+	return rec.MeshActionProgressDone(ctx, publisher, eventKey, changeID, normalizeMeshID(recipient), channel)
+}
+
+// RecordMeshActionProgress durably marks one successful transmission of
+// the meshtastic action for the exact message version and recipient
+// (empty recipient + channel index = the group broadcast). Idempotent;
+// a missing recorder is a no-op (the ledger is best-effort, a failed
+// write only costs a duplicate on retry — at-least-once).
+func (h *Hub) RecordMeshActionProgress(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) error {
+	h.mu.Lock()
+	rec := h.recorder
+	h.mu.Unlock()
+	if rec == nil {
+		return nil
 	}
-	if len(rows) == 0 {
-		return false, nil
-	}
-	return rows[0].Status == TxSent || rows[0].Status == TxDelivered, nil
+	return rec.RecordMeshActionProgress(ctx, publisher, eventKey, changeID, normalizeMeshID(recipient), channel, time.Now())
+}
+
+// normalizeMeshID canonicalizes a node id the way SendContactMessage
+// does (the progress ledger and the DM addressing must agree).
+func normalizeMeshID(addr string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(addr), "!"))
 }
 
 // sendText transmits one text message and records it as TX. Broadcasts

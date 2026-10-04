@@ -28,6 +28,46 @@ func (s *Store) RecordMeshtasticMessage(ctx context.Context, direction, sender, 
 	return nil
 }
 
+// meshProgressRetention bounds the mesh action progress ledger: rows
+// older than it are useless (a delivery job retries within minutes) and
+// are pruned on every record.
+const meshProgressRetention = 30 * 24 * time.Hour
+
+// RecordMeshActionProgress durably marks one successful meshtastic
+// action transmission: publisher + event key + change id (the message
+// VERSION) + recipient (empty for a channel broadcast) + channel index
+// (0 = direct message). The row is the resume ledger of the action's
+// retries — independent of the message history, so a historical
+// delivered message with the same text never suppresses a new alert
+// version. Idempotent.
+func (s *Store) RecordMeshActionProgress(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int, at time.Time) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO mesh_action_progress (publisher, event_key, change_id, recipient, channel, created_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		publisher, eventKey, changeID, recipient, channel, at.UnixMilli()); err != nil {
+		return fmt.Errorf("record mesh action progress: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM mesh_action_progress WHERE created_at_ms < ?`,
+		s.now().Add(-meshProgressRetention).UnixMilli()); err != nil {
+		return fmt.Errorf("prune mesh action progress: %w", err)
+	}
+	return nil
+}
+
+// MeshActionProgressDone reports whether the exact transmission (same
+// version, recipient and channel) already has a progress row.
+func (s *Store) MeshActionProgressDone(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error) {
+	var done int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mesh_action_progress
+		WHERE publisher = ? AND event_key = ? AND change_id = ? AND recipient = ? AND channel = ?`,
+		publisher, eventKey, changeID, recipient, channel).Scan(&done); err != nil {
+		return false, fmt.Errorf("query mesh action progress: %w", err)
+	}
+	return done > 0, nil
+}
+
 // UpdateMeshtasticMessageStatus marks the delivery state of the matching
 // TX row (created_at_ms + text): the hub stamps "sent" when the radio
 // transmits the frame, "delivered" on the recipient's acknowledgment,

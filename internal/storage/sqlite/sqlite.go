@@ -775,6 +775,52 @@ WHERE json_valid(payload) AND json_extract(payload, '$.change_id') IS NOT NULL;
 CREATE INDEX idx_ingest_outbox_identity ON ingest_outbox(instance_id, event_key, publisher, change_id, id);
 `,
 	},
+	{
+		// v43: versioned mesh action progress. The meshtastic action's
+		// retry resume needs durable per-recipient progress keyed by the
+		// MESSAGE VERSION (publisher + event key + change id) — the
+		// message history cannot serve as that ledger: a historical
+		// delivered row with the same text must never suppress a NEW
+		// alert (reported P1).
+		SQL: `
+CREATE TABLE mesh_action_progress (
+	publisher     TEXT NOT NULL,
+	event_key     TEXT NOT NULL,
+	change_id     INTEGER NOT NULL,
+	recipient     TEXT NOT NULL,
+	channel       INTEGER NOT NULL,
+	created_at_ms INTEGER NOT NULL,
+	PRIMARY KEY (publisher, event_key, change_id, recipient, channel)
+);
+`,
+	},
+	{
+		// v44: outbox version watermark. The version guard of the
+		// outbox merge must survive the ACK: once a cancellation is
+		// published and deleted from the queue, a delayed OLDER version
+		// may arrive and would find no pending rows to compare against
+		// — resurrecting the cancelled alarm on the broker. The
+		// watermark keeps the highest ACCEPTED version per event
+		// identity after the rows are gone. Existing pending rows are
+		// backfilled; rows accepted before this migration have no
+		// durable version record (upgrade caveat).
+		SQL: `
+CREATE TABLE ingest_outbox_watermark (
+	instance_id   TEXT NOT NULL,
+	event_key     TEXT NOT NULL,
+	publisher     TEXT NOT NULL,
+	change_id     INTEGER NOT NULL,
+	expires_at_ms INTEGER,
+	updated_at_ms INTEGER NOT NULL,
+	PRIMARY KEY (instance_id, event_key, publisher)
+);
+INSERT INTO ingest_outbox_watermark (instance_id, event_key, publisher, change_id, expires_at_ms, updated_at_ms)
+SELECT instance_id, event_key, publisher, MAX(change_id), MAX(expires_at_ms), MAX(created_at_ms)
+FROM ingest_outbox
+WHERE event_key != '' AND change_id > 0
+GROUP BY instance_id, event_key, publisher;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1321,6 +1367,9 @@ func (s *Store) CommitIngest(ctx context.Context, instanceID, topic string, payl
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			instanceID, topic, string(payload), nowMs, status, expiresMs, eventKey, publisher, changeID); err != nil {
 			return 0, fmt.Errorf("outbox row for ingest %q: %w", instanceID, err)
+		}
+		if err := upsertOutboxWatermark(ctx, tx, instanceID, eventKey, publisher, changeID, expiresMs, nowMs); err != nil {
+			return 0, err
 		}
 		if err := enforceOutboxCap(ctx, tx, nowMs); err != nil {
 			return 0, err
@@ -2306,6 +2355,9 @@ func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payl
 		if err != nil {
 			return 0, fmt.Errorf("append outbox row for %q: %w", instanceID, err)
 		}
+		if err := upsertOutboxWatermark(ctx, tx, instanceID, eventKey, publisher, changeID, expiresMs, nowMs); err != nil {
+			return 0, err
+		}
 		if err := enforceOutboxCap(ctx, tx, nowMs); err != nil {
 			return 0, err
 		}
@@ -2360,11 +2412,13 @@ func outboxIdentity(payload []byte) (eventKey, publisher string, changeID int64)
 // event. Identity merge only — one MQTT topic carries many independent
 // events, so merging by topic removed independent alarms (reported P2).
 //
-// The version comparison is the P1 guard: when a pending row carries a
-// NEWER version (change id) than the incoming payload, the incoming
-// document is stale and must not replace the newer state — proceed is
-// false and the append skips its row. A delayed older transition can
-// therefore never resurrect an already-cancelled alarm on the broker.
+// The version comparison is the P1 guard: when a pending row OR the
+// durable version watermark carries a NEWER version (change id) than the
+// incoming payload, the incoming document is stale and must not replace
+// the newer state — proceed is false and the append skips its row. The
+// watermark keeps the highest ACCEPTED version after the queue rows are
+// acknowledged and gone, so a delayed older transition can never
+// resurrect an already-cancelled alarm on the broker (reported P1).
 // Payloads without a version (change id 0) keep the legacy
 // delete-and-replace semantics.
 func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publisher string, changeID int64) (bool, error) {
@@ -2379,7 +2433,17 @@ func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publ
 			instanceID, eventKey, publisher).Scan(&stored); err != nil {
 			return false, err
 		}
-		if stored > changeID {
+		var watermark int64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COALESCE(MAX(change_id), 0) FROM ingest_outbox_watermark
+			WHERE instance_id = ? AND event_key = ? AND publisher = ?`,
+			instanceID, eventKey, publisher).Scan(&watermark); err != nil {
+			return false, err
+		}
+		if stored > watermark {
+			watermark = stored
+		}
+		if watermark > changeID {
 			return false, nil
 		}
 	}
@@ -2389,6 +2453,44 @@ func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publ
 		return false, err
 	}
 	return true, nil
+}
+
+// watermarkOrphanMax bounds the lifetime of a version watermark whose
+// event carries no expiry: longer than any realistic delayed transition.
+const watermarkOrphanMax = 90 * 24 * time.Hour
+
+// upsertOutboxWatermark records the highest accepted version of one
+// event identity durably. It runs inside the append transaction on every
+// accepted append and OUTLIVES the queue rows (the version guard must
+// survive the ACK). Expired watermarks (the event's own expiry passed)
+// and orphaned ones (no expiry recorded, older than the bound) are
+// pruned opportunistically.
+func upsertOutboxWatermark(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publisher string, changeID int64, expiresMs *int64, nowMs int64) error {
+	if eventKey == "" || changeID <= 0 {
+		return nil
+	}
+	var exp any
+	if expiresMs != nil {
+		exp = *expiresMs
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO ingest_outbox_watermark (instance_id, event_key, publisher, change_id, expires_at_ms, updated_at_ms)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(instance_id, event_key, publisher) DO UPDATE SET
+			change_id = CASE WHEN excluded.change_id > ingest_outbox_watermark.change_id THEN excluded.change_id ELSE ingest_outbox_watermark.change_id END,
+			expires_at_ms = CASE WHEN excluded.change_id > ingest_outbox_watermark.change_id THEN excluded.expires_at_ms ELSE ingest_outbox_watermark.expires_at_ms END,
+			updated_at_ms = excluded.updated_at_ms`,
+		instanceID, eventKey, publisher, changeID, exp, nowMs); err != nil {
+		return fmt.Errorf("upsert outbox watermark for %q: %w", eventKey, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM ingest_outbox_watermark
+		WHERE (expires_at_ms IS NOT NULL AND expires_at_ms <= ?)
+		   OR updated_at_ms < ?`,
+		nowMs, nowMs-watermarkOrphanMax.Milliseconds()); err != nil {
+		return fmt.Errorf("prune outbox watermarks: %w", err)
+	}
+	return nil
 }
 
 // outboxLifecycle extracts the lifecycle metadata of one outbox payload.
@@ -2505,9 +2607,11 @@ func (s *Store) PruneOutbox(ctx context.Context, olderThan time.Time) (int64, er
 		return 0, fmt.Errorf("prune stale outbox rows count: %w", err)
 	}
 	// CAPACITY: the queue may never drop a still-valid pending row. Only
-	// PROVABLY OBSOLETE rows go — expired, or superseded by a newer
-	// version of the same event identity. When the still-valid backlog
-	// alone exceeds the bound, nothing is evicted here: appends fail
+	// PROVABLY OBSOLETE rows go — expired NON-CORRECTIVE rows, or rows
+	// superseded by a newer version of the same event identity (a
+	// corrective row's expiry does not prove the broker retired the
+	// earlier active document). When the still-valid backlog alone
+	// exceeds the bound, nothing is evicted here: appends fail
 	// with storage.ErrOutboxFull (explicit backpressure, no partial
 	// write) until publishing drains the queue.
 	var total int
@@ -2534,12 +2638,15 @@ const outboxRowCap = storage.OutboxCapacity
 
 // obsoleteOutboxSQL deletes the only rows capacity pressure may remove:
 // provably obsolete ones. A row is obsolete when its expiry already
-// passed (the broker's mirror is self-expired, nothing new can be lost)
-// or when a NEWER version of the same event identity (instance +
-// publisher + event key) is already queued — the older document is
-// superseded. Still-valid pending rows are never touched.
+// passed AND it is not corrective (empty/active status only) — a
+// corrective row's expiry does NOT prove the broker retired the earlier
+// active document, so cancellations/expirations are protected until the
+// ACK or a newer version of the same identity (reported P1) — or when a
+// NEWER version of the same event identity (instance + publisher +
+// event key) is already queued — the older document is superseded.
+// Still-valid pending rows are never touched.
 const obsoleteOutboxSQL = `
-DELETE FROM ingest_outbox WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?;
+DELETE FROM ingest_outbox WHERE status IN ('', 'active') AND expires_at_ms IS NOT NULL AND expires_at_ms <= ?;
 DELETE FROM ingest_outbox AS a
 WHERE a.event_key != ''
   AND (
@@ -2563,12 +2670,12 @@ WHERE a.event_key != ''
 
 // enforceOutboxCap runs inside the append transaction. Below the bound
 // nothing happens (age-pruning owns expired rows). Under capacity
-// pressure it removes the provably obsolete rows (expired or
-// superseded) and then verifies the remaining pending backlog fits
-// within outboxRowCap. When the backlog alone exceeds the bound there
-// is nothing safe to evict and storage.ErrOutboxFull is the explicit
-// backpressure — the transaction rolls back, so the caller rejects
-// without any partial write.
+// pressure it removes the provably obsolete rows (expired
+// non-corrective, or superseded by a newer version) and then verifies
+// the remaining pending backlog fits within outboxRowCap. When the
+// backlog alone exceeds the bound there is nothing safe to evict and
+// storage.ErrOutboxFull is the explicit backpressure — the transaction
+// rolls back, so the caller rejects without any partial write.
 func enforceOutboxCap(ctx context.Context, tx *sql.Tx, nowMs int64) error {
 	var pending int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM ingest_outbox`).Scan(&pending); err != nil {

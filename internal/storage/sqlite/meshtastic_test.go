@@ -178,6 +178,64 @@ func TestMeshtasticMessageChannelFilter(t *testing.T) {
 	}
 }
 
+// TestMeshActionProgress pins the versioned resume ledger of the
+// meshtastic action: an entry counts only for the exact (publisher,
+// event key, change id, recipient, channel) identity, records are
+// idempotent and old rows are pruned.
+func TestMeshActionProgress(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	at := time.Now().Truncate(time.Millisecond)
+
+	if done, err := s.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); err != nil || done {
+		t.Fatalf("empty ledger = (%v, %v), want false", done, err)
+	}
+	if err := s.RecordMeshActionProgress(ctx, "p1", "k", 1, "a0a85934", 0, at); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := s.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); err != nil || !done {
+		t.Fatalf("recorded entry = (%v, %v), want true", done, err)
+	}
+
+	// A new VERSION of the same event and recipient is independent —
+	// the whole point of the ledger (a new alarm with the same text
+	// must never be suppressed).
+	if done, err := s.MeshActionProgressDone(ctx, "p1", "k", 2, "a0a85934", 0); err != nil || done {
+		t.Fatalf("new version = (%v, %v), want false", done, err)
+	}
+	// Same version, different channel: independent.
+	if done, err := s.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 2); err != nil || done {
+		t.Fatalf("different channel = (%v, %v), want false", done, err)
+	}
+
+	// The group broadcast has its own entry (empty recipient + channel).
+	if err := s.RecordMeshActionProgress(ctx, "p1", "k", 1, "", 1, at); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := s.MeshActionProgressDone(ctx, "p1", "k", 1, "", 1); err != nil || !done {
+		t.Fatalf("broadcast entry = (%v, %v), want true", done, err)
+	}
+
+	// Idempotent: re-recording never duplicates.
+	if err := s.RecordMeshActionProgress(ctx, "p1", "k", 1, "a0a85934", 0, at); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM mesh_action_progress`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("rows after re-record = (%d, %v), want 2", n, err)
+	}
+
+	// Retention: rows older than the bound are pruned on every record.
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	if err := s.RecordMeshActionProgress(ctx, "p1", "k2", 1, "a0a85934", 0, old); err != nil {
+		t.Fatal(err)
+	}
+	var oldN int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM mesh_action_progress WHERE event_key = 'k2'`).Scan(&oldN); err != nil || oldN != 0 {
+		t.Fatalf("old rows retained = (%d, %v), want 0 (pruned)", oldN, err)
+	}
+}
+
 // TestMeshtasticMessageTextFilter pins the exact-text narrowing used by
 // the meshtastic action as its durable delivery-progress ledger: only
 // rows with the exact message text match, combined freely with the

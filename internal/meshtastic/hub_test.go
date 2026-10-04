@@ -1074,8 +1074,9 @@ func TestHubTelemetryStored(t *testing.T) {
 // TestHubSendBroadcast pins a broadcast transmission: To is the broadcast
 // id, the port is TEXT_MESSAGE_APP and the tx lands in the history.
 type captureRecorder struct {
-	mu  sync.Mutex
-	got []Message
+	mu       sync.Mutex
+	got      []Message
+	progress map[string]bool
 }
 
 func (c *captureRecorder) RecordMeshtasticMessage(_ context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error {
@@ -1096,49 +1097,25 @@ func (c *captureRecorder) UpdateMeshtasticMessageStatus(_ context.Context, statu
 	return nil
 }
 
-// ListMeshtasticMessages mirrors the store query over the captured rows
-// (newest first).
-func (c *captureRecorder) ListMeshtasticMessages(_ context.Context, f storage.MeshtasticMessageFilter, limit, offset int) ([]storage.MeshMessage, error) {
+// The captureRecorder also keeps the versioned action progress ledger.
+func (c *captureRecorder) progressKey(publisher, eventKey string, changeID int64, recipient string, channel int) string {
+	return fmt.Sprintf("%s|%s|%d|%s|%d", publisher, eventKey, changeID, recipient, channel)
+}
+
+func (c *captureRecorder) RecordMeshActionProgress(_ context.Context, publisher, eventKey string, changeID int64, recipient string, channel int, _ time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []storage.MeshMessage
-	for i := len(c.got) - 1; i >= 0; i-- {
-		m := c.got[i]
-		if f.Direction != "" && m.Direction != f.Direction {
-			continue
-		}
-		if f.Channel != "" {
-			if f.Exclude && m.Channel == f.Channel {
-				continue
-			}
-			if !f.Exclude && m.Channel != f.Channel {
-				continue
-			}
-		}
-		if f.Peer != "" {
-			ok := (m.Direction == "rx" && m.Sender == f.Peer) ||
-				(m.Direction == "tx" && m.Recipient == f.Peer)
-			if !ok {
-				continue
-			}
-		}
-		if f.Text != "" && m.Text != f.Text {
-			continue
-		}
-		out = append(out, storage.MeshMessage{
-			ID: int64(len(c.got) - i), Direction: m.Direction, Sender: m.Sender,
-			Recipient: m.Recipient, Channel: m.Channel, Hops: m.Hops,
-			Operator: m.Operator, Text: m.Text, Status: m.Status, At: m.At,
-		})
+	if c.progress == nil {
+		c.progress = map[string]bool{}
 	}
-	if offset > len(out) {
-		offset = len(out)
-	}
-	out = out[offset:]
-	if limit < len(out) {
-		out = out[:limit]
-	}
-	return out, nil
+	c.progress[c.progressKey(publisher, eventKey, changeID, recipient, channel)] = true
+	return nil
+}
+
+func (c *captureRecorder) MeshActionProgressDone(_ context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.progress[c.progressKey(publisher, eventKey, changeID, recipient, channel)], nil
 }
 
 func (c *captureRecorder) messages() []Message {
@@ -1147,78 +1124,54 @@ func (c *captureRecorder) messages() []Message {
 	return append([]Message(nil), c.got...)
 }
 
-// TestHubTxDeliveredLedger pins the durable delivery-progress query: a
-// tx row proves success only once the radio transmitted it (sent) or the
-// recipient acknowledged it (delivered); unstamped and failed rows mean
-// the send must be retried. The exact (channel, recipient, text)
-// identity is matched, and a hub without a recorder reports no progress
-// (fail-open).
-func TestHubTxDeliveredLedger(t *testing.T) {
+// TestHubMeshActionProgress pins the durable versioned progress ledger:
+// a transmission counts as done only for the exact (publisher, event
+// key, change id, recipient, channel) identity — a different version,
+// recipient or channel never matches, so a historical delivered message
+// with the same text can never suppress a new alert. A hub without a
+// recorder reports no progress (fail-open).
+func TestHubMeshActionProgress(t *testing.T) {
 	rec := &captureRecorder{}
 	h := &Hub{recorder: rec}
 	ctx := context.Background()
-	at := time.Now().Truncate(time.Millisecond)
 
-	// Nothing recorded yet: no progress.
-	if done, err := h.ContactDelivered(ctx, "a0a85934", "alarm"); err != nil || done {
+	if done, err := h.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); err != nil || done {
 		t.Fatalf("empty ledger = (%v, %v), want false", done, err)
 	}
-
-	// A DM row exists but is still unstamped: not proven, retry.
-	if err := rec.RecordMeshtasticMessage(ctx, "tx", "", "a0a85934", "dm", "alarm", "system", 0, at); err != nil {
+	if err := h.RecordMeshActionProgress(ctx, "p1", "k", 1, "a0a85934", 0); err != nil {
 		t.Fatal(err)
 	}
-	if done, err := h.ContactDelivered(ctx, "a0a85934", "alarm"); err != nil || done {
-		t.Fatalf("unstamped row = (%v, %v), want false", done, err)
+	// The id spelling variants resolve to the same entry.
+	if done, err := h.MeshActionProgressDone(ctx, "p1", "k", 1, "!A0A85934", 0); err != nil || !done {
+		t.Fatalf("recorded DM = (%v, %v), want true", done, err)
 	}
-
-	// The same text to another recipient does not count for this one.
-	if done, err := h.ContactDelivered(ctx, "b0b85934", "alarm"); err != nil || done {
-		t.Fatalf("other recipient = (%v, %v), want false", done, err)
+	// A different version of the SAME text identity must not match.
+	if done, err := h.MeshActionProgressDone(ctx, "p1", "k", 2, "a0a85934", 0); err != nil || done {
+		t.Fatalf("new version = (%v, %v), want false (the version is part of the identity)", done, err)
 	}
-
-	// Sent: proven. The id spelling variants resolve to the same node.
-	if err := rec.UpdateMeshtasticMessageStatus(ctx, TxSent, at, "alarm"); err != nil {
-		t.Fatal(err)
+	// Different recipient / channel / publisher / event key: no match.
+	probes := []struct {
+		publisher, eventKey, recipient string
+		changeID                       int64
+		channel                        int
+	}{
+		{"p1", "k", "b0b85934", 1, 0},
+		{"p1", "k", "a0a85934", 1, 1},
+		{"p2", "k", "a0a85934", 1, 0},
+		{"p1", "other", "a0a85934", 1, 0},
 	}
-	if done, err := h.ContactDelivered(ctx, "!A0A85934", "alarm"); err != nil || !done {
-		t.Fatalf("sent row = (%v, %v), want true", done, err)
+	for _, probe := range probes {
+		if done, err := h.MeshActionProgressDone(ctx, probe.publisher, probe.eventKey, probe.changeID, probe.recipient, probe.channel); err != nil || done {
+			t.Fatalf("other identity %+v = (%v, %v), want false", probe, done, err)
+		}
 	}
-
-	// A different text is a different progress entry.
-	if done, err := h.ContactDelivered(ctx, "a0a85934", "other"); err != nil || done {
-		t.Fatalf("other text = (%v, %v), want false", done, err)
-	}
-
-	// The channel broadcast has its own ledger key (channel label,
-	// no recipient).
-	at2 := at.Add(time.Second)
-	if err := rec.RecordMeshtasticMessage(ctx, "tx", "", "", "ch1", "alarm", "system", 0, at2); err != nil {
-		t.Fatal(err)
-	}
-	if done, err := h.ChannelTextDelivered(ctx, 1, "alarm"); err != nil || done {
-		t.Fatalf("unstamped broadcast = (%v, %v), want false", done, err)
-	}
-	if err := rec.UpdateMeshtasticMessageStatus(ctx, TxDelivered, at2, "alarm"); err != nil {
-		t.Fatal(err)
-	}
-	if done, err := h.ChannelTextDelivered(ctx, 1, "alarm"); err != nil || !done {
-		t.Fatalf("delivered broadcast = (%v, %v), want true", done, err)
-	}
-
-	// A failed newest row revokes the proof: the send must be retried
-	// (at-least-once) — the earlier sent row no longer counts.
-	if err := rec.UpdateMeshtasticMessageStatus(ctx, TxFailed, at, "alarm"); err != nil {
-		t.Fatal(err)
-	}
-	if done, err := h.ContactDelivered(ctx, "a0a85934", "alarm"); err != nil || done {
-		t.Fatalf("failed newest row = (%v, %v), want false", done, err)
-	}
-
 	// No recorder: fail-open, never claim progress.
 	empty := &Hub{}
-	if done, err := empty.ContactDelivered(ctx, "a0a85934", "alarm"); err != nil || done {
+	if done, err := empty.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); err != nil || done {
 		t.Fatalf("no recorder = (%v, %v), want false", done, err)
+	}
+	if err := empty.RecordMeshActionProgress(ctx, "p1", "k", 1, "a0a85934", 0); err != nil {
+		t.Fatalf("record without recorder: %v", err)
 	}
 }
 

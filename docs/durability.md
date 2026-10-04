@@ -102,12 +102,22 @@ jobs exist durably and the row is gone, or neither happened.
   fully masked category defers the row, never drops the local delivery.
 - **Capacity never drops a still-valid alarm.** A long broker outage
   can fill the queue past its bound; capacity pressure may remove only
-  *provably obsolete* rows — expired, or superseded by a newer version
-  of the same event identity. When the backlog alone exceeds the bound,
-  new appends fail with an explicit **503 and no partial write**
-  (`ErrOutboxFull`), and the operator gets a fullness warning in the
-  logs before (and at) the point where appends start being rejected.
-  The backlog drains to the broker and acceptance resumes on its own.
+  *provably obsolete* rows — expired non-corrective rows (a corrective
+  row's expiry does not prove the broker retired the earlier active
+  document, so cancellations/expirations are protected until the ACK or
+  a newer version of the same identity), or rows superseded by a newer
+  version. When the backlog alone exceeds the bound, new appends fail
+  with an explicit **503 and no partial write** (`ErrOutboxFull`), and
+  the operator gets a fullness warning in the logs before (and at) the
+  point where appends start being rejected. The backlog drains to the
+  broker and acceptance resumes on its own.
+- **The version guard survives the ACK.** Every accepted append records
+  the highest version per event identity in a durable watermark that
+  outlives the queue rows: a cancellation that was published and
+  acknowledged still blocks a delayed older version from re-publishing
+  the alert (the queue-drain comparison alone would let it through).
+  The watermark lives until the event's own expiry passes (then the
+  broker mirror is self-expired and the guard is pointless).
 - `/metrics` exposes `warnflux_ingest_outbox_backlog` so a degraded
   broker sync is visible to the operator.
 
@@ -259,12 +269,15 @@ device took the message, the protocol has no stronger signal.
 - The Meshtastic action paces one alert to the whole routed group under
   a single bounded call deadline — a large group can exceed it mid-list.
 - Every successful transmission (the channel broadcast and each direct
-  message) is written to the durable message history **before** the send
-  call returns, so the history doubles as the delivery-progress ledger.
-- A retry skips the broadcast and every recipient whose exact message
-  text already has a `sent`/`delivered` row and transmits only the
-  unfinished sends: early recipients are never repeated, and the last
-  member is reached instead of being starved by the deadline.
+  message) is recorded in a durable, **version-keyed progress ledger**
+  (`publisher + event key + change id + recipient + channel`) before the
+  action moves on, so the ledger is independent of the message history:
+  a historical delivered message with the same text never suppresses a
+  NEW alert version.
+- A retry skips the broadcast and every recipient whose exact version
+  already has a progress row and transmits only the unfinished sends:
+  early recipients are never repeated, and the last member is reached
+  instead of being starved by the deadline.
 - An unreadable ledger fails open (the send goes out again): a repeated
   alert is always safer than a lost one.
 

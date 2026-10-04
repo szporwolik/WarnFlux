@@ -282,17 +282,20 @@ func TestOutboxMergeVersionGuard(t *testing.T) {
 func TestOutboxCapacityProtectsCorrective(t *testing.T) {
 	store := openTemp(t)
 	ctx := context.Background()
+	past := time.Now().Add(-time.Hour).UnixMilli()
 
-	// Direct bulk insert keeps the test fast: 10002 evictable rows
-	// (empty status) + 1 corrective cancellation appended LAST (newest).
+	// Direct bulk insert keeps the test fast: 10002 EXPIRED evictable
+	// rows + 1 corrective cancellation appended LAST (newest). The
+	// expired rows are provably obsolete; the corrective row is not.
 	tx, err := store.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < outboxRowCap+2; i++ {
 		if _, err := tx.Exec(
-			`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms) VALUES ('news', ?, '{}', ?)`,
-			fmt.Sprintf("t/fill-%d", i), 1); err != nil {
+			`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms)
+			 VALUES ('news', ?, '{}', 1, 'active', ?)`,
+			fmt.Sprintf("t/fill-%d", i), past); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -331,15 +334,15 @@ func TestOutboxCapacityProtectsCorrective(t *testing.T) {
 	if topic != "t/cancel" {
 		t.Fatalf("surviving corrective topic = %q, want t/cancel", topic)
 	}
-	if total != outboxRowCap+1 {
-		t.Fatalf("total rows after prune = %d, want %d (cap of evictable + 1 corrective)", total, outboxRowCap+1)
+	if total != 1 {
+		t.Fatalf("total rows after prune = %d, want 1 (every expired row is obsolete, the corrective one survives)", total)
 	}
 }
 
-// TestOutboxFullBackpressure pins the explicit failure: when corrective
-// rows alone exceed the capacity bound there is nothing evictable, so
-// appends fail with storage.ErrOutboxFull instead of dropping
-// corrective sync.
+// TestOutboxFullBackpressure pins the explicit failure: when pending
+// rows alone exceed the capacity bound and none is provably obsolete,
+// appends fail with storage.ErrOutboxFull instead of dropping a
+// still-valid sync.
 func TestOutboxFullBackpressure(t *testing.T) {
 	store := openTemp(t)
 	ctx := context.Background()
@@ -368,18 +371,21 @@ func TestOutboxFullBackpressure(t *testing.T) {
 		t.Fatalf("CommitIngest on full corrective outbox = %v, want ErrOutboxFull", err)
 	}
 
-	// The normal evictable overflow still succeeds: eviction clears room.
-	// Bulk insert keeps the test fast; the single append triggers the
-	// capacity enforcement inside its own transaction.
+	// The provably obsolete overflow still succeeds: expired rows are
+	// evicted and the append lands. Bulk insert keeps the test fast; the
+	// single append triggers the capacity enforcement inside its own
+	// transaction.
 	store2 := openTemp(t)
+	past := time.Now().Add(-time.Hour).UnixMilli()
 	tx2, err := store2.db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < outboxRowCap+5; i++ {
 		if _, err := tx2.Exec(
-			`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms) VALUES ('news', ?, '{}', 1)`,
-			fmt.Sprintf("t/%d", i)); err != nil {
+			`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms)
+			 VALUES ('news', ?, '{}', 1, 'active', ?)`,
+			fmt.Sprintf("t/%d", i), past); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -387,10 +393,117 @@ func TestOutboxFullBackpressure(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store2.AppendOutbox(ctx, "news", "warnflux/events", []byte(`{"x":1}`)); err != nil {
-		t.Fatalf("AppendOutbox with evictable overflow: %v", err)
+		t.Fatalf("AppendOutbox with obsolete overflow: %v", err)
 	}
 	if n, err := store2.OutboxCount(ctx); err != nil || n > outboxRowCap {
-		t.Fatalf("OutboxCount after evictable overflow = (%d, %v), want <= %d", n, err, outboxRowCap)
+		t.Fatalf("OutboxCount after obsolete overflow = (%d, %v), want <= %d", n, err, outboxRowCap)
+	}
+}
+
+// TestOutboxCapacityNeverDropsStillValid pins the reported P1: when the
+// queue overflows with still-valid pending events (expiry in the
+// future) there is nothing safe to evict, so appends fail with
+// storage.ErrOutboxFull — explicit backpressure with no partial write —
+// and the accepted backlog stays untouched until publishing drains it.
+func TestOutboxCapacityNeverDropsStillValid(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour).UnixMilli()
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < outboxRowCap+5; i++ {
+		if _, err := tx.Exec(
+			`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms)
+			 VALUES ('news', ?, '{}', 1, 'active', ?)`,
+			fmt.Sprintf("t/valid-%d", i), future); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both append paths reject without touching the backlog.
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events",
+		wirePayload("active", time.Hour)); !errors.Is(err, storage.ErrOutboxFull) {
+		t.Fatalf("AppendOutbox on still-valid backlog = %v, want ErrOutboxFull", err)
+	}
+	if _, err := store.CommitIngest(ctx, "news", "warnflux/events",
+		wirePayload("active", time.Hour), commitEvent("k2", dispatch.TransitionNew)); !errors.Is(err, storage.ErrOutboxFull) {
+		t.Fatalf("CommitIngest on still-valid backlog = %v, want ErrOutboxFull", err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n != outboxRowCap+5 {
+		t.Fatalf("OutboxCount after rejected appends = (%d, %v), want %d (nothing dropped, no partial write)",
+			n, err, outboxRowCap+5)
+	}
+
+	// Once the pending events actually expire, they become provably
+	// obsolete and the next append evicts them and succeeds.
+	if _, err := store.db.Exec(
+		`UPDATE ingest_outbox SET expires_at_ms = ?`, time.Now().Add(-time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events", wirePayload("active", time.Hour)); err != nil {
+		t.Fatalf("AppendOutbox after expiry: %v", err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n > outboxRowCap {
+		t.Fatalf("OutboxCount after expiry eviction = (%d, %v), want <= %d", n, err, outboxRowCap)
+	}
+}
+
+// TestOutboxCapacityEvictsSuperseded pins the second obsolete class: a
+// backlog of OLD versions of one event identity (still valid expiry, so
+// the expiry clause must not apply) is evicted in favour of the newest
+// version — only rows replaced by a newer version go.
+func TestOutboxCapacityEvictsSuperseded(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour).UnixMilli()
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < outboxRowCap+5; i++ {
+		if _, err := tx.Exec(
+			`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher, change_id)
+			 VALUES ('news', ?, '{}', 1, 'active', ?, 'aprs:k', 'publisher-1', 1)`,
+			fmt.Sprintf("t/old-%d", i), future); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The newest version of the same identity.
+	if _, err := tx.Exec(
+		`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher, change_id)
+		 VALUES ('news', 't/new', '{}', 1, 'active', ?, 'aprs:k', 'publisher-1', 2)`, future); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The append evicts the superseded rows; the newest version and the
+	// appended row survive.
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events", []byte(`{"x":1}`)); err != nil {
+		t.Fatalf("AppendOutbox with superseded backlog: %v", err)
+	}
+	var newest, old int
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*) FROM ingest_outbox WHERE event_key = 'aprs:k' AND change_id = 2`).Scan(&newest); err != nil {
+		t.Fatal(err)
+	}
+	if newest != 1 {
+		t.Fatalf("newest version rows = %d, want 1", newest)
+	}
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*) FROM ingest_outbox WHERE event_key = 'aprs:k' AND change_id = 1`).Scan(&old); err != nil {
+		t.Fatal(err)
+	}
+	if old != 0 {
+		t.Fatalf("superseded rows after append = %d, want 0", old)
 	}
 }
 

@@ -24,7 +24,7 @@ func testResolverLogger() *slog.Logger {
 // plus one Zulu-windowed line per hazard (the hourly digest form), and
 // an explicit answer when nothing is active.
 func TestHazardsForRadio(t *testing.T) {
-	if got := hazardsForRadio(nil); got != "No active hazards" {
+	if got := hazardsForRadio(nil); got != "No active messages" {
 		t.Fatalf("empty list = %q, want the no-hazards answer", got)
 	}
 	eff := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
@@ -33,7 +33,7 @@ func TestHazardsForRadio(t *testing.T) {
 		{Headline: "Burza", Description: "Porywy", EffectiveAt: &eff, ExpiresAt: &exp},
 		{Headline: "Mgla"},
 	})
-	want := "Active hazards: 2\n2026-10-05 10:00Z-2026-10-05 12:00Z Burza — Porywy\n?-? Mgla"
+	want := "Active messages: 2\n2026-10-05 10:00Z-2026-10-05 12:00Z Burza — Porywy\n?-? Mgla"
 	if got != want {
 		t.Fatalf("hazardsForRadio = %q, want %q", got, want)
 	}

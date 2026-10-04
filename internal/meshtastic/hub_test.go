@@ -1024,7 +1024,7 @@ func TestHubHazardDigest(t *testing.T) {
 			t.Fatalf("digest packet %d to = %v, want a broadcast", i, p.GetTo())
 		}
 	}
-	if got := string(out[0].GetDecoded().GetPayload()); got != "WarnFlux active hazards: 2" {
+	if got := string(out[0].GetDecoded().GetPayload()); got != "WarnFlux active messages: 2" {
 		t.Fatalf("digest header = %q", got)
 	}
 	if got, want := string(out[1].GetDecoded().GetPayload()), "2026-10-05 10:00Z-2026-10-05 13:00Z Burza — Silne porywy wiatru"; got != want {

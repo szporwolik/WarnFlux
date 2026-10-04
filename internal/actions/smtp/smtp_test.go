@@ -374,7 +374,7 @@ rate_limit_per_minute: -1
 		// The subject carries [Header1] from the application identity.
 		"Subject: [SPOK] SEVERE: Silny wiatr",
 		"WarnFlux notification",
-		"Hazard: SEVERE · Burza",
+		"Message: SEVERE · Burza",
 		"Headline: Silny wiatr",
 		"source: imgw-meteo",
 		"areas: małopolskie",
@@ -383,7 +383,7 @@ rate_limit_per_minute: -1
 		"Content-Type: multipart/related",
 		"Content-Type: multipart/alternative",
 		"Content-Type: text/html; charset=utf-8",
-		"Hazard notification",
+		"Message notification",
 		"View details",
 		// Embedded logo: inline CID image referenced from the HTML brand row.
 		"Content-Type: image/png; name=\"logo.png\"",
@@ -458,7 +458,7 @@ ca_file: %s
 	if len(got) != 1 {
 		t.Fatalf("received %d mails, want 1", len(got))
 	}
-	if !strings.Contains(got[0].data, "Hazard: SEVERE · Burza") {
+	if !strings.Contains(got[0].data, "Message: SEVERE · Burza") {
 		t.Errorf("mail body:\n%s", got[0].data)
 	}
 }
@@ -495,7 +495,7 @@ ca_file: %s
 	if len(got) != 1 {
 		t.Fatalf("received %d mails, want 1", len(got))
 	}
-	if !strings.Contains(got[0].data, "Hazard: SEVERE · Burza") {
+	if !strings.Contains(got[0].data, "Message: SEVERE · Burza") {
 		t.Errorf("mail body:\n%s", got[0].data)
 	}
 }

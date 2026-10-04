@@ -60,7 +60,7 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 	if err := s.RecordMeshtasticMessage(ctx, "tx", "", "dm", "hello", "admin", 0, at); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	rows, err := s.ListMeshtasticMessages(ctx, "tx", 10, 0)
+	rows, err := s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx"}, 10, 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 	if err := s.UpdateMeshtasticMessageStatus(ctx, "delivered", at, "hello"); err != nil {
 		t.Fatalf("delivered: %v", err)
 	}
-	rows, err = s.ListMeshtasticMessages(ctx, "tx", 10, 0)
+	rows, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx"}, 10, 0)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("list: %v rows=%v", err, rows)
 	}
@@ -89,7 +89,7 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 	if err := s.UpdateMeshtasticMessageStatus(ctx, "failed", at, "hello"); err != nil {
 		t.Fatalf("failed: %v", err)
 	}
-	rows, err = s.ListMeshtasticMessages(ctx, "tx", 10, 0)
+	rows, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx"}, 10, 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -104,5 +104,76 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 				t.Fatalf("hello row status = %q, want failed", r.Status)
 			}
 		}
+	}
+}
+
+// TestMeshtasticMessageChannelFilter pins the channel narrowing of the
+// history: exact-label match (the ch0 tab), inverted exclusion (every
+// other tab hides ch0) and the combination with the direction filter.
+func TestMeshtasticMessageChannelFilter(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	at := time.Now().Truncate(time.Millisecond)
+
+	rows := []storage.MeshMessage{
+		{Direction: "rx", Channel: "ch0", Text: "rx-ch0", At: at},
+		{Direction: "tx", Channel: "ch0", Text: "tx-ch0", At: at},
+		{Direction: "rx", Channel: "SP9MOA", Text: "rx-sp9", At: at},
+		{Direction: "rx", Channel: "dm", Text: "rx-dm", At: at},
+	}
+	for _, m := range rows {
+		if err := s.RecordMeshtasticMessage(ctx, m.Direction, m.Sender, m.Channel, m.Text, m.Operator, m.Hops, m.At); err != nil {
+			t.Fatalf("record %s: %v", m.Text, err)
+		}
+	}
+
+	// The ch0 tab shows both directions of the primary channel only.
+	got, err := s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "ch0"}, 10, 0)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ch0 filter = %d rows, %v", len(got), err)
+	}
+	for _, m := range got {
+		if m.Channel != "ch0" {
+			t.Fatalf("ch0 filter leaked %q (%s)", m.Channel, m.Text)
+		}
+	}
+
+	// Every other tab excludes ch0.
+	got, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "ch0", Exclude: true}, 10, 0)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("exclude filter = %d rows, %v", len(got), err)
+	}
+	for _, m := range got {
+		if m.Channel == "ch0" {
+			t.Fatalf("exclude filter leaked %s", m.Text)
+		}
+	}
+
+	// Direction + exclusion combine: rx without ch0 leaves the SP9MOA
+	// and dm rows (both are rx rows on other channels).
+	got, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "rx", Channel: "ch0", Exclude: true}, 10, 0)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("rx-exclude filter = %+v, %v", got, err)
+	}
+	seen := map[string]bool{}
+	for _, m := range got {
+		if m.Channel == "ch0" {
+			t.Fatalf("rx-exclude filter leaked %s", m.Text)
+		}
+		seen[m.Text] = true
+	}
+	if !seen["rx-sp9"] || !seen["rx-dm"] {
+		t.Fatalf("rx-exclude filter = %+v, want rx-sp9 and rx-dm", got)
+	}
+
+	// Counts mirror the same filters.
+	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "ch0"}); err != nil || n != 2 {
+		t.Fatalf("ch0 count = %d, %v", n, err)
+	}
+	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "ch0", Exclude: true}); err != nil || n != 2 {
+		t.Fatalf("exclude count = %d, %v", n, err)
+	}
+	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx"}); err != nil || n != 1 {
+		t.Fatalf("tx count = %d, %v", n, err)
 	}
 }

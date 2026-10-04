@@ -3460,6 +3460,7 @@ func TestMessageListPartials(t *testing.T) {
 		"/partials/messages?dir=rx",
 		"/partials/meshtastic?tab=messages",
 		"/partials/meshtastic?tab=messages&dir=tx",
+		"/partials/meshtastic?tab=messages&dir=ch0",
 	} {
 		resp, body := env.get(p)
 		if resp.StatusCode != http.StatusOK {
@@ -3490,12 +3491,21 @@ func (f *fakeMeshMsgs) UpdateMeshtasticMessageStatus(_ context.Context, status s
 	return nil
 }
 
-func (f *fakeMeshMsgs) ListMeshtasticMessages(_ context.Context, direction string, limit, offset int) ([]storage.MeshMessage, error) {
+func (f *fakeMeshMsgs) ListMeshtasticMessages(_ context.Context, flt storage.MeshtasticMessageFilter, limit, offset int) ([]storage.MeshMessage, error) {
 	var out []storage.MeshMessage
 	for _, m := range f.rows {
-		if direction == "" || m.Direction == direction {
-			out = append(out, m)
+		if flt.Direction != "" && m.Direction != flt.Direction {
+			continue
 		}
+		if flt.Channel != "" {
+			if flt.Exclude && m.Channel == flt.Channel {
+				continue
+			}
+			if !flt.Exclude && m.Channel != flt.Channel {
+				continue
+			}
+		}
+		out = append(out, m)
 	}
 	if offset > len(out) {
 		offset = len(out)
@@ -3507,12 +3517,21 @@ func (f *fakeMeshMsgs) ListMeshtasticMessages(_ context.Context, direction strin
 	return out, nil
 }
 
-func (f *fakeMeshMsgs) CountMeshtasticMessages(_ context.Context, direction string) (int, error) {
+func (f *fakeMeshMsgs) CountMeshtasticMessages(_ context.Context, flt storage.MeshtasticMessageFilter) (int, error) {
 	n := 0
 	for _, m := range f.rows {
-		if direction == "" || m.Direction == direction {
-			n++
+		if flt.Direction != "" && m.Direction != flt.Direction {
+			continue
 		}
+		if flt.Channel != "" {
+			if flt.Exclude && m.Channel == flt.Channel {
+				continue
+			}
+			if !flt.Exclude && m.Channel != flt.Channel {
+				continue
+			}
+		}
+		n++
 	}
 	return n, nil
 }
@@ -3547,13 +3566,95 @@ func TestMeshMessageChannelNames(t *testing.T) {
 	}
 	env.login()
 
+	// The unfiltered list hides ch0 rows (the primary channel has its
+	// own tab) and keeps every other channel.
 	resp, body := env.get("/partials/meshtastic?tab=messages")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("partial = %d", resp.StatusCode)
 	}
-	for _, want := range []string{"ch0", "LongFast", "sp9kow", "!abcd1234", "via 3 hops", "(admin)"} {
+	if strings.Contains(body, "hello") {
+		t.Errorf("all partial must hide ch0 rows: %.300s", body)
+	}
+	for _, want := range []string{"LongFast", "sp9kow", "!abcd1234", "via 3 hops", "(admin)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("messages partial missing %q: %.300s", want, body)
+		}
+	}
+
+	// The ch0 tab shows the primary-channel rows (both directions).
+	resp, body = env.get("/partials/meshtastic?tab=messages&dir=ch0")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ch0 partial = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "hello") || strings.Contains(body, "LongFast") || strings.Contains(body, "ggg") {
+		t.Errorf("ch0 partial wrong rows: %.300s", body)
+	}
+}
+
+// TestMeshtasticCh0Tab pins the primary-channel tab: it sits right after
+// the tx tab, lists rx+tx ch0 rows with pagination, and every other dir
+// view excludes ch0.
+func TestMeshtasticCh0Tab(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeMeshMsgs{}
+	// The fake lists rows in append order (oldest first): append the tx
+	// row before the filler so it lands on page 1 like a newest row.
+	store.rows = append(store.rows,
+		storage.MeshMessage{Direction: "tx", Channel: "ch0", Operator: "admin", Text: "tx-ch0", At: time.Now()},
+	)
+	for i := 0; i < 101; i++ {
+		store.rows = append(store.rows, storage.MeshMessage{Direction: "rx", Channel: "ch0", Text: "ch0-fill", At: time.Now()})
+	}
+	store.rows = append(store.rows,
+		storage.MeshMessage{Direction: "rx", Channel: "SP9MOA", Text: "sp9-row", At: time.Now()},
+		storage.MeshMessage{Direction: "rx", Channel: "dm", Text: "dm-row", At: time.Now()},
+	)
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
+	env.login()
+
+	// The tab strip places ch0 right after tx.
+	_, html := env.get("/meshtastic")
+	txIdx := strings.Index(html, "/meshtastic?dir=tx")
+	ch0Idx := strings.Index(html, "/meshtastic?dir=ch0")
+	rxIdx := strings.Index(html, "/meshtastic?dir=rx")
+	if txIdx < 0 || ch0Idx < 0 || !(rxIdx < txIdx && txIdx < ch0Idx) {
+		t.Fatalf("tab order wrong (rx=%d tx=%d ch0=%d): %.200s", rxIdx, txIdx, ch0Idx, html)
+	}
+
+	// The all view excludes ch0 (101 ch0 rows hidden, 2 others shown).
+	_, html = env.get("/meshtastic")
+	if strings.Contains(html, "ch0-fill") || strings.Contains(html, "tx-ch0") {
+		t.Errorf("all view leaked ch0 rows: %.300s", html)
+	}
+	if !strings.Contains(html, "sp9-row") || !strings.Contains(html, "dm-row") {
+		t.Errorf("all view missing non-ch0 rows: %.300s", html)
+	}
+
+	// The ch0 view shows both directions of the primary channel and
+	// paginates (101 rx + 1 tx = 102 rows, 100 per page).
+	_, html = env.get("/meshtastic?dir=ch0")
+	if !strings.Contains(html, "tx-ch0") {
+		t.Errorf("ch0 view missing the tx row: %.300s", html)
+	}
+	if !strings.Contains(html, "/meshtastic?dir=ch0&amp;page=2") {
+		t.Errorf("ch0 view missing page-2 link: %.300s", html)
+	}
+	if strings.Contains(html, "sp9-row") || strings.Contains(html, "dm-row") {
+		t.Errorf("ch0 view leaked other channels: %.300s", html)
+	}
+
+	// rx/tx views also exclude ch0.
+	for _, dir := range []string{"rx", "tx"} {
+		_, html = env.get("/meshtastic?dir=" + dir)
+		if strings.Contains(html, "ch0-fill") || strings.Contains(html, "tx-ch0") {
+			t.Errorf("%s view leaked ch0 rows: %.300s", dir, html)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -960,5 +962,89 @@ func TestGroupRecipientDiscord(t *testing.T) {
 	// Sorted, distinct (case-insensitive), non-empty: @cya + ada only.
 	if len(got) != 2 || got[0] != "@cya" || got[1] != "ada#1234" {
 		t.Fatalf("handles = %v, want [@cya ada#1234]", got)
+	}
+}
+
+// TestRequeueDeliveryByVersion pins the async-failure re-arm: a job the
+// worker already settled as accepted is revived as failed due NOW when
+// the modem reports TxFailed for its version — a bare progress revoke
+// schedules nothing. Only accepted/confirmed jobs of the exact version
+// move, and the attempt counter stays spent (the budget still applies).
+func TestRequeueDeliveryByVersion(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("mesh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := func(changeID int64, publisher string) []byte {
+		ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+			Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw",
+				ChangeID: changeID, Publisher: publisher}}
+		b, err := json.Marshal(action.ActionRequest{ID: "imgw:1/mesh", Event: ev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	at := time.Now()
+	for _, spec := range []struct {
+		dedup, pub string
+		changeID   int64
+		status     string
+	}{
+		{"c:v2", "pub-1", 2, "accepted"}, // the settled version: re-armed
+		{"c:v3", "pub-1", 3, "accepted"}, // a different version: untouched
+		{"c:s", "pub-1", 2, "saved"},     // not settled yet: untouched
+		{"c:o", "pub-2", 2, "accepted"},  // another publisher: untouched
+	} {
+		st, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
+			GroupID: g.ID, ActionID: "mesh", EventKey: "imgw:1",
+			DedupKey: spec.dedup, Payload: payload(spec.changeID, spec.pub), FiredAt: at,
+		})
+		if err != nil || !queued || st != storage.DeliverySaved {
+			t.Fatalf("enqueue %s = (%v, %v, %v)", spec.dedup, st, queued, err)
+		}
+		if spec.status == "accepted" {
+			if err := store.SettleDelivery(ctx, g.ID, "mesh", spec.dedup, storage.DeliveryAccepted, time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	n, err := store.RequeueDeliveryByVersion(ctx, "pub-1", "imgw:1", 2, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("re-armed %d jobs, want exactly 1", n)
+	}
+	var status string
+	var attempts int
+	var nextMs int64
+	if err := store.db.QueryRow(
+		`SELECT status, attempts, next_attempt_at_ms FROM action_fires WHERE dedup_key = 'c:v2'`).
+		Scan(&status, &attempts, &nextMs); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || attempts != 0 || nextMs == 0 {
+		t.Fatalf("re-armed job = (%q, attempts %d, next %d), want failed with the retry deadline now", status, attempts, nextMs)
+	}
+	for _, dedup := range []string{"c:v3", "c:o"} {
+		var st string
+		if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = ?`, dedup).Scan(&st); err != nil {
+			t.Fatal(err)
+		}
+		if st != "accepted" {
+			t.Fatalf("job %s = %q, want untouched accepted", dedup, st)
+		}
+	}
+	var st string
+	if err := store.db.QueryRow(`SELECT status FROM action_fires WHERE dedup_key = 'c:s'`).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st != "saved" {
+		t.Fatalf("job c:s = %q, want untouched saved", st)
 	}
 }

@@ -1077,6 +1077,7 @@ type captureRecorder struct {
 	mu       sync.Mutex
 	got      []Message
 	progress map[string]bool
+	failures map[string]bool
 }
 
 func (c *captureRecorder) RecordMeshtasticMessage(_ context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error {
@@ -1116,6 +1117,39 @@ func (c *captureRecorder) MeshActionProgressDone(_ context.Context, publisher, e
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.progress[c.progressKey(publisher, eventKey, changeID, recipient, channel)], nil
+}
+
+func (c *captureRecorder) DeleteMeshActionProgress(_ context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.progress, c.progressKey(publisher, eventKey, changeID, recipient, channel))
+	return nil
+}
+
+func (c *captureRecorder) SetMeshActionFailed(_ context.Context, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.failures == nil {
+		c.failures = map[string]bool{}
+	}
+	if failed {
+		c.failures[c.progressKey(publisher, eventKey, changeID, recipient, channel)] = true
+	} else {
+		delete(c.failures, c.progressKey(publisher, eventKey, changeID, recipient, channel))
+	}
+	return nil
+}
+
+func (c *captureRecorder) MeshActionFailed(_ context.Context, publisher, eventKey string, changeID int64) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prefix := fmt.Sprintf("%s|%s|%d|", publisher, eventKey, changeID)
+	for k := range c.failures {
+		if strings.HasPrefix(k, prefix) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (c *captureRecorder) messages() []Message {
@@ -1172,6 +1206,135 @@ func TestHubMeshActionProgress(t *testing.T) {
 	}
 	if err := empty.RecordMeshActionProgress(ctx, "p1", "k", 1, "a0a85934", 0); err != nil {
 		t.Fatalf("record without recorder: %v", err)
+	}
+}
+
+// TestHubProgressFollowsTransmissionOutcome pins the P1: the progress
+// entry follows the TRANSMISSION RESULT. The radio transmitting the
+// frame (sent) or the recipient's ack (delivered) records the entry; a
+// later TxFailed REVOKES it, so the next group attempt sends the
+// recipient again instead of skipping a failed transmission.
+func TestHubProgressFollowsTransmissionOutcome(t *testing.T) {
+	rec := &captureRecorder{}
+	h := &Hub{recorder: rec}
+	ctx := context.Background()
+	ps := &pendingSend{
+		at:   time.Now().Truncate(time.Millisecond),
+		text: "alarm",
+		prog: progressRef{publisher: "p1", eventKey: "k", changeID: 1, recipient: "a0a85934", channel: 0},
+	}
+
+	// Before the radio result nothing is recorded.
+	if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); done {
+		t.Fatal("progress exists before the transmission result")
+	}
+
+	// The radio transmitted the frame: progress recorded.
+	h.markStatus(ps, TxSent)
+	if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); !done {
+		t.Fatal("TxSent did not record the progress entry")
+	}
+
+	// The delivery ultimately failed: the entry is revoked, the durable
+	// failure marker is set and the re-arm sink fires with the identity.
+	var sinkPub, sinkKey string
+	var sinkVer int64
+	sinkCalls := 0
+	h.meshDeliverySink = func(_ context.Context, publisher, eventKey string, changeID int64) {
+		sinkCalls++
+		sinkPub, sinkKey, sinkVer = publisher, eventKey, changeID
+	}
+	h.markStatus(ps, TxFailed)
+	if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); done {
+		t.Fatal("TxFailed did not revoke the progress entry")
+	}
+	if failed, _ := rec.MeshActionFailed(ctx, "p1", "k", 1); !failed {
+		t.Fatal("TxFailed did not set the failure marker")
+	}
+	if sinkCalls != 1 || sinkPub != "p1" || sinkKey != "k" || sinkVer != 1 {
+		t.Fatalf("sink = (%d, %q, %q, %d), want one call with the version identity", sinkCalls, sinkPub, sinkKey, sinkVer)
+	}
+
+	// A retransmit that gets the ack records again (delivered) and
+	// clears the failure marker.
+	h.markStatus(ps, TxDelivered)
+	if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "a0a85934", 0); !done {
+		t.Fatal("TxDelivered did not record the progress entry")
+	}
+	if failed, _ := rec.MeshActionFailed(ctx, "p1", "k", 1); failed {
+		t.Fatal("TxDelivered did not clear the failure marker")
+	}
+	if sinkCalls != 1 {
+		t.Fatalf("sink calls = %d, want 1 (only the failure fires the re-arm)", sinkCalls)
+	}
+
+	// A send without a progress identity never touches the ledger.
+	plain := &pendingSend{at: time.Now(), text: "other"}
+	h.markStatus(plain, TxSent)
+	h.markStatus(plain, TxFailed)
+	if n := len(rec.progress); n != 1 {
+		t.Fatalf("progress entries = %d, want 1 (the plain send must not touch the ledger)", n)
+	}
+	if n := len(rec.failures); n != 0 {
+		t.Fatalf("failure markers = %d, want 0 (the plain send must not touch the ledger)", n)
+	}
+}
+
+// TestHubVersionedSendProgressFollowsEcho pins the end-to-end seam: a
+// versioned send attaches the progress identity to the pending send, the
+// device echo (modem acceptance) stamps the entry, and the modem's
+// failure reason revokes it — the action retry sees the recipient as
+// unfinished again.
+func TestHubVersionedSendProgressFollowsEcho(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessageVersioned(ctx, "ef010203", "ack me", "system", "p1", "k", 1); err != nil {
+		t.Fatalf("versioned send: %v", err)
+	}
+
+	// The device echo (modem acceptance) stamps the progress.
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, Id: 4242, To: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("ack me")},
+		},
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "ef010203", 0); done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "ef010203", 0); !done {
+		t.Fatal("echo did not stamp the progress entry")
+	}
+
+	// The modem reports the delivery failed: the entry is revoked.
+	fail, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_ErrorReason{ErrorReason: pb.Routing_MAX_RETRANSMIT}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, To: 0xabcd1234,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: fail},
+		},
+	})
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "ef010203", 0); !done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if done, _ := rec.MeshActionProgressDone(ctx, "p1", "k", 1, "ef010203", 0); done {
+		t.Fatal("modem failure did not revoke the progress entry")
 	}
 }
 

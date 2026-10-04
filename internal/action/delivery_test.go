@@ -382,6 +382,62 @@ func TestInstanceDurableGateSkips(t *testing.T) {
 	}
 }
 
+// TestInstanceDurableAsyncFailureCheck pins the post-execution oracle:
+// a job whose transport reported the transmission failed asynchronously
+// is NOT settled as accepted — the worker schedules a retry within the
+// budget; once the failure clears (the retransmission succeeded), the
+// retry settles accepted.
+func TestInstanceDurableAsyncFailureCheck(t *testing.T) {
+	p := &deliveryPlugin{}
+	inst, ms := newDeliveryInstance(t, p, 2) // 3 attempts total
+	// The oracle reports the async failure for the FIRST execution only
+	// (the retransmission of the retry succeeds): attempt 1 must not
+	// settle as accepted, attempt 2 settles accepted. Deterministic —
+	// no polling-based flag flips.
+	var calls atomic.Int32
+	inst.setMeshFailureCheck(func(ctx context.Context, req ActionRequest) bool {
+		return calls.Add(1) == 1
+	})
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw", ChangeID: 7, Publisher: "pub-1"}}
+	payload, _ := json.Marshal(ActionRequest{ID: "imgw:1/log", Event: ev})
+	enqueueOne(t, ms, payload)
+
+	// Had attempt 1 settled as accepted, no retry would exist and this
+	// wait would time out.
+	waitForDelivery(t, func() bool {
+		return p.handled.Load() == 2 && ms.statusOf(1, "log", "c:1") == storage.DeliveryAccepted
+	}, "async failure settled as retry, then accepted after the retransmission")
+	if got := p.handled.Load(); got != 2 {
+		t.Errorf("executions = %d, want 2 (retry after the async failure)", got)
+	}
+}
+
+// TestInstanceDurableAsyncFailureBudgetExhausted pins the budget side:
+// with no attempts left, the async failure turns the success into a
+// terminal failed instead of a stuck accepted.
+func TestInstanceDurableAsyncFailureBudgetExhausted(t *testing.T) {
+	p := &deliveryPlugin{}
+	inst, ms := newDeliveryInstance(t, p, 0) // 1 attempt total
+	inst.setMeshFailureCheck(func(ctx context.Context, req ActionRequest) bool {
+		return true
+	})
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw", ChangeID: 7, Publisher: "pub-1"}}
+	payload, _ := json.Marshal(ActionRequest{ID: "imgw:1/log", Event: ev})
+	enqueueOne(t, ms, payload)
+
+	waitForDelivery(t, func() bool {
+		return p.handled.Load() == 1 && ms.statusOf(1, "log", "c:1") == storage.DeliveryFailed
+	}, "budget-exhausted async failure settled terminally")
+	time.Sleep(50 * time.Millisecond)
+	if got := p.handled.Load(); got != 1 {
+		t.Errorf("executions = %d, want 1 (terminal failure must not re-run)", got)
+	}
+}
+
 // TestManagerStaleClaimRecovery pins the crash window end to end: a job
 // left running by a dead process is re-queued by the manager and
 // executed by the worker after the claim lease expires.

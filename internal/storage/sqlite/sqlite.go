@@ -821,6 +821,26 @@ WHERE event_key != '' AND change_id > 0
 GROUP BY instance_id, event_key, publisher;
 `,
 	},
+	{
+		// v45: mesh action failures. The action worker settles a job as
+		// accepted right after the transport accepted the frames, but
+		// the modem result arrives asynchronously: a later TxFailed must
+		// revive the durable job (retry within the attempt budget or a
+		// terminal failed) — a bare progress revoke schedules nothing
+		// (reported P1). The failure marker lives until a retransmission
+		// succeeds or the retention bound passes.
+		SQL: `
+CREATE TABLE mesh_action_failures (
+	publisher     TEXT NOT NULL,
+	event_key     TEXT NOT NULL,
+	change_id     INTEGER NOT NULL,
+	recipient     TEXT NOT NULL,
+	channel       INTEGER NOT NULL,
+	created_at_ms INTEGER NOT NULL,
+	PRIMARY KEY (publisher, event_key, change_id, recipient, channel)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1357,7 +1377,7 @@ func (s *Store) CommitIngest(ctx context.Context, instanceID, topic string, payl
 	// the version comparison happens inside this transaction.
 	status, expiresMs := outboxLifecycle(payload)
 	eventKey, publisher, changeID := outboxIdentity(payload)
-	proceed, err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher, changeID)
+	proceed, err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher, changeID, nowMs)
 	if err != nil {
 		return 0, fmt.Errorf("merge outbox rows for %q: %w", instanceID, err)
 	}
@@ -2343,7 +2363,7 @@ func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payl
 		return 0, fmt.Errorf("begin outbox append: %w", err)
 	}
 	defer tx.Rollback()
-	proceed, err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher, changeID)
+	proceed, err := mergeOutboxRows(ctx, tx, instanceID, eventKey, publisher, changeID, nowMs)
 	if err != nil {
 		return 0, fmt.Errorf("merge outbox rows for %q: %w", instanceID, err)
 	}
@@ -2421,9 +2441,17 @@ func outboxIdentity(payload []byte) (eventKey, publisher string, changeID int64)
 // resurrect an already-cancelled alarm on the broker (reported P1).
 // Payloads without a version (change id 0) keep the legacy
 // delete-and-replace semantics.
-func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publisher string, changeID int64) (bool, error) {
+func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publisher string, changeID, nowMs int64) (bool, error) {
 	if eventKey == "" {
 		return true, nil
+	}
+	// The watermark retention sweep runs on EVERY append (also on stale
+	// skips): the replay protection lasts the wall-clock bound and then
+	// ages out even when only stale versions keep arriving.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM ingest_outbox_watermark WHERE updated_at_ms < ?`,
+		nowMs-watermarkRetention.Milliseconds()); err != nil {
+		return false, err
 	}
 	if changeID > 0 {
 		var stored int64
@@ -2455,16 +2483,21 @@ func mergeOutboxRows(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publ
 	return true, nil
 }
 
-// watermarkOrphanMax bounds the lifetime of a version watermark whose
-// event carries no expiry: longer than any realistic delayed transition.
-const watermarkOrphanMax = 90 * 24 * time.Hour
+// watermarkRetention bounds the lifetime of a version watermark. It is
+// the REPLAY-PROTECTION retention, deliberately INDEPENDENT of the
+// alarm's expiry: an older version arriving after the cancellation's
+// expiry passed must still be rejected (the input format does not
+// guarantee the stale version carries its own expiry — a delayed new v1
+// without one would resurrect the alarm, reported P1). Longer than any
+// realistic delayed transition.
+const watermarkRetention = 90 * 24 * time.Hour
 
 // upsertOutboxWatermark records the highest accepted version of one
 // event identity durably. It runs inside the append transaction on every
 // accepted append and OUTLIVES the queue rows (the version guard must
-// survive the ACK). Expired watermarks (the event's own expiry passed)
-// and orphaned ones (no expiry recorded, older than the bound) are
-// pruned opportunistically.
+// survive the ACK). Watermarks age out ONLY on the wall-clock retention
+// bound — never on the event's expiry — so the replay protection lasts
+// even after the alarm expired.
 func upsertOutboxWatermark(ctx context.Context, tx *sql.Tx, instanceID, eventKey, publisher string, changeID int64, expiresMs *int64, nowMs int64) error {
 	if eventKey == "" || changeID <= 0 {
 		return nil
@@ -2482,13 +2515,6 @@ func upsertOutboxWatermark(ctx context.Context, tx *sql.Tx, instanceID, eventKey
 			updated_at_ms = excluded.updated_at_ms`,
 		instanceID, eventKey, publisher, changeID, exp, nowMs); err != nil {
 		return fmt.Errorf("upsert outbox watermark for %q: %w", eventKey, err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM ingest_outbox_watermark
-		WHERE (expires_at_ms IS NOT NULL AND expires_at_ms <= ?)
-		   OR updated_at_ms < ?`,
-		nowMs, nowMs-watermarkOrphanMax.Milliseconds()); err != nil {
-		return fmt.Errorf("prune outbox watermarks: %w", err)
 	}
 	return nil
 }

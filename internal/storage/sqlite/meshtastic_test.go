@@ -178,6 +178,53 @@ func TestMeshtasticMessageChannelFilter(t *testing.T) {
 	}
 }
 
+// TestMeshActionFailures pins the durable failure marker that ties the
+// async modem result to the delivery job: a failure marks the version,
+// the version-wide query reports it, a successful retransmission clears
+// it, and old rows age out.
+func TestMeshActionFailures(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+
+	if failed, err := s.MeshActionFailed(ctx, "p1", "k", 1); err != nil || failed {
+		t.Fatalf("empty = (%v, %v), want false", failed, err)
+	}
+	if err := s.SetMeshActionFailed(ctx, "p1", "k", 1, "a0a85934", 0, true); err != nil {
+		t.Fatal(err)
+	}
+	// The query is version-wide: any recipient's failure marks the job.
+	if failed, err := s.MeshActionFailed(ctx, "p1", "k", 1); err != nil || !failed {
+		t.Fatalf("marked = (%v, %v), want true", failed, err)
+	}
+	// Another version is independent.
+	if failed, err := s.MeshActionFailed(ctx, "p1", "k", 2); err != nil || failed {
+		t.Fatalf("other version = (%v, %v), want false", failed, err)
+	}
+
+	// A successful retransmission clears its own marker.
+	if err := s.SetMeshActionFailed(ctx, "p1", "k", 1, "a0a85934", 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if failed, err := s.MeshActionFailed(ctx, "p1", "k", 1); err != nil || failed {
+		t.Fatalf("cleared = (%v, %v), want false", failed, err)
+	}
+
+	// Failure rows age out on the retention bound.
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	if _, err := s.db.Exec(`INSERT INTO mesh_action_failures (publisher, event_key, change_id, recipient, channel, created_at_ms)
+		VALUES ('p1', 'old', 1, 'a0a85934', 0, ?)`, old.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh mark prunes the stale row.
+	if err := s.SetMeshActionFailed(ctx, "p1", "new", 1, "a0a85934", 0, true); err != nil {
+		t.Fatal(err)
+	}
+	var stale int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM mesh_action_failures WHERE event_key = 'old'`).Scan(&stale); err != nil || stale != 0 {
+		t.Fatalf("stale failure rows = (%d, %v), want 0 (pruned)", stale, err)
+	}
+}
+
 // TestMeshActionProgress pins the versioned resume ledger of the
 // meshtastic action: an entry counts only for the exact (publisher,
 // event key, change id, recipient, channel) identity, records are
@@ -216,13 +263,25 @@ func TestMeshActionProgress(t *testing.T) {
 		t.Fatalf("broadcast entry = (%v, %v), want true", done, err)
 	}
 
+	// Revocation: a failed transmission deletes the entry (the retry
+	// sends the recipient again). Idempotent.
+	if err := s.DeleteMeshActionProgress(ctx, "p1", "k", 1, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	if done, err := s.MeshActionProgressDone(ctx, "p1", "k", 1, "", 1); err != nil || done {
+		t.Fatalf("revoked entry = (%v, %v), want false", done, err)
+	}
+	if err := s.DeleteMeshActionProgress(ctx, "p1", "k", 1, "", 1); err != nil {
+		t.Fatalf("second revoke: %v", err)
+	}
+
 	// Idempotent: re-recording never duplicates.
 	if err := s.RecordMeshActionProgress(ctx, "p1", "k", 1, "a0a85934", 0, at); err != nil {
 		t.Fatal(err)
 	}
 	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM mesh_action_progress`).Scan(&n); err != nil || n != 2 {
-		t.Fatalf("rows after re-record = (%d, %v), want 2", n, err)
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM mesh_action_progress`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("rows after re-record = (%d, %v), want 1 (broadcast entry revoked earlier)", n, err)
 	}
 
 	// Retention: rows older than the bound are pruned on every record.

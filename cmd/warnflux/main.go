@@ -743,6 +743,36 @@ func run(configPath string, checkConfig bool) error {
 		}
 		return true
 	})
+	// Async-transmission failure oracle: the meshtastic modem reports
+	// TxFailed AFTER the action returned, so a successful execution is
+	// only settled as accepted when no failure marker exists for the
+	// message version. A marked failure schedules a retry within the
+	// attempt budget (the late case is re-armed by the hub sink below).
+	actionsMgr.SetMeshFailureCheck(func(ctx context.Context, req action.ActionRequest) bool {
+		if h := req.Event.Hazard; h != nil && h.Publisher != "" && h.ChangeID != 0 {
+			failed, err := store.MeshActionFailed(ctx, h.Publisher, h.Key, h.ChangeID)
+			if err != nil {
+				logger.Warn("actions: mesh failure lookup failed", "event_key", h.Key, "error", err)
+				return false // never force a retry on a lookup failure
+			}
+			return failed
+		}
+		return false
+	})
+	// Re-arm sink: a TxFailed arriving after the job was already settled
+	// as accepted revives it as failed due NOW — the worker retries
+	// within the attempt budget or leaves it terminally failed.
+	meshtasticHub.SetMeshDeliverySink(func(ctx context.Context, publisher, eventKey string, changeID int64) {
+		n, err := store.RequeueDeliveryByVersion(ctx, publisher, eventKey, changeID, time.Now())
+		if err != nil {
+			logger.Warn("meshtastic: delivery re-arm failed", "event_key", eventKey, "error", err)
+			return
+		}
+		if n > 0 {
+			logger.Info("meshtastic: transmission failed, delivery retry re-armed",
+				"event_key", eventKey, "jobs", n)
+		}
+	})
 
 	// MQTT receivers: independent input clients (never the publisher).
 	// Construction failures are fatal; connection failures are not.

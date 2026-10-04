@@ -115,6 +115,16 @@ type Recorder interface {
 	// MeshActionProgressDone reports whether the exact versioned
 	// transmission already has a progress row.
 	MeshActionProgressDone(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error)
+	// DeleteMeshActionProgress revokes the progress entry when the
+	// transmission ultimately failed: the next attempt sends again.
+	DeleteMeshActionProgress(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) error
+	// SetMeshActionFailed marks (or clears) the durable failure marker
+	// of one versioned transmission: the marker ties the async modem
+	// result to the durable delivery job.
+	SetMeshActionFailed(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error
+	// MeshActionFailed reports whether ANY transmission of the version
+	// carries a failure marker.
+	MeshActionFailed(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error)
 }
 
 // NodeStore persists the heard-node directory (implemented by storage
@@ -212,6 +222,35 @@ type pendingSend struct {
 	echoed  bool   // the id is known (echo or queueStatus paired)
 	status  string
 	retries int
+	// prog carries the durable action-progress identity when the send
+	// came from the meshtastic action: the ledger follows the
+	// TRANSMISSION OUTCOME (recorded on sent/delivered, revoked on
+	// failed) instead of the accept handoff.
+	prog progressRef
+}
+
+// meshDeliverySink is the optional re-arm callback the hub invokes when
+// an action transmission ultimately FAILS: the durable delivery job was
+// likely already settled as accepted, and only this callback schedules
+// the retry (a bare progress revoke schedules nothing — reported P1).
+// Wired by the application to the delivery store; nil keeps the
+// progress-only behavior.
+type meshDeliverySinkFunc func(ctx context.Context, publisher, eventKey string, changeID int64)
+
+// progressRef identifies one durable action-progress entry (the
+// versioned resume ledger of the meshtastic action). The zero value
+// attaches no ledger.
+type progressRef struct {
+	publisher string
+	eventKey  string
+	changeID  int64
+	recipient string // normalized node id for DMs, "" for broadcasts
+	channel   int
+}
+
+// active reports whether the reference attaches the ledger.
+func (p progressRef) active() bool {
+	return p.publisher != "" && p.changeID > 0
 }
 
 // Node signal kinds observed in packets from the node (shown as badges
@@ -438,6 +477,9 @@ type Hub struct {
 	recorder    Recorder
 	stationSink func(ctx context.Context, topic string, retained bool, payload []byte) error
 	messageSink func(ctx context.Context, topic string, retained bool, payload []byte) error
+	// meshDeliverySink re-arms the durable delivery job when an action
+	// transmission ultimately fails (see meshDeliverySinkFunc).
+	meshDeliverySink meshDeliverySinkFunc
 	// senderGate resolves the direct-message sender's node id onto the
 	// directory username that registered it; empty = not registered (the
 	// message stays off the alarm pipeline).
@@ -569,6 +611,14 @@ func (h *Hub) Connected() bool {
 
 // SetRecorder attaches the durable message history store (optional).
 func (h *Hub) SetRecorder(r Recorder) { h.mu.Lock(); h.recorder = r; h.mu.Unlock() }
+
+// SetMeshDeliverySink attaches the re-arm callback invoked when an
+// action transmission ultimately fails (see meshDeliverySinkFunc).
+func (h *Hub) SetMeshDeliverySink(fn meshDeliverySinkFunc) {
+	h.mu.Lock()
+	h.meshDeliverySink = fn
+	h.mu.Unlock()
+}
 
 // SetNodeStore attaches the persistent heard-node directory (optional):
 // the hub restores it at startup and rewrites it whenever a node is
@@ -1294,11 +1344,18 @@ func (h *Hub) dropPendingLocked(ps *pendingSend) {
 }
 
 // markStatus stamps one pending send's delivery state into the durable
-// history.
+// history — and mirrors it into the action-progress ledger: the progress
+// entry is recorded once the radio actually transmitted (sent, or
+// delivered on the recipient's ack) and REVOKED when the transmission
+// ultimately failed, so a later group retry sends the recipient again.
+// The failure additionally sets the durable failure marker and fires the
+// re-arm sink: the delivery job (already settled as accepted by the
+// worker) is revived for a retry within the attempt budget.
 func (h *Hub) markStatus(ps *pendingSend, status string) {
 	ps.status = status
 	h.mu.Lock()
 	rec := h.recorder
+	sink := h.meshDeliverySink
 	h.mu.Unlock()
 	if rec == nil {
 		return
@@ -1307,6 +1364,28 @@ func (h *Hub) markStatus(ps *pendingSend, status string) {
 	defer cancel()
 	if err := rec.UpdateMeshtasticMessageStatus(ctx, status, ps.at, ps.text); err != nil && h.logger != nil {
 		h.logger.Warn("meshtastic: message status update failed", "status", status, "error", err)
+	}
+	if !ps.prog.active() {
+		return
+	}
+	switch status {
+	case TxSent, TxDelivered:
+		if err := rec.RecordMeshActionProgress(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel, time.Now()); err != nil && h.logger != nil {
+			h.logger.Warn("meshtastic: action progress record failed", "error", err)
+		}
+		if err := rec.SetMeshActionFailed(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel, false); err != nil && h.logger != nil {
+			h.logger.Warn("meshtastic: action failure marker clear failed", "error", err)
+		}
+	case TxFailed:
+		if err := rec.DeleteMeshActionProgress(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel); err != nil && h.logger != nil {
+			h.logger.Warn("meshtastic: action progress revoke failed", "error", err)
+		}
+		if err := rec.SetMeshActionFailed(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID, ps.prog.recipient, ps.prog.channel, true); err != nil && h.logger != nil {
+			h.logger.Warn("meshtastic: action failure marker record failed", "error", err)
+		}
+		if sink != nil {
+			sink(ctx, ps.prog.publisher, ps.prog.eventKey, ps.prog.changeID)
+		}
 	}
 }
 
@@ -2017,13 +2096,37 @@ func (h *Hub) SendChannelText(ctx context.Context, idx int, text, operator strin
 	if idx < 1 || idx > 7 {
 		return ErrPrimaryChannelBlocked
 	}
-	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), idx, h.ChannelLabel(idx), text, operator)
+	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), idx, h.ChannelLabel(idx), text, operator, progressRef{})
+}
+
+// SendChannelTextVersioned is SendChannelText with the durable
+// action-progress identity attached: the ledger follows the transmission
+// outcome (recorded on sent/delivered, revoked on failed).
+func (h *Hub) SendChannelTextVersioned(ctx context.Context, idx int, text, operator, publisher, eventKey string, changeID int64) error {
+	if idx < 1 || idx > 7 {
+		return ErrPrimaryChannelBlocked
+	}
+	return h.sendText(ctx, core.BroadcastNodeID.Uint32(), idx, h.ChannelLabel(idx), text, operator,
+		progressRef{publisher: publisher, eventKey: eventKey, changeID: changeID, recipient: "", channel: idx})
 }
 
 // SendContactMessage sends one direct text message to a node id (8 hex
 // chars, with or without the leading '!').
 func (h *Hub) SendContactMessage(ctx context.Context, addr, text, operator string) error {
-	idStr := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(addr), "!"))
+	return h.sendContact(ctx, addr, text, operator, progressRef{})
+}
+
+// SendContactMessageVersioned is SendContactMessage with the durable
+// action-progress identity attached: the ledger follows the transmission
+// outcome (recorded on sent/delivered, revoked on failed).
+func (h *Hub) SendContactMessageVersioned(ctx context.Context, addr, text, operator, publisher, eventKey string, changeID int64) error {
+	idStr := normalizeMeshID(addr)
+	return h.sendContact(ctx, addr, text, operator,
+		progressRef{publisher: publisher, eventKey: eventKey, changeID: changeID, recipient: idStr, channel: 0})
+}
+
+func (h *Hub) sendContact(ctx context.Context, addr, text, operator string, prog progressRef) error {
+	idStr := normalizeMeshID(addr)
 	if len(idStr) != 8 {
 		return fmt.Errorf("meshtastic: node id must be 8 hex characters, got %q", addr)
 	}
@@ -2031,7 +2134,7 @@ func (h *Hub) SendContactMessage(ctx context.Context, addr, text, operator strin
 	if err != nil {
 		return fmt.Errorf("meshtastic: node id must be 8 hex characters, got %q", addr)
 	}
-	return h.sendText(ctx, uint32(n), 0, "dm", text, operator)
+	return h.sendText(ctx, uint32(n), 0, "dm", text, operator, prog)
 }
 
 // MeshActionProgressDone reports whether the exact versioned
@@ -2075,8 +2178,9 @@ func normalizeMeshID(addr string) string {
 
 // sendText transmits one text message and records it as TX. Broadcasts
 // carry the target channel index; direct messages leave the channel to
-// the device.
-func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLabel, text, operator string) error {
+// the device. prog attaches the durable action-progress identity when
+// the send comes from the meshtastic action.
+func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLabel, text, operator string, prog progressRef) error {
 	h.sendMu.Lock()
 	defer h.sendMu.Unlock()
 	h.mu.Lock()
@@ -2115,6 +2219,7 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		text:    text,
 		channel: channelLabel,
 		wantAck: wantAck,
+		prog:    prog,
 	}
 	// sendMu is held by the defer above; the echo must be queued before
 	// the frame goes out so a fast device echo can never miss its entry.

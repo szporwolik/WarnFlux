@@ -68,6 +68,65 @@ func (s *Store) MeshActionProgressDone(ctx context.Context, publisher, eventKey 
 	return done > 0, nil
 }
 
+// DeleteMeshActionProgress revokes the progress entry when the
+// transmission ultimately failed: the next attempt sends the recipient
+// again. Idempotent.
+func (s *Store) DeleteMeshActionProgress(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) error {
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM mesh_action_progress
+		WHERE publisher = ? AND event_key = ? AND change_id = ? AND recipient = ? AND channel = ?`,
+		publisher, eventKey, changeID, recipient, channel); err != nil {
+		return fmt.Errorf("delete mesh action progress: %w", err)
+	}
+	return nil
+}
+
+// SetMeshActionFailed marks (or clears) the durable failure marker of
+// one versioned transmission. The marker is what ties the ASYNC modem
+// result to the durable delivery job: the worker consults
+// MeshActionFailed before settling a job as accepted, and the hub's
+// re-arm callback revives an already-settled job. A successful
+// retransmission clears the marker. Failure rows age out on the same
+// retention bound as the progress rows.
+func (s *Store) SetMeshActionFailed(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int, failed bool) error {
+	if failed {
+		now := s.now().UnixMilli()
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT OR IGNORE INTO mesh_action_failures (publisher, event_key, change_id, recipient, channel, created_at_ms)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			publisher, eventKey, changeID, recipient, channel, now); err != nil {
+			return fmt.Errorf("mark mesh action failure: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM mesh_action_failures WHERE created_at_ms < ?`,
+			s.now().Add(-meshProgressRetention).UnixMilli()); err != nil {
+			return fmt.Errorf("prune mesh action failures: %w", err)
+		}
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM mesh_action_failures
+		WHERE publisher = ? AND event_key = ? AND change_id = ? AND recipient = ? AND channel = ?`,
+		publisher, eventKey, changeID, recipient, channel); err != nil {
+		return fmt.Errorf("clear mesh action failure: %w", err)
+	}
+	return nil
+}
+
+// MeshActionFailed reports whether ANY transmission of the message
+// version carries a failure marker (the retry re-sends only the failed
+// recipients; the job-level check is version-wide).
+func (s *Store) MeshActionFailed(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error) {
+	var failed int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mesh_action_failures
+		WHERE publisher = ? AND event_key = ? AND change_id = ?`,
+		publisher, eventKey, changeID).Scan(&failed); err != nil {
+		return false, fmt.Errorf("query mesh action failures: %w", err)
+	}
+	return failed > 0, nil
+}
+
 // UpdateMeshtasticMessageStatus marks the delivery state of the matching
 // TX row (created_at_ms + text): the hub stamps "sent" when the radio
 // transmits the frame, "delivered" on the recipient's acknowledgment,

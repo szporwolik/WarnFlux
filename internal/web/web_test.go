@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3477,8 +3478,8 @@ type fakeMeshMsgs struct {
 	rows []storage.MeshMessage
 }
 
-func (f *fakeMeshMsgs) RecordMeshtasticMessage(_ context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error {
-	f.rows = append(f.rows, storage.MeshMessage{Direction: direction, Sender: sender, Channel: channel, Hops: hops, Operator: operator, Text: text, At: at})
+func (f *fakeMeshMsgs) RecordMeshtasticMessage(_ context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error {
+	f.rows = append(f.rows, storage.MeshMessage{Direction: direction, Sender: sender, Recipient: recipient, Channel: channel, Hops: hops, Operator: operator, Text: text, At: at})
 	return nil
 }
 
@@ -3502,6 +3503,13 @@ func (f *fakeMeshMsgs) ListMeshtasticMessages(_ context.Context, flt storage.Mes
 				continue
 			}
 			if !flt.Exclude && m.Channel != flt.Channel {
+				continue
+			}
+		}
+		if flt.Peer != "" {
+			ok := (m.Direction == "rx" && m.Sender == flt.Peer) ||
+				(m.Direction == "tx" && m.Recipient == flt.Peer)
+			if !ok {
 				continue
 			}
 		}
@@ -3531,9 +3539,37 @@ func (f *fakeMeshMsgs) CountMeshtasticMessages(_ context.Context, flt storage.Me
 				continue
 			}
 		}
+		if flt.Peer != "" {
+			ok := (m.Direction == "rx" && m.Sender == flt.Peer) ||
+				(m.Direction == "tx" && m.Recipient == flt.Peer)
+			if !ok {
+				continue
+			}
+		}
 		n++
 	}
 	return n, nil
+}
+
+func (f *fakeMeshMsgs) MeshtasticPeers(_ context.Context) ([]string, error) {
+	seen := make(map[string]bool)
+	for _, m := range f.rows {
+		if m.Channel != "dm" {
+			continue
+		}
+		if m.Direction == "rx" && m.Sender != "" {
+			seen[m.Sender] = true
+		}
+		if m.Direction == "tx" && m.Recipient != "" {
+			seen[m.Recipient] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // TestMeshMessageChannelNames pins the channel display: legacy "ch0" rows
@@ -3566,16 +3602,15 @@ func TestMeshMessageChannelNames(t *testing.T) {
 	}
 	env.login()
 
-	// The unfiltered list hides ch0 rows (the primary channel has its
-	// own tab) and keeps every other channel.
+	// The default DM view shows direct messages only.
 	resp, body := env.get("/partials/meshtastic?tab=messages")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("partial = %d", resp.StatusCode)
 	}
-	if strings.Contains(body, "hello") {
-		t.Errorf("all partial must hide ch0 rows: %.300s", body)
+	if strings.Contains(body, "hello") || strings.Contains(body, "LongFast") {
+		t.Errorf("DM partial must hide channel rows: %.300s", body)
 	}
-	for _, want := range []string{"LongFast", "sp9kow", "!abcd1234", "via 3 hops", "(admin)"} {
+	for _, want := range []string{"ggg", "sp9kow", "!abcd1234", "via 3 hops"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("messages partial missing %q: %.300s", want, body)
 		}
@@ -3619,22 +3654,25 @@ func TestMeshtasticCh0Tab(t *testing.T) {
 	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
 	env.login()
 
-	// The tab strip places ch0 right after tx.
+	// The tab strip: DM first, then ch0 (the rx/tx tabs are gone).
 	_, html := env.get("/meshtastic")
-	txIdx := strings.Index(html, "/meshtastic?dir=tx")
+	dmIdx := strings.Index(html, `href="/meshtastic"`)
 	ch0Idx := strings.Index(html, "/meshtastic?dir=ch0")
-	rxIdx := strings.Index(html, "/meshtastic?dir=rx")
-	if txIdx < 0 || ch0Idx < 0 || !(rxIdx < txIdx && txIdx < ch0Idx) {
-		t.Fatalf("tab order wrong (rx=%d tx=%d ch0=%d): %.200s", rxIdx, txIdx, ch0Idx, html)
+	if dmIdx < 0 || ch0Idx < 0 || !(dmIdx < ch0Idx) {
+		t.Fatalf("tab order wrong (dm=%d ch0=%d): %.200s", dmIdx, ch0Idx, html)
+	}
+	if strings.Contains(html, "/meshtastic?dir=rx") || strings.Contains(html, "/meshtastic?dir=tx") {
+		t.Errorf("rx/tx tabs must be gone: %.300s", html)
 	}
 
-	// The all view excludes ch0 (101 ch0 rows hidden, 2 others shown).
+	// The DM view shows direct messages only (ch0 and channel rows live
+	// on their own tabs).
 	_, html = env.get("/meshtastic")
-	if strings.Contains(html, "ch0-fill") || strings.Contains(html, "tx-ch0") {
-		t.Errorf("all view leaked ch0 rows: %.300s", html)
+	if strings.Contains(html, "ch0-fill") || strings.Contains(html, "tx-ch0") || strings.Contains(html, "sp9-row") {
+		t.Errorf("DM view leaked channel rows: %.300s", html)
 	}
-	if !strings.Contains(html, "sp9-row") || !strings.Contains(html, "dm-row") {
-		t.Errorf("all view missing non-ch0 rows: %.300s", html)
+	if !strings.Contains(html, "dm-row") {
+		t.Errorf("DM view missing dm rows: %.300s", html)
 	}
 
 	// The ch0 view shows both directions of the primary channel and
@@ -3649,20 +3687,102 @@ func TestMeshtasticCh0Tab(t *testing.T) {
 	if strings.Contains(html, "sp9-row") || strings.Contains(html, "dm-row") {
 		t.Errorf("ch0 view leaked other channels: %.300s", html)
 	}
+}
 
-	// rx/tx views also exclude ch0.
-	for _, dir := range []string{"rx", "tx"} {
-		_, html = env.get("/meshtastic?dir=" + dir)
-		if strings.Contains(html, "ch0-fill") || strings.Contains(html, "tx-ch0") {
-			t.Errorf("%s view leaked ch0 rows: %.300s", dir, html)
+// TestMeshtasticDMTab pins the DM view: the dropdown lists the
+// conversation partners (directory username, heard node name or bare id),
+// the peer filter shows only that conversation with pagination, and the
+// partial poller honors the peer parameter.
+func TestMeshtasticDMTab(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// deadbeef has a heard node name; c0ffee11 is unknown entirely.
+	hub.SeedNode("deadbeef", "Bunkier", "", 0, 0, time.Now(), []string{"text"})
+
+	store := &fakeMeshMsgs{}
+	// The fake lists rows in append order (oldest first): prepend the tx
+	// row so it lands on page 1 like a newest row.
+	store.rows = append(store.rows,
+		storage.MeshMessage{Direction: "tx", Recipient: "a0a85934", Channel: "dm", Text: "to-spm", At: time.Now()},
+	)
+	for i := 0; i < 101; i++ {
+		store.rows = append(store.rows, storage.MeshMessage{Direction: "rx", Sender: "a0a85934", Channel: "dm", Text: "from-spm", At: time.Now()})
+	}
+	store.rows = append(store.rows,
+		storage.MeshMessage{Direction: "rx", Sender: "deadbeef", Channel: "dm", Text: "from-bunkier", At: time.Now()},
+		storage.MeshMessage{Direction: "rx", Sender: "c0ffee11", Channel: "dm", Text: "from-unknown", At: time.Now()},
+	)
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
+	// Register a0a85934 in the directory as sp9spm.
+	u, err := env.users.CreateUser("sp9spm", "", "", "", "member", "pw1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserMeshtasticIDs(u.ID, []string{"a0a85934"}); err != nil {
+		t.Fatal(err)
+	}
+	env.login()
+
+	// The DM dropdown lists every dm participant with the best label:
+	// directory username, heard node name, then the bare id.
+	_, html := env.get("/meshtastic")
+	for _, want := range []string{
+		`name="peer"`,
+		`<option value="a0a85934">sp9spm</option>`,
+		`<option value="deadbeef">Bunkier</option>`,
+		`<option value="c0ffee11">!c0ffee11</option>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("DM filter missing %q: %.400s", want, html)
 		}
+	}
+
+	// Default: no filter, every dm row, paginated.
+	_, html = env.get("/meshtastic")
+	if !strings.Contains(html, "to-spm") {
+		t.Errorf("DM default view missing rows: %.300s", html)
+	}
+	if !strings.Contains(html, "/meshtastic?dir=all&amp;page=2") {
+		t.Errorf("DM default view missing page-2 link: %.300s", html)
+	}
+	_, html = env.get("/meshtastic?page=2")
+	if !strings.Contains(html, "from-unknown") {
+		t.Errorf("DM page 2 missing rows: %.300s", html)
+	}
+
+	// Selecting a peer shows only that conversation (rx from them + tx
+	// to them) and keeps the peer in the pagination links.
+	_, html = env.get("/meshtastic?peer=a0a85934")
+	if strings.Contains(html, "from-bunkier") || strings.Contains(html, "from-unknown") {
+		t.Errorf("peer view leaked other peers: %.300s", html)
+	}
+	if !strings.Contains(html, "to-spm") {
+		t.Errorf("peer view missing tx row: %.300s", html)
+	}
+	if !strings.Contains(html, "/meshtastic?dir=all&amp;peer=a0a85934&amp;page=2") {
+		t.Errorf("peer view missing page-2 link with peer: %.300s", html)
+	}
+	if !strings.Contains(html, `<option value="a0a85934" selected>sp9spm</option>`) {
+		t.Errorf("selected peer not marked: %.300s", html)
+	}
+
+	// The partial poller carries the peer filter too.
+	_, body := env.get("/partials/meshtastic?tab=messages&peer=deadbeef")
+	if !strings.Contains(body, "from-bunkier") || strings.Contains(body, "from-spm") || strings.Contains(body, "from-unknown") {
+		t.Errorf("peer partial wrong rows: %.300s", body)
 	}
 }
 
 // TestMeshtasticEmcomTab pins the configured-emcom-channel tab: it
 // appears only when meshtastic.emcom_channel is set, sits right after
-// ch0, lists that channel's rx+tx rows with pagination, and other views
-// keep the emcom rows (only ch0 is hidden elsewhere).
+// ch0, lists that channel's rx+tx rows with pagination, and the DM view
+// leaves the emcom rows to their own tab.
 func TestMeshtasticEmcomTab(t *testing.T) {
 	hub, err := meshtastic.NewHub(meshtastic.Config{
 		Enabled:      true,
@@ -3698,9 +3818,10 @@ func TestMeshtasticEmcomTab(t *testing.T) {
 		t.Fatalf("emcom tab missing or misplaced (ch0=%d ch1=%d): %.250s", ch0Idx, emcomIdx, html)
 	}
 
-	// The all view still shows the emcom rows (only ch0 is hidden).
-	if !strings.Contains(html, "emcom-tx") || strings.Contains(html, "c0-row") {
-		t.Errorf("all view must keep emcom rows and hide ch0: %.300s", html)
+	// The DM view shows direct messages only; the emcom channel rows
+	// live on their own tab.
+	if !strings.Contains(html, "dm-row") || strings.Contains(html, "emcom-tx") || strings.Contains(html, "c0-row") {
+		t.Errorf("DM view wrong rows: %.300s", html)
 	}
 
 	// The emcom tab lists only the emcom channel, rx+tx, with pagination.

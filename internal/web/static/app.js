@@ -3737,6 +3737,9 @@
       if (q.get("page")) {
         params.set("page", q.get("page"));
       }
+      if (q.get("peer")) {
+        params.set("peer", q.get("peer"));
+      }
       fetch(url + "?" + params.toString(), {
         headers: { "Accept": "text/html" },
         credentials: "same-origin",

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -67,6 +68,14 @@ type meshtasticContactView struct {
 	ID       string // 8-hex node id
 }
 
+// meshtasticPeerView is one conversation partner in the DM tab's filter
+// dropdown: the raw node id and its display label (directory username,
+// heard node name, or the bare id).
+type meshtasticPeerView struct {
+	ID    string
+	Label string
+}
+
 // meshtasticChannelOption is one device channel offered by the send form.
 type meshtasticChannelOption struct {
 	Idx   int
@@ -108,6 +117,10 @@ type meshtasticView struct {
 	// messages tab
 	Messages []meshtasticMessageView
 	Dir      string
+	// Peer is the selected conversation partner (8-hex node id; empty =
+	// no filter). Peers feeds the DM tab's filter dropdown.
+	Peer  string
+	Peers []meshtasticPeerView
 	// EmcomDir / EmcomTab carry the configured emcom-channel tab (empty
 	// when the channel is not configured): the dir value ("ch1") and the
 	// display label ("ch1 · SP9MOA" once the device names the channel).
@@ -204,7 +217,17 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 			v.EmcomTab = emcomDir + " · " + emcomLabel
 		}
 	}
-	filter := storage.MeshtasticMessageFilter{Channel: primary, Exclude: true}
+	// The peer dropdown filter (?peer=<8hex>): one conversation with a
+	// specific Meshtastic user.
+	if id := meshtasticNormalizeID(r.URL.Query().Get("peer")); id != "" {
+		v.Peer = id
+	}
+	s.fillMeshtasticPeers(r.Context(), v)
+
+	// The DM tab (default) shows direct messages only; the legacy rx/tx
+	// dirs keep their direction filter on top. ch0 and the configured
+	// emcom channel have their own tabs.
+	filter := storage.MeshtasticMessageFilter{Channel: "dm"}
 	switch v.Dir {
 	case "ch0":
 		filter = storage.MeshtasticMessageFilter{Channel: primary}
@@ -219,6 +242,7 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 			filter = storage.MeshtasticMessageFilter{Channel: label}
 		}
 	}
+	filter.Peer = v.Peer
 	total, err := s.meshtasticMsgs.CountMeshtasticMessages(r.Context(), filter)
 	if err != nil {
 		s.logger.Warn("web: mesh messages count failed", "error", err)
@@ -280,6 +304,46 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 		}
 		v.Messages = append(v.Messages, view)
 	}
+}
+
+// fillMeshtasticPeers builds the DM tab's conversation dropdown from the
+// stored direct messages: directory usernames for registered node ids,
+// heard node names for the rest, and the bare id as the last resort.
+func (s *Server) fillMeshtasticPeers(ctx context.Context, v *meshtasticView) {
+	if s.meshtasticMsgs == nil {
+		return
+	}
+	ids, err := s.meshtasticMsgs.MeshtasticPeers(ctx)
+	if err != nil {
+		s.logger.Warn("web: mesh peers failed", "error", err)
+		return
+	}
+	var owners map[string]string
+	if s.users != nil {
+		owners, _ = s.users.MeshtasticOwners()
+	}
+	names := make(map[string]string, len(ids))
+	if s.meshtastic != nil {
+		for _, n := range s.meshtastic.Snapshot().Nodes {
+			names[strings.ToLower(n.ID)] = n.Name
+		}
+	}
+	v.Peers = make([]meshtasticPeerView, 0, len(ids))
+	for _, id := range ids {
+		label := ""
+		if u, ok := owners[id]; ok {
+			label = u
+		} else if name := names[id]; name != "" {
+			label = name
+		}
+		if label == "" {
+			label = "!" + id
+		}
+		v.Peers = append(v.Peers, meshtasticPeerView{ID: id, Label: label})
+	}
+	sort.Slice(v.Peers, func(i, j int) bool {
+		return strings.ToLower(v.Peers[i].Label) < strings.ToLower(v.Peers[j].Label)
+	})
 }
 
 // meshtasticChannelName resolves a stored channel label for display. New rows

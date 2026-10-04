@@ -46,12 +46,20 @@
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshtastic.tab_messages"}} <span class="count" id="mesh-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
       <p class="muted log-hint">{{tr .Lang "meshtastic.hint"}}</p>
       <div class="page-tabs">
-        <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/meshtastic">{{tr .Lang "messages.dir_all"}}</a>
-        <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/meshtastic?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
-        <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/meshtastic?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
+        <a class="page-tab{{if not (or (eq .Dir "ch0") (and .EmcomDir (eq .Dir .EmcomDir)))}} active{{end}}" href="/meshtastic">DM</a>
         <a class="page-tab{{if eq .Dir "ch0"}} active{{end}}" href="/meshtastic?dir=ch0">ch0</a>
         {{if .EmcomDir}}<a class="page-tab{{if eq .Dir .EmcomDir}} active{{end}}" href="/meshtastic?dir={{.EmcomDir}}">{{.EmcomTab}}</a>{{end}}
       </div>
+      {{if .Peers}}
+      <form method="get" action="/meshtastic" class="msgs-filter">
+        <label for="dm-peer">{{tr .Lang "meshtastic.filter_peer"}}</label>
+        <select name="peer" id="dm-peer" onchange="this.form.submit()">
+          <option value="">{{tr .Lang "meshtastic.filter_all"}}</option>
+          {{range .Peers}}<option value="{{.ID}}"{{if eq $.Peer .ID}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+        {{if .Peer}}<a class="btn-ghost btn-small" href="/meshtastic">{{tr .Lang "meshtastic.filter_clear"}}</a>{{end}}
+      </form>
+      {{end}}
       <div id="mesh-msgs">{{template "mesh_msgs" .}}</div>
     </section>
 
@@ -145,9 +153,9 @@
 </div>
 <div class="pager">
   <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
-  {{if gt .Page 1}}<a class="page-link" href="/meshtastic?dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+  {{if gt .Page 1}}<a class="page-link" href="/meshtastic?dir={{.Dir}}{{if .Peer}}&amp;peer={{.Peer}}{{end}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
   <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
-  {{if lt .Page .Pages}}<a class="page-link" href="/meshtastic?dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
+  {{if lt .Page .Pages}}<a class="page-link" href="/meshtastic?dir={{.Dir}}{{if .Peer}}&amp;peer={{.Peer}}{{end}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
 </div>
 {{else}}
 <p class="home-none">{{tr .Lang "meshtastic.none"}}</p>

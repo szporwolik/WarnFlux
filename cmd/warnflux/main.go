@@ -743,23 +743,17 @@ func run(configPath string, checkConfig bool) error {
 		}
 		return true
 	})
-	// Re-arm sink: a TxFailed arriving after the job was already settled
-	// as accepted revives it as failed due NOW — the worker retries
-	// within the attempt budget or leaves it terminally failed. The
-	// EARLY case (failure before the settlement) is covered by the
-	// guarded settlement inside the store: the marker read and the
-	// accepted write share one transaction.
-	meshtasticHub.SetMeshDeliverySink(func(ctx context.Context, actionID, publisher, eventKey string, changeID int64) {
-		n, err := store.RequeueDeliveryByVersion(ctx, actionID, publisher, eventKey, changeID, time.Now())
-		if err != nil {
-			logger.Warn("meshtastic: delivery re-arm failed", "event_key", eventKey, "error", err)
-			return
-		}
-		if n > 0 {
-			logger.Info("meshtastic: transmission failed, delivery retry re-armed",
-				"event_key", eventKey, "jobs", n)
-		}
-	})
+	// Recovery sweep for the async-failure ledger: a crash between the
+	// failure-marker write and the job re-arm (pre-atomic versions, or
+	// any future split) would leave an accepted job with a durable
+	// marker — re-arm it now, so the retry runs within the attempt
+	// budget. The atomic recorder path (RecordMeshFailureAndRequeue)
+	// can no longer create that state, this is the safety net.
+	if n, err := store.RequeueMarkedDeliveries(context.Background(), time.Now()); err != nil {
+		logger.Warn("actions: marked-delivery recovery failed", "error", err)
+	} else if n > 0 {
+		logger.Info("actions: marked deliveries re-armed after restart", "jobs", n)
+	}
 
 	// MQTT receivers: independent input clients (never the publisher).
 	// Construction failures are fatal; connection failures are not.
@@ -1232,6 +1226,14 @@ func run(configPath string, checkConfig bool) error {
 				if backlog, err := store.OutboxCount(ctx); err == nil && backlog >= storage.OutboxCapacity*9/10 {
 					logger.Warn("ingest_http: outbox backlog high — still-valid rows near capacity; appends are rejected with 503 until publishing drains",
 						"backlog", backlog, "capacity", storage.OutboxCapacity)
+				}
+				// Async-failure sweep: re-arm any accepted job whose
+				// action+version still carries a failure marker (safety
+				// net for the atomic recorder path).
+				if n, err := store.RequeueMarkedDeliveries(ctx, time.Now()); err != nil {
+					logger.Warn("actions: marked-delivery sweep failed", "error", err)
+				} else if n > 0 {
+					logger.Info("actions: marked deliveries re-armed", "jobs", n)
 				}
 			}
 			prune()

@@ -85,9 +85,10 @@ type DeliveryResult struct {
 }
 
 // DeliveryVersion identifies the message version of one job — the
-// failure-marker guard key. The guard is ACTION-SCOPED: a Mesh TxFailed
-// must never re-arm or downgrade other actions' jobs of the same event
-// (reported P2).
+// failure-marker guard key. The guard is JOB-SCOPED: the concrete job
+// identity (group + dedup key in DeliverySettle) plus the version scope
+// the marker, so a Mesh TxFailed must never re-arm or downgrade other
+// groups' or other actions' jobs of the same event (reported P2).
 type DeliveryVersion struct {
 	ActionID  string
 	Publisher string

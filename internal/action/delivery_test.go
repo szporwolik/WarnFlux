@@ -28,8 +28,9 @@ type memDeliveryStore struct {
 	mu   sync.Mutex
 	jobs map[string]*memJob
 	// versionFailed simulates the durable failure-marker read of the
-	// guarded settlement (nil = never failed).
-	versionFailed func(actionID, publisher, eventKey string, changeID int64) bool
+	// guarded settlement (nil = never failed), keyed by the concrete
+	// job identity exactly like the SQLite guard.
+	versionFailed func(actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64) bool
 }
 
 type memJob struct {
@@ -127,8 +128,8 @@ func (m *memDeliveryStore) SettleDeliveryGuarded(ctx context.Context, d storage.
 	}
 	stage := d.Stage
 	if (stage == storage.DeliveryAccepted || stage == storage.DeliveryConfirmed) &&
-		d.Version != nil && d.Version.ActionID != "" && d.Version.Publisher != "" && d.Version.ChangeID > 0 &&
-		m.versionFailed != nil && m.versionFailed(d.Version.ActionID, d.Version.Publisher, d.Version.EventKey, d.Version.ChangeID) {
+		d.Version != nil && d.Version.ActionID != "" && d.DedupKey != "" && d.Version.Publisher != "" && d.Version.ChangeID > 0 &&
+		m.versionFailed != nil && m.versionFailed(d.Version.ActionID, d.GroupID, d.DedupKey, d.Version.Publisher, d.Version.EventKey, d.Version.ChangeID) {
 		stage = storage.DeliveryFailed
 	}
 	j.status = stage
@@ -424,7 +425,10 @@ func TestInstanceDurableAsyncFailureCheck(t *testing.T) {
 	p := &deliveryPlugin{}
 	_, ms := newDeliveryInstance(t, p, 2) // 3 attempts total
 	var calls atomic.Int32
-	ms.versionFailed = func(actionID, publisher, eventKey string, changeID int64) bool {
+	var seenGroup int64
+	var seenDedup string
+	ms.versionFailed = func(actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64) bool {
+		seenGroup, seenDedup = groupID, dedupKey
 		return calls.Add(1) == 1 // only the first settlement sees the marker
 	}
 
@@ -441,6 +445,17 @@ func TestInstanceDurableAsyncFailureCheck(t *testing.T) {
 	if got := p.handled.Load(); got != 2 {
 		t.Errorf("executions = %d, want 2 (retry after the async failure)", got)
 	}
+	if seenGroup != 1 || seenDedup != "c:1" {
+		t.Errorf("marker hook saw (group %d, dedup %q), want the concrete job identity (1, c:1)", seenGroup, seenDedup)
+	}
+	// The worker stamps the concrete job identity onto the request: the
+	// plugin's async callback can scope its failure to this job.
+	p.mu.Lock()
+	stamped := p.last.JobGroupID == 1 && p.last.JobDedupKey == "c:1"
+	p.mu.Unlock()
+	if !stamped {
+		t.Errorf("job identity not stamped: last = %+v, want group 1 dedup c:1", p.last)
+	}
 }
 
 // TestInstanceDurableAsyncFailureBudgetExhausted pins the budget side:
@@ -449,7 +464,7 @@ func TestInstanceDurableAsyncFailureCheck(t *testing.T) {
 func TestInstanceDurableAsyncFailureBudgetExhausted(t *testing.T) {
 	p := &deliveryPlugin{}
 	_, ms := newDeliveryInstance(t, p, 0) // 1 attempt total
-	ms.versionFailed = func(actionID, publisher, eventKey string, changeID int64) bool {
+	ms.versionFailed = func(actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64) bool {
 		return true
 	}
 

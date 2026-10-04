@@ -411,12 +411,13 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 
 	stage := d.Stage
 	if (stage == storage.DeliveryAccepted || stage == storage.DeliveryConfirmed) &&
-		d.Version != nil && d.Version.ActionID != "" && d.Version.Publisher != "" && d.Version.ChangeID > 0 {
+		d.Version != nil && d.Version.ActionID != "" && d.DedupKey != "" && d.Version.Publisher != "" && d.Version.ChangeID > 0 {
 		var failed int
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM mesh_action_failures
-			WHERE action_id = ? AND publisher = ? AND event_key = ? AND change_id = ?`,
-			d.Version.ActionID, d.Version.Publisher, d.Version.EventKey, d.Version.ChangeID).Scan(&failed); err != nil {
+			WHERE action_id = ? AND group_id = ? AND dedup_key = ?
+			  AND publisher = ? AND event_key = ? AND change_id = ?`,
+			d.Version.ActionID, d.GroupID, d.DedupKey, d.Version.Publisher, d.Version.EventKey, d.Version.ChangeID).Scan(&failed); err != nil {
 			return 0, fmt.Errorf("read failure marker for guarded settle of action %q group %d: %w", d.ActionID, d.GroupID, err)
 		}
 		if failed > 0 {
@@ -450,6 +451,29 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 	return stage, nil
 }
 
+// RequeueMarkedDeliveries re-arms every accepted/confirmed delivery job
+// whose concrete job identity (action + group + dedup key) carries a
+// durable failure marker: the startup recovery for the inconsistent
+// state an older crash could leave behind (marker recorded, re-arm not)
+// and a safety net for any future split. The retry runs within the
+// attempt budget as usual.
+func (s *Store) RequeueMarkedDeliveries(ctx context.Context, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE action_fires
+		SET status = 'failed', next_attempt_at_ms = ?
+		WHERE status IN ('accepted', 'confirmed')
+		  AND EXISTS (
+			SELECT 1 FROM mesh_action_failures f
+			WHERE f.action_id = action_fires.action_id
+			  AND f.group_id = action_fires.group_id
+			  AND f.dedup_key = action_fires.dedup_key
+		  )`, now.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("re-arm marked deliveries: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // RecoverStaleClaims re-queues running jobs whose claim deadline has
 // passed — the claiming process died between claim and settlement. The
 // attempt counter stays spent, so the retry budget still applies.
@@ -460,35 +484,6 @@ func (s *Store) RecoverStaleClaims(ctx context.Context, now time.Time) (int64, e
 		now.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("recover stale delivery claims: %w", err)
-	}
-	return res.RowsAffected()
-}
-
-// RequeueDeliveryByVersion re-arms the durable delivery jobs of ONE
-// ACTION and one event version whose worker already settled them as
-// accepted or confirmed: the ASYNC transmission result (e.g. the
-// meshtastic modem reporting TxFailed after the action returned) revives
-// the job as failed with the retry deadline NOW — a bare progress revoke
-// schedules nothing (reported P1). The action scope keeps other actions'
-// successful jobs of the same event untouched (reported P2). The attempt
-// budget still applies: the worker claims the revived job only while
-// attempts < maxAttempts, and a budget-exhausted job stays terminally
-// failed until a replayed transition re-arms it with a fresh budget. The
-// version is matched on the persisted payload (the action request
-// carries the hazard's publisher and change id under event.Hazard — the
-// no-tag JSON shape of the dispatch event).
-func (s *Store) RequeueDeliveryByVersion(ctx context.Context, actionID, publisher, eventKey string, changeID int64, now time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE action_fires
-		SET status = 'failed', next_attempt_at_ms = ?
-		WHERE action_id = ?
-		  AND event_key = ?
-		  AND status IN ('accepted', 'confirmed')
-		  AND json_extract(payload, '$.event.Hazard.Publisher') = ?
-		  AND json_extract(payload, '$.event.Hazard.ChangeID') = ?`,
-		now.UnixMilli(), actionID, eventKey, publisher, changeID)
-	if err != nil {
-		return 0, fmt.Errorf("re-arm delivery by version for %q: %w", eventKey, err)
 	}
 	return res.RowsAffected()
 }

@@ -544,6 +544,11 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 // Enabled reports whether the meshtastic integration is configured.
 func (h *Hub) Enabled() bool { return h.cfg.Enabled }
 
+// EmcomChannel reports the configured presence-beacon channel index
+// (1-7; 0 = beacon disabled). The admin message history uses it for the
+// dedicated emcom-channel tab.
+func (h *Hub) EmcomChannel() int { return h.cfg.EmcomChannel }
+
 // Connected reports whether the serial session is currently up.
 func (h *Hub) Connected() bool {
 	h.mu.Lock()

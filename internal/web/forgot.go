@@ -44,6 +44,7 @@ type forgotView struct {
 	CSRF     string
 
 	Error   string
+	Note    string
 	Message string
 
 	Username string
@@ -97,7 +98,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	username := strings.ToLower(strings.TrimSpace(r.PostFormValue("username")))
 	email := strings.TrimSpace(r.PostFormValue("email"))
 
-	view := func(errMsg, okMsg string) {
+	view := func(errMsg, noteMsg, okMsg string) {
 		csrf, err := newCSRFCookiePath(w, s.cfg.Auth.SecureCookie, "/")
 		if err != nil {
 			s.logger.Error("web: forgot csrf token generation failed", "error", err)
@@ -116,6 +117,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 			RepoURL:  repoURL,
 			CSRF:     csrf,
 			Error:    errMsg,
+			Note:     noteMsg,
 			Message:  okMsg,
 			Username: username,
 			Email:    email,
@@ -137,7 +139,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	// The configured admin account is managed in configuration.
 	if checkUsername(username, s.cfg.Auth.Username) {
 		s.loginLimiter.record(limiterKey, false)
-		view(i18n.T(lang, "forgot.admin_pass"), "")
+		view("", i18n.T(lang, "forgot.admin_pass"), "")
 		return
 	}
 
@@ -146,7 +148,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		!strings.EqualFold(strings.TrimSpace(u.Email), email) {
 		s.loginLimiter.record(limiterKey, false)
 		// Generic answer — no account enumeration.
-		view("", i18n.T(lang, "forgot.sent"))
+		view("", "", i18n.T(lang, "forgot.sent"))
 		return
 	}
 
@@ -154,7 +156,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Error("web: password reset token failed", "username", username, "error", err)
 		s.loginLimiter.record(limiterKey, false)
-		view("", i18n.T(lang, "forgot.sent"))
+		view("", "", i18n.T(lang, "forgot.sent"))
 		return
 	}
 
@@ -169,7 +171,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	if origin == "" || s.resetMailer == nil || s.OfflineMode() {
 		s.logger.Warn("web: password reset offline (web.domain not configured, no mailer, or offline mode)", "username", username)
 		s.loginLimiter.recordCooldown(limiterKey, forgotSendCooldown)
-		view("", i18n.T(lang, "forgot.offline"))
+		view("", i18n.T(lang, "forgot.offline"), "")
 		return
 	}
 
@@ -181,13 +183,13 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := s.resetMailer(strings.TrimSpace(u.Email), subject, body); err != nil {
 		s.logger.Warn("web: password reset email failed", "username", username, "error", err)
 		s.loginLimiter.record(limiterKey, false)
-		view(i18n.T(lang, "forgot.mail_failed"), "")
+		view(i18n.T(lang, "forgot.mail_failed"), "", "")
 		return
 	}
 	// A successful send imposes a cooldown, it does not clear the key:
 	// repeat sends for the same user+IP must wait.
 	s.loginLimiter.recordCooldown(limiterKey, forgotSendCooldown)
-	view("", i18n.T(lang, "forgot.sent"))
+	view("", "", i18n.T(lang, "forgot.sent"))
 }
 
 // validateRequestHost rejects malformed Host headers on the recovery

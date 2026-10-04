@@ -3659,6 +3659,92 @@ func TestMeshtasticCh0Tab(t *testing.T) {
 	}
 }
 
+// TestMeshtasticEmcomTab pins the configured-emcom-channel tab: it
+// appears only when meshtastic.emcom_channel is set, sits right after
+// ch0, lists that channel's rx+tx rows with pagination, and other views
+// keep the emcom rows (only ch0 is hidden elsewhere).
+func TestMeshtasticEmcomTab(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled:      true,
+		Device:       "/dev/fake",
+		NodeTTL:      time.Hour,
+		EmcomChannel: 1,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeMeshMsgs{}
+	// The fake lists rows in append order (oldest first): prepend the tx
+	// row so it lands on page 1 like a newest row.
+	store.rows = append(store.rows,
+		storage.MeshMessage{Direction: "tx", Channel: "ch1", Operator: "admin", Text: "emcom-tx", At: time.Now()},
+	)
+	for i := 0; i < 101; i++ {
+		store.rows = append(store.rows, storage.MeshMessage{Direction: "rx", Channel: "ch1", Text: "emcom-fill", At: time.Now()})
+	}
+	store.rows = append(store.rows,
+		storage.MeshMessage{Direction: "rx", Channel: "ch0", Text: "c0-row", At: time.Now()},
+		storage.MeshMessage{Direction: "rx", Channel: "dm", Text: "dm-row", At: time.Now()},
+	)
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
+	env.login()
+
+	// The emcom tab sits right after ch0 (the device has not named the
+	// channel yet, so the label is plain "ch1").
+	_, html := env.get("/meshtastic")
+	ch0Idx := strings.Index(html, "/meshtastic?dir=ch0")
+	emcomIdx := strings.Index(html, "/meshtastic?dir=ch1")
+	if ch0Idx < 0 || emcomIdx < 0 || !(ch0Idx < emcomIdx) {
+		t.Fatalf("emcom tab missing or misplaced (ch0=%d ch1=%d): %.250s", ch0Idx, emcomIdx, html)
+	}
+
+	// The all view still shows the emcom rows (only ch0 is hidden).
+	if !strings.Contains(html, "emcom-tx") || strings.Contains(html, "c0-row") {
+		t.Errorf("all view must keep emcom rows and hide ch0: %.300s", html)
+	}
+
+	// The emcom tab lists only the emcom channel, rx+tx, with pagination.
+	_, html = env.get("/meshtastic?dir=ch1")
+	if !strings.Contains(html, `class="page-tab active" href="/meshtastic?dir=ch1"`) {
+		t.Errorf("emcom tab not active: %.300s", html)
+	}
+	if !strings.Contains(html, "emcom-tx") {
+		t.Errorf("emcom view missing the tx row: %.300s", html)
+	}
+	if !strings.Contains(html, "/meshtastic?dir=ch1&amp;page=2") {
+		t.Errorf("emcom view missing page-2 link: %.300s", html)
+	}
+	if strings.Contains(html, "c0-row") || strings.Contains(html, "dm-row") {
+		t.Errorf("emcom view leaked other channels: %.300s", html)
+	}
+
+	// The partial endpoint honors the emcom dir too.
+	_, body := env.get("/partials/meshtastic?tab=messages&dir=ch1")
+	if !strings.Contains(body, "emcom-tx") || strings.Contains(body, "dm-row") {
+		t.Errorf("emcom partial wrong rows: %.300s", body)
+	}
+}
+
+// TestMeshtasticEmcomTabHidden pins the config gate: without
+// meshtastic.emcom_channel the page offers no emcom tab.
+func TestMeshtasticEmcomTabHidden(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, &fakeMeshMsgs{})
+	env.login()
+
+	_, html := env.get("/meshtastic")
+	if strings.Contains(html, "/meshtastic?dir=ch1") {
+		t.Errorf("emcom tab rendered without a configured emcom channel: %.300s", html)
+	}
+}
+
 // fakeAPRSMsgs is an in-memory APRSMessageStore for the admin history.
 type fakeAPRSMsgs struct {
 	rows []storage.APRSMessage

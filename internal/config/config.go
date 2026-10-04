@@ -482,8 +482,10 @@ type WebAuth struct {
 	// deployments).
 	SecureCookie bool
 	// TrustedProxies lists the reverse proxies (IPs or CIDRs) whose
-	// X-Forwarded-For header may identify the client. Empty means the
-	// service is exposed directly and proxy headers are ignored.
+	// X-Forwarded-For header may identify the client (the chain is
+	// analyzed from the right, so a client-controlled prefix never
+	// wins). Empty means the service is exposed directly and proxy
+	// headers are ignored.
 	TrustedProxies []string
 }
 

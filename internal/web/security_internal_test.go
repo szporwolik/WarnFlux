@@ -98,7 +98,9 @@ func TestClientIPNormalization(t *testing.T) {
 	if got := s.clientIP(req); got != "1.2.3.4" {
 		t.Errorf("untrusted XFF honored: %q", got)
 	}
-	// A trusted proxy forwards the original client (leftmost entry).
+	// A trusted proxy forwards the original client: the chain is read
+	// from the right, the trusted hop closest to us is skipped and the
+	// next address is the client.
 	req = &http.Request{RemoteAddr: "10.1.1.1:443", Header: http.Header{"X-Forwarded-For": {"9.9.9.9, 10.1.1.1"}}}
 	if got := s.clientIP(req); got != "9.9.9.9" {
 		t.Errorf("trusted XFF = %q, want 9.9.9.9", got)
@@ -107,6 +109,36 @@ func TestClientIPNormalization(t *testing.T) {
 	req = &http.Request{RemoteAddr: "192.168.1.5:80", Header: http.Header{"X-Forwarded-For": {"8.8.8.8"}}}
 	if got := s.clientIP(req); got != "8.8.8.8" {
 		t.Errorf("exact-IP proxy XFF = %q, want 8.8.8.8", got)
+	}
+
+	// A proxy that APPENDS the client to a header the client already
+	// sent: the client controls only the prefix, never the appended
+	// real address — the rightmost analysis picks 9.9.9.9, not the
+	// spoofed 1.2.3.4 (reported P2).
+	req = &http.Request{RemoteAddr: "10.1.1.1:443", Header: http.Header{"X-Forwarded-For": {"1.2.3.4, 9.9.9.9"}}}
+	if got := s.clientIP(req); got != "9.9.9.9" {
+		t.Errorf("prefixed XFF = %q, want 9.9.9.9 (never the client-controlled prefix)", got)
+	}
+	// Two trusted hops: every trusted address to the right is skipped.
+	req = &http.Request{RemoteAddr: "10.1.1.1:443", Header: http.Header{"X-Forwarded-For": {"1.2.3.4, 10.5.5.5, 10.1.1.1"}}}
+	if got := s.clientIP(req); got != "1.2.3.4" {
+		t.Errorf("two-hop XFF = %q, want 1.2.3.4", got)
+	}
+	// A chain of only trusted proxies carries no client identity: the
+	// direct peer stays the identity.
+	req = &http.Request{RemoteAddr: "10.1.1.1:443", Header: http.Header{"X-Forwarded-For": {"10.5.5.5, 10.1.1.1"}}}
+	if got := s.clientIP(req); got != "10.1.1.1" {
+		t.Errorf("all-trusted XFF = %q, want the direct peer 10.1.1.1", got)
+	}
+	// Malformed hops are skipped while walking left.
+	req = &http.Request{RemoteAddr: "10.1.1.1:443", Header: http.Header{"X-Forwarded-For": {"garbage, 9.9.9.9"}}}
+	if got := s.clientIP(req); got != "9.9.9.9" {
+		t.Errorf("malformed-prefix XFF = %q, want 9.9.9.9", got)
+	}
+	// No parseable client address at all: direct peer.
+	req = &http.Request{RemoteAddr: "10.1.1.1:443", Header: http.Header{"X-Forwarded-For": {"not an ip"}}}
+	if got := s.clientIP(req); got != "10.1.1.1" {
+		t.Errorf("all-malformed XFF = %q, want the direct peer 10.1.1.1", got)
 	}
 }
 

@@ -969,7 +969,7 @@ func TestUsersAdminCannotBeDeletedButMayBeEdited(t *testing.T) {
 	for _, want := range []string{
 		`id="user-edit-dialog" open`,
 		`name="edit_id" value="1"`,
-		`name="username" id="user-edit-username" value="admin" required maxlength="64" pattern="[a-z0-9._-]+" readonly`,
+		`name="username" id="user-edit-username" value="admin" required maxlength="64" pattern="[a-z0-9._\-]+" readonly`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("admin edit dialog missing %q: %s", want, html)

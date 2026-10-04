@@ -85,7 +85,7 @@
       {{if .Error}}{{if .DialogOpen}}{{template "flash-err" .Error}}{{end}}{{end}}
       {{if .AdminEdit}}{{template "flash-note" (tr .Lang "users.admin_note")}}{{end}}
       <label class="modal-field">{{tr .Lang "users.username"}}
-        <input type="text" name="username" id="user-edit-username" value="{{.Form.Username}}" required maxlength="64" pattern="[a-z0-9._-]+"{{if .AdminEdit}} readonly{{end}}>
+        <input type="text" name="username" id="user-edit-username" value="{{.Form.Username}}" required maxlength="64" pattern="[a-z0-9._\-]+"{{if .AdminEdit}} readonly{{end}}>
       </label>
       <label class="modal-field">{{tr .Lang "users.phone"}}
         <input type="text" name="phone" id="user-edit-phone" value="{{.Form.Phone}}" maxlength="32">

@@ -15,6 +15,7 @@ package action
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -84,6 +85,17 @@ const (
 	// Only channels whose protocol offers confirmations can report it.
 	StageConfirmed
 )
+
+// RequestActionID derives the configured action instance id from a
+// routed request: the routing engine stamps the request ID as
+// "<event key>/<action id>". Non-routed callers (tests, the in-memory
+// fallback) may use any ID — an unknown shape yields "".
+func RequestActionID(req ActionRequest) string {
+	if i := strings.LastIndex(req.ID, "/"); i > 0 {
+		return req.ID[i+1:]
+	}
+	return ""
+}
 
 // Plugin is the minimal contract every action implements.
 type Plugin interface {

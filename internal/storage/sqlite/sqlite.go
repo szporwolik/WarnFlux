@@ -841,6 +841,27 @@ CREATE TABLE mesh_action_failures (
 );
 `,
 	},
+	{
+		// v46: action-scoped mesh failures. The async failure guard and
+		// the delivery re-arm matched the event VERSION only: a Mesh
+		// TxFailed also downgraded an already-accepted SMTP job of the
+		// same event (reported P2). The marker now carries the action
+		// id; existing transient markers are dropped (they re-form on
+		// the next failure within the retention window).
+		SQL: `
+DROP TABLE mesh_action_failures;
+CREATE TABLE mesh_action_failures (
+	action_id     TEXT NOT NULL,
+	publisher     TEXT NOT NULL,
+	event_key     TEXT NOT NULL,
+	change_id     INTEGER NOT NULL,
+	recipient     TEXT NOT NULL,
+	channel       INTEGER NOT NULL,
+	created_at_ms INTEGER NOT NULL,
+	PRIMARY KEY (action_id, publisher, event_key, change_id, recipient, channel)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

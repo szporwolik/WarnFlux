@@ -51,13 +51,6 @@ type Manager struct {
 	// version (publisher + change ID), not merely the event key.
 	deliveryGate func(ctx context.Context, req ActionRequest) bool
 
-	// meshFailureCheck is the optional oracle consulted AFTER a queued
-	// job executed successfully but BEFORE the worker settles it as
-	// accepted: an asynchronous transport result (the meshtastic modem
-	// reporting TxFailed) must turn the success into a scheduled retry
-	// within the attempt budget instead of a terminal accepted.
-	meshFailureCheck func(ctx context.Context, req ActionRequest) bool
-
 	// offline is the offline-mode switch: internet-backed actions hold
 	// their queued requests (nothing executed, nothing lost) while it is
 	// on.
@@ -125,9 +118,6 @@ func (m *Manager) Start(ctx context.Context) {
 		if m.deliveryGate != nil {
 			inst.setDeliveryGate(m.deliveryGate)
 		}
-		if m.meshFailureCheck != nil {
-			inst.setMeshFailureCheck(m.meshFailureCheck)
-		}
 		inst.setOfflineFn(m.Offline)
 		inst.Start(mgrCtx)
 	}
@@ -152,16 +142,6 @@ func (m *Manager) SetDeliveryStore(st storage.DeliveryStore) {
 // be called before Start.
 func (m *Manager) SetDeliveryGate(gate func(ctx context.Context, req ActionRequest) bool) {
 	m.deliveryGate = gate
-}
-
-// SetMeshFailureCheck attaches the post-execution failure oracle: after
-// a job executed without an error the worker consults it BEFORE settling
-// the job as accepted — true means the transport reported the
-// transmission failed asynchronously, and the worker schedules a retry
-// within the attempt budget instead of a terminal accepted. It must be
-// called before Start.
-func (m *Manager) SetMeshFailureCheck(check func(ctx context.Context, req ActionRequest) bool) {
-	m.meshFailureCheck = check
 }
 
 // SetOffline toggles the offline-mode switch for the actions. Internet-

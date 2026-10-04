@@ -377,6 +377,79 @@ func (s *Store) SettleDelivery(ctx context.Context, groupID int64, actionID, ded
 	return nil
 }
 
+// SettleDeliveryGuarded applies one settlement atomically. The attempt
+// generation is checked first (a row whose counter already moved on
+// belongs to a newer attempt — this settlement is a stale no-op), and an
+// accepted/confirmed settlement is downgraded to a transient failure
+// when the message version carries a durable failure marker. The marker
+// read and the write share one transaction, so a TxFailed arriving
+// between the worker's pre-check and the settlement can never be lost
+// (reported P1: the async failure landed while the job was still
+// running and the later accepted overwrote it).
+func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySettle) (storage.DeliveryStatus, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin guarded settle for action %q group %d: %w", d.ActionID, d.GroupID, err)
+	}
+	defer tx.Rollback()
+
+	if d.Attempts > 0 {
+		var attempts int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT attempts FROM action_fires
+			WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
+			d.GroupID, d.ActionID, d.DedupKey).Scan(&attempts); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return d.Stage, nil // already gone (acked elsewhere): no-op
+			}
+			return 0, fmt.Errorf("read attempts for guarded settle of action %q group %d: %w", d.ActionID, d.GroupID, err)
+		}
+		if attempts != d.Attempts {
+			return d.Stage, nil // a newer attempt owns the row: stale settle
+		}
+	}
+
+	stage := d.Stage
+	if (stage == storage.DeliveryAccepted || stage == storage.DeliveryConfirmed) &&
+		d.Version != nil && d.Version.ActionID != "" && d.Version.Publisher != "" && d.Version.ChangeID > 0 {
+		var failed int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM mesh_action_failures
+			WHERE action_id = ? AND publisher = ? AND event_key = ? AND change_id = ?`,
+			d.Version.ActionID, d.Version.Publisher, d.Version.EventKey, d.Version.ChangeID).Scan(&failed); err != nil {
+			return 0, fmt.Errorf("read failure marker for guarded settle of action %q group %d: %w", d.ActionID, d.GroupID, err)
+		}
+		if failed > 0 {
+			stage = storage.DeliveryFailed
+		}
+	}
+
+	status, ok := map[storage.DeliveryStatus]string{
+		storage.DeliverySaved:     "saved",
+		storage.DeliveryAccepted:  "accepted",
+		storage.DeliveryConfirmed: "confirmed",
+		storage.DeliveryExpired:   "expired",
+		storage.DeliveryFailed:    "failed",
+	}[stage]
+	if !ok {
+		return 0, fmt.Errorf("guarded settle for action %q group %d: unknown stage %v", d.ActionID, d.GroupID, stage)
+	}
+	next := int64(0)
+	if stage == storage.DeliveryFailed && !d.NextAttempt.IsZero() {
+		next = d.NextAttempt.UnixMilli()
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE action_fires SET status = ?, next_attempt_at_ms = ?
+		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
+		status, next, d.GroupID, d.ActionID, d.DedupKey); err != nil {
+		return 0, fmt.Errorf("guarded settle for action %q group %d: %w", d.ActionID, d.GroupID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit guarded settle for action %q group %d: %w", d.ActionID, d.GroupID, err)
+	}
+	return stage, nil
+}
+
 // RecoverStaleClaims re-queues running jobs whose claim deadline has
 // passed — the claiming process died between claim and settlement. The
 // attempt counter stays spent, so the retry budget still applies.
@@ -391,27 +464,29 @@ func (s *Store) RecoverStaleClaims(ctx context.Context, now time.Time) (int64, e
 	return res.RowsAffected()
 }
 
-// RequeueDeliveryByVersion re-arms every durable delivery job of the
-// given event version whose worker already settled it as accepted or
-// confirmed: the ASYNC transmission result (e.g. the meshtastic modem
-// reporting TxFailed after the action returned) revives the job as
-// failed with the retry deadline NOW — a bare progress revoke schedules
-// nothing (reported P1). The attempt budget still applies: the worker
-// claims the revived job only while attempts < maxAttempts, and a
-// budget-exhausted job stays terminally failed until a replayed
-// transition re-arms it with a fresh budget. The version is matched on
-// the persisted payload (the action request carries the hazard's
-// publisher and change id under event.Hazard — the no-tag JSON shape of
-// the dispatch event).
-func (s *Store) RequeueDeliveryByVersion(ctx context.Context, publisher, eventKey string, changeID int64, now time.Time) (int64, error) {
+// RequeueDeliveryByVersion re-arms the durable delivery jobs of ONE
+// ACTION and one event version whose worker already settled them as
+// accepted or confirmed: the ASYNC transmission result (e.g. the
+// meshtastic modem reporting TxFailed after the action returned) revives
+// the job as failed with the retry deadline NOW — a bare progress revoke
+// schedules nothing (reported P1). The action scope keeps other actions'
+// successful jobs of the same event untouched (reported P2). The attempt
+// budget still applies: the worker claims the revived job only while
+// attempts < maxAttempts, and a budget-exhausted job stays terminally
+// failed until a replayed transition re-arms it with a fresh budget. The
+// version is matched on the persisted payload (the action request
+// carries the hazard's publisher and change id under event.Hazard — the
+// no-tag JSON shape of the dispatch event).
+func (s *Store) RequeueDeliveryByVersion(ctx context.Context, actionID, publisher, eventKey string, changeID int64, now time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE action_fires
 		SET status = 'failed', next_attempt_at_ms = ?
-		WHERE event_key = ?
+		WHERE action_id = ?
+		  AND event_key = ?
 		  AND status IN ('accepted', 'confirmed')
 		  AND json_extract(payload, '$.event.Hazard.Publisher') = ?
 		  AND json_extract(payload, '$.event.Hazard.ChangeID') = ?`,
-		now.UnixMilli(), eventKey, publisher, changeID)
+		now.UnixMilli(), actionID, eventKey, publisher, changeID)
 	if err != nil {
 		return 0, fmt.Errorf("re-arm delivery by version for %q: %w", eventKey, err)
 	}

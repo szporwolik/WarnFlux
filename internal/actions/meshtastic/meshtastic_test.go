@@ -67,7 +67,7 @@ func (s *stubSender) revokeProgress(publisher, eventKey string, changeID int64, 
 	delete(s.progress, progressKey(publisher, eventKey, changeID, recipient, channel))
 }
 
-func (s *stubSender) SendContactMessageVersioned(_ context.Context, addr, text, operator, publisher, eventKey string, changeID int64) error {
+func (s *stubSender) SendContactMessageVersioned(_ context.Context, addr, text, operator, actionID, publisher, eventKey string, changeID int64) error {
 	if err := s.SendContactMessage(nil, addr, text, operator); err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func (s *stubSender) SendContactMessageVersioned(_ context.Context, addr, text, 
 	return nil
 }
 
-func (s *stubSender) SendChannelTextVersioned(_ context.Context, idx int, text, operator, publisher, eventKey string, changeID int64) error {
+func (s *stubSender) SendChannelTextVersioned(_ context.Context, idx int, text, operator, actionID, publisher, eventKey string, changeID int64) error {
 	if err := s.SendChannelText(nil, idx, text, operator); err != nil {
 		return err
 	}
@@ -105,9 +105,11 @@ func hazardReq(nodeIDs []string, headline string) action.ActionRequest {
 }
 
 // versionedReq is hazardReq with the message VERSION stamped (publisher
-// + change id): the durable progress ledger only activates for these.
+// + change id) and a routed request id ("key/action") so the durable
+// progress ledger activates.
 func versionedReq(nodeIDs []string, headline string, changeID int64) action.ActionRequest {
 	req := hazardReq(nodeIDs, headline)
+	req.ID = "k/mesh-main"
 	req.Event.Hazard.Publisher = "publisher-1"
 	req.Event.Hazard.ChangeID = changeID
 	return req

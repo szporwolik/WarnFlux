@@ -16,11 +16,21 @@ import (
 // ErrNotFound is returned by EventStore.Get when no event matches the key.
 var ErrNotFound = errors.New("event not found")
 
+// OutboxCapacity hard-bounds the pending rows of the durable ingest
+// outbox (rows awaiting broker confirmation). Capacity pressure may
+// remove only PROVABLY OBSOLETE rows — expired or superseded by a newer
+// version of the same event identity. When the pending backlog alone
+// exceeds the bound there is nothing to evict and appends fail with
+// ErrOutboxFull (explicit backpressure): a still-valid alarm accepted by
+// the system is never dropped before its sync.
+const OutboxCapacity = 10000
+
 // ErrOutboxFull reports that the durable ingest outbox has no room left:
-// corrective-sync rows (cancellations/expirations) are never evicted, so
-// when they alone exceed the capacity bound the append fails explicitly
-// instead of dropping them (explicit backpressure).
-var ErrOutboxFull = errors.New("outbox full: corrective sync cannot be evicted")
+// the pending backlog (still-valid events and corrective sync) exceeds
+// the capacity bound and cannot be evicted without losing a still-valid
+// notification — the append fails explicitly instead of dropping rows
+// (503 at the ingress, no partial write).
+var ErrOutboxFull = errors.New("outbox full: pending sync cannot be evicted")
 
 // OutputRef identifies one enabled output instance. The durable journal
 // consumer identity is the (ID, Type) pair: changing the plugin type under

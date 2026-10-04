@@ -467,7 +467,9 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			in.metrics.rejected.Add(1)
 			msg := "local durable acceptance unavailable; retry later"
 			if errors.Is(err, storage.ErrOutboxFull) {
-				msg = "durable outbox full (corrective backlog); retry later"
+				msg = "durable outbox full (pending backlog over capacity); retry later"
+				in.logger.Warn("ingest_http: durable outbox at capacity — explicit backpressure, nothing dropped",
+					"instance", in.cfg.ID, "request_id", reqID, "event_key", eventKey)
 			}
 			in.fail(w, http.StatusServiceUnavailable, msg)
 			audit("accept_rejected", http.StatusServiceUnavailable, eventKey, len(body))
@@ -524,7 +526,9 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			in.metrics.rejected.Add(1)
 			msg := "durable outbox unavailable; retry later"
 			if errors.Is(err, storage.ErrOutboxFull) {
-				msg = "durable outbox full (corrective backlog); retry later"
+				msg = "durable outbox full (pending backlog over capacity); retry later"
+				in.logger.Warn("ingest_http: durable outbox at capacity — explicit backpressure, nothing dropped",
+					"instance", in.cfg.ID, "request_id", reqID, "event_key", eventKey)
 			}
 			in.fail(w, http.StatusServiceUnavailable, msg)
 			audit("outbox_unavailable", http.StatusServiceUnavailable, eventKey, len(body))

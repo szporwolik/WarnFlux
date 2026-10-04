@@ -100,6 +100,14 @@ jobs exist durably and the row is gone, or neither happened.
   (at-least-once — a crash or a failure retries on the next tick, and
   rows survive restarts). The publish mask is applied at publish time: a
   fully masked category defers the row, never drops the local delivery.
+- **Capacity never drops a still-valid alarm.** A long broker outage
+  can fill the queue past its bound; capacity pressure may remove only
+  *provably obsolete* rows — expired, or superseded by a newer version
+  of the same event identity. When the backlog alone exceeds the bound,
+  new appends fail with an explicit **503 and no partial write**
+  (`ErrOutboxFull`), and the operator gets a fullness warning in the
+  logs before (and at) the point where appends start being rejected.
+  The backlog drains to the broker and acceptance resumes on its own.
 - `/metrics` exposes `warnflux_ingest_outbox_backlog` so a degraded
   broker sync is visible to the operator.
 

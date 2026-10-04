@@ -765,6 +765,16 @@ UPDATE ingest_outbox SET change_id = COALESCE(json_extract(payload, '$.change_id
 WHERE json_valid(payload) AND json_extract(payload, '$.change_id') IS NOT NULL;
 `,
 	},
+	{
+		// v42: outbox identity index. Capacity pressure resolves
+		// "superseded by a newer version" per event identity
+		// (instance + publisher + event key): the index keeps that
+		// correlated lookup a probe instead of a full scan on a full
+		// queue.
+		SQL: `
+CREATE INDEX idx_ingest_outbox_identity ON ingest_outbox(instance_id, event_key, publisher, change_id, id);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1312,7 +1322,7 @@ func (s *Store) CommitIngest(ctx context.Context, instanceID, topic string, payl
 			instanceID, topic, string(payload), nowMs, status, expiresMs, eventKey, publisher, changeID); err != nil {
 			return 0, fmt.Errorf("outbox row for ingest %q: %w", instanceID, err)
 		}
-		if err := enforceOutboxCap(ctx, tx); err != nil {
+		if err := enforceOutboxCap(ctx, tx, nowMs); err != nil {
 			return 0, err
 		}
 	}
@@ -2272,11 +2282,13 @@ func insertInboxRow(e execer, ctx context.Context, data []byte, receiver string,
 // the newest state: the broker only needs the final document per event,
 // while independent alarms sharing one topic all survive. The append
 // runs in one transaction together with the capacity enforcement, so a
-// full outbox either evicts only evictable rows or fails with
-// storage.ErrOutboxFull — corrective sync is never silently dropped.
+// full outbox either removes only provably obsolete rows (expired or
+// superseded) or fails with storage.ErrOutboxFull — a still-valid alarm
+// is never silently dropped and a rejected append has no partial write.
 func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payload []byte) (int64, error) {
 	status, expiresMs := outboxLifecycle(payload)
 	eventKey, publisher, changeID := outboxIdentity(payload)
+	nowMs := s.now().UnixMilli()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin outbox append: %w", err)
@@ -2290,11 +2302,11 @@ func (s *Store) AppendOutbox(ctx context.Context, instanceID, topic string, payl
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher, change_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			instanceID, topic, string(payload), s.now().UnixMilli(), status, expiresMs, eventKey, publisher, changeID)
+			instanceID, topic, string(payload), nowMs, status, expiresMs, eventKey, publisher, changeID)
 		if err != nil {
 			return 0, fmt.Errorf("append outbox row for %q: %w", instanceID, err)
 		}
-		if err := enforceOutboxCap(ctx, tx); err != nil {
+		if err := enforceOutboxCap(ctx, tx, nowMs); err != nil {
 			return 0, err
 		}
 		id, err := res.LastInsertId()
@@ -2464,17 +2476,18 @@ func (s *Store) OutboxCount(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// PruneOutbox bounds the durable outbox WITHOUT losing corrective sync:
+// PruneOutbox bounds the durable outbox WITHOUT losing still-valid sync:
 //   - AGE: only STALE ACTIVE rows (their expiry already passed) age out.
 //     Cancellations, expirations and still-valid alarms are current or
 //     corrective sync — the broker may still hold an old active document
 //     they must retire — and never age out.
-//   - CAPACITY: beyond outboxRowCap the oldest EVICTABLE rows (empty or
-//     active status) go — a hard bound for 24/7/365 operation.
-//     Corrective rows (cancelled/expired) are NEVER capacity-evicted:
-//     dropping them would leave a stale active document on the broker
-//     forever. When corrective rows alone exceed the cap, appends fail
-//     with storage.ErrOutboxFull (explicit backpressure) instead.
+//   - CAPACITY: beyond outboxRowCap only PROVABLY OBSOLETE rows are
+//     removed (expired, or superseded by a newer version of the same
+//     event identity). A still-valid backlog above the bound is never
+//     evicted: appends fail with storage.ErrOutboxFull (explicit
+//     backpressure, no partial write) until publishing drains it —
+//     an accepted alarm can never vanish from the queue before its sync
+//     (reported P1).
 func (s *Store) PruneOutbox(ctx context.Context, olderThan time.Time) (int64, error) {
 	cutoff := olderThan.UnixMilli()
 	nowMs := s.now().UnixMilli()
@@ -2491,48 +2504,86 @@ func (s *Store) PruneOutbox(ctx context.Context, olderThan time.Time) (int64, er
 	if err != nil {
 		return 0, fmt.Errorf("prune stale outbox rows count: %w", err)
 	}
-	res2, err := s.db.ExecContext(ctx, `
-		DELETE FROM ingest_outbox WHERE id IN (
-			SELECT id FROM ingest_outbox
-			WHERE status IN ('', 'active')
-			ORDER BY id DESC LIMIT -1 OFFSET ?
-		)`, outboxRowCap)
+	// CAPACITY: the queue may never drop a still-valid pending row. Only
+	// PROVABLY OBSOLETE rows go — expired, or superseded by a newer
+	// version of the same event identity. When the still-valid backlog
+	// alone exceeds the bound, nothing is evicted here: appends fail
+	// with storage.ErrOutboxFull (explicit backpressure, no partial
+	// write) until publishing drains the queue.
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ingest_outbox`).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count outbox rows: %w", err)
+	}
+	if total <= outboxRowCap {
+		return n, nil
+	}
+	res2, err := s.db.ExecContext(ctx, obsoleteOutboxSQL, nowMs)
 	if err != nil {
-		return 0, fmt.Errorf("prune outbox over capacity: %w", err)
+		return 0, fmt.Errorf("prune obsolete outbox rows: %w", err)
 	}
 	n2, err := res2.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("prune outbox over capacity count: %w", err)
+		return 0, fmt.Errorf("prune obsolete outbox rows count: %w", err)
 	}
 	return n + n2, nil
 }
 
-// outboxRowCap hard-bounds the EVICTABLE durable outbox rows: beyond it
-// the oldest empty/active rows are dropped (the append-time merge keeps
-// the newest state per topic). Corrective rows (cancelled/expired) sit
-// outside the bound and are never evicted.
-const outboxRowCap = 10000
+// outboxRowCap mirrors storage.OutboxCapacity locally so the SQL and the
+// tests share the production bound.
+const outboxRowCap = storage.OutboxCapacity
 
-// enforceOutboxCap runs inside the append transaction: it evicts the
-// oldest EVICTABLE rows beyond outboxRowCap and then verifies that the
-// corrective backlog alone does not exceed the bound — in that case
-// there is nothing left to evict and storage.ErrOutboxFull is the
-// explicit backpressure.
-func enforceOutboxCap(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM ingest_outbox WHERE id IN (
-			SELECT id FROM ingest_outbox
-			WHERE status IN ('', 'active')
-			ORDER BY id DESC LIMIT -1 OFFSET ?
-		)`, outboxRowCap); err != nil {
-		return fmt.Errorf("evict outbox overflow: %w", err)
+// obsoleteOutboxSQL deletes the only rows capacity pressure may remove:
+// provably obsolete ones. A row is obsolete when its expiry already
+// passed (the broker's mirror is self-expired, nothing new can be lost)
+// or when a NEWER version of the same event identity (instance +
+// publisher + event key) is already queued — the older document is
+// superseded. Still-valid pending rows are never touched.
+const obsoleteOutboxSQL = `
+DELETE FROM ingest_outbox WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?;
+DELETE FROM ingest_outbox AS a
+WHERE a.event_key != ''
+  AND (
+	EXISTS (
+		SELECT 1 FROM ingest_outbox b
+		WHERE b.instance_id = a.instance_id
+		  AND b.event_key = a.event_key
+		  AND b.publisher = a.publisher
+		  AND b.change_id > a.change_id
+	)
+	OR EXISTS (
+		SELECT 1 FROM ingest_outbox b
+		WHERE b.instance_id = a.instance_id
+		  AND b.event_key = a.event_key
+		  AND b.publisher = a.publisher
+		  AND b.change_id = a.change_id
+		  AND b.id > a.id
+	)
+  );
+`
+
+// enforceOutboxCap runs inside the append transaction. Below the bound
+// nothing happens (age-pruning owns expired rows). Under capacity
+// pressure it removes the provably obsolete rows (expired or
+// superseded) and then verifies the remaining pending backlog fits
+// within outboxRowCap. When the backlog alone exceeds the bound there
+// is nothing safe to evict and storage.ErrOutboxFull is the explicit
+// backpressure — the transaction rolls back, so the caller rejects
+// without any partial write.
+func enforceOutboxCap(ctx context.Context, tx *sql.Tx, nowMs int64) error {
+	var pending int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM ingest_outbox`).Scan(&pending); err != nil {
+		return fmt.Errorf("count pending outbox rows: %w", err)
 	}
-	var corrective int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM ingest_outbox WHERE status NOT IN ('', 'active')`).Scan(&corrective); err != nil {
-		return fmt.Errorf("count corrective outbox rows: %w", err)
+	if pending <= outboxRowCap {
+		return nil
 	}
-	if corrective > outboxRowCap {
+	if _, err := tx.ExecContext(ctx, obsoleteOutboxSQL, nowMs); err != nil {
+		return fmt.Errorf("evict obsolete outbox rows: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM ingest_outbox`).Scan(&pending); err != nil {
+		return fmt.Errorf("count pending outbox rows: %w", err)
+	}
+	if pending > outboxRowCap {
 		return storage.ErrOutboxFull
 	}
 	return nil

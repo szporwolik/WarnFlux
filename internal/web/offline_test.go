@@ -139,6 +139,9 @@ func TestOfflineToggle(t *testing.T) {
 	if !strings.Contains(page, "config-offline") && !strings.Contains(page, "offline") {
 		t.Fatal("config page misses the offline form")
 	}
+	if !strings.Contains(page, `id="offline-switch"`) {
+		t.Fatal("config page misses the offline switch")
+	}
 
 	csrf := env.csrfFromPage("/config")
 	resp, _ = env.postForm("/config/offline", url.Values{"csrf": {csrf}, "offline": {"on"}})

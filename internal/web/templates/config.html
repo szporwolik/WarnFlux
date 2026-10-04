@@ -28,17 +28,16 @@
   <div class="health-group">
     <h3>{{tr .Lang "config.offline.head"}}</h3>
     <p class="muted">{{tr .Lang "config.offline.desc"}}</p>
-    <div class="health-row">
-      <span class="badge {{if .Offline}}bad{{else}}ok{{end}}">{{if .Offline}}{{tr .Lang "config.offline.state.on"}}{{else}}{{tr .Lang "config.offline.state.off"}}{{end}}</span>
-    </div>
     <form method="post" action="/config/offline" class="config-offline-form">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <input type="hidden" name="offline" value="{{if .Offline}}off{{else}}on{{end}}">
-      {{if .Offline}}
-      <button type="submit" class="btn-primary">{{tr .Lang "config.offline.disable"}}</button>
-      {{else}}
-      <button type="submit" class="btn-danger">{{tr .Lang "config.offline.enable"}}</button>
-      {{end}}
+      <input type="hidden" name="offline" id="offline-state" value="{{if .Offline}}off{{else}}on{{end}}">
+      <label class="health-row offline-row" for="offline-switch">
+        <span class="badge {{if .Offline}}bad{{else}}ok{{end}}">{{if .Offline}}{{tr .Lang "config.offline.state.on"}}{{else}}{{tr .Lang "config.offline.state.off"}}{{end}}</span>
+        <span class="switch" role="switch" aria-checked="{{if .Offline}}true{{else}}false{{end}}" title="{{if .Offline}}{{tr .Lang "config.offline.disable"}}{{else}}{{tr .Lang "config.offline.enable"}}{{end}}">
+          <input type="checkbox" id="offline-switch"{{if .Offline}} checked{{end}} onchange="document.getElementById('offline-state').value=this.checked?'on':'off';this.form.submit()">
+          <span class="slider" aria-hidden="true"></span>
+        </span>
+      </label>
     </form>
   </div>
 

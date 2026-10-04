@@ -971,7 +971,11 @@ aprs:
 # the mesh.
 # meshtastic:
 #   enabled: true
-#   device: /dev/ttyACM0   # the node plugs in over USB serial
+#   device: /dev/ttyACM0   # the node plugs in over USB serial; a
+#                          # comma-separated list is tried in order, so
+#                          # a node that re-enumerates after a USB reset
+#                          # (ttyACM0 <-> ttyACM1) is found regardless
+#                          # of the port number it landed on
 #   baud: 115200
 #   route_messages: false  # direct messages from directory-registered
 #                         # node IDs become canonical /events documents

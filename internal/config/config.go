@@ -152,7 +152,10 @@ type MeshtasticConfig struct {
 	// Enabled switches the mesh integration on; a disabled mesh leaves
 	// the source plugin and the meshtastic action inert.
 	Enabled bool
-	// Device is the serial device path (e.g. /dev/ttyACM0).
+	// Device is the serial device path (e.g. /dev/ttyACM0). A
+	// comma-separated list is accepted: the hub tries the paths in
+	// order, so a node that re-enumerates between ports after a USB
+	// reset is found without a config edit.
 	Device string
 	// Baud is the serial speed (default 115200).
 	Baud int

@@ -99,9 +99,9 @@ func TestRoutedMessageEventExclusions(t *testing.T) {
 	}
 }
 
-// TestRoutedMessageEventInternetDelivery pins that APRS-IS delivered
-// messages route too — the trust boundary moved from the transport to the
-// sender allow-list (base callsigns registered on our users).
+// TestRoutedMessageEventInternetDelivery pins the RF-only trust boundary:
+// an APRS-IS delivered /debug — even from an allow-listed sender — never
+// becomes a routed event or gets a reply. Only RF-heard messages react.
 func TestRoutedMessageEventInternetDelivery(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled:       true,
@@ -118,15 +118,16 @@ func TestRoutedMessageEventInternetDelivery(t *testing.T) {
 
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	hub.SetCLI(radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl"))
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
 	hub.Observe(ParseFeedLine("SP9XYZ-2>APRS,TCPIP*,qAO::SP9MOA-10:/debug", time.Now()), BackendInternet)
 
-	waitFor(t, func() bool { return len(sink.payloads("events")) >= 1 })
-	var ev MessageEventWire
-	if err := json.Unmarshal(sink.payloads("events")[0], &ev); err != nil {
-		t.Fatalf("event payload: %v", err)
+	time.Sleep(150 * time.Millisecond)
+	if got := len(sink.payloads("events")); got != 0 {
+		t.Fatalf("internet-delivered /debug produced %d events, want 0 (RF only)", got)
 	}
-	if !strings.HasPrefix(ev.Event.SourceID, "SP9XYZ-2:msg:") || ev.Event.Severity != "severe" {
-		t.Fatalf("event = %+v", ev.Event)
+	if got := len(tx.sends()); got != 0 {
+		t.Fatalf("internet-delivered /debug produced %d replies, want 0 (RF only)", got)
 	}
 }
 

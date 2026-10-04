@@ -71,6 +71,39 @@ func TestPluginIDValidation(t *testing.T) {
 	}
 }
 
+// TestMeshtasticHazardsDigestConfig pins the hourly emcom-channel digest
+// setting: default 1h, explicit 0 disables, explicit values pass through
+// and out-of-range values are rejected.
+func TestMeshtasticHazardsDigestConfig(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, "meshtastic:\n  enabled: false\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Meshtastic.EmcomHazardsInterval != time.Hour {
+		t.Errorf("default EmcomHazardsInterval = %s, want 1h", cfg.Meshtastic.EmcomHazardsInterval)
+	}
+
+	cfg, err = Load(writeTempConfig(t, "meshtastic:\n  emcom_hazards_interval: 30m\n"))
+	if err != nil {
+		t.Fatalf("Load(30m): %v", err)
+	}
+	if cfg.Meshtastic.EmcomHazardsInterval != 30*time.Minute {
+		t.Errorf("explicit EmcomHazardsInterval = %s, want 30m", cfg.Meshtastic.EmcomHazardsInterval)
+	}
+
+	cfg, err = Load(writeTempConfig(t, "meshtastic:\n  emcom_hazards_interval: 0s\n"))
+	if err != nil {
+		t.Fatalf("Load(0): %v", err)
+	}
+	if cfg.Meshtastic.EmcomHazardsInterval != 0 {
+		t.Errorf("explicit 0 = %s, want digest disabled", cfg.Meshtastic.EmcomHazardsInterval)
+	}
+
+	if _, err := Load(writeTempConfig(t, "meshtastic:\n  emcom_hazards_interval: 30s\n")); err == nil {
+		t.Error("30s accepted, want rejection (minimum 1m)")
+	}
+}
+
 func TestLoadFullConfig(t *testing.T) {
 	cfg, err := Load(writeTempConfig(t, exampleConfig))
 	if err != nil {

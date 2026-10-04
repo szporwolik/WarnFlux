@@ -48,7 +48,7 @@
           <td class="mono">{{.ActionID}}</td>
           <td><span class="badge nt-status-{{.Status}}">{{tr $.Lang (printf "notif.status.%s" .Status)}}</span></td>
           <td>{{.Attempts}}</td>
-          <td class="muted">{{timeHMS .FiredAt}}</td>
+          <td class="muted">{{timeShort .FiredAt}}</td>
         </tr>
         {{end}}
       </tbody>

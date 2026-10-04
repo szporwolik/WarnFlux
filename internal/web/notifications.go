@@ -70,10 +70,10 @@ type trailView struct {
 
 // deliveryRow is one action-fire ledger row shown in the trail details.
 type deliveryRow struct {
-	ActionID string
-	Status   string
-	Attempts int
-	FiredAt  time.Time
+	ActionID string    `json:"action_id"`
+	Status   string    `json:"status"`
+	Attempts int       `json:"attempts"`
+	FiredAt  time.Time `json:"fired_at"`
 }
 
 // handleNotificationsPage renders the delivery history: the most recent
@@ -149,12 +149,17 @@ func (s *Server) recentDeliveries(limit int) map[string][]deliveryRow {
 
 // handlePartialNotifications serves the full current trail list as JSON:
 // the page poller re-renders on change so new alerts appear without a
-// reload. {"trails":[...]}.
+// reload. The durable delivery-ledger rows ride along (grouped by event
+// key) so the client-rendered list keeps the per-action detail table of
+// EVERY notification path — without them the poll would replace the
+// server-rendered details with head-only articles.
+// {"trails":[...],"deliveries":{"<key>":[...]}}.
 func (s *Server) handlePartialNotifications(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"trails": s.recentTrails(notificationsPerPage),
+		"trails":     s.recentTrails(notificationsPerPage),
+		"deliveries": s.recentDeliveries(deliveriesPerPage),
 	})
 }
 

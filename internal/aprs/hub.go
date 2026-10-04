@@ -700,8 +700,10 @@ func (h *Hub) apply(op hubOp) {
 		// remembers the previous result and applies the retry policy
 		// (a transient rejection retries after the cooldown). Without
 		// this a rejected /alert could never be retried over the same
-		// receiver.
-		if p.Message != nil && (p.Message.To == h.cfg.Callsign || IsBulletin(p.Message.To)) &&
+		// receiver. Only RF-heard messages react: an APRS-IS copy
+		// (direct internet injection or an i-gated duplicate) is
+		// display-only.
+		if op.via == BackendRadio && p.Message != nil && (p.Message.To == h.cfg.Callsign || IsBulletin(p.Message.To)) &&
 			strings.HasPrefix(strings.TrimSpace(p.Message.Text), "/") {
 			h.mu.Lock()
 			cli := h.cli
@@ -948,27 +950,32 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 	// The radio CLI mirrors the Meshtastic hub: every message addressed
 	// to us is answered, commands run only for allow-listed senders and
 	// alarms fire only from explicit commands (/debug). Plain messages
-	// never enter the alarm pipeline.
+	// never enter the alarm pipeline. ONLY RF-heard messages react —
+	// APRS-IS copies are recorded and displayed, never answered, so an
+	// internet-injected message can't raise an alarm or burn reply
+	// budget (reported policy: RF only).
 	approved := h.routableMessage(p) && h.senderApproved(p.Src)
 	if h.logger != nil {
 		h.logger.Info("aprs: message received",
-			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "bulletin", IsBulletin(p.Message.To), "approved", approved)
+			"from", p.Src, "to", p.Message.To, "text", p.Message.Text, "bulletin", IsBulletin(p.Message.To), "approved", approved, "via", via)
 	}
-	h.mu.Lock()
-	cli := h.cli
-	h.mu.Unlock()
-	if cli != nil && h.routableMessage(p) {
-		text := strings.TrimSpace(p.Message.Text)
-		if strings.HasPrefix(text, "/") {
-			// The shared interpreter decides: public commands (/help)
-			// run for everyone, restricted ones (/debug) only for
-			// allow-listed senders.
-			h.routeOrCLI(p)
-		} else if h.bannerAllowed(p.Src) && h.replyAllowed(p.Src) {
-			// Plain messages never become alarms — the standard
-			// installation banner answers instead, rate-limited per
-			// sender and globally so answering bots cannot loop.
-			h.sendCLIReply(p.Src, cli.Banner())
+	if via == BackendRadio {
+		h.mu.Lock()
+		cli := h.cli
+		h.mu.Unlock()
+		if cli != nil && h.routableMessage(p) {
+			text := strings.TrimSpace(p.Message.Text)
+			if strings.HasPrefix(text, "/") {
+				// The shared interpreter decides: public commands (/help)
+				// run for everyone, restricted ones (/debug) only for
+				// allow-listed senders.
+				h.routeOrCLI(p)
+			} else if h.bannerAllowed(p.Src) && h.replyAllowed(p.Src) {
+				// Plain messages never become alarms — the standard
+				// installation banner answers instead, rate-limited per
+				// sender and globally so answering bots cannot loop.
+				h.sendCLIReply(p.Src, cli.Banner())
+			}
 		}
 	}
 
@@ -1125,18 +1132,21 @@ func (h *Hub) pruneCmds(now time.Time) {
 // sendCLIReply answers one radio command over the first ready APRS
 // transmitter (best-effort; the reply lands in the durable TX history).
 // The reply is fitted to the APRS message limit through the shared CLI
-// mechanism (identity shortens progressively, payload truncates last).
+// mechanism (identity shortens progressively, payload truncates last);
+// multi-line replies (the /hazard list) send one message per line.
 func (h *Hub) sendCLIReply(to, text string) {
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
-	if cli != nil {
-		text = cli.Fit(text, MaxMessageText)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := h.SendMessage(ctx, to, text); err != nil && h.logger != nil {
-		h.logger.Warn("aprs: cli reply failed", "to", to, "error", err)
+	for _, line := range radiocli.ReplyLines(text, radiocli.MaxReplyLines) {
+		if cli != nil {
+			line = cli.Fit(line, MaxMessageText)
+		}
+		if err := h.SendMessage(ctx, to, line); err != nil && h.logger != nil {
+			h.logger.Warn("aprs: cli reply failed", "to", to, "error", err)
+		}
 	}
 }
 

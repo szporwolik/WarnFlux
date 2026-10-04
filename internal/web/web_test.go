@@ -547,6 +547,11 @@ func TestNotificationsFlow(t *testing.T) {
 				Text string `json:"text"`
 			} `json:"steps"`
 		} `json:"trails"`
+		Deliveries map[string][]struct {
+			ActionID string `json:"action_id"`
+			Status   string `json:"status"`
+			Attempts int    `json:"attempts"`
+		} `json:"deliveries"`
 	}
 	if err := json.Unmarshal([]byte(body), &feed); err != nil {
 		t.Fatalf("feed is not valid JSON: %v", err)
@@ -554,6 +559,12 @@ func TestNotificationsFlow(t *testing.T) {
 	if len(feed.Trails) != 1 || feed.Trails[0].Key != "imgw:1" ||
 		feed.Trails[0].Outcome != "delivered" || len(feed.Trails[0].Steps) != 5 {
 		t.Fatalf("feed = %s", body)
+	}
+	// The poller renders the per-action delivery table from this payload:
+	// the key must always be present (empty map when the store has no
+	// ledger) or the client-side render drops every delivery path.
+	if feed.Deliveries == nil {
+		t.Errorf("feed missing the deliveries payload: %s", body)
 	}
 	kinds := ""
 	for _, s := range feed.Trails[0].Steps {
@@ -571,6 +582,64 @@ func TestNotificationsFlow(t *testing.T) {
 	}
 	if !strings.Contains(html, `<details class="nt-details" open>`) {
 		t.Errorf("focused page must render the details block open: %s", html)
+	}
+}
+
+// TestNotificationsDeliveriesRender pins the durable delivery-ledger
+// table: every action path renders (the page previously crashed mid-table
+// because timeHMS received a time.Time) and the partial feed carries the
+// same rows for the client-side re-render.
+func TestNotificationsDeliveriesRender(t *testing.T) {
+	u := newFakeUsers()
+	now := time.Now()
+	u.deliveries = []storage.DeliveryRecord{
+		{EventKey: "imgw:1", ActionID: "smtp-alerts", Status: "succeeded", Attempts: 1, FiredAt: now},
+		{EventKey: "imgw:1", ActionID: "meshtastic-alerts", Status: "accepted", Attempts: 2, FiredAt: now.Add(time.Second)},
+	}
+	env := newTestEnvWithUsers(t, u)
+
+	env.trails.Receive("imgw:1", "imgw", "severe", "Storm", "Gale warning", now)
+	env.trails.Add("imgw:1", trail.StepMatched, "matched group SP9MOA", now)
+	env.trails.Add("imgw:1", trail.StepDelivered, "delivered", now.Add(time.Second))
+	env.trails.SetOutcome("imgw:1", trail.OutcomeDelivered)
+
+	env.login()
+	_, html := env.get("/notifications")
+	for _, want := range []string{
+		"Details (2)",
+		`class="badge nt-status-succeeded"`,
+		`class="badge nt-status-accepted"`,
+		`class="mono">smtp-alerts</td>`,
+		`class="mono">meshtastic-alerts</td>`,
+		// The audit steps must render AFTER the table: the old timeHMS
+		// type error truncated the page mid-table, dropping every step,
+		// every later delivery row and the rest of the document.
+		`<ol class="nt-steps">`,
+		"matched group SP9MOA",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("notifications page missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "No delivery attempts recorded") {
+		t.Errorf("page shows the empty deliveries state despite ledger rows: %s", html)
+	}
+
+	_, body := env.get("/partials/notifications")
+	var feed struct {
+		Deliveries map[string][]struct {
+			ActionID string `json:"action_id"`
+			Status   string `json:"status"`
+			Attempts int    `json:"attempts"`
+		} `json:"deliveries"`
+	}
+	if err := json.Unmarshal([]byte(body), &feed); err != nil {
+		t.Fatalf("feed is not valid JSON: %v", err)
+	}
+	rows := feed.Deliveries["imgw:1"]
+	if len(rows) != 2 || rows[0].ActionID != "smtp-alerts" || rows[0].Status != "succeeded" ||
+		rows[1].ActionID != "meshtastic-alerts" || rows[1].Status != "accepted" || rows[1].Attempts != 2 {
+		t.Fatalf("feed deliveries = %+v", rows)
 	}
 }
 
@@ -736,6 +805,55 @@ func TestPublicHomeServedFromStore(t *testing.T) {
 	if !strings.Contains(body, `"event_key":"imgw-meteo:warn-1"`) ||
 		!strings.Contains(body, `"latitude":49.98`) {
 		t.Errorf("map endpoint missing the offline communication: %s", body)
+	}
+}
+
+// TestHazardByKeyServesEnded pins the mail-deep-link contract: a hazard
+// that already expired still renders (with its ended status) through
+// /api/hazard/<key>, so the notification link never dead-ends.
+func TestHazardByKeyServesEnded(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "ended.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	now := time.Now()
+	expires := now.Add(-time.Hour) // already in the past
+	ev := core.HazardEvent{
+		Source: "imgw-meteo", SourceID: "warn-9", Event: "Storm",
+		Severity: "severe", Headline: "Ended storm", Description: "It already passed",
+		Status: core.StatusActive, ExpiresAt: &expires,
+		ReceivedAt: now.Add(-3 * time.Hour), UpdatedAt: now.Add(-3 * time.Hour),
+	}
+	if _, _, err := store.Ingest(context.Background(), ev, core.Fingerprint(ev)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Expire(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+
+	env := newTestEnvFull(t, nil, nil, store, nil)
+
+	resp, body := env.get("/api/hazard/imgw-meteo:warn-9")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/hazard = %d: %s", resp.StatusCode, body)
+	}
+	for _, want := range []string{
+		`"event_key":"imgw-meteo:warn-9"`,
+		`"headline":"Ended storm"`,
+		`"status":"expired"`,
+		`"description":"It already passed"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("hazard payload missing %q: %s", want, body)
+		}
+	}
+
+	// Unknown keys answer 404 (the popup then shows the not-found note).
+	resp, _ = env.get("/api/hazard/nope:1")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /api/hazard/nope:1 = %d, want 404", resp.StatusCode)
 	}
 }
 
@@ -1088,6 +1206,9 @@ func TestPublicWeatherAPI(t *testing.T) {
 	defer cancel()
 
 	hub.Observe(aprs.ParseFeedLine("SP9WX>APRS,TCPIP*:!5056.25N/01952.50E_220/004g005t077r000p000P000h50b09900 X-Ray 0.12uSv/h", time.Now()), "aprs-inet")
+	// An RF-heard weather station: KISS frames have no q-construct, so
+	// the radio backend marks the report rf by definition.
+	hub.Observe(aprs.ParseFeedLine("SP9WY>APRS,WIDE1-1*:!5057.00N/01951.00E_.../...g...t078", time.Now()), "aprs-radio")
 
 	temp, tmax, tmin := 21.4, 24.0, 14.0
 	env.state.AddOrUpdateInfo("local", "warnflux/info/openmeteo/weather-home/home/weather", state.InfoEntry{
@@ -1117,6 +1238,7 @@ func TestPublicWeatherAPI(t *testing.T) {
 		Reports []struct {
 			Name          string   `json:"name"`
 			Via           string   `json:"via"`
+			Origin        string   `json:"origin"`
 			TemperatureC  *float64 `json:"temperature_c"`
 			RadiationUSvh *float64 `json:"radiation_usv_h"`
 		} `json:"reports"`
@@ -1137,6 +1259,7 @@ func TestPublicWeatherAPI(t *testing.T) {
 			Reports []struct {
 				Name          string   `json:"name"`
 				Via           string   `json:"via"`
+				Origin        string   `json:"origin"`
 				TemperatureC  *float64 `json:"temperature_c"`
 				RadiationUSvh *float64 `json:"radiation_usv_h"`
 			} `json:"reports"`
@@ -1150,7 +1273,7 @@ func TestPublicWeatherAPI(t *testing.T) {
 		if err := json.Unmarshal([]byte(body), &view); err != nil {
 			t.Fatalf("weather payload: %s: %v", body, err)
 		}
-		if len(view.Reports) >= 2 {
+		if len(view.Reports) >= 3 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1158,17 +1281,23 @@ func TestPublicWeatherAPI(t *testing.T) {
 
 	byName := map[string]struct {
 		via           string
+		origin        string
 		radiationUSvh *float64
 	}{}
 	for _, r := range view.Reports {
 		byName[r.Name] = struct {
 			via           string
+			origin        string
 			radiationUSvh *float64
-		}{via: r.Via, radiationUSvh: r.RadiationUSvh}
+		}{via: r.Via, origin: r.Origin, radiationUSvh: r.RadiationUSvh}
 	}
 	wx, ok := byName["SP9WX"]
-	if !ok || wx.via != "aprs" || wx.radiationUSvh == nil || *wx.radiationUSvh != 0.12 {
+	if !ok || wx.via != "aprs" || wx.origin != "internet" || wx.radiationUSvh == nil || *wx.radiationUSvh != 0.12 {
 		t.Fatalf("APRS weather report missing or wrong: %+v", view.Reports)
+	}
+	wy, ok := byName["SP9WY"]
+	if !ok || wy.via != "aprs" || wy.origin != "rf" {
+		t.Fatalf("RF weather report missing or wrong origin: %+v", view.Reports)
 	}
 	home, ok := byName["Niepołomice"]
 	if !ok || home.via != "internet" {

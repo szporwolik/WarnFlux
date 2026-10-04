@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 // Emitter is handed to a source plugin by WarnFlux. It is the only way
@@ -112,6 +113,15 @@ type OutputPlugin interface {
 // suspend or advance anything hazard-related.
 type InformationPublisher interface {
 	PublishInformation(ctx context.Context, message core.InformationMessage) error
+}
+
+// TrailAware is an OPTIONAL output capability: outputs that additionally
+// publish a copy of every hazard event for external subscribers (e.g. the
+// MQTT event stream) record their delivery attempts in the per-alert audit
+// trail served on /notifications. This makes the page account for EVERY
+// notification path — routed actions AND event-stream outputs.
+type TrailAware interface {
+	SetTrailRecorder(rec *trail.Recorder)
 }
 
 // ActiveStateSeeder is an OPTIONAL output capability for retained

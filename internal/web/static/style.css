@@ -1651,6 +1651,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .hz-modal .wf-pop { min-width: 0; border-radius: 0; }
 .hz-modal .wf-pop-t strong { white-space: normal; }
 .hz-body { max-height: 60vh; overflow: auto; padding: 0.9rem 1.1rem; }
+.hz-ended { margin: 0 0 0.6rem; padding: 0.45rem 0.75rem; border-radius: 8px; border: 1px solid rgba(240,120,78,0.45); background: rgba(240,120,78,0.12); color: #f0784e; font-size: 0.85rem; font-weight: 600; }
 .hz-row { display: flex; gap: 0.6rem; margin: 0.3rem 0; font-size: 0.88rem; }
 .hz-label { flex: 0 0 auto; color: var(--muted); min-width: 6.5rem; }
 .hz-times { font-size: 0.8rem; margin: 0.4rem 0; }

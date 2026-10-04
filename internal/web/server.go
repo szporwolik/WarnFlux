@@ -290,6 +290,11 @@ func (s *Server) routes(static http.Handler) {
 	// detail popup for that specific hazard — the link form used in
 	// email and Discord notifications.
 	s.mux.HandleFunc("GET /message/{key}", s.handleHome)
+	// Deep link data: one hazard by key, including ended (expired /
+	// cancelled) ones — the /message popup asks here when the hazard is
+	// no longer on the active list, so a mail link always shows WHAT the
+	// message was about (with the ended status on top).
+	s.mux.HandleFunc("GET /api/hazard/{key}", s.handleHazardByKey)
 	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
 	s.mux.HandleFunc("GET /archive", s.handleArchive)
 	// UI language switch: stores the choice in a cookie and returns.

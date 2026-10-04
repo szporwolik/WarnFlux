@@ -32,6 +32,9 @@ type fakeUsers struct {
 	passwords   map[string]string              // username -> plaintext (fake)
 	channelOpts map[int64]map[string]bool      // userID -> disabled delivery-channel kinds
 	resets      map[string]int64               // plaintext reset token -> userID
+	// deliveries seeds the durable delivery-ledger rows served in the
+	// notifications details view (RecentDeliveries).
+	deliveries []storage.DeliveryRecord
 }
 
 func newFakeUsers() *fakeUsers {
@@ -47,6 +50,18 @@ func newFakeUsers() *fakeUsers {
 
 // Ping satisfies the optional dbPinger assertion for the health page.
 func (f *fakeUsers) Ping(context.Context) error { return nil }
+
+// RecentDeliveries satisfies the optional delivery-ledger reader for the
+// notifications details view.
+func (f *fakeUsers) RecentDeliveries(_ context.Context, limit int) ([]storage.DeliveryRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := append([]storage.DeliveryRecord(nil), f.deliveries...)
+	if limit >= 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
 
 // PendingStats satisfies the optional storageProbe assertion for /metrics.
 func (f *fakeUsers) PendingStats(context.Context) (int, time.Duration, error) {

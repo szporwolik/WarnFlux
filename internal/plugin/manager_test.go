@@ -17,6 +17,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 // emitListSource emits the given events (in order) and then blocks until ctx
@@ -69,6 +70,60 @@ func (o *listOutput) count() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return len(o.got)
+}
+
+// trailOutput implements OutputPlugin + TrailAware for the wiring test.
+type trailOutput struct {
+	rec *trail.Recorder
+}
+
+func (o *trailOutput) Name() string { return "trailout" }
+
+func (o *trailOutput) Handle(_ context.Context, _ core.EventChange) error { return nil }
+
+func (o *trailOutput) SetTrailRecorder(rec *trail.Recorder) { o.rec = rec }
+
+// TestManagerWiresTrailRecorder: TrailAware outputs receive the recorder
+// from ManagerOptions at construction, so event-stream outputs (the MQTT
+// publish path) can record their attempts in the /notifications trail.
+func TestManagerWiresTrailRecorder(t *testing.T) {
+	out := &trailOutput{}
+	reg := NewRegistry()
+	if err := reg.RegisterOutput("trailout", func(_ *yaml.Node) (OutputPlugin, error) {
+		return out, nil
+	}); err != nil {
+		t.Fatalf("register output: %v", err)
+	}
+	rec := trail.NewRecorder(trail.DefaultMaxTrails)
+	_, err := NewManager(reg, nil, []config.Output{
+		{ID: "t", Type: "trailout", Enabled: true,
+			Runtime: config.OutputRuntime{Timeout: time.Second, FailureThreshold: 5}},
+	}, nil, nil, nil, ManagerOptions{TrailRecorder: rec}, testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if out.rec != rec {
+		t.Fatal("TrailAware output did not receive the trail recorder")
+	}
+
+	// A nil recorder is never handed out (and a disabled recorder keeps
+	// outputs unconfigured): the wiring stays optional.
+	out2 := &trailOutput{}
+	reg2 := NewRegistry()
+	if err := reg2.RegisterOutput("trailout", func(_ *yaml.Node) (OutputPlugin, error) {
+		return out2, nil
+	}); err != nil {
+		t.Fatalf("register output: %v", err)
+	}
+	if _, err := NewManager(reg2, nil, []config.Output{
+		{ID: "t", Type: "trailout", Enabled: true,
+			Runtime: config.OutputRuntime{Timeout: time.Second, FailureThreshold: 5}},
+	}, nil, nil, nil, ManagerOptions{}, testLogger()); err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if out2.rec != nil {
+		t.Fatal("output must not receive a recorder when none is configured")
+	}
 }
 
 // buildManager wires a real SQLite store, registry and manager for E2E

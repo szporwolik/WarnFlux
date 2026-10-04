@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -157,6 +158,31 @@ func (b *Bot) Banner() string {
 // DeniedText answers an unauthorized attempt to run a restricted
 // command. English on purpose: radio replies are English-only.
 const DeniedText = "You are not authorized"
+
+// MaxReplyLines bounds a multi-line command reply on every channel (the
+// hourly hazard digest uses the same cap, so /hazard matches it).
+const MaxReplyLines = 12
+
+// ReplyLines splits a reply into one channel message per line. At most
+// max lines are returned; a longer list closes with a "+N more" marker
+// line so the sender knows the list was cut.
+func ReplyLines(text string, max int) []string {
+	parts := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	lines := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimRight(p, "\r")
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		lines = append(lines, p)
+	}
+	if max > 0 && len(lines) > max {
+		rest := len(lines) - max
+		lines = lines[:max]
+		lines = append(lines, fmt.Sprintf("+%d more", rest))
+	}
+	return lines
+}
 
 // Denied returns the full installation banner plus the denial — the
 // reply for a restricted command fired by an unauthorized sender. The

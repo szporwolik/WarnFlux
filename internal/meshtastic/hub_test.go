@@ -988,6 +988,113 @@ func TestHubEmcomDefaults(t *testing.T) {
 	}
 }
 
+// TestHubHazardDigest pins the hourly active-hazard digest: a header
+// message plus one line per active hazard (Zulu window, headline and
+// description) on the emcom channel, fired on the first maintenance tick
+// after the first session.
+func TestHubHazardDigest(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		EmcomChannel: 1, EmcomHazardsInterval: time.Hour})
+	eff := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
+	exp := eff.Add(3 * time.Hour)
+	radio.hub.SetActiveHazardSource(func() []ActiveHazard {
+		return []ActiveHazard{
+			{Headline: "Burza", Description: "Silne porywy wiatru", EffectiveAt: &eff, ExpiresAt: &exp},
+			{Headline: "Powodz", ExpiresAt: &exp},
+		}
+	})
+	radio.waitConnected(t)
+
+	deadline := time.Now().Add(10 * time.Second)
+	var out []*pb.MeshPacket
+	for time.Now().Before(deadline) {
+		if out = radio.outbound(); len(out) >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(out) != 3 {
+		t.Fatalf("outbound = %d packets, want header + 2 lines", len(out))
+	}
+	for i, p := range out {
+		if p.GetChannel() != 1 {
+			t.Fatalf("digest packet %d channel = %d, want 1", i, p.GetChannel())
+		}
+		if p.GetTo() != core.BroadcastNodeID.Uint32() {
+			t.Fatalf("digest packet %d to = %v, want a broadcast", i, p.GetTo())
+		}
+	}
+	if got := string(out[0].GetDecoded().GetPayload()); got != "WarnFlux active hazards: 2" {
+		t.Fatalf("digest header = %q", got)
+	}
+	if got, want := string(out[1].GetDecoded().GetPayload()), "2026-10-05 10:00Z-2026-10-05 13:00Z Burza — Silne porywy wiatru"; got != want {
+		t.Fatalf("digest line 1 = %q, want %q", got, want)
+	}
+	if got, want := string(out[2].GetDecoded().GetPayload()), "?-2026-10-05 13:00Z Powodz"; got != want {
+		t.Fatalf("digest line 2 = %q, want %q", got, want)
+	}
+}
+
+// TestHubHazardDigestSilent pins the "only when active" rule: no active
+// hazards, no digest traffic (the header must not be sent for zero).
+func TestHubHazardDigestSilent(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		EmcomChannel: 1, EmcomHazardsInterval: time.Hour})
+	radio.hub.SetActiveHazardSource(func() []ActiveHazard { return nil })
+	radio.waitConnected(t)
+
+	// The maintenance ticker runs every dmRetryInterval; wait past one
+	// full tick and confirm the radio stayed silent.
+	deadline := time.Now().Add(dmRetryInterval + 2*time.Second)
+	for time.Now().Before(deadline) {
+		if n := len(radio.outbound()); n > 0 {
+			t.Fatalf("digest sent %d packets with no active hazards", n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestHubHazardDigestDisabled pins the interval-0 switch: no source is
+// consulted and nothing is broadcast.
+func TestHubHazardDigestDisabled(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		EmcomChannel: 1, EmcomHazardsInterval: 0})
+	called := false
+	radio.hub.SetActiveHazardSource(func() []ActiveHazard {
+		called = true
+		return []ActiveHazard{{Headline: "x"}}
+	})
+	radio.waitConnected(t)
+	deadline := time.Now().Add(dmRetryInterval + 2*time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if called {
+		t.Fatal("digest source consulted while disabled")
+	}
+	if n := len(radio.outbound()); n > 0 {
+		t.Fatalf("disabled digest sent %d packets", n)
+	}
+}
+
+// TestHazardDigestLineTruncates pins the channel limit: every line fits
+// the Meshtastic text limit, trimming the description tail first.
+func TestHazardDigestLineTruncates(t *testing.T) {
+	ts := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
+	got := hazardDigestLine(ActiveHazard{
+		Headline:    "Długi nagłówek",
+		Description: strings.Repeat("opis", 200),
+		EffectiveAt: &ts,
+		ExpiresAt:   &ts,
+	})
+	if n := len([]rune(got)); n != meshTextMaxRunes {
+		t.Fatalf("line runes = %d, want %d", n, meshTextMaxRunes)
+	}
+	if !strings.HasPrefix(got, "2026-10-05 10:00Z-2026-10-05 10:00Z Długi nagłówek — ") {
+		t.Fatalf("line lost its prefix: %q", got)
+	}
+}
+
 // TestHubChannelZeroBlocked pins the policy guard: broadcasts on the
 // default PRIMARY channel are refused.
 func TestHubChannelZeroBlocked(t *testing.T) {
@@ -1821,9 +1928,38 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 }
 
-// TestHubCommandsRequireExactAddressee pins the address gate: /debug
-// with To=0 (unset) or as a broadcast never executes — only a direct
-// message addressed exactly to our node reaches the command interpreter.
+// TestHubCLIMultilineReply pins the /hazard-style list replies on the
+// mesh side: one multi-line command answer becomes one direct message
+// per line, each fitted to the mesh text limit.
+func TestHubCLIMultilineReply(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+	// The command path needs a sender gate and an event sink wired (the
+	// address + owner checks run before the interpreter).
+	radio.hub.SetSenderGate(func(id string) string {
+		if id == "deadbeef" {
+			return "sp9kow"
+		}
+		return ""
+	})
+	radio.hub.SetEventSink(func(_ context.Context, _ string, _ bool, _ []byte) error { return nil })
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.Register("list", "test list", func(string) radiocli.Result {
+		return radiocli.Result{Handled: true, Reply: "header\nline one\nline two"}
+	})
+	radio.hub.SetCLI(cli)
+
+	dispatchPkt(t, radio, textPacket(0xdeadbeef, 0xabcd1234, "/list"))
+	reply := radio.waitOutbound(t, 3)
+	for i, want := range []string{"header", "line one", "line two"} {
+		if reply[i].GetTo() != 0xdeadbeef {
+			t.Fatalf("line %d to = %08x, want deadbeef", i, reply[i].GetTo())
+		}
+		if got := string(reply[i].GetDecoded().GetPayload()); got != want {
+			t.Fatalf("line %d = %q, want %q", i, got, want)
+		}
+	}
+}
 func TestHubCommandsRequireExactAddressee(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
 	radio.waitConnected(t)

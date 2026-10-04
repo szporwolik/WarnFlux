@@ -172,6 +172,10 @@ type MeshtasticConfig struct {
 	// EmcomInterval is the beacon spacing (default 4 hours); the first
 	// beacon fires at server start/restart.
 	EmcomInterval time.Duration
+	// EmcomHazardsInterval is the spacing of the periodic active-hazard
+	// digest broadcast on the emcom channel (default 1 hour); 0 disables
+	// the digest (the presence beacon stays on).
+	EmcomHazardsInterval time.Duration
 }
 
 // APRSConfig holds the shared APRS hub settings (top-level "aprs:"). The
@@ -561,6 +565,9 @@ type fileMeshtastic struct {
 	EmcomChannel int `yaml:"emcom_channel"`
 	// EmcomInterval is the beacon spacing (default 4h).
 	EmcomInterval *time.Duration `yaml:"emcom_interval"`
+	// EmcomHazardsInterval is the active-hazard digest spacing (default
+	// 1h); 0 disables the digest.
+	EmcomHazardsInterval *time.Duration `yaml:"emcom_hazards_interval"`
 }
 
 type fileGeo struct {
@@ -1122,7 +1129,7 @@ func (f fileConfig) toConfig() Config {
 			cfg.APRS.RouteMessages = *f.APRS.RouteMessages
 		}
 	}
-	cfg.Meshtastic = MeshtasticConfig{Baud: 115200, NodeTTL: 30 * time.Minute, EmcomInterval: 4 * time.Hour}
+	cfg.Meshtastic = MeshtasticConfig{Baud: 115200, NodeTTL: 30 * time.Minute, EmcomInterval: 4 * time.Hour, EmcomHazardsInterval: 1 * time.Hour}
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
 		cfg.Meshtastic.Device = strings.TrimSpace(f.Meshtastic.Device)
@@ -1136,6 +1143,9 @@ func (f fileConfig) toConfig() Config {
 		}
 		if f.Meshtastic.EmcomInterval != nil {
 			cfg.Meshtastic.EmcomInterval = *f.Meshtastic.EmcomInterval
+		}
+		if f.Meshtastic.EmcomHazardsInterval != nil {
+			cfg.Meshtastic.EmcomHazardsInterval = *f.Meshtastic.EmcomHazardsInterval
 		}
 	}
 	if f.Geo != nil {
@@ -1401,6 +1411,10 @@ func (c Config) Validate() error {
 	if c.Meshtastic.EmcomInterval != 0 &&
 		(c.Meshtastic.EmcomInterval < time.Minute || c.Meshtastic.EmcomInterval > 30*24*time.Hour) {
 		return fmt.Errorf("meshtastic.emcom_interval must be between 1m and 720h, got %s", c.Meshtastic.EmcomInterval)
+	}
+	if v := c.Meshtastic.EmcomHazardsInterval; v != 0 &&
+		(v < time.Minute || v > 30*24*time.Hour) {
+		return fmt.Errorf("meshtastic.emcom_hazards_interval must be between 1m and 720h (0 disables), got %s", v)
 	}
 	return nil
 }

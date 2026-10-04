@@ -12,11 +12,31 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/weatherreport"
 )
 
 func testResolverLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestHazardsForRadio pins the public /hazard command text: a header
+// plus one Zulu-windowed line per hazard (the hourly digest form), and
+// an explicit answer when nothing is active.
+func TestHazardsForRadio(t *testing.T) {
+	if got := hazardsForRadio(nil); got != "No active hazards" {
+		t.Fatalf("empty list = %q, want the no-hazards answer", got)
+	}
+	eff := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
+	exp := eff.Add(2 * time.Hour)
+	got := hazardsForRadio([]meshtastic.ActiveHazard{
+		{Headline: "Burza", Description: "Porywy", EffectiveAt: &eff, ExpiresAt: &exp},
+		{Headline: "Mgla"},
+	})
+	want := "Active hazards: 2\n2026-10-05 10:00Z-2026-10-05 12:00Z Burza — Porywy\n?-? Mgla"
+	if got != want {
+		t.Fatalf("hazardsForRadio = %q, want %q", got, want)
+	}
 }
 
 // TestWeatherForRadioOffGrid pins the off-grid /weather path: the local

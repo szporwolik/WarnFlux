@@ -373,24 +373,33 @@ rate_limit_per_minute: -1
 	for _, want := range []string{
 		// The subject carries [Header1] from the application identity.
 		"Subject: [SPOK] SEVERE: Silny wiatr",
-		"Transition: hazard_new",
-		"Source: imgw-meteo",
-		"Severity: severe",
-		"Areas: małopolskie",
+		"WarnFlux notification",
+		"Hazard: SEVERE · Burza",
+		"Headline: Silny wiatr",
+		"source: imgw-meteo",
+		"areas: małopolskie",
+		"instruction: Follow official communications",
 		// Multipart/alternative with the human-first HTML part.
 		"Content-Type: multipart/related",
 		"Content-Type: multipart/alternative",
 		"Content-Type: text/html; charset=utf-8",
-		"Technical details",
+		"Hazard notification",
+		"View details",
 		// Embedded logo: inline CID image referenced from the HTML brand row.
 		"Content-Type: image/png; name=\"logo.png\"",
 		"Content-ID: <warnflux-logo>",
 		"cid:warnflux-logo",
 		">SPOK</td>",
+		// The call-to-action renders as a solid button: background-color
+		// (the shorthand is stripped by some clients), white text, no
+		// underline.
+		">View details</a>",
+		"background-color:#1f6feb",
+		"color:#ffffff",
 		// The severity is colored with the application palette: a card
-		// accent and a tinted Severity table row (severe -> orange).
+		// accent and a tinted severity chip (severe -> orange).
 		"border-top:3px solid #f0784e",
-		`<span style="color:#f0784e;font-weight:600;">severe</span>`,
+		">SEVERE<",
 		// Branded footer: version, normalized domain, repository link.
 		"Sent by <strong style=\"color:#eef2f5;\">SPOK · WarnFlux</strong> v0.1.0",
 		"spok.sp9moa.pl",
@@ -449,7 +458,7 @@ ca_file: %s
 	if len(got) != 1 {
 		t.Fatalf("received %d mails, want 1", len(got))
 	}
-	if !strings.Contains(got[0].data, "Severity: severe") {
+	if !strings.Contains(got[0].data, "Hazard: SEVERE · Burza") {
 		t.Errorf("mail body:\n%s", got[0].data)
 	}
 }
@@ -486,7 +495,7 @@ ca_file: %s
 	if len(got) != 1 {
 		t.Fatalf("received %d mails, want 1", len(got))
 	}
-	if !strings.Contains(got[0].data, "Severity: severe") {
+	if !strings.Contains(got[0].data, "Hazard: SEVERE · Burza") {
 		t.Errorf("mail body:\n%s", got[0].data)
 	}
 }

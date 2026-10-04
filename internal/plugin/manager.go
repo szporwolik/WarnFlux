@@ -13,6 +13,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/storage"
+	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
 // errShuttingDown is returned by Emit once the manager has started its
@@ -45,6 +46,9 @@ type ManagerOptions struct {
 	// are kept before cleanup; active events are never cleaned.
 	EventRetention time.Duration
 	Version        string
+	// TrailRecorder is the optional per-alert audit recorder handed to
+	// TrailAware outputs (nil disables their trail integration).
+	TrailRecorder *trail.Recorder
 }
 
 // Manager owns the plugin instances and the routing between sources, the
@@ -152,6 +156,11 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		p, err := factory(cfg.Config)
 		if err != nil {
 			return nil, fmt.Errorf("output %q (type %q): invalid configuration: %w", cfg.ID, cfg.Type, err)
+		}
+		// Outputs that publish event copies record their attempts in the
+		// per-alert audit trail (the /notifications delivery history).
+		if ta, ok := p.(TrailAware); ok && opts.TrailRecorder != nil {
+			ta.SetTrailRecorder(opts.TrailRecorder)
 		}
 		w := newOutputWorker(cfg, p, store, logger, tracker)
 		w.health = m.health

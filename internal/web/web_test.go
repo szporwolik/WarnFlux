@@ -929,7 +929,7 @@ func TestPublicHomePage(t *testing.T) {
 		"Test disclaimer text.",
 		"Ekstremalny wiatr", // most severe first
 		`href="/login"`,     // sign-in behind the icon button
-		"Active hazards",
+		"Active messages",
 		"Situation map", // combined stations + weather tab
 		`id="home-alerts"`,
 		`class="theme-toggle"`, // light/dark switch
@@ -1377,13 +1377,13 @@ func TestComposeFlow(t *testing.T) {
 
 	env.login()
 	_, html := env.get("/compose")
-	if !strings.Contains(html, "Communications") {
+	if !strings.Contains(html, "Messages") {
 		t.Errorf("compose page missing the heading: %s", html)
 	}
-	if !strings.Contains(html, `<span class="nav-label">Communications</span>`) {
+	if !strings.Contains(html, `<span class="nav-label">Messages</span>`) {
 		t.Errorf("compose page missing sidebar entry: %s", html)
 	}
-	if !strings.Contains(html, "Issued communications") {
+	if !strings.Contains(html, "Issued messages") {
 		t.Errorf("compose page missing issued list: %s", html)
 	}
 	if !strings.Contains(html, `id="compose-new"`) {
@@ -1691,8 +1691,8 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `<span class="nav-label">Dashboard</span>`) {
 		t.Error("emcom must see the Dashboard nav entry")
 	}
-	if !strings.Contains(html, `<span class="nav-label">Communications</span>`) {
-		t.Error("compose page missing Communications nav entry")
+	if !strings.Contains(html, `<span class="nav-label">Messages</span>`) {
+		t.Error("compose page missing Messages nav entry")
 	}
 	if !strings.Contains(html, `href="/account"`) {
 		t.Error("emcom must see the Account entry in the user menu")

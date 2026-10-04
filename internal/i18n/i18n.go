@@ -96,7 +96,7 @@ var en = map[string]string{
 
 	// Sidebar navigation.
 	"nav.dashboard":     "Dashboard",
-	"nav.compose":       "Communications",
+	"nav.compose":       "Messages",
 	"nav.emcom":         "EMCOM",
 	"nav.account":       "Account",
 	"nav.notifications": "Notifications",
@@ -173,14 +173,15 @@ var en = map[string]string{
 	"messages.to_ph":         "Callsign (e.g. SP9XXX)",
 
 	// Public home page.
-	"home.tab.alerts":    "Active hazards",
+	"home.tab.alerts":    "Active messages",
 	"home.tab.map":       "Situation map",
 	"home.tab.archive":   "Archive",
 	"home.tab.sources":   "Sources",
+	"home.brand.home":    "Back to the home page",
 	"home.about.help":    "About this system",
-	"archive.back":       "Back to communications",
+	"archive.back":       "Back to messages",
 	"sources.back":       "Back to home",
-	"home.alerts.head":   "Active communications",
+	"home.alerts.head":   "Active messages",
 	"home.important":     "Important",
 	"home.informational": "Informational",
 	"home.no_active":     "No active messages.",
@@ -193,7 +194,7 @@ var en = map[string]string{
 
 	// Public delivery channels (the "Notification channels" list).
 	"channels.email.name":      "Email",
-	"channels.email.desc":      "Hazard alerts land in the mailboxes of the group members.",
+	"channels.email.desc":      "Alerts land in the mailboxes of the group members.",
 	"channels.aprs.name":       "APRS radio",
 	"channels.aprs.desc":       "Alerts go out as text messages to ham radio operators over the air.",
 	"channels.meshtastic.name": "Meshtastic radio",
@@ -225,7 +226,7 @@ var en = map[string]string{
 	"sources.adsb.name":       "ADS-B aircraft",
 	"sources.adsb.desc":       "Aircraft traffic over the area (informational).",
 	"home.archive.loading":    "Loading archive…",
-	"home.archive.empty":      "No archived communications in the last 180 days.",
+	"home.archive.empty":      "No archived messages in the last 180 days.",
 	"home.archive.window":     "Archive of the last 180 days",
 	"home.weather.title":      "Current weather",
 	"home.weather.loading":    "Loading weather…",
@@ -279,8 +280,8 @@ var en = map[string]string{
 	"config.sources.none":             "No enabled internet-backed sources.",
 	"config.mqtt.head":                "MQTT publishing",
 	"config.mqtt.desc":                "What this station publishes to the MQTT broker. Uncheck noisy families to cut broker traffic and CPU — changes apply immediately, the startup state lives in the mqtt_publish config block.",
-	"config.mqtt.events":              "Hazard transitions (/events)",
-	"config.mqtt.active":              "Active-hazard view (/active, /active-list)",
+	"config.mqtt.events":              "Message transitions (/events)",
+	"config.mqtt.active":              "Active-message view (/active, /active-list)",
 	"config.mqtt.info":                "Information + weather + EMCOM states (/info)",
 	"config.mqtt.status":              "Station status (/status)",
 	"config.mqtt.aprs_stations":       "APRS station feed (/aprs/stations)",
@@ -293,7 +294,7 @@ var en = map[string]string{
 	"config.mqtt.saved":               "MQTT publish mask updated — the change is live.",
 
 	// Home map layer labels (JS + toggles).
-	"map.layer.hazards":    "Hazards",
+	"map.layer.hazards":    "Messages",
 	"map.layer.stations":   "Stations",
 	"map.layer.meshtastic": "Meshtastic",
 	"map.layer.weather":    "Weather",
@@ -396,7 +397,7 @@ var en = map[string]string{
 	"weather.no_data":   "No weather data received yet",
 
 	// Warnings panel (dashboard).
-	"warnings.title":          "Active warnings",
+	"warnings.title":          "Active messages",
 	"warnings.source":         "Source:",
 	"popup.close":             "Close",
 	"warnings.effective":      "Effective:",
@@ -407,7 +408,7 @@ var en = map[string]string{
 	"warnings.via":            "via",
 	"warnings.description":    "Description",
 	"warnings.delivery_trail": "delivery trail",
-	"warnings.none":           "No active warnings",
+	"warnings.none":           "No active messages",
 	"warnings.of":             "of",
 
 	// Actions panel (dashboard).
@@ -490,8 +491,8 @@ var en = map[string]string{
 	"groups.routing.sev_extreme":  "extreme only",
 
 	// Compose page.
-	"compose.title":                 "Communications",
-	"compose.new":                   "New communication",
+	"compose.title":                 "Messages",
+	"compose.new":                   "New message",
 	"compose.templates":             "Templates:",
 	"compose.source":                "Source",
 	"compose.event":                 "Event",
@@ -510,18 +511,18 @@ var en = map[string]string{
 	"compose.location_note":         "Click the map to set the location; drag the marker to adjust it. Events with a location appear on the public map with the APRS warning icon.",
 	"compose.description":           "Description",
 	"compose.instruction":           "Instruction",
-	"compose.publish":               "Publish communication",
+	"compose.publish":               "Publish message",
 	"compose.debug":                 "Debug fill",
-	"compose.issued":                "Issued communications",
-	"compose.no_issued":             "No communications issued yet.",
+	"compose.issued":                "Issued messages",
+	"compose.no_issued":             "No messages issued yet.",
 	"compose.discard":               "Discard changes",
-	"compose.flash.published":       "Communication published on the broker.",
-	"compose.flash.updated":         "Communication updated on the broker.",
-	"compose.flash.expired":         "Communication expired and removed from the broker.",
+	"compose.flash.published":       "Message published on the broker.",
+	"compose.flash.updated":         "Message updated on the broker.",
+	"compose.flash.expired":         "Message expired and removed from the broker.",
 	"compose.err.empty_event":       "event must not be empty",
 	"compose.err.empty_headline":    "headline must not be empty",
 	"compose.err.invalid_severity":  "invalid severity",
-	"compose.intro":                 "Issue a community communication straight onto the WarnFlux broker: it becomes an active hazard for every subscriber and appears on the public home page. The same transition flows through the group routing rules, so groups receive it through their assigned actions. Expiring removes it everywhere.",
+	"compose.intro":                 "Issue a community message straight onto the WarnFlux broker: it becomes an active message for every subscriber and appears on the public home page. The same transition flows through the group routing rules, so groups receive it through their assigned actions. Expiring removes it everywhere.",
 	"compose.opt.":                  "—",
 	"compose.opt.unknown":           "unknown",
 	"compose.opt.minor":             "minor",
@@ -539,10 +540,10 @@ var en = map[string]string{
 	"compose.status.active":         "active",
 	"compose.status.expired":        "expired",
 	"compose.tpl.information":       "Information message",
-	"compose.tpl.urgent":            "Urgent hazard",
+	"compose.tpl.urgent":            "Urgent message",
 	"compose.tpl.weather":           "Weather alert",
 	"compose.tpl.test":              "Test / exercise",
-	"compose.update":                "Update communication",
+	"compose.update":                "Update message",
 	"compose.expire":                "Expire",
 	"compose.ph.event":              "Storm, Flood, …",
 	"compose.ph.headline":           "Short summary for the public page",
@@ -756,7 +757,7 @@ var en = map[string]string{
 	"archive.from":      "from:",
 	"archive.until":     "until:",
 	"archive.last_seen": "last seen:",
-	"archive.none":      "No communications recorded in the last %d days.",
+	"archive.none":      "No messages recorded in the last %d days.",
 	"archive.page":      "Page %d / %d",
 }
 
@@ -863,10 +864,11 @@ var pl = map[string]string{
 	"messages.beacon_now":    "Wyślij beacon teraz",
 	"messages.to_ph":         "Znak (np. SP9XXX)",
 
-	"home.tab.alerts":    "Aktywne zagrożenia",
+	"home.tab.alerts":    "Aktywne komunikaty",
 	"home.tab.map":       "Mapa sytuacyjna",
 	"home.tab.archive":   "Archiwum",
 	"home.tab.sources":   "Źródła",
+	"home.brand.home":    "Wróć na stronę główną",
 	"home.about.help":    "O systemie",
 	"archive.back":       "Wróć do komunikatów",
 	"sources.back":       "Wróć na stronę główną",
@@ -883,7 +885,7 @@ var pl = map[string]string{
 
 	// Publiczne kanały dostarczania (lista „Kanały powiadomień”).
 	"channels.email.name":      "E-mail",
-	"channels.email.desc":      "Alerty o zagrożeniach trafiają do skrzynek członków grupy.",
+	"channels.email.desc":      "Alerty trafiają do skrzynek członków grupy.",
 	"channels.aprs.name":       "Radio APRS",
 	"channels.aprs.desc":       "Alerty wychodzą jako wiadomości tekstowe do radioamatorów w eterze.",
 	"channels.meshtastic.name": "Radio Meshtastic",
@@ -969,8 +971,8 @@ var pl = map[string]string{
 	"config.sources.none":             "Brak włączonych źródeł internetowych.",
 	"config.mqtt.head":                "Publikacja MQTT",
 	"config.mqtt.desc":                "Co ta stacja publikuje do brokera MQTT. Odznacz głośne rodziny, aby ograniczyć ruch i CPU brokera — zmiany działają natychmiast, stan startowy ustawia blok mqtt_publish w konfiguracji.",
-	"config.mqtt.events":              "Przejścia zagrożeń (/events)",
-	"config.mqtt.active":              "Widok aktywnych zagrożeń (/active, /active-list)",
+	"config.mqtt.events":              "Przejścia komunikatów (/events)",
+	"config.mqtt.active":              "Widok aktywnych komunikatów (/active, /active-list)",
 	"config.mqtt.info":                "Informacje + pogoda + stany EMCOM (/info)",
 	"config.mqtt.status":              "Status stacji (/status)",
 	"config.mqtt.aprs_stations":       "Kanał stacji APRS (/aprs/stations)",
@@ -982,7 +984,7 @@ var pl = map[string]string{
 	"config.mqtt.save":                "Zapisz",
 	"config.mqtt.saved":               "Maska publikacji MQTT zaktualizowana — zmiana działa natychmiast.",
 
-	"map.layer.hazards":    "Zagrożenia",
+	"map.layer.hazards":    "Komunikaty",
 	"map.layer.stations":   "Stacje",
 	"map.layer.meshtastic": "Meshtastic",
 	"map.layer.weather":    "Pogoda",
@@ -1084,7 +1086,7 @@ var pl = map[string]string{
 	"weather.no_data":   "Nie odebrano jeszcze danych pogodowych",
 
 	// Warnings panel (dashboard).
-	"warnings.title":          "Aktywne ostrzeżenia",
+	"warnings.title":          "Aktywne komunikaty",
 	"warnings.source":         "Źródło:",
 	"popup.close":             "Zamknij",
 	"warnings.effective":      "Od:",
@@ -1095,7 +1097,7 @@ var pl = map[string]string{
 	"warnings.via":            "przez",
 	"warnings.description":    "Opis",
 	"warnings.delivery_trail": "historia doręczeń",
-	"warnings.none":           "Brak aktywnych ostrzeżeń",
+	"warnings.none":           "Brak aktywnych komunikatów",
 	"warnings.of":             "z",
 
 	// Actions panel (dashboard).
@@ -1206,7 +1208,7 @@ var pl = map[string]string{
 	"compose.err.empty_event":       "zdarzenie nie może być puste",
 	"compose.err.empty_headline":    "nagłówek nie może być pusty",
 	"compose.err.invalid_severity":  "nieprawidłowa ważność",
-	"compose.intro":                 "Wydaj komunikat społeczności bezpośrednio na broker WarnFlux: staje się aktywnym zagrożeniem dla każdego subskrybenta i pojawia się na publicznej stronie głównej. Ta sama zmiana przechodzi przez reguły routingu grup, więc grupy otrzymują go przez przypisane akcje. Wygaszenie usuwa go wszędzie.",
+	"compose.intro":                 "Wydaj komunikat społeczności bezpośrednio na broker WarnFlux: staje się aktywnym komunikatem dla każdego subskrybenta i pojawia się na publicznej stronie głównej. Ta sama zmiana przechodzi przez reguły routingu grup, więc grupy otrzymują go przez przypisane akcje. Wygaszenie usuwa go wszędzie.",
 	"compose.opt.":                  "—",
 	"compose.opt.unknown":           "nieznane",
 	"compose.opt.minor":             "drobne",
@@ -1224,7 +1226,7 @@ var pl = map[string]string{
 	"compose.status.active":         "aktywny",
 	"compose.status.expired":        "wygaszony",
 	"compose.tpl.information":       "Komunikat informacyjny",
-	"compose.tpl.urgent":            "Pilne zagrożenie",
+	"compose.tpl.urgent":            "Pilny komunikat",
 	"compose.tpl.weather":           "Ostrzeżenie pogodowe",
 	"compose.tpl.test":              "Test / ćwiczenia",
 	"compose.update":                "Zaktualizuj komunikat",

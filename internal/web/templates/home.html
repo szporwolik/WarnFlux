@@ -8,13 +8,13 @@
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">{{end}}
 
 {{define "public-top"}}<header class="home-top">
-    <div class="home-brand">
+    <a class="home-brand" href="/" aria-label="{{tr .Lang "home.brand.home"}}">
       <img class="home-logo" src="/static/assets/logo.png" alt="" aria-hidden="true">
       <div class="home-brand-text">
         <h1>{{.Header1}}{{if ne .Header1 "WarnFlux"}} <span class="home-codename">WarnFlux</span>{{end}}</h1>
         {{if .Header2}}<p class="home-sub">{{.Header2}}</p>{{end}}
       </div>
-    </div>
+    </a>
     <div class="home-actions">
       <button type="button" class="theme-toggle" aria-label="{{tr .Lang "common.toggle_theme"}}" title="{{tr .Lang "common.toggle_theme"}}">
         <svg class="icon ico-sun" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg>
@@ -32,7 +32,7 @@
       </a>
       {{else}}
       <a class="home-login" href="/login" title="{{tr .Lang "common.sign_in"}}" aria-label="{{tr .Lang "common.sign_in"}}">
-        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lock"></use></svg>
       </a>
       {{end}}
     </div>

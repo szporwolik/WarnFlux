@@ -120,12 +120,12 @@ func TestArchivePagination(t *testing.T) {
 func TestArchiveWithoutStore(t *testing.T) {
 	env := newTestEnv(t)
 	_, html := env.get("/archive")
-	if !strings.Contains(html, "No communications recorded") {
+	if !strings.Contains(html, "No messages recorded") {
 		t.Errorf("empty archive state missing:\n%s", html)
 	}
 	// The archive is a standalone public page now: shared chrome plus a
 	// back link to the communications.
-	for _, want := range []string{`class="home-top"`, `class="home-foot"`, "Back to communications"} {
+	for _, want := range []string{`class="home-top"`, `class="home-foot"`, "Back to messages"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("archive page missing %q:\n%s", want, html)
 		}

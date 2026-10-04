@@ -555,7 +555,7 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 	case dispatch.EventHazardTransition:
 		h := ev.Hazard
 		if h == nil {
-			b.WriteString("Hazard: <empty change>\n")
+			b.WriteString("Message: <empty change>\n")
 			break
 		}
 		event := strings.TrimSpace(h.Hazard.Event)
@@ -563,7 +563,7 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 		if headline == "" {
 			headline = event
 		}
-		fmt.Fprintf(&b, "Hazard: %s · %s\n", strings.ToUpper(h.Hazard.Severity), event)
+		fmt.Fprintf(&b, "Message: %s · %s\n", strings.ToUpper(h.Hazard.Severity), event)
 		if headline != event {
 			fmt.Fprintf(&b, "Headline: %s\n", headline)
 		}
@@ -682,7 +682,7 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 </tr></table>`,
 		logoCID, htmlEscaper(brand), htmlEscaper(brand))
 
-	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">Hazard notification</div>`)
+	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">Message notification</div>`)
 
 	ev := req.Event
 	switch ev.Kind {
@@ -716,7 +716,7 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 func hazardHTML(ev dispatch.Event, link string) string {
 	h := ev.Hazard
 	if h == nil {
-		return `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Hazard</div>`
+		return `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Message</div>`
 	}
 	var b strings.Builder
 	bg, fg := severityColor(h.Hazard.Severity)

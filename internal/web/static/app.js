@@ -15,7 +15,7 @@
   // <html lang> on every page, so table = I18N[lang] works everywhere.
   var I18N = {
     en: {
-      "map.layer.hazards": "Hazards",
+      "map.layer.hazards": "Messages",
       "map.layer.stations": "Stations",
       "map.layer.meshtastic": "Meshtastic",
       "map.layer.weather": "Weather",
@@ -132,7 +132,7 @@
       "users.add_title": "Add user"
     },
     pl: {
-      "map.layer.hazards": "Zagrożenia",
+      "map.layer.hazards": "Komunikaty",
       "map.layer.stations": "Stacje",
       "map.layer.meshtastic": "Meshtastic",
       "map.layer.weather": "Pogoda",

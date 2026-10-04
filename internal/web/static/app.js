@@ -725,7 +725,7 @@
 })();
 
 // Public home page: tab switching between the alert list and the
-// placeholder section. The alert fragment itself is polled above.
+// situation map. The alert fragment itself is polled above.
 (function () {
   "use strict";
 
@@ -733,41 +733,6 @@
     var tabs = document.querySelectorAll(".home-tab");
     if (tabs.length === 0) {
       return;
-    }
-
-    // Archive tab: the fragment (list + pagination) is fetched lazily and
-    // replaced in place by the pagination links.
-    var archiveBox = document.getElementById("archive-box");
-    var archiveLoaded = false;
-
-    function loadingNote(text) {
-      var p = document.createElement("p");
-      p.className = "muted";
-      p.textContent = text;
-      return p;
-    }
-
-    function loadArchive(url) {
-      if (!archiveBox) {
-        return;
-      }
-      archiveBox.textContent = "";
-      archiveBox.appendChild(loadingNote(tr("home.archive.loading")));
-      fetch(url || "/archive", { headers: { "Accept": "text/html" }, cache: "no-store" })
-        .then(function (resp) { return resp.ok ? resp.text() : null; })
-        .then(function (html) {
-          if (!archiveBox || !html) {
-            return;
-          }
-          archiveBox.innerHTML = html;
-          archiveLoaded = true;
-        })
-        .catch(function () {
-          if (archiveBox) {
-            archiveBox.textContent = "";
-            archiveBox.appendChild(loadingNote(tr("home.archive.failed")));
-          }
-        });
     }
 
     tabs.forEach(function (tab) {
@@ -781,23 +746,8 @@
             panel.hidden = !active;
           }
         });
-        if (tab.dataset.tab === "tab-archive" && !archiveLoaded) {
-          loadArchive();
-        }
       });
     });
-
-    if (archiveBox) {
-      archiveBox.addEventListener("click", function (ev) {
-        var link = ev.target.closest ? ev.target.closest("a[href^='/archive?']") : null;
-        if (!link) {
-          return;
-        }
-        ev.preventDefault();
-        loadArchive(link.getAttribute("href"));
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      });
-    }
   }
 
   if (document.readyState === "loading") {
@@ -2909,15 +2859,105 @@
 
 // One-time about popup: the config-driven system intro appears as a
 // modal on the first visit (per browser) and stays dismissed afterwards
-// via localStorage.
+// via localStorage. The question-mark button in the top bar reopens it
+// any time. The intro is rendered as a small markdown subset: headings,
+// emphasis, lists, code and links (always opened in a new tab).
 (function () {
   "use strict";
+
+  function mdEscape(s) {
+    var d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  }
+
+  function mdInline(s) {
+    var out = mdEscape(s);
+    out = out.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return out;
+  }
+
+  function renderMarkdown(src) {
+    var lines = String(src == null ? "" : src).split(/\r?\n/);
+    var html = [];
+    var para = [];
+    var codeBuf = null;
+
+    function flushPara() {
+      if (para.length) {
+        html.push("<p>" + para.join("<br>") + "</p>");
+        para = [];
+      }
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (/^\s*```/.test(line)) {
+        flushPara();
+        if (codeBuf === null) {
+          codeBuf = [];
+        } else {
+          html.push("<pre><code>" + mdEscape(codeBuf.join("\n")) + "</code></pre>");
+          codeBuf = null;
+        }
+        continue;
+      }
+      if (codeBuf !== null) {
+        codeBuf.push(line);
+        continue;
+      }
+      var h = /^(#{1,4})\s+(.*)$/.exec(line);
+      if (h) {
+        flushPara();
+        html.push("<h4>" + mdInline(h[2]) + "</h4>");
+        continue;
+      }
+      var li = /^\s*[-*]\s+(.*)$/.exec(line);
+      if (li) {
+        flushPara();
+        var items = [];
+        while (li) {
+          items.push("<li>" + mdInline(li[1]) + "</li>");
+          i++;
+          li = i < lines.length ? /^\s*[-*]\s+(.*)$/.exec(lines[i]) : null;
+        }
+        i--;
+        html.push("<ul>" + items.join("") + "</ul>");
+        continue;
+      }
+      if (line.trim() === "") {
+        flushPara();
+        continue;
+      }
+      para.push(mdInline(line));
+    }
+    flushPara();
+    return html.join("\n");
+  }
 
   function initAboutPopup() {
     var dialog = document.getElementById("about-dialog");
     if (!dialog) {
       return;
     }
+    var box = dialog.querySelector(".about-dialog-text");
+
+    // Render the configured intro once, from its text form (raw HTML in
+    // the config is neutralized by the escape-first markdown pass).
+    function renderOnce() {
+      if (!box || box.dataset.md) {
+        return;
+      }
+      var src = box.textContent;
+      box.dataset.md = "1";
+      box.textContent = "";
+      box.innerHTML = renderMarkdown(src);
+    }
+
     var seen = false;
     try { seen = localStorage.getItem("warnflux-about-seen") === "1"; } catch (e) { /* storage unavailable */ }
     var close = function () {
@@ -2930,6 +2970,17 @@
     if (x) { x.addEventListener("click", close); }
     dialog.addEventListener("click", function (e) { if (e.target === dialog) { close(); } });
     dialog.addEventListener("cancel", function (e) { e.preventDefault(); close(); });
+
+    // The question-mark button in the top bar reopens the popup.
+    var help = document.getElementById("about-help");
+    if (help) {
+      help.addEventListener("click", function () {
+        renderOnce();
+        if (!dialog.open) { dialog.showModal(); }
+      });
+    }
+
+    renderOnce();
     if (!seen) { dialog.showModal(); }
   }
 

@@ -297,6 +297,8 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.HandleFunc("GET /api/hazard/{key}", s.handleHazardByKey)
 	s.mux.HandleFunc("GET /partials/home", s.handlePartialHome)
 	s.mux.HandleFunc("GET /archive", s.handleArchive)
+	// Public sources/channels page (linked from the footer).
+	s.mux.HandleFunc("GET /sources", s.handleSourcesPage)
 	// UI language switch: stores the choice in a cookie and returns.
 	s.mux.HandleFunc("GET /lang/{code}", s.handleLanguage)
 	s.mux.HandleFunc("GET /api/aprs/stations", s.handleAPRSStations)

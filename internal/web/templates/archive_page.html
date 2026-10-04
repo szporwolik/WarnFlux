@@ -1,0 +1,18 @@
+{{define "archive_page"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  {{template "public-head" .}}
+</head>
+<body class="home" data-offline="{{if .OfflineMode}}1{{else}}0{{end}}">
+  {{template "public-top" .}}
+  {{template "public-banners" .}}
+  <main class="home-main home-single">
+    <section class="home-panel">
+      <p class="home-back"><a class="home-sub-link" href="/">← {{tr .Lang "archive.back"}}</a></p>
+      {{template "archive" .}}
+    </section>
+  </main>
+  {{template "public-foot" .}}
+</body>
+</html>
+{{end}}

@@ -174,9 +174,12 @@ var en = map[string]string{
 
 	// Public home page.
 	"home.tab.alerts":    "Active hazards",
-	"home.tab.map":       "Map",
+	"home.tab.map":       "Situation map",
 	"home.tab.archive":   "Archive",
 	"home.tab.sources":   "Sources",
+	"home.about.help":    "About this system",
+	"archive.back":       "Back to communications",
+	"sources.back":       "Back to home",
 	"home.alerts.head":   "Active communications",
 	"home.important":     "Important",
 	"home.informational": "Informational",
@@ -861,9 +864,12 @@ var pl = map[string]string{
 	"messages.to_ph":         "Znak (np. SP9XXX)",
 
 	"home.tab.alerts":    "Aktywne zagrożenia",
-	"home.tab.map":       "Mapa",
+	"home.tab.map":       "Mapa sytuacyjna",
 	"home.tab.archive":   "Archiwum",
 	"home.tab.sources":   "Źródła",
+	"home.about.help":    "O systemie",
+	"archive.back":       "Wróć do komunikatów",
+	"sources.back":       "Wróć na stronę główną",
 	"home.alerts.head":   "Aktywne komunikaty",
 	"home.important":     "Ważne",
 	"home.informational": "Informacyjne",

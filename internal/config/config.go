@@ -885,7 +885,11 @@ func (f fileConfig) toConfig() Config {
 		InboxWriteTimeout: defaultInboxWriteTimeout,
 		InboxRetention:    defaultInboxRetention,
 	}
-	// mqtt_publish defaults to everything enabled.
+	// mqtt_publish defaults to the quiet mask: the canonical hazard
+	// stream plus every retained current-state document. The noisy
+	// per-packet/per-message mirrors (APRS packets and messages,
+	// Meshtastic messages) are opt-in — the local dispatch pipeline
+	// consumes those internally and the web history reads the store.
 	cfg.MQTTPublish = MQTTPublish{
 		Events:             true,
 		Active:             true,
@@ -893,10 +897,10 @@ func (f fileConfig) toConfig() Config {
 		Status:             true,
 		APRSStations:       true,
 		APRSBulletins:      true,
-		APRSPackets:        true,
-		APRSMessages:       true,
+		APRSPackets:        false,
+		APRSMessages:       false,
 		MeshtasticStations: true,
-		MeshtasticMessages: true,
+		MeshtasticMessages: false,
 	}
 	if f.MQTTPublish != nil {
 		if v := f.MQTTPublish.Events; v != nil {

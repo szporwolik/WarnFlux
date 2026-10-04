@@ -983,7 +983,7 @@ func (h *Hub) routeOrCLI(p Packet) {
 	if cli == nil {
 		return
 	}
-	cid := p.Src + ":" + msgIdentity(p)
+	cid := p.Src + ":" + commandIdentity(p)
 	now := h.now()
 	h.mu.Lock()
 	rec := h.cmds[cid]
@@ -1015,7 +1015,7 @@ func (h *Hub) routeOrCLI(p Packet) {
 	reply := res.Reply
 	retryable := false
 	if res.Debug {
-		key := "aprs:" + p.Src + ":msg:" + msgIdentity(p)
+		key := "aprs:" + p.Src + ":msg:" + commandIdentity(p)
 		eff, exp, prev := h.resolveCommand(key, time.Hour)
 		if prev != "" {
 			reply = prev
@@ -1030,7 +1030,7 @@ func (h *Hub) routeOrCLI(p Packet) {
 		if ttl <= 0 {
 			ttl = 4 * time.Hour
 		}
-		key := "aprs:" + p.Src + ":alert:" + msgIdentity(p)
+		key := "aprs:" + p.Src + ":alert:" + commandIdentity(p)
 		eff, exp, prev := h.resolveCommand(key, ttl)
 		if prev != "" {
 			reply = prev
@@ -1077,6 +1077,16 @@ func msgIdentity(p Packet) string {
 		return p.Message.ID
 	}
 	return "h" + radiocli.ContentID(p.Src, p.Message.To, p.Message.Text)
+}
+
+// commandIdentity is the dedup identity of one command message: the
+// message identity ALWAYS followed by the content fingerprint. A reused
+// message number with different text is therefore a different command
+// (a new alarm runs instead of replaying the old result), while a
+// byte-identical retransmission maps to the same identity. The durable
+// registry and the event key share this identity.
+func commandIdentity(p Packet) string {
+	return msgIdentity(p) + ":h" + radiocli.ContentID(p.Src, p.Message.To, p.Message.Text)
 }
 
 // pruneCmds drops expired command records and bounds the map. The
@@ -1280,7 +1290,7 @@ func (h *Hub) publishMessageEvent(p Packet, eff, exp time.Time, commandResult st
 	// APRS-IS copy of the same packet map to the same event, so the
 	// storage deduplication collapses them into one alarm; the command
 	// cache in routeOrCLI already stops re-execution in-process.
-	sourceID := from + ":msg:" + msgIdentity(p)
+	sourceID := from + ":msg:" + commandIdentity(p)
 	text := strings.TrimSpace(p.Message.Text)
 
 	doc := MessageEventWire{
@@ -1340,7 +1350,7 @@ func (h *Hub) publishAlertEvent(p Packet, spec *radiocli.AlertSpec, eff, exp tim
 	}
 	from := p.Src
 	// Stable identity: sender + message identity (see publishMessageEvent).
-	sourceID := from + ":alert:" + msgIdentity(p)
+	sourceID := from + ":alert:" + commandIdentity(p)
 	nowS := eff.Format(time.RFC3339)
 	expS := exp.Format(time.RFC3339)
 	doc := MessageEventWire{

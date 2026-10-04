@@ -14,6 +14,7 @@ import (
 	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // meshtasticMessagesPageSize bounds one page of the admin mesh message history.
@@ -163,14 +164,24 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 		return
 	}
 	switch d := r.URL.Query().Get("dir"); d {
-	case "rx", "tx":
+	case "rx", "tx", "ch0":
 		v.Dir = d
 	}
-	dirFilter := ""
-	if v.Dir != "all" {
-		dirFilter = v.Dir
+	// The primary channel (0) owns the dedicated "ch0" tab; every other
+	// view (all, rx, tx) hides it. The label comes from the hub's
+	// channel table ("ch0" unless the device names the primary channel).
+	primary := "ch0"
+	if s.meshtastic != nil {
+		primary = s.meshtastic.ChannelLabel(0)
 	}
-	total, err := s.meshtasticMsgs.CountMeshtasticMessages(r.Context(), dirFilter)
+	filter := storage.MeshtasticMessageFilter{Channel: primary, Exclude: true}
+	switch v.Dir {
+	case "ch0":
+		filter = storage.MeshtasticMessageFilter{Channel: primary}
+	case "rx", "tx":
+		filter.Direction = v.Dir
+	}
+	total, err := s.meshtasticMsgs.CountMeshtasticMessages(r.Context(), filter)
 	if err != nil {
 		s.logger.Warn("web: mesh messages count failed", "error", err)
 		return
@@ -196,7 +207,7 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 			v.To = total
 		}
 	}
-	stored, err := s.meshtasticMsgs.ListMeshtasticMessages(r.Context(), dirFilter, meshtasticMessagesPageSize, (page-1)*meshtasticMessagesPageSize)
+	stored, err := s.meshtasticMsgs.ListMeshtasticMessages(r.Context(), filter, meshtasticMessagesPageSize, (page-1)*meshtasticMessagesPageSize)
 	if err != nil {
 		s.logger.Warn("web: mesh messages list failed", "error", err)
 		return

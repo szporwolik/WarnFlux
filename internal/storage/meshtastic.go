@@ -29,6 +29,18 @@ type MeshMessage struct {
 	At        time.Time
 }
 
+// MeshtasticMessageFilter narrows the persisted message history queries.
+type MeshtasticMessageFilter struct {
+	// Direction is "rx", "tx" or "" (both directions).
+	Direction string
+	// Channel is an exact stored channel label ("ch0", "dm", "SP9MOA",
+	// ...). Empty means no channel condition.
+	Channel string
+	// Exclude inverts the channel condition: every channel except
+	// Channel. Ignored when Channel is empty.
+	Exclude bool
+}
+
 // MeshtasticMessageStore persists Meshtastic message history. Implementations
 // bound retention to MeshMessageRetentionEntries.
 type MeshtasticMessageStore interface {
@@ -36,8 +48,8 @@ type MeshtasticMessageStore interface {
 	// UpdateMeshtasticMessageStatus marks the delivery state of the
 	// matching TX row (created at + text).
 	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
-	ListMeshtasticMessages(ctx context.Context, direction string, limit, offset int) ([]MeshMessage, error)
-	CountMeshtasticMessages(ctx context.Context, direction string) (int, error)
+	ListMeshtasticMessages(ctx context.Context, f MeshtasticMessageFilter, limit, offset int) ([]MeshMessage, error)
+	CountMeshtasticMessages(ctx context.Context, f MeshtasticMessageFilter) (int, error)
 }
 
 // MeshtasticNode is one persisted heard node from the node directory.

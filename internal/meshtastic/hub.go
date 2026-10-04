@@ -44,8 +44,12 @@ const (
 // Config is the hub configuration (top-level "meshtastic:").
 type Config struct {
 	Enabled bool
-	// Device is the serial device path (e.g. /dev/ttyACM0 or /dev/ttyUSB0)
-	// of the Meshtastic node.
+	// Device is the serial device path of the Meshtastic node (e.g.
+	// /dev/ttyACM0 or /dev/ttyUSB0). A comma-separated list is
+	// accepted: the hub tries the paths in order and connects to the
+	// first one that opens — a node that re-enumerates between ports
+	// after a USB reset (ttyACM0 <-> ttyACM1) is found on whichever
+	// port it landed, without a config edit.
 	Device string
 	Baud   int
 	// RouteMessages re-publishes direct messages from directory-known
@@ -444,15 +448,51 @@ func (a *clientAdapter) Handle(kind proto.Message, fn func(proto.Message) error)
 }
 func (a *clientAdapter) SendToRadio(msg *pb.ToRadio) error { return a.t.SendToRadio(msg) }
 
-// Dial opens the device transport (the seam for tests). Production dials
-// through serial.Connect, which performs the client handshake itself and
-// returns a transport that is already connected.
-var Dial = func(ctx context.Context, cfg Config) (transportConn, error) {
-	t, err := serial.Connect(ctx, serial.Config{Port: cfg.Device, BaudRate: cfg.Baud})
+// serialDial opens one serial device transport (the seam for tests).
+var serialDial = func(ctx context.Context, cfg serial.Config) (transportConn, error) {
+	t, err := serial.Connect(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &clientAdapter{t: t}, nil
+}
+
+// deviceCandidates splits the device field into the ordered list of
+// serial paths to try: a comma-separated list keeps the hub working
+// when a node re-enumerates onto a different port number after a USB
+// reset. Empty/whitespace entries are dropped.
+func deviceCandidates(device string) []string {
+	var out []string
+	for _, p := range strings.Split(device, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Dial opens the device transport (the seam for tests). Production
+// tries the configured device paths in order and returns the first
+// transport that connects; when none opens, the error names every
+// candidate that failed.
+var Dial = func(ctx context.Context, cfg Config) (transportConn, error) {
+	paths := deviceCandidates(cfg.Device)
+	if len(paths) == 0 {
+		return nil, errors.New("meshtastic: no serial device path configured")
+	}
+	var lastErr error
+	for _, path := range paths {
+		conn, err := serialDial(ctx, serial.Config{Port: path, BaudRate: cfg.Baud})
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if len(paths) == 1 {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("meshtastic: none of the device candidates connected (%s): %w",
+		strings.Join(paths, ", "), lastErr)
 }
 
 // Hub owns the serial connection to the Meshtastic node and the shared

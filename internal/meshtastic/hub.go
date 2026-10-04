@@ -1567,7 +1567,7 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// retry) re-sends the previous reply instead of executing the
 	// command again.
 	if cli != nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
-		mid := msgIdentity(pkt, text)
+		mid := commandIdentity(pkt, text)
 		cid := id + ":" + mid
 		now := time.Now()
 		h.mu.Lock()
@@ -1740,6 +1740,16 @@ func msgIdentity(pkt *pb.MeshPacket, text string) string {
 		return strconv.FormatUint(uint64(pid), 10)
 	}
 	return "h" + radiocli.ContentID(fmt.Sprintf("%08x", pkt.GetFrom()), text)
+}
+
+// commandIdentity is the dedup identity of one command packet: the
+// packet identity ALWAYS followed by the content fingerprint. A reused
+// packet id with different text is therefore a different command (a new
+// alarm runs instead of replaying the old result), while a byte-identical
+// redelivery maps to the same identity. The durable registry and the
+// event key share this identity.
+func commandIdentity(pkt *pb.MeshPacket, text string) string {
+	return msgIdentity(pkt, text) + ":h" + radiocli.ContentID(fmt.Sprintf("%08x", pkt.GetFrom()), text)
 }
 
 // pruneCmds drops expired command records and bounds the map. The

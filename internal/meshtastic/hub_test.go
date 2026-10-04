@@ -1750,8 +1750,9 @@ func TestHubCommandDedup(t *testing.T) {
 		t.Fatalf("event payload: %v", err)
 	}
 	mu.Unlock()
-	if we.Event.SourceID != "deadbeef:msg:4242" {
-		t.Fatalf("event source id = %q, want the stable packet identity deadbeef:msg:4242", we.Event.SourceID)
+	want := "deadbeef:msg:4242:h" + radiocli.ContentID("deadbeef", "/debug")
+	if we.Event.SourceID != want {
+		t.Fatalf("event source id = %q, want %q (packet id + content fingerprint)", we.Event.SourceID, want)
 	}
 	out := radio.outbound()
 	if len(out) < 2 {

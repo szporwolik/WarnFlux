@@ -227,6 +227,45 @@ func TestHubWeatherSnapshotOffGrid(t *testing.T) {
 	}
 }
 
+// TestHubWeatherOutsideOperationalArea pins the P2 guard: a reading
+// placed outside the operational area never reaches the cache, the
+// weather sink or the station document — the area is checked BEFORE the
+// cache update and the publication.
+func TestHubWeatherOutsideOperationalArea(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		Icon:       "/j",
+		GridSquare: "JO90WW",
+		RadiusKM:   30,
+		StationTTL: 30 * time.Minute,
+	})
+	gotCh := make(chan WeatherReport, 4)
+	hub.SetWeatherSink(func(_ context.Context, w WeatherReport) error {
+		gotCh <- w
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// ~2° of latitude north of the area center — far outside 30 km.
+	hub.Observe(ParseFeedLine("SP9FAR>APRS,TCPIP*:!5230.00N/01900.00E_220/004g005t077r000p000P000h50b09900", time.Now()), "aprs-inet")
+	time.Sleep(150 * time.Millisecond)
+
+	if len(gotCh) != 0 {
+		t.Fatalf("out-of-area weather reached the sink: %+v", <-gotCh)
+	}
+	for _, w := range hub.WeatherSnapshot(time.Now()) {
+		if w.Callsign == "SP9FAR" {
+			t.Fatalf("out-of-area weather leaked into the cache: %+v", w)
+		}
+	}
+	if n := len(sink.payloads(StationsTopicPrefix + "SP9FAR")); n != 0 {
+		t.Fatalf("out-of-area weather station document published %d times, want 0", n)
+	}
+}
+
 func checkFloat(t *testing.T, field string, got *float64, want float64) {
 	t.Helper()
 	if got == nil {

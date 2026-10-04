@@ -78,11 +78,20 @@ func wirePayload(status string, expiry time.Duration) []byte {
 }
 
 // wireEventPayload builds a /events-shaped payload carrying a proper
-// event identity (publisher + event key) plus the lifecycle fields.
+// event identity (publisher + event key) plus the lifecycle fields; the
+// change_type matches the status so the payloads stay realistic.
 func wireEventPayload(status, eventKey string, expiry time.Duration) []byte {
+	changeType := "new"
+	switch status {
+	case "cancelled":
+		changeType = "cancelled"
+	case "expired":
+		changeType = "expired"
+	}
 	b, err := json.Marshal(map[string]any{
-		"event_key": eventKey,
-		"publisher": "publisher-1",
+		"event_key":   eventKey,
+		"publisher":   "publisher-1",
+		"change_type": changeType,
 		"event": map[string]any{
 			"status": status, "expires_at": time.Now().Add(expiry).UTC().Format(time.RFC3339),
 		},
@@ -183,6 +192,86 @@ func TestOutboxMergeByIdentity(t *testing.T) {
 	}
 	if n, err := store.OutboxCount(ctx); err != nil || n != 2 {
 		t.Fatalf("OutboxCount after merge = (%d, %v), want 2 (a merged, b untouched)", n, err)
+	}
+}
+
+// wireVersioned builds a versioned /events payload (publisher + event
+// key + change id) with a realistic change_type.
+func wireVersioned(status string, changeID int64, expiry time.Duration) []byte {
+	changeType := "new"
+	switch status {
+	case "cancelled":
+		changeType = "cancelled"
+	case "expired":
+		changeType = "expired"
+	}
+	b, err := json.Marshal(map[string]any{
+		"event_key": "aprs:v", "publisher": "publisher-1", "change_id": changeID,
+		"change_type": changeType,
+		"event": map[string]any{
+			"status": status, "expires_at": time.Now().Add(expiry).UTC().Format(time.RFC3339),
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// TestOutboxMergeVersionGuard pins the P1: a delayed OLDER transition
+// must never replace a newer pending state. Sequence: cancel v2, then a
+// delayed new v1 — the outbox keeps only the v2 cancellation.
+func TestOutboxMergeVersionGuard(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	// The newer cancellation queues first.
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("cancelled", 2, time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// The delayed older version arrives later.
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("active", 1, time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var status string
+	var changeID int64
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*), MAX(status), MAX(change_id) FROM ingest_outbox WHERE event_key = 'aprs:v'`).
+		Scan(&count, &status, &changeID); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || status != "cancelled" || changeID != 2 {
+		t.Fatalf("after stale v1 = (%d rows, %q, change %d), want 1 cancelled row at version 2", count, status, changeID)
+	}
+
+	// A newer version still replaces.
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("active", 3, time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(
+		`SELECT status, change_id FROM ingest_outbox WHERE event_key = 'aprs:v'`).Scan(&status, &changeID); err != nil {
+		t.Fatal(err)
+	}
+	if status != "active" || changeID != 3 {
+		t.Fatalf("after v3 = (%q, %d), want active at version 3", status, changeID)
+	}
+
+	// The production CommitIngest path applies the same guard.
+	if _, err := store.CommitIngest(ctx, "news", "warnflux/events",
+		wireVersioned("cancelled", 5, time.Hour), commitEvent("v", dispatch.TransitionCancelled)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CommitIngest(ctx, "news", "warnflux/events",
+		wireVersioned("active", 4, time.Hour), commitEvent("v", dispatch.TransitionNew)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(
+		`SELECT status, change_id FROM ingest_outbox WHERE event_key = 'aprs:v'`).Scan(&status, &changeID); err != nil {
+		t.Fatal(err)
+	}
+	if status != "cancelled" || changeID != 5 {
+		t.Fatalf("after stale CommitIngest v4 = (%q, %d), want cancelled at version 5", status, changeID)
 	}
 }
 
@@ -302,5 +391,89 @@ func TestOutboxFullBackpressure(t *testing.T) {
 	}
 	if n, err := store2.OutboxCount(ctx); err != nil || n > outboxRowCap {
 		t.Fatalf("OutboxCount after evictable overflow = (%d, %v), want <= %d", n, err, outboxRowCap)
+	}
+}
+
+// TestOutboxLifecycleFromChangeType pins the P1 root: the queue status
+// derives from the canonical change_type, never from the wire
+// event.status — the simplified builder wrote "active" even for a
+// cancellation, and the retention read exactly that field.
+func TestOutboxLifecycleFromChangeType(t *testing.T) {
+	store := openTemp(t)
+	ctx := context.Background()
+
+	// The buggy builder shape: corrective transition, active status,
+	// expired long ago.
+	buggy := []byte(`{"change_type":"cancelled","event_key":"k","publisher":"p1",` +
+		`"event":{"status":"active","expires_at":"` + time.Now().Add(-time.Hour).UTC().Format(time.RFC3339) + `"}}`)
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events", buggy); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := store.db.QueryRow(`SELECT status FROM ingest_outbox WHERE event_key = 'k'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("queued status = %q, want cancelled (derived from change_type)", status)
+	}
+
+	// Retention must keep the corrective row even though its expiry
+	// passed long ago.
+	if n, err := store.PruneOutbox(ctx, time.Now().Add(-24*time.Hour)); err != nil || n != 0 {
+		t.Fatalf("PruneOutbox = (%d, %v), want 0 (the cancellation never ages out)", n, err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n != 1 {
+		t.Fatalf("OutboxCount after prune = (%d, %v), want 1", n, err)
+	}
+
+	// Legacy payloads without a change_type still fall back to the wire
+	// status (backward compatible).
+	legacy := []byte(`{"event_key":"l","event":{"status":"active","expires_at":"` +
+		time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}}`)
+	if _, err := store.AppendOutbox(ctx, "news", "warnflux/events", legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT status FROM ingest_outbox WHERE event_key = 'l'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "active" {
+		t.Fatalf("legacy status = %q, want active (event.status fallback)", status)
+	}
+}
+
+// TestOutboxMigrationRepairsCancellationStatus pins the v40 repair: rows
+// persisted before the fix (corrective transition stored as active)
+// re-derive their status from the payload's change_type on upgrade.
+func TestOutboxMigrationRepairsCancellationStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repair.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := migrate(db, migrations[:39]); err != nil {
+		t.Fatalf("migrate to v39: %v", err)
+	}
+	buggy := []byte(`{"change_type":"cancelled","change_id":42,"event_key":"aprs:fix","publisher":"p1",` +
+		`"event":{"status":"active","expires_at":"` + time.Now().Add(-time.Hour).UTC().Format(time.RFC3339) + `"}}`)
+	if _, err := db.Exec(
+		`INSERT INTO ingest_outbox (instance_id, topic, payload, created_at_ms, status, expires_at_ms, event_key, publisher)
+		 VALUES ('news', 'warnflux/events', ?, 1, 'active', NULL, 'aprs:fix', 'p1')`, string(buggy)); err != nil {
+		t.Fatalf("insert buggy row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store := openTempAt(t, path)
+	var status string
+	var changeID int64
+	if err := store.db.QueryRow(`SELECT status, change_id FROM ingest_outbox WHERE event_key = 'aprs:fix'`).Scan(&status, &changeID); err != nil {
+		t.Fatal(err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("repaired status = %q, want cancelled", status)
+	}
+	if changeID != 42 {
+		t.Fatalf("backfilled change_id = %d, want 42", changeID)
 	}
 }

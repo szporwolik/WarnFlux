@@ -27,6 +27,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -464,7 +465,11 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		inboxID, err := in.acceptor.CommitIngest(r.Context(), in.cfg.ID, in.eventsTopic(), payload, ev)
 		if err != nil {
 			in.metrics.rejected.Add(1)
-			in.fail(w, http.StatusServiceUnavailable, "local durable acceptance unavailable; retry later")
+			msg := "local durable acceptance unavailable; retry later"
+			if errors.Is(err, storage.ErrOutboxFull) {
+				msg = "durable outbox full (corrective backlog); retry later"
+			}
+			in.fail(w, http.StatusServiceUnavailable, msg)
 			audit("accept_rejected", http.StatusServiceUnavailable, eventKey, len(body))
 			return
 		}
@@ -517,7 +522,11 @@ func (in *Instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if in.acceptor == nil && in.outbox != nil {
 		if _, err := in.outbox.AppendOutbox(r.Context(), in.cfg.ID, in.eventsTopic(), payload); err != nil {
 			in.metrics.rejected.Add(1)
-			in.fail(w, http.StatusServiceUnavailable, "durable outbox unavailable; retry later")
+			msg := "durable outbox unavailable; retry later"
+			if errors.Is(err, storage.ErrOutboxFull) {
+				msg = "durable outbox full (corrective backlog); retry later"
+			}
+			in.fail(w, http.StatusServiceUnavailable, msg)
 			audit("outbox_unavailable", http.StatusServiceUnavailable, eventKey, len(body))
 			return
 		}

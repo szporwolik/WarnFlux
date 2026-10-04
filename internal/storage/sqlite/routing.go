@@ -391,6 +391,33 @@ func (s *Store) RecoverStaleClaims(ctx context.Context, now time.Time) (int64, e
 	return res.RowsAffected()
 }
 
+// RequeueDeliveryByVersion re-arms every durable delivery job of the
+// given event version whose worker already settled it as accepted or
+// confirmed: the ASYNC transmission result (e.g. the meshtastic modem
+// reporting TxFailed after the action returned) revives the job as
+// failed with the retry deadline NOW — a bare progress revoke schedules
+// nothing (reported P1). The attempt budget still applies: the worker
+// claims the revived job only while attempts < maxAttempts, and a
+// budget-exhausted job stays terminally failed until a replayed
+// transition re-arms it with a fresh budget. The version is matched on
+// the persisted payload (the action request carries the hazard's
+// publisher and change id under event.Hazard — the no-tag JSON shape of
+// the dispatch event).
+func (s *Store) RequeueDeliveryByVersion(ctx context.Context, publisher, eventKey string, changeID int64, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE action_fires
+		SET status = 'failed', next_attempt_at_ms = ?
+		WHERE event_key = ?
+		  AND status IN ('accepted', 'confirmed')
+		  AND json_extract(payload, '$.event.Hazard.Publisher') = ?
+		  AND json_extract(payload, '$.event.Hazard.ChangeID') = ?`,
+		now.UnixMilli(), eventKey, publisher, changeID)
+	if err != nil {
+		return 0, fmt.Errorf("re-arm delivery by version for %q: %w", eventKey, err)
+	}
+	return res.RowsAffected()
+}
+
 // PendingDeliveries counts the non-terminal jobs of one action.
 func (s *Store) PendingDeliveries(ctx context.Context, actionID string) (int, error) {
 	var n int

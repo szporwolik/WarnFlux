@@ -323,16 +323,18 @@ func TestOutboxVersionWatermarkSurvivesAck(t *testing.T) {
 	}
 }
 
-// TestOutboxWatermarkExpiryPrune pins the watermark lifetime: once the
-// event's own expiry passed, the guard is gone too — a later transition
-// is harmless (the broker's document is self-expired) and is accepted
-// again instead of being skipped forever.
-func TestOutboxWatermarkExpiryPrune(t *testing.T) {
+// TestOutboxWatermarkRetentionIgnoresExpiry pins the P1: the replay
+// protection outlives the alarm's expiry. The v2 cancellation with an
+// already-passed expires_at keeps its watermark (the input format does
+// not guarantee a delayed older version carries its own expiry — a
+// new v1 WITHOUT one would resurrect the alarm forever). Only the
+// wall-clock retention bound removes the guard.
+func TestOutboxWatermarkRetentionIgnoresExpiry(t *testing.T) {
 	store := openTemp(t)
 	ctx := context.Background()
 
-	// The v2 cancellation's hazard is already expired: the watermark is
-	// pruned on the next sweep.
+	// The v2 cancellation's hazard is already expired — the watermark
+	// still must survive.
 	id, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("cancelled", 2, -time.Hour))
 	if err != nil || id == 0 {
 		t.Fatalf("AppendOutbox expired v2 = (%d, %v)", id, err)
@@ -345,13 +347,38 @@ func TestOutboxWatermarkExpiryPrune(t *testing.T) {
 		`SELECT COUNT(*) FROM ingest_outbox_watermark WHERE event_key = 'aprs:v'`).Scan(&watermark); err != nil {
 		t.Fatal(err)
 	}
-	if watermark != 0 {
-		t.Fatalf("expired watermark rows = %d, want 0 (pruned with its expiry)", watermark)
+	if watermark != 1 {
+		t.Fatalf("watermark rows after expired ack = %d, want 1 (retention ignores the expiry)", watermark)
 	}
 
-	// No guard left: the (equally expired) older version is accepted.
-	if id, err := store.AppendOutbox(ctx, "news", "warnflux/events", wireVersioned("active", 1, -time.Hour)); err != nil || id == 0 {
-		t.Fatalf("AppendOutbox v1 after watermark expiry = (%d, %v), want accepted", id, err)
+	// The delayed older version carries NO expiry at all: it must still
+	// be rejected — the replay protection is independent of the expiry.
+	noExpiry := func(changeID int64) []byte {
+		b, err := json.Marshal(map[string]any{
+			"event_key": "aprs:v", "publisher": "publisher-1", "change_id": changeID,
+			"change_type": "new",
+			"event":       map[string]any{"status": "active"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if id, err := store.AppendOutbox(ctx, "news", "warnflux/events", noExpiry(1)); err != nil || id != 0 {
+		t.Fatalf("stale no-expiry v1 = (%d, %v), want (0, nil)", id, err)
+	}
+	if n, err := store.OutboxCount(ctx); err != nil || n != 0 {
+		t.Fatalf("OutboxCount after stale no-expiry v1 = (%d, %v), want 0", n, err)
+	}
+
+	// Only the wall-clock retention bound removes the guard.
+	old := time.Now().Add(-91 * 24 * time.Hour).UnixMilli()
+	if _, err := store.db.Exec(
+		`UPDATE ingest_outbox_watermark SET updated_at_ms = ? WHERE event_key = 'aprs:v'`, old); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := store.AppendOutbox(ctx, "news", "warnflux/events", noExpiry(1)); err != nil || id == 0 {
+		t.Fatalf("v1 after watermark retention = (%d, %v), want accepted", id, err)
 	}
 }
 

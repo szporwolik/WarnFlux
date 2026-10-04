@@ -13,16 +13,16 @@ import (
 )
 
 // stubSender records every transmission the action hands to the hub and
-// keeps the durable progress ledger: every successful send marks the
-// exact VERSIONED entry (publisher|event key|change id|recipient|
-// channel) as done. Pre-seeding the map simulates the progress rows a
-// previous attempt recorded.
+// keeps the durable progress ledger with the SAME semantics as the hub:
+// a versioned send marks the exact entry (publisher|event key|change
+// id|recipient|channel) as done only when the transmission succeeded —
+// the tests revoke entries to simulate a later TxFailed.
 type stubSender struct {
 	contacts []string
 	channels []int
 	texts    []string
 	err      error
-	// ledgerErr makes both progress calls fail (unreadable ledger).
+	// ledgerErr makes the progress queries fail (unreadable ledger).
 	ledgerErr error
 	// progress keys: "publisher|eventKey|changeID|recipient|channel".
 	progress map[string]bool
@@ -49,22 +49,45 @@ func progressKey(publisher, eventKey string, changeID int64, recipient string, c
 	return fmt.Sprintf("%s|%s|%d|%s|%d", publisher, eventKey, changeID, recipient, channel)
 }
 
-func (s *stubSender) MeshActionProgressDone(_ context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error) {
+// recordProgress mirrors the hub's echo stamp: the transmission result
+// arrives shortly after the send.
+func (s *stubSender) recordProgress(publisher, eventKey string, changeID int64, recipient string, channel int) {
 	if s.ledgerErr != nil {
-		return false, s.ledgerErr
-	}
-	return s.progress[progressKey(publisher, eventKey, changeID, recipient, channel)], nil
-}
-
-func (s *stubSender) RecordMeshActionProgress(_ context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) error {
-	if s.ledgerErr != nil {
-		return s.ledgerErr
+		return
 	}
 	if s.progress == nil {
 		s.progress = map[string]bool{}
 	}
 	s.progress[progressKey(publisher, eventKey, changeID, recipient, channel)] = true
+}
+
+// revokeProgress simulates the hub's TxFailed: the failed transmission
+// becomes retryable again.
+func (s *stubSender) revokeProgress(publisher, eventKey string, changeID int64, recipient string, channel int) {
+	delete(s.progress, progressKey(publisher, eventKey, changeID, recipient, channel))
+}
+
+func (s *stubSender) SendContactMessageVersioned(_ context.Context, addr, text, operator, publisher, eventKey string, changeID int64) error {
+	if err := s.SendContactMessage(nil, addr, text, operator); err != nil {
+		return err
+	}
+	s.recordProgress(publisher, eventKey, changeID, addr, 0)
 	return nil
+}
+
+func (s *stubSender) SendChannelTextVersioned(_ context.Context, idx int, text, operator, publisher, eventKey string, changeID int64) error {
+	if err := s.SendChannelText(nil, idx, text, operator); err != nil {
+		return err
+	}
+	s.recordProgress(publisher, eventKey, changeID, "", idx)
+	return nil
+}
+
+func (s *stubSender) MeshActionProgressDone(_ context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error) {
+	if s.ledgerErr != nil {
+		return false, s.ledgerErr
+	}
+	return s.progress[progressKey(publisher, eventKey, changeID, recipient, channel)], nil
 }
 
 func hazardReq(nodeIDs []string, headline string) action.ActionRequest {
@@ -271,6 +294,47 @@ func TestExecuteNewVersionSameTextResends(t *testing.T) {
 	}
 	if len(stub.contacts) != 2 || len(stub.channels) != 2 {
 		t.Fatalf("after v2 retry = contacts %v broadcasts %v, want no repeats", stub.contacts, stub.channels)
+	}
+}
+
+// TestExecuteResendsAfterFailedTransmission pins the P1: the progress
+// follows the TRANSMISSION OUTCOME, not the accept handoff. A send that
+// was recorded but later reported failed by the radio (TxFailed revokes
+// the entry) must be retried — the group resume must never skip a
+// recipient whose transmission did not make it.
+func TestExecuteResendsAfterFailedTransmission(t *testing.T) {
+	stub := &stubSender{}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
+	req := versionedReq([]string{"a0a85934"}, "Big storm coming", 1)
+
+	// The first attempt transmits and the device echo stamps progress.
+	if err := a.Execute(context.Background(), req); err != nil {
+		t.Fatalf("attempt 1: %v", err)
+	}
+	if len(stub.contacts) != 1 || len(stub.channels) != 1 {
+		t.Fatalf("attempt 1 = contacts %v broadcasts %v, want one each", stub.contacts, stub.channels)
+	}
+
+	// The modem later reports the DM failed: the hub revokes the entry.
+	stub.revokeProgress("publisher-1", req.Event.Hazard.Key, 1, "a0a85934", 0)
+
+	// The group retry must send the failed recipient again.
+	if err := a.Execute(context.Background(), req); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if len(stub.contacts) != 2 || stub.contacts[1] != "a0a85934" {
+		t.Fatalf("contacts after failed tx = %v, want the recipient retransmitted", stub.contacts)
+	}
+	if len(stub.channels) != 1 {
+		t.Fatalf("broadcasts = %v, want still exactly one (the broadcast succeeded)", stub.channels)
+	}
+
+	// The retry's own echo stamps the progress again: a further retry skips.
+	if err := a.Execute(context.Background(), req); err != nil {
+		t.Fatalf("retry 2: %v", err)
+	}
+	if len(stub.contacts) != 2 || len(stub.channels) != 1 {
+		t.Fatalf("after re-stamped retry = contacts %v broadcasts %v, want no repeats", stub.contacts, stub.channels)
 	}
 }
 

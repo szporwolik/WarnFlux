@@ -3591,10 +3591,13 @@ func TestMeshMessageChannelNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// deadbeef has a heard node name but no directory user.
+	hub.SeedNode("deadbeef", "Bunkier", "", 0, 0, time.Now(), []string{"text"})
 	store := &fakeMeshMsgs{rows: []storage.MeshMessage{
 		{Direction: "rx", Channel: "ch0", Text: "hello", At: time.Now()},
 		{Direction: "tx", Channel: "LongFast", Operator: "admin", Text: "73", At: time.Now()},
 		{Direction: "rx", Sender: "abcd1234", Channel: "dm", Hops: 3, Text: "ggg", At: time.Now()},
+		{Direction: "rx", Sender: "deadbeef", Channel: "dm", Text: "from-bunkier", At: time.Now()},
 	}}
 	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
 	// Register the sender's node id in the directory so the history can
@@ -3616,7 +3619,9 @@ func TestMeshMessageChannelNames(t *testing.T) {
 	if strings.Contains(body, "hello") || strings.Contains(body, "LongFast") {
 		t.Errorf("DM partial must hide channel rows: %.300s", body)
 	}
-	for _, want := range []string{"ggg", "sp9kow", "!abcd1234", "via 3 hops"} {
+	// Directory users show their username; unknown senders show the
+	// heard node name (the bare id stays visible as a suffix).
+	for _, want := range []string{"ggg", "sp9kow", "!abcd1234", "via 3 hops", "Bunkier", "!deadbeef"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("messages partial missing %q: %.300s", want, body)
 		}

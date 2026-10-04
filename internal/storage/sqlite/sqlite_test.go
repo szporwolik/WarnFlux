@@ -818,21 +818,47 @@ func TestPruneOutbox(t *testing.T) {
 		t.Fatalf("topics after prune = %v, want [t/valid t/cancel]", topics)
 	}
 
-	// Append-time merge: the newest transition of one topic supersedes
-	// pending older rows.
-	if _, err := store.AppendOutbox(ctx, "news", "t/merge", payload("active", time.Hour)); err != nil {
+	// Append-time merge: the newest transition of one EVENT supersedes
+	// pending older rows (identity = publisher + event key, never the
+	// topic — independent alarms sharing one topic all survive).
+	eventPayload := func(eventKey, status string, expiry time.Duration) []byte {
+		b, err := json.Marshal(map[string]any{
+			"event_key": eventKey,
+			"publisher": "publisher-1",
+			"event": map[string]any{
+				"status": status, "expires_at": time.Now().Add(expiry).UTC().Format(time.RFC3339),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if _, err := store.AppendOutbox(ctx, "news", "t/merge", eventPayload("aprs:same", "active", time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendOutbox(ctx, "news", "t/merge", payload("cancelled", -time.Hour)); err != nil {
+	if _, err := store.AppendOutbox(ctx, "news", "t/merge", eventPayload("aprs:same", "cancelled", -time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// A different event on the same topic never merges away.
+	if _, err := store.AppendOutbox(ctx, "news", "t/merge", eventPayload("aprs:other", "active", time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	var count int
 	var status string
-	if err := store.db.QueryRow(`SELECT COUNT(*), MAX(status) FROM ingest_outbox WHERE topic = 't/merge'`).Scan(&count, &status); err != nil {
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*), MAX(status) FROM ingest_outbox WHERE event_key = 'aprs:same'`).Scan(&count, &status); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 || status != "cancelled" {
 		t.Fatalf("merge result = (%d rows, status %q), want 1 row carrying the newest cancelled state", count, status)
+	}
+	var total int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM ingest_outbox WHERE topic = 't/merge'`).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("rows on t/merge = %d, want 2 (merged same event + independent other event)", total)
 	}
 }
 

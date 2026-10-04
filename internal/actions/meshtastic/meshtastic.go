@@ -47,12 +47,14 @@ var errHubDisabled = errors.New("meshtastic: hub is not configured")
 type sender interface {
 	SendContactMessage(ctx context.Context, addr, text, operator string) error
 	SendChannelText(ctx context.Context, idx int, text, operator string) error
-	// ContactDelivered reports whether the exact text was already
-	// transmitted to addr with a successful state (sent/delivered) —
-	// the durable progress ledger the action resumes from.
-	ContactDelivered(ctx context.Context, addr, text string) (bool, error)
-	// ChannelTextDelivered is the same ledger for the group broadcast.
-	ChannelTextDelivered(ctx context.Context, idx int, text string) (bool, error)
+	// MeshActionProgressDone reports whether the exact versioned
+	// transmission (publisher + event key + change id + recipient +
+	// channel) already succeeded — the durable resume ledger of the
+	// action, independent of the message history.
+	MeshActionProgressDone(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) (bool, error)
+	// RecordMeshActionProgress durably marks one successful
+	// transmission of the exact versioned entry.
+	RecordMeshActionProgress(ctx context.Context, publisher, eventKey string, changeID int64, recipient string, channel int) error
 }
 
 // Action sends SOSNA alerts as direct messages to the routed group
@@ -94,29 +96,53 @@ func (a *Action) Name() string { return Type }
 // ID.
 //
 // The whole group shares one bounded call deadline, so a large group can
-// exceed it mid-list. Every transmission is recorded durably by the hub
-// (the tx history) BEFORE the call returns: a retry therefore resumes
-// exactly where the previous attempt stopped — recipients and the
-// channel broadcast already transmitted successfully are skipped, only
-// the unfinished sends go out again (reported P1: with a whole-group
-// retry restart, early recipients received repeated alerts and the last
-// one never got any).
+// exceed it mid-list. Every successful transmission is recorded durably
+// in a per-VERSION progress ledger (publisher + event key + change id +
+// recipient): a retry therefore resumes exactly where the previous
+// attempt stopped — recipients and the channel broadcast already
+// transmitted are skipped, only the unfinished sends go out again
+// (reported P1: with a whole-group retry restart, early recipients
+// received repeated alerts and the last one never got any). The ledger
+// is keyed by the message VERSION, never by the text: a NEW alert whose
+// text matches a historical message still transmits (reported P1).
 func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if req.Event.Kind != dispatch.EventHazardTransition || req.Event.Hazard == nil {
 		return nil // nothing to say for non-hazard events
 	}
 	text := a.textFor(ctx, req)
 
+	// The durable ledger identity: the message version. Legacy payloads
+	// without a publisher/version get no ledger (fail-open: always
+	// send, at-least-once).
+	var pub, key string
+	var ver int64
+	if req.Event.Hazard != nil {
+		pub, key, ver = req.Event.Hazard.Publisher, req.Event.Hazard.Key, req.Event.Hazard.ChangeID
+	}
+	ledger := pub != "" && ver > 0
+	done := func(recipient string, channel int) bool {
+		if !ledger {
+			return false
+		}
+		d, err := a.hub.MeshActionProgressDone(ctx, pub, key, ver, recipient, channel)
+		if err != nil {
+			return false // ledger unreadable: fail-open, deliver again
+		}
+		return d
+	}
+	mark := func(recipient string, channel int) {
+		if !ledger {
+			return
+		}
+		_ = a.hub.RecordMeshActionProgress(ctx, pub, key, ver, recipient, channel)
+	}
+
 	// The group channel is the base delivery: every alert is published
 	// there when configured, with or without registered node IDs. The
 	// durable ledger skips a broadcast an earlier attempt already got
 	// out successfully.
 	if a.cfg.Channel > 0 {
-		done, err := a.hub.ChannelTextDelivered(ctx, a.cfg.Channel, text)
-		if err != nil {
-			done = false // ledger unreadable: fail-open, deliver again
-		}
-		if !done {
+		if !done("", a.cfg.Channel) {
 			if err := a.pace(ctx); err != nil {
 				return err
 			}
@@ -124,20 +150,17 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 				return fmt.Errorf("meshtastic: %w", err)
 			}
 			a.last = time.Now()
+			mark("", a.cfg.Channel)
 		}
 	}
 
 	// Registered node IDs additionally get a direct message with
 	// per-recipient delivery tracking. Recipients whose exact message
-	// already has a successful tx row are skipped: only the unfinished
-	// sends are retried, so every member is reached exactly once across
-	// attempts.
+	// version already has a progress row are skipped: only the
+	// unfinished sends are retried, so every member is reached exactly
+	// once across attempts.
 	for _, id := range req.MeshNodeIDs {
-		done, err := a.hub.ContactDelivered(ctx, id, text)
-		if err != nil {
-			done = false // ledger unreadable: fail-open, deliver again
-		}
-		if done {
+		if done(id, 0) {
 			continue
 		}
 		if err := a.pace(ctx); err != nil {
@@ -147,6 +170,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 			return fmt.Errorf("meshtastic: %s: %w", id, err)
 		}
 		a.last = time.Now()
+		mark(id, 0)
 	}
 	return nil
 }

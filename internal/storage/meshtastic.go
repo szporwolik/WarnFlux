@@ -45,10 +45,10 @@ type MeshtasticMessageFilter struct {
 	// Peer is a node id whose conversation to show: rx rows sent BY the
 	// node plus tx rows addressed TO it. Empty = no peer condition.
 	Peer string
-	// Text is an exact content match ("" = no text condition). The
-	// meshtastic action uses it as its durable delivery-progress
-	// ledger: a retry resumes only the recipients whose exact alert
-	// text has no successful tx row yet.
+	// Text is an exact content match ("" = no text condition). It is a
+	// generic history filter; the meshtastic action does NOT use the
+	// history for its delivery progress — that lives in the dedicated
+	// versioned mesh_action_progress ledger.
 	Text string
 }
 

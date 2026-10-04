@@ -57,7 +57,7 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now().Truncate(time.Millisecond)
 
-	if err := s.RecordMeshtasticMessage(ctx, "tx", "", "dm", "hello", "admin", 0, at); err != nil {
+	if err := s.RecordMeshtasticMessage(ctx, "tx", "", "", "dm", "hello", "admin", 0, at); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	rows, err := s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx"}, 10, 0)
@@ -83,7 +83,7 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 	}
 
 	// A second row at the same instant with different text stays untouched.
-	if err := s.RecordMeshtasticMessage(ctx, "tx", "", "dm", "other", "admin", 0, at); err != nil {
+	if err := s.RecordMeshtasticMessage(ctx, "tx", "", "", "dm", "other", "admin", 0, at); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	if err := s.UpdateMeshtasticMessageStatus(ctx, "failed", at, "hello"); err != nil {
@@ -122,7 +122,7 @@ func TestMeshtasticMessageChannelFilter(t *testing.T) {
 		{Direction: "rx", Channel: "dm", Text: "rx-dm", At: at},
 	}
 	for _, m := range rows {
-		if err := s.RecordMeshtasticMessage(ctx, m.Direction, m.Sender, m.Channel, m.Text, m.Operator, m.Hops, m.At); err != nil {
+		if err := s.RecordMeshtasticMessage(ctx, m.Direction, m.Sender, m.Recipient, m.Channel, m.Text, m.Operator, m.Hops, m.At); err != nil {
 			t.Fatalf("record %s: %v", m.Text, err)
 		}
 	}
@@ -175,5 +175,63 @@ func TestMeshtasticMessageChannelFilter(t *testing.T) {
 	}
 	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx"}); err != nil || n != 1 {
 		t.Fatalf("tx count = %d, %v", n, err)
+	}
+}
+
+// TestMeshtasticMessagePeerFilter pins the DM conversation filter: one
+// peer's rx rows plus the tx rows addressed to them, combined with the
+// dm-channel base and the direction narrowing.
+func TestMeshtasticMessagePeerFilter(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	at := time.Now().Truncate(time.Millisecond)
+
+	rows := []storage.MeshMessage{
+		{Direction: "rx", Sender: "a0a85934", Channel: "dm", Text: "from-a", At: at},
+		{Direction: "tx", Recipient: "a0a85934", Channel: "dm", Text: "to-a", At: at},
+		{Direction: "rx", Sender: "deadbeef", Channel: "dm", Text: "from-b", At: at},
+		{Direction: "tx", Recipient: "deadbeef", Channel: "dm", Text: "to-b", At: at},
+		{Direction: "tx", Channel: "dm", Text: "legacy-no-recipient", At: at},
+		{Direction: "rx", Sender: "a0a85934", Channel: "SP9MOA", Text: "channel-row", At: at},
+	}
+	for _, m := range rows {
+		if err := s.RecordMeshtasticMessage(ctx, m.Direction, m.Sender, m.Recipient, m.Channel, m.Text, m.Operator, m.Hops, m.At); err != nil {
+			t.Fatalf("record %s: %v", m.Text, err)
+		}
+	}
+
+	// The conversation with a0a85934: dm rx from them + dm tx to them.
+	got, err := s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "dm", Peer: "a0a85934"}, 10, 0)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("peer filter = %+v, %v", got, err)
+	}
+	for _, m := range got {
+		if m.Text != "from-a" && m.Text != "to-a" {
+			t.Fatalf("peer filter leaked %s", m.Text)
+		}
+	}
+
+	// Direction narrows the conversation further.
+	got, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "dm", Direction: "rx", Peer: "a0a85934"}, 10, 0)
+	if err != nil || len(got) != 1 || got[0].Text != "from-a" {
+		t.Fatalf("rx peer filter = %+v, %v", got, err)
+	}
+	got, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "dm", Direction: "tx", Peer: "a0a85934"}, 10, 0)
+	if err != nil || len(got) != 1 || got[0].Text != "to-a" {
+		t.Fatalf("tx peer filter = %+v, %v", got, err)
+	}
+
+	// The peers list carries the distinct dm participants only.
+	peers, err := s.MeshtasticPeers(ctx)
+	if err != nil || len(peers) != 2 || peers[0] != "a0a85934" || peers[1] != "deadbeef" {
+		t.Fatalf("peers = %v, %v", peers, err)
+	}
+
+	// Counts mirror the filter.
+	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "dm", Peer: "a0a85934"}); err != nil || n != 2 {
+		t.Fatalf("peer count = %d, %v", n, err)
+	}
+	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "dm"}); err != nil || n != 5 {
+		t.Fatalf("dm count = %d, %v", n, err)
 	}
 }

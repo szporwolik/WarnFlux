@@ -717,6 +717,15 @@ CREATE TABLE command_events (
 );
 `,
 	},
+	{
+		// v38: DM conversation filtering. A tx history row records the
+		// recipient node id so the admin DM tab can show one peer's full
+		// conversation (rx from them + tx to them). Broadcasts and rx
+		// rows keep the empty default.
+		SQL: `
+ALTER TABLE meshtastic_messages ADD COLUMN recipient TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

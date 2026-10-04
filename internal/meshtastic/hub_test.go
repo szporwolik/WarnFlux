@@ -1078,10 +1078,10 @@ type captureRecorder struct {
 	got []Message
 }
 
-func (c *captureRecorder) RecordMeshtasticMessage(_ context.Context, direction, sender, channel, text, operator string, hops int, at time.Time) error {
+func (c *captureRecorder) RecordMeshtasticMessage(_ context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.got = append(c.got, Message{Direction: direction, Sender: sender, Channel: channel, Text: text, Operator: operator, Hops: hops, At: at})
+	c.got = append(c.got, Message{Direction: direction, Sender: sender, Recipient: recipient, Channel: channel, Text: text, Operator: operator, Hops: hops, At: at})
 	return nil
 }
 

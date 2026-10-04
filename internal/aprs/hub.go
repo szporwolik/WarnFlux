@@ -638,15 +638,27 @@ func (h *Hub) apply(op hubOp) {
 				w.Longitude = rec.state.position.Longitude
 			}
 		}
-		// Local cache first: /weather reads it directly, so a broker
-		// outage (off-grid) never hides a measurement the radio heard.
-		at := w.Time
-		if at.IsZero() {
-			at = h.now()
-		}
-		h.weatherCache[p.Src] = weatherEntry{at: at, report: *w}
 		h.mu.Unlock()
-		weather = w
+		// Operational-area gate FIRST (reported P2: the cache stored the
+		// measurement before the distance check): a reading we can place
+		// outside the area never reaches the cache nor the pipeline.
+		// Unplaceable reports (no coordinates, unknown station) pass
+		// through — fail-open.
+		if (w.Latitude != 0 || w.Longitude != 0) &&
+			DistanceKM(h.cfg.AreaLat, h.cfg.AreaLon, w.Latitude, w.Longitude) > h.cfg.AreaRadiusKM {
+			h.filtered.Add(1)
+		} else {
+			// Local cache first: /weather reads it directly, so a broker
+			// outage (off-grid) never hides a measurement the radio heard.
+			at := w.Time
+			if at.IsZero() {
+				at = h.now()
+			}
+			h.mu.Lock()
+			h.weatherCache[p.Src] = weatherEntry{at: at, report: *w}
+			h.mu.Unlock()
+			weather = w
+		}
 	}
 
 	// Infrastructure filter: objects, digipeaters, gateways, weather

@@ -104,6 +104,42 @@ func TestMeshtasticHazardsDigestConfig(t *testing.T) {
 	}
 }
 
+// TestMeshtasticTransportConfig pins the node-link selection: the
+// default is serial, "tcp" requires a host, unknown values are rejected
+// and the host passes through trimmed.
+func TestMeshtasticTransportConfig(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, "meshtastic:\n  enabled: false\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Meshtastic.Transport != "" {
+		t.Errorf("default Transport = %q, want empty (serial)", cfg.Meshtastic.Transport)
+	}
+
+	cfg, err = Load(writeTempConfig(t, "meshtastic:\n  transport: tcp\n  host: 192.168.1.40\n"))
+	if err != nil {
+		t.Fatalf("Load(tcp): %v", err)
+	}
+	if cfg.Meshtastic.Transport != "tcp" || cfg.Meshtastic.Host != "192.168.1.40" {
+		t.Errorf("tcp config = transport %q host %q", cfg.Meshtastic.Transport, cfg.Meshtastic.Host)
+	}
+
+	cfg, err = Load(writeTempConfig(t, "meshtastic:\n  transport: SERIAL\n"))
+	if err != nil {
+		t.Fatalf("Load(serial): %v", err)
+	}
+	if cfg.Meshtastic.Transport != "serial" {
+		t.Errorf("SERIAL normalized = %q, want lowercase serial", cfg.Meshtastic.Transport)
+	}
+
+	if _, err := Load(writeTempConfig(t, "meshtastic:\n  transport: tcp\n")); err == nil {
+		t.Error("tcp without host accepted, want rejection")
+	}
+	if _, err := Load(writeTempConfig(t, "meshtastic:\n  transport: udp\n  host: 10.0.0.1\n")); err == nil {
+		t.Error("unknown transport accepted, want rejection")
+	}
+}
+
 func TestLoadFullConfig(t *testing.T) {
 	cfg, err := Load(writeTempConfig(t, exampleConfig))
 	if err != nil {

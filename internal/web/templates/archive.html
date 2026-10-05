@@ -5,7 +5,7 @@
     {{range .Events}}
     <article class="hazard sev-bd-{{sevClass .Severity}}">
       <div class="hazard-head">
-        <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
+        <span class="sev sev-{{sevClass .Severity}}">{{sevLabel $.Lang .Severity}}</span>
         {{if eq .Status "active"}}<span class="badge ok">{{tr $.Lang "archive.active"}}</span>{{else if eq .Status "cancelled"}}<span class="badge bad">{{tr $.Lang "archive.cancelled"}}</span>{{else}}<span class="badge muted">{{tr $.Lang "archive.ended"}}</span>{{end}}
         <h3>{{.Headline}}</h3>
       </div>

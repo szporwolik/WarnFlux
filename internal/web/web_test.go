@@ -976,30 +976,38 @@ func TestPublicHomePage(t *testing.T) {
 		t.Errorf("hazards not ordered by severity: extreme@%d moderate@%d", extremeAt, moderateAt)
 	}
 
-	// The important (moderate+) section is always rendered and open by
-	// default; the minor hazard lives in the separate collapsed details.
-	importantAt := strings.Index(html, `<details class="home-section home-important" open>`)
-	if importantAt < 0 {
-		t.Error("important section missing or not open by default")
+	// Groups are 1:1 with the severity scale; moderate and above start
+	// expanded, only minor collapsed.
+	if !strings.Contains(html, `<details class="home-section home-sev-extreme" open>`) {
+		t.Error("extreme group missing or not open by default")
+	}
+	if !strings.Contains(html, `<details class="home-section home-sev-moderate" open>`) {
+		t.Error("moderate group missing or not open by default")
+	}
+	if strings.Contains(html, `<details class="home-section home-sev-minor" open`) {
+		t.Error("minor group must be collapsed by default")
+	}
+	if !strings.Contains(html, `class="sev sev-extreme">Extreme</span>`) {
+		t.Error("extreme badge must carry the localized severity label")
+	}
+	if !strings.Contains(html, `class="sev sev-minor">Minor</span>`) {
+		t.Error("minor badge must carry the localized severity label")
 	}
 	if strings.Contains(html, "No active messages.") {
-		t.Error("important section must not show the empty note while hazards are active")
+		t.Error("groups must not show the empty note while hazards are active")
 	}
 
 	minorAt := strings.Index(html, "Drobne prace drogowe")
-	detailsAt := strings.Index(html, `<details class="home-section home-minor">`)
+	detailsAt := strings.Index(html, `<details class="home-section home-sev-minor">`)
 	if minorAt < 0 || detailsAt < 0 || minorAt < detailsAt {
-		t.Errorf("minor hazard must sit inside the collapsed details: minor@%d details@%d",
+		t.Errorf("minor hazard must sit inside the collapsed minor group: minor@%d details@%d",
 			minorAt, detailsAt)
 	}
-	if strings.Contains(html, `<details class="home-section home-minor" open`) {
-		t.Error("minor section must be collapsed by default")
+	if !strings.Contains(html, "Minor") {
+		t.Error("minor group summary missing")
 	}
-	if !strings.Contains(html, "Informational") {
-		t.Error("minor section summary missing")
-	}
-	if !strings.Contains(html, `class="count">1</span>`) {
-		t.Error("minor section should carry its own count badge of 1")
+	if !strings.Contains(html, `<summary>Minor <span class="count count-live">1</span></summary>`) {
+		t.Error("minor group should carry its own count badge of 1")
 	}
 
 	// The TERYT code wall is filtered from the public card: the named
@@ -1070,9 +1078,9 @@ func TestPublicSourcesPage(t *testing.T) {
 	}
 }
 
-// TestPublicHomeMinorOnly pins the collapsed-section rendering when every
-// active hazard is low priority: no empty-state box (the page is not
-// "empty"), just the collapsed minor details with its own count badge.
+// TestPublicHomeMinorOnly pins the collapsed-group rendering when every
+// active hazard is low priority: no empty-state note (the page is not
+// "empty"), just the collapsed minor group with its own count badge.
 func TestPublicHomeMinorOnly(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -1093,8 +1101,8 @@ func TestPublicHomeMinorOnly(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET / = %d, want 200", resp.StatusCode)
 	}
-	if !strings.Contains(html, `<details class="home-section home-minor">`) {
-		t.Error("collapsed minor details missing")
+	if !strings.Contains(html, `<details class="home-section home-sev-minor">`) {
+		t.Error("collapsed minor group missing")
 	}
 	if !strings.Contains(html, "Tylko prace drogowe") {
 		t.Error("minor hazard headline missing")
@@ -1102,16 +1110,18 @@ func TestPublicHomeMinorOnly(t *testing.T) {
 	if strings.Contains(html, "No active hazards.") {
 		t.Error("the old full-page empty box must be gone")
 	}
-	// The important section is empty but always visible: it carries the
-	// no-active-messages note.
-	if !strings.Contains(html, "No active messages.") {
-		t.Error("minor-only page must carry the no-active-messages note in the important section")
+	// Only groups that have hazards render: with a single minor hazard
+	// there is no severe/extreme group and no empty-state note.
+	if strings.Contains(html, "home-sev-severe") || strings.Contains(html, "home-sev-extreme") {
+		t.Error("empty severity groups must not render")
+	}
+	if strings.Contains(html, "No active messages.") {
+		t.Error("minor-only page must not carry the empty-state note")
 	}
 }
 
-// TestPublicHomeAllEmpty pins the fully empty home page: the important
-// section renders with the no-active-messages note and no minor details
-// exist.
+// TestPublicHomeAllEmpty pins the fully empty home page: the empty-state
+// note renders instead of any severity group.
 func TestPublicHomeAllEmpty(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -1119,14 +1129,11 @@ func TestPublicHomeAllEmpty(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET / = %d, want 200", resp.StatusCode)
 	}
-	if !strings.Contains(html, `<details class="home-section home-important" open>`) {
-		t.Error("important section missing")
+	if strings.Contains(html, "home-section home-sev-") {
+		t.Error("no severity groups must render when nothing is active")
 	}
 	if !strings.Contains(html, "No active messages.") {
-		t.Error("empty important section must say there are no active messages")
-	}
-	if strings.Contains(html, "home-section home-minor") {
-		t.Error("minor details must not render when there are no minor hazards")
+		t.Error("empty home must say there are no active messages")
 	}
 }
 

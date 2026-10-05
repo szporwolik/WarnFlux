@@ -39,6 +39,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/sysinfo"
 	"github.com/szporwolik/WarnFlux/internal/trail"
@@ -782,6 +783,14 @@ func templateFuncs() template.FuncMap {
 			default:
 				return "unknown"
 			}
+		},
+		// sevLabel renders a canonical severity in the page language;
+		// non-canonical strings pass through untouched.
+		"sevLabel": func(lang, sev string) string {
+			if _, ok := severity.Rank(sev); ok {
+				return i18n.T(lang, "sev."+sev)
+			}
+			return sev
 		},
 		"contains": func(list []string, s string) bool {
 			for _, v := range list {

@@ -126,7 +126,7 @@
           <tbody>
             {{range .Items}}
             <tr>
-              <td><span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span></td>
+              <td><span class="sev sev-{{sevClass .Severity}}">{{sevLabel $.Lang .Severity}}</span></td>
               <td><strong>{{.Headline}}</strong></td>
               <td>{{.Event}}{{if .Urgency}} <span class="muted">· {{.Urgency}}{{if .Certainty}}/{{.Certainty}}{{end}}</span>{{end}}</td>
               <td>{{.Areas}}</td>

@@ -182,8 +182,6 @@ var en = map[string]string{
 	"archive.back":       "Back to messages",
 	"sources.back":       "Back to home",
 	"home.alerts.head":   "Active messages",
-	"home.important":     "Important",
-	"home.informational": "Informational",
 	"home.no_active":     "No active messages.",
 	"home.sources.head":  "Where the data comes from",
 	"home.sources.note":  "The alerts are collected from these official feeds and networks.",
@@ -410,6 +408,13 @@ var en = map[string]string{
 	"warnings.delivery_trail": "delivery trail",
 	"warnings.none":           "No active messages",
 	"warnings.of":             "of",
+
+	// Canonical severity labels (public cards, groups, badges).
+	"sev.minor":    "Minor",
+	"sev.moderate": "Moderate",
+	"sev.severe":   "Severe",
+	"sev.extreme":  "Extreme",
+	"sev.unknown":  "Unknown",
 
 	// Actions panel (dashboard).
 	"actions.title":      "Actions",
@@ -873,8 +878,6 @@ var pl = map[string]string{
 	"archive.back":       "Wróć do komunikatów",
 	"sources.back":       "Wróć na stronę główną",
 	"home.alerts.head":   "Aktywne komunikaty",
-	"home.important":     "Ważne",
-	"home.informational": "Informacyjne",
 	"home.no_active":     "Brak aktywnych komunikatów.",
 	"home.sources.head":  "Skąd pochodzą dane",
 	"home.sources.note":  "Alerty są zbierane z tych oficjalnych źródeł i sieci.",
@@ -1099,6 +1102,13 @@ var pl = map[string]string{
 	"warnings.delivery_trail": "historia doręczeń",
 	"warnings.none":           "Brak aktywnych komunikatów",
 	"warnings.of":             "z",
+
+	// Etykiety poziomów ważności (karty publiczne, grupy, plakietki).
+	"sev.minor":    "Drobne",
+	"sev.moderate": "Umiarkowane",
+	"sev.severe":   "Poważne",
+	"sev.extreme":  "Ekstremalne",
+	"sev.unknown":  "Nieznane",
 
 	// Actions panel (dashboard).
 	"actions.title":      "Akcje",

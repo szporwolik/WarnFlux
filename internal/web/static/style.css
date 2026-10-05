@@ -1745,18 +1745,14 @@ tr.click-send:hover td { background: var(--surface-hi); }
   border: 1px solid var(--border);
   background: var(--surface-raised);
 }
-.home-section > .home-alerts { margin-top: 0.6rem; }
-.home-important > .home-alerts {
-  /* Important cards keep the full layout; only the minor tail is compact. */
-  margin-top: 0.7rem;
-}
-.home-minor {
+.home-section > .home-alerts { margin-top: 0.7rem; }
+/* Severity groups sit stacked; every group after the first gets a soft
+   separator so the sections read as distinct blocks. */
+.home-section + .home-section {
   margin-top: 0.9rem;
   border-top: 1px dashed var(--border-strong);
   padding-top: 0.55rem;
 }
-.home-minor .hazard { padding: 0.5rem 0.7rem; box-shadow: none; }
-.home-minor .hazard-head h3 { font-size: 0.95rem; }
 .home-none {
   margin: 0.4rem 0 0;
   color: var(--muted);

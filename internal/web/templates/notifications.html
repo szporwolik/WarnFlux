@@ -40,13 +40,14 @@
     {{if .Deliveries}}
     <table class="plugins nt-deliveries">
       <thead>
-        <tr><th>{{tr .Lang "notif.action"}}</th><th>{{tr .Lang "notif.status"}}</th><th>{{tr .Lang "notif.attempts"}}</th><th>{{tr .Lang "notif.at"}}</th></tr>
+        <tr><th>{{tr .Lang "notif.action"}}</th><th>{{tr .Lang "notif.status"}}</th><th>{{tr .Lang "notif.to"}}</th><th>{{tr .Lang "notif.attempts"}}</th><th>{{tr .Lang "notif.at"}}</th></tr>
       </thead>
       <tbody>
         {{range .Deliveries}}
         <tr>
           <td class="mono">{{.ActionID}}</td>
           <td><span class="badge nt-status-{{.Status}}">{{tr $.Lang (printf "notif.status.%s" .Status)}}</span></td>
+          <td class="muted nt-to">{{if .Recipients}}{{.Recipients}}{{else}}—{{end}}</td>
           <td>{{.Attempts}}</td>
           <td class="muted">{{timeShort .FiredAt}}</td>
         </tr>

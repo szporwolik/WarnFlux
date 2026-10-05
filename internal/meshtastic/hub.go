@@ -361,8 +361,12 @@ type Node struct {
 	// Sends lists the observed packet kinds from this node
 	// (telemetry, position, text), stable order.
 	Sends []string
-	Lat   float64
-	Lon   float64
+	// Hops is how many mesh hops the LAST packet from this node
+	// travelled before reaching us (0 = direct; also 0 for legacy
+	// directory entries restored without a packet).
+	Hops int
+	Lat  float64
+	Lon  float64
 	// Telemetry is the latest telemetry the node broadcast (nil when
 	// the node never sent any).
 	Telemetry *Telemetry
@@ -1651,11 +1655,22 @@ func (h *Hub) markStatus(ps *pendingSend, status string) {
 	}
 }
 
+// packetHops reports how many mesh hops the packet already travelled:
+// the sender's hop_start minus the remaining hop_limit. Direct packets
+// arrive with hop_start == hop_limit (0 hops).
+func packetHops(pkt *pb.MeshPacket) int {
+	h := int(pkt.GetHopStart()) - int(pkt.GetHopLimit())
+	if h < 0 {
+		return 0
+	}
+	return h
+}
+
 // recordSignal marks one observed packet kind on the sender's node and
 // refreshes its last-seen time (any packet means the node is alive).
 // The node is created when it is not in the directory yet.
-func (h *Hub) recordSignal(from uint32, signal string) {
-	id := fmt.Sprintf("%08x", from)
+func (h *Hub) recordSignal(pkt *pb.MeshPacket, signal string) {
+	id := fmt.Sprintf("%08x", pkt.GetFrom())
 	h.mu.Lock()
 	if h.self != nil && id == h.self.ID {
 		h.mu.Unlock()
@@ -1671,6 +1686,7 @@ func (h *Hub) recordSignal(from uint32, signal string) {
 		n.Sends = append(n.Sends, signal)
 		h.nodesDirty = true
 	}
+	n.Hops = packetHops(pkt)
 	n.LastSeen = time.Now()
 	h.mu.Unlock()
 }
@@ -1696,7 +1712,7 @@ func (h *Hub) receiveTelemetry(pkt *pb.MeshPacket, decoded *pb.Data) {
 	tele := &pb.Telemetry{}
 	if err := proto.Unmarshal(decoded.GetPayload(), tele); err != nil {
 		// Undecodable telemetry still proves the node broadcasts it.
-		h.recordSignal(pkt.GetFrom(), SignalTelemetry)
+		h.recordSignal(pkt, SignalTelemetry)
 		return
 	}
 	id := fmt.Sprintf("%08x", pkt.GetFrom())
@@ -1788,6 +1804,7 @@ func (h *Hub) receiveTelemetry(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	t.At = time.Now()
 	n.LastSeen = time.Now()
+	n.Hops = packetHops(pkt)
 	copyN := *n
 	copyN.Telemetry = cloneTelemetry(n.Telemetry)
 	h.mu.Unlock()
@@ -1827,6 +1844,7 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 		n.Short = sn
 	}
 	n.LastSeen = time.Now()
+	n.Hops = packetHops(pkt)
 	copyN := *n
 	copyN.Telemetry = cloneTelemetry(n.Telemetry)
 	h.mu.Unlock()
@@ -1858,6 +1876,7 @@ func (h *Hub) receivePosition(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	n.Lat, n.Lon = lat, lon
 	n.LastSeen = time.Now()
+	n.Hops = packetHops(pkt)
 	if !slices.Contains(n.Sends, SignalPosition) {
 		n.Sends = append(n.Sends, SignalPosition)
 		h.nodesDirty = true
@@ -1881,7 +1900,7 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	if selfID != "" && id == selfID {
 		return // our own transmission echoed by the radio
 	}
-	h.recordSignal(pkt.GetFrom(), SignalText)
+	h.recordSignal(pkt, SignalText)
 	channel := h.channelNameFor(pkt)
 	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", int(pkt.GetHopStart()), time.Now())
 
@@ -2562,6 +2581,7 @@ func (h *Hub) publishStation(n *Node) {
 		"name":      n.Name,
 		"short":     n.Short,
 		"sends":     n.Sends,
+		"hops":      n.Hops,
 		"lat":       n.Lat,
 		"lon":       n.Lon,
 		"last_seen": n.LastSeen.UTC().Format(time.RFC3339),

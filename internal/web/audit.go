@@ -43,6 +43,7 @@ type auditView struct {
 	NavAPRS          bool
 	NavMessages      bool
 	NavMeshtastic    bool
+	NavMeshMap       bool
 	MaxEntries       int
 }
 

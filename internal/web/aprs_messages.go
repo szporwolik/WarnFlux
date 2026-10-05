@@ -68,6 +68,7 @@ type aprsMessagesView struct {
 	NavAccount       bool
 	NavAudit         bool
 	NavMessages      bool
+	NavAPRS          bool
 	NavMeshtastic    bool
 
 	Messages []aprsMessageView

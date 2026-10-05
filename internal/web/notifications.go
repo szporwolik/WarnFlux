@@ -47,6 +47,7 @@ type notificationsView struct {
 	NavGroups        bool
 	NavLogs          bool
 	NavAudit         bool
+	NavAPRS          bool
 	NavMessages      bool
 	NavMeshtastic    bool
 	NavTraffic       bool

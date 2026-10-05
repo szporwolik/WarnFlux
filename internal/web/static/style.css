@@ -1810,6 +1810,29 @@ tr.click-send:hover td { background: var(--surface-hi); }
   color: var(--muted);
   text-decoration: underline;
 }
+/* Admin APRS map browser: the same look as the home map inside the
+   admin card layout. */
+.aprs-admin-map-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+#aprs-admin-map {
+  width: 100%;
+  height: min(calc(100dvh - 16rem), 46rem);
+  min-height: 24rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+#aprs-admin-map.leaflet-container {
+  font-family: inherit;
+}
+#aprs-map-filter { margin: 0.5rem 0; }
+@media (max-width: 640px) {
+  #aprs-admin-map { min-height: 18rem; height: 60dvh; }
+}
 /* Wide screens: the category lists collapse into a 1/4 column on the
    left while the map takes the remaining 3/4 and stays pinned while the
    lists scroll. Narrow screens keep the stacked flow (map on top). */

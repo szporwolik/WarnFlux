@@ -1239,6 +1239,59 @@ func TestHomeAPRSMapTab(t *testing.T) {
 	if len(got) != 1 || got[0].Callsign != "SP9XYZ-7" || got[0].Position == nil {
 		t.Fatalf("stations = %+v, want SP9XYZ-7 with a position", got)
 	}
+
+	// A weather station (symbol '_') is excluded from the public list —
+	// the weather layer draws it — but the admin map asks for all=1.
+	hub.Observe(aprs.ParseFeedLine("SP9WX>APRS,TCPIP*:!5056.25N/01952.50E_220/004g005t077", time.Now()), "aprs-inet")
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, body := env.get("/api/aprs/stations?all=1")
+		var all []aprs.StationDocument
+		if err := json.Unmarshal([]byte(body), &all); err != nil {
+			t.Fatalf("stations all payload = %s: %v", body, err)
+		}
+		if len(all) >= 2 {
+			got = all
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(got) != 2 {
+		t.Fatalf("stations?all=1 = %d entries, want 2 (weather station included)", len(got))
+	}
+	foundWX := false
+	for _, doc := range got {
+		if doc.Callsign == "SP9WX" {
+			foundWX = true
+		}
+	}
+	if !foundWX {
+		t.Fatalf("stations?all=1 missing the weather station: %+v", got)
+	}
+}
+
+// TestAPRSMapPage pins the admin APRS station-map browser: the page
+// renders the ALL / APRS-IS / APRS-RF filter and the map element.
+func TestAPRSMapPage(t *testing.T) {
+	hub, err := aprs.NewHub(aprs.HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: 25, StationTTL: 30 * time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvWithHub(t, hub)
+	env.login()
+
+	resp, body := env.get("/aprs")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /aprs = %d", resp.StatusCode)
+	}
+	for _, want := range []string{`id="aprs-admin-map"`, `data-filter="all"`, `data-filter="inet"`, `data-filter="radio"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/aprs missing %s", want)
+		}
+	}
 }
 
 // TestComposeFlow pins the officer-facing communication module: the form

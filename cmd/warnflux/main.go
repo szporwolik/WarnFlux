@@ -44,6 +44,7 @@ import (
 	mqttout "github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/routing"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 	"github.com/szporwolik/WarnFlux/internal/trail"
@@ -137,6 +138,33 @@ func dispatchLocalChange(ingress *dispatch.Ingress, logger *slog.Logger, change 
 // radioAlertTTL bounds a radio-raised /alert hazard (4 hours by
 // default).
 const radioAlertTTL = 4 * time.Hour
+
+// hazardsFromMirror projects the dispatch mirror's active hazards,
+// most severe first (Snapshot sorts them). minSeverity keeps only that
+// level and above ("" = the full list).
+func hazardsFromMirror(mirror *state.State, minSeverity string) []meshtastic.ActiveHazard {
+	snap := mirror.Snapshot()
+	filter := minSeverity != ""
+	minRank := 0
+	if filter {
+		minRank, _ = severity.Rank(minSeverity)
+	}
+	out := make([]meshtastic.ActiveHazard, 0, len(snap.Hazards))
+	for _, h := range snap.Hazards {
+		if filter {
+			if r, _ := severity.Rank(h.Severity); r < minRank {
+				continue
+			}
+		}
+		out = append(out, meshtastic.ActiveHazard{
+			Headline:    h.Headline,
+			Description: h.Description,
+			EffectiveAt: h.EffectiveAt,
+			ExpiresAt:   h.ExpiresAt,
+		})
+	}
+	return out
+}
 
 // hazardsForRadio renders the active-hazard list for the public /hazard
 // radio command: a header plus one Zulu-windowed line per hazard — the
@@ -686,22 +714,17 @@ func run(configPath string, checkConfig bool) error {
 	mirror := state.New()
 	// The active hazards from the dispatch state mirror, most severe
 	// first (Snapshot sorts them), one Zulu-windowed line per hazard.
-	// Shared by the hourly emcom-channel digest and the public /hazard
-	// radio command, so both always speak the same list.
+	// The hourly emcom-channel digest speaks severe-and-above only —
+	// pushing every minor road-works entry onto the mesh would drown
+	// the channel in noise. The /hazard command keeps the full list
+	// (an operator explicitly asked for it).
 	hazardSource := func() []meshtastic.ActiveHazard {
-		snap := mirror.Snapshot()
-		out := make([]meshtastic.ActiveHazard, 0, len(snap.Hazards))
-		for _, h := range snap.Hazards {
-			out = append(out, meshtastic.ActiveHazard{
-				Headline:    h.Headline,
-				Description: h.Description,
-				EffectiveAt: h.EffectiveAt,
-				ExpiresAt:   h.ExpiresAt,
-			})
-		}
-		return out
+		return hazardsFromMirror(mirror, "")
 	}
-	meshtasticHub.SetActiveHazardSource(hazardSource)
+	digestSource := func() []meshtastic.ActiveHazard {
+		return hazardsFromMirror(mirror, severity.Severe)
+	}
+	meshtasticHub.SetActiveHazardSource(digestSource)
 	// /hazard: a public command — every active hazard, one Zulu-windowed
 	// line each (the same form the hourly digest broadcasts). The
 	// channels split the reply into one message per line.

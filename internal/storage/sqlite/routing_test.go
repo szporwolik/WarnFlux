@@ -530,6 +530,9 @@ func TestRecentDeliveries(t *testing.T) {
 	if got[0].ActionID != "mesh-main" || got[0].Status != "saved" || got[0].Attempts != 0 {
 		t.Fatalf("row = %+v, want the action id, saved status and zero attempts", got[0])
 	}
+	if got[0].Payload != `{"id":"x"}` {
+		t.Fatalf("payload = %q, want the raw delivery-job JSON", got[0].Payload)
+	}
 	if got[0].FiredAt.IsZero() || got[0].FiredAt.Before(at) {
 		t.Fatalf("fired_at = %v, want the enqueue time", got[0].FiredAt)
 	}

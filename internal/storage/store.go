@@ -262,6 +262,8 @@ type DeliveryRecord struct {
 	Attempts      int
 	FiredAt       time.Time
 	NextAttemptAt time.Time
+	// Payload is the raw delivery-job JSON (recipients ride along).
+	Payload string
 }
 
 // ActiveEventLister is an OPTIONAL EventStore capability: enumerating the

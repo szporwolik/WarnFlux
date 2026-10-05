@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -74,6 +76,10 @@ type deliveryRow struct {
 	Status   string    `json:"status"`
 	Attempts int       `json:"attempts"`
 	FiredAt  time.Time `json:"fired_at"`
+	// Recipients summarizes who the job targeted (mesh node IDs,
+	// email count, APRS callsigns, Discord handles) — the delivery
+	// history must answer "to whom" without opening the raw payload.
+	Recipients string `json:"recipients,omitempty"`
 }
 
 // handleNotificationsPage renders the delivery history: the most recent
@@ -138,13 +144,52 @@ func (s *Server) recentDeliveries(limit int) map[string][]deliveryRow {
 	}
 	for _, r := range rows {
 		out[r.EventKey] = append(out[r.EventKey], deliveryRow{
-			ActionID: r.ActionID,
-			Status:   r.Status,
-			Attempts: r.Attempts,
-			FiredAt:  r.FiredAt,
+			ActionID:   r.ActionID,
+			Status:     r.Status,
+			Attempts:   r.Attempts,
+			FiredAt:    r.FiredAt,
+			Recipients: recipientSummary(r.Payload),
 		})
 	}
 	return out
+}
+
+// recipientSummary renders the target list of one delivery job from its
+// raw ledger payload: mesh node IDs in full, then the email count, the
+// APRS callsigns (up to three, then +N) and the Discord handle count.
+// Unparseable or empty payloads yield an empty string.
+func recipientSummary(payload string) string {
+	if payload == "" {
+		return ""
+	}
+	var p struct {
+		BCC            []string `json:"bcc"`
+		APRSCallsigns  []string `json:"aprs_callsigns"`
+		MeshNodeIDs    []string `json:"mesh_node_ids"`
+		DiscordHandles []string `json:"discord_handles"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return ""
+	}
+	var parts []string
+	if len(p.MeshNodeIDs) > 0 {
+		parts = append(parts, "mesh: "+strings.Join(p.MeshNodeIDs, ", "))
+	}
+	if len(p.BCC) > 0 {
+		parts = append(parts, fmt.Sprintf("email: %d", len(p.BCC)))
+	}
+	if len(p.APRSCallsigns) > 0 {
+		shown, suffix := p.APRSCallsigns, ""
+		if len(shown) > 3 {
+			suffix = fmt.Sprintf(" +%d", len(shown)-3)
+			shown = shown[:3]
+		}
+		parts = append(parts, "APRS: "+strings.Join(shown, ", ")+suffix)
+	}
+	if len(p.DiscordHandles) > 0 {
+		parts = append(parts, fmt.Sprintf("discord: %d", len(p.DiscordHandles)))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // handlePartialNotifications serves the full current trail list as JSON:

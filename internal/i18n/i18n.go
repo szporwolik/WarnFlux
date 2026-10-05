@@ -106,7 +106,8 @@ var en = map[string]string{
 	"nav.logs":          "Logs",
 	"nav.audit":         "Audit log",
 	"nav.mqtt":          "MQTT",
-	"nav.messages":      "APRS",
+	"nav.messages":      "APRS msgs",
+	"nav.aprs":          "APRS",
 	"nav.meshtastic":    "Meshtastic",
 	"nav.config":        "Config",
 
@@ -176,6 +177,12 @@ var en = map[string]string{
 	"messages.beacon_failed": "beacon failed: %s",
 	"messages.beacon_now":    "Send beacon now",
 	"messages.to_ph":         "Callsign (e.g. SP9XXX)",
+
+	"aprsmap.title":    "APRS stations",
+	"aprsmap.hint":     "Every station the APRS hub currently holds: heard over our own radio (APRS-RF) and through the internet feed (APRS-IS). The popup shows the last digipeater path, comment and counts; the filter shows what each backend delivered.",
+	"aprsmap.path":     "Path",
+	"aprsmap.packets":  "Packets",
+	"aprsmap.disabled": "The APRS hub is disabled.",
 
 	// Public home page.
 	"home.tab.alerts":    "Active messages",
@@ -809,7 +816,8 @@ var pl = map[string]string{
 	"nav.logs":          "Logi",
 	"nav.audit":         "Dziennik audytu",
 	"nav.mqtt":          "MQTT",
-	"nav.messages":      "APRS",
+	"nav.messages":      "Wiadomości APRS",
+	"nav.aprs":          "APRS",
 	"nav.meshtastic":    "Meshtastic",
 	"nav.config":        "Konfiguracja",
 
@@ -879,6 +887,12 @@ var pl = map[string]string{
 	"messages.beacon_failed": "beacon nie powiódł się: %s",
 	"messages.beacon_now":    "Wyślij beacon teraz",
 	"messages.to_ph":         "Znak (np. SP9XXX)",
+
+	"aprsmap.title":    "Stacje APRS",
+	"aprsmap.hint":     "Wszystkie stacje trzymane teraz przez hub APRS: słyszane przez nasze radio (APRS-RF) i przez internet (APRS-IS). Dymek pokazuje ostatnią ścieżkę digipeaterów, komentarz i liczniki; filtr pokazuje, co dostarczył każdy backend.",
+	"aprsmap.path":     "Ścieżka",
+	"aprsmap.packets":  "Pakiety",
+	"aprsmap.disabled": "Hub APRS jest wyłączony.",
 
 	"home.tab.alerts":    "Aktywne komunikaty",
 	"home.tab.map":       "Mapa sytuacyjna",

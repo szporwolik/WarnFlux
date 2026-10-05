@@ -109,6 +109,7 @@ type meshtasticView struct {
 	NavEmcom         bool
 	NavAccount       bool
 	NavAudit         bool
+	NavAPRS          bool
 	NavMessages      bool
 	NavMeshtastic    bool
 

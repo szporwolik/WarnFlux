@@ -319,6 +319,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /messages", s.requireAdmin(s.handleAPRSMessagesPage))
 	s.mux.Handle("POST /messages/send", s.requireAdmin(s.handleAPRSSend))
 	s.mux.Handle("POST /messages/beacon", s.requireAdmin(s.handleAPRSBeacon))
+	s.mux.Handle("GET /aprs", s.requireAdmin(s.handleAPRSMapPage))
 	s.mux.Handle("GET /meshtastic", s.requireAdmin(s.handleMeshtasticPage))
 	s.mux.Handle("GET /partials/meshtastic", s.requireAdminPartial(s.handlePartialMeshtastic))
 	s.mux.Handle("GET /partials/messages", s.requireAdminPartial(s.handlePartialMessages))

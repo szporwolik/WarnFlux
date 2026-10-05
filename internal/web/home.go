@@ -632,8 +632,12 @@ func (s *Server) handleAPRSStations(w http.ResponseWriter, r *http.Request) {
 	}
 	stations := s.aprs.Stations()
 	out := stations[:0:0]
+	// The public home map skips weather stations (symbol '_') because
+	// the weather layer draws them; the admin APRS map asks for all=1
+	// to see every heard station.
+	all := r.URL.Query().Get("all") == "1"
 	for _, doc := range stations {
-		if doc.Symbol == "_" {
+		if doc.Symbol == "_" && !all {
 			continue
 		}
 		out = append(out, doc)

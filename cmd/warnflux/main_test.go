@@ -16,6 +16,34 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/weatherreport"
 )
 
+// TestHazardsFromMirrorSevereOnly pins the mesh-digest filter: the
+// hourly channel drop keeps severe-and-above only (the mirror carries
+// plenty of minor road-works noise), while the full projection keeps
+// every active hazard for the on-demand /hazard command.
+func TestHazardsFromMirrorSevereOnly(t *testing.T) {
+	m := state.New()
+	seed := func(sev, head string) {
+		if err := m.AddOrUpdateActive("local", "warnflux/active/x/"+head, state.Hazard{
+			EventKey: head, Source: "x", Severity: sev, Headline: head, Status: "active",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("minor", "M1")
+	seed("moderate", "M2")
+	seed("severe", "S1")
+	seed("extreme", "X1")
+	seed("unknown", "U1")
+
+	got := hazardsFromMirror(m, "severe")
+	if len(got) != 2 || got[0].Headline != "X1" || got[1].Headline != "S1" {
+		t.Fatalf("severe+ projection = %+v, want [X1 S1]", got)
+	}
+	if all := hazardsFromMirror(m, ""); len(all) != 5 {
+		t.Fatalf("full projection = %d entries, want 5", len(all))
+	}
+}
+
 func testResolverLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

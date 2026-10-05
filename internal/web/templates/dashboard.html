@@ -109,7 +109,7 @@
     {{range .Hazards}}
     <article class="warning">
       <div class="w-head">
-        <span class="sev sev-{{sevClass .Severity}}">{{.Severity}}</span>
+        <span class="sev sev-{{sevClass .Severity}}">{{sevLabel $.Lang .Severity}}</span>
         <h3>{{.Headline}}</h3>
       </div>
       <div class="w-meta">

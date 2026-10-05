@@ -29,7 +29,7 @@
 
 {{define "notif-item"}}<article class="notif{{if eq .Trail.Outcome "failed"}} notif-failed{{end}}" id="notif-{{.Trail.Key}}" data-key="{{.Trail.Key}}">
   <div class="notif-head">
-    <span class="sev sev-{{sevClass .Trail.Severity}}">{{.Trail.Severity}}</span>
+    <span class="sev sev-{{sevClass .Trail.Severity}}">{{sevLabel .Lang .Trail.Severity}}</span>
     <strong>{{trf .Lang "notif.source_alert" .Trail.Source}}</strong>
     {{if .Trail.Headline}}<span class="nt-title">{{.Trail.Headline}}</span>{{end}}
     <span class="muted nt-time">{{timeFullStr .Trail.ReceivedAt}}</span>

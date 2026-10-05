@@ -39,6 +39,15 @@ type publicHazardView struct {
 	UpdatedAt   time.Time
 }
 
+// homeSeverityGroup is one severity bucket on the public home page: the
+// canonical level, its hazards and whether the group renders expanded.
+type homeSeverityGroup struct {
+	Severity string
+	Count    int
+	Hazards  []publicHazardView
+	Open     bool
+}
+
 // homeView is the PUBLIC home page model. The login form is deliberately
 // not part of it: the sign-in lives behind the top-right icon button.
 type homeView struct {
@@ -61,16 +70,11 @@ type homeView struct {
 	LandingLabel string
 
 	ActiveCount int
-	Hazards     []publicHazardView
 
-	// MainCount counts the important (moderate and above) hazards shown
-	// in the always-rendered Important section.
-	MainCount int
-
-	// MinorCount and MinorHazards carry the low-priority tail (minor and
-	// unknown severity) shown in a collapsed section on the home page.
-	MinorCount   int
-	MinorHazards []publicHazardView
+	// Groups is one entry per non-empty severity level — extreme,
+	// severe, moderate, minor (most severe first). Moderate and above
+	// render expanded; only minor starts collapsed.
+	Groups []homeSeverityGroup
 
 	// AprsEnabled turns the second home tab into the APRS neighbourhood
 	// map: centered on our locator, range circle, radar overlay and the
@@ -327,15 +331,25 @@ func displayAreas(tokens []string) []string {
 	return out
 }
 
-// fillHomeHazards fills the hazard-related fields of a home view:
-// severity-split cards, counts and the client-side JSON payload. nets
-// carries the already-read EMCOM network list (nil = read it here).
+// fillHomeHazards fills the hazard-related fields of a home view: the
+// severity-split groups (one per level), counts and the client-side JSON
+// payload. nets carries the already-read EMCOM network list (nil = read
+// it here).
 func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 	hazards := s.collectHazards(nets)
 	v.ActiveCount = len(hazards)
-	v.Hazards = make([]publicHazardView, 0, len(hazards))
-	v.MinorHazards = make([]publicHazardView, 0)
-	minorRank, _ := severity.Rank(severity.Minor)
+
+	// Groups follow the canonical scale 1:1, most severe first; the
+	// minor group also absorbs unknown severities.
+	rankExtreme, _ := severity.Rank(severity.Extreme)
+	rankSevere, _ := severity.Rank(severity.Severe)
+	rankModerate, _ := severity.Rank(severity.Moderate)
+	groupOrder := []string{severity.Extreme, severity.Severe, severity.Moderate, severity.Minor}
+	buckets := make(map[string]*homeSeverityGroup, len(groupOrder))
+	for _, sev := range groupOrder {
+		buckets[sev] = &homeSeverityGroup{Severity: sev}
+	}
+
 	hazardsJSON := make([]homeHazardJSON, 0, len(hazards))
 	for _, h := range hazards {
 		view := publicHazardView{
@@ -354,14 +368,17 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 			ExpiresAt:   h.ExpiresAt,
 			UpdatedAt:   h.UpdatedAt,
 		}
-		// Moderate and above stay up front; minor/unknown drop into the
-		// collapsed low-priority section so routine road-info noise does
-		// not push real communications down the page.
-		if r, _ := severity.Rank(h.Severity); r > minorRank {
-			v.Hazards = append(v.Hazards, view)
-		} else {
-			v.MinorHazards = append(v.MinorHazards, view)
+		r, _ := severity.Rank(h.Severity)
+		key := severity.Minor
+		switch {
+		case r >= rankExtreme:
+			key = severity.Extreme
+		case r >= rankSevere:
+			key = severity.Severe
+		case r >= rankModerate:
+			key = severity.Moderate
 		}
+		buckets[key].Hazards = append(buckets[key].Hazards, view)
 		hazardsJSON = append(hazardsJSON, hazardJSONFromState(h, view.Areas))
 	}
 	if b, err := json.Marshal(hazardsJSON); err == nil {
@@ -369,10 +386,20 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 	} else {
 		v.HazardsJSON = template.JS("[]")
 	}
-	v.MinorCount = len(v.MinorHazards)
-	v.MainCount = len(v.Hazards)
-	sortHazards(v.Hazards)
-	sortHazards(v.MinorHazards)
+
+	// Only non-empty groups render; moderate and above start expanded.
+	v.Groups = make([]homeSeverityGroup, 0, len(groupOrder))
+	for _, sev := range groupOrder {
+		g := buckets[sev]
+		if len(g.Hazards) == 0 {
+			continue
+		}
+		sortHazards(g.Hazards)
+		g.Count = len(g.Hazards)
+		r, _ := severity.Rank(sev)
+		g.Open = r >= rankModerate
+		v.Groups = append(v.Groups, *g)
+	}
 }
 
 // hazardTime renders an optional time as RFC3339 (empty for nil) for the

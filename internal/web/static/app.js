@@ -16,6 +16,11 @@
   var I18N = {
     en: {
       "map.layer.hazards": "Messages",
+      "sev.minor": "Minor",
+      "sev.moderate": "Moderate",
+      "sev.severe": "Severe",
+      "sev.extreme": "Extreme",
+      "sev.unknown": "Unknown",
       "map.layer.stations": "Stations",
       "map.layer.meshtastic": "Meshtastic",
       "map.layer.weather": "Weather",
@@ -133,6 +138,11 @@
     },
     pl: {
       "map.layer.hazards": "Komunikaty",
+      "sev.minor": "Drobne",
+      "sev.moderate": "Umiarkowane",
+      "sev.severe": "Poważne",
+      "sev.extreme": "Ekstremalne",
+      "sev.unknown": "Nieznane",
       "map.layer.stations": "Stacje",
       "map.layer.meshtastic": "Meshtastic",
       "map.layer.weather": "Pogoda",
@@ -264,6 +274,14 @@
       s = s.replace(/%[sd]/, String(arguments[i] === undefined ? "" : arguments[i]));
     }
     return s;
+  }
+
+  // sevLabel renders a canonical severity in the page language;
+  // anything off the canonical scale passes through untouched.
+  var SEV_KEYS = { unknown: 1, minor: 1, moderate: 1, severe: 1, extreme: 1 };
+  function sevLabel(sev) {
+    var s = String(sev || "").toLowerCase();
+    return SEV_KEYS[s] ? tr("sev." + s) : String(sev || "");
   }
 
 
@@ -538,7 +556,7 @@
 
     var sev = document.createElement("span");
     sev.className = "sev sev-" + (trail.severity || "unknown").toLowerCase();
-    sev.textContent = trail.severity || "unknown";
+    sev.textContent = sevLabel(trail.severity || "unknown");
     head.appendChild(sev);
 
     var src = document.createElement("strong");
@@ -1813,7 +1831,7 @@
             color: HAZARD_COLORS[e.severity] || HAZARD_COLORS.unknown,
             icon: BADGE_GLYPHS.warning,
             title: esc(e.headline || e.event),
-            value: esc(e.severity || "unknown"),
+            value: esc(sevLabel(e.severity)),
             body: body
           });
           var icon = hazardIcon(e.severity);
@@ -3579,7 +3597,7 @@
     }
     html += "</span>";
     if (h.severity) {
-      html += '<span class="wf-pop-val">' + hzEsc(h.severity) + "</span>";
+      html += '<span class="wf-pop-val">' + hzEsc(sevLabel(h.severity)) + "</span>";
     }
     html += '</div><div class="wf-pop-body hz-body">';
     if (h.status === "expired" || h.status === "cancelled") {

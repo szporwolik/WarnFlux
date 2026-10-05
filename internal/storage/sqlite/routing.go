@@ -509,7 +509,7 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]storage.Deli
 		return nil, fmt.Errorf("limit must be positive, got %d", limit)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_key, action_id, status, attempts, fired_at_ms, next_attempt_at_ms
+		SELECT event_key, action_id, status, attempts, fired_at_ms, next_attempt_at_ms, payload
 		FROM action_fires ORDER BY fired_at_ms DESC, event_key ASC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("recent deliveries: %w", err)
@@ -520,7 +520,7 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]storage.Deli
 	for rows.Next() {
 		var r storage.DeliveryRecord
 		var firedMs, nextMs int64
-		if err := rows.Scan(&r.EventKey, &r.ActionID, &r.Status, &r.Attempts, &firedMs, &nextMs); err != nil {
+		if err := rows.Scan(&r.EventKey, &r.ActionID, &r.Status, &r.Attempts, &firedMs, &nextMs, &r.Payload); err != nil {
 			return nil, fmt.Errorf("scan delivery record: %w", err)
 		}
 		r.FiredAt = time.UnixMilli(firedMs).UTC()

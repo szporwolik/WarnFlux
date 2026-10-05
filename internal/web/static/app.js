@@ -113,6 +113,7 @@
       "notif.action": "Action",
       "notif.status": "Status",
       "notif.attempts": "attempts",
+      "notif.to": "Recipients",
       "notif.at": "at",
       "notif.no_deliveries": "No delivery attempts recorded.",
       "notif.status.saved": "queued",
@@ -235,6 +236,7 @@
       "notif.action": "Akcja",
       "notif.status": "Status",
       "notif.attempts": "próby",
+      "notif.to": "Odbiorcy",
       "notif.at": "o",
       "notif.no_deliveries": "Brak zarejestrowanych prób dostarczenia.",
       "notif.status.saved": "w kolejce",
@@ -605,7 +607,7 @@
       table.className = "plugins nt-deliveries";
       var thead = document.createElement("thead");
       var hr = document.createElement("tr");
-      [tr("notif.action"), tr("notif.status"), tr("notif.attempts"), tr("notif.at")].forEach(function (h) {
+      [tr("notif.action"), tr("notif.status"), tr("notif.to"), tr("notif.attempts"), tr("notif.at")].forEach(function (h) {
         var th = document.createElement("th");
         th.textContent = h;
         hr.appendChild(th);
@@ -629,12 +631,16 @@
         c2.appendChild(badge);
         row.appendChild(c2);
         var c3 = document.createElement("td");
-        c3.textContent = String(d.attempts);
+        c3.className = "muted nt-to";
+        c3.textContent = d.recipients || "—";
         row.appendChild(c3);
         var c4 = document.createElement("td");
-        c4.className = "muted";
-        c4.textContent = hhmmss(d.fired_at);
+        c4.textContent = String(d.attempts);
         row.appendChild(c4);
+        var c5 = document.createElement("td");
+        c5.className = "muted";
+        c5.textContent = hhmmss(d.fired_at);
+        row.appendChild(c5);
         tbody.appendChild(row);
       });
       table.appendChild(tbody);

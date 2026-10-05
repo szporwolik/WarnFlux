@@ -593,8 +593,10 @@ func TestNotificationsDeliveriesRender(t *testing.T) {
 	u := newFakeUsers()
 	now := time.Now()
 	u.deliveries = []storage.DeliveryRecord{
-		{EventKey: "imgw:1", ActionID: "smtp-alerts", Status: "succeeded", Attempts: 1, FiredAt: now},
-		{EventKey: "imgw:1", ActionID: "meshtastic-alerts", Status: "accepted", Attempts: 2, FiredAt: now.Add(time.Second)},
+		{EventKey: "imgw:1", ActionID: "smtp-alerts", Status: "succeeded", Attempts: 1, FiredAt: now,
+			Payload: `{"bcc":["a@x.pl","b@x.pl"],"aprs_callsigns":[],"mesh_node_ids":[],"discord_handles":null}`},
+		{EventKey: "imgw:1", ActionID: "meshtastic-alerts", Status: "accepted", Attempts: 2, FiredAt: now.Add(time.Second),
+			Payload: `{"bcc":[],"aprs_callsigns":["SP9SPM","SP9SPM-7","SP9SPM-9","SP9WSS-2"],"mesh_node_ids":["a0a85934"],"discord_handles":null}`},
 	}
 	env := newTestEnvWithUsers(t, u)
 
@@ -611,6 +613,13 @@ func TestNotificationsDeliveriesRender(t *testing.T) {
 		`class="badge nt-status-accepted"`,
 		`class="mono">smtp-alerts</td>`,
 		`class="mono">meshtastic-alerts</td>`,
+		// The recipients column answers "to whom" — mesh node IDs in
+		// full, emails as a count, APRS callsigns up to three.
+		"Recipients",
+		"mesh: a0a85934",
+		"email: 2",
+		// html/template escapes the "+" of the overflow marker.
+		"APRS: SP9SPM, SP9SPM-7, SP9SPM-9 &#43;1",
 		// The audit steps must render AFTER the table: the old timeHMS
 		// type error truncated the page mid-table, dropping every step,
 		// every later delivery row and the rest of the document.
@@ -628,9 +637,10 @@ func TestNotificationsDeliveriesRender(t *testing.T) {
 	_, body := env.get("/partials/notifications")
 	var feed struct {
 		Deliveries map[string][]struct {
-			ActionID string `json:"action_id"`
-			Status   string `json:"status"`
-			Attempts int    `json:"attempts"`
+			ActionID   string `json:"action_id"`
+			Status     string `json:"status"`
+			Attempts   int    `json:"attempts"`
+			Recipients string `json:"recipients"`
 		} `json:"deliveries"`
 	}
 	if err := json.Unmarshal([]byte(body), &feed); err != nil {
@@ -640,6 +650,9 @@ func TestNotificationsDeliveriesRender(t *testing.T) {
 	if len(rows) != 2 || rows[0].ActionID != "smtp-alerts" || rows[0].Status != "succeeded" ||
 		rows[1].ActionID != "meshtastic-alerts" || rows[1].Status != "accepted" || rows[1].Attempts != 2 {
 		t.Fatalf("feed deliveries = %+v", rows)
+	}
+	if rows[0].Recipients != "email: 2" || rows[1].Recipients != "mesh: a0a85934 · APRS: SP9SPM, SP9SPM-7, SP9SPM-9 +1" {
+		t.Fatalf("feed recipients = %q / %q", rows[0].Recipients, rows[1].Recipients)
 	}
 }
 

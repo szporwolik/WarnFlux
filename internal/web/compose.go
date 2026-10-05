@@ -474,6 +474,62 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard) {
 	})
 }
 
+// AutoExpireCompose reconciles module-issued communications whose
+// expires_at has passed. The per-communication AfterFunc timers die
+// with the process, so a restart (or a missed timer) must never leave
+// an active communication alive past its validity — the maintenance
+// loop runs this periodically and the expiry is durable: local record
+// first, then the dispatch transition, then the broker sync. Returns
+// the number of communications expired.
+func (s *Server) AutoExpireCompose(ctx context.Context) (int, error) {
+	cs, ok := s.users.(composeStore)
+	if !ok {
+		return 0, nil // mirror-only: the mirror prunes expired entries itself
+	}
+	rows, err := cs.ComposeHazards(ctx)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	expired := 0
+	for _, row := range rows {
+		if row.Status != "active" {
+			continue
+		}
+		var h state.Hazard
+		if err := json.Unmarshal(row.State, &h); err != nil {
+			s.logger.Warn("compose: local record corrupt during auto-expiry", "event_key", row.EventKey, "error", err)
+			continue
+		}
+		if h.ExpiresAt == nil || h.ExpiresAt.After(now) {
+			continue
+		}
+		// Local record first: a failed save must not dispatch the
+		// expiry (the communication stays active and the manual expire
+		// remains available).
+		if err := cs.SaveComposeHazard(ctx, storage.ComposeHazard{
+			EventKey: row.EventKey, State: row.State, Status: "expired", UpdatedAt: now,
+		}); err != nil {
+			s.logger.Warn("compose: auto-expiry local record failed", "event_key", row.EventKey, "error", err)
+			continue
+		}
+		if s.ingress.Enqueue(composeTransition(h, dispatch.TransitionExpired)) == dispatch.Rejected {
+			s.logger.Warn("compose: dispatch queue full, auto-expiry transition rejected", "event_key", row.EventKey)
+			continue
+		}
+		if s.pub != nil {
+			go func(key string) {
+				if err := s.pub.ExpireActive(composeSource, key); err != nil {
+					s.logger.Warn("compose: auto-expiry broker sync failed", "event_key", key, "error", err)
+				}
+			}(row.EventKey)
+		}
+		s.logger.Info("compose: communication auto-expired (reconciliation)", "event_key", row.EventKey)
+		expired++
+	}
+	return expired, nil
+}
+
 // composeStateJSON marshals one hazard for the local record (nil on
 // failure; callers log and continue — the dispatch inbox already holds
 // the transition).

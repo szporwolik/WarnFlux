@@ -31,7 +31,7 @@ func NewManager(cfgs []config.Receiver, st *state.State, ingress *dispatch.Ingre
 	m := &Manager{logger: logger}
 	for _, cfg := range cfgs {
 		if !cfg.Enabled {
-			m.receivers = append(m.receivers, &Receiver{cfg: cfg, stats: &Stats{}, logger: logger, status: Status{
+			m.receivers = append(m.receivers, &Receiver{cfg: cfg, stats: &Stats{}, logger: logger, done: make(chan struct{}), status: Status{
 				ID:      cfg.ID,
 				Enabled: false,
 				Broker:  sanitizeBroker(cfg.Broker),
@@ -84,6 +84,9 @@ func (m *Manager) StartAll() {
 					"receiver", r.cfg.ID, "error", err)
 			}
 		}(r)
+		// Self-healing: a wedged inbound stream (connected but silent)
+		// triggers a session reset after the stall threshold.
+		go r.StartStallMonitor(0, 0)
 	}
 }
 

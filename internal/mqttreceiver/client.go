@@ -24,6 +24,20 @@ const subscribeTimeout = 10 * time.Second
 // because receivers feed the dispatch ingress.
 const maxReconnectInterval = 30 * time.Second
 
+// Inbound-stall watchdog defaults. A wedged delivery path is otherwise
+// silent: the connection stays "connected" and the subscriptions look
+// fine while no message ever arrives again (the broker can stop sending
+// without the client noticing). The app publishes status/heartbeat
+// documents every 30s, so a connected receiver that heard nothing for
+// stallThreshold has a broken inbound stream.
+const (
+	stallCheckInterval  = 30 * time.Second
+	stallThreshold      = 3 * time.Minute
+	stallEscalateAfter  = 2                // resets before the clean-session escalation
+	stallEscalateWindow = 10 * time.Minute // repeated stalls outside this window restart the escalation
+	stallConnectTimeout = 15 * time.Second // bound for the reset Connect attempt
+)
+
 // maxPasswordFileBytes bounds the receiver password file read.
 const maxPasswordFileBytes = 64 * 1024
 
@@ -56,6 +70,7 @@ type Status struct {
 	Malformed     int64
 	Oversized     int64
 	Dropped       int64
+	StallResets   int64
 }
 
 // Receiver owns one independent MQTT client: its connection, subscriptions,
@@ -70,6 +85,20 @@ type Receiver struct {
 
 	mu     sync.Mutex
 	status Status
+
+	// connMu serializes Connect calls (startup and stall-monitor session
+	// resets) so the client pointer is never swapped concurrently.
+	connMu sync.Mutex
+	// done closes on Disconnect and stops the stall monitor.
+	done     chan struct{}
+	doneOnce sync.Once
+	// cleanOnce forces the next Connect to use a clean session: the
+	// broker discards the persistent session (queued messages, in-flight
+	// state and subscriptions) and the receiver starts from a clean slate.
+	cleanOnce bool
+	// stallResets counts stall-monitor session resets (visible in the
+	// receiver status and metrics).
+	stallResets int64
 	// resync re-publishes the local-first state (panel communications,
 	// EMCOM networks) after a (re)connect, so broker outages never lose
 	// them permanently.
@@ -110,6 +139,7 @@ func NewReceiver(cfg config.Receiver, st *state.State, ingress *dispatch.Ingress
 		cfg:    cfg,
 		stats:  stats,
 		logger: logger,
+		done:   make(chan struct{}),
 		status: Status{
 			ID:            cfg.ID,
 			Enabled:       cfg.Enabled,
@@ -145,12 +175,23 @@ func (r *Receiver) SetResync(fn func()) {
 // After that, paho reconnects automatically in the background; a failed
 // initial attempt is an error here, never fatal to the process.
 func (r *Receiver) Connect(ctx context.Context) error {
+	r.connMu.Lock()
+	defer r.connMu.Unlock()
+
+	// A stall-monitor escalation may request one clean-session connect:
+	// the flag is consumed here so the next auto-reconnect goes back to
+	// the configured session mode.
+	r.mu.Lock()
+	cleanOnce := r.cleanOnce
+	r.cleanOnce = false
+	r.mu.Unlock()
+
 	opts := mqtt.NewClientOptions().
 		AddBroker(r.cfg.Broker).
 		SetClientID(r.cfg.ClientID).
 		SetKeepAlive(r.cfg.KeepAlive).
 		SetConnectTimeout(r.cfg.ConnectTimeout).
-		SetCleanSession(r.cfg.CleanSession).
+		SetCleanSession(r.cfg.CleanSession || cleanOnce).
 		SetOrderMatters(false).
 		SetAutoReconnect(true).
 		SetConnectRetry(true).
@@ -260,9 +301,106 @@ func (r *Receiver) subscribe() error {
 	return nil
 }
 
+// StartStallMonitor watches the inbound stream and resets the MQTT
+// session when messages stop arriving while the client claims to be
+// connected. The first reset preserves the persistent session (queued
+// and redelivered backlog is kept); repeated stalls inside a short
+// window escalate to a clean-session reset, which discards the
+// broker-side session state entirely. interval and threshold exist for
+// tests; production uses the package defaults.
+func (r *Receiver) StartStallMonitor(interval, threshold time.Duration) {
+	if interval <= 0 {
+		interval = stallCheckInterval
+	}
+	if threshold <= 0 {
+		threshold = stallThreshold
+	}
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		stalls := 0
+		var firstStallAt time.Time
+		for {
+			select {
+			case <-r.done:
+				return
+			case <-t.C:
+			}
+
+			r.mu.Lock()
+			connected, last := r.status.Connected, r.status.LastMessage
+			r.mu.Unlock()
+			if !firstStallAt.IsZero() && time.Since(firstStallAt) > stallEscalateWindow {
+				stalls = 0
+				firstStallAt = time.Time{}
+			}
+			if connected && !last.IsZero() && time.Since(last) < threshold {
+				// Traffic flowing: healthy, restart the escalation.
+				stalls = 0
+				firstStallAt = time.Time{}
+				continue
+			}
+			if !connected || last.IsZero() {
+				// Reconnecting or no traffic yet: keep the escalation state
+				// so a reset-in-progress still counts towards escalation.
+				continue
+			}
+			if firstStallAt.IsZero() {
+				firstStallAt = time.Now()
+			}
+			stalls++
+			clean := stalls >= stallEscalateAfter
+			r.logger.Warn("receiver: inbound stream stalled; resetting MQTT session",
+				"receiver", r.cfg.ID, "last_message", last.Format(time.RFC3339),
+				"threshold", threshold, "stalls", stalls, "clean_session", clean)
+			r.resetSession(clean)
+			r.mu.Lock()
+			r.stallResets++
+			r.mu.Unlock()
+		}
+	}()
+}
+
+// resetSession disconnects the current client and opens a fresh
+// connection. With clean=true the broker discards the persistent session
+// (queued messages, in-flight state, prior subscriptions) and the
+// receiver starts from a clean slate. An explicit Disconnect stops the
+// old client's automatic reconnection, so exactly one client owns the
+// connection afterwards.
+func (r *Receiver) resetSession(clean bool) {
+	r.mu.Lock()
+	r.cleanOnce = clean
+	r.mu.Unlock()
+
+	// Swap the client under the connection and browse locks so a
+	// concurrent startup Connect or Browse never races the pointer.
+	r.connMu.Lock()
+	r.browseMu.Lock()
+	if r.client != nil {
+		r.client.Disconnect(250)
+	}
+	r.client = nil
+	r.browseMu.Unlock()
+	r.connMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), stallConnectTimeout)
+	defer cancel()
+	if err := r.Connect(ctx); err != nil {
+		// Not fatal: paho keeps retrying the new client in the background.
+		r.logger.Warn("receiver: session reset failed (background retry pending)",
+			"receiver", r.cfg.ID, "error", err)
+	}
+}
+
 // StopIntake unsubscribes from all topics so no new messages reach the
 // ingress. The TCP connection stays up; Disconnect tears it down.
 func (r *Receiver) StopIntake() {
+	r.connMu.Lock()
+	defer r.connMu.Unlock()
+	r.stopIntake()
+}
+
+func (r *Receiver) stopIntake() {
 	if r.client == nil {
 		return
 	}
@@ -272,10 +410,15 @@ func (r *Receiver) StopIntake() {
 
 // Disconnect unsubscribes and disconnects cleanly (bounded wait).
 func (r *Receiver) Disconnect() {
+	if r.done != nil {
+		r.doneOnce.Do(func() { close(r.done) })
+	}
+	r.connMu.Lock()
+	defer r.connMu.Unlock()
 	if r.client == nil {
 		return
 	}
-	r.StopIntake()
+	r.stopIntake()
 	r.client.Disconnect(250)
 }
 
@@ -288,6 +431,7 @@ func (r *Receiver) Status() Status {
 	s.Malformed = r.stats.Malformed.Load()
 	s.Oversized = r.stats.Oversized.Load()
 	s.Dropped = r.stats.Dropped.Load()
+	s.StallResets = r.stallResets
 	return s
 }
 

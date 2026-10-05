@@ -1193,6 +1193,16 @@ func run(configPath string, checkConfig bool) error {
 				} else if n > 0 {
 					logger.Debug("compose: tombstones pruned", "removed", n)
 				}
+				// Compose auto-expiry reconciliation: the AfterFunc timers
+				// live only in this process, so a restart must re-apply
+				// every expires_at that passed in the meantime.
+				if webSrv != nil {
+					if n, err := webSrv.AutoExpireCompose(ctx); err != nil {
+						logger.Warn("compose: auto-expiry reconciliation failed", "error", err)
+					} else if n > 0 {
+						logger.Info("compose: auto-expiry reconciled", "expired", n)
+					}
+				}
 				if n, err := store.PruneEmcomNetworks(ctx, cutoff); err != nil {
 					logger.Warn("emcom: tombstone prune failed", "error", err)
 				} else if n > 0 {

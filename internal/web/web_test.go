@@ -3198,6 +3198,81 @@ func newLocalPanelStore(t *testing.T) *sqlite.Store {
 	return store
 }
 
+// TestComposeAutoExpireReconcile pins the restart-survival fix: the
+// AfterFunc expiry timers die with the process, so the maintenance loop
+// reconciles every active communication whose expires_at already passed
+// (the prod incident: a message expired between restarts and stayed
+// active on the public page for hours).
+func TestComposeAutoExpireReconcile(t *testing.T) {
+	store := newLocalPanelStore(t)
+	env := newTestEnvWithUsers(t, store)
+	ctx := context.Background()
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	seed := func(key string, status string, exp *time.Time) {
+		b, err := json.Marshal(state.Hazard{
+			EventKey: key, Source: "compose", Headline: key,
+			Severity: "severe", ExpiresAt: exp, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveComposeHazard(ctx, storage.ComposeHazard{
+			EventKey: key, State: b, Status: status, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("compose:gone", "active", &past)
+	seed("compose:live", "active", &future)
+	seed("compose:dead", "expired", &past)
+
+	n, err := env.server.AutoExpireCompose(ctx)
+	if err != nil {
+		t.Fatalf("AutoExpireCompose = %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("AutoExpireCompose expired %d, want 1", n)
+	}
+
+	rows, err := store.ComposeHazards(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, row := range rows {
+		status[row.EventKey] = row.Status
+	}
+	if status["compose:gone"] != "expired" {
+		t.Errorf("compose:gone status = %q, want expired", status["compose:gone"])
+	}
+	if status["compose:live"] != "active" {
+		t.Errorf("compose:live status = %q, want active (still valid)", status["compose:live"])
+	}
+
+	// The expiry transition reaches the canonical ingress.
+	ev := drainIngress(env)
+	if ev == nil || ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionExpired || ev.Hazard.Key != "compose:gone" {
+		t.Fatalf("reconcile did not enqueue the expiry transition: %+v", ev)
+	}
+
+	// The broker retirement is asynchronous — wait for it.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(env.pub.expiredSnapshot()) < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := env.pub.expiredSnapshot(); len(got) != 1 || got[0] != "compose:gone" {
+		t.Fatalf("broker retirement = %v, want [compose:gone]", got)
+	}
+
+	// A second run is a no-op: the expiry is idempotent.
+	if n, err := env.server.AutoExpireCompose(ctx); err != nil || n != 0 {
+		t.Fatalf("second AutoExpireCompose = %d, %v; want 0, nil", n, err)
+	}
+}
+
 // TestComposeLocalFirstNoBroker pins the P1 fix: a communication is
 // persisted and routed locally even when the broker is unreachable — the
 // save succeeds (303), the transition hits the ingress and the issued

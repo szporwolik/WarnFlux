@@ -40,7 +40,7 @@
                 {{if .Assignments}}
                 <span class="routing-matrix">
                   {{range .Assignments}}
-                  <span class="matrix-chip"><span class="matrix-src">{{if .Source}}{{.Source}}{{else}}{{tr $.Lang "groups.routing.any"}}{{end}}</span>{{.ID}} <span class="sev sev-{{sevClass .MinSeverity}}">≥ {{.MinSeverity}}</span></span>
+                  <span class="matrix-chip"><span class="matrix-src">{{if .Source}}{{.Source}}{{else}}{{tr $.Lang "groups.routing.any"}}{{end}}</span>{{.ID}} <span class="sev sev-{{sevClass .MinSeverity}}">≥ {{sevLabel $.Lang .MinSeverity}}</span></span>
                   {{end}}
                 </span>
                 {{else}}<span class="muted">{{tr $.Lang "common.none"}}</span>{{end}}

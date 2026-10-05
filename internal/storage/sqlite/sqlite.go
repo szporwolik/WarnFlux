@@ -884,6 +884,14 @@ CREATE TABLE mesh_action_failures (
 );
 `,
 	},
+	{
+		// v48: APRS message delivery status. Outbound rows start with an
+		// empty status (transmitted); the hub marks them "delivered" when
+		// the addressee's ack arrives and "failed" on a rej.
+		SQL: `
+ALTER TABLE aprs_messages ADD COLUMN status TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

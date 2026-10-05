@@ -1,6 +1,8 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -27,8 +29,12 @@ type aprsMessageView struct {
 	// on tx rows (empty otherwise).
 	ToName string
 	Text   string
+	MsgID  string
 	Via    string
 	At     time.Time
+	// Status is the outbound delivery state ("delivered" after the
+	// addressee's ack, "failed" after a rej); empty while unanswered.
+	Status string
 	// Bulletin marks broadcast frames (addressed to BLN0-BLN9, BLNA-Z):
 	// visible in the history, never routed as alerts.
 	Bulletin bool
@@ -76,8 +82,9 @@ type aprsMessagesView struct {
 	Calls []string
 
 	// Send-form feedback (query flashes).
-	Error string
-	Sent  bool
+	Error  string
+	Sent   bool
+	Beacon bool
 }
 
 // handleAPRSMessagesPage renders the admin view of every received and sent
@@ -105,6 +112,7 @@ func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) 
 		v.Error = errMsg
 	}
 	v.Sent = r.URL.Query().Get("sent") != ""
+	v.Beacon = r.URL.Query().Get("beacon") != ""
 	if s.users != nil {
 		v.Calls, _ = s.users.AllAPRSCallsigns()
 	}
@@ -176,8 +184,10 @@ func (s *Server) fillAPRSMessages(r *http.Request, v *aprsMessagesView) {
 			From:      m.From,
 			To:        m.To,
 			Text:      m.Text,
+			MsgID:     m.MsgID,
 			Via:       m.Via,
 			At:        m.At,
+			Status:    m.Status,
 			Bulletin:  aprs.IsBulletin(m.To),
 		}
 		if m.Direction == "rx" {
@@ -231,10 +241,9 @@ func (s *Server) handlePartialMessages(w http.ResponseWriter, r *http.Request) {
 	s.renderL(w, r, "aprs_msgs", v)
 }
 
-// handleAPRSSend transmits one APRS message from the admin panel through
-// the first ready transmitter. The hub validates the addressee, records
-// the tx in the durable history and reports the outcome back via the
-// page flash.
+// handleAPRSSend transmits one APRS message from the admin panel with an
+// ack id and waits briefly for the addressee's ack. The outcome lands in
+// the durable history status and is reported back via the page flash.
 func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
@@ -247,8 +256,21 @@ func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 	}
 	to := strings.TrimSpace(r.PostFormValue("to"))
 	text := strings.TrimSpace(r.PostFormValue("text"))
-	if err := s.aprs.SendMessage(r.Context(), to, text); err != nil {
-		flash := fmt.Sprintf(i18n.T(s.langFor(r), "messages.send_failed"), err)
+	lang := s.langFor(r)
+	ackCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	acked, err := s.aprs.SendMessageWaitAck(ackCtx, to, text, 15*time.Second)
+	cancel()
+	if err != nil {
+		key := "messages.send_failed"
+		if errors.Is(err, aprs.ErrNoAck) {
+			key = "messages.send_no_ack"
+		}
+		flash := fmt.Sprintf(i18n.T(lang, key), err)
+		http.Redirect(w, r, "/messages?err="+url.QueryEscape(flash), http.StatusSeeOther)
+		return
+	}
+	if !acked {
+		flash := i18n.T(lang, "messages.send_no_ack")
 		http.Redirect(w, r, "/messages?err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}
@@ -274,5 +296,5 @@ func (s *Server) handleAPRSBeacon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(sess.username, "aprs-beacon", "")
-	http.Redirect(w, r, "/messages?sent=1", http.StatusSeeOther)
+	http.Redirect(w, r, "/messages?beacon=1", http.StatusSeeOther)
 }

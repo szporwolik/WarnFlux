@@ -67,6 +67,65 @@ func TestAPRSMessagesHistory(t *testing.T) {
 	}
 }
 
+// TestAPRSMessageStatusRoundTrip pins the ack-status column (migration
+// v48): tx rows start empty, UpdateAPRSMessageStatus flips the matching
+// row by msg id and only for the tx direction, and the list carries the
+// status back to the admin view.
+func TestAPRSMessageStatusRoundTrip(t *testing.T) {
+	s := openAPRSTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 9, 29, 10, 0, 0, 0, time.UTC)
+
+	if err := s.RecordAPRSMessage(ctx, "tx", "SP9SPM-10", "SP9WSS-2", "wiatr", "12345", "aprs-radio", base); err != nil {
+		t.Fatalf("record tx: %v", err)
+	}
+	rows, err := s.ListAPRSMessages(ctx, "tx", 10, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list = %d, %v; want 1 tx row", len(rows), err)
+	}
+	if rows[0].Status != "" {
+		t.Fatalf("fresh tx status = %q, want empty", rows[0].Status)
+	}
+
+	if err := s.UpdateAPRSMessageStatus(ctx, "12345", "delivered", base.Add(time.Minute)); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	rows, err = s.ListAPRSMessages(ctx, "tx", 10, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list after update = %d, %v", len(rows), err)
+	}
+	if rows[0].Status != "delivered" {
+		t.Fatalf("tx status = %q, want delivered", rows[0].Status)
+	}
+
+	// A rej overwrites the outcome.
+	if err := s.UpdateAPRSMessageStatus(ctx, "12345", "failed", base.Add(2*time.Minute)); err != nil {
+		t.Fatalf("update to failed: %v", err)
+	}
+	rows, _ = s.ListAPRSMessages(ctx, "tx", 10, 0)
+	if rows[0].Status != "failed" {
+		t.Fatalf("tx status = %q, want failed", rows[0].Status)
+	}
+
+	// Unknown ids are silent no-ops, and rx rows are never touched.
+	if err := s.UpdateAPRSMessageStatus(ctx, "99999", "delivered", base); err != nil {
+		t.Fatalf("unknown id update: %v", err)
+	}
+	if err := s.UpdateAPRSMessageStatus(ctx, "", "delivered", base); err != nil {
+		t.Fatalf("empty id update: %v", err)
+	}
+	if err := s.RecordAPRSMessage(ctx, "rx", "SP9WSS-2", "SP9SPM-10", "ok", "12345", "aprs-radio", base.Add(3*time.Minute)); err != nil {
+		t.Fatalf("record rx: %v", err)
+	}
+	if err := s.UpdateAPRSMessageStatus(ctx, "12345", "delivered", base); err != nil {
+		t.Fatalf("rx id update: %v", err)
+	}
+	rx, _ := s.ListAPRSMessages(ctx, "rx", 10, 0)
+	if rx[0].Status != "" {
+		t.Fatalf("rx status = %q, want untouched", rx[0].Status)
+	}
+}
+
 func TestAPRSMessageRetentionOnInsert(t *testing.T) {
 	s := openAPRSTestStore(t)
 	ctx := context.Background()

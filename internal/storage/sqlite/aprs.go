@@ -31,7 +31,7 @@ func (s *Store) RecordAPRSMessage(ctx context.Context, direction, from, to, text
 // "tx" or "" (both).
 func (s *Store) ListAPRSMessages(ctx context.Context, direction string, limit, offset int) ([]storage.APRSMessage, error) {
 	query := `
-		SELECT id, direction, from_call, to_call, text, msg_id, via, created_at_ms
+		SELECT id, direction, from_call, to_call, text, msg_id, via, created_at_ms, status
 		FROM aprs_messages`
 	args := []any{}
 	if direction == "rx" || direction == "tx" {
@@ -51,13 +51,32 @@ func (s *Store) ListAPRSMessages(ctx context.Context, direction string, limit, o
 	for rows.Next() {
 		var m storage.APRSMessage
 		var atMs int64
-		if err := rows.Scan(&m.ID, &m.Direction, &m.From, &m.To, &m.Text, &m.MsgID, &m.Via, &atMs); err != nil {
+		if err := rows.Scan(&m.ID, &m.Direction, &m.From, &m.To, &m.Text, &m.MsgID, &m.Via, &atMs, &m.Status); err != nil {
 			return nil, fmt.Errorf("scan aprs message: %w", err)
 		}
 		m.At = time.UnixMilli(atMs)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// UpdateAPRSMessageStatus marks the outbound row carrying msgID with the
+// delivery outcome ("delivered" on ack, "failed" on rej). Messages sent
+// without an ack id are never matched and silently keep their status.
+func (s *Store) UpdateAPRSMessageStatus(ctx context.Context, msgID, status string, at time.Time) error {
+	if msgID == "" {
+		return nil
+	}
+	if status != "delivered" && status != "failed" {
+		return fmt.Errorf("aprs message: invalid status %q", status)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE aprs_messages SET status = ?
+		WHERE direction = 'tx' AND msg_id = ?`,
+		status, msgID); err != nil {
+		return fmt.Errorf("update aprs message status: %w", err)
+	}
+	return nil
 }
 
 // CountAPRSMessages counts history rows, optionally filtered by direction.

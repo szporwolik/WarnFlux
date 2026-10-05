@@ -113,3 +113,82 @@ func TestSanitizeBroker(t *testing.T) {
 		}
 	}
 }
+
+// TestStallMonitorResetsSilentReceiver pins the inbound-stall watchdog:
+// a connected receiver whose stream went silent triggers session resets
+// (counted in the status), a healthy stream triggers none, and a
+// disconnected receiver is left alone (paho owns reconnection).
+func TestStallMonitorResetsSilentReceiver(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	r, err := NewReceiver(config.Receiver{
+		ID: "stall", Enabled: true,
+		Broker: "tcp://127.0.0.1:1", ClientID: "warnflux-test-stall",
+		ConnectTimeout: 200 * time.Millisecond, KeepAlive: 30 * time.Second,
+		WF: config.ReceiverWF{Enabled: true, TopicPrefix: "warnflux"},
+	}, state.New(), dispatch.NewIngress(64), logger, nil)
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	t.Cleanup(r.Disconnect)
+
+	// Wedged state: connected but the last message is old.
+	r.mu.Lock()
+	r.status.Connected = true
+	r.status.LastMessage = time.Now().Add(-time.Minute)
+	r.mu.Unlock()
+
+	r.StartStallMonitor(10*time.Millisecond, 50*time.Millisecond)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if r.Status().StallResets > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stall monitor never reset the silent receiver")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	first := r.Status().StallResets
+
+	// Healthy traffic stops further resets (the reset itself reconnects,
+	// and messages keep LastMessage fresh).
+	r.mu.Lock()
+	r.status.LastMessage = time.Now()
+	r.mu.Unlock()
+	time.Sleep(300 * time.Millisecond)
+	if got := r.Status().StallResets; got != first {
+		t.Fatalf("healthy stream triggered resets: %d -> %d", first, got)
+	}
+
+	// A disconnected receiver must not be reset (paho handles it).
+	r.mu.Lock()
+	r.status.Connected = false
+	r.mu.Unlock()
+	time.Sleep(300 * time.Millisecond)
+	if got := r.Status().StallResets; got != first {
+		t.Fatalf("disconnected receiver triggered resets: %d -> %d", first, got)
+	}
+}
+
+// TestStallMonitorNotConnectedNoResets: without a completed connection
+// the watchdog must stay quiet (no traffic can be expected yet).
+func TestStallMonitorNotConnectedNoResets(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	r, err := NewReceiver(config.Receiver{
+		ID: "stall-idle", Enabled: true,
+		Broker: "tcp://127.0.0.1:1", ClientID: "warnflux-test-stall-idle",
+		ConnectTimeout: 200 * time.Millisecond, KeepAlive: 30 * time.Second,
+		WF: config.ReceiverWF{Enabled: true, TopicPrefix: "warnflux"},
+	}, state.New(), dispatch.NewIngress(64), logger, nil)
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	t.Cleanup(r.Disconnect)
+
+	r.StartStallMonitor(10*time.Millisecond, 50*time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
+	if got := r.Status().StallResets; got != 0 {
+		t.Fatalf("unconnected receiver triggered %d resets", got)
+	}
+}

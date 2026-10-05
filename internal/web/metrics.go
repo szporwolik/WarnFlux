@@ -48,12 +48,15 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// MQTT connection gauges.
 	fmt.Fprintf(&b, "# HELP warnflux_mqtt_connected Whether an MQTT receiver is connected (1) or not (0).\n")
 	fmt.Fprintf(&b, "# TYPE warnflux_mqtt_connected gauge\n")
+	fmt.Fprintf(&b, "# HELP warnflux_mqtt_stall_resets_total MQTT receiver session resets triggered by the inbound-stall watchdog.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_mqtt_stall_resets_total counter\n")
 	for _, rs := range s.receivers.Statuses() {
 		v := 0
 		if rs.Connected {
 			v = 1
 		}
 		fmt.Fprintf(&b, "warnflux_mqtt_connected{receiver=%q} %d\n", rs.ID, v)
+		fmt.Fprintf(&b, "warnflux_mqtt_stall_resets_total{receiver=%q} %d\n", rs.ID, rs.StallResets)
 	}
 
 	// Dispatch queue depth.

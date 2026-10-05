@@ -112,6 +112,7 @@ type meshtasticView struct {
 	NavAPRS          bool
 	NavMessages      bool
 	NavMeshtastic    bool
+	NavMeshMap       bool
 
 	Tab string // messages | nodes
 

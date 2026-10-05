@@ -1294,6 +1294,83 @@ func TestAPRSMapPage(t *testing.T) {
 	}
 }
 
+// TestMeshMapPage pins the admin Meshtastic node-map browser: the page
+// renders the map element, and the stations endpoint in all=1 mode
+// returns every heard node — outside the operational ring and past the
+// node TTL included — plus the positionless ones.
+func TestMeshMapPage(t *testing.T) {
+	lat, lon := 50.05, 20.10
+	aprsHub, err := aprs.NewHub(aprs.HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: 25, StationTTL: 30 * time.Minute,
+		Latitude: &lat, Longitude: &lon,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mesh, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true, Device: "/dev/fake", NodeTTL: time.Minute,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvAll(t, nil, aprsHub, nil, mesh, nil, nil)
+	env.login()
+
+	now := time.Now()
+	mesh.SeedNode("11111111", "Near", "N1", 50.06, 20.11, now, []string{"telemetry"})             // inside the ring
+	mesh.SeedNode("22222222", "Far", "F2", 52.00, 18.00, now, []string{"position"})               // far outside
+	mesh.SeedNode("33333333", "Old", "O3", 50.00, 20.00, now.Add(-2*time.Hour), []string{"text"}) // stale (TTL)
+	mesh.SeedNode("44444444", "NoPos", "N4", 0, 0, now, []string{"text"})                         // no position
+
+	resp, body := env.get("/meshmap")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /meshmap = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, `id="mesh-admin-map"`) {
+		t.Errorf("/meshmap missing the map element")
+	}
+
+	var view struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+		NoPos []struct {
+			ID string `json:"id"`
+		} `json:"nopos"`
+	}
+	resp, body = env.get("/api/meshtastic/stations")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/meshtastic/stations = %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal([]byte(body), &view); err != nil {
+		t.Fatalf("stations payload: %v", err)
+	}
+	if len(view.Nodes) != 1 || view.Nodes[0].ID != "11111111" {
+		t.Fatalf("default nodes = %+v, want only the in-ring fresh node", view.Nodes)
+	}
+	if len(view.NoPos) != 1 || view.NoPos[0].ID != "44444444" {
+		t.Fatalf("default nopos = %+v, want the positionless node", view.NoPos)
+	}
+
+	resp, body = env.get("/api/meshtastic/stations?all=1")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/meshtastic/stations?all=1 = %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal([]byte(body), &view); err != nil {
+		t.Fatalf("all stations payload: %v", err)
+	}
+	got := map[string]bool{}
+	for _, n := range view.Nodes {
+		got[n.ID] = true
+	}
+	for _, id := range []string{"11111111", "22222222", "33333333"} {
+		if !got[id] {
+			t.Errorf("all=1 nodes missing %s: %+v", id, view.Nodes)
+		}
+	}
+}
+
 // TestComposeFlow pins the officer-facing communication module: the form
 // publishes onto the broker (fake here), the issued list renders the
 // module's communications, edits update the same event key and expire

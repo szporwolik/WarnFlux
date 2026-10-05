@@ -118,10 +118,14 @@ type HubConfig struct {
 	Symbol      byte
 }
 
-// MessageRecorder persists one APRS message (rx or tx). Implemented by
-// storage stores; the hub treats recording failures as best-effort.
+// MessageRecorder persists the APRS message history (rx and tx) and the
+// delivery status of outbound messages. Implemented by storage stores;
+// the hub treats recording failures as best-effort.
 type MessageRecorder interface {
 	RecordAPRSMessage(ctx context.Context, direction, from, to, text, msgID, via string, at time.Time) error
+	// UpdateAPRSMessageStatus marks the tx row carrying msgID as
+	// delivered (ack) or failed (rej).
+	UpdateAPRSMessageStatus(ctx context.Context, msgID, status string, at time.Time) error
 }
 
 // Defaults applied by NewHub when the config omits values.

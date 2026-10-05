@@ -21,6 +21,9 @@ type APRSMessage struct {
 	MsgID     string
 	Via       string
 	At        time.Time
+	// Status is the outbound delivery state ("" = transmitted, "delivered"
+	// after the addressee's ack, "failed" after a rej). rx rows keep "".
+	Status string
 }
 
 // APRSMessageStore persists APRS message history. The hub records both
@@ -28,6 +31,7 @@ type APRSMessage struct {
 // bound retention to APRSMessageRetentionEntries.
 type APRSMessageStore interface {
 	RecordAPRSMessage(ctx context.Context, direction, from, to, text, msgID, via string, at time.Time) error
+	UpdateAPRSMessageStatus(ctx context.Context, msgID, status string, at time.Time) error
 	ListAPRSMessages(ctx context.Context, direction string, limit, offset int) ([]APRSMessage, error)
 	CountAPRSMessages(ctx context.Context, direction string) (int, error)
 }

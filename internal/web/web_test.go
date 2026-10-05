@@ -4180,6 +4180,15 @@ func (f *fakeAPRSMsgs) RecordAPRSMessage(_ context.Context, direction, from, to,
 	return nil
 }
 
+func (f *fakeAPRSMsgs) UpdateAPRSMessageStatus(_ context.Context, msgID, status string, _ time.Time) error {
+	for i := range f.rows {
+		if f.rows[i].Direction == "tx" && f.rows[i].MsgID == msgID {
+			f.rows[i].Status = status
+		}
+	}
+	return nil
+}
+
 func (f *fakeAPRSMsgs) ListAPRSMessages(_ context.Context, direction string, limit, offset int) ([]storage.APRSMessage, error) {
 	var out []storage.APRSMessage
 	for _, m := range f.rows {
@@ -4226,9 +4235,33 @@ func TestAPRSBulletinBadge(t *testing.T) {
 	}
 }
 
-// TestMeshNodeOwnerLabel pins the admin-only directory match: a node
-// whose id belongs to a registered user shows the username next to the
-// node name on the nodes tab (the public home page never does).
+// TestAPRSAckStatusBadge pins the delivery-status badge: a tx row shows
+// delivered (with its msg id) once the addressee acked it, failed on a
+// rej, and the neutral sent badge while unanswered.
+func TestAPRSAckStatusBadge(t *testing.T) {
+	now := time.Now()
+	store := &fakeAPRSMsgs{rows: []storage.APRSMessage{
+		{Direction: "tx", From: "SP9MOA-10", To: "SP9XYZ-7", Text: "pogoda", MsgID: "00123", Status: "delivered", Via: "aprs-radio", At: now},
+		{Direction: "tx", From: "SP9MOA-10", To: "SP9XYZ-7", Text: "alert", MsgID: "00124", Status: "failed", Via: "aprs-radio", At: now},
+		{Direction: "tx", From: "SP9MOA-10", To: "SP9XYZ-7", Text: "info", MsgID: "00125", Via: "aprs-radio", At: now},
+	}}
+	env := newTestEnvAll(t, nil, nil, nil, nil, store, nil)
+	env.login()
+
+	resp, body := env.get("/partials/messages?dir=tx")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "#00123") || !strings.Contains(body, "delivered") {
+		t.Errorf("partial missing delivered badge: %.400s", body)
+	}
+	if !strings.Contains(body, "failed") {
+		t.Errorf("partial missing failed badge: %.400s", body)
+	}
+	if !strings.Contains(body, "sent") {
+		t.Errorf("partial missing sent badge: %.400s", body)
+	}
+}
 func TestMeshNodeOwnerLabel(t *testing.T) {
 	hub, err := meshtastic.NewHub(meshtastic.Config{
 		Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,

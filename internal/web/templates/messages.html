@@ -35,6 +35,7 @@
       <p class="muted log-hint">{{tr .Lang "messages.hint"}}</p>
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
       {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.sent"}}</span></div>{{end}}
+      {{if .Beacon}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.beacon_sent"}}</span></div>{{end}}
       <div id="aprs-msgs">{{template "aprs_msgs" .}}</div>
     </section>
   </main>
@@ -62,7 +63,7 @@
       {{range .Messages}}
       <tr class="msgs-{{.Direction}} click-send" data-key="{{if eq .Direction "rx"}}{{.From}}{{else}}{{.To}}{{end}}" title="{{tr $.Lang "messages.click_to_send"}}">
         <td class="muted nowrap">{{timeFull .At}}</td>
-        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
+        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span>{{if eq .Direction "tx"}}{{if .MsgID}} <span class="muted op-name">#{{.MsgID}}</span>{{end}}{{if eq .Status "delivered"}} <span class="badge ok">✓ {{tr $.Lang "messages.st_delivered"}}</span>{{else if eq .Status "failed"}} <span class="badge bad">{{tr $.Lang "messages.st_failed"}}</span>{{else}} <span class="badge muted">{{tr $.Lang "messages.st_sent"}}</span>{{end}}{{end}}</td>
         <td><strong>{{.From}}</strong>{{if .FromName}} <span class="muted op-name">({{.FromName}})</span>{{end}}</td>
         <td>{{.To}}{{if .Bulletin}} <span class="badge muted">{{tr $.Lang "messages.bulletin"}}</span>{{end}}{{if .ToName}} <span class="muted op-name">({{.ToName}})</span>{{end}}</td>
         <td class="msgs-text">{{.Text}}</td>

@@ -176,24 +176,32 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	// version already has a progress row are skipped: only the
 	// unfinished sends are retried, so every member is reached exactly
 	// once across attempts.
-	for _, id := range req.MeshNodeIDs {
-		if done(id, 0) {
-			continue
-		}
-		if err := a.pace(ctx); err != nil {
-			return err
-		}
-		var err error
-		if ledger {
-			err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", prog)
-		} else {
-			err = a.hub.SendContactMessage(ctx, id, text, "system")
-		}
-		if err != nil {
-			return fmt.Errorf("meshtastic: %s: %w", id, err)
-		}
-		a.last = time.Now()
-	}
+	//
+	// TEMPORARILY DISABLED (operator decision, 2026-10-05): hazard
+	// notifications as direct messages are OFF for now — the emcom
+	// channel broadcast above is the only meshtastic delivery. Direct
+	// message REPLIES (the radio CLI answering /hazard, /weather,
+	// /alert) are unaffected; they live in the hub, not here. Re-enable
+	// the loop below when PM notifications are wanted again.
+	//
+	// for _, id := range req.MeshNodeIDs {
+	// 	if done(id, 0) {
+	// 		continue
+	// 	}
+	// 	if err := a.pace(ctx); err != nil {
+	// 		return err
+	// 	}
+	// 	var err error
+	// 	if ledger {
+	// 		err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", prog)
+	// 	} else {
+	// 		err = a.hub.SendContactMessage(ctx, id, text, "system")
+	// 	}
+	// 	if err != nil {
+	// 		return fmt.Errorf("meshtastic: %s: %w", id, err)
+	// 	}
+	// 	a.last = time.Now()
+	// }
 	return nil
 }
 

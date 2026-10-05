@@ -41,10 +41,13 @@ func (s *stubSender) SendContactMessage(_ context.Context, addr, text, operator 
 }
 
 func (s *stubSender) SendChannelText(_ context.Context, idx int, text, operator string) error {
+	// The attempt is recorded even when the device rejects it: the
+	// resume tests assert failed broadcasts were attempted.
+	s.channels = append(s.channels, idx)
+	s.texts = append(s.texts, text)
 	if s.err != nil {
 		return s.err
 	}
-	s.channels = append(s.channels, idx)
 	return nil
 }
 
@@ -120,61 +123,39 @@ func versionedReq(nodeIDs []string, headline string, changeID int64) action.Acti
 	return req
 }
 
-// TestExecuteDMsEveryMember pins the per-user delivery: one direct
-// message per routed node ID, and the configured group channel carries
-// every alert as the base delivery — with or without registered nodes.
-func TestExecuteDMsEveryMember(t *testing.T) {
+// TestExecuteDMsDisabledChannelOnly pins the current operator decision:
+// hazard notifications go out ONLY as the emcom channel broadcast — the
+// direct-message loop to registered node IDs is disabled (direct message
+// REPLIES stay in the hub).
+func TestExecuteDMsDisabledChannelOnly(t *testing.T) {
 	stub := &stubSender{}
 	a := &Action{cfg: Config{Prefix: "SOSNA"}, hub: stub}
 
 	if err := a.Execute(context.Background(), hazardReq([]string{"a0a85934", "b0b85934"}, "Big storm coming")); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(stub.contacts) != 2 || stub.contacts[0] != "a0a85934" || stub.contacts[1] != "b0b85934" {
-		t.Fatalf("contacts = %v, want both node IDs", stub.contacts)
+	if len(stub.contacts) != 0 {
+		t.Fatalf("contacts = %v, want none (direct hazard messages are disabled)", stub.contacts)
 	}
 	if len(stub.channels) != 0 {
 		t.Fatalf("broadcasts = %v, want none without a configured channel", stub.channels)
 	}
-	for i, text := range stub.texts {
-		if !strings.HasPrefix(text, "SOSNA SEVERE") {
-			t.Fatalf("message %d = %q, want the SOSNA SEVERE prefix", i, text)
-		}
-	}
-
-	// No channel and no node IDs: nothing is transmitted.
-	stubSkip := &stubSender{}
-	aSkip := &Action{cfg: Config{Prefix: "SOSNA"}, hub: stubSkip}
-	if err := aSkip.Execute(context.Background(), hazardReq(nil, "Flood alert")); err != nil {
-		t.Fatalf("Execute skip: %v", err)
-	}
-	if len(stubSkip.channels) != 0 || len(stubSkip.contacts) != 0 {
-		t.Fatalf("skip = contacts %v broadcasts %v, want none", stubSkip.contacts, stubSkip.channels)
-	}
 
 	// Channel configured: the broadcast goes out even when the group
-	// has no registered node IDs.
+	// has registered node IDs — and the node IDs stay silent.
 	stub2 := &stubSender{}
 	a2 := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub2}
-	if err := a2.Execute(context.Background(), hazardReq(nil, "Flood alert")); err != nil {
-		t.Fatalf("Execute fallback: %v", err)
+	if err := a2.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "Flood alert")); err != nil {
+		t.Fatalf("Execute broadcast: %v", err)
 	}
-	if len(stub2.channels) != 1 || stub2.channels[0] != 1 || len(stub2.contacts) != 0 {
-		t.Fatalf("fallback = contacts %v broadcasts %v, want one broadcast on channel 1", stub2.contacts, stub2.channels)
+	if len(stub2.channels) != 1 || stub2.channels[0] != 1 {
+		t.Fatalf("broadcasts = %v, want one on channel 1", stub2.channels)
 	}
-
-	// Channel configured AND node IDs present: the broadcast is the
-	// base delivery and the direct messages go out on top.
-	stub3 := &stubSender{}
-	a3 := &Action{cfg: Config{Prefix: "SOSNA", Channel: 2}, hub: stub3}
-	if err := a3.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "Storm alert")); err != nil {
-		t.Fatalf("Execute channel+DM: %v", err)
+	if len(stub2.contacts) != 0 {
+		t.Fatalf("contacts = %v, want none (direct hazard messages are disabled)", stub2.contacts)
 	}
-	if len(stub3.channels) != 1 || stub3.channels[0] != 2 {
-		t.Fatalf("broadcasts = %v, want one on channel 2", stub3.channels)
-	}
-	if len(stub3.contacts) != 1 || stub3.contacts[0] != "a0a85934" {
-		t.Fatalf("contacts = %v, want the node DM on top of the broadcast", stub3.contacts)
+	if len(stub2.texts) != 1 || !strings.HasPrefix(stub2.texts[0], "SOSNA SEVERE") {
+		t.Fatalf("text = %v, want the SOSNA SEVERE prefix", stub2.texts)
 	}
 }
 
@@ -182,14 +163,14 @@ func TestExecuteDMsEveryMember(t *testing.T) {
 // fallback to the event name.
 func TestExecuteFailurePropagates(t *testing.T) {
 	stub := &stubSender{err: errors.New("device gone")}
-	a := &Action{cfg: Config{Prefix: "SOSNA"}, hub: stub}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
 	err := a.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "x"))
-	if err == nil || !strings.Contains(err.Error(), "a0a85934") {
-		t.Fatalf("Execute = %v, want an error naming the node", err)
+	if err == nil || !strings.Contains(err.Error(), "device gone") {
+		t.Fatalf("Execute = %v, want the device error", err)
 	}
 
 	stub2 := &stubSender{}
-	a2 := &Action{cfg: Config{Prefix: "SOSNA"}, hub: stub2}
+	a2 := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub2}
 	if err := a2.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "")); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -198,72 +179,68 @@ func TestExecuteFailurePropagates(t *testing.T) {
 	}
 }
 
-// TestExecuteResumesUnfinishedSends pins the P1 fix: the whole group
-// shares one bounded call deadline, so a large group is cut mid-list —
-// but the durable progress ledger lets the next attempt skip every
-// completed transmission and finish only the remaining ones. Across the
-// attempts every recipient is reached exactly once and the broadcast
-// goes out exactly once.
-func TestExecuteResumesUnfinishedSends(t *testing.T) {
-	stub := &stubSender{}
-	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1, TxInterval: 40 * time.Millisecond}, hub: stub}
-	req := versionedReq([]string{"a0a85934", "b0b85934", "c0c85934"}, "Big storm coming", 1)
+// TestExecuteResumesUnfinishedBroadcast pins the resume semantics on
+// the single remaining transmission path (the channel broadcast): a
+// failed first attempt leaves no ledger row, so the retry transmits
+// again — and once recorded, further retries skip it.
+func TestExecuteResumesUnfinishedBroadcast(t *testing.T) {
+	stub := &stubSender{err: errors.New("device gone")}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
+	req := versionedReq([]string{"a0a85934"}, "Big storm coming", 1)
 
-	// Attempt 1: four paced transmissions (broadcast + 3 DMs) need at
-	// least 120 ms; the deadline grants 70 ms — the call fails
-	// mid-list no matter how the scheduler interleaves.
-	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Millisecond)
-	defer cancel()
-	if err := a.Execute(ctx, req); err == nil {
-		t.Fatalf("attempt 1 = nil, want the deadline to cut the group")
+	// Attempt 1: the device fails — nothing lands in the ledger.
+	if err := a.Execute(context.Background(), req); err == nil {
+		t.Fatalf("attempt 1 = nil, want the device error")
 	}
-	if len(stub.channels) != 1 || stub.channels[0] != 1 {
-		t.Fatalf("attempt 1 broadcasts = %v, want exactly one on channel 1", stub.channels)
+	if len(stub.channels) != 1 {
+		t.Fatalf("attempt 1 broadcasts = %v, want one attempt on channel 1", stub.channels)
 	}
 
-	// Attempt 2 resumes the SAME request: the ledger skips the
-	// broadcast and every recipient attempt 1 already completed; only
-	// the unfinished sends go out.
+	// Attempt 2 with a working device: the broadcast goes out again and
+	// its progress row lands.
+	stub.err = nil
 	if err := a.Execute(context.Background(), req); err != nil {
 		t.Fatalf("attempt 2: %v", err)
 	}
-	if len(stub.channels) != 1 {
-		t.Fatalf("broadcasts after resume = %v, want exactly one on channel 1", stub.channels)
+	if len(stub.channels) != 2 {
+		t.Fatalf("broadcasts after retry = %v, want the failed broadcast retransmitted", stub.channels)
 	}
-	seen := map[string]int{}
-	for _, id := range stub.contacts {
-		seen[id]++
+	if len(stub.contacts) != 0 {
+		t.Fatalf("contacts = %v, want none (direct messages disabled)", stub.contacts)
 	}
-	if len(stub.contacts) != 3 || seen["a0a85934"] != 1 || seen["b0b85934"] != 1 || seen["c0c85934"] != 1 {
-		t.Fatalf("contacts after resume = %v (%v), want each of a/b/c exactly once",
-			stub.contacts, seen)
+
+	// Attempt 3: the ledger skips the already-delivered broadcast.
+	if err := a.Execute(context.Background(), req); err != nil {
+		t.Fatalf("attempt 3: %v", err)
+	}
+	if len(stub.channels) != 2 {
+		t.Fatalf("broadcasts after recorded retry = %v, want no repeat", stub.channels)
 	}
 }
 
 // TestExecuteSkipsLedgerCompleted pins the progress reads themselves: a
-// retry of an already partially-delivered group transmits only the
-// entries without a successful ledger row.
+// retry of an already-broadcast version transmits nothing new.
 func TestExecuteSkipsLedgerCompleted(t *testing.T) {
 	stub := &stubSender{}
 	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 2}, hub: stub}
 	req := versionedReq([]string{"a0a85934"}, "Flood alert", 1)
 
-	// A previous attempt delivered the broadcast and recipient a.
+	// A previous attempt delivered the broadcast.
 	if err := a.Execute(context.Background(), req); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
 	// Reset the call log, keep the ledger (the durable state).
 	stub.contacts, stub.texts, stub.channels = nil, nil, nil
 
-	// The full group retry: broadcast and a are skipped, only b goes out.
+	// The full group retry: the broadcast is skipped, nothing goes out.
 	if err := a.Execute(context.Background(), versionedReq([]string{"a0a85934", "b0b85934"}, "Flood alert", 1)); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if len(stub.channels) != 0 {
 		t.Fatalf("broadcasts on retry = %v, want none (already broadcast)", stub.channels)
 	}
-	if len(stub.contacts) != 1 || stub.contacts[0] != "b0b85934" {
-		t.Fatalf("contacts on retry = %v, want only the unfinished b0b85934", stub.contacts)
+	if len(stub.contacts) != 0 {
+		t.Fatalf("contacts on retry = %v, want none (direct messages disabled)", stub.contacts)
 	}
 }
 
@@ -280,35 +257,32 @@ func TestExecuteNewVersionSameTextResends(t *testing.T) {
 	if err := a.Execute(context.Background(), versionedReq(ids, "Big storm coming", 1)); err != nil {
 		t.Fatalf("v1: %v", err)
 	}
-	if len(stub.contacts) != 1 {
-		t.Fatalf("v1 contacts = %v, want one transmission", stub.contacts)
+	if len(stub.channels) != 1 {
+		t.Fatalf("v1 broadcasts = %v, want one transmission", stub.channels)
 	}
 
 	// The SAME text with a NEW version must transmit again.
 	if err := a.Execute(context.Background(), versionedReq(ids, "Big storm coming", 2)); err != nil {
 		t.Fatalf("v2: %v", err)
 	}
-	if len(stub.contacts) != 2 || stub.contacts[1] != "a0a85934" {
-		t.Fatalf("v2 contacts = %v, want the recipient transmitted again (new version)", stub.contacts)
-	}
 	if len(stub.channels) != 2 {
-		t.Fatalf("broadcasts = %v, want one per version", stub.channels)
+		t.Fatalf("v2 broadcasts = %v, want one per version", stub.channels)
 	}
 
 	// A retry of version 2 itself still resumes: nothing re-sent.
 	if err := a.Execute(context.Background(), versionedReq(ids, "Big storm coming", 2)); err != nil {
 		t.Fatalf("v2 retry: %v", err)
 	}
-	if len(stub.contacts) != 2 || len(stub.channels) != 2 {
-		t.Fatalf("after v2 retry = contacts %v broadcasts %v, want no repeats", stub.contacts, stub.channels)
+	if len(stub.channels) != 2 || len(stub.contacts) != 0 {
+		t.Fatalf("after v2 retry = broadcasts %v contacts %v, want no repeats and no DMs",
+			stub.channels, stub.contacts)
 	}
 }
 
 // TestExecuteResendsAfterFailedTransmission pins the P1: the progress
-// follows the TRANSMISSION OUTCOME, not the accept handoff. A send that
-// was recorded but later reported failed by the radio (TxFailed revokes
-// the entry) must be retried — the group resume must never skip a
-// recipient whose transmission did not make it.
+// follows the TRANSMISSION OUTCOME, not the accept handoff. A broadcast
+// that was recorded but later reported failed by the radio (TxFailed
+// revokes the entry) must be retried.
 func TestExecuteResendsAfterFailedTransmission(t *testing.T) {
 	stub := &stubSender{}
 	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
@@ -318,30 +292,30 @@ func TestExecuteResendsAfterFailedTransmission(t *testing.T) {
 	if err := a.Execute(context.Background(), req); err != nil {
 		t.Fatalf("attempt 1: %v", err)
 	}
-	if len(stub.contacts) != 1 || len(stub.channels) != 1 {
-		t.Fatalf("attempt 1 = contacts %v broadcasts %v, want one each", stub.contacts, stub.channels)
+	if len(stub.channels) != 1 {
+		t.Fatalf("attempt 1 broadcasts = %v, want one", stub.channels)
 	}
 
-	// The modem later reports the DM failed: the hub revokes the entry.
-	stub.revokeProgress("publisher-1", req.Event.Hazard.Key, 1, "a0a85934", 0)
+	// The modem later reports the broadcast failed: the hub revokes it.
+	stub.revokeProgress("publisher-1", req.Event.Hazard.Key, 1, "", 1)
 
-	// The group retry must send the failed recipient again.
+	// The group retry must send the failed broadcast again.
 	if err := a.Execute(context.Background(), req); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if len(stub.contacts) != 2 || stub.contacts[1] != "a0a85934" {
-		t.Fatalf("contacts after failed tx = %v, want the recipient retransmitted", stub.contacts)
+	if len(stub.channels) != 2 {
+		t.Fatalf("broadcasts after failed tx = %v, want the broadcast retransmitted", stub.channels)
 	}
-	if len(stub.channels) != 1 {
-		t.Fatalf("broadcasts = %v, want still exactly one (the broadcast succeeded)", stub.channels)
+	if len(stub.contacts) != 0 {
+		t.Fatalf("contacts = %v, want none (direct messages disabled)", stub.contacts)
 	}
 
 	// The retry's own echo stamps the progress again: a further retry skips.
 	if err := a.Execute(context.Background(), req); err != nil {
 		t.Fatalf("retry 2: %v", err)
 	}
-	if len(stub.contacts) != 2 || len(stub.channels) != 1 {
-		t.Fatalf("after re-stamped retry = contacts %v broadcasts %v, want no repeats", stub.contacts, stub.channels)
+	if len(stub.channels) != 2 {
+		t.Fatalf("after re-stamped retry = broadcasts %v, want no repeats", stub.channels)
 	}
 }
 
@@ -354,8 +328,8 @@ func TestExecuteLedgerFailureFailsOpen(t *testing.T) {
 	if err := a.Execute(context.Background(), versionedReq([]string{"a0a85934"}, "x", 1)); err != nil {
 		t.Fatalf("Execute with broken ledger: %v", err)
 	}
-	if len(stub.channels) != 1 || len(stub.contacts) != 1 {
-		t.Fatalf("transmissions = broadcast %v contacts %v, want both delivered (fail-open)",
+	if len(stub.channels) != 1 || len(stub.contacts) != 0 {
+		t.Fatalf("transmissions = broadcast %v contacts %v, want the broadcast delivered and no DMs",
 			stub.channels, stub.contacts)
 	}
 }
@@ -374,14 +348,13 @@ func TestExecutePassesJobIdentityToVersionedSends(t *testing.T) {
 	if err := a.Execute(context.Background(), req); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(stub.progs) != 2 {
-		t.Fatalf("versioned sends = %d, want 2 (broadcast + dm)", len(stub.progs))
+	if len(stub.progs) != 1 {
+		t.Fatalf("versioned sends = %d, want 1 (the channel broadcast only)", len(stub.progs))
 	}
-	for i, prog := range stub.progs {
-		if prog.ActionID != "mesh-main" || prog.GroupID != 42 || prog.DedupKey != "c:42" ||
-			prog.Publisher != "publisher-1" || prog.ChangeID != 3 {
-			t.Fatalf("send %d prog = %+v, want the job identity (group 42, dedup c:42) + version", i, prog)
-		}
+	prog := stub.progs[0]
+	if prog.ActionID != "mesh-main" || prog.GroupID != 42 || prog.DedupKey != "c:42" ||
+		prog.Publisher != "publisher-1" || prog.ChangeID != 3 {
+		t.Fatalf("broadcast prog = %+v, want the job identity (group 42, dedup c:42) + version", prog)
 	}
 }
 

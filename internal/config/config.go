@@ -159,6 +159,12 @@ type MeshtasticConfig struct {
 	Device string
 	// Baud is the serial speed (default 115200).
 	Baud int
+	// Transport selects the node link: "serial" (USB CDC, the default)
+	// or "tcp" (the node's WiFi API on Host).
+	Transport string
+	// Host is the TCP endpoint for transport "tcp": a host, an IP or a
+	// host:port pair (the default port 4403 is appended when missing).
+	Host string
 	// RouteMessages re-publishes direct messages from directory-known
 	// senders as canonical /events documents (the alarm pipeline).
 	RouteMessages bool
@@ -554,8 +560,14 @@ type fileMQTTPublish struct {
 // fileMeshtastic mirrors the top-level meshtastic block (pointer fields keep
 // omitted values distinguishable from explicit zeroes).
 type fileMeshtastic struct {
-	Enabled       bool           `yaml:"enabled"`
-	Device        string         `yaml:"device"`
+	Enabled bool   `yaml:"enabled"`
+	Device  string `yaml:"device"`
+	// Transport selects the node link: "serial" (USB CDC, the default)
+	// or "tcp" (the node's WiFi API).
+	Transport string `yaml:"transport"`
+	// Host is the TCP endpoint for transport "tcp" (host, IP or
+	// host:port; the default port 4403 is appended when missing).
+	Host          string         `yaml:"host"`
 	Baud          *int           `yaml:"baud"`
 	RouteMessages bool           `yaml:"route_messages"`
 	NodeTTL       *time.Duration `yaml:"node_ttl"`
@@ -1133,6 +1145,8 @@ func (f fileConfig) toConfig() Config {
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
 		cfg.Meshtastic.Device = strings.TrimSpace(f.Meshtastic.Device)
+		cfg.Meshtastic.Transport = strings.ToLower(strings.TrimSpace(f.Meshtastic.Transport))
+		cfg.Meshtastic.Host = strings.TrimSpace(f.Meshtastic.Host)
 		cfg.Meshtastic.RouteMessages = f.Meshtastic.RouteMessages
 		cfg.Meshtastic.EmcomChannel = f.Meshtastic.EmcomChannel
 		if f.Meshtastic.Baud != nil {
@@ -1407,6 +1421,14 @@ func (c Config) Validate() error {
 	}
 	if c.Meshtastic.EmcomChannel < 0 || c.Meshtastic.EmcomChannel > 7 {
 		return fmt.Errorf("meshtastic.emcom_channel must be 0-7, got %d", c.Meshtastic.EmcomChannel)
+	}
+	switch c.Meshtastic.Transport {
+	case "", "serial", "tcp":
+	default:
+		return fmt.Errorf("meshtastic.transport must be \"serial\" or \"tcp\", got %q", c.Meshtastic.Transport)
+	}
+	if c.Meshtastic.Transport == "tcp" && c.Meshtastic.Host == "" {
+		return fmt.Errorf("meshtastic.host is required when meshtastic.transport is \"tcp\"")
 	}
 	if c.Meshtastic.EmcomInterval != 0 &&
 		(c.Meshtastic.EmcomInterval < time.Minute || c.Meshtastic.EmcomInterval > 30*24*time.Hour) {

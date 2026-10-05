@@ -395,6 +395,8 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 	meshtasticHub, err := meshtastic.NewHub(meshtastic.Config{
 		Enabled:       cfg.Meshtastic.Enabled,
 		Device:        cfg.Meshtastic.Device,
+		Transport:     cfg.Meshtastic.Transport,
+		Host:          cfg.Meshtastic.Host,
 		Baud:          cfg.Meshtastic.Baud,
 		RouteMessages: cfg.Meshtastic.RouteMessages,
 		NodeTTL:       cfg.Meshtastic.NodeTTL,
@@ -619,6 +621,8 @@ func run(configPath string, checkConfig bool) error {
 	meshtasticHub, err := meshtastic.NewHub(meshtastic.Config{
 		Enabled:              cfg.Meshtastic.Enabled,
 		Device:               cfg.Meshtastic.Device,
+		Transport:            cfg.Meshtastic.Transport,
+		Host:                 cfg.Meshtastic.Host,
 		Baud:                 cfg.Meshtastic.Baud,
 		RouteMessages:        cfg.Meshtastic.RouteMessages,
 		NodeTTL:              cfg.Meshtastic.NodeTTL,

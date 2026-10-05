@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"slices"
 	"sort"
 	"strconv"
@@ -28,6 +29,7 @@ import (
 	"github.com/kabili207/meshtastic-go/transport"
 	"github.com/kabili207/meshtastic-go/transport/client"
 	"github.com/kabili207/meshtastic-go/transport/serial"
+	"github.com/kabili207/meshtastic-go/transport/tcp"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
@@ -52,6 +54,14 @@ type Config struct {
 	// port it landed, without a config edit.
 	Device string
 	Baud   int
+	// Transport selects the device link: "serial" (USB CDC, the
+	// default) or "tcp" (the node's WiFi API — transport "tcp" dials
+	// Host on the Meshtastic API port, 4403 by default). An empty value
+	// means serial.
+	Transport string
+	// Host is the TCP endpoint for transport "tcp": a host, an IP or a
+	// host:port pair (the default port 4403 is appended when missing).
+	Host string
 	// RouteMessages re-publishes direct messages from directory-known
 	// senders as canonical /events documents, so they enter the normal
 	// routing matrix (the alarm pipeline) like APRS messages do.
@@ -467,6 +477,29 @@ var serialDial = func(ctx context.Context, cfg serial.Config) (transportConn, er
 	return &clientAdapter{t: t}, nil
 }
 
+// tcpDial opens one TCP transport to the node's WiFi API (the seam for
+// tests).
+var tcpDial = func(ctx context.Context, address string) (transportConn, error) {
+	t, err := tcp.Connect(ctx, tcp.Config{Address: address})
+	if err != nil {
+		return nil, err
+	}
+	return &clientAdapter{t: t}, nil
+}
+
+// tcpAddress normalizes the configured TCP endpoint: a bare host or IP
+// gets the Meshtastic default API port (4403) appended.
+func tcpAddress(host string) (string, error) {
+	addr := strings.TrimSpace(host)
+	if addr == "" {
+		return "", errors.New("meshtastic: no TCP host configured (set meshtastic.host)")
+	}
+	if !strings.Contains(addr, ":") {
+		addr = net.JoinHostPort(addr, "4403")
+	}
+	return addr, nil
+}
+
 // deviceCandidates splits the device field into the ordered list of
 // serial paths to try: a comma-separated list keeps the hub working
 // when a node re-enumerates onto a different port number after a USB
@@ -488,23 +521,23 @@ func deviceCandidates(device string) []string {
 // would never come back after a USB hiccup. Overridable in tests.
 var dialAttemptTimeout = 15 * time.Second
 
-// dialOne opens one transport with a bounded attempt window. The library
-// call runs in a goroutine because its context may be ignored on the
+// dialOne opens one transport with a bounded attempt window. The
+// device library can block indefinitely in open() when the port is in a
+// bad state (a hung MCU, a half-dead USB link): without the bound, a
+// radio-silence reconnect would hang the whole reconnect loop forever
+// and the node would never come back after a USB hiccup. The dial
+// function runs in a goroutine because its context may be ignored on the
 // blocking syscall path; the select below is the real timeout. A late
 // connect (the syscall finished just after the deadline) is reaped and
-// stopped so it never leaks a live transport.
-func dialOne(ctx context.Context, cfg serial.Config) (transportConn, error) {
+// stopped so it never leaks a live transport. Overridable in tests.
+func dialOne(ctx context.Context, dial func(context.Context) (transportConn, error)) (transportConn, error) {
 	type res struct {
 		t   transportConn
 		err error
 	}
-	// Captured BEFORE the goroutine starts: the load of the (test-)
-	// swappable seam is ordered with the caller and can never race with
-	// a later swap.
-	dial := serialDial
 	ch := make(chan res, 1)
 	go func() {
-		t, err := dial(ctx, cfg)
+		t, err := dial(ctx)
 		ch <- res{t: t, err: err}
 	}()
 	select {
@@ -524,30 +557,57 @@ func dialOne(ctx context.Context, cfg serial.Config) (transportConn, error) {
 	}
 }
 
-// Dial opens the device transport (the seam for tests). Production
-// tries the configured device paths in order and returns the first
-// transport that connects; when none opens, the error names every
-// candidate that failed.
+// Dial opens the device transport (the seam for tests). The serial
+// transport tries the configured device paths in order and returns the
+// first transport that connects; when none opens, the error names every
+// candidate that failed. The tcp transport dials the configured host
+// (the node's WiFi API).
 var Dial = func(ctx context.Context, cfg Config) (transportConn, error) {
-	paths := deviceCandidates(cfg.Device)
-	if len(paths) == 0 {
-		return nil, errors.New("meshtastic: no serial device path configured")
-	}
-	var lastErr error
-	for _, path := range paths {
-		dctx, cancel := context.WithTimeout(ctx, dialAttemptTimeout)
-		conn, err := dialOne(dctx, serial.Config{Port: path, BaudRate: cfg.Baud})
-		cancel()
-		if err == nil {
-			return conn, nil
+	switch strings.ToLower(strings.TrimSpace(cfg.Transport)) {
+	case "", "serial":
+		paths := deviceCandidates(cfg.Device)
+		if len(paths) == 0 {
+			return nil, errors.New("meshtastic: no serial device path configured")
 		}
-		lastErr = err
+		var lastErr error
+		for _, path := range paths {
+			// Capture the (test-)swappable seam before the goroutine
+			// starts: the load is ordered with the caller and can never
+			// race with a later swap.
+			sd := serialDial
+			dctx, cancel := context.WithTimeout(ctx, dialAttemptTimeout)
+			conn, err := dialOne(dctx, func(c context.Context) (transportConn, error) {
+				return sd(c, serial.Config{Port: path, BaudRate: cfg.Baud})
+			})
+			cancel()
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if len(paths) == 1 {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("meshtastic: none of the device candidates connected (%s): %w",
+			strings.Join(paths, ", "), lastErr)
+	case "tcp":
+		addr, err := tcpAddress(cfg.Host)
+		if err != nil {
+			return nil, err
+		}
+		td := tcpDial
+		dctx, cancel := context.WithTimeout(ctx, dialAttemptTimeout)
+		defer cancel()
+		conn, err := dialOne(dctx, func(c context.Context) (transportConn, error) {
+			return td(c, addr)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("meshtastic: TCP dial to %s: %w", addr, err)
+		}
+		return conn, nil
+	default:
+		return nil, fmt.Errorf("meshtastic: unknown transport %q (want \"serial\" or \"tcp\")", cfg.Transport)
 	}
-	if len(paths) == 1 {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("meshtastic: none of the device candidates connected (%s): %w",
-		strings.Join(paths, ", "), lastErr)
 }
 
 // Hub owns the serial connection to the Meshtastic node and the shared

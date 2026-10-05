@@ -269,6 +269,70 @@ func TestDialTriesDeviceCandidates(t *testing.T) {
 	}
 }
 
+// TestDialTCPTransport pins the tcp link: a bare host gets the default
+// API port appended, an explicit port passes through, the dial goes
+// through the tcpDial seam, and misconfiguration is rejected without a
+// dial attempt.
+func TestDialTCPTransport(t *testing.T) {
+	old := tcpDial
+	t.Cleanup(func() { tcpDial = old })
+
+	var gotAddr string
+	tcpDial = func(_ context.Context, address string) (transportConn, error) {
+		gotAddr = address
+		return &fakeTransportConn{port: address}, nil
+	}
+
+	conn, err := Dial(context.Background(), Config{Transport: "tcp", Host: "pirx-node"})
+	if err != nil {
+		t.Fatalf("Dial(tcp) = %v", err)
+	}
+	if fc, ok := conn.(*fakeTransportConn); !ok || fc.port != "pirx-node:4403" {
+		t.Fatalf("connected via %v, want pirx-node:4403", conn)
+	}
+	if gotAddr != "pirx-node:4403" {
+		t.Fatalf("tcpDial address = %q, want pirx-node:4403", gotAddr)
+	}
+
+	// An explicit port passes through untouched.
+	tcpDial = func(_ context.Context, address string) (transportConn, error) {
+		gotAddr = address
+		return &fakeTransportConn{port: address}, nil
+	}
+	if _, err := Dial(context.Background(), Config{Transport: "tcp", Host: "10.0.0.40:4403"}); err != nil {
+		t.Fatalf("Dial(tcp host:port) = %v", err)
+	}
+	if gotAddr != "10.0.0.40:4403" {
+		t.Fatalf("explicit port dialed as %q, want it unchanged", gotAddr)
+	}
+
+	// Missing host and unknown transports are errors, never dials.
+	dials := 0
+	tcpDial = func(_ context.Context, _ string) (transportConn, error) {
+		dials++
+		return &fakeTransportConn{}, nil
+	}
+	if _, err := Dial(context.Background(), Config{Transport: "tcp"}); err == nil {
+		t.Fatal("tcp without host = nil, want error")
+	}
+	if _, err := Dial(context.Background(), Config{Transport: "udp", Host: "x"}); err == nil {
+		t.Fatal("unknown transport = nil, want error")
+	}
+	if dials != 0 {
+		t.Fatalf("misconfiguration still dialed %d times", dials)
+	}
+
+	// A failing TCP dial surfaces the endpoint in the error.
+	tcpDial = func(_ context.Context, _ string) (transportConn, error) {
+		return nil, errors.New("connection refused")
+	}
+	if _, err := Dial(context.Background(), Config{Transport: "tcp", Host: "10.0.0.99"}); err == nil {
+		t.Fatal("failing tcp dial = nil, want error")
+	} else if !strings.Contains(err.Error(), "10.0.0.99:4403") {
+		t.Fatalf("error %q, want the dialed endpoint named", err)
+	}
+}
+
 // TestDialTimeoutOnBlockedOpen pins the reconnect-loop self-healing: a
 // serial open that hangs forever (the library ignoring the context on
 // the blocking syscall path — the prod incident: "device radio silent"

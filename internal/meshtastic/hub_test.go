@@ -556,6 +556,33 @@ func TestHubNodeDirectoryRetention(t *testing.T) {
 	}
 }
 
+// TestNodeHopsFromPacket pins the hop count learned from the packet
+// header: hops travelled = hop_start - hop_limit; a direct packet
+// counts 0.
+func TestNodeHopsFromPacket(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+
+	pkt := textPacket(0xef010203, 0xabcd1234, "hello")
+	pkt.HopStart, pkt.HopLimit = 3, 1
+	dispatchPkt(t, radio, pkt)
+
+	deadline := time.Now().Add(5 * time.Second)
+	var hops int
+	for time.Now().Before(deadline) {
+		for _, n := range radio.hub.Snapshot().Nodes {
+			if n.ID == "ef010203" {
+				hops = n.Hops
+			}
+		}
+		if hops == 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("node hops = %d, want 2", hops)
+}
+
 // TestHubAckWithoutEcho pins the 2.7.x firmware behavior: the device does
 // not echo direct messages, but the recipient's ROUTING_APP alone must
 // still settle the tx (paired by recipient, FIFO).

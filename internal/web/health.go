@@ -83,6 +83,7 @@ type healthView struct {
 	NavAPRS          bool
 	NavMessages      bool
 	NavMeshtastic    bool
+	NavMeshMap       bool
 	NavTraffic       bool
 	NavNotifications bool
 	NavHealth        bool

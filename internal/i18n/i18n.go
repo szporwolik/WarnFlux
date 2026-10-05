@@ -108,6 +108,7 @@ var en = map[string]string{
 	"nav.mqtt":          "MQTT",
 	"nav.messages":      "APRS msgs",
 	"nav.aprs":          "APRS",
+	"nav.meshmap":       "Mesh map",
 	"nav.meshtastic":    "Meshtastic",
 	"nav.config":        "Config",
 
@@ -183,6 +184,13 @@ var en = map[string]string{
 	"aprsmap.path":     "Path",
 	"aprsmap.packets":  "Packets",
 	"aprsmap.disabled": "The APRS hub is disabled.",
+
+	"meshmap.title":    "Mesh nodes",
+	"meshmap.hint":     "Every node our Meshtastic radio heard — no operational ring, no time limit. The popup shows the hop count of the last packet, the observed signal kinds, telemetry, last-heard time and distance from our node.",
+	"meshmap.hops":     "Hops",
+	"meshmap.direct":   "direct",
+	"meshmap.nopos":    "Heard without a position",
+	"meshmap.disabled": "The Meshtastic hub is disabled.",
 
 	// Public home page.
 	"home.tab.alerts":    "Active messages",
@@ -818,6 +826,7 @@ var pl = map[string]string{
 	"nav.mqtt":          "MQTT",
 	"nav.messages":      "Wiadomości APRS",
 	"nav.aprs":          "APRS",
+	"nav.meshmap":       "Mapa mesh",
 	"nav.meshtastic":    "Meshtastic",
 	"nav.config":        "Konfiguracja",
 
@@ -893,6 +902,13 @@ var pl = map[string]string{
 	"aprsmap.path":     "Ścieżka",
 	"aprsmap.packets":  "Pakiety",
 	"aprsmap.disabled": "Hub APRS jest wyłączony.",
+
+	"meshmap.title":    "Węzły mesh",
+	"meshmap.hint":     "Każdy węzeł, który usłyszało nasze radio Meshtastic — bez ograniczenia promieniem ani czasem. Dymek pokazuje liczbę hopów ostatniego pakietu, rodzaje odebranych sygnałów, telemetrię, czas ostatniego odbioru i odległość od naszego węzła.",
+	"meshmap.hops":     "Hopy",
+	"meshmap.direct":   "bezpośrednio",
+	"meshmap.nopos":    "Słyszane bez pozycji",
+	"meshmap.disabled": "Hub Meshtastic jest wyłączony.",
 
 	"home.tab.alerts":    "Aktywne komunikaty",
 	"home.tab.map":       "Mapa sytuacyjna",

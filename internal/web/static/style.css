@@ -1833,6 +1833,39 @@ tr.click-send:hover td { background: var(--surface-hi); }
 @media (max-width: 640px) {
   #aprs-admin-map { min-height: 18rem; height: 60dvh; }
 }
+/* Admin Meshtastic map browser: same map block as the APRS one, plus a
+   small list of heard nodes without a position. */
+#mesh-admin-map {
+  width: 100%;
+  height: min(calc(100dvh - 16rem), 46rem);
+  min-height: 24rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+#mesh-admin-map.leaflet-container {
+  font-family: inherit;
+}
+.meshmap-nopos {
+  margin: 0.6rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.35rem;
+}
+.meshmap-nopos li {
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+}
+.meshmap-nopos li strong { font-weight: 600; }
+@media (max-width: 640px) {
+  #mesh-admin-map { min-height: 18rem; height: 60dvh; }
+}
 /* Wide screens: the category lists collapse into a 1/4 column on the
    left while the map takes the remaining 3/4 and stays pinned while the
    lists scroll. Narrow screens keep the stacked flow (map on top). */

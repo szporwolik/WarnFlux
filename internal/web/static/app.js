@@ -1238,7 +1238,11 @@
       return;
     }
     var layer = L.tileLayer(url, {
-      pane: "aprsRadar", opacity: 0.55, maxNativeZoom: 7, maxZoom: 12
+      // maxNativeZoom keeps tile requests cheap; maxZoom matches the
+      // base layer so the overlay never caps the WHOLE map (Leaflet
+      // clamps every layer to the lowest maxZoom — the old value of 12
+      // blocked banner focus zooms and manual zoom-in past 12).
+      pane: "aprsRadar", opacity: 0.55, maxNativeZoom: 7, maxZoom: 19
     });
     if (radarLayer) {
       map.removeLayer(radarLayer);

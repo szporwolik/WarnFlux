@@ -400,6 +400,30 @@ func TestHubSendMessageSanity(t *testing.T) {
 	}
 }
 
+// TestHubStationLastPath pins the digipeater path carried in the
+// retained station document: the hops of the LAST packet, in order.
+func TestHubStationLastPath(t *testing.T) {
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hub.Observe(testPacket("SP9XYZ-7>APRS,WIDE1-1*,SR9NWZ*:!5056.25N/01952.50E-"), "aprs-inet")
+	waitFor(t, func() bool {
+		return len(sink.payloads(StationsTopicPrefix+"SP9XYZ-7")) >= 1
+	})
+	var doc StationDocument
+	if err := json.Unmarshal(sink.payloads(StationsTopicPrefix + "SP9XYZ-7")[0], &doc); err != nil {
+		t.Fatalf("unmarshal station doc: %v", err)
+	}
+	if len(doc.Path) != 2 || doc.Path[0] != "WIDE1-1*" || doc.Path[1] != "SR9NWZ*" {
+		t.Fatalf("path = %v, want [WIDE1-1* SR9NWZ*]", doc.Path)
+	}
+}
+
 func TestHubStationExpiry(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled:    true,

@@ -44,11 +44,15 @@ type StationDocument struct {
 	DistanceKM float64 `json:"distance_km,omitempty"`
 	// Origin reports how the latest packet reached APRS-IS: "rf" (heard
 	// over the radio by an i-gate) or "internet" (injected directly).
-	Origin       string   `json:"origin,omitempty"`
-	LastHeardAt  string   `json:"last_heard_at"`
-	LastPacketAt string   `json:"last_packet_at,omitempty"`
-	ReceivedVia  []string `json:"received_via"`
-	PacketCount  int      `json:"packet_count"`
+	Origin       string `json:"origin,omitempty"`
+	LastHeardAt  string `json:"last_heard_at"`
+	LastPacketAt string `json:"last_packet_at,omitempty"`
+	// Path is the digipeater path of the LAST packet: the hops the frame
+	// took, in order, each with a trailing '*' when that digi actually
+	// repeated it. Empty when the packet was heard directly.
+	Path        []string `json:"path,omitempty"`
+	ReceivedVia []string `json:"received_via"`
+	PacketCount int      `json:"packet_count"`
 	// Weather is the latest decoded weather observation, when the
 	// station is a weather station (APRS symbol '_').
 	Weather *WeatherReport `json:"weather,omitempty"`

@@ -180,6 +180,7 @@ type composeView struct {
 	NavAccount       bool
 	NavLogs          bool
 	NavAudit         bool
+	NavAPRS          bool
 	NavMessages      bool
 	NavMeshtastic    bool
 	NavTraffic       bool

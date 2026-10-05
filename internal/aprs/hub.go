@@ -122,6 +122,10 @@ type stationState struct {
 	packets        int
 	weather        *WeatherReport
 
+	// path is the digipeater path of the last packet (the hops the
+	// frame took, in order). Directly-heard packets leave it empty.
+	path []string
+
 	// track is the movement tail: up to maxTrackPoints earlier positions,
 	// oldest first. The current position lives in position, so the map
 	// can draw the full polyline [track..., position].
@@ -787,6 +791,7 @@ func (r *stationRecord) merge(p *Packet, via string, now int64) {
 	if p.Status != "" {
 		st.status = p.Status
 	}
+	st.path = append([]string(nil), p.Path...)
 	if o := OriginFromPath(p.Path); o != OriginUnknown {
 		st.origin = o
 	} else if via == BackendRadio {
@@ -846,6 +851,7 @@ func (h *Hub) buildStationDoc(rec *stationRecord) StationDocument {
 	doc.AltitudeM = st.altitudeM
 	doc.Comment = st.comment
 	doc.Status = st.status
+	doc.Path = append([]string(nil), st.path...)
 	if st.weather != nil {
 		doc.Weather = st.weather
 	}

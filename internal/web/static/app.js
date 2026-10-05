@@ -2008,9 +2008,10 @@
       lines.push(tr("map.moving"));
     }
     // Which backend delivered this station's packets: APRS-IS
-    // (internet), our own radio, or both.
-    if (stationVia(s)) {
-      lines.push(stationVia(s));
+    // (internet), our own radio, or both — dimmed, it is metadata.
+    var viaLine = stationVia(s);
+    if (viaLine) {
+      lines.push('<span class="muted">' + esc(viaLine) + "</span>");
     }
     body += lines.join("<br>");
     body += stationWeatherBlock(s.callsign);
@@ -2048,11 +2049,13 @@
     if (r.pressure_hpa != null) { meta.push(fmtNum(r.pressure_hpa, 0) + " hPa"); }
     if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
     if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
-    if (r.via === "aprs" && r.origin) {
-      var viaLabel = r.origin === "rf" ? tr("map.via.radio") : r.origin === "internet" ? tr("map.via.internet") : "";
-      if (viaLabel) { meta.push(viaLabel); }
-    }
     if (meta.length) { body += '<div class="wf-pop-meta">' + meta.join(" · ") + '</div>'; }
+    // APRS reports say which backend delivered the data — the same
+    // stationVia line the station popups show, dimmed as metadata.
+    if (r.via === "aprs") {
+      var viaLine = stationVia(r);
+      if (viaLine) { body += '<div class="wf-pop-via muted">' + esc(viaLine) + '</div>'; }
+    }
     var f = forecastKey()[r.provider + "\x00" + r.name];
     if (f && f.daily && f.daily.length) {
       body += '<div class="hw-fcast">';
@@ -2277,13 +2280,14 @@
       if (r.pressure_hpa != null) { meta.push(fmtNum(r.pressure_hpa, 0) + " hPa"); }
       if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
       if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
-      // APRS reports say where the data came from: our radio or the
-      // internet feed — the same labels the station popups use.
-      if (r.via === "aprs" && r.origin) {
-        var viaLabel = r.origin === "rf" ? tr("map.via.radio") : r.origin === "internet" ? tr("map.via.internet") : "";
-        if (viaLabel) { meta.push(viaLabel); }
-      }
       if (meta.length) { body.appendChild(mk("span", "hw-meta", meta.join(" · "))); }
+      // APRS reports say where the data came from: our radio or the
+      // internet feed — the same stationVia line the station popups
+      // use, rendered dimmed below the measurement row.
+      if (r.via === "aprs") {
+        var viaLine = stationVia(r);
+        if (viaLine) { body.appendChild(mk("span", "hw-meta hw-via", viaLine)); }
+      }
 
       var f = fk[r.provider + "\x00" + r.name];
       if (f && f.daily && f.daily.length) {

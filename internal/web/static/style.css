@@ -2186,8 +2186,8 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .hw-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
 .hw-provider { color: var(--muted); font-size: 0.75rem; }
 .hw-meta { color: var(--muted); font-size: 0.8rem; }
-.hw-meta.hw-via { opacity: 0.75; margin-top: 0.15rem; }
-.wf-pop-body .wf-pop-via { font-size: 0.75rem; opacity: 0.8; margin-top: 0.15rem; }
+.hw-via-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.15rem; }
+.wf-pop-body .wf-via-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.35rem; }
 /* MeshCore nodes heard without a position: a wrapped badge row below the
    node cards — one pill per node with the name, type, hops and last-heard
    time (full key on hover). */

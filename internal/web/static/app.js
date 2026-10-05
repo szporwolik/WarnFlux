@@ -1354,6 +1354,22 @@
     return "";
   }
 
+  // aprsViaChips renders the delivery path of one APRS weather report as
+  // badge chips: APRS-RF when our own radio heard the station, APRS-IS
+  // when it arrived through the internet feed (both when both) — so a
+  // weather station never leaves doubt how its data got in. Protocol
+  // names, so they are never translated. Falls back to the APRS-IS path
+  // classification for legacy documents without received_via.
+  function aprsViaChips(r) {
+    var via = r.received_via || [];
+    if (!via.length && r.origin === "rf") { via = ["aprs-radio"]; }
+    if (!via.length && r.origin === "internet") { via = ["aprs-inet"]; }
+    var chips = [];
+    if (via.indexOf("aprs-radio") >= 0) { chips.push('<span class="badge ok">APRS-RF</span>'); }
+    if (via.indexOf("aprs-inet") >= 0) { chips.push('<span class="badge muted">APRS-IS</span>'); }
+    return chips.join(" ");
+  }
+
   function stationColor(s) {
     return stationIsMoving(s) ? STATION_COLORS.moving : STATION_COLORS.static;
   }
@@ -2056,11 +2072,11 @@
     if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
     if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
     if (meta.length) { body += '<div class="wf-pop-meta">' + meta.join(" · ") + '</div>'; }
-    // APRS reports say which backend delivered the data — the same
-    // stationVia line the station popups show, dimmed as metadata.
+    // APRS reports say which backend delivered the data: our radio or
+    // the internet feed — shown as clear APRS-RF / APRS-IS chips.
     if (r.via === "aprs") {
-      var viaLine = stationVia(r);
-      if (viaLine) { body += '<div class="wf-pop-via muted">' + esc(viaLine) + '</div>'; }
+      var chips = aprsViaChips(r);
+      if (chips) { body += '<div class="wf-via-chips">' + chips + '</div>'; }
     }
     var f = forecastKey()[r.provider + "\x00" + r.name];
     if (f && f.daily && f.daily.length) {
@@ -2112,10 +2128,13 @@
         return; // the station marker shows this weather inline
       }
       var marker = L.marker([r.latitude, r.longitude], { icon: weatherIcon(r), riseOnHover: true });
-      marker.bindTooltip(
-        r.name + (r.temperature_c != null ? " · " + fmtNum(r.temperature_c) + "°C" : ""),
-        { direction: "top" }
-      );
+      var tip = "<strong>" + esc(r.name) + "</strong>";
+      if (r.temperature_c != null) { tip += " · " + fmtNum(r.temperature_c) + "°C"; }
+      if (r.via === "aprs") {
+        var chips = aprsViaChips(r);
+        if (chips) { tip += "<br>" + chips; }
+      }
+      marker.bindTooltip(tip, { direction: "top" });
       marker.bindPopup(weatherPopup(r));
       weatherLayer.addLayer(marker);
       weatherMarkers[String(r.name || "").toUpperCase()] = marker;
@@ -2287,12 +2306,15 @@
       if (r.radiation_usv_h != null) { meta.push(fmtNum(r.radiation_usv_h, 2) + " µSv/h"); }
       if (r.radiation_cpm != null) { meta.push(fmtNum(r.radiation_cpm, 0) + " cpm"); }
       if (meta.length) { body.appendChild(mk("span", "hw-meta", meta.join(" · "))); }
-      // APRS reports say where the data came from: our radio or the
-      // internet feed — the same stationVia line the station popups
-      // use, rendered dimmed below the measurement row.
+      // APRS reports carry the delivery path as APRS-RF / APRS-IS chips
+      // below the measurement row.
       if (r.via === "aprs") {
-        var viaLine = stationVia(r);
-        if (viaLine) { body.appendChild(mk("span", "hw-meta hw-via", viaLine)); }
+        var chips = aprsViaChips(r);
+        if (chips) {
+          var viaEl = mk("span", "hw-via-chips");
+          viaEl.innerHTML = chips;
+          body.appendChild(viaEl);
+        }
       }
 
       var f = fk[r.provider + "\x00" + r.name];

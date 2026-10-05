@@ -658,7 +658,11 @@ type weatherReportView struct {
 	Via       string  `json:"via"` // "internet" or "aprs"
 	// Origin classifies APRS reports: "rf" (heard by our radio),
 	// "internet" (APRS-IS only) or "" (unknown).
-	Origin           string   `json:"origin,omitempty"`
+	Origin string `json:"origin,omitempty"`
+	// ReceivedVia lists which of our backends actually delivered the
+	// station's packets: "aprs-radio" and/or "aprs-inet". APRS reports
+	// only; the map shows it as APRS-RF / APRS-IS chips.
+	ReceivedVia      []string `json:"received_via,omitempty"`
 	Condition        string   `json:"condition"`
 	TemperatureC     *float64 `json:"temperature_c,omitempty"`
 	HumidityPct      *float64 `json:"humidity_pct,omitempty"`
@@ -727,6 +731,7 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 				Longitude:        lon,
 				Via:              "aprs",
 				Origin:           doc.Origin,
+				ReceivedVia:      doc.ReceivedVia,
 				Condition:        aprsWeatherCondition(doc.Weather),
 				TemperatureC:     doc.Weather.TemperatureC,
 				HumidityPct:      doc.Weather.HumidityPct,

@@ -1299,6 +1299,7 @@ func TestPublicWeatherAPI(t *testing.T) {
 			Name          string   `json:"name"`
 			Via           string   `json:"via"`
 			Origin        string   `json:"origin"`
+			ReceivedVia   []string `json:"received_via"`
 			TemperatureC  *float64 `json:"temperature_c"`
 			RadiationUSvh *float64 `json:"radiation_usv_h"`
 		} `json:"reports"`
@@ -1320,6 +1321,7 @@ func TestPublicWeatherAPI(t *testing.T) {
 				Name          string   `json:"name"`
 				Via           string   `json:"via"`
 				Origin        string   `json:"origin"`
+				ReceivedVia   []string `json:"received_via"`
 				TemperatureC  *float64 `json:"temperature_c"`
 				RadiationUSvh *float64 `json:"radiation_usv_h"`
 			} `json:"reports"`
@@ -1342,22 +1344,30 @@ func TestPublicWeatherAPI(t *testing.T) {
 	byName := map[string]struct {
 		via           string
 		origin        string
+		receivedVia   []string
 		radiationUSvh *float64
 	}{}
 	for _, r := range view.Reports {
 		byName[r.Name] = struct {
 			via           string
 			origin        string
+			receivedVia   []string
 			radiationUSvh *float64
-		}{via: r.Via, origin: r.Origin, radiationUSvh: r.RadiationUSvh}
+		}{via: r.Via, origin: r.Origin, receivedVia: r.ReceivedVia, radiationUSvh: r.RadiationUSvh}
 	}
 	wx, ok := byName["SP9WX"]
 	if !ok || wx.via != "aprs" || wx.origin != "internet" || wx.radiationUSvh == nil || *wx.radiationUSvh != 0.12 {
 		t.Fatalf("APRS weather report missing or wrong: %+v", view.Reports)
 	}
+	if len(wx.receivedVia) != 1 || wx.receivedVia[0] != "aprs-inet" {
+		t.Fatalf("APRS-IS weather report received_via = %v, want [aprs-inet]", wx.receivedVia)
+	}
 	wy, ok := byName["SP9WY"]
 	if !ok || wy.via != "aprs" || wy.origin != "rf" {
 		t.Fatalf("RF weather report missing or wrong origin: %+v", view.Reports)
+	}
+	if len(wy.receivedVia) != 1 || wy.receivedVia[0] != "aprs-radio" {
+		t.Fatalf("RF weather report received_via = %v, want [aprs-radio]", wy.receivedVia)
 	}
 	home, ok := byName["Niepołomice"]
 	if !ok || home.via != "internet" {

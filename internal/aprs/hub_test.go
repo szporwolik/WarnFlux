@@ -787,9 +787,115 @@ func TestHubRadioCLI(t *testing.T) {
 	}
 }
 
+// bareReply strips the hub-generated {NNNNN} ack suffix that every CLI
+// reply carries since the ack-id change; the remainder is the handler
+// text the channel fitted.
+func bareReply(s string) string {
+	if i := strings.LastIndexByte(s, '{'); i > 0 && len(s)-i == AckSuffixLen && strings.HasSuffix(s, "}") {
+		return s[:i]
+	}
+	return s
+}
+
+// fakeAPRSRecorder captures the durable message history the hub writes:
+// tx rows plus the status updates signalAck applies.
+type fakeAPRSRecorder struct {
+	mu     sync.Mutex
+	rows   []recRow
+	status map[string]string
+}
+
+type recRow struct {
+	direction, from, to, text, msgID, via string
+}
+
+func (f *fakeAPRSRecorder) RecordAPRSMessage(_ context.Context, direction, from, to, text, msgID, via string, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rows = append(f.rows, recRow{direction, from, to, text, msgID, via})
+	return nil
+}
+
+func (f *fakeAPRSRecorder) UpdateAPRSMessageStatus(_ context.Context, msgID, status string, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.status == nil {
+		f.status = map[string]string{}
+	}
+	f.status[msgID] = status
+	return nil
+}
+
+func (f *fakeAPRSRecorder) statusFor(msgID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status[msgID]
+}
+
+func (f *fakeAPRSRecorder) txMsgID(i int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.rows {
+		if r.direction == "tx" {
+			if i == 0 {
+				return r.msgID
+			}
+			i--
+		}
+	}
+	return ""
+}
+
+// TestHubCLIReplyCarriesAckID pins the ack-id change: every automatic
+// CLI reply goes out with a hub-generated {NNNNN} id so the receiving
+// radio can acknowledge it (and stops retransmitting the message), the
+// ack marks the durable tx row delivered, and the ack frame itself is
+// never answered (no banner/ack loop).
+func TestHubCLIReplyCarriesAckID(t *testing.T) {
+	rec := &fakeAPRSRecorder{}
+	hub, _ := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute,
+		RouteMessages: true, MessageRecorder: rec,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	cli.Register("probe", "probe", func(string) radiocli.Result {
+		return radiocli.Result{Handled: true, Reply: "OK: probed"}
+	})
+	hub.SetCLI(cli)
+
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/probe"), BackendRadio)
+	waitFor(t, func() bool { return len(tx.sends()) == 1 })
+	got := tx.sends()[0][1]
+	if bareReply(got) != "OK: probed" || len(got) != len(bareReply(got))+AckSuffixLen {
+		t.Fatalf("reply = %q, want the handler text with a {NNNNN} ack id", got)
+	}
+	id := got[len(got)-AckSuffixLen+1 : len(got)-1] // the digits inside {}
+	if rec.txMsgID(0) != id {
+		t.Fatalf("durable tx msg id = %q, want %q", rec.txMsgID(0), id)
+	}
+
+	// The addressee acknowledges: the durable tx row turns delivered.
+	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:ack"+id), BackendRadio)
+	waitFor(t, func() bool { return rec.statusFor(id) == "delivered" })
+
+	// The ack frame itself is never answered: still exactly one reply.
+	time.Sleep(150 * time.Millisecond)
+	if n := len(tx.sends()); n != 1 {
+		t.Fatalf("sends after ack = %d, want 1 (an ack must not trigger a banner reply)", n)
+	}
+}
+
 // TestHubCLIMultilineReply pins the /hazard-style list replies: one
 // multi-line command answer becomes one APRS message per line, each
-// fitted to the APRS limit.
+// fitted to the APRS limit. Since the ack-id change every line also
+// carries a hub-generated ack id.
 func TestHubCLIMultilineReply(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
@@ -811,8 +917,8 @@ func TestHubCLIMultilineReply(t *testing.T) {
 	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/list"), BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 3 })
 	sends := tx.sends()
-	if sends[0][0] != "SP9XYZ" || sends[0][1] != "header" ||
-		sends[1][1] != "line one" || sends[2][1] != "line two" {
+	if sends[0][0] != "SP9XYZ" || bareReply(sends[0][1]) != "header" ||
+		bareReply(sends[1][1]) != "line one" || bareReply(sends[2][1]) != "line two" {
 		t.Fatalf("multiline reply = %v, want three lines to SP9XYZ", sends)
 	}
 	if got := len(sink.payloads("events")); got != 0 {
@@ -969,7 +1075,7 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	// Durable acceptance: the plain handler confirmation.
 	hub.Observe(testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu"), BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 1 })
-	if got := tx.sends()[0][1]; got != "OK: alert raised" {
+	if got := bareReply(tx.sends()[0][1]); got != "OK: alert raised" {
 		t.Fatalf("durable confirmation = %q, want the plain handler reply", got)
 	}
 
@@ -986,7 +1092,7 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	rejPkt := testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu 3")
 	hub.Observe(rejPkt, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 3 })
-	if got := tx.sends()[2][1]; got != "FAILED: alert rejected" {
+	if got := bareReply(tx.sends()[2][1]); got != "FAILED: alert rejected" {
 		t.Fatalf("rejected confirmation = %q, want the explicit failure", got)
 	}
 
@@ -994,7 +1100,7 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	// re-executing (no new acceptor call).
 	hub.Observe(rejPkt, "aprs-radio")
 	waitFor(t, func() bool { return len(tx.sends()) == 4 })
-	if got := tx.sends()[3][1]; got != "FAILED: alert rejected" {
+	if got := bareReply(tx.sends()[3][1]); got != "FAILED: alert rejected" {
 		t.Fatalf("in-cooldown retransmission = %q, want the replayed failure", got)
 	}
 	mu.Lock()
@@ -1010,7 +1116,7 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	accValue = dispatch.AcceptedDurable
 	hub.Observe(rejPkt, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 5 })
-	if got := tx.sends()[4][1]; got != "OK: alert raised" {
+	if got := bareReply(tx.sends()[4][1]); got != "OK: alert raised" {
 		t.Fatalf("post-recovery retry = %q, want the success confirmation", got)
 	}
 	mu.Lock()
@@ -1178,7 +1284,7 @@ func TestHubCommandRegistryResultReplay(t *testing.T) {
 	pkt := testPacket("SP9XYZ-7>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu")
 	hub.Observe(pkt, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 1 })
-	if got := tx.sends()[0][1]; got != "OK: alert raised" {
+	if got := bareReply(tx.sends()[0][1]); got != "OK: alert raised" {
 		t.Fatalf("first confirmation = %q, want the handler reply", got)
 	}
 
@@ -1191,7 +1297,7 @@ func TestHubCommandRegistryResultReplay(t *testing.T) {
 	// second acceptance, the stored confirmation is replayed.
 	hub.Observe(pkt, "aprs-radio")
 	waitFor(t, func() bool { return len(tx.sends()) == 2 })
-	if got := tx.sends()[1][1]; got != "OK: alert raised" {
+	if got := bareReply(tx.sends()[1][1]); got != "OK: alert raised" {
 		t.Fatalf("replayed confirmation = %q, want the stored result", got)
 	}
 	mu.Lock()
@@ -1253,7 +1359,7 @@ func TestHubReusedMessageNumberRunsNewAlert(t *testing.T) {
 	p1 := testPacket("SP9XYZ-7>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu{123")
 	hub.Observe(p1, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 1 })
-	if got := tx.sends()[0][1]; got != "OK: alert raised" {
+	if got := bareReply(tx.sends()[0][1]); got != "OK: alert raised" {
 		t.Fatalf("first confirmation = %q, want the handler reply", got)
 	}
 
@@ -1267,7 +1373,7 @@ func TestHubReusedMessageNumberRunsNewAlert(t *testing.T) {
 	p2 := testPacket("SP9XYZ-7>APRS,TCPIP*::SP9MOA-10:/alert powodz miasto{123")
 	hub.Observe(p2, BackendRadio)
 	waitFor(t, func() bool { mu.Lock(); n := calls; mu.Unlock(); return n == 2 })
-	if got := tx.sends()[len(tx.sends())-1][1]; got != "OK: alert raised" {
+	if got := bareReply(tx.sends()[len(tx.sends())-1][1]); got != "OK: alert raised" {
 		t.Fatalf("second confirmation = %q, want the new handler reply", got)
 	}
 
@@ -1321,7 +1427,7 @@ func TestHubDebugConfirmationTracksAcceptance(t *testing.T) {
 	// senders keep each execution a distinct command.
 	hub.Observe(testPacket("SP9XYZ-1>APRS,TCPIP*::SP9MOA-10:/debug"), BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 1 })
-	if got := tx.sends()[0][1]; got != "OK: debug alarm generated" {
+	if got := bareReply(tx.sends()[0][1]); got != "OK: debug alarm generated" {
 		t.Fatalf("durable confirmation = %q, want the plain handler reply", got)
 	}
 
@@ -1338,14 +1444,14 @@ func TestHubDebugConfirmationTracksAcceptance(t *testing.T) {
 	rejPkt := testPacket("SP9XYZ-3>APRS,TCPIP*::SP9MOA-10:/debug")
 	hub.Observe(rejPkt, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 3 })
-	if got := tx.sends()[2][1]; got != "FAILED: debug alarm rejected" {
+	if got := bareReply(tx.sends()[2][1]); got != "FAILED: debug alarm rejected" {
 		t.Fatalf("rejected confirmation = %q, want the explicit failure", got)
 	}
 
 	// In-cooldown retransmission: replayed failure, no re-execution.
 	hub.Observe(rejPkt, "aprs-radio")
 	waitFor(t, func() bool { return len(tx.sends()) == 4 })
-	if got := tx.sends()[3][1]; got != "FAILED: debug alarm rejected" {
+	if got := bareReply(tx.sends()[3][1]); got != "FAILED: debug alarm rejected" {
 		t.Fatalf("in-cooldown retransmission = %q, want the replayed failure", got)
 	}
 	mu.Lock()
@@ -1360,7 +1466,7 @@ func TestHubDebugConfirmationTracksAcceptance(t *testing.T) {
 	accValue = dispatch.AcceptedDurable
 	hub.Observe(rejPkt, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 5 })
-	if got := tx.sends()[4][1]; got != "OK: debug alarm generated" {
+	if got := bareReply(tx.sends()[4][1]); got != "OK: debug alarm generated" {
 		t.Fatalf("post-recovery retry = %q, want the success confirmation", got)
 	}
 	mu.Lock()
@@ -1439,7 +1545,7 @@ func TestHubCommandRetrySurvivesPacketDedup(t *testing.T) {
 	pkt := testPacket("SP9XYZ>APRS,TCPIP*::SP9MOA-10:/alert pozar lasu")
 	hub.Observe(pkt, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 1 })
-	if got := tx.sends()[0][1]; got != "FAILED: alert rejected" {
+	if got := bareReply(tx.sends()[0][1]); got != "FAILED: alert rejected" {
 		t.Fatalf("first attempt = %q, want the transient rejection", got)
 	}
 
@@ -1447,7 +1553,7 @@ func TestHubCommandRetrySurvivesPacketDedup(t *testing.T) {
 	// no new acceptance attempt.
 	hub.Observe(pkt, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 2 })
-	if got := tx.sends()[1][1]; got != "FAILED: alert rejected" {
+	if got := bareReply(tx.sends()[1][1]); got != "FAILED: alert rejected" {
 		t.Fatalf("in-cooldown retransmission = %q, want the replayed failure", got)
 	}
 	mu.Lock()
@@ -1463,7 +1569,7 @@ func TestHubCommandRetrySurvivesPacketDedup(t *testing.T) {
 	accValue = dispatch.AcceptedDurable
 	hub.Observe(pkt, BackendRadio)
 	waitFor(t, func() bool { return len(tx.sends()) == 3 })
-	if got := tx.sends()[2][1]; got != "OK: alert raised" {
+	if got := bareReply(tx.sends()[2][1]); got != "OK: alert raised" {
 		t.Fatalf("post-recovery retry = %q, want the success confirmation", got)
 	}
 	mu.Lock()
@@ -1574,7 +1680,7 @@ func TestHubReplyFitsChannelLimit(t *testing.T) {
 	if got := sends[0][1]; len([]rune(got)) > MaxMessageText {
 		t.Fatalf("reply = %q, %d runes — over the APRS limit", got, len([]rune(got)))
 	}
-	if got := sends[0][1]; got != "WarnFlux v1.0 - SOSNA | type /help for help" {
+	if got := bareReply(sends[0][1]); got != "WarnFlux v1.0 - SOSNA | type /help for help" {
 		t.Fatalf("reply = %q, want the domain dropped", got)
 	}
 }

@@ -963,7 +963,10 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 		h.mu.Lock()
 		cli := h.cli
 		h.mu.Unlock()
-		if cli != nil && h.routableMessage(p) {
+		// ack/rej frames are protocol confirmations, never answered:
+		// a banner reply would be acked again and loop forever.
+		isAck := p.Message.ID != "" && ackKind(strings.TrimSpace(p.Message.Text)) != ""
+		if cli != nil && h.routableMessage(p) && !isAck {
 			text := strings.TrimSpace(p.Message.Text)
 			if strings.HasPrefix(text, "/") {
 				// The shared interpreter decides: public commands (/help)
@@ -1134,6 +1137,11 @@ func (h *Hub) pruneCmds(now time.Time) {
 // The reply is fitted to the APRS message limit through the shared CLI
 // mechanism (identity shortens progressively, payload truncates last);
 // multi-line replies (the /hazard list) send one message per line.
+//
+// Every reply carries a hub-generated {id} ack suffix: the recipient's
+// radio acknowledges by protocol (ackNNN) and the durable history marks
+// the row delivered/failed — without the id the receiving radio has
+// nothing to ACK and keeps retransmitting the message.
 func (h *Hub) sendCLIReply(to, text string) {
 	h.mu.Lock()
 	cli := h.cli
@@ -1142,9 +1150,11 @@ func (h *Hub) sendCLIReply(to, text string) {
 	defer cancel()
 	for _, line := range radiocli.ReplyLines(text, radiocli.MaxReplyLines) {
 		if cli != nil {
-			line = cli.Fit(line, MaxMessageText)
+			// Fit with the ack budget so the {id} suffix never
+			// eats into the fitted payload.
+			line = cli.Fit(line, MaxMessageText-AckSuffixLen)
 		}
-		if err := h.SendMessage(ctx, to, line); err != nil && h.logger != nil {
+		if _, _, err := h.sendTracked(ctx, to, line); err != nil && h.logger != nil {
 			h.logger.Warn("aprs: cli reply failed", "to", to, "error", err)
 		}
 	}
@@ -1433,7 +1443,9 @@ func ackKind(text string) string {
 // must be in flight AND the ack must come from the addressee the
 // message was sent to, addressed back to our callsign. A foreign or
 // stale ack is ignored and leaves the wait intact, so it can never
-// confirm someone else's exchange (or a recycled id).
+// confirm someone else's exchange (or a recycled id). The matching
+// durable tx row is marked delivered (ack) or failed (rej) — this is
+// how the admin history shows which messages got acknowledged.
 func (h *Hub) signalAck(p Packet, kind string) {
 	h.mu.Lock()
 	w, ok := h.pending[p.Message.ID]
@@ -1443,6 +1455,18 @@ func (h *Hub) signalAck(p Packet, kind string) {
 	}
 	delete(h.pending, p.Message.ID)
 	ch := w.ch
+	status := "delivered"
+	if kind == "rej" {
+		status = "failed"
+	}
+	if recorder := h.cfg.MessageRecorder; recorder != nil {
+		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := recorder.UpdateAPRSMessageStatus(recCtx, p.Message.ID, status, h.now())
+		cancel()
+		if err != nil && h.logger != nil {
+			h.logger.Debug("aprs: ack history update failed", "id", p.Message.ID, "status", status, "error", err)
+		}
+	}
 	h.mu.Unlock()
 	select {
 	case ch <- kind:
@@ -1505,55 +1529,21 @@ func (h *Hub) SendBeacon(ctx context.Context) error {
 	return bt.Beacon(ctx)
 }
 
-// SendMessageWaitAck sends one message with a hub-generated {id} and waits// up to timeout for the addressee's ack (or rej) before returning. The
+// SendMessageWaitAck sends one message with a hub-generated {id} and waits
+// up to timeout for the addressee's ack (or rej) before returning. The
 // bool reports whether an ack arrived; ErrNoAck means the timeout elapsed.
 // The text is shortened to leave room for the {id} suffix, so the whole
 // APRS message field never exceeds the protocol limit.
 func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout time.Duration) (bool, error) {
-	to = NormalizeCallsign(to)
-	if !ValidCallsign(to) {
-		return false, fmt.Errorf("aprs: invalid addressee callsign %q", to)
+	msgid, ch, err := h.sendTracked(ctx, to, text)
+	if err != nil {
+		return false, err
 	}
-	// Sanity stage before the protocol pass (see SendMessage).
-	text = sanity.NormalizeText(ctx, sanity.ChannelAPRS, text)
-	text = LimitMessageText(text, AckSuffixLen)
-	if text == "" {
-		return false, fmt.Errorf("aprs: message text must not be empty")
-	}
-
-	msgid := fmt.Sprintf("%05d", h.msgSeq.Add(1)%100000)
-	ch := make(chan string, 1)
-	h.mu.Lock()
-	if len(h.pending) >= ackPendingCap {
-		h.mu.Unlock()
-		return false, fmt.Errorf("aprs: %d messages already awaiting acks", ackPendingCap)
-	}
-	// ID reuse guard: the sequence wraps after 100000 messages. An id
-	// still in flight is never re-registered, so a late ack of a
-	// previous cycle cannot collide with a live wait.
-	for {
-		if _, busy := h.pending[msgid]; !busy {
-			break
-		}
-		msgid = fmt.Sprintf("%05d", h.msgSeq.Add(1)%100000)
-	}
-	h.pending[msgid] = &ackWait{from: h.cfg.Callsign, to: to, at: h.now(), ch: ch}
-	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
 		delete(h.pending, msgid)
 		h.mu.Unlock()
 	}()
-
-	tx := h.readyTransmitterFor(to)
-	if tx == nil {
-		return false, ErrNoTransmitter
-	}
-	full := text + "{" + msgid + "}"
-	if err := tx.Send(ctx, to, full); err != nil {
-		return false, fmt.Errorf("aprs: transmitter %s: %w", tx.Name(), err)
-	}
-	h.publishTxMessage(to, text, msgid, tx.Name())
 
 	if timeout <= 0 {
 		timeout = ackWaitDefault
@@ -1571,6 +1561,61 @@ func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout t
 	case <-timer.C:
 		return false, ErrNoAck
 	}
+}
+
+// sendTracked sends one message with a hub-generated {id} ack suffix,
+// registers the pending ack wait and returns the id plus the result
+// channel. Waiters select on the channel; fire-and-forget callers (the
+// radio CLI replies) ignore it — the durable history status is updated
+// from signalAck either way. The text is shortened to leave room for
+// the {id} suffix.
+func (h *Hub) sendTracked(ctx context.Context, to, text string) (string, <-chan string, error) {
+	to = NormalizeCallsign(to)
+	if !ValidCallsign(to) {
+		return "", nil, fmt.Errorf("aprs: invalid addressee callsign %q", to)
+	}
+	// Sanity stage before the protocol pass (see SendMessage).
+	text = sanity.NormalizeText(ctx, sanity.ChannelAPRS, text)
+	text = LimitMessageText(text, AckSuffixLen)
+	if text == "" {
+		return "", nil, fmt.Errorf("aprs: message text must not be empty")
+	}
+
+	msgid := fmt.Sprintf("%05d", h.msgSeq.Add(1)%100000)
+	ch := make(chan string, 1)
+	h.mu.Lock()
+	if len(h.pending) >= ackPendingCap {
+		h.mu.Unlock()
+		return "", nil, fmt.Errorf("aprs: %d messages already awaiting acks", ackPendingCap)
+	}
+	// ID reuse guard: the sequence wraps after 100000 messages. An id
+	// still in flight is never re-registered, so a late ack of a
+	// previous cycle cannot collide with a live wait.
+	for {
+		if _, busy := h.pending[msgid]; !busy {
+			break
+		}
+		msgid = fmt.Sprintf("%05d", h.msgSeq.Add(1)%100000)
+	}
+	h.pending[msgid] = &ackWait{from: h.cfg.Callsign, to: to, at: h.now(), ch: ch}
+	h.mu.Unlock()
+
+	tx := h.readyTransmitterFor(to)
+	if tx == nil {
+		h.mu.Lock()
+		delete(h.pending, msgid)
+		h.mu.Unlock()
+		return "", nil, ErrNoTransmitter
+	}
+	full := text + "{" + msgid + "}"
+	if err := tx.Send(ctx, to, full); err != nil {
+		h.mu.Lock()
+		delete(h.pending, msgid)
+		h.mu.Unlock()
+		return "", nil, fmt.Errorf("aprs: transmitter %s: %w", tx.Name(), err)
+	}
+	h.publishTxMessage(to, text, msgid, tx.Name())
+	return msgid, ch, nil
 }
 
 // readyTransmitterFor picks the outbound backend for one addressee. The

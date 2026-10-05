@@ -481,6 +481,49 @@ func deviceCandidates(device string) []string {
 	return out
 }
 
+// dialAttemptTimeout bounds ONE serial open attempt. The device library
+// can block indefinitely in open() when the port is in a bad state (a
+// hung MCU, a half-dead USB link): without the bound, a radio-silence
+// reconnect would hang the whole reconnect loop forever and the node
+// would never come back after a USB hiccup. Overridable in tests.
+var dialAttemptTimeout = 15 * time.Second
+
+// dialOne opens one transport with a bounded attempt window. The library
+// call runs in a goroutine because its context may be ignored on the
+// blocking syscall path; the select below is the real timeout. A late
+// connect (the syscall finished just after the deadline) is reaped and
+// stopped so it never leaks a live transport.
+func dialOne(ctx context.Context, cfg serial.Config) (transportConn, error) {
+	type res struct {
+		t   transportConn
+		err error
+	}
+	// Captured BEFORE the goroutine starts: the load of the (test-)
+	// swappable seam is ordered with the caller and can never race with
+	// a later swap.
+	dial := serialDial
+	ch := make(chan res, 1)
+	go func() {
+		t, err := dial(ctx, cfg)
+		ch <- res{t: t, err: err}
+	}()
+	select {
+	case r := <-ch:
+		return r.t, r.err
+	case <-ctx.Done():
+		go func() {
+			select {
+			case r := <-ch:
+				if r.t != nil {
+					_ = r.t.Stop()
+				}
+			case <-time.After(30 * time.Second):
+			}
+		}()
+		return nil, ctx.Err()
+	}
+}
+
 // Dial opens the device transport (the seam for tests). Production
 // tries the configured device paths in order and returns the first
 // transport that connects; when none opens, the error names every
@@ -492,7 +535,9 @@ var Dial = func(ctx context.Context, cfg Config) (transportConn, error) {
 	}
 	var lastErr error
 	for _, path := range paths {
-		conn, err := serialDial(ctx, serial.Config{Port: path, BaudRate: cfg.Baud})
+		dctx, cancel := context.WithTimeout(ctx, dialAttemptTimeout)
+		conn, err := dialOne(dctx, serial.Config{Port: path, BaudRate: cfg.Baud})
+		cancel()
 		if err == nil {
 			return conn, nil
 		}

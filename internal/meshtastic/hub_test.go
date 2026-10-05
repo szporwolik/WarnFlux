@@ -187,12 +187,18 @@ func dispatchPkt(t *testing.T, r *testRadio, pkt *pb.MeshPacket) {
 // fakeTransportConn is a minimal transportConn stand-in for the dial
 // candidate tests: nothing about the session is exercised, only WHICH
 // serial path the dial ended up opening.
-type fakeTransportConn struct{ port string }
+type fakeTransportConn struct {
+	port    string
+	stopped int32
+}
 
 func (f *fakeTransportConn) Connect(context.Context) error { return nil }
 func (f *fakeTransportConn) IsConnected() bool             { return true }
-func (f *fakeTransportConn) Stop() error                   { return nil }
-func (f *fakeTransportConn) State() *client.DeviceState    { return nil }
+func (f *fakeTransportConn) Stop() error {
+	atomic.AddInt32(&f.stopped, 1)
+	return nil
+}
+func (f *fakeTransportConn) State() *client.DeviceState { return nil }
 func (f *fakeTransportConn) SetPacketHandler(func(*pb.MeshPacket)) {
 }
 func (f *fakeTransportConn) Handle(proto.Message, func(proto.Message) error) {}
@@ -260,6 +266,66 @@ func TestDialTriesDeviceCandidates(t *testing.T) {
 	}
 	if len(tried) != 2 {
 		t.Fatalf("tried %v, want both candidates attempted", tried)
+	}
+}
+
+// TestDialTimeoutOnBlockedOpen pins the reconnect-loop self-healing: a
+// serial open that hangs forever (the library ignoring the context on
+// the blocking syscall path — the prod incident: "device radio silent"
+// followed by a stuck reconnect) must not freeze Dial. Every attempt is
+// bounded by dialAttemptTimeout, so the Run backoff loop keeps turning.
+func TestDialTimeoutOnBlockedOpen(t *testing.T) {
+	oldDial := serialDial
+	oldTimeout := dialAttemptTimeout
+	t.Cleanup(func() {
+		serialDial = oldDial
+		dialAttemptTimeout = oldTimeout
+	})
+
+	dialAttemptTimeout = 50 * time.Millisecond
+	serialDial = func(ctx context.Context, _ serial.Config) (transportConn, error) {
+		<-ctx.Done() // a hung open: it only unblocks when cancelled
+		return nil, ctx.Err()
+	}
+
+	start := time.Now()
+	_, err := Dial(context.Background(), Config{Device: "/dev/ttyACM0", Baud: 115200})
+	if err == nil {
+		t.Fatal("Dial with a hung open = nil, want the attempt timeout error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Dial took %v, want the attempt window to bound it", elapsed)
+	}
+}
+
+// TestDialReapsLateConnect pins the leak guard: a serial open that
+// completes JUST after the attempt deadline must be stopped, never left
+// as a live orphan transport.
+func TestDialReapsLateConnect(t *testing.T) {
+	oldDial := serialDial
+	oldTimeout := dialAttemptTimeout
+	t.Cleanup(func() {
+		serialDial = oldDial
+		dialAttemptTimeout = oldTimeout
+	})
+
+	dialAttemptTimeout = 20 * time.Millisecond
+	fc := &fakeTransportConn{port: "/dev/ttyACM0"}
+	serialDial = func(_ context.Context, cfg serial.Config) (transportConn, error) {
+		time.Sleep(80 * time.Millisecond) // finishes after the deadline
+		return fc, nil
+	}
+
+	if _, err := Dial(context.Background(), Config{Device: "/dev/ttyACM0"}); err == nil {
+		t.Fatal("Dial = nil, want the attempt timeout error")
+	}
+	// The reap goroutine stops the late transport shortly after it lands.
+	deadline := time.Now().Add(time.Second)
+	for atomic.LoadInt32(&fc.stopped) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&fc.stopped) != 1 {
+		t.Fatalf("late transport stopped %d times, want 1 (orphan leak)", atomic.LoadInt32(&fc.stopped))
 	}
 }
 

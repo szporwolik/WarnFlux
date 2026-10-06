@@ -196,6 +196,12 @@ var en = map[string]string{
 	"meshmap.nopos":    "Heard without a position",
 	"meshmap.disabled": "The Meshtastic hub is disabled.",
 
+	"meshmap.filter_all":   "All",
+	"meshmap.filter_15m":   "15 min",
+	"meshmap.filter_1h":    "1 h",
+	"meshmap.filter_4h":    "4 h",
+	"meshmap.filter_today": "Today",
+
 	// Public home page.
 	"home.tab.alerts":    "Active messages",
 	"home.tab.map":       "Situation map",
@@ -917,6 +923,12 @@ var pl = map[string]string{
 	"meshmap.direct":   "bezpośrednio",
 	"meshmap.nopos":    "Słyszane bez pozycji",
 	"meshmap.disabled": "Hub Meshtastic jest wyłączony.",
+
+	"meshmap.filter_all":   "Wszystkie",
+	"meshmap.filter_15m":   "15 min",
+	"meshmap.filter_1h":    "1 godz.",
+	"meshmap.filter_4h":    "4 godz.",
+	"meshmap.filter_today": "Dzisiaj",
 
 	"home.tab.alerts":    "Aktywne komunikaty",
 	"home.tab.map":       "Mapa sytuacyjna",

@@ -892,6 +892,14 @@ CREATE TABLE mesh_action_failures (
 ALTER TABLE aprs_messages ADD COLUMN status TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v49: the heard-node directory keeps the radio path length of
+		// the last packet per node (mesh hops travelled), so the admin
+		// map shows real hops after restarts too.
+		SQL: `
+ALTER TABLE meshtastic_nodes ADD COLUMN hops INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

@@ -1138,6 +1138,7 @@ func (h *Hub) restoreNodes(ctx context.Context) {
 			Lon:      n.Lon,
 			LastSeen: n.LastSeen,
 			Sends:    append([]string(nil), n.Sends...),
+			Hops:     n.Hops,
 		}
 	}
 	h.mu.Unlock()
@@ -1172,6 +1173,7 @@ func (h *Hub) persistNodes() {
 			Lon:      n.Lon,
 			LastSeen: n.LastSeen,
 			Sends:    append([]string(nil), n.Sends...),
+			Hops:     n.Hops,
 		})
 	}
 	h.lastPersist = time.Now()
@@ -1902,7 +1904,10 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	h.recordSignal(pkt, SignalText)
 	channel := h.channelNameFor(pkt)
-	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", int(pkt.GetHopStart()), time.Now())
+	// Hops travelled (hop_start - hop_limit), matching the node
+	// directory and the map pins; hop_start alone overstated direct
+	// packets (the device echoes them with the full budget left).
+	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", packetHops(pkt), time.Now())
 
 	// Only messages addressed EXACTLY to our node route (broadcasts,
 	// To=0 packets and third-party traffic stay on the feed): the gate

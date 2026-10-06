@@ -558,10 +558,13 @@ func TestHubNodeDirectoryRetention(t *testing.T) {
 
 // TestNodeHopsFromPacket pins the hop count learned from the packet
 // header: hops travelled = hop_start - hop_limit; a direct packet
-// counts 0.
+// counts 0. The recorded message row must carry the same travelled
+// value (hop_start alone overstates direct packets).
 func TestNodeHopsFromPacket(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
 	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
 
 	pkt := textPacket(0xef010203, 0xabcd1234, "hello")
 	pkt.HopStart, pkt.HopLimit = 3, 1
@@ -576,6 +579,11 @@ func TestNodeHopsFromPacket(t *testing.T) {
 			}
 		}
 		if hops == 2 {
+			for _, m := range rec.messages() {
+				if m.Direction == "rx" && m.Hops != 2 {
+					t.Fatalf("recorded message hops = %d, want 2", m.Hops)
+				}
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

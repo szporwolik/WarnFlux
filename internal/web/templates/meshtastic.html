@@ -75,7 +75,7 @@
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
       {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "meshtastic.sent"}}</span></div>{{end}}
       <div class="mesh-toolbar">
-        <form method="post" action="/meshtastic/send" class="mesh-send">
+        <form method="post" action="/meshtastic/send" class="mesh-send mesh-send-active">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="hidden" name="target" value="channel">
           <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}">
@@ -328,13 +328,20 @@
     "use strict";
     // The Message action (map popups and the nodes table) jumps to the
     // Messages tab and prefills the direct-message form for the node.
+    function setActiveSend(form) {
+      document.querySelectorAll("form.mesh-send").forEach(function (f) {
+        f.classList.toggle("mesh-send-active", f === form);
+      });
+    }
     function openCompose(id) {
       var tab = document.querySelector('.page-tab[data-tab="panel-msgs"]');
       if (tab) { tab.click(); }
       var contact = document.querySelector("form.mesh-send input[name='contact']");
       if (!contact) { return; }
+      var dmForm = contact.closest("form.mesh-send");
       contact.value = id;
-      var text = document.querySelector("form.mesh-send input[name='text']");
+      setActiveSend(dmForm);
+      var text = dmForm ? dmForm.querySelector("input[name='text']") : null;
       if (text) { text.focus(); }
       contact.scrollIntoView({ block: "nearest" });
     }
@@ -346,6 +353,11 @@
       openCompose(id);
       var close = document.querySelector(".leaflet-popup .leaflet-popup-close-button");
       if (close) { close.click(); }
+    });
+    // Typing into one of the two forms switches the highlight there.
+    document.addEventListener("focusin", function (e) {
+      var form = e.target && e.target.closest ? e.target.closest("form.mesh-send") : null;
+      if (form) { setActiveSend(form); }
     });
   })();
   </script>

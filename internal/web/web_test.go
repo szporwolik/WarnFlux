@@ -2247,7 +2247,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/aprs?tab=msgs", "/meshtastic"}
 	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications", "/partials/health"}
 	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions"}
-	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing"}
+	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing", "/api/meshtastic/traceroute"}
 
 	loginAs := func(user, pass string) {
 		t.Helper()
@@ -3858,6 +3858,24 @@ func TestAPRSBeaconValidation(t *testing.T) {
 	resp, _ = env.postForm("/messages/beacon", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "err=") {
 		t.Fatalf("POST beacon no transmitter = %d %q, want redirect with err", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// TestMeshtasticTracerouteGuard pins the admin route-probe endpoint:
+// it is CSRF-guarded and answers 404 while the mesh hub is disabled.
+func TestMeshtasticTracerouteGuard(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	resp, _ := env.postForm("/api/meshtastic/traceroute", url.Values{"csrf": {"bogus"}, "to": {"abcd1234"}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST traceroute bad csrf = %d, want 403", resp.StatusCode)
+	}
+	_, html := env.get("/meshtastic")
+	csrf := extractCSRF(t, html)
+	resp, _ = env.postForm("/api/meshtastic/traceroute", url.Values{"csrf": {csrf}, "to": {"abcd1234"}})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST traceroute without hub = %d, want 404", resp.StatusCode)
 	}
 }
 

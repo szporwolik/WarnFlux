@@ -153,6 +153,11 @@ var en = map[string]string{
 	"meshtastic.copy_id":            "Copy node id",
 	"meshtastic.no_nodes":           "No nodes heard yet.",
 
+	"meshtastic.trace":          "Trace",
+	"meshtastic.trace_tracing":  "Tracing",
+	"meshtastic.trace_no_reply": "no reply from the destination",
+	"meshtastic.trace_failed":   "trace failed",
+
 	"messages.title":         "APRS",
 	"messages.hint":          "Every APRS message received or sent by this station, kept in the database (newest first).",
 	"messages.time":          "Time",
@@ -880,6 +885,11 @@ var pl = map[string]string{
 	"meshtastic.click_to_send":      "Kliknij, aby wysłać wiadomość",
 	"meshtastic.copy_id":            "Kopiuj id węzła",
 	"meshtastic.no_nodes":           "Nie słychać jeszcze żadnych węzłów.",
+
+	"meshtastic.trace":          "Trasa",
+	"meshtastic.trace_tracing":  "Śledzę trasę",
+	"meshtastic.trace_no_reply": "brak odpowiedzi z węzła docelowego",
+	"meshtastic.trace_failed":   "trasa nie powiodła się",
 
 	"messages.title":         "APRS",
 	"messages.hint":          "Wszystkie wiadomości APRS odebrane i wysłane przez tę stację, przechowywane w bazie (od najnowszych).",

@@ -2778,41 +2778,78 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .home-offline .emcom-chip-label { font-weight: 600; }
 
-/* Config page: MQTT publish-mask checkboxes. */
+/* Config page: compact setting cards in a responsive grid. */
+.config-card { display: flex; flex-direction: column; gap: 0.75rem; }
+.config-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+.config-head h2 { margin: 0; }
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: 0.75rem;
+  align-items: start;
+}
+.config-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface, var(--bg));
+  padding: 0.7rem 0.9rem;
+}
+.config-block-wide { grid-column: 1 / -1; }
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.config-row-title { font-weight: 600; font-size: 0.9rem; }
+.config-hint { margin: 0; color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+.config-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.config-chip {
+  border: 1px solid var(--border);
+  background: var(--surface-hi);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+/* Offline mode: one clickable row — title, state badge, switch. */
+.config-offline-form { margin: 0; }
+.config-offline-form .config-row {
+  cursor: pointer;
+  justify-content: space-between;
+  user-select: none;
+  flex-wrap: nowrap;
+}
+.config-offline-form .config-row .switch { margin-left: auto; flex: none; }
+
+/* Config page: MQTT publish-mask checkboxes in a two-column grid. */
 .config-mqtt-form {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
   gap: 6px;
-  margin-top: 0.6rem;
 }
 .config-mqtt-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 10px;
+  padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 .config-mqtt-row:hover { border-color: var(--accent); }
-.config-mqtt-form .btn-primary { justify-self: start; margin-top: 6px; }
-
-/* Config page: offline-mode switch. */
-.config-offline-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  border-top: 1px solid var(--border);
-  padding-top: 0.9rem;
-  margin-top: 0.6rem;
-}
-.config-offline-form .health-row {
-  cursor: pointer;
-  justify-content: space-between;
-  user-select: none;
-}
-.config-offline-form .health-row:hover { border-color: var(--accent); }
 .switch {
   position: relative;
   display: inline-block;

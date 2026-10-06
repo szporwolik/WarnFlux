@@ -1887,6 +1887,12 @@ tr.click-send:hover td { background: var(--surface-hi); }
   font-size: 0.82rem;
 }
 .meshmap-nopos li strong { font-weight: 600; }
+/* The no-position header is a toggle: collapsed by default. */
+.meshmap-nopos-title {
+  cursor: pointer;
+  user-select: none;
+}
+.meshmap-nopos-title:hover { color: var(--text); }
 @media (max-width: 640px) {
   #mesh-admin-map { min-height: 18rem; height: 60dvh; }
 }

@@ -40,6 +40,7 @@ type configView struct {
 	NavMeshtastic    bool
 	NavMeshMap       bool
 	NavTraffic       bool
+	NavWebsite       bool
 	NavNotifications bool
 	NavHealth        bool
 	NavCompose       bool

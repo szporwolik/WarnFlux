@@ -42,7 +42,7 @@
         <p class="aprs-map-attrib"><span id="mesh-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
       </div>
       <h3 class="meshmap-nopos-title muted" id="mesh-nopos-title" hidden></h3>
-      <ul class="meshmap-nopos" id="mesh-nopos"></ul>
+      <ul class="meshmap-nopos" id="mesh-nopos" hidden></ul>
       {{else}}
       <p class="home-none">{{tr .Lang "meshmap.disabled"}}</p>
       {{end}}
@@ -338,6 +338,33 @@
     var noposTitle = document.getElementById("mesh-nopos-title");
     var MESH_COLOR = "#8e24aa";
 
+    // Stations without a position are collapsed by default: the title
+    // doubles as a toggle that expands the list.
+    var noposOpen = false;
+    var noposCount = 0;
+    function syncNoposToggle() {
+      if (!noposTitle) { return; }
+      noposTitle.hidden = !noposCount;
+      noposEl.hidden = !noposOpen;
+      noposTitle.textContent = LBL_NOPOS + " (" + noposCount + ") " + (noposOpen ? "▾" : "▸");
+      noposTitle.setAttribute("aria-expanded", String(noposOpen));
+    }
+    if (noposTitle) {
+      noposTitle.setAttribute("role", "button");
+      noposTitle.setAttribute("tabindex", "0");
+      noposTitle.addEventListener("click", function () {
+        noposOpen = !noposOpen;
+        syncNoposToggle();
+      });
+      noposTitle.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          noposOpen = !noposOpen;
+          syncNoposToggle();
+        }
+      });
+    }
+
     // Same basemap idea as the APRS map: the local tile tree in offline
     // mode, otherwise a free raster provider matching the theme.
     var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
@@ -476,8 +503,8 @@
       var list = (data.nopos || []).filter(function (n) {
         return !cutoff || (n.last_seen && new Date(n.last_seen).getTime() >= cutoff);
       });
-      noposTitle.hidden = !list.length;
-      if (list.length) { noposTitle.textContent = LBL_NOPOS + " (" + list.length + ")"; }
+      noposCount = list.length;
+      syncNoposToggle();
       list.forEach(function (n) {
         var li = document.createElement("li");
         var strong = document.createElement("strong");

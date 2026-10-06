@@ -39,6 +39,7 @@
              data-lbl-heard="{{tr .Lang "map.heard"}}" data-lbl-hops="{{tr .Lang "meshmap.hops"}}"
              data-lbl-direct="{{tr .Lang "meshmap.direct"}}" data-lbl-nopos="{{tr .Lang "meshmap.nopos"}}"
              data-lbl-trace="{{tr .Lang "meshtastic.trace"}}"
+             data-lbl-msg="{{tr .Lang "meshtastic.msg"}}"
              data-lbl-inactive-m="{{tr .Lang "meshtastic.trace_inactive_m"}}"
              data-lbl-inactive-h="{{tr .Lang "meshtastic.trace_inactive_h"}}"
              data-lbl-inactive-d="{{tr .Lang "meshtastic.trace_inactive_d"}}"></div>
@@ -324,6 +325,32 @@
   </script>
   <script>
   (function () {
+    "use strict";
+    // The Message action (map popups and the nodes table) jumps to the
+    // Messages tab and prefills the direct-message form for the node.
+    function openCompose(id) {
+      var tab = document.querySelector('.page-tab[data-tab="panel-msgs"]');
+      if (tab) { tab.click(); }
+      var contact = document.querySelector("form.mesh-send input[name='contact']");
+      if (!contact) { return; }
+      contact.value = id;
+      var text = document.querySelector("form.mesh-send input[name='text']");
+      if (text) { text.focus(); }
+      contact.scrollIntoView({ block: "nearest" });
+    }
+    document.addEventListener("click", function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest("button.mesh-msg") : null;
+      if (!btn) { return; }
+      var id = btn.getAttribute("data-id");
+      if (!id) { return; }
+      openCompose(id);
+      var close = document.querySelector(".leaflet-popup .leaflet-popup-close-button");
+      if (close) { close.click(); }
+    });
+  })();
+  </script>
+  <script>
+  (function () {
     var el = document.getElementById("mesh-admin-map");
     if (!el || !window.L) { return; }
     var OFFLINE = (document.body.getAttribute("data-offline") === "1") || window.WF_OFFLINE === true;
@@ -337,6 +364,7 @@
     var LBL_DIRECT = el.dataset.lblDirect || "direct";
     var LBL_NOPOS = el.dataset.lblNopos || "Heard without a position";
     var LBL_TRACE = el.dataset.lblTrace || "Trace";
+    var LBL_MSG = el.dataset.lblMsg || "Message";
     var LBL_INACTIVE_M = el.dataset.lblInactiveM || "inactive for %dm";
     var LBL_INACTIVE_H = el.dataset.lblInactiveH || "inactive for %dh";
     var LBL_INACTIVE_D = el.dataset.lblInactiveD || "inactive for %dd";
@@ -475,7 +503,9 @@
         '<span class="wf-pop-t"><strong>' + esc(displayName(n)) + '</strong>' +
         '<span class="wf-pop-sub">' + esc(n.id) + '</span></span></div>' +
         '<div class="wf-pop-body">' + lines.join("<br>") + '</div>' +
-        '<div class="wf-pop-actions"><button type="button" class="btn-ghost btn-small mesh-trace"' +
+        '<div class="wf-pop-actions">' +
+        '<button type="button" class="btn-ghost btn-small mesh-msg" data-id="' + esc(n.id) + '">' + esc(LBL_MSG) + '</button>' +
+        '<button type="button" class="btn-ghost btn-small mesh-trace"' +
         (stale ? ' disabled title="' + esc(ageText) + '"' : '') +
         ' data-id="' + esc(n.id) + '" data-name="' + esc(n.name || "") + '" data-short="' + esc(n.short_name || "") + '">' +
         esc(LBL_TRACE) + '</button></div></div>';
@@ -626,9 +656,10 @@
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}{{if .Stale}} <span class="badge muted">{{.Inactive}}</span>{{end}}</td>
-        <td>{{if .Stale}}<button type="button" class="btn-ghost btn-small mesh-trace" disabled
+        <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost btn-small mesh-trace" disabled
             title="{{.Inactive}}">{{tr $.Lang "meshtastic.trace"}}</button>{{else}}
-          <button type="button" class="btn-ghost btn-small mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}</td>
+          <button type="button" class="btn-ghost btn-small mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}
+          <button type="button" class="btn-ghost btn-small mesh-msg" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">{{tr $.Lang "meshtastic.msg"}}</button></td>
       </tr>
       {{end}}
     </tbody>

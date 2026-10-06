@@ -877,7 +877,8 @@
   // usage limits. Fiord for the dark theme, bright for the light one.
   // When WebGL or the GL glue is unavailable (headless browsers, offline
   // fallback), keyless RASTER tiles take over: OpenStreetMap for the
-  // light theme, Esri World Dark Gray for the dark theme.
+  // light theme, CARTO Dark for the dark one (ArcGIS tiles anonymously
+  // answered "API blocked" from some networks).
   function tilesForTheme() {
     var theme = document.documentElement.getAttribute("data-theme");
     // Offline mode: the operator-provided tile tree served by the
@@ -907,9 +908,9 @@
     }
     return {
       style: "https://tiles.openfreemap.org/styles/fiord",
-      raster: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+      raster: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
       glLabel: glLabel,
-      rasterLabel: '<a href="https://www.esri.com/" target="_blank" rel="noopener noreferrer">Esri</a> World Dark Gray',
+      rasterLabel: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
       marker: { color: "#1565c0", fillColor: "#64b5f6" }
     };
   }
@@ -3102,7 +3103,7 @@
     }
     var dark = document.documentElement.getAttribute("data-theme") !== "light";
     return dark
-      ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+      ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
       : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
   }
 
@@ -3139,6 +3140,12 @@
     }
     map = L.map(mapEl, { attributionControl: false }).setView(center, 11);
     L.tileLayer(tileURL(), { maxZoom: 19 }).addTo(map);
+    var attribEl = document.getElementById("compose-map-attrib");
+    if (attribEl) {
+      attribEl.innerHTML = wfOffline()
+        ? "WarnFlux (local tiles)"
+        : '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> · <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
+    }
     map.on("click", function (e) { dropMarker(e.latlng); });
 
     // Edit flow: an existing location prefills the marker.

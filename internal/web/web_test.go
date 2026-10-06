@@ -1017,6 +1017,10 @@ func TestPublicHomePage(t *testing.T) {
 	if extremeAt < 0 || moderateAt < 0 || extremeAt > moderateAt {
 		t.Errorf("hazards not ordered by severity: extreme@%d moderate@%d", extremeAt, moderateAt)
 	}
+	// With an extreme hazard active the calm-state banner stays away.
+	if strings.Contains(html, "home-no-severe") {
+		t.Error("home page must not show the no-severe banner while severe+ hazards are active")
+	}
 
 	// Groups are 1:1 with the severity scale; moderate and above start
 	// expanded, only minor collapsed.
@@ -1160,6 +1164,11 @@ func TestPublicHomeMinorOnly(t *testing.T) {
 	if strings.Contains(html, "No active messages.") {
 		t.Error("minor-only page must not carry the empty-state note")
 	}
+	// Calm state: no severe-or-higher hazard, so the gentle banner sits
+	// above the collapsed minor group.
+	if !strings.Contains(html, "home-no-severe") || !strings.Contains(html, "No severe or higher messages right now.") {
+		t.Error("minor-only page missing the no-severe banner")
+	}
 }
 
 // TestPublicHomeAllEmpty pins the fully empty home page: the empty-state
@@ -1173,6 +1182,9 @@ func TestPublicHomeAllEmpty(t *testing.T) {
 	}
 	if strings.Contains(html, "home-section home-sev-") {
 		t.Error("no severity groups must render when nothing is active")
+	}
+	if strings.Contains(html, "home-no-severe") {
+		t.Error("empty home must not carry the no-severe banner")
 	}
 	if !strings.Contains(html, "No active messages.") {
 		t.Error("empty home must say there are no active messages")

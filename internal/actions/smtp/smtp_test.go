@@ -390,24 +390,29 @@ rate_limit_per_minute: -1
 		"Content-ID: <warnflux-logo>",
 		"cid:warnflux-logo",
 		">SPOK</td>",
-		// The call-to-action renders as a solid button: background-color
-		// (the shorthand is stripped by some clients), white text, no
-		// underline.
+		// The call-to-action renders as a solid button in every client:
+		// a bgcolor table cell plus background-color on the anchor, white
+		// text, no underline.
 		">View details</a>",
+		`bgcolor="#1f6feb"`,
 		"background-color:#1f6feb",
 		"color:#ffffff",
-		// The severity is colored with the application palette: a card
-		// accent and a tinted severity chip (severe -> orange).
-		"border-top:3px solid #f0784e",
+		// The severity is colored with the application palette: a solid
+		// card accent strip and a solid severity chip (severe -> orange).
+		"background-color:#f0784e;height:4px",
+		"background-color:#f0784e;color:#0f1419",
 		">SEVERE<",
-		// Branded footer: version, normalized domain, repository link.
+		// Branded footer: version and normalized domain. The repository
+		// link must not appear in outbound mails.
 		"Sent by <strong style=\"color:#eef2f5;\">SPOK · WarnFlux</strong> v0.1.0",
 		"spok.sp9moa.pl",
-		`href="https://github.com/szporwolik/WarnFlux"`,
 	} {
 		if !strings.Contains(m.data, want) {
 			t.Errorf("mail body missing %q:\n%s", want, m.data)
 		}
+	}
+	if strings.Contains(m.data, "github.com") {
+		t.Errorf("mail body must not link the repository:\n%s", m.data)
 	}
 
 	// A non-ASCII subject must be MIME word-encoded (UTF-8 bytes).

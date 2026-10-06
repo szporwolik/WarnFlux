@@ -23,17 +23,14 @@ const routerHeartbeatStaleAfter = 90 * time.Second
 // ---- system view ---------------------------------------------------------
 
 type statusView struct {
-	Lang        string
-	Title       string
-	Version     string
-	Commit      string
-	Uptime      time.Duration
-	Messages    int64
-	Malformed   int64
-	Oversized   int64
-	QueueDepth  int
-	QueueCap    int
-	DroppedFull int64
+	Lang      string
+	Title     string
+	Version   string
+	Commit    string
+	Uptime    time.Duration
+	Messages  int64
+	Malformed int64
+	Oversized int64
 
 	// CPU/Mem are the host utilization percentages sampled from /proc;
 	// the Avail flags are false on unsupported platforms (UI shows n/a)
@@ -186,6 +183,7 @@ type pageView struct {
 	Username string
 	Role     string
 	Status   statusView
+	Health   healthView
 	MQTT     mqttView
 	Plugins  pluginsView
 	Actions  actionsView
@@ -213,16 +211,12 @@ type pageView struct {
 // ---- view builders -------------------------------------------------------
 
 func (s *Server) buildStatusView() statusView {
-	_, droppedFull, _, depth, cap := s.ingress.Stats()
 	rs := s.receivers.Statuses()
 	view := statusView{
-		Title:       s.cfg.Title,
-		Version:     s.version,
-		Commit:      s.commit,
-		Uptime:      time.Since(s.startedAt),
-		QueueDepth:  depth,
-		QueueCap:    cap,
-		DroppedFull: droppedFull,
+		Title:   s.cfg.Title,
+		Version: s.version,
+		Commit:  s.commit,
+		Uptime:  time.Since(s.startedAt),
 	}
 	for _, r := range rs {
 		view.Messages += r.Messages
@@ -639,6 +633,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Username:     sess.username,
 		Role:         sess.role,
 		Status:       s.buildStatusView(),
+		Health:       s.buildHealthView(s.langFor(r)),
 		MQTT:         s.buildMQTTView(snap),
 		Plugins:      s.buildPluginsView(),
 		Actions:      s.buildActionsView(),

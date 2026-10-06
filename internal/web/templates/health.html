@@ -1,57 +1,8 @@
-{{define "healthpage"}}<!doctype html>
-<html lang="{{.Lang}}">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{tr .Lang "health.title"}} · {{.AppTitle}}</title>
-  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
-  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
-  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
-</head>
-<body class="app">
-  {{template "topbar" .}}
-  {{template "sidebar" .}}
-  <main class="users-main">
-    {{template "health" .}}
-  </main>
-  {{template "footer" .}}
-  <script src="/static/app.js?v={{.Commit}}" defer></script>
-</body>
-</html>
-{{end}}
-
 {{define "health"}}<section class="card health-card" id="health-section">
   <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg>{{tr .Lang "health.title"}}
     <span class="badge {{if eq .Overall "ok"}}ok{{else}}bad{{end}} health-overall">{{if eq .Overall "ok"}}{{tr .Lang "health.badge.ok"}}{{else}}{{tr .Lang "health.badge.degraded"}}{{end}}</span>
   </h2>
   <p class="muted log-hint">{{tr .Lang "health.hint"}}</p>
-
-  <div class="health-group">
-    <h3>{{tr .Lang "health.sources"}}</h3>
-    {{range .Sources}}<div class="health-row">
-      <span class="health-name"><strong>{{.Name}}</strong></span>
-      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
-      <span class="health-detail">{{.Detail}}</span>
-    </div>{{else}}<p class="empty">{{tr $.Lang "health.no_sources"}}</p>{{end}}
-  </div>
-
-  <div class="health-group">
-    <h3>{{tr .Lang "health.mqtt"}}</h3>
-    {{range .MQTT}}<div class="health-row">
-      <span class="health-name"><strong>{{.Name}}</strong></span>
-      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
-      <span class="health-detail">{{.Detail}}</span>
-    </div>{{else}}<p class="empty">{{tr $.Lang "health.no_receivers"}}</p>{{end}}
-  </div>
-
-  <div class="health-group">
-    <h3>{{tr .Lang "health.actions"}}</h3>
-    {{range .Actions}}<div class="health-row">
-      <span class="health-name"><strong>{{.Name}}</strong></span>
-      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
-      <span class="health-detail">{{.Detail}}</span>
-    </div>{{else}}<p class="empty">{{tr $.Lang "health.no_actions"}}</p>{{end}}
-  </div>
 
   {{if .Ingest}}
   <div class="health-group">

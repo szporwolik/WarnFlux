@@ -1295,7 +1295,8 @@ func TestAPRSMapPage(t *testing.T) {
 	}
 }
 
-// TestMeshMapPage pins the admin Meshtastic node-map browser: the page
+// TestMeshMapPage pins the admin Meshtastic node-map tab (merged into
+// /meshtastic; the old /meshmap route stays as a redirect): the page
 // renders the map element, and the stations endpoint in all=1 mode
 // returns every heard node — outside the operational ring and past the
 // node TTL included — plus the positionless ones.
@@ -1324,12 +1325,16 @@ func TestMeshMapPage(t *testing.T) {
 	mesh.SeedNode("33333333", "Old", "O3", 50.00, 20.00, now.Add(-2*time.Hour), []string{"text"}) // stale (TTL)
 	mesh.SeedNode("44444444", "NoPos", "N4", 0, 0, now, []string{"text"})                         // no position
 
-	resp, body := env.get("/meshmap")
+	resp, _ := env.get("/meshmap")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/meshtastic?tab=map" {
+		t.Fatalf("GET /meshmap = %d %q, want 303 /meshtastic?tab=map", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	resp, body := env.get("/meshtastic?tab=map")
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /meshmap = %d", resp.StatusCode)
+		t.Fatalf("GET /meshtastic?tab=map = %d", resp.StatusCode)
 	}
 	if !strings.Contains(body, `id="mesh-admin-map"`) {
-		t.Errorf("/meshmap missing the map element")
+		t.Errorf("/meshtastic map tab missing the map element")
 	}
 
 	var view struct {

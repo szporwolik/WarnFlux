@@ -900,6 +900,14 @@ ALTER TABLE aprs_messages ADD COLUMN status TEXT NOT NULL DEFAULT '';
 ALTER TABLE meshtastic_nodes ADD COLUMN hops INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		// v50: hops=0 rows persisted before v49 are UNKNOWN, not direct:
+		// the value was never observed. -1 marks that until the node's
+		// next packet provides the real path length.
+		SQL: `
+UPDATE meshtastic_nodes SET hops = -1 WHERE hops = 0;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

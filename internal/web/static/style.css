@@ -634,6 +634,22 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
 }
 .visits-chart-wrap svg { display: block; width: 100%; height: auto; }
 .visits-chart-label { font-size: 9px; fill: var(--muted); }
+/* The Website page stacks the three time windows side by side. */
+.visits-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 0.8rem;
+  margin-top: 0.4rem;
+}
+.visits-charts .visits-chart-wrap { margin: 0; }
+.visits-chart-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
 
 .commit-link { color: var(--muted); }
 .commit-link:hover { color: var(--link); }

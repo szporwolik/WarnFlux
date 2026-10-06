@@ -18,9 +18,20 @@
       <div class="visits-cards" id="visits-cards"
            data-lbl-new="{{tr .Lang "traffic.visitors.new"}}" data-lbl-returning="{{tr .Lang "traffic.visitors.returning"}}"
            data-lbl-today="{{tr .Lang "traffic.visitors.today"}}" data-lbl-7d="{{tr .Lang "traffic.visitors.days7"}}"
-           data-lbl-14d="{{tr .Lang "traffic.visitors.days14"}}" data-lbl-total="{{tr .Lang "traffic.visitors.total"}}"></div>
-      <div class="visits-chart-wrap" id="visits-chart-wrap" hidden>
-        <svg id="visits-chart" viewBox="0 0 640 180" preserveAspectRatio="none" role="img" aria-label="{{tr .Lang "traffic.visitors.chart"}}"></svg>
+           data-lbl-30d="{{tr .Lang "traffic.visitors.days30"}}" data-lbl-total="{{tr .Lang "traffic.visitors.total"}}"></div>
+      <div class="visits-charts" id="visits-charts">
+        <div class="visits-chart-wrap">
+          <h3 class="visits-chart-title">{{tr .Lang "website.chart_7d"}}</h3>
+          <svg id="visits-chart-7d" viewBox="0 0 640 180" preserveAspectRatio="none" role="img" aria-label="{{tr .Lang "traffic.visitors.chart"}}"></svg>
+        </div>
+        <div class="visits-chart-wrap">
+          <h3 class="visits-chart-title">{{tr .Lang "website.chart_1m"}}</h3>
+          <svg id="visits-chart-1m" viewBox="0 0 640 180" preserveAspectRatio="none" role="img" aria-label="{{tr .Lang "traffic.visitors.chart"}}"></svg>
+        </div>
+        <div class="visits-chart-wrap">
+          <h3 class="visits-chart-title">{{tr .Lang "website.chart_12m"}}</h3>
+          <svg id="visits-chart-12m" viewBox="0 0 640 180" preserveAspectRatio="none" role="img" aria-label="{{tr .Lang "traffic.visitors.chart"}}"></svg>
+        </div>
       </div>
       <p class="home-none" id="visits-none" hidden>{{tr .Lang "traffic.visitors.none"}}</p>
     </section>
@@ -32,14 +43,13 @@
     "use strict";
     var cards = document.getElementById("visits-cards");
     var none = document.getElementById("visits-none");
-    var wrap = document.getElementById("visits-chart-wrap");
-    var svg = document.getElementById("visits-chart");
-    if (!cards || !svg) { return; }
+    var chartsBox = document.getElementById("visits-charts");
+    if (!cards || !chartsBox) { return; }
     var LBL_NEW = cards.getAttribute("data-lbl-new") || "New";
     var LBL_RET = cards.getAttribute("data-lbl-returning") || "Returning";
     var LBL_TODAY = cards.getAttribute("data-lbl-today") || "Today";
     var LBL_7D = cards.getAttribute("data-lbl-7d") || "7 days";
-    var LBL_14D = cards.getAttribute("data-lbl-14d") || "14 days";
+    var LBL_30D = cards.getAttribute("data-lbl-30d") || "30 days";
 
     function card(label, value, sub) {
       var d = document.createElement("div");
@@ -61,48 +71,65 @@
       cards.appendChild(d);
     }
 
-    // A tiny dependency-free bar chart: two bars per day (new in
-    // purple, returning in gray), scaled to the busiest day.
-    function chart(rows) {
+    function rect(x, y, w, h, fill, num) {
+      var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      r.setAttribute("x", x); r.setAttribute("y", y);
+      r.setAttribute("width", w); r.setAttribute("height", Math.max(0, h));
+      r.setAttribute("fill", fill);
+      var t2 = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      t2.textContent = num;
+      r.appendChild(t2);
+      return r;
+    }
+
+    // A tiny dependency-free bar chart: two bars per bucket (new in
+    // purple, returning in gray), scaled to the busiest bucket. rows
+    // carry {label, n, v}, oldest first.
+    function chart(svg, rows) {
       svg.textContent = "";
       var W = 640, H = 180, padB = 18, padT = 6;
       var n = rows.length;
       var max = 1;
       rows.forEach(function (r) {
-        max = Math.max(max, r.New || 0, r.Returning || 0, (r.New || 0) + (r.Returning || 0));
+        max = Math.max(max, r.n || 0, r.v || 0, (r.n || 0) + (r.v || 0));
       });
       var slot = W / n;
-      var barW = Math.max(3, Math.min(10, slot * 0.3));
+      var barW = Math.max(2, Math.min(10, slot * 0.3));
+      var labelStep = Math.ceil(n / 8);
       rows.forEach(function (r, i) {
         var x = i * slot + (slot - 2 * barW - 3) / 2;
-        var nv = r.New || 0, rv = r.Returning || 0;
-        var hn = nv / max * (H - padB - padT);
-        var hr = rv / max * (H - padB - padT);
+        var hn = (r.n || 0) / max * (H - padB - padT);
+        var hr = (r.v || 0) / max * (H - padB - padT);
         var y = H - padB;
-        svg.appendChild(rect(x, y - hn, barW, hn, "var(--brand, #8e24aa)", nv));
-        svg.appendChild(rect(x + barW + 3, y - hr, barW, hr, "#78909c", rv));
-        if (n <= 16 || i % 2 === 0) {
+        svg.appendChild(rect(x, y - hn, barW, hn, "var(--brand, #8e24aa)", r.n || 0));
+        svg.appendChild(rect(x + barW + 3, y - hr, barW, hr, "#78909c", r.v || 0));
+        if (n <= 8 || i % labelStep === 0) {
           var t = document.createElementNS("http://www.w3.org/2000/svg", "text");
           t.setAttribute("x", x);
           t.setAttribute("y", H - 4);
           t.setAttribute("class", "visits-chart-label");
-          t.textContent = r.Day.slice(5); // MM-DD
+          t.textContent = r.label;
           svg.appendChild(t);
         }
       });
-      function rect(x, y, w, h, fill, num) {
-        var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        r.setAttribute("x", x); r.setAttribute("y", y);
-        r.setAttribute("width", w); r.setAttribute("height", Math.max(0, h));
-        r.setAttribute("fill", fill);
-        var t2 = document.createElementNS("http://www.w3.org/2000/svg", "title");
-        t2.textContent = num;
-        r.appendChild(t2);
-        return r;
-      }
     }
 
-    fetch("/api/stats/visits?days=14", { credentials: "same-origin" })
+    // Daily rows are newest-first from the API; the charts want oldest
+    // first, and the 12-month view buckets days into months.
+    function byMonth(rows) {
+      var m = {};
+      rows.forEach(function (r) {
+        var k = r.Day.slice(0, 7);
+        var e = m[k] || (m[k] = { n: 0, v: 0 });
+        e.n += r.New || 0;
+        e.v += r.Returning || 0;
+      });
+      return Object.keys(m).sort().map(function (k) {
+        return { label: k, n: m[k].n, v: m[k].v };
+      });
+    }
+
+    fetch("/api/stats/visits?days=366", { credentials: "same-origin" })
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (rows) {
         rows = (rows || []).slice().reverse(); // oldest first
@@ -116,13 +143,19 @@
           rows.slice(-nDays).forEach(function (r) { s.n += r.New || 0; s.r += r.Returning || 0; });
           return s;
         };
-        var w7 = sum(7), w14 = sum(14);
+        var w7 = sum(7), w30 = sum(30);
         card(LBL_TODAY, (today.New || 0) + (today.Returning || 0),
           LBL_NEW + ": " + (today.New || 0) + " · " + LBL_RET + ": " + (today.Returning || 0));
         card(LBL_7D, w7.n + w7.r, LBL_NEW + ": " + w7.n + " · " + LBL_RET + ": " + w7.r);
-        card(LBL_14D, w14.n + w14.r, LBL_NEW + ": " + w14.n + " · " + LBL_RET + ": " + w14.r);
-        chart(rows);
-        if (wrap) { wrap.hidden = false; }
+        card(LBL_30D, w30.n + w30.r, LBL_NEW + ": " + w30.n + " · " + LBL_RET + ": " + w30.r);
+
+        var day = function (r) { return { label: r.Day.slice(5), n: r.New || 0, v: r.Returning || 0 }; };
+        var svg7 = document.getElementById("visits-chart-7d");
+        var svg1m = document.getElementById("visits-chart-1m");
+        var svg12m = document.getElementById("visits-chart-12m");
+        if (svg7) { chart(svg7, rows.slice(-7).map(day)); }
+        if (svg1m) { chart(svg1m, rows.slice(-31).map(day)); }
+        if (svg12m) { chart(svg12m, byMonth(rows)); }
       })
       .catch(function () { if (none) { none.hidden = false; } });
   })();

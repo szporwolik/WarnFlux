@@ -454,9 +454,17 @@ func TestAuditFlow(t *testing.T) {
 	}
 
 	env.login()
-	_, html := env.get("/audit")
+	// The old page URL redirects to the audit tab of the merged logs page.
+	resp, _ = env.get("/audit")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/logs?tab=audit" {
+		t.Fatalf("GET /audit as admin = %d %q, want 303 /logs?tab=audit", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	_, html := env.get("/logs?tab=audit")
 	if !strings.Contains(html, `id="audit-viewer"`) {
-		t.Errorf("audit page missing viewer: %s", html)
+		t.Errorf("audit tab missing viewer: %s", html)
+	}
+	if !strings.Contains(html, `data-tab="panel-applog"`) || !strings.Contains(html, `data-tab="panel-notif"`) {
+		t.Errorf("merged logs page missing the other tabs: %s", html)
 	}
 
 	// The login itself is audited.
@@ -506,12 +514,18 @@ func TestNotificationsFlow(t *testing.T) {
 	env.trails.SetOutcome("imgw:1", trail.OutcomeDelivered)
 
 	env.login()
-	_, html := env.get("/notifications")
-	if !strings.Contains(html, `id="notif-list"`) {
-		t.Errorf("notifications page missing list: %s", html)
+	// The old page URL redirects to the notification tab of the merged
+	// logs page.
+	resp, _ = env.get("/notifications")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/logs?tab=notif" {
+		t.Fatalf("GET /notifications as admin = %d %q, want 303 /logs?tab=notif", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	if !strings.Contains(html, `<span class="nav-label">Notifications</span>`) {
-		t.Errorf("notifications page missing sidebar entry: %s", html)
+	_, html := env.get("/logs?tab=notif")
+	if !strings.Contains(html, `id="notif-list"`) {
+		t.Errorf("notifications tab missing list: %s", html)
+	}
+	if !strings.Contains(html, `<span class="nav-label">Logs</span>`) {
+		t.Errorf("merged logs page missing the Logs sidebar entry: %s", html)
 	}
 	if !strings.Contains(html, "matched group Niepołomice") ||
 		!strings.Contains(html, "imgw → smtp-alerts ≥ Moderate") ||
@@ -574,9 +588,13 @@ func TestNotificationsFlow(t *testing.T) {
 		t.Errorf("feed step kinds = %q", kinds)
 	}
 
-	// Focus deep link (?key=…) renders the same trail with the details
-	// block OPEN.
-	_, html = env.get("/notifications?key=imgw:1")
+	// Focus deep link (?key=…) keeps working through the legacy URL and
+	// renders the same trail with the details block OPEN.
+	resp, _ = env.get("/notifications?key=imgw:1")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/logs?tab=notif&key=imgw%3A1" {
+		t.Fatalf("focused legacy URL = %d %q, want 303 /logs?tab=notif&key=imgw%%3A1", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	_, html = env.get("/logs?tab=notif&key=imgw:1")
 	if !strings.Contains(html, `id="notif-imgw:1"`) {
 		t.Errorf("focused page missing trail: %s", html)
 	}
@@ -606,7 +624,7 @@ func TestNotificationsDeliveriesRender(t *testing.T) {
 	env.trails.SetOutcome("imgw:1", trail.OutcomeDelivered)
 
 	env.login()
-	_, html := env.get("/notifications")
+	_, html := env.get("/logs?tab=notif")
 	for _, want := range []string{
 		"Details (2)",
 		`class="badge nt-status-succeeded"`,
@@ -2270,7 +2288,7 @@ func TestAdminAccountPageKeepsAdminNav(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /account as admin = %d", resp.StatusCode)
 	}
-	for _, want := range []string{"Users", "Groups", "Logs", "Notifications"} {
+	for _, want := range []string{"Users", "Groups", "Logs"} {
 		if !strings.Contains(html, `<span class="nav-label">`+want+`</span>`) {
 			t.Errorf("admin /account sidebar missing %s nav entry", want)
 		}
@@ -2292,7 +2310,10 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adminPages := []string{"/users", "/groups", "/logs", "/audit", "/traffic", "/notifications", "/aprs?tab=msgs", "/meshtastic"}
+	adminPages := []string{"/users", "/groups", "/logs", "/traffic", "/aprs?tab=msgs", "/meshtastic"}
+	// /audit and /notifications merged into /logs tabs: every role gets a
+	// redirect (to the dashboard unless admin).
+	legacyLogPages := []string{"/audit", "/notifications"}
 	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications"}
 	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions", "/partials/health"}
 	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing", "/api/meshtastic/traceroute"}
@@ -2309,7 +2330,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 
 	// Unauthenticated: pages redirect to /login, partials answer 401 and
 	// POSTs are blocked before any handler runs.
-	for _, p := range adminPages {
+	for _, p := range append(append([]string{}, adminPages...), legacyLogPages...) {
 		resp, _ := env.get(p)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
 			t.Errorf("unauthenticated GET %s = %d %q, want 303 /login", p, resp.StatusCode, resp.Header.Get("Location"))
@@ -2340,7 +2361,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 	// Member: admin pages bounce to the dashboard, admin partials answer
 	// 401, admin POSTs bounce, compose bounces; shared surfaces work.
 	loginAs("member1", "password123")
-	for _, p := range adminPages {
+	for _, p := range append(append([]string{}, adminPages...), legacyLogPages...) {
 		resp, _ := env.get(p)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
 			t.Errorf("member GET %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
@@ -2374,7 +2395,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 	// Emcom: same admin walls; compose opens.
 	env.logout()
 	loginAs("ops1", "password123")
-	for _, p := range adminPages {
+	for _, p := range append(append([]string{}, adminPages...), legacyLogPages...) {
 		resp, _ := env.get(p)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
 			t.Errorf("emcom GET %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
@@ -2396,8 +2417,8 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Errorf("emcom GET /compose = %d, want 200", resp.StatusCode)
 	}
 
-	// Admin: everything listed above opens; /health merged into the
-	// dashboard, so it redirects there for everyone signed in.
+	// Admin: everything listed above opens; the merged /logs tabs answer
+	// through the legacy URLs with a redirect.
 	env.logout()
 	env.login()
 	for _, p := range append(append(append([]string{}, adminPages...), adminPartials...), sharedPartials...) {
@@ -2405,6 +2426,12 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("admin GET %s = %d, want 200", p, resp.StatusCode)
 		}
+	}
+	if resp, _ := env.get("/audit"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/logs?tab=audit" {
+		t.Errorf("admin GET /audit = %d %q, want 303 /logs?tab=audit", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp, _ := env.get("/notifications"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/logs?tab=notif" {
+		t.Errorf("admin GET /notifications = %d %q, want 303 /logs?tab=notif", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	resp, _ := env.get("/health")
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {

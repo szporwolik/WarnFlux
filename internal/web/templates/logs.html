@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{tr .Lang "logs.title"}} · {{.AppTitle}}</title>
+  <title>{{tr .Lang "nav.logs"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
@@ -12,10 +12,34 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    <section class="card log-card">
+    <div class="page-tabs" role="tablist">
+      <button type="button" class="page-tab{{if ne .Tab "audit"}}{{if ne .Tab "notif"}} active{{end}}{{end}}" role="tab" aria-selected="{{if or (eq .Tab "audit") (eq .Tab "notif")}}false{{else}}true{{end}}" data-tab="panel-applog">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "logs.tab.app"}}
+      </button>
+      <button type="button" class="page-tab{{if eq .Tab "audit"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "audit"}}true{{else}}false{{end}}" data-tab="panel-audit">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{tr .Lang "logs.tab.audit"}}
+      </button>
+      <button type="button" class="page-tab{{if eq .Tab "notif"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "notif"}}true{{else}}false{{end}}" data-tab="panel-notif">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "logs.tab.notif"}}
+      </button>
+    </div>
+    <section class="card log-card page-panel" id="panel-applog" data-panel="panel-applog"{{if or (eq .Tab "audit") (eq .Tab "notif")}} hidden{{end}}>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "logs.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "logs.hint"}}</p>
       <div id="log-viewer" class="log-viewer" data-after="0"></div>
+    </section>
+    <section class="card log-card page-panel" id="panel-audit" data-panel="panel-audit"{{if ne .Tab "audit"}} hidden{{end}}>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{tr .Lang "audit.title"}}</h2>
+      <p class="muted log-hint">{{trf .Lang "audit.hint" .MaxEntries}}</p>
+      <div id="audit-viewer" class="log-viewer" data-after="0"></div>
+    </section>
+    <section class="card nt-card page-panel" id="panel-notif" data-panel="panel-notif"{{if ne .Tab "notif"}} hidden{{end}}>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "notif.title"}}</h2>
+      <p class="muted log-hint">{{tr .Lang "notif.hint"}}</p>
+      {{template "flash-note" (tr .Lang "notif.retention")}}
+      <div id="notif-list" class="notif-list">
+        {{range .Trails}}{{template "notif-item" .}}{{else}}<p class="empty">{{tr $.Lang "notif.empty"}}</p>{{end}}
+      </div>
     </section>
   </main>
   {{template "footer" .}}

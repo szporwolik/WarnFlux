@@ -3,7 +3,7 @@
 {{define "topbar"}}<script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>
-    <span class="topbar-title">{{if .NavUsers}}{{tr .Lang "nav.users"}}{{else if .NavGroups}}{{tr .Lang "nav.groups"}}{{else if .NavCompose}}{{tr .Lang "nav.compose"}}{{else if .NavEmcom}}{{tr .Lang "nav.emcom"}}{{else if .NavAccount}}{{tr .Lang "nav.account"}}{{else if .NavLogs}}{{tr .Lang "nav.logs"}}{{else if .NavAudit}}{{tr .Lang "nav.audit"}}{{else if .NavTraffic}}{{tr .Lang "nav.mqtt"}}{{else if .NavAPRS}}{{tr .Lang "nav.aprs"}}{{else if .NavMeshtastic}}{{tr .Lang "nav.meshtastic"}}{{else if .NavNotifications}}{{tr .Lang "nav.notifications"}}{{else if .NavConfig}}{{tr .Lang "nav.config"}}{{else}}{{tr .Lang "nav.dashboard"}}{{end}}</span>
+    <span class="topbar-title">{{if .NavUsers}}{{tr .Lang "nav.users"}}{{else if .NavGroups}}{{tr .Lang "nav.groups"}}{{else if .NavCompose}}{{tr .Lang "nav.compose"}}{{else if .NavEmcom}}{{tr .Lang "nav.emcom"}}{{else if .NavAccount}}{{tr .Lang "nav.account"}}{{else if .NavLogs}}{{tr .Lang "nav.logs"}}{{else if .NavTraffic}}{{tr .Lang "nav.mqtt"}}{{else if .NavAPRS}}{{tr .Lang "nav.aprs"}}{{else if .NavMeshtastic}}{{tr .Lang "nav.meshtastic"}}{{else if .NavConfig}}{{tr .Lang "nav.config"}}{{else}}{{tr .Lang "nav.dashboard"}}{{end}}</span>
     <span class="topbar-spacer"></span>
     <a class="topbar-home" href="/" title="{{tr .Lang "common.public_page"}}" aria-label="{{tr .Lang "common.public_page"}}">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>
@@ -51,7 +51,6 @@
       {{if ne .Role "member"}}<a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">{{tr .Lang "nav.compose"}}</span></a>{{end}}
       {{if ne .Role "member"}}<a class="nav-item{{if .NavEmcom}} active{{end}}" href="/emcom"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-megaphone"></use></svg><span class="nav-label">{{tr .Lang "nav.emcom"}}</span></a>{{end}}
       {{if eq .Role "admin"}}
-      <a class="nav-item{{if .NavNotifications}} active{{end}}" href="/notifications"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg><span class="nav-label">{{tr .Lang "nav.notifications"}}</span></a>
       <a class="nav-item{{if .NavGroups}} active{{end}}" href="/groups"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">{{tr .Lang "nav.groups"}}</span></a>
       <a class="nav-item{{if .NavUsers}} active{{end}}" href="/users"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg><span class="nav-label">{{tr .Lang "nav.users"}}</span></a>
       <a class="nav-item{{if .NavAPRS}} active{{end}}" href="/aprs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">{{tr .Lang "nav.aprs"}}</span></a>
@@ -60,7 +59,6 @@
       <a class="nav-item{{if .NavWebsite}} active{{end}}" href="/website"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">{{tr .Lang "nav.website"}}</span></a>
       <a class="nav-item{{if .NavConfig}} active{{end}}" href="/config"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-gear"></use></svg><span class="nav-label">{{tr .Lang "nav.config"}}</span></a>
       <a class="nav-item{{if .NavLogs}} active{{end}}" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg><span class="nav-label">{{tr .Lang "nav.logs"}}</span></a>
-      <a class="nav-item{{if .NavAudit}} active{{end}}" href="/audit"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span class="nav-label">{{tr .Lang "nav.audit"}}</span></a>
       {{end}}
     </nav>
     <span class="sidebar-spacer"></span>

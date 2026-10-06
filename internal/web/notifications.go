@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -20,46 +21,6 @@ const notificationsPerPage = 50
 // (the details view groups them under the matching trails; the ledger
 // itself is retention-bounded by PruneActionFires).
 const deliveriesPerPage = 500
-
-// notificationsView is the full /notifications page model.
-type notificationsView struct {
-	Lang     string
-	AppTitle string
-	Name     string
-	Header1  string
-	Header2  string
-	Tagline  string
-	Version  string
-	Commit   string
-	RepoURL  string
-	CSRF     string
-	Username string
-	Role     string
-
-	// FocusKey highlights one trail (?key=… deep links from the
-	// dashboard warning cards).
-	FocusKey string
-
-	Trails []trailView
-
-	NavDashboard     bool
-	NavUsers         bool
-	NavGroups        bool
-	NavLogs          bool
-	NavAudit         bool
-	NavAPRS          bool
-	NavMessages      bool
-	NavMeshtastic    bool
-	NavMeshMap       bool
-	NavTraffic       bool
-	NavWebsite       bool
-	NavNotifications bool
-	NavHealth        bool
-	NavConfig        bool
-	NavCompose       bool
-	NavEmcom         bool
-	NavAccount       bool
-}
 
 // trailView pairs one notification trail with the UI language for the
 // notif-item sub-template (which otherwise loses the root context).
@@ -85,30 +46,15 @@ type deliveryRow struct {
 	Recipients string `json:"recipients,omitempty"`
 }
 
-// handleNotificationsPage renders the delivery history: the most recent
-// notification trails, newest first. ?key= focuses one trail.
+// handleNotificationsPage keeps the old /notifications URL working (the
+// dashboard warning cards deep-link here): the history is the third tab
+// of the merged /logs page now. ?key= rides along.
 func (s *Server) handleNotificationsPage(w http.ResponseWriter, r *http.Request) {
-	sess := s.sessions.currentSession(r)
-	lang := s.langFor(r)
-	focus := r.URL.Query().Get("key")
-	view := notificationsView{
-		AppTitle:         s.cfg.Title,
-		Name:             s.displayName(),
-		Header1:          s.displayHeader1(),
-		Header2:          s.cfg.Header2,
-		Tagline:          s.cfg.Tagline,
-		Version:          s.version,
-		Commit:           s.commit,
-		RepoURL:          repoURL,
-		Username:         sess.username,
-		Role:             sess.role,
-		CSRF:             sess.csrf,
-		FocusKey:         focus,
-		Trails:           wrapTrails(lang, focus, s.recentTrails(notificationsPerPage), s.recentDeliveries(deliveriesPerPage)),
-		NavNotifications: true,
+	target := "/logs?tab=notif"
+	if k := r.URL.Query().Get("key"); k != "" {
+		target += "&key=" + url.QueryEscape(k)
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "notifications", view)
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // wrapTrails pairs each trail with a UI language and attaches the

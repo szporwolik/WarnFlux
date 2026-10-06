@@ -102,6 +102,7 @@ var en = map[string]string{
 	"nav.account":    "Account",
 	"nav.groups":     "Groups",
 	"nav.users":      "Users",
+	"nav.access":     "Access",
 	"nav.logs":       "Logs",
 	"nav.mqtt":       "MQTT",
 	"nav.messages":   "APRS msgs",
@@ -470,6 +471,8 @@ var en = map[string]string{
 
 	// Users page.
 	"users.title":               "Users",
+	"access.tab.users":          "Users",
+	"access.tab.groups":         "Groups",
 	"users.add":                 "Add user",
 	"users.username":            "Username",
 	"users.phone":               "Phone",
@@ -847,6 +850,7 @@ var pl = map[string]string{
 	"nav.account":    "Konto",
 	"nav.groups":     "Grupy",
 	"nav.users":      "Użytkownicy",
+	"nav.access":     "Dostęp",
 	"nav.logs":       "Logi",
 	"nav.mqtt":       "MQTT",
 	"nav.messages":   "Wiadomości APRS",
@@ -1211,6 +1215,8 @@ var pl = map[string]string{
 	"actions.no_actions": "Nie skonfigurowano żadnych akcji",
 
 	"users.title":               "Użytkownicy",
+	"access.tab.users":          "Użytkownicy",
+	"access.tab.groups":         "Grupy",
 	"users.add":                 "Dodaj użytkownika",
 	"users.username":            "Nazwa użytkownika",
 	"users.phone":               "Telefon",

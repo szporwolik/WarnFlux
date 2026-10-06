@@ -1,19 +1,5 @@
-{{define "users"}}<!doctype html>
-<html lang="{{.Lang}}">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{tr .Lang "users.title"}} · {{.AppTitle}}</title>
-  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
-  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
-  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
-</head>
-<body class="app">
-  {{template "topbar" .}}
-  {{template "sidebar" .}}
-  <main class="users-main">
-    <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>{{tr .Lang "users.title"}}</h2>
+{{define "users"}}<section class="card page-panel" id="panel-users" data-panel="panel-users"{{if ne .Tab "users"}} hidden{{end}}>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>{{tr .Lang "users.title"}}</h2>
       {{if .Notice}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Notice}}</p>{{end}}
       {{if .Error}}{{if not .DialogOpen}}{{template "flash-err" .Error}}{{end}}{{end}}
       <div class="user-toolbar">
@@ -75,9 +61,8 @@
       {{else}}
       <p class="empty">{{tr .Lang "users.no_users"}}</p>
       {{end}}
-    </section>
-  </main>
-  <dialog class="modal" id="user-edit-dialog" {{if .DialogOpen}}open{{end}}>
+</section>
+<dialog class="modal" id="user-edit-dialog" {{if .DialogOpen}}open{{end}}>
     <form method="post" action="/users" class="modal-form">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="edit_id" value="{{if gt .EditID 0}}{{.EditID}}{{else}}0{{end}}" id="user-edit-id">
@@ -149,8 +134,4 @@
       </div>
     </form>
   </dialog>
-  {{template "footer" .}}
-  <script src="/static/app.js?v={{.Commit}}" defer></script>
-</body>
-</html>
 {{end}}

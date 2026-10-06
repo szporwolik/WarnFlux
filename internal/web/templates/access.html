@@ -1,0 +1,30 @@
+{{define "access"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{tr .Lang "nav.access"}} · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <div class="page-tabs" role="tablist">
+      <button type="button" class="page-tab{{if ne .Tab "groups"}} active{{end}}" role="tab" aria-selected="{{if ne .Tab "groups"}}true{{else}}false{{end}}" data-tab="panel-users">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-person"></use></svg>{{tr .Lang "access.tab.users"}}
+      </button>
+      <button type="button" class="page-tab{{if eq .Tab "groups"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "groups"}}true{{else}}false{{end}}" data-tab="panel-groups">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>{{tr .Lang "access.tab.groups"}}
+      </button>
+    </div>
+    {{template "users" .Users}}
+    {{template "groups" .Groups}}
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
+</body>
+</html>
+{{end}}

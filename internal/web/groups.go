@@ -128,7 +128,7 @@ type groupForm struct {
 	Name string
 }
 
-// groupsView is the full /groups page model.
+// groupsView is the groups-tab panel model of the merged /access page.
 type groupsView struct {
 	Lang     string
 	AppTitle string
@@ -142,6 +142,10 @@ type groupsView struct {
 	CSRF     string
 	Username string
 	Role     string
+
+	// Tab carries the active access-page tab ("users" | "groups") so the
+	// panel knows whether it is the visible one.
+	Tab string
 
 	Groups []groupRow
 	Form   groupForm
@@ -180,24 +184,13 @@ type groupsView struct {
 	NavAccount       bool
 }
 
-// handleGroupsPage renders the group administration page. ?edit=<id>
-// prefills the top form for editing that group.
+// handleGroupsPage keeps the old /groups URL working: the groups tab of
+// the merged /access page. ?edit=<id> prefills the group form.
 func (s *Server) handleGroupsPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	view := s.buildGroupsView(r, groupForm{}, 0, "")
-	view.CSRF = sess.csrf
-	view.Username = sess.username
-	view.Role = sess.role
-	if raw := r.URL.Query().Get("edit"); raw != "" {
-		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
-			if g, err := s.users.GetGroup(id); err == nil {
-				view.EditID = g.ID
-				view.Form = groupForm{Name: g.Name}
-			}
-		}
-	}
+	view := s.buildAccessView(r, sess, "groups")
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "groups", view)
+	s.renderL(w, r, "access", view)
 }
 
 // handleGroupSave creates or updates a group from the top form. A hidden
@@ -510,7 +503,10 @@ func (s *Server) renderGroupsError(w http.ResponseWriter, r *http.Request, statu
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
+	view.Tab = "groups"
+	av := s.buildAccessView(r, sess, "groups")
+	av.Groups = view
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	s.renderL(w, r, "groups", view)
+	s.renderL(w, r, "access", av)
 }

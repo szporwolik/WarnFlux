@@ -3366,6 +3366,20 @@ func TestEmcomPanelFlow(t *testing.T) {
 		!strings.Contains(h.Headline, "level 2 – Local activation") || !strings.Contains(h.Headline, "SP9MOA EMCOM") {
 		t.Errorf("hazard = %+v", h)
 	}
+	// Activation notifications must be self-explanatory: the activated
+	// level's definition, the FULL readiness scale and the operator
+	// instruction ride along (the SMTP action prints them).
+	if !strings.Contains(h.Description, "level 2 – Local activation") ||
+		!strings.Contains(h.Description, "directed net") {
+		t.Errorf("hazard description missing the activated level definition: %+v", h.Description)
+	}
+	if !strings.Contains(h.Description, "Level 0 – Monitoring") ||
+		!strings.Contains(h.Description, "Level 3 – Full activation") {
+		t.Errorf("hazard description missing the full readiness scale: %+v", h.Description)
+	}
+	if !strings.Contains(h.Instruction, "directed net") {
+		t.Errorf("hazard instruction missing the operator directive: %+v", h.Instruction)
+	}
 	var ev dispatch.Event
 	select {
 	case ev = <-env.ingress.Events():
@@ -3374,6 +3388,10 @@ func TestEmcomPanelFlow(t *testing.T) {
 	}
 	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionNew || ev.Hazard.Hazard.Severity != "severe" {
 		t.Errorf("transition = %+v", ev)
+	}
+	if !strings.Contains(ev.Hazard.Hazard.Description, "Operational readiness levels") ||
+		ev.Hazard.Hazard.Instruction == "" {
+		t.Errorf("transition lost the EMCOM description/instruction: %+v", ev.Hazard.Hazard)
 	}
 
 	// The broker would mirror the hazard into the active state.
@@ -3431,10 +3449,13 @@ func TestEmcomPanelFlow(t *testing.T) {
 		t.Errorf("expiry transition = %+v", ev)
 	}
 	mirrorInfo(3) // level 0 payload
+	// The fake publisher does not echo the retire: simulate the broker
+	// deleting the active document like the receiver would.
+	env.state.DeleteActive("local", "warnflux/active/emcom/abc")
 	_, homeHTML = env.get("/")
 	// Monitoring is the default state: level-0 networks disappear from
 	// the public header entirely.
-	if strings.Contains(homeHTML, "emcom-chip") || strings.Contains(homeHTML, "Monitoring") {
+	if strings.Contains(homeHTML, "emcom-chip") || strings.Contains(homeHTML, "level 2 – Local activation") {
 		t.Errorf("monitoring network still shown on the home header: %s", homeHTML)
 	}
 	if strings.Contains(homeHTML, "data-emcom-info") {

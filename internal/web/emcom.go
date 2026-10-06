@@ -44,11 +44,13 @@ const (
 var emcomSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 // emcomLevel is one operational readiness level with its official Polish
-// definition and the hazard severity used when the network is raised to it.
+// definition, the operator instruction delivered with the activation
+// notification and the hazard severity used when the network is raised.
 type emcomLevel struct {
 	Level       int
 	Name        string
 	Description string
+	Instruction string
 	Severity    string
 }
 
@@ -59,18 +61,22 @@ var emcomLevels = []emcomLevel{
 	{
 		Level: 0, Name: "Monitoring", Severity: severity.Minor,
 		Description: "Ongoing monitoring of the agreed frequencies and public channels (e.g. PMR, CB) without activating an organized communications network.",
+		Instruction: "No action required — monitoring continues on the agreed frequencies and public channels.",
 	},
 	{
 		Level: 1, Name: "Increased readiness", Severity: severity.Severe,
 		Description: "Operators ready to act: radio equipment prepared and a duty station maintained on the agreed primary frequency.",
+		Instruction: "Operators: prepare radio equipment and maintain a duty station on the agreed primary frequency.",
 	},
 	{
 		Level: 2, Name: "Local activation", Severity: severity.Severe,
 		Description: "An organized radio network is activated in the affected area, including the net control station (SKS), field operators and relay stations. Activating level 2 or 3 means the network works as a directed net.",
+		Instruction: "Operators: the network works as a directed net — net control (SKS), field operators and relay stations report in and follow net discipline.",
 	},
 	{
 		Level: 3, Name: "Full activation", Severity: severity.Severe,
 		Description: "The full organizational structure is activated — base station, field operators and relay stations — with continuous operation: around-the-clock work in shifts.",
+		Instruction: "Operators: report to the net control station and staff the network around the clock in shifts, per the duty roster.",
 	},
 }
 
@@ -190,22 +196,38 @@ func emcomEventKey(slug string) string {
 	return emcomSource + ":" + slug
 }
 
+// emcomLevelsLegend renders the full readiness scale as plain text for
+// the notification bodies (one line per level).
+func emcomLevelsLegend() string {
+	var b strings.Builder
+	for _, l := range emcomLevels {
+		fmt.Fprintf(&b, "Level %d – %s: %s\n", l.Level, l.Name, l.Description)
+	}
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
 // emcomHazard builds the severe communication published when a network is
-// raised above monitoring.
+// raised above monitoring. The description always carries the activated
+// level's definition PLUS the full readiness scale, and the instruction
+// tells the operators what the level asks of them — activation mails must
+// be self-explanatory.
 func emcomHazard(net emcomNetwork, now time.Time) state.Hazard {
 	lvl, _ := emcomLevelAt(net.Level)
 	return state.Hazard{
-		EventKey:   emcomEventKey(net.Slug),
-		Source:     emcomSource,
-		SourceID:   "ops",
-		Event:      "EMCOM",
-		Severity:   lvl.Severity,
-		Urgency:    "immediate",
-		Certainty:  "observed",
-		Headline:   fmt.Sprintf("%s: level %d – %s", net.Name, net.Level, lvl.Name),
-		Status:     "active",
-		ReceivedAt: now,
-		UpdatedAt:  now,
+		EventKey:  emcomEventKey(net.Slug),
+		Source:    emcomSource,
+		SourceID:  "ops",
+		Event:     "EMCOM",
+		Severity:  lvl.Severity,
+		Urgency:   "immediate",
+		Certainty: "observed",
+		Headline:  fmt.Sprintf("%s: level %d – %s", net.Name, net.Level, lvl.Name),
+		Description: fmt.Sprintf("%s is now at level %d – %s.\n\n%s\n\nOperational readiness levels:\n%s",
+			net.Name, net.Level, lvl.Name, lvl.Description, emcomLevelsLegend()),
+		Instruction: lvl.Instruction,
+		Status:      "active",
+		ReceivedAt:  now,
+		UpdatedAt:   now,
 	}
 }
 
@@ -239,6 +261,8 @@ func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher stri
 				Urgency:     h.Urgency,
 				Certainty:   h.Certainty,
 				Headline:    h.Headline,
+				Description: h.Description,
+				Instruction: h.Instruction,
 				Areas:       h.Areas,
 				Latitude:    h.Latitude,
 				Longitude:   h.Longitude,

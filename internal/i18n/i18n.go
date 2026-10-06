@@ -203,6 +203,7 @@ var en = map[string]string{
 	"meshmap.hint":     "Every node our Meshtastic radio heard — no operational ring, no time limit. The popup shows the hop count of the last packet, the observed signal kinds, telemetry, last-heard time and distance from our node.",
 	"meshmap.hops":     "Hops",
 	"meshmap.direct":   "direct",
+	"meshmap.unknown":  "unknown",
 	"meshmap.nopos":    "Heard without a position",
 	"meshmap.disabled": "The Meshtastic hub is disabled.",
 
@@ -941,6 +942,7 @@ var pl = map[string]string{
 	"meshmap.hint":     "Każdy węzeł, który usłyszało nasze radio Meshtastic — bez ograniczenia promieniem ani czasem. Dymek pokazuje liczbę hopów ostatniego pakietu, rodzaje odebranych sygnałów, telemetrię, czas ostatniego odbioru i odległość od naszego węzła.",
 	"meshmap.hops":     "Hopy",
 	"meshmap.direct":   "bezpośrednio",
+	"meshmap.unknown":  "nieznane",
 	"meshmap.nopos":    "Słyszane bez pozycji",
 	"meshmap.disabled": "Hub Meshtastic jest wyłączony.",
 

@@ -18,6 +18,7 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 	nodes := []storage.MeshtasticNode{
 		{ID: "a0a85934", Name: "Meshtastic 5934", Short: "SPM", Lat: 50.02, Lon: 20.0, LastSeen: seen, Sends: []string{"telemetry", "text"}, Hops: 3},
 		{ID: "b0b85934", Name: "Other", LastSeen: seen.Add(-time.Hour)},
+		{ID: "c0c85934", Name: "Unheard", LastSeen: seen.Add(-time.Minute), Hops: -1},
 	}
 	if err := s.SaveMeshtasticNodes(ctx, nodes); err != nil {
 		t.Fatalf("save: %v", err)
@@ -26,8 +27,8 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(got) != 2 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" {
-		t.Fatalf("nodes = %+v, want both ids", got)
+	if len(got) != 3 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" || got[2].ID != "c0c85934" {
+		t.Fatalf("nodes = %+v, want all three ids", got)
 	}
 	if got[0].Name != "Meshtastic 5934" || got[0].Short != "SPM" || got[0].Lat != 50.02 {
 		t.Fatalf("first node = %+v", got[0])
@@ -37,6 +38,9 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 	}
 	if got[0].Hops != 3 {
 		t.Fatalf("hops = %d, want 3", got[0].Hops)
+	}
+	if got[2].Hops != -1 {
+		t.Fatalf("unknown hops = %d, want -1", got[2].Hops)
 	}
 	if !got[0].LastSeen.Equal(seen) {
 		t.Fatalf("last seen = %v, want %v", got[0].LastSeen, seen)

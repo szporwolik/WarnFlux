@@ -61,6 +61,12 @@ type meshtasticNodeView struct {
 	BearingDeg float64
 	Cardinal   string
 	LastSeen   string
+	// Stale marks nodes unheard for over the trace threshold: their
+	// Trasa button is disabled so nobody probes a dead node.
+	Stale bool
+	// Inactive is the human age ("3 godz. temu") shown next to the
+	// last-seen time and in the disabled button's tooltip.
+	Inactive string
 }
 
 // meshtasticContactView is one directory user's Meshtastic node offered by
@@ -186,7 +192,7 @@ func (s *Server) handleMeshtasticPage(w http.ResponseWriter, r *http.Request) {
 
 	// Both panels render at once; the tab strip toggles them client-side
 	// (Tab only preselects the visible one, e.g. /meshtastic?tab=nodes).
-	s.fillMeshtasticNodes(&v)
+	s.fillMeshtasticNodes(r, &v)
 	s.fillMeshtasticMessages(r, &v)
 
 	// Map tab data: our own node position when the device reported one;
@@ -403,7 +409,8 @@ func (s *Server) meshtasticChannelName(stored string) string {
 	return s.meshtastic.ChannelLabel(idx)
 }
 
-func (s *Server) fillMeshtasticNodes(v *meshtasticView) {
+func (s *Server) fillMeshtasticNodes(r *http.Request, v *meshtasticView) {
+	lang := s.langFor(r)
 	// Contact picker comes from the directory (independent of the hub).
 	var owners map[string]string
 	if s.users != nil {
@@ -455,6 +462,8 @@ func (s *Server) fillMeshtasticNodes(v *meshtasticView) {
 		if name == "" {
 			name = owner
 		}
+		age := time.Since(n.LastSeen)
+		stale := !n.LastSeen.IsZero() && age > meshtasticTraceStaleAfter
 		v.Nodes = append(v.Nodes, meshtasticNodeView{
 			ID:    n.ID,
 			Name:  name,
@@ -466,7 +475,32 @@ func (s *Server) fillMeshtasticNodes(v *meshtasticView) {
 			BearingDeg: n.BearingDeg,
 			Cardinal:   cardinalDirection(n.BearingDeg),
 			LastSeen:   n.LastSeen.Format("15:04:05"),
+			Stale:      stale,
+			Inactive:   meshInactiveText(lang, age),
 		})
+	}
+}
+
+// meshtasticTraceStaleAfter is the inactivity threshold beyond which a
+// node is marked stale and its traceroute button is disabled.
+const meshtasticTraceStaleAfter = 30 * time.Minute
+
+// meshInactiveText renders how long a node stayed unheard, as a full
+// sentence ("nieaktywny od 4 dni") for badges, tooltips and the
+// traceroute stale gate.
+func meshInactiveText(lang string, d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return i18n.T(lang, "time.just_now")
+	case d < time.Hour:
+		return fmt.Sprintf(i18n.T(lang, "meshtastic.trace_inactive_m"), int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf(i18n.T(lang, "meshtastic.trace_inactive_h"), int(d.Hours()))
+	default:
+		return fmt.Sprintf(i18n.T(lang, "meshtastic.trace_inactive_d"), int(d.Hours()/24))
 	}
 }
 
@@ -523,7 +557,7 @@ func (s *Server) handlePartialMeshtastic(w http.ResponseWriter, r *http.Request)
 		s.renderL(w, r, "mesh_msgs", v)
 		return
 	}
-	s.fillMeshtasticNodes(&v)
+	s.fillMeshtasticNodes(r, &v)
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "mesh_nodes", v)
 }

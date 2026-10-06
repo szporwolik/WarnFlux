@@ -30,9 +30,22 @@ func (s *Server) handleMeshtasticTraceroute(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "node id must be 8 hex characters", http.StatusBadRequest)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	// Stale nodes are not probed: the radio answer is physically
+	// impossible, and every such probe burns airtime on a busy channel.
+	lang := s.langFor(r)
+	if ls := s.meshtastic.NodeLastSeen(to); !ls.IsZero() && time.Since(ls) > meshtasticTraceStaleAfter {
+		http.Error(w, meshInactiveText(lang, time.Since(ls)), http.StatusConflict)
+		return
+	}
+	// Far nodes (or unknown distance) get a longer window: three probes
+	// ride a 60 s budget instead of the usual 35 s.
+	timeout := 35 * time.Second
+	if hops := s.meshtastic.NodeHops(to); hops < 0 || hops > 3 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout+10*time.Second)
 	defer cancel()
-	res, err := s.meshtastic.Traceroute(ctx, to, 35*time.Second)
+	res, err := s.meshtastic.Traceroute(ctx, to, timeout)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

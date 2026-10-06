@@ -173,6 +173,9 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 			headline = h.Hazard.Event
 		}
 		text = fmt.Sprintf("[%s] %s: %s — %s", prefix, strings.ToUpper(h.Hazard.Severity), h.Hazard.Event, headline)
+		if id := h.Hazard.MessageID(); id != "" {
+			text += "\nMessage ID: " + id
+		}
 		if len(h.Hazard.Areas) > 0 {
 			text += "\nAreas: " + strings.Join(h.Hazard.Areas, ", ")
 		}

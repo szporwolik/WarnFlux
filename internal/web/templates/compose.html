@@ -122,11 +122,12 @@
       <div class="table-wrap">
         <table class="plugins">
           <thead>
-            <tr><th>{{tr .Lang "compose.severity"}}</th><th>{{tr .Lang "compose.headline"}}</th><th>{{tr .Lang "compose.event"}}</th><th>{{tr .Lang "compose.areas"}}</th><th>{{tr .Lang "compose.status"}}</th><th>{{tr .Lang "users.updated"}}</th><th>{{tr .Lang "actions.title"}}</th></tr>
+            <tr><th>{{tr .Lang "common.id"}}</th><th>{{tr .Lang "compose.severity"}}</th><th>{{tr .Lang "compose.headline"}}</th><th>{{tr .Lang "compose.event"}}</th><th>{{tr .Lang "compose.areas"}}</th><th>{{tr .Lang "compose.status"}}</th><th>{{tr .Lang "users.updated"}}</th><th>{{tr .Lang "actions.title"}}</th></tr>
           </thead>
           <tbody>
             {{range .Items}}
             <tr>
+              <td><span class="msgid">{{.MsgID}}</span></td>
               <td><span class="sev sev-{{sevClass .Severity}}">{{sevLabel $.Lang .Severity}}</span></td>
               <td><strong>{{.Headline}}</strong></td>
               <td>{{.Event}}{{if .Urgency}} <span class="muted">· {{.Urgency}}{{if .Certainty}}/{{.Certainty}}{{end}}</span>{{end}}</td>

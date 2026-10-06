@@ -564,6 +564,9 @@ func bodyOfPlain(req action.ActionRequest, now time.Time) string {
 			headline = event
 		}
 		fmt.Fprintf(&b, "Message: %s · %s\n", strings.ToUpper(h.Hazard.Severity), event)
+		if id := h.Hazard.MessageID(); id != "" {
+			fmt.Fprintf(&b, "Message ID: %s\n", id)
+		}
 		if headline != event {
 			fmt.Fprintf(&b, "Headline: %s\n", headline)
 		}
@@ -725,9 +728,15 @@ func hazardHTML(ev dispatch.Event, link string) string {
 	var b strings.Builder
 	badge := severityColor(h.Hazard.Severity)
 	// Solid chip with dark text: the tinted rgba look is lost in Gmail
-	// and Outlook, a plain hex background renders everywhere.
-	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="display:inline-block;background-color:%s;color:#0f1419;padding:5px 16px;border-radius:12px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span></div>`,
-		badge, htmlEscaper(strings.ToUpper(h.Hazard.Severity)))
+	// and Outlook, a plain hex background renders everywhere. The short
+	// message ID chip rides along so one specific communication can be
+	// cited in replies.
+	idChip := ""
+	if id := h.Hazard.MessageID(); id != "" {
+		idChip = fmt.Sprintf(` <span style="display:inline-block;background-color:#1b232b;border:1px solid #303c46;color:#eef2f5;padding:5px 12px;border-radius:12px;font-family:monospace;font-size:12px;letter-spacing:.05em;">%s</span>`, htmlEscaper(id))
+	}
+	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="display:inline-block;background-color:%s;color:#0f1419;padding:5px 16px;border-radius:12px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span>%s</div>`,
+		badge, htmlEscaper(strings.ToUpper(h.Hazard.Severity)), idChip)
 
 	headline := strings.TrimSpace(h.Hazard.Headline)
 	if headline == "" {

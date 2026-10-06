@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 )
@@ -385,7 +386,8 @@ func fullReq(headline, event, desc string, lat, lon float64, areas []string) act
 			Kind: dispatch.EventHazardTransition,
 			Hazard: &dispatch.HazardTransition{
 				Hazard: dispatch.Hazard{
-					Event: event, Severity: "severe", Headline: headline,
+					EventKey: "imgw-meteo:1",
+					Event:    event, Severity: "severe", Headline: headline,
 					Description: desc, Areas: areas,
 					Latitude: latP, Longitude: lonP,
 				},
@@ -408,6 +410,10 @@ func TestTextForLocationRidesAlong(t *testing.T) {
 			t.Errorf("text = %q, missing %q", got, want)
 		}
 	}
+	// The stable message ID closes every transmission.
+	if !strings.HasSuffix(got, " ["+core.MessageID("imgw-meteo:1")+"]") {
+		t.Errorf("text = %q, the message ID must close the message", got)
+	}
 }
 
 // TestTextForTitleAndLocationSurvive pins the worst case: a gigantic
@@ -423,8 +429,9 @@ func TestTextForTitleAndLocationSurvive(t *testing.T) {
 	if !strings.HasPrefix(got, "SOSNA SEVERE ") {
 		t.Errorf("text = %q, prefix/severity must survive", got)
 	}
-	if !strings.HasSuffix(got, "49.985,20.065") {
-		t.Errorf("text = %q, the location must survive whole", got)
+	// The location survives whole; the ID closes the message after it.
+	if !strings.HasSuffix(got, "49.985,20.065 ["+core.MessageID("imgw-meteo:1")+"]") {
+		t.Errorf("text = %q, the location and the message ID must survive", got)
 	}
 	if !strings.Contains(got, "uwaga") {
 		t.Errorf("text = %q, the trimmed title must still be present", got)
@@ -442,6 +449,9 @@ func TestTextForHardCutNoLocation(t *testing.T) {
 	if !strings.HasPrefix(got, "SOSNA SEVERE ") {
 		t.Errorf("text = %q, prefix/severity must survive the hard cut", got)
 	}
+	if !strings.HasSuffix(got, " ["+core.MessageID("imgw-meteo:1")+"]") {
+		t.Errorf("text = %q, the message ID must survive the hard cut", got)
+	}
 }
 
 // TestTextForDescriptionTail pins the leftover budget: the description
@@ -452,8 +462,9 @@ func TestTextForDescriptionTail(t *testing.T) {
 	if len([]rune(got)) > maxMeshMessageChars {
 		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
 	}
-	if !strings.HasSuffix(got, "...") {
-		t.Errorf("text = %q, a cut description must end with ...", got)
+	// The description fills the leftover budget; the ID closes the text.
+	if !strings.HasSuffix(got, " ["+core.MessageID("imgw-meteo:1")+"]") {
+		t.Errorf("text = %q, the message ID must close the message", got)
 	}
 	if !strings.Contains(got, "Krotki tytul") || !strings.Contains(got, "opis") {
 		t.Errorf("text = %q, the title and the description tail must be present", got)

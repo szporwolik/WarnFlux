@@ -110,6 +110,7 @@
         <h3>{{.Headline}}</h3>
       </div>
       <div class="w-meta">
+        <span class="msgid">{{.MsgID}}</span>
         <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
         <span>{{tr $.Lang "warnings.via"}} <strong>{{.Receiver}}</strong></span>
         {{if .EffectiveAt}}<span>{{tr $.Lang "warnings.effective"}} {{timeFull .EffectiveAt}}</span>{{end}}

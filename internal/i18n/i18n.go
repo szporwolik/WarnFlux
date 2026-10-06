@@ -86,6 +86,7 @@ var en = map[string]string{
 	"common.prev":         "Prev",
 	"common.next":         "Next",
 	"common.none":         "none",
+	"common.id":           "ID",
 	"common.language":     "Language",
 	"common.source_code":  "Source code (GitHub)",
 
@@ -838,6 +839,7 @@ var pl = map[string]string{
 	"common.prev":         "Poprzednia",
 	"common.next":         "Następna",
 	"common.none":         "brak",
+	"common.id":           "ID",
 	"common.language":     "Język",
 	"common.source_code":  "Kod źródłowy (GitHub)",
 

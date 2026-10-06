@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/core"
 )
 
 // archiveDays is the public archive window: the home-page Archive tab
@@ -15,6 +17,7 @@ const archivePageSize = 25
 
 // archiveEventView is one historical communication shown in the archive.
 type archiveEventView struct {
+	MsgID       string
 	Severity    string
 	Headline    string
 	Event       string
@@ -94,6 +97,7 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	for _, se := range stored {
 		ev := se.Event
 		view.Events = append(view.Events, archiveEventView{
+			MsgID:       core.MessageID(ev.Key()),
 			Severity:    ev.Severity,
 			Headline:    ev.Headline,
 			Event:       ev.Event,

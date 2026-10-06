@@ -1008,3 +1008,8 @@ aprs:
 #   # headline + description, capped at 12 lines). Sent only when at
 #   # least one hazard is active; the first digest fires at startup.
 #   emcom_hazards_interval: 1h  # default; 0 = digest disabled
+#   # Read-only tab channel: received traffic on this channel index gets
+#   # a dedicated tab in the message history. It NEVER transmits — a
+#   # secondary install can watch the production channel without
+#   # beaconing on it. 0 = no extra tab.
+#   watch_channel: 1

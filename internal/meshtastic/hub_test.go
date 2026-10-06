@@ -1154,6 +1154,27 @@ func TestHubNodeDirectoryPersists(t *testing.T) {
 	}
 }
 
+// TestTabChannel pins the extra message-history tab channel: the
+// read-only watch channel wins when configured, otherwise the tab
+// follows the emcom channel.
+func TestTabChannel(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hub, err := NewHub(Config{Enabled: false, EmcomChannel: 1}, logger)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	if got := hub.TabChannel(); got != 1 {
+		t.Fatalf("TabChannel with emcom only = %d, want 1", got)
+	}
+	hub2, err := NewHub(Config{Enabled: false, EmcomChannel: 1, WatchChannel: 2}, logger)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	if got := hub2.TabChannel(); got != 2 {
+		t.Fatalf("TabChannel with watch = %d, want 2", got)
+	}
+}
+
 // TestHubEmcomBeacon pins the periodic presence beacon: identity,
 // uptime and node count broadcast on the configured emcom channel — and
 // never on the PRIMARY channel.

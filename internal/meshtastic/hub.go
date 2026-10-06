@@ -83,6 +83,11 @@ type Config struct {
 	// PRIMARY channel) is never used for broadcasts — broadcasts there
 	// are blocked.
 	EmcomChannel int
+	// WatchChannel is the device channel index (1-7) whose received
+	// traffic gets a dedicated read-only tab in the message history.
+	// It never triggers any transmission, so a secondary install can
+	// watch the production channel without beaconing on it. 0 = off.
+	WatchChannel int
 	// EmcomInterval is the beacon spacing (default 4 hours). The first
 	// beacon fires as soon as the first session comes up (server
 	// start/restart).
@@ -753,6 +758,9 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if cfg.EmcomChannel < 0 || cfg.EmcomChannel > 7 {
 		return nil, errors.New("meshtastic: emcom channel must be 0-7")
 	}
+	if cfg.WatchChannel < 0 || cfg.WatchChannel > 7 {
+		return nil, errors.New("meshtastic: watch channel must be 0-7")
+	}
 	if cfg.EmcomHazardsInterval < 0 {
 		return nil, errors.New("meshtastic: emcom hazards interval must not be negative (0 disables)")
 	}
@@ -821,6 +829,16 @@ func (h *Hub) SetActiveHazardSource(fn func() []ActiveHazard) {
 // (1-7; 0 = beacon disabled). The admin message history uses it for the
 // dedicated emcom-channel tab.
 func (h *Hub) EmcomChannel() int { return h.cfg.EmcomChannel }
+
+// TabChannel is the channel index that owns the extra message-history
+// tab: the read-only watch channel when configured, otherwise the emcom
+// channel. The tab is purely a view — it never transmits.
+func (h *Hub) TabChannel() int {
+	if h.cfg.WatchChannel > 0 {
+		return h.cfg.WatchChannel
+	}
+	return h.cfg.EmcomChannel
+}
 
 // Connected reports whether the serial session is currently up.
 func (h *Hub) Connected() bool {

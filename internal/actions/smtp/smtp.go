@@ -639,19 +639,22 @@ func roadNumbers(areas []string) []string {
 }
 
 // severityColor maps a canonical severity to the UI palette used by the
-// web dashboard, so outbound mails match the application branding.
-func severityColor(severity string) (bg, fg string) {
+// web dashboard, so outbound mails match the application branding. A
+// single solid hex is returned: Gmail strips the `background` shorthand
+// and Outlook's Word engine drops rgba(), while a plain hex works in
+// every client.
+func severityColor(severity string) string {
 	switch strings.ToLower(severity) {
 	case "extreme":
-		return "rgba(240,90,105,0.18)", "#f05a69"
+		return "#f05a69"
 	case "severe":
-		return "rgba(240,120,78,0.18)", "#f0784e"
+		return "#f0784e"
 	case "moderate":
-		return "rgba(224,166,60,0.18)", "#e0a63c"
+		return "#e0a63c"
 	case "minor":
-		return "rgba(157,168,177,0.18)", "#9da8b1"
+		return "#9da8b1"
 	default:
-		return "rgba(142,153,163,0.18)", "#8e99a3"
+		return "#8e99a3"
 	}
 }
 
@@ -663,13 +666,14 @@ func severityColor(severity string) (bg, fg string) {
 func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 	accent := "#303c46"
 	if ev := req.Event; ev.Kind == dispatch.EventHazardTransition && ev.Hazard != nil {
-		_, accent = severityColor(ev.Hazard.Hazard.Severity)
+		accent = severityColor(ev.Hazard.Hazard.Severity)
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, `<div style="background:#0f1419;padding:24px;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
-<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;border:1px solid #303c46;border-top:3px solid %s;border-radius:8px;background:#151b21;color:#eef2f5;font-size:14px;">
-<tr><td style="padding:24px 28px;">`, accent)
+	fmt.Fprintf(&b, `<div style="background-color:#0f1419;padding:24px;font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;">
+<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;background-color:#151b21;border:1px solid #303c46;border-radius:8px;">
+<tr><td bgcolor="%s" style="background-color:%s;height:4px;line-height:4px;font-size:0;">&nbsp;</td></tr>
+<tr><td style="padding:24px 28px;color:#eef2f5;font-size:14px;">`, accent, accent)
 
 	// Brand row: the embedded logo next to the system header (header1).
 	brand := strings.TrimSpace(req.App.Header1)
@@ -719,9 +723,11 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		return `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Message</div>`
 	}
 	var b strings.Builder
-	bg, fg := severityColor(h.Hazard.Severity)
-	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="background:%s;color:%s;padding:4px 14px;border-radius:999px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span></div>`,
-		bg, fg, htmlEscaper(strings.ToUpper(h.Hazard.Severity)))
+	badge := severityColor(h.Hazard.Severity)
+	// Solid chip with dark text: the tinted rgba look is lost in Gmail
+	// and Outlook, a plain hex background renders everywhere.
+	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="display:inline-block;background-color:%s;color:#0f1419;padding:5px 16px;border-radius:12px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span></div>`,
+		badge, htmlEscaper(strings.ToUpper(h.Hazard.Severity)))
 
 	headline := strings.TrimSpace(h.Hazard.Headline)
 	if headline == "" {
@@ -743,7 +749,7 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		b.WriteString(`<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">areas</div>`)
 		var chips strings.Builder
 		for _, a := range geo.DisplayAreas(areas) {
-			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#1b232b;border:1px solid #303c46;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(a))
+			fmt.Fprintf(&chips, `<span style="display:inline-block;background-color:#1b232b;border:1px solid #303c46;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(a))
 		}
 		b.WriteString(chips.String())
 	}
@@ -754,7 +760,7 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		}
 		var chips strings.Builder
 		for _, r := range roads {
-			fmt.Fprintf(&chips, `<span style="display:inline-block;background:#1b232b;border:1px solid #f0784e;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(r))
+			fmt.Fprintf(&chips, `<span style="display:inline-block;background-color:#1b232b;border:1px solid #f0784e;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(r))
 		}
 		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div>`, label)
 		b.WriteString(chips.String())
@@ -766,9 +772,10 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">valid until: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(humanTime(*h.Hazard.ExpiresAt)))
 	}
 	if link != "" {
-		// background-color (never the background shorthand) so Gmail and
-		// Outlook both render the call-to-action as a solid button.
-		fmt.Fprintf(&b, `<div style="margin-top:20px;"><a href="%s" style="display:inline-block;background-color:#1f6feb;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:8px;font-weight:600;font-size:13px;border:0;">View details</a></div>`, htmlEscaper(link))
+		// A table cell with bgcolor + background-color renders as a solid
+		// button in Gmail and Outlook (which ignore padding on inline
+		// anchors), while the padded anchor keeps the text nicely spaced.
+		fmt.Fprintf(&b, `<div style="margin-top:20px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td bgcolor="#1f6feb" style="background-color:#1f6feb;border-radius:8px;"><a href="%s" style="display:inline-block;background-color:#1f6feb;color:#ffffff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;font-size:13px;line-height:1;border:1px solid #1f6feb;">View details</a></td></tr></table></div>`, htmlEscaper(link))
 	}
 	return b.String()
 }
@@ -814,9 +821,6 @@ func footerText(req action.ActionRequest) string {
 	if domain != "" {
 		fmt.Fprintf(&b, " · %s", domain)
 	}
-	if req.App.RepoURL != "" {
-		fmt.Fprintf(&b, " · %s", req.App.RepoURL)
-	}
 	return b.String()
 }
 
@@ -830,10 +834,6 @@ func footerHTML(req action.ActionRequest) string {
 	}
 	if domain != "" {
 		fmt.Fprintf(&b, " · %s", htmlEscaper(domain))
-	}
-	if req.App.RepoURL != "" {
-		fmt.Fprintf(&b, ` · <a href="%s" style="color:#78a9c0;text-decoration:none;">%s</a>`,
-			htmlEscaper(req.App.RepoURL), htmlEscaper(req.App.RepoURL))
 	}
 	return b.String()
 }

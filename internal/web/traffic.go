@@ -20,7 +20,7 @@ type receiverChoice struct {
 	Connected bool
 }
 
-// trafficView is the full /traffic page model.
+// trafficView is the MQTT traffic panel model of the merged /logs page.
 type trafficView struct {
 	Lang     string
 	AppTitle string
@@ -34,6 +34,10 @@ type trafficView struct {
 	CSRF     string
 	Username string
 	Role     string
+
+	// Tab carries the active logs-page tab so the panel knows whether it
+	// is the visible one.
+	Tab string
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -57,15 +61,19 @@ type trafficView struct {
 	Receivers  []receiverChoice
 }
 
-// handleTrafficPage renders the self-refreshing MQTT traffic viewer.
+// handleTrafficPage keeps the old /traffic URL working: the MQTT traffic
+// viewer is the fourth tab of the merged /logs page now.
 func (s *Server) handleTrafficPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	view := s.baseTrafficView()
+	view := s.baseLogsView()
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
+	view.Tab = "traffic"
+	view.Traffic = s.baseTrafficView()
+	view.Traffic.Tab = "traffic"
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "traffic", view)
+	s.renderL(w, r, "logs", view)
 }
 
 func (s *Server) baseTrafficView() trafficView {

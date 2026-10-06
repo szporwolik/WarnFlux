@@ -351,7 +351,8 @@ func TestLogsViewerFlow(t *testing.T) {
 	}
 }
 
-// TestTrafficViewerFlow pins the /traffic page and the incremental feed:
+// TestTrafficViewerFlow pins the MQTT traffic tab of the merged /logs
+// page (the old /traffic URL still serves it) and the incremental feed:
 // the page requires login, the first poll returns the whole buffer and a
 // cursor-restricted poll returns only the newer entries.
 func TestTrafficViewerFlow(t *testing.T) {
@@ -369,16 +370,19 @@ func TestTrafficViewerFlow(t *testing.T) {
 	env.login()
 	_, html := env.get("/traffic")
 	if !strings.Contains(html, `id="traffic-viewer"`) {
-		t.Errorf("traffic page missing viewer: %s", html)
+		t.Errorf("traffic tab missing viewer: %s", html)
 	}
-	if !strings.Contains(html, `<span class="nav-label">MQTT</span>`) {
-		t.Errorf("traffic page missing sidebar entry: %s", html)
+	if !strings.Contains(html, `<span class="nav-label">Logs</span>`) {
+		t.Errorf("traffic tab missing the Logs sidebar entry: %s", html)
+	}
+	if !strings.Contains(html, `data-tab="panel-traffic"`) {
+		t.Errorf("logs page missing the MQTT traffic tab: %s", html)
 	}
 	if !strings.Contains(html, "Last 100 inbound MQTT frames") {
-		t.Errorf("traffic page missing buffer hint: %s", html)
+		t.Errorf("traffic tab missing buffer hint: %s", html)
 	}
 	if !strings.Contains(html, `id="browse-form"`) {
-		t.Errorf("traffic page missing MQTT browser: %s", html)
+		t.Errorf("traffic tab missing MQTT browser: %s", html)
 	}
 
 	// Full buffer poll.

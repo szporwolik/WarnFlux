@@ -2348,7 +2348,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 	legacyLogPages := []string{"/audit", "/notifications"}
 	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications"}
 	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions", "/partials/health"}
-	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing", "/api/meshtastic/traceroute"}
+	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing", "/api/meshtastic/traceroute", "/config/mesh"}
 
 	loginAs := func(user, pass string) {
 		t.Helper()

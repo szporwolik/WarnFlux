@@ -97,6 +97,21 @@ func Register(reg *action.Registry, hub *mesh.Hub) error {
 
 func (a *Action) Name() string { return Type }
 
+// meshBell is the Meshtastic notification trigger (BEL, 0x07): a direct
+// message starting with it rings the receiver's device, so hazard DMs
+// stand out from ordinary traffic.
+const meshBell = "\x07"
+
+// bellText prefixes the notification bell and keeps the total within
+// the channel limit.
+func bellText(text string) string {
+	r := []rune(text)
+	if len(r) > maxMeshMessageChars-1 {
+		r = r[:maxMeshMessageChars-1]
+	}
+	return meshBell + string(r)
+}
+
 // Execute formats the routed hazard as one message and delivers it to
 // every routed group member's registered node ID (direct message), and
 // publishes it on the configured group channel whenever one is set —
@@ -119,6 +134,9 @@ func (a *Action) Name() string { return Type }
 func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if req.Event.Kind != dispatch.EventHazardTransition || req.Event.Hazard == nil {
 		return nil // nothing to say for non-hazard events
+	}
+	if !mesh.AlertsEnabled() {
+		return nil // the operator muted the mesh announcements
 	}
 	text := a.textFor(ctx, req)
 
@@ -171,37 +189,30 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		}
 	}
 
-	// Registered node IDs additionally get a direct message with
-	// per-recipient delivery tracking. Recipients whose exact message
-	// version already has a progress row are skipped: only the
-	// unfinished sends are retried, so every member is reached exactly
-	// once across attempts.
-	//
-	// TEMPORARILY DISABLED (operator decision, 2026-10-05): hazard
-	// notifications as direct messages are OFF for now — the emcom
-	// channel broadcast above is the only meshtastic delivery. Direct
-	// message REPLIES (the radio CLI answering /hazard, /weather,
-	// /alert) are unaffected; they live in the hub, not here. Re-enable
-	// the loop below when PM notifications are wanted again.
-	//
-	// for _, id := range req.MeshNodeIDs {
-	// 	if done(id, 0) {
-	// 		continue
-	// 	}
-	// 	if err := a.pace(ctx); err != nil {
-	// 		return err
-	// 	}
-	// 	var err error
-	// 	if ledger {
-	// 		err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", prog)
-	// 	} else {
-	// 		err = a.hub.SendContactMessage(ctx, id, text, "system")
-	// 	}
-	// 	if err != nil {
-	// 		return fmt.Errorf("meshtastic: %s: %w", id, err)
-	// 	}
-	// 	a.last = time.Now()
-	// }
+	// Registered node IDs additionally get a direct message with the
+	// notification bell and per-recipient delivery tracking, in parallel
+	// with the channel broadcast. Recipients whose exact message version
+	// already has a progress row are skipped: only the unfinished sends
+	// are retried, so every member is reached exactly once across
+	// attempts.
+	for _, id := range req.MeshNodeIDs {
+		if done(id, 0) {
+			continue
+		}
+		if err := a.pace(ctx); err != nil {
+			return err
+		}
+		var err error
+		if ledger {
+			err = a.hub.SendContactMessageVersioned(ctx, id, bellText(text), "system", prog)
+		} else {
+			err = a.hub.SendContactMessage(ctx, id, bellText(text), "system")
+		}
+		if err != nil {
+			return fmt.Errorf("meshtastic: %s: %w", id, err)
+		}
+		a.last = time.Now()
+	}
 	return nil
 }
 

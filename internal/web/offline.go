@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
@@ -63,6 +64,9 @@ type configView struct {
 	// EmcomNetworks lists the managed EMCOM networks (admin-level
 	// add/remove moved here from the operator panel).
 	EmcomNetworks []emcomNetworkView
+	// MeshAlerts is the runtime Meshtastic announcements switch (hazard
+	// channel posts + direct messages).
+	MeshAlerts bool
 	// Msg is the flash message after a toggle.
 	Msg string
 	// Error carries the banner after a rejected EMCOM management
@@ -160,6 +164,7 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		InternetSources: s.internetSources(),
 		MqttRows:        s.mqttRows(),
 		EmcomNetworks:   s.emcomNetworkViews(lang),
+		MeshAlerts:      meshtastic.AlertsEnabled(),
 	}
 }
 
@@ -177,6 +182,8 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		v.Msg = i18n.T(lang, "emcom.flash.added")
 	case "emcom-deleted":
 		v.Msg = i18n.T(lang, "emcom.flash.deleted")
+	case "mesh":
+		v.Msg = i18n.T(lang, "config.mesh.saved")
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "configpage", v)
@@ -222,6 +229,33 @@ func (s *Server) handleConfigMqtt(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("mqtt publish mask updated by admin",
 		"user", sess.username, "categories", mqttpolicy.EnabledKeys(mask))
 	http.Redirect(w, r, "/config?msg=mqtt", http.StatusSeeOther)
+}
+
+// handleConfigMesh flips the Meshtastic announcements switch: OFF means
+// no hazard message leaves the station over the mesh (channel posts and
+// direct messages) until the operator turns it back on. Admin-only.
+func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		if err == nil {
+			return
+		}
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	switch strings.TrimSpace(r.PostFormValue("mesh")) {
+	case "on":
+		meshtastic.SetAlertsEnabled(true)
+	case "off":
+		meshtastic.SetAlertsEnabled(false)
+	default:
+		http.Error(w, "invalid value", http.StatusBadRequest)
+		return
+	}
+	s.audit(sess.username, "config-mesh", r.PostFormValue("mesh"))
+	s.logger.Info("meshtastic announcements toggled by admin",
+		"user", sess.username, "state", r.PostFormValue("mesh"))
+	http.Redirect(w, r, "/config?msg=mesh", http.StatusSeeOther)
 }
 
 // handleConfigOffline flips the offline-mode switch. Admin-only; the

@@ -1,9 +1,9 @@
-{{define "aprsmap"}}<!doctype html>
+{{define "aprs"}}<!doctype html>
 <html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{tr .Lang "aprsmap.title"}} · {{.AppTitle}}</title>
+  <title>{{tr .Lang "messages.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
   <link rel="stylesheet" href="/static/leaflet/leaflet.css">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
@@ -13,7 +13,16 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    <section class="card">
+    <div class="page-tabs" role="tablist" id="aprs-tabs">
+      <button type="button" class="page-tab{{if ne .Tab "msgs"}} active{{end}}" role="tab" aria-selected="{{if ne .Tab "msgs"}}true{{else}}false{{end}}" data-tab="panel-map">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "aprs.tab.map"}}
+      </button>
+      <button type="button" class="page-tab{{if eq .Tab "msgs"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "msgs"}}true{{else}}false{{end}}" data-tab="panel-msgs">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "aprs.tab.msgs"}}
+      </button>
+    </div>
+
+    <section class="card page-panel" id="panel-map" data-panel="panel-map"{{if eq .Tab "msgs"}} hidden{{end}}>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "aprsmap.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "aprsmap.hint"}}</p>
       <div class="page-tabs" role="tablist" id="aprs-map-filter">
@@ -34,9 +43,37 @@
       <p class="home-none">{{tr .Lang "aprsmap.disabled"}}</p>
       {{end}}
     </section>
+
+    <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "msgs"}} hidden{{end}}>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "messages.title"}} <span class="count" id="aprs-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
+      <div class="aprs-toolbar">
+        <form method="post" action="/messages/send" class="aprs-send">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" required>
+          <datalist id="aprs-calls">{{range .Calls}}<option value="{{.}}">{{end}}</datalist>
+          <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="67" required>
+          <button type="submit" class="btn-primary btn-small">{{tr .Lang "messages.send"}}</button>
+        </form>
+        <form method="post" action="/messages/beacon" class="inline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <button type="submit" class="btn-ghost btn-small">{{tr .Lang "messages.beacon_now"}}</button>
+        </form>
+      </div>
+      <div class="page-tabs" role="tablist">
+        <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/aprs?tab=msgs">{{tr .Lang "messages.dir_all"}}</a>
+        <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/aprs?tab=msgs&dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
+        <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/aprs?tab=msgs&dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
+      </div>
+      <p class="muted log-hint">{{tr .Lang "messages.hint"}}</p>
+      {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
+      {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.sent"}}</span></div>{{end}}
+      {{if .Beacon}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.beacon_sent"}}</span></div>{{end}}
+      <div id="aprs-msgs">{{template "aprs_msgs" .}}</div>
+    </section>
   </main>
   {{template "footer" .}}
   <script>window.WF_OFFLINE={{if .OfflineMode}}true{{else}}false{{end}};</script>
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
   <script src="/static/leaflet/leaflet.js"></script>
   <script>
   (function () {
@@ -65,23 +102,36 @@
       attrib.textContent = "WarnFlux (local tiles)";
     }
 
-    var map = L.map(el, { attributionControl: false }).setView([lat, lon], 9);
-    L.tileLayer(raster, { maxZoom: 19 }).addTo(map);
+    // The map is created lazily: the messages tab can be the active one
+    // on load (e.g. after sending), and Leaflet needs a visible container
+    // to size itself. app.js dispatches "panel-shown" on the panel, so
+    // the first activation builds the map; later ones just invalidate.
+    var map = null;
+    var stationsLayer = null;
+    function initMap() {
+      if (map) {
+        map.invalidateSize();
+        return;
+      }
+      map = L.map(el, { attributionControl: false }).setView([lat, lon], 9);
+      L.tileLayer(raster, { maxZoom: 19 }).addTo(map);
+      stationsLayer = L.layerGroup().addTo(map);
 
-    var stationsLayer = L.layerGroup().addTo(map);
-
-    // Our own locator and the collection-radius circle, like the home
-    // map (the circle follows the operational area, not the antenna).
-    if (ownLat && ownLon) {
-      var ownMarker = L.marker([ownLat, ownLon], { icon: badge("#007a3d", "APRS", ownCall), riseOnHover: true }).addTo(map);
-      ownMarker.bindTooltip(ownCall || "WarnFlux", { direction: "top" });
-    }
-    if (radius > 0) {
-      L.circle([lat, lon], {
-        radius: radius * 1000,
-        color: "#94a3b8", weight: 1.5, opacity: 0.55, dashArray: "8 6",
-        fill: false, interactive: false
-      }).addTo(map);
+      // Our own locator and the collection-radius circle, like the home
+      // map (the circle follows the operational area, not the antenna).
+      if (ownLat && ownLon) {
+        var ownMarker = L.marker([ownLat, ownLon], { icon: badge("#007a3d", "APRS", ownCall), riseOnHover: true }).addTo(map);
+        ownMarker.bindTooltip(ownCall || "WarnFlux", { direction: "top" });
+      }
+      if (radius > 0) {
+        L.circle([lat, lon], {
+          radius: radius * 1000,
+          color: "#94a3b8", weight: 1.5, opacity: 0.55, dashArray: "8 6",
+          fill: false, interactive: false
+        }).addTo(map);
+      }
+      refresh();
+      window.setInterval(refresh, 30 * 1000);
     }
 
     function esc(s) {
@@ -220,8 +270,9 @@
       });
     });
 
-    refresh();
-    window.setInterval(refresh, 30 * 1000);
+    var panel = document.getElementById("panel-map");
+    if (panel && !panel.hidden) { initMap(); }
+    if (panel) { panel.addEventListener("panel-shown", initMap); }
   })();
   </script>
 </body>

@@ -2,9 +2,10 @@ package web
 
 import "net/http"
 
-// aprsMapView is the /aprs admin map page model: a simple browser over
-// every station the APRS hub currently holds, with an ALL / APRS-IS /
-// APRS-RF filter.
+// aprsMapView is the /aprs admin section model: a combined page with two
+// tabs — the station map (every station the APRS hub currently holds,
+// with an ALL / APRS-IS / APRS-RF filter) and the durable message
+// history.
 type aprsMapView struct {
 	Lang     string
 	AppTitle string
@@ -29,6 +30,14 @@ type aprsMapView struct {
 
 	OfflineMode bool
 
+	// Messages tab (history payload + feedback; see aprsMessagesData).
+	aprsMessagesData
+	Calls  []string
+	Error  string
+	Sent   bool
+	Beacon bool
+	Tab    string // map | msgs
+
 	NavDashboard     bool
 	NavUsers         bool
 	NavGroups        bool
@@ -47,11 +56,12 @@ type aprsMapView struct {
 	NavConfig        bool
 }
 
-// handleAPRSMapPage renders the admin APRS station-map browser. The
-// station data comes from the retained hub state through the shared
-// /api/aprs/stations?all=1 endpoint (which also includes weather
-// stations, unlike the public home endpoint).
-func (s *Server) handleAPRSMapPage(w http.ResponseWriter, r *http.Request) {
+// handleAPRSPage renders the combined APRS admin section: the station map
+// (tab "map", the default) and the durable message history (tab "msgs")
+// behind one sidebar entry. Map data comes from the retained hub state
+// through the shared /api/aprs/stations?all=1 endpoint (which also
+// includes weather stations, unlike the public home endpoint).
+func (s *Server) handleAPRSPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	v := aprsMapView{
 		AppTitle:    s.cfg.Title,
@@ -66,7 +76,23 @@ func (s *Server) handleAPRSMapPage(w http.ResponseWriter, r *http.Request) {
 		Username:    sess.username,
 		Role:        sess.role,
 		NavAPRS:     true,
+		Tab:         "map",
 		OfflineMode: s.OfflineMode(),
+	}
+	if r.URL.Query().Get("tab") == "msgs" {
+		v.Tab = "msgs"
+	}
+	if errMsg := r.URL.Query().Get("err"); errMsg != "" {
+		v.Error = errMsg
+	}
+	v.Sent = r.URL.Query().Get("sent") != ""
+	v.Beacon = r.URL.Query().Get("beacon") != ""
+	v.Dir = "all"
+	if s.users != nil {
+		v.Calls, _ = s.users.AllAPRSCallsigns()
+	}
+	if s.aprsMsgs != nil {
+		s.fillAPRSMessages(r, &v.aprsMessagesData)
 	}
 	if s.aprs != nil && s.aprs.Enabled() {
 		v.AprsEnabled = true
@@ -78,5 +104,5 @@ func (s *Server) handleAPRSMapPage(w http.ResponseWriter, r *http.Request) {
 		v.AprsCallsign = s.aprs.Callsign()
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "aprsmap", v)
+	s.renderL(w, r, "aprs", v)
 }

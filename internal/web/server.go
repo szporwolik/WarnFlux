@@ -377,6 +377,7 @@ func (s *Server) routes(static http.Handler) {
 	// MQTT publish mask.
 	s.mux.Handle("GET /config", s.requireAdmin(s.handleConfigPage))
 	s.mux.Handle("POST /config/offline", s.requireAdmin(s.handleConfigOffline))
+	s.mux.Handle("POST /config/mesh", s.requireAdmin(s.handleConfigMesh))
 	s.mux.Handle("POST /config/mqtt", s.requireAdmin(s.handleConfigMqtt))
 	// Local map tiles ({z}/{x}/{y}.jpg under web.tiles_dir) for offline
 	// mode. Registered unconditionally; empty tiles_dir yields 404s.

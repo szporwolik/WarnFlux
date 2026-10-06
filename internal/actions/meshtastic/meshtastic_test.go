@@ -124,26 +124,31 @@ func versionedReq(nodeIDs []string, headline string, changeID int64) action.Acti
 	return req
 }
 
-// TestExecuteDMsDisabledChannelOnly pins the current operator decision:
-// hazard notifications go out ONLY as the emcom channel broadcast — the
-// direct-message loop to registered node IDs is disabled (direct message
-// REPLIES stay in the hub).
-func TestExecuteDMsDisabledChannelOnly(t *testing.T) {
+// TestExecuteDMsParallelWithChannel pins the delivery shape: the channel
+// broadcast and a direct message with the notification bell go out in
+// parallel — the DM to every registered node ID, with or without a
+// configured channel.
+func TestExecuteDMsParallelWithChannel(t *testing.T) {
 	stub := &stubSender{}
 	a := &Action{cfg: Config{Prefix: "SOSNA"}, hub: stub}
 
 	if err := a.Execute(context.Background(), hazardReq([]string{"a0a85934", "b0b85934"}, "Big storm coming")); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(stub.contacts) != 0 {
-		t.Fatalf("contacts = %v, want none (direct hazard messages are disabled)", stub.contacts)
+	if len(stub.contacts) != 2 || stub.contacts[0] != "a0a85934" || stub.contacts[1] != "b0b85934" {
+		t.Fatalf("contacts = %v, want a DM per node id", stub.contacts)
 	}
 	if len(stub.channels) != 0 {
 		t.Fatalf("broadcasts = %v, want none without a configured channel", stub.channels)
 	}
+	for _, tx := range stub.texts {
+		if !strings.HasPrefix(tx, "\x07SOSNA SEVERE") {
+			t.Fatalf("DM text = %q, want the notification bell + SOSNA SEVERE", tx)
+		}
+	}
 
-	// Channel configured: the broadcast goes out even when the group
-	// has registered node IDs — and the node IDs stay silent.
+	// Channel configured: the broadcast goes out AND the node IDs get
+	// their belled DM in parallel.
 	stub2 := &stubSender{}
 	a2 := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub2}
 	if err := a2.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "Flood alert")); err != nil {
@@ -152,11 +157,17 @@ func TestExecuteDMsDisabledChannelOnly(t *testing.T) {
 	if len(stub2.channels) != 1 || stub2.channels[0] != 1 {
 		t.Fatalf("broadcasts = %v, want one on channel 1", stub2.channels)
 	}
-	if len(stub2.contacts) != 0 {
-		t.Fatalf("contacts = %v, want none (direct hazard messages are disabled)", stub2.contacts)
+	if len(stub2.contacts) != 1 || stub2.contacts[0] != "a0a85934" {
+		t.Fatalf("contacts = %v, want the parallel DM", stub2.contacts)
 	}
-	if len(stub2.texts) != 1 || !strings.HasPrefix(stub2.texts[0], "SOSNA SEVERE") {
-		t.Fatalf("text = %v, want the SOSNA SEVERE prefix", stub2.texts)
+	if len(stub2.texts) != 2 {
+		t.Fatalf("texts = %v, want the channel text + the belled DM", stub2.texts)
+	}
+	if !strings.HasPrefix(stub2.texts[0], "SOSNA SEVERE") || strings.HasPrefix(stub2.texts[0], "\x07") {
+		t.Fatalf("channel text = %q, want SOSNA SEVERE without the bell", stub2.texts[0])
+	}
+	if !strings.HasPrefix(stub2.texts[1], "\x07SOSNA SEVERE") {
+		t.Fatalf("DM text = %q, want the bell + SOSNA SEVERE", stub2.texts[1])
 	}
 }
 
@@ -175,8 +186,12 @@ func TestExecuteFailurePropagates(t *testing.T) {
 	if err := a2.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "")); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(stub2.texts) != 1 || !strings.HasPrefix(stub2.texts[0], "SOSNA SEVERE Storm") {
-		t.Fatalf("text = %v, want the event-name fallback", stub2.texts)
+	// Channel text + belled DM.
+	if len(stub2.texts) != 2 || !strings.HasPrefix(stub2.texts[0], "SOSNA SEVERE Storm") {
+		t.Fatalf("text = %v, want the event-name fallback on the channel", stub2.texts)
+	}
+	if !strings.HasPrefix(stub2.texts[1], "\x07SOSNA SEVERE Storm") {
+		t.Fatalf("DM text = %v, want the belled fallback", stub2.texts)
 	}
 }
 
@@ -197,8 +212,8 @@ func TestExecuteResumesUnfinishedBroadcast(t *testing.T) {
 		t.Fatalf("attempt 1 broadcasts = %v, want one attempt on channel 1", stub.channels)
 	}
 
-	// Attempt 2 with a working device: the broadcast goes out again and
-	// its progress row lands.
+	// Attempt 2 with a working device: the broadcast AND the DM go out
+	// again and their progress rows land.
 	stub.err = nil
 	if err := a.Execute(context.Background(), req); err != nil {
 		t.Fatalf("attempt 2: %v", err)
@@ -206,8 +221,8 @@ func TestExecuteResumesUnfinishedBroadcast(t *testing.T) {
 	if len(stub.channels) != 2 {
 		t.Fatalf("broadcasts after retry = %v, want the failed broadcast retransmitted", stub.channels)
 	}
-	if len(stub.contacts) != 0 {
-		t.Fatalf("contacts = %v, want none (direct messages disabled)", stub.contacts)
+	if len(stub.contacts) != 1 {
+		t.Fatalf("contacts = %v, want the parallel DM delivered", stub.contacts)
 	}
 
 	// Attempt 3: the ledger skips the already-delivered broadcast.
@@ -233,15 +248,16 @@ func TestExecuteSkipsLedgerCompleted(t *testing.T) {
 	// Reset the call log, keep the ledger (the durable state).
 	stub.contacts, stub.texts, stub.channels = nil, nil, nil
 
-	// The full group retry: the broadcast is skipped, nothing goes out.
+	// The full group retry: the broadcast is skipped and the delivered DM
+	// too — only the NEW recipient (b0b85934) gets its DM.
 	if err := a.Execute(context.Background(), versionedReq([]string{"a0a85934", "b0b85934"}, "Flood alert", 1)); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if len(stub.channels) != 0 {
 		t.Fatalf("broadcasts on retry = %v, want none (already broadcast)", stub.channels)
 	}
-	if len(stub.contacts) != 0 {
-		t.Fatalf("contacts on retry = %v, want none (direct messages disabled)", stub.contacts)
+	if len(stub.contacts) != 1 || stub.contacts[0] != "b0b85934" {
+		t.Fatalf("contacts on retry = %v, want only the new recipient", stub.contacts)
 	}
 }
 
@@ -274,8 +290,8 @@ func TestExecuteNewVersionSameTextResends(t *testing.T) {
 	if err := a.Execute(context.Background(), versionedReq(ids, "Big storm coming", 2)); err != nil {
 		t.Fatalf("v2 retry: %v", err)
 	}
-	if len(stub.channels) != 2 || len(stub.contacts) != 0 {
-		t.Fatalf("after v2 retry = broadcasts %v contacts %v, want no repeats and no DMs",
+	if len(stub.channels) != 2 || len(stub.contacts) != 2 {
+		t.Fatalf("after v2 retry = broadcasts %v contacts %v, want no repeats (one broadcast + one DM per version)",
 			stub.channels, stub.contacts)
 	}
 }
@@ -307,8 +323,8 @@ func TestExecuteResendsAfterFailedTransmission(t *testing.T) {
 	if len(stub.channels) != 2 {
 		t.Fatalf("broadcasts after failed tx = %v, want the broadcast retransmitted", stub.channels)
 	}
-	if len(stub.contacts) != 0 {
-		t.Fatalf("contacts = %v, want none (direct messages disabled)", stub.contacts)
+	if len(stub.contacts) != 1 {
+		t.Fatalf("contacts = %v, want the parallel DM", stub.contacts)
 	}
 
 	// The retry's own echo stamps the progress again: a further retry skips.
@@ -329,8 +345,8 @@ func TestExecuteLedgerFailureFailsOpen(t *testing.T) {
 	if err := a.Execute(context.Background(), versionedReq([]string{"a0a85934"}, "x", 1)); err != nil {
 		t.Fatalf("Execute with broken ledger: %v", err)
 	}
-	if len(stub.channels) != 1 || len(stub.contacts) != 0 {
-		t.Fatalf("transmissions = broadcast %v contacts %v, want the broadcast delivered and no DMs",
+	if len(stub.channels) != 1 || len(stub.contacts) != 1 {
+		t.Fatalf("transmissions = broadcast %v contacts %v, want the broadcast and the DM delivered fail-open",
 			stub.channels, stub.contacts)
 	}
 }
@@ -349,13 +365,14 @@ func TestExecutePassesJobIdentityToVersionedSends(t *testing.T) {
 	if err := a.Execute(context.Background(), req); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(stub.progs) != 1 {
-		t.Fatalf("versioned sends = %d, want 1 (the channel broadcast only)", len(stub.progs))
+	if len(stub.progs) != 2 {
+		t.Fatalf("versioned sends = %d, want 2 (the channel broadcast + the DM)", len(stub.progs))
 	}
-	prog := stub.progs[0]
-	if prog.ActionID != "mesh-main" || prog.GroupID != 42 || prog.DedupKey != "c:42" ||
-		prog.Publisher != "publisher-1" || prog.ChangeID != 3 {
-		t.Fatalf("broadcast prog = %+v, want the job identity (group 42, dedup c:42) + version", prog)
+	for _, prog := range stub.progs {
+		if prog.ActionID != "mesh-main" || prog.GroupID != 42 || prog.DedupKey != "c:42" ||
+			prog.Publisher != "publisher-1" || prog.ChangeID != 3 {
+			t.Fatalf("send prog = %+v, want the job identity (group 42, dedup c:42) + version", prog)
+		}
 	}
 }
 
@@ -368,6 +385,22 @@ func TestExecuteNonHazardNoop(t *testing.T) {
 	}
 	if len(stub.contacts) != 0 || len(stub.channels) != 0 {
 		t.Fatalf("non-hazard event transmitted: %v %v", stub.contacts, stub.channels)
+	}
+}
+
+// TestExecuteMuted pins the Config master switch: when the operator
+// turns meshtastic announcements off, nothing leaves the station —
+// neither the channel broadcast nor the direct messages.
+func TestExecuteMuted(t *testing.T) {
+	defer mesh.SetAlertsEnabled(true)
+	mesh.SetAlertsEnabled(false)
+	stub := &stubSender{}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
+	if err := a.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "Flood alert")); err != nil {
+		t.Fatalf("Execute muted: %v", err)
+	}
+	if len(stub.channels) != 0 || len(stub.contacts) != 0 {
+		t.Fatalf("muted action transmitted: broadcasts %v contacts %v", stub.channels, stub.contacts)
 	}
 }
 

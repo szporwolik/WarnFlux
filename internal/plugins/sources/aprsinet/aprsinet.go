@@ -204,7 +204,7 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	delay := minReconnectDelay
 	for {
 		sessionStart := time.Now()
-		err := s.session(ctx)
+		err := s.session(ctx, health)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -243,7 +243,7 @@ func resetBackoff(delay, sessionDuration time.Duration) time.Duration {
 }
 
 // session runs one connection lifetime: dial, login, read, disconnect.
-func (s *Source) session(ctx context.Context) error {
+func (s *Source) session(ctx context.Context, health plugin.SourceHealthReporter) error {
 	dialer := net.Dialer{Timeout: s.cfg.ConnectTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", s.cfg.Server)
 	if err != nil {
@@ -276,6 +276,13 @@ func (s *Source) session(ctx context.Context) error {
 	}()
 
 	s.logger.Info("aprs-inet: connected", "server", s.cfg.Server)
+
+	// A live APRS-IS connection clears any earlier degradation: without
+	// this the /health row stays "degraded" forever after one outage,
+	// even though packets flow again on the reconnect.
+	if health != nil {
+		health.ReportSourceHealthy()
+	}
 
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 64*1024), 64*1024)

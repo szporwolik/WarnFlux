@@ -36,9 +36,25 @@
              data-own-lat="{{.AprsOwnLat}}" data-own-lon="{{.AprsOwnLon}}"
              data-radius="{{.AprsRadiusKM}}" data-callsign="{{.AprsCallsign}}"
              data-lbl-heard="{{tr .Lang "map.heard"}}" data-lbl-path="{{tr .Lang "aprsmap.path"}}"
-             data-lbl-packets="{{tr .Lang "aprsmap.packets"}}"></div>
+             data-lbl-packets="{{tr .Lang "aprsmap.packets"}}"
+             data-lbl-nopos="{{tr .Lang "meshmap.nopos"}}" data-lbl-click="{{tr .Lang "messages.click_to_send"}}"></div>
         <p class="aprs-map-attrib"><span id="aprs-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
       </div>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "aprs.dir_title"}} <span class="count" id="aprs-dir-count"></span></h2>
+      <div class="msgs-table-wrap">
+        <table class="msgs-table" id="aprs-dir-table">
+          <thead>
+            <tr>
+              <th>{{tr .Lang "aprs.dir_call"}}</th>
+              <th>{{tr .Lang "aprsmap.path"}}</th>
+              <th>{{tr .Lang "aprsmap.packets"}}</th>
+              <th>{{tr .Lang "meshtastic.node_seen"}}</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="home-none" id="aprs-dir-none" hidden>{{tr .Lang "aprs.dir_none"}}</p>
       {{else}}
       <p class="home-none">{{tr .Lang "aprsmap.disabled"}}</p>
       {{end}}
@@ -89,6 +105,8 @@
     var LBL_HEARD = el.dataset.lblHeard || "Heard";
     var LBL_PATH = el.dataset.lblPath || "Path";
     var LBL_PACKETS = el.dataset.lblPackets || "Packets";
+    var LBL_NOPOS = el.dataset.lblNopos || "Heard without a position";
+    var LBL_CLICK = el.dataset.lblClick || "Click to send a message";
 
     // The same basemap idea as the home page, simplified: the local tile
     // tree in offline mode, otherwise a free raster provider matching
@@ -239,6 +257,7 @@
         var n = counts[f] || 0;
         b.textContent = (f === "all" ? "ALL" : f === "inet" ? "APRS-IS" : "APRS-RF") + " (" + n + ")";
       });
+      renderDirTable();
       if (!fittedOnce) {
         if (bounds.isValid()) {
           map.fitBounds(bounds.pad(0.2), { maxZoom: 13 });
@@ -248,6 +267,73 @@
         fittedOnce = true;
       }
     }
+
+    // renderDirTable mirrors the Meshtastic heard-node directory: every
+    // station the hub holds, newest first, filtered by the same backend
+    // buttons as the map; rows prefll the send form like message rows.
+    function renderDirTable() {
+      var tbody = document.querySelector("#aprs-dir-table tbody");
+      if (!tbody) { return; }
+      var rows = allStations.slice().sort(function (a, b) {
+        return new Date(b.last_heard_at) - new Date(a.last_heard_at);
+      });
+      var countEl = document.getElementById("aprs-dir-count");
+      var noneEl = document.getElementById("aprs-dir-none");
+      tbody.textContent = "";
+      rows.forEach(function (s) {
+        if (s.self) { return; }
+        var v = viaOf(s);
+        if (filter === "inet" && !v.inet) { return; }
+        if (filter === "radio" && !v.radio) { return; }
+        var tr = document.createElement("tr");
+        tr.className = "click-send";
+        tr.setAttribute("data-key", s.callsign);
+        tr.title = LBL_CLICK;
+
+        var td1 = document.createElement("td");
+        var strong = document.createElement("strong");
+        strong.textContent = s.callsign;
+        td1.appendChild(strong);
+        var chips = viaChips(s);
+        if (chips) { td1.insertAdjacentHTML("beforeend", " " + chips); }
+        if (!s.position) { td1.insertAdjacentHTML("beforeend", ' <span class="badge muted">' + LBL_NOPOS + "</span>"); }
+        if (s.comment) {
+          var cm = document.createElement("div");
+          cm.className = "muted op-name";
+          cm.textContent = s.comment;
+          td1.appendChild(cm);
+        }
+        tr.appendChild(td1);
+
+        var td2 = document.createElement("td");
+        td2.className = "muted nowrap";
+        td2.textContent = s.path && s.path.length ? s.path.join(" › ") : "—";
+        tr.appendChild(td2);
+
+        var td3 = document.createElement("td");
+        td3.className = "nowrap";
+        td3.textContent = s.packet_count || 0;
+        tr.appendChild(td3);
+
+        var td4 = document.createElement("td");
+        td4.className = "muted nowrap";
+        td4.textContent = fmtTime(s.last_heard_at);
+        tr.appendChild(td4);
+
+        tbody.appendChild(tr);
+      });
+      if (countEl) { countEl.textContent = "(" + tbody.children.length + ")"; }
+      if (noneEl) { noneEl.hidden = tbody.children.length > 0; }
+    }
+
+    // A directory-row click opens the messages tab with the callsign
+    // prefilled (the app.js click-send handler does the form fill).
+    document.addEventListener("click", function (e) {
+      var row = e.target.closest("#aprs-dir-table tr.click-send");
+      if (!row) { return; }
+      var msgsTab = document.querySelector('[data-tab="panel-msgs"]');
+      if (msgsTab) { msgsTab.click(); }
+    });
 
     function refresh() {
       fetch("/api/aprs/stations?all=1")

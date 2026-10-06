@@ -1288,7 +1288,7 @@ func TestAPRSMapPage(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /aprs = %d", resp.StatusCode)
 	}
-	for _, want := range []string{`id="aprs-admin-map"`, `data-filter="all"`, `data-filter="inet"`, `data-filter="radio"`, `data-tab="panel-msgs"`, `action="/messages/send"`} {
+	for _, want := range []string{`id="aprs-admin-map"`, `data-filter="all"`, `data-filter="inet"`, `data-filter="radio"`, `data-tab="panel-msgs"`, `action="/messages/send"`, `id="aprs-dir-table"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/aprs missing %s", want)
 		}

@@ -13,65 +13,10 @@ import (
 // auditPageSize bounds one poll of the audit feed.
 const auditPageSize = 500
 
-// auditView is the full /audit page model.
-type auditView struct {
-	Lang     string
-	AppTitle string
-	Name     string
-	Header1  string
-	Header2  string
-	Tagline  string
-	Version  string
-	Commit   string
-	RepoURL  string
-	CSRF     string
-	Username string
-	Role     string
-
-	NavDashboard     bool
-	NavUsers         bool
-	NavGroups        bool
-	NavLogs          bool
-	NavTraffic       bool
-	NavWebsite       bool
-	NavNotifications bool
-	NavHealth        bool
-	NavConfig        bool
-	NavCompose       bool
-	NavEmcom         bool
-	NavAccount       bool
-	NavAudit         bool
-	NavAPRS          bool
-	NavMessages      bool
-	NavMeshtastic    bool
-	NavMeshMap       bool
-	MaxEntries       int
-}
-
-// handleAuditPage renders the self-refreshing user-action audit viewer.
+// handleAuditPage keeps the old /audit URL working: the audit trail is
+// the second tab of the merged /logs page now.
 func (s *Server) handleAuditPage(w http.ResponseWriter, r *http.Request) {
-	sess := s.sessions.currentSession(r)
-	max := s.auditLog.Max()
-	if _, ok := s.users.(storage.AuditStore); ok {
-		max = storage.AuditRetentionEntries
-	}
-	v := auditView{
-		AppTitle:   s.cfg.Title,
-		Name:       s.displayName(),
-		Header1:    s.displayHeader1(),
-		Header2:    s.cfg.Header2,
-		Tagline:    s.cfg.Tagline,
-		Version:    s.version,
-		Commit:     s.commit,
-		RepoURL:    repoURL,
-		CSRF:       sess.csrf,
-		Username:   sess.username,
-		Role:       sess.role,
-		NavAudit:   true,
-		MaxEntries: max,
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "audit", v)
+	http.Redirect(w, r, "/logs?tab=audit", http.StatusSeeOther)
 }
 
 // handlePartialAudit serves the incremental audit feed:

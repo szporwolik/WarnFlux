@@ -374,6 +374,11 @@
     }
 
     function poll() {
+      // The logs page hosts three tabs; only the visible panel polls.
+      var panel = viewer.closest(".page-panel");
+      if (panel && panel.hidden) {
+        return;
+      }
       fetch("/partials/logs?after=" + after, {
         headers: { "Accept": "application/json" },
         credentials: "same-origin",
@@ -704,6 +709,11 @@
     }
 
     function poll() {
+      // The logs page hosts three tabs; only the visible panel polls.
+      var panel = list.closest(".page-panel");
+      if (panel && panel.hidden) {
+        return;
+      }
       fetch("/partials/notifications", {
         headers: { "Accept": "application/json" },
         credentials: "same-origin",
@@ -3528,6 +3538,11 @@
     var after = parseInt(viewer.getAttribute("data-after"), 10) || 0;
 
     function poll() {
+      // The logs page hosts three tabs; only the visible panel polls.
+      var panel = viewer.closest(".page-panel");
+      if (panel && panel.hidden) {
+        return;
+      }
       fetch("/partials/audit?after=" + after, {
         headers: { "Accept": "application/json" },
         credentials: "same-origin",

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // DefaultLogLines bounds the in-memory log viewer buffer.
@@ -88,7 +90,8 @@ func (b *LogBuffer) Snapshot(after int64) []logLine {
 	return out
 }
 
-// logsView is the full /logs page model.
+// logsView is the full /logs page model: one page, three tabs — the app
+// log tail, the user-action audit trail and the notification history.
 type logsView struct {
 	Lang     string
 	AppTitle string
@@ -103,32 +106,54 @@ type logsView struct {
 	Username string
 	Role     string
 
-	NavDashboard     bool
-	NavUsers         bool
-	NavGroups        bool
-	NavLogs          bool
-	NavAudit         bool
-	NavAPRS          bool
-	NavMessages      bool
-	NavMeshtastic    bool
-	NavMeshMap       bool
-	NavTraffic       bool
-	NavWebsite       bool
-	NavNotifications bool
-	NavHealth        bool
-	NavConfig        bool
-	NavCompose       bool
-	NavEmcom         bool
-	NavAccount       bool
+	// Tab selects the active panel: "applog" (default), "audit", "notif".
+	Tab string
+	// FocusKey highlights one notification trail (?key=… deep links).
+	FocusKey string
+	// Trails is the server-rendered notification history.
+	Trails []trailView
+	// MaxEntries bounds the audit retention hint.
+	MaxEntries int
+
+	NavDashboard  bool
+	NavUsers      bool
+	NavGroups     bool
+	NavLogs       bool
+	NavAPRS       bool
+	NavMessages   bool
+	NavMeshtastic bool
+	NavMeshMap    bool
+	NavTraffic    bool
+	NavWebsite    bool
+	NavConfig     bool
+	NavCompose    bool
+	NavEmcom      bool
+	NavAccount    bool
 }
 
-// handleLogsPage renders the self-refreshing log viewer.
+// handleLogsPage renders the merged logs page with its three tabs.
 func (s *Server) handleLogsPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
+	lang := s.langFor(r)
+	tab := r.URL.Query().Get("tab")
+	if tab != "audit" && tab != "notif" {
+		tab = "applog"
+	}
+	focus := r.URL.Query().Get("key")
+
+	max := s.auditLog.Max()
+	if _, ok := s.users.(storage.AuditStore); ok {
+		max = storage.AuditRetentionEntries
+	}
+
 	view := s.baseLogsView()
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
+	view.Tab = tab
+	view.FocusKey = focus
+	view.MaxEntries = max
+	view.Trails = wrapTrails(lang, focus, s.recentTrails(notificationsPerPage), s.recentDeliveries(deliveriesPerPage))
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "logs", view)
 }

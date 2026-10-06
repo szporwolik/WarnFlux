@@ -45,6 +45,12 @@ func (e *recordingEmitter) ReportSourceStats(summary string) {
 	e.mu.Unlock()
 }
 
+func (e *recordingEmitter) isHealthy() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.healthy
+}
+
 // fakeSink records hub publications.
 type fakeSink struct {
 	mu   sync.Mutex
@@ -216,6 +222,12 @@ func TestSessionFlow(t *testing.T) {
 	waitFor(t, func() bool {
 		return len(sink.payloads(aprs.MessagesTopic)) >= 1
 	})
+
+	// The live connection must have reported healthy (the /health row
+	// recovers after an outage, it must not stay degraded forever).
+	if !emit.isHealthy() {
+		t.Error("source never reported healthy after connect")
+	}
 
 	// TX through the hub goes out over the APRS-IS connection.
 	if err := hub.SendMessage(context.Background(), "SP9XYZ", "test reply"); err != nil {

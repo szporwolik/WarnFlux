@@ -169,7 +169,7 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	delay := minReconnectDelay
 	for {
 		sessionStart := time.Now()
-		err := s.session(ctx)
+		err := s.session(ctx, health)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -218,7 +218,7 @@ func (s *Source) closeConn() {
 
 // session runs one connection lifetime: dial, register as transmitter,
 // decode frames, deregister on exit.
-func (s *Source) session(ctx context.Context) error {
+func (s *Source) session(ctx context.Context, health plugin.SourceHealthReporter) error {
 	dialer := net.Dialer{Timeout: s.cfg.ConnectTimeout, KeepAlive: 30 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", s.cfg.Server)
 	if err != nil {
@@ -241,6 +241,13 @@ func (s *Source) session(ctx context.Context) error {
 	}()
 
 	s.logger.Info("aprs-radio: connected", "server", s.cfg.Server)
+
+	// A live KISS connection clears any earlier degradation: without
+	// this the /health row stays "degraded" forever after one quiet
+	// window, even though frames flow again on the reconnect.
+	if health != nil {
+		health.ReportSourceHealthy()
+	}
 
 	dec := &aprs.KISSDecoder{}
 	reader := bufio.NewReaderSize(conn, 4096)

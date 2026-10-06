@@ -346,6 +346,8 @@ var en = map[string]string{
 	"config.emcom.head":               "EMCOM networks",
 	"config.emcom.desc":               "Add and remove the managed EMCOM networks. Operators only move the readiness sliders on the EMCOM panel.",
 	"config.emcom.none":               "No EMCOM networks configured yet.",
+	"config.logs.head":                "Logs & diagnostics",
+	"config.logs.desc":                "Application log, audit trail, notification delivery history and MQTT traffic.",
 
 	// Home map layer labels (JS + toggles).
 	"map.layer.hazards":    "Messages",
@@ -1105,6 +1107,8 @@ var pl = map[string]string{
 	"config.emcom.head":               "Sieci EMCOM",
 	"config.emcom.desc":               "Dodawaj i usuwaj zarządzane sieci EMCOM. Operatorzy przesuwają tylko suwaki gotowości na panelu EMCOM.",
 	"config.emcom.none":               "Nie skonfigurowano jeszcze żadnej sieci EMCOM.",
+	"config.logs.head":                "Logi i diagnostyka",
+	"config.logs.desc":                "Dziennik aplikacji, ślad audytu, historia doręczeń powiadomień i ruch MQTT.",
 
 	"map.layer.hazards":    "Komunikaty",
 	"map.layer.stations":   "Stacje",

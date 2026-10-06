@@ -27,6 +27,12 @@
   {{if .Error}}{{template "flash-err" .Error}}{{end}}
 
   <div class="health-group">
+    <h3>{{tr .Lang "config.logs.head"}}</h3>
+    <p class="muted">{{tr .Lang "config.logs.desc"}}</p>
+    <a class="btn-ghost" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "nav.logs"}} →</a>
+  </div>
+
+  <div class="health-group">
     <h3>{{tr .Lang "config.offline.head"}}</h3>
     <p class="muted">{{tr .Lang "config.offline.desc"}}</p>
     <form method="post" action="/config/offline" class="config-offline-form">

@@ -177,6 +177,9 @@ func (s *Server) baseLogsView() logsView {
 		Commit:   s.commit,
 		RepoURL:  repoURL,
 		NavLogs:  true,
+		// The logs surface lives under the Config menu entry; the sidebar
+		// highlights Config while a log tab is open.
+		NavConfig: true,
 	}
 }
 

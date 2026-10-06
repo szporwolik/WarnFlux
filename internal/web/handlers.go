@@ -28,12 +28,9 @@ type statusView struct {
 	Version     string
 	Commit      string
 	Uptime      time.Duration
-	Receivers   int
-	Connected   int
 	Messages    int64
 	Malformed   int64
 	Oversized   int64
-	RouterDocs  int
 	QueueDepth  int
 	QueueCap    int
 	DroppedFull int64
@@ -223,20 +220,15 @@ func (s *Server) buildStatusView() statusView {
 		Version:     s.version,
 		Commit:      s.commit,
 		Uptime:      time.Since(s.startedAt),
-		Receivers:   len(rs),
 		QueueDepth:  depth,
 		QueueCap:    cap,
 		DroppedFull: droppedFull,
 	}
 	for _, r := range rs {
-		if r.Connected {
-			view.Connected++
-		}
 		view.Messages += r.Messages
 		view.Malformed += r.Malformed
 		view.Oversized += r.Oversized
 	}
-	view.RouterDocs = len(s.st.Snapshot().Router)
 	if s.sys != nil {
 		if cpu, ok := s.sys.CPUPercent(); ok {
 			view.CPU = cpu

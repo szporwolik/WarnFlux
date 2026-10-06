@@ -30,8 +30,6 @@
     <div class="kv"><span class="k">{{tr .Lang "dash.uptime"}}</span><span class="v">{{dur .Uptime}}</span></div>
     <div class="kv"><span class="k">{{tr .Lang "dash.cpu"}}</span><span class="v">{{if .CPUAvail}}<span class="kv-gauge" title="{{tr .Lang "dash.host_cpu_hint"}}"><span class="kv-gauge-fill {{.CPUClass}}" style="width: {{printf "%.1f" .CPU}}%"></span></span>{{printf "%.1f" .CPU}}%{{else}}<span class="muted">n/a</span>{{end}}</span></div>
     <div class="kv"><span class="k">{{tr .Lang "dash.memory"}}</span><span class="v">{{if .MemAvail}}<span class="kv-gauge" title="{{tr .Lang "dash.host_mem_hint"}}"><span class="kv-gauge-fill {{.MemClass}}" style="width: {{printf "%.1f" .Mem}}%"></span></span>{{printf "%.1f" .Mem}}% <span class="muted">({{printf "%.1f" .MemUsed}} / {{printf "%.1f" .MemTotal}} GiB)</span>{{else}}<span class="muted">n/a</span>{{end}}</span></div>
-    <div class="kv"><span class="k">{{tr .Lang "dash.receivers"}}</span><span class="v">{{trf .Lang "dash.connected_of" .Connected .Receivers}}</span></div>
-    <div class="kv"><span class="k">{{tr .Lang "dash.router_snapshots"}}</span><span class="v">{{.RouterDocs}}</span></div>
     <div class="kv"><span class="k">{{tr .Lang "dash.dispatch_queue"}}</span><span class="v">{{.QueueDepth}} / {{.QueueCap}} ({{trf .Lang "dash.dropped" .DroppedFull}})</span></div>
     <div class="kv"><span class="k">{{tr .Lang "dash.messages"}}</span><span class="v">{{.Messages}} {{trf .Lang "dash.malformed_of" .Malformed .Oversized}}</span></div>
     <div class="kv"><span class="k">{{tr .Lang "dash.database"}}</span><span class="v"><span class="badge ok">{{tr .Lang "dash.ready"}}</span></span></div>

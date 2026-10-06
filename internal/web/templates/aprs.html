@@ -123,7 +123,7 @@
     // the theme (no keys, no CDN libraries).
     var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
       : (document.documentElement.getAttribute("data-theme") === "light"
-        ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
         : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
     var attrib = document.getElementById("aprs-admin-tiles-attrib");
     if (attrib && OFFLINE) {

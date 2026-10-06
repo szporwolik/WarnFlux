@@ -52,7 +52,9 @@
       <dialog class="modal" id="mesh-trace-dialog" aria-labelledby="mesh-trace-title"
               data-lbl-tracing="{{tr .Lang "meshtastic.trace_tracing"}}"
               data-lbl-no-reply="{{tr .Lang "meshtastic.trace_no_reply"}}"
-              data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}">
+              data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}"
+              data-lbl-hops="{{tr .Lang "meshtastic.trace_hops"}}"
+              data-lbl-direct="{{tr .Lang "meshtastic.trace_direct"}}">
         <h3 id="mesh-trace-title"></h3>
         <div id="mesh-trace-body"></div>
         <div class="modal-actions">
@@ -124,7 +126,7 @@
 
     function hopLine(h) {
       var s = h.name ? (h.name + " (!" + h.id + ")") : ("!" + h.id);
-      if (h.snr) { s += " · " + Number(h.snr).toFixed(1) + " dB"; }
+      if (typeof h.snr === "number") { s += " · " + Number(h.snr).toFixed(1) + " dB"; }
       return s;
     }
 
@@ -153,6 +155,8 @@
       var LBL_TRACING = dialog.dataset.lblTracing || "Tracing";
       var LBL_NOREPLY = dialog.dataset.lblNoReply || "no reply from the destination";
       var LBL_FAILED = dialog.dataset.lblFailed || "trace failed";
+      var LBL_HOPS = dialog.dataset.lblHops || "Hops";
+      var LBL_DIRECT = dialog.dataset.lblDirect || "direct";
       function nodeLabel() {
         var s = "!" + id;
         if (btnName) { s += " — " + btnName; }
@@ -174,8 +178,16 @@
           return JSON.parse(t);
         });
       }).then(function (j) {
-        var lines = (j.hops || []).map(hopLine);
-        if (!j.reached) { lines.unshift(LBL_NOREPLY); }
+        var lines = [];
+        if (!j.reached) { lines.push(LBL_NOREPLY); }
+        var hs = j.hops || [];
+        if (hs.length) {
+          var sum = LBL_HOPS + ": " + hs.length;
+          if (j.elapsed_ms > 0) { sum += " · " + (j.elapsed_ms / 1000).toFixed(1) + " s"; }
+          if (j.reached && hs.length === 1) { sum += " — " + LBL_DIRECT; }
+          lines.push(sum);
+        }
+        hs.forEach(function (h) { lines.push(hopLine(h)); });
         show((j.reached ? "✓ " : "✗ ") + nodeLabel(), lines);
       }).catch(function (err) {
         show(LBL_FAILED, [err && err.message ? err.message : String(err)]);

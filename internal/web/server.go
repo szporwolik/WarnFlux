@@ -368,6 +368,7 @@ func (s *Server) routes(static http.Handler) {
 	// own contact data and password.
 	s.mux.Handle("GET /account", s.requirePage(s.handleAccountPage))
 	s.mux.Handle("POST /account", s.requirePage(s.handleAccountSave))
+	s.mux.Handle("GET /access", s.requireAdmin(s.handleAccessPage))
 	s.mux.Handle("GET /users", s.requireAdmin(s.handleUsersPage))
 	s.mux.Handle("POST /users", s.requireAdmin(s.handleUserSave))
 	s.mux.Handle("POST /users/{id}/delete", s.requireAdmin(s.handleUserDelete))

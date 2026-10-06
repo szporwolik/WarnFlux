@@ -1895,7 +1895,7 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `href="/account"`) {
 		t.Error("emcom must see the Account entry in the user menu")
 	}
-	for _, forbidden := range []string{"Users", "Groups", "Notifications"} {
+	for _, forbidden := range []string{"Access", "Notifications"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
 			t.Errorf("emcom must not see %s nav entry", forbidden)
 		}
@@ -2288,7 +2288,7 @@ func TestAdminAccountPageKeepsAdminNav(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /account as admin = %d", resp.StatusCode)
 	}
-	for _, want := range []string{"Users", "Groups", "Logs"} {
+	for _, want := range []string{"Access", "Logs"} {
 		if !strings.Contains(html, `<span class="nav-label">`+want+`</span>`) {
 			t.Errorf("admin /account sidebar missing %s nav entry", want)
 		}
@@ -2310,7 +2310,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adminPages := []string{"/users", "/groups", "/logs", "/traffic", "/aprs?tab=msgs", "/meshtastic"}
+	adminPages := []string{"/users", "/groups", "/access", "/logs", "/traffic", "/aprs?tab=msgs", "/meshtastic"}
 	// /audit and /notifications merged into /logs tabs: every role gets a
 	// redirect (to the dashboard unless admin).
 	legacyLogPages := []string{"/audit", "/notifications"}

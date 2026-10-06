@@ -1,20 +1,5 @@
-{{define "groups"}}<!doctype html>
-<html lang="{{.Lang}}">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{tr .Lang "groups.title"}} · {{.AppTitle}}</title>
-  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
-  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
-  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
-  <script src="/static/app.js?v={{.Commit}}" defer></script>
-</head>
-<body class="app">
-  {{template "topbar" .}}
-  {{template "sidebar" .}}
-  <main class="users-main">
-    <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>{{tr .Lang "groups.title"}}</h2>
+{{define "groups"}}<section class="card page-panel" id="panel-groups" data-panel="panel-groups"{{if ne .Tab "groups"}} hidden{{end}}>
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>{{tr .Lang "groups.title"}}</h2>
       {{if .Error}}{{template "flash-err" .Error}}{{end}}
       <form method="post" action="/groups" class="user-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -70,11 +55,7 @@
       {{else}}
       <p class="empty">{{tr .Lang "groups.no_groups"}}</p>
       {{end}}
-    </section>
-  </main>
-  {{template "footer" .}}
-</body>
-</html>
+</section>
 {{end}}
 
 {{define "group_routing"}}<!doctype html>

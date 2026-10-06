@@ -719,8 +719,37 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 	// our own info topics, which the receiver ingests back off the broker.
 	seenReports := make(map[string]bool)
 	if s.aprs != nil && s.aprs.Enabled() {
+		// The local weather cache is the authoritative source: it also
+		// covers infrastructure weather stations that never enter the
+		// station directory — without it their readings resurface as an
+		// unclassified internet echo.
+		for _, w := range s.aprs.WeatherSnapshot(time.Now()) {
+			if w.Callsign == "" {
+				continue
+			}
+			seenReports["aprs:"+w.Callsign] = true
+			view.Reports = append(view.Reports, weatherReportView{
+				Provider:         "APRS",
+				Name:             w.Callsign,
+				Latitude:         w.Latitude,
+				Longitude:        w.Longitude,
+				Via:              "aprs",
+				Origin:           w.Origin,
+				ReceivedVia:      w.ReceivedVia,
+				Condition:        aprsWeatherCondition(&w),
+				TemperatureC:     w.TemperatureC,
+				HumidityPct:      w.HumidityPct,
+				WindSpeedKmh:     w.WindSpeedKmh,
+				WindDirectionDeg: w.WindDirectionDeg,
+				WindGustsKmh:     w.WindGustsKmh,
+				PressureHpa:      w.PressureHpa,
+				RadiationUSvh:    w.RadiationUSvh,
+				RadiationCPM:     w.RadiationCPM,
+				GeneratedAt:      w.GeneratedAt,
+			})
+		}
 		for _, doc := range s.aprs.Stations() {
-			if doc.Weather == nil {
+			if doc.Weather == nil || seenReports["aprs:"+doc.Callsign] {
 				continue
 			}
 			lat, lon := 0.0, 0.0

@@ -210,10 +210,19 @@ func TestHubWeatherSnapshotOffGrid(t *testing.T) {
 		return false
 	})
 
-	// The report is fresh and carries the reading.
+	// The report is fresh, carries the reading and is classified by
+	// delivery backend: TCPIP* over aprs-inet = internet, never RF.
 	for _, w := range hub.WeatherSnapshot(time.Now()) {
-		if w.Callsign == "SP9WX" && (w.TemperatureC == nil || *w.TemperatureC != 25.0) {
-			t.Fatalf("cached report = %+v, want temperature 25", w)
+		if w.Callsign == "SP9WX" {
+			if w.TemperatureC == nil || *w.TemperatureC != 25.0 {
+				t.Fatalf("cached report = %+v, want temperature 25", w)
+			}
+			if w.Origin != "internet" {
+				t.Fatalf("cached origin = %q, want internet", w.Origin)
+			}
+			if len(w.ReceivedVia) != 1 || w.ReceivedVia[0] != "aprs-inet" {
+				t.Fatalf("cached received_via = %v, want [aprs-inet]", w.ReceivedVia)
+			}
 		}
 	}
 

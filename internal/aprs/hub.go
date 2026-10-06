@@ -161,6 +161,13 @@ type replyWindow struct {
 type weatherEntry struct {
 	at     time.Time
 	report WeatherReport
+	// via and origin classify the delivery: the backend label(s) that
+	// observed the station and the q-construct origin of the last
+	// packet. They survive in the cache so /weather can label APRS
+	// weather stations RF/IS even when the station itself is filtered
+	// out of the directory (infrastructure).
+	via    string
+	origin string
 }
 
 // ackWait is one in-flight outbound message awaiting its ack/rej. The
@@ -591,7 +598,15 @@ func (h *Hub) WeatherSnapshot(now time.Time) []WeatherReport {
 		if e.at.Before(cutoff) {
 			continue
 		}
-		out = append(out, e.report)
+		rep := e.report
+		rep.Origin = e.origin
+		switch e.via {
+		case "both":
+			rep.ReceivedVia = []string{BackendRadio, BackendInternet}
+		case BackendRadio, BackendInternet:
+			rep.ReceivedVia = []string{e.via}
+		}
+		out = append(out, rep)
 	}
 	return out
 }
@@ -658,8 +673,22 @@ func (h *Hub) apply(op hubOp) {
 			if at.IsZero() {
 				at = h.now()
 			}
+			via := string(op.via)
+			origin := string(OriginFromPath(p.Path))
+			if origin == string(OriginUnknown) && op.via == BackendRadio {
+				origin = string(OriginRF)
+			}
 			h.mu.Lock()
-			h.weatherCache[p.Src] = weatherEntry{at: at, report: *w}
+			prev := h.weatherCache[p.Src]
+			mergedVia, mergedOrigin := via, origin
+			if prev.via != "" && prev.via != via {
+				mergedVia = "both"
+			}
+			if prev.origin != "" && prev.origin != string(OriginUnknown) &&
+				(mergedOrigin == "" || mergedOrigin == string(OriginUnknown)) {
+				mergedOrigin = prev.origin
+			}
+			h.weatherCache[p.Src] = weatherEntry{at: at, report: *w, via: mergedVia, origin: mergedOrigin}
 			h.mu.Unlock()
 			weather = w
 		}

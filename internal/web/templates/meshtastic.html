@@ -82,7 +82,7 @@
             {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
           </select>
           <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
-          <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send_channel"}}</button>
+          <button type="submit" class="btn-primary">{{tr .Lang "meshtastic.send_channel"}}</button>
         </form>
         <form method="post" action="/meshtastic/send" class="mesh-send">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -90,7 +90,7 @@
           <input type="text" name="contact" id="mesh-contact" placeholder="{{tr .Lang "meshtastic.contact_ph"}}" maxlength="8" list="mesh-contacts">
           <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">{{.Username}}</option>{{end}}</datalist>
           <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
-          <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send_contact"}}</button>
+          <button type="submit" class="btn-primary">{{tr .Lang "meshtastic.send_contact"}}</button>
         </form>
       </div>
       <p class="muted log-hint">{{tr .Lang "meshtastic.hint"}}</p>

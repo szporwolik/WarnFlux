@@ -24,6 +24,7 @@ import (
 // client-side detail popup opened by clicking a card.
 type publicHazardView struct {
 	EventKey    string
+	MsgID       string
 	Severity    string
 	Headline    string
 	Event       string
@@ -147,6 +148,7 @@ type publicChannelView struct {
 // served to the home map (/api/events).
 type mapEventView struct {
 	EventKey    string     `json:"event_key"`
+	MsgID       string     `json:"msg_id,omitempty"`
 	Source      string     `json:"source"`
 	Severity    string     `json:"severity"`
 	Headline    string     `json:"headline"`
@@ -164,6 +166,7 @@ type mapEventView struct {
 // escapes <, > and &, so the payload is safe inside a <script> element.
 type homeHazardJSON struct {
 	EventKey    string   `json:"event_key"`
+	MsgID       string   `json:"msg_id,omitempty"`
 	Severity    string   `json:"severity"`
 	Headline    string   `json:"headline"`
 	Event       string   `json:"event"`
@@ -191,6 +194,7 @@ func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 		}
 		events = append(events, mapEventView{
 			EventKey:    h.EventKey,
+			MsgID:       core.MessageID(h.EventKey),
 			Source:      h.Source,
 			Severity:    h.Severity,
 			Headline:    h.Headline,
@@ -358,6 +362,7 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 	for _, h := range hazards {
 		view := publicHazardView{
 			EventKey:    h.EventKey,
+			MsgID:       core.MessageID(h.EventKey),
 			Severity:    h.Severity,
 			Headline:    h.Headline,
 			Event:       h.Event,
@@ -421,6 +426,7 @@ func hazardTime(t *time.Time) string {
 func hazardJSONFromState(h state.Hazard, areas string) homeHazardJSON {
 	return homeHazardJSON{
 		EventKey:    h.EventKey,
+		MsgID:       core.MessageID(h.EventKey),
 		Severity:    h.Severity,
 		Headline:    h.Headline,
 		Event:       h.Event,
@@ -445,6 +451,7 @@ func hazardJSONFromState(h state.Hazard, areas string) homeHazardJSON {
 func hazardJSONFromEvent(ev core.HazardEvent) homeHazardJSON {
 	return homeHazardJSON{
 		EventKey:    ev.Key(),
+		MsgID:       core.MessageID(ev.Key()),
 		Severity:    ev.Severity,
 		Headline:    ev.Headline,
 		Event:       ev.Event,

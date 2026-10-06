@@ -230,6 +230,17 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest) string {
 	}
 	desc := norm(h.Description)
 
+	// The short message ID always rides along (people cite it on the
+	// air): its room is reserved BEFORE the text is assembled, so the
+	// location and the description tail are never silently cut off to
+	// make space for it.
+	tag := ""
+	limit := maxMeshMessageChars
+	if id := h.MessageID(); id != "" {
+		tag = " [" + id + "]"
+		limit -= len([]rune(tag))
+	}
+
 	// Location: exact coordinates first, the area list otherwise.
 	var loc string
 	switch {
@@ -252,12 +263,12 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest) string {
 		}
 		return head + " " + s
 	}
-	over := func(s string) int { return len([]rune(s)) - maxMeshMessageChars }
+	over := func(s string) int { return len([]rune(s)) - limit }
 	cut := func(s string) string {
 		s = norm(s)
 		r := []rune(s)
-		if len(r) > maxMeshMessageChars {
-			return string(r[:maxMeshMessageChars])
+		if len(r) > limit {
+			return string(r[:limit])
 		}
 		return s
 	}
@@ -273,37 +284,37 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest) string {
 		// separator mismatch.
 		fixed := withHead("") + " | " + loc
 		if over(fixed) > 0 {
-			return cut(fixed)
+			return cut(fixed) + tag
 		}
-		room := maxMeshMessageChars - len([]rune(fixed))
+		room := limit - len([]rune(fixed))
 		hs := []rune(headline)
 		if len(hs) > room {
 			hs = hs[:room]
 		}
 		base = withHead(string(hs)) + " | " + loc
 	} else if over(base) > 0 {
-		return cut(base)
+		return cut(base) + tag
 	}
 	if event != "" {
-		if b, ok := appendFit(base, event); ok {
+		if b, ok := appendFit(base, event, limit); ok {
 			base = b
 		}
 	}
 	if desc != "" {
-		base, _ = appendFit(base, desc)
+		base, _ = appendFit(base, desc, limit)
 	}
-	return cut(base)
+	return cut(base) + tag
 }
 
-// appendFit appends extra to base with the " | " separator when it fits;
-// otherwise it appends the truncated prefix of extra marked with "..."
-// and reports false (the channel limit is hard).
-func appendFit(base, extra string) (string, bool) {
+// appendFit appends extra to base with the " | " separator when it fits
+// within limit; otherwise it appends the truncated prefix of extra marked
+// with "..." and reports false (the limit is hard).
+func appendFit(base, extra string, limit int) (string, bool) {
 	const sep = " | "
-	if len([]rune(base))+len([]rune(sep))+len([]rune(extra)) <= maxMeshMessageChars {
+	if len([]rune(base))+len([]rune(sep))+len([]rune(extra)) <= limit {
 		return base + sep + extra, true
 	}
-	room := maxMeshMessageChars - len([]rune(base)) - len([]rune(sep))
+	room := limit - len([]rune(base)) - len([]rune(sep))
 	if room <= 0 {
 		return base, false
 	}

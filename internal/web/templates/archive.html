@@ -10,6 +10,7 @@
         <h3>{{.Headline}}</h3>
       </div>
       <div class="hazard-meta">
+        <span class="msgid">{{.MsgID}}</span>
         <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
         {{if .Event}}<span>{{.Event}}</span>{{end}}
         {{if .Areas}}<span>{{tr $.Lang "warnings.areas"}} {{.Areas}}</span>{{end}}

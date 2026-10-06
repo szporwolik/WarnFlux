@@ -95,6 +95,7 @@
       "map.moving": "moving",
       "warnings.source": "Source:",
       "popup.event": "Event:",
+      "popup.message_id": "Message ID:",
       "popup.status": "Status:",
       "popup.urgency": "Urgency:",
       "popup.certainty": "Certainty:",
@@ -218,6 +219,7 @@
       "map.moving": "w ruchu",
       "warnings.source": "Źródło:",
       "popup.event": "Zdarzenie:",
+      "popup.message_id": "ID komunikatu:",
       "popup.status": "Status:",
       "popup.urgency": "Pilność:",
       "popup.certainty": "Pewność:",
@@ -1867,6 +1869,9 @@
             body += "<br><span class=\"muted\">" + when.join(" · ") + "</span>";
           }
           body += "<br><span class=\"muted\">" + tr("warnings.source") + " " + esc(e.source) + "</span>";
+          if (e.msg_id) {
+            body += "<br><span class=\"muted\">" + tr("popup.message_id") + " <span class=\"msgid\">" + esc(e.msg_id) + "</span></span>";
+          }
           // Severity-colored badge + banner, the same visual system as
           // every other map pin.
           var popup = wfPopup({
@@ -3683,6 +3688,7 @@
         hzEsc(h.status === "cancelled" ? tr("popup.cancelled_note") : tr("popup.expired_note")) +
         "</div>";
     }
+    html += hzRow(tr("popup.message_id"), h.msg_id);
     html += hzRow(tr("popup.event"), h.event);
     html += hzRow(tr("popup.status"), h.status);
     html += hzRow(tr("popup.urgency"), h.urgency);

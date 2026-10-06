@@ -2444,6 +2444,22 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .key-copy .icon { width: 13px; height: 13px; }
 .key-copy.copied { color: var(--ok, #2e7d32); border-color: var(--ok, #2e7d32); }
 .key-copy.copied .key-short { overflow-wrap: anywhere; }
+/* Short, stable message identifier (WX-XXXXXXXX) shown on every hazard
+   card and list: the same ID appears in mails, Discord, APRS and
+   Meshtastic, so people can cite one specific communication. */
+.msgid {
+  display: inline-block;
+  padding: 0.08rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--chip-bg, rgba(127, 127, 127, 0.08));
+  color: var(--link);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.hazard-meta .msgid, .w-meta .msgid { vertical-align: middle; }
 /* Raw key prefix shown next to a resolved username in the mesh message
    history: subtle, mono, smaller than the name. */
 .short-key {

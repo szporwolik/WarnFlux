@@ -3,6 +3,7 @@
 package core
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -95,6 +96,22 @@ func EventKey(source, sourceID string) string {
 // Key returns the stable logical identity of the event.
 func (e HazardEvent) Key() string {
 	return EventKey(e.Source, e.SourceID)
+}
+
+// MessageID derives the short, human-usable identifier of one hazard from
+// its stable event key. It is a pure function of the key, so one message
+// keeps the same ID across restarts, broker round-trips, content updates
+// and independent instances — operators cite it on the radio, in mails,
+// on Discord and in the web UI to refer to one specific communication.
+// The result is a fixed 11 characters ("WX-" + 8 base32hex digits).
+func MessageID(eventKey string) string {
+	sum := sha256.Sum256([]byte(eventKey))
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUV" // base32hex, no padding
+	var out [8]byte
+	for i := range out {
+		out[i] = alphabet[sum[i]&0x1f]
+	}
+	return "WX-" + string(out[:])
 }
 
 // ValidateSource checks a canonical source name. Callers should normalize

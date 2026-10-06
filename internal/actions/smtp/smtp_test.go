@@ -289,6 +289,7 @@ func hazardReq() action.ActionRequest {
 				Key:    "imgw-meteo:123",
 				Source: "imgw-meteo",
 				Hazard: dispatch.Hazard{
+					EventKey: "imgw-meteo:123",
 					Event:    "Burza",
 					Severity: "severe",
 					Headline: "Silny wiatr",
@@ -376,6 +377,7 @@ rate_limit_per_minute: -1
 		"WarnFlux notification",
 		"Message: SEVERE · Burza",
 		"Headline: Silny wiatr",
+		"Message ID: WX-",
 		"source: imgw-meteo",
 		"areas: małopolskie",
 		"instruction: Follow official communications",
@@ -398,10 +400,12 @@ rate_limit_per_minute: -1
 		"background-color:#1f6feb",
 		"color:#ffffff",
 		// The severity is colored with the application palette: a solid
-		// card accent strip and a solid severity chip (severe -> orange).
+		// card accent strip and a solid severity chip (severe -> orange),
+		// with the short message ID chip right next to it.
 		"background-color:#f0784e;height:4px",
 		"background-color:#f0784e;color:#0f1419",
 		">SEVERE<",
+		">WX-",
 		// Branded footer: version and normalized domain. The repository
 		// link must not appear in outbound mails.
 		"Sent by <strong style=\"color:#eef2f5;\">SPOK · WarnFlux</strong> v0.1.0",

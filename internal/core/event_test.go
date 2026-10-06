@@ -288,3 +288,31 @@ func TestValidateSizeCaps(t *testing.T) {
 		t.Errorf("description at the cap rejected: %v", err)
 	}
 }
+
+func TestMessageIDStable(t *testing.T) {
+	key := EventKey("imgw-meteo", "1234567890")
+	id := MessageID(key)
+	if id != MessageID(key) {
+		t.Fatalf("MessageID is not deterministic: %q vs %q", id, MessageID(key))
+	}
+	if len(id) != 11 {
+		t.Fatalf("MessageID = %q, want 11 characters (WX- + 8)", id)
+	}
+	if !strings.HasPrefix(id, "WX-") {
+		t.Fatalf("MessageID = %q, want the WX- prefix", id)
+	}
+	for _, r := range id[3:] {
+		if (r < '0' || r > '9') && (r < 'A' || r > 'V') {
+			t.Fatalf("MessageID = %q carries %q outside base32hex", id, r)
+		}
+	}
+	// Different keys must produce different IDs.
+	other := MessageID(EventKey("gddkia", "droga:79"))
+	if other == id {
+		t.Fatalf("distinct keys collided on %q", id)
+	}
+	// Updates keep the ID: it derives from the key, not the content.
+	if MessageID(key) != id {
+		t.Fatalf("ID changed for the same key")
+	}
+}

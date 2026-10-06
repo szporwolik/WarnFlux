@@ -130,6 +130,13 @@ func (a *aprsAction) messageText(req action.ActionRequest) string {
 		prefix = strings.TrimSpace(req.App.Header1)
 	}
 	if h := req.Event.Hazard; h != nil {
+		// The short message ID always rides along so operators can cite
+		// one specific communication on the air.
+		if id := h.Hazard.MessageID(); id != "" {
+			suffix := "ID:" + id
+			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, h.Hazard.Headline, 1+len(suffix))
+			return strings.TrimSpace(base + " " + suffix)
+		}
 		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, h.Hazard.Headline, 0)
 	}
 	return aprs.TrimMessageText(strings.Join([]string{prefix, "WarnFlux notification"}, " "))

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
@@ -88,6 +89,7 @@ type composeForm struct {
 // composeItem is one module-issued communication in the list.
 type composeItem struct {
 	EventKey    string
+	MsgID       string
 	Event       string
 	Severity    string
 	Urgency     string
@@ -559,6 +561,7 @@ func composeTransition(h state.Hazard, typ dispatch.TransitionType) dispatch.Eve
 			Timestamp: now,
 			Hazard: dispatch.Hazard{
 				EventKey:  h.EventKey,
+				MsgID:     core.MessageID(h.EventKey),
 				Source:    h.Source,
 				SourceID:  h.SourceID,
 				Event:     h.Event,
@@ -834,6 +837,7 @@ func (s *Server) composeItems() []composeItem {
 func composeItemFrom(h state.Hazard, status string) composeItem {
 	return composeItem{
 		EventKey:    h.EventKey,
+		MsgID:       core.MessageID(h.EventKey),
 		Event:       h.Event,
 		Severity:    h.Severity,
 		Urgency:     h.Urgency,

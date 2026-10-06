@@ -305,17 +305,22 @@ func TestRadioAckRoundtrip(t *testing.T) {
 	}
 }
 
-// healthRecorder is an Emitter that records degraded reports.
+// healthRecorder is an Emitter that records degraded and healthy reports.
 type healthRecorder struct {
 	mu       sync.Mutex
 	degraded []error
+	healthy  int
 }
 
 func (r *healthRecorder) Emit(context.Context, core.HazardEvent) error { return nil }
 func (r *healthRecorder) EmitInformation(context.Context, core.InformationMessage) error {
 	return nil
 }
-func (r *healthRecorder) ReportSourceHealthy() {}
+func (r *healthRecorder) ReportSourceHealthy() {
+	r.mu.Lock()
+	r.healthy++
+	r.mu.Unlock()
+}
 func (r *healthRecorder) ReportSourceDegraded(err error) {
 	r.mu.Lock()
 	r.degraded = append(r.degraded, err)
@@ -326,6 +331,11 @@ func (r *healthRecorder) degradedCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.degraded)
+}
+func (r *healthRecorder) healthyCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.healthy
 }
 
 // TestIdleTNCStaysUp pins the quiet-channel behavior: a read timeout is
@@ -350,6 +360,9 @@ func TestIdleTNCStaysUp(t *testing.T) {
 	time.Sleep(6 * time.Second)
 	if n := rec.degradedCount(); n != 0 {
 		t.Fatalf("source degraded %d times on an idle TNC, want 0", n)
+	}
+	if n := rec.healthyCount(); n != 1 {
+		t.Fatalf("source reported healthy %d times, want 1 (on connect)", n)
 	}
 	if !p.(*Source).Ready() {
 		t.Fatal("plugin not ready after an idle read timeout")
@@ -402,6 +415,16 @@ func TestSilentTNCEventuallyReconnects(t *testing.T) {
 	}
 	if rec.degradedCount() == 0 {
 		t.Fatal("source never degraded after the idle window elapsed")
+	}
+
+	// The reconnect must report healthy again — the /health row recovers
+	// instead of staying degraded until a restart.
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && rec.healthyCount() < 2 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := rec.healthyCount(); n < 2 {
+		t.Fatalf("reconnect reported healthy %d times, want >= 2 (connect + reconnect)", n)
 	}
 
 	// Run must keep going (reconnect loop), not exit.

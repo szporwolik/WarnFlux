@@ -213,10 +213,11 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 		return
 	}
 	// The configured emcom channel (meshtastic.emcom_channel in the
-	// YAML) owns a dedicated tab next to ch0; 0 = not configured.
+	// YAML) or the read-only watch channel (meshtastic.watch_channel)
+	// owns a dedicated tab next to ch0; 0 = not configured.
 	emcomIdx := 0
 	if s.meshtastic != nil {
-		emcomIdx = s.meshtastic.EmcomChannel()
+		emcomIdx = s.meshtastic.TabChannel()
 	}
 	emcomDir := ""
 	if emcomIdx > 0 {

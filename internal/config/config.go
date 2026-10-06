@@ -175,6 +175,12 @@ type MeshtasticConfig struct {
 	// presence beacon; 0 disables the beacon. The default PRIMARY
 	// channel is never used for broadcasts.
 	EmcomChannel int
+	// WatchChannel is the device channel index (1-7) whose received
+	// traffic gets a dedicated read-only tab in the message history.
+	// It never triggers any transmission — it exists so a secondary
+	// install can WATCH the production channel without beaconing on
+	// it. 0 = no extra tab.
+	WatchChannel int
 	// EmcomInterval is the beacon spacing (default 4 hours); the first
 	// beacon fires at server start/restart.
 	EmcomInterval time.Duration
@@ -575,6 +581,10 @@ type fileMeshtastic struct {
 	// presence beacon; 0 disables the beacon. The default PRIMARY
 	// channel is never used for broadcasts.
 	EmcomChannel int `yaml:"emcom_channel"`
+	// WatchChannel is the device channel index (1-7) whose received
+	// traffic gets a dedicated read-only tab in the message history
+	// (no transmission involved). 0 = no extra tab.
+	WatchChannel int `yaml:"watch_channel"`
 	// EmcomInterval is the beacon spacing (default 4h).
 	EmcomInterval *time.Duration `yaml:"emcom_interval"`
 	// EmcomHazardsInterval is the active-hazard digest spacing (default
@@ -1149,6 +1159,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.Meshtastic.Host = strings.TrimSpace(f.Meshtastic.Host)
 		cfg.Meshtastic.RouteMessages = f.Meshtastic.RouteMessages
 		cfg.Meshtastic.EmcomChannel = f.Meshtastic.EmcomChannel
+		cfg.Meshtastic.WatchChannel = f.Meshtastic.WatchChannel
 		if f.Meshtastic.Baud != nil {
 			cfg.Meshtastic.Baud = *f.Meshtastic.Baud
 		}
@@ -1421,6 +1432,9 @@ func (c Config) Validate() error {
 	}
 	if c.Meshtastic.EmcomChannel < 0 || c.Meshtastic.EmcomChannel > 7 {
 		return fmt.Errorf("meshtastic.emcom_channel must be 0-7, got %d", c.Meshtastic.EmcomChannel)
+	}
+	if c.Meshtastic.WatchChannel < 0 || c.Meshtastic.WatchChannel > 7 {
+		return fmt.Errorf("meshtastic.watch_channel must be 0-7, got %d", c.Meshtastic.WatchChannel)
 	}
 	switch c.Meshtastic.Transport {
 	case "", "serial", "tcp":

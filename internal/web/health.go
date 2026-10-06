@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
@@ -51,58 +50,26 @@ type healthRow struct {
 	Detail     string
 }
 
-// healthView is the /health page model.
+// healthView is the system-health card model. The card lives on the
+// dashboard (the former /health page moved there); the plugins, MQTT and
+// actions cards already carry the per-component detail.
 type healthView struct {
-	Lang     string
-	AppTitle string
-	Name     string
-	Header1  string
-	Header2  string
-	Tagline  string
-	Version  string
-	Commit   string
-	RepoURL  string
-	CSRF     string
-	Username string
-	Role     string
-
+	Lang    string
 	Overall string // ok | degraded
-	Sources []healthRow
-	MQTT    []healthRow
-	Actions []healthRow
 	Ingest  []healthRow
 	DB      healthRow
 	Queue   healthRow
 	Pending healthRow
-
-	NavDashboard     bool
-	NavUsers         bool
-	NavGroups        bool
-	NavLogs          bool
-	NavAudit         bool
-	NavAPRS          bool
-	NavMessages      bool
-	NavMeshtastic    bool
-	NavMeshMap       bool
-	NavTraffic       bool
-	NavWebsite       bool
-	NavNotifications bool
-	NavHealth        bool
-	NavConfig        bool
-	NavCompose       bool
-	NavEmcom         bool
-	NavAccount       bool
 }
 
-// handleHealthPage renders the system health dashboard.
-func (s *Server) handleHealthPage(w http.ResponseWriter, r *http.Request) {
-	sess := s.sessions.currentSession(r)
-	view := s.buildHealthView(s.langFor(r))
-	view.CSRF = sess.csrf
-	view.Username = sess.username
-	view.Role = sess.role
-	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "healthpage", view)
+// handleHealthLegacy keeps the old /health URL working: the page moved
+// onto the dashboard, so every signed-in role lands on its own page.
+func (s *Server) handleHealthLegacy(w http.ResponseWriter, r *http.Request) {
+	if sess := s.sessions.currentSession(r); sess != nil {
+		http.Redirect(w, r, landingForRole(sess.role), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
 // handlePartialHealth serves the refreshable health section.
@@ -116,97 +83,34 @@ func (s *Server) handlePartialHealth(w http.ResponseWriter, r *http.Request) {
 // disconnected receiver, an unhealthy action, a DB failure or a full
 // dispatch queue. Config-disabled subsystems stay gray.
 func (s *Server) buildHealthView(lang string) healthView {
-	v := healthView{
-		AppTitle:  s.cfg.Title,
-		Name:      s.displayName(),
-		Header1:   s.displayHeader1(),
-		Header2:   s.cfg.Header2,
-		Tagline:   s.cfg.Tagline,
-		Version:   s.version,
-		Commit:    s.commit,
-		RepoURL:   repoURL,
-		Overall:   "ok",
-		NavHealth: true,
-	}
+	v := healthView{Overall: "ok"}
 	bad := false
 
-	// Sources (IMGW, RSO, openmeteo, …).
+	// Degraded sources and disconnected receivers still flip the overall
+	// verdict; their per-component rows live in the plugins and MQTT
+	// cards next to this one.
 	for _, st := range s.router.Statuses() {
 		if st.Kind != plugin.KindSource {
 			continue
 		}
-		row := healthRow{Name: st.ID, Detail: sourceDetailL(lang, st)}
 		switch st.State {
-		case plugin.StateRunning:
-			row.BadgeClass, row.BadgeText = "ok", "OK"
-			if st.LastSummary != "" {
-				row.Detail = st.LastSummary + " · " + row.Detail
-			}
-		case plugin.StateSuspended:
-			// Suspended is deliberate (offline mode) — amber, not red.
-			row.BadgeClass, row.BadgeText = "warn", strings.ToUpper(string(st.State))
 		case plugin.StateDegraded, plugin.StateStarting, plugin.StateStopping:
-			row.BadgeClass, row.BadgeText = "bad", strings.ToUpper(string(st.State))
 			bad = true
-			if st.LastError != "" {
-				row.Detail = st.LastError + " · " + row.Detail
-			}
-		default:
-			row.BadgeClass, row.BadgeText = "muted", i18n.T(lang, "health.disabled")
 		}
-		v.Sources = append(v.Sources, row)
 	}
-
-	// MQTT receivers.
 	for _, rs := range s.receivers.Statuses() {
-		row := healthRow{Name: rs.ID}
-		if !rs.Enabled {
-			row.BadgeClass, row.BadgeText = "muted", i18n.T(lang, "health.disabled")
-			row.Detail = i18n.T(lang, "health.not_enabled")
-		} else if rs.Connected {
-			row.BadgeClass, row.BadgeText = "ok", "OK"
-			if !rs.LastMessage.IsZero() {
-				row.Detail = fmt.Sprintf(i18n.T(lang, "health.connected_broker"), rs.Broker, ageTextL(lang, time.Since(rs.LastMessage)))
-			} else {
-				row.Detail = fmt.Sprintf(i18n.T(lang, "health.connected_short"), rs.Broker)
-			}
-		} else {
-			row.BadgeClass, row.BadgeText = "bad", i18n.T(lang, "health.badge.disconnected")
+		if rs.Enabled && !rs.Connected {
 			bad = true
-			row.Detail = i18n.T(lang, "health.not_connected")
-			if rs.LastError != "" {
-				row.Detail += " · " + rs.LastError
-			}
 		}
-		v.MQTT = append(v.MQTT, row)
 	}
 
 	// Actions (SMTP, …) and pending-notification pressure.
 	pending := 0
 	for _, as := range s.actions.Statuses() {
-		row := healthRow{Name: as.ID}
 		pending += as.QueueDepth
-		switch as.State {
-		case action.StateHealthy:
-			row.BadgeClass, row.BadgeText = "ok", "OK"
-			row.Detail = i18n.T(lang, "health.healthy")
-			if !as.LastSuccess.IsZero() {
-				row.Detail += " · " + fmt.Sprintf(i18n.T(lang, "health.last_success_ago"), ageTextL(lang, time.Since(as.LastSuccess)))
-			}
-			if as.Failures > 0 {
-				row.Detail += fmt.Sprintf(" · "+i18n.T(lang, "health.failures_since"), as.Failures)
-			}
-		case action.StateDegraded:
-			row.BadgeClass, row.BadgeText = "bad", i18n.T(lang, "health.badge.degraded")
+		if as.State == action.StateDegraded {
 			bad = true
-			if as.LastErrorText != "" {
-				row.Detail = as.LastErrorText
-			}
-		default:
-			row.BadgeClass, row.BadgeText = "muted", i18n.T(lang, "health.disabled")
-			row.Detail = as.Reason
 		}
-		v.Actions = append(v.Actions, row)
 	}
 
 	// Public HTTP ingest endpoints.
@@ -305,33 +209,4 @@ func (s *Server) buildHealthView(lang string) healthView {
 		v.Overall = "degraded"
 	}
 	return v
-}
-
-// sourceDetailL describes the last poll of a source plugin in a UI language.
-func sourceDetailL(lang string, st plugin.PluginStatus) string {
-	if st.LastSuccessAt == nil {
-		if st.LastError != "" {
-			return st.LastError
-		}
-		return i18n.T(lang, "health.no_poll")
-	}
-	return fmt.Sprintf(i18n.T(lang, "health.last_poll"), ageTextL(lang, time.Since(*st.LastSuccessAt)))
-}
-
-// ageTextL renders a duration like the template "ageL" helper, for views
-// built in Go rather than templates.
-func ageTextL(lang string, d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Second:
-		return i18n.T(lang, "time.just_now")
-	case d < time.Minute:
-		return fmt.Sprintf(i18n.T(lang, "time.secs_ago"), int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf(i18n.T(lang, "time.mins_ago"), int(d.Minutes()))
-	default:
-		return fmt.Sprintf(i18n.T(lang, "time.hours_ago"), int(d.Hours()))
-	}
 }

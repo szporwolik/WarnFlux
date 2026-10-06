@@ -50,6 +50,8 @@ type meshtasticNodeView struct {
 	Short string
 	// Sends lists the observed packet kinds (telemetry/position/text).
 	Sends []string
+	// Hops is the radio path length of the last packet (0 = direct).
+	Hops int
 	// Owner is the directory username whose registered node id matches
 	// the node's id (empty when nobody registered it).
 	Owner      string
@@ -453,11 +455,10 @@ func (s *Server) fillMeshtasticNodes(v *meshtasticView) {
 			name = owner
 		}
 		v.Nodes = append(v.Nodes, meshtasticNodeView{
-			ID:         n.ID,
-			Name:       name,
-			Short:      n.Short,
-			Sends:      n.Sends,
-			Owner:      owner,
+			ID:    n.ID,
+			Name:  name,
+			Short: n.Short,
+			Sends: n.Sends, Hops: n.Hops, Owner: owner,
 			Lat:        n.Lat,
 			Lon:        n.Lon,
 			DistKM:     n.DistKM,

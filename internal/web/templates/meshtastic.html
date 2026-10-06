@@ -394,6 +394,7 @@
       <tr>
         <th>{{tr .Lang "meshtastic.node_name"}}</th>
         <th>{{tr .Lang "meshtastic.node_id"}}</th>
+        <th>{{tr .Lang "meshmap.hops"}}</th>
         <th>{{tr .Lang "meshtastic.node_sends"}}</th>
         <th>{{tr .Lang "meshtastic.node_pos"}}</th>
         <th>{{tr .Lang "meshtastic.node_seen"}}</th>
@@ -410,6 +411,7 @@
             <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-clipboard"></use></svg>
           </button>
         </td>
+        <td class="nowrap">{{if .Hops}}{{.Hops}}{{else}}0 <span class="muted">({{tr $.Lang "meshmap.direct"}})</span>{{end}}</td>
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}</td>

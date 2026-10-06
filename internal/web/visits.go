@@ -70,7 +70,7 @@ func (s *Server) handleVisitorStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	days := 14
-	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 90 {
+	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d > 0 && d <= 400 {
 		days = d
 	}
 	rows, err := s.visits.SiteVisits(r.Context(), days)

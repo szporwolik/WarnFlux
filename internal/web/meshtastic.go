@@ -114,7 +114,7 @@ type meshtasticView struct {
 	NavMeshtastic    bool
 	NavMeshMap       bool
 
-	Tab string // messages | nodes | map
+	Tab string // map | msgs (the heard-node directory lives on the map tab)
 
 	// map tab
 	MeshEnabled bool
@@ -171,12 +171,12 @@ func (s *Server) handleMeshtasticPage(w http.ResponseWriter, r *http.Request) {
 		Username:      sess.username,
 		Role:          sess.role,
 		NavMeshtastic: true,
-		Tab:           "messages",
+		Tab:           "map",
 		Dir:           "all",
 		OfflineMode:   s.OfflineMode(),
 	}
-	if tab := r.URL.Query().Get("tab"); tab == "nodes" || tab == "map" {
-		v.Tab = tab
+	if tab := r.URL.Query().Get("tab"); tab == "msgs" {
+		v.Tab = "msgs"
 	}
 	v.Sent = r.URL.Query().Get("sent") == "1"
 	v.Error = r.URL.Query().Get("err")
@@ -535,14 +535,14 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 	}
 	text := strings.TrimSpace(r.PostFormValue("text"))
 	if text == "" {
-		http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.text_required")), http.StatusSeeOther)
+		http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.text_required")), http.StatusSeeOther)
 		return
 	}
 	var err error
 	if r.PostFormValue("target") == "contact" {
 		id := meshtasticNormalizeID(r.PostFormValue("contact"))
 		if id == "" {
-			http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_node_id")), http.StatusSeeOther)
+			http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_node_id")), http.StatusSeeOther)
 			return
 		}
 		err = s.meshtastic.SendContactMessage(r.Context(), id, text, sess.username)
@@ -551,7 +551,7 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 		if raw := strings.TrimSpace(r.PostFormValue("channel_idx")); raw != "" {
 			parsed, parseErr := strconv.Atoi(raw)
 			if parseErr != nil || parsed < 1 || parsed > 7 {
-				http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_channel")), http.StatusSeeOther)
+				http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_channel")), http.StatusSeeOther)
 				return
 			}
 			idx = parsed
@@ -561,9 +561,9 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Warn("web: meshtastic send failed", "target", r.PostFormValue("target"), "error", err)
 		flash := fmt.Sprintf(i18n.T(s.langFor(r), "meshtastic.send_failed"), err)
-		http.Redirect(w, r, "/meshtastic?err="+url.QueryEscape(flash), http.StatusSeeOther)
+		http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "meshtastic-send", text)
-	http.Redirect(w, r, "/meshtastic?sent=1", http.StatusSeeOther)
+	http.Redirect(w, r, "/meshtastic?tab=msgs&sent=1", http.StatusSeeOther)
 }

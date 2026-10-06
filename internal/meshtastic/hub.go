@@ -1633,6 +1633,9 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 	ch := h.registerRouteWaiter(uint32(dest))
 	defer h.unregisterRouteWaiter(uint32(dest), ch)
 
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	probes := make([]*pendingSend, 0, 2)
 	defer func() {
 		h.sendMu.Lock()
@@ -1642,6 +1645,14 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 		h.sendMu.Unlock()
 	}()
 	send := func() error {
+		// The session goroutine swaps h.conn on reconnect: refetch it
+		// for every attempt so a retry rides the fresh TCP session.
+		h.mu.Lock()
+		c := h.conn
+		h.mu.Unlock()
+		if c == nil || !c.IsConnected() {
+			return errors.New("meshtastic: device not connected")
+		}
 		// Each probe rides the send path as a placeholder so its ROUTING
 		// ack pairs up like any other send.
 		p := &pendingSend{
@@ -1655,7 +1666,7 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 		h.sendMu.Lock()
 		h.echoQueue = append(h.echoQueue, p)
 		h.sendMu.Unlock()
-		if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+		if err := c.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
 			To:      uint32(dest),
 			WantAck: true,
 			// Reach multi-hop nodes: the device default (3) dies en route to
@@ -1673,12 +1684,28 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 		}
 		return nil
 	}
-	if err := send(); err != nil {
-		return TracerouteResult{}, err
+	// The TCP session to the device can die between the connectivity
+	// check and the write (broken pipe) — the session watchdog then
+	// reconnects within seconds. Retry briefly instead of failing the
+	// probe on a stale transport.
+	sendErr := send()
+	for i := 0; sendErr != nil && i < 3 && ctx.Err() == nil; i++ {
+		if h.logger != nil {
+			h.logger.Warn("meshtastic: traceroute send failed, retrying", "to", idStr, "error", sendErr)
+		}
+		sel := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			sel.Stop()
+			return TracerouteResult{}, sendErr
+		case <-sel.C:
+		}
+		sendErr = send()
+	}
+	if sendErr != nil {
+		return TracerouteResult{}, sendErr
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	reprobe := time.NewTimer(tracerouteProbeGap)
 	defer reprobe.Stop()
 	started := time.Now()

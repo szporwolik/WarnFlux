@@ -158,6 +158,8 @@ var en = map[string]string{
 	"meshtastic.trace_tracing":  "Tracing",
 	"meshtastic.trace_no_reply": "no reply from the destination",
 	"meshtastic.trace_failed":   "trace failed",
+	"meshtastic.trace_hops":     "Hops",
+	"meshtastic.trace_direct":   "direct connection",
 
 	"messages.title":         "APRS",
 	"messages.hint":          "Every APRS message received or sent by this station, kept in the database (newest first).",
@@ -897,6 +899,8 @@ var pl = map[string]string{
 	"meshtastic.trace_tracing":  "Śledzę trasę",
 	"meshtastic.trace_no_reply": "brak odpowiedzi z węzła docelowego",
 	"meshtastic.trace_failed":   "trasa nie powiodła się",
+	"meshtastic.trace_hops":     "Przeskoków",
+	"meshtastic.trace_direct":   "połączenie bezpośrednie",
 
 	"messages.title":         "APRS",
 	"messages.hint":          "Wszystkie wiadomości APRS odebrane i wysłane przez tę stację, przechowywane w bazie (od najnowszych).",

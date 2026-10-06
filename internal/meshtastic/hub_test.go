@@ -2,6 +2,7 @@ package meshtastic
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -589,6 +590,72 @@ func TestNodeHopsFromPacket(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("node hops = %d, want 2", hops)
+}
+
+// TestTraceroute pins the route probe: the hub sends a TRACEROUTE_APP
+// frame with the destination node number in the payload, and the
+// destination's route_reply resolves the probe with the intermediate
+// hops and SNRs (scaled 4x in the protocol).
+func TestTraceroute(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+
+	type out struct {
+		res TracerouteResult
+		err error
+	}
+	done := make(chan out, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		res, err := radio.hub.Traceroute(ctx, "ef010203", 5*time.Second)
+		done <- out{res, err}
+	}()
+
+	pkt := radio.waitOutbound(t, 1)
+	if len(pkt) != 1 || pkt[0].GetTo() != 0xef010203 {
+		t.Fatalf("outbound = %v, want one probe to ef010203", pkt)
+	}
+	if got := pkt[0].GetDecoded().GetPortnum(); got != pb.PortNum_TRACEROUTE_APP {
+		t.Fatalf("portnum = %v, want TRACEROUTE_APP", got)
+	}
+	if got := binary.LittleEndian.Uint32(pkt[0].GetDecoded().GetPayload()); got != 0xef010203 {
+		t.Fatalf("payload = %08x, want ef010203", got)
+	}
+
+	// The destination answers with the route: one intermediate hop at
+	// 24/4 = 6 dB.
+	rr, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_RouteReply{RouteReply: &pb.RouteDiscovery{
+		Route:   []uint32{0xaaaa0001},
+		SnrBack: []int32{24},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xef010203, To: 0xabcd1234,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, Payload: rr},
+		},
+	})
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Traceroute: %v", r.err)
+		}
+		if !r.res.Reached || len(r.res.Hops) != 2 {
+			t.Fatalf("result = %+v, want reached with intermediate + destination", r.res)
+		}
+		if r.res.Hops[0].ID != "aaaa0001" || r.res.Hops[0].SNR != 6.0 {
+			t.Fatalf("hop = %+v, want aaaa0001 @ 6 dB", r.res.Hops[0])
+		}
+		if r.res.Hops[1].ID != "ef010203" {
+			t.Fatalf("last hop = %+v, want the destination", r.res.Hops[1])
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("traceroute did not settle in time")
+	}
 }
 
 // TestHubAckWithoutEcho pins the 2.7.x firmware behavior: the device does

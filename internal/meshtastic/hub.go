@@ -10,6 +10,7 @@ package meshtastic
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -429,6 +430,30 @@ type Snapshot struct {
 	NodeTTL time.Duration
 }
 
+// routeReply is one TRACEROUTE route-discovery answer buffered for a
+// waiting probe.
+type routeReply struct {
+	from  uint32
+	route *pb.RouteDiscovery
+}
+
+// TracerouteHop is one node on the discovered route from us towards the
+// destination (SNR is the link quality the hop reported, in dB).
+type TracerouteHop struct {
+	ID   string  `json:"id"`
+	Name string  `json:"name,omitempty"`
+	SNR  float32 `json:"snr,omitempty"`
+}
+
+// TracerouteResult is the outcome of one route probe: the hops from us
+// to the answering node (excluding us) and whether the destination
+// itself answered (an intermediate reply means the destination was not
+// reached, but the partial route still shows how far the probe got).
+type TracerouteResult struct {
+	Hops    []TracerouteHop `json:"hops"`
+	Reached bool            `json:"reached"`
+}
+
 // Message is one received or sent text message.
 type Message struct {
 	Direction string // rx | tx
@@ -645,6 +670,11 @@ type Hub struct {
 	pending   map[uint32]*pendingSend // by device-assigned packet id
 	echoQueue []*pendingSend          // sent but the echo (id) not seen yet
 
+	// routeWaiters buffers TRACEROUTE route replies while probes wait,
+	// keyed by the replying node (the destination answers with the full
+	// route; intermediate nodes may answer when it is out of reach).
+	routeWaiters map[uint32][]chan routeReply
+
 	// lastRadio is the unix-nano time of the most recent FromRadio
 	// message; the session is declared dead after cfg.SilenceTimeout
 	// (defaultSilenceTimeout) of total radio silence.
@@ -740,21 +770,23 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		// Run and the admin page shows the device as disconnected.
 		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node),
 			pending: make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
-			bannerLast: make(map[string]time.Time), replyLast: make(map[string]replyWindow),
+			routeWaiters: make(map[uint32][]chan routeReply),
+			bannerLast:   make(map[string]time.Time), replyLast: make(map[string]replyWindow),
 			startedAt: time.Now()}, nil
 	}
 	if cfg.Device == "" {
 		return nil, errors.New("meshtastic: device path is required")
 	}
 	return &Hub{
-		cfg:        cfg,
-		logger:     logger,
-		nodes:      make(map[string]*Node),
-		pending:    make(map[uint32]*pendingSend),
-		cmds:       make(map[string]*cmdRecord),
-		bannerLast: make(map[string]time.Time),
-		replyLast:  make(map[string]replyWindow),
-		startedAt:  time.Now(),
+		cfg:          cfg,
+		logger:       logger,
+		nodes:        make(map[string]*Node),
+		pending:      make(map[uint32]*pendingSend),
+		cmds:         make(map[string]*cmdRecord),
+		routeWaiters: make(map[uint32][]chan routeReply),
+		bannerLast:   make(map[string]time.Time),
+		replyLast:    make(map[string]replyWindow),
+		startedAt:    time.Now(),
 	}, nil
 }
 
@@ -1463,12 +1495,23 @@ func (h *Hub) pairByRoutingLocked(rid, from uint32, fromSelf bool) *pendingSend 
 // sequence still ends delivered. Broadcast confirmations and every
 // error frame are final and consume the wait.
 func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
-	rid := decoded.GetRequestId()
-	if rid == 0 {
-		return
-	}
 	var routing pb.Routing
 	if err := proto.Unmarshal(decoded.GetPayload(), &routing); err != nil {
+		return
+	}
+	// Traceroute replies (route_reply / route_request) are not delivery
+	// acks: fan them out to the waiting probes BEFORE the ack logic — a
+	// route frame must never settle (or consume) a pending send.
+	if rd := routing.GetRouteReply(); rd != nil {
+		h.deliverRouteReply(pkt.GetFrom(), rd)
+		return
+	}
+	if rd := routing.GetRouteRequest(); rd != nil {
+		h.deliverRouteReply(pkt.GetFrom(), rd)
+		return
+	}
+	rid := decoded.GetRequestId()
+	if rid == 0 {
 		return
 	}
 	fromSelf := fmt.Sprintf("%08x", pkt.GetFrom()) == h.selfID()
@@ -1512,6 +1555,136 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	h.sendMu.Unlock()
 	h.markStatus(ps, status)
+}
+
+// Traceroute probes the radio path to addr (8-hex node id): the device
+// sends a TRACEROUTE_APP frame and the nodes along the way answer with
+// route-discovery frames. The call waits up to timeout for the best
+// answer — the destination's own reply wins and is returned immediately;
+// otherwise the longest partial route heard is returned with
+// Reached=false. No reply at all yields an empty result, not an error.
+func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration) (TracerouteResult, error) {
+	idStr := normalizeMeshID(addr)
+	if len(idStr) != 8 {
+		return TracerouteResult{}, fmt.Errorf("meshtastic: node id must be 8 hex characters, got %q", addr)
+	}
+	dest, err := strconv.ParseUint(idStr, 16, 32)
+	if err != nil {
+		return TracerouteResult{}, fmt.Errorf("meshtastic: node id must be 8 hex characters, got %q", addr)
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	h.mu.Lock()
+	conn := h.conn
+	h.mu.Unlock()
+	if conn == nil || !conn.IsConnected() {
+		return TracerouteResult{}, errors.New("meshtastic: device not connected")
+	}
+
+	// The probe payload is the destination node number, little-endian.
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, uint32(dest))
+	ch := h.registerRouteWaiter(uint32(dest))
+	defer h.unregisterRouteWaiter(uint32(dest), ch)
+	if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+		To: uint32(dest),
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TRACEROUTE_APP, Payload: payload},
+		},
+	}}}); err != nil {
+		return TracerouteResult{}, fmt.Errorf("meshtastic: traceroute send failed: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	best := TracerouteResult{}
+	for {
+		select {
+		case <-ctx.Done():
+			return best, nil
+		case rep := <-ch:
+			res := h.routeResult(rep)
+			if rep.from == uint32(dest) {
+				res.Reached = true
+				return res, nil
+			}
+			if len(res.Hops) > len(best.Hops) {
+				best = res
+			}
+		}
+	}
+}
+
+// registerRouteWaiter subscribes one probe to route replies from dest.
+func (h *Hub) registerRouteWaiter(dest uint32) chan routeReply {
+	ch := make(chan routeReply, 4)
+	h.sendMu.Lock()
+	h.routeWaiters[dest] = append(h.routeWaiters[dest], ch)
+	h.sendMu.Unlock()
+	return ch
+}
+
+// unregisterRouteWaiter removes the probe's subscription (idempotent).
+func (h *Hub) unregisterRouteWaiter(dest uint32, ch chan routeReply) {
+	h.sendMu.Lock()
+	list := h.routeWaiters[dest]
+	for i, c := range list {
+		if c == ch {
+			h.routeWaiters[dest] = append(list[:i], list[i+1:]...)
+			break
+		}
+	}
+	h.sendMu.Unlock()
+}
+
+// deliverRouteReply fans one route-discovery frame out to every probe
+// waiting on the replying node (buffered, non-blocking).
+func (h *Hub) deliverRouteReply(from uint32, rd *pb.RouteDiscovery) {
+	h.sendMu.Lock()
+	chans := h.routeWaiters[from]
+	if len(chans) > 0 {
+		delete(h.routeWaiters, from)
+	}
+	h.sendMu.Unlock()
+	for _, ch := range chans {
+		select {
+		case ch <- routeReply{from: from, route: rd}:
+		default:
+		}
+	}
+}
+
+// routeResult converts one route-discovery answer into the hop list from
+// us to the answering node. The protocol stores SNR values scaled 4x;
+// hop names resolve through the heard-node directory when known.
+func (h *Hub) routeResult(rep routeReply) TracerouteResult {
+	res := TracerouteResult{}
+	route := rep.route.GetRoute()
+	snrs := rep.route.GetSnrBack()
+	if len(snrs) == 0 {
+		snrs = rep.route.GetSnrTowards()
+	}
+	h.mu.Lock()
+	nodes := h.nodes
+	h.mu.Unlock()
+	for i, id := range route {
+		hop := TracerouteHop{ID: fmt.Sprintf("%08x", id)}
+		if n := nodes[hop.ID]; n != nil && n.Name != "" {
+			hop.Name = n.Name
+		}
+		if i < len(snrs) {
+			hop.SNR = float32(snrs[i]) / 4
+		}
+		res.Hops = append(res.Hops, hop)
+	}
+	// The answering node closes the route (mirrors ParseRoute's
+	// sender → intermediates → receiver shape).
+	last := fmt.Sprintf("%08x", rep.from)
+	if len(res.Hops) == 0 || res.Hops[len(res.Hops)-1].ID != last {
+		res.Hops = append(res.Hops, TracerouteHop{ID: last})
+	}
+	return res
 }
 
 // retryPending settles or re-transmits sends that got no answer:

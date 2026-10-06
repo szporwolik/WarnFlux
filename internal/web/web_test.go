@@ -1336,6 +1336,13 @@ func TestMeshMapPage(t *testing.T) {
 	if !strings.Contains(body, `id="mesh-admin-map"`) {
 		t.Errorf("/meshtastic map tab missing the map element")
 	}
+	// The map tab carries the heard-window filter (all / 15 min / 1 h /
+	// 4 h / today).
+	for _, want := range []string{`id="mesh-map-filter"`, `data-filter="m15"`, `data-filter="h1"`, `data-filter="h4"`, `data-filter="today"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/meshtastic map tab missing %s", want)
+		}
+	}
 
 	var view struct {
 		Nodes []struct {

@@ -77,6 +77,13 @@
     <section class="card page-panel" id="panel-map" data-panel="panel-map"{{if ne .Tab "map"}} hidden{{end}}>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "meshmap.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "meshmap.hint"}}</p>
+      <div class="page-tabs" role="tablist" id="mesh-map-filter">
+        <button type="button" class="page-tab active" role="tab" aria-selected="true" data-filter="all">{{tr .Lang "meshmap.filter_all"}}</button>
+        <button type="button" class="page-tab" role="tab" aria-selected="false" data-filter="m15">{{tr .Lang "meshmap.filter_15m"}}</button>
+        <button type="button" class="page-tab" role="tab" aria-selected="false" data-filter="h1">{{tr .Lang "meshmap.filter_1h"}}</button>
+        <button type="button" class="page-tab" role="tab" aria-selected="false" data-filter="h4">{{tr .Lang "meshmap.filter_4h"}}</button>
+        <button type="button" class="page-tab" role="tab" aria-selected="false" data-filter="today">{{tr .Lang "meshmap.filter_today"}}</button>
+      </div>
       {{if .MeshEnabled}}
       <div class="aprs-admin-map-wrap">
         <div id="mesh-admin-map" data-lat="{{.CenterLat}}" data-lon="{{.CenterLon}}"
@@ -200,11 +207,28 @@
     }
 
     var fittedOnce = false;
+    var lastData = { nodes: [], nopos: [] };
+    var timeFilter = "all";
+
+    // Time window for the map: nothing, the last 15 minutes, the last
+    // hour, the last 4 hours or everything heard today (local time).
+    function windowCutoff(f) {
+      if (f === "m15") { return Date.now() - 15 * 60 * 1000; }
+      if (f === "h1") { return Date.now() - 60 * 60 * 1000; }
+      if (f === "h4") { return Date.now() - 4 * 60 * 60 * 1000; }
+      if (f === "today") {
+        var n = new Date();
+        return new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+      }
+      return 0;
+    }
 
     function render(data) {
+      var cutoff = windowCutoff(timeFilter);
       nodesLayer.clearLayers();
       var bounds = L.latLngBounds([]);
       (data.nodes || []).forEach(function (n) {
+        if (cutoff && (!n.last_seen || new Date(n.last_seen).getTime() < cutoff)) { return; }
         if (!n.latitude || !n.longitude) { return; }
         var marker = L.marker([n.latitude, n.longitude], {
           icon: badge(MESH_COLOR, n.hops ? String(n.hops) : "0", displayName(n)),
@@ -219,7 +243,10 @@
 
       // Nodes heard without a position: listed below the map.
       noposEl.textContent = "";
-      var list = data.nopos || [];
+      var cutoff = windowCutoff(timeFilter);
+      var list = (data.nopos || []).filter(function (n) {
+        return !cutoff || (n.last_seen && new Date(n.last_seen).getTime() >= cutoff);
+      });
       noposTitle.hidden = !list.length;
       if (list.length) { noposTitle.textContent = LBL_NOPOS + " (" + list.length + ")"; }
       list.forEach(function (n) {
@@ -247,9 +274,23 @@
     function refresh() {
       fetch("/api/meshtastic/stations?all=1")
         .then(function (r) { return r.ok ? r.json() : {}; })
-        .then(function (data) { render(data || {}); })
+        .then(function (data) {
+          lastData = data || {};
+          render(lastData);
+        })
         .catch(function () { /* transient — next poll retries */ });
     }
+
+    document.querySelectorAll("#mesh-map-filter .page-tab").forEach(function (b) {
+      b.addEventListener("click", function () {
+        timeFilter = b.getAttribute("data-filter");
+        document.querySelectorAll("#mesh-map-filter .page-tab").forEach(function (t) {
+          t.classList.toggle("active", t === b);
+          t.setAttribute("aria-selected", t === b ? "true" : "false");
+        });
+        render(lastData);
+      });
+    });
 
     var panel = document.getElementById("panel-map");
     if (panel && !panel.hidden) { initMap(); }

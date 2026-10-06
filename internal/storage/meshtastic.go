@@ -76,6 +76,7 @@ type MeshtasticNode struct {
 	Lon      float64
 	LastSeen time.Time
 	Sends    []string
+	Hops     int
 }
 
 // MeshtasticNodeStore persists the heard-node directory across restarts:

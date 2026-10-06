@@ -16,7 +16,7 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 	seen := time.Now().Truncate(time.Millisecond)
 
 	nodes := []storage.MeshtasticNode{
-		{ID: "a0a85934", Name: "Meshtastic 5934", Short: "SPM", Lat: 50.02, Lon: 20.0, LastSeen: seen, Sends: []string{"telemetry", "text"}},
+		{ID: "a0a85934", Name: "Meshtastic 5934", Short: "SPM", Lat: 50.02, Lon: 20.0, LastSeen: seen, Sends: []string{"telemetry", "text"}, Hops: 3},
 		{ID: "b0b85934", Name: "Other", LastSeen: seen.Add(-time.Hour)},
 	}
 	if err := s.SaveMeshtasticNodes(ctx, nodes); err != nil {
@@ -34,6 +34,9 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 	}
 	if len(got[0].Sends) != 2 || got[0].Sends[1] != "text" {
 		t.Fatalf("sends = %v, want [telemetry text]", got[0].Sends)
+	}
+	if got[0].Hops != 3 {
+		t.Fatalf("hops = %d, want 3", got[0].Hops)
 	}
 	if !got[0].LastSeen.Equal(seen) {
 		t.Fatalf("last seen = %v, want %v", got[0].LastSeen, seen)

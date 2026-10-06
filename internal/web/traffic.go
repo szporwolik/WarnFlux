@@ -87,6 +87,9 @@ func (s *Server) baseTrafficView() trafficView {
 		Commit:     s.commit,
 		RepoURL:    repoURL,
 		NavTraffic: true,
+		// The traffic viewer is part of the logs surface, which lives
+		// under the Config menu entry.
+		NavConfig: true,
 	}
 	if s.traffic != nil {
 		v.MaxEntries = s.traffic.Max()

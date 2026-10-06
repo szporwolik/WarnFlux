@@ -29,6 +29,10 @@ func TestConfigPageAdminOnly(t *testing.T) {
 	if !strings.Contains(page, "</html>") || !strings.Contains(page, "sidenav") {
 		t.Fatalf("config page lacks the chrome document: %.200s", page)
 	}
+	// The logs surface lives under Config: the page links to /logs.
+	if !strings.Contains(page, `href="/logs"`) {
+		t.Fatalf("config page missing the Logs link: %.200s", page)
+	}
 }
 
 // TestConfigEndpointsRequireCSRF pins the reported P2: the state-changing

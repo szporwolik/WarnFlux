@@ -315,8 +315,12 @@ func TestLogsViewerFlow(t *testing.T) {
 	if !strings.Contains(html, `id="log-viewer"`) {
 		t.Errorf("logs page missing viewer: %s", html)
 	}
-	if !strings.Contains(html, `<span class="nav-label">Logs</span>`) {
-		t.Errorf("logs page missing sidebar entry: %s", html)
+	// Logs moved under the Config menu entry: no dedicated sidebar item.
+	if strings.Contains(html, `<span class="nav-label">Logs</span>`) {
+		t.Errorf("logs page must not carry a sidebar entry (logs live under Config): %s", html)
+	}
+	if !strings.Contains(html, `class="nav-item active" href="/config"`) {
+		t.Errorf("logs page must highlight the Config sidebar entry: %s", html)
 	}
 
 	// Full buffer poll.
@@ -372,8 +376,9 @@ func TestTrafficViewerFlow(t *testing.T) {
 	if !strings.Contains(html, `id="traffic-viewer"`) {
 		t.Errorf("traffic tab missing viewer: %s", html)
 	}
-	if !strings.Contains(html, `<span class="nav-label">Logs</span>`) {
-		t.Errorf("traffic tab missing the Logs sidebar entry: %s", html)
+	// Logs (including the traffic tab) live under the Config menu entry.
+	if strings.Contains(html, `<span class="nav-label">Logs</span>`) {
+		t.Errorf("traffic tab must not carry a Logs sidebar entry (moved under Config): %s", html)
 	}
 	if !strings.Contains(html, `data-tab="panel-traffic"`) {
 		t.Errorf("logs page missing the MQTT traffic tab: %s", html)
@@ -528,8 +533,8 @@ func TestNotificationsFlow(t *testing.T) {
 	if !strings.Contains(html, `id="notif-list"`) {
 		t.Errorf("notifications tab missing list: %s", html)
 	}
-	if !strings.Contains(html, `<span class="nav-label">Logs</span>`) {
-		t.Errorf("merged logs page missing the Logs sidebar entry: %s", html)
+	if strings.Contains(html, `<span class="nav-label">Logs</span>`) {
+		t.Errorf("merged logs page must not carry a Logs sidebar entry (moved under Config): %s", html)
 	}
 	if !strings.Contains(html, "matched group Niepołomice") ||
 		!strings.Contains(html, "imgw → smtp-alerts ≥ Moderate") ||
@@ -2311,10 +2316,14 @@ func TestAdminAccountPageKeepsAdminNav(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /account as admin = %d", resp.StatusCode)
 	}
-	for _, want := range []string{"Access", "Logs"} {
+	for _, want := range []string{"Access"} {
 		if !strings.Contains(html, `<span class="nav-label">`+want+`</span>`) {
 			t.Errorf("admin /account sidebar missing %s nav entry", want)
 		}
+	}
+	// Logs moved under Config: the sidebar carries no Logs entry anymore.
+	if strings.Contains(html, `<span class="nav-label">Logs</span>`) {
+		t.Error("admin /account sidebar still shows the Logs entry (moved under Config)")
 	}
 	if strings.Contains(html, `<span class="nav-label">Health</span>`) {
 		t.Error("admin /account sidebar still shows the removed Health entry")

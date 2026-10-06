@@ -908,6 +908,17 @@ ALTER TABLE meshtastic_nodes ADD COLUMN hops INTEGER NOT NULL DEFAULT 0;
 UPDATE meshtastic_nodes SET hops = -1 WHERE hops = 0;
 `,
 	},
+	{
+		// v51: per-day visitor analytics (new vs returning), counted
+		// once per visitor per day after the cookie consent.
+		SQL: `
+CREATE TABLE site_visits (
+	day                TEXT PRIMARY KEY,
+	new_visitors       INTEGER NOT NULL DEFAULT 0,
+	returning_visitors INTEGER NOT NULL DEFAULT 0
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

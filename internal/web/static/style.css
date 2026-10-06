@@ -582,6 +582,51 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
 .footer-name { color: var(--text); font-weight: 600; }
 .footer-tagline { color: var(--muted); }
 
+/* Cookie consent bar: minimum EU notice with accept/decline. */
+#cookie-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 1rem;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  max-width: min(46rem, calc(100vw - 2rem));
+  padding: 0.65rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  font-size: 0.82rem;
+}
+.cookie-bar-actions { display: flex; gap: 0.45rem; flex: none; }
+
+/* Visitor stats: numeric cards + a dependency-free SVG bar chart. */
+.visits-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+.visits-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.8rem;
+  background: var(--bg);
+}
+.visits-card-label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.visits-card-value { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+.visits-card-sub { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; }
+.visits-chart-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 0.5rem;
+}
+.visits-chart-wrap svg { display: block; width: 100%; height: auto; }
+.visits-chart-label { font-size: 9px; fill: var(--muted); }
+
 .commit-link { color: var(--muted); }
 .commit-link:hover { color: var(--link); }
 

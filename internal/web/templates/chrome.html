@@ -81,4 +81,35 @@
     {{if ne .Commit "unknown"}}<a class="commit-link" href="https://github.com/szporwolik/WarnFlux/commit/{{.Commit}}" target="_blank" rel="noopener noreferrer">{{shortCommit .Commit}}</a>{{else}}{{.Commit}}{{end}}
 	    <a class="gh-link" href="{{.RepoURL}}" target="_blank" rel="noopener noreferrer" aria-label="{{tr .Lang "common.source_code"}}"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg></a>
   </footer>
+  {{template "cookiebar" .}}
+{{end}}
+
+{{define "cookiebar"}}
+  <div id="cookie-bar" role="dialog" aria-label="{{tr .Lang "cookies.title"}}" hidden>
+    <span>{{tr .Lang "cookies.text"}}</span>
+    <span class="cookie-bar-actions">
+      <button type="button" id="cookie-decline" class="btn-ghost btn-small">{{tr .Lang "cookies.decline"}}</button>
+      <button type="button" id="cookie-accept" class="btn-primary btn-small">{{tr .Lang "cookies.accept"}}</button>
+    </span>
+  </div>
+  <script>
+  (function () {
+    "use strict";
+    function hasConsent() {
+      return document.cookie.split(";").some(function (c) {
+        return c.trim().indexOf("wf_consent=") === 0;
+      });
+    }
+    var bar = document.getElementById("cookie-bar");
+    if (!bar) { return; }
+    if (!hasConsent()) { bar.hidden = false; }
+    function decide(v) {
+      document.cookie = "wf_consent=" + v + ";max-age=31536000;path=/;SameSite=Lax";
+      bar.hidden = true;
+      if (v === "yes") { window.location.reload(); }
+    }
+    document.getElementById("cookie-accept").addEventListener("click", function () { decide("yes"); });
+    document.getElementById("cookie-decline").addEventListener("click", function () { decide("no"); });
+  })();
+  </script>
 {{end}}

@@ -229,7 +229,7 @@
           var OFFLINE = (document.body.getAttribute("data-offline") === "1") || window.WF_OFFLINE === true;
           var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
             : (document.documentElement.getAttribute("data-theme") === "light"
-              ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
               : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
           traceMap = L.map(mapBox, { attributionControl: false, zoomControl: false, dragging: false,
             scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false });
@@ -415,7 +415,7 @@
     // mode, otherwise a free raster provider matching the theme.
     var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
       : (document.documentElement.getAttribute("data-theme") === "light"
-        ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
         : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
     var attrib = document.getElementById("mesh-admin-tiles-attrib");
     if (attrib && OFFLINE) {

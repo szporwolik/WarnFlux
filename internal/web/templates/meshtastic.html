@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{tr .Lang "meshtastic.title"}} · {{.AppTitle}}</title>
   <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="stylesheet" href="/static/leaflet/leaflet.css">
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
   <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
 </head>
@@ -40,6 +41,9 @@
       <button type="button" class="page-tab{{if eq .Tab "nodes"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "nodes"}}true{{else}}false{{end}}" data-tab="panel-nodes">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshtastic.tab_nodes"}}
       </button>
+      <button type="button" class="page-tab{{if eq .Tab "map"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "map"}}true{{else}}false{{end}}" data-tab="panel-map">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "meshtastic.tab_map"}}
+      </button>
     </div>
 
     <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "messages"}} hidden{{end}}>
@@ -69,9 +73,189 @@
         {{template "mesh_nodes" .}}
       </div>
     </section>
+
+    <section class="card page-panel" id="panel-map" data-panel="panel-map"{{if ne .Tab "map"}} hidden{{end}}>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "meshmap.title"}}</h2>
+      <p class="muted log-hint">{{tr .Lang "meshmap.hint"}}</p>
+      {{if .MeshEnabled}}
+      <div class="aprs-admin-map-wrap">
+        <div id="mesh-admin-map" data-lat="{{.CenterLat}}" data-lon="{{.CenterLon}}"
+             data-own-lat="{{.SelfLat}}" data-own-lon="{{.SelfLon}}" data-own-name="{{.SelfName}}"
+             data-lbl-heard="{{tr .Lang "map.heard"}}" data-lbl-hops="{{tr .Lang "meshmap.hops"}}"
+             data-lbl-direct="{{tr .Lang "meshmap.direct"}}" data-lbl-nopos="{{tr .Lang "meshmap.nopos"}}"></div>
+        <p class="aprs-map-attrib"><span id="mesh-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
+      </div>
+      <h3 class="meshmap-nopos-title muted" id="mesh-nopos-title" hidden></h3>
+      <ul class="meshmap-nopos" id="mesh-nopos"></ul>
+      {{else}}
+      <p class="home-none">{{tr .Lang "meshmap.disabled"}}</p>
+      {{end}}
+    </section>
   </main>
   {{template "footer" .}}
+  <script>window.WF_OFFLINE={{if .OfflineMode}}true{{else}}false{{end}};</script>
   <script src="/static/app.js?v={{.Commit}}" defer></script>
+  <script src="/static/leaflet/leaflet.js"></script>
+  <script>
+  (function () {
+    var el = document.getElementById("mesh-admin-map");
+    if (!el || !window.L) { return; }
+    var OFFLINE = (document.body.getAttribute("data-offline") === "1") || window.WF_OFFLINE === true;
+    var lat = parseFloat(el.dataset.lat) || 0;
+    var lon = parseFloat(el.dataset.lon) || 0;
+    var ownLat = parseFloat(el.dataset.ownLat) || 0;
+    var ownLon = parseFloat(el.dataset.ownLon) || 0;
+    var ownName = el.dataset.ownName || "";
+    var LBL_HEARD = el.dataset.lblHeard || "Heard";
+    var LBL_HOPS = el.dataset.lblHops || "Hops";
+    var LBL_DIRECT = el.dataset.lblDirect || "direct";
+    var LBL_NOPOS = el.dataset.lblNopos || "Heard without a position";
+    var noposEl = document.getElementById("mesh-nopos");
+    var noposTitle = document.getElementById("mesh-nopos-title");
+    var MESH_COLOR = "#8e24aa";
+
+    // Same basemap idea as the APRS map: the local tile tree in offline
+    // mode, otherwise a free raster provider matching the theme.
+    var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
+      : (document.documentElement.getAttribute("data-theme") === "light"
+        ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        : "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}");
+    var attrib = document.getElementById("mesh-admin-tiles-attrib");
+    if (attrib && OFFLINE) {
+      attrib.textContent = "WarnFlux (local tiles)";
+    }
+
+    // Built lazily: another tab can be active on load, and Leaflet needs
+    // a visible container to size itself. app.js dispatches
+    // "panel-shown" on the panel, so the first activation builds the
+    // map; later ones just invalidate.
+    var map = null;
+    var nodesLayer = null;
+    function initMap() {
+      if (map) {
+        map.invalidateSize();
+        return;
+      }
+      map = L.map(el, { attributionControl: false }).setView([lat, lon], 10);
+      L.tileLayer(raster, { maxZoom: 19 }).addTo(map);
+      nodesLayer = L.layerGroup().addTo(map);
+
+      // Our own node marker (mesh purple), when the device reported a
+      // position.
+      if (ownLat && ownLon) {
+        var ownMarker = L.marker([ownLat, ownLon], { icon: badge(MESH_COLOR, "ME", ownName || "self"), riseOnHover: true }).addTo(map);
+        ownMarker.bindTooltip(ownName || "WarnFlux", { direction: "top" });
+      }
+      refresh();
+      window.setInterval(refresh, 30 * 1000);
+    }
+
+    function esc(s) {
+      var d = document.createElement("div");
+      d.textContent = s == null ? "" : String(s);
+      return d.innerHTML;
+    }
+
+    function fmtTime(v) {
+      if (!v) { return ""; }
+      var t = new Date(v);
+      if (isNaN(t.getTime())) { return String(v).replace("T", " ").slice(0, 16); }
+      function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+      return t.getFullYear() + "-" + pad2(t.getMonth() + 1) + "-" + pad2(t.getDate()) +
+        " " + pad2(t.getHours()) + ":" + pad2(t.getMinutes());
+    }
+
+    function badge(color, code, label) {
+      var html = '<span class="wf-badge-wrap"><span class="wf-badge" style="--wf-bg:' + color +
+        ';width:24px;height:24px"><span style="font-size:0.55rem;font-weight:700">' + esc(code) + '</span></span>' +
+        '<span class="wf-station-label">' + esc(label || "") + '</span></span>';
+      return L.divIcon({ className: "wf-badge-pin", iconSize: [96, 46], iconAnchor: [48, 28], html: html });
+    }
+
+    function hopsLine(n) {
+      if (!n.hops) { return LBL_HOPS + ": 0 (" + LBL_DIRECT + ")"; }
+      return LBL_HOPS + ": " + n.hops;
+    }
+
+    function displayName(n) {
+      return n.name || n.short_name || n.id;
+    }
+
+    function popupFor(n) {
+      var lines = [];
+      lines.push(hopsLine(n));
+      if (n.sends && n.sends.length) { lines.push(esc(n.sends.join(" · "))); }
+      if (n.telemetry) {
+        var t = n.telemetry;
+        if (t.battery_level) { lines.push("🔋 " + t.battery_level + "%" + (t.voltage ? " · " + Number(t.voltage).toFixed(2) + " V" : "")); }
+        if (t.temperature != null) { lines.push(Number(t.temperature).toFixed(1) + "°C"); }
+      }
+      lines.push(LBL_HEARD + ": " + fmtTime(n.last_seen));
+      if (n.distance_km) { lines.push(Number(n.distance_km).toFixed(1) + " km"); }
+      return '<div class="wf-pop">' +
+        '<div class="wf-pop-head" style="--wf-pop-c:' + MESH_COLOR + '">' +
+        '<span class="wf-pop-t"><strong>' + esc(displayName(n)) + '</strong>' +
+        '<span class="wf-pop-sub">' + esc(n.id) + '</span></span></div>' +
+        '<div class="wf-pop-body">' + lines.join("<br>") + '</div></div>';
+    }
+
+    var fittedOnce = false;
+
+    function render(data) {
+      nodesLayer.clearLayers();
+      var bounds = L.latLngBounds([]);
+      (data.nodes || []).forEach(function (n) {
+        if (!n.latitude || !n.longitude) { return; }
+        var marker = L.marker([n.latitude, n.longitude], {
+          icon: badge(MESH_COLOR, n.hops ? String(n.hops) : "0", displayName(n)),
+          riseOnHover: true
+        });
+        marker.bindTooltip("<strong>" + esc(displayName(n)) + "</strong><br>" + esc(hopsLine(n)),
+          { sticky: true, direction: "top" });
+        marker.bindPopup(popupFor(n));
+        nodesLayer.addLayer(marker);
+        bounds.extend([n.latitude, n.longitude]);
+      });
+
+      // Nodes heard without a position: listed below the map.
+      noposEl.textContent = "";
+      var list = data.nopos || [];
+      noposTitle.hidden = !list.length;
+      if (list.length) { noposTitle.textContent = LBL_NOPOS + " (" + list.length + ")"; }
+      list.forEach(function (n) {
+        var li = document.createElement("li");
+        var strong = document.createElement("strong");
+        strong.textContent = displayName(n);
+        li.appendChild(strong);
+        li.appendChild(document.createTextNode(hopsLine(n)));
+        if (n.last_seen) {
+          li.appendChild(document.createTextNode(LBL_HEARD + ": " + fmtTime(n.last_seen)));
+        }
+        noposEl.appendChild(li);
+      });
+
+      if (!fittedOnce) {
+        if (bounds.isValid()) {
+          map.fitBounds(bounds.pad(0.2), { maxZoom: 13 });
+        } else if (ownLat && ownLon) {
+          map.setView([ownLat, ownLon], 10);
+        }
+        fittedOnce = true;
+      }
+    }
+
+    function refresh() {
+      fetch("/api/meshtastic/stations?all=1")
+        .then(function (r) { return r.ok ? r.json() : {}; })
+        .then(function (data) { render(data || {}); })
+        .catch(function () { /* transient — next poll retries */ });
+    }
+
+    var panel = document.getElementById("panel-map");
+    if (panel && !panel.hidden) { initMap(); }
+    if (panel) { panel.addEventListener("panel-shown", initMap); }
+  })();
+  </script>
 </body>
 </html>
 {{end}}

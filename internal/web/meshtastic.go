@@ -114,7 +114,16 @@ type meshtasticView struct {
 	NavMeshtastic    bool
 	NavMeshMap       bool
 
-	Tab string // messages | nodes
+	Tab string // messages | nodes | map
+
+	// map tab
+	MeshEnabled bool
+	SelfLat     float64
+	SelfLon     float64
+	SelfName    string
+	CenterLat   float64
+	CenterLon   float64
+	OfflineMode bool
 
 	// messages tab
 	Messages []meshtasticMessageView
@@ -164,9 +173,10 @@ func (s *Server) handleMeshtasticPage(w http.ResponseWriter, r *http.Request) {
 		NavMeshtastic: true,
 		Tab:           "messages",
 		Dir:           "all",
+		OfflineMode:   s.OfflineMode(),
 	}
-	if tab := r.URL.Query().Get("tab"); tab == "nodes" {
-		v.Tab = "nodes"
+	if tab := r.URL.Query().Get("tab"); tab == "nodes" || tab == "map" {
+		v.Tab = tab
 	}
 	v.Sent = r.URL.Query().Get("sent") == "1"
 	v.Error = r.URL.Query().Get("err")
@@ -176,6 +186,23 @@ func (s *Server) handleMeshtasticPage(w http.ResponseWriter, r *http.Request) {
 	// (Tab only preselects the visible one, e.g. /meshtastic?tab=nodes).
 	s.fillMeshtasticNodes(&v)
 	s.fillMeshtasticMessages(r, &v)
+
+	// Map tab data: our own node position when the device reported one;
+	// without it the initial view falls back to the operational area
+	// (the APRS territory center).
+	if s.meshtastic != nil && s.meshtastic.Enabled() {
+		v.MeshEnabled = true
+		snap := s.meshtastic.Snapshot()
+		v.SelfLat = snap.Self.Lat
+		v.SelfLon = snap.Self.Lon
+		v.SelfName = snap.Self.LongName
+		v.CenterLat = snap.Self.Lat
+		v.CenterLon = snap.Self.Lon
+	}
+	if v.CenterLat == 0 && v.CenterLon == 0 && s.aprs != nil && s.aprs.Enabled() {
+		v.CenterLat = s.aprs.AreaLat()
+		v.CenterLon = s.aprs.AreaLon()
+	}
 	s.renderL(w, r, "meshtastic", v)
 }
 

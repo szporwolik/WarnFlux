@@ -3885,8 +3885,9 @@
       : null;
     if (!row) { return; }
     // The key cell's copy button lives inside a clickable row: copying
-    // must not prefill the send form.
-    if (e.target.closest("button.key-copy, .mc-chip[data-key]")) { return; }
+    // must not prefill the send form. The APRS Trace button opens its
+    // own dialog instead of preflilling either.
+    if (e.target.closest("button.key-copy, .mc-chip[data-key], button.aprs-trace")) { return; }
 
     var aprs = document.querySelector("form.aprs-send");
     if (aprs) {

@@ -892,9 +892,8 @@
   // uses: OpenFreeMap vector styles via MapLibre GL — no API keys, no
   // usage limits. Fiord for the dark theme, bright for the light one.
   // When WebGL or the GL glue is unavailable (headless browsers, offline
-  // fallback), keyless RASTER tiles take over: OpenStreetMap for the
-  // light theme, CARTO Dark for the dark one (ArcGIS tiles anonymously
-  // answered "API blocked" from some networks).
+  // fallback), keyless RASTER tiles take over: CARTO for both themes
+  // (OpenStreetMap tiles IP-block by usage policy, CARTO does not).
   function tilesForTheme() {
     var theme = document.documentElement.getAttribute("data-theme");
     // Offline mode: the operator-provided tile tree served by the
@@ -916,9 +915,9 @@
     if (theme === "light") {
       return {
         style: "https://tiles.openfreemap.org/styles/bright",
-        raster: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        raster: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
         glLabel: glLabel,
-        rasterLabel: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+        rasterLabel: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
         marker: { color: "#0d47a1", fillColor: "#1976d2" }
       };
     }
@@ -3120,7 +3119,7 @@
     var dark = document.documentElement.getAttribute("data-theme") !== "light";
     return dark
       ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
-      : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+      : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png";
   }
 
   function loadLeaflet(cb) {

@@ -148,11 +148,19 @@
       var btn = e.target.closest("button.mesh-trace");
       if (!btn || busy || !dialog) { return; }
       var id = btn.getAttribute("data-id");
+      var btnName = btn.getAttribute("data-name") || "";
+      var btnShort = btn.getAttribute("data-short") || "";
       var LBL_TRACING = dialog.dataset.lblTracing || "Tracing";
       var LBL_NOREPLY = dialog.dataset.lblNoReply || "no reply from the destination";
       var LBL_FAILED = dialog.dataset.lblFailed || "trace failed";
+      function nodeLabel() {
+        var s = "!" + id;
+        if (btnName) { s += " — " + btnName; }
+        if (btnShort && btnShort !== btnName) { s += " (" + btnShort + ")"; }
+        return s;
+      }
       busy = true;
-      show(LBL_TRACING + " !" + id, ["…"]);
+      show(LBL_TRACING + ": " + nodeLabel() + "…", ["…"]);
       var csrfEl = document.querySelector('form input[name="csrf"]');
       fetch("/api/meshtastic/traceroute", {
         method: "POST",
@@ -168,7 +176,7 @@
       }).then(function (j) {
         var lines = (j.hops || []).map(hopLine);
         if (!j.reached) { lines.unshift(LBL_NOREPLY); }
-        show((j.reached ? "✓ " : "✗ ") + "!" + id, lines);
+        show((j.reached ? "✓ " : "✗ ") + nodeLabel(), lines);
       }).catch(function (err) {
         show(LBL_FAILED, [err && err.message ? err.message : String(err)]);
       }).finally(function () { busy = false; });
@@ -416,7 +424,7 @@
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}</td>
-        <td><button type="button" class="btn-ghost btn-small mesh-trace" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button></td>
+        <td><button type="button" class="btn-ghost btn-small mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button></td>
       </tr>
       {{end}}
     </tbody>

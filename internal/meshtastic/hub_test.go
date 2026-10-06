@@ -2,7 +2,6 @@ package meshtastic
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -624,8 +623,14 @@ func TestTraceroute(t *testing.T) {
 	if !pkt[0].GetWantAck() || !pkt[0].GetDecoded().GetWantResponse() {
 		t.Fatalf("probe flags = ack:%v resp:%v, want both true", pkt[0].GetWantAck(), pkt[0].GetDecoded().GetWantResponse())
 	}
-	if got := binary.LittleEndian.Uint32(pkt[0].GetDecoded().GetPayload()); got != 0xef010203 {
-		t.Fatalf("payload = %08x, want ef010203", got)
+	// The payload is an empty RouteDiscovery protobuf (the firmware 2.x
+	// format: relays extend it along the way).
+	var rd pb.RouteDiscovery
+	if err := proto.Unmarshal(pkt[0].GetDecoded().GetPayload(), &rd); err != nil {
+		t.Fatalf("payload is not a RouteDiscovery: %v", err)
+	}
+	if len(rd.GetRoute()) != 0 || len(rd.GetSnrTowards()) != 0 {
+		t.Fatalf("probe payload must start empty, got route=%v snr=%v", rd.GetRoute(), rd.GetSnrTowards())
 	}
 
 	// The destination answers with the route: one intermediate hop at

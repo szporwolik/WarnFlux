@@ -10,7 +10,6 @@ package meshtastic
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -953,6 +952,9 @@ func (h *Hub) runSession(ctx context.Context) error {
 	conn.Handle(&pb.QueueStatus{}, func(msg proto.Message) error {
 		h.lastRadio.Store(time.Now().UnixNano())
 		if qs, ok := msg.(*pb.QueueStatus); ok {
+			if qs.GetRes() != int32(pb.Routing_NONE) && h.logger != nil {
+				h.logger.Warn("meshtastic: device rejected a send", "res", qs.GetRes(), "id", qs.GetMeshPacketId())
+			}
 			h.pairQueueStatus(qs.GetMeshPacketId())
 		}
 		return nil
@@ -1566,6 +1568,14 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	h.markStatus(ps, status)
 }
 
+// tracerouteHopLimit is the hop budget of one route probe: far above
+// the device default (3) so the probe survives long relay chains.
+const tracerouteHopLimit = 7
+
+// tracerouteProbeGap re-sends the probe once when the radio stays
+// silent: single probes to far nodes are lossy on a busy mesh.
+const tracerouteProbeGap = 12 * time.Second
+
 // Traceroute probes the radio path to addr (8-hex node id): the device
 // sends a TRACEROUTE_APP frame and the nodes along the way answer with
 // route-discovery frames. The call waits up to timeout for the best
@@ -1591,52 +1601,76 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 		return TracerouteResult{}, errors.New("meshtastic: device not connected")
 	}
 
-	// The probe payload is the destination node number, little-endian.
-	// The frame carries want_ack + want_response: the firmware only
-	// processes traceroute frames flagged that way (the route_reply
-	// frame IS the answer). A placeholder rides the send bookkeeping so
-	// the device's routing acknowledgment settles it and never steals an
-	// unrelated pending text message to the same node.
-	payload := make([]byte, 4)
-	binary.LittleEndian.PutUint32(payload, uint32(dest))
-	probe := &pendingSend{
-		to:      uint32(dest),
-		at:      time.Now(),
-		lastTry: time.Now(),
-		text:    "\x00traceroute", // never matches a history row
-		wantAck: true,
-		probe:   true,
+	// The probe payload is an EMPTY RouteDiscovery protobuf (the firmware
+	// 2.x format): every relay appends its id + SNR and the destination
+	// answers with the accumulated route. The legacy 4-byte destination
+	// payload only ever produced an empty route from direct neighbours.
+	payload, err := proto.Marshal(&pb.RouteDiscovery{})
+	if err != nil {
+		return TracerouteResult{}, fmt.Errorf("meshtastic: traceroute payload: %w", err)
 	}
-	h.sendMu.Lock()
-	h.echoQueue = append(h.echoQueue, probe)
-	h.sendMu.Unlock()
-	defer func() {
-		h.sendMu.Lock()
-		h.dropPendingLocked(probe)
-		h.sendMu.Unlock()
-	}()
+
 	ch := h.registerRouteWaiter(uint32(dest))
 	defer h.unregisterRouteWaiter(uint32(dest), ch)
-	if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
-		To:      uint32(dest),
-		WantAck: true,
-		PayloadVariant: &pb.MeshPacket_Decoded{
-			Decoded: &pb.Data{Portnum: pb.PortNum_TRACEROUTE_APP, Payload: payload, WantResponse: true},
-		},
-	}}}); err != nil {
-		return TracerouteResult{}, fmt.Errorf("meshtastic: traceroute send failed: %w", err)
+
+	probes := make([]*pendingSend, 0, 2)
+	defer func() {
+		h.sendMu.Lock()
+		for _, p := range probes {
+			h.dropPendingLocked(p)
+		}
+		h.sendMu.Unlock()
+	}()
+	send := func() error {
+		// Each probe rides the send path as a placeholder so its ROUTING
+		// ack pairs up like any other send.
+		p := &pendingSend{
+			to:      uint32(dest),
+			at:      time.Now(),
+			lastTry: time.Now(),
+			text:    "\x00traceroute", // never matches a history row
+			wantAck: true,
+			probe:   true,
+		}
+		h.sendMu.Lock()
+		h.echoQueue = append(h.echoQueue, p)
+		h.sendMu.Unlock()
+		if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+			To:      uint32(dest),
+			WantAck: true,
+			// Reach multi-hop nodes: the device default (3) dies en route to
+			// nodes 4+ hops away and nobody ever answers the probe.
+			HopLimit: tracerouteHopLimit,
+			PayloadVariant: &pb.MeshPacket_Decoded{
+				Decoded: &pb.Data{Portnum: pb.PortNum_TRACEROUTE_APP, Payload: payload, WantResponse: true},
+			},
+		}}}); err != nil {
+			return fmt.Errorf("meshtastic: traceroute send failed: %w", err)
+		}
+		probes = append(probes, p)
+		if h.logger != nil {
+			h.logger.Info("meshtastic: traceroute probe sent", "to", idStr, "timeout", timeout)
+		}
+		return nil
 	}
-	if h.logger != nil {
-		h.logger.Info("meshtastic: traceroute probe sent", "to", idStr, "timeout", timeout)
+	if err := send(); err != nil {
+		return TracerouteResult{}, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	reprobe := time.NewTimer(tracerouteProbeGap)
+	defer reprobe.Stop()
 	best := TracerouteResult{}
 	for {
 		select {
 		case <-ctx.Done():
 			return best, nil
+		case <-reprobe.C:
+			// One re-probe: silence is loss, not a dead route.
+			if err := send(); err != nil && h.logger != nil {
+				h.logger.Warn("meshtastic: traceroute re-probe failed", "to", idStr, "error", err)
+			}
 		case rep := <-ch:
 			res := h.routeResult(rep)
 			if rep.from == uint32(dest) {

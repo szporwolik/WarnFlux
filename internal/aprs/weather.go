@@ -29,6 +29,11 @@ type WeatherReport struct {
 	// the fallback). Not serialized — the station document has Position.
 	Latitude  float64 `json:"-"`
 	Longitude float64 `json:"-"`
+	// Origin classifies the last delivery ("rf"/"internet") and
+	// ReceivedVia lists the backends that delivered the report. Filled
+	// by the hub for /weather; not part of the wire document.
+	Origin      string   `json:"-"`
+	ReceivedVia []string `json:"-"`
 
 	WindDirectionDeg *float64 `json:"wind_direction_deg,omitempty"`
 	WindSpeedKmh     *float64 `json:"wind_speed_kmh,omitempty"`

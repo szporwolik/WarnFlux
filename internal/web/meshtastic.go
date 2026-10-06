@@ -33,7 +33,11 @@ type meshtasticMessageView struct {
 	Hops       int
 	// Operator is the admin username behind a tx row (rx rows empty).
 	Operator string
-	Text     string
+	// Recipient is the 8-hex target of a tx direct message (empty for
+	// broadcasts and rx rows); RecipientName is its display name.
+	Recipient     string
+	RecipientName string
+	Text          string
 	// Status is the tx delivery state ("", sent, delivered, failed).
 	Status string
 	At     time.Time
@@ -348,6 +352,13 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 			view.SenderName = meshtasticOwnerFor(owners, id)
 			if view.SenderName == "" {
 				view.SenderName = nodeNames[id]
+			}
+		}
+		if rid := meshtasticNormalizeID(m.Recipient); rid != "" {
+			view.Recipient = rid
+			view.RecipientName = meshtasticOwnerFor(owners, rid)
+			if view.RecipientName == "" {
+				view.RecipientName = nodeNames[rid]
 			}
 		}
 		v.Messages = append(v.Messages, view)

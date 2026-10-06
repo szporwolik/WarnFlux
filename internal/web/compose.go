@@ -171,8 +171,10 @@ type composeView struct {
 	AprsLat float64
 	AprsLon float64
 
-	// OfflineMode switches the picker map to the local tile tree.
+	// OfflineMode switches the picker map to the local tile tree;
+	// ForceTiles does the same even while online (the Config switch).
 	OfflineMode bool
+	ForceTiles  bool
 
 	NavDashboard     bool
 	NavUsers         bool

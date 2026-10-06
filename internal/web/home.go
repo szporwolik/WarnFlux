@@ -123,7 +123,9 @@ type homeView struct {
 
 	// OfflineMode turns the header banner on and tells the map to use
 	// the station's local tile tree instead of internet providers.
+	// ForceTiles does the tile part only, even while online (Config).
 	OfflineMode bool
+	ForceTiles  bool
 }
 
 // emcomChipView is one EMCOM network's readiness status as shown in the
@@ -270,6 +272,7 @@ func (s *Server) buildHomeView(lang string) homeView {
 		Commit:      s.commit,
 		RepoURL:     repoURL,
 		OfflineMode: s.OfflineMode(),
+		ForceTiles:  s.forceTiles.Load(),
 	}
 
 	// One EMCOM read serves both the hazard list and the header chips.

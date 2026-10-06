@@ -67,6 +67,9 @@ type configView struct {
 	// MeshAlerts is the runtime Meshtastic announcements switch (hazard
 	// channel posts + direct messages).
 	MeshAlerts bool
+	// ForceLocalTiles forces every map onto the local tile tree even
+	// while the station is online.
+	ForceLocalTiles bool
 	// Msg is the flash message after a toggle.
 	Msg string
 	// Error carries the banner after a rejected EMCOM management
@@ -165,6 +168,7 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		MqttRows:        s.mqttRows(),
 		EmcomNetworks:   s.emcomNetworkViews(lang),
 		MeshAlerts:      meshtastic.AlertsEnabled(),
+		ForceLocalTiles: s.forceTiles.Load(),
 	}
 }
 
@@ -184,6 +188,8 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		v.Msg = i18n.T(lang, "emcom.flash.deleted")
 	case "mesh":
 		v.Msg = i18n.T(lang, "config.mesh.saved")
+	case "tiles":
+		v.Msg = i18n.T(lang, "config.tiles.saved")
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "configpage", v)
@@ -229,6 +235,33 @@ func (s *Server) handleConfigMqtt(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("mqtt publish mask updated by admin",
 		"user", sess.username, "categories", mqttpolicy.EnabledKeys(mask))
 	http.Redirect(w, r, "/config?msg=mqtt", http.StatusSeeOther)
+}
+
+// handleConfigTiles flips the local-tile forcing switch: ON means every
+// map serves the operator-provided tile tree even while the station is
+// online (no internet tile provider is ever contacted). Admin-only.
+func (s *Server) handleConfigTiles(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		if err == nil {
+			return
+		}
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	switch strings.TrimSpace(r.PostFormValue("tiles")) {
+	case "on":
+		s.forceTiles.Store(true)
+	case "off":
+		s.forceTiles.Store(false)
+	default:
+		http.Error(w, "invalid value", http.StatusBadRequest)
+		return
+	}
+	s.audit(sess.username, "config-tiles", r.PostFormValue("tiles"))
+	s.logger.Info("local tile forcing toggled by admin",
+		"user", sess.username, "state", r.PostFormValue("tiles"))
+	http.Redirect(w, r, "/config?msg=tiles", http.StatusSeeOther)
 }
 
 // handleConfigMesh flips the Meshtastic announcements switch: OFF means

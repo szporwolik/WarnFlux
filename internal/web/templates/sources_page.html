@@ -3,7 +3,7 @@
 <head>
   {{template "public-head" .}}
 </head>
-<body class="home" data-offline="{{if .OfflineMode}}1{{else}}0{{end}}">
+<body class="home" data-offline="{{if or .OfflineMode .ForceTiles}}1{{else}}0{{end}}">
   {{template "public-top" .}}
   {{template "public-banners" .}}
   <main class="home-main home-single">

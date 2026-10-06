@@ -114,6 +114,7 @@ type meshtasticView struct {
 	NavGroups        bool
 	NavLogs          bool
 	NavTraffic       bool
+	NavWebsite       bool
 	NavNotifications bool
 	NavHealth        bool
 	NavConfig        bool

@@ -45,6 +45,7 @@ type trafficView struct {
 	NavMeshtastic    bool
 	NavMeshMap       bool
 	NavTraffic       bool
+	NavWebsite       bool
 	NavNotifications bool
 
 	NavHealth  bool

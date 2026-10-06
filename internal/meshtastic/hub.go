@@ -1720,12 +1720,12 @@ func (h *Hub) routeResult(rep routeReply) TracerouteResult {
 	if len(snrs) == 0 {
 		snrs = rep.route.GetSnrTowards()
 	}
+	// Name lookups happen under the lock: the node directory is mutated
+	// by the session goroutine while probes read it here.
 	h.mu.Lock()
-	nodes := h.nodes
-	h.mu.Unlock()
 	for i, id := range route {
 		hop := TracerouteHop{ID: fmt.Sprintf("%08x", id)}
-		if n := nodes[hop.ID]; n != nil && n.Name != "" {
+		if n := h.nodes[hop.ID]; n != nil && n.Name != "" {
 			hop.Name = n.Name
 		}
 		if i < len(snrs) {
@@ -1733,6 +1733,7 @@ func (h *Hub) routeResult(rep routeReply) TracerouteResult {
 		}
 		res.Hops = append(res.Hops, hop)
 	}
+	h.mu.Unlock()
 	// The answering node closes the route (mirrors ParseRoute's
 	// sender → intermediates → receiver shape).
 	last := fmt.Sprintf("%08x", rep.from)

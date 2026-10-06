@@ -56,7 +56,6 @@ type healthRow struct {
 type healthView struct {
 	Lang    string
 	Overall string // ok | degraded
-	Ingest  []healthRow
 	DB      healthRow
 	Queue   healthRow
 	Pending healthRow
@@ -111,33 +110,6 @@ func (s *Server) buildHealthView(lang string) healthView {
 		if as.State == action.StateDegraded {
 			bad = true
 		}
-	}
-
-	// Public HTTP ingest endpoints.
-	var ingestIDs []string
-	for id := range s.ingest {
-		ingestIDs = append(ingestIDs, id)
-	}
-	sort.Strings(ingestIDs)
-	for _, id := range ingestIDs {
-		probe, ok := s.ingest[id].(ingestProbe)
-		if !ok {
-			continue
-		}
-		row := healthRow{Name: id + " (ingest)"}
-		c := probe.Counters()
-		row.Detail = fmt.Sprintf("accepted=%d rejected=%d auth_failed=%d rate_limited=%d forbidden=%d",
-			c.Accepted, c.Rejected, c.AuthFailed, c.RateLimited, c.Forbidden)
-		switch {
-		case probe.Connected():
-			row.BadgeClass, row.BadgeText = "ok", "OK"
-		case probe.Started():
-			row.BadgeClass, row.BadgeText = "bad", i18n.T(lang, "health.badge.no_broker")
-			bad = true
-		default:
-			row.BadgeClass, row.BadgeText = "muted", i18n.T(lang, "health.badge.not_started")
-		}
-		v.Ingest = append(v.Ingest, row)
 	}
 
 	// Database.
@@ -209,4 +181,36 @@ func (s *Server) buildHealthView(lang string) healthView {
 		v.Overall = "degraded"
 	}
 	return v
+}
+
+// ingestHealthRows renders one health row per public HTTP ingest
+// endpoint. The rows live in the Sources & Outputs card on the
+// dashboard (they are sources after all), not in the health card.
+func (s *Server) ingestHealthRows() []healthRow {
+	var ids []string
+	for id := range s.ingest {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var out []healthRow
+	for _, id := range ids {
+		probe, ok := s.ingest[id].(ingestProbe)
+		if !ok {
+			continue
+		}
+		row := healthRow{Name: id + " (ingest)"}
+		c := probe.Counters()
+		row.Detail = fmt.Sprintf("accepted=%d rejected=%d auth_failed=%d rate_limited=%d forbidden=%d",
+			c.Accepted, c.Rejected, c.AuthFailed, c.RateLimited, c.Forbidden)
+		switch {
+		case probe.Connected():
+			row.BadgeClass, row.BadgeText = "ok", "OK"
+		case probe.Started():
+			row.BadgeClass, row.BadgeText = "bad", i18n.T(i18n.LangEN, "health.badge.no_broker")
+		default:
+			row.BadgeClass, row.BadgeText = "muted", i18n.T(i18n.LangEN, "health.badge.not_started")
+		}
+		out = append(out, row)
+	}
+	return out
 }

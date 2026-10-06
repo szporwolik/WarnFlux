@@ -4,17 +4,6 @@
   </h2>
   <p class="muted log-hint">{{tr .Lang "health.hint"}}</p>
 
-  {{if .Ingest}}
-  <div class="health-group">
-    <h3>{{tr .Lang "health.ingest"}}</h3>
-    {{range .Ingest}}<div class="health-row">
-      <span class="health-name"><strong>{{.Name}}</strong></span>
-      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
-      <span class="health-detail">{{.Detail}}</span>
-    </div>{{end}}
-  </div>
-  {{end}}
-
   <div class="health-group">
     <h3>{{tr .Lang "health.infra"}}</h3>
     <div class="health-row">

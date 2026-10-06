@@ -184,7 +184,26 @@
     </table>
   </div>
   {{end}}
-  {{if not (or .Sources .Outputs)}}
+  {{if .Ingest}}
+  <h3>{{tr .Lang "health.ingest"}}</h3>
+  <div class="table-wrap">
+    <table class="plugins">
+      <thead>
+        <tr><th>{{tr .Lang "dash.source"}}</th><th>{{tr .Lang "dash.status"}}</th><th>{{tr .Lang "dash.detail"}}</th></tr>
+      </thead>
+      <tbody>
+        {{range .Ingest}}
+        <tr>
+          <td><strong>{{.Name}}</strong></td>
+          <td><span class="badge {{.BadgeClass}}">{{.BadgeText}}</span></td>
+          <td class="muted">{{.Detail}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{if not (or .Sources .Outputs .Ingest)}}
   <p class="empty">{{tr .Lang "dash.no_plugins"}}</p>
   {{end}}
 </section>

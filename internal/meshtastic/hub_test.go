@@ -1205,6 +1205,36 @@ func TestNodeHopsAndLastSeen(t *testing.T) {
 	}
 }
 
+// TestResolveNode pins the query resolution for contact sends: an
+// 8-hex id, a name, a short name and a name prefix all map onto the
+// canonical id; unknown queries stay empty.
+func TestResolveNode(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hub, err := NewHub(Config{Enabled: false}, logger)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	hub.mu.Lock()
+	hub.nodes["b2a73ef8"] = &Node{ID: "b2a73ef8", Name: "format HQ", Short: "foip"}
+	hub.nodes["aa010203"] = &Node{ID: "aa010203", Name: "Some Other", Short: "OTR"}
+	hub.nodes["cc040506"] = &Node{ID: "cc040506", Name: "Server Node", Short: "EDG"}
+	hub.mu.Unlock()
+
+	for _, q := range []string{"b2a73ef8", "B2A73EF8", "!b2a73ef8", "format hq", "FORMAT HQ", "foip", "format", "hq"} {
+		if got := hub.ResolveNode(q); got != "b2a73ef8" {
+			t.Fatalf("ResolveNode(%q) = %q, want b2a73ef8", q, got)
+		}
+	}
+	if got := hub.ResolveNode("nope"); got != "" {
+		t.Fatalf("ResolveNode(nope) = %q, want empty", got)
+	}
+	// An ambiguous substring query must stay unresolved: "er" appears
+	// in both "Some Other" and "Server Node".
+	if got := hub.ResolveNode("er"); got != "" {
+		t.Fatalf("ResolveNode(er) = %q, want empty (ambiguous)", got)
+	}
+}
+
 // TestHubEmcomBeacon pins the periodic presence beacon: identity,
 // uptime and node count broadcast on the configured emcom channel — and
 // never on the PRIMARY channel.

@@ -468,6 +468,12 @@
     }
 
     function poll() {
+      // The logs page hosts four tabs; only the visible panel polls.
+      var outer = viewer.closest("#panel-traffic");
+      var inner = viewer.closest("#traffic-view");
+      if ((outer && outer.hidden) || (inner && inner.hidden)) {
+        return;
+      }
       fetch("/partials/traffic?after=" + after, {
         headers: { "Accept": "application/json" },
         credentials: "same-origin",
@@ -3298,12 +3304,19 @@
     }
     tabs.forEach(function (tab) {
       tab.addEventListener("click", function () {
-        tabs.forEach(function (t) {
+        // Tabs act within their own group: the top-level strip of a
+        // page toggles the direct child panels, a nested strip (e.g.
+        // the traffic sub-tabs inside the Logs MQTT tab) toggles only
+        // its own panels.
+        var group = tab.closest(".page-tabs");
+        var scope = group ? group.parentElement : document;
+        var siblings = group ? group.querySelectorAll(".page-tab[data-tab]") : tabs;
+        siblings.forEach(function (t) {
           var active = t === tab;
           t.classList.toggle("active", active);
           t.setAttribute("aria-selected", active ? "true" : "false");
         });
-        document.querySelectorAll(".page-panel[data-panel]").forEach(function (p) {
+        scope.querySelectorAll(":scope > .page-panel[data-panel]").forEach(function (p) {
           var show = p.getAttribute("data-panel") === tab.getAttribute("data-tab");
           if (p.hidden !== !show) {
             p.hidden = !show;

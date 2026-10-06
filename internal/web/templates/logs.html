@@ -13,7 +13,7 @@
   {{template "sidebar" .}}
   <main class="users-main">
     <div class="page-tabs" role="tablist">
-      <button type="button" class="page-tab{{if ne .Tab "audit"}}{{if ne .Tab "notif"}} active{{end}}{{end}}" role="tab" aria-selected="{{if or (eq .Tab "audit") (eq .Tab "notif")}}false{{else}}true{{end}}" data-tab="panel-applog">
+      <button type="button" class="page-tab{{if or (eq .Tab "audit") (eq .Tab "notif") (eq .Tab "traffic")}} active{{end}}" role="tab" aria-selected="{{if or (eq .Tab "audit") (eq .Tab "notif") (eq .Tab "traffic")}}true{{else}}false{{end}}" data-tab="panel-applog">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "logs.tab.app"}}
       </button>
       <button type="button" class="page-tab{{if eq .Tab "audit"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "audit"}}true{{else}}false{{end}}" data-tab="panel-audit">
@@ -22,8 +22,11 @@
       <button type="button" class="page-tab{{if eq .Tab "notif"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "notif"}}true{{else}}false{{end}}" data-tab="panel-notif">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "logs.tab.notif"}}
       </button>
+      <button type="button" class="page-tab{{if eq .Tab "traffic"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "traffic"}}true{{else}}false{{end}}" data-tab="panel-traffic">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr .Lang "logs.tab.traffic"}}
+      </button>
     </div>
-    <section class="card log-card page-panel" id="panel-applog" data-panel="panel-applog"{{if or (eq .Tab "audit") (eq .Tab "notif")}} hidden{{end}}>
+    <section class="card log-card page-panel" id="panel-applog" data-panel="panel-applog"{{if or (eq .Tab "audit") (eq .Tab "notif") (eq .Tab "traffic")}} hidden{{end}}>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "logs.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "logs.hint"}}</p>
       <div id="log-viewer" class="log-viewer" data-after="0"></div>
@@ -40,8 +43,7 @@
       <div id="notif-list" class="notif-list">
         {{range .Trails}}{{template "notif-item" .}}{{else}}<p class="empty">{{tr $.Lang "notif.empty"}}</p>{{end}}
       </div>
-    </section>
-  </main>
+    </section>    {{template "traffic" .Traffic}}  </main>
   {{template "footer" .}}
   <script src="/static/app.js?v={{.Commit}}" defer></script>
 </body>

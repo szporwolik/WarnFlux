@@ -90,8 +90,9 @@ func (b *LogBuffer) Snapshot(after int64) []logLine {
 	return out
 }
 
-// logsView is the full /logs page model: one page, three tabs — the app
-// log tail, the user-action audit trail and the notification history.
+// logsView is the full /logs page model: one page, four tabs — the app
+// log tail, the user-action audit trail, the notification history and
+// the MQTT traffic viewer.
 type logsView struct {
 	Lang     string
 	AppTitle string
@@ -106,7 +107,8 @@ type logsView struct {
 	Username string
 	Role     string
 
-	// Tab selects the active panel: "applog" (default), "audit", "notif".
+	// Tab selects the active panel: "applog" (default), "audit", "notif"
+	// or "traffic".
 	Tab string
 	// FocusKey highlights one notification trail (?key=… deep links).
 	FocusKey string
@@ -114,6 +116,8 @@ type logsView struct {
 	Trails []trailView
 	// MaxEntries bounds the audit retention hint.
 	MaxEntries int
+	// Traffic carries the MQTT traffic panel model.
+	Traffic trafficView
 
 	NavDashboard  bool
 	NavUsers      bool
@@ -131,12 +135,14 @@ type logsView struct {
 	NavAccount    bool
 }
 
-// handleLogsPage renders the merged logs page with its three tabs.
+// handleLogsPage renders the merged logs page with its four tabs.
 func (s *Server) handleLogsPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	lang := s.langFor(r)
 	tab := r.URL.Query().Get("tab")
-	if tab != "audit" && tab != "notif" {
+	switch tab {
+	case "audit", "notif", "traffic":
+	default:
 		tab = "applog"
 	}
 	focus := r.URL.Query().Get("key")
@@ -154,6 +160,8 @@ func (s *Server) handleLogsPage(w http.ResponseWriter, r *http.Request) {
 	view.FocusKey = focus
 	view.MaxEntries = max
 	view.Trails = wrapTrails(lang, focus, s.recentTrails(notificationsPerPage), s.recentDeliveries(deliveriesPerPage))
+	view.Traffic = s.baseTrafficView()
+	view.Traffic.Tab = tab
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "logs", view)
 }

@@ -1,6 +1,17 @@
 package web
 
-import "net/http"
+import (
+	"net/http"
+	"sort"
+	"strings"
+)
+
+// aprsContactView is one recipient suggestion for the message form: the
+// registered callsign (SSID kept) plus the owning username.
+type aprsContactView struct {
+	Callsign string
+	Username string
+}
 
 // aprsMapView is the /aprs admin section model: a combined page with two
 // tabs — the station map (every station the APRS hub currently holds,
@@ -32,7 +43,9 @@ type aprsMapView struct {
 
 	// Messages tab (history payload + feedback; see aprsMessagesData).
 	aprsMessagesData
-	Calls  []string
+	// Calls carries the recipient suggestions of the send form: every
+	// APRS callsign registered for the users (SSID kept, sorted).
+	Calls  []aprsContactView
 	Error  string
 	Sent   bool
 	Beacon bool
@@ -90,7 +103,19 @@ func (s *Server) handleAPRSPage(w http.ResponseWriter, r *http.Request) {
 	v.Beacon = r.URL.Query().Get("beacon") != ""
 	v.Dir = "all"
 	if s.users != nil {
-		v.Calls, _ = s.users.AllAPRSCallsigns()
+		if owners, err := s.users.APRSCallsignOwners(); err == nil {
+			v.Calls = make([]aprsContactView, 0, len(owners))
+			for callsign, username := range owners {
+				v.Calls = append(v.Calls, aprsContactView{Callsign: callsign, Username: username})
+			}
+			sort.Slice(v.Calls, func(i, j int) bool {
+				ci, cj := strings.ToLower(v.Calls[i].Callsign), strings.ToLower(v.Calls[j].Callsign)
+				if ci != cj {
+					return ci < cj
+				}
+				return v.Calls[i].Callsign < v.Calls[j].Callsign
+			})
+		}
 	}
 	if s.aprsMsgs != nil {
 		s.fillAPRSMessages(r, &v.aprsMessagesData)

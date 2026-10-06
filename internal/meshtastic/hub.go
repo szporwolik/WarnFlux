@@ -830,6 +830,30 @@ func (h *Hub) SetActiveHazardSource(fn func() []ActiveHazard) {
 // dedicated emcom-channel tab.
 func (h *Hub) EmcomChannel() int { return h.cfg.EmcomChannel }
 
+// NodeHops reports the radio path length of the last packet heard from
+// addr (0 = direct), or -1 when the node is unknown.
+func (h *Hub) NodeHops(addr string) int {
+	id := normalizeMeshID(addr)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if n := h.nodes[id]; n != nil {
+		return n.Hops
+	}
+	return -1
+}
+
+// NodeLastSeen reports when addr's last packet was heard (zero time
+// when the node is unknown).
+func (h *Hub) NodeLastSeen(addr string) time.Time {
+	id := normalizeMeshID(addr)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if n := h.nodes[id]; n != nil {
+		return n.LastSeen
+	}
+	return time.Time{}
+}
+
 // TabChannel is the channel index that owns the extra message-history
 // tab: the read-only watch channel when configured, otherwise the emcom
 // channel. The tab is purely a view — it never transmits.
@@ -1592,9 +1616,14 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 // the device default (3) so the probe survives long relay chains.
 const tracerouteHopLimit = 7
 
-// tracerouteProbeGap re-sends the probe once when the radio stays
-// silent: single probes to far nodes are lossy on a busy mesh.
-const tracerouteProbeGap = 12 * time.Second
+// tracerouteProbeGap spaces the probe re-sends (one every gap while
+// nothing comes back) and tracerouteExtraProbes is how many re-sends
+// follow the first probe: silence is loss, not a dead route, and a
+// busy mesh drops a lot of single probes.
+const (
+	tracerouteProbeGap    = 12 * time.Second
+	tracerouteExtraProbes = 2
+)
 
 // Traceroute probes the radio path to addr (8-hex node id): the device
 // sends a TRACEROUTE_APP frame and the nodes along the way answer with
@@ -1708,6 +1737,7 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 
 	reprobe := time.NewTimer(tracerouteProbeGap)
 	defer reprobe.Stop()
+	reprobesLeft := tracerouteExtraProbes
 	started := time.Now()
 	best := TracerouteResult{}
 	for {
@@ -1716,9 +1746,15 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 			best.ElapsedMS = time.Since(started).Milliseconds()
 			return best, nil
 		case <-reprobe.C:
-			// One re-probe: silence is loss, not a dead route.
-			if err := send(); err != nil && h.logger != nil {
-				h.logger.Warn("meshtastic: traceroute re-probe failed", "to", idStr, "error", err)
+			// Re-probe while silence persists (lossy mesh, busy
+			// channel): each re-send restarts the firmware's own
+			// want_ack retransmission cycle.
+			if reprobesLeft > 0 {
+				reprobesLeft--
+				if err := send(); err != nil && h.logger != nil {
+					h.logger.Warn("meshtastic: traceroute re-probe failed", "to", idStr, "error", err)
+				}
+				reprobe.Reset(tracerouteProbeGap)
 			}
 		case rep := <-ch:
 			res := h.routeResult(rep)

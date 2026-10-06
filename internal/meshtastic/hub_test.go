@@ -1175,6 +1175,36 @@ func TestTabChannel(t *testing.T) {
 	}
 }
 
+// TestNodeHopsAndLastSeen pins the traceroute planning accessors: hops
+// and last-seen of a heard node (unknown nodes report -1 / zero time).
+func TestNodeHopsAndLastSeen(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hub, err := NewHub(Config{Enabled: false}, logger)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	ts := time.Now().Add(-2 * time.Hour)
+	hub.mu.Lock()
+	hub.nodes["aa010203"] = &Node{ID: "aa010203", Hops: 4, LastSeen: ts}
+	hub.mu.Unlock()
+
+	if got := hub.NodeHops("aa010203"); got != 4 {
+		t.Fatalf("NodeHops = %d, want 4", got)
+	}
+	if got := hub.NodeHops("AA010203"); got != 4 {
+		t.Fatalf("NodeHops (uppercase id) = %d, want 4", got)
+	}
+	if got := hub.NodeHops("ffffffff"); got != -1 {
+		t.Fatalf("NodeHops (unknown) = %d, want -1", got)
+	}
+	if got := hub.NodeLastSeen("aa010203"); !got.Equal(ts) {
+		t.Fatalf("NodeLastSeen = %v, want %v", got, ts)
+	}
+	if got := hub.NodeLastSeen("ffffffff"); !got.IsZero() {
+		t.Fatalf("NodeLastSeen (unknown) = %v, want zero time", got)
+	}
+}
+
 // TestHubEmcomBeacon pins the periodic presence beacon: identity,
 // uptime and node count broadcast on the configured emcom channel — and
 // never on the PRIMARY channel.

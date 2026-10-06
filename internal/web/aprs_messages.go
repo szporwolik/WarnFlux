@@ -40,38 +40,13 @@ type aprsMessageView struct {
 	Bulletin bool
 }
 
-// aprsMessagesView is the admin APRS message history page model.
-type aprsMessagesView struct {
+// aprsMessagesData is the durable APRS message-history payload shared by
+// the combined APRS section (/aprs, messages tab) and the polled
+// fragment (/partials/messages).
+type aprsMessagesData struct {
+	// Lang is stamped by renderL so the {{tr}} calls in the shared
+	// aprs_msgs template resolve in the user's UI language.
 	Lang     string
-	AppTitle string
-	Name     string
-	Header1  string
-	Header2  string
-	Tagline  string
-	Version  string
-	Commit   string
-	RepoURL  string
-	CSRF     string
-	Username string
-	Role     string
-
-	NavDashboard     bool
-	NavUsers         bool
-	NavGroups        bool
-	NavLogs          bool
-	NavTraffic       bool
-	NavNotifications bool
-	NavHealth        bool
-	NavConfig        bool
-	NavCompose       bool
-	NavEmcom         bool
-	NavAccount       bool
-	NavAudit         bool
-	NavMessages      bool
-	NavAPRS          bool
-	NavMeshMap       bool
-	NavMeshtastic    bool
-
 	Messages []aprsMessageView
 	Dir      string // all | rx | tx
 	Page     int
@@ -79,57 +54,22 @@ type aprsMessagesView struct {
 	From     int
 	To       int
 	Total    int
-
-	// Calls lists the registered user callsigns for the send-form picker.
-	Calls []string
-
-	// Send-form feedback (query flashes).
-	Error  string
-	Sent   bool
-	Beacon bool
 }
 
-// handleAPRSMessagesPage renders the admin view of every received and sent
-// APRS message, newest first, paginated, with an rx/tx filter. The history
-// lives in the database and survives restarts.
+// handleAPRSMessagesPage redirects to the combined APRS section: the
+// message history now lives on the messages tab of /aprs. Kept so old
+// links and the send-form feedback URLs keep working.
 func (s *Server) handleAPRSMessagesPage(w http.ResponseWriter, r *http.Request) {
-	sess := s.sessions.currentSession(r)
-	v := aprsMessagesView{
-		AppTitle:    s.cfg.Title,
-		Name:        s.displayName(),
-		Header1:     s.displayHeader1(),
-		Header2:     s.cfg.Header2,
-		Tagline:     s.cfg.Tagline,
-		Version:     s.version,
-		Commit:      s.commit,
-		RepoURL:     repoURL,
-		CSRF:        sess.csrf,
-		Username:    sess.username,
-		Role:        sess.role,
-		NavMessages: true,
-		Dir:         "all",
+	target := "/aprs?tab=msgs"
+	if q := r.URL.RawQuery; q != "" {
+		target += "&" + q
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	if errMsg := r.URL.Query().Get("err"); errMsg != "" {
-		v.Error = errMsg
-	}
-	v.Sent = r.URL.Query().Get("sent") != ""
-	v.Beacon = r.URL.Query().Get("beacon") != ""
-	if s.users != nil {
-		v.Calls, _ = s.users.AllAPRSCallsigns()
-	}
-
-	if s.aprsMsgs == nil {
-		s.renderL(w, r, "messages", v)
-		return
-	}
-	s.fillAPRSMessages(r, &v)
-	s.renderL(w, r, "messages", v)
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // fillAPRSMessages loads the filtered, paginated message list into the
 // view (shared by the page and the polled fragment).
-func (s *Server) fillAPRSMessages(r *http.Request, v *aprsMessagesView) {
+func (s *Server) fillAPRSMessages(r *http.Request, v *aprsMessagesData) {
 	switch d := r.URL.Query().Get("dir"); d {
 	case "rx", "tx":
 		v.Dir = d
@@ -231,11 +171,7 @@ func aprsOwnerFor(owners map[string]string, callsign string) string {
 // handlePartialMessages serves the polled APRS message-list fragment so
 // the admin sees new traffic as it happens.
 func (s *Server) handlePartialMessages(w http.ResponseWriter, r *http.Request) {
-	sess := s.sessions.currentSession(r)
-	v := aprsMessagesView{
-		CSRF: sess.csrf,
-		Dir:  "all",
-	}
+	v := aprsMessagesData{Dir: "all"}
 	if s.aprsMsgs != nil {
 		s.fillAPRSMessages(r, &v)
 	}
@@ -253,7 +189,7 @@ func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.aprs == nil {
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape(i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
+		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
 		return
 	}
 	to := strings.TrimSpace(r.PostFormValue("to"))
@@ -268,16 +204,16 @@ func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 			key = "messages.send_no_ack"
 		}
 		flash := fmt.Sprintf(i18n.T(lang, key), err)
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape(flash), http.StatusSeeOther)
+		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}
 	if !acked {
 		flash := i18n.T(lang, "messages.send_no_ack")
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape(flash), http.StatusSeeOther)
+		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "aprs-send", to)
-	http.Redirect(w, r, "/messages?sent=1", http.StatusSeeOther)
+	http.Redirect(w, r, "/aprs?tab=msgs&sent=1", http.StatusSeeOther)
 }
 
 // handleAPRSBeacon forces an immediate position beacon through the radio
@@ -289,14 +225,14 @@ func (s *Server) handleAPRSBeacon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.aprs == nil {
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape(i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
+		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
 		return
 	}
 	if err := s.aprs.SendBeacon(r.Context()); err != nil {
 		flash := fmt.Sprintf(i18n.T(s.langFor(r), "messages.beacon_failed"), err)
-		http.Redirect(w, r, "/messages?err="+url.QueryEscape(flash), http.StatusSeeOther)
+		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "aprs-beacon", "")
-	http.Redirect(w, r, "/messages?beacon=1", http.StatusSeeOther)
+	http.Redirect(w, r, "/aprs?tab=msgs&beacon=1", http.StatusSeeOther)
 }

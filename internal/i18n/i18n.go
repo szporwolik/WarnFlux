@@ -185,6 +185,9 @@ var en = map[string]string{
 	"aprsmap.packets":  "Packets",
 	"aprsmap.disabled": "The APRS hub is disabled.",
 
+	"aprs.tab.map":  "Stations map",
+	"aprs.tab.msgs": "Messages",
+
 	"meshmap.title":    "Mesh nodes",
 	"meshmap.hint":     "Every node our Meshtastic radio heard — no operational ring, no time limit. The popup shows the hop count of the last packet, the observed signal kinds, telemetry, last-heard time and distance from our node.",
 	"meshmap.hops":     "Hops",
@@ -902,6 +905,9 @@ var pl = map[string]string{
 	"aprsmap.path":     "Ścieżka",
 	"aprsmap.packets":  "Pakiety",
 	"aprsmap.disabled": "Hub APRS jest wyłączony.",
+
+	"aprs.tab.map":  "Mapa stacji",
+	"aprs.tab.msgs": "Wiadomości",
 
 	"meshmap.title":    "Węzły mesh",
 	"meshmap.hint":     "Każdy węzeł, który usłyszało nasze radio Meshtastic — bez ograniczenia promieniem ani czasem. Dymek pokazuje liczbę hopów ostatniego pakietu, rodzaje odebranych sygnałów, telemetrię, czas ostatniego odbioru i odległość od naszego węzła.",

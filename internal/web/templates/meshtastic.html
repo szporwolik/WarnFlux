@@ -78,6 +78,7 @@
         <form method="post" action="/meshtastic/send" class="mesh-send mesh-send-active">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="hidden" name="target" value="channel">
+          <span class="mesh-send-label">{{tr .Lang "meshtastic.form_channel"}}</span>
           <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}">
             {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
           </select>
@@ -87,8 +88,9 @@
         <form method="post" action="/meshtastic/send" class="mesh-send">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="hidden" name="target" value="contact">
+          <span class="mesh-send-label">{{tr .Lang "meshtastic.form_dm"}}</span>
           <input type="text" name="contact" id="mesh-contact" placeholder="{{tr .Lang "meshtastic.contact_ph"}}" maxlength="8" list="mesh-contacts">
-          <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">{{.Username}}</option>{{end}}</datalist>
+          <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">!{{.ID}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
           <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
           <button type="submit" class="btn-primary">{{tr .Lang "meshtastic.send_contact"}}</button>
         </form>
@@ -516,8 +518,8 @@
         '<span class="wf-pop-sub">' + esc(n.id) + '</span></span></div>' +
         '<div class="wf-pop-body">' + lines.join("<br>") + '</div>' +
         '<div class="wf-pop-actions">' +
-        '<button type="button" class="btn-ghost btn-small mesh-msg" data-id="' + esc(n.id) + '">' + esc(LBL_MSG) + '</button>' +
-        '<button type="button" class="btn-ghost btn-small mesh-trace"' +
+        '<button type="button" class="btn-ghost mesh-msg" data-id="' + esc(n.id) + '">' + esc(LBL_MSG) + '</button>' +
+        '<button type="button" class="btn-ghost mesh-trace"' +
         (stale ? ' disabled title="' + esc(ageText) + '"' : '') +
         ' data-id="' + esc(n.id) + '" data-name="' + esc(n.name || "") + '" data-short="' + esc(n.short_name || "") + '">' +
         esc(LBL_TRACE) + '</button></div></div>';
@@ -583,6 +585,38 @@
         if (n.last_seen) {
           li.appendChild(document.createTextNode(LBL_HEARD + ": " + fmtTime(n.last_seen)));
         }
+        // Stations without a position get the same Trace and Message
+        // actions as the table rows (the radio handles them too).
+        var stale = false;
+        var ageText = "";
+        if (n.last_seen) {
+          var age = Date.now() - new Date(n.last_seen).getTime();
+          if (age > 30 * 60 * 1000) {
+            stale = true;
+            ageText = inactiveText(age);
+          }
+        }
+        var actions = document.createElement("span");
+        actions.className = "mesh-nopos-actions";
+        var msg = document.createElement("button");
+        msg.type = "button";
+        msg.className = "btn-ghost mesh-msg";
+        msg.setAttribute("data-id", n.id);
+        msg.textContent = LBL_MSG;
+        actions.appendChild(msg);
+        var tr = document.createElement("button");
+        tr.type = "button";
+        tr.className = "btn-ghost mesh-trace";
+        tr.setAttribute("data-id", n.id);
+        tr.setAttribute("data-name", n.name || "");
+        tr.setAttribute("data-short", n.short_name || "");
+        if (stale) {
+          tr.disabled = true;
+          tr.title = ageText;
+        }
+        tr.textContent = LBL_TRACE;
+        actions.appendChild(tr);
+        li.appendChild(actions);
         noposEl.appendChild(li);
       });
 
@@ -668,10 +702,10 @@
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}{{if .Stale}} <span class="badge muted">{{.Inactive}}</span>{{end}}</td>
-        <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost btn-small mesh-trace" disabled
+        <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost mesh-trace" disabled
             title="{{.Inactive}}">{{tr $.Lang "meshtastic.trace"}}</button>{{else}}
-          <button type="button" class="btn-ghost btn-small mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}
-          <button type="button" class="btn-ghost btn-small mesh-msg" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">{{tr $.Lang "meshtastic.msg"}}</button></td>
+          <button type="button" class="btn-ghost mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}
+          <button type="button" class="btn-ghost mesh-msg" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">{{tr $.Lang "meshtastic.msg"}}</button></td>
       </tr>
       {{end}}
     </tbody>

@@ -903,6 +903,18 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .mesh-send:not(.mesh-send-active) { opacity: 0.72; }
 .mesh-send:not(.mesh-send-active):hover,
 .mesh-send:not(.mesh-send-active):focus-within { opacity: 1; }
+/* Each send form carries a small full-width label so the channel
+   broadcast and the direct-message form read as separate sections. */
+.mesh-send-label {
+  flex-basis: 100%;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: -0.15rem 0;
+}
+.mesh-nopos-actions { display: inline-flex; gap: 0.4rem; margin-left: 0.6rem; vertical-align: middle; }
 .mesh-send input[name="text"] { flex: 1 1 16rem; }
 .mesh-send .btn-primary { width: auto; flex: none; }
 .aprs-send {

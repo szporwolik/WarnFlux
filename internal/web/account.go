@@ -177,12 +177,10 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The configured admin account is managed in configuration: no
-	// self-service write may touch it, whatever the form says.
-	if sess.role == "admin" {
-		http.Error(w, "the configured admin account is managed in configuration and cannot be edited here", http.StatusForbidden)
-		return
-	}
+	// The configured admin account keeps its username, role and password
+	// in configuration, but contact data and notification subscriptions
+	// are ordinary self-service fields: they persist in the store.
+	adminManaged := sess.role == "admin"
 
 	u, err := s.users.GetUserByUsername(sess.username)
 	if err != nil {
@@ -198,6 +196,10 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(r.PostFormValue("email"))
 	discord := strings.TrimSpace(r.PostFormValue("discord"))
 	password := r.PostFormValue("password")
+	if adminManaged {
+		// The admin password is config-owned and never changes here.
+		password = ""
+	}
 
 	// Group subscriptions: checked boxes stay subscribed; everything
 	// else is an unsubscribe.

@@ -299,7 +299,7 @@
         var strong = document.createElement("strong");
         strong.textContent = displayName(n);
         li.appendChild(strong);
-        li.appendChild(document.createTextNode(hopsLine(n)));
+        li.appendChild(document.createTextNode(" " + hopsLine(n) + " · "));
         if (n.last_seen) {
           li.appendChild(document.createTextNode(LBL_HEARD + ": " + fmtTime(n.last_seen)));
         }

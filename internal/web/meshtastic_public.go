@@ -93,18 +93,25 @@ func (s *Server) handleMeshtasticStations(w http.ResponseWriter, r *http.Request
 			LastSeen: seen, DistanceKM: d, Telemetry: n.Telemetry,
 		})
 	}
-	sort.Slice(nodes, func(i, j int) bool {
-		if nodes[i].DistanceKM != nodes[j].DistanceKM {
-			return nodes[i].DistanceKM < nodes[j].DistanceKM
-		}
-		return nodes[i].Name < nodes[j].Name
-	})
-	sort.Slice(nopos, func(i, j int) bool {
-		if nopos[i].Name != nopos[j].Name {
-			return nopos[i].Name < nopos[j].Name
-		}
-		return nopos[i].ID < nopos[j].ID
-	})
+	if all {
+		// The admin map is a live feed: newest heard first for both the
+		// located pins and the position-less badge list.
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].LastSeen > nodes[j].LastSeen })
+		sort.Slice(nopos, func(i, j int) bool { return nopos[i].LastSeen > nopos[j].LastSeen })
+	} else {
+		sort.Slice(nodes, func(i, j int) bool {
+			if nodes[i].DistanceKM != nodes[j].DistanceKM {
+				return nodes[i].DistanceKM < nodes[j].DistanceKM
+			}
+			return nodes[i].Name < nodes[j].Name
+		})
+		sort.Slice(nopos, func(i, j int) bool {
+			if nopos[i].Name != nopos[j].Name {
+				return nopos[i].Name < nopos[j].Name
+			}
+			return nopos[i].ID < nopos[j].ID
+		})
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(map[string]any{"nodes": nodes, "nopos": nopos}); err != nil {

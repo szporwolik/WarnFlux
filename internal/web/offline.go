@@ -60,8 +60,14 @@ type configView struct {
 	// MqttRows is the long checkbox list of the publish-mask
 	// categories (what WarnFlux may publish to the MQTT broker).
 	MqttRows []configMqttRow
+	// EmcomNetworks lists the managed EMCOM networks (admin-level
+	// add/remove moved here from the operator panel).
+	EmcomNetworks []emcomNetworkView
 	// Msg is the flash message after a toggle.
 	Msg string
+	// Error carries the banner after a rejected EMCOM management
+	// action (re-rendered on the config page).
+	Error string
 }
 
 // configMqttRow is one checkbox row of the publish mask.
@@ -132,10 +138,10 @@ func (s *Server) mqttRows() []configMqttRow {
 	return rows
 }
 
-// handleConfigPage renders the admin-only configuration page.
-func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
-	sess := s.sessions.currentSession(r)
-	v := configView{
+// buildConfigView assembles the shared admin configuration page model
+// (everything except the flash message).
+func (s *Server) buildConfigView(sess *session, lang string) configView {
+	return configView{
 		AppTitle:        s.cfg.Title,
 		Name:            s.displayName(),
 		Header1:         s.displayHeader1(),
@@ -153,14 +159,37 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		TilesOK:         s.tilesAvailable(),
 		InternetSources: s.internetSources(),
 		MqttRows:        s.mqttRows(),
+		EmcomNetworks:   s.emcomNetworkViews(lang),
 	}
+}
+
+// handleConfigPage renders the admin-only configuration page.
+func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	lang := s.langFor(r)
+	v := s.buildConfigView(sess, lang)
 	switch msg := r.URL.Query().Get("msg"); msg {
 	case "on", "off":
-		v.Msg = i18n.T(s.langFor(r), "config.offline."+msg)
+		v.Msg = i18n.T(lang, "config.offline."+msg)
 	case "mqtt":
-		v.Msg = i18n.T(s.langFor(r), "config.mqtt.saved")
+		v.Msg = i18n.T(lang, "config.mqtt.saved")
+	case "emcom-added":
+		v.Msg = i18n.T(lang, "emcom.flash.added")
+	case "emcom-deleted":
+		v.Msg = i18n.T(lang, "emcom.flash.deleted")
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	s.renderL(w, r, "configpage", v)
+}
+
+// renderConfigEmcomError re-renders the config page with an error banner
+// after a rejected EMCOM add/delete action (the management surface).
+func (s *Server) renderConfigEmcomError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	sess := s.sessions.currentSession(r)
+	v := s.buildConfigView(sess, s.langFor(r))
+	v.Error = msg
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
 	s.renderL(w, r, "configpage", v)
 }
 

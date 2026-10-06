@@ -508,9 +508,15 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
   font-weight: 600;
   color: var(--on-brand);
   cursor: pointer;
-  width: 100%;
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
 }
 .btn-primary:hover { background: var(--btn-primary-hi); }
+/* Auth cards are narrow by design: their primary action fills the card. */
+.login-card .btn-primary { width: 100%; }
 
 /* ---- layout ---- */
 /* The dashboard grid stretches to the full width of the window (minus the
@@ -856,7 +862,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
   align-items: center;
   margin-bottom: 0.9rem;
 }
-.mesh-toolbar .mesh-send { flex: 1 1 24rem; margin-bottom: 0; }
+.mesh-toolbar .mesh-send { flex: 0 1 36rem; margin-bottom: 0; }
 .mesh-toolbar .mesh-forms { margin-bottom: 0; }
 /* Same toolbar pattern on the APRS messages page: send form (left) and
    the manual beacon action (right). */
@@ -867,7 +873,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
   align-items: center;
   margin-bottom: 0.9rem;
 }
-.aprs-toolbar .aprs-send { flex: 1 1 24rem; margin-bottom: 0; }
+.aprs-toolbar .aprs-send { flex: 0 1 36rem; margin-bottom: 0; }
 .mesh-send {
   display: flex;
   flex-wrap: wrap;
@@ -1049,6 +1055,9 @@ tr.click-send:hover td { background: var(--surface-hi); }
   font-size: 0.9rem;
   width: 100%;
 }
+/* Wide form rows keep standard control widths instead of stretching. */
+.test-form .field-wide input[type="text"],
+.test-form .field-wide textarea { max-width: 36rem; }
 .test-form input:focus,
 .test-form select:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
 .test-form .field-wide { grid-column: 1 / -1; }
@@ -1214,6 +1223,26 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .row-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: flex-end; align-items: center; }
 .inline-form { margin: 0; display: inline-flex; }
 .users-main .pager { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; }
+
+/* Groups tab: one-line add/edit form with a standard-width name field. */
+.user-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.9rem;
+}
+.user-form input[type="text"] {
+  flex: 0 1 22rem;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.9rem;
+}
+.user-form input[type="text"]:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
+.user-form .btn-primary { width: auto; }
 
 /* ---- users table: group chips ---- */
 .groups-cell { display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; }
@@ -2824,7 +2853,8 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .emcom-add { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: 0.6rem; }
 .emcom-add-label { display: block; font-weight: 600; margin-bottom: 0.4rem; }
 .emcom-add-row { display: flex; gap: 0.6rem; }
-.emcom-add-row input[type="text"] { flex: 1; }
+.emcom-add-row input[type="text"] { flex: 0 1 22rem; }
+.emcom-add-row .btn-primary { width: auto; }
 .emcom-levels { display: grid; gap: 0.7rem; margin: 0.8rem 0; }
 .emcom-level { border-left: 4px solid var(--border); padding: 0.35rem 0.6rem; }
 .emcom-level:nth-child(1) { border-left-color: #607d8b; }

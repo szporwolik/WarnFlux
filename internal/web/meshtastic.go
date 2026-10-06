@@ -581,9 +581,16 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 	}
 	var err error
 	if r.PostFormValue("target") == "contact" {
+		// The contact field accepts an 8-hex id, a node name or a short
+		// name (the directory resolves the latter two) — typing a name
+		// must not bounce with a validation error.
 		id := meshtasticNormalizeID(r.PostFormValue("contact"))
+		if id == "" && s.meshtastic != nil {
+			id = s.meshtastic.ResolveNode(r.PostFormValue("contact"))
+		}
 		if id == "" {
-			http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_node_id")), http.StatusSeeOther)
+			http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(fmt.Sprintf(
+				i18n.T(s.langFor(r), "meshtastic.contact_not_found"), r.PostFormValue("contact"))), http.StatusSeeOther)
 			return
 		}
 		err = s.meshtastic.SendContactMessage(r.Context(), id, text, sess.username)

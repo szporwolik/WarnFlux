@@ -854,6 +854,83 @@ func (h *Hub) NodeLastSeen(addr string) time.Time {
 	return time.Time{}
 }
 
+// ResolveNode maps a node query — an 8-hex id, a name or a short name,
+// case-insensitive — onto the canonical 8-hex id. Unknown queries
+// return "". Resolution order: id, exact name, exact short name, name
+// prefix, then substring matches that are unambiguous (a single
+// candidate) — an ambiguous query stays unresolved instead of sending a
+// message to a random node.
+func (h *Hub) ResolveNode(q string) string {
+	q = strings.TrimSpace(strings.TrimPrefix(q, "!"))
+	if q == "" {
+		return ""
+	}
+	ql := strings.ToLower(q)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if id := normalizeMeshID(q); id != "" {
+		if _, ok := h.nodes[id]; ok {
+			return id
+		}
+	}
+	var nameHit, shortHit, prefixHit string
+	for id, n := range h.nodes {
+		nl := strings.ToLower(n.Name)
+		if nl == ql {
+			if nameHit == "" {
+				nameHit = id
+			}
+			continue
+		}
+		if strings.ToLower(n.Short) == ql {
+			if shortHit == "" {
+				shortHit = id
+			}
+			continue
+		}
+		if prefixHit == "" && strings.HasPrefix(nl, ql) {
+			prefixHit = id
+		}
+	}
+	if nameHit != "" {
+		return nameHit
+	}
+	if shortHit != "" {
+		return shortHit
+	}
+	if prefixHit != "" {
+		return prefixHit
+	}
+	// Substring fallback: only when exactly one node matches, so a
+	// sloppy query can never route a message to an arbitrary node. A
+	// query ambiguous on names stops here — a unique short-name hit
+	// would still be a guess.
+	count, hit := 0, ""
+	for id, n := range h.nodes {
+		if n.Name != "" && strings.Contains(strings.ToLower(n.Name), ql) {
+			count++
+			hit = id
+		}
+	}
+	if count == 1 {
+		return hit
+	}
+	if count > 1 {
+		return ""
+	}
+	count, hit = 0, ""
+	for id, n := range h.nodes {
+		if n.Short != "" && strings.Contains(strings.ToLower(n.Short), ql) {
+			count++
+			hit = id
+		}
+	}
+	if count == 1 {
+		return hit
+	}
+	return ""
+}
+
 // TabChannel is the channel index that owns the extra message-history
 // tab: the read-only watch channel when configured, otherwise the emcom
 // channel. The tab is purely a view — it never transmits.

@@ -341,6 +341,9 @@ var en = map[string]string{
 	"config.mqtt.meshtastic_messages": "Meshtastic message feed (/meshtastic/messages)",
 	"config.mqtt.save":                "Save",
 	"config.mqtt.saved":               "MQTT publish mask updated — the change is live.",
+	"config.emcom.head":               "EMCOM networks",
+	"config.emcom.desc":               "Add and remove the managed EMCOM networks. Operators only move the readiness sliders on the EMCOM panel.",
+	"config.emcom.none":               "No EMCOM networks configured yet.",
 
 	// Home map layer labels (JS + toggles).
 	"map.layer.hazards":    "Messages",
@@ -1091,6 +1094,9 @@ var pl = map[string]string{
 	"config.mqtt.meshtastic_messages": "Kanał wiadomości Meshtastic (/meshtastic/messages)",
 	"config.mqtt.save":                "Zapisz",
 	"config.mqtt.saved":               "Maska publikacji MQTT zaktualizowana — zmiana działa natychmiast.",
+	"config.emcom.head":               "Sieci EMCOM",
+	"config.emcom.desc":               "Dodawaj i usuwaj zarządzane sieci EMCOM. Operatorzy przesuwają tylko suwaki gotowości na panelu EMCOM.",
+	"config.emcom.none":               "Nie skonfigurowano jeszcze żadnej sieci EMCOM.",
 
 	"map.layer.hazards":    "Komunikaty",
 	"map.layer.stations":   "Stacje",

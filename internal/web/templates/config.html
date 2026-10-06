@@ -24,6 +24,7 @@
   <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-gear"></use></svg>{{tr .Lang "config.title"}}</h2>
   <p class="muted log-hint">{{tr .Lang "config.intro"}}</p>
   {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
+  {{if .Error}}{{template "flash-err" .Error}}{{end}}
 
   <div class="health-group">
     <h3>{{tr .Lang "config.offline.head"}}</h3>
@@ -74,5 +75,46 @@
       <button type="submit" class="btn-primary">{{tr .Lang "config.mqtt.save"}}</button>
     </form>
   </div>
+
+  <div class="health-group">
+    <h3>{{tr .Lang "config.emcom.head"}}</h3>
+    <p class="muted">{{tr .Lang "config.emcom.desc"}}</p>
+    {{range .EmcomNetworks}}
+    <div class="health-row">
+      <span class="health-name"><strong>{{.Name}}</strong></span>
+      <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
+        <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
+      </span>
+      <form method="post" action="/config/emcom/{{.Slug}}/delete" class="inline-form" data-emcom-config-delete data-name="{{.Name}}">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button type="submit" class="btn-danger btn-small">{{tr $.Lang "emcom.delete"}}</button>
+      </form>
+    </div>
+    {{else}}
+    <p class="empty">{{tr .Lang "config.emcom.none"}}</p>
+    {{end}}
+    <form method="post" action="/config/emcom/add" class="emcom-add">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label class="emcom-add-label" for="emcom-name">{{tr .Lang "emcom.add_label"}}</label>
+      <div class="emcom-add-row">
+        <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="{{tr .Lang "emcom.add_placeholder"}}" required>
+        <button type="submit" class="btn-primary">{{tr .Lang "emcom.add_btn"}}</button>
+      </div>
+      <p class="muted small">{{tr .Lang "emcom.add_note"}}</p>
+    </form>
+  </div>
 </section>
+<script>
+  // Delete confirmation: the network disappears from the broker and its
+  // active communication is retired.
+  (function () {
+    "use strict";
+    var DEL = "{{tr .Lang "emcom.confirm.delete"}}";
+    document.querySelectorAll("[data-emcom-config-delete]").forEach(function (f) {
+      f.addEventListener("submit", function (e) {
+        if (!confirm(DEL.replace("%s", f.getAttribute("data-name")))) { e.preventDefault(); }
+      });
+    });
+  })();
+</script>
 {{end}}

@@ -441,7 +441,12 @@ func (s *Server) fillMeshtasticNodes(v *meshtasticView) {
 	// the name when the node carries none, and next to the name
 	// otherwise). The public home page never sees this.
 	v.Nodes = make([]meshtasticNodeView, 0, len(v.Snap.Nodes))
-	for _, n := range v.Snap.Nodes {
+	// Newest first: the directory reads like a live feed.
+	ordered := append([]mesh.Node(nil), v.Snap.Nodes...)
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i].LastSeen.After(ordered[j].LastSeen)
+	})
+	for _, n := range ordered {
 		owner := meshtasticOwnerFor(owners, n.ID)
 		name := n.Name
 		if name == "" {

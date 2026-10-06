@@ -56,6 +56,8 @@
               data-lbl-hops="{{tr .Lang "meshtastic.trace_hops"}}"
               data-lbl-direct="{{tr .Lang "meshtastic.trace_direct"}}">
         <h3 id="mesh-trace-title"></h3>
+        <div id="mesh-trace-map" class="mesh-trace-map" hidden></div>
+        <p id="mesh-trace-map-note" class="muted mesh-trace-map-note" hidden></p>
         <div id="mesh-trace-body"></div>
         <div class="modal-actions">
           <button type="button" class="btn-ghost btn-small" id="mesh-trace-close">{{tr .Lang "common.close"}}</button>
@@ -119,9 +121,17 @@
     var dialog = document.getElementById("mesh-trace-dialog");
     var titleEl = document.getElementById("mesh-trace-title");
     var bodyEl = document.getElementById("mesh-trace-body");
+    var mapBox = document.getElementById("mesh-trace-map");
+    var mapNote = document.getElementById("mesh-trace-map-note");
     var closeBtn = document.getElementById("mesh-trace-close");
     if (closeBtn) {
       closeBtn.addEventListener("click", function () { if (dialog && dialog.open) { dialog.close(); } });
+    }
+
+    function escT(s) {
+      var d = document.createElement("div");
+      d.textContent = s == null ? "" : String(s);
+      return d.innerHTML;
     }
 
     function hopLine(h) {
@@ -146,6 +156,116 @@
       if (dialog && !dialog.open) { dialog.showModal(); }
     }
 
+    // --- The flight path: a tiny map inside the dialog showing how the
+    // probe travelled from our station through every relay hop. ---
+    var traceMap = null;
+    var traceLayer = null;
+    var stationsCache = null;
+
+    function loadStations() {
+      if (stationsCache) { return stationsCache; }
+      stationsCache = fetch("/api/meshtastic/stations?all=1", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; });
+      return stationsCache;
+    }
+
+    function tracePin(code, color) {
+      var html = '<span class="wf-badge" style="--wf-bg:' + color + ';width:22px;height:22px">' +
+        '<span style="font-size:0.55rem;font-weight:700">' + escT(code) + '</span></span>';
+      return L.divIcon({ className: "wf-badge-pin", iconSize: [22, 22], iconAnchor: [11, 11], html: html });
+    }
+
+    function renderTraceMap(hops, reached) {
+      if (!window.L || !mapBox) { return; }
+      var adminMap = document.getElementById("mesh-admin-map");
+      loadStations().then(function (st) {
+        var byId = {};
+        if (st) {
+          (st.nodes || []).forEach(function (n) { byId[n.id] = n; });
+          (st.nopos || []).forEach(function (n) { byId[n.id] = n; });
+        }
+        // Our station first, then every hop whose position is known.
+        var pts = [];
+        var ownLat = adminMap ? (parseFloat(adminMap.dataset.ownLat) || 0) : 0;
+        var ownLon = adminMap ? (parseFloat(adminMap.dataset.ownLon) || 0) : 0;
+        if (ownLat && ownLon) {
+          pts.push({ lat: ownLat, lon: ownLon, kind: "self", name: adminMap.dataset.ownName || "WarnFlux" });
+        }
+        var destPlotted = false;
+        hops.forEach(function (h, i) {
+          var n = byId[h.id] || {};
+          var lat = parseFloat(n.latitude) || 0;
+          var lon = parseFloat(n.longitude) || 0;
+          if (lat && lon) {
+            var isDest = i === hops.length - 1;
+            if (isDest) { destPlotted = true; }
+            pts.push({ lat: lat, lon: lon, kind: isDest ? "dest" : "relay",
+              name: h.name || n.name || n.short_name || h.id, id: h.id, snr: h.snr, num: i + 1 });
+          }
+        });
+        if (pts.length < 2) {
+          mapBox.hidden = true;
+          // The destination itself lacks a position: say so under the
+          // list instead of drawing a map that ends mid-air.
+          if (mapNote && hops.length && !destPlotted) {
+            mapNote.textContent = adminMap ? (adminMap.dataset.lblNopos || "position unknown") : "position unknown";
+            mapNote.hidden = false;
+          }
+          return;
+        }
+        if (mapNote) { mapNote.hidden = true; }
+        // Unhide BEFORE the map is created: Leaflet needs a visible
+        // container to size itself, otherwise markers and the polyline
+        // land on an empty viewport.
+        mapBox.hidden = false;
+
+        if (!traceMap) {
+          var OFFLINE = (document.body.getAttribute("data-offline") === "1") || window.WF_OFFLINE === true;
+          var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
+            : (document.documentElement.getAttribute("data-theme") === "light"
+              ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              : "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}");
+          traceMap = L.map(mapBox, { attributionControl: false, zoomControl: false, dragging: false,
+            scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false });
+          L.tileLayer(raster, { maxZoom: 19 }).addTo(traceMap);
+          traceLayer = L.layerGroup().addTo(traceMap);
+        }
+        traceLayer.clearLayers();
+        var latlngs = pts.map(function (p) { return [p.lat, p.lon]; });
+        L.polyline(latlngs, { color: "#8e24aa", weight: 3, dashArray: "6 6", opacity: 0.9 }).addTo(traceLayer);
+        pts.forEach(function (p, i) {
+          var color = "#8e24aa";
+          var code = i === 0 ? "ME" : String(p.num || i);
+          if (p.kind === "dest") { color = reached ? "#2e7d32" : "#c62828"; code = reached ? "✓" : "✗"; }
+          var marker = L.marker([p.lat, p.lon], { icon: tracePin(code, color), riseOnHover: true }).addTo(traceLayer);
+          var tip = p.name;
+          if (p.id && p.id !== p.name) { tip += " (" + p.id + ")"; }
+          if (typeof p.snr === "number") { tip += " · " + Number(p.snr).toFixed(1) + " dB"; }
+          marker.bindTooltip(escT(tip), { direction: "top" });
+        });
+        traceMap.fitBounds(L.latLngBounds(latlngs), { padding: [26, 26], maxZoom: 13 });
+        window.setTimeout(function () {
+          if (!mapBox.hidden) {
+            traceMap.invalidateSize();
+            traceMap.fitBounds(L.latLngBounds(latlngs), { padding: [26, 26], maxZoom: 13 });
+          }
+        }, 80);
+        // The route is drawn but the destination itself has no
+        // position: point that out instead of pretending the line
+        // reached it.
+        if (mapNote && !destPlotted) {
+          mapNote.textContent = adminMap ? (adminMap.dataset.lblNopos || "position unknown") : "position unknown";
+          mapNote.hidden = false;
+        }
+      });
+    }
+
+    function hideTraceMap() {
+      if (mapBox) { mapBox.hidden = true; }
+      if (mapNote) { mapNote.hidden = true; }
+    }
+
     document.addEventListener("click", function (e) {
       var btn = e.target.closest("button.mesh-trace");
       if (!btn || busy || !dialog) { return; }
@@ -164,6 +284,7 @@
         return s;
       }
       busy = true;
+      hideTraceMap();
       show(LBL_TRACING + ": " + nodeLabel() + "…", ["…"]);
       var csrfEl = document.querySelector('form input[name="csrf"]');
       fetch("/api/meshtastic/traceroute", {
@@ -189,7 +310,9 @@
         }
         hs.forEach(function (h) { lines.push(hopLine(h)); });
         show((j.reached ? "✓ " : "✗ ") + nodeLabel(), lines);
+        renderTraceMap(hs, j.reached);
       }).catch(function (err) {
+        hideTraceMap();
         show(LBL_FAILED, [err && err.message ? err.message : String(err)]);
       }).finally(function () { busy = false; });
     });

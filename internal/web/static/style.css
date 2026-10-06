@@ -1126,6 +1126,19 @@ tr.click-send:hover td { background: var(--surface-hi); }
   border-bottom: 1px dashed var(--border);
 }
 .mesh-trace-list li:last-child { border-bottom: 0; }
+/* The probe flight path: a compact map inside the trace dialog. */
+.mesh-trace-map {
+  height: 200px;
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.mesh-trace-map .wf-badge::after { display: none; }
+.mesh-trace-map-note {
+  margin: -0.25rem 0 0.5rem;
+  font-size: 0.78rem;
+}
 .btn-small {
   display: inline-flex;
   align-items: center;

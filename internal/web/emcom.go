@@ -612,6 +612,25 @@ func (s *Server) handleEmcomPage(w http.ResponseWriter, r *http.Request) {
 	s.renderL(w, r, "emcom", view)
 }
 
+// emcomNetworkViews projects the mirrored network list onto the panel
+// shape (shared by the operator panel and the config management section).
+func (s *Server) emcomNetworkViews(lang string) []emcomNetworkView {
+	views := make([]emcomNetworkView, 0, 8)
+	for _, net := range s.emcomNetworks() {
+		views = append(views, emcomNetworkView{
+			Slug:       net.Slug,
+			Name:       net.Name,
+			Level:      net.Level,
+			LevelName:  i18n.T(lang, fmt.Sprintf("emcom.levels.%d", net.Level)),
+			LevelClass: emcomLevelClass(net.Level),
+			UpdatedBy:  net.UpdatedBy,
+			UpdatedAt:  net.UpdatedAt,
+			Active:     s.emcomHazardInMirror(net.Slug),
+		})
+	}
+	return views
+}
+
 // buildEmcomView assembles the page model from the mirrored state in a UI
 // language. Level names/descriptions are localized for display; the wire
 // payload keeps the English canonical names.
@@ -635,18 +654,7 @@ func (s *Server) buildEmcomView(lang string) emcomView {
 			Class:       emcomLevelClass(l.Level),
 		})
 	}
-	for _, net := range s.emcomNetworks() {
-		view.Networks = append(view.Networks, emcomNetworkView{
-			Slug:       net.Slug,
-			Name:       net.Name,
-			Level:      net.Level,
-			LevelName:  i18n.T(lang, fmt.Sprintf("emcom.levels.%d", net.Level)),
-			LevelClass: emcomLevelClass(net.Level),
-			UpdatedBy:  net.UpdatedBy,
-			UpdatedAt:  net.UpdatedAt,
-			Active:     s.emcomHazardInMirror(net.Slug),
-		})
-	}
+	view.Networks = s.emcomNetworkViews(lang)
 	return view
 }
 
@@ -665,7 +673,8 @@ func (s *Server) renderEmcomError(w http.ResponseWriter, r *http.Request, status
 
 // handleEmcomAdd creates a new network at level 0 (monitoring). The
 // retained info document is the durable record — no hazard is raised for
-// a network that is only monitoring.
+// a network that is only monitoring. The management surface lives on the
+// Config page.
 func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
@@ -674,27 +683,27 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	if name == "" {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "emcom.err.name_required"))
+		s.renderConfigEmcomError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "emcom.err.name_required"))
 		return
 	}
 	if len([]rune(name)) > maxEmcomName {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
+		s.renderConfigEmcomError(w, r, http.StatusUnprocessableEntity,
 			fmt.Sprintf(i18n.T(s.langFor(r), "emcom.err.name_long"), maxEmcomName))
 		return
 	}
 	slug := emcomSlugify(name)
 	if !emcomSlugRe.MatchString(slug) {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
+		s.renderConfigEmcomError(w, r, http.StatusUnprocessableEntity,
 			i18n.T(s.langFor(r), "emcom.err.name_chars"))
 		return
 	}
 	if len(s.emcomNetworks()) >= maxEmcomNetworks {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity,
+		s.renderConfigEmcomError(w, r, http.StatusUnprocessableEntity,
 			fmt.Sprintf(i18n.T(s.langFor(r), "emcom.err.too_many"), maxEmcomNetworks))
 		return
 	}
 	if _, ok := s.emcomNetworkBySlug(slug); ok {
-		s.renderEmcomError(w, r, http.StatusConflict, i18n.T(s.langFor(r), "emcom.err.exists"))
+		s.renderConfigEmcomError(w, r, http.StatusConflict, i18n.T(s.langFor(r), "emcom.err.exists"))
 		return
 	}
 	net := emcomNetwork{Slug: slug, Name: name, Level: 0, UpdatedBy: sess.username, UpdatedAt: time.Now()}
@@ -703,7 +712,7 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 		// retained MQTT document is only an asynchronous sync copy.
 		if _, err := s.saveEmcomNetwork(net); err != nil {
 			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
+			s.renderConfigEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
 			return
 		}
 		s.publishEmcomStateAsync(net, sess.username)
@@ -711,19 +720,19 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 		// Mirror-only installations keep the broker document as the
 		// record; publishing is required there.
 		if s.pub == nil {
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable,
+			s.renderConfigEmcomError(w, r, http.StatusServiceUnavailable,
 				i18n.T(s.langFor(r), "emcom.err.no_broker"))
 			return
 		}
 		if err := s.publishEmcomState(net, sess.username); err != nil {
 			s.logger.Warn("emcom: publish failed", "slug", slug, "error", err)
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
+			s.renderConfigEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
 			return
 		}
 	}
 	s.logger.Info("emcom: network added", "slug", slug, "name", name, "by", sess.username)
 	s.audit(sess.username, "emcom-add", slug)
-	http.Redirect(w, r, "/emcom?msg=added", http.StatusSeeOther)
+	http.Redirect(w, r, "/config?msg=emcom-added", http.StatusSeeOther)
 }
 
 // handleEmcomSetLevel moves one network to a readiness level. Levels 1-3
@@ -938,5 +947,5 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("emcom: network deleted", "slug", slug, "name", net.Name, "by", sess.username)
 	s.audit(sess.username, "emcom-delete", slug)
-	http.Redirect(w, r, "/emcom?msg=deleted", http.StatusSeeOther)
+	http.Redirect(w, r, "/config?msg=emcom-deleted", http.StatusSeeOther)
 }

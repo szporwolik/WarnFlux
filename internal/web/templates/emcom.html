@@ -45,7 +45,6 @@
               </span>
               <span class="emcom-card-btns">
                 <button type="submit" class="btn-primary btn-small" data-emcom-save>{{tr $.Lang "emcom.save"}}</button>
-	                {{if eq $.Role "admin"}}<button type="button" class="btn-danger btn-small" data-emcom-delete data-slug="{{.Slug}}" data-name="{{.Name}}">{{tr $.Lang "emcom.delete"}}</button>{{end}}
               </span>
             </div>
           </form>
@@ -54,18 +53,6 @@
         <p class="empty">{{tr $.Lang "emcom.empty"}}</p>
         {{end}}
       </div>
-
-      {{if eq .Role "admin"}}
-      <form method="post" action="/emcom" class="emcom-add">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <label class="emcom-add-label" for="emcom-name">{{tr .Lang "emcom.add_label"}}</label>
-        <div class="emcom-add-row">
-          <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="{{tr .Lang "emcom.add_placeholder"}}" required>
-          <button type="submit" class="btn-primary">{{tr .Lang "emcom.add_btn"}}</button>
-        </div>
-        <p class="muted small">{{tr .Lang "emcom.add_note"}}</p>
-      </form>
-      {{end}}
     </section>
 
     <section class="card">
@@ -98,7 +85,6 @@
       // slider before the form is saved.
       var LVL = "{{tr .Lang "emcom.level"}}";
       var BADGE = "{{tr .Lang "emcom.badge"}}";
-      var DEL = "{{tr .Lang "emcom.confirm.delete"}}";
       var levels = {{jsonLevels .Levels}};
       function levelInfo(n) {
         for (var i = 0; i < levels.length; i++) {
@@ -132,26 +118,6 @@
         }
         slider.addEventListener("input", paint);
         paint();
-      });
-
-      // Delete confirmation: the network disappears from the broker and
-      // its active communication is retired.
-      document.querySelectorAll("[data-emcom-delete]").forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          var name = btn.getAttribute("data-name");
-          var slug = btn.getAttribute("data-slug");
-          if (!confirm(DEL.replace("%s", name))) { return; }
-          var form = document.createElement("form");
-          form.method = "post";
-          form.action = "/emcom/" + slug + "/delete";
-          var csrf = document.createElement("input");
-          csrf.type = "hidden";
-          csrf.name = "csrf";
-          csrf.value = btn.closest(".emcom-form").querySelector("[name=csrf]").value;
-          form.appendChild(csrf);
-          document.body.appendChild(form);
-          form.submit();
-        });
       });
     })();
   </script>

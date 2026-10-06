@@ -1938,6 +1938,8 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if !strings.Contains(html, "data-emcom-slider") || !strings.Contains(html, "data-emcom-save") {
 		t.Errorf("emcom operator must see the level controls: %s", html)
 	}
+	// Network management moved to the Config page: the operator panel
+	// carries neither the add form nor delete buttons.
 	if strings.Contains(html, "emcom-add") {
 		t.Errorf("emcom operator must not see the add-network form: %s", html)
 	}
@@ -1947,11 +1949,11 @@ func TestEmcomRoleFlow(t *testing.T) {
 		t.Errorf("emcom operator must not see the delete buttons: %s", html)
 	}
 	csrf = extractCSRF(t, html)
-	resp, _ = env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"ROGUE"}})
+	resp, _ = env.postForm("/config/emcom/add", url.Values{"csrf": {csrf}, "name": {"ROGUE"}})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
-		t.Errorf("POST /emcom as emcom = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
+		t.Errorf("POST /config/emcom/add as emcom = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	resp, _ = env.postForm("/emcom/nope/delete", url.Values{"csrf": {csrf}})
+	resp, _ = env.postForm("/config/emcom/nope/delete", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
 		t.Errorf("POST delete as emcom = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
 	}
@@ -3305,16 +3307,17 @@ func TestEmcomPanelFlow(t *testing.T) {
 	}
 	csrf := extractCSRF(t, html)
 
-	// CSRF is enforced on mutations.
-	resp, _ = env.postForm("/emcom", url.Values{"name": {"SP9MOA EMCOM"}})
+	// CSRF is enforced on mutations (network management lives on the
+	// admin Config page).
+	resp, _ = env.postForm("/config/emcom/add", url.Values{"name": {"SP9MOA EMCOM"}})
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST /emcom without csrf = %d, want 403", resp.StatusCode)
+		t.Fatalf("POST /config/emcom/add without csrf = %d, want 403", resp.StatusCode)
 	}
 
 	// Add a network: one retained info document at level 0.
-	resp, _ = env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}})
+	resp, _ = env.postForm("/config/emcom/add", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}})
 	if resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("POST /emcom = %d, want 303", resp.StatusCode)
+		t.Fatalf("POST /config/emcom/add = %d, want 303", resp.StatusCode)
 	}
 	raw := env.pub.rawSnapshot()
 	if len(raw) != 1 || raw[0].Suffix != "info/emcom/emcom/sp9moa-emcom/emcom" || !raw[0].Retained {
@@ -3343,7 +3346,7 @@ func TestEmcomPanelFlow(t *testing.T) {
 	// Duplicate names are rejected.
 	_, html = env.get("/emcom")
 	csrf = extractCSRF(t, html)
-	resp, _ = env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"sp9moa EMCOM"}})
+	resp, _ = env.postForm("/config/emcom/add", url.Values{"csrf": {csrf}, "name": {"sp9moa EMCOM"}})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("duplicate add = %d, want 409", resp.StatusCode)
 	}
@@ -3441,7 +3444,7 @@ func TestEmcomPanelFlow(t *testing.T) {
 	// Deleting the network clears the retained document.
 	_, html = env.get("/emcom")
 	csrf = extractCSRF(t, html)
-	resp, _ = env.postForm("/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}})
+	resp, _ = env.postForm("/config/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST delete = %d, want 303", resp.StatusCode)
 	}
@@ -3674,12 +3677,12 @@ func TestEmcomLocalFirstNoBroker(t *testing.T) {
 
 	_, html := env.get("/emcom")
 	csrf := extractCSRF(t, html)
-	resp, _ := env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}})
+	resp, _ := env.postForm("/config/emcom/add", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("emcom add with a down broker = %d, want 303 (local-first)", resp.StatusCode)
 	}
 	_, html = env.get("/emcom")
-	if !strings.Contains(html, `data-slug="sp9moa-emcom"`) {
+	if !strings.Contains(html, "SP9MOA EMCOM") {
 		t.Fatalf("network missing from the panel despite the dead broker: %s", html)
 	}
 
@@ -3703,12 +3706,12 @@ func TestEmcomLocalFirstNoBroker(t *testing.T) {
 	}
 
 	// Deleting works locally too.
-	resp, _ = env.postForm("/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}})
+	resp, _ = env.postForm("/config/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("emcom delete with a down broker = %d, want 303 (local-first)", resp.StatusCode)
 	}
 	_, html = env.get("/emcom")
-	if strings.Contains(html, `data-slug="sp9moa-emcom"`) {
+	if strings.Contains(html, "SP9MOA EMCOM") {
 		t.Errorf("deleted network still listed: %s", html)
 	}
 }
@@ -3726,7 +3729,7 @@ func TestEmcomLevelZeroBlocksQueuedActivation(t *testing.T) {
 
 	_, html := env.get("/emcom")
 	csrf := extractCSRF(t, html)
-	if resp, _ := env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}}); resp.StatusCode != http.StatusSeeOther {
+	if resp, _ := env.postForm("/config/emcom/add", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("add = %d, want 303", resp.StatusCode)
 	}
 
@@ -3797,7 +3800,7 @@ func TestEmcomDeleteBlocksQueuedActivation(t *testing.T) {
 
 	_, html := env.get("/emcom")
 	csrf := extractCSRF(t, html)
-	if resp, _ := env.postForm("/emcom", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}}); resp.StatusCode != http.StatusSeeOther {
+	if resp, _ := env.postForm("/config/emcom/add", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("add = %d, want 303", resp.StatusCode)
 	}
 	if resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}}); resp.StatusCode != http.StatusSeeOther {
@@ -3818,7 +3821,7 @@ func TestEmcomDeleteBlocksQueuedActivation(t *testing.T) {
 	// Delete: the expiry transition is dispatched with its committed
 	// inbox id and the allocated version — the cancellation is durable
 	// before the panel even answers.
-	if resp, _ := env.postForm("/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}}); resp.StatusCode != http.StatusSeeOther {
+	if resp, _ := env.postForm("/config/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("delete = %d, want 303", resp.StatusCode)
 	}
 	var expiry dispatch.Event

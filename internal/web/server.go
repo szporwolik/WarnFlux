@@ -356,14 +356,13 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /compose", s.requireCompose(s.handleComposePage))
 	s.mux.Handle("POST /compose", s.requireCompose(s.handleComposeSave))
 	s.mux.Handle("POST /compose/expire", s.requireCompose(s.handleComposeExpire))
-	// EMCOM networks: admin and emcom sessions view the panel and move
-	// the readiness level; ADDING or DELETING a network is an
-	// admin-tier structural change (the emcom operator's surface is the
-	// level slider).
+	// EMCOM networks: admin and emcom sessions use the panel and move
+	// the readiness level. Adding and deleting networks is an
+	// admin-tier structural change and lives on the Config page.
 	s.mux.Handle("GET /emcom", s.requireCompose(s.handleEmcomPage))
-	s.mux.Handle("POST /emcom", s.requireAdmin(s.handleEmcomAdd))
 	s.mux.Handle("POST /emcom/{slug}/level", s.requireCompose(s.handleEmcomSetLevel))
-	s.mux.Handle("POST /emcom/{slug}/delete", s.requireAdmin(s.handleEmcomDelete))
+	s.mux.Handle("POST /config/emcom/add", s.requireAdmin(s.handleEmcomAdd))
+	s.mux.Handle("POST /config/emcom/{slug}/delete", s.requireAdmin(s.handleEmcomDelete))
 	// Self-service account page: member and emcom sessions edit their
 	// own contact data and password.
 	s.mux.Handle("GET /account", s.requirePage(s.handleAccountPage))

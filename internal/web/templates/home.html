@@ -72,7 +72,7 @@
 <head>
   {{template "public-head" .}}
 </head>
-<body class="home" data-offline="{{if .OfflineMode}}1{{else}}0{{end}}">
+<body class="home" data-offline="{{if or .OfflineMode .ForceTiles}}1{{else}}0{{end}}">
   {{template "public-top" .}}
 
   {{if .EmcomNetworks}}<div class="home-emcom" role="status" aria-label="{{tr .Lang "home.emcom.aria"}}">

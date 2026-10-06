@@ -648,6 +648,7 @@
         <th>{{tr .Lang "messages.time"}}</th>
         <th>{{tr .Lang "messages.dir"}}</th>
         <th>{{tr .Lang "meshtastic.from"}}</th>
+        <th>{{tr .Lang "meshtastic.to"}}</th>
         <th>{{tr .Lang "meshtastic.channel"}}</th>
         <th>{{tr .Lang "messages.text"}}</th>
       </tr>
@@ -658,6 +659,7 @@
         <td class="muted nowrap">{{timeFull .At}}</td>
         <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span>{{if eq .Direction "tx"}}{{if eq .Status "delivered"}} <span class="badge ok">✓ {{tr $.Lang "meshtastic.st_delivered"}}</span>{{else if eq .Status "sent"}} <span class="badge muted">{{tr $.Lang "meshtastic.st_sent"}}</span>{{else if eq .Status "failed"}} <span class="badge bad">{{tr $.Lang "meshtastic.st_failed"}}</span>{{end}}{{end}}</td>
         <td><strong>{{if .SenderName}}{{.SenderName}}<span class="muted short-key"> !{{.Sender}}</span>{{else}}{{if .Sender}}!{{.Sender}}{{else}}—{{end}}{{end}}{{if .Operator}} <span class="muted op-name">({{.Operator}})</span>{{end}}</strong></td>
+        <td>{{if .Recipient}}{{if .RecipientName}}{{.RecipientName}}<span class="muted short-key"> !{{.Recipient}}</span>{{else}}!{{.Recipient}}{{end}}{{else if eq .Channel "dm"}}<span class="muted">{{tr $.Lang "meshtastic.me"}}</span>{{else}}—{{end}}</td>
         <td>{{.Channel}}{{if gt .Hops 0}} <span class="muted">· {{trf $.Lang "meshtastic.hops" .Hops}}</span>{{end}}</td>
         <td class="msgs-text">{{.Text}}</td>
       </tr>

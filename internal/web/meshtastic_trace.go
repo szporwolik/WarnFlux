@@ -30,9 +30,9 @@ func (s *Server) handleMeshtasticTraceroute(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "node id must be 8 hex characters", http.StatusBadRequest)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
-	res, err := s.meshtastic.Traceroute(ctx, to, 15*time.Second)
+	res, err := s.meshtastic.Traceroute(ctx, to, 35*time.Second)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

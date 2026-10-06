@@ -450,12 +450,14 @@ type TracerouteHop struct {
 }
 
 // TracerouteResult is the outcome of one route probe: the hops from us
-// to the answering node (excluding us) and whether the destination
-// itself answered (an intermediate reply means the destination was not
-// reached, but the partial route still shows how far the probe got).
+// to the answering node (excluding us), whether the destination itself
+// answered (an intermediate reply means the destination was not reached,
+// but the partial route still shows how far the probe got) and how long
+// the probe window took.
 type TracerouteResult struct {
-	Hops    []TracerouteHop `json:"hops"`
-	Reached bool            `json:"reached"`
+	Hops      []TracerouteHop `json:"hops"`
+	Reached   bool            `json:"reached"`
+	ElapsedMS int64           `json:"elapsed_ms"`
 }
 
 // Message is one received or sent text message.
@@ -1661,10 +1663,12 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 	defer cancel()
 	reprobe := time.NewTimer(tracerouteProbeGap)
 	defer reprobe.Stop()
+	started := time.Now()
 	best := TracerouteResult{}
 	for {
 		select {
 		case <-ctx.Done():
+			best.ElapsedMS = time.Since(started).Milliseconds()
 			return best, nil
 		case <-reprobe.C:
 			// One re-probe: silence is loss, not a dead route.
@@ -1675,6 +1679,7 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 			res := h.routeResult(rep)
 			if rep.from == uint32(dest) {
 				res.Reached = true
+				res.ElapsedMS = time.Since(started).Milliseconds()
 				return res, nil
 			}
 			if len(res.Hops) > len(best.Hops) {
@@ -1767,13 +1772,17 @@ func (h *Hub) routeResult(rep routeReply) TracerouteResult {
 		}
 		res.Hops = append(res.Hops, hop)
 	}
-	h.mu.Unlock()
 	// The answering node closes the route (mirrors ParseRoute's
-	// sender → intermediates → receiver shape).
+	// sender → intermediates → receiver shape) — resolve its name too.
 	last := fmt.Sprintf("%08x", rep.from)
 	if len(res.Hops) == 0 || res.Hops[len(res.Hops)-1].ID != last {
-		res.Hops = append(res.Hops, TracerouteHop{ID: last})
+		hop := TracerouteHop{ID: last}
+		if n := h.nodes[last]; n != nil && n.Name != "" {
+			hop.Name = n.Name
+		}
+		res.Hops = append(res.Hops, hop)
 	}
+	h.mu.Unlock()
 	return res
 }
 

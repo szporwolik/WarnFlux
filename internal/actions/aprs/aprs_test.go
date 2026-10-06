@@ -98,6 +98,7 @@ func TestExecuteSendsToAllRecipients(t *testing.T) {
 			Kind: dispatch.EventHazardTransition,
 			Hazard: &dispatch.HazardTransition{
 				Hazard: dispatch.Hazard{
+					EventKey: "imgw-meteo:1",
 					Severity: "severe",
 					Event:    "Burza z gradem",
 					Headline: "Ostrzeżenie dla powiatu krakowskiego",
@@ -115,11 +116,18 @@ func TestExecuteSendsToAllRecipients(t *testing.T) {
 		t.Errorf("recipients = %v", tx.sent)
 	}
 	text := tx.sent[0][1]
-	if !strings.HasPrefix(text, "WarnFlux SEV Burza z gradem:") {
+	// With the ID suffix reserved, the less important parts (the event
+	// type first) give up space before the headline.
+	if !strings.HasPrefix(text, "WarnFlux SEV") {
 		t.Errorf("message = %q", text)
 	}
 	if !strings.Contains(text, "Ostrzezenie dla powiatu krakowskiego") {
 		t.Errorf("headline missing (or not transliterated): %q", text)
+	}
+	// The stable message ID rides along so one communication can be
+	// cited on the air.
+	if !strings.Contains(text, " ID:WX-") {
+		t.Errorf("message ID missing: %q", text)
 	}
 	if len(text) > aprs.MaxMessageText {
 		t.Errorf("message is %d bytes, over the %d limit", len(text), aprs.MaxMessageText)

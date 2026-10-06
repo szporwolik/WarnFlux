@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
@@ -104,6 +105,7 @@ const warningsPerPage = 20
 
 type hazardView struct {
 	Key         string
+	MsgID       string
 	Severity    string
 	Headline    string
 	Event       string
@@ -363,6 +365,7 @@ func buildWarningsView(hazards []state.Hazard, page int) warningsView {
 	for _, h := range hazards[from:to] {
 		hv := hazardView{
 			Key:         h.EventKey,
+			MsgID:       core.MessageID(h.EventKey),
 			Severity:    h.Severity,
 			Headline:    h.Headline,
 			Event:       h.Event,

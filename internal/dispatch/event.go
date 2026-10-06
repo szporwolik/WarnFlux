@@ -51,6 +51,10 @@ const (
 // Hazard is the compact hazard block of one transition.
 type Hazard struct {
 	EventKey string
+	// MsgID is the short, human-usable message identifier (see
+	// core.MessageID). Empty for legacy producers; MessageID() derives
+	// it from EventKey on demand.
+	MsgID    string
 	Source   string
 	SourceID string
 	Event    string
@@ -94,6 +98,19 @@ type HazardTransition struct {
 	// so independent instances can never suppress each other.
 	Publisher string
 	Hazard    Hazard
+}
+
+// MessageID returns the short human identifier of the hazard, deriving it
+// from the event key when the wire or caller did not carry one. Empty for
+// hazards without any identity (should not reach actions).
+func (h Hazard) MessageID() string {
+	if h.MsgID != "" {
+		return h.MsgID
+	}
+	if h.EventKey == "" {
+		return ""
+	}
+	return core.MessageID(h.EventKey)
 }
 
 // MQTTMessage is a deep-copied raw MQTT frame. Payload never aliases the
@@ -165,6 +182,7 @@ func EventForJournalChange(changeType core.ChangeType, changeID int64, publisher
 			Timestamp: ev.UpdatedAt,
 			Hazard: Hazard{
 				EventKey:         ev.Key(),
+				MsgID:            core.MessageID(ev.Key()),
 				Source:           ev.Source,
 				SourceID:         ev.SourceID,
 				Event:            ev.Event,

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
@@ -230,6 +231,7 @@ func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher stri
 			Timestamp: now,
 			Hazard: dispatch.Hazard{
 				EventKey:    h.EventKey,
+				MsgID:       core.MessageID(h.EventKey),
 				Source:      h.Source,
 				SourceID:    h.SourceID,
 				Event:       h.Event,

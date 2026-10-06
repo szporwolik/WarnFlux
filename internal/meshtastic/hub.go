@@ -249,6 +249,11 @@ type pendingSend struct {
 	echoed  bool   // the id is known (echo or queueStatus paired)
 	status  string
 	retries int
+	// probe marks a traceroute placeholder: it rides the send
+	// bookkeeping so the device's routing acknowledgment settles IT
+	// (never an unrelated text message to the same node) and is never
+	// retransmitted as text.
+	probe bool
 	// prog carries the durable action-progress identity when the send
 	// came from the meshtastic action: the ledger follows the
 	// TRANSMISSION OUTCOME (recorded on sent/delivered, revoked on
@@ -1386,6 +1391,10 @@ func (h *Hub) handlePacket(pkt *pb.MeshPacket) {
 		h.receiveTelemetry(pkt, decoded)
 	case pb.PortNum_ROUTING_APP:
 		h.handleRoutingAck(pkt, decoded)
+	case pb.PortNum_TRACEROUTE_APP:
+		// Older firmware answers the probe on the TRACEROUTE port with a
+		// raw RouteDiscovery instead of a ROUTING_APP route_reply.
+		h.handleTracerouteReply(pkt, decoded)
 	}
 	// Low-priority banner traffic drains AFTER this packet's direct
 	// replies: alarm and command answers always go out first.
@@ -1583,17 +1592,42 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 	}
 
 	// The probe payload is the destination node number, little-endian.
+	// The frame carries want_ack + want_response: the firmware only
+	// processes traceroute frames flagged that way (the route_reply
+	// frame IS the answer). A placeholder rides the send bookkeeping so
+	// the device's routing acknowledgment settles it and never steals an
+	// unrelated pending text message to the same node.
 	payload := make([]byte, 4)
 	binary.LittleEndian.PutUint32(payload, uint32(dest))
+	probe := &pendingSend{
+		to:      uint32(dest),
+		at:      time.Now(),
+		lastTry: time.Now(),
+		text:    "\x00traceroute", // never matches a history row
+		wantAck: true,
+		probe:   true,
+	}
+	h.sendMu.Lock()
+	h.echoQueue = append(h.echoQueue, probe)
+	h.sendMu.Unlock()
+	defer func() {
+		h.sendMu.Lock()
+		h.dropPendingLocked(probe)
+		h.sendMu.Unlock()
+	}()
 	ch := h.registerRouteWaiter(uint32(dest))
 	defer h.unregisterRouteWaiter(uint32(dest), ch)
 	if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
-		To: uint32(dest),
+		To:      uint32(dest),
+		WantAck: true,
 		PayloadVariant: &pb.MeshPacket_Decoded{
-			Decoded: &pb.Data{Portnum: pb.PortNum_TRACEROUTE_APP, Payload: payload},
+			Decoded: &pb.Data{Portnum: pb.PortNum_TRACEROUTE_APP, Payload: payload, WantResponse: true},
 		},
 	}}}); err != nil {
 		return TracerouteResult{}, fmt.Errorf("meshtastic: traceroute send failed: %w", err)
+	}
+	if h.logger != nil {
+		h.logger.Info("meshtastic: traceroute probe sent", "to", idStr, "timeout", timeout)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -1647,12 +1681,33 @@ func (h *Hub) deliverRouteReply(from uint32, rd *pb.RouteDiscovery) {
 		delete(h.routeWaiters, from)
 	}
 	h.sendMu.Unlock()
+	if len(chans) == 0 {
+		// Nobody waits on this node: log the orphan so route frames
+		// that arrive after the probe window stay observable.
+		if h.logger != nil {
+			h.logger.Debug("meshtastic: traceroute reply without a waiter", "from", fmt.Sprintf("%08x", from))
+		}
+		return
+	}
+	if h.logger != nil {
+		h.logger.Info("meshtastic: traceroute reply", "from", fmt.Sprintf("%08x", from), "hops", len(rd.GetRoute()))
+	}
 	for _, ch := range chans {
 		select {
 		case ch <- routeReply{from: from, route: rd}:
 		default:
 		}
 	}
+}
+
+// handleTracerouteReply processes a route discovery delivered on the
+// TRACEROUTE_APP port (see the handlePacket switch).
+func (h *Hub) handleTracerouteReply(pkt *pb.MeshPacket, decoded *pb.Data) {
+	var rd pb.RouteDiscovery
+	if err := proto.Unmarshal(decoded.GetPayload(), &rd); err != nil {
+		return
+	}
+	h.deliverRouteReply(pkt.GetFrom(), &rd)
 }
 
 // routeResult converts one route-discovery answer into the hop list from
@@ -1716,6 +1771,13 @@ func (h *Hub) retryPending(now time.Time) {
 	// have been busy) are retransmitted.
 	for i := 0; i < len(h.echoQueue); {
 		q := h.echoQueue[i]
+		if q.probe {
+			// Traceroute placeholders are never retransmitted: the
+			// probe wait already timed out (the device may still
+			// answer; the reply is dropped as an orphan).
+			h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+			continue
+		}
 		if !q.echoed && !q.wantAck && now.Sub(q.lastTry) > 5*time.Minute {
 			h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
 			continue

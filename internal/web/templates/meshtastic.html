@@ -37,7 +37,8 @@
         <div id="mesh-admin-map" data-lat="{{.CenterLat}}" data-lon="{{.CenterLon}}"
              data-own-lat="{{.SelfLat}}" data-own-lon="{{.SelfLon}}" data-own-name="{{.SelfName}}"
              data-lbl-heard="{{tr .Lang "map.heard"}}" data-lbl-hops="{{tr .Lang "meshmap.hops"}}"
-             data-lbl-direct="{{tr .Lang "meshmap.direct"}}" data-lbl-nopos="{{tr .Lang "meshmap.nopos"}}"></div>
+             data-lbl-direct="{{tr .Lang "meshmap.direct"}}" data-lbl-nopos="{{tr .Lang "meshmap.nopos"}}"
+             data-lbl-trace="{{tr .Lang "meshtastic.trace"}}"></div>
         <p class="aprs-map-attrib"><span id="mesh-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
       </div>
       <h3 class="meshmap-nopos-title muted" id="mesh-nopos-title" hidden></h3>
@@ -332,6 +333,7 @@
     var LBL_HOPS = el.dataset.lblHops || "Hops";
     var LBL_DIRECT = el.dataset.lblDirect || "direct";
     var LBL_NOPOS = el.dataset.lblNopos || "Heard without a position";
+    var LBL_TRACE = el.dataset.lblTrace || "Trace";
     var noposEl = document.getElementById("mesh-nopos");
     var noposTitle = document.getElementById("mesh-nopos-title");
     var MESH_COLOR = "#8e24aa";
@@ -419,8 +421,19 @@
         '<div class="wf-pop-head" style="--wf-pop-c:' + MESH_COLOR + '">' +
         '<span class="wf-pop-t"><strong>' + esc(displayName(n)) + '</strong>' +
         '<span class="wf-pop-sub">' + esc(n.id) + '</span></span></div>' +
-        '<div class="wf-pop-body">' + lines.join("<br>") + '</div></div>';
+        '<div class="wf-pop-body">' + lines.join("<br>") + '</div>' +
+        '<div class="wf-pop-actions"><button type="button" class="btn-ghost btn-small mesh-trace"' +
+        ' data-id="' + esc(n.id) + '" data-name="' + esc(n.name || "") + '" data-short="' + esc(n.short_name || "") + '">' +
+        esc(LBL_TRACE) + '</button></div></div>';
     }
+
+    // Starting a traceroute from a popup closes the marker popup so the
+    // result dialog is not crowded behind it.
+    document.addEventListener("click", function (e) {
+      if (map && e.target && e.target.closest && e.target.closest("button.mesh-trace")) {
+        map.closePopup();
+      }
+    });
 
     var fittedOnce = false;
     var lastData = { nodes: [], nopos: [] };

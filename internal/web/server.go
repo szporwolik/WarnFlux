@@ -325,6 +325,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/meshtastic", s.requireAdminPartial(s.handlePartialMeshtastic))
 	s.mux.Handle("GET /partials/messages", s.requireAdminPartial(s.handlePartialMessages))
 	s.mux.Handle("POST /meshtastic/send", s.requireAdmin(s.handleMeshtasticSend))
+	s.mux.Handle("POST /api/meshtastic/traceroute", s.requireAdmin(s.handleMeshtasticTraceroute))
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))
 	s.mux.Handle("GET /notifications", s.requireAdmin(s.handleNotificationsPage))
 	s.mux.Handle("GET /partials/notifications", s.requireAdminPartial(s.handlePartialNotifications))

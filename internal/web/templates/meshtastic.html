@@ -72,6 +72,10 @@
       <div id="mesh-nodes">
         {{template "mesh_nodes" .}}
       </div>
+      <div id="mesh-trace-result" class="emcom-flash" hidden
+           data-lbl-tracing="{{tr .Lang "meshtastic.trace_tracing"}}"
+           data-lbl-no-reply="{{tr .Lang "meshtastic.trace_no_reply"}}"
+           data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}"></div>
     </section>
 
     <section class="card page-panel" id="panel-map" data-panel="panel-map"{{if ne .Tab "map"}} hidden{{end}}>
@@ -103,6 +107,52 @@
   <script>window.WF_OFFLINE={{if .OfflineMode}}true{{else}}false{{end}};</script>
   <script src="/static/app.js?v={{.Commit}}" defer></script>
   <script src="/static/leaflet/leaflet.js"></script>
+  <script>
+  // Per-node traceroute ("trace" buttons in the heard-nodes table).
+  // Delegated: the polled fragment replaces the rows, the listener stays.
+  (function () {
+    var busy = false;
+    document.addEventListener("click", function (e) {
+      var btn = e.target.closest("button.mesh-trace");
+      if (!btn || busy) { return; }
+      var id = btn.getAttribute("data-id");
+      var out = document.getElementById("mesh-trace-result");
+      if (!out) { return; }
+      var LBL_TRACING = out.dataset.lblTracing || "Tracing";
+      var LBL_NOREPLY = out.dataset.lblNoReply || "no reply from the destination";
+      var LBL_FAILED = out.dataset.lblFailed || "trace failed";
+      busy = true;
+      out.hidden = false;
+      out.className = "emcom-flash";
+      out.textContent = LBL_TRACING + " !" + id + "…";
+      var csrfEl = document.querySelector('form input[name="csrf"]');
+      fetch("/api/meshtastic/traceroute", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        credentials: "same-origin",
+        body: "csrf=" + encodeURIComponent(csrfEl ? csrfEl.value : "") + "&to=" + encodeURIComponent(id)
+      }).then(function (r) {
+        if (r.status === 401) { window.location.href = "/login"; }
+        return r.text().then(function (t) {
+          if (!r.ok) { throw new Error(t || ("HTTP " + r.status)); }
+          return JSON.parse(t);
+        });
+      }).then(function (j) {
+        var parts = (j.hops || []).map(function (h) {
+          var s = h.name || h.id;
+          if (h.snr) { s += " (" + Number(h.snr).toFixed(1) + " dB)"; }
+          return s;
+        });
+        var line = parts.length ? parts.join(" → ") : "—";
+        out.className = j.reached ? "emcom-flash" : "emcom-flash emcom-flash-err";
+        out.textContent = (j.reached ? "✓ " : LBL_NOREPLY + ": ") + line;
+      }).catch(function (err) {
+        out.className = "emcom-flash emcom-flash-err";
+        out.textContent = LBL_FAILED + ": " + (err && err.message ? err.message : err);
+      }).finally(function () { busy = false; });
+    });
+  })();
+  </script>
   <script>
   (function () {
     var el = document.getElementById("mesh-admin-map");
@@ -325,6 +375,7 @@
         <th>{{tr .Lang "meshtastic.node_sends"}}</th>
         <th>{{tr .Lang "meshtastic.node_pos"}}</th>
         <th>{{tr .Lang "meshtastic.node_seen"}}</th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
@@ -340,6 +391,7 @@
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}</td>
+        <td><button type="button" class="btn-ghost btn-small mesh-trace" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button></td>
       </tr>
       {{end}}
     </tbody>

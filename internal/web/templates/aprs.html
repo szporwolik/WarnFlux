@@ -37,6 +37,7 @@
              data-radius="{{.AprsRadiusKM}}" data-callsign="{{.AprsCallsign}}"
              data-lbl-heard="{{tr .Lang "map.heard"}}" data-lbl-path="{{tr .Lang "aprsmap.path"}}"
              data-lbl-packets="{{tr .Lang "aprsmap.packets"}}"
+             data-lbl-trace="{{tr .Lang "aprs.trace"}}" data-lbl-msg="{{tr .Lang "aprs.msg"}}"
              data-lbl-nopos="{{tr .Lang "meshmap.nopos"}}" data-lbl-click="{{tr .Lang "messages.click_to_send"}}"></div>
         <p class="aprs-map-attrib"><span id="aprs-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
       </div>
@@ -55,6 +56,13 @@
         </table>
       </div>
       <p class="home-none" id="aprs-dir-none" hidden>{{tr .Lang "aprs.dir_none"}}</p>
+      <dialog class="modal" id="aprs-trace-dialog" aria-labelledby="aprs-trace-title">
+        <h3 id="aprs-trace-title"></h3>
+        <div id="aprs-trace-body"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost btn-small" id="aprs-trace-close">{{tr .Lang "common.close"}}</button>
+        </div>
+      </dialog>
       {{else}}
       <p class="home-none">{{tr .Lang "aprsmap.disabled"}}</p>
       {{end}}
@@ -107,6 +115,8 @@
     var LBL_PACKETS = el.dataset.lblPackets || "Packets";
     var LBL_NOPOS = el.dataset.lblNopos || "Heard without a position";
     var LBL_CLICK = el.dataset.lblClick || "Click to send a message";
+    var LBL_TRACE = el.dataset.lblTrace || "Trace";
+    var LBL_MSG = el.dataset.lblMsg || "Message";
 
     // The same basemap idea as the home page, simplified: the local tile
     // tree in offline mode, otherwise a free raster provider matching
@@ -223,7 +233,11 @@
         '<span class="wf-pop-t"><strong>' + esc(s.callsign) + '</strong>' +
         (s.comment ? '<span class="wf-pop-sub">' + esc(s.comment) + '</span>' : "") +
         '</span></div>' +
-        '<div class="wf-pop-body">' + lines.join("<br>") + '</div></div>';
+        '<div class="wf-pop-body">' + lines.join("<br>") + '</div>' +
+        '<div class="wf-pop-actions">' +
+        '<button type="button" class="btn-ghost btn-small aprs-msg" data-key="' + esc(s.callsign) + '">' + esc(LBL_MSG) + '</button>' +
+        '<button type="button" class="btn-ghost btn-small aprs-trace" data-key="' + esc(s.callsign) + '">' + esc(LBL_TRACE) + '</button>' +
+        '</div></div>';
     }
 
     var allStations = [];
@@ -320,6 +334,22 @@
         td4.textContent = fmtTime(s.last_heard_at);
         tr.appendChild(td4);
 
+        var td5 = document.createElement("td");
+        td5.className = "nowrap";
+        var btnMsg = document.createElement("button");
+        btnMsg.type = "button";
+        btnMsg.className = "btn-ghost btn-small aprs-msg";
+        btnMsg.setAttribute("data-key", s.callsign);
+        btnMsg.textContent = LBL_MSG;
+        td5.appendChild(btnMsg);
+        var btnTrace = document.createElement("button");
+        btnTrace.type = "button";
+        btnTrace.className = "btn-ghost btn-small aprs-trace";
+        btnTrace.setAttribute("data-key", s.callsign);
+        btnTrace.textContent = LBL_TRACE;
+        td5.appendChild(btnTrace);
+        tr.appendChild(td5);
+
         tbody.appendChild(tr);
       });
       if (countEl) { countEl.textContent = "(" + tbody.children.length + ")"; }
@@ -327,12 +357,73 @@
     }
 
     // A directory-row click opens the messages tab with the callsign
-    // prefilled (the app.js click-send handler does the form fill).
+    // prefilled (the app.js click-send handler does the form fill); the
+    // row's own action buttons opt out.
     document.addEventListener("click", function (e) {
       var row = e.target.closest("#aprs-dir-table tr.click-send");
       if (!row) { return; }
+      if (e.target.closest("button")) { return; }
       var msgsTab = document.querySelector('[data-tab="panel-msgs"]');
       if (msgsTab) { msgsTab.click(); }
+    });
+
+    // The Message action: jump to the messages tab and prefill the
+    // send form with the station's callsign.
+    document.addEventListener("click", function (e) {
+      var msg = e.target && e.target.closest ? e.target.closest("button.aprs-msg") : null;
+      if (!msg) { return; }
+      var key = msg.getAttribute("data-key");
+      if (!key) { return; }
+      var msgsTab = document.querySelector('[data-tab="panel-msgs"]');
+      if (msgsTab) { msgsTab.click(); }
+      var to = document.querySelector("form.aprs-send input[name='to']");
+      if (to) {
+        to.value = key;
+        var text = document.querySelector("form.aprs-send input[name='text']");
+        if (text) { text.focus(); }
+        to.scrollIntoView({ block: "nearest" });
+      }
+      var close = document.querySelector(".leaflet-popup .leaflet-popup-close-button");
+      if (close) { close.click(); }
+    });
+
+    // The Trace action: the APRS path is already known, so the dialog
+    // just lists the digipeater chain the last packet travelled.
+    var traceDlg = document.getElementById("aprs-trace-dialog");
+    var traceTitle = document.getElementById("aprs-trace-title");
+    var traceBody = document.getElementById("aprs-trace-body");
+    var traceClose = document.getElementById("aprs-trace-close");
+    if (traceClose) { traceClose.addEventListener("click", function () { if (traceDlg && traceDlg.open) { traceDlg.close(); } }); }
+    function showTrace(call) {
+      var s = null;
+      for (var i = 0; i < allStations.length; i++) {
+        if (allStations[i].callsign === call) { s = allStations[i]; break; }
+      }
+      if (!s || !traceDlg || !traceTitle || !traceBody) { return; }
+      traceTitle.textContent = s.callsign + (s.comment ? " — " + s.comment : "");
+      traceBody.textContent = "";
+      var ul = document.createElement("ul");
+      ul.className = "mesh-trace-list";
+      var hops = (s.path && s.path.length) ? s.path : [];
+      if (!hops.length) {
+        var li0 = document.createElement("li");
+        li0.textContent = "—";
+        ul.appendChild(li0);
+      }
+      hops.forEach(function (h, i) {
+        var li = document.createElement("li");
+        li.textContent = (i + 1) + ". " + h;
+        ul.appendChild(li);
+      });
+      traceBody.appendChild(ul);
+      traceDlg.showModal();
+    }
+    document.addEventListener("click", function (e) {
+      var tr = e.target && e.target.closest ? e.target.closest("button.aprs-trace") : null;
+      if (!tr) { return; }
+      showTrace(tr.getAttribute("data-key"));
+      var close = document.querySelector(".leaflet-popup .leaflet-popup-close-button");
+      if (close) { close.click(); }
     });
 
     function refresh() {

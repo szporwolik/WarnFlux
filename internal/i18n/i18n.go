@@ -198,6 +198,8 @@ var en = map[string]string{
 	"aprsmap.title":    "APRS stations",
 	"aprsmap.hint":     "Every station the APRS hub currently holds: heard over our own radio (APRS-RF) and through the internet feed (APRS-IS). The popup shows the last digipeater path, comment and counts; the filter shows what each backend delivered.",
 	"aprsmap.path":     "Path",
+	"aprs.trace":       "Trace",
+	"aprs.msg":         "Message",
 	"aprsmap.packets":  "Packets",
 	"aprsmap.disabled": "The APRS hub is disabled.",
 
@@ -946,6 +948,8 @@ var pl = map[string]string{
 	"aprsmap.title":    "Stacje APRS",
 	"aprsmap.hint":     "Wszystkie stacje trzymane teraz przez hub APRS: słyszane przez nasze radio (APRS-RF) i przez internet (APRS-IS). Dymek pokazuje ostatnią ścieżkę digipeaterów, komentarz i liczniki; filtr pokazuje, co dostarczył każdy backend.",
 	"aprsmap.path":     "Ścieżka",
+	"aprs.trace":       "Trasa",
+	"aprs.msg":         "Wiadomość",
 	"aprsmap.packets":  "Pakiety",
 	"aprsmap.disabled": "Hub APRS jest wyłączony.",
 

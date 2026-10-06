@@ -4137,8 +4137,8 @@ func TestMeshtasticCh0Tab(t *testing.T) {
 
 	// The tab strip: DM first, then ch0 (the rx/tx tabs are gone).
 	_, html := env.get("/meshtastic")
-	dmIdx := strings.Index(html, `href="/meshtastic"`)
-	ch0Idx := strings.Index(html, "/meshtastic?dir=ch0")
+	dmIdx := strings.Index(html, `href="/meshtastic?tab=msgs"`)
+	ch0Idx := strings.Index(html, "/meshtastic?tab=msgs&dir=ch0")
 	if dmIdx < 0 || ch0Idx < 0 || !(dmIdx < ch0Idx) {
 		t.Fatalf("tab order wrong (dm=%d ch0=%d): %.200s", dmIdx, ch0Idx, html)
 	}
@@ -4158,11 +4158,11 @@ func TestMeshtasticCh0Tab(t *testing.T) {
 
 	// The ch0 view shows both directions of the primary channel and
 	// paginates (101 rx + 1 tx = 102 rows, 100 per page).
-	_, html = env.get("/meshtastic?dir=ch0")
+	_, html = env.get("/meshtastic?tab=msgs&dir=ch0")
 	if !strings.Contains(html, "tx-ch0") {
 		t.Errorf("ch0 view missing the tx row: %.300s", html)
 	}
-	if !strings.Contains(html, "/meshtastic?dir=ch0&amp;page=2") {
+	if !strings.Contains(html, "/meshtastic?tab=msgs&dir=ch0&amp;page=2") {
 		t.Errorf("ch0 view missing page-2 link: %.300s", html)
 	}
 	if strings.Contains(html, "sp9-row") || strings.Contains(html, "dm-row") {
@@ -4229,24 +4229,24 @@ func TestMeshtasticDMTab(t *testing.T) {
 	if !strings.Contains(html, "to-spm") {
 		t.Errorf("DM default view missing rows: %.300s", html)
 	}
-	if !strings.Contains(html, "/meshtastic?dir=all&amp;page=2") {
+	if !strings.Contains(html, "/meshtastic?tab=msgs&dir=all&amp;page=2") {
 		t.Errorf("DM default view missing page-2 link: %.300s", html)
 	}
-	_, html = env.get("/meshtastic?page=2")
+	_, html = env.get("/meshtastic?tab=msgs&page=2")
 	if !strings.Contains(html, "from-unknown") {
 		t.Errorf("DM page 2 missing rows: %.300s", html)
 	}
 
 	// Selecting a peer shows only that conversation (rx from them + tx
 	// to them) and keeps the peer in the pagination links.
-	_, html = env.get("/meshtastic?peer=a0a85934")
+	_, html = env.get("/meshtastic?tab=msgs&peer=a0a85934")
 	if strings.Contains(html, "from-bunkier") || strings.Contains(html, "from-unknown") {
 		t.Errorf("peer view leaked other peers: %.300s", html)
 	}
 	if !strings.Contains(html, "to-spm") {
 		t.Errorf("peer view missing tx row: %.300s", html)
 	}
-	if !strings.Contains(html, "/meshtastic?dir=all&amp;peer=a0a85934&amp;page=2") {
+	if !strings.Contains(html, "/meshtastic?tab=msgs&dir=all&amp;peer=a0a85934&amp;page=2") {
 		t.Errorf("peer view missing page-2 link with peer: %.300s", html)
 	}
 	if !strings.Contains(html, `<option value="a0a85934" selected>sp9spm</option>`) {
@@ -4293,8 +4293,8 @@ func TestMeshtasticEmcomTab(t *testing.T) {
 	// The emcom tab sits right after ch0 (the device has not named the
 	// channel yet, so the label is plain "ch1").
 	_, html := env.get("/meshtastic")
-	ch0Idx := strings.Index(html, "/meshtastic?dir=ch0")
-	emcomIdx := strings.Index(html, "/meshtastic?dir=ch1")
+	ch0Idx := strings.Index(html, "/meshtastic?tab=msgs&dir=ch0")
+	emcomIdx := strings.Index(html, "/meshtastic?tab=msgs&dir=ch1")
 	if ch0Idx < 0 || emcomIdx < 0 || !(ch0Idx < emcomIdx) {
 		t.Fatalf("emcom tab missing or misplaced (ch0=%d ch1=%d): %.250s", ch0Idx, emcomIdx, html)
 	}
@@ -4306,14 +4306,14 @@ func TestMeshtasticEmcomTab(t *testing.T) {
 	}
 
 	// The emcom tab lists only the emcom channel, rx+tx, with pagination.
-	_, html = env.get("/meshtastic?dir=ch1")
-	if !strings.Contains(html, `class="page-tab active" href="/meshtastic?dir=ch1"`) {
+	_, html = env.get("/meshtastic?tab=msgs&dir=ch1")
+	if !strings.Contains(html, `class="page-tab active" href="/meshtastic?tab=msgs&dir=ch1"`) {
 		t.Errorf("emcom tab not active: %.300s", html)
 	}
 	if !strings.Contains(html, "emcom-tx") {
 		t.Errorf("emcom view missing the tx row: %.300s", html)
 	}
-	if !strings.Contains(html, "/meshtastic?dir=ch1&amp;page=2") {
+	if !strings.Contains(html, "/meshtastic?tab=msgs&dir=ch1&amp;page=2") {
 		t.Errorf("emcom view missing page-2 link: %.300s", html)
 	}
 	if strings.Contains(html, "c0-row") || strings.Contains(html, "dm-row") {

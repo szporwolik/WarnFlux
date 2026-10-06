@@ -13,72 +13,16 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
-    {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "meshtastic.sent"}}</span></div>{{end}}
-    <div class="mesh-toolbar">
-      <form method="post" action="/meshtastic/send" class="mesh-send">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="target" value="channel">
-        <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}">
-          {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
-        </select>
-        <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
-        <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send_channel"}}</button>
-      </form>
-      <form method="post" action="/meshtastic/send" class="mesh-send">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="target" value="contact">
-        <input type="text" name="contact" id="mesh-contact" placeholder="{{tr .Lang "meshtastic.contact_ph"}}" maxlength="8" list="mesh-contacts">
-        <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">{{.Username}}</option>{{end}}</datalist>
-        <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
-        <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send_contact"}}</button>
-      </form>
-    </div>
     <div class="page-tabs" role="tablist">
-      <button type="button" class="page-tab{{if eq .Tab "messages"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "messages"}}true{{else}}false{{end}}" data-tab="panel-msgs">
-        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshtastic.tab_messages"}}
-      </button>
-      <button type="button" class="page-tab{{if eq .Tab "nodes"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "nodes"}}true{{else}}false{{end}}" data-tab="panel-nodes">
-        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshtastic.tab_nodes"}}
-      </button>
-      <button type="button" class="page-tab{{if eq .Tab "map"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "map"}}true{{else}}false{{end}}" data-tab="panel-map">
+      <button type="button" class="page-tab{{if ne .Tab "msgs"}} active{{end}}" role="tab" aria-selected="{{if ne .Tab "msgs"}}true{{else}}false{{end}}" data-tab="panel-map">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "meshtastic.tab_map"}}
       </button>
+      <button type="button" class="page-tab{{if eq .Tab "msgs"}} active{{end}}" role="tab" aria-selected="{{if eq .Tab "msgs"}}true{{else}}false{{end}}" data-tab="panel-msgs">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "meshtastic.tab_messages"}}
+      </button>
     </div>
 
-    <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "messages"}} hidden{{end}}>
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshtastic.tab_messages"}} <span class="count" id="mesh-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
-      <p class="muted log-hint">{{tr .Lang "meshtastic.hint"}}</p>
-      <div class="page-tabs">
-        <a class="page-tab{{if not (or (eq .Dir "ch0") (and .EmcomDir (eq .Dir .EmcomDir)))}} active{{end}}" href="/meshtastic">DM</a>
-        <a class="page-tab{{if eq .Dir "ch0"}} active{{end}}" href="/meshtastic?dir=ch0">ch0</a>
-        {{if .EmcomDir}}<a class="page-tab{{if eq .Dir .EmcomDir}} active{{end}}" href="/meshtastic?dir={{.EmcomDir}}">{{.EmcomTab}}</a>{{end}}
-      </div>
-      {{if .Peers}}
-      <form method="get" action="/meshtastic" class="msgs-filter">
-        <label for="dm-peer">{{tr .Lang "meshtastic.filter_peer"}}</label>
-        <select name="peer" id="dm-peer" onchange="this.form.submit()">
-          <option value="">{{tr .Lang "meshtastic.filter_all"}}</option>
-          {{range .Peers}}<option value="{{.ID}}"{{if eq $.Peer .ID}} selected{{end}}>{{.Label}}</option>{{end}}
-        </select>
-        {{if .Peer}}<a class="btn-ghost btn-small" href="/meshtastic">{{tr .Lang "meshtastic.filter_clear"}}</a>{{end}}
-      </form>
-      {{end}}
-      <div id="mesh-msgs">{{template "mesh_msgs" .}}</div>
-    </section>
-
-    <section class="card page-panel" id="panel-nodes" data-panel="panel-nodes"{{if ne .Tab "nodes"}} hidden{{end}}>
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshtastic.tab_nodes"}}</h2>
-      <div id="mesh-nodes">
-        {{template "mesh_nodes" .}}
-      </div>
-      <div id="mesh-trace-result" class="emcom-flash" hidden
-           data-lbl-tracing="{{tr .Lang "meshtastic.trace_tracing"}}"
-           data-lbl-no-reply="{{tr .Lang "meshtastic.trace_no_reply"}}"
-           data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}"></div>
-    </section>
-
-    <section class="card page-panel" id="panel-map" data-panel="panel-map"{{if ne .Tab "map"}} hidden{{end}}>
+    <section class="card page-panel" id="panel-map" data-panel="panel-map"{{if eq .Tab "msgs"}} hidden{{end}}>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "meshmap.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "meshmap.hint"}}</p>
       <div class="page-tabs" role="tablist" id="mesh-map-filter">
@@ -101,6 +45,57 @@
       {{else}}
       <p class="home-none">{{tr .Lang "meshmap.disabled"}}</p>
       {{end}}
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshtastic.tab_nodes"}}</h2>
+      <div id="mesh-nodes">
+        {{template "mesh_nodes" .}}
+      </div>
+      <div id="mesh-trace-result" class="emcom-flash" hidden
+           data-lbl-tracing="{{tr .Lang "meshtastic.trace_tracing"}}"
+           data-lbl-no-reply="{{tr .Lang "meshtastic.trace_no_reply"}}"
+           data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}"></div>
+    </section>
+
+    <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "msgs"}} hidden{{end}}>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "meshtastic.tab_messages"}} <span class="count" id="mesh-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
+      {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
+      {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "meshtastic.sent"}}</span></div>{{end}}
+      <div class="mesh-toolbar">
+        <form method="post" action="/meshtastic/send" class="mesh-send">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="target" value="channel">
+          <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}">
+            {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
+          </select>
+          <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
+          <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send_channel"}}</button>
+        </form>
+        <form method="post" action="/meshtastic/send" class="mesh-send">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="target" value="contact">
+          <input type="text" name="contact" id="mesh-contact" placeholder="{{tr .Lang "meshtastic.contact_ph"}}" maxlength="8" list="mesh-contacts">
+          <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">{{.Username}}</option>{{end}}</datalist>
+          <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
+          <button type="submit" class="btn-primary btn-small">{{tr .Lang "meshtastic.send_contact"}}</button>
+        </form>
+      </div>
+      <p class="muted log-hint">{{tr .Lang "meshtastic.hint"}}</p>
+      <div class="page-tabs">
+        <a class="page-tab{{if not (or (eq .Dir "ch0") (and .EmcomDir (eq .Dir .EmcomDir)))}} active{{end}}" href="/meshtastic?tab=msgs">DM</a>
+        <a class="page-tab{{if eq .Dir "ch0"}} active{{end}}" href="/meshtastic?tab=msgs&dir=ch0">ch0</a>
+        {{if .EmcomDir}}<a class="page-tab{{if eq .Dir .EmcomDir}} active{{end}}" href="/meshtastic?tab=msgs&dir={{.EmcomDir}}">{{.EmcomTab}}</a>{{end}}
+      </div>
+      {{if .Peers}}
+      <form method="get" action="/meshtastic" class="msgs-filter">
+        <input type="hidden" name="tab" value="msgs">
+        <label for="dm-peer">{{tr .Lang "meshtastic.filter_peer"}}</label>
+        <select name="peer" id="dm-peer" onchange="this.form.submit()">
+          <option value="">{{tr .Lang "meshtastic.filter_all"}}</option>
+          {{range .Peers}}<option value="{{.ID}}"{{if eq $.Peer .ID}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+        {{if .Peer}}<a class="btn-ghost btn-small" href="/meshtastic?tab=msgs">{{tr .Lang "meshtastic.filter_clear"}}</a>{{end}}
+      </form>
+      {{end}}
+      <div id="mesh-msgs">{{template "mesh_msgs" .}}</div>
     </section>
   </main>
   {{template "footer" .}}
@@ -430,9 +425,9 @@
 </div>
 <div class="pager">
   <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
-  {{if gt .Page 1}}<a class="page-link" href="/meshtastic?dir={{.Dir}}{{if .Peer}}&amp;peer={{.Peer}}{{end}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+  {{if gt .Page 1}}<a class="page-link" href="/meshtastic?tab=msgs&dir={{.Dir}}{{if .Peer}}&amp;peer={{.Peer}}{{end}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
   <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
-  {{if lt .Page .Pages}}<a class="page-link" href="/meshtastic?dir={{.Dir}}{{if .Peer}}&amp;peer={{.Peer}}{{end}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
+  {{if lt .Page .Pages}}<a class="page-link" href="/meshtastic?tab=msgs&dir={{.Dir}}{{if .Peer}}&amp;peer={{.Peer}}{{end}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
 </div>
 {{else}}
 <p class="home-none">{{tr .Lang "meshtastic.none"}}</p>

@@ -43,7 +43,7 @@
              data-lbl-inactive-m="{{tr .Lang "meshtastic.trace_inactive_m"}}"
              data-lbl-inactive-h="{{tr .Lang "meshtastic.trace_inactive_h"}}"
              data-lbl-inactive-d="{{tr .Lang "meshtastic.trace_inactive_d"}}"></div>
-        <p class="aprs-map-attrib"><span id="mesh-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
+        <p class="aprs-map-attrib"><span id="mesh-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> · <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
       </div>
       <h3 class="meshmap-nopos-title muted" id="mesh-nopos-title" hidden></h3>
       <ul class="meshmap-nopos" id="mesh-nopos" hidden></ul>
@@ -230,7 +230,7 @@
           var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
             : (document.documentElement.getAttribute("data-theme") === "light"
               ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              : "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}");
+              : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
           traceMap = L.map(mapBox, { attributionControl: false, zoomControl: false, dragging: false,
             scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false });
           L.tileLayer(raster, { maxZoom: 19 }).addTo(traceMap);
@@ -404,7 +404,7 @@
     var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
       : (document.documentElement.getAttribute("data-theme") === "light"
         ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        : "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}");
+        : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
     var attrib = document.getElementById("mesh-admin-tiles-attrib");
     if (attrib && OFFLINE) {
       attrib.textContent = "WarnFlux (local tiles)";

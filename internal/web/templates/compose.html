@@ -95,7 +95,8 @@
             </label>
             <button type="button" class="btn-ghost" id="compose-loc-clear">{{tr .Lang "compose.clear_loc"}}</button>
           </div>
-          {{if .AprsLat}}<div id="compose-map" class="compose-map" data-lat="{{.AprsLat}}" data-lon="{{.AprsLon}}"></div>{{end}}
+          {{if .AprsLat}}<div id="compose-map" class="compose-map" data-lat="{{.AprsLat}}" data-lon="{{.AprsLon}}"></div>
+          <p class="aprs-map-attrib" id="compose-map-attrib"></p>{{end}}
           <p class="muted compose-loc-note">{{tr .Lang "compose.location_note"}}</p>
         </fieldset>
         <label class="field field-wide">

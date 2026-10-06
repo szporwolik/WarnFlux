@@ -49,10 +49,16 @@
       <div id="mesh-nodes">
         {{template "mesh_nodes" .}}
       </div>
-      <div id="mesh-trace-result" class="emcom-flash" hidden
-           data-lbl-tracing="{{tr .Lang "meshtastic.trace_tracing"}}"
-           data-lbl-no-reply="{{tr .Lang "meshtastic.trace_no_reply"}}"
-           data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}"></div>
+      <dialog class="modal" id="mesh-trace-dialog" aria-labelledby="mesh-trace-title"
+              data-lbl-tracing="{{tr .Lang "meshtastic.trace_tracing"}}"
+              data-lbl-no-reply="{{tr .Lang "meshtastic.trace_no_reply"}}"
+              data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}">
+        <h3 id="mesh-trace-title"></h3>
+        <div id="mesh-trace-body"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost btn-small" id="mesh-trace-close">{{tr .Lang "common.close"}}</button>
+        </div>
+      </dialog>
     </section>
 
     <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "msgs"}} hidden{{end}}>
@@ -105,21 +111,48 @@
   <script>
   // Per-node traceroute ("trace" buttons in the heard-nodes table).
   // Delegated: the polled fragment replaces the rows, the listener stays.
+  // The result opens in a modal dialog instead of an inline flash.
   (function () {
     var busy = false;
+    var dialog = document.getElementById("mesh-trace-dialog");
+    var titleEl = document.getElementById("mesh-trace-title");
+    var bodyEl = document.getElementById("mesh-trace-body");
+    var closeBtn = document.getElementById("mesh-trace-close");
+    if (closeBtn) {
+      closeBtn.addEventListener("click", function () { if (dialog && dialog.open) { dialog.close(); } });
+    }
+
+    function hopLine(h) {
+      var s = h.name ? (h.name + " (!" + h.id + ")") : ("!" + h.id);
+      if (h.snr) { s += " · " + Number(h.snr).toFixed(1) + " dB"; }
+      return s;
+    }
+
+    function show(title, lines) {
+      titleEl.textContent = title;
+      bodyEl.textContent = "";
+      if (lines && lines.length) {
+        var ul = document.createElement("ul");
+        ul.className = "mesh-trace-list";
+        lines.forEach(function (l) {
+          var li = document.createElement("li");
+          li.textContent = l;
+          ul.appendChild(li);
+        });
+        bodyEl.appendChild(ul);
+      }
+      if (dialog && !dialog.open) { dialog.showModal(); }
+    }
+
     document.addEventListener("click", function (e) {
       var btn = e.target.closest("button.mesh-trace");
-      if (!btn || busy) { return; }
+      if (!btn || busy || !dialog) { return; }
       var id = btn.getAttribute("data-id");
-      var out = document.getElementById("mesh-trace-result");
-      if (!out) { return; }
-      var LBL_TRACING = out.dataset.lblTracing || "Tracing";
-      var LBL_NOREPLY = out.dataset.lblNoReply || "no reply from the destination";
-      var LBL_FAILED = out.dataset.lblFailed || "trace failed";
+      var LBL_TRACING = dialog.dataset.lblTracing || "Tracing";
+      var LBL_NOREPLY = dialog.dataset.lblNoReply || "no reply from the destination";
+      var LBL_FAILED = dialog.dataset.lblFailed || "trace failed";
       busy = true;
-      out.hidden = false;
-      out.className = "emcom-flash";
-      out.textContent = LBL_TRACING + " !" + id + "…";
+      show(LBL_TRACING + " !" + id, ["…"]);
       var csrfEl = document.querySelector('form input[name="csrf"]');
       fetch("/api/meshtastic/traceroute", {
         method: "POST",
@@ -133,17 +166,11 @@
           return JSON.parse(t);
         });
       }).then(function (j) {
-        var parts = (j.hops || []).map(function (h) {
-          var s = h.name || h.id;
-          if (h.snr) { s += " (" + Number(h.snr).toFixed(1) + " dB)"; }
-          return s;
-        });
-        var line = parts.length ? parts.join(" → ") : "—";
-        out.className = j.reached ? "emcom-flash" : "emcom-flash emcom-flash-err";
-        out.textContent = (j.reached ? "✓ " : LBL_NOREPLY + ": ") + line;
+        var lines = (j.hops || []).map(hopLine);
+        if (!j.reached) { lines.unshift(LBL_NOREPLY); }
+        show((j.reached ? "✓ " : "✗ ") + "!" + id, lines);
       }).catch(function (err) {
-        out.className = "emcom-flash emcom-flash-err";
-        out.textContent = LBL_FAILED + ": " + (err && err.message ? err.message : err);
+        show(LBL_FAILED, [err && err.message ? err.message : String(err)]);
       }).finally(function () { busy = false; });
     });
   })();

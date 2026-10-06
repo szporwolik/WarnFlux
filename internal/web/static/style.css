@@ -2192,6 +2192,12 @@ tr.click-send:hover td { background: var(--surface-hi); }
   border-radius: 999px;
 }
 .wf-pop-body { padding: 0.55rem 0.75rem; font-size: 0.82rem; line-height: 1.45; }
+.wf-pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  padding: 0 0.6rem 0.6rem;
+}
 .wf-pop-body .wf-pop-meta { margin-bottom: 0.3rem; }
 .wf-pop-body .wf-pop-time { font-size: 0.75rem; margin-top: 0.4rem; }
 .wf-pop-body .hw-fcast { margin-top: 0.45rem; }

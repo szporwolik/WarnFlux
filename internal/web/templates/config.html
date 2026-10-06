@@ -20,94 +20,91 @@
 </html>
 {{end}}
 
-{{define "config"}}<section class="card health-card" id="config-section">
-  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-gear"></use></svg>{{tr .Lang "config.title"}}</h2>
-  <p class="muted log-hint">{{tr .Lang "config.intro"}}</p>
+{{define "config"}}<section class="card config-card" id="config-section">
+  <div class="config-head">
+    <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-gear"></use></svg>{{tr .Lang "config.title"}}</h2>
+    <a class="btn-ghost" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "nav.logs"}} →</a>
+  </div>
   {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
   {{if .Error}}{{template "flash-err" .Error}}{{end}}
 
-  <div class="health-group">
-    <h3>{{tr .Lang "config.logs.head"}}</h3>
-    <p class="muted">{{tr .Lang "config.logs.desc"}}</p>
-    <a class="btn-ghost" href="/logs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "nav.logs"}} →</a>
-  </div>
+  <div class="config-grid">
 
-  <div class="health-group">
-    <h3>{{tr .Lang "config.offline.head"}}</h3>
-    <p class="muted">{{tr .Lang "config.offline.desc"}}</p>
-    <form method="post" action="/config/offline" class="config-offline-form">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <input type="hidden" name="offline" id="offline-state" value="{{if .Offline}}off{{else}}on{{end}}">
-      <label class="health-row offline-row" for="offline-switch">
-        <span class="badge {{if .Offline}}bad{{else}}ok{{end}}">{{if .Offline}}{{tr .Lang "config.offline.state.on"}}{{else}}{{tr .Lang "config.offline.state.off"}}{{end}}</span>
-        <span class="switch" role="switch" aria-checked="{{if .Offline}}true{{else}}false{{end}}" title="{{if .Offline}}{{tr .Lang "config.offline.disable"}}{{else}}{{tr .Lang "config.offline.enable"}}{{end}}">
-          <input type="checkbox" id="offline-switch"{{if .Offline}} checked{{end}} onchange="document.getElementById('offline-state').value=this.checked?'on':'off';this.form.submit()">
-          <span class="slider" aria-hidden="true"></span>
-        </span>
-      </label>
-    </form>
-  </div>
-
-  <div class="health-group">
-    <h3>{{tr .Lang "config.sources.head"}}</h3>
-    <p class="muted">{{tr .Lang "config.sources.desc"}}</p>
-    {{range .InternetSources}}<div class="health-row">
-      <span class="health-name"><strong>{{.ID}}</strong></span>
-      <span class="badge muted">{{.Type}}</span>
-    </div>{{else}}<p class="empty">{{tr $.Lang "config.sources.none"}}</p>{{end}}
-  </div>
-
-  <div class="health-group">
-    <h3>{{tr .Lang "config.tiles.head"}}</h3>
-    <p class="muted">{{tr .Lang "config.tiles.desc"}}</p>
-    <div class="health-row">
-      {{if .TilesDir}}
-      <span class="health-name"><code>{{.TilesDir}}</code></span>
-      <span class="badge {{if .TilesOK}}ok{{else}}warn{{end}}">{{if .TilesOK}}{{tr .Lang "config.tiles.ok"}}{{else}}{{tr .Lang "config.tiles.missing"}}{{end}}</span>
-      {{else}}
-      <span class="badge muted">{{tr .Lang "config.tiles.none"}}</span>
-      {{end}}
-    </div>
-  </div>
-
-  <div class="health-group">
-    <h3>{{tr .Lang "config.mqtt.head"}}</h3>
-    <p class="muted">{{tr .Lang "config.mqtt.desc"}}</p>
-    <form method="post" action="/config/mqtt" class="config-mqtt-form">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      {{range .MqttRows}}
-      <label class="config-mqtt-row"><input type="checkbox" name="cat" value="{{.Key}}"{{if .Checked}} checked{{end}}><span>{{tr $.Lang (printf "config.mqtt.%s" .Key)}}</span></label>
-      {{end}}
-      <button type="submit" class="btn-primary">{{tr .Lang "config.mqtt.save"}}</button>
-    </form>
-  </div>
-
-  <div class="health-group">
-    <h3>{{tr .Lang "config.emcom.head"}}</h3>
-    <p class="muted">{{tr .Lang "config.emcom.desc"}}</p>
-    {{range .EmcomNetworks}}
-    <div class="health-row">
-      <span class="health-name"><strong>{{.Name}}</strong></span>
-      <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
-        <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
-      </span>
-      <form method="post" action="/config/emcom/{{.Slug}}/delete" class="inline-form" data-emcom-config-delete data-name="{{.Name}}">
-        <input type="hidden" name="csrf" value="{{$.CSRF}}">
-        <button type="submit" class="btn-danger btn-small">{{tr $.Lang "emcom.delete"}}</button>
+    <div class="config-block">
+      <form method="post" action="/config/offline" class="config-offline-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="offline" id="offline-state" value="{{if .Offline}}off{{else}}on{{end}}">
+        <label class="config-row" for="offline-switch">
+          <span class="config-row-title">{{tr .Lang "config.offline.head"}}</span>
+          <span class="badge {{if .Offline}}bad{{else}}ok{{end}}">{{if .Offline}}{{tr .Lang "config.offline.state.on"}}{{else}}{{tr .Lang "config.offline.state.off"}}{{end}}</span>
+          <span class="switch" role="switch" aria-checked="{{if .Offline}}true{{else}}false{{end}}" title="{{if .Offline}}{{tr .Lang "config.offline.disable"}}{{else}}{{tr .Lang "config.offline.enable"}}{{end}}">
+            <input type="checkbox" id="offline-switch"{{if .Offline}} checked{{end}} onchange="document.getElementById('offline-state').value=this.checked?'on':'off';this.form.submit()">
+            <span class="slider" aria-hidden="true"></span>
+          </span>
+        </label>
       </form>
     </div>
-    {{else}}
-    <p class="empty">{{tr .Lang "config.emcom.none"}}</p>
-    {{end}}
-    <form method="post" action="/config/emcom/add" class="emcom-add">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <label class="emcom-add-label" for="emcom-name">{{tr .Lang "emcom.add_label"}}</label>
-      <div class="emcom-add-row">
-        <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="{{tr .Lang "emcom.add_placeholder"}}" required>
-        <button type="submit" class="btn-primary">{{tr .Lang "emcom.add_btn"}}</button>
+
+    <div class="config-block">
+      <div class="config-row">
+        <span class="config-row-title">{{tr .Lang "config.tiles.head"}}</span>
+        {{if .TilesDir}}<span class="badge {{if .TilesOK}}ok{{else}}warn{{end}}">{{if .TilesOK}}{{tr .Lang "config.tiles.ok"}}{{else}}{{tr .Lang "config.tiles.missing"}}{{end}}</span>
+        {{else}}<span class="badge muted">{{tr .Lang "config.tiles.none"}}</span>{{end}}
       </div>
-      <p class="muted small">{{tr .Lang "emcom.add_note"}}</p>
-    </form>
+      {{if .TilesDir}}<p class="config-hint"><code>{{.TilesDir}}</code></p>{{end}}
+    </div>
+
+    <div class="config-block">
+      <div class="config-row">
+        <span class="config-row-title">{{tr .Lang "config.sources.head"}}</span>
+        <span class="badge muted">{{len .InternetSources}}</span>
+      </div>
+      <div class="config-chips">
+        {{range .InternetSources}}<span class="config-chip"><strong>{{.ID}}</strong> <span class="muted">{{.Type}}</span></span>
+        {{else}}<span class="config-hint">{{tr $.Lang "config.sources.none"}}</span>{{end}}
+      </div>
+    </div>
+
+    <div class="config-block">
+      <div class="config-row">
+        <span class="config-row-title">{{tr .Lang "config.mqtt.head"}}</span>
+        <button type="submit" form="config-mqtt-form" class="btn-primary">{{tr .Lang "config.mqtt.save"}}</button>
+      </div>
+      <form method="post" action="/config/mqtt" id="config-mqtt-form" class="config-mqtt-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        {{range .MqttRows}}
+        <label class="config-mqtt-row"><input type="checkbox" name="cat" value="{{.Key}}"{{if .Checked}} checked{{end}}><span>{{tr $.Lang (printf "config.mqtt.%s" .Key)}}</span></label>
+        {{end}}
+      </form>
+    </div>
+
+    <div class="config-block config-block-wide">
+      <div class="config-row">
+        <span class="config-row-title">{{tr .Lang "config.emcom.head"}}</span>
+      </div>
+      {{range .EmcomNetworks}}
+      <div class="config-row">
+        <span class="config-row-title">{{.Name}}</span>
+        <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
+          <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
+        </span>
+        <form method="post" action="/config/emcom/{{.Slug}}/delete" class="inline-form" data-emcom-config-delete data-name="{{.Name}}">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <button type="submit" class="btn-danger btn-small">{{tr $.Lang "emcom.delete"}}</button>
+        </form>
+      </div>
+      {{else}}
+      <p class="config-hint">{{tr .Lang "config.emcom.none"}}</p>
+      {{end}}
+      <form method="post" action="/config/emcom/add" class="emcom-add">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <div class="emcom-add-row">
+          <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="{{tr .Lang "emcom.add_placeholder"}}" required>
+          <button type="submit" class="btn-primary">{{tr .Lang "emcom.add_btn"}}</button>
+        </div>
+      </form>
+    </div>
+
   </div>
 </section>
 <script>

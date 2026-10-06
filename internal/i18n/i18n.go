@@ -777,7 +777,7 @@ var en = map[string]string{
 	"notif.status.expired":    "expired",
 
 	// Account page.
-	"account.config_note":          "This account is managed in configuration: username, email and password come from config.yaml and cannot be changed here.",
+	"account.config_note":          "Username, role and password stay in the server configuration. Contact details and notification subscriptions are saved here.",
 	"account.contact":              "Contact",
 	"account.contact_note":         "Used for alert routing. The username is managed by an administrator.",
 	"account.phone":                "Phone",
@@ -1533,7 +1533,7 @@ var pl = map[string]string{
 	"notif.status.confirmed":  "potwierdzono",
 	"notif.status.expired":    "wygasło",
 
-	"account.config_note":          "To konto jest zarządzane w konfiguracji: nazwa użytkownika, e-mail i hasło pochodzą z config.yaml i nie można ich tu zmienić.",
+	"account.config_note":          "Nazwa użytkownika, rola i hasło pozostają w konfiguracji serwera. Dane kontaktowe i subskrypcje powiadomień zapisujesz tutaj.",
 	"account.contact":              "Kontakt",
 	"account.contact_note":         "Używane do routingu alertów. Nazwą użytkownika zarządza administrator.",
 	"account.phone":                "Telefon",

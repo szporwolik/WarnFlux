@@ -37,15 +37,15 @@
           <div class="account-grid">
             <label class="field">
               <span>{{tr .Lang "account.phone"}}</span>
-              <input type="text" name="phone" value="{{.Phone}}" maxlength="32" placeholder="+48 600 000 000"{{if .ManagedAccount}} disabled{{end}}>
+              <input type="text" name="phone" value="{{.Phone}}" maxlength="32" placeholder="+48 600 000 000">
             </label>
             <label class="field">
               <span>{{tr .Lang "account.email"}}</span>
-              <input type="email" name="email" value="{{.Email}}" maxlength="128" placeholder="you@example.com"{{if .ManagedAccount}} disabled{{end}}>
+              <input type="email" name="email" value="{{.Email}}" maxlength="128" placeholder="you@example.com">
             </label>
             <label class="field">
               <span>{{tr .Lang "account.discord"}}</span>
-              <input type="text" name="discord" value="{{.Discord}}" maxlength="128" placeholder="@handle"{{if .ManagedAccount}} disabled{{end}}>
+              <input type="text" name="discord" value="{{.Discord}}" maxlength="128" placeholder="@handle">
             </label>
           </div>
         </div>
@@ -67,7 +67,7 @@
           <div class="account-channels-grid">
             {{range .Groups}}
             <label class="account-channel">
-              <input type="checkbox" name="groups" value="{{.ID}}" {{if index $.GroupSet .ID}}checked{{end}}{{if $.ManagedAccount}} disabled{{end}}>
+              <input type="checkbox" name="groups" value="{{.ID}}" {{if index $.GroupSet .ID}}checked{{end}}>
               <span>{{.Name}}</span>
             </label>
             {{else}}
@@ -82,18 +82,16 @@
           <div class="account-channels-grid">
             {{range .Channels}}
             <label class="account-channel">
-              <input type="checkbox" name="channels" value="{{.Kind}}" {{if index $.ChannelSet .Kind}}checked{{end}}{{if $.ManagedAccount}} disabled{{end}}>
+              <input type="checkbox" name="channels" value="{{.Kind}}" {{if index $.ChannelSet .Kind}}checked{{end}}>
               <span>{{.Label}}</span>
             </label>
             {{end}}
           </div>
         </div>
 
-        {{if not .ManagedAccount}}
         <div class="form-footer">
           <button type="submit" class="btn-primary">{{tr .Lang "account.save"}}</button>
         </div>
-        {{end}}
       </form>
     </section>
   </main>

@@ -1115,6 +1115,17 @@ tr.click-send:hover td { background: var(--surface-hi); }
   gap: 0.5rem;
   margin-top: 0.4rem;
 }
+/* Traceroute result list inside the modal. */
+.mesh-trace-list {
+  margin: 0.3rem 0 0.6rem 1.2rem;
+  padding: 0;
+  list-style: none;
+}
+.mesh-trace-list li {
+  padding: 0.15rem 0;
+  border-bottom: 1px dashed var(--border);
+}
+.mesh-trace-list li:last-child { border-bottom: 0; }
 .btn-small {
   display: inline-flex;
   align-items: center;

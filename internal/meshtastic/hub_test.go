@@ -619,6 +619,11 @@ func TestTraceroute(t *testing.T) {
 	if got := pkt[0].GetDecoded().GetPortnum(); got != pb.PortNum_TRACEROUTE_APP {
 		t.Fatalf("portnum = %v, want TRACEROUTE_APP", got)
 	}
+	// The firmware only answers traceroute frames flagged want_ack +
+	// want_response.
+	if !pkt[0].GetWantAck() || !pkt[0].GetDecoded().GetWantResponse() {
+		t.Fatalf("probe flags = ack:%v resp:%v, want both true", pkt[0].GetWantAck(), pkt[0].GetDecoded().GetWantResponse())
+	}
 	if got := binary.LittleEndian.Uint32(pkt[0].GetDecoded().GetPayload()); got != 0xef010203 {
 		t.Fatalf("payload = %08x, want ef010203", got)
 	}

@@ -516,6 +516,38 @@ func TestHubStationsSnapshot(t *testing.T) {
 	}
 }
 
+// TestHubRFBypassesAreaGate pins the admin-map policy: RF-heard stations
+// enter the station registry no matter how far outside the operational
+// area they sit (the antenna hears them), while internet-injected
+// position packets stay area-limited.
+func TestHubRFBypassesAreaGate(t *testing.T) {
+	alat, alon := 50.0, 20.0
+	hub, sink := testHub(t, HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: 30, StationTTL: 30 * time.Minute,
+		AreaLatitude: &alat, AreaLongitude: &alon, AreaRadiusKM: 30,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	// ~278 km from the area center: the internet copy is dropped, the
+	// RF copy becomes station state.
+	far := "SP9FAR>APRS:!5230.00N/02010.00E-"
+	hub.Observe(testPacket(far), BackendInternet)
+	hub.Observe(testPacket(far), BackendRadio)
+
+	waitFor(t, func() bool {
+		return len(sink.payloads(StationsTopicPrefix+"SP9FAR")) >= 1
+	})
+	if got := len(sink.payloads(StationsTopicPrefix + "SP9FAR")); got != 1 {
+		t.Fatalf("RF station published %d times, want 1", got)
+	}
+	if got := hub.Stats().Filtered; got != 1 {
+		t.Errorf("filtered = %d, want 1 (only the internet copy)", got)
+	}
+}
+
 func TestHubInfrastructureFilter(t *testing.T) {
 	hub, sink := testHub(t, HubConfig{
 		Enabled:               true,

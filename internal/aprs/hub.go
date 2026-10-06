@@ -678,8 +678,11 @@ func (h *Hub) apply(op hubOp) {
 
 	// Defense in depth: the APRS-IS filter already limits the feed to the
 	// operational area (virtual center of the served towns); position-bearing
-	// packets outside the area are dropped.
-	if p.Position != nil {
+	// packets outside the area are dropped. RF-heard packets BYPASS this
+	// gate on purpose: the admin APRS map shows everything the antenna
+	// actually hears, no matter how far outside the operational ring the
+	// station sits (internet-injected stations stay area-limited).
+	if p.Position != nil && op.via != BackendRadio {
 		d := DistanceKM(h.cfg.AreaLat, h.cfg.AreaLon, p.Position.Latitude, p.Position.Longitude)
 		if d > h.cfg.AreaRadiusKM {
 			h.filtered.Add(1)

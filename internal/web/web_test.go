@@ -1695,6 +1695,11 @@ func TestComposeFlow(t *testing.T) {
 		t.Fatalf("compose publish did not enqueue a new transition: %+v", ev)
 	} else if ev.Hazard.Hazard.Latitude == nil || *ev.Hazard.Hazard.Latitude != 49.985 {
 		t.Errorf("compose transition lost coordinates: %+v", ev.Hazard.Hazard)
+	} else if ev.Hazard.Hazard.Description != "Heavy rain may cause local flooding." ||
+		ev.Hazard.Hazard.Instruction != "Avoid the river bank." {
+		// The SMTP action prints these free-text fields; without them
+		// every mail falls back to the default instruction.
+		t.Errorf("compose transition lost description/instruction: %+v", ev.Hazard.Hazard)
 	}
 
 	// Simulate the broker loopback: the ingestor mirrors the document.

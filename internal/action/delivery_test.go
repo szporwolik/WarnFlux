@@ -415,6 +415,36 @@ func TestInstanceDurableGateSkips(t *testing.T) {
 	}
 }
 
+// TestInstanceDurableGateIgnoredForNotify pins the deliberate exception:
+// a terminal transition flagged Notify is the stand-down notice — it
+// must transmit even when the lifecycle oracle reports the hazard is no
+// longer active (the gate is never consulted).
+func TestInstanceDurableGateIgnoredForNotify(t *testing.T) {
+	p := &deliveryPlugin{}
+	inst, ms := newDeliveryInstance(t, p, 1)
+	inst.setDeliveryGate(func(ctx context.Context, req ActionRequest) bool {
+		return false // lifecycle says: no longer active
+	})
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Key: "emcom:net", Source: "emcom", ChangeID: 9, Publisher: "pub-1", Notify: true,
+			Type: dispatch.TransitionExpired,
+			Hazard: dispatch.Hazard{
+				EventKey: "emcom:net", Severity: "severe",
+				Headline: "NET: level 0 – Monitoring",
+			}}}
+	payload, _ := json.Marshal(ActionRequest{ID: "emcom:net/log", Event: ev})
+	enqueueOne(t, ms, payload)
+
+	waitForDelivery(t, func() bool {
+		return p.handled.Load() == 1
+	}, "notify payload transmitted despite the gate")
+	if got := ms.statusOf(1, "log", "c:1"); got != storage.DeliveryAccepted && got != storage.DeliveryConfirmed {
+		t.Errorf("job status = %s, want accepted/confirmed (transmitted)", got)
+	}
+}
+
 // TestInstanceDurableAsyncFailureCheck pins the guarded settlement: the
 // failure marker read and the accepted write happen ATOMICALLY in the
 // store. The first settlement sees the marker (the async TxFailed) and

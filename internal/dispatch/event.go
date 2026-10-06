@@ -97,7 +97,11 @@ type HazardTransition struct {
 	// instance (empty for legacy publishers): deduplication includes it,
 	// so independent instances can never suppress each other.
 	Publisher string
-	Hazard    Hazard
+	// Notify marks a terminal transition (cancelled/expired) that must
+	// STILL start the notification machine: the document is retired, but
+	// people must be told (e.g. an EMCOM network standing down).
+	Notify bool
+	Hazard Hazard
 }
 
 // MessageID returns the short human identifier of the hazard, deriving it

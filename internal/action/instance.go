@@ -292,7 +292,13 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 			return
 		}
 	}
-	if i.gate != nil && !i.gate(context.Background(), req) {
+	// Staleness gate DIRECTLY BEFORE the transmission: the hazard may
+	// have expired while the job sat in the queue, or a newer
+	// cancellation may already be known. Either way the stale alert
+	// must never hit the radio — settle as expired, a terminal state
+	// that deduplicates replays. A Notify transition is the deliberate
+	// exception: its whole point is telling people the hazard ended.
+	if i.gate != nil && !(req.Event.Hazard != nil && req.Event.Hazard.Notify) && !i.gate(context.Background(), req) {
 		i.logger.Info("action: queued alert superseded before transmission",
 			"action", i.id, "event_key", key)
 		i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req)

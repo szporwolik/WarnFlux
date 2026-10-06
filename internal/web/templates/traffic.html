@@ -19,6 +19,9 @@
       <button type="button" class="page-tab" role="tab" aria-selected="false" data-tab="panel-browser">
         <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg>{{tr .Lang "traffic.tab.browser"}}
       </button>
+      <button type="button" class="page-tab" role="tab" aria-selected="false" data-tab="panel-visitors">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>{{tr .Lang "traffic.tab.visitors"}}
+      </button>
     </div>
     <section class="card log-card page-panel" id="panel-traffic" data-panel="panel-traffic">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr .Lang "traffic.title"}}</h2>
@@ -58,9 +61,122 @@
         </table>
       </div>
     </section>
+    <section class="card page-panel" id="panel-visitors" data-panel="panel-visitors" hidden>
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>{{tr .Lang "traffic.visitors.title"}}</h2>
+      <p class="muted log-hint">{{tr .Lang "traffic.visitors.hint"}}</p>
+      <div class="visits-cards" id="visits-cards"
+           data-lbl-new="{{tr .Lang "traffic.visitors.new"}}" data-lbl-returning="{{tr .Lang "traffic.visitors.returning"}}"
+           data-lbl-today="{{tr .Lang "traffic.visitors.today"}}" data-lbl-7d="{{tr .Lang "traffic.visitors.days7"}}"
+           data-lbl-14d="{{tr .Lang "traffic.visitors.days14"}}" data-lbl-total="{{tr .Lang "traffic.visitors.total"}}"></div>
+      <div class="visits-chart-wrap" id="visits-chart-wrap" hidden>
+        <svg id="visits-chart" viewBox="0 0 640 180" preserveAspectRatio="none" role="img" aria-label="{{tr .Lang "traffic.visitors.chart"}}"></svg>
+      </div>
+      <p class="home-none" id="visits-none" hidden>{{tr .Lang "traffic.visitors.none"}}</p>
+    </section>
   </main>
   {{template "footer" .}}
   <script src="/static/app.js?v={{.Commit}}" defer></script>
+  <script>
+  (function () {
+    "use strict";
+    var cards = document.getElementById("visits-cards");
+    var none = document.getElementById("visits-none");
+    var wrap = document.getElementById("visits-chart-wrap");
+    var svg = document.getElementById("visits-chart");
+    if (!cards || !svg) { return; }
+    var LBL_NEW = cards.getAttribute("data-lbl-new") || "New";
+    var LBL_RET = cards.getAttribute("data-lbl-returning") || "Returning";
+    var LBL_TODAY = cards.getAttribute("data-lbl-today") || "Today";
+    var LBL_7D = cards.getAttribute("data-lbl-7d") || "7 days";
+    var LBL_14D = cards.getAttribute("data-lbl-14d") || "14 days";
+    var LBL_TOTAL = cards.getAttribute("data-lbl-total") || "Total";
+
+    function card(label, value, sub) {
+      var d = document.createElement("div");
+      d.className = "visits-card";
+      var l = document.createElement("div");
+      l.className = "visits-card-label";
+      l.textContent = label;
+      var v = document.createElement("div");
+      v.className = "visits-card-value";
+      v.textContent = value;
+      d.appendChild(l);
+      d.appendChild(v);
+      if (sub) {
+        var s = document.createElement("div");
+        s.className = "visits-card-sub";
+        s.textContent = sub;
+        d.appendChild(s);
+      }
+      cards.appendChild(d);
+    }
+
+    // A tiny dependency-free bar chart: two bars per day (new in
+    // purple, returning in gray), scaled to the busiest day.
+    function chart(rows) {
+      svg.textContent = "";
+      var W = 640, H = 180, padB = 18, padT = 6;
+      var n = rows.length;
+      var max = 1;
+      rows.forEach(function (r) {
+        max = Math.max(max, r.New || 0, r.Returning || 0, (r.New || 0) + (r.Returning || 0));
+      });
+      var slot = W / n;
+      var barW = Math.max(3, Math.min(10, slot * 0.3));
+      rows.forEach(function (r, i) {
+        var x = i * slot + (slot - 2 * barW - 3) / 2;
+        var nv = r.New || 0, rv = r.Returning || 0;
+        var hn = nv / max * (H - padB - padT);
+        var hr = rv / max * (H - padB - padT);
+        var y = H - padB;
+        svg.appendChild(rect(x, y - hn, barW, hn, "var(--brand, #8e24aa)", nv));
+        svg.appendChild(rect(x + barW + 3, y - hr, barW, hr, "#78909c", rv));
+        if (n <= 16 || i % 2 === 0) {
+          var t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          t.setAttribute("x", x);
+          t.setAttribute("y", H - 4);
+          t.setAttribute("class", "visits-chart-label");
+          t.textContent = r.Day.slice(5); // MM-DD
+          svg.appendChild(t);
+        }
+      });
+      function rect(x, y, w, h, fill, n) {
+        var r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        r.setAttribute("x", x); r.setAttribute("y", y);
+        r.setAttribute("width", w); r.setAttribute("height", Math.max(0, h));
+        r.setAttribute("fill", fill);
+        var t2 = document.createElementNS("http://www.w3.org/2000/svg", "title");
+        t2.textContent = n;
+        r.appendChild(t2);
+        return r;
+      }
+    }
+
+    fetch("/api/stats/visits?days=14", { credentials: "same-origin" })
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (rows) {
+        rows = (rows || []).slice().reverse(); // oldest first
+        if (!rows.length) {
+          if (none) { none.hidden = false; }
+          return;
+        }
+        var today = rows[rows.length - 1];
+        var sum = function (nDays) {
+          var s = { n: 0, r: 0 };
+          rows.slice(-nDays).forEach(function (r) { s.n += r.New || 0; s.r += r.Returning || 0; });
+          return s;
+        };
+        var w7 = sum(7), w14 = sum(14);
+        card(LBL_TODAY, (today.New || 0) + (today.Returning || 0),
+          LBL_NEW + ": " + (today.New || 0) + " · " + LBL_RET + ": " + (today.Returning || 0));
+        card(LBL_7D, w7.n + w7.r, LBL_NEW + ": " + w7.n + " · " + LBL_RET + ": " + w7.r);
+        card(LBL_14D, w14.n + w14.r, LBL_NEW + ": " + w14.n + " · " + LBL_RET + ": " + w14.r);
+        chart(rows);
+        if (wrap) { wrap.hidden = false; }
+      })
+      .catch(function () { if (none) { none.hidden = false; } });
+  })();
+  </script>
 </body>
 </html>
 {{end}}

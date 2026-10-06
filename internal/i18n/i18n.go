@@ -195,6 +195,10 @@ var en = map[string]string{
 	"aprs.tab.map":  "Stations map",
 	"aprs.tab.msgs": "Messages",
 
+	"aprs.dir_title": "Heard stations",
+	"aprs.dir_call":  "Callsign",
+	"aprs.dir_none":  "No stations heard yet.",
+
 	"meshmap.title":    "Mesh nodes",
 	"meshmap.hint":     "Every node our Meshtastic radio heard — no operational ring, no time limit. The popup shows the hop count of the last packet, the observed signal kinds, telemetry, last-heard time and distance from our node.",
 	"meshmap.hops":     "Hops",
@@ -928,6 +932,10 @@ var pl = map[string]string{
 
 	"aprs.tab.map":  "Mapa stacji",
 	"aprs.tab.msgs": "Wiadomości",
+
+	"aprs.dir_title": "Słyszane stacje",
+	"aprs.dir_call":  "Znak",
+	"aprs.dir_none":  "Nie słychać jeszcze żadnych stacji.",
 
 	"meshmap.title":    "Węzły mesh",
 	"meshmap.hint":     "Każdy węzeł, który usłyszało nasze radio Meshtastic — bez ograniczenia promieniem ani czasem. Dymek pokazuje liczbę hopów ostatniego pakietu, rodzaje odebranych sygnałów, telemetrię, czas ostatniego odbioru i odległość od naszego węzła.",

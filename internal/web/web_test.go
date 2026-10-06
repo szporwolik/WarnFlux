@@ -2180,37 +2180,75 @@ func TestAdminResetPassword(t *testing.T) {
 	}
 }
 
-// TestAdminAccountReadOnly pins the configuration-managed admin account:
-// the self-service page renders the form disabled (no Save button) and the
-// server rejects any direct POST to /account for the admin session.
-func TestAdminAccountReadOnly(t *testing.T) {
+// TestAdminAccountSelfService pins the self-service surface for the
+// configuration-managed admin: username, role and password stay
+// config-owned (the password field is disabled and any posted password
+// is ignored), while contact data and notification subscriptions are
+// edited and persisted here.
+func TestAdminAccountSelfService(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()
+
+	g, err := env.users.CreateGroup("SP9MOA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserGroups(1, []int64{g.ID}); err != nil {
+		t.Fatal(err)
+	}
 
 	resp, html := env.get("/account")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /account as admin = %d", resp.StatusCode)
 	}
-	if !strings.Contains(html, "account-note") || !strings.Contains(html, "managed in configuration") {
+	if !strings.Contains(html, "account-note") || !strings.Contains(html, "stay in the server configuration") {
 		t.Errorf("account page missing the managed-account note: %s", html)
 	}
-	if !strings.Contains(html, `name="email" value="" maxlength="128" placeholder="you@example.com" disabled`) {
-		t.Errorf("email field must be disabled for the admin: %s", html)
+	if strings.Contains(html, `name="email" value="" maxlength="128" placeholder="you@example.com" disabled`) {
+		t.Errorf("email field must be editable for the admin: %s", html)
 	}
 	if !strings.Contains(html, `name="password" value="" autocomplete="new-password" placeholder="leave empty to keep the current one" disabled`) {
-		t.Errorf("password field must be disabled for the admin: %s", html)
+		t.Errorf("password field must stay disabled for the admin: %s", html)
 	}
-	if strings.Contains(html, "Save changes") {
-		t.Errorf("admin account page must not offer Save changes: %s", html)
+	if !strings.Contains(html, "Save changes") {
+		t.Errorf("admin account page must offer Save changes: %s", html)
 	}
 
-	// A direct POST is blocked server-side too.
+	// Contact fields update, the group unsubscribe works, and a posted
+	// password is ignored (the admin password is config-owned).
 	csrf := extractCSRF(t, html)
 	resp, _ = env.postForm("/account", url.Values{
-		"csrf": {csrf}, "email": {"hacker@example.com"}, "password": {"newpassword1"},
+		"csrf": {csrf}, "email": {"admin@sp9moa.pl"}, "phone": {"+48 600 000 000"},
+		"groups": {}, "channels": {"smtp", "aprs", "meshtastic", "discord"},
+		"password": {"newpassword1"},
 	})
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("POST /account as admin = %d, want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account?msg=saved" {
+		t.Fatalf("POST /account as admin = %d %q, want redirect to the saved flash", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	u, err := env.users.GetUserByUsername(testUsername)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Phone != "+48 600 000 000" || u.Email != "admin@sp9moa.pl" {
+		t.Errorf("admin contact data not persisted: %+v", u)
+	}
+	if !u.IsAdmin || u.Username != testUsername {
+		t.Errorf("admin identity must stay config-owned: %+v", u)
+	}
+	// The fake store never receives a password write for the admin row:
+	// the posted password must have been dropped server-side.
+	fu := env.users.(*fakeUsers)
+	fu.mu.Lock()
+	storedPassword := fu.passwords[testUsername]
+	fu.mu.Unlock()
+	if storedPassword != "" {
+		t.Fatalf("posted password leaked into the admin row: %q", storedPassword)
+	}
+	if ids, err := env.users.GroupIDsForUser(u.ID); err != nil {
+		t.Fatal(err)
+	} else if len(ids) != 0 {
+		t.Fatalf("admin groups = %v, want none after the unsubscribe", ids)
 	}
 }
 

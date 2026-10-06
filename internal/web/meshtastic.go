@@ -446,18 +446,17 @@ func (s *Server) fillMeshtasticNodes(r *http.Request, v *meshtasticView) {
 		return
 	}
 	v.Snap = s.meshtastic.Snapshot()
-	// The send form offers the device channel table (the node is the
-	// source of truth); the default PRIMARY channel (0) is receive-only
-	// by policy and is never offered.
+	// The send form offers ONLY the device channel table (the node is
+	// the source of truth): the default PRIMARY channel (0) is
+	// receive-only by policy and never offered, and there is no
+	// fallback — when the device has not reported its channels yet, the
+	// list is simply empty.
 	v.Channels = make([]meshtasticChannelOption, 0, len(v.Snap.Channels))
 	for i, name := range v.Snap.Channels {
 		if i == 0 {
 			continue
 		}
 		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: i, Label: name})
-	}
-	if len(v.Channels) == 0 {
-		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: 1})
 	}
 	// Directory match: any user who registered a node's id labels it (as
 	// the name when the node carries none, and next to the name

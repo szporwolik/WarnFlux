@@ -79,11 +79,11 @@
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="hidden" name="target" value="channel">
           <span class="mesh-send-label">{{tr .Lang "meshtastic.form_channel"}}</span>
-          <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}">
+          <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}"{{if not .Channels}} disabled{{end}}>
             {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
           </select>
           <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
-          <button type="submit" class="btn-primary">{{tr .Lang "meshtastic.send_channel"}}</button>
+          <button type="submit" class="btn-primary"{{if not .Channels}} disabled{{end}}>{{tr .Lang "meshtastic.send_channel"}}</button>
         </form>
         <form method="post" action="/meshtastic/send" class="mesh-send">
           <input type="hidden" name="csrf" value="{{.CSRF}}">

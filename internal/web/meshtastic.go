@@ -137,6 +137,7 @@ type meshtasticView struct {
 	CenterLat   float64
 	CenterLon   float64
 	OfflineMode bool
+	ForceTiles  bool
 
 	// messages tab
 	Messages []meshtasticMessageView
@@ -187,6 +188,7 @@ func (s *Server) handleMeshtasticPage(w http.ResponseWriter, r *http.Request) {
 		Tab:           "map",
 		Dir:           "all",
 		OfflineMode:   s.OfflineMode(),
+		ForceTiles:    s.forceTiles.Load(),
 	}
 	if tab := r.URL.Query().Get("tab"); tab == "msgs" {
 		v.Tab = "msgs"

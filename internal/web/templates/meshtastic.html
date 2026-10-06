@@ -116,7 +116,7 @@
     </section>
   </main>
   {{template "footer" .}}
-  <script>window.WF_OFFLINE={{if .OfflineMode}}true{{else}}false{{end}};</script>
+  <script>window.WF_OFFLINE={{if or .OfflineMode .ForceTiles}}true{{else}}false{{end}};</script>
   <script src="/static/app.js?v={{.Commit}}" defer></script>
   <script src="/static/leaflet/leaflet.js"></script>
   <script>

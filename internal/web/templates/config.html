@@ -61,8 +61,19 @@
     </div>
 
     <div class="config-block">
+      <form method="post" action="/config/tiles" class="config-offline-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="tiles" id="tiles-state" value="{{if .ForceLocalTiles}}off{{else}}on{{end}}">
+        <label class="config-row" for="tiles-switch">
+          <span class="config-row-title">{{tr .Lang "config.tiles.force"}}</span>
+          <span class="badge {{if .ForceLocalTiles}}ok{{else}}bad{{end}}">{{if .ForceLocalTiles}}{{tr .Lang "config.tiles.local"}}{{else}}{{tr .Lang "config.tiles.internet"}}{{end}}</span>
+          <span class="switch" role="switch" aria-checked="{{if .ForceLocalTiles}}true{{else}}false{{end}}" title="{{tr .Lang "config.tiles.force_hint"}}">
+            <input type="checkbox" id="tiles-switch"{{if .ForceLocalTiles}} checked{{end}} onchange="document.getElementById('tiles-state').value=this.checked?'on':'off';this.form.submit()">
+            <span class="slider" aria-hidden="true"></span>
+          </span>
+        </label>
+      </form>
       <div class="config-row">
-        <span class="config-row-title">{{tr .Lang "config.tiles.head"}}</span>
         {{if .TilesDir}}<span class="badge {{if .TilesOK}}ok{{else}}warn{{end}}">{{if .TilesOK}}{{tr .Lang "config.tiles.ok"}}{{else}}{{tr .Lang "config.tiles.missing"}}{{end}}</span>
         {{else}}<span class="badge muted">{{tr .Lang "config.tiles.none"}}</span>{{end}}
       </div>

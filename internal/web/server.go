@@ -104,6 +104,9 @@ type Server struct {
 	// hook that propagates a toggle to the plugin and action managers.
 	offline   atomic.Bool
 	offlineOn func(on bool)
+	// forceTiles forces every map to the local tile tree even while the
+	// station is online (the Config page switch).
+	forceTiles atomic.Bool
 
 	// resetMailer delivers password-reset emails. nil = email delivery
 	// unavailable (the self-service flow degrades gracefully).
@@ -377,6 +380,7 @@ func (s *Server) routes(static http.Handler) {
 	// MQTT publish mask.
 	s.mux.Handle("GET /config", s.requireAdmin(s.handleConfigPage))
 	s.mux.Handle("POST /config/offline", s.requireAdmin(s.handleConfigOffline))
+	s.mux.Handle("POST /config/tiles", s.requireAdmin(s.handleConfigTiles))
 	s.mux.Handle("POST /config/mesh", s.requireAdmin(s.handleConfigMesh))
 	s.mux.Handle("POST /config/mqtt", s.requireAdmin(s.handleConfigMqtt))
 	// Local map tiles ({z}/{x}/{y}.jpg under web.tiles_dir) for offline

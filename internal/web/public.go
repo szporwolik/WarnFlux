@@ -24,6 +24,7 @@ type publicChrome struct {
 	Landing      string
 	LandingLabel string
 	OfflineMode  bool
+	ForceTiles   bool
 	Disclaimer   string
 	// About is the operator-authored system intro (markdown); empty
 	// hides both the one-time popup and the header help button.
@@ -41,6 +42,7 @@ func (s *Server) publicChromeFor() publicChrome {
 		Commit:      s.commit,
 		RepoURL:     repoURL,
 		OfflineMode: s.OfflineMode(),
+		ForceTiles:  s.forceTiles.Load(),
 		Disclaimer:  s.cfg.Disclaimer,
 		About:       template.HTML(s.cfg.About),
 	}

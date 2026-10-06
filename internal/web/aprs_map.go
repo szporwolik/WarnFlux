@@ -40,6 +40,7 @@ type aprsMapView struct {
 	AprsCallsign  string
 
 	OfflineMode bool
+	ForceTiles  bool
 
 	// Messages tab (history payload + feedback; see aprsMessagesData).
 	aprsMessagesData
@@ -92,6 +93,7 @@ func (s *Server) handleAPRSPage(w http.ResponseWriter, r *http.Request) {
 		NavAPRS:     true,
 		Tab:         "map",
 		OfflineMode: s.OfflineMode(),
+		ForceTiles:  s.forceTiles.Load(),
 	}
 	if r.URL.Query().Get("tab") == "msgs" {
 		v.Tab = "msgs"

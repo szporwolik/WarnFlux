@@ -147,6 +147,9 @@ type pluginsView struct {
 	Lang    string
 	Sources []pluginStatusView
 	Outputs []pluginStatusView
+	// Ingest lists the public HTTP ingest endpoints (sources of the
+	// builder-mode alerts) with their acceptance counters.
+	Ingest []healthRow
 }
 
 // ---- actions view --------------------------------------------------------
@@ -400,6 +403,7 @@ func pageParam(r *http.Request, key string) int {
 
 func (s *Server) buildPluginsView() pluginsView {
 	v := pluginsView{}
+	v.Ingest = s.ingestHealthRows()
 	for _, st := range s.router.Statuses() {
 		row := pluginStatusView{
 			ID:                  st.ID,

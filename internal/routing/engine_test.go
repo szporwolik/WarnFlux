@@ -1352,8 +1352,30 @@ func TestEngineExpiredTransitionSkipped(t *testing.T) {
 	}
 }
 
-// TestEngineSupersededTransitionSkipped pins the ordering rule: an
-// older update must not outrank a cancellation the store already knows.
+// TestEngineExpiredNotifyFires pins the deliberate exception: a terminal
+// transition flagged Notify (e.g. an EMCOM network standing down) still
+// starts the notification machine — the document is retired AND people
+// are told.
+func TestEngineExpiredNotifyFires(t *testing.T) {
+	store := &fakeStore{rules: []storage.GroupRouting{
+		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
+	}}
+	acts := &fakeActions{}
+	e, feed := startEngine(t, store, acts)
+	waitFor(t, e.Ready, "rules loaded")
+
+	ev := hazardEvent("severe", dispatch.TransitionExpired)
+	ev.Hazard.Notify = true
+	feed <- ev
+
+	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "notify transition fired")
+	if got := e.Stats().TransitionsSkipped; got != 0 {
+		t.Fatalf("transitions skipped = %d for a Notify expiry, want 0", got)
+	}
+	if got := store.payloadCount("log"); got != 1 {
+		t.Fatalf("jobs queued = %d for a Notify expiry, want 1", got)
+	}
+}
 func TestEngineSupersededTransitionSkipped(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},

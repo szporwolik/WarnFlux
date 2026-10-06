@@ -231,6 +231,27 @@ func emcomHazard(net emcomNetwork, now time.Time) state.Hazard {
 	}
 }
 
+// emcomDeactivationHazard builds the notification that fires when a
+// network drops to a lower level (including back to monitoring): people
+// must be told the network stood down. It keeps the PREVIOUS level's
+// severity so the same routing cells (severity thresholds) deliver it
+// to exactly the audience that received the activation.
+func emcomDeactivationHazard(net emcomNetwork, prev int, now time.Time) state.Hazard {
+	h := emcomHazard(net, now)
+	old, ok := emcomLevelAt(prev)
+	oldName := fmt.Sprintf("level %d", prev)
+	if ok {
+		oldName = fmt.Sprintf("level %d – %s", prev, old.Name)
+		if old.Severity != "" {
+			h.Severity = old.Severity
+		}
+	}
+	lvl, _ := emcomLevelAt(net.Level)
+	h.Description = fmt.Sprintf("%s was lowered from %s to level %d – %s.\n\n%s\n\nOperational readiness levels:\n%s",
+		net.Name, oldName, net.Level, lvl.Name, lvl.Description, emcomLevelsLegend())
+	return h
+}
+
 // emcomTransition builds the canonical ingress event for one level change
 // (new / updated / expired), mirroring the compose module. The transition
 // carries the instance's publisher identity and the version the store
@@ -783,6 +804,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	// The PREVIOUS level decides new vs updated vs expiry — captured
 	// before the local record changes.
 	wasActive := net.Level >= 1
+	prevLevel := net.Level
 
 	net.Level = level
 	net.UpdatedBy = sess.username
@@ -854,10 +876,16 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if wasActive {
-		// Back to monitoring: retire the hazard document; the expiry
-		// transition never starts the notification machine (like compose).
-		if s.ingress.Enqueue(emcomTransition(emcomHazard(net, net.UpdatedAt), dispatch.TransitionExpired, publisher, version)) == dispatch.Rejected {
-			s.logger.Warn("emcom: local dispatch rejected the expiry transition", "slug", slug)
+		// Back to monitoring: the expiry transition retires the document
+		// everywhere AND carries the Notify flag — the routing engine
+		// starts the notification machine anyway, so people are told the
+		// network stood down. The payload is the deactivation hazard
+		// (previous level's severity, so the same routing cells deliver
+		// it; headline and description explain the drop).
+		drop := emcomTransition(emcomDeactivationHazard(net, prevLevel, net.UpdatedAt), dispatch.TransitionExpired, publisher, version)
+		drop.Hazard.Notify = true
+		if s.ingress.Enqueue(drop) == dispatch.Rejected {
+			s.logger.Warn("emcom: local dispatch rejected the deactivation transition", "slug", slug)
 		}
 		if hasStore {
 			s.publishEmcomStateAsync(net, sess.username)

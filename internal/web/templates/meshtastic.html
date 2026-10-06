@@ -252,6 +252,7 @@
     }
 
     function hopsLine(n) {
+      if (n.hops == null || n.hops < 0) { return LBL_HOPS + ": ?"; }
       if (!n.hops) { return LBL_HOPS + ": 0 (" + LBL_DIRECT + ")"; }
       return LBL_HOPS + ": " + n.hops;
     }
@@ -303,7 +304,7 @@
         if (cutoff && (!n.last_seen || new Date(n.last_seen).getTime() < cutoff)) { return; }
         if (!n.latitude || !n.longitude) { return; }
         var marker = L.marker([n.latitude, n.longitude], {
-          icon: badge(MESH_COLOR, n.hops ? String(n.hops) : "0", displayName(n)),
+          icon: badge(MESH_COLOR, n.hops > 0 ? String(n.hops) : (n.hops < 0 ? "?" : "0"), displayName(n)),
           riseOnHover: true
         });
         marker.bindTooltip("<strong>" + esc(displayName(n)) + "</strong><br>" + esc(hopsLine(n)),
@@ -411,7 +412,7 @@
             <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-clipboard"></use></svg>
           </button>
         </td>
-        <td class="nowrap">{{if .Hops}}{{.Hops}}{{else}}0 <span class="muted">({{tr $.Lang "meshmap.direct"}})</span>{{end}}</td>
+        <td class="nowrap">{{if gt .Hops 0}}{{.Hops}}{{else if eq .Hops 0}}0 <span class="muted">({{tr $.Lang "meshmap.direct"}})</span>{{else}}<span class="muted" title="{{tr $.Lang "meshmap.unknown"}}">?</span>{{end}}</td>
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}</td>

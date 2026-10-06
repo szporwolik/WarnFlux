@@ -373,29 +373,34 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		// rest of the engine's degraded modes.
 	}
 
-	// Cancellations and expirations only retire the active view (the
-	// dashboard hides the hazard); starting the notification machine for
-	// them makes no sense, so only new and updated transitions are
-	// routed to actions.
+	// Cancellations and expirations normally only retire the active view
+	// (the dashboard hides the hazard); starting the notification
+	// machine for them makes no sense. A terminal transition flagged
+	// Notify is the deliberate exception: the document is retired AND
+	// people are told (e.g. a network standing down).
 	switch ev.Hazard.Type {
 	case dispatch.TransitionCancelled, dispatch.TransitionExpired:
-		e.transitionsSkipped.Add(1)
-		e.logger.Debug("routing: terminal transition skipped",
-			"type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
-		e.trail.Add(key, trail.StepSkipped,
-			"skipped: "+string(ev.Hazard.Type)+" transition — notifications are never started for cancelled/expired hazards",
-			time.Now())
-		e.trail.SetOutcome(key, trail.OutcomeSkipped)
-		e.consumeDeliberate(ctx, inboxID)
-		return
+		if !ev.Hazard.Notify {
+			e.transitionsSkipped.Add(1)
+			e.logger.Debug("routing: terminal transition skipped",
+				"type", ev.Hazard.Type, "event_key", ev.Hazard.Key)
+			e.trail.Add(key, trail.StepSkipped,
+				"skipped: "+string(ev.Hazard.Type)+" transition — notifications are never started for cancelled/expired hazards",
+				time.Now())
+			e.trail.SetOutcome(key, trail.OutcomeSkipped)
+			e.consumeDeliberate(ctx, inboxID)
+			return
+		}
 	}
 
 	// Staleness gate BEFORE anything is scheduled: a recovered new or
 	// updated transition must never notify for a hazard that already
 	// expired, and an older update must not outrank a cancellation the
 	// store already knows. This is a deliberate skip — the inbox row
-	// (if any) is consumed.
-	if !e.hazardFresh(ctx, ev) {
+	// (if any) is consumed. Notify transitions bypass it: the lifecycle
+	// ledger has just recorded THIS transition as terminal, and the
+	// stand-down notice must still go out.
+	if !ev.Hazard.Notify && !e.hazardFresh(ctx, ev) {
 		e.transitionsSkipped.Add(1)
 		e.logger.Debug("routing: stale transition skipped",
 			"type", ev.Hazard.Type, "event_key", ev.Hazard.Key)

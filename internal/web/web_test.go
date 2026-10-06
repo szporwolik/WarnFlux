@@ -3440,13 +3440,18 @@ func TestEmcomPanelFlow(t *testing.T) {
 	if len(exp) != 1 || exp[0] != "emcom:sp9moa-emcom" {
 		t.Fatalf("expired = %v", exp)
 	}
+	// The drop dispatches ONE expiry transition flagged Notify: it
+	// retires the document AND starts the notification machine so
+	// people learn the network stood down.
 	select {
 	case ev = <-env.ingress.Events():
 	case <-time.After(time.Second):
-		t.Fatal("no expiry transition enqueued")
+		t.Fatal("no deactivation transition enqueued")
 	}
-	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionExpired {
-		t.Errorf("expiry transition = %+v", ev)
+	if ev.Hazard == nil || ev.Hazard.Type != dispatch.TransitionExpired || !ev.Hazard.Notify ||
+		ev.Hazard.Hazard.Severity != "severe" ||
+		!strings.Contains(ev.Hazard.Hazard.Description, "was lowered") {
+		t.Errorf("deactivation transition = %+v", ev)
 	}
 	mirrorInfo(3) // level 0 payload
 	// The fake publisher does not echo the retire: simulate the broker
@@ -3787,8 +3792,10 @@ func TestEmcomLevelZeroBlocksQueuedActivation(t *testing.T) {
 		t.Fatalf("gate for the fresh activation = (%v, %v), want allowed", blocked, err)
 	}
 
-	// Drop back to monitoring: the cancellation is recorded with the
-	// network state, and the queued activation is now blocked.
+	// Drop back to monitoring: one expiry transition flagged Notify — it
+	// records the cancellation atomically with the network state (the
+	// delivery gate then blocks the queued activation) AND still starts
+	// the notification machine for the stand-down.
 	if resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"0"}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("drop = %d, want 303", resp.StatusCode)
 	}
@@ -3798,7 +3805,7 @@ func TestEmcomLevelZeroBlocksQueuedActivation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no expiry transition enqueued")
 	}
-	if expiry.Hazard == nil || expiry.Hazard.Type != dispatch.TransitionExpired {
+	if expiry.Hazard == nil || expiry.Hazard.Type != dispatch.TransitionExpired || !expiry.Hazard.Notify {
 		t.Fatalf("expiry transition = %+v", expiry)
 	}
 	blocked, err = store.LifecycleBlocks(context.Background(), publisher, key, activation.Hazard.ChangeID)

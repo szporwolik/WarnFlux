@@ -71,6 +71,10 @@ type homeView struct {
 
 	ActiveCount int
 
+	// NoSevere marks the calm state: no active hazard is severe or
+	// higher, so a gentle banner above the minor group says so.
+	NoSevere bool
+
 	// Groups is one entry per non-empty severity level — extreme,
 	// severe, moderate, minor (most severe first). Moderate and above
 	// render expanded; only minor starts collapsed.
@@ -388,6 +392,7 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 	}
 
 	// Only non-empty groups render; moderate and above start expanded.
+	v.NoSevere = len(buckets[severity.Severe].Hazards) == 0 && len(buckets[severity.Extreme].Hazards) == 0
 	v.Groups = make([]homeSeverityGroup, 0, len(groupOrder))
 	for _, sev := range groupOrder {
 		g := buckets[sev]

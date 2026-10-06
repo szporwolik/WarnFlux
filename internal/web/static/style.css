@@ -1874,6 +1874,19 @@ tr.click-send:hover td { background: var(--surface-hi); }
   color: var(--muted);
   font-size: 0.85rem;
 }
+/* Calm-state banner above the collapsed minor group: subtle, dashed. */
+.home-no-severe {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.9rem 0 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-hi);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
 .home-empty {
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);

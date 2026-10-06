@@ -3934,7 +3934,7 @@ func TestContactPickers(t *testing.T) {
 	}
 
 	_, html = env.get("/meshtastic")
-	if !strings.Contains(html, `list="mesh-contacts"`) || !strings.Contains(html, `<datalist id="mesh-contacts"><option value="abcd1234">sp9kow</option>`) {
+	if !strings.Contains(html, `list="mesh-contacts"`) || !strings.Contains(html, `<datalist id="mesh-contacts"><option value="abcd1234">!abcd1234 · sp9kow</option>`) {
 		t.Errorf("meshtastic page missing contact picker: %s", html)
 	}
 }

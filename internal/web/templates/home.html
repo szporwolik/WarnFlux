@@ -60,6 +60,7 @@
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-github"></use></svg>
     </a>
   </footer>
+  {{template "cookiebar" .}}
   {{if .About}}<dialog id="about-dialog" class="about-dialog">
     <button type="button" class="about-close" aria-label="{{tr .Lang "home.about.close"}}">×</button>
     <div class="about-dialog-text">{{.About}}</div>

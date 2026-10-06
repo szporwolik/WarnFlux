@@ -79,14 +79,17 @@ type Server struct {
 	// meshtasticMsgs backs the admin Meshtastic message history page; nil in
 	// minimal constructions (the page then shows an empty state).
 	meshtasticMsgs storage.MeshtasticMessageStore
-	logger         *slog.Logger
-	sessions       *sessionStore
-	loginLimiter   *loginLimiter
-	logs           *LogBuffer
-	traffic        *mqttreceiver.TrafficBuffer
-	auditLog       *AuditBuffer
-	trails         *trail.Recorder
-	metrics        *metrics.Registry
+	// visits persists the per-day visitor analytics when the store
+	// supports it (nil otherwise — the counting then stays off).
+	visits       storage.VisitorStore
+	logger       *slog.Logger
+	sessions     *sessionStore
+	loginLimiter *loginLimiter
+	logs         *LogBuffer
+	traffic      *mqttreceiver.TrafficBuffer
+	auditLog     *AuditBuffer
+	trails       *trail.Recorder
+	metrics      *metrics.Registry
 
 	// sys samples host CPU/memory utilization for the System card;
 	// nil in minimal constructions (the view degrades to n/a).
@@ -207,6 +210,11 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		mux:            http.NewServeMux(),
 		ingest:         ingest,
 	}
+	// Visitor analytics ride the same SQLite store as the events: the
+	// optional interface keeps minimal test constructions untouched.
+	if v, ok := events.(storage.VisitorStore); ok {
+		s.visits = v
+	}
 
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -316,6 +324,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/audit", s.requireAdminPartial(s.handlePartialAudit))
 	s.mux.Handle("GET /traffic", s.requireAdmin(s.handleTrafficPage))
 	s.mux.Handle("GET /partials/traffic", s.requireAdminPartial(s.handlePartialTraffic))
+	s.mux.Handle("GET /api/stats/visits", s.requireAdmin(s.handleVisitorStats))
 	s.mux.Handle("GET /messages", s.requireAdmin(s.handleAPRSMessagesPage))
 	s.mux.Handle("POST /messages/send", s.requireAdmin(s.handleAPRSSend))
 	s.mux.Handle("POST /messages/beacon", s.requireAdmin(s.handleAPRSBeacon))
@@ -619,6 +628,7 @@ func setLangValue(v reflect.Value, lang string) {
 // renderL renders a page template with the request's UI language stamped
 // onto the view (so the {{tr}} calls resolve correctly).
 func (s *Server) renderL(w http.ResponseWriter, r *http.Request, name string, data any) {
+	s.countVisit(w, r)
 	s.render(w, name, stampLang(data, s.langFor(r)))
 }
 

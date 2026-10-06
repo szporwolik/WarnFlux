@@ -60,7 +60,7 @@ type userForm struct {
 	ChannelSet map[string]bool
 }
 
-// usersView is the full /users page model.
+// usersView is the users-tab panel model of the merged /access page.
 type usersView struct {
 	Lang     string
 	AppTitle string
@@ -74,6 +74,10 @@ type usersView struct {
 	CSRF     string
 	Username string
 	Role     string
+
+	// Tab carries the active access-page tab ("users" | "groups") so the
+	// panel knows whether it is the visible one.
+	Tab string
 
 	Users  []userRow
 	Groups []storage.Group
@@ -117,35 +121,13 @@ type usersView struct {
 	NavAccount       bool
 }
 
-// handleUsersPage renders the user administration page. ?edit=<id>
-// prefills the top form for editing that user.
+// handleUsersPage keeps the old /users URL working: the directory is the
+// default tab of the merged /access page. ?edit=<id> opens the dialog.
 func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	view := s.buildUsersView(r, userForm{}, 0, "")
-	view.CSRF = sess.csrf
-	view.Username = sess.username
-	view.Role = sess.role
-
-	if raw := r.URL.Query().Get("edit"); raw != "" {
-		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
-			if u, err := s.users.GetUser(id); err == nil {
-				view.EditID = u.ID
-				view.AdminEdit = u.IsAdmin
-				view.DialogOpen = true
-				view.Form = userForm{
-					Username:      u.Username,
-					Phone:         u.Phone,
-					Email:         u.Email,
-					Discord:       u.Discord,
-					Role:          u.Role,
-					APRSCallsigns: strings.Join(u.APRSCallsigns, " "), MeshtasticIDs: strings.Join(u.MeshtasticIDs, " "), GroupSet: s.userGroupSet(u.ID),
-					ChannelSet: s.userChannelSet(u.ID),
-				}
-			}
-		}
-	}
+	view := s.buildAccessView(r, sess, "users")
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "users", view)
+	s.renderL(w, r, "access", view)
 }
 
 // handleUserSave creates or updates a user from the top form. A hidden
@@ -451,13 +433,10 @@ func (s *Server) handleUserResetPassword(w http.ResponseWriter, r *http.Request)
 		s.audit(sess.username, "sessions-revoked", fmt.Sprintf("user %s sessions=%d", u.Username, n))
 	}
 
-	view := s.buildUsersView(r, userForm{}, 0, "")
-	view.CSRF = sess.csrf
-	view.Username = sess.username
-	view.Role = sess.role
-	view.Notice = fmt.Sprintf(i18n.T(s.langFor(r), "users.notice.password"), u.Username, password)
+	view := s.buildAccessView(r, sess, "users")
+	view.Users.Notice = fmt.Sprintf(i18n.T(s.langFor(r), "users.notice.password"), u.Username, password)
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "users", view)
+	s.renderL(w, r, "access", view)
 }
 
 // buildUsersView assembles the page model from the store.
@@ -546,17 +525,19 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 	}
 }
 
-// renderUsersError re-renders the page with an error banner, preserving
-// the submitted form values.
+// renderUsersError re-renders the merged access page with the users tab
+// open, an error banner and the submitted form values preserved.
 func (s *Server) renderUsersError(w http.ResponseWriter, r *http.Request, status int, form userForm, editID int64, msg string) {
 	sess := s.sessions.currentSession(r)
-	view := s.buildUsersView(r, form, editID, msg)
-	view.CSRF = sess.csrf
-	view.Username = sess.username
-	view.Role = sess.role
+	view := s.buildAccessView(r, sess, "users")
+	view.Users = s.buildUsersView(r, form, editID, msg)
+	view.Users.CSRF = sess.csrf
+	view.Users.Username = sess.username
+	view.Users.Role = sess.role
+	view.Users.Tab = "users"
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	s.renderL(w, r, "users", view)
+	s.renderL(w, r, "access", view)
 }
 
 // validateUserForm returns a human-readable problem or "". requirePassword

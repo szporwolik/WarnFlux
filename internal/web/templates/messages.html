@@ -1,50 +1,3 @@
-{{define "messages"}}<!doctype html>
-<html lang="{{.Lang}}">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{tr .Lang "messages.title"}} · {{.AppTitle}}</title>
-  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
-  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
-  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
-</head>
-<body class="app">
-  {{template "topbar" .}}
-  {{template "sidebar" .}}
-  <main class="users-main">
-    <div class="aprs-toolbar">
-      <form method="post" action="/messages/send" class="aprs-send">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" required>
-        <datalist id="aprs-calls">{{range .Calls}}<option value="{{.}}">{{end}}</datalist>
-        <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="67" required>
-        <button type="submit" class="btn-primary btn-small">{{tr .Lang "messages.send"}}</button>
-      </form>
-      <form method="post" action="/messages/beacon" class="inline-form">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <button type="submit" class="btn-ghost btn-small">{{tr .Lang "messages.beacon_now"}}</button>
-      </form>
-    </div>
-    <div class="page-tabs" role="tablist">
-      <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/messages">{{tr .Lang "messages.dir_all"}}</a>
-      <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/messages?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
-      <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/messages?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
-    </div>
-    <section class="card">
-      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "messages.title"}} <span class="count" id="aprs-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
-      <p class="muted log-hint">{{tr .Lang "messages.hint"}}</p>
-      {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
-      {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.sent"}}</span></div>{{end}}
-      {{if .Beacon}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "messages.beacon_sent"}}</span></div>{{end}}
-      <div id="aprs-msgs">{{template "aprs_msgs" .}}</div>
-    </section>
-  </main>
-  {{template "footer" .}}
-  <script src="/static/app.js?v={{.Commit}}" defer></script>
-</body>
-</html>
-{{end}}
-
 {{define "aprs_msgs"}}<span id="aprs-msg-total" hidden>{{.Total}}</span>
 {{if .Messages}}
 <div class="msgs-table-wrap">
@@ -75,9 +28,9 @@
 </div>
 <div class="pager">
   <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
-  {{if gt .Page 1}}<a class="page-link" href="/messages?dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+  {{if gt .Page 1}}<a class="page-link" href="/aprs?tab=msgs&dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
   <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
-  {{if lt .Page .Pages}}<a class="page-link" href="/messages?dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
+  {{if lt .Page .Pages}}<a class="page-link" href="/aprs?tab=msgs&dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
 </div>
 {{else}}
 <p class="home-none">{{tr .Lang "messages.none"}}</p>

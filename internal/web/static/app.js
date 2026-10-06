@@ -3287,7 +3287,15 @@
           t.setAttribute("aria-selected", active ? "true" : "false");
         });
         document.querySelectorAll(".page-panel[data-panel]").forEach(function (p) {
-          p.hidden = p.getAttribute("data-panel") !== tab.getAttribute("data-tab");
+          var show = p.getAttribute("data-panel") === tab.getAttribute("data-tab");
+          if (p.hidden !== !show) {
+            p.hidden = !show;
+            if (show) {
+              // Panels with lazy content (e.g. the Leaflet map on /aprs)
+              // size themselves on first show via this event.
+              p.dispatchEvent(new CustomEvent("panel-shown"));
+            }
+          }
         });
       });
     });

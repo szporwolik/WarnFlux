@@ -1270,8 +1270,9 @@ func TestHomeAPRSMapTab(t *testing.T) {
 	}
 }
 
-// TestAPRSMapPage pins the admin APRS station-map browser: the page
-// renders the ALL / APRS-IS / APRS-RF filter and the map element.
+// TestAPRSMapPage pins the combined admin APRS section: the page
+// renders the station map with the ALL / APRS-IS / APRS-RF filter AND
+// the messages tab (send form) behind one navigation entry.
 func TestAPRSMapPage(t *testing.T) {
 	hub, err := aprs.NewHub(aprs.HubConfig{
 		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
@@ -1287,7 +1288,7 @@ func TestAPRSMapPage(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /aprs = %d", resp.StatusCode)
 	}
-	for _, want := range []string{`id="aprs-admin-map"`, `data-filter="all"`, `data-filter="inet"`, `data-filter="radio"`} {
+	for _, want := range []string{`id="aprs-admin-map"`, `data-filter="all"`, `data-filter="inet"`, `data-filter="radio"`, `data-tab="panel-msgs"`, `action="/messages/send"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/aprs missing %s", want)
 		}
@@ -2231,7 +2232,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/messages", "/meshtastic"}
+	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/aprs?tab=msgs", "/meshtastic"}
 	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications", "/partials/health"}
 	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions"}
 	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing"}
@@ -3724,9 +3725,11 @@ func TestEmcomDeleteBlocksQueuedActivation(t *testing.T) {
 	}
 }
 
-// TestAPRSMessagesPage pins the admin APRS message history: admin-only
-// and renders the (empty or populated) durable history. Row rendering is
-// covered by the sqlite store tests plus live verification.
+// TestAPRSMessagesPage pins the admin APRS message history: admin-only,
+// reachable through the messages tab of the combined APRS section (the
+// old /messages route stays as a redirect), and renders the (empty or
+// populated) durable history. Row rendering is covered by the sqlite
+// store tests plus live verification.
 func TestAPRSMessagesPage(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -3736,21 +3739,25 @@ func TestAPRSMessagesPage(t *testing.T) {
 	}
 
 	env.login()
-	resp2, html := env.get("/messages")
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("GET /messages = %d, want 200", resp2.StatusCode)
+	resp2, _ := env.get("/messages")
+	if resp2.StatusCode != http.StatusSeeOther || resp2.Header.Get("Location") != "/aprs?tab=msgs" {
+		t.Fatalf("GET /messages = %d %q, want 303 /aprs?tab=msgs", resp2.StatusCode, resp2.Header.Get("Location"))
+	}
+	resp3, html := env.get("/aprs?tab=msgs")
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("GET /aprs?tab=msgs = %d, want 200", resp3.StatusCode)
 	}
 	if !strings.Contains(html, "messages.none") && !strings.Contains(html, "No APRS messages recorded yet") {
-		t.Errorf("messages page missing empty state: %s", html)
+		t.Errorf("messages tab missing empty state: %s", html)
 	}
-	if !strings.Contains(html, "/messages?dir=rx") || !strings.Contains(html, "/messages?dir=tx") {
-		t.Errorf("messages page missing direction filters: %s", html)
+	if !strings.Contains(html, "/aprs?tab=msgs&dir=rx") || !strings.Contains(html, "/aprs?tab=msgs&dir=tx") {
+		t.Errorf("messages tab missing direction filters: %s", html)
 	}
 	if !strings.Contains(html, `action="/messages/send"`) {
-		t.Errorf("messages page missing send form: %s", html)
+		t.Errorf("messages tab missing send form: %s", html)
 	}
 	if !strings.Contains(html, `<span class="nav-label">APRS</span>`) {
-		t.Errorf("messages page nav should read APRS: %s", html)
+		t.Errorf("combined APRS page nav should read APRS: %s", html)
 	}
 }
 
@@ -3771,7 +3778,7 @@ func TestContactPickers(t *testing.T) {
 	}
 	env.login()
 
-	_, html := env.get("/messages")
+	_, html := env.get("/aprs?tab=msgs")
 	if !strings.Contains(html, `list="aprs-calls"`) || !strings.Contains(html, `<datalist id="aprs-calls"><option value="SP9KOW">`) {
 		t.Errorf("APRS page missing callsign picker: %s", html)
 	}
@@ -3791,7 +3798,7 @@ func TestAPRSSendValidation(t *testing.T) {
 	}
 	env := newTestEnvWithHub(t, hub)
 	env.login()
-	_, html := env.get("/messages")
+	_, html := env.get("/aprs?tab=msgs")
 	csrf := extractCSRF(t, html)
 
 	// Wrong CSRF: hard 403.
@@ -3829,7 +3836,7 @@ func TestAPRSBeaconValidation(t *testing.T) {
 	}
 	env := newTestEnvWithHub(t, hub)
 	env.login()
-	_, html := env.get("/messages")
+	_, html := env.get("/aprs?tab=msgs")
 	csrf := extractCSRF(t, html)
 
 	resp, _ := env.postForm("/messages/beacon", url.Values{"csrf": {"bogus"}})

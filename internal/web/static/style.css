@@ -880,6 +880,21 @@ tr.click-send:hover td { background: var(--surface-hi); }
   padding: 0.4rem 0.6rem;
   font-size: 0.85rem;
 }
+/* One send form is active at a time: the highlighted one is where the
+   message goes. The Message action on the map prefills the DM form and
+   moves the highlight there; typing into the other form moves it back. */
+.mesh-send {
+  border-radius: var(--radius);
+  padding: 0.2rem 0.45rem;
+  transition: box-shadow 0.15s ease, opacity 0.15s ease;
+}
+.mesh-send-active {
+  box-shadow: 0 0 0 2px var(--accent);
+  background: var(--accent-soft, var(--surface-hi));
+}
+.mesh-send:not(.mesh-send-active) { opacity: 0.72; }
+.mesh-send:not(.mesh-send-active):hover,
+.mesh-send:not(.mesh-send-active):focus-within { opacity: 1; }
 .mesh-send input[name="text"] { flex: 1 1 16rem; }
 .mesh-send .btn-primary { width: auto; flex: none; }
 .aprs-send {

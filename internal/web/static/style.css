@@ -600,6 +600,9 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
   font-size: 0.82rem;
 }
+/* display:flex overrides the UA [hidden] rule, so the consent bar would
+   stay visible forever after a click; hide it explicitly. */
+#cookie-bar[hidden] { display: none; }
 .cookie-bar-actions { display: flex; gap: 0.45rem; flex: none; }
 
 /* Visitor stats: numeric cards + a dependency-free SVG bar chart. */

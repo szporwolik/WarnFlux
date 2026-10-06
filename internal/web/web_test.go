@@ -656,10 +656,11 @@ func TestNotificationsDeliveriesRender(t *testing.T) {
 	}
 }
 
-// TestHealthFlow pins the system health page: login required, the rows
-// render, and the verdict is degraded only when something actually is
-// (here: the test receiver never connects).
-func TestHealthFlow(t *testing.T) {
+// TestDashboardHealthCard pins the merged system-health card: the former
+// /health page lives on the dashboard now, the verdict degrades only when
+// something actually is (here: the test receiver never connects), and the
+// old URL redirects there.
+func TestDashboardHealthCard(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Unauthenticated: redirect to the login page.
@@ -669,23 +670,29 @@ func TestHealthFlow(t *testing.T) {
 	}
 
 	env.login()
-	_, html := env.get("/health")
+	// The old page URL redirects to the dashboard.
+	resp, _ = env.get("/health")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("GET /health as admin = %d %q, want 303 /dashboard", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	_, html := env.get("/dashboard")
 	for _, want := range []string{
 		`id="health-section"`,
-		`<span class="nav-label">Health</span>`,
 		"System health",
 		"DEGRADED", // receiver "local" is configured but never dialed in tests
-		">imgw-warnings</strong>",
-		">OK</span>", // the running source
-		">DISCONNECTED</span>",
 		">Database</strong>",
 		"ready",
 		">Dispatch queue</strong>",
 		">Pending notifications</strong>",
 	} {
 		if !strings.Contains(html, want) {
-			t.Errorf("health page missing %q: %s", want, html)
+			t.Errorf("dashboard health card missing %q: %s", want, html)
 		}
+	}
+	// The standalone health page and its sidebar entry are gone.
+	if strings.Contains(html, `<span class="nav-label">Health</span>`) {
+		t.Error("sidebar still offers the removed Health entry")
 	}
 
 	// Refresh partial carries the same section markup.
@@ -709,13 +716,13 @@ func TestHealthEmergencyAcceptance(t *testing.T) {
 	}
 
 	env.login()
-	_, html := env.get("/health")
+	_, html := env.get("/dashboard")
 	for _, want := range []string{
 		"EMERGENCY",
 		"accepted without durable storage",
 	} {
 		if !strings.Contains(html, want) {
-			t.Errorf("health page missing %q: %s", want, html)
+			t.Errorf("dashboard health card missing %q: %s", want, html)
 		}
 	}
 }
@@ -728,13 +735,13 @@ func TestHealthLowDiskAlarm(t *testing.T) {
 	env.server.SetStorageAlarm(1 << 40)
 
 	env.login()
-	_, html := env.get("/health")
+	_, html := env.get("/dashboard")
 	for _, want := range []string{
 		"LOW DISK",
 		"free space 12288 MB (alarm below 1048576 MB)",
 	} {
 		if !strings.Contains(html, want) {
-			t.Errorf("health page missing %q: %s", want, html)
+			t.Errorf("dashboard health card missing %q: %s", want, html)
 		}
 	}
 }
@@ -762,14 +769,14 @@ func TestHealthIngestRow(t *testing.T) {
 	env := newTestEnvWithIngest(t, map[string]http.Handler{"news": probe})
 
 	env.login()
-	_, html := env.get("/health")
+	_, html := env.get("/dashboard")
 	for _, want := range []string{
 		">news (ingest)</strong>",
 		">OK</span>",
 		"accepted=7 rejected=2 auth_failed=1 rate_limited=0 forbidden=0",
 	} {
 		if !strings.Contains(html, want) {
-			t.Errorf("health page missing ingest row %q: %s", want, html)
+			t.Errorf("dashboard health card missing ingest row %q: %s", want, html)
 		}
 	}
 }
@@ -2263,10 +2270,13 @@ func TestAdminAccountPageKeepsAdminNav(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /account as admin = %d", resp.StatusCode)
 	}
-	for _, want := range []string{"Users", "Groups", "Health", "Logs", "Notifications"} {
+	for _, want := range []string{"Users", "Groups", "Logs", "Notifications"} {
 		if !strings.Contains(html, `<span class="nav-label">`+want+`</span>`) {
 			t.Errorf("admin /account sidebar missing %s nav entry", want)
 		}
+	}
+	if strings.Contains(html, `<span class="nav-label">Health</span>`) {
+		t.Error("admin /account sidebar still shows the removed Health entry")
 	}
 }
 
@@ -2282,9 +2292,9 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adminPages := []string{"/users", "/groups", "/health", "/logs", "/audit", "/traffic", "/notifications", "/aprs?tab=msgs", "/meshtastic"}
-	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications", "/partials/health"}
-	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions"}
+	adminPages := []string{"/users", "/groups", "/logs", "/audit", "/traffic", "/notifications", "/aprs?tab=msgs", "/meshtastic"}
+	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications"}
+	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions", "/partials/health"}
 	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing", "/api/meshtastic/traceroute"}
 
 	loginAs := func(user, pass string) {
@@ -2386,7 +2396,8 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Errorf("emcom GET /compose = %d, want 200", resp.StatusCode)
 	}
 
-	// Admin: everything listed above opens.
+	// Admin: everything listed above opens; /health merged into the
+	// dashboard, so it redirects there for everyone signed in.
 	env.logout()
 	env.login()
 	for _, p := range append(append(append([]string{}, adminPages...), adminPartials...), sharedPartials...) {
@@ -2394,6 +2405,10 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("admin GET %s = %d, want 200", p, resp.StatusCode)
 		}
+	}
+	resp, _ := env.get("/health")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Errorf("admin GET /health = %d %q, want 303 /dashboard", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }
 
@@ -2949,12 +2964,18 @@ func TestWarningsPagination(t *testing.T) {
 	}
 }
 
-func TestDashboardSystemShowsDispatchQueue(t *testing.T) {
+func TestDashboardSystemCard(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()
 	_, html := env.get("/partials/status")
-	if !strings.Contains(html, "Dispatch queue") {
-		t.Errorf("dispatch queue stats not rendered: %s", html)
+	for _, want := range []string{"Version", "Uptime", "Memory"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("system card missing %q: %s", want, html)
+		}
+	}
+	// The DB and dispatch rows moved to the health card (same page).
+	if strings.Contains(html, "Dispatch queue") {
+		t.Errorf("system card still renders the dispatch queue row: %s", html)
 	}
 }
 

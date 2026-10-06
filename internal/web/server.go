@@ -339,8 +339,9 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))
 	s.mux.Handle("GET /notifications", s.requireAdmin(s.handleNotificationsPage))
 	s.mux.Handle("GET /partials/notifications", s.requireAdminPartial(s.handlePartialNotifications))
-	s.mux.Handle("GET /health", s.requireAdmin(s.handleHealthPage))
-	s.mux.Handle("GET /partials/health", s.requireAdminPartial(s.handlePartialHealth))
+	// /health merged into the dashboard: the old URL now redirects there.
+	s.mux.HandleFunc("GET /health", s.handleHealthLegacy)
+	s.mux.Handle("GET /partials/health", s.requirePagePartial(s.handlePartialHealth))
 	// Metrics: unauthenticated on purpose (Prometheus cannot log in);
 	// only counters are exposed.
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)

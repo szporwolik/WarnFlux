@@ -164,6 +164,12 @@
 
   {{if .Groups}}
   {{range .Groups}}
+  {{if and $.NoSevere (eq .Severity "minor")}}
+  <div class="home-no-severe" role="status">
+    <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-info-circle"></use></svg>
+    <span>{{tr $.Lang "home.no_severe"}}</span>
+  </div>
+  {{end}}
   <details class="home-section home-sev-{{.Severity}}"{{if .Open}} open{{end}}>
     <summary>{{sevLabel $.Lang .Severity}} <span class="count{{if gt .Count 0}} count-live{{end}}">{{.Count}}</span></summary>
     <div class="home-alerts">

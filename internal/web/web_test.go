@@ -3929,7 +3929,7 @@ func TestContactPickers(t *testing.T) {
 	env.login()
 
 	_, html := env.get("/aprs?tab=msgs")
-	if !strings.Contains(html, `list="aprs-calls"`) || !strings.Contains(html, `<datalist id="aprs-calls"><option value="SP9KOW-7">sp9kow</option>`) {
+	if !strings.Contains(html, `list="aprs-calls"`) || !strings.Contains(html, `<datalist id="aprs-calls"><option value="SP9KOW-7">SP9KOW-7 · sp9kow</option>`) {
 		t.Errorf("APRS page missing callsign picker: %s", html)
 	}
 

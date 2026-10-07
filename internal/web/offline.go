@@ -423,3 +423,51 @@ func (s *Server) handleTile(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("web: serving tile failed", "path", rel, "error", err)
 	}
 }
+
+// localTilesMaxZoom returns the deepest zoom level (0..25) that holds at
+// least one tile in the configured tree, scanning each level once and
+// caching the result. The tree is static in production, so the cache is
+// never invalidated; a concurrent first call may scan twice — harmless.
+func (s *Server) localTilesMaxZoom() int {
+	if v := s.tilesMaxZoom.Load(); v >= 0 {
+		return int(v)
+	}
+	if s.cfg.TilesDir == "" {
+		s.tilesMaxZoom.Store(0)
+		return 0
+	}
+	max := 0
+	for z := 0; z <= 25; z++ {
+		zdir := filepath.Join(s.cfg.TilesDir, strconv.Itoa(z))
+		xs, err := os.ReadDir(zdir)
+		if err != nil {
+			continue
+		}
+		found := false
+		for _, x := range xs {
+			if !x.IsDir() {
+				continue
+			}
+			files, err := os.ReadDir(filepath.Join(zdir, x.Name()))
+			if err == nil && len(files) > 0 {
+				found = true
+				break
+			}
+		}
+		if found {
+			max = z
+		}
+	}
+	s.tilesMaxZoom.Store(int64(max))
+	return max
+}
+
+// handleTilesMaxZoom reports the deepest zoom level available in the
+// local tile tree (0 when there are no tiles). The offline maps use it
+// as the tile layer's maxNativeZoom: beyond it Leaflet stretches the
+// deepest available tiles instead of requesting missing ones.
+func (s *Server) handleTilesMaxZoom(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	fmt.Fprintf(w, `{"maxzoom":%d}`, s.localTilesMaxZoom())
+}

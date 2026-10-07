@@ -11,6 +11,42 @@
       window.WF_OFFLINE === true;
   }
 
+  // The local tile tree has a limited depth; beyond it Leaflet must
+  // stretch the deepest tiles (maxNativeZoom) instead of requesting
+  // missing zoom levels. The deepest level comes from the server once
+  // and is shared by every offline map on the page.
+  var localTilesMaxZoom = 0;
+  var localTilesMaxZoomP = null;
+  function fetchLocalTilesMaxZoom() {
+    if (!wfOffline()) {
+      return Promise.resolve(0);
+    }
+    if (localTilesMaxZoomP) {
+      return localTilesMaxZoomP;
+    }
+    localTilesMaxZoomP = fetch("/api/tiles/maxzoom", { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        localTilesMaxZoom = j && j.maxzoom > 0 ? j.maxzoom : 0;
+        return localTilesMaxZoom;
+      })
+      .catch(function () { return 0; });
+    return localTilesMaxZoomP;
+  }
+
+  // clampNativeZoom makes one local-tile layer stretch its deepest zoom
+  // instead of going blank when the operator zooms past the tree.
+  function clampNativeZoom(layer) {
+    if (!layer || !wfOffline()) {
+      return;
+    }
+    fetchLocalTilesMaxZoom().then(function (z) {
+      if (z > 0 && layer.options) {
+        layer.options.maxNativeZoom = z;
+      }
+    });
+  }
+
   // Client-side UI strings, keyed like internal/i18n. The server stamps
   // <html lang> on every page, so table = I18N[lang] works everywhere.
   var I18N = {
@@ -975,6 +1011,9 @@
     if (!layer) {
       layer = L.tileLayer(t.raster, { maxZoom: 19, pane: "aprsBase" }).addTo(map);
       mode = "raster";
+      // Offline raster: stretch the deepest local tiles past the tree's
+      // limit so zooming never shows empty squares.
+      clampNativeZoom(layer);
     }
     return { layer: layer, mode: mode };
   }
@@ -3231,7 +3270,9 @@
       return;
     }
     map = L.map(mapEl, { attributionControl: false }).setView(center, 11);
-    L.tileLayer(tileURL(), { maxZoom: 19 }).addTo(map);
+    var pickerBase = L.tileLayer(tileURL(), { maxZoom: 19 }).addTo(map);
+    // Offline: stretch the deepest local tiles past the tree's limit.
+    clampNativeZoom(pickerBase);
     var attribEl = document.getElementById("compose-map-attrib");
     if (attribEl) {
       attribEl.innerHTML = wfOffline()

@@ -390,6 +390,15 @@ var en = map[string]string{
 	"config.logs.head":                "Logs & diagnostics",
 	"config.logs.desc":                "Application log, audit trail, notification delivery history and MQTT traffic.",
 
+	// Discord webhook action: the message speaks the system language.
+	"discord.hazard_transition": "hazard transition",
+	"discord.notification":       "WarnFlux notification",
+	"discord.message_id":         "Message ID",
+	"discord.areas":              "Areas",
+	"discord.valid_until":        "Valid until",
+	"discord.for":                "For",
+	"discord.details":            "Details",
+
 	// Home map layer labels (JS + toggles).
 	"map.layer.hazards":    "Messages",
 	"map.layer.stations":   "Stations",
@@ -1236,6 +1245,15 @@ var pl = map[string]string{
 	"config.emcom.none":               "Nie skonfigurowano jeszcze żadnej sieci EMCOM.",
 	"config.logs.head":                "Logi i diagnostyka",
 	"config.logs.desc":                "Dziennik aplikacji, ślad audytu, historia doręczeń powiadomień i ruch MQTT.",
+
+	// Discord webhook action: the message speaks the system language.
+	"discord.hazard_transition": "przejście zagrożenia",
+	"discord.notification":       "powiadomienie WarnFlux",
+	"discord.message_id":         "ID komunikatu",
+	"discord.areas":              "Obszary",
+	"discord.valid_until":        "Ważny do",
+	"discord.for":                "Dla",
+	"discord.details":            "Szczegóły",
 
 	"map.layer.hazards":    "Komunikaty",
 	"map.layer.stations":   "Stacje",

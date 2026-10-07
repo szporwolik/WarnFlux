@@ -1963,13 +1963,25 @@ tr.click-send:hover td { background: var(--surface-hi); }
 /* Phone layout: tighter paddings, smaller brand, compact tabs. */
 @media (max-width: 640px) {
   .home { padding: 0.9rem 0.85rem 1.5rem; }
+  /* The header stacks: brand (with the tagline) on the first line,
+     the action buttons on their own row below, right-aligned. */
+  .home-top { flex-wrap: wrap; gap: 0.6rem; }
+  .home-brand { flex: 1 1 100%; }
+  .home-actions { width: 100%; justify-content: flex-end; }
   .home-logo { width: 2.5rem; height: 2.5rem; }
   .home-brand-text h1 { font-size: 1.2rem; }
   .home-brand-text p { font-size: 0.78rem; }
   .home-dash-label { display: none; }
   .home-tab { padding: 0.45rem 0.7rem; font-size: 0.8rem; }
   .about-dialog-text { font-size: 0.85rem; }
-  #aprs-map { min-height: 300px; }
+  /* A square map, at least tall enough for the whole layer-legend
+     stack (~23rem); the desktop fold clamp is lifted so the page
+     simply scrolls on very short screens. */
+  #aprs-map {
+    aspect-ratio: 1 / 1;
+    min-height: 23rem;
+    max-height: none;
+  }
 }
 .aprs-map-attrib {
   margin: 0;

@@ -218,6 +218,7 @@ var en = map[string]string{
 	"messages.beacon_failed": "beacon failed: %s",
 	"messages.beacon_now":    "Send beacon now",
 	"messages.to_ph":         "Callsign (e.g. SP9XXX)",
+	"messages.bad_callsign":  "Invalid callsign (e.g. SP9ABC-7)",
 
 	"aprsmap.title":    "APRS stations",
 	"aprsmap.hint":     "Every station the APRS hub currently holds: heard over our own radio (APRS-RF) and through the internet feed (APRS-IS). The popup shows the last digipeater path, comment and counts; the filter shows what each backend delivered.",
@@ -1080,6 +1081,7 @@ var pl = map[string]string{
 	"messages.beacon_failed": "beacon nie powiódł się: %s",
 	"messages.beacon_now":    "Wyślij beacon teraz",
 	"messages.to_ph":         "Znak (np. SP9XXX)",
+	"messages.bad_callsign":  "Nieprawidłowy znak (np. SP9ABC-7)",
 
 	"aprsmap.title":    "Stacje APRS",
 	"aprsmap.hint":     "Wszystkie stacje trzymane teraz przez hub APRS: słyszane przez nasze radio (APRS-RF) i przez internet (APRS-IS). Dymek pokazuje ostatnią ścieżkę digipeaterów, komentarz i liczniki; filtr pokazuje, co dostarczył każdy backend.",

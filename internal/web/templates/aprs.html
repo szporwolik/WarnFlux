@@ -71,11 +71,11 @@
     <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "msgs"}} hidden{{end}}>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "messages.title"}} <span class="count" id="aprs-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
       <div class="aprs-toolbar">
-        <form method="post" action="/messages/send" class="aprs-send">
+        <form method="post" action="/messages/send" class="aprs-send" data-bad-call="{{tr .Lang "messages.bad_callsign"}}">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
-          <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" required>
+          <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" autocomplete="off" spellcheck="false" required>
           <datalist id="aprs-calls">{{range .Calls}}<option value="{{.Callsign}}">{{.Callsign}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
-          <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="67" required>
+          <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="60" required>
           <button type="submit" class="btn-primary">{{tr .Lang "messages.send"}}</button>
         </form>
         <form method="post" action="/messages/beacon" class="inline-form">
@@ -83,6 +83,43 @@
           <button type="submit" class="btn-ghost">{{tr .Lang "messages.beacon_now"}}</button>
         </form>
       </div>
+      <script>
+      (function () {
+        var form = document.querySelector("form.aprs-send");
+        if (!form) { return; }
+        var to = form.querySelector("input[name='to']");
+        var text = form.querySelector("input[name='text']");
+        var callRE = /^[A-Z0-9]{1,6}(-[0-9]{1,2})?$/;
+        var badCall = form.getAttribute("data-bad-call") || "Invalid callsign";
+        function checkCall() {
+          var v = (to.value || "").toUpperCase().replace(/[^A-Z0-9-]/g, "");
+          if (v !== to.value) { to.value = v; }
+          if (to.value && !callRE.test(to.value)) {
+            to.setCustomValidity(badCall);
+          } else {
+            to.setCustomValidity("");
+          }
+          to.classList.toggle("invalid", to.validity.customError);
+        }
+        function checkText() {
+          // { | } ~ are reserved in APRS message bodies; control
+          // characters cannot travel at all. Everything else is either
+          // ASCII or a Polish diacritic the pipeline transliterates.
+          var v = (text.value || "").replace(/[{|}~\u0000-\u001f\u007f]/g, "");
+          if (v !== text.value) { text.value = v; }
+        }
+        to.addEventListener("input", checkCall);
+        text.addEventListener("input", checkText);
+        form.addEventListener("submit", function (e) {
+          checkCall();
+          checkText();
+          if (to.validity.customError) {
+            e.preventDefault();
+            to.reportValidity();
+          }
+        });
+      })();
+      </script>
       <div class="page-tabs" role="tablist">
         <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/aprs?tab=msgs">{{tr .Lang "messages.dir_all"}}</a>
         <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/aprs?tab=msgs&dir=rx">{{tr .Lang "messages.dir_rx"}}</a>

@@ -1118,6 +1118,11 @@ func run(configPath string, checkConfig bool) error {
 		Domain:  cfg.Web.Domain,
 		RepoURL: appinfo.RepoURL,
 	}, trails, met)
+	// Broadcast channels (APRS, EMCOM group posts) follow the system
+	// notification language; the admin Config page switches it live.
+	if webSrv != nil {
+		ruleEngine.SetSystemLang(func() string { return webSrv.SystemLanguage() })
+	}
 	ruleEngine.SetInbox(store)
 	var routingWG sync.WaitGroup
 	routingWG.Add(1)

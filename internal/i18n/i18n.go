@@ -6,6 +6,7 @@ package i18n
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -43,6 +44,26 @@ func T(lang, key string) string {
 		return s
 	}
 	return key
+}
+
+// Effective resolves lang to a supported code: "" and unsupported codes
+// resolve to the default language (English).
+func Effective(lang string) string {
+	if Supported(lang) {
+		return lang
+	}
+	return Default
+}
+
+// Codes lists the supported language codes in deterministic (sorted)
+// order, for language pickers.
+func Codes() []string {
+	out := make([]string, 0, len(catalogs))
+	for code := range catalogs {
+		out = append(out, code)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // FromRequest resolves the UI language for a request: the wf_lang cookie
@@ -839,6 +860,71 @@ var en = map[string]string{
 	"archive.last_seen": "last seen:",
 	"archive.none":      "No messages recorded in the last %d days.",
 	"archive.page":      "Page %d / %d",
+
+	// Notification language (per-user choice and system default).
+	"lang.system_default":   "System default",
+	"lang.en":               "English",
+	"lang.pl":               "Polish",
+	"users.lang":            "Language",
+	"users.modal.lang_note": "Emails and direct Meshtastic messages are delivered to this user in this language.",
+	"account.lang":          "Notification language",
+	"account.lang_note":     "Alerts sent to you by email or direct Meshtastic message use this language.",
+
+	// System language switch (admin Config page).
+	"config.lang.head":  "System language",
+	"config.lang.desc":  "Broadcast channels — APRS messages and EMCOM group-channel Meshtastic posts — are sent in this language.",
+	"config.lang.saved": "System language updated.",
+
+	// Severity names for notification bodies and subject lines.
+	"severity.unknown":  "unknown",
+	"severity.minor":    "minor",
+	"severity.moderate": "moderate",
+	"severity.severe":   "severe",
+	"severity.extreme":  "extreme",
+
+	// Notification boilerplate (email subjects and bodies).
+	"notif.subject.transition":  "hazard transition",
+	"notif.subject.mqtt":        "MQTT message on %s",
+	"notif.subject.mqtt_plain":  "MQTT message",
+	"notif.subject.event":       "dispatch event",
+	"mail.head":                 "WarnFlux notification",
+	"mail.time":                 "Time",
+	"mail.message":              "Message",
+	"mail.message_id":           "Message ID",
+	"mail.headline":             "Headline",
+	"mail.source":               "source",
+	"mail.description":          "description",
+	"mail.instruction":          "instruction",
+	"mail.roads":                "roads",
+	"mail.road":                 "road",
+	"mail.areas":                "areas",
+	"mail.location":             "location",
+	"mail.effective_from":       "effective from",
+	"mail.valid_until":          "valid until",
+	"mail.details":              "details",
+	"mail.view_details":         "View details",
+	"mail.message_notification": "Message notification",
+	"mail.updated":              "Updated",
+	"mail.sent_by":              "Sent by",
+	"mail.topic":                "Topic",
+	"mail.qos":                  "QoS",
+	"mail.payload_bytes":        "Payload bytes",
+	"mail.empty_change":         "<empty change>",
+	"mail.dispatch_event":       "Dispatch event",
+	"mail.mqtt_on":              "MQTT message on %s",
+	"mail.default_instruction":  "Follow official communications and obey the instructions of emergency services.",
+
+	// EMCOM notification payloads (per-language hazard texts).
+	"emcom.headline":     "%s: level %d – %s",
+	"emcom.raised_at":    "%s is now at level %d – %s.",
+	"emcom.lowered_from": "%s was lowered from %s to level %d – %s.",
+	"emcom.level_name":   "Level %d – %s: %s",
+	"emcom.level_plain":  "level %d",
+	"emcom.legend_head":  "Operational readiness levels",
+	"emcom.instr.0":      "No action required — monitoring continues on the agreed frequencies and public channels.",
+	"emcom.instr.1":      "Operators: prepare radio equipment and maintain a duty station on the agreed primary frequency.",
+	"emcom.instr.2":      "Operators: the network works as a directed net — net control (SKS), field operators and relay stations report in and follow net discipline.",
+	"emcom.instr.3":      "Operators: report to the net control station and staff the network around the clock in shifts, per the duty roster.",
 }
 
 // pl is the Polish catalog (falls back to English for missing keys).
@@ -1599,4 +1685,69 @@ var pl = map[string]string{
 	"archive.last_seen": "ostatnio widziany:",
 	"archive.none":      "Brak komunikatów z ostatnich %d dni.",
 	"archive.page":      "Strona %d / %d",
+
+	// Język powiadomień (wybór per użytkownik i domyślny systemu).
+	"lang.system_default":   "Domyślny systemu",
+	"lang.en":               "Angielski",
+	"lang.pl":               "Polski",
+	"users.lang":            "Język",
+	"users.modal.lang_note": "E-maile i prywatne wiadomości Meshtastic są dostarczane temu użytkownikowi w tym języku.",
+	"account.lang":          "Język powiadomień",
+	"account.lang_note":     "Alerty wysyłane do Ciebie e-mailem lub prywatną wiadomością Meshtastic używają tego języka.",
+
+	// Przełącznik języka systemu (strona Konfiguracja).
+	"config.lang.head":  "Język systemu",
+	"config.lang.desc":  "Kanały rozgłoszeniowe — komunikaty APRS i wpisy EMCOM na kanały grupowe Meshtastic — są wysyłane w tym języku.",
+	"config.lang.saved": "Język systemu zaktualizowany.",
+
+	// Nazwy wagi dla treści powiadomień i tematów.
+	"severity.unknown":  "nieznane",
+	"severity.minor":    "drobne",
+	"severity.moderate": "umiarkowane",
+	"severity.severe":   "poważne",
+	"severity.extreme":  "ekstremalne",
+
+	// Szablony powiadomień (tematy i treści e-maili).
+	"notif.subject.transition":  "przejście zagrożenia",
+	"notif.subject.mqtt":        "Wiadomość MQTT na %s",
+	"notif.subject.mqtt_plain":  "Wiadomość MQTT",
+	"notif.subject.event":       "zdarzenie dispatch",
+	"mail.head":                 "Powiadomienie WarnFlux",
+	"mail.time":                 "Czas",
+	"mail.message":              "Komunikat",
+	"mail.message_id":           "ID komunikatu",
+	"mail.headline":             "Nagłówek",
+	"mail.source":               "źródło",
+	"mail.description":          "opis",
+	"mail.instruction":          "zalecenia",
+	"mail.roads":                "drogi",
+	"mail.road":                 "droga",
+	"mail.areas":                "obszary",
+	"mail.location":             "lokalizacja",
+	"mail.effective_from":       "obowiązuje od",
+	"mail.valid_until":          "ważne do",
+	"mail.details":              "szczegóły",
+	"mail.view_details":         "Zobacz szczegóły",
+	"mail.message_notification": "Powiadomienie",
+	"mail.updated":              "Zaktualizowano",
+	"mail.sent_by":              "Wysłane przez",
+	"mail.topic":                "Temat",
+	"mail.qos":                  "QoS",
+	"mail.payload_bytes":        "Bajtów payloadu",
+	"mail.empty_change":         "<pusta zmiana>",
+	"mail.dispatch_event":       "Zdarzenie dispatch",
+	"mail.mqtt_on":              "Wiadomość MQTT na %s",
+	"mail.default_instruction":  "Postępuj zgodnie z oficjalnymi komunikatami i poleceniami służb ratunkowych.",
+
+	// Treści powiadomień EMCOM (teksty zagrożeń per język).
+	"emcom.headline":     "%s: poziom %d — %s",
+	"emcom.raised_at":    "%s jest teraz na poziomie %d — %s.",
+	"emcom.lowered_from": "%s został obniżony z %s na poziom %d — %s.",
+	"emcom.level_name":   "Poziom %d – %s: %s",
+	"emcom.level_plain":  "poziom %d",
+	"emcom.legend_head":  "Poziomy gotowości operacyjnej",
+	"emcom.instr.0":      "Brak działań — nasłuch na ustalonych częstotliwościach i kanałach ogólnodostępnych trwa.",
+	"emcom.instr.1":      "Operatorzy: przygotujcie sprzęt radiowy i utrzymujcie dyżur na ustalonej częstotliwości podstawowej.",
+	"emcom.instr.2":      "Operatorzy: sieć pracuje w trybie kierowanym — stacja kierująca (SKS), operatorzy terenowi i stacje pośredniczące meldują się i przestrzegają dyscypliny sieci.",
+	"emcom.instr.3":      "Operatorzy: zgłoście się do stacji kierującej i obsadzajcie sieć całodobowo w systemie zmianowym, zgodnie z grafikiem dyżurów.",
 }

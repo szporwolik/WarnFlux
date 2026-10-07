@@ -61,6 +61,22 @@
     </div>
 
     <div class="config-block">
+      <form method="post" action="/config/lang" class="config-offline-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <label class="config-row">
+          <span class="config-row-title">{{tr .Lang "config.lang.head"}}</span>
+          <select name="lang" onchange="this.form.submit()">
+            <option value="" {{if eq .SystemLanguage ""}}selected{{end}}>{{tr .Lang "lang.system_default"}}</option>
+            {{range .Languages}}
+            <option value="{{.}}" {{if eq $.SystemLanguage .}}selected{{end}}>{{tr $.Lang (printf "lang.%s" .)}}</option>
+            {{end}}
+          </select>
+        </label>
+      </form>
+      <p class="config-hint">{{tr .Lang "config.lang.desc"}}</p>
+    </div>
+
+    <div class="config-block">
       <form method="post" action="/config/tiles" class="config-offline-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <input type="hidden" name="tiles" id="tiles-state" value="{{if .ForceLocalTiles}}off{{else}}on{{end}}">

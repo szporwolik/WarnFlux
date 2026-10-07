@@ -107,6 +107,11 @@ type Server struct {
 	// forceTiles forces every map to the local tile tree even while the
 	// station is online (the Config page switch).
 	forceTiles atomic.Bool
+	// systemLang is the runtime system notification language (startup
+	// value from web.system_language; the admin Config page switches it
+	// at runtime). "" = the i18n default. Broadcast channels (APRS,
+	// EMCOM group posts) use it.
+	systemLang atomic.Value
 
 	// resetMailer delivers password-reset emails. nil = email delivery
 	// unavailable (the self-service flow degrades gracefully).
@@ -224,6 +229,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		return nil, fmt.Errorf("web: static assets: %w", err)
 	}
 	s.offline.Store(cfg.OfflineMode)
+	s.systemLang.Store(cfg.SystemLanguage)
 	s.routes(http.FileServerFS(static))
 	s.httpSrv = &http.Server{
 		Handler:           securityHeaders(s.mux),
@@ -382,6 +388,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /config/offline", s.requireAdmin(s.handleConfigOffline))
 	s.mux.Handle("POST /config/tiles", s.requireAdmin(s.handleConfigTiles))
 	s.mux.Handle("POST /config/mesh", s.requireAdmin(s.handleConfigMesh))
+	s.mux.Handle("POST /config/lang", s.requireAdmin(s.handleConfigLang))
 	s.mux.Handle("POST /config/mqtt", s.requireAdmin(s.handleConfigMqtt))
 	// Local map tiles ({z}/{x}/{y}.jpg under web.tiles_dir) for offline
 	// mode. Registered unconditionally; empty tiles_dir yields 404s.
@@ -529,6 +536,22 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 // browser's Accept-Language, then English).
 func (s *Server) langFor(r *http.Request) string {
 	return i18n.FromRequest(r)
+}
+
+// SystemLanguage returns the runtime system notification language
+// ("" = the i18n default). Broadcast channels — APRS messages and
+// EMCOM group-channel Meshtastic posts — are sent in it.
+func (s *Server) SystemLanguage() string {
+	code, _ := s.systemLang.Load().(string)
+	return code
+}
+
+// SetSystemLanguage switches the runtime system notification language
+// (validated by the Config page handler). Unsupported codes are ignored.
+func (s *Server) SetSystemLanguage(code string) {
+	if code == "" || i18n.Supported(code) {
+		s.systemLang.Store(code)
+	}
 }
 
 // handleLanguage stores the chosen UI language in a long-lived cookie and

@@ -55,6 +55,10 @@ type User struct {
 	Discord  string
 	IsAdmin  bool
 	Role     string
+	// Lang is the user's preferred notification language (an i18n
+	// language code); "" means the system default language. Emails and
+	// direct Meshtastic messages are rendered in it.
+	Lang string
 	// APRSCallsigns are the ham radio callsigns (with optional -SSID)
 	// registered for this user, normalized uppercase, sorted. The routing
 	// engine hands them to APRS-capable actions so notifications reach
@@ -151,6 +155,14 @@ type GroupStore interface {
 	// node IDs registered for the group's members, sorted. The rule
 	// engine hands them to Meshtastic-capable actions.
 	GroupRecipientMeshIDs(groupID int64) ([]string, error)
+	// GroupRecipientEmailLangs returns the members' preferred
+	// notification languages in the SAME ORDER as
+	// GroupRecipientEmails ("" = system default).
+	GroupRecipientEmailLangs(groupID int64) ([]string, error)
+	// GroupRecipientMeshLangs returns the members' preferred
+	// notification languages in the SAME ORDER as
+	// GroupRecipientMeshIDs ("" = system default).
+	GroupRecipientMeshLangs(groupID int64) ([]string, error)
 }
 
 // DirectoryStore combines the user and group administration stores; the
@@ -218,6 +230,10 @@ type UserStore interface {
 	// opt-outs: listed kinds are disabled, every other channel stays on.
 	// The admin row may set its own opt-outs like any other user.
 	SetUserChannelOptOuts(userID int64, kinds []string) error
+	// SetUserLanguage stores the user's preferred notification language
+	// (an i18n language code; "" = system default). The admin row may
+	// set its own language like any other user.
+	SetUserLanguage(userID int64, lang string) error
 	// SetUserPassword replaces a regular user's password. The admin row
 	// reports ErrUserProtected (its password lives in configuration).
 	SetUserPassword(userID int64, password string) error

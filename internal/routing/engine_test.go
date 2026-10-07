@@ -26,6 +26,8 @@ type fakeStore struct {
 	aprsBcc      map[int64][]string
 	discordBcc   map[int64][]string
 	meshBcc      map[int64][]string
+	bccLangs     map[int64][]string
+	meshLangs    map[int64][]string
 	jobs         map[string]storage.DeliveryStatus // group|action|dedupKey -> status
 	payloads     map[string][]byte                 // group|action|dedupKey -> JSON payload
 	payloadOrder []string                          // insertion order of payload keys
@@ -113,6 +115,24 @@ func (f *fakeStore) GroupRecipientMeshIDs(groupID int64) ([]string, error) {
 		return nil, f.recipientErr
 	}
 	return append([]string(nil), f.meshBcc[groupID]...), f.err
+}
+
+func (f *fakeStore) GroupRecipientEmailLangs(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recipientErr != nil {
+		return nil, f.recipientErr
+	}
+	return append([]string(nil), f.bccLangs[groupID]...), f.err
+}
+
+func (f *fakeStore) GroupRecipientMeshLangs(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recipientErr != nil {
+		return nil, f.recipientErr
+	}
+	return append([]string(nil), f.meshLangs[groupID]...), f.err
 }
 
 // enqueueLocked applies one job with the same semantics as the SQLite
@@ -992,10 +1012,14 @@ func TestEnginePayloadPersisted(t *testing.T) {
 	store := &fakeStore{rules: []storage.GroupRouting{
 		{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("log", "unknown")}},
 	}, bcc: map[int64][]string{1: {"a@example.net"}},
+		bccLangs:   map[int64][]string{1: {"pl"}},
 		aprsBcc:    map[int64][]string{1: {"SP9SPM-1"}},
-		discordBcc: map[int64][]string{1: {"ops#1234"}}}
+		discordBcc: map[int64][]string{1: {"ops#1234"}},
+		meshBcc:    map[int64][]string{1: {"abc12345"}},
+		meshLangs:  map[int64][]string{1: {"en"}}}
 	acts := &fakeActions{}
 	e, feed := startEngine(t, store, acts)
+	e.SetSystemLang(func() string { return "en" })
 
 	ev := hazardEvent("severe", dispatch.TransitionNew)
 	feed <- ev
@@ -1022,6 +1046,15 @@ func TestEnginePayloadPersisted(t *testing.T) {
 	}
 	if len(req.DiscordHandles) != 1 || req.DiscordHandles[0] != "ops#1234" {
 		t.Errorf("payload DiscordHandles = %v, want [ops#1234]", req.DiscordHandles)
+	}
+	if req.Lang != "en" {
+		t.Errorf("payload Lang = %q, want system language \"en\"", req.Lang)
+	}
+	if len(req.BccLangs) != 1 || req.BccLangs[0] != "pl" {
+		t.Errorf("payload BccLangs = %v, want [pl]", req.BccLangs)
+	}
+	if len(req.MeshNodeLangs) != 1 || req.MeshNodeLangs[0] != "en" {
+		t.Errorf("payload MeshNodeLangs = %v, want [en]", req.MeshNodeLangs)
 	}
 }
 

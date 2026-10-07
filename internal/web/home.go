@@ -587,7 +587,7 @@ func (s *Server) collectHazards(nets []emcomNetwork) []state.Hazard {
 		if net.Level < 1 {
 			continue
 		}
-		add(emcomHazard(net, now))
+		add(emcomHazard(net, now, s.SystemLanguage()))
 	}
 
 	for _, h := range s.st.Snapshot().Hazards {

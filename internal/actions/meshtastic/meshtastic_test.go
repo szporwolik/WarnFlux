@@ -434,7 +434,7 @@ func fullReq(headline, event, desc string, lat, lon float64, areas []string) act
 // title (APRS normalization transliterates diacritics).
 func TestTextForLocationRidesAlong(t *testing.T) {
 	a := &Action{cfg: Config{Prefix: "SOSNA"}}
-	got := a.textFor(context.Background(), fullReq("Powódź na Rabie", "Flood", "Unikaj brzegów rzeki.", 49.985, 20.065, nil))
+	got := a.textFor(context.Background(), fullReq("Powódź na Rabie", "Flood", "Unikaj brzegów rzeki.", 49.985, 20.065, nil), "")
 	if len([]rune(got)) > maxMeshMessageChars {
 		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
 	}
@@ -455,7 +455,7 @@ func TestTextForLocationRidesAlong(t *testing.T) {
 func TestTextForTitleAndLocationSurvive(t *testing.T) {
 	a := &Action{cfg: Config{Prefix: "SOSNA"}}
 	huge := strings.Repeat("uwaga ", 80)
-	got := a.textFor(context.Background(), fullReq(huge, "Flood", "", 49.985, 20.065, nil))
+	got := a.textFor(context.Background(), fullReq(huge, "Flood", "", 49.985, 20.065, nil), "")
 	if len([]rune(got)) > maxMeshMessageChars {
 		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
 	}
@@ -475,7 +475,7 @@ func TestTextForTitleAndLocationSurvive(t *testing.T) {
 // text is cut hard at the limit with the prefix and severity intact.
 func TestTextForHardCutNoLocation(t *testing.T) {
 	a := &Action{cfg: Config{Prefix: "SOSNA"}}
-	got := a.textFor(context.Background(), fullReq(strings.Repeat("abcdefghij", 30), "", "", 0, 0, nil))
+	got := a.textFor(context.Background(), fullReq(strings.Repeat("abcdefghij", 30), "", "", 0, 0, nil), "")
 	if len([]rune(got)) != maxMeshMessageChars {
 		t.Fatalf("text = %d runes, want the hard cut at %d", len([]rune(got)), maxMeshMessageChars)
 	}
@@ -491,7 +491,7 @@ func TestTextForHardCutNoLocation(t *testing.T) {
 // fills the remaining space and a cut is marked with "...".
 func TestTextForDescriptionTail(t *testing.T) {
 	a := &Action{cfg: Config{Prefix: "SOSNA"}}
-	got := a.textFor(context.Background(), fullReq("Krótki tytuł", "", strings.Repeat("opis ", 80), 0, 0, nil))
+	got := a.textFor(context.Background(), fullReq("Krótki tytuł", "", strings.Repeat("opis ", 80), 0, 0, nil), "")
 	if len([]rune(got)) > maxMeshMessageChars {
 		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
 	}

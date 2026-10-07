@@ -654,6 +654,14 @@ web:
   # can drop in their own tiles without rebuilding the container.
   tiles_dir: ""
 
+  # Main system language of BROADCAST notifications: APRS messages and
+  # EMCOM group-channel Meshtastic posts are sent in this language.
+  # One of "en", "pl" (empty = English). The admin can switch it at
+  # runtime on the Config page. Personal messages (email, direct
+  # Meshtastic messages) use each recipient's own language choice from
+  # the user directory instead.
+  system_language: ""
+
   auth:
     # The admin account is ALWAYS configured here (or via password_file):
     # on startup WarnFlux seeds the read-only admin row in the user

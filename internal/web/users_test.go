@@ -451,6 +451,85 @@ func (f *fakeUsers) SetUserChannelOptOuts(userID int64, kinds []string) error {
 	return nil
 }
 
+// SetUserLanguage stores the user's notification language.
+func (f *fakeUsers) SetUserLanguage(userID int64, lang string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID == userID {
+			f.rows[i].Lang = lang
+			return nil
+		}
+	}
+	return storage.ErrUserNotFound
+}
+
+// GroupRecipientEmailLangs returns the members' preferred languages in
+// the SAME ORDER as GroupRecipientEmails ("" = system default).
+func (f *fakeUsers) GroupRecipientEmailLangs(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	type pair struct {
+		email string
+		lang  string
+	}
+	var pairs []pair
+	seen := map[string]bool{}
+	for userID, set := range f.membership {
+		if !set[groupID] || f.channelOpts[userID]["smtp"] {
+			continue
+		}
+		for _, u := range f.rows {
+			if u.ID != userID || strings.TrimSpace(u.Email) == "" {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(u.Email))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			pairs = append(pairs, pair{email: key, lang: u.Lang})
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].email < pairs[j].email })
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p.lang)
+	}
+	return out, nil
+}
+
+// GroupRecipientMeshLangs returns the members' preferred languages in
+// the SAME ORDER as GroupRecipientMeshIDs ("" = system default).
+func (f *fakeUsers) GroupRecipientMeshLangs(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	type pair struct {
+		id   string
+		lang string
+	}
+	var pairs []pair
+	seen := map[string]bool{}
+	for _, u := range f.rows {
+		if !f.membership[u.ID][groupID] || f.channelOpts[u.ID]["meshtastic"] {
+			continue
+		}
+		for _, id := range u.MeshtasticIDs {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			pairs = append(pairs, pair{id: id, lang: u.Lang})
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].id < pairs[j].id })
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p.lang)
+	}
+	return out, nil
+}
+
 // GroupRecipientAPRS returns the distinct APRS callsigns of the group's
 // members (minus users who opted out of the aprs channel), sorted.
 func (f *fakeUsers) GroupRecipientAPRS(groupID int64) ([]string, error) {

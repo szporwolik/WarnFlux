@@ -71,6 +71,14 @@ type Hazard struct {
 	Description string
 	Instruction string
 
+	// Localized carries per-language renderings of the free-text fields
+	// (Headline, Description, Instruction) when the producer provides
+	// them — panel communications (EMCOM) do. Keys are i18n language
+	// codes. Actions pick the recipient's language through For and fall
+	// back to the canonical fields when the requested rendering is
+	// missing.
+	Localized map[string]HazardText
+
 	// Latitude/Longitude are the optional event coordinates (compose map
 	// picker, geo-located sources); nil when the event has no point.
 	Latitude  *float64
@@ -115,6 +123,30 @@ func (h Hazard) MessageID() string {
 		return ""
 	}
 	return core.MessageID(h.EventKey)
+}
+
+// HazardText is one language rendering of a hazard's free-text fields.
+type HazardText struct {
+	Headline    string `json:"headline,omitempty"`
+	Description string `json:"description,omitempty"`
+	Instruction string `json:"instruction,omitempty"`
+}
+
+// For returns the best rendering of the hazard's free-text fields for
+// lang: the exact localized rendering when the producer provided one,
+// the canonical fields otherwise (or when the requested language is
+// absent).
+func (h Hazard) For(lang string) HazardText {
+	if h.Localized != nil {
+		if t, ok := h.Localized[lang]; ok {
+			return t
+		}
+	}
+	return HazardText{
+		Headline:    h.Headline,
+		Description: h.Description,
+		Instruction: h.Instruction,
+	}
 }
 
 // MQTTMessage is a deep-copied raw MQTT frame. Payload never aliases the
@@ -217,6 +249,12 @@ func (e Event) Clone() Event {
 		h.Hazard = e.Hazard.Hazard
 		if e.Hazard.Hazard.Areas != nil {
 			h.Hazard.Areas = append([]string(nil), e.Hazard.Hazard.Areas...)
+		}
+		if e.Hazard.Hazard.Localized != nil {
+			h.Hazard.Localized = make(map[string]HazardText, len(e.Hazard.Hazard.Localized))
+			for lang, t := range e.Hazard.Hazard.Localized {
+				h.Hazard.Localized[lang] = t
+			}
 		}
 		if e.Hazard.Hazard.EffectiveAt != nil {
 			t := *e.Hazard.Hazard.EffectiveAt

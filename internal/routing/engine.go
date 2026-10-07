@@ -59,6 +59,12 @@ type RuleStore interface {
 	// GroupRecipientMeshIDs returns the group members' registered
 	// Meshtastic node IDs (empty list when the group has none).
 	GroupRecipientMeshIDs(groupID int64) ([]string, error)
+	// GroupRecipientEmailLangs returns the members' preferred
+	// notification languages, parallel to GroupRecipientEmails.
+	GroupRecipientEmailLangs(groupID int64) ([]string, error)
+	// GroupRecipientMeshLangs returns the members' preferred
+	// notification languages, parallel to GroupRecipientMeshIDs.
+	GroupRecipientMeshLangs(groupID int64) ([]string, error)
 	// CommitInboxDelivery persists every delivery job of one evaluation
 	// — full payload (event + recipients), attempt counter and
 	// next-attempt deadline all live in the row — and, for inbox events
@@ -140,6 +146,17 @@ type Engine struct {
 	// meshBcc caches each group's members' registered Meshtastic node IDs
 	// (groupID -> node IDs).
 	meshBcc map[int64][]string
+	// bccLangs parallels bcc: the members' preferred notification
+	// languages ("" = system default).
+	bccLangs map[int64][]string
+	// meshLangs parallels meshBcc: the members' preferred notification
+	// languages ("" = system default).
+	meshLangs map[int64][]string
+
+	// systemLang supplies the system/default notification language for
+	// broadcast channels (APRS, Meshtastic group posts). nil means the
+	// i18n default. Swapped at runtime from the admin Config page.
+	systemLang func() string
 
 	// Stats counters (atomic).
 	eventsSeen         atomic.Int64
@@ -196,6 +213,21 @@ func (e *Engine) notifCount(actionID, result string, delta int64) {
 // re-enter the engine on the refresh tick and after restarts.
 func (e *Engine) SetInbox(in Inbox) {
 	e.inbox = in
+}
+
+// SetSystemLang installs the system-language provider (the admin Config
+// page switches the value at runtime). May be nil: requests then carry
+// the i18n default.
+func (e *Engine) SetSystemLang(fn func() string) {
+	e.systemLang = fn
+}
+
+// currentSystemLang resolves the system language for one evaluation.
+func (e *Engine) currentSystemLang() string {
+	if e.systemLang == nil {
+		return ""
+	}
+	return e.systemLang()
 }
 
 // Run drains events until ctx is cancelled or the channel is closed
@@ -278,6 +310,8 @@ func (e *Engine) refresh() {
 	aprsBcc := make(map[int64][]string)
 	discordBcc := make(map[int64][]string)
 	meshBcc := make(map[int64][]string)
+	bccLangs := make(map[int64][]string)
+	meshLangs := make(map[int64][]string)
 	for _, rule := range rules {
 		if len(rule.Actions) == 0 {
 			continue
@@ -286,6 +320,13 @@ func (e *Engine) refresh() {
 		if err != nil {
 			e.ruleLoadErrors.Add(1)
 			e.logger.Warn("routing: recipient load failed, keeping the previous snapshot",
+				"group", rule.Name, "channel", "email", "error", err)
+			return
+		}
+		emailLangs, err := e.store.GroupRecipientEmailLangs(rule.GroupID)
+		if err != nil {
+			e.ruleLoadErrors.Add(1)
+			e.logger.Warn("routing: recipient language load failed, keeping the previous snapshot",
 				"group", rule.Name, "channel", "email", "error", err)
 			return
 		}
@@ -310,10 +351,19 @@ func (e *Engine) refresh() {
 				"group", rule.Name, "channel", "meshtastic", "error", err)
 			return
 		}
+		nodeLangs, err := e.store.GroupRecipientMeshLangs(rule.GroupID)
+		if err != nil {
+			e.ruleLoadErrors.Add(1)
+			e.logger.Warn("routing: recipient language load failed, keeping the previous snapshot",
+				"group", rule.Name, "channel", "meshtastic", "error", err)
+			return
+		}
 		bcc[rule.GroupID] = emails
 		aprsBcc[rule.GroupID] = callsigns
 		discordBcc[rule.GroupID] = handles
 		meshBcc[rule.GroupID] = nodeIDs
+		bccLangs[rule.GroupID] = emailLangs
+		meshLangs[rule.GroupID] = nodeLangs
 	}
 	e.mu.Lock()
 	e.rules = rules
@@ -321,6 +371,8 @@ func (e *Engine) refresh() {
 	e.aprsBcc = aprsBcc
 	e.discordBcc = discordBcc
 	e.meshBcc = meshBcc
+	e.bccLangs = bccLangs
+	e.meshLangs = meshLangs
 	e.mu.Unlock()
 	e.rulesLoaded.Add(1)
 	e.lastRefresh.Store(time.Now().UnixNano())
@@ -430,6 +482,8 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	aprsBcc := e.aprsBcc
 	discordBcc := e.discordBcc
 	meshBcc := e.meshBcc
+	bccLangs := e.bccLangs
+	meshLangs := e.meshLangs
 	e.mu.RUnlock()
 
 	// One evaluation first collects EVERY delivery job, then commits
@@ -488,6 +542,9 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 				APRSCallsigns:  append([]string(nil), aprsBcc[rule.GroupID]...),
 				DiscordHandles: append([]string(nil), discordBcc[rule.GroupID]...),
 				MeshNodeIDs:    append([]string(nil), meshBcc[rule.GroupID]...),
+				Lang:           e.currentSystemLang(),
+				BccLangs:       append([]string(nil), bccLangs[rule.GroupID]...),
+				MeshNodeLangs:  append([]string(nil), meshLangs[rule.GroupID]...),
 				App:            e.app,
 			}
 			payload, err := json.Marshal(req)

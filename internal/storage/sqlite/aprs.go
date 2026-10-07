@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -61,13 +63,14 @@ func (s *Store) ListAPRSMessages(ctx context.Context, direction string, limit, o
 }
 
 // UpdateAPRSMessageStatus marks the outbound row carrying msgID with the
-// delivery outcome ("delivered" on ack, "failed" on rej). Messages sent
-// without an ack id are never matched and silently keep their status.
+// delivery outcome ("delivered" on ack, "failed" on rej, "no_ack" when
+// the ack wait timed out). Messages sent without an ack id are never
+// matched and silently keep their status.
 func (s *Store) UpdateAPRSMessageStatus(ctx context.Context, msgID, status string, at time.Time) error {
 	if msgID == "" {
 		return nil
 	}
-	if status != "delivered" && status != "failed" {
+	if status != "delivered" && status != "failed" && status != "no_ack" {
 		return fmt.Errorf("aprs message: invalid status %q", status)
 	}
 	if _, err := s.db.ExecContext(ctx, `
@@ -77,6 +80,25 @@ func (s *Store) UpdateAPRSMessageStatus(ctx context.Context, msgID, status strin
 		return fmt.Errorf("update aprs message status: %w", err)
 	}
 	return nil
+}
+
+// APRSMessageAddressee returns the addressee callsign of the tx row
+// carrying msgID; ok=false when no such row exists.
+func (s *Store) APRSMessageAddressee(ctx context.Context, msgID string) (string, bool, error) {
+	if msgID == "" {
+		return "", false, nil
+	}
+	var to string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT to_call FROM aprs_messages
+		WHERE direction = 'tx' AND msg_id = ?`, msgID).Scan(&to)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("aprs message addressee: %w", err)
+	}
+	return to, true, nil
 }
 
 // CountAPRSMessages counts history rows, optionally filtered by direction.

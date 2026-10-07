@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -64,9 +65,12 @@ type configView struct {
 	// EmcomNetworks lists the managed EMCOM networks (admin-level
 	// add/remove moved here from the operator panel).
 	EmcomNetworks []emcomNetworkView
-	// MeshAlerts is the runtime Meshtastic announcements switch (hazard
-	// channel posts + direct messages).
-	MeshAlerts bool
+	// MeshChannel is the runtime switch for hazard broadcasts on the
+	// Meshtastic group channel.
+	MeshChannel bool
+	// MeshDM is the runtime switch for hazard direct messages to users'
+	// registered node IDs.
+	MeshDM bool
 	// ForceLocalTiles forces every map onto the local tile tree even
 	// while the station is online.
 	ForceLocalTiles bool
@@ -173,7 +177,8 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		InternetSources: s.internetSources(),
 		MqttRows:        s.mqttRows(),
 		EmcomNetworks:   s.emcomNetworkViews(lang),
-		MeshAlerts:      meshtastic.AlertsEnabled(),
+		MeshChannel:     meshtastic.ChannelAlerts(),
+		MeshDM:          meshtastic.DMAlerts(),
 		ForceLocalTiles: s.forceTiles.Load(),
 		SystemLanguage:  s.SystemLanguage(),
 		Languages:       i18n.Codes(),
@@ -274,9 +279,9 @@ func (s *Server) handleConfigTiles(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/config?msg=tiles", http.StatusSeeOther)
 }
 
-// handleConfigMesh flips the Meshtastic announcements switch: OFF means
-// no hazard message leaves the station over the mesh (channel posts and
-// direct messages) until the operator turns it back on. Admin-only.
+// handleConfigMesh flips the two Meshtastic announcement switches: the
+// group-channel broadcast and the direct messages to registered node IDs
+// are muted independently. Admin-only.
 func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
@@ -286,18 +291,34 @@ func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	switch strings.TrimSpace(r.PostFormValue("mesh")) {
-	case "on":
-		meshtastic.SetAlertsEnabled(true)
-	case "off":
-		meshtastic.SetAlertsEnabled(false)
-	default:
+	channel := strings.TrimSpace(r.PostFormValue("channel"))
+	dm := strings.TrimSpace(r.PostFormValue("dm"))
+	if channel == "" && dm == "" {
+		http.Error(w, "missing switch value", http.StatusBadRequest)
+		return
+	}
+	apply := func(v string, fn func(bool)) bool {
+		switch v {
+		case "on":
+			fn(true)
+		case "off":
+			fn(false)
+		case "":
+			return true // this switch was not part of the submit
+		default:
+			return false
+		}
+		return true
+	}
+	if !apply(channel, meshtastic.SetChannelAlerts) || !apply(dm, meshtastic.SetDMAlerts) {
 		http.Error(w, "invalid value", http.StatusBadRequest)
 		return
 	}
-	s.audit(sess.username, "config-mesh", r.PostFormValue("mesh"))
+	s.audit(sess.username, "config-mesh",
+		fmt.Sprintf("channel=%v dm=%v", meshtastic.ChannelAlerts(), meshtastic.DMAlerts()))
 	s.logger.Info("meshtastic announcements toggled by admin",
-		"user", sess.username, "state", r.PostFormValue("mesh"))
+		"user", sess.username,
+		"channel", meshtastic.ChannelAlerts(), "dm", meshtastic.DMAlerts())
 	http.Redirect(w, r, "/config?msg=mesh", http.StatusSeeOther)
 }
 

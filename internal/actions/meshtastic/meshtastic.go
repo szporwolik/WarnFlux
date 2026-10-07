@@ -136,8 +136,13 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if req.Event.Kind != dispatch.EventHazardTransition || req.Event.Hazard == nil {
 		return nil // nothing to say for non-hazard events
 	}
-	if !mesh.AlertsEnabled() {
-		return nil // the operator muted the mesh announcements
+	// Two independent operator switches on the Config page: the group
+	// channel broadcast and the direct messages to registered node IDs
+	// are each muted separately.
+	channelOn := mesh.ChannelAlerts()
+	dmOn := mesh.DMAlerts()
+	if !channelOn && !dmOn {
+		return nil // the operator muted every mesh announcement path
 	}
 	// The group channel always broadcasts in the SYSTEM language; direct
 	// messages use each member's personal language when they picked one.
@@ -174,7 +179,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	// there when configured, with or without registered node IDs. The
 	// durable ledger skips a broadcast an earlier attempt already got
 	// out successfully.
-	if a.cfg.Channel > 0 {
+	if channelOn && a.cfg.Channel > 0 {
 		if !done("", a.cfg.Channel) {
 			if err := a.pace(ctx); err != nil {
 				return err
@@ -199,6 +204,9 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	// are retried, so every member is reached exactly once across
 	// attempts. Each DM renders in the member's own language.
 	for i, id := range req.MeshNodeIDs {
+		if !dmOn {
+			break
+		}
 		if done(id, 0) {
 			continue
 		}

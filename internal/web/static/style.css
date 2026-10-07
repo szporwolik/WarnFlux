@@ -1102,9 +1102,10 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .test-actions .btn-primary { width: auto; }
 .compose-actions { grid-column: 1 / -1; display: flex; gap: 0.6rem; align-items: center; margin-top: 0.4rem; }
 .compose-actions .btn-primary { width: auto; }
-/* Publish / Discard / Cancel / Debug fill share one size so the action
-   row reads as a single coherent button group. */
+/* Publish / Discard / Cancel share one size so the action row reads as
+   a single coherent button group; Cancel sits at the far right. */
 .compose-actions .btn-ghost { padding: 0.4rem 1rem; font-size: 0.9rem; }
+.compose-actions #compose-cancel { margin-left: auto; }
 .compose-head { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; flex-wrap: wrap; }
 .compose-head h2 { margin: 0; }
 .compose-panel { margin: 1rem 0 0; border: 1px solid var(--input-border); border-radius: var(--radius); background: var(--card); }

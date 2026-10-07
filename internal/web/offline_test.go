@@ -319,13 +319,14 @@ func TestConfigMeshSplitSwitches(t *testing.T) {
 	t.Cleanup(func() {
 		meshtastic.SetChannelAlerts(true)
 		meshtastic.SetDMAlerts(true)
+		meshtastic.SetStationAlerts(false)
 	})
 	env := newTestEnv(t)
 	env.login()
 
 	_, page := env.get("/config")
-	if !strings.Contains(page, `name="channel"`) || !strings.Contains(page, `name="dm"`) {
-		t.Fatalf("config page misses the two mesh switches: %s", page)
+	if !strings.Contains(page, `name="channel"`) || !strings.Contains(page, `name="dm"`) || !strings.Contains(page, `name="stations"`) {
+		t.Fatalf("config page misses the three mesh switches: %s", page)
 	}
 
 	// Mute only the group channel.
@@ -351,6 +352,25 @@ func TestConfigMeshSplitSwitches(t *testing.T) {
 	}
 	if meshtastic.DMAlerts() {
 		t.Error("DM alerts must be muted after the POST")
+	}
+
+	// Enable only the APRS station announcements (off by default).
+	if meshtastic.StationAlerts() {
+		t.Fatal("station announcements must default to OFF")
+	}
+	resp, _ = env.postForm("/config/mesh", url.Values{"csrf": {csrf}, "stations": {"on"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/mesh stations = %d, want 303", resp.StatusCode)
+	}
+	if !meshtastic.StationAlerts() {
+		t.Error("station announcements must be enabled after the POST")
+	}
+	resp, _ = env.postForm("/config/mesh", url.Values{"csrf": {csrf}, "stations": {"off"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/mesh stations off = %d, want 303", resp.StatusCode)
+	}
+	if meshtastic.StationAlerts() {
+		t.Error("station announcements must be muted again")
 	}
 
 	// An empty submit is rejected.

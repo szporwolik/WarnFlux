@@ -22,6 +22,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 )
 
 // Type is the action type name used in the YAML configuration.
@@ -154,8 +155,11 @@ func detailsLink(req action.ActionRequest) string {
 
 // messageText renders one Discord message from the canonical event
 // metadata: severity first, then event, headline and areas. The content
-// never exceeds Discord's 2000-character limit.
+// never exceeds Discord's 2000-character limit. The message speaks the
+// system notification language (req.Lang), the same one the EMCOM
+// channel posts use.
 func (a *discordAction) messageText(req action.ActionRequest) string {
+	lang := i18n.Effective(req.Lang)
 	prefix := strings.TrimSpace(req.App.Header1)
 	if prefix == "" {
 		prefix = "WarnFlux"
@@ -165,37 +169,39 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 	case dispatch.EventHazardTransition:
 		h := req.Event.Hazard
 		if h == nil {
-			text = fmt.Sprintf("[%s] hazard transition", prefix)
+			text = fmt.Sprintf("[%s] %s", prefix, i18n.T(lang, "discord.hazard_transition"))
 			break
 		}
 		headline := strings.TrimSpace(h.Hazard.Headline)
 		if headline == "" {
 			headline = h.Hazard.Event
 		}
-		text = fmt.Sprintf("[%s] %s: %s — %s", prefix, strings.ToUpper(h.Hazard.Severity), h.Hazard.Event, headline)
+		text = fmt.Sprintf("[%s] %s: %s — %s", prefix,
+			strings.ToUpper(i18n.T(lang, "sev."+strings.ToLower(h.Hazard.Severity))),
+			h.Hazard.Event, headline)
 		if id := h.Hazard.MessageID(); id != "" {
-			text += "\nMessage ID: " + id
+			text += "\n" + i18n.T(lang, "discord.message_id") + ": " + id
 		}
 		if len(h.Hazard.Areas) > 0 {
-			text += "\nAreas: " + strings.Join(h.Hazard.Areas, ", ")
+			text += "\n" + i18n.T(lang, "discord.areas") + ": " + strings.Join(h.Hazard.Areas, ", ")
 		}
 		if h.Hazard.ExpiresAt != nil {
-			text += "\nValid until: " + h.Hazard.ExpiresAt.Format(time.RFC3339)
+			text += "\n" + i18n.T(lang, "discord.valid_until") + ": " + h.Hazard.ExpiresAt.Format(time.RFC3339)
 		}
 		if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
 			text += "\n" + desc
 		}
 	default:
-		text = fmt.Sprintf("[%s] WarnFlux notification", prefix)
+		text = fmt.Sprintf("[%s] %s", prefix, i18n.T(lang, "discord.notification"))
 	}
 	if len(req.DiscordHandles) > 0 {
-		text += "\nFor: " + strings.Join(req.DiscordHandles, ", ")
+		text += "\n" + i18n.T(lang, "discord.for") + ": " + strings.Join(req.DiscordHandles, ", ")
 	}
 	if link := detailsLink(req); link != "" {
 		// The link must survive truncation: bound the body first, then
 		// append the details line in full.
-		reserve := len(link) + len("\nDetails: ")
-		text = truncateRunes(text, maxContentRunes-reserve) + "\nDetails: " + link
+		reserve := len(link) + len("\n"+i18n.T(lang, "discord.details")+": ")
+		text = truncateRunes(text, maxContentRunes-reserve) + "\n" + i18n.T(lang, "discord.details") + ": " + link
 	} else {
 		text = truncateRunes(text, maxContentRunes)
 	}

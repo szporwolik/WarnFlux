@@ -123,6 +123,29 @@ func TestExecuteNon2xxFails(t *testing.T) {
 	}
 }
 
+func TestMessageTextSpeaksSystemLanguage(t *testing.T) {
+	p, err := New(node(t, map[string]any{"url": "http://x/y"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := hazardRequest()
+	req.Lang = "pl"
+	req.App.Domain = "sosna.sp9moa.pl"
+	req.DiscordHandles = []string{"ada#1234"}
+	text := p.(*discordAction).messageText(req)
+	for _, want := range []string{
+		"POWAŻNE", "Obszary: powiat wielicki", "Ważny do: 2026-09-25T17:00:00Z",
+		"Dla: ada#1234", "Szczegóły: https://sosna.sp9moa.pl/message/imgw-meteo:1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("pl content = %q, want mention of %q", text, want)
+		}
+	}
+	if strings.Contains(text, "SEVERE") || strings.Contains(text, "Areas:") {
+		t.Errorf("pl content must not carry English labels: %q", text)
+	}
+}
+
 func TestMessageTextTruncation(t *testing.T) {
 	p, err := New(node(t, map[string]any{"url": "http://x/y"}))
 	if err != nil {

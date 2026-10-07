@@ -49,13 +49,25 @@ func TestBuildMessagePerRecipientLanguage(t *testing.T) {
 	req.Event.Hazard.Hazard.Localized = map[string]dispatch.HazardText{
 		"en": {
 			Headline:    "SP9MOA EMCOM: level 1 – Increased readiness",
-			Description: "SP9MOA EMCOM is now at level 1 – Increased readiness.",
+			Description: "SP9MOA EMCOM is now at level 1 – Increased readiness.\n\nOperators ready to act.\n\nOperational readiness levels:\nLevel 0 – Monitoring: ...",
 			Instruction: "Operators: prepare radio equipment.",
+			Summary:     "SP9MOA EMCOM is now at level 1 – Increased readiness.",
+			Definition:  "Operators ready to act.",
+			Legend: []dispatch.HazardLegendLine{
+				{Level: 0, Name: "Monitoring", Description: "Ongoing monitoring."},
+				{Level: 1, Name: "Increased readiness", Description: "Operators ready to act."},
+			},
 		},
 		"pl": {
 			Headline:    "SP9MOA EMCOM: poziom 1 – Podwyższona gotowość",
-			Description: "SP9MOA EMCOM jest teraz na poziomie 1 – Podwyższona gotowość.",
+			Description: "SP9MOA EMCOM jest teraz na poziomie 1 – Podwyższona gotowość.\n\nOperatorzy gotowi do działań.\n\nPoziomy gotowości operacyjnej:\nPoziom 0 – Monitoring: ...",
 			Instruction: "Operatorzy: przygotujcie sprzęt radiowy.",
+			Summary:     "SP9MOA EMCOM jest teraz na poziomie 1 – Podwyższona gotowość.",
+			Definition:  "Operatorzy gotowi do działań.",
+			Legend: []dispatch.HazardLegendLine{
+				{Level: 0, Name: "Monitoring", Description: "Prowadzenie bieżącego nasłuchu."},
+				{Level: 1, Name: "Podwyższona gotowość", Description: "Operatorzy gotowi do działań."},
+			},
 		},
 	}
 
@@ -66,6 +78,20 @@ func TestBuildMessagePerRecipientLanguage(t *testing.T) {
 	if strings.Contains(enMsg, "Podwyższona gotowość") {
 		t.Errorf("English mail leaked the Polish rendering:\n%s", enMsg)
 	}
+	// The styled HTML uses the structured pieces: the summary callout,
+	// the definition paragraph and the legend rows — never the generic
+	// plain description block (the plain-text part keeps the full text).
+	enHTML := enMsg[strings.Index(enMsg, "text/html"):]
+	if !strings.Contains(enHTML, "Operational readiness levels") {
+		t.Errorf("English mail misses the legend heading:\n%s", enHTML)
+	}
+	if !strings.Contains(enHTML, "<strong>Monitoring</strong>") ||
+		!strings.Contains(enHTML, "<strong>Increased readiness</strong>") {
+		t.Errorf("English mail misses the legend rows:\n%s", enHTML)
+	}
+	if strings.Contains(enHTML, ">description</div>") {
+		t.Errorf("structured EMCOM mail leaked the generic description block:\n%s", enHTML)
+	}
 
 	plMsg := string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"x@y.z"}}, req, "pl", now))
 	if !strings.Contains(plMsg, "Podwyższona gotowość") || !strings.Contains(plMsg, "zalecenia:") {
@@ -73,6 +99,12 @@ func TestBuildMessagePerRecipientLanguage(t *testing.T) {
 	}
 	if strings.Contains(plMsg, "Increased readiness") {
 		t.Errorf("Polish mail leaked the English rendering:\n%s", plMsg)
+	}
+	plHTML := plMsg[strings.Index(plMsg, "text/html"):]
+	if !strings.Contains(plHTML, "Poziomy gotowości operacyjnej") ||
+		!strings.Contains(plHTML, "<strong>Monitoring</strong>") ||
+		!strings.Contains(plHTML, "<strong>Podwyższona gotowość</strong>") {
+		t.Errorf("Polish mail misses the styled legend:\n%s", plHTML)
 	}
 
 	// recipientLang resolution: members use their own choice, the

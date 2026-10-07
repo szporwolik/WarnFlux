@@ -2143,7 +2143,10 @@ func (s *Store) CleanupChanges(ctx context.Context, olderThan time.Time) (int64,
 // tracked by last_seen_at_ms (machine time, not the human-readable text),
 // so a provider that keeps repeating a stale event keeps it retained.
 // Active events are never touched, and the change journal is unaffected
-// (it carries immutable snapshots).
+// (it carries immutable snapshots). The same pass prunes the durable
+// lifecycle mirror: rows whose event no longer exists are stale dedup
+// anchors, and the set of live events is already bounded by the
+// current-state policy above.
 func (s *Store) CleanupEvents(ctx context.Context, olderThan time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
 		"DELETE FROM events WHERE status IN (?, ?) AND last_seen_at_ms < ?",
@@ -2154,6 +2157,12 @@ func (s *Store) CleanupEvents(ctx context.Context, olderThan time.Time) (int64, 
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("cleanup events: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM message_lifecycle
+		WHERE updated_at_ms < ?
+		  AND event_key NOT IN (SELECT event_key FROM events)`, olderThan.UTC().UnixMilli()); err != nil {
+		return n, fmt.Errorf("cleanup lifecycle mirror: %w", err)
 	}
 	return n, nil
 }

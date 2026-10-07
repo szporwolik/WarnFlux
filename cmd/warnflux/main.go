@@ -1300,6 +1300,37 @@ func run(configPath string, checkConfig bool) error {
 		}()
 	}
 
+	// Durable visitor analytics: the store prunes on every new day, this
+	// hourly sweep keeps the table at the retention bound even when no
+	// new visits arrive (e.g. clock jumps).
+	{
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prune := func() {
+				n, err := store.PruneSiteVisits(ctx, storage.SiteVisitRetentionDays)
+				if err != nil {
+					logger.Warn("web: site visits prune failed", "error", err)
+					return
+				}
+				if n > 0 {
+					logger.Debug("web: site visits pruned", "removed", n)
+				}
+			}
+			prune()
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					prune()
+				}
+			}
+		}()
+	}
+
 	// Durable HTTP-ingest outbox: rows the broker could not confirm for
 	// longer than outboxRetention are pruned hourly, so a prolonged
 	// broker outage cannot grow the database without bound. The local

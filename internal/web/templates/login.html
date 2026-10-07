@@ -43,6 +43,87 @@
   (function () {
     var d = document.getElementById("about-dialog");
     if (!d) { return; }
+
+    // The login page loads no app.js, so the config-driven intro is
+    // rendered here with the SAME markdown subset as the home page:
+    // headings, emphasis, lists, code and links (new tab). Everything
+    // is escaped first, so raw HTML in the config stays inert.
+    function mdEscape(s) {
+      var el = document.createElement("div");
+      el.textContent = s == null ? "" : String(s);
+      return el.innerHTML;
+    }
+    function mdInline(s) {
+      var out = mdEscape(s);
+      out = out.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+      out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+      out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      return out;
+    }
+    function renderMarkdown(src) {
+      var lines = String(src == null ? "" : src).split(/\r?\n/);
+      var html = [];
+      var para = [];
+      var codeBuf = null;
+      function flushPara() {
+        if (para.length) {
+          html.push("<p>" + para.join("<br>") + "</p>");
+          para = [];
+        }
+      }
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (/^\s*```/.test(line)) {
+          flushPara();
+          if (codeBuf === null) {
+            codeBuf = [];
+          } else {
+            html.push("<pre><code>" + mdEscape(codeBuf.join("\n")) + "</code></pre>");
+            codeBuf = null;
+          }
+          continue;
+        }
+        if (codeBuf !== null) {
+          codeBuf.push(line);
+          continue;
+        }
+        var h = /^(#{1,4})\s+(.*)$/.exec(line);
+        if (h) {
+          flushPara();
+          html.push("<h4>" + mdInline(h[2]) + "</h4>");
+          continue;
+        }
+        var li = /^\s*[-*]\s+(.*)$/.exec(line);
+        if (li) {
+          flushPara();
+          var items = [];
+          while (li) {
+            items.push("<li>" + mdInline(li[1]) + "</li>");
+            i++;
+            li = i < lines.length ? /^\s*[-*]\s+(.*)$/.exec(lines[i]) : null;
+          }
+          i--;
+          html.push("<ul>" + items.join("") + "</ul>");
+          continue;
+        }
+        if (line.trim() === "") {
+          flushPara();
+          continue;
+        }
+        para.push(mdInline(line));
+      }
+      flushPara();
+      return html.join("\n");
+    }
+
+    var box = d.querySelector(".about-dialog-text");
+    if (box && !box.dataset.md) {
+      box.dataset.md = "1";
+      box.innerHTML = renderMarkdown(box.textContent);
+    }
+
     var seen = false;
     try { seen = localStorage.getItem("warnflux-about-seen") === "1"; } catch (e) {}
     var close = function () {

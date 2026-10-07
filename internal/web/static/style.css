@@ -2916,6 +2916,41 @@ tr.click-send:hover td { background: var(--surface-hi); }
   font-size: 0.85rem;
 }
 .config-mqtt-row:hover { border-color: var(--accent); }
+
+/* Config page: editable branding/content fields — a tidy field grid in
+   the panel's input language. */
+.config-content-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+}
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.config-field.wide { grid-column: 1 / -1; }
+.config-field input,
+.config-field textarea {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+  font-weight: 400;
+}
+.config-field textarea { resize: vertical; min-height: 3rem; }
+.config-field input:hover,
+.config-field textarea:hover { border-color: var(--border-strong); }
+.config-field input:focus-visible,
+.config-field textarea:focus-visible { border-color: var(--accent); outline: none; }
+
 .switch {
   position: relative;
   display: inline-block;

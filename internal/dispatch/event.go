@@ -130,6 +130,25 @@ type HazardText struct {
 	Headline    string `json:"headline,omitempty"`
 	Description string `json:"description,omitempty"`
 	Instruction string `json:"instruction,omitempty"`
+
+	// The fields below carry the STRUCTURED rendering of EMCOM
+	// notifications; they are empty for every other producer. Styled
+	// mails use them instead of the plain-text Description.
+	//
+	// Summary is a one-line status sentence: "%s is now at level %d –
+	// %s." or "%s was lowered from %s to level %d – %s.".
+	Summary string `json:"summary,omitempty"`
+	// Definition is the activated level's own definition paragraph.
+	Definition string `json:"definition,omitempty"`
+	// Legend carries the full operational-readiness scale as rows.
+	Legend []HazardLegendLine `json:"legend,omitempty"`
+}
+
+// HazardLegendLine is one readiness-level row of an EMCOM legend.
+type HazardLegendLine struct {
+	Level       int    `json:"level"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // For returns the best rendering of the hazard's free-text fields for
@@ -253,6 +272,9 @@ func (e Event) Clone() Event {
 		if e.Hazard.Hazard.Localized != nil {
 			h.Hazard.Localized = make(map[string]HazardText, len(e.Hazard.Hazard.Localized))
 			for lang, t := range e.Hazard.Hazard.Localized {
+				if t.Legend != nil {
+					t.Legend = append([]HazardLegendLine(nil), t.Legend...)
+				}
 				h.Hazard.Localized[lang] = t
 			}
 		}

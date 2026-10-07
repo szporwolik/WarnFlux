@@ -211,9 +211,9 @@
             <input type="text" name="tagline" maxlength="200" value="{{.Tagline}}"></label>
           <label class="config-field"><span>{{tr .Lang "config.content.domain"}}</span>
             <input type="text" name="domain" maxlength="253" placeholder="sp9moa.pl" value="{{.Domain}}"></label>
-          <label class="config-field"><span>{{tr .Lang "config.content.about"}}</span>
+          <label class="config-field wide"><span>{{tr .Lang "config.content.about"}}</span>
             <textarea name="about" rows="8" maxlength="4000">{{.About}}</textarea></label>
-          <label class="config-field"><span>{{tr .Lang "config.content.disclaimer"}}</span>
+          <label class="config-field wide"><span>{{tr .Lang "config.content.disclaimer"}}</span>
             <textarea name="disclaimer" rows="3" maxlength="1000">{{.Disclaimer}}</textarea></label>
         </form>
         <p class="config-hint">{{tr .Lang "config.content.hint"}}</p>

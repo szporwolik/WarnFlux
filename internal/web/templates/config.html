@@ -48,12 +48,27 @@
     <div class="config-block">
       <form method="post" action="/config/mesh" class="config-offline-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="mesh" id="mesh-state" value="{{if .MeshAlerts}}off{{else}}on{{end}}">
-        <label class="config-row" for="mesh-switch">
-          <span class="config-row-title">{{tr .Lang "config.mesh.head"}}</span>
-          <span class="badge {{if .MeshAlerts}}ok{{else}}bad{{end}}">{{if .MeshAlerts}}{{tr .Lang "config.mesh.on"}}{{else}}{{tr .Lang "config.mesh.off"}}{{end}}</span>
-          <span class="switch" role="switch" aria-checked="{{if .MeshAlerts}}true{{else}}false{{end}}" title="{{tr .Lang "config.mesh.title"}}">
-            <input type="checkbox" id="mesh-switch"{{if .MeshAlerts}} checked{{end}} onchange="document.getElementById('mesh-state').value=this.checked?'on':'off';this.form.submit()">
+        <input type="hidden" name="channel" id="mesh-channel-state" value="{{if .MeshChannel}}off{{else}}on{{end}}">
+        <label class="config-row" for="mesh-channel-switch">
+          <span class="config-row-title">{{tr .Lang "config.mesh.channel.head"}}</span>
+          <span class="badge {{if .MeshChannel}}ok{{else}}bad{{end}}">{{if .MeshChannel}}{{tr .Lang "config.mesh.on"}}{{else}}{{tr .Lang "config.mesh.off"}}{{end}}</span>
+          <span class="switch" role="switch" aria-checked="{{if .MeshChannel}}true{{else}}false{{end}}" title="{{tr .Lang "config.mesh.channel.title"}}">
+            <input type="checkbox" id="mesh-channel-switch"{{if .MeshChannel}} checked{{end}} onchange="document.getElementById('mesh-channel-state').value=this.checked?'on':'off';this.form.submit()">
+            <span class="slider" aria-hidden="true"></span>
+          </span>
+        </label>
+      </form>
+    </div>
+
+    <div class="config-block">
+      <form method="post" action="/config/mesh" class="config-offline-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="dm" id="mesh-dm-state" value="{{if .MeshDM}}off{{else}}on{{end}}">
+        <label class="config-row" for="mesh-dm-switch">
+          <span class="config-row-title">{{tr .Lang "config.mesh.dm.head"}}</span>
+          <span class="badge {{if .MeshDM}}ok{{else}}bad{{end}}">{{if .MeshDM}}{{tr .Lang "config.mesh.on"}}{{else}}{{tr .Lang "config.mesh.off"}}{{end}}</span>
+          <span class="switch" role="switch" aria-checked="{{if .MeshDM}}true{{else}}false{{end}}" title="{{tr .Lang "config.mesh.dm.title"}}">
+            <input type="checkbox" id="mesh-dm-switch"{{if .MeshDM}} checked{{end}} onchange="document.getElementById('mesh-dm-state').value=this.checked?'on':'off';this.form.submit()">
             <span class="slider" aria-hidden="true"></span>
           </span>
         </label>

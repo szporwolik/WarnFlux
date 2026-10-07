@@ -388,12 +388,14 @@ func TestExecuteNonHazardNoop(t *testing.T) {
 	}
 }
 
-// TestExecuteMuted pins the Config master switch: when the operator
-// turns meshtastic announcements off, nothing leaves the station —
+// TestExecuteMuted pins the Config switches: when the operator turns
+// both mesh announcement paths off, nothing leaves the station —
 // neither the channel broadcast nor the direct messages.
 func TestExecuteMuted(t *testing.T) {
-	defer mesh.SetAlertsEnabled(true)
-	mesh.SetAlertsEnabled(false)
+	defer mesh.SetChannelAlerts(true)
+	defer mesh.SetDMAlerts(true)
+	mesh.SetChannelAlerts(false)
+	mesh.SetDMAlerts(false)
 	stub := &stubSender{}
 	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
 	if err := a.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "Flood alert")); err != nil {
@@ -401,6 +403,45 @@ func TestExecuteMuted(t *testing.T) {
 	}
 	if len(stub.channels) != 0 || len(stub.contacts) != 0 {
 		t.Fatalf("muted action transmitted: broadcasts %v contacts %v", stub.channels, stub.contacts)
+	}
+}
+
+// TestExecuteSplitSwitches pins the two independent Config switches: with
+// the channel muted the broadcast stays home while the DMs go out, and
+// with the DMs muted the broadcast goes out while the direct messages
+// stay home.
+func TestExecuteSplitSwitches(t *testing.T) {
+	t.Cleanup(func() {
+		mesh.SetChannelAlerts(true)
+		mesh.SetDMAlerts(true)
+	})
+
+	mesh.SetChannelAlerts(false)
+	mesh.SetDMAlerts(true)
+	stub := &stubSender{}
+	a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
+	if err := a.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "Flood alert")); err != nil {
+		t.Fatalf("Execute dm-only: %v", err)
+	}
+	if len(stub.channels) != 0 {
+		t.Fatalf("dm-only transmitted on the channel: %v", stub.channels)
+	}
+	if len(stub.contacts) != 1 {
+		t.Fatalf("dm-only contacts = %v, want 1", stub.contacts)
+	}
+
+	mesh.SetChannelAlerts(true)
+	mesh.SetDMAlerts(false)
+	stub = &stubSender{}
+	a = &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
+	if err := a.Execute(context.Background(), hazardReq([]string{"a0a85934"}, "Flood alert")); err != nil {
+		t.Fatalf("Execute channel-only: %v", err)
+	}
+	if len(stub.channels) != 1 {
+		t.Fatalf("channel-only broadcasts = %v, want 1", stub.channels)
+	}
+	if len(stub.contacts) != 0 {
+		t.Fatalf("channel-only still sent DMs: %v", stub.contacts)
 	}
 }
 

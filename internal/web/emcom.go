@@ -197,22 +197,30 @@ func emcomEventKey(slug string) string {
 }
 
 // emcomLevelsLegend renders the full readiness scale as plain text for
-// the notification bodies (one line per level).
-func emcomLevelsLegend() string {
+// the notification bodies (one line per level), localized.
+func emcomLevelsLegend(lang string) string {
+	lang = i18n.Effective(lang)
 	var b strings.Builder
 	for _, l := range emcomLevels {
-		fmt.Fprintf(&b, "Level %d – %s: %s\n", l.Level, l.Name, l.Description)
+		fmt.Fprintf(&b, i18n.T(lang, "emcom.level_name")+"\n",
+			l.Level,
+			i18n.T(lang, fmt.Sprintf("emcom.levels.%d", l.Level)),
+			i18n.T(lang, fmt.Sprintf("emcom.desc.%d", l.Level)))
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // emcomHazard builds the severe communication published when a network is
-// raised above monitoring. The description always carries the activated
-// level's definition PLUS the full readiness scale, and the instruction
-// tells the operators what the level asks of them — activation mails must
-// be self-explanatory.
-func emcomHazard(net emcomNetwork, now time.Time) state.Hazard {
+// raised above monitoring, rendered in lang. The description always
+// carries the activated level's definition PLUS the full readiness scale,
+// and the instruction tells the operators what the level asks of them —
+// activation mails must be self-explanatory.
+func emcomHazard(net emcomNetwork, now time.Time, lang string) state.Hazard {
+	lang = i18n.Effective(lang)
 	lvl, _ := emcomLevelAt(net.Level)
+	name := i18n.T(lang, fmt.Sprintf("emcom.levels.%d", net.Level))
+	desc := i18n.T(lang, fmt.Sprintf("emcom.desc.%d", net.Level))
+	instr := i18n.T(lang, fmt.Sprintf("emcom.instr.%d", net.Level))
 	return state.Hazard{
 		EventKey:  emcomEventKey(net.Slug),
 		Source:    emcomSource,
@@ -221,10 +229,10 @@ func emcomHazard(net emcomNetwork, now time.Time) state.Hazard {
 		Severity:  lvl.Severity,
 		Urgency:   "immediate",
 		Certainty: "observed",
-		Headline:  fmt.Sprintf("%s: level %d – %s", net.Name, net.Level, lvl.Name),
-		Description: fmt.Sprintf("%s is now at level %d – %s.\n\n%s\n\nOperational readiness levels:\n%s",
-			net.Name, net.Level, lvl.Name, lvl.Description, emcomLevelsLegend()),
-		Instruction: lvl.Instruction,
+		Headline:  fmt.Sprintf(i18n.T(lang, "emcom.headline"), net.Name, net.Level, name),
+		Description: fmt.Sprintf(i18n.T(lang, "emcom.raised_at")+"\n\n%s\n\n%s:\n%s",
+			net.Name, net.Level, name, desc, i18n.T(lang, "emcom.legend_head"), emcomLevelsLegend(lang)),
+		Instruction: instr,
 		Status:      "active",
 		ReceivedAt:  now,
 		UpdatedAt:   now,
@@ -236,20 +244,53 @@ func emcomHazard(net emcomNetwork, now time.Time) state.Hazard {
 // must be told the network stood down. It keeps the PREVIOUS level's
 // severity so the same routing cells (severity thresholds) deliver it
 // to exactly the audience that received the activation.
-func emcomDeactivationHazard(net emcomNetwork, prev int, now time.Time) state.Hazard {
-	h := emcomHazard(net, now)
+func emcomDeactivationHazard(net emcomNetwork, prev int, now time.Time, lang string) state.Hazard {
+	lang = i18n.Effective(lang)
+	h := emcomHazard(net, now, lang)
 	old, ok := emcomLevelAt(prev)
-	oldName := fmt.Sprintf("level %d", prev)
+	oldName := fmt.Sprintf(i18n.T(lang, "emcom.level_plain"), prev)
 	if ok {
-		oldName = fmt.Sprintf("level %d – %s", prev, old.Name)
+		oldName = fmt.Sprintf(i18n.T(lang, "emcom.level_name"), prev, i18n.T(lang, fmt.Sprintf("emcom.levels.%d", prev)))
 		if old.Severity != "" {
 			h.Severity = old.Severity
 		}
 	}
-	lvl, _ := emcomLevelAt(net.Level)
-	h.Description = fmt.Sprintf("%s was lowered from %s to level %d – %s.\n\n%s\n\nOperational readiness levels:\n%s",
-		net.Name, oldName, net.Level, lvl.Name, lvl.Description, emcomLevelsLegend())
+	lvlName := i18n.T(lang, fmt.Sprintf("emcom.levels.%d", net.Level))
+	lvlDesc := i18n.T(lang, fmt.Sprintf("emcom.desc.%d", net.Level))
+	h.Description = fmt.Sprintf(i18n.T(lang, "emcom.lowered_from")+"\n\n%s\n\n%s:\n%s",
+		net.Name, oldName, net.Level, lvlName, lvlDesc, i18n.T(lang, "emcom.legend_head"), emcomLevelsLegend(lang))
 	return h
+}
+
+// emcomLocalized renders the activation payload in every supported
+// notification language, so each recipient gets the EMCOM level texts in
+// their own language (the canonical fields stay in the system language).
+func emcomLocalized(net emcomNetwork) map[string]dispatch.HazardText {
+	out := make(map[string]dispatch.HazardText, len(i18n.Codes()))
+	for _, code := range i18n.Codes() {
+		h := emcomHazard(net, net.UpdatedAt, code)
+		out[code] = dispatch.HazardText{
+			Headline:    h.Headline,
+			Description: h.Description,
+			Instruction: h.Instruction,
+		}
+	}
+	return out
+}
+
+// emcomLocalizedDrop renders the deactivation payload in every supported
+// notification language (parallel to emcomLocalized).
+func emcomLocalizedDrop(net emcomNetwork, prev int) map[string]dispatch.HazardText {
+	out := make(map[string]dispatch.HazardText, len(i18n.Codes()))
+	for _, code := range i18n.Codes() {
+		h := emcomDeactivationHazard(net, prev, net.UpdatedAt, code)
+		out[code] = dispatch.HazardText{
+			Headline:    h.Headline,
+			Description: h.Description,
+			Instruction: h.Instruction,
+		}
+	}
+	return out
 }
 
 // emcomTransition builds the canonical ingress event for one level change
@@ -259,7 +300,7 @@ func emcomDeactivationHazard(net emcomNetwork, prev int, now time.Time) state.Ha
 // independent of the wall clock) as its ChangeID, so the lifecycle
 // ledger can identify and version it — a level drop back to monitoring
 // then blocks a previously queued activation through the delivery gate.
-func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher string, version int64) dispatch.Event {
+func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher string, version int64, localized map[string]dispatch.HazardText) dispatch.Event {
 	now := time.Now()
 	return dispatch.Event{
 		Kind:       dispatch.EventHazardTransition,
@@ -291,6 +332,7 @@ func emcomTransition(h state.Hazard, typ dispatch.TransitionType, publisher stri
 				ExpiresAt:   h.ExpiresAt,
 				ReceivedAt:  h.ReceivedAt,
 				UpdatedAt:   h.UpdatedAt,
+				Localized:   localized,
 			},
 		},
 	}
@@ -563,7 +605,7 @@ func (s *Server) SyncBrokerState() {
 					continue
 				}
 				if n.Level >= 1 {
-					if err := s.pub.PublishActive(emcomSource, emcomHazard(net, now)); err != nil {
+					if err := s.pub.PublishActive(emcomSource, emcomHazard(net, now, s.SystemLanguage())); err != nil {
 						s.logger.Warn("emcom: hazard resync failed", "slug", n.Slug, "error", err)
 					}
 				}
@@ -844,14 +886,14 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		// The hazard carries the SAVED network timestamp: the transition
 		// ChangeID (updated_at_ms) then equals the lifecycle version the
 		// store committed with the network state.
-		h := emcomHazard(net, net.UpdatedAt)
+		h := emcomHazard(net, net.UpdatedAt, s.SystemLanguage())
 		typ := dispatch.TransitionNew
 		if wasActive {
 			typ = dispatch.TransitionUpdated
 		}
 		// The transition is durable and routed locally BEFORE any broker
 		// I/O — the panel never depends on the broker round-trip.
-		switch s.ingress.Enqueue(emcomTransition(h, typ, publisher, version)) {
+		switch s.ingress.Enqueue(emcomTransition(h, typ, publisher, version, emcomLocalized(net))) {
 		case dispatch.Rejected:
 			s.logger.Warn("emcom: local dispatch rejected the transition", "slug", slug)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.dispatch"))
@@ -882,7 +924,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		// network stood down. The payload is the deactivation hazard
 		// (previous level's severity, so the same routing cells deliver
 		// it; headline and description explain the drop).
-		drop := emcomTransition(emcomDeactivationHazard(net, prevLevel, net.UpdatedAt), dispatch.TransitionExpired, publisher, version)
+		drop := emcomTransition(emcomDeactivationHazard(net, prevLevel, net.UpdatedAt, s.SystemLanguage()), dispatch.TransitionExpired, publisher, version, emcomLocalizedDrop(net, prevLevel))
 		drop.Hazard.Notify = true
 		if s.ingress.Enqueue(drop) == dispatch.Rejected {
 			s.logger.Warn("emcom: local dispatch rejected the deactivation transition", "slug", slug)
@@ -930,7 +972,7 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 	version := time.Now().UnixMilli()
 	var expiryEv dispatch.Event
 	if wasActive {
-		expiryEv = emcomTransition(emcomHazard(net, time.Now()), dispatch.TransitionExpired, s.emcomPublisher(), 0)
+		expiryEv = emcomTransition(emcomHazard(net, time.Now(), s.SystemLanguage()), dispatch.TransitionExpired, s.emcomPublisher(), 0, emcomLocalized(net))
 	}
 	_, hasStore := s.users.(emcomStore)
 	if hasStore {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/sanity"
 )
@@ -138,7 +139,9 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if !mesh.AlertsEnabled() {
 		return nil // the operator muted the mesh announcements
 	}
-	text := a.textFor(ctx, req)
+	// The group channel always broadcasts in the SYSTEM language; direct
+	// messages use each member's personal language when they picked one.
+	channelText := a.textFor(ctx, req, req.Lang)
 
 	// The durable ledger identity: the message version. Legacy payloads
 	// without a publisher/version get no ledger (fail-open: always
@@ -178,9 +181,9 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 			}
 			var err error
 			if ledger {
-				err = a.hub.SendChannelTextVersioned(ctx, a.cfg.Channel, text, "system", prog)
+				err = a.hub.SendChannelTextVersioned(ctx, a.cfg.Channel, channelText, "system", prog)
 			} else {
-				err = a.hub.SendChannelText(ctx, a.cfg.Channel, text, "system")
+				err = a.hub.SendChannelText(ctx, a.cfg.Channel, channelText, "system")
 			}
 			if err != nil {
 				return fmt.Errorf("meshtastic: %w", err)
@@ -194,14 +197,19 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	// with the channel broadcast. Recipients whose exact message version
 	// already has a progress row are skipped: only the unfinished sends
 	// are retried, so every member is reached exactly once across
-	// attempts.
-	for _, id := range req.MeshNodeIDs {
+	// attempts. Each DM renders in the member's own language.
+	for i, id := range req.MeshNodeIDs {
 		if done(id, 0) {
 			continue
 		}
 		if err := a.pace(ctx); err != nil {
 			return err
 		}
+		lang := req.Lang
+		if i < len(req.MeshNodeLangs) && req.MeshNodeLangs[i] != "" {
+			lang = req.MeshNodeLangs[i]
+		}
+		text := a.textFor(ctx, req, lang)
 		var err error
 		if ledger {
 			err = a.hub.SendContactMessageVersioned(ctx, id, bellText(text), "system", prog)
@@ -223,15 +231,17 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 // the description fill whatever room is left. Worst case the text is cut
 // hard at the channel limit — the prefix and severity are never
 // sacrificed.
-func (a *Action) textFor(ctx context.Context, req action.ActionRequest) string {
+func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang string) string {
 	h := req.Event.Hazard.Hazard
+	lang = i18n.Effective(lang)
+	t := h.For(lang)
 	norm := func(s string) string {
 		s = sanity.NormalizeText(ctx, sanity.ChannelAPRS, s)
 		return strings.Join(strings.Fields(s), " ")
 	}
 
-	sev := strings.ToUpper(strings.TrimSpace(h.Severity))
-	headline := norm(h.Headline)
+	sev := strings.ToUpper(i18n.T(lang, "severity."+strings.ToLower(strings.TrimSpace(h.Severity))))
+	headline := norm(t.Headline)
 	if headline == "" {
 		headline = norm(h.Event)
 	}
@@ -239,7 +249,7 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest) string {
 	if event == headline {
 		event = "" // the headline already carries the event name
 	}
-	desc := norm(h.Description)
+	desc := norm(t.Description)
 
 	// The short message ID always rides along (people cite it on the
 	// air): its room is reserved BEFORE the text is assembled, so the

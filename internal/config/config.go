@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 )
 
@@ -486,7 +487,12 @@ type Web struct {
 	// the operator-configured tile directory only when online). Intended
 	// for a Docker volume so each operator drops in its own tiles.
 	TilesDir string
-	Auth     WebAuth
+	// SystemLanguage is the default language of broadcast notifications
+	// (APRS messages, EMCOM group-channel Meshtastic posts): an i18n
+	// language code ("en", "pl"). Empty means the i18n default. The
+	// admin can switch it at runtime on the Config page.
+	SystemLanguage string
+	Auth           WebAuth
 }
 
 // WebAuth holds the single admin account for the web UI. Password and
@@ -664,19 +670,20 @@ type fileReceiverSubscription struct {
 }
 
 type fileWeb struct {
-	Enabled     bool         `yaml:"enabled"`
-	Listen      string       `yaml:"listen"`
-	Title       string       `yaml:"title"`
-	Name        string       `yaml:"name"`
-	Header1     string       `yaml:"header1"`
-	Header2     string       `yaml:"header2"`
-	Tagline     string       `yaml:"tagline"`
-	About       string       `yaml:"about"`
-	Disclaimer  string       `yaml:"disclaimer"`
-	Domain      string       `yaml:"domain"`
-	OfflineMode bool         `yaml:"offline_mode"`
-	TilesDir    string       `yaml:"tiles_dir"`
-	Auth        *fileWebAuth `yaml:"auth"`
+	Enabled        bool         `yaml:"enabled"`
+	Listen         string       `yaml:"listen"`
+	Title          string       `yaml:"title"`
+	Name           string       `yaml:"name"`
+	Header1        string       `yaml:"header1"`
+	Header2        string       `yaml:"header2"`
+	Tagline        string       `yaml:"tagline"`
+	About          string       `yaml:"about"`
+	Disclaimer     string       `yaml:"disclaimer"`
+	Domain         string       `yaml:"domain"`
+	OfflineMode    bool         `yaml:"offline_mode"`
+	TilesDir       string       `yaml:"tiles_dir"`
+	SystemLanguage string       `yaml:"system_language"`
+	Auth           *fileWebAuth `yaml:"auth"`
 }
 
 type fileWebAuth struct {
@@ -1053,6 +1060,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.Web.Domain = strings.TrimSuffix(strings.TrimSpace(f.Web.Domain), "/")
 		cfg.Web.OfflineMode = f.Web.OfflineMode
 		cfg.Web.TilesDir = strings.TrimSpace(f.Web.TilesDir)
+		cfg.Web.SystemLanguage = strings.ToLower(strings.TrimSpace(f.Web.SystemLanguage))
 		if f.Web.Auth != nil {
 			cfg.Web.Auth = WebAuth{
 				Username:       f.Web.Auth.Username,
@@ -1328,6 +1336,10 @@ func (c Config) Validate() error {
 		}
 		if len(c.Web.Disclaimer) > 500 {
 			return fmt.Errorf("web.disclaimer is %d characters, maximum 500", len(c.Web.Disclaimer))
+		}
+		if c.Web.SystemLanguage != "" && !i18n.Supported(c.Web.SystemLanguage) {
+			return fmt.Errorf("web.system_language must be one of %s (or empty), got %q",
+				strings.Join(i18n.Codes(), ", "), c.Web.SystemLanguage)
 		}
 	}
 	for i, a := range c.Actions {

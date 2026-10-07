@@ -70,6 +70,12 @@ type configView struct {
 	// ForceLocalTiles forces every map onto the local tile tree even
 	// while the station is online.
 	ForceLocalTiles bool
+	// SystemLanguage is the runtime broadcast notification language
+	// ("" = i18n default).
+	SystemLanguage string
+	// Languages lists the supported notification languages for the
+	// picker.
+	Languages []string
 	// Msg is the flash message after a toggle.
 	Msg string
 	// Error carries the banner after a rejected EMCOM management
@@ -169,6 +175,8 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		EmcomNetworks:   s.emcomNetworkViews(lang),
 		MeshAlerts:      meshtastic.AlertsEnabled(),
 		ForceLocalTiles: s.forceTiles.Load(),
+		SystemLanguage:  s.SystemLanguage(),
+		Languages:       i18n.Codes(),
 	}
 }
 
@@ -190,6 +198,8 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		v.Msg = i18n.T(lang, "config.mesh.saved")
 	case "tiles":
 		v.Msg = i18n.T(lang, "config.tiles.saved")
+	case "lang":
+		v.Msg = i18n.T(lang, "config.lang.saved")
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "configpage", v)
@@ -289,6 +299,30 @@ func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("meshtastic announcements toggled by admin",
 		"user", sess.username, "state", r.PostFormValue("mesh"))
 	http.Redirect(w, r, "/config?msg=mesh", http.StatusSeeOther)
+}
+
+// handleConfigLang switches the system notification language: broadcast
+// channels (APRS messages, EMCOM group-channel Meshtastic posts) are
+// sent in it. Admin-only.
+func (s *Server) handleConfigLang(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		if err == nil {
+			return
+		}
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	code := strings.ToLower(strings.TrimSpace(r.PostFormValue("lang")))
+	if code != "" && !i18n.Supported(code) {
+		http.Error(w, "invalid value", http.StatusBadRequest)
+		return
+	}
+	s.SetSystemLanguage(code)
+	s.audit(sess.username, "config-lang", code)
+	s.logger.Info("system notification language changed by admin",
+		"user", sess.username, "lang", code)
+	http.Redirect(w, r, "/config?msg=lang", http.StatusSeeOther)
 }
 
 // handleConfigOffline flips the offline-mode switch. Admin-only; the

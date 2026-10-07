@@ -310,3 +310,58 @@ func TestConfigMqttMask(t *testing.T) {
 		t.Error("info must stay allowed")
 	}
 }
+
+// TestConfigSystemLanguage pins the broadcast-language switch: the page
+// offers the supported languages and the POST changes the runtime value
+// (which the routing engine reads for APRS / channel posts).
+func TestConfigSystemLanguage(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	_, page := env.get("/config")
+	if !strings.Contains(page, `action="/config/lang"`) {
+		t.Fatalf("config page misses the language form: %s", page)
+	}
+	if !strings.Contains(page, `value="pl"`) {
+		t.Errorf("config page misses the pl option: %s", page)
+	}
+
+	if env.server.SystemLanguage() != "" {
+		t.Fatalf("startup language = %q, want empty (i18n default)", env.server.SystemLanguage())
+	}
+	csrf := env.csrfFromPage("/config")
+	resp, _ := env.postForm("/config/lang", url.Values{
+		"csrf": {csrf},
+		"lang": {"pl"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/lang = %d, want 303", resp.StatusCode)
+	}
+	if got := env.server.SystemLanguage(); got != "pl" {
+		t.Errorf("system language = %q, want pl", got)
+	}
+
+	// Unsupported codes are rejected and leave the value untouched.
+	resp, _ = env.postForm("/config/lang", url.Values{
+		"csrf": {csrf},
+		"lang": {"xx"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /config/lang invalid = %d, want 400", resp.StatusCode)
+	}
+	if got := env.server.SystemLanguage(); got != "pl" {
+		t.Errorf("system language after rejected POST = %q, want pl", got)
+	}
+
+	// Clearing returns to the system default.
+	resp, _ = env.postForm("/config/lang", url.Values{
+		"csrf": {csrf},
+		"lang": {""},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/lang clear = %d, want 303", resp.StatusCode)
+	}
+	if got := env.server.SystemLanguage(); got != "" {
+		t.Errorf("system language after clear = %q, want empty", got)
+	}
+}

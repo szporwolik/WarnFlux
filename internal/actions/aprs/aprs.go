@@ -16,6 +16,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 )
 
 // Type is the action type name used in the YAML configuration.
@@ -123,21 +124,26 @@ func (a *aprsAction) recipients(req action.ActionRequest) []string {
 
 // messageText renders the notification from the canonical event metadata:
 // headline first, then event, severity and prefix, with less important
-// components dropped before the headline is ever shortened.
+// components dropped before the headline is ever shortened. The headline
+// uses the system notification language (req.Lang) when the producer
+// provided localized renderings (EMCOM); the severity stays the compact
+// radio abbreviation.
 func (a *aprsAction) messageText(req action.ActionRequest) string {
+	lang := i18n.Effective(req.Lang)
 	prefix := strings.TrimSpace(a.cfg.Prefix)
 	if prefix == "" {
 		prefix = strings.TrimSpace(req.App.Header1)
 	}
 	if h := req.Event.Hazard; h != nil {
+		headline := h.Hazard.For(lang).Headline
 		// The short message ID always rides along so operators can cite
 		// one specific communication on the air.
 		if id := h.Hazard.MessageID(); id != "" {
 			suffix := "ID:" + id
-			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, h.Hazard.Headline, 1+len(suffix))
+			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, headline, 1+len(suffix))
 			return strings.TrimSpace(base + " " + suffix)
 		}
-		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, h.Hazard.Headline, 0)
+		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, headline, 0)
 	}
 	return aprs.TrimMessageText(strings.Join([]string{prefix, "WarnFlux notification"}, " "))
 }

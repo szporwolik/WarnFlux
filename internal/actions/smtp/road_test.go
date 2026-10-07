@@ -45,7 +45,7 @@ func TestGddkiaMessageShowsRoad(t *testing.T) {
 		},
 		App: action.AppInfo{Header1: "SOSDEV"},
 	}
-	msg := buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, req, now)
+	msg := buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, req, "", now)
 	s := string(msg)
 	if !strings.Contains(s, "roads: 79") {
 		t.Errorf("plain body missing the road line: %s", s)
@@ -88,17 +88,17 @@ func TestHazardInstructionSection(t *testing.T) {
 	// The hazard's own instruction wins.
 	req := newReq()
 	req.Event.Hazard.Hazard.Instruction = "Ignore messages."
-	msg := string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, req, now))
+	msg := string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, req, "", now))
 	if !strings.Contains(msg, "instruction: Ignore messages.") {
 		t.Errorf("own instruction missing:\n%s", msg)
 	}
-	if strings.Contains(msg, defaultInstruction) {
+	if strings.Contains(msg, defaultInstruction("")) {
 		t.Errorf("default instruction leaked into an own-instruction mail:\n%s", msg)
 	}
 
 	// No instruction: the default section is still present.
-	msg = string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, newReq(), now))
-	if !strings.Contains(msg, "instruction: "+defaultInstruction) {
+	msg = string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, newReq(), "", now))
+	if !strings.Contains(msg, "instruction: "+defaultInstruction("")) {
 		t.Errorf("default instruction missing:\n%s", msg)
 	}
 }

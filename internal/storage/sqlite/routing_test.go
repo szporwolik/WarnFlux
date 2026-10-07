@@ -924,6 +924,61 @@ func TestGroupRecipientEmails(t *testing.T) {
 	}
 }
 
+// TestGroupRecipientEmailLangs pins the per-member notification
+// languages: parallel to GroupRecipientEmails, sorted the same way,
+// with "" for members that never picked a language.
+func TestGroupRecipientEmailLangs(t *testing.T) {
+	store := newRoutingStore(t)
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	langs, err := store.GroupRecipientEmailLangs(g.ID)
+	if err != nil || len(langs) != 0 {
+		t.Fatalf("empty group langs = %v, %v", langs, err)
+	}
+	langs, err = store.GroupRecipientEmailLangs(999)
+	if err != nil || len(langs) != 0 {
+		t.Fatalf("missing group langs = %v, %v", langs, err)
+	}
+
+	ada, err := store.CreateUser("ada", "", "ada@example.com", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateUser ada: %v", err)
+	}
+	cya, err := store.CreateUser("cya", "", "cya@example.com", "", "", "")
+	if err != nil {
+		t.Fatalf("CreateUser cya: %v", err)
+	}
+	if err := store.SetUserGroups(ada.ID, []int64{g.ID}); err != nil {
+		t.Fatalf("SetUserGroups ada: %v", err)
+	}
+	if err := store.SetUserGroups(cya.ID, []int64{g.ID}); err != nil {
+		t.Fatalf("SetUserGroups cya: %v", err)
+	}
+	if err := store.SetUserLanguage(ada.ID, "pl"); err != nil {
+		t.Fatalf("SetUserLanguage ada: %v", err)
+	}
+
+	langs, err = store.GroupRecipientEmailLangs(g.ID)
+	if err != nil {
+		t.Fatalf("langs: %v", err)
+	}
+	if len(langs) != 2 || langs[0] != "pl" || langs[1] != "" {
+		t.Fatalf("langs = %v, want [pl \"\"] (parallel to [ada cya])", langs)
+	}
+
+	// A cleared language returns to the system default ("").
+	if err := store.SetUserLanguage(ada.ID, ""); err != nil {
+		t.Fatalf("SetUserLanguage clear: %v", err)
+	}
+	langs, err = store.GroupRecipientEmailLangs(g.ID)
+	if err != nil || len(langs) != 2 || langs[0] != "" || langs[1] != "" {
+		t.Fatalf("langs after clear = %v, %v", langs, err)
+	}
+}
+
 // TestGroupRecipientDiscord mirrors the email test for Discord handles:
 // sorted, distinct, non-empty, and never an error for missing groups.
 func TestGroupRecipientDiscord(t *testing.T) {

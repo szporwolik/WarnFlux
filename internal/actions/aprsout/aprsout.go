@@ -19,6 +19,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 )
 
 // Type is the action type name used in the YAML configuration.
@@ -253,19 +254,21 @@ func (a *aprsOutAction) recipients(req action.ActionRequest) []string {
 // components dropped before the headline is ever shortened. The ack {id}
 // suffix room is reserved so the final frame always fits the APRS limit.
 func (a *aprsOutAction) messageText(req action.ActionRequest) string {
+	lang := i18n.Effective(req.Lang)
 	prefix := strings.TrimSpace(a.cfg.Prefix)
 	if prefix == "" {
 		prefix = strings.TrimSpace(req.App.Header1)
 	}
 	if h := req.Event.Hazard; h != nil {
+		headline := h.Hazard.For(lang).Headline
 		// The short message ID always rides along, next to the {id} ack
 		// suffix the hub appends.
 		if id := h.Hazard.MessageID(); id != "" {
 			suffix := "ID:" + id
-			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, h.Hazard.Headline, aprs.AckSuffixLen+1+len(suffix))
+			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, headline, aprs.AckSuffixLen+1+len(suffix))
 			return strings.TrimSpace(base + " " + suffix)
 		}
-		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, h.Hazard.Headline, aprs.AckSuffixLen)
+		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, headline, aprs.AckSuffixLen)
 	}
 	return aprs.LimitMessageText(strings.Join([]string{prefix, "WarnFlux notification"}, " "), aprs.AckSuffixLen)
 }

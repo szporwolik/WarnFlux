@@ -36,6 +36,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/geo"
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/sanity"
 )
 
@@ -304,7 +305,6 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 		}
 	}
 
-	msg := buildMessage(ctx, p.cfg, req, time.Now())
 	var errs []error
 	for _, rcpt := range recipients {
 		// One rate slot per email; a cancelled wait fails the remaining
@@ -313,6 +313,10 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 			errs = append(errs, fmt.Errorf("rate limit: %w", err))
 			break
 		}
+		// Each recipient's message renders in THEIR notification
+		// language (members carry their choice in req.BccLangs); the
+		// fallback is the system language (req.Lang).
+		msg := buildMessage(ctx, p.cfg, req, recipientLang(req, rcpt), time.Now())
 		if err := p.sendOne(client, rcpt, msg); err != nil {
 			errs = append(errs, err)
 			// A transport-level failure leaves the connection unusable;
@@ -326,6 +330,23 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 		errs = append(errs, fmt.Errorf("smtp: quit: %w", err))
 	}
 	return errors.Join(errs...)
+}
+
+// recipientLang resolves one recipient's notification language: members
+// carry their personal choice in req.BccLangs (parallel to req.Bcc);
+// everyone else — the configured To list and unknown addresses — uses the
+// request (system) language, which may be empty (i18n default).
+func recipientLang(req action.ActionRequest, rcpt string) string {
+	for i, addr := range req.Bcc {
+		if !strings.EqualFold(strings.TrimSpace(addr), rcpt) {
+			continue
+		}
+		if i < len(req.BccLangs) && req.BccLangs[i] != "" {
+			return req.BccLangs[i]
+		}
+		return req.Lang
+	}
+	return req.Lang
 }
 
 // sendOne runs one SMTP transaction (MAIL/RCPT/DATA) for a single
@@ -403,15 +424,16 @@ const logoCID = "warnflux-logo"
 // inline CID image, so the brand renders without any external hosting.
 // The subject line is MIME word-encoded so non-ASCII (e.g. Polish) text
 // stays intact. All dynamic values are HTML-escaped in the HTML part.
-func buildMessage(ctx context.Context, cfg Config, req action.ActionRequest, now time.Time) []byte {
-	subject := subjectOf(cfg, req)
+func buildMessage(ctx context.Context, cfg Config, req action.ActionRequest, lang string, now time.Time) []byte {
+	lang = i18n.Effective(lang)
+	subject := subjectOf(cfg, req, lang)
 	// Sanity stage: subject and plain body pass through the shared
 	// normalizer before MIME encoding (TODO(llm): future review hook).
 	subject = sanity.NormalizeText(ctx, sanity.ChannelEmailSubject, subject)
 	relatedBoundary := fmt.Sprintf("warnflux-rel-%d", now.UnixNano())
 	altBoundary := fmt.Sprintf("warnflux-alt-%d", now.UnixNano())
-	plain := sanity.NormalizeText(ctx, sanity.ChannelEmailBody, bodyOfPlain(req, now))
-	htmlBody := bodyOfHTML(req, now)
+	plain := sanity.NormalizeText(ctx, sanity.ChannelEmailBody, bodyOfPlain(req, lang, now))
+	htmlBody := bodyOfHTML(req, lang, now)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", cfg.From)
@@ -468,28 +490,30 @@ func wrapBase64(data []byte) string {
 // prefix is the application's header1 from the web configuration (e.g.
 // "[SPOK]"); the action-level subject_prefix is only a fallback when the
 // application identity is not populated.
-func subjectOf(cfg Config, req action.ActionRequest) string {
+func subjectOf(cfg Config, req action.ActionRequest, lang string) string {
+	lang = i18n.Effective(lang)
 	var base string
 	switch req.Event.Kind {
 	case dispatch.EventHazardTransition:
 		h := req.Event.Hazard
 		if h == nil {
-			base = "hazard transition"
+			base = i18n.T(lang, "notif.subject.transition")
 			break
 		}
-		text := strings.TrimSpace(h.Hazard.Headline)
+		text := strings.TrimSpace(h.Hazard.For(lang).Headline)
 		if text == "" {
 			text = h.Hazard.Event
 		}
-		base = fmt.Sprintf("%s: %s", strings.ToUpper(h.Hazard.Severity), text)
+		sev := i18n.T(lang, "severity."+strings.ToLower(strings.TrimSpace(h.Hazard.Severity)))
+		base = fmt.Sprintf("%s: %s", strings.ToUpper(sev), text)
 	case dispatch.EventMQTTMessage:
 		if req.Event.MQTT != nil {
-			base = fmt.Sprintf("MQTT message on %s", req.Event.MQTT.Topic)
+			base = fmt.Sprintf(i18n.T(lang, "notif.subject.mqtt"), req.Event.MQTT.Topic)
 		} else {
-			base = "MQTT message"
+			base = i18n.T(lang, "notif.subject.mqtt_plain")
 		}
 	default:
-		base = "dispatch event"
+		base = i18n.T(lang, "notif.subject.event")
 	}
 	if h := strings.TrimSpace(req.App.Header1); h != "" {
 		return fmt.Sprintf("[%s] %s", h, base)
@@ -528,83 +552,88 @@ func humanTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04")
 }
 
-// defaultInstruction is the fallback instruction section text for
-// hazards that carry none: every alert mail answers the reader's first
-// question — what am I supposed to do.
-const defaultInstruction = "Follow official communications and obey the instructions of emergency services."
+// defaultInstruction returns the fallback instruction section text for
+// hazards that carry none, in lang: every alert mail answers the reader's
+// first question — what am I supposed to do.
+func defaultInstruction(lang string) string {
+	return i18n.T(lang, "mail.default_instruction")
+}
 
 // effectiveInstruction returns the hazard's own instruction or the
 // default when none was provided.
-func effectiveInstruction(h dispatch.Hazard) string {
-	if instr := strings.TrimSpace(h.Instruction); instr != "" {
+func effectiveInstruction(t dispatch.HazardText, lang string) string {
+	if instr := strings.TrimSpace(t.Instruction); instr != "" {
 		return instr
 	}
-	return defaultInstruction
+	return defaultInstruction(lang)
 }
 
 // bodyOfPlain renders the human-first plain text: severity and headline
 // up front, then the description, the instruction, the areas and the
 // validity window — no transport metadata, no raw keys.
-func bodyOfPlain(req action.ActionRequest, now time.Time) string {
+func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
+	lang = i18n.Effective(lang)
 	var b strings.Builder
-	b.WriteString("WarnFlux notification\n")
-	fmt.Fprintf(&b, "Time: %s\n\n", humanTime(now))
+	b.WriteString(i18n.T(lang, "mail.head") + "\n")
+	fmt.Fprintf(&b, "%s: %s\n\n", i18n.T(lang, "mail.time"), humanTime(now))
 
 	ev := req.Event
 	switch ev.Kind {
 	case dispatch.EventHazardTransition:
 		h := ev.Hazard
 		if h == nil {
-			b.WriteString("Message: <empty change>\n")
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.message"), i18n.T(lang, "mail.empty_change"))
 			break
 		}
+		t := h.Hazard.For(lang)
 		event := strings.TrimSpace(h.Hazard.Event)
-		headline := strings.TrimSpace(h.Hazard.Headline)
+		headline := strings.TrimSpace(t.Headline)
 		if headline == "" {
 			headline = event
 		}
-		fmt.Fprintf(&b, "Message: %s · %s\n", strings.ToUpper(h.Hazard.Severity), event)
+		sev := i18n.T(lang, "severity."+strings.ToLower(strings.TrimSpace(h.Hazard.Severity)))
+		fmt.Fprintf(&b, "%s: %s · %s\n", i18n.T(lang, "mail.message"), strings.ToUpper(sev), event)
 		if id := h.Hazard.MessageID(); id != "" {
-			fmt.Fprintf(&b, "Message ID: %s\n", id)
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.message_id"), id)
 		}
 		if headline != event {
-			fmt.Fprintf(&b, "Headline: %s\n", headline)
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.headline"), headline)
 		}
 		if src := strings.TrimSpace(h.Source); src != "" {
-			fmt.Fprintf(&b, "source: %s\n", src)
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.source"), src)
 		}
-		if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
-			fmt.Fprintf(&b, "description: %s\n", desc)
+		if desc := strings.TrimSpace(t.Description); desc != "" {
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.description"), desc)
 		}
-		fmt.Fprintf(&b, "instruction: %s\n", effectiveInstruction(h.Hazard))
+		fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.instruction"), effectiveInstruction(t, lang))
 		if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
-			fmt.Fprintf(&b, "roads: %s\n", strings.Join(roads, ", "))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.roads"), strings.Join(roads, ", "))
 		}
 		if rest := nonRoadAreas(h.Hazard.Areas); len(rest) > 0 {
-			fmt.Fprintf(&b, "areas: %s\n", strings.Join(geo.DisplayAreas(rest), ", "))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.areas"), strings.Join(geo.DisplayAreas(rest), ", "))
 		}
 		if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
-			fmt.Fprintf(&b, "location: %.5f, %.5f\n", *h.Hazard.Latitude, *h.Hazard.Longitude)
+			fmt.Fprintf(&b, "%s: %.5f, %.5f\n", i18n.T(lang, "mail.location"), *h.Hazard.Latitude, *h.Hazard.Longitude)
 		}
 		if h.Hazard.EffectiveAt != nil {
-			fmt.Fprintf(&b, "effective from: %s\n", humanTime(*h.Hazard.EffectiveAt))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.effective_from"), humanTime(*h.Hazard.EffectiveAt))
 		}
 		if h.Hazard.ExpiresAt != nil {
-			fmt.Fprintf(&b, "valid until: %s\n", humanTime(*h.Hazard.ExpiresAt))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.valid_until"), humanTime(*h.Hazard.ExpiresAt))
 		}
 		if link := messageURL(req, h.Key); link != "" {
-			fmt.Fprintf(&b, "details: %s\n", link)
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.details"), link)
 		}
 	case dispatch.EventMQTTMessage:
 		m := ev.MQTT
 		if m != nil {
-			fmt.Fprintf(&b, "Topic: %s\n", m.Topic)
-			fmt.Fprintf(&b, "QoS: %d\n", m.QoS)
-			fmt.Fprintf(&b, "Payload bytes: %d\n", len(m.Payload))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.topic"), m.Topic)
+			fmt.Fprintf(&b, "%s: %d\n", i18n.T(lang, "mail.qos"), m.QoS)
+			fmt.Fprintf(&b, "%s: %d\n", i18n.T(lang, "mail.payload_bytes"), len(m.Payload))
 		}
 	}
 	b.WriteString("\n--\n")
-	b.WriteString(footerText(req))
+	b.WriteString(footerText(req, lang))
 	return b.String()
 }
 
@@ -666,7 +695,8 @@ func severityColor(severity string) string {
 // a severity-colored accent (the same palette as the web dashboard), so
 // the alert level is visible at a glance. No transport metadata — the
 // reader sees only what a human needs.
-func bodyOfHTML(req action.ActionRequest, now time.Time) string {
+func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
+	lang = i18n.Effective(lang)
 	accent := "#303c46"
 	if ev := req.Event; ev.Kind == dispatch.EventHazardTransition && ev.Hazard != nil {
 		accent = severityColor(ev.Hazard.Hazard.Severity)
@@ -689,7 +719,7 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 </tr></table>`,
 		logoCID, htmlEscaper(brand), htmlEscaper(brand))
 
-	b.WriteString(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">Message notification</div>`)
+	b.WriteString(fmt.Sprintf(`<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.message_notification"))))
 
 	ev := req.Event
 	switch ev.Kind {
@@ -698,21 +728,22 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 		if ev.Hazard != nil {
 			link = messageURL(req, ev.Hazard.Key)
 		}
-		b.WriteString(hazardHTML(ev, link))
+		b.WriteString(hazardHTML(ev, link, lang))
 	case dispatch.EventMQTTMessage:
 		m := ev.MQTT
 		if m != nil {
 			fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">%s</div>`,
-				htmlEscaper("MQTT message on "+m.Topic))
+				htmlEscaper(fmt.Sprintf(i18n.T(lang, "mail.mqtt_on"), m.Topic)))
 		}
 	default:
-		b.WriteString(`<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Dispatch event</div>`)
+		fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">%s</div>`,
+			htmlEscaper(i18n.T(lang, "mail.dispatch_event")))
 	}
 
-	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">Updated: %s</div>`, htmlEscaper(humanTime(now)))
+	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">%s: %s</div>`, htmlEscaper(i18n.T(lang, "mail.updated")), htmlEscaper(humanTime(now)))
 
 	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #303c46;padding-top:14px;font-size:12px;color:#87939e;">`)
-	b.WriteString(footerHTML(req))
+	b.WriteString(footerHTML(req, lang))
 	b.WriteString(`</div>`)
 
 	b.WriteString(`</td></tr></table></div>`)
@@ -720,11 +751,13 @@ func bodyOfHTML(req action.ActionRequest, now time.Time) string {
 }
 
 // hazardHTML renders the focused, human-readable summary block.
-func hazardHTML(ev dispatch.Event, link string) string {
+func hazardHTML(ev dispatch.Event, link, lang string) string {
+	lang = i18n.Effective(lang)
 	h := ev.Hazard
 	if h == nil {
-		return `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">Message</div>`
+		return fmt.Sprintf(`<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.message")))
 	}
+	t := h.Hazard.For(lang)
 	var b strings.Builder
 	badge := severityColor(h.Hazard.Severity)
 	// Solid chip with dark text: the tinted rgba look is lost in Gmail
@@ -735,10 +768,11 @@ func hazardHTML(ev dispatch.Event, link string) string {
 	if id := h.Hazard.MessageID(); id != "" {
 		idChip = fmt.Sprintf(` <span style="display:inline-block;background-color:#1b232b;border:1px solid #303c46;color:#eef2f5;padding:5px 12px;border-radius:12px;font-family:monospace;font-size:12px;letter-spacing:.05em;">%s</span>`, htmlEscaper(id))
 	}
+	sev := i18n.T(lang, "severity."+strings.ToLower(strings.TrimSpace(h.Hazard.Severity)))
 	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="display:inline-block;background-color:%s;color:#0f1419;padding:5px 16px;border-radius:12px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span>%s</div>`,
-		badge, htmlEscaper(strings.ToUpper(h.Hazard.Severity)), idChip)
+		badge, htmlEscaper(strings.ToUpper(sev)), idChip)
 
-	headline := strings.TrimSpace(h.Hazard.Headline)
+	headline := strings.TrimSpace(t.Headline)
 	if headline == "" {
 		headline = h.Hazard.Event
 	}
@@ -746,16 +780,16 @@ func hazardHTML(ev dispatch.Event, link string) string {
 	if headline != h.Hazard.Event {
 		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
 	}
-	if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
-		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">description</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(desc))
+	if desc := strings.TrimSpace(t.Description); desc != "" {
+		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.description")), htmlEscaper(desc))
 	}
-	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">instruction</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(effectiveInstruction(h.Hazard)))
+	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(effectiveInstruction(t, lang)))
 	if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">location: <span style="color:#eef2f5;">%.5f, %.5f</span></div>`, *h.Hazard.Latitude, *h.Hazard.Longitude)
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%.5f, %.5f</span></div>`, htmlEscaper(i18n.T(lang, "mail.location")), *h.Hazard.Latitude, *h.Hazard.Longitude)
 	}
 
 	if areas := nonRoadAreas(h.Hazard.Areas); len(areas) > 0 {
-		b.WriteString(`<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">areas</div>`)
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.areas")))
 		var chips strings.Builder
 		for _, a := range geo.DisplayAreas(areas) {
 			fmt.Fprintf(&chips, `<span style="display:inline-block;background-color:#1b232b;border:1px solid #303c46;border-radius:999px;padding:3px 12px;margin:6px 6px 0 0;font-size:13px;color:#eef2f5;">%s</span>`, htmlEscaper(a))
@@ -763,9 +797,9 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		b.WriteString(chips.String())
 	}
 	if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
-		label := "road"
+		label := i18n.T(lang, "mail.road")
 		if len(roads) > 1 {
-			label = "roads"
+			label = i18n.T(lang, "mail.roads")
 		}
 		var chips strings.Builder
 		for _, r := range roads {
@@ -775,16 +809,16 @@ func hazardHTML(ev dispatch.Event, link string) string {
 		b.WriteString(chips.String())
 	}
 	if h.Hazard.EffectiveAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">effective from: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(humanTime(*h.Hazard.EffectiveAt)))
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.effective_from")), htmlEscaper(humanTime(*h.Hazard.EffectiveAt)))
 	}
 	if h.Hazard.ExpiresAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">valid until: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(humanTime(*h.Hazard.ExpiresAt)))
+		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.valid_until")), htmlEscaper(humanTime(*h.Hazard.ExpiresAt)))
 	}
 	if link != "" {
 		// A table cell with bgcolor + background-color renders as a solid
 		// button in Gmail and Outlook (which ignore padding on inline
 		// anchors), while the padded anchor keeps the text nicely spaced.
-		fmt.Fprintf(&b, `<div style="margin-top:20px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td bgcolor="#1f6feb" style="background-color:#1f6feb;border-radius:8px;"><a href="%s" style="display:inline-block;background-color:#1f6feb;color:#ffffff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;font-size:13px;line-height:1;border:1px solid #1f6feb;">View details</a></td></tr></table></div>`, htmlEscaper(link))
+		fmt.Fprintf(&b, `<div style="margin-top:20px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td bgcolor="#1f6feb" style="background-color:#1f6feb;border-radius:8px;"><a href="%s" style="display:inline-block;background-color:#1f6feb;color:#ffffff;text-decoration:none;padding:10px 22px;border-radius:8px;font-weight:600;font-size:13px;line-height:1;border:1px solid #1f6feb;">%s</a></td></tr></table></div>`, htmlEscaper(link), htmlEscaper(i18n.T(lang, "mail.view_details")))
 	}
 	return b.String()
 }
@@ -820,10 +854,10 @@ func brandName(req action.ActionRequest) string {
 	return h + " · WarnFlux"
 }
 
-func footerText(req action.ActionRequest) string {
+func footerText(req action.ActionRequest, lang string) string {
 	version, domain := footerParts(req)
 	var b strings.Builder
-	fmt.Fprintf(&b, "Sent by %s", brandName(req))
+	fmt.Fprintf(&b, "%s %s", i18n.T(lang, "mail.sent_by"), brandName(req))
 	if version != "" {
 		fmt.Fprintf(&b, " v%s", version)
 	}
@@ -833,10 +867,10 @@ func footerText(req action.ActionRequest) string {
 	return b.String()
 }
 
-func footerHTML(req action.ActionRequest) string {
+func footerHTML(req action.ActionRequest, lang string) string {
 	version, domain := footerParts(req)
 	var b strings.Builder
-	b.WriteString("Sent by ")
+	fmt.Fprintf(&b, "%s ", i18n.T(lang, "mail.sent_by"))
 	fmt.Fprintf(&b, "<strong style=\"color:#eef2f5;\">%s</strong>", htmlEscaper(brandName(req)))
 	if version != "" {
 		fmt.Fprintf(&b, " v%s", htmlEscaper(version))

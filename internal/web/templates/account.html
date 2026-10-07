@@ -47,7 +47,16 @@
               <span>{{tr .Lang "account.discord"}}</span>
               <input type="text" name="discord" value="{{.Discord}}" maxlength="128" placeholder="@handle">
             </label>
+            <label class="field">
+              <span>{{tr .Lang "account.lang"}}</span>
+              <select name="lang">
+                <option value="" {{if eq .NotifLang ""}}selected{{end}}>{{tr .Lang "lang.system_default"}}</option>
+                <option value="en" {{if eq .NotifLang "en"}}selected{{end}}>{{tr .Lang "lang.en"}}</option>
+                <option value="pl" {{if eq .NotifLang "pl"}}selected{{end}}>{{tr .Lang "lang.pl"}}</option>
+              </select>
+            </label>
           </div>
+          <p class="page-info">{{tr .Lang "account.lang_note"}}</p>
         </div>
 
         <div class="account-section">

@@ -88,6 +88,7 @@ func (s *Server) buildAccessView(r *http.Request, sess *session, tab string) acc
 						Email:         u.Email,
 						Discord:       u.Discord,
 						Role:          u.Role,
+						NotifLang:     u.Lang,
 						APRSCallsigns: strings.Join(u.APRSCallsigns, " "),
 						MeshtasticIDs: strings.Join(u.MeshtasticIDs, " "),
 						GroupSet:      s.userGroupSet(u.ID),

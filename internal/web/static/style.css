@@ -960,6 +960,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .aprs-send input[name="to"] { flex: 0 1 10rem; }
 .aprs-send input[name="text"] { flex: 1 1 16rem; }
+.aprs-send input.invalid { border-color: var(--bad-border); box-shadow: 0 0 0 2px var(--bad-bg); }
 .aprs-send .btn-primary { width: auto; flex: none; }
 
 /* ---- login ---- */

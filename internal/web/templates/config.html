@@ -27,140 +27,157 @@
   </div>
   {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
   {{if .Error}}{{template "flash-err" .Error}}{{end}}
+  <p class="page-info">{{tr .Lang "config.intro"}}</p>
 
-  <div class="config-grid">
+  <div class="config-sections">
 
-    <div class="config-block">
-      <form method="post" action="/config/offline" class="config-offline-form">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="offline" id="offline-state" value="{{if .Offline}}off{{else}}on{{end}}">
-        <label class="config-row" for="offline-switch">
-          <span class="config-row-title">{{tr .Lang "config.offline.head"}}</span>
-          <span class="badge {{if .Offline}}bad{{else}}ok{{end}}">{{if .Offline}}{{tr .Lang "config.offline.state.on"}}{{else}}{{tr .Lang "config.offline.state.off"}}{{end}}</span>
-          <span class="switch" role="switch" aria-checked="{{if .Offline}}true{{else}}false{{end}}" title="{{if .Offline}}{{tr .Lang "config.offline.disable"}}{{else}}{{tr .Lang "config.offline.enable"}}{{end}}">
-            <input type="checkbox" id="offline-switch"{{if .Offline}} checked{{end}} onchange="document.getElementById('offline-state').value=this.checked?'on':'off';this.form.submit()">
-            <span class="slider" aria-hidden="true"></span>
-          </span>
-        </label>
-      </form>
-    </div>
-
-    <div class="config-block">
-      <form method="post" action="/config/mesh" class="config-offline-form">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="channel" id="mesh-channel-state" value="{{if .MeshChannel}}off{{else}}on{{end}}">
-        <label class="config-row" for="mesh-channel-switch">
-          <span class="config-row-title">{{tr .Lang "config.mesh.channel.head"}}</span>
-          <span class="badge {{if .MeshChannel}}ok{{else}}bad{{end}}">{{if .MeshChannel}}{{tr .Lang "config.mesh.on"}}{{else}}{{tr .Lang "config.mesh.off"}}{{end}}</span>
-          <span class="switch" role="switch" aria-checked="{{if .MeshChannel}}true{{else}}false{{end}}" title="{{tr .Lang "config.mesh.channel.title"}}">
-            <input type="checkbox" id="mesh-channel-switch"{{if .MeshChannel}} checked{{end}} onchange="document.getElementById('mesh-channel-state').value=this.checked?'on':'off';this.form.submit()">
-            <span class="slider" aria-hidden="true"></span>
-          </span>
-        </label>
-      </form>
-    </div>
-
-    <div class="config-block">
-      <form method="post" action="/config/mesh" class="config-offline-form">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="dm" id="mesh-dm-state" value="{{if .MeshDM}}off{{else}}on{{end}}">
-        <label class="config-row" for="mesh-dm-switch">
-          <span class="config-row-title">{{tr .Lang "config.mesh.dm.head"}}</span>
-          <span class="badge {{if .MeshDM}}ok{{else}}bad{{end}}">{{if .MeshDM}}{{tr .Lang "config.mesh.on"}}{{else}}{{tr .Lang "config.mesh.off"}}{{end}}</span>
-          <span class="switch" role="switch" aria-checked="{{if .MeshDM}}true{{else}}false{{end}}" title="{{tr .Lang "config.mesh.dm.title"}}">
-            <input type="checkbox" id="mesh-dm-switch"{{if .MeshDM}} checked{{end}} onchange="document.getElementById('mesh-dm-state').value=this.checked?'on':'off';this.form.submit()">
-            <span class="slider" aria-hidden="true"></span>
-          </span>
-        </label>
-      </form>
-    </div>
-
-    <div class="config-block">
-      <form method="post" action="/config/lang" class="config-offline-form">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <label class="config-row">
-          <span class="config-row-title">{{tr .Lang "config.lang.head"}}</span>
-          <select name="lang" onchange="this.form.submit()">
-            <option value="" {{if eq .SystemLanguage ""}}selected{{end}}>{{tr .Lang "lang.system_default"}}</option>
-            {{range .Languages}}
-            <option value="{{.}}" {{if eq $.SystemLanguage .}}selected{{end}}>{{tr $.Lang (printf "lang.%s" .)}}</option>
-            {{end}}
-          </select>
-        </label>
-      </form>
-      <p class="config-hint">{{tr .Lang "config.lang.desc"}}</p>
-    </div>
-
-    <div class="config-block">
-      <form method="post" action="/config/tiles" class="config-offline-form">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="tiles" id="tiles-state" value="{{if .ForceLocalTiles}}off{{else}}on{{end}}">
-        <label class="config-row" for="tiles-switch">
-          <span class="config-row-title">{{tr .Lang "config.tiles.force"}}</span>
-          <span class="badge {{if .ForceLocalTiles}}ok{{else}}bad{{end}}">{{if .ForceLocalTiles}}{{tr .Lang "config.tiles.local"}}{{else}}{{tr .Lang "config.tiles.internet"}}{{end}}</span>
-          <span class="switch" role="switch" aria-checked="{{if .ForceLocalTiles}}true{{else}}false{{end}}" title="{{tr .Lang "config.tiles.force_hint"}}">
-            <input type="checkbox" id="tiles-switch"{{if .ForceLocalTiles}} checked{{end}} onchange="document.getElementById('tiles-state').value=this.checked?'on':'off';this.form.submit()">
-            <span class="slider" aria-hidden="true"></span>
-          </span>
-        </label>
-      </form>
-      <div class="config-row">
-        {{if .TilesDir}}<span class="badge {{if .TilesOK}}ok{{else}}warn{{end}}">{{if .TilesOK}}{{tr .Lang "config.tiles.ok"}}{{else}}{{tr .Lang "config.tiles.missing"}}{{end}}</span>
-        {{else}}<span class="badge muted">{{tr .Lang "config.tiles.none"}}</span>{{end}}
-      </div>
-      {{if .TilesDir}}<p class="config-hint"><code>{{.TilesDir}}</code></p>{{end}}
-    </div>
-
-    <div class="config-block">
-      <div class="config-row">
-        <span class="config-row-title">{{tr .Lang "config.sources.head"}}</span>
-        <span class="badge muted">{{len .InternetSources}}</span>
-      </div>
-      <div class="config-chips">
-        {{range .InternetSources}}<span class="config-chip"><strong>{{.ID}}</strong> <span class="muted">{{.Type}}</span></span>
-        {{else}}<span class="config-hint">{{tr $.Lang "config.sources.none"}}</span>{{end}}
-      </div>
-    </div>
-
-    <div class="config-block">
-      <div class="config-row">
-        <span class="config-row-title">{{tr .Lang "config.mqtt.head"}}</span>
-        <button type="submit" form="config-mqtt-form" class="btn-primary">{{tr .Lang "config.mqtt.save"}}</button>
-      </div>
-      <form method="post" action="/config/mqtt" id="config-mqtt-form" class="config-mqtt-form">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        {{range .MqttRows}}
-        <label class="config-mqtt-row"><input type="checkbox" name="cat" value="{{.Key}}"{{if .Checked}} checked{{end}}><span>{{tr $.Lang (printf "config.mqtt.%s" .Key)}}</span></label>
-        {{end}}
-      </form>
-    </div>
-
-    <div class="config-block config-block-wide">
-      <div class="config-row">
-        <span class="config-row-title">{{tr .Lang "config.emcom.head"}}</span>
-      </div>
-      {{range .EmcomNetworks}}
-      <div class="config-row">
-        <span class="config-row-title">{{.Name}}</span>
-        <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
-          <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
-        </span>
-        <form method="post" action="/config/emcom/{{.Slug}}/delete" class="inline-form" data-emcom-config-delete data-name="{{.Name}}">
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
-          <button type="submit" class="btn-danger btn-small">{{tr $.Lang "emcom.delete"}}</button>
+    <section class="config-sec" id="cfg-internet">
+      <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-cloud-sun"></use></svg>{{tr .Lang "config.sec.internet"}}</h3>
+      <div class="config-block">
+        <form method="post" action="/config/offline" class="config-offline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="offline" id="offline-state" value="{{if .Offline}}off{{else}}on{{end}}">
+          <label class="config-row" for="offline-switch">
+            <span class="config-row-title">{{tr .Lang "config.offline.head"}}</span>
+            <span class="badge {{if .Offline}}bad{{else}}ok{{end}}">{{if .Offline}}{{tr .Lang "config.offline.state.on"}}{{else}}{{tr .Lang "config.offline.state.off"}}{{end}}</span>
+            <span class="switch" role="switch" aria-checked="{{if .Offline}}true{{else}}false{{end}}" title="{{if .Offline}}{{tr .Lang "config.offline.disable"}}{{else}}{{tr .Lang "config.offline.enable"}}{{end}}">
+              <input type="checkbox" id="offline-switch"{{if .Offline}} checked{{end}} onchange="document.getElementById('offline-state').value=this.checked?'on':'off';this.form.submit()">
+              <span class="slider" aria-hidden="true"></span>
+            </span>
+          </label>
         </form>
+        <p class="config-hint">{{tr .Lang "config.offline.desc"}}</p>
       </div>
-      {{else}}
-      <p class="config-hint">{{tr .Lang "config.emcom.none"}}</p>
-      {{end}}
-      <form method="post" action="/config/emcom/add" class="emcom-add">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <div class="emcom-add-row">
-          <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="{{tr .Lang "emcom.add_placeholder"}}" required>
-          <button type="submit" class="btn-primary">{{tr .Lang "emcom.add_btn"}}</button>
+      <div class="config-block">
+        <div class="config-row">
+          <span class="config-row-title">{{tr .Lang "config.sources.head"}}</span>
+          <span class="badge muted">{{len .InternetSources}}</span>
         </div>
-      </form>
-    </div>
+        <div class="config-chips">
+          {{range .InternetSources}}<span class="config-chip"><strong>{{.ID}}</strong> <span class="muted">{{.Type}}</span></span>
+          {{else}}<span class="config-hint">{{tr $.Lang "config.sources.none"}}</span>{{end}}
+        </div>
+        <p class="config-hint">{{tr .Lang "config.sources.desc"}}</p>
+      </div>
+    </section>
+
+    <section class="config-sec" id="cfg-map">
+      <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "config.sec.map"}}</h3>
+      <div class="config-block">
+        <form method="post" action="/config/tiles" class="config-offline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="tiles" id="tiles-state" value="{{if .ForceLocalTiles}}off{{else}}on{{end}}">
+          <label class="config-row" for="tiles-switch">
+            <span class="config-row-title">{{tr .Lang "config.tiles.force"}}</span>
+            <span class="badge {{if .ForceLocalTiles}}ok{{else}}bad{{end}}">{{if .ForceLocalTiles}}{{tr .Lang "config.tiles.local"}}{{else}}{{tr .Lang "config.tiles.internet"}}{{end}}</span>
+            <span class="switch" role="switch" aria-checked="{{if .ForceLocalTiles}}true{{else}}false{{end}}" title="{{tr .Lang "config.tiles.force_hint"}}">
+              <input type="checkbox" id="tiles-switch"{{if .ForceLocalTiles}} checked{{end}} onchange="document.getElementById('tiles-state').value=this.checked?'on':'off';this.form.submit()">
+              <span class="slider" aria-hidden="true"></span>
+            </span>
+          </label>
+        </form>
+        <div class="config-row">
+          {{if .TilesDir}}<span class="badge {{if .TilesOK}}ok{{else}}warn{{end}}">{{if .TilesOK}}{{tr .Lang "config.tiles.ok"}}{{else}}{{tr .Lang "config.tiles.missing"}}{{end}}</span>
+          {{else}}<span class="badge muted">{{tr .Lang "config.tiles.none"}}</span>{{end}}
+        </div>
+        {{if .TilesDir}}<p class="config-hint"><code>{{.TilesDir}}</code></p>{{end}}
+        <p class="config-hint">{{tr .Lang "config.tiles.desc"}}</p>
+      </div>
+    </section>
+
+    <section class="config-sec" id="cfg-meshtastic">
+      <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "config.sec.meshtastic"}}</h3>
+      <div class="config-block">
+        <form method="post" action="/config/mesh" class="config-offline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="channel" id="mesh-channel-state" value="{{if .MeshChannel}}off{{else}}on{{end}}">
+          <label class="config-row" for="mesh-channel-switch">
+            <span class="config-row-title">{{tr .Lang "config.mesh.channel.head"}}</span>
+            <span class="badge {{if .MeshChannel}}ok{{else}}bad{{end}}">{{if .MeshChannel}}{{tr .Lang "config.mesh.on"}}{{else}}{{tr .Lang "config.mesh.off"}}{{end}}</span>
+            <span class="switch" role="switch" aria-checked="{{if .MeshChannel}}true{{else}}false{{end}}" title="{{tr .Lang "config.mesh.channel.title"}}">
+              <input type="checkbox" id="mesh-channel-switch"{{if .MeshChannel}} checked{{end}} onchange="document.getElementById('mesh-channel-state').value=this.checked?'on':'off';this.form.submit()">
+              <span class="slider" aria-hidden="true"></span>
+            </span>
+          </label>
+        </form>
+        <p class="config-hint">{{tr .Lang "config.mesh.channel.title"}}</p>
+      </div>
+      <div class="config-block">
+        <form method="post" action="/config/mesh" class="config-offline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="dm" id="mesh-dm-state" value="{{if .MeshDM}}off{{else}}on{{end}}">
+          <label class="config-row" for="mesh-dm-switch">
+            <span class="config-row-title">{{tr .Lang "config.mesh.dm.head"}}</span>
+            <span class="badge {{if .MeshDM}}ok{{else}}bad{{end}}">{{if .MeshDM}}{{tr .Lang "config.mesh.on"}}{{else}}{{tr .Lang "config.mesh.off"}}{{end}}</span>
+            <span class="switch" role="switch" aria-checked="{{if .MeshDM}}true{{else}}false{{end}}" title="{{tr .Lang "config.mesh.dm.title"}}">
+              <input type="checkbox" id="mesh-dm-switch"{{if .MeshDM}} checked{{end}} onchange="document.getElementById('mesh-dm-state').value=this.checked?'on':'off';this.form.submit()">
+              <span class="slider" aria-hidden="true"></span>
+            </span>
+          </label>
+        </form>
+        <p class="config-hint">{{tr .Lang "config.mesh.dm.title"}}</p>
+      </div>
+    </section>
+
+    <section class="config-sec" id="cfg-mqtt">
+      <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr .Lang "config.sec.mqtt"}}</h3>
+      <div class="config-block">
+        <div class="config-row">
+          <span class="config-row-title">{{tr .Lang "config.mqtt.head"}}</span>
+          <button type="submit" form="config-mqtt-form" class="btn-primary">{{tr .Lang "config.mqtt.save"}}</button>
+        </div>
+        <form method="post" action="/config/mqtt" id="config-mqtt-form" class="config-mqtt-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          {{range .MqttRows}}
+          <label class="config-mqtt-row"><input type="checkbox" name="cat" value="{{.Key}}"{{if .Checked}} checked{{end}}><span>{{tr $.Lang (printf "config.mqtt.%s" .Key)}}</span></label>
+          {{end}}
+        </form>
+        <p class="config-hint">{{tr .Lang "config.mqtt.desc"}}</p>
+      </div>
+    </section>
+
+    <section class="config-sec" id="cfg-emcom">
+      <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-megaphone"></use></svg>{{tr .Lang "config.sec.emcom"}}</h3>
+      <div class="config-block">
+        {{range .EmcomNetworks}}
+        <div class="config-row">
+          <span class="config-row-title">{{.Name}}</span>
+          <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
+            <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
+          </span>
+          <form method="post" action="/config/emcom/{{.Slug}}/delete" class="inline-form" data-emcom-config-delete data-name="{{.Name}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <button type="submit" class="btn-danger btn-small">{{tr $.Lang "emcom.delete"}}</button>
+          </form>
+        </div>
+        {{else}}
+        <p class="config-hint">{{tr .Lang "config.emcom.none"}}</p>
+        {{end}}
+        <form method="post" action="/config/emcom/add" class="emcom-add">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <div class="emcom-add-row">
+            <input type="text" id="emcom-name" name="name" maxlength="64" placeholder="{{tr .Lang "emcom.add_placeholder"}}" required>
+            <button type="submit" class="btn-primary">{{tr .Lang "emcom.add_btn"}}</button>
+          </div>
+        </form>
+        <p class="config-hint">{{tr .Lang "config.emcom.desc"}}</p>
+      </div>
+      <div class="config-block">
+        <form method="post" action="/config/lang" class="config-offline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <label class="config-row">
+            <span class="config-row-title">{{tr .Lang "config.lang.head"}}</span>
+            <select name="lang" onchange="this.form.submit()">
+              <option value="" {{if eq .SystemLanguage ""}}selected{{end}}>{{tr .Lang "lang.system_default"}}</option>
+              {{range .Languages}}
+              <option value="{{.}}" {{if eq $.SystemLanguage .}}selected{{end}}>{{tr $.Lang (printf "lang.%s" .)}}</option>
+              {{end}}
+            </select>
+          </label>
+        </form>
+        <p class="config-hint">{{tr .Lang "config.lang.desc"}}</p>
+      </div>
+    </section>
 
   </div>
 </section>

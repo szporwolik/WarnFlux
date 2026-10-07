@@ -82,9 +82,51 @@
       return r;
     }
 
+    // A small custom tooltip: the native SVG <title> hover is easy to
+    // miss on thin bars, so the real values get an explicit bubble that
+    // follows the pointer (and appears on touch, where hover does not
+    // exist at all).
+    function tip() {
+      var el = document.getElementById("visits-tip");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "visits-tip";
+        el.className = "visits-tip";
+        el.setAttribute("role", "status");
+        document.body.appendChild(el);
+      }
+      return el;
+    }
+    function showTip(ev, text) {
+      var el = tip();
+      el.textContent = text;
+      el.hidden = false;
+      moveTip(ev);
+    }
+    function moveTip(ev) {
+      var el = tip();
+      if (el.hidden) { return; }
+      var x = ev.clientX || 0, y = ev.clientY || 0;
+      var w = el.offsetWidth, h = el.offsetHeight;
+      if (x + w + 16 > window.innerWidth) { x = Math.max(8, window.innerWidth - w - 16); } else { x += 14; }
+      if (y + h + 24 > window.innerHeight) { y = y - h - 12; } else { y += 16; }
+      el.style.left = x + "px";
+      el.style.top = y + "px";
+    }
+    function hideTip() {
+      var el = document.getElementById("visits-tip");
+      if (el) { el.hidden = true; }
+    }
+    window.addEventListener("scroll", hideTip, { passive: true });
+
+    function bucketTip(r, nv, rv) {
+      return r.label + " — " + LBL_NEW + ": " + nv + " · " + LBL_RET + ": " + rv;
+    }
+
     // A tiny dependency-free bar chart: two bars per bucket (new in
     // purple, returning in gray), scaled to the busiest bucket. rows
-    // carry {label, n, v}, oldest first.
+    // carry {label, n, v}, oldest first. Each bucket is a group with
+    // one tooltip for BOTH bars.
     function chart(svg, rows) {
       svg.textContent = "";
       var W = 640, H = 180, padB = 18, padT = 6;
@@ -101,8 +143,15 @@
         var hn = (r.n || 0) / max * (H - padB - padT);
         var hr = (r.v || 0) / max * (H - padB - padT);
         var y = H - padB;
-        svg.appendChild(rect(x, y - hn, barW, hn, "var(--brand, #8e24aa)", r.n || 0));
-        svg.appendChild(rect(x + barW + 3, y - hr, barW, hr, "#78909c", r.v || 0));
+        var g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        g.appendChild(rect(x, y - hn, barW, hn, "var(--brand, #8e24aa)", r.n || 0));
+        g.appendChild(rect(x + barW + 3, y - hr, barW, hr, "#78909c", r.v || 0));
+        var text = bucketTip(r, r.n || 0, r.v || 0);
+        g.addEventListener("mouseenter", function (ev) { showTip(ev, text); });
+        g.addEventListener("mousemove", moveTip);
+        g.addEventListener("mouseleave", hideTip);
+        g.addEventListener("touchstart", function (ev) { showTip(ev, text); ev.preventDefault(); });
+        svg.appendChild(g);
         if (n <= 8 || i % labelStep === 0) {
           var t = document.createElementNS("http://www.w3.org/2000/svg", "text");
           t.setAttribute("x", x);

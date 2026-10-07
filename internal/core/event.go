@@ -3,12 +3,12 @@
 package core
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/severity"
@@ -98,21 +98,59 @@ func (e HazardEvent) Key() string {
 	return EventKey(e.Source, e.SourceID)
 }
 
-// MessageID derives the short, human-usable identifier of one hazard from
-// its stable event key. It is a pure function of the key, so one message
-// keeps the same ID across restarts, broker round-trips, content updates
-// and independent instances — operators cite it on the radio, in mails,
-// on Discord and in the web UI to refer to one specific communication.
-// The result is a fixed 11 characters ("WX-" + 8 base32hex digits).
+// MessageID derives the short, human-usable identifier of one hazard.
+// The format is READABLE: "WX-" followed by DDHHMMNN — day of month,
+// hour and minute in 24-hour form, and a per-minute sequence (01-99)
+// assigned in generation order. Operators cite it on the radio, in
+// mails, on Discord and in the web UI to refer to one specific
+// communication.
+//
+// The id is cached per event key, so one message keeps the same id
+// across renders, channels and repeated sends within the process. A
+// fresh process assigns fresh ids to old events (operators cite the id
+// of the moment). The result is a fixed 11 characters.
 func MessageID(eventKey string) string {
-	sum := sha256.Sum256([]byte(eventKey))
-	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUV" // base32hex, no padding
-	var out [8]byte
-	for i := range out {
-		out[i] = alphabet[sum[i]&0x1f]
-	}
-	return "WX-" + string(out[:])
+	return MessageIDAt(eventKey, time.Now())
 }
+
+// MessageIDAt is the clock-injectable form of MessageID: it pins the
+// generation time (tests use it) while sharing the same per-key cache.
+func MessageIDAt(eventKey string, now time.Time) string {
+	msgIDMu.Lock()
+	defer msgIDMu.Unlock()
+	if id, ok := msgIDByKey[eventKey]; ok {
+		return id
+	}
+	if len(msgIDByKey) >= msgIDCacheCap {
+		clear(msgIDByKey)
+	}
+	minute := now.Format("20060102-1504")
+	if minute != msgIDMinute {
+		msgIDMinute = minute
+		msgIDSeq = 1
+	} else if msgIDSeq < 99 {
+		msgIDSeq++
+	}
+	// Beyond 99 messages per minute the sequence stays at 99 instead of
+	// widening the identifier.
+	id := fmt.Sprintf("WX-%02d%02d%02d%02d", now.Day(), now.Hour(), now.Minute(), msgIDSeq)
+	msgIDByKey[eventKey] = id
+	return id
+}
+
+// Message-id generation state: the cache makes ids stable per event key
+// within one process; the minute marker plus sequence yield the readable
+// DDHHMMNN suffix.
+var (
+	msgIDMu     sync.Mutex
+	msgIDByKey  = make(map[string]string)
+	msgIDMinute string
+	msgIDSeq    int
+)
+
+// msgIDCacheCap bounds the per-key id cache; beyond it the cache resets
+// and older events receive fresh ids on their next render.
+const msgIDCacheCap = 4096
 
 // ValidateSource checks a canonical source name. Callers should normalize
 // (lowercase + trim) before validating.

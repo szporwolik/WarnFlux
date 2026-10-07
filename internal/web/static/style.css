@@ -936,6 +936,13 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .mesh-send input[name="text"] { flex: 1 1 16rem; }
 .mesh-send .btn-primary { width: auto; flex: none; }
+/* Bell toggle next to each send button: prefixes the 🔔 alert symbol.
+   The active state mirrors the send-form highlight ring. */
+.mesh-bell { font-size: 0.95rem; line-height: 1; padding: 0.4rem 0.65rem; }
+.mesh-bell.mesh-bell-on {
+  box-shadow: 0 0 0 2px var(--accent);
+  background: var(--accent-soft, var(--surface-hi));
+}
 .aprs-send {
   display: flex;
   flex-wrap: wrap;

@@ -4592,12 +4592,14 @@ func TestAPRSBulletinBadge(t *testing.T) {
 
 // TestAPRSAckStatusBadge pins the delivery-status badge: a tx row shows
 // delivered (with its msg id) once the addressee acked it, failed on a
-// rej, and the neutral sent badge while unanswered.
+// rej, unacknowledged when the ack wait timed out, and the neutral sent
+// badge while unanswered.
 func TestAPRSAckStatusBadge(t *testing.T) {
 	now := time.Now()
 	store := &fakeAPRSMsgs{rows: []storage.APRSMessage{
 		{Direction: "tx", From: "SP9MOA-10", To: "SP9XYZ-7", Text: "pogoda", MsgID: "00123", Status: "delivered", Via: "aprs-radio", At: now},
 		{Direction: "tx", From: "SP9MOA-10", To: "SP9XYZ-7", Text: "alert", MsgID: "00124", Status: "failed", Via: "aprs-radio", At: now},
+		{Direction: "tx", From: "SP9MOA-10", To: "SP9XYZ-7", Text: "cisza", MsgID: "00126", Status: "no_ack", Via: "aprs-radio", At: now},
 		{Direction: "tx", From: "SP9MOA-10", To: "SP9XYZ-7", Text: "info", MsgID: "00125", Via: "aprs-radio", At: now},
 	}}
 	env := newTestEnvAll(t, nil, nil, nil, nil, store, nil)
@@ -4612,6 +4614,9 @@ func TestAPRSAckStatusBadge(t *testing.T) {
 	}
 	if !strings.Contains(body, "failed") {
 		t.Errorf("partial missing failed badge: %.400s", body)
+	}
+	if !strings.Contains(body, "unacknowledged") {
+		t.Errorf("partial missing no_ack badge: %.400s", body)
 	}
 	if !strings.Contains(body, "sent") {
 		t.Errorf("partial missing sent badge: %.400s", body)

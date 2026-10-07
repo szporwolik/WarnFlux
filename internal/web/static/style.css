@@ -488,6 +488,9 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
 
 /* ---- buttons ---- */
 .btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   background: var(--btn-secondary-bg);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
@@ -496,6 +499,8 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
   font-weight: 500;
   cursor: pointer;
   color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
 }
 .btn-ghost:hover { background: var(--btn-secondary-hover); border-color: var(--text-muted); }
 

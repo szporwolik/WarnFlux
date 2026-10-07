@@ -117,6 +117,21 @@
         </form>
         <p class="config-hint">{{tr .Lang "config.mesh.dm.title"}}</p>
       </div>
+      <div class="config-block">
+        <form method="post" action="/config/mesh" class="config-offline-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="stations" id="mesh-stations-state" value="{{if .MeshStations}}off{{else}}on{{end}}">
+          <label class="config-row" for="mesh-stations-switch">
+            <span class="config-row-title">{{tr .Lang "config.mesh.stations.head"}}</span>
+            <span class="badge {{if .MeshStations}}ok{{else}}bad{{end}}">{{if .MeshStations}}{{tr .Lang "config.mesh.on"}}{{else}}{{tr .Lang "config.mesh.off"}}{{end}}</span>
+            <span class="switch" role="switch" aria-checked="{{if .MeshStations}}true{{else}}false{{end}}" title="{{tr .Lang "config.mesh.stations.title"}}">
+              <input type="checkbox" id="mesh-stations-switch"{{if .MeshStations}} checked{{end}} onchange="document.getElementById('mesh-stations-state').value=this.checked?'on':'off';this.form.submit()">
+              <span class="slider" aria-hidden="true"></span>
+            </span>
+          </label>
+        </form>
+        <p class="config-hint">{{tr .Lang "config.mesh.stations.title"}}</p>
+      </div>
     </section>
 
     <section class="config-sec" id="cfg-mqtt">

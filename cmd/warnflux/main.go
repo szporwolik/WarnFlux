@@ -1058,11 +1058,15 @@ func run(configPath string, checkConfig bool) error {
 	// the meshtastic group channel (the emcom channel — only when one
 	// is configured). The watcher starts with a silent baseline and
 	// announces transitions afterwards, debounced against edge
-	// flapping.
+	// flapping. The Config-page "APRS station announcements" switch
+	// mutes the transmission without stopping the watcher.
 	if hub != nil && meshtasticHub.Enabled() && cfg.Meshtastic.EmcomChannel > 0 {
 		presence := aprspresence.New(aprspresence.Options{
 			Channel: cfg.Meshtastic.EmcomChannel,
 			Send: func(ctx context.Context, text string) error {
+				if !meshtastic.StationAlerts() {
+					return nil
+				}
 				return meshtasticHub.SendChannelText(ctx, cfg.Meshtastic.EmcomChannel, text, "system")
 			},
 			Stations: hub.Stations,

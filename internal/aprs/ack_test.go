@@ -88,6 +88,127 @@ func TestSendMessageWaitAckTimeout(t *testing.T) {
 	}
 }
 
+// TestSendMessageWaitAckTimeoutMarksNoAck pins the durable trace of an
+// unanswered send: when the ack wait elapses, the tx history row is
+// marked no_ack so the admin menu shows the message went unconfirmed.
+func TestSendMessageWaitAckTimeoutMarksNoAck(t *testing.T) {
+	rec := &fakeAPRSRecorder{}
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+
+		MessageRecorder: rec,
+	})
+	hub.AddTransmitter("radio", &fakeTransmitter{name: "radio", ready: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	ack, err := hub.SendMessageWaitAck(context.Background(), "SP9XYZ-7", "hello", 100*time.Millisecond)
+	if ack || !errors.Is(err, ErrNoAck) {
+		t.Fatalf("timeout wait = %v, %v; want ErrNoAck", ack, err)
+	}
+	if got := rec.statusFor(rec.txMsgID(0)); got != "no_ack" {
+		t.Fatalf("history status after timeout = %q, want no_ack", got)
+	}
+}
+
+// TestSendMessageWaitAckLateAckUpgradesHistory pins the durable binding:
+// an ack heard AFTER the wait window still marks the tx row delivered.
+func TestSendMessageWaitAckLateAckUpgradesHistory(t *testing.T) {
+	rec := &fakeAPRSRecorder{}
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+
+		MessageRecorder: rec,
+	})
+	hub.AddTransmitter("radio", &fakeTransmitter{name: "radio", ready: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	if _, err := hub.SendMessageWaitAck(context.Background(), "SP9XYZ-7", "hello", 100*time.Millisecond); !errors.Is(err, ErrNoAck) {
+		t.Fatalf("wait = %v, want ErrNoAck", err)
+	}
+	// A late ack from the addressee upgrades the row.
+	hub.Observe(testPacket("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:ack00001"), BackendRadio)
+	waitFor(t, func() bool { return rec.statusFor("00001") == "delivered" })
+
+	// A late REJ flips the row to failed.
+	if _, err := hub.SendMessageWaitAck(context.Background(), "SP9WSS-2", "hello", 100*time.Millisecond); !errors.Is(err, ErrNoAck) {
+		t.Fatalf("wait = %v, want ErrNoAck", err)
+	}
+	hub.Observe(testPacket("SP9WSS-2>APRS::SP9MOA-10:rej00002"), "aprs-radio")
+	waitFor(t, func() bool { return rec.statusFor("00002") == "failed" })
+}
+
+// TestLateForeignAckNeverUpgradesHistory pins the durable binding of the
+// late path: an ack from an unrelated station (even with the right id)
+// must not touch the row.
+func TestLateForeignAckNeverUpgradesHistory(t *testing.T) {
+	rec := &fakeAPRSRecorder{}
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+
+		MessageRecorder: rec,
+	})
+	hub.AddTransmitter("radio", &fakeTransmitter{name: "radio", ready: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	if _, err := hub.SendMessageWaitAck(context.Background(), "SP9XYZ-7", "hello", 100*time.Millisecond); !errors.Is(err, ErrNoAck) {
+		t.Fatalf("wait = %v, want ErrNoAck", err)
+	}
+	hub.Observe(testPacket("SP9QQQ-9>APRS,WIDE1-1*::SP9MOA-10:ack00001"), BackendRadio)
+	// The foreign ack still gets recorded as an rx row; only the status
+	// must stay untouched.
+	waitFor(t, func() bool {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		return len(rec.rows) >= 2
+	})
+	if got := rec.statusFor("00001"); got != "no_ack" {
+		t.Fatalf("foreign late ack changed history status to %q, want no_ack", got)
+	}
+}
+
+// TestAckAfterRestartMarksHistory pins the restart case: no in-memory
+// waiter exists at all (the service restarted after the send), yet the
+// ack still lands on the durable row via the addressee binding.
+func TestAckAfterRestartMarksHistory(t *testing.T) {
+	rec := &fakeAPRSRecorder{}
+	if err := rec.RecordAPRSMessage(context.Background(), "tx", "SP9MOA-10", "SP9XYZ-7", "hello", "00042", "aprs-radio", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	hub, _ := testHub(t, HubConfig{
+		Enabled:    true,
+		Callsign:   "SP9MOA-10",
+		GridSquare: "JO90WW",
+		RadiusKM:   DefaultRadiusKM,
+		StationTTL: 30 * time.Minute,
+
+		MessageRecorder: rec,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hub.Start(ctx)
+	defer cancel()
+
+	hub.Observe(testPacket("SP9XYZ-7>APRS,WIDE1-1*::SP9MOA-10:ack00042"), BackendRadio)
+	waitFor(t, func() bool { return rec.statusFor("00042") == "delivered" })
+}
+
 func TestSendMessageWaitAckReject(t *testing.T) {
 	hub, _ := testHub(t, HubConfig{
 		Enabled:    true,

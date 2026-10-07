@@ -4535,6 +4535,15 @@ func (f *fakeAPRSMsgs) UpdateAPRSMessageStatus(_ context.Context, msgID, status 
 	return nil
 }
 
+func (f *fakeAPRSMsgs) APRSMessageAddressee(_ context.Context, msgID string) (string, bool, error) {
+	for _, m := range f.rows {
+		if m.Direction == "tx" && m.MsgID == msgID {
+			return m.To, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 func (f *fakeAPRSMsgs) ListAPRSMessages(_ context.Context, direction string, limit, offset int) ([]storage.APRSMessage, error) {
 	var out []storage.APRSMessage
 	for _, m := range f.rows {

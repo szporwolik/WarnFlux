@@ -1484,31 +1484,77 @@ func ackKind(text string) string {
 // confirm someone else's exchange (or a recycled id). The matching
 // durable tx row is marked delivered (ack) or failed (rej) — this is
 // how the admin history shows which messages got acknowledged.
+//
+// When the in-memory wait is already gone (the 15 s window elapsed or
+// the service restarted in between) the ack is bound through the
+// durable history instead: the frame must be addressed to our callsign
+// and the tx row must belong to the acknowledging station, so a late
+// ack still upgrades the history row without ever matching someone
+// else's exchange.
 func (h *Hub) signalAck(p Packet, kind string) {
 	h.mu.Lock()
 	w, ok := h.pending[p.Message.ID]
-	if !ok || w.to != p.Src || w.from != p.Message.To {
+	if ok {
+		if w.to != p.Src || w.from != p.Message.To {
+			h.mu.Unlock()
+			return
+		}
+		delete(h.pending, p.Message.ID)
+		ch := w.ch
 		h.mu.Unlock()
+		status := "delivered"
+		if kind == "rej" {
+			status = "failed"
+		}
+		h.recordMessageStatus(p.Message.ID, status)
+		select {
+		case ch <- kind:
+		default:
+		}
 		return
 	}
-	delete(h.pending, p.Message.ID)
-	ch := w.ch
+	h.mu.Unlock()
+
+	// Late ack: bind through the durable history.
+	if NormalizeCallsign(p.Message.To) != NormalizeCallsign(h.cfg.Callsign) {
+		return
+	}
 	status := "delivered"
 	if kind == "rej" {
 		status = "failed"
 	}
-	if recorder := h.cfg.MessageRecorder; recorder != nil {
-		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := recorder.UpdateAPRSMessageStatus(recCtx, p.Message.ID, status, h.now())
-		cancel()
-		if err != nil && h.logger != nil {
-			h.logger.Debug("aprs: ack history update failed", "id", p.Message.ID, "status", status, "error", err)
-		}
+	recorder := h.cfg.MessageRecorder
+	if recorder == nil {
+		return
 	}
-	h.mu.Unlock()
-	select {
-	case ch <- kind:
-	default:
+	recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	to, found, err := recorder.APRSMessageAddressee(recCtx, p.Message.ID)
+	cancel()
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Debug("aprs: ack history lookup failed", "id", p.Message.ID, "error", err)
+		}
+		return
+	}
+	if !found || NormalizeCallsign(to) != NormalizeCallsign(p.Src) {
+		return
+	}
+	h.recordMessageStatus(p.Message.ID, status)
+}
+
+// recordMessageStatus persists an outbound delivery outcome on the
+// durable history; failures are logged and ignored (recording is
+// best-effort).
+func (h *Hub) recordMessageStatus(msgID, status string) {
+	recorder := h.cfg.MessageRecorder
+	if recorder == nil {
+		return
+	}
+	recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := recorder.UpdateAPRSMessageStatus(recCtx, msgID, status, h.now())
+	cancel()
+	if err != nil && h.logger != nil {
+		h.logger.Debug("aprs: ack history update failed", "id", msgID, "status", status, "error", err)
 	}
 }
 
@@ -1597,6 +1643,10 @@ func (h *Hub) SendMessageWaitAck(ctx context.Context, to, text string, timeout t
 	case <-ctx.Done():
 		return false, ctx.Err()
 	case <-timer.C:
+		// No ack heard in time: the durable history keeps a trace of
+		// the unanswered send. A late ack still upgrades the row via
+		// the durable binding in signalAck.
+		h.recordMessageStatus(msgid, "no_ack")
 		return false, ErrNoAck
 	}
 }

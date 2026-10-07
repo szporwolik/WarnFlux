@@ -888,6 +888,17 @@ func (f *fakeAPRSRecorder) UpdateAPRSMessageStatus(_ context.Context, msgID, sta
 	return nil
 }
 
+func (f *fakeAPRSRecorder) APRSMessageAddressee(_ context.Context, msgID string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.rows {
+		if r.direction == "tx" && r.msgID == msgID {
+			return r.to, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 func (f *fakeAPRSRecorder) statusFor(msgID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -32,6 +32,11 @@ type APRSMessage struct {
 type APRSMessageStore interface {
 	RecordAPRSMessage(ctx context.Context, direction, from, to, text, msgID, via string, at time.Time) error
 	UpdateAPRSMessageStatus(ctx context.Context, msgID, status string, at time.Time) error
+	// APRSMessageAddressee returns the addressee callsign of the tx row
+	// carrying msgID (ok=false when no such row exists). The hub uses it
+	// to bind late acks — heard after the in-memory wait is gone — to
+	// their exchange before applying the delivery status.
+	APRSMessageAddressee(ctx context.Context, msgID string) (string, bool, error)
 	ListAPRSMessages(ctx context.Context, direction string, limit, offset int) ([]APRSMessage, error)
 	CountAPRSMessages(ctx context.Context, direction string) (int, error)
 }

@@ -2386,7 +2386,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
   color: var(--text);
   font: inherit;
 }
-.hw-report:disabled { cursor: default; }
+.hw-report:disabled { cursor: default; opacity: 0.55; }
 /* Every positioned report card is clickable (centers the map + opens the
    pin popup): pointer cursor and a hover highlight; inert cards stay
    muted. */

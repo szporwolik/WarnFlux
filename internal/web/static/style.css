@@ -638,6 +638,19 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
 }
 .visits-chart-wrap svg { display: block; width: 100%; height: auto; }
 .visits-chart-label { font-size: 9px; fill: var(--muted); }
+.visits-tip {
+  position: fixed;
+  z-index: 12000;
+  pointer-events: none;
+  background: var(--surface-hi, #1f2937);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  max-width: 18rem;
+}
 /* The Website page stacks the three time windows side by side. */
 .visits-charts {
   display: grid;

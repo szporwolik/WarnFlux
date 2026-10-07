@@ -2225,6 +2225,14 @@
       el.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     if (!m._map && m._wfGroup) {
+      // A card click must always show its pin: when the pin's whole
+      // layer is toggled off (aircraft starts hidden), turn the layer
+      // back on and mark its toggle button active.
+      if (!map.hasLayer(m._wfGroup) && layerToBtn[m._wfGroup]) {
+        map.addLayer(m._wfGroup);
+        layerToBtn[m._wfGroup].classList.add("active");
+        layerToBtn[m._wfGroup].setAttribute("aria-pressed", "true");
+      }
       m.addTo(m._wfGroup);
     }
     map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 13), { duration: 0.7 });
@@ -2828,6 +2836,20 @@
     ["airquality", tr("map.layer.airquality"), function () { return aqLayer; }],
     ["aircraft", tr("map.layer.aircraft"), function () { return aircraftLayer; }]
   ];
+  // Side-effect-free layer lookups: used to resolve a layer's toggle
+  // button without flipping switches (the radar def[2] toggles state).
+  var LAYER_GETTERS = {
+    hazards: function () { return hazardLayer; },
+    stations: function () { return stationLayer; },
+    meshtastic: function () { return meshLayer; },
+    weather: function () { return weatherLayer; },
+    radar: function () { return radarLayer; },
+    airquality: function () { return aqLayer; },
+    aircraft: function () { return aircraftLayer; }
+  };
+  // Layer object -> its toggle button, so focusMarker can switch a
+  // hidden layer back on when a card asks for one of its pins.
+  var layerToBtn = {};
 
   function addMapControls(map) {
     var c = L.control({ position: "topright" });
@@ -2854,6 +2876,8 @@
         }
         btn.style.setProperty("--wf-mc-hue", MAP_CTRL_COLORS[def[0]]);
         btn.setAttribute("aria-pressed", String(on));
+        var layer0 = LAYER_GETTERS[def[0]]();
+        if (layer0) { layerToBtn[layer0] = btn; }
         L.DomEvent.on(btn, "click", function () {
           var layer = def[2]();
           var nowOn = btn.classList.toggle("active");

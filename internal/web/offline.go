@@ -71,6 +71,9 @@ type configView struct {
 	// MeshDM is the runtime switch for hazard direct messages to users'
 	// registered node IDs.
 	MeshDM bool
+	// MeshStations is the runtime switch for APRS station announcements
+	// on the Meshtastic group channel.
+	MeshStations bool
 	// ForceLocalTiles forces every map onto the local tile tree even
 	// while the station is online.
 	ForceLocalTiles bool
@@ -179,6 +182,7 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		EmcomNetworks:   s.emcomNetworkViews(lang),
 		MeshChannel:     meshtastic.ChannelAlerts(),
 		MeshDM:          meshtastic.DMAlerts(),
+		MeshStations:    meshtastic.StationAlerts(),
 		ForceLocalTiles: s.forceTiles.Load(),
 		SystemLanguage:  s.SystemLanguage(),
 		Languages:       i18n.Codes(),
@@ -279,9 +283,9 @@ func (s *Server) handleConfigTiles(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/config?msg=tiles", http.StatusSeeOther)
 }
 
-// handleConfigMesh flips the two Meshtastic announcement switches: the
-// group-channel broadcast and the direct messages to registered node IDs
-// are muted independently. Admin-only.
+// handleConfigMesh flips the three Meshtastic announcement switches: the
+// group-channel broadcast, the direct messages to registered node IDs and
+// the APRS station range announcements are muted independently. Admin-only.
 func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
@@ -293,7 +297,8 @@ func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 	}
 	channel := strings.TrimSpace(r.PostFormValue("channel"))
 	dm := strings.TrimSpace(r.PostFormValue("dm"))
-	if channel == "" && dm == "" {
+	stations := strings.TrimSpace(r.PostFormValue("stations"))
+	if channel == "" && dm == "" && stations == "" {
 		http.Error(w, "missing switch value", http.StatusBadRequest)
 		return
 	}
@@ -310,15 +315,18 @@ func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 		}
 		return true
 	}
-	if !apply(channel, meshtastic.SetChannelAlerts) || !apply(dm, meshtastic.SetDMAlerts) {
+	if !apply(channel, meshtastic.SetChannelAlerts) ||
+		!apply(dm, meshtastic.SetDMAlerts) ||
+		!apply(stations, meshtastic.SetStationAlerts) {
 		http.Error(w, "invalid value", http.StatusBadRequest)
 		return
 	}
 	s.audit(sess.username, "config-mesh",
-		fmt.Sprintf("channel=%v dm=%v", meshtastic.ChannelAlerts(), meshtastic.DMAlerts()))
+		fmt.Sprintf("channel=%v dm=%v stations=%v", meshtastic.ChannelAlerts(), meshtastic.DMAlerts(), meshtastic.StationAlerts()))
 	s.logger.Info("meshtastic announcements toggled by admin",
 		"user", sess.username,
-		"channel", meshtastic.ChannelAlerts(), "dm", meshtastic.DMAlerts())
+		"channel", meshtastic.ChannelAlerts(), "dm", meshtastic.DMAlerts(),
+		"stations", meshtastic.StationAlerts())
 	http.Redirect(w, r, "/config?msg=mesh", http.StatusSeeOther)
 }
 

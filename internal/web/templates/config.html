@@ -147,7 +147,7 @@
           </span>
           <form method="post" action="/config/emcom/{{.Slug}}/delete" class="inline-form" data-emcom-config-delete data-name="{{.Name}}">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
-            <button type="submit" class="btn-danger btn-small">{{tr $.Lang "emcom.delete"}}</button>
+            <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>{{tr $.Lang "emcom.delete"}}</button>
           </form>
         </div>
         {{else}}

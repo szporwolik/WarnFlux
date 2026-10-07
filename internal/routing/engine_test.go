@@ -885,9 +885,15 @@ func TestEngineTrailRecording(t *testing.T) {
 	cancelled.Hazard.Key = "imgw:2"
 	cancelled.Hazard.ChangeID++
 	events <- cancelled
+	// Wait for the skip STEP, not just the outcome: Receive opens every
+	// trail with a default Skipped outcome, so the outcome alone can be
+	// visible before the engine appended the "cancelled" step.
 	waitFor(t, func() bool {
 		tr, ok := rec.Get("imgw:2")
-		return ok && tr.Outcome == trail.OutcomeSkipped
+		if !ok || len(tr.Steps) == 0 {
+			return false
+		}
+		return strings.Contains(tr.Steps[len(tr.Steps)-1].Text, "cancelled")
 	}, "cancelled trail skipped")
 	tr2, _ := rec.Get("imgw:2")
 	if !strings.Contains(tr2.Steps[len(tr2.Steps)-1].Text, "cancelled") {

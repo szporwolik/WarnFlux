@@ -98,13 +98,30 @@ func TestAPRSMessageStatusRoundTrip(t *testing.T) {
 		t.Fatalf("tx status = %q, want delivered", rows[0].Status)
 	}
 
-	// A rej overwrites the outcome.
+	// A rej overwrites the outcome, and a no_ack marks an unanswered send.
 	if err := s.UpdateAPRSMessageStatus(ctx, "12345", "failed", base.Add(2*time.Minute)); err != nil {
 		t.Fatalf("update to failed: %v", err)
 	}
 	rows, _ = s.ListAPRSMessages(ctx, "tx", 10, 0)
 	if rows[0].Status != "failed" {
 		t.Fatalf("tx status = %q, want failed", rows[0].Status)
+	}
+	if err := s.UpdateAPRSMessageStatus(ctx, "12345", "no_ack", base.Add(3*time.Minute)); err != nil {
+		t.Fatalf("update to no_ack: %v", err)
+	}
+	rows, _ = s.ListAPRSMessages(ctx, "tx", 10, 0)
+	if rows[0].Status != "no_ack" {
+		t.Fatalf("tx status = %q, want no_ack", rows[0].Status)
+	}
+
+	// The addressee lookup binds late acks: found for the tx row,
+	// absent for unknown ids and never for rx rows.
+	to, found, err := s.APRSMessageAddressee(ctx, "12345")
+	if err != nil || !found || to != "SP9WSS-2" {
+		t.Fatalf("addressee = %q, %v, %v; want SP9WSS-2", to, found, err)
+	}
+	if _, found, err := s.APRSMessageAddressee(ctx, "99999"); err != nil || found {
+		t.Fatalf("unknown addressee = found %v, err %v; want absent", found, err)
 	}
 
 	// Unknown ids are silent no-ops, and rx rows are never touched.

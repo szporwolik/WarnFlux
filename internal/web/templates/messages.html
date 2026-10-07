@@ -16,7 +16,7 @@
       {{range .Messages}}
       <tr class="msgs-{{.Direction}} click-send" data-key="{{if eq .Direction "rx"}}{{.From}}{{else}}{{.To}}{{end}}" title="{{tr $.Lang "messages.click_to_send"}}">
         <td class="muted nowrap">{{timeFull .At}}</td>
-        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span>{{if eq .Direction "tx"}}{{if .MsgID}} <span class="muted op-name">#{{.MsgID}}</span>{{end}}{{if eq .Status "delivered"}} <span class="badge ok">✓ {{tr $.Lang "messages.st_delivered"}}</span>{{else if eq .Status "failed"}} <span class="badge bad">{{tr $.Lang "messages.st_failed"}}</span>{{else}} <span class="badge muted">{{tr $.Lang "messages.st_sent"}}</span>{{end}}{{end}}</td>
+        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span>{{if eq .Direction "tx"}}{{if .MsgID}} <span class="muted op-name">#{{.MsgID}}</span>{{end}}{{if eq .Status "delivered"}} <span class="badge ok">✓ {{tr $.Lang "messages.st_delivered"}}</span>{{else if eq .Status "failed"}} <span class="badge bad">{{tr $.Lang "messages.st_failed"}}</span>{{else if eq .Status "no_ack"}} <span class="badge warn">{{tr $.Lang "messages.st_no_ack"}}</span>{{else}} <span class="badge muted">{{tr $.Lang "messages.st_sent"}}</span>{{end}}{{end}}</td>
         <td><strong>{{.From}}</strong>{{if .FromName}} <span class="muted op-name">({{.FromName}})</span>{{end}}</td>
         <td>{{.To}}{{if .Bulletin}} <span class="badge muted">{{tr $.Lang "messages.bulletin"}}</span>{{end}}{{if .ToName}} <span class="muted op-name">({{.ToName}})</span>{{end}}</td>
         <td class="msgs-text">{{.Text}}</td>

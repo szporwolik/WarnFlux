@@ -124,8 +124,11 @@ type HubConfig struct {
 type MessageRecorder interface {
 	RecordAPRSMessage(ctx context.Context, direction, from, to, text, msgID, via string, at time.Time) error
 	// UpdateAPRSMessageStatus marks the tx row carrying msgID as
-	// delivered (ack) or failed (rej).
+	// delivered (ack), failed (rej) or no_ack (ack wait timed out).
 	UpdateAPRSMessageStatus(ctx context.Context, msgID, status string, at time.Time) error
+	// APRSMessageAddressee returns the addressee of the tx row carrying
+	// msgID (ok=false when absent); see storage.APRSMessageStore.
+	APRSMessageAddressee(ctx context.Context, msgID string) (string, bool, error)
 }
 
 // Defaults applied by NewHub when the config omits values.

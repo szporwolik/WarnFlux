@@ -1613,14 +1613,14 @@ func TestComposeFlow(t *testing.T) {
 	if !strings.Contains(html, `<div class="compose-panel" id="compose-panel" hidden>`) {
 		t.Errorf("compose panel must be hidden by default: %s", html)
 	}
-	if !strings.Contains(html, `id="compose-debug-fill"`) {
-		t.Errorf("compose page missing debug fill button: %s", html)
-	}
 	if !strings.Contains(html, `id="compose-cancel"`) {
 		t.Errorf("compose page missing cancel button: %s", html)
 	}
+	if strings.Contains(html, `id="compose-debug-fill"`) || strings.Contains(html, `name="source_display"`) {
+		t.Errorf("compose page must not carry the debug fill button or the source field: %s", html)
+	}
 	if !strings.Contains(html, `/static/app.js`) {
-		t.Errorf("compose page missing app.js (debug fill and theme toggle need it): %s", html)
+		t.Errorf("compose page missing app.js (location picker and theme toggle need it): %s", html)
 	}
 	if !strings.Contains(html, `name="latitude"`) || !strings.Contains(html, `name="longitude"`) || !strings.Contains(html, `id="compose-loc-clear"`) {
 		t.Errorf("compose page missing the location fields: %s", html)

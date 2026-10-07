@@ -59,8 +59,9 @@ func (s *Server) handleAccessPage(w http.ResponseWriter, r *http.Request) {
 // buildAccessView assembles both panels and applies the active tab's
 // ?edit= dialog prefill.
 func (s *Server) buildAccessView(r *http.Request, sess *session, tab string) accessView {
-	users := s.buildUsersView(r, userForm{}, 0, "")
-	groups := s.buildGroupsView(r, groupForm{}, 0, "")
+	errMsg := s.csrfFlashMessage(r)
+	users := s.buildUsersView(r, userForm{}, 0, errMsg)
+	groups := s.buildGroupsView(r, groupForm{}, 0, errMsg)
 	// Each panel hides itself when the ACTIVE tab is the other one.
 	users.Tab = tab
 	groups.Tab = tab

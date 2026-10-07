@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 )
 
 const (
@@ -241,6 +243,29 @@ func (s *Server) requireStateChange(w http.ResponseWriter, r *http.Request, sess
 		return false
 	}
 	return true
+}
+
+// csrfMismatch reports whether the submitted token does NOT match the
+// session token (without writing anything). Form endpoints use it to
+// send the admin back with a friendly flash instead of a bare 403.
+func csrfMismatch(r *http.Request, sess *session) bool {
+	return sess == nil || !csrfOK(r.PostFormValue("csrf"), sess.csrf)
+}
+
+// redirectAfterCSRFMismatch sends the browser back to a form page with a
+// flash: an admin usually hits this after signing in again in another
+// tab — the open form still carried the previous session's token.
+func (s *Server) redirectAfterCSRFMismatch(w http.ResponseWriter, r *http.Request, target string) {
+	http.Redirect(w, r, target+"?err=csrf", http.StatusSeeOther)
+}
+
+// csrfFlashMessage resolves the ?err=csrf marker of a form page into the
+// friendly session-changed flash ("" otherwise).
+func (s *Server) csrfFlashMessage(r *http.Request) string {
+	if r.URL.Query().Get("err") != "csrf" {
+		return ""
+	}
+	return i18n.T(s.langFor(r), "common.session_changed")
 }
 
 // sameOriginHost reports whether the Origin header's host matches the

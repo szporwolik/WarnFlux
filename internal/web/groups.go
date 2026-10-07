@@ -197,8 +197,12 @@ func (s *Server) handleGroupsPage(w http.ResponseWriter, r *http.Request) {
 // edit_id turns the request into an update.
 func (s *Server) handleGroupSave(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if csrfMismatch(r, sess) {
+		s.redirectAfterCSRFMismatch(w, r, "/groups")
 		return
 	}
 	form := groupForm{Name: strings.TrimSpace(r.PostFormValue("name"))}
@@ -237,8 +241,12 @@ func (s *Server) handleGroupSave(w http.ResponseWriter, r *http.Request) {
 // are never touched.
 func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if csrfMismatch(r, sess) {
+		s.redirectAfterCSRFMismatch(w, r, "/groups")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -279,7 +287,7 @@ func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) 
 		s.logger.Warn("web: group routing unavailable", "group", id, "error", err)
 		routing.Actions = nil
 	}
-	view := s.buildGroupsView(r, groupForm{}, 0, "")
+	view := s.buildGroupsView(r, groupForm{}, 0, s.csrfFlashMessage(r))
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
@@ -296,13 +304,17 @@ func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) 
 // accepted, so stale form values can never land in the database.
 func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
-		return
-	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid group id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if csrfMismatch(r, sess) {
+		s.redirectAfterCSRFMismatch(w, r, fmt.Sprintf("/groups/%d/routing", id))
 		return
 	}
 

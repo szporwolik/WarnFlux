@@ -2,6 +2,7 @@ package core
 
 import (
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -301,18 +302,47 @@ func TestMessageIDStable(t *testing.T) {
 	if !strings.HasPrefix(id, "WX-") {
 		t.Fatalf("MessageID = %q, want the WX- prefix", id)
 	}
+	// The suffix is the readable DDHHMMNN code: digits only.
 	for _, r := range id[3:] {
-		if (r < '0' || r > '9') && (r < 'A' || r > 'V') {
-			t.Fatalf("MessageID = %q carries %q outside base32hex", id, r)
+		if r < '0' || r > '9' {
+			t.Fatalf("MessageID = %q carries %q outside 0-9", id, r)
 		}
 	}
-	// Different keys must produce different IDs.
+	// Different keys must produce different IDs (per-minute sequence).
 	other := MessageID(EventKey("gddkia", "droga:79"))
 	if other == id {
 		t.Fatalf("distinct keys collided on %q", id)
 	}
-	// Updates keep the ID: it derives from the key, not the content.
+	// Updates keep the ID: it is cached per key, not derived from content.
 	if MessageID(key) != id {
 		t.Fatalf("ID changed for the same key")
+	}
+}
+
+// TestMessageIDReadableFormat pins the time-derived structure: day of
+// month, hour and minute (24h) plus a per-minute sequence that advances
+// within one minute and restarts at 01 in the next.
+func TestMessageIDReadableFormat(t *testing.T) {
+	at := time.Date(2026, 10, 7, 19, 58, 12, 0, time.UTC)
+	a := MessageIDAt("fmt:a", at)
+	b := MessageIDAt("fmt:b", at)
+	c := MessageIDAt("fmt:c", at.Add(time.Minute))
+
+	re := regexp.MustCompile(`^WX-\d{8}$`)
+	if !re.MatchString(a) || !re.MatchString(b) || !re.MatchString(c) {
+		t.Fatalf("ids = %q, %q, %q; want WX- + 8 digits", a, b, c)
+	}
+	if !strings.HasPrefix(a, "WX-071958") {
+		t.Fatalf("id = %q, want the WX-071958 day/hour/minute prefix", a)
+	}
+	if a == b {
+		t.Fatalf("two keys in the same minute share the sequence %q", a)
+	}
+	sa, sb := a[9:], b[9:]
+	if !(sb > sa) {
+		t.Fatalf("sequence did not advance within the minute: %q then %q", a, b)
+	}
+	if want := "WX-07195901"; c != want {
+		t.Fatalf("first id of the next minute = %q, want %q", c, want)
 	}
 }

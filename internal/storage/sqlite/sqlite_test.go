@@ -758,6 +758,63 @@ func TestCleanupEventsLastSeenSurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestCleanupEventsPrunesLifecycleMirror pins the mirror bound: lifecycle
+// rows whose event is gone are stale dedup anchors and age out in the
+// same cleanup pass, while rows of live events stay (the live set is
+// already bounded by the current-state policy).
+func TestCleanupEventsPrunesLifecycleMirror(t *testing.T) {
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	store := openTemp(t, WithClock(func() time.Time { return clock }))
+	ctx := context.Background()
+
+	// A cancelled event that this cleanup pass will delete.
+	retired := normEvent()
+	retired.SourceID = "retired"
+	retired.Status = core.StatusCancelled
+	if outcome, _ := ingestOne(t, store, retired); outcome != storage.OutcomeCancelled {
+		t.Fatalf("ingest = %v", outcome)
+	}
+	if err := store.RecordLifecycle(ctx, "pub", retired.Key(), 1, "cancelled"); err != nil {
+		t.Fatalf("record retired lifecycle: %v", err)
+	}
+	// A live event keeps its mirror row.
+	live := normEvent()
+	live.SourceID = "live"
+	if outcome, _ := ingestOne(t, store, live); outcome == storage.OutcomeCancelled {
+		t.Fatalf("ingest live = %v, want an active outcome", outcome)
+	}
+	if err := store.RecordLifecycle(ctx, "pub", live.Key(), 1, "active"); err != nil {
+		t.Fatalf("record live lifecycle: %v", err)
+	}
+	// An orphan row for an event that never existed.
+	if err := store.RecordLifecycle(ctx, "pub", "ghost:1", 1, "cancelled"); err != nil {
+		t.Fatalf("record ghost lifecycle: %v", err)
+	}
+
+	clock = clock.Add(31 * 24 * time.Hour)
+	n, err := store.CleanupEvents(ctx, clock.Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("CleanupEvents: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted %d events, want the retired one", n)
+	}
+	var mirror int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM message_lifecycle`).Scan(&mirror); err != nil {
+		t.Fatal(err)
+	}
+	if mirror != 1 {
+		t.Fatalf("lifecycle mirror rows after cleanup = %d, want 1 (the live event's)", mirror)
+	}
+	var key string
+	if err := store.db.QueryRowContext(ctx, `SELECT event_key FROM message_lifecycle`).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if key != live.Key() {
+		t.Fatalf("surviving lifecycle row = %q, want the live event %q", key, live.Key())
+	}
+}
+
 func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	store := openTemp(t)
 	_, err := store.Get(context.Background(), "nope:1")

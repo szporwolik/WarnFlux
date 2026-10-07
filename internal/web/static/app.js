@@ -1155,7 +1155,7 @@
     var ownMarker = L.marker([ownLat, ownLon], {
       icon: wfBadge({
         color: "#007a3d",
-        glyph: BADGE_GLYPHS.waves,
+        glyph: '<span style="font-size:0.55rem;font-weight:700">APRS</span>',
         label: ownCall || tr("map.our_station")
       }),
       riseOnHover: true
@@ -1391,11 +1391,27 @@
   function stationColor(s) {
     return stationIsMoving(s) ? STATION_COLORS.moving : STATION_COLORS.static;
   }
+  // APRS station pins carry the same short text code the admin map
+  // uses: the delivery backend (RF / IS / RF+IS), not an abstract
+  // glyph — operators asked for one consistent pin language.
+  function stationCode(s) {
+    var via = s.received_via || [];
+    var radio = via.indexOf("aprs-radio") >= 0;
+    var inet = via.indexOf("aprs-inet") >= 0;
+    if (!radio && !inet) {
+      if (s.origin === "rf") { radio = true; }
+      if (s.origin === "internet") { inet = true; }
+    }
+    if (radio && inet) { return "RF+IS"; }
+    if (radio) { return "RF"; }
+    if (inet) { return "IS"; }
+    return "APRS";
+  }
 
   function stationBadge(s) {
     return wfBadge({
       color: stationColor(s),
-      glyph: BADGE_GLYPHS.waves,
+      glyph: '<span style="font-size:0.55rem;font-weight:700">' + esc(stationCode(s)) + '</span>',
       label: s.callsign
     });
   }
@@ -1406,13 +1422,15 @@
     return "#8e24aa";
   }
 
-  // meshBadge renders the Meshtastic pin: the chat glyph in the mesh
-  // color with the node name as the halo label (unnamed nodes get the
+  // meshBadge renders the Meshtastic pin: the hop count as the badge
+  // code (the same language as the admin map — 0 direct, ? unknown),
+  // with the node name as the halo label (unnamed nodes get the
   // generic label; ids stay off the public map).
   function meshBadge(n) {
+    var code = n.hops > 0 ? String(n.hops) : (n.hops < 0 ? "?" : "0");
     return wfBadge({
       color: meshColor(n),
-      glyph: BADGE_GLYPHS.chat,
+      glyph: '<span style="font-size:0.55rem;font-weight:700">' + esc(code) + '</span>',
       label: n.name || tr("meshtastic.type.node")
     });
   }

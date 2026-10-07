@@ -142,8 +142,12 @@ func (s *Server) handleUsersPage(w http.ResponseWriter, r *http.Request) {
 // edit_id turns the request into an update.
 func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if csrfMismatch(r, sess) {
+		s.redirectAfterCSRFMismatch(w, r, "/users")
 		return
 	}
 
@@ -334,8 +338,12 @@ func dialogEditID(editID int64) int64 {
 // handleUserDelete removes a regular user. The admin row is protected.
 func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if csrfMismatch(r, sess) {
+		s.redirectAfterCSRFMismatch(w, r, "/users")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -363,8 +371,12 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 // enabled). Empty selection clears all groups / disables every channel.
 func (s *Server) handleUserPrefs(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if csrfMismatch(r, sess) {
+		s.redirectAfterCSRFMismatch(w, r, "/users")
 		return
 	}
 	userID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -416,8 +428,12 @@ func (s *Server) handleUserPrefs(w http.ResponseWriter, r *http.Request) {
 // The configured admin account is read-only.
 func (s *Server) handleUserResetPassword(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if csrfMismatch(r, sess) {
+		s.redirectAfterCSRFMismatch(w, r, "/users")
 		return
 	}
 	userID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

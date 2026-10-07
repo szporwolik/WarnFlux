@@ -1616,6 +1616,9 @@ func TestComposeFlow(t *testing.T) {
 	if !strings.Contains(html, `id="compose-debug-fill"`) {
 		t.Errorf("compose page missing debug fill button: %s", html)
 	}
+	if !strings.Contains(html, `id="compose-cancel"`) {
+		t.Errorf("compose page missing cancel button: %s", html)
+	}
 	if !strings.Contains(html, `/static/app.js`) {
 		t.Errorf("compose page missing app.js (debug fill and theme toggle need it): %s", html)
 	}

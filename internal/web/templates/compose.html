@@ -114,6 +114,7 @@
             {{if .Form.EventKey}}{{tr .Lang "compose.update"}}{{else}}{{tr .Lang "compose.publish"}}{{end}}
           </button>
           {{if .Form.EventKey}}<a class="btn-ghost" href="/compose">{{tr .Lang "compose.discard"}}</a>{{end}}
+          <button type="button" class="btn-ghost" id="compose-cancel">{{tr .Lang "compose.cancel"}}</button>
           <button type="button" class="btn-ghost" id="compose-debug-fill">{{tr .Lang "compose.debug"}}</button>
         </div>
         </form>
@@ -173,6 +174,15 @@
         sync();
         if (!panel.hidden) { panel.scrollIntoView({ behavior: "smooth", block: "start" }); }
       });
+      // Cancel folds the form away without submitting anything; it keeps
+      // the fields intact in case the operator reopens the panel.
+      var cancel = document.getElementById("compose-cancel");
+      if (cancel) {
+        cancel.addEventListener("click", function () {
+          panel.hidden = true;
+          sync();
+        });
+      }
       sync();
     }
   })();

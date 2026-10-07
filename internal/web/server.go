@@ -107,6 +107,11 @@ type Server struct {
 	// forceTiles forces every map to the local tile tree even while the
 	// station is online (the Config page switch).
 	forceTiles atomic.Bool
+	// tilesMaxZoom caches the deepest zoom level available in the local
+	// tile tree (-1 = not computed yet); offline maps use it as the
+	// tile layer's maxNativeZoom so zooming past the tree stretches the
+	// deepest tiles instead of showing gaps.
+	tilesMaxZoom atomic.Int64
 	// systemLang is the runtime system notification language (startup
 	// value from web.system_language; the admin Config page switches it
 	// at runtime). "" = the i18n default. Broadcast channels (APRS,
@@ -218,6 +223,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		mux:            http.NewServeMux(),
 		ingest:         ingest,
 	}
+	s.tilesMaxZoom.Store(-1)
 	// Visitor analytics ride the same SQLite store as the events: the
 	// optional interface keeps minimal test constructions untouched.
 	if v, ok := events.(storage.VisitorStore); ok {
@@ -393,6 +399,7 @@ func (s *Server) routes(static http.Handler) {
 	// Local map tiles ({z}/{x}/{y}.jpg under web.tiles_dir) for offline
 	// mode. Registered unconditionally; empty tiles_dir yields 404s.
 	s.mux.HandleFunc("GET /tiles/{z}/{x}/{y}", s.handleTile)
+	s.mux.HandleFunc("GET /api/tiles/maxzoom", s.handleTilesMaxZoom)
 	s.mux.Handle("GET /groups", s.requireAdmin(s.handleGroupsPage))
 	s.mux.Handle("POST /groups", s.requireAdmin(s.handleGroupSave))
 	s.mux.Handle("POST /groups/{id}/delete", s.requireAdmin(s.handleGroupDelete))

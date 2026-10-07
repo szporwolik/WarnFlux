@@ -167,6 +167,7 @@
     // probe travelled from our station through every relay hop. ---
     var traceMap = null;
     var traceLayer = null;
+    var traceBase = null;
     var stationsCache = null;
 
     function loadStations() {
@@ -235,7 +236,17 @@
               : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
           traceMap = L.map(mapBox, { attributionControl: false, zoomControl: false, dragging: false,
             scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false });
-          L.tileLayer(raster, { maxZoom: 19 }).addTo(traceMap);
+          traceBase = L.tileLayer(raster, { maxZoom: 19 });
+          traceBase.addTo(traceMap);
+          if (OFFLINE) {
+            fetch("/api/tiles/maxzoom", { credentials: "same-origin" })
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (j) {
+                var z = j && j.maxzoom > 0 ? j.maxzoom : 0;
+                if (z > 0 && traceBase) { traceBase.options.maxNativeZoom = z; }
+              })
+              .catch(function () { /* keep native zooming */ });
+          }
           traceLayer = L.layerGroup().addTo(traceMap);
         }
         traceLayer.clearLayers();
@@ -427,7 +438,19 @@
         return;
       }
       map = L.map(el, { attributionControl: false }).setView([lat, lon], 10);
-      L.tileLayer(raster, { maxZoom: 19 }).addTo(map);
+      var baseLayer = L.tileLayer(raster, { maxZoom: 19 });
+      baseLayer.addTo(map);
+      // Offline: stretch the deepest local tiles past the tree's limit
+      // so zooming never shows empty squares.
+      if (OFFLINE) {
+        fetch("/api/tiles/maxzoom", { credentials: "same-origin" })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            var z = j && j.maxzoom > 0 ? j.maxzoom : 0;
+            if (z > 0 && baseLayer) { baseLayer.options.maxNativeZoom = z; }
+          })
+          .catch(function () { /* keep native zooming */ });
+      }
       nodesLayer = L.layerGroup().addTo(map);
 
       // Our own node marker (mesh purple), when the device reported a

@@ -1739,6 +1739,7 @@
     if (sigs) {
       lines.push(sigs);
     }
+    lines.push((n.hops >= 0 ? String(n.hops) : "?") + " " + tr("map.hops"));
     lines = lines.concat(meshTelemetryLines(n.telemetry));
     lines.push(tr("map.heard") + ": " + fmtTime(n.last_seen));
     var body = lines.join("<br>");
@@ -1805,6 +1806,37 @@
       .catch(function () { /* transient — next poll retries */ });
   }
 
+  // Positionless mesh nodes have no map pin, so their badges open a
+  // floating popover with the same details a map popup would show
+  // (signals, hops, telemetry, last heard).
+  var noposPop = null;
+  function closeNoPosPop() {
+    if (noposPop) {
+      noposPop.remove();
+      noposPop = null;
+    }
+  }
+  function toggleNoPosPop(chip, n) {
+    if (noposPop && noposPop._wfChip === chip) {
+      closeNoPosPop();
+      return;
+    }
+    closeNoPosPop();
+    noposPop = document.createElement("div");
+    noposPop.className = "wf-nopos-pop";
+    noposPop._wfChip = chip;
+    noposPop.innerHTML = meshPopup(n);
+    var r = chip.getBoundingClientRect();
+    noposPop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 320)) + "px";
+    noposPop.style.top = (r.bottom + 6) + "px";
+    document.body.appendChild(noposPop);
+  }
+  document.addEventListener("click", function (e) {
+    if (noposPop && !noposPop.contains(e.target)) {
+      closeNoPosPop();
+    }
+  });
+
   // renderMeshCards builds the Meshtastic cards below the map (located
   // nodes, clickable like the station cards) and the badge list of
   // heard nodes that carry no position.
@@ -1866,6 +1898,10 @@
         }
         extra.push(fmtClock(n.last_seen));
         chip.appendChild(mk("span", "mc-chip-meta", extra.join(" · ")));
+        chip.addEventListener("click", function (e) {
+          e.stopPropagation();
+          toggleNoPosPop(chip, n);
+        });
         badges.appendChild(chip);
       });
     }

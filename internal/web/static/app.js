@@ -39,6 +39,7 @@
       "map.sent": "Sent",
       "map.heard": "Heard",
       "map.hops": "hops",
+      "map.no_position": "No position — this report has no pin on the map",
       "map.hum": "hum",
       "map.wind": "wind",
       "map.gusts": "gusts",
@@ -163,6 +164,7 @@
       "map.sent": "Wysłano",
       "map.heard": "Słyszano",
       "map.hops": "przeskoków",
+      "map.no_position": "Brak pozycji — ten raport nie ma pinu na mapie",
       "map.hum": "wilg.",
       "map.wind": "wiatr",
       "map.gusts": "porywy",
@@ -2195,8 +2197,16 @@
     if (!map) {
       return;
     }
-    var m = stationMarkers[String(r.name || "").toUpperCase()] ||
-      weatherMarkers[String(r.name || "").toUpperCase()];
+    var key = String(r.name || "").toUpperCase();
+    var m = stationMarkers[key] || weatherMarkers[key];
+    if (!m && r.latitude && r.longitude && !(r.latitude === 0 && r.longitude === 0)) {
+      // The pin can be missing when the station refresh dropped the
+      // station (it went stale) AFTER the weather layer skipped its pin,
+      // or when the layers have not rendered yet. A positioned report
+      // must always be focusable: rebuild the weather layer and retry.
+      renderWeatherLayer();
+      m = stationMarkers[key] || weatherMarkers[key];
+    }
     if (!m) {
       return;
     }
@@ -2376,12 +2386,13 @@
       }
       // Every report whose pin sits on the map is clickable: it centers
       // the map on the pin and opens its popup. A positionless report has
-      // nothing to center on and stays disabled.
+      // nothing to center on — the card stays inert and says so.
       if (r.latitude && r.longitude && !(r.latitude === 0 && r.longitude === 0)) {
         item.title = trf("map.show_on_map", r.name);
         item.addEventListener("click", function () { focusStation(r); });
       } else {
         item.disabled = true;
+        item.title = tr("map.no_position");
       }
       container.appendChild(item);
     });

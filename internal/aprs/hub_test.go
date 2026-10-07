@@ -543,6 +543,9 @@ func TestHubRFBypassesAreaGate(t *testing.T) {
 	if got := len(sink.payloads(StationsTopicPrefix + "SP9FAR")); got != 1 {
 		t.Fatalf("RF station published %d times, want 1", got)
 	}
+	// Filtered advances inside the pipeline goroutine; wait for the
+	// dropped internet copy to be counted before asserting.
+	waitFor(t, func() bool { return hub.Stats().Filtered >= 1 })
 	if got := hub.Stats().Filtered; got != 1 {
 		t.Errorf("filtered = %d, want 1 (only the internet copy)", got)
 	}
@@ -577,6 +580,9 @@ func TestHubInfrastructureFilter(t *testing.T) {
 	if got := len(sink.payloads(StationsTopicPrefix + "SR9IG")); got != 0 {
 		t.Errorf("igate published %d times, want 0", got)
 	}
+	// Filtered advances inside the pipeline goroutine; wait for all
+	// three dropped packets to be counted before asserting.
+	waitFor(t, func() bool { return hub.Stats().Filtered >= 3 })
 	if got := hub.Stats().Filtered; got != 3 {
 		t.Errorf("filtered = %d, want 3", got)
 	}

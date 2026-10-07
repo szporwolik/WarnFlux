@@ -67,6 +67,17 @@ type ActionRequest struct {
 	// Meshtastic node IDs (8 hex). It is populated by the rule engine
 	// and used by Meshtastic-capable actions to address direct messages.
 	MeshNodeIDs []string `json:"mesh_node_ids"`
+	// Lang is the system/default notification language for broadcast
+	// channels (APRS messages, Meshtastic group-channel posts) and the
+	// fallback for recipients without a personal language. Empty means
+	// the i18n default (English). Populated by the rule engine.
+	Lang string `json:"lang"`
+	// BccLangs parallels Bcc: the preferred notification language of
+	// each member address ("" = Lang).
+	BccLangs []string `json:"bcc_langs,omitempty"`
+	// MeshNodeLangs parallels MeshNodeIDs: the preferred notification
+	// language of each member's node ("" = Lang).
+	MeshNodeLangs []string `json:"mesh_node_langs,omitempty"`
 	// App identifies the running application (version, domain, repo);
 	// populated by the rule engine.
 	App AppInfo `json:"app"`

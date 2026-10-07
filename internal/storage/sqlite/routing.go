@@ -555,6 +555,41 @@ func (s *Store) PruneActionFires(cutoff time.Time) (int64, error) {
 	return res.RowsAffected()
 }
 
+// GroupRecipientMeshLangs returns the members' preferred notification
+// languages in the SAME ORDER as GroupRecipientMeshIDs ("" = system
+// default).
+func (s *Store) GroupRecipientMeshLangs(groupID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT umi.node_id, u.lang
+		FROM user_meshtastic_ids umi
+		JOIN user_groups ug ON ug.user_id = umi.user_id
+		JOIN users u ON u.id = umi.user_id
+		WHERE ug.group_id = ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM user_channel_opts uco
+			WHERE uco.user_id = umi.user_id AND uco.channel = 'meshtastic')
+		ORDER BY umi.node_id COLLATE NOCASE ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d meshtastic recipient languages: %w", groupID, err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	var out []string
+	for rows.Next() {
+		var nodeID, lang string
+		if err := rows.Scan(&nodeID, &lang); err != nil {
+			return nil, fmt.Errorf("scan group %d meshtastic recipient language: %w", groupID, err)
+		}
+		key := strings.ToLower(nodeID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, lang)
+	}
+	return out, rows.Err()
+}
+
 // GroupRecipientAPRS returns the distinct (case-insensitive), non-empty
 // APRS callsigns registered for the group's members, sorted. Missing
 // groups yield an empty list.
@@ -613,6 +648,40 @@ func (s *Store) GroupRecipientEmails(groupID int64) ([]string, error) {
 		}
 		seen[key] = struct{}{}
 		out = append(out, email)
+	}
+	return out, rows.Err()
+}
+
+// GroupRecipientEmailLangs returns the members' preferred notification
+// languages in the SAME ORDER as GroupRecipientEmails ("" = system
+// default).
+func (s *Store) GroupRecipientEmailLangs(groupID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT u.email, u.lang
+		FROM users u
+		JOIN user_groups ug ON ug.user_id = u.id
+		WHERE ug.group_id = ? AND u.email <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM user_channel_opts uco
+			WHERE uco.user_id = u.id AND uco.channel = 'smtp')
+		ORDER BY u.email COLLATE NOCASE ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d recipient languages: %w", groupID, err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	var out []string
+	for rows.Next() {
+		var email, lang string
+		if err := rows.Scan(&email, &lang); err != nil {
+			return nil, fmt.Errorf("scan group %d recipient language: %w", groupID, err)
+		}
+		key := strings.ToLower(email)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, lang)
 	}
 	return out, rows.Err()
 }

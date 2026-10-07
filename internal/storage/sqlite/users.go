@@ -16,7 +16,7 @@ import (
 )
 
 // userColumns is the canonical user column list for SELECTs.
-const userColumns = `id, username, phone, email, discord, is_admin, role, created_at_ms, updated_at_ms`
+const userColumns = `id, username, phone, email, discord, is_admin, role, lang, created_at_ms, updated_at_ms`
 
 // passwordIterations is the PBKDF2-HMAC-SHA256 iteration count used for
 // directory-user passwords (local, single-tenant scope).
@@ -502,6 +502,31 @@ func (s *Store) MeshtasticOwners() (map[string]string, error) {
 	return owners, nil
 }
 
+// SetUserLanguage stores the user's preferred notification language
+// (an i18n language code; "" = system default). The admin row may set
+// its own language like any other user.
+func (s *Store) SetUserLanguage(userID int64, lang string) error {
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM users WHERE id = ?`, userID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	res, err := s.db.Exec(`UPDATE users SET lang = ?, updated_at_ms = ? WHERE id = ?`,
+		strings.ToLower(strings.TrimSpace(lang)), s.now().UnixMilli(), userID)
+	if err != nil {
+		return fmt.Errorf("set user %d language: %w", userID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("set user %d language: %w", userID, err)
+	} else if n == 0 {
+		return storage.ErrUserNotFound
+	}
+	return nil
+}
+
 // UserChannelOptOuts returns the delivery channels this user has disabled,
 // keyed by channel kind. An empty set means every channel is enabled.
 func (s *Store) UserChannelOptOuts(userID int64) (map[string]bool, error) {
@@ -840,7 +865,7 @@ func scanUser(sc userScanner) (storage.User, error) {
 		admin  int
 		ca, ua int64
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &ca, &ua); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &u.Lang, &ca, &ua); err != nil {
 		return storage.User{}, err
 	}
 	u.IsAdmin = admin != 0

@@ -52,6 +52,7 @@ func TestTemplateKeysTranslated(t *testing.T) {
 		"notif.outcome":  {"delivered", "failed", "skipped", "submitted"},
 		"notif.status":   {"saved", "running", "failed", "succeeded", "accepted", "confirmed", "expired"},
 		"config.mqtt":    {"events", "active", "info", "status", "save"},
+		"lang":           {"en", "pl"},
 	}
 	for _, e := range entries {
 		name := "templates/" + e.Name()

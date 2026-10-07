@@ -31,6 +31,7 @@ type userRow struct {
 	Discord       string
 	IsAdmin       bool
 	Role          string
+	Lang          string
 	GroupNames    []string
 	APRSCallsigns []string
 	APRSJoin      string
@@ -58,6 +59,10 @@ type userForm struct {
 	// and the validation-error echo.
 	GroupSet   map[int64]bool
 	ChannelSet map[string]bool
+	// NotifLang is the user's notification language ("" = system
+	// default). Named to avoid the render-time UI-language stamping of
+	// every field literally called "Lang".
+	NotifLang string
 }
 
 // usersView is the users-tab panel model of the merged /access page.
@@ -85,8 +90,11 @@ type usersView struct {
 	// self-service account page); admins override per-user opt-outs in
 	// the row preferences popover.
 	Channels []notify.ChannelDef
-	Form     userForm
-	EditID   int64
+	// Languages lists the supported notification languages for the
+	// user dialog picker.
+	Languages []string
+	Form      userForm
+	EditID    int64
 	// AdminEdit marks the dialog editing the configured admin row:
 	// identity fields (username, role, password) are shown read-only and
 	// only contact data plus delivery preferences are editable.
@@ -148,6 +156,7 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 		Password:      r.PostFormValue("password"),
 		APRSCallsigns: strings.TrimSpace(r.PostFormValue("aprs_callsigns")), MeshtasticIDs: strings.TrimSpace(r.PostFormValue("meshtastic_ids")), GroupSet: groupSetFromForm(r.PostForm["groups"]),
 		ChannelSet: channelSetFromForm(r.PostForm["channels"]),
+		NotifLang:  strings.ToLower(strings.TrimSpace(r.PostFormValue("lang"))),
 	}
 	// The modal always submits the preference boxes; clients that omit
 	// the marker (older flows, the basic save tests) leave membership
@@ -183,6 +192,10 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
+		if err := s.users.SetUserLanguage(u.ID, form.NotifLang); err != nil {
+			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
+			return
+		}
 		if savePrefs {
 			if msg := s.applyUserPrefs(w, r, u.ID, form, editID, sess.username); msg != "" {
 				return
@@ -213,6 +226,10 @@ func (s *Server) handleUserSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.users.SetUserMeshtasticIDs(u.ID, parseMeshtasticIDs(form.MeshtasticIDs)); err != nil {
+			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
+			return
+		}
+		if err := s.users.SetUserLanguage(u.ID, form.NotifLang); err != nil {
 			s.renderUsersError(w, r, userErrorStatus(err), form, dialogEditID(editID), userErrorMessage(err))
 			return
 		}
@@ -493,6 +510,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 			Discord:       u.Discord,
 			IsAdmin:       u.IsAdmin,
 			Role:          u.Role,
+			Lang:          u.Lang,
 			GroupNames:    names,
 			APRSCallsigns: u.APRSCallsigns,
 			APRSJoin:      strings.Join(u.APRSCallsigns, " "), MeshtasticIDs: u.MeshtasticIDs, UpdatedAt: u.UpdatedAt,
@@ -510,6 +528,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 		Users:      rows,
 		Groups:     groups,
 		Channels:   notify.Channels,
+		Languages:  i18n.Codes(),
 		Form:       form,
 		EditID:     editID,
 		DialogOpen: editID != 0,
@@ -549,6 +568,9 @@ func validateUserForm(f userForm, requirePassword bool) string {
 	}
 	if f.Role != "" && f.Role != "member" && f.Role != "emcom" {
 		return "role must be empty, member or emcom"
+	}
+	if f.NotifLang != "" && !i18n.Supported(f.NotifLang) {
+		return "invalid language"
 	}
 	if requirePassword && f.Role != "" && f.Password == "" {
 		return "a password is required for users with a role (they sign in with it)"

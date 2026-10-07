@@ -39,6 +39,9 @@ type accountView struct {
 	Phone   string
 	Email   string
 	Discord string
+	// NotifLang is the user's notification language ("" = system
+	// default); Lang (above) is the UI language of the page.
+	NotifLang string
 
 	// Groups is the notification-group list with the current membership
 	// mirrored in GroupSet: every new user is subscribed to all groups by
@@ -145,6 +148,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 		Phone:          u.Phone,
 		Email:          u.Email,
 		Discord:        u.Discord,
+		NotifLang:      u.Lang,
 		Groups:         groups,
 		GroupSet:       groupSet,
 		Channels:       notify.Channels,
@@ -195,10 +199,15 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	phone := strings.TrimSpace(r.PostFormValue("phone"))
 	email := strings.TrimSpace(r.PostFormValue("email"))
 	discord := strings.TrimSpace(r.PostFormValue("discord"))
+	lang := strings.ToLower(strings.TrimSpace(r.PostFormValue("lang")))
 	password := r.PostFormValue("password")
 	if adminManaged {
 		// The admin password is config-owned and never changes here.
 		password = ""
+	}
+	if lang != "" && !i18n.Supported(lang) {
+		http.Error(w, "invalid language", http.StatusBadRequest)
+		return
 	}
 
 	// Group subscriptions: checked boxes stay subscribed; everything
@@ -250,6 +259,7 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 			Phone:      phone,
 			Email:      email,
 			Discord:    discord,
+			NotifLang:  lang,
 			Groups:     groups,
 			GroupSet:   make(map[int64]bool),
 			Channels:   notify.Channels,
@@ -278,6 +288,11 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.users.SetUserChannelOptOuts(u.ID, optOuts); err != nil {
 		s.logger.Warn("web: account channel update failed", "username", sess.username, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.users.SetUserLanguage(u.ID, lang); err != nil {
+		s.logger.Warn("web: account language update failed", "username", sess.username, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

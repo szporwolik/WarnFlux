@@ -919,6 +919,15 @@ CREATE TABLE site_visits (
 );
 `,
 	},
+	{
+		// v52: per-user notification language. Every recipient picks the
+		// language of the notifications addressed to them personally
+		// (email, direct Meshtastic messages); '' means the system
+		// default language.
+		SQL: `
+ALTER TABLE users ADD COLUMN lang TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

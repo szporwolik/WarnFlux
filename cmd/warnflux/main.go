@@ -519,6 +519,13 @@ func run(configPath string, checkConfig bool) error {
 	// mqtt_publish in the config is the startup state.
 	mqttpolicy.Set(cfg.MQTTPublish.Mask())
 
+	// Meshtastic announcement switches: startup state from the config;
+	// the admin Config page toggles the same switches at runtime and
+	// writes them back to the YAML file.
+	meshtastic.SetChannelAlerts(cfg.Meshtastic.ChannelAlerts)
+	meshtastic.SetDMAlerts(cfg.Meshtastic.DMAlerts)
+	meshtastic.SetStationAlerts(cfg.Meshtastic.StationAlerts)
+
 	logger, logCloser, err := newLogger(cfg.App, logs)
 	if err != nil {
 		return fmt.Errorf("configure logging: %w", err)
@@ -1020,6 +1027,9 @@ func run(configPath string, checkConfig bool) error {
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
+		// Panel switches are written back to the YAML file so they
+		// survive restarts.
+		webSrv.SetConfigFile(configPath)
 		// Low-disk alarm: the health page and /metrics report the free
 		// space against storage.min_free_mb (0 disables the alarm).
 		webSrv.SetStorageAlarm(cfg.Storage.MinFreeMB * 1024 * 1024)

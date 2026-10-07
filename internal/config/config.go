@@ -189,6 +189,16 @@ type MeshtasticConfig struct {
 	// digest broadcast on the emcom channel (default 1 hour); 0 disables
 	// the digest (the presence beacon stays on).
 	EmcomHazardsInterval time.Duration
+	// ChannelAlerts gates hazard broadcasts on the group channel
+	// (startup state; the admin Config page toggles the same switch at
+	// runtime). Default ON.
+	ChannelAlerts bool
+	// DMAlerts gates hazard direct messages to users' registered node
+	// IDs. Default ON.
+	DMAlerts bool
+	// StationAlerts gates APRS station range announcements on the group
+	// channel. Useful but noisy — default OFF.
+	StationAlerts bool
 }
 
 // APRSConfig holds the shared APRS hub settings (top-level "aprs:"). The
@@ -487,6 +497,10 @@ type Web struct {
 	// the operator-configured tile directory only when online). Intended
 	// for a Docker volume so each operator drops in its own tiles.
 	TilesDir string
+	// ForceLocalTiles forces every map onto the local tile tree even
+	// while the station is online (startup state; the admin Config page
+	// toggles the same switch at runtime).
+	ForceLocalTiles bool
 	// SystemLanguage is the default language of broadcast notifications
 	// (APRS messages, EMCOM group-channel Meshtastic posts): an i18n
 	// language code ("en", "pl"). Empty means the i18n default. The
@@ -596,6 +610,13 @@ type fileMeshtastic struct {
 	// EmcomHazardsInterval is the active-hazard digest spacing (default
 	// 1h); 0 disables the digest.
 	EmcomHazardsInterval *time.Duration `yaml:"emcom_hazards_interval"`
+	// ChannelAlerts / DMAlerts / StationAlerts are the runtime switches
+	// on the admin Config page; pointer fields keep omitted values
+	// distinguishable from explicit false (channel/dm default ON,
+	// station announcements default OFF).
+	ChannelAlerts *bool `yaml:"channel_alerts"`
+	DMAlerts      *bool `yaml:"dm_alerts"`
+	StationAlerts *bool `yaml:"station_alerts"`
 }
 
 type fileGeo struct {
@@ -670,20 +691,21 @@ type fileReceiverSubscription struct {
 }
 
 type fileWeb struct {
-	Enabled        bool         `yaml:"enabled"`
-	Listen         string       `yaml:"listen"`
-	Title          string       `yaml:"title"`
-	Name           string       `yaml:"name"`
-	Header1        string       `yaml:"header1"`
-	Header2        string       `yaml:"header2"`
-	Tagline        string       `yaml:"tagline"`
-	About          string       `yaml:"about"`
-	Disclaimer     string       `yaml:"disclaimer"`
-	Domain         string       `yaml:"domain"`
-	OfflineMode    bool         `yaml:"offline_mode"`
-	TilesDir       string       `yaml:"tiles_dir"`
-	SystemLanguage string       `yaml:"system_language"`
-	Auth           *fileWebAuth `yaml:"auth"`
+	Enabled         bool         `yaml:"enabled"`
+	Listen          string       `yaml:"listen"`
+	Title           string       `yaml:"title"`
+	Name            string       `yaml:"name"`
+	Header1         string       `yaml:"header1"`
+	Header2         string       `yaml:"header2"`
+	Tagline         string       `yaml:"tagline"`
+	About           string       `yaml:"about"`
+	Disclaimer      string       `yaml:"disclaimer"`
+	Domain          string       `yaml:"domain"`
+	OfflineMode     bool         `yaml:"offline_mode"`
+	TilesDir        string       `yaml:"tiles_dir"`
+	ForceLocalTiles bool         `yaml:"force_local_tiles"`
+	SystemLanguage  string       `yaml:"system_language"`
+	Auth            *fileWebAuth `yaml:"auth"`
 }
 
 type fileWebAuth struct {
@@ -1060,6 +1082,7 @@ func (f fileConfig) toConfig() Config {
 		cfg.Web.Domain = strings.TrimSuffix(strings.TrimSpace(f.Web.Domain), "/")
 		cfg.Web.OfflineMode = f.Web.OfflineMode
 		cfg.Web.TilesDir = strings.TrimSpace(f.Web.TilesDir)
+		cfg.Web.ForceLocalTiles = f.Web.ForceLocalTiles
 		cfg.Web.SystemLanguage = strings.ToLower(strings.TrimSpace(f.Web.SystemLanguage))
 		if f.Web.Auth != nil {
 			cfg.Web.Auth = WebAuth{
@@ -1159,7 +1182,10 @@ func (f fileConfig) toConfig() Config {
 			cfg.APRS.RouteMessages = *f.APRS.RouteMessages
 		}
 	}
-	cfg.Meshtastic = MeshtasticConfig{Baud: 115200, NodeTTL: 30 * time.Minute, EmcomInterval: 4 * time.Hour, EmcomHazardsInterval: 1 * time.Hour}
+	cfg.Meshtastic = MeshtasticConfig{
+		Baud: 115200, NodeTTL: 30 * time.Minute, EmcomInterval: 4 * time.Hour, EmcomHazardsInterval: 1 * time.Hour,
+		ChannelAlerts: true, DMAlerts: true, StationAlerts: false,
+	}
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
 		cfg.Meshtastic.Device = strings.TrimSpace(f.Meshtastic.Device)
@@ -1179,6 +1205,15 @@ func (f fileConfig) toConfig() Config {
 		}
 		if f.Meshtastic.EmcomHazardsInterval != nil {
 			cfg.Meshtastic.EmcomHazardsInterval = *f.Meshtastic.EmcomHazardsInterval
+		}
+		if v := f.Meshtastic.ChannelAlerts; v != nil {
+			cfg.Meshtastic.ChannelAlerts = *v
+		}
+		if v := f.Meshtastic.DMAlerts; v != nil {
+			cfg.Meshtastic.DMAlerts = *v
+		}
+		if v := f.Meshtastic.StationAlerts; v != nil {
+			cfg.Meshtastic.StationAlerts = *v
 		}
 	}
 	if f.Geo != nil {

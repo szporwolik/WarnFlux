@@ -118,6 +118,21 @@ type Server struct {
 	// EMCOM group posts) use it.
 	systemLang atomic.Value
 
+	// configPath is the YAML file the admin Config page writes its
+	// switches back to (empty = persistence disabled, e.g. tests).
+	configPath string
+
+	// Runtime branding/content fields: initialized from the config at
+	// startup, editable on the Config page and persisted to the YAML
+	// file. All view builders read them through the Display* getters,
+	// so a panel edit takes effect immediately.
+	header1    atomic.Value // string
+	header2    atomic.Value // string
+	tagline    atomic.Value // string
+	about      atomic.Value // string
+	disclaimer atomic.Value // string
+	domain     atomic.Value // string
+
 	// resetMailer delivers password-reset emails. nil = email delivery
 	// unavailable (the self-service flow degrades gracefully).
 	resetMailer func(to, subject, text string) error
@@ -142,6 +157,29 @@ type Server struct {
 	httpSrv  *http.Server
 	listener net.Listener
 }
+
+// SetConfigFile enables persistence of the admin Config page switches:
+// every toggle is additionally written back to this YAML file so the
+// choice survives restarts. Empty disables persistence.
+func (s *Server) SetConfigFile(path string) { s.configPath = path }
+
+// DisplayHeader1 returns the runtime primary header line.
+func (s *Server) DisplayHeader1() string { return s.header1.Load().(string) }
+
+// DisplayHeader2 returns the runtime subtitle.
+func (s *Server) DisplayHeader2() string { return s.header2.Load().(string) }
+
+// DisplayTagline returns the runtime footer motto.
+func (s *Server) DisplayTagline() string { return s.tagline.Load().(string) }
+
+// DisplayAbout returns the runtime about text (markdown).
+func (s *Server) DisplayAbout() string { return s.about.Load().(string) }
+
+// DisplayDisclaimer returns the runtime public-page disclaimer.
+func (s *Server) DisplayDisclaimer() string { return s.disclaimer.Load().(string) }
+
+// DisplayDomain returns the runtime public domain used for deep links.
+func (s *Server) DisplayDomain() string { return s.domain.Load().(string) }
 
 // maxPasswordFileBytes bounds the admin password file read.
 const maxPasswordFileBytes = 64 * 1024
@@ -235,7 +273,14 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		return nil, fmt.Errorf("web: static assets: %w", err)
 	}
 	s.offline.Store(cfg.OfflineMode)
+	s.forceTiles.Store(cfg.ForceLocalTiles)
 	s.systemLang.Store(cfg.SystemLanguage)
+	s.header1.Store(cfg.Header1)
+	s.header2.Store(cfg.Header2)
+	s.tagline.Store(cfg.Tagline)
+	s.about.Store(cfg.About)
+	s.disclaimer.Store(cfg.Disclaimer)
+	s.domain.Store(cfg.Domain)
 	s.routes(http.FileServerFS(static))
 	s.httpSrv = &http.Server{
 		Handler:           securityHeaders(s.mux),
@@ -395,6 +440,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /config/tiles", s.requireAdmin(s.handleConfigTiles))
 	s.mux.Handle("POST /config/mesh", s.requireAdmin(s.handleConfigMesh))
 	s.mux.Handle("POST /config/lang", s.requireAdmin(s.handleConfigLang))
+	s.mux.Handle("POST /config/content", s.requireAdmin(s.handleConfigContent))
 	s.mux.Handle("POST /config/mqtt", s.requireAdmin(s.handleConfigMqtt))
 	// Local map tiles ({z}/{x}/{y}.jpg under web.tiles_dir) for offline
 	// mode. Registered unconditionally; empty tiles_dir yields 404s.

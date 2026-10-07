@@ -8,12 +8,20 @@ import (
 )
 
 // RecordSiteVisit bumps the given day's counter (insert-ensure + update
-// keeps the upsert race-free without duplicating logic).
+// keeps the upsert race-free without duplicating logic). The first visit
+// of a new day opportunistically prunes the table back to the retention
+// bound, so the analytics can never grow without limit.
 func (s *Store) RecordSiteVisit(ctx context.Context, day string, newVisitor bool) error {
-	if _, err := s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO site_visits(day, new_visitors, returning_visitors) VALUES(?, 0, 0)
-		ON CONFLICT(day) DO NOTHING`, day); err != nil {
+		ON CONFLICT(day) DO NOTHING`, day)
+	if err != nil {
 		return fmt.Errorf("ensure site visit day: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		if _, err := s.PruneSiteVisits(ctx, storage.SiteVisitRetentionDays); err != nil {
+			return fmt.Errorf("prune site visits: %w", err)
+		}
 	}
 	col := "returning_visitors"
 	if newVisitor {
@@ -25,6 +33,21 @@ func (s *Store) RecordSiteVisit(ctx context.Context, day string, newVisitor bool
 		return fmt.Errorf("record site visit: %w", err)
 	}
 	return nil
+}
+
+// PruneSiteVisits deletes every daily counter beyond the newest `keep`
+// days.
+func (s *Store) PruneSiteVisits(ctx context.Context, keep int) (int64, error) {
+	if keep < 1 {
+		keep = storage.SiteVisitRetentionDays
+	}
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM site_visits WHERE day NOT IN (
+			SELECT day FROM site_visits ORDER BY day DESC LIMIT ?)`, keep)
+	if err != nil {
+		return 0, fmt.Errorf("prune site visits: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // SiteVisits returns the newest `days` daily counters, newest first.

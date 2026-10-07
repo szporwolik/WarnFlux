@@ -9,6 +9,11 @@ type SiteVisit struct {
 	Returning int
 }
 
+// SiteVisitRetentionDays bounds the per-day visitor analytics: rows
+// beyond the newest 365 days are pruned so the table cannot grow
+// forever on a 24/7/365 deployment.
+const SiteVisitRetentionDays = 365
+
 // VisitorStore persists per-day visitor analytics. Visitors are counted
 // once per day, only after they accepted the site's cookie notice.
 type VisitorStore interface {

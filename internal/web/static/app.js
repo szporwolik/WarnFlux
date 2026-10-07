@@ -2310,6 +2310,10 @@
       }
       m.addTo(m._wfGroup);
     }
+    // A deliberate focus becomes the established view: the one-time
+    // auto-fit (first data refresh) must not zoom the map back out and
+    // bury the pin the user just asked for.
+    fittedOnce = true;
     map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 13), { duration: 0.7 });
     m.openPopup();
   }

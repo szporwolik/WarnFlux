@@ -1297,10 +1297,16 @@
 
   // The admin panel menu icons, reused on the public map so both views
   // speak one language: APRS = the broadcast pin, Meshtastic = the
-  // broadcast rings (icons.svg #i-broadcast-pin / #i-broadcast).
+  // broadcast rings (icons.svg #i-broadcast-pin / #i-broadcast). The
+  // 16-grid paths feed BOTH the pin glyphs and the legend buttons, so
+  // the two can never drift apart.
+  var ADMIN_ICON_PATHS = {
+    aprs: 'M3.05 3.05a7 7 0 0 0 0 9.9.5.5 0 0 1-.707.707 8 8 0 0 1 0-11.314.5.5 0 0 1 .707.707m2.122 2.122a4 4 0 0 0 0 5.656.5.5 0 1 1-.708.708 5 5 0 0 1 0-7.072.5.5 0 0 1 .708.708m5.656-.708a.5.5 0 0 1 .708 0 5 5 0 0 1 0 7.072.5.5 0 1 1-.708-.708 4 4 0 0 0 0-5.656.5.5 0 0 1 0-.708m2.122-2.12a.5.5 0 0 1 .707 0 8 8 0 0 1 0 11.313.5.5 0 0 1-.707-.707 7 7 0 0 0 0-9.9.5.5 0 0 1 0-.707zM6 8a2 2 0 1 1 2.5 1.937V15.5a.5.5 0 0 1-1 0V9.937A2 2 0 0 1 6 8',
+    mesh: 'M3.05 3.05a7 7 0 0 0 0 9.9.5.5 0 0 1-.707.707 8 8 0 0 1 0-11.314.5.5 0 0 1 .707.707m2.122 2.122a4 4 0 0 0 0 5.656.5.5 0 1 1-.708.708 5 5 0 0 1 0-7.072.5.5 0 0 1 .708.708m5.656-.708a.5.5 0 0 1 .708 0 5 5 0 0 1 0 7.072.5.5 0 1 1-.708-.708 4 4 0 0 0 0-5.656.5.5 0 0 1 0-.708m2.122-2.12a.5.5 0 0 1 .707 0 8 8 0 0 1 0 11.313.5.5 0 0 1-.707-.707 7 7 0 0 0 0-9.9.5.5 0 0 1 0-.707zM10 8a2 2 0 1 1-4 0 2 2 0 0 1 4 0'
+  };
   var ADMIN_ICONS = {
-    aprs: '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3.05 3.05a7 7 0 0 0 0 9.9.5.5 0 0 1-.707.707 8 8 0 0 1 0-11.314.5.5 0 0 1 .707.707m2.122 2.122a4 4 0 0 0 0 5.656.5.5 0 1 1-.708.708 5 5 0 0 1 0-7.072.5.5 0 0 1 .708.708m5.656-.708a.5.5 0 0 1 .708 0 5 5 0 0 1 0 7.072.5.5 0 1 1-.708-.708 4 4 0 0 0 0-5.656.5.5 0 0 1 0-.708m2.122-2.12a.5.5 0 0 1 .707 0 8 8 0 0 1 0 11.313.5.5 0 0 1-.707-.707 7 7 0 0 0 0-9.9.5.5 0 0 1 0-.707zM6 8a2 2 0 1 1 2.5 1.937V15.5a.5.5 0 0 1-1 0V9.937A2 2 0 0 1 6 8"/></svg>',
-    mesh: '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3.05 3.05a7 7 0 0 0 0 9.9.5.5 0 0 1-.707.707 8 8 0 0 1 0-11.314.5.5 0 0 1 .707.707m2.122 2.122a4 4 0 0 0 0 5.656.5.5 0 1 1-.708.708 5 5 0 0 1 0-7.072.5.5 0 0 1 .708.708m5.656-.708a.5.5 0 0 1 .708 0 5 5 0 0 1 0 7.072.5.5 0 1 1-.708-.708 4 4 0 0 0 0-5.656.5.5 0 0 1 0-.708m2.122-2.12a.5.5 0 0 1 .707 0 8 8 0 0 1 0 11.313.5.5 0 0 1-.707-.707 7 7 0 0 0 0-9.9.5.5 0 0 1 0-.707zM10 8a2 2 0 1 1-4 0 2 2 0 0 1 4 0"/></svg>'
+    aprs: '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="' + ADMIN_ICON_PATHS.aprs + '"/></svg>',
+    mesh: '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="' + ADMIN_ICON_PATHS.mesh + '"/></svg>'
   };
 
   // wfBadge renders one unified pin. opts: color, glyph (SVG or HTML),
@@ -2706,8 +2712,6 @@
   // the Leaflet zoom control stays untouched at the top-left.
   var MAP_CTRL_ICONS = {
     hazards: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
-    stations: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/><path d="M12 14.2v6.8"/>',
-    meshtastic: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/>',
     weather: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
     radar: '<circle cx="12" cy="12" r="8"/><path d="M12 12V4"/><path d="M12 12l6-3.5"/>',
     airquality: '<path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/>',
@@ -2730,6 +2734,19 @@
     btn.title = title;
     btn.setAttribute("aria-label", title);
     btn.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>';
+    L.DomEvent.disableClickPropagation(btn);
+    L.DomEvent.disableScrollPropagation(btn);
+    return btn;
+  }
+
+  // svgBtnFilled builds a legend button carrying a FILLED admin-menu
+  // icon (16-grid path, the exact shapes of the sidebar and the pins).
+  function svgBtnFilled(cls, pathD, title) {
+    var btn = L.DomUtil.create("button", cls);
+    btn.type = "button";
+    btn.title = title;
+    btn.setAttribute("aria-label", title);
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="17" height="17" fill="currentColor" aria-hidden="true"><path d="' + pathD + '"/></svg>';
     L.DomEvent.disableClickPropagation(btn);
     L.DomEvent.disableScrollPropagation(btn);
     return btn;
@@ -2814,7 +2831,16 @@
         // All layers on by default, except aircraft: planes are noisy on
         // the map, so they stay off until asked for.
         var on = def[0] !== "aircraft";
-        var btn = svgBtn("wf-mc-btn" + (on ? " active" : ""), MAP_CTRL_ICONS[def[0]], def[1]);
+        // The radio layers carry the FILLED admin-menu icons (the same
+        // shapes as the pins); everything else keeps the stroke set.
+        var btn;
+        if (def[0] === "stations") {
+          btn = svgBtnFilled("wf-mc-btn" + (on ? " active" : ""), ADMIN_ICON_PATHS.aprs, def[1]);
+        } else if (def[0] === "meshtastic") {
+          btn = svgBtnFilled("wf-mc-btn" + (on ? " active" : ""), ADMIN_ICON_PATHS.mesh, def[1]);
+        } else {
+          btn = svgBtn("wf-mc-btn" + (on ? " active" : ""), MAP_CTRL_ICONS[def[0]], def[1]);
+        }
         btn.style.setProperty("--wf-mc-hue", MAP_CTRL_COLORS[def[0]]);
         btn.setAttribute("aria-pressed", String(on));
         L.DomEvent.on(btn, "click", function () {

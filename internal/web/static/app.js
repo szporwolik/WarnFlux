@@ -1155,7 +1155,7 @@
     var ownMarker = L.marker([ownLat, ownLon], {
       icon: wfBadge({
         color: "#007a3d",
-        glyph: '<span style="font-size:0.55rem;font-weight:700">APRS</span>',
+        glyph: ADMIN_ICONS.aprs,
         label: ownCall || tr("map.our_station")
       }),
       riseOnHover: true
@@ -1295,6 +1295,14 @@
     plane: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L21 21 L12 17 L3 21 Z"/></svg>'
   };
 
+  // The admin panel menu icons, reused on the public map so both views
+  // speak one language: APRS = the broadcast pin, Meshtastic = the
+  // broadcast rings (icons.svg #i-broadcast-pin / #i-broadcast).
+  var ADMIN_ICONS = {
+    aprs: '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3.05 3.05a7 7 0 0 0 0 9.9.5.5 0 0 1-.707.707 8 8 0 0 1 0-11.314.5.5 0 0 1 .707.707m2.122 2.122a4 4 0 0 0 0 5.656.5.5 0 1 1-.708.708 5 5 0 0 1 0-7.072.5.5 0 0 1 .708.708m5.656-.708a.5.5 0 0 1 .708 0 5 5 0 0 1 0 7.072.5.5 0 1 1-.708-.708 4 4 0 0 0 0-5.656.5.5 0 0 1 0-.708m2.122-2.12a.5.5 0 0 1 .707 0 8 8 0 0 1 0 11.313.5.5 0 0 1-.707-.707 7 7 0 0 0 0-9.9.5.5 0 0 1 0-.707zM6 8a2 2 0 1 1 2.5 1.937V15.5a.5.5 0 0 1-1 0V9.937A2 2 0 0 1 6 8"/></svg>',
+    mesh: '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3.05 3.05a7 7 0 0 0 0 9.9.5.5 0 0 1-.707.707 8 8 0 0 1 0-11.314.5.5 0 0 1 .707.707m2.122 2.122a4 4 0 0 0 0 5.656.5.5 0 1 1-.708.708 5 5 0 0 1 0-7.072.5.5 0 0 1 .708.708m5.656-.708a.5.5 0 0 1 .708 0 5 5 0 0 1 0 7.072.5.5 0 1 1-.708-.708 4 4 0 0 0 0-5.656.5.5 0 0 1 0-.708m2.122-2.12a.5.5 0 0 1 .707 0 8 8 0 0 1 0 11.313.5.5 0 0 1-.707-.707 7 7 0 0 0 0-9.9.5.5 0 0 1 0-.707zM10 8a2 2 0 1 1-4 0 2 2 0 0 1 4 0"/></svg>'
+  };
+
   // wfBadge renders one unified pin. opts: color, glyph (SVG or HTML),
   // rot (glyph rotation, e.g. the aircraft track), size (default 24),
   // hollow (transparent fill, glyph in the category color — used for
@@ -1391,27 +1399,13 @@
   function stationColor(s) {
     return stationIsMoving(s) ? STATION_COLORS.moving : STATION_COLORS.static;
   }
-  // APRS station pins carry the same short text code the admin map
-  // uses: the delivery backend (RF / IS / RF+IS), not an abstract
-  // glyph — operators asked for one consistent pin language.
-  function stationCode(s) {
-    var via = s.received_via || [];
-    var radio = via.indexOf("aprs-radio") >= 0;
-    var inet = via.indexOf("aprs-inet") >= 0;
-    if (!radio && !inet) {
-      if (s.origin === "rf") { radio = true; }
-      if (s.origin === "internet") { inet = true; }
-    }
-    if (radio && inet) { return "RF+IS"; }
-    if (radio) { return "RF"; }
-    if (inet) { return "IS"; }
-    return "APRS";
-  }
-
+  // APRS station pins carry the admin menu's broadcast-pin icon (the
+  // delivery backend RF / IS / RF+IS stays in the tooltip, where it
+  // has room to breathe).
   function stationBadge(s) {
     return wfBadge({
       color: stationColor(s),
-      glyph: '<span style="font-size:0.55rem;font-weight:700">' + esc(stationCode(s)) + '</span>',
+      glyph: ADMIN_ICONS.aprs,
       label: s.callsign
     });
   }
@@ -1422,15 +1416,13 @@
     return "#8e24aa";
   }
 
-  // meshBadge renders the Meshtastic pin: the hop count as the badge
-  // code (the same language as the admin map — 0 direct, ? unknown),
-  // with the node name as the halo label (unnamed nodes get the
-  // generic label; ids stay off the public map).
+  // meshBadge renders the Meshtastic pin with the admin menu's
+  // broadcast icon; the hop count moved into the tooltip, where it
+  // stays readable.
   function meshBadge(n) {
-    var code = n.hops > 0 ? String(n.hops) : (n.hops < 0 ? "?" : "0");
     return wfBadge({
       color: meshColor(n),
-      glyph: '<span style="font-size:0.55rem;font-weight:700">' + esc(code) + '</span>',
+      glyph: ADMIN_ICONS.mesh,
       label: n.name || tr("meshtastic.type.node")
     });
   }
@@ -1744,6 +1736,7 @@
           if (meshSignals(n)) {
             hover += "<br>" + esc(meshSignals(n));
           }
+          hover += "<br>" + (n.hops >= 0 ? String(n.hops) : "?") + " " + tr("map.hops");
           hover += "<br>" + tr("map.heard") + ": " + esc(fmtTime(n.last_seen));
           marker.bindTooltip(hover, { sticky: true, direction: "top" });
           marker.bindPopup(meshPopup(n));
@@ -2713,8 +2706,8 @@
   // the Leaflet zoom control stays untouched at the top-left.
   var MAP_CTRL_ICONS = {
     hazards: '<path d="M12 3l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
-    stations: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/>',
-    meshtastic: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/><path d="M8 11h8"/><path d="M8 15h5"/>',
+    stations: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/><path d="M12 14.2v6.8"/>',
+    meshtastic: '<circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 1 6.6 0"/><path d="M5.3 5.3a9.5 9.5 0 0 1 13.4 0"/>',
     weather: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
     radar: '<circle cx="12" cy="12" r="8"/><path d="M12 12V4"/><path d="M12 12l6-3.5"/>',
     airquality: '<path d="M3 8h9a3 3 0 1 0-3-3"/><path d="M3 12h13a3 3 0 1 1-3 3"/><path d="M3 16h7a2 2 0 1 1-2 2"/>',

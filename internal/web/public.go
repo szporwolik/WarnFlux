@@ -36,15 +36,15 @@ func (s *Server) publicChromeFor() publicChrome {
 	return publicChrome{
 		AppTitle:    s.cfg.Title,
 		Header1:     s.displayHeader1(),
-		Header2:     s.cfg.Header2,
-		Tagline:     s.cfg.Tagline,
+		Header2:     s.DisplayHeader2(),
+		Tagline:     s.DisplayTagline(),
 		Version:     s.version,
 		Commit:      s.commit,
 		RepoURL:     repoURL,
 		OfflineMode: s.OfflineMode(),
 		ForceTiles:  s.forceTiles.Load(),
-		Disclaimer:  s.cfg.Disclaimer,
-		About:       template.HTML(s.cfg.About),
+		Disclaimer:  s.DisplayDisclaimer(),
+		About:       template.HTML(s.DisplayAbout()),
 	}
 }
 

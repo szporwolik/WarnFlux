@@ -6,14 +6,24 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
+
+// domainPattern accepts a host (or host:port) without scheme and path.
+var domainPattern = regexp.MustCompile(`^[a-zA-Z0-9.-]+(:[0-9]{1,5})?$`)
+
+// contentFieldCap bounds every editable content field on the Config page.
+const contentFieldCap = 4000
 
 // configView is the admin-only /config page model: the offline-mode
 // switch, the local tile tree status and the list of sources that the
@@ -88,6 +98,11 @@ type configView struct {
 	// Error carries the banner after a rejected EMCOM management
 	// action (re-rendered on the config page).
 	Error string
+	// Editable branding/content (the "appearance" section):
+	// populated from the runtime getters, saved back to the YAML file.
+	About      string
+	Disclaimer string
+	Domain     string
 }
 
 // configMqttRow is one checkbox row of the publish mask.
@@ -165,8 +180,8 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		AppTitle:        s.cfg.Title,
 		Name:            s.displayName(),
 		Header1:         s.displayHeader1(),
-		Header2:         s.cfg.Header2,
-		Tagline:         s.cfg.Tagline,
+		Header2:         s.DisplayHeader2(),
+		Tagline:         s.DisplayTagline(),
 		Version:         s.version,
 		Commit:          s.commit,
 		RepoURL:         repoURL,
@@ -186,6 +201,9 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		ForceLocalTiles: s.forceTiles.Load(),
 		SystemLanguage:  s.SystemLanguage(),
 		Languages:       i18n.Codes(),
+		About:           s.DisplayAbout(),
+		Disclaimer:      s.DisplayDisclaimer(),
+		Domain:          s.DisplayDomain(),
 	}
 }
 
@@ -209,9 +227,29 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		v.Msg = i18n.T(lang, "config.tiles.saved")
 	case "lang":
 		v.Msg = i18n.T(lang, "config.lang.saved")
+	case "content":
+		v.Msg = i18n.T(lang, "config.content.saved")
+	}
+	if r.URL.Query().Get("perr") == "1" {
+		v.Error = i18n.T(lang, "config.persist_failed")
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "configpage", v)
+}
+
+// persistConfigYAML applies one panel change to the YAML configuration
+// file. The runtime state has already been flipped; this only makes the
+// change durable.
+func (s *Server) persistConfigYAML(change string, set func() error) bool {
+	if s.configPath == "" {
+		return true
+	}
+	if err := set(); err != nil {
+		s.logger.Warn("config persist failed", "change", change, "error", err)
+		return false
+	}
+	s.logger.Info("config persisted", "change", change, "path", s.configPath)
+	return true
 }
 
 // renderConfigEmcomError re-renders the config page with an error banner
@@ -223,6 +261,12 @@ func (s *Server) renderConfigEmcomError(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	s.renderL(w, r, "configpage", v)
+}
+
+// renderConfigError re-renders the config page with an error banner after
+// a rejected panel action.
+func (s *Server) renderConfigError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	s.renderConfigEmcomError(w, r, status, msg)
 }
 
 // handleConfigMqtt replaces the runtime publish mask. Checked categories
@@ -249,11 +293,24 @@ func (s *Server) handleConfigMqtt(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mqttpolicy.Set(mask)
+	perr := ""
+	if !s.persistConfigYAML("mqtt_publish", func() error {
+		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
+			for _, c := range mqttpolicy.List() {
+				if err := config.SetScalarPath(root, "mqtt_publish."+mqttpolicy.Key(c), config.BoolScalar(mask&uint32(c) != 0)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}) {
+		perr = "&perr=1"
+	}
 	s.audit(sess.username, "config-mqtt",
 		"publish mask: "+strings.Join(mqttpolicy.EnabledKeys(mask), ","))
 	s.logger.Info("mqtt publish mask updated by admin",
 		"user", sess.username, "categories", mqttpolicy.EnabledKeys(mask))
-	http.Redirect(w, r, "/config?msg=mqtt", http.StatusSeeOther)
+	http.Redirect(w, r, "/config?msg=mqtt"+perr, http.StatusSeeOther)
 }
 
 // handleConfigTiles flips the local-tile forcing switch: ON means every
@@ -277,10 +334,18 @@ func (s *Server) handleConfigTiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid value", http.StatusBadRequest)
 		return
 	}
+	perr := ""
+	if !s.persistConfigYAML("force_local_tiles", func() error {
+		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
+			return config.SetScalarPath(root, "web.force_local_tiles", config.BoolScalar(s.forceTiles.Load()))
+		})
+	}) {
+		perr = "&perr=1"
+	}
 	s.audit(sess.username, "config-tiles", r.PostFormValue("tiles"))
 	s.logger.Info("local tile forcing toggled by admin",
 		"user", sess.username, "state", r.PostFormValue("tiles"))
-	http.Redirect(w, r, "/config?msg=tiles", http.StatusSeeOther)
+	http.Redirect(w, r, "/config?msg=tiles"+perr, http.StatusSeeOther)
 }
 
 // handleConfigMesh flips the three Meshtastic announcement switches: the
@@ -321,13 +386,36 @@ func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid value", http.StatusBadRequest)
 		return
 	}
+	perr := ""
+	if !s.persistConfigYAML("meshtastic alerts", func() error {
+		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
+			if channel != "" {
+				if err := config.SetScalarPath(root, "meshtastic.channel_alerts", config.BoolScalar(meshtastic.ChannelAlerts())); err != nil {
+					return err
+				}
+			}
+			if dm != "" {
+				if err := config.SetScalarPath(root, "meshtastic.dm_alerts", config.BoolScalar(meshtastic.DMAlerts())); err != nil {
+					return err
+				}
+			}
+			if stations != "" {
+				if err := config.SetScalarPath(root, "meshtastic.station_alerts", config.BoolScalar(meshtastic.StationAlerts())); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}) {
+		perr = "&perr=1"
+	}
 	s.audit(sess.username, "config-mesh",
 		fmt.Sprintf("channel=%v dm=%v stations=%v", meshtastic.ChannelAlerts(), meshtastic.DMAlerts(), meshtastic.StationAlerts()))
 	s.logger.Info("meshtastic announcements toggled by admin",
 		"user", sess.username,
 		"channel", meshtastic.ChannelAlerts(), "dm", meshtastic.DMAlerts(),
 		"stations", meshtastic.StationAlerts())
-	http.Redirect(w, r, "/config?msg=mesh", http.StatusSeeOther)
+	http.Redirect(w, r, "/config?msg=mesh"+perr, http.StatusSeeOther)
 }
 
 // handleConfigLang switches the system notification language: broadcast
@@ -348,10 +436,78 @@ func (s *Server) handleConfigLang(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.SetSystemLanguage(code)
+	perr := ""
+	if !s.persistConfigYAML("system_language", func() error {
+		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
+			return config.SetScalarPath(root, "web.system_language", config.StringScalar(code))
+		})
+	}) {
+		perr = "&perr=1"
+	}
 	s.audit(sess.username, "config-lang", code)
 	s.logger.Info("system notification language changed by admin",
 		"user", sess.username, "lang", code)
-	http.Redirect(w, r, "/config?msg=lang", http.StatusSeeOther)
+	http.Redirect(w, r, "/config?msg=lang"+perr, http.StatusSeeOther)
+}
+
+// handleConfigContent saves the editable branding/content fields of the
+// admin Config page: they apply to every page immediately and are
+// written back to the YAML file so they survive restarts. Admin-only.
+func (s *Server) handleConfigContent(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		if err == nil {
+			return
+		}
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	trim := func(k string) string { return strings.TrimSpace(r.PostFormValue(k)) }
+	fields := map[string]string{
+		"header1":    trim("header1"),
+		"header2":    trim("header2"),
+		"tagline":    trim("tagline"),
+		"about":      trim("about"),
+		"disclaimer": trim("disclaimer"),
+		"domain":     strings.TrimSuffix(trim("domain"), "/"),
+	}
+	for k, v := range fields {
+		if len(v) > contentFieldCap {
+			s.renderConfigError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "config.content.toolong"))
+			return
+		}
+		if k == "domain" && v != "" && !domainPattern.MatchString(v) {
+			s.renderConfigError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "config.content.baddomain"))
+			return
+		}
+	}
+	s.header1.Store(fields["header1"])
+	s.header2.Store(fields["header2"])
+	s.tagline.Store(fields["tagline"])
+	s.about.Store(fields["about"])
+	s.disclaimer.Store(fields["disclaimer"])
+	s.domain.Store(fields["domain"])
+
+	perr := ""
+	if !s.persistConfigYAML("web content", func() error {
+		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
+			for key, path := range map[string]string{
+				"header1": "web.header1", "header2": "web.header2", "tagline": "web.tagline",
+				"about": "web.about", "disclaimer": "web.disclaimer", "domain": "web.domain",
+			} {
+				if err := config.SetScalarPath(root, path, config.StringScalar(fields[key])); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}) {
+		perr = "&perr=1"
+	}
+	s.audit(sess.username, "config-content",
+		fmt.Sprintf("header1=%q header2=%q tagline=%q domain=%q", fields["header1"], fields["header2"], fields["tagline"], fields["domain"]))
+	s.logger.Info("web branding content updated by admin", "user", sess.username, "domain", fields["domain"])
+	http.Redirect(w, r, "/config?msg=content"+perr, http.StatusSeeOther)
 }
 
 // handleConfigOffline flips the offline-mode switch. Admin-only; the
@@ -377,6 +533,14 @@ func (s *Server) handleConfigOffline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.SetOffline(on)
+	perr := ""
+	if !s.persistConfigYAML("offline_mode", func() error {
+		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
+			return config.SetScalarPath(root, "web.offline_mode", config.BoolScalar(on))
+		})
+	}) {
+		perr = "&perr=1"
+	}
 	if on {
 		s.audit(sess.username, "config-offline", "offline mode enabled")
 		s.logger.Info("offline mode enabled by admin", "user", sess.username)
@@ -385,9 +549,9 @@ func (s *Server) handleConfigOffline(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("offline mode disabled by admin", "user", sess.username)
 	}
 	if on {
-		http.Redirect(w, r, "/config?msg=on", http.StatusSeeOther)
+		http.Redirect(w, r, "/config?msg=on"+perr, http.StatusSeeOther)
 	} else {
-		http.Redirect(w, r, "/config?msg=off", http.StatusSeeOther)
+		http.Redirect(w, r, "/config?msg=off"+perr, http.StatusSeeOther)
 	}
 }
 

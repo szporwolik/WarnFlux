@@ -873,6 +873,7 @@ func (s *Server) buildComposeView(lang string, form composeForm) composeView {
 		Statuses:    composeStatusesFor(lang),
 		NavCompose:  true,
 		OfflineMode: s.OfflineMode(),
+		ForceTiles:  s.forceTiles.Load(),
 		// Editing opens the panel on the initial render; a fresh page
 		// starts with the issued list and a collapsed panel.
 		ShowForm: form.EventKey != "",

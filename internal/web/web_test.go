@@ -1632,6 +1632,22 @@ func TestComposeFlow(t *testing.T) {
 	}
 	csrf := extractCSRF(t, html)
 
+	// Force-local-tiles must reach the compose picker too: after the
+	// Config switch the page stamps WF_OFFLINE (the picker then serves
+	// the station's own tile tree even while online).
+	resp, _ = env.postForm("/config/tiles", url.Values{"csrf": {csrf}, "tiles": {"on"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/tiles = %d, want redirect", resp.StatusCode)
+	}
+	_, html = env.get("/compose")
+	if !strings.Contains(html, "window.WF_OFFLINE=true") {
+		t.Errorf("compose page must honor the force-local-tiles switch: %s", html)
+	}
+	resp, _ = env.postForm("/config/tiles", url.Values{"csrf": {csrf}, "tiles": {"off"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/tiles off = %d, want redirect", resp.StatusCode)
+	}
+
 	// CSRF is enforced on both mutations.
 	resp, _ = env.postForm("/compose", url.Values{"event": {"Flood"}, "headline": {"x"}, "severity": {"severe"}})
 	if resp.StatusCode != http.StatusForbidden {

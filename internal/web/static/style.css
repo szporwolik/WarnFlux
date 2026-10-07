@@ -2444,6 +2444,13 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .mc-chip-meta { color: var(--muted); font-size: 0.75rem; }
 .mc-chip.copied .mc-chip-name { color: var(--ok, #2e7d32); overflow-wrap: anywhere; }
+/* Positionless mesh badge details: a floating popover with the same
+   content a map popup would show (the node has no pin). */
+.wf-nopos-pop {
+  position: fixed;
+  z-index: 12000;
+  max-width: 20rem;
+}
 /* Copyable public key in the MeshCore nodes table: the short prefix with
    a clipboard glyph; a click copies the full key and flashes it in place. */
 .key-copy {

@@ -1714,7 +1714,10 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .home-sub-link:hover { color: var(--link); }
 .home-back { margin: 0 0 1rem; }
-.home-single { max-width: 56rem; margin: 0 auto; padding: 0 1rem 2rem; width: 100%; }
+/* Standalone public pages (archive, sources) use the full desktop
+   width so wide layouts — the three-column archive grid, the channel
+   list — have room to breathe. */
+.home-single { max-width: 92rem; margin: 0 auto; padding: 0 1rem 2rem; width: 100%; }
 .home-single .home-panel { display: block; }
 .home-foot-link { color: var(--muted); text-decoration: none; }
 .home-foot-link:hover { color: var(--link); text-decoration: underline; }
@@ -1733,7 +1736,10 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .home-alerts-head .emcom-info:hover { color: var(--link); border-color: var(--link); }
 .home-alerts-head .emcom-info .icon { width: 0.85rem; height: 0.85rem; }
-.home-archive .home-alerts { display: grid; gap: 0.6rem; }
+/* Archive: one column on phones, two on tablets, three on desktop. */
+.home-archive .home-alerts { display: grid; gap: 0.6rem; grid-template-columns: 1fr; align-items: start; }
+@media (min-width: 768px) { .home-archive .home-alerts { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1200px) { .home-archive .home-alerts { grid-template-columns: repeat(3, 1fr); } }
 .home-archive .pager { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; }
 .home-archive-window { color: var(--muted); font-size: 0.8rem; font-weight: 500; }
 .home-channels-note { margin: 0 0 1rem; }

@@ -4376,6 +4376,9 @@ func TestMeshtasticDMTab(t *testing.T) {
 
 	// Default: no filter, every dm row, paginated.
 	_, html = env.get("/meshtastic")
+	if strings.Count(html, `class="btn-ghost mesh-bell"`) != 2 {
+		t.Errorf("meshtastic page must carry a bell toggle in each send form: %.300s", html)
+	}
 	if !strings.Contains(html, "to-spm") {
 		t.Errorf("DM default view missing rows: %.300s", html)
 	}

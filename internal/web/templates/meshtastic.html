@@ -45,8 +45,6 @@
              data-lbl-inactive-d="{{tr .Lang "meshtastic.trace_inactive_d"}}"></div>
         <p class="aprs-map-attrib"><span id="mesh-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> · <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
       </div>
-      <h3 class="meshmap-nopos-title muted" id="mesh-nopos-title" hidden></h3>
-      <ul class="meshmap-nopos" id="mesh-nopos" hidden></ul>
       {{else}}
       <p class="home-none">{{tr .Lang "meshmap.disabled"}}</p>
       {{end}}
@@ -382,36 +380,7 @@
     var LBL_INACTIVE_M = el.dataset.lblInactiveM || "inactive for %dm";
     var LBL_INACTIVE_H = el.dataset.lblInactiveH || "inactive for %dh";
     var LBL_INACTIVE_D = el.dataset.lblInactiveD || "inactive for %dd";
-    var noposEl = document.getElementById("mesh-nopos");
-    var noposTitle = document.getElementById("mesh-nopos-title");
     var MESH_COLOR = "#8e24aa";
-
-    // Stations without a position are collapsed by default: the title
-    // doubles as a toggle that expands the list.
-    var noposOpen = false;
-    var noposCount = 0;
-    function syncNoposToggle() {
-      if (!noposTitle) { return; }
-      noposTitle.hidden = !noposCount;
-      noposEl.hidden = !noposOpen;
-      noposTitle.textContent = LBL_NOPOS + " (" + noposCount + ") " + (noposOpen ? "▾" : "▸");
-      noposTitle.setAttribute("aria-expanded", String(noposOpen));
-    }
-    if (noposTitle) {
-      noposTitle.setAttribute("role", "button");
-      noposTitle.setAttribute("tabindex", "0");
-      noposTitle.addEventListener("click", function () {
-        noposOpen = !noposOpen;
-        syncNoposToggle();
-      });
-      noposTitle.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          noposOpen = !noposOpen;
-          syncNoposToggle();
-        }
-      });
-    }
 
     // Same basemap idea as the APRS map: the local tile tree in offline
     // mode, otherwise a free raster provider matching the theme.
@@ -568,58 +537,9 @@
         bounds.extend([n.latitude, n.longitude]);
       });
 
-      // Nodes heard without a position: listed below the map.
-      noposEl.textContent = "";
-      var cutoff = windowCutoff(timeFilter);
-      var list = (data.nopos || []).filter(function (n) {
-        return !cutoff || (n.last_seen && new Date(n.last_seen).getTime() >= cutoff);
-      });
-      noposCount = list.length;
-      syncNoposToggle();
-      list.forEach(function (n) {
-        var li = document.createElement("li");
-        var strong = document.createElement("strong");
-        strong.textContent = displayName(n);
-        li.appendChild(strong);
-        li.appendChild(document.createTextNode(" " + hopsLine(n) + " · "));
-        if (n.last_seen) {
-          li.appendChild(document.createTextNode(LBL_HEARD + ": " + fmtTime(n.last_seen)));
-        }
-        // Stations without a position get the same Trace and Message
-        // actions as the table rows (the radio handles them too).
-        var stale = false;
-        var ageText = "";
-        if (n.last_seen) {
-          var age = Date.now() - new Date(n.last_seen).getTime();
-          if (age > 30 * 60 * 1000) {
-            stale = true;
-            ageText = inactiveText(age);
-          }
-        }
-        var actions = document.createElement("span");
-        actions.className = "mesh-nopos-actions";
-        var msg = document.createElement("button");
-        msg.type = "button";
-        msg.className = "btn-ghost mesh-msg";
-        msg.setAttribute("data-id", n.id);
-        msg.textContent = LBL_MSG;
-        actions.appendChild(msg);
-        var tr = document.createElement("button");
-        tr.type = "button";
-        tr.className = "btn-ghost mesh-trace";
-        tr.setAttribute("data-id", n.id);
-        tr.setAttribute("data-name", n.name || "");
-        tr.setAttribute("data-short", n.short_name || "");
-        if (stale) {
-          tr.disabled = true;
-          tr.title = ageText;
-        }
-        tr.textContent = LBL_TRACE;
-        actions.appendChild(tr);
-        li.appendChild(actions);
-        noposEl.appendChild(li);
-      });
-
+      // Nodes heard without a position live in the Heard nodes table
+      // below (marked there with a "no position" badge), so the map
+      // only shows what it can pin.
       if (!fittedOnce) {
         if (bounds.isValid()) {
           map.fitBounds(bounds.pad(0.2), { maxZoom: 13 });
@@ -700,7 +620,7 @@
         </td>
         <td class="nowrap">{{if gt .Hops 0}}{{.Hops}}{{else if eq .Hops 0}}0 <span class="muted">({{tr $.Lang "meshmap.direct"}})</span>{{else}}<span class="muted" title="{{tr $.Lang "meshmap.unknown"}}">?</span>{{end}}</td>
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
-        <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else}}—{{end}}</td>
+        <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else if .Lat}}—{{else}}<span class="badge muted">{{tr $.Lang "meshmap.nopos"}}</span>{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}{{if .Stale}} <span class="badge muted">{{.Inactive}}</span>{{end}}</td>
         <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost mesh-trace" disabled
             title="{{.Inactive}}">{{tr $.Lang "meshtastic.trace"}}</button>{{else}}

@@ -934,7 +934,6 @@ tr.click-send:hover td { background: var(--surface-hi); }
   color: var(--muted);
   margin: -0.15rem 0;
 }
-.mesh-nopos-actions { display: inline-flex; gap: 0.4rem; margin-left: 0.6rem; vertical-align: middle; }
 .mesh-send input[name="text"] { flex: 1 1 16rem; }
 .mesh-send .btn-primary { width: auto; flex: none; }
 .aprs-send {
@@ -2010,29 +2009,6 @@ tr.click-send:hover td { background: var(--surface-hi); }
 #mesh-admin-map.leaflet-container {
   font-family: inherit;
 }
-.meshmap-nopos {
-  margin: 0.6rem 0 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
-  gap: 0.35rem;
-}
-.meshmap-nopos li {
-  list-style: none;
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-  padding: 0.35rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 0.82rem;
-}
-.meshmap-nopos li strong { font-weight: 600; }
-/* The no-position header is a toggle: collapsed by default. */
-.meshmap-nopos-title {
-  cursor: pointer;
-  user-select: none;
-}
-.meshmap-nopos-title:hover { color: var(--text); }
 @media (max-width: 640px) {
   #mesh-admin-map { min-height: 18rem; height: 60dvh; }
 }

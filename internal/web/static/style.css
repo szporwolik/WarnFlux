@@ -54,10 +54,10 @@
   --brand-soft:  #342018;
   --on-brand:    #101418; /* dark text on brand buttons */
 
-  /* Complementary cool blue: links, info, secondary accents. */
-  --secondary:       #78a9c0;
-  --secondary-hover: #91bdd0;
-  --secondary-soft:  #182a33;
+	/* Component accent: the brand orange, used by toggles, active
+	   chips and highlighted rows across the whole UI. */
+	--accent:      var(--brand);
+	--accent-soft: var(--brand-soft);
   --link:            var(--secondary);
   --link-hover:      #9bc6d8;
 
@@ -149,9 +149,8 @@ html[data-theme="light"] {
   --brand-soft:  #f7e7e0;
   --on-brand:    #ffffff;
 
-  --secondary:       #2f6b84;
-  --secondary-hover: #255970;
-  --secondary-soft:  #e5eff3;
+	--accent:      var(--brand);
+	--accent-soft: var(--brand-soft);
   --link:            #2f6b84;
   --link-hover:      #214f63;
 
@@ -2807,6 +2806,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
   border-radius: var(--radius);
   background: var(--surface, var(--bg));
   padding: 0.7rem 0.9rem;
+  box-shadow: var(--card-shadow);
 }
 .config-block-wide { grid-column: 1 / -1; }
 .config-row {
@@ -2815,8 +2815,10 @@ tr.click-send:hover td { background: var(--surface-hi); }
   gap: 0.7rem;
   flex-wrap: wrap;
 }
-.config-row-title { font-weight: 600; font-size: 0.9rem; }
+.config-row-title { font-weight: 600; font-size: 0.9rem; flex: 1 1 auto; min-width: 9rem; }
+.config-row .badge { flex: none; }
 .config-hint { margin: 0; color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+.config-hint code { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-secondary); }
 .config-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .config-chip {
   border: 1px solid var(--border);
@@ -2826,6 +2828,19 @@ tr.click-send:hover td { background: var(--surface-hi); }
   font-size: 0.78rem;
   white-space: nowrap;
 }
+
+/* Config selects share the input language of the rest of the app. */
+.config-block select {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+}
+.config-block select:hover { border-color: var(--border-strong); }
+.config-block select:focus-visible { border-color: var(--accent); }
 
 /* Offline mode: one clickable row — title, state badge, switch. */
 .config-offline-form { margin: 0; }
@@ -2862,7 +2877,14 @@ tr.click-send:hover td { background: var(--surface-hi); }
   height: 26px;
   flex: none;
 }
-.switch input { opacity: 0; width: 0; height: 0; }
+.switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+  z-index: 1;
+}
 .switch .slider {
   position: absolute;
   inset: 0;
@@ -2878,12 +2900,14 @@ tr.click-send:hover td { background: var(--surface-hi); }
   width: 18px;
   left: 3px;
   top: 3px;
-  background: var(--muted);
+  background: var(--text-secondary);
   border-radius: 50%;
   transition: transform 0.2s, background 0.2s;
 }
+.switch:hover .slider { border-color: var(--border-strong); }
 .switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
 .switch input:checked + .slider::before { transform: translateX(24px); background: #fff; }
+.switch input:checked:hover + .slider { border-color: var(--brand-hover); }
 .switch input:focus-visible + .slider { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* EMCOM panel page. */

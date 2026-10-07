@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 )
 
@@ -308,6 +309,54 @@ func TestConfigMqttMask(t *testing.T) {
 	}
 	if !mqttpolicy.Allowed(mqttpolicy.CatInfo) {
 		t.Error("info must stay allowed")
+	}
+}
+
+// TestConfigMeshSplitSwitches pins the two independent mesh switches: the
+// group-channel broadcast and the direct messages to users are toggled
+// separately from the Config page.
+func TestConfigMeshSplitSwitches(t *testing.T) {
+	t.Cleanup(func() {
+		meshtastic.SetChannelAlerts(true)
+		meshtastic.SetDMAlerts(true)
+	})
+	env := newTestEnv(t)
+	env.login()
+
+	_, page := env.get("/config")
+	if !strings.Contains(page, `name="channel"`) || !strings.Contains(page, `name="dm"`) {
+		t.Fatalf("config page misses the two mesh switches: %s", page)
+	}
+
+	// Mute only the group channel.
+	csrf := env.csrfFromPage("/config")
+	resp, _ := env.postForm("/config/mesh", url.Values{"csrf": {csrf}, "channel": {"off"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/mesh channel = %d, want 303", resp.StatusCode)
+	}
+	if meshtastic.ChannelAlerts() {
+		t.Error("channel alerts must be muted after the POST")
+	}
+	if !meshtastic.DMAlerts() {
+		t.Error("DM alerts must be untouched by the channel POST")
+	}
+
+	// Mute only the direct messages.
+	resp, _ = env.postForm("/config/mesh", url.Values{"csrf": {csrf}, "dm": {"off"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/mesh dm = %d, want 303", resp.StatusCode)
+	}
+	if meshtastic.ChannelAlerts() {
+		t.Error("channel alerts must stay muted")
+	}
+	if meshtastic.DMAlerts() {
+		t.Error("DM alerts must be muted after the POST")
+	}
+
+	// An empty submit is rejected.
+	resp, _ = env.postForm("/config/mesh", url.Values{"csrf": {csrf}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /config/mesh empty = %d, want 400", resp.StatusCode)
 	}
 }
 

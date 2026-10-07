@@ -262,18 +262,54 @@ func emcomDeactivationHazard(net emcomNetwork, prev int, now time.Time, lang str
 	return h
 }
 
+// emcomTextFor renders one EMCOM notification payload in lang: the full
+// plain-text Description (summary + level definition + full legend) plus
+// the structured pieces styled mails use instead (Summary, Definition
+// and the Legend rows).
+func emcomTextFor(net emcomNetwork, prev int, lang string, drop bool) dispatch.HazardText {
+	lang = i18n.Effective(lang)
+	var h state.Hazard
+	if drop {
+		h = emcomDeactivationHazard(net, prev, net.UpdatedAt, lang)
+	} else {
+		h = emcomHazard(net, net.UpdatedAt, lang)
+	}
+	lvlName := i18n.T(lang, fmt.Sprintf("emcom.levels.%d", net.Level))
+	lvlDesc := i18n.T(lang, fmt.Sprintf("emcom.desc.%d", net.Level))
+	summary := fmt.Sprintf(i18n.T(lang, "emcom.raised_at"), net.Name, net.Level, lvlName)
+	if drop {
+		oldName := fmt.Sprintf(i18n.T(lang, "emcom.level_plain"), prev)
+		if _, ok := emcomLevelAt(prev); ok {
+			oldName = fmt.Sprintf(i18n.T(lang, "emcom.level_name"), prev,
+				i18n.T(lang, fmt.Sprintf("emcom.levels.%d", prev)))
+		}
+		summary = fmt.Sprintf(i18n.T(lang, "emcom.lowered_from"), net.Name, oldName, net.Level, lvlName)
+	}
+	legend := make([]dispatch.HazardLegendLine, 0, len(emcomLevels))
+	for _, l := range emcomLevels {
+		legend = append(legend, dispatch.HazardLegendLine{
+			Level:       l.Level,
+			Name:        i18n.T(lang, fmt.Sprintf("emcom.levels.%d", l.Level)),
+			Description: i18n.T(lang, fmt.Sprintf("emcom.desc.%d", l.Level)),
+		})
+	}
+	return dispatch.HazardText{
+		Headline:    h.Headline,
+		Description: h.Description,
+		Instruction: h.Instruction,
+		Summary:     summary,
+		Definition:  lvlDesc,
+		Legend:      legend,
+	}
+}
+
 // emcomLocalized renders the activation payload in every supported
 // notification language, so each recipient gets the EMCOM level texts in
 // their own language (the canonical fields stay in the system language).
 func emcomLocalized(net emcomNetwork) map[string]dispatch.HazardText {
 	out := make(map[string]dispatch.HazardText, len(i18n.Codes()))
 	for _, code := range i18n.Codes() {
-		h := emcomHazard(net, net.UpdatedAt, code)
-		out[code] = dispatch.HazardText{
-			Headline:    h.Headline,
-			Description: h.Description,
-			Instruction: h.Instruction,
-		}
+		out[code] = emcomTextFor(net, 0, code, false)
 	}
 	return out
 }
@@ -283,12 +319,7 @@ func emcomLocalized(net emcomNetwork) map[string]dispatch.HazardText {
 func emcomLocalizedDrop(net emcomNetwork, prev int) map[string]dispatch.HazardText {
 	out := make(map[string]dispatch.HazardText, len(i18n.Codes()))
 	for _, code := range i18n.Codes() {
-		h := emcomDeactivationHazard(net, prev, net.UpdatedAt, code)
-		out[code] = dispatch.HazardText{
-			Headline:    h.Headline,
-			Description: h.Description,
-			Instruction: h.Instruction,
-		}
+		out[code] = emcomTextFor(net, prev, code, true)
 	}
 	return out
 }

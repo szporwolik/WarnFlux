@@ -690,6 +690,22 @@ func severityColor(severity string) string {
 	}
 }
 
+// emcomLevelColor maps an EMCOM readiness level onto the shared level
+// palette (the same colors as the public home header chips), used for
+// the legend rows in styled mails.
+func emcomLevelColor(level int) string {
+	switch level {
+	case 1:
+		return "#b28704"
+	case 2:
+		return "#e07b00"
+	case 3:
+		return "#c62828"
+	default:
+		return "#607d8b"
+	}
+}
+
 // bodyOfHTML renders a styled, human-first HTML version of the event: a
 // focused summary for the reader and a branded footer. The card carries
 // a severity-colored accent (the same palette as the web dashboard), so
@@ -780,10 +796,41 @@ func hazardHTML(ev dispatch.Event, link, lang string) string {
 	if headline != h.Hazard.Event {
 		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
 	}
-	if desc := strings.TrimSpace(t.Description); desc != "" {
-		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.description")), htmlEscaper(desc))
+
+	// EMCOM notifications carry a structured rendering (summary sentence,
+	// the activated level's definition and the full readiness scale): it
+	// renders as styled blocks instead of one plain-text wall.
+	emcomLayout := t.Summary != "" || len(t.Legend) > 0
+	if emcomLayout {
+		fmt.Fprintf(&b, `<div style="margin-top:16px;background-color:#1b232b;border-left:4px solid %s;padding:12px 16px;border-radius:8px;color:#eef2f5;font-size:14px;line-height:1.5;">%s</div>`,
+			badge, htmlEscaper(t.Summary))
+		if t.Definition != "" {
+			fmt.Fprintf(&b, `<div style="margin-top:12px;color:#eef2f5;font-size:13px;line-height:1.6;">%s</div>`, htmlEscaper(t.Definition))
+		}
+		if len(t.Legend) > 0 {
+			fmt.Fprintf(&b, `<div style="margin-top:18px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div>`,
+				htmlEscaper(i18n.T(lang, "emcom.legend_head")))
+			b.WriteString(`<div style="margin-top:8px;">`)
+			for _, l := range t.Legend {
+				col := emcomLevelColor(l.Level)
+				fmt.Fprintf(&b, `<table role="presentation" cellpadding="0" cellspacing="0" width="100%%" style="margin-bottom:8px;"><tr>
+<td style="vertical-align:top;padding-right:10px;"><span style="display:inline-block;background-color:%s;color:#0f1419;font-weight:700;font-size:12px;min-width:20px;text-align:center;border-radius:999px;padding:3px 8px;">%d</span></td>
+<td style="vertical-align:top;color:#eef2f5;font-size:13px;line-height:1.5;"><strong>%s</strong><br><span style="color:#9aa7b2;">%s</span></td>
+</tr></table>`, col, l.Level, htmlEscaper(l.Name), htmlEscaper(l.Description))
+			}
+			b.WriteString(`</div>`)
+		}
+		// The operator instruction sits in its own callout box.
+		fmt.Fprintf(&b, `<div style="margin-top:18px;background-color:#1b232b;border:1px solid #303c46;border-radius:8px;padding:12px 16px;">
+<div style="color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div>
+<div style="margin-top:6px;color:#eef2f5;font-size:13px;line-height:1.5;">%s</div></div>`,
+			htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(effectiveInstruction(t, lang)))
+	} else {
+		if desc := strings.TrimSpace(t.Description); desc != "" {
+			fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.description")), htmlEscaper(desc))
+		}
+		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(effectiveInstruction(t, lang)))
 	}
-	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(effectiveInstruction(t, lang)))
 	if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
 		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%.5f, %.5f</span></div>`, htmlEscaper(i18n.T(lang, "mail.location")), *h.Hazard.Latitude, *h.Hazard.Longitude)
 	}

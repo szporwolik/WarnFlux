@@ -1102,7 +1102,7 @@ var pl = map[string]string{
 	"sources.back":       "Wróć na stronę główną",
 	"home.alerts.head":   "Aktywne komunikaty",
 	"home.no_active":     "Brak aktywnych komunikatów.",
-	"home.no_severe":     "Brak severe lub wyższych komunikatów w tym momencie.",
+	"home.no_severe":     "Brak poważnych lub wyższych komunikatów w tym momencie.",
 	"home.sources.head":  "Skąd pochodzą dane",
 	"home.sources.note":  "Alerty są zbierane z tych oficjalnych źródeł i sieci.",
 	"home.channels.head": "Kanały powiadomień",

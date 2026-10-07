@@ -43,7 +43,7 @@
              data-lbl-inactive-m="{{tr .Lang "meshtastic.trace_inactive_m"}}"
              data-lbl-inactive-h="{{tr .Lang "meshtastic.trace_inactive_h"}}"
              data-lbl-inactive-d="{{tr .Lang "meshtastic.trace_inactive_d"}}"></div>
-        <p class="aprs-map-attrib"><span id="mesh-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> · <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
+        <p class="aprs-map-attrib"><span id="mesh-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
       </div>
       {{else}}
       <p class="home-none">{{tr .Lang "meshmap.disabled"}}</p>
@@ -232,8 +232,8 @@
           var OFFLINE = (document.body.getAttribute("data-offline") === "1") || window.WF_OFFLINE === true;
           var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
             : (document.documentElement.getAttribute("data-theme") === "light"
-              ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
-              : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
+              ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+              : "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}");
           traceMap = L.map(mapBox, { attributionControl: false, zoomControl: false, dragging: false,
             scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false });
           traceBase = L.tileLayer(raster, { maxZoom: 19 });
@@ -419,8 +419,8 @@
     // mode, otherwise a free raster provider matching the theme.
     var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
       : (document.documentElement.getAttribute("data-theme") === "light"
-        ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
-        : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
+        ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+        : "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}");
     var attrib = document.getElementById("mesh-admin-tiles-attrib");
     if (attrib && OFFLINE) {
       attrib.textContent = "WarnFlux (local tiles)";

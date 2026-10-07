@@ -39,7 +39,7 @@
              data-lbl-packets="{{tr .Lang "aprsmap.packets"}}"
              data-lbl-trace="{{tr .Lang "aprs.trace"}}" data-lbl-msg="{{tr .Lang "aprs.msg"}}"
              data-lbl-nopos="{{tr .Lang "meshmap.nopos"}}" data-lbl-click="{{tr .Lang "messages.click_to_send"}}"></div>
-        <p class="aprs-map-attrib"><span id="aprs-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> · <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
+        <p class="aprs-map-attrib"><span id="aprs-admin-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a></span> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></p>
       </div>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "aprs.dir_title"}} <span class="count" id="aprs-dir-count"></span></h2>
       <div class="msgs-table-wrap">
@@ -160,8 +160,8 @@
     // the theme (no keys, no CDN libraries).
     var raster = OFFLINE ? "/tiles/{z}/{x}/{y}.jpg"
       : (document.documentElement.getAttribute("data-theme") === "light"
-        ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
-        : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png");
+        ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+        : "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}");
     var attrib = document.getElementById("aprs-admin-tiles-attrib");
     if (attrib && OFFLINE) {
       attrib.textContent = "WarnFlux (local tiles)";

@@ -932,8 +932,9 @@
   // uses: OpenFreeMap vector styles via MapLibre GL — no API keys, no
   // usage limits. Fiord for the dark theme, bright for the light one.
   // When WebGL or the GL glue is unavailable (headless browsers, offline
-  // fallback), keyless RASTER tiles take over: CARTO for both themes
-  // (OpenStreetMap tiles IP-block by usage policy, CARTO does not).
+  // fallback), keyless RASTER tiles take over: Esri for both themes
+  // (OpenStreetMap tiles IP-block by usage policy, Esri does not).
+  // CARTO basemaps were dropped: they now serve "API KEY REQUIRED".
   function tilesForTheme() {
     var theme = document.documentElement.getAttribute("data-theme");
     // Offline mode: the operator-provided tile tree served by the
@@ -955,17 +956,17 @@
     if (theme === "light") {
       return {
         style: "https://tiles.openfreemap.org/styles/bright",
-        raster: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        raster: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
         glLabel: glLabel,
-        rasterLabel: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
+        rasterLabel: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a>',
         marker: { color: "#0d47a1", fillColor: "#1976d2" }
       };
     }
     return {
       style: "https://tiles.openfreemap.org/styles/fiord",
-      raster: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+      raster: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
       glLabel: glLabel,
-      rasterLabel: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
+      rasterLabel: '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a>',
       marker: { color: "#1565c0", fillColor: "#64b5f6" }
     };
   }
@@ -3274,8 +3275,8 @@
     }
     var dark = document.documentElement.getAttribute("data-theme") !== "light";
     return dark
-      ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
-      : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png";
+      ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+      : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
   }
 
   function loadLeaflet(cb) {
@@ -3317,7 +3318,7 @@
     if (attribEl) {
       attribEl.innerHTML = wfOffline()
         ? "WarnFlux (local tiles)"
-        : '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> · <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
+        : '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
     }
     map.on("click", function (e) { dropMarker(e.latlng); });
 

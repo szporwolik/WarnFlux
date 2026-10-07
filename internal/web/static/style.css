@@ -2775,7 +2775,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .home-offline .emcom-chip-label { font-weight: 600; }
 
-/* Config page: compact setting cards in a responsive grid. */
+/* Config page: vertical flow, grouped into labeled sections. */
 .config-card { display: flex; flex-direction: column; gap: 0.75rem; }
 .config-head {
   display: flex;
@@ -2785,11 +2785,31 @@ tr.click-send:hover td { background: var(--surface-hi); }
   flex-wrap: wrap;
 }
 .config-head h2 { margin: 0; }
-.config-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
-  gap: 0.75rem;
-  align-items: start;
+.config-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+.config-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.config-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.config-sec-head .icon { width: 1.05rem; height: 1.05rem; }
+.config-sec-head::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+  margin-left: 0.3rem;
 }
 .config-block {
   display: flex;
@@ -2801,7 +2821,6 @@ tr.click-send:hover td { background: var(--surface-hi); }
   padding: 0.7rem 0.9rem;
   box-shadow: var(--card-shadow);
 }
-.config-block-wide { grid-column: 1 / -1; }
 .config-row {
   display: flex;
   align-items: center;

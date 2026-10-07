@@ -335,6 +335,11 @@ var en = map[string]string{
 	// Admin config page (offline mode + local map tiles).
 	"config.title":                    "Configuration",
 	"config.intro":                    "Station-level switches that change how WarnFlux uses the network. Changes apply immediately.",
+	"config.sec.internet":             "Internet",
+	"config.sec.map":                  "Map",
+	"config.sec.meshtastic":           "Meshtastic",
+	"config.sec.mqtt":                 "MQTT",
+	"config.sec.emcom":                "EMCOM",
 	"config.offline.head":             "Offline mode",
 	"config.offline.desc":             "Stops every internet-backed source and action and switches the maps to the local tile tree. The station keeps working off-grid on its own resources: SQLite storage, the local MQTT broker and the radios. Local-only functions (APRS radio, Meshtastic, EMCOM panel, radio routing) stay on.",
 	"config.offline.state.on":         "ON",
@@ -1175,6 +1180,11 @@ var pl = map[string]string{
 	// Admin config page (offline mode + local map tiles).
 	"config.title":                    "Konfiguracja",
 	"config.intro":                    "Przełączniki stacyjne zmieniające sposób, w jaki WarnFlux używa sieci. Zmiany działają natychmiast.",
+	"config.sec.internet":             "Internet",
+	"config.sec.map":                  "Mapa",
+	"config.sec.meshtastic":           "Meshtastic",
+	"config.sec.mqtt":                 "MQTT",
+	"config.sec.emcom":                "EMCOM",
 	"config.offline.head":             "Tryb offline",
 	"config.offline.desc":             "Zatrzymuje wszystkie źródła i akcje oparte na internecie oraz przełącza mapy na lokalne kafelki. Stacja dalej działa offgrid na własnych zasobach: magazyn SQLite, lokalny broker MQTT i radia. Funkcje lokalne (radio APRS, Meshtastic, panel EMCOM, routing radiowy) pozostają włączone.",
 	"config.offline.state.on":         "Włączony",

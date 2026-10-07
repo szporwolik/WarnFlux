@@ -58,6 +58,33 @@ func TestGroupsCRUDFlow(t *testing.T) {
 	}
 }
 
+func TestGroupsStaleCSRF(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	// A token from a previous session (e.g. the admin signed in again in
+	// another tab) must not produce a bare 403: the admin is sent back
+	// with a friendly flash so the rename can simply be retried.
+	resp, _ := env.postForm("/groups", url.Values{"csrf": {"stale-token"}, "edit_id": {"1"}, "name": {"renamed"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("stale csrf = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/groups?err=csrf" {
+		t.Fatalf("stale csrf Location = %q, want /groups?err=csrf", loc)
+	}
+
+	_, html := env.get("/groups?err=csrf")
+	if !strings.Contains(html, "session changed") {
+		t.Fatalf("friendly flash missing after stale csrf: %s", html)
+	}
+
+	// The group was NOT renamed.
+	_, html = env.get("/groups")
+	if strings.Contains(html, "renamed") {
+		t.Fatalf("group renamed despite stale csrf: %s", html)
+	}
+}
+
 func TestUserGroupAssignment(t *testing.T) {
 	env := newTestEnv(t)
 	env.login()

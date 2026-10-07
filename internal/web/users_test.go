@@ -1117,12 +1117,22 @@ func TestUsersValidation(t *testing.T) {
 	for name, values := range map[string]url.Values{
 		"bad username": {"csrf": {csrf}, "username": {"UPPER CASE"}},
 		"bad email":    {"csrf": {csrf}, "username": {"okuser"}, "email": {"no-at-sign"}},
-		"missing csrf": {"username": {"okuser"}},
 	} {
 		resp, html := env.postForm("/users", values)
 		if resp.StatusCode < 400 {
 			t.Errorf("%s: status = %d, want 4xx (%s)", name, resp.StatusCode, html)
 		}
+	}
+
+	// A missing token is a stale-session situation, not a validation
+	// error: the admin is sent back with a friendly flash instead of a
+	// bare 403.
+	resp, _ := env.postForm("/users", url.Values{"username": {"okuser"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("missing csrf: status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/users?err=csrf" {
+		t.Errorf("missing csrf: Location = %q, want /users?err=csrf", loc)
 	}
 }
 

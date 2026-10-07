@@ -77,6 +77,15 @@
       </ul>
       <p class="muted small">{{tr .Lang "emcom.dispatch_note"}}</p>
     </section>
+
+    <dialog class="modal" id="emcom-confirm-dialog" aria-labelledby="emcom-confirm-title">
+      <h3 id="emcom-confirm-title"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg>{{tr .Lang "emcom.confirm.title"}}</h3>
+      <p class="muted">{{tr .Lang "emcom.confirm.change"}}</p>
+      <div class="modal-actions">
+        <button type="button" class="btn-ghost btn-small" id="emcom-confirm-cancel">{{tr .Lang "common.cancel"}}</button>
+        <button type="button" class="btn-primary btn-small" id="emcom-confirm-ok">{{tr .Lang "emcom.confirm.ok"}}</button>
+      </div>
+    </dialog>
   </main>
   {{template "footer" .}}
   <script>
@@ -119,6 +128,31 @@
         slider.addEventListener("input", paint);
         paint();
       });
+
+      // Saving a changed level is confirmed first: the transition
+      // dispatches real notifications on every configured channel.
+      var dialog = document.getElementById("emcom-confirm-dialog");
+      if (dialog) {
+        var pending = null;
+        document.querySelectorAll("form[data-emcom-form]").forEach(function (form) {
+          form.addEventListener("submit", function (e) {
+            if (pending === form) { pending = null; return; } // confirmed
+            e.preventDefault();
+            pending = form;
+            dialog.showModal();
+          });
+        });
+        var cancel = document.getElementById("emcom-confirm-cancel");
+        var ok = document.getElementById("emcom-confirm-ok");
+        var clear = function () { pending = null; dialog.close(); };
+        if (cancel) { cancel.addEventListener("click", clear); }
+        if (ok) {
+          ok.addEventListener("click", function () {
+            if (pending) { pending.submit(); }
+          });
+        }
+        dialog.addEventListener("cancel", function (e) { e.preventDefault(); clear(); });
+      }
     })();
   </script>
 </body>

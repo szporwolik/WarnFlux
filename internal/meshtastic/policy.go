@@ -10,9 +10,9 @@ import "sync/atomic"
 // switches decide WHICH mesh paths carry it. Station announcements
 // default to OFF: they are useful but noisy.
 var (
-	channelAlerts  atomic.Bool
-	dmAlerts       atomic.Bool
-	stationAlerts  atomic.Bool
+	channelAlerts atomic.Bool
+	dmAlerts      atomic.Bool
+	stationAlerts atomic.Bool
 )
 
 func init() {

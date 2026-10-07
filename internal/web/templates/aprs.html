@@ -136,13 +136,26 @@
     // the first activation builds the map; later ones just invalidate.
     var map = null;
     var stationsLayer = null;
+    var baseLayer = null;
     function initMap() {
       if (map) {
         map.invalidateSize();
         return;
       }
       map = L.map(el, { attributionControl: false }).setView([lat, lon], 9);
-      L.tileLayer(raster, { maxZoom: 19 }).addTo(map);
+      baseLayer = L.tileLayer(raster, { maxZoom: 19 });
+      baseLayer.addTo(map);
+      // Offline: stretch the deepest local tiles past the tree's limit
+      // so zooming never shows empty squares.
+      if (OFFLINE) {
+        fetch("/api/tiles/maxzoom", { credentials: "same-origin" })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            var z = j && j.maxzoom > 0 ? j.maxzoom : 0;
+            if (z > 0 && baseLayer) { baseLayer.options.maxNativeZoom = z; }
+          })
+          .catch(function () { /* keep native zooming */ });
+      }
       stationsLayer = L.layerGroup().addTo(map);
 
       // Our own locator and the collection-radius circle, like the home

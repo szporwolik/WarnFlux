@@ -256,11 +256,25 @@ func TestTileHandler(t *testing.T) {
 		}
 	}
 
-	// Without a configured tile tree everything 404s.
+	// The max-zoom endpoint reports the deepest level with tiles — the
+	// offline maps stretch them past that point.
+	resp, body = env.get("/api/tiles/maxzoom")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET maxzoom = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body, `"maxzoom":8`) {
+		t.Errorf("maxzoom payload = %q, want 8", body)
+	}
+
+	// Without a configured tile tree everything 404s (and maxzoom is 0).
 	env2 := newTestEnv(t)
 	resp, _ = env2.get("/tiles/8/141/86")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("tile without tiles_dir = %d, want 404", resp.StatusCode)
+	}
+	resp, body = env2.get("/api/tiles/maxzoom")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"maxzoom":0`) {
+		t.Errorf("maxzoom without tiles_dir = %d %q, want 0", resp.StatusCode, body)
 	}
 }
 

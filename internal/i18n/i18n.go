@@ -1451,7 +1451,7 @@ var pl = map[string]string{
 	"compose.clear_loc":             "Wyczyść lokalizację",
 	"compose.location_note":         "Kliknij mapę, aby ustawić lokalizację; przeciągnij znacznik, aby ją poprawić. Zdarzenia z lokalizacją pojawiają się na publicznej mapie z ikoną ostrzeżenia APRS.",
 	"compose.description":           "Opis",
-	"compose.instruction":           "instrukcja",
+	"compose.instruction":           "Instrukcja",
 	"compose.publish":               "Opublikuj komunikat",
 	"compose.debug":                 "Wypełnienie testowe",
 	"compose.cancel":                "Anuluj",

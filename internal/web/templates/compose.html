@@ -35,15 +35,11 @@
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <input type="hidden" name="event_key" value="{{.Form.EventKey}}">
         <input type="hidden" name="received_at" value="{{.Form.ReceivedAt}}">
-        <label class="field">
-          <span>{{tr .Lang "compose.source"}}</span>
-          <input type="text" name="source_display" value="{{.Source}}" disabled>
-        </label>
-        <label class="field">
+        <label class="field field-wide">
           <span>{{tr .Lang "compose.event"}}</span>
           <input type="text" name="event" value="{{.Form.Event}}" required maxlength="120" placeholder="{{tr .Lang "compose.ph.event"}}">
         </label>
-        <label class="field">
+        <label class="field field-wide">
           <span>{{tr .Lang "compose.headline"}}</span>
           <input type="text" name="headline" value="{{.Form.Headline}}" required maxlength="200" placeholder="{{tr .Lang "compose.ph.headline"}}">
         </label>
@@ -115,7 +111,6 @@
           </button>
           {{if .Form.EventKey}}<a class="btn-ghost" href="/compose">{{tr .Lang "compose.discard"}}</a>{{end}}
           <button type="button" class="btn-ghost" id="compose-cancel">{{tr .Lang "compose.cancel"}}</button>
-          <button type="button" class="btn-ghost" id="compose-debug-fill">{{tr .Lang "compose.debug"}}</button>
         </div>
         </form>
       </div>

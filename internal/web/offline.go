@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
@@ -295,14 +293,11 @@ func (s *Server) handleConfigMqtt(w http.ResponseWriter, r *http.Request) {
 	mqttpolicy.Set(mask)
 	perr := ""
 	if !s.persistConfigYAML("mqtt_publish", func() error {
-		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
-			for _, c := range mqttpolicy.List() {
-				if err := config.SetScalarPath(root, "mqtt_publish."+mqttpolicy.Key(c), config.BoolScalar(mask&uint32(c) != 0)); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
+		edits := make([]config.ScalarEdit, 0, 10)
+		for _, c := range mqttpolicy.List() {
+			edits = append(edits, config.ScalarEdit{Path: "mqtt_publish." + mqttpolicy.Key(c), Value: config.BoolScalar(mask&uint32(c) != 0)})
+		}
+		return config.UpdateFile(s.configPath, edits)
 	}) {
 		perr = "&perr=1"
 	}
@@ -336,8 +331,8 @@ func (s *Server) handleConfigTiles(w http.ResponseWriter, r *http.Request) {
 	}
 	perr := ""
 	if !s.persistConfigYAML("force_local_tiles", func() error {
-		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
-			return config.SetScalarPath(root, "web.force_local_tiles", config.BoolScalar(s.forceTiles.Load()))
+		return config.UpdateFile(s.configPath, []config.ScalarEdit{
+			{Path: "web.force_local_tiles", Value: config.BoolScalar(s.forceTiles.Load())},
 		})
 	}) {
 		perr = "&perr=1"
@@ -388,24 +383,17 @@ func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 	}
 	perr := ""
 	if !s.persistConfigYAML("meshtastic alerts", func() error {
-		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
-			if channel != "" {
-				if err := config.SetScalarPath(root, "meshtastic.channel_alerts", config.BoolScalar(meshtastic.ChannelAlerts())); err != nil {
-					return err
-				}
-			}
-			if dm != "" {
-				if err := config.SetScalarPath(root, "meshtastic.dm_alerts", config.BoolScalar(meshtastic.DMAlerts())); err != nil {
-					return err
-				}
-			}
-			if stations != "" {
-				if err := config.SetScalarPath(root, "meshtastic.station_alerts", config.BoolScalar(meshtastic.StationAlerts())); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
+		var edits []config.ScalarEdit
+		if channel != "" {
+			edits = append(edits, config.ScalarEdit{Path: "meshtastic.channel_alerts", Value: config.BoolScalar(meshtastic.ChannelAlerts())})
+		}
+		if dm != "" {
+			edits = append(edits, config.ScalarEdit{Path: "meshtastic.dm_alerts", Value: config.BoolScalar(meshtastic.DMAlerts())})
+		}
+		if stations != "" {
+			edits = append(edits, config.ScalarEdit{Path: "meshtastic.station_alerts", Value: config.BoolScalar(meshtastic.StationAlerts())})
+		}
+		return config.UpdateFile(s.configPath, edits)
 	}) {
 		perr = "&perr=1"
 	}
@@ -438,8 +426,8 @@ func (s *Server) handleConfigLang(w http.ResponseWriter, r *http.Request) {
 	s.SetSystemLanguage(code)
 	perr := ""
 	if !s.persistConfigYAML("system_language", func() error {
-		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
-			return config.SetScalarPath(root, "web.system_language", config.StringScalar(code))
+		return config.UpdateFile(s.configPath, []config.ScalarEdit{
+			{Path: "web.system_language", Value: config.StringScalar(code)},
 		})
 	}) {
 		perr = "&perr=1"
@@ -490,17 +478,15 @@ func (s *Server) handleConfigContent(w http.ResponseWriter, r *http.Request) {
 
 	perr := ""
 	if !s.persistConfigYAML("web content", func() error {
-		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
-			for key, path := range map[string]string{
-				"header1": "web.header1", "header2": "web.header2", "tagline": "web.tagline",
-				"about": "web.about", "disclaimer": "web.disclaimer", "domain": "web.domain",
-			} {
-				if err := config.SetScalarPath(root, path, config.StringScalar(fields[key])); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
+		paths := []struct{ field, path string }{
+			{"header1", "web.header1"}, {"header2", "web.header2"}, {"tagline", "web.tagline"},
+			{"about", "web.about"}, {"disclaimer", "web.disclaimer"}, {"domain", "web.domain"},
+		}
+		edits := make([]config.ScalarEdit, 0, len(paths))
+		for _, p := range paths {
+			edits = append(edits, config.ScalarEdit{Path: p.path, Value: config.StringScalar(fields[p.field])})
+		}
+		return config.UpdateFile(s.configPath, edits)
 	}) {
 		perr = "&perr=1"
 	}
@@ -535,8 +521,8 @@ func (s *Server) handleConfigOffline(w http.ResponseWriter, r *http.Request) {
 	s.SetOffline(on)
 	perr := ""
 	if !s.persistConfigYAML("offline_mode", func() error {
-		return config.UpdateFile(s.configPath, func(root *yaml.Node) error {
-			return config.SetScalarPath(root, "web.offline_mode", config.BoolScalar(on))
+		return config.UpdateFile(s.configPath, []config.ScalarEdit{
+			{Path: "web.offline_mode", Value: config.BoolScalar(on)},
 		})
 	}) {
 		perr = "&perr=1"

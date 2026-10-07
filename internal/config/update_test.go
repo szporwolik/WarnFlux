@@ -5,14 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
-// TestUpdateFileRoundTrip pins the YAML edit layer: values set through
-// UpdateFile survive a reload, unrelated sections stay intact, comments
-// survive and a rolling backup is written.
+// TestUpdateFileRoundTrip pins the surgical YAML editor: values set
+// through UpdateFile survive a reload, unrelated lines stay byte-identical
+// (comments, alignment, blank lines), and a rolling backup is written.
 func TestUpdateFileRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -22,6 +21,7 @@ app:
 web:
   enabled: true
   title: "SOSNA"
+
   offline_mode: false
   auth:
     username: admin
@@ -31,17 +31,11 @@ web:
 		t.Fatal(err)
 	}
 
-	err := UpdateFile(path, func(root *yaml.Node) error {
-		if err := SetScalarPath(root, "web.force_local_tiles", BoolScalar(true)); err != nil {
-			return err
-		}
-		if err := SetScalarPath(root, "web.header2", StringScalar("Społeczny system")); err != nil {
-			return err
-		}
-		if err := SetScalarPath(root, "web.about", StringScalar("# Info\n\ndruga linia")); err != nil {
-			return err
-		}
-		return SetScalarPath(root, "meshtastic.station_alerts", BoolScalar(true))
+	err := UpdateFile(path, []ScalarEdit{
+		{Path: "web.force_local_tiles", Value: BoolScalar(true)},
+		{Path: "web.header2", Value: StringScalar("Społeczny system")},
+		{Path: "web.about", Value: StringScalar("# Info\n\ndruga linia")},
+		{Path: "meshtastic.station_alerts", Value: BoolScalar(true)},
 	})
 	if err != nil {
 		t.Fatalf("UpdateFile: %v", err)
@@ -69,47 +63,74 @@ web:
 		t.Errorf("web.about = %q", cfg.Web.About)
 	}
 	if !cfg.Meshtastic.StationAlerts {
-		t.Error("meshtastic.station_alerts = false, want true")
+		t.Error("meshtastic.station_alerts = false, want true (section auto-created)")
 	}
-	// Untouched state preserved.
+	if !cfg.Meshtastic.ChannelAlerts || !cfg.Meshtastic.DMAlerts {
+		t.Errorf("channel/dm defaults must stay ON: %+v", cfg.Meshtastic)
+	}
 	if cfg.Web.OfflineMode || cfg.Web.Title != "SOSNA" || cfg.App.LogLevel != "info" {
 		t.Errorf("unrelated config changed: web=%+v app=%+v", cfg.Web, cfg.App)
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"# station configuration", "# keep this comment"} {
-		if !bytes.Contains(data, []byte(want)) {
-			t.Errorf("comment %q lost:\n%s", want, data)
+	data, _ := os.ReadFile(path)
+	got := string(data)
+	// Untouched lines stay byte-identical, comments and alignment included.
+	for _, want := range []string{
+		"# station configuration",
+		"  log_level: info   # keep this comment",
+		"  title: \"SOSNA\"",
+		"\n\n  offline_mode: false",
+		"  auth:\n    username: admin",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("untouched content %q lost:\n%s", want, got)
 		}
 	}
 }
 
-// TestSetScalarPathCreatesMissingSections pins section creation: a panel
-// write into a not-yet-existing top-level section adds the mappings
-// instead of failing.
-func TestSetScalarPathCreatesMissingSections(t *testing.T) {
+// TestUpdateFileByteExactness pins the no-reformat promise: one scalar
+// change must alter exactly that line and nothing else.
+func TestUpdateFileByteExactness(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("web:\n  enabled: true\n  auth:\n    username: admin\n    password: secret123\n"), 0o600); err != nil {
+	before := `app:
+  log_level: debug          # debug | info | warn | error
+  expiration_interval: 1m
+
+web:
+  enabled: true
+
+  offline_mode: false
+  auth:
+    username: admin
+    password: secret123
+`
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := UpdateFile(path, func(root *yaml.Node) error {
-		return SetScalarPath(root, "meshtastic.station_alerts", BoolScalar(true))
+	if err := UpdateFile(path, []ScalarEdit{
+		{Path: "web.offline_mode", Value: BoolScalar(true)},
 	}); err != nil {
 		t.Fatalf("UpdateFile: %v", err)
 	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
+	after, _ := os.ReadFile(path)
+	linesBefore := strings.Split(before, "\n")
+	linesAfter := strings.Split(string(after), "\n")
+	if len(linesBefore) != len(linesAfter) {
+		t.Fatalf("line count changed %d -> %d:\n%s", len(linesBefore), len(linesAfter), after)
 	}
-	if !cfg.Meshtastic.StationAlerts {
-		t.Error("station_alerts = false, want true")
+	changed := 0
+	for i := range linesBefore {
+		if linesBefore[i] != linesAfter[i] {
+			changed++
+			t.Logf("line %d: %q -> %q", i, linesBefore[i], linesAfter[i])
+		}
 	}
-	if !cfg.Meshtastic.ChannelAlerts || !cfg.Meshtastic.DMAlerts {
-		t.Errorf("channel/dm defaults must stay ON: %+v", cfg.Meshtastic)
+	if changed != 1 {
+		t.Errorf("changed lines = %d, want exactly 1", changed)
+	}
+	if !strings.Contains(string(after), "  offline_mode: true") {
+		t.Errorf("new value missing:\n%s", after)
 	}
 }
 
@@ -123,9 +144,7 @@ func TestUpdateFileRejectsNonMapping(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := UpdateFile(path, func(root *yaml.Node) error {
-		return nil
-	})
+	err := UpdateFile(path, []ScalarEdit{{Path: "web.x", Value: BoolScalar(true)}})
 	if err == nil {
 		t.Fatal("UpdateFile on a list document must fail")
 	}
@@ -135,16 +154,17 @@ func TestUpdateFileRejectsNonMapping(t *testing.T) {
 	}
 }
 
-// TestSetScalarPathOverwrite pins value replacement on an existing key
-// (the key keeps its position, only the value changes).
-func TestSetScalarPathOverwrite(t *testing.T) {
+// TestUpdateFileQuoting pins value quoting: reserved-looking strings are
+// quoted so the reload reads the same value back.
+func TestUpdateFileQuoting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("web:\n  enabled: true\n  auth:\n    username: admin\n    password: secret123\n  offline_mode: false\n"), 0o600); err != nil {
+	before := "web:\n  enabled: true\n  auth:\n    username: admin\n    password: secret123\n"
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := UpdateFile(path, func(root *yaml.Node) error {
-		return SetScalarPath(root, "web.offline_mode", BoolScalar(true))
+	if err := UpdateFile(path, []ScalarEdit{
+		{Path: "web.tagline", Value: StringScalar("on: #tak")},
 	}); err != nil {
 		t.Fatalf("UpdateFile: %v", err)
 	}
@@ -152,7 +172,7 @@ func TestSetScalarPathOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if !cfg.Web.OfflineMode {
-		t.Error("offline_mode = false, want true after overwrite")
+	if cfg.Web.Tagline != "on: #tak" {
+		t.Errorf("tagline = %q, want the quoted round-trip", cfg.Web.Tagline)
 	}
 }

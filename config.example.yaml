@@ -654,6 +654,11 @@ web:
   # can drop in their own tiles without rebuilding the container.
   tiles_dir: ""
 
+  # Force the local tile tree on EVERY map even while the station is
+  # online (startup state; the admin Config page toggles the same switch
+  # at runtime and writes it back here, so it survives restarts).
+  force_local_tiles: false
+
   # Main system language of BROADCAST notifications: APRS messages and
   # EMCOM group-channel Meshtastic posts are sent in this language.
   # One of "en", "pl" (empty = English). The admin can switch it at
@@ -684,6 +689,24 @@ web:
     # proxy headers are ignored. Proxies may append or overwrite the
     # header; both work, appending only risks an extra unused prefix.
     trusted_proxies: []
+
+# Meshtastic Companion link (optional): the Heltec node plugs in over USB
+# and exposes the mesh as a source plus the group/direct announcement
+# actions. The announcement switches below are the STARTUP state; the
+# admin Config page toggles the same switches at runtime and writes them
+# back to this file.
+meshtastic:
+  enabled: false
+  device: ""
+
+  # Hazard announcements on the group channel and as direct messages to
+  # users' registered node IDs (both ON by default).
+  channel_alerts: true
+  dm_alerts: true
+
+  # APRS stations entering/leaving the operational range announced on
+  # the group channel — useful but noisy, OFF by default.
+  station_alerts: false
 
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI). They never automatically receive MQTT

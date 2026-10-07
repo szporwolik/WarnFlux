@@ -461,11 +461,12 @@ func (s *Server) displayName() string {
 	return s.cfg.Title
 }
 
-// displayHeader1 returns the primary header line (web.header1), falling
-// back to the system name when it is not configured.
+// displayHeader1 returns the primary header line (web.header1, editable
+// on the Config page), falling back to the system name when it is not
+// configured.
 func (s *Server) displayHeader1() string {
-	if s.cfg.Header1 != "" {
-		return s.cfg.Header1
+	if h := s.DisplayHeader1(); h != "" {
+		return h
 	}
 	return s.displayName()
 }
@@ -493,9 +494,9 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, r *http.Request, errMsg,
 		"AppTitle": s.cfg.Title,
 		"Name":     s.displayName(),
 		"Header1":  s.displayHeader1(),
-		"Header2":  s.cfg.Header2,
-		"Tagline":  s.cfg.Tagline,
-		"About":    template.HTML(s.cfg.About),
+		"Header2":  s.DisplayHeader2(),
+		"Tagline":  s.DisplayTagline(),
+		"About":    template.HTML(s.DisplayAbout()),
 		"Version":  s.version,
 		"Commit":   s.commit,
 		"RepoURL":  repoURL,
@@ -632,8 +633,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		AppTitle:     s.cfg.Title,
 		Name:         s.displayName(),
 		Header1:      s.displayHeader1(),
-		Header2:      s.cfg.Header2,
-		Tagline:      s.cfg.Tagline,
+		Header2:      s.DisplayHeader2(),
+		Tagline:      s.DisplayTagline(),
 		Version:      s.version,
 		Commit:       s.commit,
 		RepoURL:      repoURL,

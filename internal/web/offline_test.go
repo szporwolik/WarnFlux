@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 )
@@ -446,5 +447,165 @@ func TestConfigSystemLanguage(t *testing.T) {
 	}
 	if got := env.server.SystemLanguage(); got != "" {
 		t.Errorf("system language after clear = %q, want empty", got)
+	}
+}
+
+// panelConfig writes a minimal valid config.yaml for the persistence
+// tests and registers it on the test server.
+func panelConfig(t *testing.T, env *testEnv) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	base := "web:\n  enabled: true\n  offline_mode: false\n  auth:\n    username: admin\n    password: secret123\n"
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.server.SetConfigFile(path)
+	return path
+}
+
+// TestConfigPanelPersistsYAML pins the durability promise: every switch
+// on the Config page is written back to the YAML file, so the choice
+// survives restarts.
+func TestConfigPanelPersistsYAML(t *testing.T) {
+	t.Cleanup(func() {
+		meshtastic.SetChannelAlerts(true)
+		meshtastic.SetDMAlerts(true)
+		meshtastic.SetStationAlerts(false)
+		mqttpolicy.Set(uint32(mqttpolicy.CatAll))
+	})
+	env := newTestEnv(t)
+	env.login()
+	path := panelConfig(t, env)
+	csrf := env.csrfFromPage("/config")
+
+	reload := func() *config.Config {
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("reload config: %v", err)
+		}
+		return cfg
+	}
+
+	// Meshtastic station announcements.
+	resp, _ := env.postForm("/config/mesh", url.Values{"csrf": {csrf}, "stations": {"on"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST stations = %d, want 303", resp.StatusCode)
+	}
+	if !reload().Meshtastic.StationAlerts {
+		t.Error("meshtastic.station_alerts not written to the YAML file")
+	}
+
+	// Local tile forcing.
+	resp, _ = env.postForm("/config/tiles", url.Values{"csrf": {csrf}, "tiles": {"on"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST tiles = %d, want 303", resp.StatusCode)
+	}
+	if !reload().Web.ForceLocalTiles {
+		t.Error("web.force_local_tiles not written to the YAML file")
+	}
+
+	// Offline mode.
+	resp, _ = env.postForm("/config/offline", url.Values{"csrf": {csrf}, "offline": {"on"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST offline = %d, want 303", resp.StatusCode)
+	}
+	if !reload().Web.OfflineMode {
+		t.Error("web.offline_mode not written to the YAML file")
+	}
+
+	// System language.
+	resp, _ = env.postForm("/config/lang", url.Values{"csrf": {csrf}, "lang": {"pl"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST lang = %d, want 303", resp.StatusCode)
+	}
+	if got := reload().Web.SystemLanguage; got != "pl" {
+		t.Errorf("web.system_language = %q, want pl", got)
+	}
+
+	// MQTT publish mask: only info + status publish.
+	resp, _ = env.postForm("/config/mqtt", url.Values{"csrf": {csrf}, "cat": {"info", "status"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST mqtt = %d, want 303", resp.StatusCode)
+	}
+	cfg := reload()
+	if !cfg.MQTTPublish.Info || !cfg.MQTTPublish.Status || cfg.MQTTPublish.Events || cfg.MQTTPublish.Active {
+		t.Errorf("mqtt_publish = %+v, want only info+status enabled", cfg.MQTTPublish)
+	}
+}
+
+// TestConfigContentPanel pins the editable branding section: the fields
+// apply immediately (runtime getters) and land in the YAML file; an
+// invalid domain is rejected without changing anything.
+func TestConfigContentPanel(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	path := panelConfig(t, env)
+	csrf := env.csrfFromPage("/config")
+
+	resp, _ := env.postForm("/config/content", url.Values{
+		"csrf": {csrf}, "header1": {"Główna"}, "header2": {"Podtytuł"},
+		"tagline": {"motto"}, "about": {"# Info\n\ntekst **ważny**"},
+		"disclaimer": {"nieoficjalny system"}, "domain": {"sp9moa.pl"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST content = %d, want 303", resp.StatusCode)
+	}
+	if got := env.server.DisplayHeader1(); got != "Główna" {
+		t.Errorf("header1 = %q, want Główna", got)
+	}
+	if got := env.server.DisplayAbout(); got != "# Info\n\ntekst **ważny**" {
+		t.Errorf("about = %q, want the markdown text", got)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if cfg.Web.Header1 != "Główna" || cfg.Web.Header2 != "Podtytuł" || cfg.Web.Tagline != "motto" ||
+		cfg.Web.About != "# Info\n\ntekst **ważny**" || cfg.Web.Disclaimer != "nieoficjalny system" ||
+		cfg.Web.Domain != "sp9moa.pl" {
+		t.Errorf("web content not persisted: %+v", cfg.Web)
+	}
+
+	// An invalid domain is rejected.
+	csrf = env.csrfFromPage("/config")
+	resp, _ = env.postForm("/config/content", url.Values{
+		"csrf": {csrf}, "header1": {"Główna"}, "domain": {"https://sp9moa.pl/x"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("bad domain = %d, want 422", resp.StatusCode)
+	}
+	if got := env.server.DisplayDomain(); got != "sp9moa.pl" {
+		t.Errorf("domain changed despite rejection: %q", got)
+	}
+}
+
+// TestConfigPersistFailureFlag pins the graceful degradation: when the
+// YAML write fails the switch still applies, but the redirect carries
+// perr=1 so the page can warn the operator.
+func TestConfigPersistFailureFlag(t *testing.T) {
+	t.Cleanup(func() {
+		meshtastic.SetStationAlerts(false)
+	})
+	env := newTestEnv(t)
+	env.login()
+	// A DIRECTORY as the "config file": UpdateFile fails on it.
+	env.server.SetConfigFile(t.TempDir())
+	csrf := env.csrfFromPage("/config")
+
+	resp, _ := env.postForm("/config/mesh", url.Values{"csrf": {csrf}, "stations": {"on"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST stations = %d, want 303", resp.StatusCode)
+	}
+	if !meshtastic.StationAlerts() {
+		t.Error("switch must apply even when persistence fails")
+	}
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "perr=1") {
+		t.Errorf("Location = %q, want the perr=1 persistence warning", loc)
+	}
+
+	// The warning renders on the config page.
+	_, page := env.get("/config?msg=mesh&perr=1")
+	if !strings.Contains(page, "config.yaml") {
+		t.Errorf("persistence warning missing from the page: %s", page)
 	}
 }

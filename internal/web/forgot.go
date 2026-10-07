@@ -68,8 +68,8 @@ func (s *Server) handleForgotPage(w http.ResponseWriter, r *http.Request) {
 		AppTitle: s.cfg.Title,
 		Name:     s.displayName(),
 		Header1:  s.displayHeader1(),
-		Header2:  s.cfg.Header2,
-		Tagline:  s.cfg.Tagline,
+		Header2:  s.DisplayHeader2(),
+		Tagline:  s.DisplayTagline(),
 		Version:  s.version,
 		Commit:   s.commit,
 		RepoURL:  repoURL,
@@ -110,8 +110,8 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 			AppTitle: s.cfg.Title,
 			Name:     s.displayName(),
 			Header1:  s.displayHeader1(),
-			Header2:  s.cfg.Header2,
-			Tagline:  s.cfg.Tagline,
+			Header2:  s.DisplayHeader2(),
+			Tagline:  s.DisplayTagline(),
 			Version:  s.version,
 			Commit:   s.commit,
 			RepoURL:  repoURL,
@@ -214,7 +214,7 @@ func (s *Server) resetOrigin() string {
 	if s.cfg.Auth.SecureCookie {
 		scheme = "https"
 	}
-	if d := strings.TrimSpace(s.cfg.Domain); d != "" {
+	if d := strings.TrimSpace(s.DisplayDomain()); d != "" {
 		return scheme + "://" + d
 	}
 	return ""
@@ -256,8 +256,8 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 		AppTitle: s.cfg.Title,
 		Name:     s.displayName(),
 		Header1:  s.displayHeader1(),
-		Header2:  s.cfg.Header2,
-		Tagline:  s.cfg.Tagline,
+		Header2:  s.DisplayHeader2(),
+		Tagline:  s.DisplayTagline(),
 		Version:  s.version,
 		Commit:   s.commit,
 		RepoURL:  repoURL,
@@ -306,8 +306,8 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 			AppTitle: s.cfg.Title,
 			Name:     s.displayName(),
 			Header1:  s.displayHeader1(),
-			Header2:  s.cfg.Header2,
-			Tagline:  s.cfg.Tagline,
+			Header2:  s.DisplayHeader2(),
+			Tagline:  s.DisplayTagline(),
 			Version:  s.version,
 			Commit:   s.commit,
 			RepoURL:  repoURL,

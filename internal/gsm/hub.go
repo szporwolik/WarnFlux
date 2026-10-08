@@ -66,9 +66,42 @@ const atTimeout = 15 * time.Second
 // submitted SMS body (the modem answers when the network takes it).
 const sendAckTimeout = 45 * time.Second
 
-// received is one consumed inbox message.
+// received is one consumed inbox record.
 type received struct {
 	from, text string
+	// minute is the record's timestamp truncated to the minute — parts
+	// of one long message share the sender and the minute.
+	minute string
+}
+
+// mergeSMS joins the parts of long messages. The E173 firmware splits
+// messages over ~150 characters across consecutive storage slots and
+// stores the parts BACKWARDS (the last part lands in the lowest slot).
+// Parts share the sender and the timestamp minute; separate messages
+// from the same sender (different minutes) stay separate.
+func mergeSMS(in []received) []received {
+	var out []received
+	i := 0
+	for i < len(in) {
+		j := i + 1
+		for j < len(in) && in[j].from == in[i].from && in[j].minute == in[i].minute && in[i].minute != "" {
+			j++
+		}
+		group := in[i:j]
+		if len(group) == 1 {
+			out = append(out, group[0])
+		} else {
+			merged := group[0]
+			var sb strings.Builder
+			for k := len(group) - 1; k >= 0; k-- {
+				sb.WriteString(group[k].text)
+			}
+			merged.text = sb.String()
+			out = append(out, merged)
+		}
+		i = j
+	}
+	return out
 }
 
 // Hub owns the AT session to one modem. All exchanges serialize under
@@ -84,6 +117,10 @@ type Hub struct {
 	conn      io.ReadWriteCloser
 	connected atomic.Bool
 	ready     atomic.Bool
+
+	// storage is the active SMS storage id ("SM" or "ME") — guarded
+	// by mu, chosen by initLocked.
+	storage string
 
 	// operator and csq are the last modem status (network name and
 	// signal quality); refreshed periodically by the poll loop.
@@ -289,15 +326,77 @@ func openSerial(path string) (io.ReadWriteCloser, error) {
 	return os.NewFile(uintptr(fd), path), nil
 }
 
-// initLocked runs the modem setup: echo off + text-mode SMS. The caller
-// holds h.mu.
+// initLocked runs the modem setup: echo off, text-mode SMS, pinned TE
+// character set, detailed headers and the preferred message storage.
+// The caller holds h.mu.
 func (h *Hub) initLocked() bool {
 	for _, cmd := range []string{"ATE0", "AT+CMGF=1"} {
 		if _, err := h.exchangeLocked(cmd, "OK"); err != nil {
 			return false
 		}
 	}
+	// Pin the TE character set to IRA (plain ASCII): UCS-2 coded
+	// messages (emoji etc.) then arrive as hex bodies, which
+	// DecodeSMSBody turns back into text. Tolerated if rejected.
+	_, _ = h.exchangeLocked(`AT+CSCS="IRA"`, "OK")
+	// Detailed headers (CSDH=1) append <tooa>,<fo>,<pid>,<dcs>,<sca>,
+	// <tosca>,<length> to the CMGR/CMGL header — the real encoding is
+	// then visible instead of guessed. Tolerated if unsupported.
+	_, _ = h.exchangeLocked("AT+CSDH=1", "OK")
+
+	// Storage selection. SIM records hold ~176 bytes, so the firmware
+	// splits a long message across several SIM slots — in reverse
+	// order. Modem memory (ME) stores the whole concatenated message
+	// as ONE record. Prefer ME when supported; drain whatever the SIM
+	// still holds first so pending messages are not stranded when the
+	// active storage moves.
+	h.storage = "SM"
+	if lines, err := h.exchangeLocked("AT+CPMS=?", "OK"); err == nil && cpmsSupports(lines, "ME") {
+		h.pollUnreadLocked() // best-effort drain of SIM leftovers
+		if _, err := h.exchangeLocked(`AT+CPMS="ME","ME","ME"`, "OK"); err == nil {
+			if lines, err := h.exchangeLocked("AT+CPMS?", "OK"); err == nil && cpmsActive(lines) == "ME" {
+				h.storage = "ME"
+			} else {
+				_, _ = h.exchangeLocked(`AT+CPMS="SM","SM","SM"`, "OK")
+			}
+		}
+	}
 	return true
+}
+
+// cpmsSupports reports whether a +CPMS=? reply lists the given storage
+// id ("SM", "ME", ...).
+func cpmsSupports(lines []string, id string) bool {
+	for _, l := range lines {
+		if !strings.HasPrefix(l, "+CPMS:") {
+			continue
+		}
+		for _, tok := range strings.FieldsFunc(l, func(r rune) bool {
+			return r == '(' || r == ')' || r == ','
+		}) {
+			if strings.Trim(strings.TrimSpace(tok), `"`) == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// cpmsActive returns the first storage id of a +CPMS? reply (the
+// active read storage).
+func cpmsActive(lines []string) string {
+	for _, l := range lines {
+		if !strings.HasPrefix(l, "+CPMS:") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(l, "+CPMS:"))
+		if len(rest) > 1 && rest[0] == '"' {
+			if j := strings.IndexByte(rest[1:], '"'); j >= 0 {
+				return rest[1 : 1+j]
+			}
+		}
+	}
+	return ""
 }
 
 // exchangeLocked writes one AT command and waits for the expected
@@ -644,12 +743,13 @@ func (h *Hub) pollUnreadLocked() (out []received, ok bool) {
 	}
 	// The firmware leaves HOLES (a deleted slot stays empty instead of
 	// compacting), so every slot 1..max must be probed individually.
+	var raw []received
 	for idx := 1; idx <= maxSlots && idx <= 64; idx++ {
 		m, status, err := h.readIndexLocked(idx)
 		if errors.Is(err, ErrModemRejected) {
 			// Indices beyond the firmware's real storage are refused —
 			// the scan is simply done.
-			return out, true
+			return h.recordBatch(raw), true
 		}
 		if err != nil {
 			h.logger.Debug("gsm: unread scan failed", "error", err)
@@ -666,6 +766,25 @@ func (h *Hub) pollUnreadLocked() (out []received, ok bool) {
 			}
 			continue
 		}
+		raw = append(raw, m)
+		if _, err := h.exchangeLocked(fmt.Sprintf("AT+CMGD=%d", idx), "OK"); err != nil && !errors.Is(err, ErrModemRejected) {
+			h.logger.Debug("gsm: inbox delete failed", "error", err)
+			return h.recordBatch(raw), true
+		}
+	}
+	return h.recordBatch(raw), true
+}
+
+// recordBatch persists and reports one drained batch. Parts of long
+// messages are merged back into reading order only for the SIM storage
+// (SM) — it physically cannot hold one long message in one record. The
+// modem memory (ME) already stores assembled messages.
+func (h *Hub) recordBatch(raw []received) []received {
+	msgs := raw
+	if h.storage == "SM" {
+		msgs = mergeSMS(raw)
+	}
+	for _, m := range msgs {
 		if h.rec != nil {
 			recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := h.rec.RecordGSMMessage(recCtx, "rx", m.from, "self", m.text, h.now())
@@ -675,13 +794,8 @@ func (h *Hub) pollUnreadLocked() (out []received, ok bool) {
 			}
 		}
 		h.logger.Info("gsm: sms received", "from", m.from)
-		out = append(out, m)
-		if _, err := h.exchangeLocked(fmt.Sprintf("AT+CMGD=%d", idx), "OK"); err != nil && !errors.Is(err, ErrModemRejected) {
-			h.logger.Debug("gsm: inbox delete failed", "error", err)
-			return out, true
-		}
 	}
-	return out, true
+	return msgs
 }
 
 // storageStatsLocked reads the active storage status (+CPMS?): used
@@ -720,20 +834,16 @@ func (h *Hub) readIndexLocked(idx int) (m received, status string, err error) {
 	for _, l := range lines {
 		if strings.HasPrefix(l, "+CMGR:") {
 			// +CMGR: "REC UNREAD","+48509558155",,"26/10/08,18:51:52+08"
-			rest := strings.TrimSpace(strings.TrimPrefix(l, "+CMGR:"))
-			if len(rest) > 1 && rest[0] == '"' {
-				if j := strings.IndexByte(rest[1:], '"'); j >= 0 {
-					status = rest[1 : 1+j]
-					rest = rest[j+2:]
-					if i := strings.IndexByte(rest, ','); i >= 0 {
-						rest = strings.TrimSpace(rest[i+1:])
-						if len(rest) > 1 && rest[0] == '"' {
-							if k := strings.IndexByte(rest[1:], '"'); k >= 0 {
-								m.from = rest[1 : 1+k]
-							}
-						}
-					}
-				}
+			// (+CSDH=1 appends ,<tooa>,<fo>,<pid>,<dcs>,<sca>,<tosca>,<length>)
+			fields := smsHeaderFields(strings.TrimSpace(strings.TrimPrefix(l, "+CMGR:")))
+			if len(fields) >= 1 {
+				status = fields[0]
+			}
+			if len(fields) >= 2 {
+				m.from = fields[1]
+			}
+			if len(fields) >= 4 {
+				m.minute = minuteOfSCTS(fields[3])
 			}
 			continue
 		}
@@ -751,8 +861,62 @@ func (h *Hub) readIndexLocked(idx int) (m received, status string, err error) {
 	if len(body) == 1 {
 		text = DecodeSMSBody(body[0])
 	}
+	// Some senders pad message parts with zero-width characters — strip
+	// them so merged text has no invisible gaps.
+	text = strings.ReplaceAll(text, "\u200B", "")
+	text = strings.ReplaceAll(text, "\uFEFF", "")
 	m.text = text
 	return m, status, nil
+}
+
+// smsHeaderFields splits one +CMGR/+CMGL header into its comma-
+// separated fields, honoring double quotes (the service-centre
+// timestamp itself contains a comma). Empty fields are kept — the
+// field order carries the meaning.
+func smsHeaderFields(s string) []string {
+	var fields []string
+	for i := 0; i < len(s); {
+		for i < len(s) && s[i] == ' ' {
+			i++
+		}
+		if i >= len(s) {
+			break
+		}
+		var f string
+		if s[i] == '"' {
+			i++
+			var b strings.Builder
+			for i < len(s) && s[i] != '"' {
+				b.WriteByte(s[i])
+				i++
+			}
+			if i < len(s) {
+				i++ // closing quote
+			}
+			f = b.String()
+		} else {
+			start := i
+			for i < len(s) && s[i] != ',' {
+				i++
+			}
+			f = s[start:i]
+		}
+		fields = append(fields, f)
+		if i < len(s) && s[i] == ',' {
+			i++
+		}
+	}
+	return fields
+}
+
+// minuteOfSCTS truncates a +CMGR service-centre timestamp to the
+// minute ("26/10/08,18:51:52+08" → "26/10/08,18:51") — the parts of
+// one long message share the timestamp.
+func minuteOfSCTS(s string) string {
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		return s[:i]
+	}
+	return ""
 }
 
 // reconnectLocked drops the dead transport and reopens + reinitializes

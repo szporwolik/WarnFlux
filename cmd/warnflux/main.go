@@ -648,16 +648,13 @@ func run(configPath string, checkConfig bool) error {
 	}
 	meshtasticHub.SetRecorder(store)
 	// The GSM hub owns the serial AT session to the cellular modem;
-	// history lands in the same SQLite store as APRS/Meshtastic.
+	// history lands in the same SQLite store as APRS/Meshtastic. SMS
+	// commands and replies use the same shared interpreter and event
+	// pipeline as the other channels (wired further below).
 	gsmHub := gsm.NewHub(gsm.Config{
 		Enabled: cfg.GSM.Enabled,
 		Device:  cfg.GSM.Device,
 	}, store, logger)
-	// The future SMS command interpreter plugs in here (currently only
-	// history).
-	gsmHub.SetHandler(func(from, text string) {
-		logger.Info("gsm: sms command candidate", "from", from)
-	})
 	// The heard-node directory persists in SQLite so restarts and quiet
 	// periods do not empty the node list.
 	meshtasticHub.SetNodeStore(store)
@@ -689,13 +686,27 @@ func run(configPath string, checkConfig bool) error {
 		return false
 	})
 
+	// GSM SMS routing trusts registered operators exactly like the radio
+	// channels: the sender's phone number must belong to a user's
+	// registered phone field. Without the gate no SMS can run
+	// restricted commands or raise alarms.
+	gsmHub.SetSenderGate(func(phone string) string {
+		owners, err := store.PhoneOwners()
+		if err != nil {
+			logger.Warn("gsm: sender allow-list load failed", "error", err)
+			return ""
+		}
+		return owners[gsm.NumberKey(phone)]
+	})
+
 	// The shared radio CLI: /help lists the commands, /debug fires the
-	// debug alarm; both APRS messages and Meshtastic direct messages
-	// answer through the same interpreter (future topics plug in here).
-	// Unknown slash messages answer with the installation banner.
+	// debug alarm; APRS messages, Meshtastic direct messages and SMS
+	// all answer through the same interpreter. Unknown slash messages
+	// answer with the installation banner.
 	radioCLI := radiocli.New(identity)
 	hub.SetCLI(radioCLI)
 	meshtasticHub.SetCLI(radioCLI)
+	gsmHub.SetCLI(radioCLI)
 
 	if err := plugins.RegisterBuiltins(registry, hub, meshtasticHub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
@@ -899,6 +910,8 @@ func run(configPath string, checkConfig bool) error {
 	}
 	hub.SetEventTimesResolver(eventTimes)
 	meshtasticHub.SetEventTimesResolver(eventTimes)
+	gsmHub.SetEventTimesResolver(eventTimes)
+	gsmHub.SetEventAcceptor(eventAcceptor)
 
 	// Heard Meshtastic nodes feed the broker as retained station documents
 	// under meshtastic/stations/<key12>; expired nodes are tombstoned.

@@ -584,26 +584,3 @@ func TestOperatorAndSignal(t *testing.T) {
 		}
 	}
 }
-
-func TestSetHandlerLastWins(t *testing.T) {
-	rec := &recStub{}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := NewHub(Config{}, rec, logger)
-	var a, b int
-	h.SetHandler(func(string, string) { a++ })
-	h.SetHandler(func(string, string) { b++ })
-	h.mu.Lock()
-	fn := h.handler
-	h.mu.Unlock()
-	fn("+48", "x")
-	if a != 0 || b != 1 {
-		t.Fatalf("handler calls: a=%d b=%d, want 0/1", a, b)
-	}
-	h.SetHandler(nil)
-	h.mu.Lock()
-	fn = h.handler
-	h.mu.Unlock()
-	if fn != nil {
-		t.Fatalf("handler not cleared")
-	}
-}

@@ -21,6 +21,8 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"golang.org/x/sys/unix"
 )
 
@@ -44,6 +46,18 @@ var phoneRE = regexp.MustCompile(`^\+?[0-9]{7,15}$`)
 
 // ValidNumber reports whether the phone number has an accepted shape.
 func ValidNumber(s string) bool { return phoneRE.MatchString(strings.TrimSpace(s)) }
+
+// NumberKey normalizes a phone number for identity comparison: digits
+// only, so "+48 509 558 155" and "48509558155" compare equal.
+func NumberKey(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // ErrNoModem is returned when the hub has no session (disabled or not
 // started).
@@ -100,10 +114,32 @@ type Hub struct {
 	op  atomic.Pointer[string]
 	csq atomic.Int64
 
-	// handler receives every incoming SMS text (the future command
-	// interpreter hook; nil = history only). Invoked WITHOUT the
-	// session lock, so it may call Send.
-	handler func(from, text string)
+	// cli is the shared radio-command interpreter (optional): an SMS
+	// that parses as a command is answered in-band and (except /debug)
+	// never becomes an alarm. Guarded by mu.
+	cli *radiocli.Bot
+	// senderGate resolves the sender's registered directory user by
+	// phone number ("" = not registered); registered senders may run
+	// restricted commands. Guarded by mu.
+	senderGate func(from string) string
+	// eventAcceptor accepts a marshalled COMMAND event (/alert and
+	// /debug) and reports the local pipeline's acceptance. Guarded by
+	// mu.
+	eventAcceptor func(payload []byte) dispatch.Acceptance
+	// eventTimes resolves the durable command registry for one command
+	// key (lifecycle anchor + recorded result). Guarded by mu.
+	eventTimes func(ctx context.Context, key string) (eff, exp time.Time, result string, ok bool)
+	// cmds remembers executed commands by sender + content identity,
+	// so a repeated text replays the previous result instead of
+	// re-executing the command. Guarded by mu.
+	cmds map[string]*cmdRecord
+	// replyLast bounds ALL automatic replies per sender (command
+	// answers, banners, denials); guarded by mu.
+	replyLast map[string]replyWindow
+	// bannerLast / bannerNext pace the plain-message banner replies
+	// (per sender and globally); guarded by mu.
+	bannerLast map[string]time.Time
+	bannerNext time.Time
 }
 
 // NewHub builds the hub (nothing is opened yet).
@@ -111,15 +147,54 @@ func NewHub(cfg Config, rec MessageRecorder, logger *slog.Logger) *Hub {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Hub{cfg: cfg, logger: logger, rec: rec, now: time.Now}
+	return &Hub{
+		cfg:        cfg,
+		logger:     logger,
+		rec:        rec,
+		now:        time.Now,
+		cmds:       map[string]*cmdRecord{},
+		replyLast:  map[string]replyWindow{},
+		bannerLast: map[string]time.Time{},
+	}
 }
 
-// SetHandler installs the incoming-message hook (commands later). The
-// last registration wins; nil clears it.
-func (h *Hub) SetHandler(fn func(from, text string)) {
+// SetCLI attaches the shared radio-command interpreter (optional): an
+// SMS that parses as a command is answered in-band and — except for
+// /debug — never becomes an alarm; plain texts answer with the
+// installation banner. The last registration wins; nil clears it.
+func (h *Hub) SetCLI(b *radiocli.Bot) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.handler = fn
+	h.cli = b
+}
+
+// SetSenderGate installs the sender allow-list lookup: it resolves the
+// sender's phone number to the directory username that registered it
+// ("" = unknown sender). Without the gate no SMS can run restricted
+// commands or raise alarms. The last registration wins; nil clears it.
+func (h *Hub) SetSenderGate(fn func(from string) string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.senderGate = fn
+}
+
+// SetEventAcceptor installs the LOCAL acceptance path for command
+// events (/debug, /alert): the acceptor receives the marshalled
+// canonical /events payload and reports how the pipeline took it.
+// The last registration wins; nil clears it.
+func (h *Hub) SetEventAcceptor(fn func(payload []byte) dispatch.Acceptance) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.eventAcceptor = fn
+}
+
+// SetEventTimesResolver installs the durable command-registry lookup
+// (the storage half of the restart-proof command dedup). The last
+// registration wins; nil clears it.
+func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (eff, exp time.Time, result string, ok bool)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.eventTimes = fn
 }
 
 // Connected reports whether the serial session is up.
@@ -593,16 +668,9 @@ func (h *Hub) pollLoop(ctx context.Context) {
 				}
 			}
 			h.mu.Unlock()
-			// Handlers run outside the lock — they may call Send.
-			if len(msgs) > 0 {
-				h.mu.Lock()
-				fn := h.handler
-				h.mu.Unlock()
-				for _, m := range msgs {
-					if fn != nil {
-						fn(m.from, m.text)
-					}
-				}
+			// Command routing runs outside the lock — replies call Send.
+			for _, m := range msgs {
+				h.routeMessage(m.from, m.text)
 			}
 		}
 	}

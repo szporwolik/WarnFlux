@@ -178,6 +178,124 @@ func TestSMSAlertEvent(t *testing.T) {
 	_ = w
 }
 
+// TestSMSRCBSender pins the broadcast-sender detection that separates
+// national Alert RCB dispatches from ordinary messages.
+func TestSMSRCBSender(t *testing.T) {
+	for in, want := range map[string]bool{
+		"ALERT RCB":    true,
+		"alert rcb":    true,
+		"Alert RCB":    true,
+		"ALERT-RCB":    true,
+		" alert rcb ":  true,
+		"+48509558155": false,
+		"":             false,
+		"ALERT RCB2":   false,
+		"RCB ALERT":    false,
+		"alertrcb":     false,
+	} {
+		if got := isRCBSender(in); got != want {
+			t.Errorf("isRCBSender(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestSMSRCBEvent pins the Alert RCB pipeline: the incoming SMS becomes
+// a canonical "rcb" event (severe, expiring 24 hours out) through the
+// installed acceptor, and the broadcast sender is never answered.
+func TestSMSRCBEvent(t *testing.T) {
+	h, f := replyHub(t, 0)
+	var mu sync.Mutex
+	var payload string
+	h.SetEventAcceptor(func(p []byte) dispatch.Acceptance {
+		mu.Lock()
+		payload = string(p)
+		mu.Unlock()
+		return dispatch.AcceptedDurable
+	})
+	h.routeMessage("ALERT RCB", "Uwaga! Jutro burze z gradem")
+	mu.Lock()
+	p := payload
+	mu.Unlock()
+	if p == "" {
+		t.Fatal("no event published for the Alert RCB SMS")
+	}
+	if !strings.Contains(p, `"source":"rcb"`) {
+		t.Fatalf("rcb event missing source: %q", p)
+	}
+	if !strings.Contains(p, `"severity":"severe"`) || !strings.Contains(p, `"expires_at"`) {
+		t.Fatalf("rcb event severity/expiry missing: %q", p)
+	}
+	if !strings.Contains(p, "Uwaga! Jutro burze z gradem") {
+		t.Fatalf("rcb event lost the alert text: %q", p)
+	}
+	// The broadcast sender must never be answered.
+	time.Sleep(50 * time.Millisecond)
+	if w := f.written(); strings.Contains(w, "AT+CMGS") {
+		t.Fatalf("automatic reply sent to the Alert RCB sender: %q", w)
+	}
+}
+
+// TestSMSRCBExpiry pins the 24-hour lifecycle window stamped on the
+// generated hazard.
+func TestSMSRCBExpiry(t *testing.T) {
+	h, _ := replyHub(t, 0)
+	fixed := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	h.now = func() time.Time { return fixed }
+	var mu sync.Mutex
+	var payload string
+	h.SetEventAcceptor(func(p []byte) dispatch.Acceptance {
+		mu.Lock()
+		payload = string(p)
+		mu.Unlock()
+		return dispatch.AcceptedDurable
+	})
+	h.routeMessage("Alert RCB", "Uwaga! Burze")
+	mu.Lock()
+	p := payload
+	mu.Unlock()
+	wantEff := fixed.Format(time.RFC3339)
+	wantExp := fixed.Add(24 * time.Hour).Format(time.RFC3339)
+	if !strings.Contains(p, wantEff) || !strings.Contains(p, wantExp) {
+		t.Fatalf("rcb event lifecycle = %q, want effective %s expires %s", p, wantEff, wantExp)
+	}
+}
+
+// TestSMSRCBEmpty pins the no-op for an empty broadcast body.
+func TestSMSRCBEmpty(t *testing.T) {
+	h, f := replyHub(t, 0)
+	called := false
+	h.SetEventAcceptor(func([]byte) dispatch.Acceptance {
+		called = true
+		return dispatch.AcceptedDurable
+	})
+	h.routeMessage("ALERT RCB", "   ")
+	if called {
+		t.Fatal("empty RCB SMS published an event")
+	}
+	if w := f.written(); strings.Contains(w, "AT+CMGS") {
+		t.Fatalf("automatic reply sent for an empty RCB SMS: %q", w)
+	}
+}
+
+// TestSMSRCBPlainSender pins that an RCB-looking text from an ordinary
+// phone still follows the plain banner path instead of the RCB pipeline.
+func TestSMSRCBPlainSender(t *testing.T) {
+	h, f := replyHub(t, 1)
+	called := false
+	h.SetEventAcceptor(func([]byte) dispatch.Acceptance {
+		called = true
+		return dispatch.AcceptedDurable
+	})
+	h.routeMessage("+48600111222", "Uwaga! Jutro burze z gradem")
+	if called {
+		t.Fatal("plain phone message published an rcb event")
+	}
+	w := waitForWritten(t, f, "type /help for help")
+	if !strings.Contains(w, "WarnFlux v1") {
+		t.Fatalf("plain phone message lost its banner reply: %q", w)
+	}
+}
+
 // TestSMSReplyFitsOneMessage pins the reply fitting: a long command
 // answer is transliterated and hard-capped so it always fits a single
 // 160-character text-mode SMS.

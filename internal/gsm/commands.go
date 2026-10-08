@@ -98,11 +98,29 @@ const (
 	maxSMSReplyLen = 160 // one text-mode SMS, after transliteration
 )
 
-// routeMessage handles one received SMS: slash-prefixed texts go to the
-// shared radio CLI (public commands for everyone, restricted ones for
-// registered senders), plain texts answer with the installation banner
-// (rate-limited). Replies fit one SMS and are sent fire-and-forget.
+// isRCBSender reports whether the SMS originator is the national Alert
+// RCB broadcast sender (alphanumeric "ALERT RCB", matching the
+// operator delivery; case/spacing-insensitive).
+func isRCBSender(from string) bool {
+	f := strings.ToUpper(strings.Join(strings.Fields(from), " "))
+	return f == "ALERT RCB" || f == "ALERT-RCB"
+}
+
+// rcbEventTTL bounds the generated hazard: an Alert RCB stays active as
+// a 24-hour communication.
+const rcbEventTTL = 24 * time.Hour
+
+// routeMessage handles one received SMS: Alert RCB broadcasts become a
+// 24-hour severe "rcb" hazard through the standard routing pipeline
+// (never answered — the sender is a broadcast short code), slash texts
+// go to the shared radio CLI and plain texts answer with the
+// installation banner (rate-limited). Replies fit one SMS and are sent
+// fire-and-forget.
 func (h *Hub) routeMessage(from, text string) {
+	if isRCBSender(from) {
+		h.publishRCBEvent(from, text)
+		return
+	}
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
@@ -207,6 +225,59 @@ func fitReply(text string) string {
 		return string(r[:maxSMSReplyLen])
 	}
 	return text
+}
+
+// publishRCBEvent converts one received Alert RCB SMS into a canonical
+// /events document (the "rcb" source): severe, active for 24 hours,
+// routed through the standard matrix like every other hazard. The event
+// identity is stable per message content, so a redelivered SMS maps to
+// the same hazard. No automatic reply is ever sent to the broadcast
+// sender.
+func (h *Hub) publishRCBEvent(from, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	now := h.now().UTC()
+	nowS := now.Format(time.RFC3339)
+	expS := now.Add(rcbEventTTL).Format(time.RFC3339)
+	sourceID := from + ":msg:" + radiocli.ContentID(text)
+	doc := MessageEventWire{
+		SchemaVersion: messageEventSchemaVersion,
+		ChangeID:      radiocli.StableID("rcb:msg", sourceID, text),
+		ChangeType:    "new",
+		EventKey:      "rcb:" + sourceID,
+		Event: MessageEventHazard{
+			Source:      "rcb",
+			SourceID:    sourceID,
+			Event:       "Alert RCB",
+			Severity:    "severe",
+			Urgency:     "immediate",
+			Certainty:   "observed",
+			Headline:    "Alert RCB: " + text,
+			Description: "Alert RCB received over SMS (" + from + ")",
+			EffectiveAt: &nowS,
+			ExpiresAt:   &expS,
+			Areas:       []string{},
+			Status:      "active",
+			ReceivedAt:  nowS,
+			UpdatedAt:   nowS,
+		},
+	}
+	payload, err := json.Marshal(doc)
+	if err != nil {
+		h.logger.Warn("gsm: rcb event marshal failed", "error", err)
+		return
+	}
+	h.mu.Lock()
+	acceptor := h.eventAcceptor
+	h.mu.Unlock()
+	if acceptor == nil {
+		h.logger.Warn("gsm: rcb event dropped — no event acceptor installed", "from", from)
+		return
+	}
+	h.logger.Info("gsm: alert rcb received", "from", from)
+	_ = acceptor(payload)
 }
 
 // confirmation maps the local acceptance of a command event onto the

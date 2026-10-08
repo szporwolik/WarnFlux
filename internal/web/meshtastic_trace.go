@@ -43,6 +43,13 @@ func (s *Server) handleMeshtasticTraceroute(w http.ResponseWriter, r *http.Reque
 	if hops := s.meshtastic.NodeHops(to); hops < 0 || hops > 3 {
 		timeout = 60 * time.Second
 	}
+	// The far-node budget matches the server's global 60 s WriteTimeout:
+	// the result would be written right at the deadline and the proxy
+	// would cut the connection (visible as a 502). Extend THIS response's
+	// write deadline past the probe window instead.
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(timeout + 15*time.Second))
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), timeout+10*time.Second)
 	defer cancel()
 	res, err := s.meshtastic.Traceroute(ctx, to, timeout)

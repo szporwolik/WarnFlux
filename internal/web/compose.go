@@ -220,7 +220,7 @@ func (s *Server) handleComposePage(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			form = composeForm{Severity: "moderate", Status: "active"}
 		} else {
-			form = composeFormFromHazard(h)
+			form = composeFormFromHazard(h, s.displayLoc())
 		}
 	}
 
@@ -654,12 +654,13 @@ func parseComposeTime(v string) *time.Time {
 	return nil
 }
 
-// composeTimeValue formats an optional time for the datetime-local input.
-func composeTimeValue(t *time.Time) string {
+// composeTimeValue formats an optional time for the datetime-local input
+// in the server's display timezone.
+func composeTimeValue(t *time.Time, loc *time.Location) string {
 	if t == nil {
 		return ""
 	}
-	return t.Local().Format("2006-01-02T15:04")
+	return t.In(loc).Format("2006-01-02T15:04")
 }
 
 // composeAreas splits the comma/semicolon-separated areas field.
@@ -732,7 +733,7 @@ func composeCoordValue(v *float64) string {
 }
 
 // composeFormFromHazard prefills the form for an edit.
-func composeFormFromHazard(h state.Hazard) composeForm {
+func composeFormFromHazard(h state.Hazard, loc *time.Location) composeForm {
 	return composeForm{
 		EventKey:    h.EventKey,
 		Event:       h.Event,
@@ -746,8 +747,8 @@ func composeFormFromHazard(h state.Hazard) composeForm {
 		Areas:       strings.Join(h.Areas, ", "),
 		Latitude:    composeCoordValue(h.Latitude),
 		Longitude:   composeCoordValue(h.Longitude),
-		EffectiveAt: composeTimeValue(h.EffectiveAt),
-		ExpiresAt:   composeTimeValue(h.ExpiresAt),
+		EffectiveAt: composeTimeValue(h.EffectiveAt, loc),
+		ExpiresAt:   composeTimeValue(h.ExpiresAt, loc),
 		ReceivedAt:  h.ReceivedAt.Format(time.RFC3339),
 	}
 }

@@ -1045,6 +1045,17 @@ func run(configPath string, checkConfig bool) error {
 		// Panel switches are written back to the YAML file so they
 		// survive restarts.
 		webSrv.SetConfigFile(configPath)
+		// Human-facing timestamps ride the configured display timezone:
+		// containers typically run UTC, which would shift every panel
+		// time two hours behind the local wall clock.
+		if cfg.App.Timezone != "" {
+			if loc, err := time.LoadLocation(cfg.App.Timezone); err == nil {
+				webSrv.SetTimezone(loc)
+			} else {
+				logger.Warn("app.timezone unavailable, keeping the process-local zone",
+					"timezone", cfg.App.Timezone, "error", err)
+			}
+		}
 		// Low-disk alarm: the health page and /metrics report the free
 		// space against storage.min_free_mb (0 disables the alarm).
 		webSrv.SetStorageAlarm(cfg.Storage.MinFreeMB * 1024 * 1024)

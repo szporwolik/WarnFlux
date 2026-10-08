@@ -3,6 +3,7 @@ package gsm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -135,9 +136,8 @@ func TestValidNumber(t *testing.T) {
 func TestInitExchange(t *testing.T) {
 	h, f, _ := newTestHub(t)
 	f.feed("OK\r\n")                           // ATE0
-	f.feed("OK\r\n")                           // AT+CMGF=1
+	f.feed("OK\r\n")                           // AT+CMGF=0
 	f.feed("OK\r\n")                           // AT+CSCS="IRA"
-	f.feed("OK\r\n")                           // AT+CSDH=1
 	f.feed("+CPMS: (\"SM\",\"SR\")\r\nOK\r\n") // no ME → stay on SIM
 	h.mu.Lock()
 	ok := h.initLocked()
@@ -150,7 +150,7 @@ func TestInitExchange(t *testing.T) {
 		t.Fatalf("storage = %q, want SM (no ME support)", storage)
 	}
 	written := f.written()
-	for _, cmd := range []string{"ATE0\r", "AT+CMGF=1\r", "AT+CSCS=\"IRA\"\r", "AT+CSDH=1\r", "AT+CPMS=?\r"} {
+	for _, cmd := range []string{"ATE0\r", "AT+CMGF=0\r", "AT+CPMS=?\r"} {
 		if !strings.Contains(written, cmd) {
 			t.Fatalf("init command %q missing: %q", cmd, written)
 		}
@@ -163,12 +163,10 @@ func TestInitExchange(t *testing.T) {
 func TestInitPrefersME(t *testing.T) {
 	h, f, _ := newTestHub(t)
 	f.feed("OK\r\n") // ATE0
-	f.feed("OK\r\n") // AT+CMGF=1
+	f.feed("OK\r\n") // AT+CMGF=0
 	f.feed("OK\r\n") // AT+CSCS="IRA"
-	f.feed("OK\r\n") // AT+CSDH=1
 	f.feed("+CPMS: (\"ME\",\"MT\",\"SM\",\"SR\"),(\"ME\",\"MT\",\"SM\",\"SR\"),(\"ME\",\"MT\",\"SM\",\"SR\")\r\nOK\r\n")
-	f.feed("+CPMS: \"SM\",0,1,\"SM\",0,1,\"SM\",0,1\r\nOK\r\n") // SIM drain: empty
-	f.feed("OK\r\n")                                            // CMGR=1: hole
+	f.feed("+CPMS: \"SM\",0,1,\"SM\",0,1,\"SM\",0,1\r\nOK\r\n") // SIM drain: empty → no probing
 	f.feed("OK\r\n")                                            // AT+CPMS="ME","ME","ME"
 	f.feed("+CPMS: \"ME\",0,23,\"ME\",0,23,\"ME\",0,23\r\nOK\r\n")
 	h.mu.Lock()
@@ -189,12 +187,11 @@ func TestInitPrefersME(t *testing.T) {
 func TestInitDrainsSIMBeforeSwitch(t *testing.T) {
 	h, f, rec := newTestHub(t)
 	f.feed("OK\r\n") // ATE0
-	f.feed("OK\r\n") // AT+CMGF=1
+	f.feed("OK\r\n") // AT+CMGF=0
 	f.feed("OK\r\n") // AT+CSCS="IRA"
-	f.feed("OK\r\n") // AT+CSDH=1
 	f.feed("+CPMS: (\"ME\",\"MT\",\"SM\",\"SR\"),(\"ME\",\"MT\",\"SM\",\"SR\"),(\"ME\",\"MT\",\"SM\",\"SR\")\r\nOK\r\n")
 	f.feed("+CPMS: \"SM\",1,1,\"SM\",1,1,\"SM\",1,1\r\nOK\r\n") // one SIM leftover
-	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"25/10/03,10:00:00+08\"\r\nZalegla wiadomosc\r\nOK\r\n")
+	f.feed("+CMGR: 0\r\n" + deliverPDU(t, "+48123456789", "Zalegla wiadomosc") + "\r\nOK\r\n")
 	f.feed("OK\r\n") // AT+CMGD=1
 	f.feed("OK\r\n") // AT+CPMS="ME","ME","ME"
 	f.feed("+CPMS: \"ME\",0,23,\"ME\",0,23,\"ME\",0,23\r\nOK\r\n")
@@ -230,11 +227,11 @@ func TestPollUnreadParses(t *testing.T) {
 	h, f, rec := newTestHub(t)
 	f.feed("+CPMS: \"SM\",4,5,\"SM\",4,5,\"SM\",4,5\r\nOK\r\n")
 	f.feed("OK\r\n") // CMGR=1: empty slot (hole)
-	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"25/10/03,10:00:00+08\"\r\nWiadomosc testowa\r\nOK\r\n")
+	f.feed("+CMGR: 0\r\n" + deliverPDU(t, "+48123456789", "Wiadomosc testowa") + "\r\nOK\r\n")
 	f.feed("OK\r\n") // AT+CMGD=2
-	f.feed("+CMGR: \"STO SENT\",\"+48600999888\",,\"25/10/03,10:01:00+08\"\r\nkopia wysylki\r\nOK\r\n")
+	f.feed("+CMGR: 3\r\n" + submitHex(t, "kopia wysylki") + "\r\nOK\r\n")
 	f.feed("OK\r\n") // AT+CMGD=3 (sent copy — deleted, not imported)
-	f.feed("+CMGR: \"REC READ\",\"+48600999888\",,\"25/10/03,10:05:00+08\"\r\nDruga wiadomosc\r\nOK\r\n")
+	f.feed("+CMGR: 1\r\n" + deliverPDU(t, "+48600999888", "Druga wiadomosc") + "\r\nOK\r\n")
 	f.feed("OK\r\n")              // AT+CMGD=4
 	f.feed("+CMS ERROR: 321\r\n") // CMGR=5: beyond the real storage
 
@@ -277,41 +274,31 @@ func TestPollUnreadParses(t *testing.T) {
 	}
 }
 
-func TestMergeSMS(t *testing.T) {
-	in := []received{
-		{from: "+48123456789", text: "A", minute: "26/10/08,18:51"},
-		{from: "+48123456789", text: "B", minute: "26/10/08,18:51"},
-		{from: "+48123456789", text: "C", minute: "26/10/08,18:52"}, // other minute: separate
-		{from: "+48123456789", text: "D", minute: ""},               // unknown time: never merged
-		{from: "+48123456789", text: "E", minute: ""},
+// submitHex builds a stored SMS-SUBMIT PDU (a sent copy) — the MTI
+// differs from SMS-DELIVER, so the receiver must delete, not import.
+func submitHex(t *testing.T, text string) string {
+	t.Helper()
+	pdus, err := encodePDU("+48600999888", text, 0)
+	if err != nil {
+		t.Fatalf("submit build: %v", err)
 	}
-	out := mergeSMS(in)
-	if len(out) != 4 {
-		t.Fatalf("merged to %d messages: %+v", len(out), out)
-	}
-	if out[0].text != "BA" {
-		t.Fatalf("first = %q, want BA (reversed parts)", out[0].text)
-	}
-	if out[1].text != "C" || out[2].text != "D" || out[3].text != "E" {
-		t.Fatalf("wrong tail: %+v", out[1:])
-	}
+	return pdus[0].Hex
 }
 
-// TestPollUnreadMergesSM pins the SIM-storage reconstruction: the
-// firmware stores the parts of one long message backwards across the
-// slots, so the batch must be re-read in reverse and merged.
-func TestPollUnreadMergesSM(t *testing.T) {
+// TestPollUnreadReassemblesConcat pins the standards-defined part
+// joining: the E173 stores each segment of a long message as its own
+// slot and the storage order is NOT guaranteed, so the UDH sequence
+// numbers decide the final text.
+func TestPollUnreadReassemblesConcat(t *testing.T) {
 	h, f, rec := newTestHub(t)
-	h.mu.Lock()
-	h.storage = "SM"
-	h.mu.Unlock()
-	f.feed("+CPMS: \"SM\",3,3,\"SM\",3,3,\"SM\",3,3\r\nOK\r\n")
-	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"26/10/08,18:51:59+08\"\r\nA\r\nOK\r\n") // slot 1 = LAST part
-	f.feed("OK\r\n")                                                                          // AT+CMGD=1
-	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"26/10/08,18:51:58+08\"\r\nB\r\nOK\r\n") // slot 2
-	f.feed("OK\r\n")                                                                          // AT+CMGD=2
-	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"26/10/08,18:51:57+08\"\r\nC\r\nOK\r\n") // slot 3 = FIRST part
-	f.feed("OK\r\n")                                                                          // AT+CMGD=3
+	f.feed("+CPMS: \"ME\",3,3,\"ME\",3,3,\"ME\",3,3\r\nOK\r\n")
+	// Slot 1 holds seq 2, slot 2 holds seq 1 — storage order reversed.
+	f.feed("+CMGR: 0\r\n" + deliverPDU(t, "+48123456789", "czesc druga", 0x2A, 2, 2) + "\r\nOK\r\n")
+	f.feed("OK\r\n") // AT+CMGD=1
+	f.feed("+CMGR: 0\r\n" + deliverPDU(t, "+48123456789", "Czesc pierwsza ", 0x2A, 2, 1) + "\r\nOK\r\n")
+	f.feed("OK\r\n") // AT+CMGD=2
+	f.feed("+CMGR: 0\r\n" + deliverPDU(t, "+48600999888", "osobna wiadomosc") + "\r\nOK\r\n")
+	f.feed("OK\r\n") // AT+CMGD=3
 
 	h.mu.Lock()
 	got, ok := h.pollUnreadLocked()
@@ -319,27 +306,89 @@ func TestPollUnreadMergesSM(t *testing.T) {
 	if !ok {
 		t.Fatalf("poll reported a transport failure")
 	}
-	if len(got) != 1 || got[0].text != "CBA" {
-		t.Fatalf("merged = %+v, want one message CBA", got)
+	if len(got) != 2 {
+		t.Fatalf("received %d messages, want 2: %+v", len(got), got)
 	}
-	if rows := rec.list(); len(rows) != 1 || rows[0].Text != "CBA" {
+	if got[0].text != "Czesc pierwsza czesc druga" {
+		t.Fatalf("merged = %q, want the joined parts in UDH order", got[0].text)
+	}
+	if got[1].text != "osobna wiadomosc" {
+		t.Fatalf("second = %q", got[1].text)
+	}
+	if rows := rec.list(); len(rows) != 2 || rows[0].Text != "Czesc pierwsza czesc druga" {
 		t.Fatalf("recorded = %+v", rows)
+	}
+}
+
+// TestPollSkipsEmptyStorage pins the idle fast path: an empty inbox
+// answers only the capacity query — no per-slot probing, which keeps
+// the modem chatter minimal over years of uptime.
+func TestPollSkipsEmptyStorage(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	f.feed("+CPMS: \"ME\",0,23,\"ME\",0,23,\"ME\",0,23\r\nOK\r\n")
+	h.mu.Lock()
+	got, ok := h.pollUnreadLocked()
+	h.mu.Unlock()
+	if !ok || len(got) != 0 {
+		t.Fatalf("poll = %+v ok=%v, want empty + ok", got, ok)
+	}
+	if w := f.written(); strings.Contains(w, "AT+CMGR=") {
+		t.Fatalf("empty storage was probed: %q", w)
+	}
+	if len(rec.list()) != 0 {
+		t.Fatalf("empty storage recorded rows")
+	}
+}
+
+// TestDeepClean pins the hourly maintenance: the inactive storage is
+// drained into the history, the status-report mailbox is bulk-cleared
+// and the active storage is restored each time.
+func TestDeepClean(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	h.mu.Lock()
+	h.storage = "ME"
+	h.mu.Unlock()
+	f.feed("OK\r\n") // AT+CPMS="SM","ME","ME"
+	f.feed("+CPMS: \"SM\",1,1,\"ME\",1,1,\"ME\",1,1\r\nOK\r\n")
+	f.feed("+CMGR: 0\r\n" + deliverPDU(t, "+48123456789", "zapomniana z SIM") + "\r\nOK\r\n")
+	f.feed("OK\r\n") // AT+CMGD=1
+	f.feed("OK\r\n") // AT+CPMS="ME","ME","ME"
+	f.feed("OK\r\n") // AT+CPMS="SR","ME","ME"
+	f.feed("OK\r\n") // AT+CMGD=1,4
+	f.feed("OK\r\n") // AT+CPMS="ME","ME","ME"
+
+	h.mu.Lock()
+	h.deepCleanLocked()
+	h.mu.Unlock()
+	rows := rec.list()
+	if len(rows) != 1 || rows[0].Text != "zapomniana z SIM" {
+		t.Fatalf("deep clean did not import the SIM leftover: %+v", rows)
+	}
+	w := f.written()
+	for _, cmd := range []string{"AT+CPMS=\"SM\",\"ME\",\"ME\"\r", "AT+CMGD=1,4\r"} {
+		if !strings.Contains(w, cmd) {
+			t.Fatalf("deep clean missing %q: %q", cmd, w)
+		}
+	}
+	if n := strings.Count(w, "AT+CPMS=\"ME\",\"ME\",\"ME\"\r"); n != 2 {
+		t.Fatalf("storage restore count = %d, want 2: %q", n, w)
 	}
 }
 
 func TestSendFlow(t *testing.T) {
 	h, f, rec := newTestHub(t)
-	f.feed("> \r\n")
-	f.feed("OK\r\n")
+	f.feed("OK\r\n") // AT+CMGF=1
+	f.feed("> \r\n") // CMGS prompt
+	f.feed("OK\r\n") // network accept
+	f.feed("OK\r\n") // AT+CMGF=0 (restore PDU mode)
 	if err := h.Send(context.Background(), "+48600111222", "Czesc"); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	written := f.written()
-	if !strings.Contains(written, "AT+CMGS=\"+48600111222\"\r") {
-		t.Fatalf("send command missing: %q", written)
-	}
-	if !strings.Contains(written, "Czesc\x1A") {
-		t.Fatalf("body+ctrl-z missing: %q", written)
+	for _, cmd := range []string{"AT+CMGF=1\r", "AT+CMGS=\"+48600111222\"\r", "Czesc\x1A", "AT+CMGF=0\r"} {
+		if !strings.Contains(written, cmd) {
+			t.Fatalf("send sequence missing %q: %q", cmd, written)
+		}
 	}
 	rows := rec.list()
 	if len(rows) != 1 {
@@ -348,6 +397,40 @@ func TestSendFlow(t *testing.T) {
 	r := rows[0]
 	if r.Direction != "tx" || r.From != "self" || r.To != "+48600111222" || r.Text != "Czesc" {
 		t.Fatalf("tx row = %+v", r)
+	}
+}
+
+// TestSendTransliterates pins the text-mode alphabet: Polish diacritics
+// get their ASCII equivalents before the modem sees them.
+func TestSendTransliterates(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	f.feed("OK\r\n") // AT+CMGF=1
+	f.feed("> \r\n")
+	f.feed("OK\r\n")
+	f.feed("OK\r\n") // AT+CMGF=0
+	if err := h.Send(context.Background(), "+48600111222", "Zażółć gęślą jaźń"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if !strings.Contains(f.written(), "Zazolc gesla jazn\x1A") {
+		t.Fatalf("transliterated body missing: %q", f.written())
+	}
+	rows := rec.list()
+	if len(rows) != 1 || rows[0].Text != "Zazolc gesla jazn" {
+		t.Fatalf("tx rows = %+v", rows)
+	}
+}
+
+// TestSendTooLong160 pins the single-segment cap of the text-mode path.
+func TestSendTooLong160(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	if err := h.Send(context.Background(), "+48600111222", strings.Repeat("A", 161)); !errors.Is(err, ErrTooLong) {
+		t.Fatalf("send(161) = %v, want ErrTooLong", err)
+	}
+	if w := f.written(); w != "" {
+		t.Fatalf("too-long send touched the modem: %q", w)
+	}
+	if len(rec.list()) != 0 {
+		t.Fatalf("too-long send wrote history rows")
 	}
 }
 
@@ -403,8 +486,10 @@ func TestNoTransport(t *testing.T) {
 // real device.
 func TestSendPromptWithoutNewline(t *testing.T) {
 	h, f, rec := newTestHub(t)
-	f.feed("> ") // prompt only — no CRLF after it
+	f.feed("OK\r\n") // AT+CMGF=1
+	f.feed("> ")     // prompt only — no CRLF after it
 	f.feed("\r\n+CMGS: 1\r\nOK\r\n")
+	f.feed("OK\r\n") // AT+CMGF=0
 	if err := h.Send(context.Background(), "+48600111222", "Czesc"); err != nil {
 		t.Fatalf("send: %v", err)
 	}

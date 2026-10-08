@@ -83,7 +83,8 @@
           <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}"{{if not .Channels}} disabled{{end}}>
             {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
           </select>
-          <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
+          <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" data-char-count="133" required>
+          <span class="char-count">0 / 133</span>
           <button type="button" class="btn-ghost mesh-bell" aria-pressed="false" title="{{tr .Lang "meshtastic.bell"}}">🔔</button>
           <button type="submit" class="btn-primary"{{if not .Channels}} disabled{{end}}>{{tr .Lang "meshtastic.send_channel"}}</button>
         </form>
@@ -93,7 +94,8 @@
           <span class="mesh-send-label">{{tr .Lang "meshtastic.form_dm"}}</span>
           <input type="text" name="contact" id="mesh-contact" placeholder="{{tr .Lang "meshtastic.contact_ph"}}" maxlength="8" list="mesh-contacts">
           <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">!{{.ID}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
-          <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" required>
+          <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" data-char-count="133" required>
+          <span class="char-count">0 / 133</span>
           <button type="button" class="btn-ghost mesh-bell" aria-pressed="false" title="{{tr .Lang "meshtastic.bell"}}">🔔</button>
           <button type="submit" class="btn-primary">{{tr .Lang "meshtastic.send_contact"}}</button>
         </form>

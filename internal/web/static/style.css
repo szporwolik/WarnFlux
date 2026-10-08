@@ -3113,3 +3113,14 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .emcom-num-l3 { background: #c62828; }
 .emcom-level p { margin: 0.25rem 0 0; }
 .emcom-notes { margin: 0.5rem 0 0; padding-left: 1.2rem; display: grid; gap: 0.35rem; font-size: 0.82rem; }
+
+/* Live character counters on the send forms (GSM / Meshtastic / APRS). */
+.char-count {
+  font-size: 0.78rem;
+  color: var(--muted);
+  min-width: 4.5rem;
+  white-space: nowrap;
+  align-self: center;
+}
+.char-count.warn { color: #c62828; font-weight: 600; }
+label.field .char-count { align-self: flex-end; margin-top: -0.35rem; }

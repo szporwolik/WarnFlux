@@ -3935,6 +3935,9 @@ func TestAPRSMessagesPage(t *testing.T) {
 	if !strings.Contains(html, `action="/messages/send"`) {
 		t.Errorf("messages tab missing send form: %s", html)
 	}
+	if !strings.Contains(html, `data-char-count="60"`) || !strings.Contains(html, `class="char-count"`) {
+		t.Errorf("messages tab missing the character counter: %s", html)
+	}
 	if !strings.Contains(html, `<span class="nav-label">APRS</span>`) {
 		t.Errorf("combined APRS page nav should read APRS: %s", html)
 	}
@@ -3965,6 +3968,9 @@ func TestContactPickers(t *testing.T) {
 	_, html = env.get("/meshtastic")
 	if !strings.Contains(html, `list="mesh-contacts"`) || !strings.Contains(html, `<datalist id="mesh-contacts"><option value="abcd1234">!abcd1234 · sp9kow</option>`) {
 		t.Errorf("meshtastic page missing contact picker: %s", html)
+	}
+	if n := strings.Count(html, `data-char-count="133"`); n != 2 {
+		t.Errorf("meshtastic page character counters = %d, want 2 (channel + DM)", n)
 	}
 }
 

@@ -57,7 +57,10 @@
               data-lbl-no-reply="{{tr .Lang "meshtastic.trace_no_reply"}}"
               data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}"
               data-lbl-hops="{{tr .Lang "meshtastic.trace_hops"}}"
-              data-lbl-direct="{{tr .Lang "meshtastic.trace_direct"}}">
+              data-lbl-direct="{{tr .Lang "meshtastic.trace_direct"}}"
+              data-lbl-inactive-m="{{tr .Lang "meshtastic.trace_inactive_m"}}"
+              data-lbl-inactive-h="{{tr .Lang "meshtastic.trace_inactive_h"}}"
+              data-lbl-inactive-d="{{tr .Lang "meshtastic.trace_inactive_d"}}">
         <h3 id="mesh-trace-title"></h3>
         <div id="mesh-trace-map" class="mesh-trace-map" hidden></div>
         <p id="mesh-trace-map-note" class="muted mesh-trace-map-note" hidden></p>
@@ -284,6 +287,33 @@
       if (mapNote) { mapNote.hidden = true; }
     }
 
+    // The staleness threshold mirrors the server's trace gate
+    // (meshtasticTraceStaleAfter): a node unheard this long cannot
+    // answer a probe, so its button disables itself without a request.
+    var TRACE_STALE_MS = 30 * 60 * 1000;
+    function inactiveText(ms) {
+      var mins = Math.floor(ms / 60000);
+      if (mins < 60) { return (dialog.dataset.lblInactiveM || "inactive for %dm").replace("%d", mins); }
+      var h = Math.floor(mins / 60);
+      if (h < 24) { return (dialog.dataset.lblInactiveH || "inactive for %dh").replace("%d", h); }
+      return (dialog.dataset.lblInactiveD || "inactive for %dd").replace("%d", Math.floor(h / 24));
+    }
+    function blockStale(btn) {
+      if (btn.disabled) { return; }
+      var seen = Number(btn.getAttribute("data-seen") || 0);
+      if (!seen) { return; }
+      var age = Date.now() - seen;
+      if (age > TRACE_STALE_MS) {
+        btn.disabled = true;
+        btn.title = inactiveText(age);
+      }
+    }
+    // Re-check open buttons periodically: the nodes fragment poll may be
+    // paused (hidden tab, focused form), but staleness keeps advancing.
+    window.setInterval(function () {
+      document.querySelectorAll("button.mesh-trace[data-seen]").forEach(blockStale);
+    }, 60 * 1000);
+
     document.addEventListener("click", function (e) {
       var btn = e.target.closest("button.mesh-trace");
       if (!btn || busy || !dialog) { return; }
@@ -301,6 +331,13 @@
         if (btnShort && btnShort !== btnName) { s += " (" + btnShort + ")"; }
         return s;
       }
+      // Stale node: block the button in place and explain instead of
+      // firing a probe the server would refuse anyway.
+      blockStale(btn);
+      if (btn.disabled) {
+        show("⛔ " + nodeLabel(), [btn.title || inactiveText(Date.now() - Number(btn.getAttribute("data-seen") || 0))]);
+        return;
+      }
       busy = true;
       hideTraceMap();
       show(LBL_TRACING + ": " + nodeLabel() + "…", ["…"]);
@@ -312,6 +349,14 @@
         body: "csrf=" + encodeURIComponent(csrfEl ? csrfEl.value : "") + "&to=" + encodeURIComponent(id)
       }).then(function (r) {
         if (r.status === 401) { window.location.href = "/login"; }
+        // The server refused the probe (stale node): show the reason
+        // as a notice, not as a "failed" error.
+        if (r.status === 409) {
+          return r.text().then(function (t) {
+            show("⛔ " + nodeLabel(), [t || inactiveText(Date.now() - Number(btn.getAttribute("data-seen") || 0))]);
+            return { skip: true };
+          });
+        }
         return r.text().then(function (t) {
           // A proxy HTML error page (e.g. 502) is not a readable
           // message — fall back to the bare status.
@@ -319,6 +364,7 @@
           return JSON.parse(t);
         });
       }).then(function (j) {
+        if (j && j.skip) { return; }
         var lines = [];
         if (!j.reached) { lines.push(LBL_NOREPLY); }
         var hs = j.hops || [];
@@ -669,9 +715,9 @@
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else if .Lat}}—{{else}}<span class="badge muted">{{tr $.Lang "meshmap.nopos"}}</span>{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}{{if .Stale}} <span class="badge muted">{{.Inactive}}</span>{{end}}</td>
-        <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost mesh-trace" disabled
+        <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost mesh-trace" disabled data-seen="{{.LastSeenUnix}}"
             title="{{.Inactive}}">{{tr $.Lang "meshtastic.trace"}}</button>{{else}}
-          <button type="button" class="btn-ghost mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}
+          <button type="button" class="btn-ghost mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" data-seen="{{.LastSeenUnix}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}
           <button type="button" class="btn-ghost mesh-msg" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">{{tr $.Lang "meshtastic.msg"}}</button></td>
       </tr>
       {{end}}

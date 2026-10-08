@@ -227,6 +227,12 @@ backend therefore only needs to (a) parse frames into `aprs.Packet` and
 call `hub.Observe`, and (b) optionally implement `aprs.Transmitter` — the
 hub, the MQTT topics and the action wiring stay untouched.
 
+The same pattern covers the GSM channel: the built-in `sms` action sends
+notifications through the shared GSM hub (the serial AT modem session)
+to the configured phones plus the routed group members' registered
+numbers, and inbound SMS commands (`/help`, `/hazard`, `/alert`, ...)
+enter the pipeline as the `gsm` source.
+
 ## Mandatory rules
 
 - Respect context cancellation; do not block past it.

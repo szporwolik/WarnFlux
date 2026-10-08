@@ -224,7 +224,7 @@ func TestProviderToActionE2E(t *testing.T) {
 	}
 
 	areg := action.NewRegistry()
-	if err := actions.RegisterAll(areg, nil, nil); err != nil {
+	if err := actions.RegisterAll(areg, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	actionsMgr, err := action.NewManager([]config.Action{{
@@ -326,7 +326,7 @@ func TestLocalPathWithoutBroker(t *testing.T) {
 	ing := ingest.NewIngester(store, testLogger(), met)
 
 	areg := action.NewRegistry()
-	if err := actions.RegisterAll(areg, nil, nil); err != nil {
+	if err := actions.RegisterAll(areg, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	actionsMgr, err := action.NewManager([]config.Action{{
@@ -427,7 +427,7 @@ func TestCrashBetweenJournalAndDispatchStillDelivers(t *testing.T) {
 	// window.
 
 	areg := action.NewRegistry()
-	if err := actions.RegisterAll(areg, nil, nil); err != nil {
+	if err := actions.RegisterAll(areg, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	actionsMgr, err := action.NewManager([]config.Action{{
@@ -580,7 +580,7 @@ func TestProviderToWebhookE2E(t *testing.T) {
 	met := metrics.New()
 	rec := trail.NewRecorder(trail.DefaultMaxTrails)
 	areg := action.NewRegistry()
-	if err := actions.RegisterAll(areg, nil, nil); err != nil {
+	if err := actions.RegisterAll(areg, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	actionsMgr, err := action.NewManager([]config.Action{{

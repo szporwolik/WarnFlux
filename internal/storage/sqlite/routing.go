@@ -618,6 +618,64 @@ func (s *Store) GroupRecipientAPRS(groupID int64) ([]string, error) {
 	return out, rows.Err()
 }
 
+// GroupRecipientPhones returns the distinct non-empty phone numbers of
+// the group's members (raw values, ordered by the digits-only key so
+// differently formatted duplicates sit next to each other and the
+// caller can de-duplicate). Missing groups yield an empty list.
+func (s *Store) GroupRecipientPhones(groupID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT u.phone
+		FROM users u
+		JOIN user_groups ug ON ug.user_id = u.id
+		WHERE ug.group_id = ? AND u.phone IS NOT NULL AND u.phone <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM user_channel_opts uco
+			WHERE uco.user_id = u.id AND uco.channel = 'sms')
+		ORDER BY u.phone COLLATE NOCASE ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d phone recipients: %w", groupID, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var phone string
+		if err := rows.Scan(&phone); err != nil {
+			return nil, fmt.Errorf("scan group %d phone recipient: %w", groupID, err)
+		}
+		out = append(out, phone)
+	}
+	return out, rows.Err()
+}
+
+// GroupRecipientPhoneLangs returns the members' preferred notification
+// languages in the SAME ORDER as GroupRecipientPhones ("" = system
+// default).
+func (s *Store) GroupRecipientPhoneLangs(groupID int64) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT u.phone, MIN(u.lang) AS lang
+		FROM users u
+		JOIN user_groups ug ON ug.user_id = u.id
+		WHERE ug.group_id = ? AND u.phone IS NOT NULL AND u.phone <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM user_channel_opts uco
+			WHERE uco.user_id = u.id AND uco.channel = 'sms')
+		GROUP BY u.phone COLLATE NOCASE
+		ORDER BY u.phone COLLATE NOCASE ASC`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list group %d phone recipient languages: %w", groupID, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var phone, lang string
+		if err := rows.Scan(&phone, &lang); err != nil {
+			return nil, fmt.Errorf("scan group %d phone recipient language: %w", groupID, err)
+		}
+		out = append(out, lang)
+	}
+	return out, rows.Err()
+}
+
 // GroupRecipientEmails returns the distinct (case-insensitive), non-empty
 // email addresses of the group's members, sorted. Missing groups yield an
 // empty list (the membership table simply has no rows for them).

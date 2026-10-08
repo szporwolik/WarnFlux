@@ -26,8 +26,10 @@ type fakeStore struct {
 	aprsBcc      map[int64][]string
 	discordBcc   map[int64][]string
 	meshBcc      map[int64][]string
+	phoneBcc     map[int64][]string
 	bccLangs     map[int64][]string
 	meshLangs    map[int64][]string
+	phoneLangs   map[int64][]string
 	jobs         map[string]storage.DeliveryStatus // group|action|dedupKey -> status
 	payloads     map[string][]byte                 // group|action|dedupKey -> JSON payload
 	payloadOrder []string                          // insertion order of payload keys
@@ -133,6 +135,24 @@ func (f *fakeStore) GroupRecipientMeshLangs(groupID int64) ([]string, error) {
 		return nil, f.recipientErr
 	}
 	return append([]string(nil), f.meshLangs[groupID]...), f.err
+}
+
+func (f *fakeStore) GroupRecipientPhones(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recipientErr != nil {
+		return nil, f.recipientErr
+	}
+	return append([]string(nil), f.phoneBcc[groupID]...), f.err
+}
+
+func (f *fakeStore) GroupRecipientPhoneLangs(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recipientErr != nil {
+		return nil, f.recipientErr
+	}
+	return append([]string(nil), f.phoneLangs[groupID]...), f.err
 }
 
 // enqueueLocked applies one job with the same semantics as the SQLite

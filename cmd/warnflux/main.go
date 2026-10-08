@@ -428,7 +428,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 	trails := trail.NewRecorder(trail.DefaultMaxTrails)
 
 	actionRegistry := action.NewRegistry()
-	if err := actions.RegisterAll(actionRegistry, hub, meshtasticHub); err != nil {
+	if err := actions.RegisterAll(actionRegistry, hub, meshtasticHub, gsmHub); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
 	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)
@@ -810,7 +810,7 @@ func run(configPath string, checkConfig bool) error {
 	// ActionPlugins: explicit routing only. Unknown types fail here, before
 	// any worker starts (even for disabled entries).
 	actionRegistry := action.NewRegistry()
-	if err := actions.RegisterAll(actionRegistry, hub, meshtasticHub); err != nil {
+	if err := actions.RegisterAll(actionRegistry, hub, meshtasticHub, gsmHub); err != nil {
 		return fmt.Errorf("register built-in actions: %w", err)
 	}
 	actionsMgr, err := action.NewManager(cfg.Actions, actionRegistry, logger, trails, met)

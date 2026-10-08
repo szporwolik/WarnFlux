@@ -568,6 +568,58 @@ func (f *fakeUsers) GroupRecipientAPRS(groupID int64) ([]string, error) {
 	return out, nil
 }
 
+// GroupRecipientPhones returns the distinct phone numbers of the group's
+// members (minus users who opted out of the sms channel), sorted.
+func (f *fakeUsers) GroupRecipientPhones(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := make(map[string]bool)
+	var out []string
+	for _, u := range f.rows {
+		if !f.membership[u.ID][groupID] || f.channelOpts[u.ID]["sms"] {
+			continue
+		}
+		phone := strings.TrimSpace(u.Phone)
+		if phone == "" || seen[phone] {
+			continue
+		}
+		seen[phone] = true
+		out = append(out, phone)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// GroupRecipientPhoneLangs returns the members' preferred languages in
+// the SAME ORDER as GroupRecipientPhones ("" = system default).
+func (f *fakeUsers) GroupRecipientPhoneLangs(groupID int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	type pair struct {
+		phone string
+		lang  string
+	}
+	var pairs []pair
+	seen := map[string]bool{}
+	for _, u := range f.rows {
+		if !f.membership[u.ID][groupID] || f.channelOpts[u.ID]["sms"] {
+			continue
+		}
+		phone := strings.TrimSpace(u.Phone)
+		if phone == "" || seen[phone] {
+			continue
+		}
+		seen[phone] = true
+		pairs = append(pairs, pair{phone: phone, lang: u.Lang})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].phone < pairs[j].phone })
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p.lang)
+	}
+	return out, nil
+}
+
 // GroupRecipientDiscord returns the distinct Discord handles of the
 // group's members (minus users who opted out of the discord channel),
 // sorted.

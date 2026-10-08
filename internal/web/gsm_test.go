@@ -159,8 +159,11 @@ func TestGSMPage(t *testing.T) {
 	if !strings.Contains(html, "Modem connected and ready") {
 		t.Errorf("gsm page missing modem status: %s", html)
 	}
-	if !strings.Contains(html, "PLAY") || !strings.Contains(html, "CSQ 26") {
-		t.Errorf("gsm page missing operator/signal badges: %s", html)
+	if !strings.Contains(html, "Play") || !strings.Contains(html, "aria-label=\"CSQ 26 · -61 dBm\"") {
+		t.Errorf("gsm page missing operator/signal indicator: %s", html)
+	}
+	if !strings.Contains(html, "class=\"gsm-bar on\"") {
+		t.Errorf("gsm page missing signal bars: %s", html)
 	}
 	if !strings.Contains(html, `<span class="nav-label">GSM</span>`) {
 		t.Errorf("gsm page nav should read GSM: %s", html)

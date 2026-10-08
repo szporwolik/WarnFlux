@@ -18,11 +18,15 @@
       {{if not .HubEnabled}}
       <p><span class="badge muted">{{tr .Lang "gsm.modem_off"}}</span></p>
       {{else if and .HubConnected .HubReady}}
-      <p><span class="badge ok">{{tr .Lang "gsm.modem_ok"}}</span>{{if .Operator}} <span class="badge muted">{{.Operator}}</span>{{end}}{{if .Signal}} <span class="badge muted">{{.Signal}}</span>{{end}}</p>
+      <p class="gsm-status">
+        <span class="badge ok">{{tr .Lang "gsm.modem_ok"}}</span>
+        {{if .OperatorName}}<span class="gsm-op">{{tr .Lang "gsm.network"}}: <strong>{{.OperatorName}}</strong></span>{{end}}
+        {{if .SignalBars}}<span class="gsm-bars" role="img" aria-label="{{.SignalDetail}}" title="{{.SignalDetail}}">{{range .SignalBars}}<i class="gsm-bar{{if .}} on{{end}}"></i>{{end}}</span>{{end}}
+      </p>
       {{else}}
       <p><span class="badge warn">{{tr .Lang "gsm.modem_down"}}</span></p>
       {{end}}
-      <form method="post" action="/gsm/send" class="test-form gsm-send">
+      <form method="post" action="/gsm/send" class="test-form gsm-send" data-lbl-sent="{{tr .Lang "gsm.sent"}}" data-lbl-failed="{{tr .Lang "gsm.failed"}}">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <label class="field">
           <span>{{tr .Lang "gsm.number"}}</span>
@@ -37,8 +41,10 @@
           <button type="submit" class="btn-primary">{{tr .Lang "gsm.send"}}</button>
         </div>
       </form>
-      {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
-      {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "gsm.sent"}}</span></div>{{end}}
+      <div id="gsm-flash">
+        {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
+        {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "gsm.sent"}}</span></div>{{end}}
+      </div>
       <div class="page-tabs" role="tablist">
         <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/gsm">{{tr .Lang "messages.dir_all"}}</a>
         <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/gsm?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
@@ -49,6 +55,66 @@
   </main>
   {{template "footer" .}}
   <script src="/static/app.js?v={{.Commit}}" defer></script>
+  <script>
+  // The send form posts via fetch: the page never reloads, the flash
+  // updates in place and the polled history refreshes immediately.
+  (function () {
+    "use strict";
+    var form = document.querySelector("form.gsm-send");
+    if (!form) { return; }
+    var flashBox = document.getElementById("gsm-flash");
+    var LBL_SENT = form.dataset.lblSent || "SMS sent.";
+    function flash(text, isErr) {
+      if (!flashBox) { return; }
+      var d = document.createElement("div");
+      d.className = "emcom-flash" + (isErr ? " emcom-flash-err" : "");
+      d.setAttribute("role", isErr ? "alert" : "status");
+      var svg = '<svg class="icon" aria-hidden="true"><use href="/static/icons.svg#' +
+        (isErr ? "i-exclamation-triangle" : "i-check-circle") + '"></use></svg>';
+      var span = document.createElement("span");
+      span.textContent = text;
+      d.innerHTML = svg;
+      d.appendChild(span);
+      flashBox.replaceChildren(d);
+    }
+    function refreshHistory() {
+      var box = document.getElementById("gsm-msgs");
+      if (!box) { return; }
+      fetch("/partials/gsm", { credentials: "same-origin", cache: "no-store" })
+        .then(function (r) { return r.ok ? r.text() : null; })
+        .then(function (html) { if (html) { box.innerHTML = html; } })
+        .catch(function () { /* the regular poll retries */ });
+    }
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var btn = form.querySelector("button[type=submit]");
+      var label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "…";
+      fetch("/gsm/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        credentials: "same-origin",
+        body: new URLSearchParams(new FormData(form)).toString()
+      }).then(function (r) {
+        if (r.status === 401) { window.location.href = "/login"; return null; }
+        // The handler redirects to /gsm?sent=1 or /gsm?err=... — the
+        // final URL carries the outcome.
+        var m = r.url && r.url.match(/[?&]err=([^&]*)/);
+        if (m) { flash(decodeURIComponent(m[1].replace(/\+/g, " ")), true); }
+        else if (r.url && r.url.indexOf("sent=1") >= 0) { flash(LBL_SENT, false); form.reset(); }
+        else if (!r.ok) { return r.text().then(function (t) { flash(t || ("HTTP " + r.status), true); }); }
+        refreshHistory();
+        return null;
+      }).catch(function () {
+        flash(form.dataset.lblFailed || "SMS send failed", true);
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = label;
+      });
+    });
+  })();
+  </script>
 </body>
 </html>
 {{end}}
@@ -70,8 +136,8 @@
       <tr class="msgs-{{.Direction}}">
         <td class="muted nowrap">{{timeFull .At}}</td>
         <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
-        <td><strong>{{.From}}</strong>{{if .FromName}} <span class="muted op-name">({{.FromName}})</span>{{end}}</td>
-        <td>{{.To}}{{if .ToName}} <span class="muted op-name">({{.ToName}})</span>{{end}}</td>
+        <td><strong>{{if eq .From "self"}}{{tr $.Lang "gsm.self"}}{{else}}{{.From}}{{end}}</strong>{{if .FromName}} <span class="muted op-name">({{.FromName}})</span>{{end}}</td>
+        <td>{{if eq .To "self"}}{{tr $.Lang "gsm.self"}}{{else}}{{.To}}{{end}}{{if .ToName}} <span class="muted op-name">({{.ToName}})</span>{{end}}</td>
         <td class="msgs-text">{{.Text}}</td>
       </tr>
       {{end}}

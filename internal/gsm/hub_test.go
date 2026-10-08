@@ -364,6 +364,29 @@ func TestDecodeSMSBody(t *testing.T) {
 	}
 }
 
+// TestOperatorAndSignal pins the friendly status helpers for the admin
+// page: short network aliases map to names and CSQ maps to bar levels.
+func TestOperatorAndSignal(t *testing.T) {
+	for in, want := range map[string]string{
+		"POL":        "Play",
+		"PLAY":       "Play",
+		"POL ":       "Play",
+		"T-MOBILE":   "T-Mobile",
+		"Orange PL":  "Orange",
+		"some weird": "some weird",
+		"":           "",
+	} {
+		if got := OperatorName(in); got != want {
+			t.Errorf("OperatorName(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for csq, want := range map[int]int{0: 0, 3: 1, 8: 2, 13: 3, 18: 4, 26: 5, 31: 5} {
+		if got := SignalLevel(csq); got != want {
+			t.Errorf("SignalLevel(%d) = %d, want %d", csq, got, want)
+		}
+	}
+}
+
 func TestSetHandlerLastWins(t *testing.T) {
 	rec := &recStub{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

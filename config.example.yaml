@@ -24,6 +24,11 @@ app:
   # One of: debug, info, warn, error.
   log_level: info
 
+  # IANA timezone used for every human-facing timestamp (admin panels,
+  # message history). Containers usually run UTC — without this, panel
+  # times lag the local wall clock. Empty = the process-local zone.
+  timezone: Europe/Warsaw
+
   # Optional rotating log file; empty means log to stdout only.
   # In Docker, point this at the mounted volume, e.g. /logs/warnflux.log.
   log_file: ""

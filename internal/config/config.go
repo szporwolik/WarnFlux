@@ -24,6 +24,7 @@ const (
 	DefaultConfigPath = "config.yaml"
 
 	defaultLogLevel           = "info"
+	defaultTimezone           = "Europe/Warsaw"
 	defaultExpirationInterval = time.Minute
 	defaultChangeRetention    = 24 * time.Hour
 	defaultEventRetention     = 30 * 24 * time.Hour
@@ -128,7 +129,12 @@ type Geo struct {
 
 // App holds general application settings.
 type App struct {
-	LogLevel           string
+	LogLevel string
+	// Timezone is the IANA zone name used for every human-facing
+	// timestamp (admin panels, message history). Empty = the
+	// process-local zone. Containers typically run UTC, so the default
+	// is Europe/Warsaw regardless of the host zone.
+	Timezone           string
 	ExpirationInterval time.Duration
 	// ChangeRetention is how long acknowledged journal records are kept
 	// before cleanup deletes them.
@@ -754,6 +760,7 @@ type fileActionRuntime struct {
 
 type fileApp struct {
 	LogLevel              string         `yaml:"log_level"`
+	Timezone              string         `yaml:"timezone"`
 	ExpirationInterval    *time.Duration `yaml:"expiration_interval"`
 	ChangeRetention       *time.Duration `yaml:"change_retention"`
 	EventRetention        *time.Duration `yaml:"event_retention"`
@@ -868,6 +875,7 @@ func (f fileConfig) toConfig() Config {
 	cfg := Config{
 		App: App{
 			LogLevel:              defaultLogLevel,
+			Timezone:              defaultTimezone,
 			ExpirationInterval:    defaultExpirationInterval,
 			ChangeRetention:       defaultChangeRetention,
 			EventRetention:        defaultEventRetention,
@@ -885,6 +893,9 @@ func (f fileConfig) toConfig() Config {
 
 	if level := strings.TrimSpace(f.App.LogLevel); level != "" {
 		cfg.App.LogLevel = strings.ToLower(level)
+	}
+	if tz := strings.TrimSpace(f.App.Timezone); tz != "" {
+		cfg.App.Timezone = tz
 	}
 	if f.App.ExpirationInterval != nil {
 		cfg.App.ExpirationInterval = *f.App.ExpirationInterval
@@ -1253,6 +1264,11 @@ func (c Config) Validate() error {
 	if !slices.Contains(validLogLevels, c.App.LogLevel) {
 		return fmt.Errorf("app.log_level must be one of %s, got %q",
 			strings.Join(validLogLevels, ", "), c.App.LogLevel)
+	}
+	if c.App.Timezone != "" {
+		if _, err := time.LoadLocation(c.App.Timezone); err != nil {
+			return fmt.Errorf("app.timezone: %w", err)
+		}
 	}
 	if c.App.ExpirationInterval <= 0 {
 		return fmt.Errorf("app.expiration_interval must be greater than 0, got %s", c.App.ExpirationInterval)

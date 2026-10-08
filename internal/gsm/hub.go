@@ -134,6 +134,44 @@ func (h *Hub) Operator() string {
 // unknown; 0 until the first refresh).
 func (h *Hub) SignalCSQ() int { return int(h.csq.Load()) }
 
+// OperatorName maps the modem's operator report to a friendly display
+// name (the network sends short aliases like "POL" for Play). Unknown
+// names pass through unchanged.
+func OperatorName(raw string) string {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "", "0":
+		return ""
+	case "POL", "PLAY", "PLAY (P4)":
+		return "Play"
+	case "PLUS", "PLUS PL":
+		return "Plus"
+	case "ORANGE PL":
+		return "Orange"
+	case "T-MOBILE.PL", "T-MOBILE", "TM PL":
+		return "T-Mobile"
+	}
+	return strings.TrimSpace(raw)
+}
+
+// SignalLevel converts a CSQ value (0..31) into a 1..5 bar level
+// (0 = unknown/no signal).
+func SignalLevel(csq int) int {
+	switch {
+	case csq <= 0:
+		return 0
+	case csq <= 6: // ≈ ≤ -101 dBm
+		return 1
+	case csq <= 11: // ≈ ≤ -91 dBm
+		return 2
+	case csq <= 16: // ≈ ≤ -81 dBm
+		return 3
+	case csq <= 21: // ≈ ≤ -71 dBm
+		return 4
+	default:
+		return 5
+	}
+}
+
 // SetTransport injects an already-open transport (tests); nil clears it
 // so Start opens the configured device.
 func (h *Hub) SetTransport(rw io.ReadWriteCloser) {

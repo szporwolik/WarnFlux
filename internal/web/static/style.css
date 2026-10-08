@@ -1105,6 +1105,23 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .gsm-send textarea:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-ring); }
 
+/* Modem status line: friendly operator name + a 5-bar signal meter. */
+.gsm-status { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; margin: 0.6rem 0; }
+.gsm-op { color: var(--text); font-size: 0.9rem; }
+.gsm-op strong { font-weight: 600; }
+.gsm-bars { display: inline-flex; align-items: flex-end; gap: 2px; }
+.gsm-bar {
+  width: 4px;
+  background: var(--border-strong);
+  border-radius: 1px;
+}
+.gsm-bar:nth-child(1) { height: 6px; }
+.gsm-bar:nth-child(2) { height: 9px; }
+.gsm-bar:nth-child(3) { height: 12px; }
+.gsm-bar:nth-child(4) { height: 15px; }
+.gsm-bar:nth-child(5) { height: 18px; }
+.gsm-bar.on { background: var(--accent); }
+
 /* ---- test signal page ---- */
 .test-form {
   display: grid;

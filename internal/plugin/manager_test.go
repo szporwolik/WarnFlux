@@ -473,6 +473,56 @@ func TestManagerExpirationReachesOutputs(t *testing.T) {
 	}
 }
 
+// TestManagerGSMHistoryAgeCleanup pins the maintenance loop's GSM age
+// bound: rows older than 365 days are deleted periodically even with no
+// new traffic, while fresh rows survive.
+func TestManagerGSMHistoryAgeCleanup(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now()
+	if err := store.RecordGSMMessage(ctx, "rx", "+48600111222", "self", "stary", now.Add(-400*24*time.Hour)); err != nil {
+		t.Fatalf("record old: %v", err)
+	}
+	if err := store.RecordGSMMessage(ctx, "rx", "+48600999888", "self", "swiezy", now); err != nil {
+		t.Fatalf("record fresh: %v", err)
+	}
+
+	opts := managerOpts()
+	opts.ExpirationInterval = 10 * time.Millisecond
+	m, err := NewManager(NewRegistry(), nil, nil, nil, nil, store, opts, testLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		m.Run(runCtx)
+	}()
+
+	// The age-bound cleanup removes only the 400-day-old row.
+	waitFor(t, 5*time.Second, func() bool {
+		n, err := store.CountGSMMessages(context.Background(), "")
+		return err == nil && n == 1
+	})
+	rows, err := store.ListGSMMessages(context.Background(), "", 10, 0)
+	if err != nil || len(rows) != 1 || rows[0].Text != "swiezy" {
+		t.Fatalf("rows after cleanup = %+v, %v; want only the fresh message", rows, err)
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manager did not stop")
+	}
+	store.Close()
+}
+
 func TestManagerShutdownWithPendingDeliveries(t *testing.T) {
 	base := eventFor("003")
 	source := &emitListSource{events: []core.HazardEvent{base}}

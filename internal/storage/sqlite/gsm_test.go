@@ -74,6 +74,58 @@ func TestGSMMessagesHistory(t *testing.T) {
 	}
 }
 
+// TestGSMMessagesAgeRetention pins the 365-day bound: rows older than
+// the retention age are deleted, newer rows survive.
+func TestGSMMessagesAgeRetention(t *testing.T) {
+	s := openGSMTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+
+	old := base.Add(-400 * 24 * time.Hour)
+	recent := base.Add(-100 * 24 * time.Hour)
+	if err := s.RecordGSMMessage(ctx, "rx", "+48600111222", "self", "stary", old); err != nil {
+		t.Fatalf("record old: %v", err)
+	}
+	if err := s.RecordGSMMessage(ctx, "rx", "+48600111222", "self", "swiezy", recent); err != nil {
+		t.Fatalf("record recent: %v", err)
+	}
+
+	n, err := s.PruneGSMMessagesOlderThan(ctx, base.Add(-storage.GSMMessageRetentionAge))
+	if err != nil || n != 1 {
+		t.Fatalf("prune by age = %d, %v; want 1", n, err)
+	}
+	if got, err := s.CountGSMMessages(ctx, ""); err != nil || got != 1 {
+		t.Fatalf("count after age prune = %d, %v; want 1", got, err)
+	}
+	rows, err := s.ListGSMMessages(ctx, "", 10, 0)
+	if err != nil || len(rows) != 1 || rows[0].Text != "swiezy" {
+		t.Fatalf("survivors = %+v, %v; want the recent row only", rows, err)
+	}
+}
+
+// TestGSMMessageAgePruneOnInsert pins the insert-time age bound: a fresh
+// insert deletes rows past the 365-day cutoff even though the
+// entry-count cap never engaged.
+func TestGSMMessageAgePruneOnInsert(t *testing.T) {
+	s := openGSMTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+
+	if err := s.RecordGSMMessage(ctx, "rx", "+48600111222", "self", "zabytek", now.Add(-400*24*time.Hour)); err != nil {
+		t.Fatalf("record old: %v", err)
+	}
+	if err := s.RecordGSMMessage(ctx, "rx", "+48600999888", "self", "nowosc", now); err != nil {
+		t.Fatalf("record new: %v", err)
+	}
+	if n, err := s.CountGSMMessages(ctx, ""); err != nil || n != 1 {
+		t.Fatalf("count = %d, %v; want 1 (the old row evicted on insert)", n, err)
+	}
+	rows, err := s.ListGSMMessages(ctx, "", 10, 0)
+	if err != nil || len(rows) != 1 || rows[0].Text != "nowosc" {
+		t.Fatalf("rows = %+v, %v; want only the fresh message", rows, err)
+	}
+}
+
 // TestGSMMessageRetentionOnInsert pins the per-insert prune to the
 // retention bound: one insert beyond the bound evicts the oldest row.
 func TestGSMMessageRetentionOnInsert(t *testing.T) {

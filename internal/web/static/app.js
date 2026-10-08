@@ -4166,6 +4166,11 @@
     tickAprs();
     window.setInterval(tickAprs, MSGS_POLL_MS);
   }
+  var tickGsm = poll("gsm-msgs", "/partials/gsm");
+  if (tickGsm) {
+    tickGsm();
+    window.setInterval(tickGsm, MSGS_POLL_MS);
+  }
   var tickMesh = poll("mesh-msgs", "/partials/meshtastic", "messages");
   if (tickMesh) {
     tickMesh();

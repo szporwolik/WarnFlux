@@ -34,6 +34,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/gsm"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
@@ -67,6 +68,7 @@ type Server struct {
 	actions    *action.Manager
 	aprs       *aprs.Hub
 	meshtastic *meshtastic.Hub
+	gsm        *gsm.Hub
 	ingress    *dispatch.Ingress
 	users      storage.DirectoryStore
 	// events backs the public archive (180-day history of communications).
@@ -79,6 +81,9 @@ type Server struct {
 	// meshtasticMsgs backs the admin Meshtastic message history page; nil in
 	// minimal constructions (the page then shows an empty state).
 	meshtasticMsgs storage.MeshtasticMessageStore
+	// gsmMsgs backs the admin GSM/SMS history page; nil in minimal
+	// constructions (the page then shows an empty state).
+	gsmMsgs storage.GSMMessageStore
 	// visits persists the per-day visitor analytics when the store
 	// supports it (nil otherwise — the counting then stays off).
 	visits       storage.VisitorStore
@@ -197,9 +202,9 @@ const repoURL = appinfo.RepoURL
 // by /metrics.
 func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	pub composePublisher, router RouterStatuses, actions *action.Manager,
-	aprsHub *aprs.Hub, meshtasticHub *meshtastic.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
+	aprsHub *aprs.Hub, meshtasticHub *meshtastic.Hub, gsmHub *gsm.Hub, ingress *dispatch.Ingress, logger *slog.Logger, version, commit string,
 	users storage.DirectoryStore, events storage.EventStore, aprsMsgs storage.APRSMessageStore,
-	meshtasticMsgs storage.MeshtasticMessageStore, ingest map[string]http.Handler,
+	meshtasticMsgs storage.MeshtasticMessageStore, gsmMsgs storage.GSMMessageStore, ingest map[string]http.Handler,
 	logs *LogBuffer, traffic *mqttreceiver.TrafficBuffer,
 	trails *trail.Recorder, metricsReg *metrics.Registry) (*Server, error) {
 
@@ -239,11 +244,13 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		actions:        actions,
 		aprs:           aprsHub,
 		meshtastic:     meshtasticHub,
+		gsm:            gsmHub,
 		ingress:        ingress,
 		users:          users,
 		events:         events,
 		aprsMsgs:       aprsMsgs,
 		meshtasticMsgs: meshtasticMsgs,
+		gsmMsgs:        gsmMsgs,
 		logger:         logger,
 		sessions:       newSessionStore(cfg.Auth.SecureCookie),
 		loginLimiter:   newLoginLimiter(),
@@ -390,6 +397,9 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /messages/send", s.requireAdmin(s.handleAPRSSend))
 	s.mux.Handle("POST /messages/beacon", s.requireAdmin(s.handleAPRSBeacon))
 	s.mux.Handle("GET /aprs", s.requireAdmin(s.handleAPRSPage))
+	s.mux.Handle("GET /gsm", s.requireAdmin(s.handleGSMPage))
+	s.mux.Handle("GET /partials/gsm", s.requireAdminPartial(s.handlePartialGSM))
+	s.mux.Handle("POST /gsm/send", s.requireAdmin(s.handleGSMSend))
 	s.mux.Handle("GET /meshtastic", s.requireAdmin(s.handleMeshtasticPage))
 	s.mux.Handle("GET /meshmap", s.requireAdmin(s.handleMeshMapPage))
 	s.mux.Handle("GET /partials/meshtastic", s.requireAdminPartial(s.handlePartialMeshtastic))

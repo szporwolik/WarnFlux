@@ -34,6 +34,7 @@ type accessView struct {
 	NavLogs       bool
 	NavAPRS       bool
 	NavMessages   bool
+	NavGSM        bool
 	NavMeshtastic bool
 	NavMeshMap    bool
 	NavTraffic    bool

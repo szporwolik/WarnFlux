@@ -675,6 +675,7 @@ type emcomView struct {
 	NavAudit         bool
 	NavAPRS          bool
 	NavMessages      bool
+	NavGSM           bool
 	NavMeshtastic    bool
 	NavMeshMap       bool
 	NavTraffic       bool

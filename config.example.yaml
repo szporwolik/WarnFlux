@@ -708,6 +708,15 @@ meshtastic:
   # the group channel — useful but noisy, OFF by default.
   station_alerts: false
 
+# GSM cellular modem (optional): a serial AT modem (e.g. Huawei E173 on
+# /dev/ttyUSB0) receives and sends SMS. Received messages land in the
+# durable history and later feed the SMS command interpreter; the admin
+# GSM page shows the history and sends messages to phone numbers.
+gsm:
+  enabled: false
+  # Serial device of the modem's AT port.
+  device: ""
+
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI). They never automatically receive MQTT
 # events. Built-in types: smtp (email), http_webhook, discord, aprs.

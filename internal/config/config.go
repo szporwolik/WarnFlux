@@ -103,6 +103,10 @@ type Config struct {
 	// Meshtastic holds the Companion serial link settings (top-level
 	// "meshtastic:"). The Heltec node plugs in over USB.
 	Meshtastic MeshtasticConfig
+	// GSM holds the optional cellular modem integration (top-level
+	// "gsm:"): SMS receive/send through a serial AT modem (e.g. a
+	// Huawei E173 USB stick).
+	GSM GSMConfig
 	// Geo extends the bundled TERYT table with installation-specific
 	// territorial units (any region of the country).
 	Geo Geo
@@ -564,6 +568,7 @@ type fileConfig struct {
 	IngestHTTP  []fileIngestHTTP `yaml:"ingest_http"`
 	APRS        *fileAPRS        `yaml:"aprs"`
 	Meshtastic  *fileMeshtastic  `yaml:"meshtastic"`
+	GSM         *fileGSM         `yaml:"gsm"`
 	Geo         *fileGeo         `yaml:"geo"`
 }
 
@@ -621,6 +626,22 @@ type fileMeshtastic struct {
 
 type fileGeo struct {
 	Areas []GeoArea `yaml:"areas"`
+}
+
+// GSMConfig holds the optional cellular modem integration (top-level
+// "gsm:"): a serial AT modem receives and sends SMS messages.
+type GSMConfig struct {
+	// Enabled switches the modem session on.
+	Enabled bool
+	// Device is the serial device path of the modem's AT port
+	// (e.g. /dev/ttyUSB0).
+	Device string
+}
+
+// fileGSM mirrors the top-level gsm block.
+type fileGSM struct {
+	Enabled bool   `yaml:"enabled"`
+	Device  string `yaml:"device"`
 }
 
 type fileAPRS struct {
@@ -1219,6 +1240,11 @@ func (f fileConfig) toConfig() Config {
 	if f.Geo != nil {
 		cfg.Geo.Areas = append(cfg.Geo.Areas, f.Geo.Areas...)
 	}
+	cfg.GSM = GSMConfig{}
+	if f.GSM != nil {
+		cfg.GSM.Enabled = f.GSM.Enabled
+		cfg.GSM.Device = strings.TrimSpace(f.GSM.Device)
+	}
 	return cfg
 }
 
@@ -1498,6 +1524,9 @@ func (c Config) Validate() error {
 	if v := c.Meshtastic.EmcomHazardsInterval; v != 0 &&
 		(v < time.Minute || v > 30*24*time.Hour) {
 		return fmt.Errorf("meshtastic.emcom_hazards_interval must be between 1m and 720h (0 disables), got %s", v)
+	}
+	if c.GSM.Enabled && c.GSM.Device == "" {
+		return fmt.Errorf("gsm.device is required when gsm.enabled is true")
 	}
 	return nil
 }

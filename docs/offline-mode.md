@@ -13,7 +13,7 @@ switches the maps to a local tile tree. The switch takes effect
 | Internet actions | Held, not executed: `smtp`, `http_webhook`, `discord` workers wait with their queued requests (durable jobs stay `saved`, attempts are not spent). On going online, everything delivers. |
 | Password reset | Self-service email reset is unavailable ("contact an administrator") — no email leaves the station. |
 | Maps | The browser uses the **bundled Leaflet** (no unpkg) and the station's own tile tree (`/tiles/{z}/{x}/{y}.jpg`). MapLibre (vector styles) and the RainViewer radar are internet features and are skipped. |
-| Local functions | **Untouched**: SQLite storage, the local MQTT broker, APRS radio (KISS/TNC), Meshtastic (serial), the EMCOM panel, local radio routing, the archive, the admin UI. |
+| Local functions | **Untouched**: SQLite storage, the local MQTT broker, APRS radio (KISS/TNC), Meshtastic (serial), the GSM modem (SMS), the EMCOM panel, local radio routing, the archive, the admin UI. |
 
 ## Local map tiles
 
@@ -58,7 +58,7 @@ itself plus the map providers listed under *Frontend*.
 
 `aprs-radio` (KISS/TNC), `meshtastic` (serial), the MQTT receiver/output
 (the broker is operator-configured — keep it local), `logger`,
-`aprs`/`aprsout`/`meshtastic` actions, HTTP ingest (local broker).
+`aprs`/`aprsout`/`meshtastic`/`sms` actions, HTTP ingest (local broker).
 
 ### Frontend (the browser)
 

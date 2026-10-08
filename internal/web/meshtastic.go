@@ -66,11 +66,16 @@ type meshtasticNodeView struct {
 	Cardinal   string
 	LastSeen   string
 	// Stale marks nodes unheard for over the trace threshold: their
-	// Trasa button is disabled so nobody probes a dead node.
+	// Trasa button is disabled and the row carries the inactivity age.
 	Stale bool
 	// Inactive is the human age ("3 godz. temu") shown next to the
 	// last-seen time and in the disabled button's tooltip.
 	Inactive string
+	// LastSeenUnix is the last-heard instant in Unix milliseconds
+	// (0 = never): the browser re-checks staleness so a button can
+	// disable itself the moment the threshold passes without waiting
+	// for the next fragment poll.
+	LastSeenUnix int64
 }
 
 // meshtasticContactView is one directory user's Meshtastic node offered by
@@ -478,19 +483,24 @@ func (s *Server) fillMeshtasticNodes(r *http.Request, v *meshtasticView) {
 		}
 		age := time.Since(n.LastSeen)
 		stale := !n.LastSeen.IsZero() && age > meshtasticTraceStaleAfter
+		seenUnix := int64(0)
+		if !n.LastSeen.IsZero() {
+			seenUnix = n.LastSeen.UnixMilli()
+		}
 		v.Nodes = append(v.Nodes, meshtasticNodeView{
 			ID:    n.ID,
 			Name:  name,
 			Short: n.Short,
 			Sends: n.Sends, Hops: n.Hops, Owner: owner,
-			Lat:        n.Lat,
-			Lon:        n.Lon,
-			DistKM:     n.DistKM,
-			BearingDeg: n.BearingDeg,
-			Cardinal:   cardinalDirection(n.BearingDeg),
-			LastSeen:   n.LastSeen.Format("15:04:05"),
-			Stale:      stale,
-			Inactive:   meshInactiveText(lang, age),
+			Lat:          n.Lat,
+			Lon:          n.Lon,
+			DistKM:       n.DistKM,
+			BearingDeg:   n.BearingDeg,
+			Cardinal:     cardinalDirection(n.BearingDeg),
+			LastSeen:     n.LastSeen.Format("15:04:05"),
+			Stale:        stale,
+			Inactive:     meshInactiveText(lang, age),
+			LastSeenUnix: seenUnix,
 		})
 	}
 }

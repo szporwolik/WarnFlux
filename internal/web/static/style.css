@@ -502,6 +502,15 @@ html[data-theme="light"] .theme-toggle .ico-moon { display: block; }
   white-space: nowrap;
 }
 .btn-ghost:hover { background: var(--btn-secondary-hover); border-color: var(--text-muted); }
+/* Disabled buttons must LOOK disabled — otherwise a blocked action
+   (e.g. the stale-node traceroute) reads as a broken one. */
+button:disabled { cursor: not-allowed; }
+.btn-ghost:disabled, .btn-primary:disabled {
+  opacity: 0.45;
+  border-style: dashed;
+}
+.btn-ghost:disabled:hover { background: var(--btn-secondary-bg); border-color: var(--border-strong); }
+.btn-primary:disabled:hover { background: var(--btn-primary); }
 
 .btn-primary {
   background: var(--btn-primary);

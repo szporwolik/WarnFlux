@@ -10,6 +10,11 @@ import (
 // at startup and hourly).
 const GSMMessageRetentionEntries = 2000
 
+// GSMMessageRetentionAge bounds the durable SMS history by age: rows
+// older than 365 days are deleted regardless of how few entries the
+// table holds (pruned on insert and by the periodic maintenance loop).
+const GSMMessageRetentionAge = 365 * 24 * time.Hour
+
 // GSMMessage is one SMS history row (rx or tx).
 type GSMMessage struct {
 	ID        int64

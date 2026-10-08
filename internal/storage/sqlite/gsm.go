@@ -24,6 +24,9 @@ func (s *Store) RecordGSMMessage(ctx context.Context, direction, from, to, text 
 	if _, err := s.PruneGSMMessages(ctx, storage.GSMMessageRetentionEntries); err != nil {
 		return fmt.Errorf("prune gsm messages: %w", err)
 	}
+	if _, err := s.PruneGSMMessagesOlderThan(ctx, at.Add(-storage.GSMMessageRetentionAge)); err != nil {
+		return fmt.Errorf("prune gsm messages by age: %w", err)
+	}
 	return nil
 }
 
@@ -90,4 +93,18 @@ func (s *Store) PruneGSMMessages(ctx context.Context, keep int) (int, error) {
 		return 0, fmt.Errorf("prune gsm messages: %w", err)
 	}
 	return int(n), nil
+}
+
+// PruneGSMMessagesOlderThan deletes history rows created before cutoff
+// and reports how many were removed. The 365-day age bound guarantees
+// the SMS history never grows without bound even when the station is
+// idle and the entry-count cap never engages.
+func (s *Store) PruneGSMMessagesOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM gsm_messages WHERE created_at_ms < ?`,
+		cutoff.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("prune gsm messages by age: %w", err)
+	}
+	return res.RowsAffected()
 }

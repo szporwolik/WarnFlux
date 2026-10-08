@@ -51,6 +51,7 @@ var baseRoutingSources = []sourceOption{
 	{Value: "imgw-meteo", Label: "IMGW meteo"},
 	{Value: "imgw-hydro", Label: "IMGW hydro"},
 	{Value: "rso", Label: "RSO"},
+	{Value: "rcb", Label: "groups.src.rcb"},
 	{Value: "aprs", Label: "groups.src.aprs"},
 	{Value: "gsm", Label: "groups.src.gsm"},
 	{Value: "giosaq", Label: "groups.src.giosaq"},

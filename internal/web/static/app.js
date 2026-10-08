@@ -4197,3 +4197,26 @@
     window.setInterval(tickMesh, MSGS_POLL_MS);
   }
 })();
+
+// Live character counters for the send forms: elements marked
+// data-char-count="N" get a fixed N-character limit with a live
+// counter. The matching counter lives in the element selected by
+// data-char-out or the sibling .char-count.
+(function () {
+  "use strict";
+  function update(el) {
+    var lim = parseInt(el.getAttribute("data-char-count"), 10);
+    if (!lim) { return; }
+    var out = el.getAttribute("data-char-out")
+      ? document.querySelector(el.getAttribute("data-char-out"))
+      : el.nextElementSibling;
+    if (!out || !out.classList.contains("char-count")) { return; }
+    var used = Array.from(el.value || "").length;
+    out.textContent = used + " / " + lim;
+    out.classList.toggle("warn", used >= lim);
+  }
+  document.querySelectorAll("[data-char-count]").forEach(function (el) {
+    el.addEventListener("input", function () { update(el); });
+    update(el);
+  });
+})();

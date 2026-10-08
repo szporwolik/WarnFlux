@@ -75,7 +75,8 @@
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" autocomplete="off" spellcheck="false" required>
           <datalist id="aprs-calls">{{range .Calls}}<option value="{{.Callsign}}">{{.Callsign}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
-          <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="60" required>
+          <input type="text" name="text" placeholder="{{tr .Lang "messages.text"}}" maxlength="60" data-char-count="60" required>
+          <span class="char-count">0 / 60</span>
           <button type="submit" class="btn-primary">{{tr .Lang "messages.send"}}</button>
         </form>
         <form method="post" action="/messages/beacon" class="inline-form">

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -178,16 +179,58 @@ func (s *Server) fillGSMMessages(r *http.Request, v *gsmView) {
 			Direction: m.Direction,
 			From:      m.From,
 			To:        m.To,
-			// Older rows may still carry a raw UCS-2 hex body — the
-			// decode is idempotent, so re-applying it at display time
-			// cleans them up too.
-			Text:     gsm.DecodeSMSBody(m.Text),
-			At:       m.At,
-			FromName: names[strings.TrimSpace(m.From)],
-			ToName:   names[strings.TrimSpace(m.To)],
+			Text:      m.Text,
+			At:        m.At,
+			FromName:  names[strings.TrimSpace(m.From)],
+			ToName:    names[strings.TrimSpace(m.To)],
 		}
 		v.Messages = append(v.Messages, view)
 	}
+	// Join legacy split parts BEFORE decoding: the raw parts still
+	// carry their boundary spacing, which the decode would trim away.
+	v.Messages = mergeLegacyParts(v.Messages)
+	for i := range v.Messages {
+		// Older rows may still carry a raw UCS-2 hex body — the decode
+		// is idempotent, so re-applying it at display time cleans them
+		// up too.
+		v.Messages[i].Text = gsm.DecodeSMSBody(v.Messages[i].Text)
+	}
+}
+
+// mergeLegacyParts joins the parts of long messages imported before the
+// PDU pipeline existed: the old text-mode ingest stored each segment as
+// its own row (parts in ascending id order). Consecutive rx rows from
+// the same sender within the same minute are one message — the list is
+// newest-first, so the parts join in reverse. New PDU-ingested messages
+// arrive already assembled and are never merged.
+func mergeLegacyParts(rows []gsmMessageView) []gsmMessageView {
+	out := rows[:0]
+	for i := 0; i < len(rows); {
+		m := rows[i]
+		j := i + 1
+		if m.Direction == "rx" && m.From != "self" {
+			minute := m.At.Truncate(time.Minute)
+			for j < len(rows) && rows[j].Direction == "rx" &&
+				rows[j].From == m.From &&
+				rows[j].At.Truncate(time.Minute).Equal(minute) {
+				j++
+			}
+		}
+		if j-i > 1 {
+			var sb strings.Builder
+			for k := j - 1; k >= i; k-- {
+				sb.WriteString(rows[k].Text)
+			}
+			m.Text = sb.String()
+		}
+		// Some senders pad message parts with zero-width characters —
+		// strip them so the merged text has no invisible gaps.
+		m.Text = strings.ReplaceAll(m.Text, "\u200B", "")
+		m.Text = strings.ReplaceAll(m.Text, "\uFEFF", "")
+		out = append(out, m)
+		i = j
+	}
+	return out
 }
 
 // handleGSMPage renders the admin GSM page.
@@ -261,7 +304,12 @@ func (s *Server) handleGSMSend(w http.ResponseWriter, r *http.Request) {
 		_ = rc.SetWriteDeadline(time.Now().Add(90 * time.Second))
 	}
 	if err := s.gsm.Send(r.Context(), number, text); err != nil {
-		flash := fmt.Sprintf(i18n.T(lang, "gsm.send_failed"), err)
+		var flash string
+		if errors.Is(err, gsm.ErrTooLong) {
+			flash = i18n.T(lang, "gsm.too_long")
+		} else {
+			flash = fmt.Sprintf(i18n.T(lang, "gsm.send_failed"), err)
+		}
 		http.Redirect(w, r, "/gsm?err="+url.QueryEscape(flash), http.StatusSeeOther)
 		return
 	}

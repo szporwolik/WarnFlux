@@ -35,7 +35,8 @@
         </label>
         <label class="field field-wide">
           <span>{{tr .Lang "gsm.text"}}</span>
-          <textarea name="text" rows="3" maxlength="1000" placeholder="{{tr .Lang "gsm.text_ph"}}" required></textarea>
+          <textarea name="text" rows="3" data-char-count="160" data-char-out="#gsm-count" placeholder="{{tr .Lang "gsm.text_ph"}}" required></textarea>
+          <span class="char-count" id="gsm-count">0 / 160</span>
         </label>
         <div class="test-actions">
           <button type="submit" class="btn-primary">{{tr .Lang "gsm.send"}}</button>

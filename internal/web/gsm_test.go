@@ -109,19 +109,20 @@ func newTestGSMHubRec(t *testing.T, rec gsm.MessageRecorder) *gsm.Hub {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h := gsm.NewHub(gsm.Config{Enabled: true, Device: "/dev/null"}, rec, logger)
-	// init: ATE0→OK, AT+CMGF=1→OK, AT+CSCS→OK, AT+CSDH=1→OK,
-	// AT+CPMS=?→SM only (no drain/switch); status: AT+COPS=3,0→OK,
-	// AT+COPS?→PLAY, AT+CSQ→26; send: prompt then OK.
+	// init: ATE0→OK, AT+CMGF=0→OK, AT+CPMS=?→SM only (no drain/switch);
+	// status: AT+COPS=3,0→OK, AT+COPS?→PLAY, AT+CSQ→26; send: prompt
+	// then OK.
 	h.SetTransport(newScriptedPort(
 		"OK\r\nOK\r\n" +
-			"OK\r\n" +
-			"OK\r\n" +
+			"OK\r\n" + // AT+CSCS="IRA"
 			"+CPMS: (\"SM\",\"SR\")\r\nOK\r\n" +
 			"OK\r\n" +
 			"+COPS: 0,0,\"PLAY\",0\r\nOK\r\n" +
 			"+CSQ: 26,99\r\nOK\r\n" +
+			"OK\r\n" + // AT+CMGF=1 (send)
 			"> \r\n" +
-			"OK\r\n"))
+			"OK\r\n" +
+			"OK\r\n")) // AT+CMGF=0 (restore)
 	h.Start(context.Background())
 	t.Cleanup(h.Close)
 	return h
@@ -168,6 +169,9 @@ func TestGSMPage(t *testing.T) {
 	}
 	if !strings.Contains(html, "class=\"gsm-bar on\"") {
 		t.Errorf("gsm page missing signal bars: %s", html)
+	}
+	if !strings.Contains(html, `data-char-count="160"`) || !strings.Contains(html, `id="gsm-count"`) {
+		t.Errorf("gsm page missing the character counter: %s", html)
 	}
 	if !strings.Contains(html, `<span class="nav-label">GSM</span>`) {
 		t.Errorf("gsm page nav should read GSM: %s", html)
@@ -259,5 +263,46 @@ func TestGSMSendNoModem(t *testing.T) {
 	resp, _ := env.postForm("/gsm/send", url.Values{"csrf": {csrf}, "number": {"+48600111222"}, "text": {"x"}})
 	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "err=") {
 		t.Fatalf("POST send without modem = %d %q, want 303 with err", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// TestGSMSendTooLong pins the segment cap: the web handler rejects the
+// message before the modem is ever asked.
+func TestGSMSendTooLong(t *testing.T) {
+	rec := &fakeGSMMsgs{}
+	hub := newTestGSMHub(t)
+	env := newTestEnvWebUsers(t, defaultTestWebConfig(), nil, nil, nil, nil, nil, nil, nil, hub, rec)
+	env.login()
+	_, html := env.get("/gsm")
+	csrf := extractCSRF(t, html)
+
+	resp, _ := env.postForm("/gsm/send", url.Values{"csrf": {csrf}, "number": {"+48600111222"}, "text": {strings.Repeat("A", 500)}})
+	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "too+long") {
+		t.Fatalf("POST long text = %d %q, want 303 with too_long flash", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if n, _ := rec.CountGSMMessages(context.Background(), ""); n != 0 {
+		t.Fatalf("long send recorded %d rows", n)
+	}
+}
+
+// TestGSMMessagesMergeLegacyParts pins the display-time joining of the
+// split rows imported by the old text-mode pipeline: consecutive rx
+// rows from one sender within the same minute render as ONE message in
+// reading order (the list is newest-first, the parts are ascending).
+func TestGSMMessagesMergeLegacyParts(t *testing.T) {
+	store := &fakeGSMMsgs{}
+	hub := newTestGSMHub(t)
+	env := newTestEnvWebUsers(t, defaultTestWebConfig(), nil, nil, nil, nil, nil, nil, nil, hub, store)
+	base := time.Date(2026, 10, 8, 19, 58, 4, 0, time.Local)
+	for i, part := range []string{"Kod weryfikacyjny: 3275. ", "Jesli nie wiesz czego dotyczy, ", "skontaktuj sie z nami.\u200B"} {
+		if err := store.RecordGSMMessage(context.Background(), "rx", "80766589", "self", part, base.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env.login()
+	_, html := env.get("/gsm")
+	joined := "Kod weryfikacyjny: 3275. Jesli nie wiesz czego dotyczy, skontaktuj sie z nami."
+	if !strings.Contains(html, joined) {
+		t.Fatalf("gsm page missing the joined message: %s", html)
 	}
 }

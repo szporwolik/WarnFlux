@@ -85,11 +85,12 @@ type gsmView struct {
 	HubEnabled   bool
 	HubConnected bool
 	HubReady     bool
-	// Operator is the last reported network operator name ("" until
-	// the first status refresh); Signal is a pre-formatted quality
-	// string ("CSQ 26 · -61 dBm", "" when unknown).
-	Operator string
-	Signal   string
+	// OperatorName is the friendly network name ("Play"; "" until the
+	// first status refresh). SignalBars is a 5-element bar indicator
+	// (true = lit) and SignalDetail carries the tooltip text.
+	OperatorName string
+	SignalBars   []bool
+	SignalDetail string
 
 	// Send-form feedback (query flashes).
 	Error string
@@ -213,10 +214,15 @@ func (s *Server) handleGSMPage(w http.ResponseWriter, r *http.Request) {
 		v.HubEnabled = s.gsm.Enabled()
 		v.HubConnected = s.gsm.Connected()
 		v.HubReady = s.gsm.Ready()
-		v.Operator = s.gsm.Operator()
+		v.OperatorName = gsm.OperatorName(s.gsm.Operator())
 		if csq := s.gsm.SignalCSQ(); csq > 0 && csq < 99 {
 			// Standard CSQ→dBm approximation (2*csq-113).
-			v.Signal = fmt.Sprintf("CSQ %d · %d dBm", csq, 2*csq-113)
+			v.SignalDetail = fmt.Sprintf("CSQ %d · %d dBm", csq, 2*csq-113)
+			lvl := gsm.SignalLevel(csq)
+			v.SignalBars = make([]bool, 5)
+			for i := range v.SignalBars {
+				v.SignalBars[i] = i < lvl
+			}
 		}
 	}
 	s.fillGSMPhones(r.Context(), &v)

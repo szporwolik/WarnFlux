@@ -593,6 +593,8 @@ func (i *Instance) recordResult(err error) {
 
 	if err != nil {
 		i.logger.Error("action call failed", "action", i.id, "type", i.typ, "error", err)
+	} else {
+		i.logger.Info("action call succeeded", "action", i.id, "type", i.typ)
 	}
 }
 

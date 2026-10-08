@@ -651,6 +651,8 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		e.trail.Add(key, trail.StepSubmitted,
 			fmt.Sprintf("%s job queued durably (group %s)", m.actionID, m.ruleName), time.Now())
 		e.trail.SetOutcome(key, trail.OutcomeSubmitted)
+		e.logger.Info("routing: delivery queued",
+			"group", m.ruleName, "action", m.actionID, "event", ev.Hazard.Key)
 	}
 	if len(groupFired) > 0 {
 		e.rulesMatched.Add(int64(len(groupFired)))
@@ -696,6 +698,8 @@ func (e *Engine) deliverInMemory(key string, metas []jobMeta) {
 		e.trail.Add(key, trail.StepSubmitted,
 			fmt.Sprintf("%s action started (group %s, ledger unavailable)", m.actionID, m.ruleName), time.Now())
 		e.trail.SetOutcome(key, trail.OutcomeSubmitted)
+		e.logger.Info("routing: action submitted (ledger unavailable)",
+			"group", m.ruleName, "action", m.actionID)
 	}
 	if len(groupFired) > 0 {
 		e.rulesMatched.Add(int64(len(groupFired)))

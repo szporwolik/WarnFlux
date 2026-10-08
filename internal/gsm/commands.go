@@ -125,14 +125,22 @@ func (h *Hub) routeMessage(from, text string) {
 	cli := h.cli
 	h.mu.Unlock()
 	if cli == nil {
+		h.logger.Warn("gsm: no command interpreter — message dropped", "from", from)
 		return
 	}
 	owner := h.ownerOf(from)
 	t := strings.TrimSpace(text)
 	if !strings.HasPrefix(t, "/") {
-		if h.bannerAllowed(from) && h.replyAllowed(from) {
-			h.sendReply(from, cli.Banner())
+		if !h.bannerAllowed(from) {
+			h.logger.Debug("gsm: banner skipped", "from", from, "reason", "interval")
+			return
 		}
+		if !h.replyAllowed(from) {
+			h.logger.Debug("gsm: banner reply suppressed", "from", from, "reason", "burst")
+			return
+		}
+		h.sendReply(from, cli.Banner())
+		h.logger.Info("gsm: banner sent", "from", from)
 		return
 	}
 	cid := from + ":" + radiocli.ContentID(t)
@@ -146,6 +154,7 @@ func (h *Hub) routeMessage(from, text string) {
 	}
 	h.mu.Unlock()
 	if fresh {
+		h.logger.Debug("gsm: command replay", "from", from, "cmd", t)
 		if recReply != "" && h.replyAllowed(from) {
 			h.sendReply(from, recReply)
 		}
@@ -182,12 +191,22 @@ func (h *Hub) routeMessage(from, text string) {
 			reply = confirmation(res.Reply, "FAILED: alert rejected", acc)
 		}
 	}
+	cmdName := strings.TrimPrefix(strings.Fields(t)[0], "/")
+	h.logger.Info("gsm: command received",
+		"from", from,
+		"cmd", cmdName,
+		"owner", owner != "",
+		"handled", res.Handled,
+		"alert", res.Alert != nil)
 	h.mu.Lock()
 	h.pruneCmds(now)
 	h.cmds[cid] = &cmdRecord{at: now, reply: reply}
 	h.mu.Unlock()
 	if res.Handled && reply != "" && h.replyAllowed(from) {
 		h.sendReply(from, reply)
+		h.logger.Info("gsm: command reply sent", "from", from, "cmd", cmdName)
+	} else if res.Handled && reply != "" {
+		h.logger.Debug("gsm: command reply suppressed", "from", from, "cmd", cmdName, "reason", "burst")
 	}
 }
 
@@ -212,7 +231,9 @@ func (h *Hub) sendReply(to, text string) {
 		defer cancel()
 		if err := h.Send(ctx, to, fitReply(text)); err != nil {
 			h.logger.Warn("gsm: reply send failed", "to", to, "error", err)
+			return
 		}
+		h.logger.Info("gsm: reply sent", "to", to)
 	}()
 }
 
@@ -276,8 +297,9 @@ func (h *Hub) publishRCBEvent(from, text string) {
 		h.logger.Warn("gsm: rcb event dropped — no event acceptor installed", "from", from)
 		return
 	}
-	h.logger.Info("gsm: alert rcb received", "from", from)
-	_ = acceptor(payload)
+	h.logger.Info("gsm: alert rcb received", "from", from, "text", text)
+	acc := acceptor(payload)
+	h.logAcceptance("rcb", sourceID, acc)
 }
 
 // confirmation maps the local acceptance of a command event onto the
@@ -390,6 +412,20 @@ func (h *Hub) pruneCmds(now time.Time) {
 	}
 }
 
+// logAcceptance reports how the local pipeline took one published SMS
+// event: durable or failover acceptance is normal operation, a
+// rejection is a routing problem worth surfacing.
+func (h *Hub) logAcceptance(kind, key string, acc dispatch.Acceptance) {
+	switch acc {
+	case dispatch.Rejected:
+		h.logger.Warn("gsm: event rejected by pipeline", "kind", kind, "key", key)
+	case dispatch.AcceptedEmergency:
+		h.logger.Info("gsm: event accepted (failover mode)", "kind", kind, "key", key)
+	default:
+		h.logger.Info("gsm: event accepted", "kind", kind, "key", key)
+	}
+}
+
 // publishMessageEvent re-publishes one /debug SMS as a canonical
 // /events payload (the "gsm" source) so it enters the normal routing
 // pipeline. The event identity is stable per message (sender + content
@@ -432,10 +468,13 @@ func (h *Hub) publishMessageEvent(from, text string, eff, exp time.Time, command
 	h.mu.Lock()
 	acceptor := h.eventAcceptor
 	h.mu.Unlock()
-	if acceptor != nil {
-		return acceptor(payload)
+	if acceptor == nil {
+		h.logger.Warn("gsm: event dropped — no event acceptor installed", "kind", "debug")
+		return dispatch.AcceptedDurable
 	}
-	return dispatch.AcceptedDurable
+	acc := acceptor(payload)
+	h.logAcceptance("debug", sourceID, acc)
+	return acc
 }
 
 // publishAlertEvent raises one operator-requested hazard (/alert SMS)
@@ -480,8 +519,11 @@ func (h *Hub) publishAlertEvent(from, text string, spec *radiocli.AlertSpec, eff
 	h.mu.Lock()
 	acceptor := h.eventAcceptor
 	h.mu.Unlock()
-	if acceptor != nil {
-		return acceptor(payload)
+	if acceptor == nil {
+		h.logger.Warn("gsm: event dropped — no event acceptor installed", "kind", "alert")
+		return dispatch.AcceptedDurable
 	}
-	return dispatch.AcceptedDurable
+	acc := acceptor(payload)
+	h.logAcceptance("alert", sourceID, acc)
+	return acc
 }

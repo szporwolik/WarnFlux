@@ -1,0 +1,81 @@
+{{define "gsm"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{tr .Lang "gsm.title"}} · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr .Lang "gsm.title"}}</h2>
+      <p class="muted log-hint">{{tr .Lang "gsm.hint"}}</p>
+      {{if not .HubEnabled}}
+      <p><span class="badge muted">{{tr .Lang "gsm.modem_off"}}</span></p>
+      {{else if and .HubConnected .HubReady}}
+      <p><span class="badge ok">{{tr .Lang "gsm.modem_ok"}}</span></p>
+      {{else}}
+      <p><span class="badge warn">{{tr .Lang "gsm.modem_down"}}</span></p>
+      {{end}}
+      <form method="post" action="/gsm/send" class="aprs-send">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="tel" name="number" placeholder="{{tr .Lang "gsm.number_ph"}}" maxlength="20" list="gsm-phones" autocomplete="off" spellcheck="false" required>
+        <datalist id="gsm-phones">{{range .Phones}}<option value="{{.Number}}">{{.Number}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
+        <textarea name="text" placeholder="{{tr .Lang "gsm.text_ph"}}" rows="2" maxlength="1000" required></textarea>
+        <button type="submit" class="btn-primary">{{tr .Lang "gsm.send"}}</button>
+      </form>
+      {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
+      {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "gsm.sent"}}</span></div>{{end}}
+      <div class="page-tabs" role="tablist">
+        <a class="page-tab{{if eq .Dir "all"}} active{{end}}" href="/gsm">{{tr .Lang "messages.dir_all"}}</a>
+        <a class="page-tab{{if eq .Dir "rx"}} active{{end}}" href="/gsm?dir=rx">{{tr .Lang "messages.dir_rx"}}</a>
+        <a class="page-tab{{if eq .Dir "tx"}} active{{end}}" href="/gsm?dir=tx">{{tr .Lang "messages.dir_tx"}}</a>
+      </div>
+      <div id="gsm-msgs">{{template "gsm_msgs" .}}</div>
+    </section>
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
+</body>
+</html>
+{{end}}
+
+{{define "gsm_msgs"}}{{if .Messages}}
+<div class="msgs-table-wrap">
+  <table class="msgs-table">
+    <thead>
+      <tr>
+        <th>{{tr .Lang "messages.time"}}</th>
+        <th>{{tr .Lang "messages.dir"}}</th>
+        <th>{{tr .Lang "messages.from"}}</th>
+        <th>{{tr .Lang "messages.to"}}</th>
+        <th>{{tr .Lang "messages.text"}}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Messages}}
+      <tr class="msgs-{{.Direction}}">
+        <td class="muted nowrap">{{timeFull .At}}</td>
+        <td><span class="badge {{if eq .Direction "rx"}}ok{{else}}muted{{end}}">{{if eq .Direction "rx"}}RX{{else}}TX{{end}}</span></td>
+        <td><strong>{{.From}}</strong>{{if .FromName}} <span class="muted op-name">({{.FromName}})</span>{{end}}</td>
+        <td>{{.To}}{{if .ToName}} <span class="muted op-name">({{.ToName}})</span>{{end}}</td>
+        <td class="msgs-text">{{.Text}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div class="pager">
+  <span class="page-info">{{.From}}–{{.To}} {{tr .Lang "warnings.of"}} {{.Total}}</span>
+  {{if gt .Page 1}}<a class="page-link" href="/gsm?dir={{.Dir}}&amp;page={{add .Page -1}}">{{tr .Lang "common.prev"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.prev"}}</span>{{end}}
+  <span class="page-info">{{trf .Lang "archive.page" .Page .Pages}}</span>
+  {{if lt .Page .Pages}}<a class="page-link" href="/gsm?dir={{.Dir}}&amp;page={{add .Page 1}}">{{tr .Lang "common.next"}}</a>{{else}}<span class="page-link disabled">{{tr .Lang "common.next"}}</span>{{end}}
+</div>
+{{else}}
+<p class="home-none">{{tr .Lang "gsm.none"}}</p>
+{{end}}{{end}}

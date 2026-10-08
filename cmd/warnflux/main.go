@@ -33,6 +33,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/geo"
+	"github.com/szporwolik/WarnFlux/internal/gsm"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
@@ -404,6 +405,9 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
 	}
+	// The GSM hub is a plain serial session (no plugin plumbing); the
+	// web admin page only needs the config shape to validate.
+	gsmHub := gsm.NewHub(gsm.Config{Enabled: cfg.GSM.Enabled, Device: cfg.GSM.Device}, nil, logger)
 	if err := plugins.RegisterBuiltins(registry, hub, meshtasticHub); err != nil {
 		return fmt.Errorf("register built-in plugins: %w", err)
 	}
@@ -469,7 +473,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 
 	if cfg.Web.Enabled {
 		if _, err := web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub,
-			meshtasticHub, ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, nil, nil, traffic, trails, met); err != nil {
+			meshtasticHub, gsmHub, ingress, logger, resolvedVersion, commit, nil, nil, nil, nil, nil, nil, nil, traffic, trails, met); err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
 	}
@@ -643,6 +647,17 @@ func run(configPath string, checkConfig bool) error {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
 	}
 	meshtasticHub.SetRecorder(store)
+	// The GSM hub owns the serial AT session to the cellular modem;
+	// history lands in the same SQLite store as APRS/Meshtastic.
+	gsmHub := gsm.NewHub(gsm.Config{
+		Enabled: cfg.GSM.Enabled,
+		Device:  cfg.GSM.Device,
+	}, store, logger)
+	// The future SMS command interpreter plugs in here (currently only
+	// history).
+	gsmHub.SetHandler(func(from, text string) {
+		logger.Info("gsm: sms command candidate", "from", from)
+	})
 	// The heard-node directory persists in SQLite so restarts and quiet
 	// periods do not empty the node list.
 	meshtasticHub.SetNodeStore(store)
@@ -1023,7 +1038,7 @@ func run(configPath string, checkConfig bool) error {
 		if err := store.EnsureAdminUser(cfg.Web.Auth.Username, adminPassword); err != nil {
 			logger.Warn("web: ensure admin user failed", "error", err)
 		}
-		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, meshtasticHub, ingress, logger, resolvedVersion, commit, store, store, store, store, ingestHandlers, logs, traffic, trails, met)
+		webSrv, err = web.New(cfg.Web, mirror, receivers, receivers, manager, actionsMgr, hub, meshtasticHub, gsmHub, ingress, logger, resolvedVersion, commit, store, store, store, store, store, ingestHandlers, logs, traffic, trails, met)
 		if err != nil {
 			return fmt.Errorf("configure web: %w", err)
 		}
@@ -1119,6 +1134,9 @@ func run(configPath string, checkConfig bool) error {
 	go seedMeshtasticStations(ctx, meshtasticHub, receivers, cfg, logger)
 	if hub.Enabled() {
 		hub.Start(ctx)
+	}
+	if gsmHub.Enabled() {
+		gsmHub.Start(ctx)
 	}
 
 	// Group routing rule engine: the consumer of the dispatch ingress. It
@@ -1284,6 +1302,36 @@ func run(configPath string, checkConfig bool) error {
 				}
 				if n > 0 {
 					logger.Debug("aprs: message history pruned", "removed", n)
+				}
+			}
+			prune()
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					prune()
+				}
+			}
+		}()
+	}
+
+	// Durable GSM/SMS history: pruned to the retention bound at startup
+	// and then hourly (the store also prunes on every insert).
+	{
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prune := func() {
+				n, err := store.PruneGSMMessages(ctx, storage.GSMMessageRetentionEntries)
+				if err != nil {
+					logger.Warn("gsm: message history prune failed", "error", err)
+					return
+				}
+				if n > 0 {
+					logger.Debug("gsm: message history pruned", "removed", n)
 				}
 			}
 			prune()

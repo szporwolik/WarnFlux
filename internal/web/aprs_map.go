@@ -62,6 +62,7 @@ type aprsMapView struct {
 	NavAudit         bool
 	NavMessages      bool
 	NavAPRS          bool
+	NavGSM           bool
 	NavMeshtastic    bool
 	NavMeshMap       bool
 	NavTraffic       bool

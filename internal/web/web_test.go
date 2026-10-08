@@ -22,6 +22,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/szporwolik/WarnFlux/internal/gsm"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
@@ -200,19 +201,19 @@ func newTestEnvAll(t *testing.T, ingest map[string]http.Handler, hub *aprs.Hub, 
 
 // newTestEnvWeb builds the environment with an explicit web config.
 func newTestEnvWeb(t *testing.T, cfg config.Web, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshtasticHub *meshtastic.Hub, aprsMsgs storage.APRSMessageStore, meshtasticMsgs storage.MeshtasticMessageStore) *testEnv {
-	return newTestEnvWebUsers(t, cfg, nil, ingest, hub, events, meshtasticHub, aprsMsgs, meshtasticMsgs)
+	return newTestEnvWebUsers(t, cfg, nil, ingest, hub, events, meshtasticHub, aprsMsgs, meshtasticMsgs, nil, nil)
 }
 
 // newTestEnvWithUsers builds the environment with an explicit directory
 // store (nil = the in-memory fake): tests exercising the local-first
 // panel paths inject the real SQLite store.
 func newTestEnvWithUsers(t *testing.T, users storage.DirectoryStore) *testEnv {
-	return newTestEnvWebUsers(t, defaultTestWebConfig(), users, nil, nil, nil, nil, nil, nil)
+	return newTestEnvWebUsers(t, defaultTestWebConfig(), users, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 // newTestEnvWebUsers builds the environment with an explicit web config
 // and directory store.
-func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectoryStore, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshtasticHub *meshtastic.Hub, aprsMsgs storage.APRSMessageStore, meshtasticMsgs storage.MeshtasticMessageStore) *testEnv {
+func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectoryStore, ingest map[string]http.Handler, hub *aprs.Hub, events storage.EventStore, meshtasticHub *meshtastic.Hub, aprsMsgs storage.APRSMessageStore, meshtasticMsgs storage.MeshtasticMessageStore, gsmHub *gsm.Hub, gsmMsgs storage.GSMMessageStore) *testEnv {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -272,7 +273,7 @@ func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectorySto
 
 	pub := &fakeComposePublisher{}
 
-	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshtasticHub, ingress, logger, "test-version", "abc1234", users2, events, aprsMsgs, meshtasticMsgs, ingest, logs, traffic, trails, met)
+	srv, err := web.New(cfg, st, receivers, pub, router, actions, hub, meshtasticHub, gsmHub, ingress, logger, "test-version", "abc1234", users2, events, aprsMsgs, meshtasticMsgs, gsmMsgs, ingest, logs, traffic, trails, met)
 	if err != nil {
 		t.Fatal(err)
 	}

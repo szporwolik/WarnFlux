@@ -314,6 +314,7 @@ func (h *Hub) Close() {
 	h.mu.Lock()
 	h.closeTransport()
 	h.mu.Unlock()
+	h.logger.Info("gsm: modem session closed")
 }
 
 func (h *Hub) closeTransport() {
@@ -609,7 +610,11 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 	if _, err := h.exchangeLocked("AT+CMGF=1", "OK"); err != nil {
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
 	}
-	defer func() { _, _ = h.exchangeLocked("AT+CMGF=0", "OK") }()
+	defer func() {
+		if _, err := h.exchangeLocked("AT+CMGF=0", "OK"); err != nil {
+			h.logger.Warn("gsm: text-mode restore failed", "to", number, "error", err)
+		}
+	}()
 	// Wait for the prompt, then submit the body with Ctrl-Z.
 	if _, err := h.exchangePromptLocked(`AT+CMGS="` + number + `"`); err != nil {
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
@@ -622,6 +627,7 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 	if _, err := h.exchangeLockedTimeout("", "OK", sendAckTimeout); err != nil {
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
 	}
+	h.logger.Info("gsm: sms sent", "to", number, "len", len([]rune(text)))
 	if h.rec != nil {
 		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := h.rec.RecordGSMMessage(recCtx, "tx", "self", number, text, h.now())
@@ -708,6 +714,8 @@ func (h *Hub) refreshStatusLocked() {
 				break
 			}
 		}
+	} else {
+		h.logger.Debug("gsm: operator query failed", "error", err)
 	}
 	if lines, err := h.exchangeLocked(`AT+CSQ`, "OK"); err == nil {
 		for _, l := range lines {
@@ -719,6 +727,8 @@ func (h *Hub) refreshStatusLocked() {
 				break
 			}
 		}
+	} else {
+		h.logger.Debug("gsm: signal query failed", "error", err)
 	}
 }
 
@@ -944,6 +954,7 @@ func (h *Hub) recordBatch(raw []received) []received {
 	msgs := reassemble(raw)
 	for _, m := range msgs {
 		if strings.TrimSpace(m.from) == "" || strings.TrimSpace(m.text) == "" {
+			h.logger.Debug("gsm: empty shell message dropped")
 			continue
 		}
 		if h.rec != nil {
@@ -954,7 +965,7 @@ func (h *Hub) recordBatch(raw []received) []received {
 				h.logger.Warn("gsm: rx history record failed", "from", m.from, "error", err)
 			}
 		}
-		h.logger.Info("gsm: sms received", "from", m.from)
+		h.logger.Info("gsm: sms received", "from", m.from, "len", len([]rune(m.text)))
 	}
 	return msgs
 }

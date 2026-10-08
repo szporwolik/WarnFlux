@@ -313,7 +313,9 @@
       }).then(function (r) {
         if (r.status === 401) { window.location.href = "/login"; }
         return r.text().then(function (t) {
-          if (!r.ok) { throw new Error(t || ("HTTP " + r.status)); }
+          // A proxy HTML error page (e.g. 502) is not a readable
+          // message — fall back to the bare status.
+          if (!r.ok) { throw new Error((!t || t.charAt(0) === "<") ? ("HTTP " + r.status) : t); }
           return JSON.parse(t);
         });
       }).then(function (j) {

@@ -3306,10 +3306,12 @@
     });
   }
 
-  loadLeaflet(function () {
-    if (!window.L) {
+  var initialized = false;
+  function initMap() {
+    if (initialized || !window.L) {
       return;
     }
+    initialized = true;
     map = L.map(mapEl, { attributionControl: false }).setView(center, 11);
     var pickerBase = L.tileLayer(tileURL(), { maxZoom: 19 }).addTo(map);
     // Offline: stretch the deepest local tiles past the tree's limit.
@@ -3329,7 +3331,25 @@
       dropMarker([lat, lon]);
       map.setView([lat, lon], 13);
     }
-  });
+  }
+
+  // Leaflet inside a display:none container computes a 0x0 size and the
+  // tiles stay misaligned forever. The form panel starts folded, so build
+  // the map on first reveal instead (the edit flow pre-opens the panel
+  // and initializes immediately).
+  var panel = document.getElementById("compose-panel");
+  if (panel && panel.hidden) {
+    var panelObserver = new MutationObserver(function () {
+      if (panel.hidden) {
+        return;
+      }
+      panelObserver.disconnect();
+      loadLeaflet(initMap);
+    });
+    panelObserver.observe(panel, { attributes: true, attributeFilter: ["hidden"] });
+  } else {
+    loadLeaflet(initMap);
+  }
 })();
 
 // Application drawer: collapses to an icon rail on desktop (persisted),

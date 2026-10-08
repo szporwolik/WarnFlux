@@ -596,6 +596,23 @@ func (m *Manager) maintenance(ctx context.Context) {
 					m.logger.Info("event cleanup", "deleted_events", n)
 				}
 			}
+			// The durable SMS history is age-bounded too (365 days): the
+			// store prunes on every insert, this loop keeps an idle
+			// station bounded as well. Optional assert — only the SQLite
+			// store implements it.
+			if m.store != nil {
+				if p, ok := m.store.(interface {
+					PruneGSMMessagesOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+				}); ok {
+					if n, err := p.PruneGSMMessagesOlderThan(ctx, now.Add(-storage.GSMMessageRetentionAge)); err != nil {
+						if ctx.Err() == nil {
+							m.logger.Warn("gsm history cleanup failed", "error", err)
+						}
+					} else if n > 0 {
+						m.logger.Info("gsm history cleanup", "deleted_messages", n)
+					}
+				}
+			}
 		}
 	}
 }

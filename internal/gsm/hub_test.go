@@ -332,6 +332,26 @@ func TestRefreshStatus(t *testing.T) {
 	}
 }
 
+// TestDecodeSMSBody pins the UCS-2 hex path: emoji-bearing messages
+// arrive as hex code units from the modem and must become readable
+// text; plain messages pass through unchanged (idempotent).
+func TestDecodeSMSBody(t *testing.T) {
+	hex := "004800690020007700610072006E0066006C007500780020D83DDC4B0020"
+	decoded := DecodeSMSBody(hex)
+	if !strings.Contains(decoded, "Hi warnflux") || !strings.Contains(decoded, "👋") {
+		t.Errorf("DecodeSMSBody = %q, want 'Hi warnflux 👋 '", decoded)
+	}
+	if got := DecodeSMSBody(decoded); got != strings.TrimSpace(decoded) {
+		t.Errorf("DecodeSMSBody is not idempotent: %q", got)
+	}
+	if got := DecodeSMSBody("Hi warnflux"); got != "Hi warnflux" {
+		t.Errorf("plain text changed: %q", got)
+	}
+	if got := DecodeSMSBody("ABC"); got != "ABC" {
+		t.Errorf("short hex changed: %q", got)
+	}
+}
+
 func TestSetHandlerLastWins(t *testing.T) {
 	rec := &recStub{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

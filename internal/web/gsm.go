@@ -177,10 +177,13 @@ func (s *Server) fillGSMMessages(r *http.Request, v *gsmView) {
 			Direction: m.Direction,
 			From:      m.From,
 			To:        m.To,
-			Text:      m.Text,
-			At:        m.At,
-			FromName:  names[strings.TrimSpace(m.From)],
-			ToName:    names[strings.TrimSpace(m.To)],
+			// Older rows may still carry a raw UCS-2 hex body — the
+			// decode is idempotent, so re-applying it at display time
+			// cleans them up too.
+			Text:     gsm.DecodeSMSBody(m.Text),
+			At:       m.At,
+			FromName: names[strings.TrimSpace(m.From)],
+			ToName:   names[strings.TrimSpace(m.To)],
 		}
 		v.Messages = append(v.Messages, view)
 	}

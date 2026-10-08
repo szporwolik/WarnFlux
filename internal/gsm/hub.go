@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"golang.org/x/sys/unix"
 )
@@ -522,6 +523,32 @@ func (h *Hub) refreshStatusLocked() {
 	}
 }
 
+// DecodeSMSBody turns a modem-delivered SMS body into readable text.
+// Messages containing non-GSM-7 characters (emoji, etc.) arrive as
+// UCS-2 code units rendered as a plain hex string by the modem; anything
+// else passes through unchanged (the check is idempotent, so an already
+// decoded string stays as it is).
+func DecodeSMSBody(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw)%4 != 0 {
+		return raw
+	}
+	for _, c := range raw {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return raw
+		}
+	}
+	units := make([]uint16, 0, len(raw)/4)
+	for i := 0; i+4 <= len(raw); i += 4 {
+		v, err := strconv.ParseUint(raw[i:i+4], 16, 16)
+		if err != nil {
+			return raw
+		}
+		units = append(units, uint16(v))
+	}
+	return string(utf16.Decode(units))
+}
+
 // parseCOPS extracts the operator field of a +COPS response
 // ("+COPS: 0,0,\"PLAY\",0" → PLAY; numeric codes map to names).
 func parseCOPS(line string) string {
@@ -619,7 +646,7 @@ func (h *Hub) pollUnreadLocked() (out []received, ok bool) {
 			continue
 		}
 		if got && l != "" {
-			cur.text = l
+			cur.text = DecodeSMSBody(l)
 		}
 	}
 	flush()

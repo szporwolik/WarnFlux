@@ -214,6 +214,10 @@ type UserStore interface {
 	// to the username that registered it. The admin meshtastic page uses
 	// it to label heard nodes.
 	MeshtasticOwners() (map[string]string, error)
+	// PhoneOwners returns every registered phone number mapped to the
+	// username that registered it (numbers normalized to digits only).
+	// The GSM message bridge uses it as the sender allow-list.
+	PhoneOwners() (map[string]string, error)
 	// AllAPRSCallsigns returns the distinct BASE callsigns (SSID
 	// stripped, uppercase) registered for any user, sorted. The APRS
 	// message-routing bridge uses it as the sender allow-list.

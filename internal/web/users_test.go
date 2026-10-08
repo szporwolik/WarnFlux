@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/gsm"
 	"github.com/szporwolik/WarnFlux/internal/notify"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -337,6 +338,21 @@ func (f *fakeUsers) MeshtasticOwners() (map[string]string, error) {
 	for _, u := range f.rows {
 		for _, k := range u.MeshtasticIDs {
 			owners[k] = u.Username
+		}
+	}
+	return owners, nil
+}
+
+// PhoneOwners returns each registered phone number mapped to the owning
+// username (digits-only keys).
+func (f *fakeUsers) PhoneOwners() (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	owners := make(map[string]string)
+	for _, u := range f.rows {
+		key := gsm.NumberKey(u.Phone)
+		if key != "" {
+			owners[key] = u.Username
 		}
 	}
 	return owners, nil

@@ -85,6 +85,11 @@ type gsmView struct {
 	HubEnabled   bool
 	HubConnected bool
 	HubReady     bool
+	// Operator is the last reported network operator name ("" until
+	// the first status refresh); Signal is a pre-formatted quality
+	// string ("CSQ 26 · -61 dBm", "" when unknown).
+	Operator string
+	Signal   string
 
 	// Send-form feedback (query flashes).
 	Error string
@@ -205,6 +210,11 @@ func (s *Server) handleGSMPage(w http.ResponseWriter, r *http.Request) {
 		v.HubEnabled = s.gsm.Enabled()
 		v.HubConnected = s.gsm.Connected()
 		v.HubReady = s.gsm.Ready()
+		v.Operator = s.gsm.Operator()
+		if csq := s.gsm.SignalCSQ(); csq > 0 && csq < 99 {
+			// Standard CSQ→dBm approximation (2*csq-113).
+			v.Signal = fmt.Sprintf("CSQ %d · %d dBm", csq, 2*csq-113)
+		}
 	}
 	s.fillGSMPhones(r.Context(), &v)
 	s.fillGSMMessages(r, &v)
@@ -234,6 +244,12 @@ func (s *Server) handleGSMSend(w http.ResponseWriter, r *http.Request) {
 	if s.gsm == nil {
 		http.Redirect(w, r, "/gsm?err="+url.QueryEscape(i18n.T(lang, "gsm.no_modem")), http.StatusSeeOther)
 		return
+	}
+	// The modem's accept reply can take tens of seconds on a busy
+	// channel — beyond the server's global WriteTimeout. Extend THIS
+	// response's write deadline like the traceroute handler does.
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(90 * time.Second))
 	}
 	if err := s.gsm.Send(r.Context(), number, text); err != nil {
 		flash := fmt.Sprintf(i18n.T(lang, "gsm.send_failed"), err)

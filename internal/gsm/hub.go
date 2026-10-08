@@ -7,7 +7,6 @@
 package gsm
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -57,6 +57,10 @@ const pollInterval = 10 * time.Second
 // atTimeout bounds one AT exchange.
 const atTimeout = 15 * time.Second
 
+// sendAckTimeout bounds the wait for the network accept reply after a
+// submitted SMS body (the modem answers when the network takes it).
+const sendAckTimeout = 45 * time.Second
+
 // received is one consumed inbox message.
 type received struct {
 	from, text string
@@ -73,9 +77,13 @@ type Hub struct {
 
 	mu        sync.Mutex
 	conn      io.ReadWriteCloser
-	reader    *bufio.Reader
 	connected atomic.Bool
 	ready     atomic.Bool
+
+	// operator and csq are the last modem status (network name and
+	// signal quality); refreshed periodically by the poll loop.
+	op  atomic.Pointer[string]
+	csq atomic.Int64
 
 	// handler receives every incoming SMS text (the future command
 	// interpreter hook; nil = history only). Invoked WITHOUT the
@@ -108,6 +116,19 @@ func (h *Hub) Ready() bool { return h.ready.Load() }
 // Enabled reports whether the modem integration is configured on.
 func (h *Hub) Enabled() bool { return h.cfg.Enabled }
 
+// Operator returns the last reported network operator name ("" until
+// the first status refresh succeeds).
+func (h *Hub) Operator() string {
+	if p := h.op.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// SignalCSQ returns the last reported signal quality (0..31, 99 =
+// unknown; 0 until the first refresh).
+func (h *Hub) SignalCSQ() int { return int(h.csq.Load()) }
+
 // SetTransport injects an already-open transport (tests); nil clears it
 // so Start opens the configured device.
 func (h *Hub) SetTransport(rw io.ReadWriteCloser) {
@@ -117,7 +138,6 @@ func (h *Hub) SetTransport(rw io.ReadWriteCloser) {
 		_ = h.conn.Close()
 	}
 	h.conn = rw
-	h.reader = nil
 }
 
 // Start opens the device (unless a transport was injected), runs the AT
@@ -138,9 +158,6 @@ func (h *Hub) Start(ctx context.Context) {
 		conn = dev
 		h.conn = dev
 	}
-	if h.reader == nil {
-		h.reader = bufio.NewReader(conn)
-	}
 	h.mu.Unlock()
 	h.connected.Store(true)
 
@@ -155,6 +172,12 @@ func (h *Hub) Start(ctx context.Context) {
 	h.ready.Store(true)
 	h.logger.Info("gsm: modem ready", "device", h.cfg.Device)
 
+	// First operator/signal snapshot right away (errors are tolerated;
+	// the poll loop refreshes every few minutes).
+	h.mu.Lock()
+	h.refreshStatusLocked()
+	h.mu.Unlock()
+
 	go h.pollLoop(ctx)
 }
 
@@ -168,7 +191,6 @@ func (h *Hub) Close() {
 func (h *Hub) closeTransport() {
 	h.connected.Store(false)
 	h.ready.Store(false)
-	h.reader = nil
 	if h.conn != nil {
 		_ = h.conn.Close()
 		h.conn = nil
@@ -199,6 +221,28 @@ func openSerial(path string) (io.ReadWriteCloser, error) {
 		_ = unix.Close(fd)
 		return nil, err
 	}
+	// Blocking mode: reads then honor VMIN/VTIME (an idle read returns
+	// within ~0.1 s) so the hub's exchange deadlines actually fire.
+	// In non-blocking mode the Go runtime poller waits indefinitely and
+	// a silent modem would stall the session forever.
+	if flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0); err == nil {
+		_, _ = unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags&^unix.O_NONBLOCK)
+	}
+	// A previous session (or a manual probe) may have left the modem
+	// mid-text-entry with the prompt open: ESC aborts that entry and a
+	// short drain eats the stale reply — otherwise the first AT command
+	// is appended to the abandoned message body and the init times out.
+	_, _ = unix.Write(fd, []byte("\x1B\r"))
+	var buf [256]byte
+	start := time.Now()
+	last := start
+	for time.Since(start) < time.Second && time.Since(last) < 200*time.Millisecond {
+		if n, err := unix.Read(fd, buf[:]); err == nil && n > 0 {
+			last = time.Now()
+		} else {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
 	return os.NewFile(uintptr(fd), path), nil
 }
 
@@ -217,7 +261,13 @@ func (h *Hub) initLocked() bool {
 // response (a "" command writes nothing — used to collect a pending
 // response). The caller holds h.mu.
 func (h *Hub) exchangeLocked(cmd, expect string) ([]string, error) {
-	if h.reader == nil {
+	return h.exchangeLockedTimeout(cmd, expect, atTimeout)
+}
+
+// exchangeLockedTimeout is exchangeLocked with an explicit response
+// budget (the modem's SMS-accept reply can take tens of seconds).
+func (h *Hub) exchangeLockedTimeout(cmd, expect string, timeout time.Duration) ([]string, error) {
+	if h.conn == nil {
 		return nil, ErrNoModem
 	}
 	if cmd != "" {
@@ -225,7 +275,7 @@ func (h *Hub) exchangeLocked(cmd, expect string) ([]string, error) {
 			return nil, fmt.Errorf("gsm: write %q: %w", cmd, err)
 		}
 	}
-	deadline := h.now().Add(atTimeout)
+	deadline := h.now().Add(timeout)
 	var lines []string
 	for {
 		if h.now().After(deadline) {
@@ -243,32 +293,105 @@ func (h *Hub) exchangeLocked(cmd, expect string) ([]string, error) {
 		switch {
 		case line == expect:
 			return lines, nil
-		case expect == "> " && strings.TrimSpace(line) == ">":
-			return lines, nil
 		case line == "ERROR":
 			return lines, fmt.Errorf("gsm: modem error on %q", cmd)
+		case strings.HasPrefix(line, "+CMS ERROR"):
+			detail := strings.TrimSpace(strings.TrimPrefix(line, "+CMS ERROR"))
+			detail = strings.TrimSpace(strings.TrimPrefix(detail, ":"))
+			return lines, fmt.Errorf("gsm: modem rejected %q (%s)", cmd, detail)
 		}
 	}
 }
 
-// readLine reads one line from the persistent reader, honoring the
-// deadline.
-func (h *Hub) readLine(deadline time.Time) (string, error) {
-	var sb strings.Builder
+// exchangePromptLocked sends one AT command and waits for the SMS text
+// prompt ('> ') — Huawei-style modems answer it WITHOUT a trailing
+// newline, so the line-based exchange would time out. The caller holds
+// h.mu.
+func (h *Hub) exchangePromptLocked(cmd string) ([]string, error) {
+	if h.conn == nil {
+		return nil, ErrNoModem
+	}
+	if _, err := io.WriteString(h.conn, cmd+"\r"); err != nil {
+		return nil, fmt.Errorf("gsm: write %q: %w", cmd, err)
+	}
+	deadline := h.now().Add(atTimeout)
+	var lines []string
+	var partial strings.Builder
 	for {
-		s, err := h.reader.ReadString('\n')
-		sb.WriteString(s)
-		if strings.HasSuffix(s, "\n") {
-			return sb.String(), nil
+		if h.now().After(deadline) {
+			return lines, ErrTimeout
+		}
+		b, err := h.readByte(deadline)
+		if err != nil {
+			return lines, err
+		}
+		if b == '\n' {
+			line := strings.TrimRight(partial.String(), "\r")
+			partial.Reset()
+			if line == "" {
+				continue
+			}
+			lines = append(lines, line)
+			if line == "ERROR" || strings.HasPrefix(line, "+CMS ERROR") {
+				detail := strings.TrimSpace(strings.TrimPrefix(line, "+CMS ERROR"))
+				detail = strings.TrimSpace(strings.TrimPrefix(detail, ":"))
+				return lines, fmt.Errorf("gsm: modem rejected %q (%s)", cmd, detail)
+			}
+			continue
+		}
+		partial.WriteByte(b)
+		// The prompt may be the only content of the response — match it
+		// as soon as the bytes spell '>' (with an optional space).
+		s := strings.TrimRight(partial.String(), "\r")
+		if s == ">" || s == "> " {
+			lines = append(lines, s)
+			return lines, nil
+		}
+	}
+}
+
+// readByte reads one byte with an absolute deadline. Idle reads — the
+// VTIME tick of a blocking serial port, which Go surfaces as a 0-byte
+// read (io.EOF) — retry until the deadline or a real failure; a
+// silently dead modem can no longer stall the session forever.
+func (h *Hub) readByte(deadline time.Time) (byte, error) {
+	var one [1]byte
+	for {
+		if h.now().After(deadline) {
+			return 0, ErrTimeout
+		}
+		n, err := h.conn.Read(one[:])
+		if n > 0 {
+			return one[0], nil
 		}
 		if err != nil {
-			if sb.Len() > 0 {
-				return sb.String(), nil
+			if errors.Is(err, io.EOF) || errors.Is(err, unix.EAGAIN) {
+				// An empty VTIME read translates to io.EOF in Go — it
+				// means "no data yet", not a disconnected modem.
+				time.Sleep(20 * time.Millisecond)
+				continue
 			}
-			if h.now().After(deadline) {
-				return "", ErrTimeout
+			return 0, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// readLine reads one line (through '\n') with an absolute deadline; a
+// partial line accumulated when the deadline hits is returned as-is.
+func (h *Hub) readLine(deadline time.Time) (string, error) {
+	var sb []byte
+	for {
+		b, err := h.readByte(deadline)
+		if err != nil {
+			if len(sb) > 0 {
+				return string(sb), nil
 			}
 			return "", err
+		}
+		sb = append(sb, b)
+		if b == '\n' || len(sb) >= 4096 {
+			return string(sb), nil
 		}
 	}
 }
@@ -286,17 +409,19 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.conn == nil || !h.connected.Load() || h.reader == nil {
+	if h.conn == nil || !h.connected.Load() {
 		return ErrNoModem
 	}
 	// Wait for the prompt, then submit the body with Ctrl-Z.
-	if _, err := h.exchangeLocked(`AT+CMGS="`+number+`"`, "> "); err != nil {
+	if _, err := h.exchangePromptLocked(`AT+CMGS="` + number + `"`); err != nil {
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
 	}
 	if _, err := io.WriteString(h.conn, text+"\x1A"); err != nil {
 		return fmt.Errorf("gsm: write body: %w", err)
 	}
-	if _, err := h.exchangeLocked("", "OK"); err != nil {
+	// The network accept reply can take tens of seconds on a busy
+	// channel — a wider budget than the regular exchange timeout.
+	if _, err := h.exchangeLockedTimeout("", "OK", sendAckTimeout); err != nil {
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
 	}
 	if h.rec != nil {
@@ -314,37 +439,140 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 func (h *Hub) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	lastStatus := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for _, m := range h.pollUnread() {
+			h.mu.Lock()
+			if h.now().Sub(lastStatus) > 5*time.Minute {
+				lastStatus = h.now()
+				h.refreshStatusLocked()
+			}
+			// A USB modem may vanish mid-session (firmware reset): the
+			// scan reports it and the session reopens itself so the
+			// admin page never stays dead until a full restart.
+			var msgs []received
+			if h.conn != nil {
+				var ok bool
+				if msgs, ok = h.pollUnreadLocked(); !ok {
+					h.reconnectLocked()
+				}
+			}
+			h.mu.Unlock()
+			// Handlers run outside the lock — they may call Send.
+			if len(msgs) > 0 {
 				h.mu.Lock()
 				fn := h.handler
 				h.mu.Unlock()
-				if fn != nil {
-					fn(m.from, m.text)
+				for _, m := range msgs {
+					if fn != nil {
+						fn(m.from, m.text)
+					}
 				}
 			}
 		}
 	}
 }
 
-// pollUnread lists "REC UNREAD" messages, records them, deletes the
-// inbox and returns the received set (handlers run outside the lock).
-func (h *Hub) pollUnread() []received {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// mccmncNames maps Polish network codes to operator names (numeric
+// +COPS replies carry only the MCC-MNC).
+var mccmncNames = map[string]string{
+	"26001": "Plus",
+	"26002": "T-Mobile",
+	"26003": "Orange",
+	"26006": "Play",
+	"26010": "Aero2",
+	"26012": "Cyfrowy Polsat",
+}
+
+// refreshStatusLocked queries the signal quality and the network
+// operator and stores them for the admin page. Failures leave the
+// previous values in place. The caller holds h.mu.
+func (h *Hub) refreshStatusLocked() {
+	if h.conn == nil {
+		return
+	}
+	// Long-alphanumeric operator format (persisted on the modem); a
+	// modem that rejects it keeps the numeric format and the code below
+	// maps the MCC-MNC.
+	_, _ = h.exchangeLocked(`AT+COPS=3,0`, "OK")
+	if lines, err := h.exchangeLocked(`AT+COPS?`, "OK"); err == nil {
+		for _, l := range lines {
+			if !strings.HasPrefix(l, "+COPS:") {
+				continue
+			}
+			if op := parseCOPS(l); op != "" {
+				h.op.Store(&op)
+				break
+			}
+		}
+	}
+	if lines, err := h.exchangeLocked(`AT+CSQ`, "OK"); err == nil {
+		for _, l := range lines {
+			if !strings.HasPrefix(l, "+CSQ:") {
+				continue
+			}
+			if v := parseCSQ(l); v >= 0 {
+				h.csq.Store(int64(v))
+				break
+			}
+		}
+	}
+}
+
+// parseCOPS extracts the operator field of a +COPS response
+// ("+COPS: 0,0,\"PLAY\",0" → PLAY; numeric codes map to names).
+func parseCOPS(line string) string {
+	fields := strings.Split(line, ",")
+	if len(fields) < 3 {
+		return ""
+	}
+	op := strings.Trim(strings.TrimSpace(fields[2]), `"`)
+	if op == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(op); err == nil {
+		if name := mccmncNames[op]; name != "" {
+			return name
+		}
+	}
+	return op
+}
+
+// parseCSQ extracts the rssi value of a +CSQ response ("+CSQ: 26,99" →
+// 26; -1 when the line does not parse).
+func parseCSQ(line string) int {
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "+CSQ:"))
+	if i := strings.IndexByte(rest, ','); i >= 0 {
+		rest = rest[:i]
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(rest))
+	if err != nil {
+		return -1
+	}
+	return v
+}
+
+// pollUnreadLocked lists "REC UNREAD" messages, records them, deletes
+// the inbox and returns the received set (handlers run outside the
+// lock). ok=false means the transport died (the poll loop reconnects).
+// The caller holds h.mu.
+func (h *Hub) pollUnreadLocked() (out []received, ok bool) {
 	if h.conn == nil || !h.connected.Load() {
-		return nil
+		return nil, false
 	}
 	lines, err := h.exchangeLocked(`AT+CMGL="REC UNREAD"`, "OK")
 	if err != nil {
+		if errors.Is(err, ErrTimeout) {
+			// An empty inbox often answers NOTHING at all — the quiet
+			// expiry is a valid "no unread messages" reply.
+			return nil, true
+		}
 		h.logger.Debug("gsm: unread scan failed", "error", err)
-		return nil
+		return nil, false
 	}
-	var out []received
 	var cur received
 	got := false
 	flush := func() {
@@ -396,9 +624,32 @@ func (h *Hub) pollUnread() []received {
 	}
 	flush()
 	// Consume the whole unread inbox: read-once semantics without index
-	// bookkeeping (indices shift on delete).
-	if _, err := h.exchangeLocked(`AT+CMGD=1,4`, "OK"); err != nil {
+	// bookkeeping (indices shift on delete). An unanswered delete (the
+	// modem skips the OK when the inbox was already empty) is fine.
+	if _, err := h.exchangeLocked(`AT+CMGD=1,4`, "OK"); err != nil && !errors.Is(err, ErrTimeout) {
 		h.logger.Debug("gsm: inbox delete failed", "error", err)
 	}
-	return out
+	return out, true
+}
+
+// reconnectLocked drops the dead transport and reopens + reinitializes
+// the modem (a firmware reset re-enumerates the USB device, so a fresh
+// open is the only way back). The caller holds h.mu.
+func (h *Hub) reconnectLocked() {
+	h.closeTransport()
+	dev, err := openSerial(h.cfg.Device)
+	if err != nil {
+		h.logger.Debug("gsm: reconnect open failed", "device", h.cfg.Device, "error", err)
+		return
+	}
+	h.conn = dev
+	h.connected.Store(true)
+	if !h.initLocked() {
+		h.logger.Warn("gsm: reconnect init failed", "device", h.cfg.Device)
+		h.closeTransport()
+		return
+	}
+	h.ready.Store(true)
+	h.refreshStatusLocked()
+	h.logger.Info("gsm: modem reconnected", "device", h.cfg.Device)
 }

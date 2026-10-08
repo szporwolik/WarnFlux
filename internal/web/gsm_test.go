@@ -109,8 +109,15 @@ func newTestGSMHubRec(t *testing.T, rec gsm.MessageRecorder) *gsm.Hub {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h := gsm.NewHub(gsm.Config{Enabled: true, Device: "/dev/null"}, rec, logger)
-	// init: ATE0→OK, AT+CMGF=1→OK; send: prompt then OK.
-	h.SetTransport(newScriptedPort("OK\r\nOK\r\n> \r\nOK\r\n"))
+	// init: ATE0→OK, AT+CMGF=1→OK; status: AT+COPS=3,0→OK,
+	// AT+COPS?→PLAY, AT+CSQ→26; send: prompt then OK.
+	h.SetTransport(newScriptedPort(
+		"OK\r\nOK\r\n" +
+			"OK\r\n" +
+			"+COPS: 0,0,\"PLAY\",0\r\nOK\r\n" +
+			"+CSQ: 26,99\r\nOK\r\n" +
+			"> \r\n" +
+			"OK\r\n"))
 	h.Start(context.Background())
 	t.Cleanup(h.Close)
 	return h
@@ -151,6 +158,9 @@ func TestGSMPage(t *testing.T) {
 	}
 	if !strings.Contains(html, "Modem connected and ready") {
 		t.Errorf("gsm page missing modem status: %s", html)
+	}
+	if !strings.Contains(html, "PLAY") || !strings.Contains(html, "CSQ 26") {
+		t.Errorf("gsm page missing operator/signal badges: %s", html)
 	}
 	if !strings.Contains(html, `<span class="nav-label">GSM</span>`) {
 		t.Errorf("gsm page nav should read GSM: %s", html)

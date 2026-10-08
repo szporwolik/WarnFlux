@@ -18,16 +18,24 @@
       {{if not .HubEnabled}}
       <p><span class="badge muted">{{tr .Lang "gsm.modem_off"}}</span></p>
       {{else if and .HubConnected .HubReady}}
-      <p><span class="badge ok">{{tr .Lang "gsm.modem_ok"}}</span></p>
+      <p><span class="badge ok">{{tr .Lang "gsm.modem_ok"}}</span>{{if .Operator}} <span class="badge muted">{{.Operator}}</span>{{end}}{{if .Signal}} <span class="badge muted">{{.Signal}}</span>{{end}}</p>
       {{else}}
       <p><span class="badge warn">{{tr .Lang "gsm.modem_down"}}</span></p>
       {{end}}
-      <form method="post" action="/gsm/send" class="aprs-send">
+      <form method="post" action="/gsm/send" class="test-form gsm-send">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="tel" name="number" placeholder="{{tr .Lang "gsm.number_ph"}}" maxlength="20" list="gsm-phones" autocomplete="off" spellcheck="false" required>
-        <datalist id="gsm-phones">{{range .Phones}}<option value="{{.Number}}">{{.Number}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
-        <textarea name="text" placeholder="{{tr .Lang "gsm.text_ph"}}" rows="2" maxlength="1000" required></textarea>
-        <button type="submit" class="btn-primary">{{tr .Lang "gsm.send"}}</button>
+        <label class="field">
+          <span>{{tr .Lang "gsm.number"}}</span>
+          <input type="tel" name="number" placeholder="{{tr .Lang "gsm.number_ph"}}" maxlength="20" list="gsm-phones" autocomplete="off" spellcheck="false" required>
+          <datalist id="gsm-phones">{{range .Phones}}<option value="{{.Number}}">{{.Number}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
+        </label>
+        <label class="field field-wide">
+          <span>{{tr .Lang "gsm.text"}}</span>
+          <textarea name="text" rows="3" maxlength="1000" placeholder="{{tr .Lang "gsm.text_ph"}}" required></textarea>
+        </label>
+        <div class="test-actions">
+          <button type="submit" class="btn-primary">{{tr .Lang "gsm.send"}}</button>
+        </div>
       </form>
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
       {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "gsm.sent"}}</span></div>{{end}}

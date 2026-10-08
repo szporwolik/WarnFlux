@@ -1,7 +1,6 @@
 package gsm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -105,10 +104,7 @@ func newTestHub(t *testing.T) (*Hub, *fakePort, *recStub) {
 	h := NewHub(Config{Enabled: true, Device: "/dev/null"}, rec, logger)
 	f := newFakePort()
 	h.SetTransport(f)
-	h.mu.Lock()
-	h.reader = bufio.NewReader(f)
 	h.connected.Store(true)
-	h.mu.Unlock()
 	t.Cleanup(func() { h.Close() })
 	return h, f, rec
 }
@@ -173,7 +169,12 @@ func TestPollUnreadParses(t *testing.T) {
 	f.feed("OK\r\n")
 	f.feed("OK\r\n") // AT+CMGD=1,4
 
-	got := h.pollUnread()
+	h.mu.Lock()
+	got, ok := h.pollUnreadLocked()
+	h.mu.Unlock()
+	if !ok {
+		t.Fatalf("poll reported a transport failure")
+	}
 	if len(got) != 2 {
 		t.Fatalf("received %d messages, want 2", len(got))
 	}
@@ -268,6 +269,66 @@ func TestNoTransport(t *testing.T) {
 	h := NewHub(Config{Enabled: true}, rec, logger)
 	if err := h.Send(context.Background(), "+48600111222", "x"); err == nil {
 		t.Fatalf("send succeeded without a session")
+	}
+}
+
+// TestSendPromptWithoutNewline pins the Huawei-style prompt: '> ' with
+// NO trailing newline (the line-based exchange would time out). The
+// modem's accept reply then starts with a fresh CRLF, exactly like the
+// real device.
+func TestSendPromptWithoutNewline(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	f.feed("> ") // prompt only — no CRLF after it
+	f.feed("\r\n+CMGS: 1\r\nOK\r\n")
+	if err := h.Send(context.Background(), "+48600111222", "Czesc"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if !strings.Contains(f.written(), "Czesc\x1A") {
+		t.Fatalf("body+ctrl-z missing: %q", f.written())
+	}
+	rows := rec.list()
+	if len(rows) != 1 || rows[0].Text != "Czesc" {
+		t.Fatalf("tx rows = %+v", rows)
+	}
+}
+
+func TestParseCSQCOPS(t *testing.T) {
+	if got := parseCSQ("+CSQ: 26,99"); got != 26 {
+		t.Errorf("parseCSQ = %d, want 26", got)
+	}
+	if got := parseCSQ("+CSQ: 99,99"); got != 99 {
+		t.Errorf("parseCSQ(99) = %d, want 99", got)
+	}
+	if got := parseCSQ("bogus"); got != -1 {
+		t.Errorf("parseCSQ(bogus) = %d, want -1", got)
+	}
+	if got := parseCOPS(`+COPS: 0,0,"PLAY",0`); got != "PLAY" {
+		t.Errorf("parseCOPS(PLAY) = %q", got)
+	}
+	if got := parseCOPS(`+COPS: 0,2,"26006",0`); got != "Play" {
+		t.Errorf("parseCOPS(26006) = %q, want Play", got)
+	}
+	if got := parseCOPS(`+COPS: 0,2,"26001",0`); got != "Plus" {
+		t.Errorf("parseCOPS(26001) = %q, want Plus", got)
+	}
+	if got := parseCOPS("+COPS:"); got != "" {
+		t.Errorf("parseCOPS(empty) = %q", got)
+	}
+}
+
+func TestRefreshStatus(t *testing.T) {
+	h, f, _ := newTestHub(t)
+	f.feed("OK\r\n") // AT+COPS=3,0
+	f.feed("+COPS: 0,0,\"PLAY\",0\r\nOK\r\n")
+	f.feed("+CSQ: 26,99\r\nOK\r\n")
+	h.mu.Lock()
+	h.refreshStatusLocked()
+	h.mu.Unlock()
+	if got := h.Operator(); got != "PLAY" {
+		t.Errorf("Operator = %q, want PLAY", got)
+	}
+	if got := h.SignalCSQ(); got != 26 {
+		t.Errorf("SignalCSQ = %d, want 26", got)
 	}
 }
 

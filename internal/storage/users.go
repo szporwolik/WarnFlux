@@ -163,6 +163,14 @@ type GroupStore interface {
 	// notification languages in the SAME ORDER as
 	// GroupRecipientMeshIDs ("" = system default).
 	GroupRecipientMeshLangs(groupID int64) ([]string, error)
+	// GroupRecipientPhones returns the distinct non-empty phone numbers
+	// registered for the group's members, sorted. The rule engine hands
+	// them to SMS-capable actions.
+	GroupRecipientPhones(groupID int64) ([]string, error)
+	// GroupRecipientPhoneLangs returns the members' preferred
+	// notification languages in the SAME ORDER as
+	// GroupRecipientPhones ("" = system default).
+	GroupRecipientPhoneLangs(groupID int64) ([]string, error)
 }
 
 // DirectoryStore combines the user and group administration stores; the

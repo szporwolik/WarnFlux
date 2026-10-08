@@ -116,6 +116,7 @@ func recipientSummary(payload string) string {
 		APRSCallsigns  []string `json:"aprs_callsigns"`
 		MeshNodeIDs    []string `json:"mesh_node_ids"`
 		DiscordHandles []string `json:"discord_handles"`
+		Phones         []string `json:"phones"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
 		return ""
@@ -137,6 +138,9 @@ func recipientSummary(payload string) string {
 	}
 	if len(p.DiscordHandles) > 0 {
 		parts = append(parts, fmt.Sprintf("discord: %d", len(p.DiscordHandles)))
+	}
+	if len(p.Phones) > 0 {
+		parts = append(parts, fmt.Sprintf("SMS: %d", len(p.Phones)))
 	}
 	return strings.Join(parts, " · ")
 }

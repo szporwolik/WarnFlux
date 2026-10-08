@@ -67,6 +67,10 @@ type ActionRequest struct {
 	// Meshtastic node IDs (8 hex). It is populated by the rule engine
 	// and used by Meshtastic-capable actions to address direct messages.
 	MeshNodeIDs []string `json:"mesh_node_ids"`
+	// Phones carries the matched group's members' registered phone
+	// numbers (as stored). It is populated by the rule engine and used
+	// by SMS-capable actions to address outbound messages.
+	Phones []string `json:"phones"`
 	// Lang is the system/default notification language for broadcast
 	// channels (APRS messages, Meshtastic group-channel posts) and the
 	// fallback for recipients without a personal language. Empty means
@@ -78,6 +82,9 @@ type ActionRequest struct {
 	// MeshNodeLangs parallels MeshNodeIDs: the preferred notification
 	// language of each member's node ("" = Lang).
 	MeshNodeLangs []string `json:"mesh_node_langs,omitempty"`
+	// PhoneLangs parallels Phones: the preferred notification language
+	// of each member's phone ("" = Lang).
+	PhoneLangs []string `json:"phone_langs,omitempty"`
 	// App identifies the running application (version, domain, repo);
 	// populated by the rule engine.
 	App AppInfo `json:"app"`

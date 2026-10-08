@@ -109,10 +109,14 @@ func newTestGSMHubRec(t *testing.T, rec gsm.MessageRecorder) *gsm.Hub {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h := gsm.NewHub(gsm.Config{Enabled: true, Device: "/dev/null"}, rec, logger)
-	// init: ATE0→OK, AT+CMGF=1→OK; status: AT+COPS=3,0→OK,
+	// init: ATE0→OK, AT+CMGF=1→OK, AT+CSCS→OK, AT+CSDH=1→OK,
+	// AT+CPMS=?→SM only (no drain/switch); status: AT+COPS=3,0→OK,
 	// AT+COPS?→PLAY, AT+CSQ→26; send: prompt then OK.
 	h.SetTransport(newScriptedPort(
 		"OK\r\nOK\r\n" +
+			"OK\r\n" +
+			"OK\r\n" +
+			"+CPMS: (\"SM\",\"SR\")\r\nOK\r\n" +
 			"OK\r\n" +
 			"+COPS: 0,0,\"PLAY\",0\r\nOK\r\n" +
 			"+CSQ: 26,99\r\nOK\r\n" +

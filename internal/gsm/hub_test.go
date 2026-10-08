@@ -134,17 +134,80 @@ func TestValidNumber(t *testing.T) {
 
 func TestInitExchange(t *testing.T) {
 	h, f, _ := newTestHub(t)
-	f.feed("OK\r\n")
-	f.feed("OK\r\n")
+	f.feed("OK\r\n")                           // ATE0
+	f.feed("OK\r\n")                           // AT+CMGF=1
+	f.feed("OK\r\n")                           // AT+CSCS="IRA"
+	f.feed("OK\r\n")                           // AT+CSDH=1
+	f.feed("+CPMS: (\"SM\",\"SR\")\r\nOK\r\n") // no ME → stay on SIM
 	h.mu.Lock()
 	ok := h.initLocked()
+	storage := h.storage
 	h.mu.Unlock()
 	if !ok {
 		t.Fatalf("init failed")
 	}
+	if storage != "SM" {
+		t.Fatalf("storage = %q, want SM (no ME support)", storage)
+	}
 	written := f.written()
-	if !strings.Contains(written, "ATE0\r") || !strings.Contains(written, "AT+CMGF=1\r") {
-		t.Fatalf("init commands not written: %q", written)
+	for _, cmd := range []string{"ATE0\r", "AT+CMGF=1\r", "AT+CSCS=\"IRA\"\r", "AT+CSDH=1\r", "AT+CPMS=?\r"} {
+		if !strings.Contains(written, cmd) {
+			t.Fatalf("init command %q missing: %q", cmd, written)
+		}
+	}
+	if strings.Contains(written, "AT+CPMS=\"ME") {
+		t.Fatalf("ME switch attempted without ME support: %q", written)
+	}
+}
+
+func TestInitPrefersME(t *testing.T) {
+	h, f, _ := newTestHub(t)
+	f.feed("OK\r\n") // ATE0
+	f.feed("OK\r\n") // AT+CMGF=1
+	f.feed("OK\r\n") // AT+CSCS="IRA"
+	f.feed("OK\r\n") // AT+CSDH=1
+	f.feed("+CPMS: (\"ME\",\"MT\",\"SM\",\"SR\"),(\"ME\",\"MT\",\"SM\",\"SR\"),(\"ME\",\"MT\",\"SM\",\"SR\")\r\nOK\r\n")
+	f.feed("+CPMS: \"SM\",0,1,\"SM\",0,1,\"SM\",0,1\r\nOK\r\n") // SIM drain: empty
+	f.feed("OK\r\n")                                            // CMGR=1: hole
+	f.feed("OK\r\n")                                            // AT+CPMS="ME","ME","ME"
+	f.feed("+CPMS: \"ME\",0,23,\"ME\",0,23,\"ME\",0,23\r\nOK\r\n")
+	h.mu.Lock()
+	ok := h.initLocked()
+	storage := h.storage
+	h.mu.Unlock()
+	if !ok {
+		t.Fatalf("init failed")
+	}
+	if storage != "ME" {
+		t.Fatalf("storage = %q, want ME", storage)
+	}
+	if w := f.written(); !strings.Contains(w, "AT+CPMS=\"ME\",\"ME\",\"ME\"\r") {
+		t.Fatalf("ME switch missing: %q", w)
+	}
+}
+
+func TestInitDrainsSIMBeforeSwitch(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	f.feed("OK\r\n") // ATE0
+	f.feed("OK\r\n") // AT+CMGF=1
+	f.feed("OK\r\n") // AT+CSCS="IRA"
+	f.feed("OK\r\n") // AT+CSDH=1
+	f.feed("+CPMS: (\"ME\",\"MT\",\"SM\",\"SR\"),(\"ME\",\"MT\",\"SM\",\"SR\"),(\"ME\",\"MT\",\"SM\",\"SR\")\r\nOK\r\n")
+	f.feed("+CPMS: \"SM\",1,1,\"SM\",1,1,\"SM\",1,1\r\nOK\r\n") // one SIM leftover
+	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"25/10/03,10:00:00+08\"\r\nZalegla wiadomosc\r\nOK\r\n")
+	f.feed("OK\r\n") // AT+CMGD=1
+	f.feed("OK\r\n") // AT+CPMS="ME","ME","ME"
+	f.feed("+CPMS: \"ME\",0,23,\"ME\",0,23,\"ME\",0,23\r\nOK\r\n")
+	h.mu.Lock()
+	ok := h.initLocked()
+	storage := h.storage
+	h.mu.Unlock()
+	if !ok || storage != "ME" {
+		t.Fatalf("init ok=%v storage=%q, want ok + ME", ok, storage)
+	}
+	rows := rec.list()
+	if len(rows) != 1 || rows[0].Text != "Zalegla wiadomosc" {
+		t.Fatalf("SIM leftover not drained: %+v", rows)
 	}
 }
 
@@ -211,6 +274,56 @@ func TestPollUnreadParses(t *testing.T) {
 	}
 	if !strings.Contains(written, "AT+CMGD=3\r") {
 		t.Fatalf("sent-copy delete missing: %q", written)
+	}
+}
+
+func TestMergeSMS(t *testing.T) {
+	in := []received{
+		{from: "+48123456789", text: "A", minute: "26/10/08,18:51"},
+		{from: "+48123456789", text: "B", minute: "26/10/08,18:51"},
+		{from: "+48123456789", text: "C", minute: "26/10/08,18:52"}, // other minute: separate
+		{from: "+48123456789", text: "D", minute: ""},               // unknown time: never merged
+		{from: "+48123456789", text: "E", minute: ""},
+	}
+	out := mergeSMS(in)
+	if len(out) != 4 {
+		t.Fatalf("merged to %d messages: %+v", len(out), out)
+	}
+	if out[0].text != "BA" {
+		t.Fatalf("first = %q, want BA (reversed parts)", out[0].text)
+	}
+	if out[1].text != "C" || out[2].text != "D" || out[3].text != "E" {
+		t.Fatalf("wrong tail: %+v", out[1:])
+	}
+}
+
+// TestPollUnreadMergesSM pins the SIM-storage reconstruction: the
+// firmware stores the parts of one long message backwards across the
+// slots, so the batch must be re-read in reverse and merged.
+func TestPollUnreadMergesSM(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	h.mu.Lock()
+	h.storage = "SM"
+	h.mu.Unlock()
+	f.feed("+CPMS: \"SM\",3,3,\"SM\",3,3,\"SM\",3,3\r\nOK\r\n")
+	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"26/10/08,18:51:59+08\"\r\nA\r\nOK\r\n") // slot 1 = LAST part
+	f.feed("OK\r\n")                                                                          // AT+CMGD=1
+	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"26/10/08,18:51:58+08\"\r\nB\r\nOK\r\n") // slot 2
+	f.feed("OK\r\n")                                                                          // AT+CMGD=2
+	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"26/10/08,18:51:57+08\"\r\nC\r\nOK\r\n") // slot 3 = FIRST part
+	f.feed("OK\r\n")                                                                          // AT+CMGD=3
+
+	h.mu.Lock()
+	got, ok := h.pollUnreadLocked()
+	h.mu.Unlock()
+	if !ok {
+		t.Fatalf("poll reported a transport failure")
+	}
+	if len(got) != 1 || got[0].text != "CBA" {
+		t.Fatalf("merged = %+v, want one message CBA", got)
+	}
+	if rows := rec.list(); len(rows) != 1 || rows[0].Text != "CBA" {
+		t.Fatalf("recorded = %+v", rows)
 	}
 }
 

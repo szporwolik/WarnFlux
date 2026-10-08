@@ -502,6 +502,38 @@ func (s *Store) MeshtasticOwners() (map[string]string, error) {
 	return owners, nil
 }
 
+// PhoneOwners returns every registered phone number mapped to the
+// username that registered it; the keys are digits-only, so formatting
+// differences (spaces, + prefix, dashes) collapse onto one number.
+func (s *Store) PhoneOwners() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT phone, username FROM users WHERE phone IS NOT NULL AND phone != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("query phone owners: %w", err)
+	}
+	defer rows.Close()
+	owners := make(map[string]string)
+	for rows.Next() {
+		var phone, username string
+		if err := rows.Scan(&phone, &username); err != nil {
+			return nil, fmt.Errorf("scan phone owner: %w", err)
+		}
+		key := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, phone)
+		if key == "" {
+			continue
+		}
+		owners[key] = username
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate phone owners: %w", err)
+	}
+	return owners, nil
+}
+
 // SetUserLanguage stores the user's preferred notification language
 // (an i18n language code; "" = system default). The admin row may set
 // its own language like any other user.

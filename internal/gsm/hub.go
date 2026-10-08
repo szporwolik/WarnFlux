@@ -49,6 +49,10 @@ func ValidNumber(s string) bool { return phoneRE.MatchString(strings.TrimSpace(s
 // started).
 var ErrNoModem = errors.New("gsm: modem session not available")
 
+// ErrModemRejected wraps AT commands the modem refused (+CMS ERROR /
+// ERROR). Scans treat it as "nothing more to read", sends surface it.
+var ErrModemRejected = errors.New("gsm: modem rejected")
+
 // ErrTimeout is returned when the modem does not answer an AT exchange.
 var ErrTimeout = errors.New("gsm: modem response timeout")
 
@@ -299,7 +303,7 @@ func (h *Hub) exchangeLockedTimeout(cmd, expect string, timeout time.Duration) (
 		case strings.HasPrefix(line, "+CMS ERROR"):
 			detail := strings.TrimSpace(strings.TrimPrefix(line, "+CMS ERROR"))
 			detail = strings.TrimSpace(strings.TrimPrefix(detail, ":"))
-			return lines, fmt.Errorf("gsm: modem rejected %q (%s)", cmd, detail)
+			return lines, fmt.Errorf("%w %q (%s)", ErrModemRejected, cmd, detail)
 		}
 	}
 }
@@ -336,7 +340,7 @@ func (h *Hub) exchangePromptLocked(cmd string) ([]string, error) {
 			if line == "ERROR" || strings.HasPrefix(line, "+CMS ERROR") {
 				detail := strings.TrimSpace(strings.TrimPrefix(line, "+CMS ERROR"))
 				detail = strings.TrimSpace(strings.TrimPrefix(detail, ":"))
-				return lines, fmt.Errorf("gsm: modem rejected %q (%s)", cmd, detail)
+				return lines, fmt.Errorf("%w %q (%s)", ErrModemRejected, cmd, detail)
 			}
 			continue
 		}
@@ -582,81 +586,135 @@ func parseCSQ(line string) int {
 	return v
 }
 
-// pollUnreadLocked lists "REC UNREAD" messages, records them, deletes
-// the inbox and returns the received set (handlers run outside the
-// lock). ok=false means the transport died (the poll loop reconnects).
-// The caller holds h.mu.
+// pollUnreadLocked drains the stored inbox, records every message and
+// returns the received set (handlers run outside the lock). ok=false
+// means the transport died (the poll loop reconnects). The caller holds
+// h.mu.
+//
+// The Huawei E173 firmware lists NOTHING via AT+CMGL even when the SIM
+// holds unread messages, so the scan reads front-to-back by index
+// (CMGR=1 + CMGD=1 — the remaining messages shift down after each
+// delete).
 func (h *Hub) pollUnreadLocked() (out []received, ok bool) {
 	if h.conn == nil || !h.connected.Load() {
 		return nil, false
 	}
-	lines, err := h.exchangeLocked(`AT+CMGL="REC UNREAD"`, "OK")
+	_, maxSlots, err := h.storageStatsLocked()
 	if err != nil {
-		if errors.Is(err, ErrTimeout) {
-			// An empty inbox often answers NOTHING at all — the quiet
-			// expiry is a valid "no unread messages" reply.
-			return nil, true
-		}
 		h.logger.Debug("gsm: unread scan failed", "error", err)
-		return nil, false
+		return out, false
 	}
-	var cur received
-	got := false
-	flush := func() {
-		if !got || cur.from == "" {
-			got, cur = false, received{}
-			return
+	// The firmware leaves HOLES (a deleted slot stays empty instead of
+	// compacting), so every slot 1..max must be probed individually.
+	for idx := 1; idx <= maxSlots && idx <= 64; idx++ {
+		m, status, err := h.readIndexLocked(idx)
+		if errors.Is(err, ErrModemRejected) {
+			// Indices beyond the firmware's real storage are refused —
+			// the scan is simply done.
+			return out, true
+		}
+		if err != nil {
+			h.logger.Debug("gsm: unread scan failed", "error", err)
+			return out, false
+		}
+		if status == "" {
+			continue // empty slot (hole)
+		}
+		// Sent copies (STO SENT) also live in the storage: delete them
+		// for hygiene but never import them as received messages.
+		if strings.HasPrefix(status, "STO") {
+			if _, err := h.exchangeLocked(fmt.Sprintf("AT+CMGD=%d", idx), "OK"); err != nil && !errors.Is(err, ErrModemRejected) {
+				h.logger.Debug("gsm: inbox delete failed", "error", err)
+			}
+			continue
 		}
 		if h.rec != nil {
 			recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := h.rec.RecordGSMMessage(recCtx, "rx", cur.from, "self", cur.text, h.now())
+			err := h.rec.RecordGSMMessage(recCtx, "rx", m.from, "self", m.text, h.now())
 			cancel()
 			if err != nil {
-				h.logger.Warn("gsm: rx history record failed", "from", cur.from, "error", err)
+				h.logger.Warn("gsm: rx history record failed", "from", m.from, "error", err)
 			}
 		}
-		h.logger.Info("gsm: sms received", "from", cur.from)
-		out = append(out, cur)
-		got, cur = false, received{}
-	}
-	for _, l := range lines {
-		if strings.HasPrefix(l, "+CMGL:") {
-			flush()
-			// +CMGL: 1,"REC UNREAD","+48123456789",,"25/10/08,.."
-			rest := strings.TrimSpace(strings.TrimPrefix(l, "+CMGL:"))
-			if i := strings.IndexByte(rest, ','); i >= 0 {
-				rest = strings.TrimSpace(rest[i+1:])
-				if len(rest) > 1 && rest[0] == '"' {
-					if j := strings.IndexByte(rest[1:], '"'); j >= 0 {
-						rest = rest[j+1:]
-					}
-				}
-				if k := strings.Index(rest, `","`); k >= 0 {
-					rest = rest[k+3:]
-					if m := strings.IndexByte(rest, '"'); m >= 0 {
-						cur.from = rest[:m]
-					}
-				}
-			}
-			got = true
-			continue
+		h.logger.Info("gsm: sms received", "from", m.from)
+		out = append(out, m)
+		if _, err := h.exchangeLocked(fmt.Sprintf("AT+CMGD=%d", idx), "OK"); err != nil && !errors.Is(err, ErrModemRejected) {
+			h.logger.Debug("gsm: inbox delete failed", "error", err)
+			return out, true
 		}
-		if got && (l == "OK" || l == "ERROR") {
-			flush()
-			continue
-		}
-		if got && l != "" {
-			cur.text = DecodeSMSBody(l)
-		}
-	}
-	flush()
-	// Consume the whole unread inbox: read-once semantics without index
-	// bookkeeping (indices shift on delete). An unanswered delete (the
-	// modem skips the OK when the inbox was already empty) is fine.
-	if _, err := h.exchangeLocked(`AT+CMGD=1,4`, "OK"); err != nil && !errors.Is(err, ErrTimeout) {
-		h.logger.Debug("gsm: inbox delete failed", "error", err)
 	}
 	return out, true
+}
+
+// storageStatsLocked reads the active storage status (+CPMS?): used
+// slots and the storage capacity. The caller holds h.mu.
+func (h *Hub) storageStatsLocked() (used, max int, err error) {
+	lines, err := h.exchangeLocked(`AT+CPMS?`, "OK")
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, l := range lines {
+		if !strings.HasPrefix(l, "+CPMS:") {
+			continue
+		}
+		// +CPMS: "SM",5,25,"SM",5,25,"SM",5,25
+		fields := strings.Split(strings.TrimPrefix(l, "+CPMS:"), ",")
+		if len(fields) >= 3 {
+			u, err1 := strconv.Atoi(strings.Trim(strings.TrimSpace(fields[1]), `"`))
+			m, err2 := strconv.Atoi(strings.Trim(strings.TrimSpace(fields[2]), `"`))
+			if err1 == nil && err2 == nil {
+				return u, m, nil
+			}
+		}
+	}
+	return 0, 0, nil
+}
+
+// readIndexLocked reads one stored message by index (+CMGR=<i>) and
+// returns its content with the storage status field ("REC UNREAD",
+// "STO SENT", ...; "" when the slot is empty). The caller holds h.mu.
+func (h *Hub) readIndexLocked(idx int) (m received, status string, err error) {
+	lines, err := h.exchangeLocked(fmt.Sprintf("AT+CMGR=%d", idx), "OK")
+	if err != nil {
+		return received{}, "", err
+	}
+	var body []string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "+CMGR:") {
+			// +CMGR: "REC UNREAD","+48509558155",,"26/10/08,18:51:52+08"
+			rest := strings.TrimSpace(strings.TrimPrefix(l, "+CMGR:"))
+			if len(rest) > 1 && rest[0] == '"' {
+				if j := strings.IndexByte(rest[1:], '"'); j >= 0 {
+					status = rest[1 : 1+j]
+					rest = rest[j+2:]
+					if i := strings.IndexByte(rest, ','); i >= 0 {
+						rest = strings.TrimSpace(rest[i+1:])
+						if len(rest) > 1 && rest[0] == '"' {
+							if k := strings.IndexByte(rest[1:], '"'); k >= 0 {
+								m.from = rest[1 : 1+k]
+							}
+						}
+					}
+				}
+			}
+			continue
+		}
+		if l == "OK" || l == "ERROR" {
+			continue
+		}
+		if l != "" {
+			body = append(body, l)
+		}
+	}
+	if m.from == "" {
+		return received{}, "", nil
+	}
+	text := strings.Join(body, "\n")
+	if len(body) == 1 {
+		text = DecodeSMSBody(body[0])
+	}
+	m.text = text
+	return m, status, nil
 }
 
 // reconnectLocked drops the dead transport and reopens + reinitializes

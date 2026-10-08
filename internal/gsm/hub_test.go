@@ -159,15 +159,21 @@ func TestInitFailsOnModemError(t *testing.T) {
 	}
 }
 
-// TestPollUnreadParses pins the +CMGL parsing and the durable rx rows.
+// TestPollUnreadParses pins the slot-probing drain (the Huawei firmware
+// lists nothing via CMGL AND leaves holes instead of compacting): every
+// slot 1..max is read, received messages import, sent copies are deleted
+// silently and an out-of-range index ends the scan.
 func TestPollUnreadParses(t *testing.T) {
 	h, f, rec := newTestHub(t)
-	f.feed("+CMGL: 1,\"REC UNREAD\",\"+48123456789\",,\"25/10/03,10:00:00+08\"\r\n")
-	f.feed("Wiadomosc testowa\r\n")
-	f.feed("+CMGL: 2,\"REC UNREAD\",\"+48600999888\",,\"25/10/03,10:05:00+08\"\r\n")
-	f.feed("Druga wiadomosc\r\n")
-	f.feed("OK\r\n")
-	f.feed("OK\r\n") // AT+CMGD=1,4
+	f.feed("+CPMS: \"SM\",4,5,\"SM\",4,5,\"SM\",4,5\r\nOK\r\n")
+	f.feed("OK\r\n") // CMGR=1: empty slot (hole)
+	f.feed("+CMGR: \"REC UNREAD\",\"+48123456789\",,\"25/10/03,10:00:00+08\"\r\nWiadomosc testowa\r\nOK\r\n")
+	f.feed("OK\r\n") // AT+CMGD=2
+	f.feed("+CMGR: \"STO SENT\",\"+48600999888\",,\"25/10/03,10:01:00+08\"\r\nkopia wysylki\r\nOK\r\n")
+	f.feed("OK\r\n") // AT+CMGD=3 (sent copy — deleted, not imported)
+	f.feed("+CMGR: \"REC READ\",\"+48600999888\",,\"25/10/03,10:05:00+08\"\r\nDruga wiadomosc\r\nOK\r\n")
+	f.feed("OK\r\n")              // AT+CMGD=4
+	f.feed("+CMS ERROR: 321\r\n") // CMGR=5: beyond the real storage
 
 	h.mu.Lock()
 	got, ok := h.pollUnreadLocked()
@@ -194,11 +200,17 @@ func TestPollUnreadParses(t *testing.T) {
 		}
 	}
 	written := f.written()
-	if !strings.Contains(written, "AT+CMGL=\"REC UNREAD\"\r") {
-		t.Fatalf("list command missing: %q", written)
+	if !strings.Contains(written, "AT+CPMS?\r") {
+		t.Fatalf("count command missing: %q", written)
 	}
-	if !strings.Contains(written, "AT+CMGD=1,4\r") {
+	if !strings.Contains(written, "AT+CMGR=2\r") {
+		t.Fatalf("read command missing: %q", written)
+	}
+	if !strings.Contains(written, "AT+CMGD=2\r") {
 		t.Fatalf("delete command missing: %q", written)
+	}
+	if !strings.Contains(written, "AT+CMGD=3\r") {
+		t.Fatalf("sent-copy delete missing: %q", written)
 	}
 }
 

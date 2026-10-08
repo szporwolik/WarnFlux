@@ -124,6 +124,7 @@ type meshtasticView struct {
 	NavAudit         bool
 	NavAPRS          bool
 	NavMessages      bool
+	NavGSM           bool
 	NavMeshtastic    bool
 	NavMeshMap       bool
 

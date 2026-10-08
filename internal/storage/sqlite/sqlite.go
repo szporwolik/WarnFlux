@@ -928,6 +928,22 @@ CREATE TABLE site_visits (
 ALTER TABLE users ADD COLUMN lang TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v53: GSM/SMS message history (the admin /gsm page). Both
+		// directions are recorded; retention is bounded to
+		// storage.GSMMessageRetentionEntries by the store.
+		SQL: `
+CREATE TABLE gsm_messages (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	direction    TEXT NOT NULL,
+	from_number  TEXT NOT NULL,
+	to_number    TEXT NOT NULL,
+	text         TEXT NOT NULL,
+	created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX idx_gsm_messages_created ON gsm_messages(created_at_ms);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

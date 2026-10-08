@@ -154,6 +154,10 @@ type Server struct {
 	version string
 	commit  string
 
+	// tz is the display timezone for every formatted timestamp (nil =
+	// the process-local zone). SetTimezone overrides it before serving.
+	tz *time.Location
+
 	startedAt time.Time
 	ready     atomic.Bool
 
@@ -167,6 +171,19 @@ type Server struct {
 // every toggle is additionally written back to this YAML file so the
 // choice survives restarts. Empty disables persistence.
 func (s *Server) SetConfigFile(path string) { s.configPath = path }
+
+// SetTimezone overrides the display timezone for every formatted
+// timestamp (nil = the process-local zone).
+func (s *Server) SetTimezone(loc *time.Location) { s.tz = loc }
+
+// displayLoc returns the display timezone (the process-local zone when
+// none was configured).
+func (s *Server) displayLoc() *time.Location {
+	if s.tz != nil {
+		return s.tz
+	}
+	return time.Local
+}
 
 // DisplayHeader1 returns the runtime primary header line.
 func (s *Server) DisplayHeader1() string { return s.header1.Load().(string) }
@@ -223,11 +240,6 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		cfg.Auth.Password = strings.TrimRight(string(data), "\r\n")
 	}
 
-	tmpl, err := template.New("root").Funcs(templateFuncs()).ParseFS(templatesFS, "templates/*.html")
-	if err != nil {
-		return nil, fmt.Errorf("web: parse templates: %w", err)
-	}
-
 	// Trusted reverse proxies: proxy headers are honored ONLY from these
 	// peers (IP or CIDR). An empty list means direct exposure.
 	trusted, err := parseTrustedProxies(cfg.Auth.TrustedProxies)
@@ -264,10 +276,17 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		version:        version,
 		commit:         commit,
 		startedAt:      time.Now(),
-		tmpl:           tmpl,
 		mux:            http.NewServeMux(),
 		ingest:         ingest,
 	}
+	// Parsed after construction: the template funcs close over the
+	// server's display timezone (set later via SetTimezone, nil = the
+	// process-local zone).
+	tmpl, err := template.New("root").Funcs(s.templateFuncs()).ParseFS(templatesFS, "templates/*.html")
+	if err != nil {
+		return nil, fmt.Errorf("web: parse templates: %w", err)
+	}
+	s.tmpl = tmpl
 	s.tilesMaxZoom.Store(-1)
 	// Visitor analytics ride the same SQLite store as the events: the
 	// optional interface keeps minimal test constructions untouched.
@@ -726,13 +745,14 @@ func (s *Server) renderL(w http.ResponseWriter, r *http.Request, name string, da
 }
 
 // templateFuncs provides the small set of formatting helpers used by the UI.
-func templateFuncs() template.FuncMap {
+func (s *Server) templateFuncs() template.FuncMap {
+	loc := s.displayLoc()
 	return template.FuncMap{
 		"timeFull": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"
 			}
-			return t.Local().Format("2006-01-02 15:04:05")
+			return t.In(loc).Format("2006-01-02 15:04:05")
 		},
 		"derefTime": func(t *time.Time) time.Time {
 			if t == nil {
@@ -798,7 +818,7 @@ func templateFuncs() template.FuncMap {
 			if t.IsZero() {
 				return "—"
 			}
-			return t.Local().Format("15:04:05")
+			return t.In(loc).Format("15:04:05")
 		},
 		// Trail steps carry RFC3339 timestamps as strings (JSON shape);
 		// these two helpers render them for the notifications page.
@@ -807,14 +827,14 @@ func templateFuncs() template.FuncMap {
 			if err != nil {
 				return s
 			}
-			return t.Local().Format("15:04:05")
+			return t.In(loc).Format("15:04:05")
 		},
 		"timeFullStr": func(s string) string {
 			t, err := time.Parse(time.RFC3339, s)
 			if err != nil {
 				return s
 			}
-			return t.Local().Format("2006-01-02 15:04:05")
+			return t.In(loc).Format("2006-01-02 15:04:05")
 		},
 		"dur": func(d time.Duration) string {
 			if d < 0 {

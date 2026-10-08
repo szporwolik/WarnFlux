@@ -364,6 +364,29 @@ func TestLoadInvalidStorageDriver(t *testing.T) {
 	}
 }
 
+func TestLoadTimezone(t *testing.T) {
+	// Default: Europe/Warsaw even without an explicit setting.
+	cfg, err := Load(writeTempConfig(t, "app:\n  log_level: info\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.App.Timezone != "Europe/Warsaw" {
+		t.Errorf("default timezone = %q, want Europe/Warsaw", cfg.App.Timezone)
+	}
+	// Explicit zone overrides the default.
+	cfg, err = Load(writeTempConfig(t, "app:\n  timezone: UTC\n"))
+	if err != nil {
+		t.Fatalf("Load UTC: %v", err)
+	}
+	if cfg.App.Timezone != "UTC" {
+		t.Errorf("timezone = %q, want UTC", cfg.App.Timezone)
+	}
+	// An unknown IANA name is rejected.
+	if _, err := Load(writeTempConfig(t, "app:\n  timezone: Mars/Olympus\n")); err == nil {
+		t.Fatal("expected error for invalid timezone, got nil")
+	}
+}
+
 func TestLoadInvalidExpirationAndRetention(t *testing.T) {
 	if _, err := Load(writeTempConfig(t, "app:\n  expiration_interval: 0s\n")); err == nil {
 		t.Fatal("expected error for expiration_interval 0s, got nil")

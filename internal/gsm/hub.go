@@ -8,6 +8,7 @@ package gsm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -105,6 +106,12 @@ type Hub struct {
 	connected atomic.Bool
 	ready     atomic.Bool
 
+	// messageSink is the optional MQTT message-feed publisher: every
+	// received and sent SMS is published as a non-retained document
+	// under gsm/messages, mirroring the APRS and Meshtastic feeds.
+	// Guarded by mu.
+	messageSink func(ctx context.Context, topic string, retained bool, payload []byte) error
+
 	// storage is the active SMS storage id ("SM" or "ME") — guarded
 	// by mu, chosen by initLocked.
 	storage string
@@ -166,6 +173,15 @@ func (h *Hub) SetCLI(b *radiocli.Bot) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cli = b
+}
+
+// SetMessageSink attaches the MQTT message feed publisher (optional):
+// every received and sent SMS is published as a non-retained document
+// under gsm/messages, mirroring the APRS and Meshtastic message feeds.
+func (h *Hub) SetMessageSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.messageSink = fn
 }
 
 // SetSenderGate installs the sender allow-list lookup: it resolves the
@@ -628,6 +644,7 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
 	}
 	h.logger.Info("gsm: sms sent", "to", number, "len", len([]rune(text)))
+	h.publishMessageFeed("tx", "self", number, text, h.now())
 	if h.rec != nil {
 		recCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := h.rec.RecordGSMMessage(recCtx, "tx", "self", number, text, h.now())
@@ -966,8 +983,38 @@ func (h *Hub) recordBatch(raw []received) []received {
 			}
 		}
 		h.logger.Info("gsm: sms received", "from", m.from, "len", len([]rune(m.text)))
+		h.publishMessageFeed("rx", m.from, "self", m.text, h.now())
 	}
 	return msgs
+}
+
+// publishMessageFeed pushes one SMS document onto the MQTT message
+// feed (gsm/messages, non-retained). Fire-and-forget like the automatic
+// replies: the feed is auxiliary and must never stall the serial
+// session. The caller holds h.mu (both call sites do: the tx path in
+// Send and the rx batch drain).
+func (h *Hub) publishMessageFeed(direction, from, to, text string, at time.Time) {
+	sink := h.messageSink
+	if sink == nil {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"direction": direction,
+		"from":      from,
+		"to":        to,
+		"text":      text,
+		"at":        at.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := sink(ctx, "gsm/messages", false, payload); err != nil {
+			h.logger.Warn("gsm: message feed publish failed", "direction", direction, "error", err)
+		}
+	}()
 }
 
 // storageStatsLocked reads the active storage status (+CPMS?): used

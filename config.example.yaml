@@ -563,6 +563,7 @@ dispatch:
 #   aprs_messages     — <prefix>/aprs/messages (rx and tx)
 #   meshtastic_stations — <prefix>/meshtastic/stations/<node-id>
 #   meshtastic_messages — <prefix>/meshtastic/messages
+#   gsm_messages     — <prefix>/gsm/messages (received and sent SMS)
 #
 # The default is the QUIET mask: the hazard-transition stream (/events)
 # plus every retained current-state document. The per-packet and
@@ -580,6 +581,7 @@ mqtt_publish:
   aprs_messages: false
   meshtastic_stations: true
   meshtastic_messages: false
+  gsm_messages: false
 
 # Authenticated admin web UI (server-rendered, embedded assets, no CDN).
 web:

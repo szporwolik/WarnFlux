@@ -21,6 +21,7 @@ func TestRawCategoryClassification(t *testing.T) {
 		{"events", mqttpolicy.CatEvents},
 		{"meshtastic/stations/d1e51b043a9c", mqttpolicy.CatMeshtasticStations},
 		{"meshtastic/messages", mqttpolicy.CatMeshtasticMessages},
+		{"gsm/messages", mqttpolicy.CatGSMMessages},
 		{"info/emcom/emcom/sp9moa/emcom", mqttpolicy.CatInfo},
 		{"anything/else", 0}, // unclassified = always allowed
 	}

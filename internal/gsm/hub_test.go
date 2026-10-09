@@ -400,6 +400,81 @@ func TestSendFlow(t *testing.T) {
 	}
 }
 
+// feedCapture records the last message-feed publication.
+type feedCapture struct {
+	mu       sync.Mutex
+	topic    string
+	retained bool
+	payload  string
+}
+
+func (c *feedCapture) sink(_ context.Context, topic string, retained bool, payload []byte) error {
+	c.mu.Lock()
+	c.topic, c.retained, c.payload = topic, retained, string(payload)
+	c.mu.Unlock()
+	return nil
+}
+
+// waitDoc polls until a document arrives (the publish is fire-and-forget).
+func (c *feedCapture) waitDoc(t *testing.T) (topic string, retained bool, payload string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		topic, retained, payload = c.topic, c.retained, c.payload
+		c.mu.Unlock()
+		if topic != "" {
+			return topic, retained, payload
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("no message feed document published")
+	return "", false, ""
+}
+
+// TestSendFeedPublishes pins the MQTT message feed for sent SMS: one
+// non-retained document on gsm/messages per transmission.
+func TestSendFeedPublishes(t *testing.T) {
+	h, f, _ := newTestHub(t)
+	f.feed("OK\r\n") // AT+CMGF=1
+	f.feed("> \r\n")
+	f.feed("OK\r\n")
+	f.feed("OK\r\n") // AT+CMGF=0
+	var feed feedCapture
+	h.SetMessageSink(feed.sink)
+	if err := h.Send(context.Background(), "+48600111222", "Czesc"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	topic, retained, payload := feed.waitDoc(t)
+	if topic != "gsm/messages" || retained {
+		t.Fatalf("feed publish = %q retained=%v, want non-retained gsm/messages", topic, retained)
+	}
+	for _, want := range []string{`"direction":"tx"`, `"from":"self"`, `"to":"+48600111222"`, `"text":"Czesc"`} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("tx feed payload missing %s: %q", want, payload)
+		}
+	}
+}
+
+// TestReceiveFeedPublishes pins the MQTT message feed for received SMS.
+func TestReceiveFeedPublishes(t *testing.T) {
+	h, _, _ := newTestHub(t)
+	var feed feedCapture
+	h.SetMessageSink(feed.sink)
+	h.mu.Lock()
+	h.recordBatch([]received{{from: "+48600999888", text: "hej"}})
+	h.mu.Unlock()
+	topic, retained, payload := feed.waitDoc(t)
+	if topic != "gsm/messages" || retained {
+		t.Fatalf("feed publish = %q retained=%v, want non-retained gsm/messages", topic, retained)
+	}
+	for _, want := range []string{`"direction":"rx"`, `"from":"+48600999888"`, `"to":"self"`, `"text":"hej"`} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("rx feed payload missing %s: %q", want, payload)
+		}
+	}
+}
+
 // TestSendTransliterates pins the text-mode alphabet: Polish diacritics
 // get their ASCII equivalents before the modem sees them.
 func TestSendTransliterates(t *testing.T) {

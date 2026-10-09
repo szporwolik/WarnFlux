@@ -696,7 +696,7 @@ func run(configPath string, checkConfig bool) error {
 			logger.Warn("gsm: sender allow-list load failed", "error", err)
 			return ""
 		}
-		return owners[gsm.NumberKey(phone)]
+		return owners[gsm.CanonicalNumberKey(phone)]
 	})
 
 	// The shared radio CLI: /help lists the commands, /debug fires the

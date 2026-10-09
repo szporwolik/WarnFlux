@@ -503,8 +503,9 @@ func (s *Store) MeshtasticOwners() (map[string]string, error) {
 }
 
 // PhoneOwners returns every registered phone number mapped to the
-// username that registered it; the keys are digits-only, so formatting
-// differences (spaces, + prefix, dashes) collapse onto one number.
+// username that registered it; the keys are digits-only with the
+// international "00" prefix folded onto "+", so formatting differences
+// (spaces, + or 00 prefix, dashes) collapse onto one number.
 func (s *Store) PhoneOwners() (map[string]string, error) {
 	rows, err := s.db.Query(`SELECT phone, username FROM users WHERE phone IS NOT NULL AND phone != ''`)
 	if err != nil {
@@ -526,7 +527,7 @@ func (s *Store) PhoneOwners() (map[string]string, error) {
 		if key == "" {
 			continue
 		}
-		owners[key] = username
+		owners[strings.TrimPrefix(key, "00")] = username
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate phone owners: %w", err)

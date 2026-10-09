@@ -391,14 +391,17 @@ func openSerial(path string) (io.ReadWriteCloser, error) {
 	return os.NewFile(uintptr(fd), path), nil
 }
 
-// initLocked runs the modem setup: echo off, PDU-mode SMS, pinned TE
-// character set and the preferred message storage. PDU mode is the only
-// mode that carries the user-data header, so concatenated messages and
-// non-GSM-7 alphabets work on receive. CSCS="IRA" is pinned because the
-// text-mode send path needs it (a leftover UCS2 setting would make the
-// modem reject ASCII AT+CMGS commands). The caller holds h.mu.
+// initLocked runs the modem setup: echo off, text-mode SMS, pinned TE
+// character set and the preferred message storage. TEXT mode is the
+// only mode this firmware family supports for reading stored messages
+// (verified live on the E173: PDU-mode AT+CMGR returns nothing), so
+// long messages arrive as separate stored parts (merged at display)
+// and non-GSM-7 bodies arrive as UCS-2 hex that DecodeSMSBody
+// converts. CSCS="IRA" is pinned because the text-mode send path needs
+// it (a leftover UCS2 setting would make the modem reject ASCII
+// AT+CMGS commands). The caller holds h.mu.
 func (h *Hub) initLocked() bool {
-	for _, cmd := range []string{"ATE0", "AT+CMGF=0"} {
+	for _, cmd := range []string{"ATE0", "AT+CMGF=1"} {
 		if _, err := h.exchangeLocked(cmd, "OK"); err != nil {
 			return false
 		}
@@ -621,16 +624,9 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 	if len([]rune(text)) > 160 {
 		return ErrTooLong
 	}
-	// Receiving runs in PDU mode (CMGF=0) — sending switches to text
-	// mode for this one message and always switches back.
-	if _, err := h.exchangeLocked("AT+CMGF=1", "OK"); err != nil {
-		return fmt.Errorf("gsm: send to %s: %w", number, err)
-	}
-	defer func() {
-		if _, err := h.exchangeLocked("AT+CMGF=0", "OK"); err != nil {
-			h.logger.Warn("gsm: text-mode restore failed", "to", number, "error", err)
-		}
-	}()
+	// Both receive and send run in text mode (this firmware family
+	// cannot read stored messages in PDU mode), so no mode switch is
+	// needed around sends.
 	// Wait for the prompt, then submit the body with Ctrl-Z.
 	if _, err := h.exchangePromptLocked(`AT+CMGS="` + number + `"`); err != nil {
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
@@ -964,11 +960,14 @@ func reassemble(raw []received) []received {
 	return out
 }
 
-// recordBatch persists and reports one drained batch (after part
-// reassembly). Empty shell messages (zero-length PDUs some SMSCs emit)
-// are dropped — they carry nothing to display.
+// recordBatch persists and reports one drained batch. Empty shell
+// messages (some SMSCs emit them) are dropped — they carry nothing to
+// display or route. Text mode stores each part of a long message as a
+// separate entry with no user-data header, so the web layer merges
+// same-sender same-minute parts at display.
 func (h *Hub) recordBatch(raw []received) []received {
 	msgs := reassemble(raw)
+	kept := make([]received, 0, len(msgs))
 	for _, m := range msgs {
 		if strings.TrimSpace(m.from) == "" || strings.TrimSpace(m.text) == "" {
 			h.logger.Debug("gsm: empty shell message dropped")
@@ -984,8 +983,9 @@ func (h *Hub) recordBatch(raw []received) []received {
 		}
 		h.logger.Info("gsm: sms received", "from", m.from, "len", len([]rune(m.text)))
 		h.publishMessageFeed("rx", m.from, "self", m.text, h.now())
+		kept = append(kept, m)
 	}
-	return msgs
+	return kept
 }
 
 // publishMessageFeed pushes one SMS document onto the MQTT message
@@ -1041,78 +1041,72 @@ func (h *Hub) storageStatsLocked() (used, max int, err error) {
 	return 0, 0, nil
 }
 
-// readIndexLocked reads one stored message by index (+CMGR=<i>) and
-// returns the decoded PDU with the storage status field. PDU mode
-// reports the status as a numeric field ("0"/"1" = received, "2"/"3" =
-// sent copies) or a textual one; "" means the slot is empty. The
-// caller holds h.mu.
+// readIndexLocked reads one stored message by index (+CMGR=<i>) in
+// TEXT mode — the only mode this firmware family supports for CMGR
+// reads. It returns the decoded message with the storage status field;
+// "" means the slot is empty. The caller holds h.mu.
+//
+// The live E173 header shape:
+//
+//	+CMGR: "REC UNREAD","+48509558155",,"26/10/09,02:51:43+08",145,...
+//	Pong2
+//
+// Sent copies report "STO ..." as the first field. Bodies carrying
+// non-GSM-7 characters arrive as UCS-2 hex (DecodeSMSBody converts
+// them).
 func (h *Hub) readIndexLocked(idx int) (m received, status string, err error) {
 	lines, err := h.exchangeLocked(fmt.Sprintf("AT+CMGR=%d", idx), "OK")
 	if err != nil {
 		return received{}, "", err
 	}
-	var pduHex string
+	var header string
+	var body []string
 	for _, l := range lines {
 		if strings.HasPrefix(l, "+CMGR:") {
-			// +CMGR: 0,,26 or +CMGR: "REC UNREAD",... — the first field
-			// is the status, the body follows as a hex PDU.
-			rest := strings.TrimSpace(strings.TrimPrefix(l, "+CMGR:"))
-			first := rest
-			if i := strings.IndexByte(rest, ','); i >= 0 {
-				first = rest[:i]
-			}
-			first = strings.Trim(strings.TrimSpace(first), `"`)
-			switch {
-			case first == "":
-				// header without a status — decide from the body below
-			case first == "2" || first == "3" || strings.HasPrefix(first, "STO"):
-				status = "STO"
-			default:
-				status = "REC"
-			}
+			header = l
 			continue
 		}
 		if l == "OK" || l == "ERROR" || l == "" {
 			continue
 		}
-		if isHexLine(l) {
-			pduHex += l
-		}
+		body = append(body, l)
 	}
-	if pduHex == "" {
+	if header == "" {
 		return received{}, "", nil // empty slot (hole)
 	}
-	d, err := ParseDeliverPDU(pduHex)
-	if err != nil {
-		// A stored SMS-SUBMIT (sent copy) has a different MTI — the
-		// parse fails and the slot is deleted below as a sent copy.
-		if status == "" {
-			status = "STO"
-		}
-		return received{}, status, nil
+	fields := splitCMGRFields(strings.TrimSpace(strings.TrimPrefix(header, "+CMGR:")))
+	if len(fields) < 2 {
+		return received{}, "", nil
 	}
-	if status == "" {
-		status = "REC"
+	first := strings.Trim(fields[0], `"`)
+	if strings.HasPrefix(first, "STO") || first == "2" || first == "3" {
+		return received{}, "STO", nil // sent copy: delete, never import
 	}
-	m.from = d.From
-	m.text = d.Text
-	m.concatRef = d.ConcatRef
-	m.concatTotal = d.ConcatTotal
-	m.concatSeq = d.ConcatSeq
-	return m, status, nil
+	m.from = strings.Trim(fields[1], `"`)
+	m.text = DecodeSMSBody(strings.Join(body, "\n"))
+	return m, "REC", nil
 }
 
-// isHexLine reports whether the line is a pure hex PDU body line.
-func isHexLine(s string) bool {
-	if len(s) == 0 || len(s)%2 != 0 {
-		return false
-	}
-	for _, c := range s {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
-			return false
+// splitCMGRFields splits a +CMGR header into comma-separated fields,
+// honoring double quotes (the service-center timestamp contains a comma
+// inside quotes).
+func splitCMGRFields(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for _, r := range s {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+		case r == ',' && !inQuote:
+			out = append(out, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
 		}
 	}
-	return true
+	out = append(out, cur.String())
+	return out
 }
 
 // reconnectLocked drops the dead transport and reopens + reinitializes

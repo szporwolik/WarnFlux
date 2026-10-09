@@ -231,10 +231,11 @@ The same pattern covers the GSM channel: the built-in `sms` action sends
 notifications through the shared GSM hub (the serial AT modem session)
 to the configured phones plus the routed group members' registered
 numbers, and inbound SMS commands (`/help`, `/hazard`, `/alert`, ...)
-from directory-registered senders enter the pipeline as the `gsm`
-source. SMS spam is never answered: numbers not registered in the user
-directory are silently ignored (their messages still land in the
-history and the MQTT feed).
+enter the pipeline as the `gsm` source. Only directory-registered phone
+numbers are ever answered or allowed to run commands — unknown senders
+are dropped outright (spam hygiene). The one exception is the national
+Alert RCB broadcast sender, which is never answered but generates a
+24-hour severe `rcb` hazard through the routing matrix.
 
 ## Mandatory rules
 

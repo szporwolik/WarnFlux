@@ -43,12 +43,15 @@ const (
 	// CatMeshtasticMessages is the non-retained Meshtastic message feed
 	// (<prefix>/meshtastic/messages).
 	CatMeshtasticMessages
+	// CatGSMMessages is the non-retained GSM/SMS message feed
+	// (<prefix>/gsm/messages, rx and tx).
+	CatGSMMessages
 )
 
 // CatAll is the default mask: everything publishes.
 const CatAll = CatEvents | CatActive | CatInfo | CatStatus |
 	CatAPRSStations | CatAPRSBulletins | CatAPRSPackets | CatAPRSMessages |
-	CatMeshtasticStations | CatMeshtasticMessages
+	CatMeshtasticStations | CatMeshtasticMessages | CatGSMMessages
 
 // orderedNames maps the canonical config keys to their categories; the
 // order is the UI order.
@@ -67,6 +70,7 @@ var orderedNames = []struct {
 	{"aprs_messages", CatAPRSMessages, "APRS message feed"},
 	{"meshtastic_stations", CatMeshtasticStations, "Meshtastic node feed"},
 	{"meshtastic_messages", CatMeshtasticMessages, "Meshtastic message feed"},
+	{"gsm_messages", CatGSMMessages, "GSM/SMS message feed"},
 }
 
 // mask is the process-wide publish mask. The zero value means "nothing

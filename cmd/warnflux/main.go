@@ -913,6 +913,12 @@ func run(configPath string, checkConfig bool) error {
 	gsmHub.SetEventTimesResolver(eventTimes)
 	gsmHub.SetEventAcceptor(eventAcceptor)
 
+	// GSM rx/tx SMS messages feed the broker as non-retained documents
+	// on gsm/messages, mirroring the APRS and Meshtastic message feeds.
+	gsmHub.SetMessageSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {
+		return receivers.PublishRaw(topic, retained, payload)
+	})
+
 	// Heard Meshtastic nodes feed the broker as retained station documents
 	// under meshtastic/stations/<key12>; expired nodes are tombstoned.
 	meshtasticHub.SetStationSink(func(ctx context.Context, topic string, retained bool, payload []byte) error {

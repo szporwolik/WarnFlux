@@ -382,6 +382,7 @@ type MQTTPublish struct {
 	APRSMessages       bool
 	MeshtasticStations bool
 	MeshtasticMessages bool
+	GSMMessages        bool
 }
 
 // Mask converts the section into the runtime publish mask.
@@ -416,6 +417,9 @@ func (p MQTTPublish) Mask() uint32 {
 	}
 	if p.MeshtasticMessages {
 		m |= uint32(mqttpolicy.CatMeshtasticMessages)
+	}
+	if p.GSMMessages {
+		m |= uint32(mqttpolicy.CatGSMMessages)
 	}
 	return m
 }
@@ -592,6 +596,7 @@ type fileMQTTPublish struct {
 	APRSMessages       *bool `yaml:"aprs_messages"`
 	MeshtasticStations *bool `yaml:"meshtastic_stations"`
 	MeshtasticMessages *bool `yaml:"meshtastic_messages"`
+	GSMMessages        *bool `yaml:"gsm_messages"`
 }
 
 // fileMeshtastic mirrors the top-level meshtastic block (pointer fields keep
@@ -996,6 +1001,7 @@ func (f fileConfig) toConfig() Config {
 		APRSMessages:       false,
 		MeshtasticStations: true,
 		MeshtasticMessages: false,
+		GSMMessages:        false,
 	}
 	if f.MQTTPublish != nil {
 		if v := f.MQTTPublish.Events; v != nil {
@@ -1027,6 +1033,9 @@ func (f fileConfig) toConfig() Config {
 		}
 		if v := f.MQTTPublish.MeshtasticMessages; v != nil {
 			cfg.MQTTPublish.MeshtasticMessages = *v
+		}
+		if v := f.MQTTPublish.GSMMessages; v != nil {
+			cfg.MQTTPublish.GSMMessages = *v
 		}
 	}
 	if f.Dispatch != nil {

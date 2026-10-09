@@ -11,17 +11,15 @@ import (
 )
 
 // replyHub wires a hub with the shared CLI and a scripted port ready to
-// accept n automatic replies (each reply consumes CMGF=1, the prompt,
-// the network OK and the CMGF=0 restore).
+// accept n automatic replies (each reply consumes the CMGS prompt and
+// the network OK — the session is permanently in text mode).
 func replyHub(t *testing.T, n int) (*Hub, *fakePort) {
 	t.Helper()
 	h, f, _ := newTestHub(t)
 	h.SetCLI(radiocli.New("WarnFlux v1 - SOSDEV - sosna.sp9moa.pl"))
 	for i := 0; i < n; i++ {
-		f.feed("OK\r\n") // AT+CMGF=1
 		f.feed("> \r\n") // CMGS prompt
 		f.feed("OK\r\n") // network accept
-		f.feed("OK\r\n") // AT+CMGF=0 restore
 	}
 	return h, f
 }

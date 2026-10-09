@@ -114,8 +114,11 @@ const rcbEventTTL = 24 * time.Hour
 // 24-hour severe "rcb" hazard through the standard routing pipeline
 // (never answered — the sender is a broadcast short code), slash texts
 // go to the shared radio CLI and plain texts answer with the
-// installation banner (rate-limited). Replies fit one SMS and are sent
-// fire-and-forget.
+// installation banner (rate-limited). SMS spam is real and answering
+// proves the number is live, so ONLY directory-registered senders are
+// ever answered: unknown numbers are silently ignored (their messages
+// still land in the durable history and the MQTT feed). Replies fit one
+// SMS and are sent fire-and-forget.
 func (h *Hub) routeMessage(from, text string) {
 	if isRCBSender(from) {
 		h.publishRCBEvent(from, text)
@@ -128,7 +131,20 @@ func (h *Hub) routeMessage(from, text string) {
 		h.logger.Warn("gsm: no command interpreter — message dropped", "from", from)
 		return
 	}
-	owner := h.ownerOf(from)
+	h.mu.Lock()
+	gate := h.senderGate
+	h.mu.Unlock()
+	if gate == nil {
+		h.logger.Warn("gsm: no sender directory installed — message ignored", "from", from)
+		return
+	}
+	owner := gate(from)
+	if owner == "" {
+		// Unknown number: never answer it — not even a banner. A reply
+		// would confirm to a spammer that the number is live.
+		h.logger.Info("gsm: unknown sender ignored", "from", from)
+		return
+	}
 	t := strings.TrimSpace(text)
 	if !strings.HasPrefix(t, "/") {
 		if !h.bannerAllowed(from) {
@@ -160,7 +176,7 @@ func (h *Hub) routeMessage(from, text string) {
 		}
 		return
 	}
-	res := cli.Handle(t, owner != "")
+	res := cli.Handle(t, true)
 	// The stored reply is the FINAL confirmation (post-acceptance), so
 	// a repeated text replays exactly the previous result. A durable
 	// registry hit (stored result) proves the job executed before — the
@@ -195,7 +211,7 @@ func (h *Hub) routeMessage(from, text string) {
 	h.logger.Info("gsm: command received",
 		"from", from,
 		"cmd", cmdName,
-		"owner", owner != "",
+		"owner", owner,
 		"handled", res.Handled,
 		"alert", res.Alert != nil)
 	h.mu.Lock()
@@ -208,18 +224,6 @@ func (h *Hub) routeMessage(from, text string) {
 	} else if res.Handled && reply != "" {
 		h.logger.Debug("gsm: command reply suppressed", "from", from, "cmd", cmdName, "reason", "burst")
 	}
-}
-
-// ownerOf resolves the sender's directory username through the
-// installed allow-list gate ("" = unknown sender).
-func (h *Hub) ownerOf(from string) string {
-	h.mu.Lock()
-	gate := h.senderGate
-	h.mu.Unlock()
-	if gate == nil {
-		return ""
-	}
-	return gate(from)
 }
 
 // sendReply transmits one automatic SMS reply, fitted into a single

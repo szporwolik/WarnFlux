@@ -685,6 +685,25 @@ func run(configPath string, checkConfig bool) error {
 		}
 		return false
 	})
+	// The owner resolver feeds per-user command authorization (e.g. the
+	// /emcom network gate): base callsign -> directory username.
+	hub.SetSenderOwner(func(base string) string {
+		owners, err := store.APRSCallsignOwners()
+		if err != nil {
+			logger.Warn("aprs: sender owner lookup failed", "error", err)
+			return ""
+		}
+		for callsign, username := range owners {
+			ownerBase := callsign
+			if i := strings.IndexByte(ownerBase, '-'); i >= 0 {
+				ownerBase = ownerBase[:i]
+			}
+			if ownerBase == base {
+				return username
+			}
+		}
+		return ""
+	})
 
 	// GSM SMS routing trusts registered operators exactly like the radio
 	// channels: the sender's phone number must belong to a user's
@@ -766,20 +785,20 @@ func run(configPath string, checkConfig bool) error {
 	// /hazard: a public command — every active hazard, one Zulu-windowed
 	// line each (the same form the hourly digest broadcasts). The
 	// channels split the reply into one message per line.
-	radioCLI.Register("hazard", "active messages", func(string) radiocli.Result {
+	radioCLI.Register("hazard", "active messages", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: hazardsForRadio(hazardSource())}
 	})
 	// /weather: a public command — the region average of every current
 	// weather reading (APRS stations + internet providers, gross errors
 	// rejected) plus the averaged forecast when one is held. Built for
 	// EMCOM: it scales from many sources down to a single station.
-	radioCLI.Register("weather", "weather", func(string) radiocli.Result {
+	radioCLI.Register("weather", "weather", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: weatherForRadio(hub, mirror, time.Now()).Text()}
 	})
 	// /alert: authorized operators raise a severe hazard straight from
 	// the radio — "severe alert with the information", default 4-hour
 	// expiry, distributed through the standard routing matrix.
-	radioCLI.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	radioCLI.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		headline := strings.TrimSpace(args)
 		if headline == "" {
 			return radiocli.Result{Handled: true, Reply: "Missing parameter: /alert <text>"}
@@ -790,16 +809,17 @@ func run(configPath string, checkConfig bool) error {
 			Reply:   "OK: alert raised",
 		}
 	})
-	// /emcom: authorized operators move one managed EMCOM network to a
-	// readiness level straight from the radio — the same state, audit
-	// trail and routing as the panel. Bound to the web server's EMCOM
-	// service after web.New below (one source of truth).
-	var emcomRadio func(args string) radiocli.Result
-	radioCLI.RegisterRestricted("emcom", "EMCOM network level: /emcom <id> <0-3>", func(args string) radiocli.Result {
+	// /emcom: operators who belong to a group assigned to the network
+	// (or the admin) move it to a readiness level straight from the
+	// radio — the same state, audit trail and routing as the panel.
+	// Bound to the web server's EMCOM service after web.New below (one
+	// source of truth).
+	var emcomRadio func(args string, sender radiocli.Sender) radiocli.Result
+	radioCLI.RegisterRestricted("emcom", "EMCOM network level: /emcom <id> <0-3>", func(args string, sender radiocli.Sender) radiocli.Result {
 		if emcomRadio == nil {
 			return radiocli.Result{Handled: true, Reply: "EMCOM unavailable"}
 		}
-		return emcomRadio(args)
+		return emcomRadio(args, sender)
 	})
 
 	// LOCAL-FIRST source pipeline: every journal change (ingest or
@@ -1087,9 +1107,10 @@ func run(configPath string, checkConfig bool) error {
 			}
 		}
 		// Radio channels (APRS, Meshtastic, SMS) share the panel's EMCOM
-		// transition logic through the /emcom command.
-		emcomRadio = func(args string) radiocli.Result {
-			return webSrv.RadioEmcom(args, "radio")
+		// transition logic through the /emcom command. The sender's
+		// directory username drives the per-network authorization.
+		emcomRadio = func(args string, sender radiocli.Sender) radiocli.Result {
+			return webSrv.RadioEmcom(args, sender.Name)
 		}
 		// Low-disk alarm: the health page and /metrics report the free
 		// space against storage.min_free_mb (0 disables the alarm).

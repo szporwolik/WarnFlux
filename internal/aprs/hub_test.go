@@ -938,7 +938,7 @@ func TestHubCLIReplyCarriesAckID(t *testing.T) {
 	hub.AddTransmitter("aprs-inet", tx)
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.Register("probe", "probe", func(string) radiocli.Result {
+	cli.Register("probe", "probe", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: "OK: probed"}
 	})
 	hub.SetCLI(cli)
@@ -982,7 +982,7 @@ func TestHubCLIMultilineReply(t *testing.T) {
 	hub.AddTransmitter("aprs-inet", tx)
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.Register("list", "test list", func(string) radiocli.Result {
+	cli.Register("list", "test list", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: "header\nline one\nline two"}
 	})
 	hub.SetCLI(cli)
@@ -1128,7 +1128,7 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 	hub.AddTransmitter("aprs-inet", tx)
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
 	})
 	hub.SetCLI(cli)
@@ -1256,7 +1256,7 @@ func TestRadioEventContentDeterministic(t *testing.T) {
 	defer cancel()
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
 	})
 	hub.SetCLI(cli)
@@ -1319,7 +1319,7 @@ func TestHubCommandRegistryResultReplay(t *testing.T) {
 	hub.AddTransmitter("aprs-inet", tx)
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
 	})
 	hub.SetCLI(cli)
@@ -1397,7 +1397,7 @@ func TestHubReusedMessageNumberRunsNewAlert(t *testing.T) {
 	hub.AddTransmitter("aprs-inet", tx)
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
 	})
 	hub.SetCLI(cli)
@@ -1598,7 +1598,7 @@ func TestHubCommandRetrySurvivesPacketDedup(t *testing.T) {
 	hub.AddTransmitter("aprs-inet", tx)
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
 	})
 	hub.SetCLI(cli)
@@ -1669,7 +1669,7 @@ func TestHubAlertCommand(t *testing.T) {
 	hub.AddTransmitter("aprs-inet", tx)
 	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		headline := strings.TrimSpace(args)
 		if headline == "" {
 			return radiocli.Result{Handled: true, Reply: "Missing parameter: /alert <text>"}

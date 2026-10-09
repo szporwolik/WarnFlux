@@ -29,6 +29,7 @@ type fakeUsers struct {
 	rows        []storage.User
 	groups      []storage.Group
 	membership  map[int64]map[int64]bool       // userID -> groupID set
+	emcomGroups map[string]map[int64]bool      // network slug -> groupID set
 	routing     map[int64]storage.GroupRouting // groupID -> routing
 	passwords   map[string]string              // username -> plaintext (fake)
 	channelOpts map[int64]map[string]bool      // userID -> disabled delivery-channel kinds
@@ -42,6 +43,7 @@ func newFakeUsers() *fakeUsers {
 	return &fakeUsers{
 		nextID: 1, nextGroupID: 1,
 		membership:  make(map[int64]map[int64]bool),
+		emcomGroups: make(map[string]map[int64]bool),
 		routing:     make(map[int64]storage.GroupRouting),
 		passwords:   make(map[string]string),
 		channelOpts: make(map[int64]map[string]bool),
@@ -816,6 +818,51 @@ func (f *fakeUsers) SetUserGroups(userID int64, groupIDs []int64) error {
 	}
 	f.membership[userID] = set
 	return nil
+}
+
+func (f *fakeUsers) EmcomNetworkGroups(_ context.Context, slug string) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	set := f.emcomGroups[slug]
+	out := make([]int64, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
+func (f *fakeUsers) SetEmcomNetworkGroups(_ context.Context, slug string, groupIDs []int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	set := make(map[int64]bool, len(groupIDs))
+	for _, id := range groupIDs {
+		set[id] = true
+	}
+	if len(set) == 0 {
+		delete(f.emcomGroups, slug)
+		return nil
+	}
+	f.emcomGroups[slug] = set
+	return nil
+}
+
+func (f *fakeUsers) UserInGroups(_ context.Context, username string, groupIDs []int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.rows {
+		if u.Username != username {
+			continue
+		}
+		membership := f.membership[u.ID]
+		for _, id := range groupIDs {
+			if membership[id] {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	return false, nil
 }
 
 func (f *fakeUsers) GroupRouting(groupID int64) (storage.GroupRouting, error) {

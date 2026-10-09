@@ -239,6 +239,10 @@ type Hub struct {
 	// the configured allow-list (SSIDs may differ).
 	senderGate func(base string) bool
 
+	// senderOwner resolves the base callsign to its directory username
+	// (optional, per-user command authorization); guarded by mu.
+	senderOwner func(base string) string
+
 	// cli is the shared radio-command interpreter (optional): a message
 	// that parses as a command is answered in-band and (except /debug)
 	// stays off the alarm pipeline; guarded by mu.
@@ -434,6 +438,16 @@ func (h *Hub) AreaRadius() float64 { return h.cfg.AreaRadiusKM }
 func (h *Hub) SetSenderGate(fn func(base string) bool) {
 	h.mu.Lock()
 	h.senderGate = fn
+	h.mu.Unlock()
+}
+
+// SetSenderOwner installs the optional directory resolver: the callback
+// receives the BASE callsign and returns the owning username ("" =
+// unknown). It feeds the per-user authorization of radio commands
+// (e.g. the /emcom network gate).
+func (h *Hub) SetSenderOwner(fn func(base string) string) {
+	h.mu.Lock()
+	h.senderOwner = fn
 	h.mu.Unlock()
 }
 
@@ -1064,7 +1078,10 @@ func (h *Hub) routeOrCLI(p Packet) {
 		}
 		return
 	}
-	res := cli.Handle(strings.TrimSpace(p.Message.Text), h.senderApproved(p.Src))
+	res := cli.Handle(strings.TrimSpace(p.Message.Text), radiocli.Sender{
+		Authorized: h.senderApproved(p.Src),
+		Name:       h.senderOwnerName(p.Src),
+	})
 	// The stored reply is the FINAL confirmation (post-acceptance), so a
 	// retransmission replays exactly the previous result. Both commands
 	// share the same confirmation path. A rejection is transient:
@@ -1249,6 +1266,18 @@ func (h *Hub) senderApproved(callsign string) bool {
 	gate := h.senderGate
 	h.mu.Unlock()
 	return gate != nil && gate(BaseCallsign(callsign))
+}
+
+// senderOwnerName resolves the directory username of the message sender
+// through the optional owner resolver ("" when not installed).
+func (h *Hub) senderOwnerName(callsign string) string {
+	h.mu.Lock()
+	resolver := h.senderOwner
+	h.mu.Unlock()
+	if resolver == nil {
+		return ""
+	}
+	return resolver(BaseCallsign(callsign))
 }
 
 // bannerAllowed reports whether an automatic banner answer may go out

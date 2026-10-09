@@ -16,7 +16,7 @@ func TestMQTTPublishDefaults(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := uint32(mqttpolicy.CatAll) &^
-		uint32(mqttpolicy.CatAPRSPackets|mqttpolicy.CatAPRSMessages|mqttpolicy.CatMeshtasticMessages)
+		uint32(mqttpolicy.CatAPRSPackets|mqttpolicy.CatAPRSMessages|mqttpolicy.CatMeshtasticMessages|mqttpolicy.CatGSMMessages)
 	if cfg.MQTTPublish.Mask() != want {
 		t.Errorf("default mask = %#x, want quiet mask %#x", cfg.MQTTPublish.Mask(), want)
 	}
@@ -57,6 +57,25 @@ mqtt_publish:
 	}
 	if mask&uint32(mqttpolicy.CatAPRSMessages) != 0 {
 		t.Error("omitted aprs_messages must default to disabled")
+	}
+	if mask&uint32(mqttpolicy.CatGSMMessages) != 0 {
+		t.Error("omitted gsm_messages must default to disabled")
+	}
+}
+
+// TestMQTTPublishGSMMessages pins the explicit opt-in of the SMS feed.
+func TestMQTTPublishGSMMessages(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, `
+app:
+  log_level: info
+mqtt_publish:
+  gsm_messages: true
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MQTTPublish.Mask()&uint32(mqttpolicy.CatGSMMessages) == 0 {
+		t.Error("gsm_messages: true must enable the SMS feed")
 	}
 }
 

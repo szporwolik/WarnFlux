@@ -126,6 +126,8 @@ func rawCategory(suffix string) mqttpolicy.Category {
 		return mqttpolicy.CatMeshtasticStations
 	case suffix == "meshtastic/messages":
 		return mqttpolicy.CatMeshtasticMessages
+	case suffix == "gsm/messages":
+		return mqttpolicy.CatGSMMessages
 	case strings.HasPrefix(suffix, "info/"):
 		return mqttpolicy.CatInfo
 	}

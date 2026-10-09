@@ -944,6 +944,16 @@ CREATE TABLE gsm_messages (
 CREATE INDEX idx_gsm_messages_created ON gsm_messages(created_at_ms);
 `,
 	},
+	{
+		// v54: numeric EMCOM network ids — a stable small number for
+		// every network (the radio /emcom command uses it instead of the
+		// slug). Backfilled from the rowid so existing networks keep
+		// their creation order.
+		SQL: `
+ALTER TABLE emcom_networks ADD COLUMN net_id INTEGER NOT NULL DEFAULT 0;
+UPDATE emcom_networks SET net_id = rowid;
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1676,8 +1686,8 @@ func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) 
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO emcom_networks (slug, name, level, updated_by, updated_at_ms)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO emcom_networks (net_id, slug, name, level, updated_by, updated_at_ms)
+		VALUES (COALESCE((SELECT MAX(net_id) + 1 FROM emcom_networks), 1), ?, ?, ?, ?, ?)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = excluded.name, level = excluded.level,
 			updated_by = excluded.updated_by, updated_at_ms = excluded.updated_at_ms`,
@@ -1809,7 +1819,7 @@ func (s *Store) TombstoneEmcomNetwork(ctx context.Context, slug string, ev dispa
 // EmcomNetworks returns the persisted readiness networks sorted by name.
 func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT slug, name, level, updated_by, updated_at_ms
+		SELECT net_id, slug, name, level, updated_by, updated_at_ms
 		FROM emcom_networks ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list emcom networks: %w", err)
@@ -1819,7 +1829,7 @@ func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, erro
 	for rows.Next() {
 		var n storage.EmcomNetwork
 		var ms int64
-		if err := rows.Scan(&n.Slug, &n.Name, &n.Level, &n.UpdatedBy, &ms); err != nil {
+		if err := rows.Scan(&n.ID, &n.Slug, &n.Name, &n.Level, &n.UpdatedBy, &ms); err != nil {
 			return nil, fmt.Errorf("scan emcom network: %w", err)
 		}
 		n.UpdatedAt = time.UnixMilli(ms)

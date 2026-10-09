@@ -120,6 +120,7 @@ type emcomWire struct {
 // emcomNetwork is one network's current state as read from the mirrored
 // MQTT state.
 type emcomNetwork struct {
+	ID        int64
 	Slug      string
 	Name      string
 	Level     int
@@ -408,6 +409,7 @@ func (s *Server) emcomNetworks() []emcomNetwork {
 				}
 				lvl, _ := emcomLevelAt(n.Level)
 				out = append(out, emcomNetwork{
+					ID:        n.ID,
 					Slug:      n.Slug,
 					Name:      n.Name,
 					Level:     n.Level,
@@ -463,6 +465,16 @@ func (s *Server) emcomNetworks() []emcomNetwork {
 func (s *Server) emcomNetworkBySlug(slug string) (emcomNetwork, bool) {
 	for _, net := range s.emcomNetworks() {
 		if net.Slug == slug {
+			return net, true
+		}
+	}
+	return emcomNetwork{}, false
+}
+
+// emcomNetworkByID returns one network by its numeric operator id.
+func (s *Server) emcomNetworkByID(id int64) (emcomNetwork, bool) {
+	for _, net := range s.emcomNetworks() {
+		if net.ID == id {
 			return net, true
 		}
 	}
@@ -689,6 +701,7 @@ type emcomView struct {
 
 // emcomNetworkView is one managed network for the panel.
 type emcomNetworkView struct {
+	ID         int64
 	Slug       string
 	Name       string
 	Level      int
@@ -739,6 +752,7 @@ func (s *Server) emcomNetworkViews(lang string) []emcomNetworkView {
 	views := make([]emcomNetworkView, 0, 8)
 	for _, net := range s.emcomNetworks() {
 		views = append(views, emcomNetworkView{
+			ID:         net.ID,
 			Slug:       net.Slug,
 			Name:       net.Name,
 			Level:      net.Level,
@@ -1027,38 +1041,50 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 }
 
 // RadioEmcom serves the shared /emcom radio command for authorized
-// senders on APRS, Meshtastic and SMS: "/emcom <network-id> <level>".
-// No arguments lists the networks with their ids and current levels; a
-// missing or invalid parameter explains the usage. Replies are English
-// (the radio convention).
+// senders on APRS, Meshtastic and SMS: "/emcom <network-id> <level>",
+// where <network-id> is the numeric id shown on the panel (the slug is
+// accepted as a fallback). No arguments lists the networks with their
+// ids and current levels; a missing or invalid parameter explains the
+// usage. Replies are English (the radio convention).
 func (s *Server) RadioEmcom(args string, by string) radiocli.Result {
 	fields := strings.Fields(args)
 	if len(fields) == 0 {
 		lines := []string{"usage: /emcom <network-id> <level 0-3>"}
 		for _, n := range s.emcomNetworks() {
-			lines = append(lines, fmt.Sprintf("%s = %s (level %d)", n.Slug, n.Name, n.Level))
+			lines = append(lines, fmt.Sprintf("%d = %s (level %d)", n.ID, n.Name, n.Level))
 		}
 		if len(lines) == 1 {
 			lines = append(lines, "no networks configured")
 		}
 		return radiocli.Result{Handled: true, Reply: strings.Join(lines, "\n")}
 	}
-	slug := fields[0]
+	ref := fields[0]
 	if len(fields) < 2 {
-		return radiocli.Result{Handled: true, Reply: "missing level — usage: /emcom " + slug + " <0-3>"}
+		return radiocli.Result{Handled: true, Reply: "missing level — usage: /emcom " + ref + " <0-3>"}
 	}
 	level, err := strconv.Atoi(fields[1])
 	if err != nil || level < 0 || level > 3 {
-		return radiocli.Result{Handled: true, Reply: "invalid level (want 0-3) — usage: /emcom " + slug + " <0-3>"}
+		return radiocli.Result{Handled: true, Reply: "invalid level (want 0-3) — usage: /emcom " + ref + " <0-3>"}
 	}
-	net, ok := s.emcomNetworkBySlug(slug)
+	net, ok := s.emcomNetworkByRef(ref)
 	if !ok {
-		return radiocli.Result{Handled: true, Reply: "unknown network id " + slug + " — /emcom alone lists the networks"}
+		return radiocli.Result{Handled: true, Reply: "unknown network id " + ref + " — /emcom alone lists the networks"}
 	}
-	if err := s.setEmcomLevel(slug, level, by); err != nil {
+	if err := s.setEmcomLevel(net.Slug, level, by); err != nil {
 		return radiocli.Result{Handled: true, Reply: "FAILED: " + err.Error()}
 	}
 	return radiocli.Result{Handled: true, Reply: fmt.Sprintf("OK: %s -> level %d", net.Name, level)}
+}
+
+// emcomNetworkByRef resolves the /emcom identifier: the numeric panel id
+// first, the slug as a fallback for machine users.
+func (s *Server) emcomNetworkByRef(ref string) (emcomNetwork, bool) {
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		if net, ok := s.emcomNetworkByID(id); ok {
+			return net, true
+		}
+	}
+	return s.emcomNetworkBySlug(ref)
 }
 
 // handleEmcomDelete removes one network: the retained info document is

@@ -28,37 +28,43 @@ func TestRadioEmcom(t *testing.T) {
 	env := newTestEnvWithUsers(t, store)
 	srv := env.server
 
-	// No arguments: usage + the network list with the unique id.
+	// No arguments: usage + the network list with the numeric id.
 	res := srv.RadioEmcom("", "radio")
-	if !res.Handled || !strings.Contains(res.Reply, "sp9moa = SP9MOA EMCOM (level 0)") {
+	if !res.Handled || !strings.Contains(res.Reply, "1 = SP9MOA EMCOM (level 0)") {
 		t.Fatalf("list reply = %+v", res)
 	}
 
 	// Missing level parameter.
-	res = srv.RadioEmcom("sp9moa", "radio")
+	res = srv.RadioEmcom("1", "radio")
 	if !strings.Contains(res.Reply, "missing level") {
 		t.Fatalf("missing level reply = %+v", res)
 	}
 
 	// Invalid level.
-	res = srv.RadioEmcom("sp9moa 7", "radio")
+	res = srv.RadioEmcom("1 7", "radio")
 	if !strings.Contains(res.Reply, "invalid level") {
 		t.Fatalf("invalid level reply = %+v", res)
 	}
 
 	// Unknown network id.
-	res = srv.RadioEmcom("nope 2", "radio")
-	if !strings.Contains(res.Reply, "unknown network id nope") {
+	res = srv.RadioEmcom("9 2", "radio")
+	if !strings.Contains(res.Reply, "unknown network id 9") {
 		t.Fatalf("unknown network reply = %+v", res)
 	}
 
-	// A valid transition: confirmation with the network name.
-	res = srv.RadioEmcom("sp9moa 2", "radio")
+	// A valid transition by the numeric id: confirmation with the name.
+	res = srv.RadioEmcom("1 2", "radio")
 	if !res.Handled || !strings.Contains(res.Reply, "OK: SP9MOA EMCOM -> level 2") {
 		t.Fatalf("set reply = %+v", res)
 	}
 	rows, err := store.EmcomNetworks(context.Background())
-	if err != nil || len(rows) != 1 || rows[0].Level != 2 || rows[0].UpdatedBy != "radio" {
-		t.Fatalf("rows = %+v, %v; want one network at level 2 by radio", rows, err)
+	if err != nil || len(rows) != 1 || rows[0].Level != 2 || rows[0].UpdatedBy != "radio" || rows[0].ID != 1 {
+		t.Fatalf("rows = %+v, %v; want one network id 1 at level 2 by radio", rows, err)
+	}
+
+	// The slug still works as a fallback reference.
+	res = srv.RadioEmcom("sp9moa 0", "radio")
+	if !res.Handled || !strings.Contains(res.Reply, "OK: SP9MOA EMCOM -> level 0") {
+		t.Fatalf("slug fallback reply = %+v", res)
 	}
 }

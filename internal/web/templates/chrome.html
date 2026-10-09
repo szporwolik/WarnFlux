@@ -49,7 +49,7 @@
     <nav class="sidenav">
       <a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">{{tr .Lang "nav.dashboard"}}</span></a>
       {{if ne .Role "member"}}<a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">{{tr .Lang "nav.compose"}}</span></a>{{end}}
-      {{if ne .Role "member"}}<a class="nav-item{{if .NavEmcom}} active{{end}}" href="/emcom"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-megaphone"></use></svg><span class="nav-label">{{tr .Lang "nav.emcom"}}</span></a>{{end}}
+	  {{if emcomNav .Role .Username}}<a class="nav-item{{if .NavEmcom}} active{{end}}" href="/emcom"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-megaphone"></use></svg><span class="nav-label">{{tr .Lang "nav.emcom"}}</span></a>{{end}}
       {{if eq .Role "admin"}}
       <a class="nav-item{{if or .NavUsers .NavGroups}} active{{end}}" href="/access"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">{{tr .Lang "nav.access"}}</span></a>
       <a class="nav-item{{if .NavAPRS}} active{{end}}" href="/aprs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">{{tr .Lang "nav.aprs"}}</span></a>

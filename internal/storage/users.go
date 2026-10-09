@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -171,6 +172,16 @@ type GroupStore interface {
 	// notification languages in the SAME ORDER as
 	// GroupRecipientPhones ("" = system default).
 	GroupRecipientPhoneLangs(groupID int64) ([]string, error)
+	// EmcomNetworkGroups returns the group ids assigned to one EMCOM
+	// network (its level may be changed only by members of these groups
+	// or the admin).
+	EmcomNetworkGroups(ctx context.Context, slug string) ([]int64, error)
+	// SetEmcomNetworkGroups replaces the group assignments of one EMCOM
+	// network (admin-only; empty = only the admin may change its level).
+	SetEmcomNetworkGroups(ctx context.Context, slug string, groupIDs []int64) error
+	// UserInGroups reports whether the directory user is a member of at
+	// least one of the given groups.
+	UserInGroups(ctx context.Context, username string, groupIDs []int64) (bool, error)
 }
 
 // DirectoryStore combines the user and group administration stores; the

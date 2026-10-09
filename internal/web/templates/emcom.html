@@ -28,6 +28,9 @@
               <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
             </span>
           </div>
+          <p class="muted small">{{tr $.Lang "emcom.groups.assigned"}}:
+            {{range .GroupNames}}<span class="emcom-group-chip">{{.}}</span>{{else}}{{tr $.Lang "emcom.groups.admin_only"}}{{end}}
+          </p>
           <form method="post" action="/emcom/{{.Slug}}/level" class="emcom-form" data-emcom-form>
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
             <div class="emcom-slider-row">

@@ -2287,8 +2287,9 @@ func TestAdminAccountSelfService(t *testing.T) {
 		t.Errorf("admin account page must offer Save changes: %s", html)
 	}
 
-	// Contact fields update, the group unsubscribe works, and a posted
-	// password is ignored (the admin password is config-owned).
+	// Contact fields update; a posted groups payload is ignored
+	// (membership is admin-assigned only) and a posted password is
+	// ignored (the admin password is config-owned).
 	csrf := extractCSRF(t, html)
 	resp, _ = env.postForm("/account", url.Values{
 		"csrf": {csrf}, "email": {"admin@sp9moa.pl"}, "phone": {"+48 600 000 000"},
@@ -2318,10 +2319,12 @@ func TestAdminAccountSelfService(t *testing.T) {
 	if storedPassword != "" {
 		t.Fatalf("posted password leaked into the admin row: %q", storedPassword)
 	}
+	// Group membership is admin-assigned: the self-service POST must not
+	// have touched the admin-assigned membership.
 	if ids, err := env.users.GroupIDsForUser(u.ID); err != nil {
 		t.Fatal(err)
-	} else if len(ids) != 0 {
-		t.Fatalf("admin groups = %v, want none after the unsubscribe", ids)
+	} else if len(ids) != 1 || ids[0] != g.ID {
+		t.Fatalf("admin groups = %v, want the admin-assigned [%d] untouched", ids, g.ID)
 	}
 }
 
@@ -2508,6 +2511,15 @@ func TestMemberRoleFlow(t *testing.T) {
 	if _, err := env.users.CreateUser("plain-user", "", "", "", "member", "password123"); err != nil {
 		t.Fatal(err)
 	}
+	// Membership is admin-assigned: put the user into the hams group
+	// (the admin API is the only way to join a group).
+	u0, err := env.users.GetUserByUsername("plain-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserGroups(u0.ID, []int64{hams.ID}); err != nil {
+		t.Fatal(err)
+	}
 
 	_, html := env.get("/login")
 	csrf := extractCSRF(t, html)
@@ -2545,12 +2557,16 @@ func TestMemberRoleFlow(t *testing.T) {
 	if !strings.Contains(html, `name="phone"`) || !strings.Contains(html, `name="email"`) {
 		t.Error("account page missing the self-service contact form")
 	}
-	// Default subscription: every channel checkbox is checked.
-	for _, g := range []storage.Group{ops, hams} {
-		want := fmt.Sprintf(`name="groups" value="%d" checked`, g.ID)
-		if !strings.Contains(html, want) {
-			t.Errorf("account page missing checked channel %s (%d)", g.Name, g.ID)
-		}
+	// Group membership is read-only on the account page: assigned groups
+	// show as on, unassigned as off, and no group inputs are offered.
+	if strings.Contains(html, `name="groups"`) {
+		t.Error("account page must not offer group self-service inputs")
+	}
+	if !strings.Contains(html, fmt.Sprintf(`<span class="account-channel"><span>%s</span></span>`, hams.Name)) {
+		t.Errorf("account page missing the assigned group %s as on", hams.Name)
+	}
+	if !strings.Contains(html, fmt.Sprintf(`<span class="account-channel account-channel-off"><span>%s</span></span>`, ops.Name)) {
+		t.Errorf("account page missing the unassigned group %s as off", ops.Name)
 	}
 	// Default delivery channels: every known medium is enabled.
 	for _, kind := range []string{"aprs", "smtp"} {
@@ -2573,12 +2589,13 @@ func TestMemberRoleFlow(t *testing.T) {
 		}
 	}
 
-	// Self-service save: contact fields update, role stays member, and
-	// only the channels still checked stay subscribed.
+	// Self-service save: contact fields update, role stays member, the
+	// posted groups payload is ignored (membership is admin-assigned),
+	// and only the channels still checked stay subscribed.
 	csrf2 := extractCSRF(t, html)
 	form = url.Values{
 		"csrf": {csrf2}, "phone": {"600700800"}, "email": {"member@example.com"},
-		"password": {""}, "groups": {strconv.FormatInt(hams.ID, 10)},
+		"password": {""}, "groups": {strconv.FormatInt(ops.ID, 10)},
 		// Only aprs stays checked: smtp becomes a per-user opt-out.
 		"channels": {"aprs"},
 	}
@@ -2598,7 +2615,7 @@ func TestMemberRoleFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != hams.ID {
-		t.Errorf("after save memberships = %v, want only %d (ops unsubscribed)", ids, hams.ID)
+		t.Errorf("after save memberships = %v, want the admin-assigned [%d] unchanged", ids, hams.ID)
 	}
 	opts, err := env.users.UserChannelOptOuts(u.ID)
 	if err != nil {

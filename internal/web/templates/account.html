@@ -75,10 +75,7 @@
           <p class="page-info">{{tr .Lang "account.groups_note"}}</p>
           <div class="account-channels-grid">
             {{range .Groups}}
-            <label class="account-channel">
-              <input type="checkbox" name="groups" value="{{.ID}}" {{if index $.GroupSet .ID}}checked{{end}}>
-              <span>{{.Name}}</span>
-            </label>
+            <span class="account-channel{{if not (index $.GroupSet .ID)}} account-channel-off{{end}}"><span>{{.Name}}</span></span>
             {{else}}
             <p class="muted">{{tr $.Lang "account.no_groups"}}</p>
             {{end}}

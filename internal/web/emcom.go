@@ -843,6 +843,25 @@ func (s *Server) mayControlEmcom(username, slug string) bool {
 	return member
 }
 
+// emcomNavVisible decides whether the EMCOM sidebar entry belongs to a
+// session: the admin always sees it (they manage networks and may
+// control every level); an emcom operator sees it only when they may
+// change the level of at least one network. Everyone else never does.
+func (s *Server) emcomNavVisible(role, username string) bool {
+	if role == "admin" {
+		return true
+	}
+	if role != "emcom" || username == "" {
+		return false
+	}
+	for _, net := range s.emcomNetworks() {
+		if s.mayControlEmcom(username, net.Slug) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildEmcomView assembles the page model from the mirrored state in a UI
 // language. Level names/descriptions are localized for display; the wire
 // payload keeps the English canonical names.

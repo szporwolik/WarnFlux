@@ -192,3 +192,82 @@ func TestEmcomLevelAuthz(t *testing.T) {
 func idStr(id int64) string {
 	return fmt.Sprint(id)
 }
+
+// TestEmcomNavVisibility pins the sidebar rule: the admin always sees
+// the EMCOM entry; an emcom operator sees it only while they may change
+// the level of at least one network (assigned group membership).
+func TestEmcomNavVisibility(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	// Admin: the entry is always there.
+	resp, html := env.get("/dashboard")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dashboard as admin = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `href="/emcom"`) {
+		t.Fatalf("admin sidebar missing the EMCOM entry: %s", html)
+	}
+
+	// An operator with no authorized network must not see it.
+	if _, err := env.users.CreateUser("ops-user", "", "", "", "emcom", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	env.logout()
+	_, html = env.get("/login")
+	csrf := extractCSRF(t, html)
+	resp, _ = env.postForm("/login", url.Values{
+		"csrf": {csrf}, "username": {"ops-user"}, "password": {"password123"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("operator login = %d, want 303", resp.StatusCode)
+	}
+	resp, html = env.get("/dashboard")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dashboard as operator = %d", resp.StatusCode)
+	}
+	if strings.Contains(html, `href="/emcom"`) {
+		t.Fatalf("unauthorized operator must not see the EMCOM entry: %s", html)
+	}
+
+	// The admin creates a network and authorizes the operator's group:
+	// the entry appears.
+	env.logout()
+	env.login()
+	ops, err := env.users.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slug := seedEmcomNetwork(t, env)
+	u, err := env.users.GetUserByUsername("ops-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserGroups(u.ID, []int64{ops.ID}); err != nil {
+		t.Fatal(err)
+	}
+	gs, ok := env.users.(storage.GroupStore)
+	if !ok {
+		t.Fatal("fake users store is not a GroupStore")
+	}
+	if err := gs.SetEmcomNetworkGroups(context.Background(), slug, []int64{ops.ID}); err != nil {
+		t.Fatal(err)
+	}
+	env.logout()
+
+	_, html = env.get("/login")
+	csrf = extractCSRF(t, html)
+	resp, _ = env.postForm("/login", url.Values{
+		"csrf": {csrf}, "username": {"ops-user"}, "password": {"password123"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("operator re-login = %d, want 303", resp.StatusCode)
+	}
+	resp, html = env.get("/dashboard")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dashboard after assignment = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `href="/emcom"`) {
+		t.Fatalf("authorized operator sidebar missing the EMCOM entry: %s", html)
+	}
+}

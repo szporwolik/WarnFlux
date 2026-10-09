@@ -788,6 +788,13 @@ func (s *Server) templateFuncs() template.FuncMap {
 		"roleLabelL": func(lang, role string) string {
 			return i18n.T(lang, "role."+role)
 		},
+		// emcomNav reports whether the EMCOM entry belongs in this
+		// session's sidebar: the admin always sees it; an operator
+		// sees it only when they may change the level of at least one
+		// network (group authorization, every channel).
+		"emcomNav": func(role, username string) bool {
+			return s.emcomNavVisible(role, username)
+		},
 		// shortCommit trims full hashes for display (links keep the
 		// full hash; cache-busting query strings must too).
 		"shortCommit": func(s string) string {

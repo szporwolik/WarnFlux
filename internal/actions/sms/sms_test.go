@@ -133,7 +133,7 @@ func TestExecuteDedupsByNumberKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := hazardReq()
-	req.Phones = []string{"+48 600 111 222"} // same number, different format
+	req.Phones = []string{"+48 600 111 222", "0048600111222"} // same number, different formats
 	if err := p.Execute(context.Background(), req); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

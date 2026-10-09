@@ -52,6 +52,23 @@ func TestNumberKey(t *testing.T) {
 	}
 }
 
+func TestCanonicalNumberKey(t *testing.T) {
+	cases := map[string]string{
+		"+48509558155":    "48509558155",
+		"0048509558155":   "48509558155",
+		"+48 509-558-155": "48509558155",
+		"0044 7000 00000": "44700000000",
+		"509 558 155":     "509558155",
+		"":                "",
+		"00":              "",
+	}
+	for in, want := range cases {
+		if got := CanonicalNumberKey(in); got != want {
+			t.Errorf("CanonicalNumberKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestSMSUnknownSenderIgnored pins the spam hygiene: an unregistered
 // number is never answered and never reaches the command interpreter —
 // not even for /help or a plain text.

@@ -54,39 +54,29 @@ func TestNumberKey(t *testing.T) {
 	}
 }
 
-// TestSMSUnknownSenderIgnored pins the anti-spam policy: an SMS from a
-// number that is not in the directory is NEVER answered — no banner,
-// no command output, no denial — while it still lands in the durable
-// history and the MQTT feed (recorded by the hub before routing).
+// TestSMSUnknownSenderIgnored pins the spam hygiene: an unregistered
+// number is never answered and never reaches the command interpreter —
+// not even for /help or a plain text.
 func TestSMSUnknownSenderIgnored(t *testing.T) {
 	h, f := replyHub(t, 0)
 	h.SetSenderGate(func(string) string { return "" })
-	called := false
-	h.SetEventAcceptor(func([]byte) dispatch.Acceptance {
-		called = true
-		return dispatch.AcceptedDurable
+	ran := false
+	h.mu.Lock()
+	cli := h.cli
+	h.mu.Unlock()
+	cli.Register("zzz", "zzz", func(string) radiocli.Result {
+		ran = true
+		return radiocli.Result{Handled: true, Reply: "ZZZ"}
 	})
-	h.routeMessage("+48600111222", "hej, co umiesz?")
-	h.routeMessage("+48600111222", "/help")
-	h.routeMessage("+48600111222", "/wat")
-	h.routeMessage("+48600111222", "/debug")
+	for _, msg := range []string{"hej", "/zzz", "/debug"} {
+		h.routeMessage("+48600111222", msg)
+	}
 	time.Sleep(50 * time.Millisecond)
 	if w := f.written(); strings.Contains(w, "AT+CMGS") {
 		t.Fatalf("unknown sender got an automatic reply: %q", w)
 	}
-	if called {
-		t.Fatal("unknown sender produced an event")
-	}
-}
-
-// TestSMSUnknownSenderWithoutGate pins the same policy when the
-// directory lookup itself is missing: everything is ignored.
-func TestSMSUnknownSenderWithoutGate(t *testing.T) {
-	h, f := replyHub(t, 0)
-	h.routeMessage("+48600111222", "/help")
-	time.Sleep(50 * time.Millisecond)
-	if w := f.written(); strings.Contains(w, "AT+CMGS") {
-		t.Fatalf("no-gate sender got an automatic reply: %q", w)
+	if ran {
+		t.Fatal("unknown sender reached the command interpreter")
 	}
 }
 
@@ -102,6 +92,18 @@ func TestSMSCommandHelpAuthorized(t *testing.T) {
 	}
 }
 
+// TestSMSKnownSlashBanner pins the installation banner for unknown slash
+// texts from a registered sender.
+func TestSMSKnownSlashBanner(t *testing.T) {
+	h, f := replyHub(t, 1)
+	h.SetSenderGate(func(string) string { return "sp9kow" })
+	h.routeMessage("+48600111222", "/wat")
+	w := waitForWritten(t, f, radiocli.HelpHint)
+	if !strings.Contains(w, "WarnFlux v1") || !strings.Contains(w, "type /help for help") {
+		t.Fatalf("banner reply missing: %q", w)
+	}
+}
+
 // TestSMSPlainBanner pins the plain-text answer for a REGISTERED sender:
 // the banner with the /help hint, never an alarm.
 func TestSMSPlainBanner(t *testing.T) {
@@ -114,12 +116,12 @@ func TestSMSPlainBanner(t *testing.T) {
 	}
 }
 
-// TestSMSRestrictedUnknownDropped pins the silent drop for a restricted
-// command from an unknown number: no denial (a denial would confirm the
-// number is live), no reply at all.
-func TestSMSRestrictedUnknownDropped(t *testing.T) {
-	h, f := replyHub(t, 0)
-	h.SetSenderGate(func(string) string { return "" })
+// TestSMSRestrictedRegistered pins the authorized path: a registered
+// sender runs a restricted command and gets its confirmation (unknown
+// senders never reach this far — see TestSMSUnknownSenderIgnored).
+func TestSMSRestrictedRegistered(t *testing.T) {
+	h, f := replyHub(t, 1)
+	h.SetSenderGate(func(string) string { return "sp9kow" })
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
@@ -127,9 +129,9 @@ func TestSMSRestrictedUnknownDropped(t *testing.T) {
 		return radiocli.Result{Handled: true, Reply: "OK: alert raised"}
 	})
 	h.routeMessage("+48600111222", "/alert test")
-	time.Sleep(50 * time.Millisecond)
-	if w := f.written(); w != "" {
-		t.Fatalf("unknown sender got a denial/reply: %q", w)
+	w := waitForWritten(t, f, "OK: alert raised")
+	if !strings.Contains(w, "OK: alert raised") {
+		t.Fatalf("authorized restricted reply missing: %q", w)
 	}
 }
 
@@ -287,11 +289,11 @@ func TestSMSRCBEmpty(t *testing.T) {
 	}
 }
 
-// TestSMSRCBPlainSender pins that an RCB-looking text from an unknown
-// ordinary phone never enters the RCB pipeline — and never gets a reply.
+// TestSMSRCBPlainSender pins that an RCB-looking text from an ordinary
+// phone neither publishes an rcb event nor gets an answer: unregistered
+// numbers are dropped outright.
 func TestSMSRCBPlainSender(t *testing.T) {
 	h, f := replyHub(t, 0)
-	h.SetSenderGate(func(string) string { return "" })
 	called := false
 	h.SetEventAcceptor(func([]byte) dispatch.Acceptance {
 		called = true
@@ -303,7 +305,7 @@ func TestSMSRCBPlainSender(t *testing.T) {
 	}
 	time.Sleep(50 * time.Millisecond)
 	if w := f.written(); strings.Contains(w, "AT+CMGS") {
-		t.Fatalf("unknown phone got an automatic reply: %q", w)
+		t.Fatalf("automatic reply sent to an unregistered number: %q", w)
 	}
 }
 
@@ -340,8 +342,8 @@ func TestSMSReplyFitsOneMessage(t *testing.T) {
 	}
 }
 
-// TestSMSReplyBurst pins the shared reply budget: a flood of distinct
-// unknown commands from a REGISTERED sender produces at most replyBurst
+// TestSMSReplyBurst pins the shared reply budget: a registered sender's
+// flood of distinct unknown commands produces at most replyBurst
 // automatic answers.
 func TestSMSReplyBurst(t *testing.T) {
 	h, f := replyHub(t, replyBurst)

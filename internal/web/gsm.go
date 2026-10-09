@@ -168,10 +168,12 @@ func (s *Server) fillGSMMessages(r *http.Request, v *gsmView) {
 	}
 	v.Messages = make([]gsmMessageView, 0, len(stored))
 	// One pass over the phones resolves display names in both columns.
+	// Keyed canonically so "+48..." and "0048..." find the same user.
 	names := make(map[string]string, len(v.Phones))
 	for _, p := range v.Phones {
-		if _, ok := names[p.Number]; !ok {
-			names[p.Number] = p.Username
+		k := gsm.CanonicalNumberKey(p.Number)
+		if _, ok := names[k]; !ok {
+			names[k] = p.Username
 		}
 	}
 	for _, m := range stored {
@@ -181,8 +183,8 @@ func (s *Server) fillGSMMessages(r *http.Request, v *gsmView) {
 			To:        m.To,
 			Text:      m.Text,
 			At:        m.At,
-			FromName:  names[strings.TrimSpace(m.From)],
-			ToName:    names[strings.TrimSpace(m.To)],
+			FromName:  names[gsm.CanonicalNumberKey(m.From)],
+			ToName:    names[gsm.CanonicalNumberKey(m.To)],
 		}
 		v.Messages = append(v.Messages, view)
 	}

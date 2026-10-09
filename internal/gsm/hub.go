@@ -60,6 +60,14 @@ func NumberKey(s string) string {
 	return b.String()
 }
 
+// CanonicalNumberKey normalizes a phone number across international
+// dialing prefixes: digits only, with a leading "00" (the international
+// access code) folded onto the same form as "+" — so "+48509558155"
+// and "0048509558155" compare equal.
+func CanonicalNumberKey(s string) string {
+	return strings.TrimPrefix(NumberKey(s), "00")
+}
+
 // ErrNoModem is returned when the hub has no session (disabled or not
 // started).
 var ErrNoModem = errors.New("gsm: modem session not available")

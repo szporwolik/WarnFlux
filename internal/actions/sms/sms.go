@@ -101,7 +101,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	seen := make(map[string]bool, len(a.cfg.Phones)+len(req.Phones))
 	var recipients []recipient
 	add := func(phone, lang string) {
-		key := gsm.NumberKey(phone)
+		key := gsm.CanonicalNumberKey(phone)
 		if key == "" || seen[key] {
 			return
 		}

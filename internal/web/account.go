@@ -5,7 +5,6 @@ package web
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/szporwolik/WarnFlux/internal/i18n"
@@ -44,8 +43,8 @@ type accountView struct {
 	NotifLang string
 
 	// Groups is the notification-group list with the current membership
-	// mirrored in GroupSet: every new user is subscribed to all groups by
-	// default and can unsubscribe here.
+	// mirrored in GroupSet — READ-ONLY here: group membership is
+	// admin-assigned (the Access page).
 	Groups   []storage.Group
 	GroupSet map[int64]bool
 
@@ -90,6 +89,10 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if sess == nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if s.users == nil {
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		return
 	}
 	u, err := s.users.GetUserByUsername(sess.username)
@@ -167,7 +170,8 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAccountSave applies the self-service edit: contact fields and an
-// optional new password. The username and role stay untouched.
+// optional new password. The username, role and GROUP MEMBERSHIP stay
+// untouched — groups are admin-assigned on the Access page.
 func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if sess == nil {
@@ -186,6 +190,11 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	// in configuration, but contact data and notification subscriptions
 	// are ordinary self-service fields: they persist in the store.
 	adminManaged := sess.role == "admin"
+
+	if s.users == nil {
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		return
+	}
 
 	u, err := s.users.GetUserByUsername(sess.username)
 	if err != nil {
@@ -211,18 +220,8 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Group subscriptions: checked boxes stay subscribed; everything
-	// else is an unsubscribe.
-	var wantGroups []int64
-	seen := make(map[int64]bool)
-	for _, v := range r.PostForm["groups"] {
-		id, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || id <= 0 || seen[id] {
-			continue
-		}
-		seen[id] = true
-		wantGroups = append(wantGroups, id)
-	}
+	// Group subscriptions are admin-assigned: the account form never
+	// writes them (the membership display above is read-only).
 
 	// Delivery channels: checked boxes stay enabled; every known channel
 	// left unchecked becomes a per-user opt-out.
@@ -268,7 +267,8 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 			Error:      msg,
 			NavAccount: true,
 		}
-		for _, id := range wantGroups {
+		memberIDs, _ := s.users.GroupIDsForUser(u.ID)
+		for _, id := range memberIDs {
 			v.GroupSet[id] = true
 		}
 		w.Header().Set("Cache-Control", "no-store")
@@ -279,11 +279,6 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.users.UpdateUser(u.ID, u.Username, phone, email, discord, u.Role, password); err != nil {
 		s.logger.Warn("web: account update failed", "username", sess.username, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if err := s.users.SetUserGroups(u.ID, wantGroups); err != nil {
-		s.logger.Warn("web: account subscription update failed", "username", sess.username, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

@@ -2399,7 +2399,7 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 			}
 			return
 		}
-		res := cli.Handle(text, owner != "")
+		res := cli.Handle(text, radiocli.Sender{Authorized: owner != "", Name: owner})
 		// The stored reply is the FINAL confirmation (post-acceptance),
 		// so a redelivery replays exactly the previous result. Both
 		// commands share the same confirmation path. A rejection is

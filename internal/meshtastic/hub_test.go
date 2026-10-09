@@ -2267,7 +2267,7 @@ func TestHubCLIMultilineReply(t *testing.T) {
 	})
 	radio.hub.SetEventSink(func(_ context.Context, _ string, _ bool, _ []byte) error { return nil })
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.Register("list", "test list", func(string) radiocli.Result {
+	cli.Register("list", "test list", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: "header\nline one\nline two"}
 	})
 	radio.hub.SetCLI(cli)
@@ -2427,7 +2427,7 @@ func TestHubCommandRegistryResultReplay(t *testing.T) {
 		return ""
 	})
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
 	})
 	radio.hub.SetCLI(cli)
@@ -2631,7 +2631,7 @@ func TestHubAlertConfirmationTracksAcceptance(t *testing.T) {
 		return nil
 	})
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: strings.TrimSpace(args), TTL: 4 * time.Hour}, Reply: "OK: alert raised"}
 	})
 	radio.hub.SetCLI(cli)
@@ -2909,7 +2909,7 @@ func TestHubAlertCommand(t *testing.T) {
 		return nil
 	})
 	cli := radiocli.New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		headline := strings.TrimSpace(args)
 		if headline == "" {
 			return radiocli.Result{Handled: true, Reply: "Missing parameter: /alert <text>"}

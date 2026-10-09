@@ -15,6 +15,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // domainPattern accepts a host (or host:port) without scheme and path.
@@ -74,6 +75,9 @@ type configView struct {
 	// EmcomNetworks lists the managed EMCOM networks (admin-level
 	// add/remove moved here from the operator panel).
 	EmcomNetworks []emcomNetworkView
+	// Groups lists every notification group (the EMCOM assignment
+	// checkboxes).
+	Groups []storage.Group
 	// MeshChannel is the runtime switch for hazard broadcasts on the
 	// Meshtastic group channel.
 	MeshChannel bool
@@ -175,6 +179,10 @@ func (s *Server) mqttRows() []configMqttRow {
 // buildConfigView assembles the shared admin configuration page model
 // (everything except the flash message).
 func (s *Server) buildConfigView(sess *session, lang string) configView {
+	var groups []storage.Group
+	if s.users != nil {
+		groups, _ = s.users.ListAllGroups()
+	}
 	return configView{
 		AppTitle:        s.cfg.Title,
 		Name:            s.displayName(),
@@ -194,6 +202,7 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		InternetSources: s.internetSources(),
 		MqttRows:        s.mqttRows(),
 		EmcomNetworks:   s.emcomNetworkViews(lang),
+		Groups:          groups,
 		MeshChannel:     meshtastic.ChannelAlerts(),
 		MeshDM:          meshtastic.DMAlerts(),
 		MeshStations:    meshtastic.StationAlerts(),
@@ -220,6 +229,8 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		v.Msg = i18n.T(lang, "emcom.flash.added")
 	case "emcom-deleted":
 		v.Msg = i18n.T(lang, "emcom.flash.deleted")
+	case "emcom-groups":
+		v.Msg = i18n.T(lang, "emcom.flash.groups")
 	case "mesh":
 		v.Msg = i18n.T(lang, "config.mesh.saved")
 	case "tiles":

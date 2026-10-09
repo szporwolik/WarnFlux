@@ -167,7 +167,7 @@ func (h *Hub) routeMessage(from, text string) {
 		}
 		return
 	}
-	res := cli.Handle(t, true)
+	res := cli.Handle(t, radiocli.Sender{Authorized: true, Name: owner})
 	// The stored reply is the FINAL confirmation (post-acceptance), so
 	// a repeated text replays exactly the previous result. A durable
 	// registry hit (stored result) proves the job executed before — the

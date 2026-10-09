@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -954,6 +955,19 @@ ALTER TABLE emcom_networks ADD COLUMN net_id INTEGER NOT NULL DEFAULT 0;
 UPDATE emcom_networks SET net_id = rowid;
 `,
 	},
+	{
+		// v55: EMCOM network → group assignments. Only members of an
+		// assigned group (or the admin) may change the network's
+		// operational level, on every control channel (panel, SMS,
+		// APRS, Meshtastic).
+		SQL: `
+CREATE TABLE emcom_network_groups (
+	slug     TEXT NOT NULL REFERENCES emcom_networks(slug) ON DELETE CASCADE,
+	group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+	PRIMARY KEY (slug, group_id)
+);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -1836,6 +1850,74 @@ func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, erro
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+// EmcomNetworkGroups returns the group ids assigned to one EMCOM network
+// (the members authorized to change its operational level).
+func (s *Store) EmcomNetworkGroups(ctx context.Context, slug string) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT group_id FROM emcom_network_groups WHERE slug = ? ORDER BY group_id`, slug)
+	if err != nil {
+		return nil, fmt.Errorf("list emcom network groups %q: %w", slug, err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan emcom network group %q: %w", slug, err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SetEmcomNetworkGroups replaces the group assignments of one EMCOM
+// network (admin-only; empty = only the admin may change its level).
+func (s *Store) SetEmcomNetworkGroups(ctx context.Context, slug string, groupIDs []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin emcom groups save for %q: %w", slug, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM emcom_network_groups WHERE slug = ?`, slug); err != nil {
+		return fmt.Errorf("clear emcom groups %q: %w", slug, err)
+	}
+	for _, id := range groupIDs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO emcom_network_groups (slug, group_id) VALUES (?, ?)`, slug, id); err != nil {
+			return fmt.Errorf("assign emcom group %q <- %d: %w", slug, id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit emcom groups save for %q: %w", slug, err)
+	}
+	return nil
+}
+
+// UserInGroups reports whether the directory user is a member of at
+// least one of the given groups (the EMCOM level-change authorization).
+func (s *Store) UserInGroups(ctx context.Context, username string, groupIDs []int64) (bool, error) {
+	if len(groupIDs) == 0 {
+		return false, nil
+	}
+	ph := make([]string, len(groupIDs))
+	ids := make([]any, 0, len(groupIDs)+1)
+	ids = append(ids, username)
+	for i, id := range groupIDs {
+		ph[i] = "?"
+		ids = append(ids, id)
+	}
+	var ok bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM user_groups ug
+			JOIN users u ON u.id = ug.user_id
+			WHERE u.username = ? AND ug.group_id IN (`+strings.Join(ph, ",")+`)
+		)`, ids...).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check user %q emcom groups: %w", username, err)
+	}
+	return ok, nil
 }
 
 // SaveComposeHazard upserts one panel-issued communication (the panel's

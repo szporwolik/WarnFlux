@@ -40,9 +40,21 @@ type AlertSpec struct {
 	TTL time.Duration
 }
 
+// Sender identifies the operator who sent one radio command.
+type Sender struct {
+	// Authorized reports whether the channel's allow-list knows the
+	// sender: restricted commands run for authorized senders only.
+	Authorized bool
+	// Name is the directory username when the channel resolves it
+	// ("" otherwise). Per-user authorization (e.g. the /emcom network
+	// gate) keys off it.
+	Name string
+}
+
 // Handler executes one radio command. args is the text after the
-// command name (trimmed, possibly empty).
-type Handler func(args string) Result
+// command name (trimmed, possibly empty); sender identifies the
+// operator.
+type Handler func(args string, sender Sender) Result
 
 // ContentID returns a short stable fingerprint (16 hex chars) of the
 // given parts. The gateways use it to identify a retransmitted message
@@ -103,7 +115,7 @@ func New(identity string) *Bot {
 	b.order = append(b.order, "help")
 	b.descs["help"] = "this list"
 	b.public["help"] = true
-	b.RegisterRestricted("debug", "alarm test", func(string) Result {
+	b.RegisterRestricted("debug", "alarm test", func(string, Sender) Result {
 		return Result{Handled: true, Debug: true, Reply: "OK: debug alarm generated"}
 	})
 	return b
@@ -237,12 +249,12 @@ func (b *Bot) Fit(text string, maxRunes int) string {
 	return string([]rune(trimmed)[:maxRunes])
 }
 
-// Handle evaluates one inbound text. authorized reports whether the
-// sender sits on the channel's allow-list: public commands run for
+// Handle evaluates one inbound text. sender.Authorized reports whether
+// the sender sits on the channel's allow-list: public commands run for
 // everyone, restricted commands run for authorized senders only (others
 // get the public banner). Non-commands return Handled=false so the
 // channel applies its normal routing.
-func (b *Bot) Handle(text string, authorized bool) Result {
+func (b *Bot) Handle(text string, sender Sender) Result {
 	t := strings.TrimSpace(text)
 	if !strings.HasPrefix(t, "/") {
 		return Result{}
@@ -255,7 +267,7 @@ func (b *Bot) Handle(text string, authorized bool) Result {
 	}
 	// /help is public and lists only the commands the sender may run.
 	if name == "help" {
-		return Result{Handled: true, Reply: b.helpText(authorized)}
+		return Result{Handled: true, Reply: b.helpText(sender.Authorized)}
 	}
 	h, ok := b.handlers[name]
 	if !ok {
@@ -264,12 +276,12 @@ func (b *Bot) Handle(text string, authorized bool) Result {
 		// knows what they reached and how to list the commands.
 		return Result{Handled: true, Reply: b.Banner()}
 	}
-	if !b.public[name] && !authorized {
+	if !b.public[name] && !sender.Authorized {
 		// Restricted command from an unauthorized sender: a clear
 		// denial, never the command.
 		return Result{Handled: true, Reply: b.Denied()}
 	}
-	return h(args)
+	return h(args, sender)
 }
 
 // helpText renders the command list available to the sender. Kept short

@@ -79,7 +79,7 @@ func TestSMSUnknownSenderIgnored(t *testing.T) {
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
-	cli.Register("zzz", "zzz", func(string) radiocli.Result {
+	cli.Register("zzz", "zzz", func(string, radiocli.Sender) radiocli.Result {
 		ran = true
 		return radiocli.Result{Handled: true, Reply: "ZZZ"}
 	})
@@ -140,7 +140,7 @@ func TestSMSRestrictedRegistered(t *testing.T) {
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
-	cli.RegisterRestricted("alert", "alert", func(string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: "OK: alert raised"}
 	})
 	h.routeMessage("+48600111222", "/alert test")
@@ -183,7 +183,7 @@ func TestSMSAlertEvent(t *testing.T) {
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
-	cli.RegisterRestricted("alert", "alert", func(args string) radiocli.Result {
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: args}, Reply: "OK: alert raised"}
 	})
 	var mu sync.Mutex
@@ -333,7 +333,7 @@ func TestSMSReplyFitsOneMessage(t *testing.T) {
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
-	cli.Register("long", "long reply", func(string) radiocli.Result {
+	cli.Register("long", "long reply", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: "ż" + strings.Repeat("x", 200)}
 	})
 	h.routeMessage("+48600111222", "/long")

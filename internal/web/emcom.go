@@ -678,6 +678,9 @@ type emcomView struct {
 	Error    string
 	Networks []emcomNetworkView
 	Levels   []emcomLevelView
+	// Groups lists every notification group for the assigned-group
+	// display (read-only on the operator panel).
+	Groups []storage.Group
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -710,6 +713,11 @@ type emcomNetworkView struct {
 	UpdatedBy  string
 	UpdatedAt  time.Time
 	Active     bool
+	// Groups is the set of group ids assigned to the network (only
+	// members of these groups — or the admin — may change its level).
+	Groups map[int64]bool
+	// GroupNames lists the names of the assigned groups for display.
+	GroupNames []string
 }
 
 // emcomLevelView is one readiness level for the panel legend.
@@ -749,8 +757,19 @@ func (s *Server) handleEmcomPage(w http.ResponseWriter, r *http.Request) {
 // emcomNetworkViews projects the mirrored network list onto the panel
 // shape (shared by the operator panel and the config management section).
 func (s *Server) emcomNetworkViews(lang string) []emcomNetworkView {
+	var allGroups []storage.Group
+	if s.users != nil {
+		allGroups, _ = s.users.ListAllGroups()
+	}
 	views := make([]emcomNetworkView, 0, 8)
 	for _, net := range s.emcomNetworks() {
+		assigned := s.emcomAssignedGroups(net.Slug)
+		names := make([]string, 0, len(assigned))
+		for _, g := range allGroups {
+			if assigned[g.ID] {
+				names = append(names, g.Name)
+			}
+		}
 		views = append(views, emcomNetworkView{
 			ID:         net.ID,
 			Slug:       net.Slug,
@@ -761,9 +780,67 @@ func (s *Server) emcomNetworkViews(lang string) []emcomNetworkView {
 			UpdatedBy:  net.UpdatedBy,
 			UpdatedAt:  net.UpdatedAt,
 			Active:     s.emcomHazardInMirror(net.Slug),
+			Groups:     assigned,
+			GroupNames: names,
 		})
 	}
 	return views
+}
+
+// emcomAssignedGroups returns the group ids assigned to one network
+// (empty when no store is attached).
+func (s *Server) emcomAssignedGroups(slug string) map[int64]bool {
+	out := make(map[int64]bool)
+	gs, ok := s.users.(storage.GroupStore)
+	if !ok {
+		return out
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ids, err := gs.EmcomNetworkGroups(ctx, slug)
+	cancel()
+	if err != nil {
+		s.logger.Warn("emcom: network groups load failed", "slug", slug, "error", err)
+		return out
+	}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out
+}
+
+// mayControlEmcom reports whether the operator may change the level of
+// one EMCOM network: the configured admin always may; everyone else must
+// belong to at least one group assigned to the network. Applied on every
+// control channel (panel, SMS, APRS, Meshtastic).
+func (s *Server) mayControlEmcom(username, slug string) bool {
+	if username == "" {
+		return false
+	}
+	if username == s.cfg.Auth.Username {
+		return true
+	}
+	if s.users == nil {
+		return false
+	}
+	gs, ok := s.users.(storage.GroupStore)
+	if !ok {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	groupIDs, err := gs.EmcomNetworkGroups(ctx, slug)
+	cancel()
+	if err != nil {
+		s.logger.Warn("emcom: network groups load failed", "slug", slug, "error", err)
+		return false
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	member, err := gs.UserInGroups(ctx, username, groupIDs)
+	cancel()
+	if err != nil {
+		s.logger.Warn("emcom: group membership check failed", "username", username, "error", err)
+		return false
+	}
+	return member
 }
 
 // buildEmcomView assembles the page model from the mirrored state in a UI
@@ -790,6 +867,9 @@ func (s *Server) buildEmcomView(lang string) emcomView {
 		})
 	}
 	view.Networks = s.emcomNetworkViews(lang)
+	if s.users != nil {
+		view.Groups, _ = s.users.ListAllGroups()
+	}
 	return view
 }
 
@@ -1019,6 +1099,10 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "emcom.err.level_range"))
 		return
 	}
+	if !s.mayControlEmcom(sess.username, slug) {
+		s.renderEmcomError(w, r, http.StatusForbidden, i18n.T(s.langFor(r), "emcom.err.not_authorized"))
+		return
+	}
 	if err := s.setEmcomLevel(slug, level, sess.username); err != nil {
 		var le *emcomLevelError
 		if errors.As(err, &le) {
@@ -1038,6 +1122,48 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/emcom?msg=level", http.StatusSeeOther)
+}
+
+// handleEmcomSetGroups assigns the authorized groups to one network
+// (admin only): only members of these groups — or the admin — may
+// change the network's operational level.
+func (s *Server) handleEmcomSetGroups(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	slug := r.PathValue("slug")
+	if _, ok := s.emcomNetworkBySlug(slug); !ok {
+		http.Error(w, i18n.T(s.langFor(r), "emcom.err.unknown"), http.StatusNotFound)
+		return
+	}
+	gs, ok := s.users.(storage.GroupStore)
+	if !ok {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	var ids []int64
+	seen := make(map[int64]bool)
+	for _, v := range r.PostForm["groups"] {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	err := gs.SetEmcomNetworkGroups(ctx, slug, ids)
+	cancel()
+	if err != nil {
+		s.logger.Warn("emcom: group assignment failed", "slug", slug, "error", err)
+		s.renderConfigEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
+		return
+	}
+	s.logger.Info("emcom: groups assigned", "slug", slug, "groups", len(ids), "by", sess.username)
+	s.audit(sess.username, "emcom-groups", fmt.Sprintf("%s=%v", slug, ids))
+	http.Redirect(w, r, "/config?msg=emcom-groups", http.StatusSeeOther)
 }
 
 // RadioEmcom serves the shared /emcom radio command for authorized
@@ -1069,6 +1195,9 @@ func (s *Server) RadioEmcom(args string, by string) radiocli.Result {
 	net, ok := s.emcomNetworkByRef(ref)
 	if !ok {
 		return radiocli.Result{Handled: true, Reply: "unknown network id " + ref + " — /emcom alone lists the networks"}
+	}
+	if !s.mayControlEmcom(by, net.Slug) {
+		return radiocli.Result{Handled: true, Reply: "You are not authorized for this network"}
 	}
 	if err := s.setEmcomLevel(net.Slug, level, by); err != nil {
 		return radiocli.Result{Handled: true, Reply: "FAILED: " + err.Error()}

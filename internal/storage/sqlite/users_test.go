@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -165,9 +166,10 @@ func TestUsersCRUDAndProtection(t *testing.T) {
 	}
 }
 
-// TestCreateUserSubscribesAllChannels pins the default subscription: every
-// new user belongs to every group that exists at creation time.
-func TestCreateUserSubscribesAllChannels(t *testing.T) {
+// TestCreateUserStartsWithoutGroups pins the admin-only membership model:
+// every new user starts with NO groups, and only explicit admin
+// assignment (SetUserGroups) gives membership.
+func TestCreateUserStartsWithoutGroups(t *testing.T) {
 	store := newUsersStore(t)
 	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
 		t.Fatal(err)
@@ -189,24 +191,100 @@ func TestCreateUserSubscribesAllChannels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := make(map[int64]bool, len(ids))
-	for _, id := range ids {
-		got[id] = true
-	}
-	if !got[g1.ID] || !got[g2.ID] || len(ids) != 2 {
-		t.Fatalf("new user memberships = %v, want both groups", ids)
+	if len(ids) != 0 {
+		t.Fatalf("new user memberships = %v, want none (admin-assigned only)", ids)
 	}
 
-	// Self-service unsubscribe: membership is replaced, never merged.
-	if err := store.SetUserGroups(u.ID, []int64{g1.ID}); err != nil {
+	// Admin assignment: membership is replaced, never merged.
+	if err := store.SetUserGroups(u.ID, []int64{g1.ID, g2.ID}); err != nil {
 		t.Fatal(err)
 	}
 	ids, err = store.GroupIDsForUser(u.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0] != g1.ID {
-		t.Fatalf("after unsubscribe memberships = %v, want only %d", ids, g1.ID)
+	got := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		got[id] = true
+	}
+	if !got[g1.ID] || !got[g2.ID] || len(ids) != 2 {
+		t.Fatalf("after admin assignment memberships = %v, want both groups", ids)
+	}
+}
+
+// TestEmcomNetworkGroups pins the per-network authorization rows:
+// replace-with semantics and the membership lookup used by the web and
+// radio gates.
+func TestEmcomNetworkGroups(t *testing.T) {
+	store := newUsersStore(t)
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.SaveEmcomNetwork(ctx, storage.EmcomNetwork{
+		Slug: "sp9moa", Name: "SP9MOA EMCOM", Level: 0, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed network: %v", err)
+	}
+
+	// No assignments for a fresh network.
+	ids, err := store.EmcomNetworkGroups(ctx, "sp9moa")
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("fresh network groups = %v, %v; want none", ids, err)
+	}
+
+	g1, err := store.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := store.CreateGroup("hams")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := store.CreateUser("oper", "", "", "", "emcom", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Member of an assigned group: authorized.
+	if err := store.SetEmcomNetworkGroups(ctx, "sp9moa", []int64{g1.ID}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err = store.EmcomNetworkGroups(ctx, "sp9moa")
+	if err != nil || len(ids) != 1 || ids[0] != g1.ID {
+		t.Fatalf("assigned groups = %v, %v; want [%d]", ids, err, g1.ID)
+	}
+	// Not yet a member: denied before the admin assigns membership.
+	ok, err := store.UserInGroups(ctx, "oper", []int64{g1.ID})
+	if err != nil || ok {
+		t.Fatalf("pre-assignment member lookup: ok=%v, %v; want false", ok, err)
+	}
+	if err := store.SetUserGroups(u.ID, []int64{g1.ID}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = store.UserInGroups(ctx, "oper", []int64{g1.ID})
+	if err != nil || !ok {
+		t.Fatalf("member of assigned group after join: ok=%v, %v; want true", ok, err)
+	}
+
+	// Not a member of the assigned group: denied; replacement wipes the
+	// previous assignment.
+	ok, err = store.UserInGroups(ctx, "oper", []int64{g2.ID})
+	if err != nil || ok {
+		t.Fatalf("non-member of assigned group: ok=%v, %v; want false", ok, err)
+	}
+	if err := store.SetEmcomNetworkGroups(ctx, "sp9moa", []int64{g2.ID}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err = store.EmcomNetworkGroups(ctx, "sp9moa")
+	if err != nil || len(ids) != 1 || ids[0] != g2.ID {
+		t.Fatalf("replaced groups = %v, %v; want [%d]", ids, err, g2.ID)
+	}
+
+	// Unknown user: not in any group.
+	ok, err = store.UserInGroups(ctx, "ghost", []int64{g1.ID, g2.ID})
+	if err != nil || ok {
+		t.Fatalf("unknown user: ok=%v, %v; want false", ok, err)
 	}
 }
 

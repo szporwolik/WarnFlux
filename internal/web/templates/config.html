@@ -155,6 +155,7 @@
       <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-megaphone"></use></svg>{{tr .Lang "config.sec.emcom"}}</h3>
       <div class="config-block">
         {{range .EmcomNetworks}}
+        {{$net := .}}
         <div class="config-row">
           <span class="config-row-title">{{.Name}} <span class="muted small">({{tr $.Lang "emcom.net_id"}}: {{.ID}})</span></span>
           <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
@@ -165,6 +166,18 @@
             <button type="submit" class="btn-ghost btn-small btn-danger"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>{{tr $.Lang "emcom.delete"}}</button>
           </form>
         </div>
+        <form method="post" action="/config/emcom/{{$net.Slug}}/groups" class="emcom-groups-form">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <div class="emcom-groups-row">
+            <span class="muted small">{{tr $.Lang "emcom.groups.note"}}</span>
+            {{range $.Groups}}
+            <label class="emcom-group-label"><input type="checkbox" name="groups" value="{{.ID}}"{{if index $net.Groups .ID}} checked{{end}}><span>{{.Name}}</span></label>
+            {{else}}
+            <span class="muted small">{{tr $.Lang "groups.none"}}</span>
+            {{end}}
+            <button type="submit" class="btn-ghost btn-small">{{tr $.Lang "emcom.save_groups"}}</button>
+          </div>
+        </form>
         {{else}}
         <p class="config-hint">{{tr .Lang "config.emcom.none"}}</p>
         {{end}}

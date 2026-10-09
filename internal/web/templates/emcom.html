@@ -23,7 +23,7 @@
         {{range .Networks}}
         <article class="emcom-card">
           <div class="emcom-card-head">
-            <h3>{{.Name}}</h3>
+            <h3>{{.Name}} <span class="muted small">({{tr $.Lang "emcom.net_id"}}: {{.Slug}})</span></h3>
             <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
               <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
             </span>

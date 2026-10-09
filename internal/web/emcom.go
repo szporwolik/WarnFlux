@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -854,25 +856,34 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/config?msg=emcom-added", http.StatusSeeOther)
 }
 
-// handleEmcomSetLevel moves one network to a readiness level. Levels 1-3
-// publish a severe hazard document and flow through the routing matrix;
-// level 0 retires the hazard document (monitoring continues silently).
-func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
-	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
-		return
-	}
-	slug := r.PathValue("slug")
+// emcomLevelErrKind classifies a failed level transition for the two
+// callers of setEmcomLevel (the panel handler and the radio command).
+type emcomLevelErrKind string
+
+const (
+	emcomErrUnknownNetwork emcomLevelErrKind = "unknown_network"
+	emcomErrSave           emcomLevelErrKind = "save"
+	emcomErrBroker         emcomLevelErrKind = "broker"
+	emcomErrDispatch       emcomLevelErrKind = "dispatch"
+)
+
+// emcomLevelError is one failed EMCOM level transition.
+type emcomLevelError struct {
+	kind emcomLevelErrKind
+	err  error
+}
+
+func (e *emcomLevelError) Error() string { return e.err.Error() }
+
+// setEmcomLevel moves one network to a readiness level and reports the
+// first failure. Shared by the panel handler and the /emcom radio
+// command, so every path mutates the exact same state: the durable
+// local record, the canonical dispatch ingress and the broker sync. by
+// is the acting operator identity.
+func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 	net, ok := s.emcomNetworkBySlug(slug)
 	if !ok {
-		http.Error(w, i18n.T(s.langFor(r), "emcom.err.unknown"), http.StatusNotFound)
-		return
-	}
-	level, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("level")))
-	if err != nil || level < 0 || level > 3 {
-		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "emcom.err.level_range"))
-		return
+		return &emcomLevelError{kind: emcomErrUnknownNetwork, err: fmt.Errorf("emcom: unknown network %q", slug)}
 	}
 
 	// The PREVIOUS level decides new vs updated vs expiry — captured
@@ -881,7 +892,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 	prevLevel := net.Level
 
 	net.Level = level
-	net.UpdatedBy = sess.username
+	net.UpdatedBy = by
 	net.UpdatedAt = time.Now()
 	// The lifecycle version comes from the store's clock-independent
 	// counter when a store is attached; mirror-only installations fall
@@ -894,22 +905,18 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		v, err := s.saveEmcomNetwork(net)
 		if err != nil {
 			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
-			return
+			return &emcomLevelError{kind: emcomErrSave, err: err}
 		}
 		version = v
 	} else {
 		// Mirror-only installations keep the broker document as the
 		// record; publishing is required and synchronous there.
 		if s.pub == nil {
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable,
-				i18n.T(s.langFor(r), "emcom.err.no_broker"))
-			return
+			return &emcomLevelError{kind: emcomErrBroker, err: errors.New("emcom: no broker configured")}
 		}
-		if err := s.publishEmcomState(net, sess.username); err != nil {
+		if err := s.publishEmcomState(net, by); err != nil {
 			s.logger.Warn("emcom: state publish failed", "slug", slug, "error", err)
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
-			return
+			return &emcomLevelError{kind: emcomErrBroker, err: err}
 		}
 	}
 
@@ -928,15 +935,14 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 		switch s.ingress.Enqueue(emcomTransition(h, typ, publisher, version, emcomLocalized(net))) {
 		case dispatch.Rejected:
 			s.logger.Warn("emcom: local dispatch rejected the transition", "slug", slug)
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.dispatch"))
-			return
+			return &emcomLevelError{kind: emcomErrDispatch, err: errors.New("emcom: local dispatch rejected")}
 		case dispatch.AcceptedEmergency:
 			s.logger.Warn("emcom: transition accepted WITHOUT durable storage (emergency mode; lost on restart)", "slug", slug)
 		}
 		if hasStore {
 			// Broker sync: the state document and the retained hazard,
 			// best-effort (the resync hook republishes on reconnect).
-			s.publishEmcomStateAsync(net, sess.username)
+			s.publishEmcomStateAsync(net, by)
 			if s.pub != nil {
 				go func() {
 					if err := s.pub.PublishActive(emcomSource, h); err != nil {
@@ -946,8 +952,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if err := s.pub.PublishActive(emcomSource, h); err != nil {
 			s.logger.Warn("emcom: hazard publish failed", "slug", slug, "error", err)
-			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.communication"))
-			return
+			return &emcomLevelError{kind: emcomErrBroker, err: err}
 		}
 	} else if wasActive {
 		// Back to monitoring: the expiry transition retires the document
@@ -962,7 +967,7 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("emcom: local dispatch rejected the deactivation transition", "slug", slug)
 		}
 		if hasStore {
-			s.publishEmcomStateAsync(net, sess.username)
+			s.publishEmcomStateAsync(net, by)
 			if s.pub != nil {
 				go func() {
 					if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
@@ -974,11 +979,86 @@ func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
 		}
 	} else if hasStore {
-		s.publishEmcomStateAsync(net, sess.username)
+		s.publishEmcomStateAsync(net, by)
 	}
-	s.logger.Info("emcom: level changed", "slug", slug, "level", level, "by", sess.username)
-	s.audit(sess.username, "emcom-level", fmt.Sprintf("%s=%d", slug, level))
+	s.logger.Info("emcom: level changed", "slug", slug, "level", level, "by", by)
+	s.audit(by, "emcom-level", fmt.Sprintf("%s=%d", slug, level))
+	return nil
+}
+
+// handleEmcomSetLevel moves one network to a readiness level. Levels 1-3
+// publish a severe hazard document and flow through the routing matrix;
+// level 0 retires the hazard document (monitoring continues silently).
+func (s *Server) handleEmcomSetLevel(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	slug := r.PathValue("slug")
+	if _, ok := s.emcomNetworkBySlug(slug); !ok {
+		http.Error(w, i18n.T(s.langFor(r), "emcom.err.unknown"), http.StatusNotFound)
+		return
+	}
+	level, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("level")))
+	if err != nil || level < 0 || level > 3 {
+		s.renderEmcomError(w, r, http.StatusUnprocessableEntity, i18n.T(s.langFor(r), "emcom.err.level_range"))
+		return
+	}
+	if err := s.setEmcomLevel(slug, level, sess.username); err != nil {
+		var le *emcomLevelError
+		if errors.As(err, &le) {
+			switch le.kind {
+			case emcomErrUnknownNetwork:
+				http.Error(w, i18n.T(s.langFor(r), "emcom.err.unknown"), http.StatusNotFound)
+			case emcomErrSave:
+				s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
+			case emcomErrDispatch:
+				s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.dispatch"))
+			case emcomErrBroker:
+				s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.communication"))
+			}
+			return
+		}
+		http.Error(w, "emcom transition failed", http.StatusServiceUnavailable)
+		return
+	}
 	http.Redirect(w, r, "/emcom?msg=level", http.StatusSeeOther)
+}
+
+// RadioEmcom serves the shared /emcom radio command for authorized
+// senders on APRS, Meshtastic and SMS: "/emcom <network-id> <level>".
+// No arguments lists the networks with their ids and current levels; a
+// missing or invalid parameter explains the usage. Replies are English
+// (the radio convention).
+func (s *Server) RadioEmcom(args string, by string) radiocli.Result {
+	fields := strings.Fields(args)
+	if len(fields) == 0 {
+		lines := []string{"usage: /emcom <network-id> <level 0-3>"}
+		for _, n := range s.emcomNetworks() {
+			lines = append(lines, fmt.Sprintf("%s = %s (level %d)", n.Slug, n.Name, n.Level))
+		}
+		if len(lines) == 1 {
+			lines = append(lines, "no networks configured")
+		}
+		return radiocli.Result{Handled: true, Reply: strings.Join(lines, "\n")}
+	}
+	slug := fields[0]
+	if len(fields) < 2 {
+		return radiocli.Result{Handled: true, Reply: "missing level — usage: /emcom " + slug + " <0-3>"}
+	}
+	level, err := strconv.Atoi(fields[1])
+	if err != nil || level < 0 || level > 3 {
+		return radiocli.Result{Handled: true, Reply: "invalid level (want 0-3) — usage: /emcom " + slug + " <0-3>"}
+	}
+	net, ok := s.emcomNetworkBySlug(slug)
+	if !ok {
+		return radiocli.Result{Handled: true, Reply: "unknown network id " + slug + " — /emcom alone lists the networks"}
+	}
+	if err := s.setEmcomLevel(slug, level, by); err != nil {
+		return radiocli.Result{Handled: true, Reply: "FAILED: " + err.Error()}
+	}
+	return radiocli.Result{Handled: true, Reply: fmt.Sprintf("OK: %s -> level %d", net.Name, level)}
 }
 
 // handleEmcomDelete removes one network: the retained info document is

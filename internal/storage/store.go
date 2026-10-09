@@ -152,8 +152,11 @@ type PendingDeleteStore interface {
 
 // EmcomNetwork is one EMCOM operational-readiness network persisted
 // locally: the panel edits it without any broker dependency and the
-// retained MQTT document is only an asynchronous sync copy.
+// retained MQTT document is only an asynchronous sync copy. ID is the
+// stable numeric identifier operators use on the radio (/emcom <id>
+// <level>); Slug remains the machine key (topics, event keys).
 type EmcomNetwork struct {
+	ID        int64
 	Slug      string
 	Name      string
 	Level     int

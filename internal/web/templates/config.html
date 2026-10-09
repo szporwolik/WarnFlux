@@ -156,7 +156,7 @@
       <div class="config-block">
         {{range .EmcomNetworks}}
         <div class="config-row">
-          <span class="config-row-title">{{.Name}}</span>
+          <span class="config-row-title">{{.Name}} <span class="muted small">({{tr $.Lang "emcom.net_id"}}: {{.Slug}})</span></span>
           <span class="emcom-level-badge emcom-badge-{{.LevelClass}}">
             <span class="emcom-badge-dot"></span> {{trf $.Lang "emcom.badge" .Level .LevelName}}
           </span>

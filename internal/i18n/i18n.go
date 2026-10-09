@@ -720,6 +720,7 @@ var en = map[string]string{
 	"compose.err.dispatch":          "local dispatch rejected the communication; the intake is unavailable",
 	// EMCOM panel.
 	"emcom.title":             "EMCOM networks",
+	"emcom.net_id":            "network ID",
 	"emcom.intro":             "Situational crisis-communications networks. Each network's readiness level is published as a retained MQTT message and shown publicly in the home-page header.",
 	"emcom.level":             "level %d",
 	"emcom.badge":             "level %d — %s",
@@ -1616,6 +1617,7 @@ var pl = map[string]string{
 	"compose.err.dispatch":          "lokalny dyspozytor odrzucił komunikat; odbiór niedostępny",
 
 	"emcom.title":             "Sieci EMCOM",
+	"emcom.net_id":            "ID sieci",
 	"emcom.intro":             "Sytuacyjne sieci łączności kryzysowej. Poziom gotowości każdej sieci jest publikowany jako komunikat utrzymywany (retain) na MQTT i widoczny publicznie w nagłówku strony głównej.",
 	"emcom.level":             "poziom %d",
 	"emcom.badge":             "poziom %d — %s",

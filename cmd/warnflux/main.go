@@ -790,6 +790,17 @@ func run(configPath string, checkConfig bool) error {
 			Reply:   "OK: alert raised",
 		}
 	})
+	// /emcom: authorized operators move one managed EMCOM network to a
+	// readiness level straight from the radio — the same state, audit
+	// trail and routing as the panel. Bound to the web server's EMCOM
+	// service after web.New below (one source of truth).
+	var emcomRadio func(args string) radiocli.Result
+	radioCLI.RegisterRestricted("emcom", "EMCOM network level: /emcom <id> <0-3>", func(args string) radiocli.Result {
+		if emcomRadio == nil {
+			return radiocli.Result{Handled: true, Reply: "EMCOM unavailable"}
+		}
+		return emcomRadio(args)
+	})
 
 	// LOCAL-FIRST source pipeline: every journal change (ingest or
 	// expiration) is dispatched into the local ingress directly — SQLite
@@ -1074,6 +1085,11 @@ func run(configPath string, checkConfig bool) error {
 				logger.Warn("app.timezone unavailable, keeping the process-local zone",
 					"timezone", cfg.App.Timezone, "error", err)
 			}
+		}
+		// Radio channels (APRS, Meshtastic, SMS) share the panel's EMCOM
+		// transition logic through the /emcom command.
+		emcomRadio = func(args string) radiocli.Result {
+			return webSrv.RadioEmcom(args, "radio")
 		}
 		// Low-disk alarm: the health page and /metrics report the free
 		// space against storage.min_free_mb (0 disables the alarm).

@@ -26,6 +26,7 @@
       {{else}}
       <p><span class="badge warn">{{tr .Lang "gsm.modem_down"}}</span></p>
       {{end}}
+      {{if eq .Role "admin"}}
       <form method="post" action="/gsm/send" class="test-form gsm-send" data-lbl-sent="{{tr .Lang "gsm.sent"}}" data-lbl-failed="{{tr .Lang "gsm.failed"}}">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <label class="field">
@@ -42,6 +43,7 @@
           <button type="submit" class="btn-primary">{{tr .Lang "gsm.send"}}</button>
         </div>
       </form>
+      {{end}}
       <div id="gsm-flash">
         {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
         {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "gsm.sent"}}</span></div>{{end}}

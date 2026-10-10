@@ -76,6 +76,7 @@
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
       {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "meshtastic.sent"}}</span></div>{{end}}
       <div class="mesh-toolbar">
+      {{if eq .Role "admin"}}
         <form method="post" action="/meshtastic/send" class="mesh-send mesh-send-active">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="hidden" name="target" value="channel">
@@ -98,8 +99,9 @@
           <span class="char-count">0 / 133</span>
           <button type="button" class="btn-ghost mesh-bell" aria-pressed="false" title="{{tr .Lang "meshtastic.bell"}}">🔔</button>
           <button type="submit" class="btn-primary">{{tr .Lang "meshtastic.send_contact"}}</button>
-        </form>
-      </div>
+        </form>      {{else}}
+      <form class="wf-csrf-only" hidden><input type="hidden" name="csrf" value="{{.CSRF}}"></form>
+      {{end}}      </div>
       <p class="muted log-hint">{{tr .Lang "meshtastic.hint"}}</p>
       <div class="page-tabs">
         <a class="page-tab{{if not (or (eq .Dir "ch0") (and .EmcomDir (eq .Dir .EmcomDir)))}} active{{end}}" href="/meshtastic?tab=msgs">DM</a>
@@ -121,7 +123,8 @@
     </section>
   </main>
   {{template "footer" .}}
-  <script>window.WF_OFFLINE={{if or .OfflineMode .ForceTiles}}true{{else}}false{{end}};</script>
+  <script>window.WF_OFFLINE={{if or .OfflineMode .ForceTiles}}true{{else}}false{{end}};
+  window.WF_ADMIN={{if eq .Role "admin"}}true{{else}}false{{end}};</script>
   <script src="/static/app.js?v={{.Commit}}" defer></script>
   <script src="/static/leaflet/leaflet.js"></script>
   <script>
@@ -576,17 +579,20 @@
       }
       lines.push(LBL_HEARD + ": " + fmtTime(n.last_seen));
       if (n.distance_km) { lines.push(Number(n.distance_km).toFixed(1) + " km"); }
+      var actions = "";
+      if (window.WF_ADMIN === true) {
+        actions = '<button type="button" class="btn-ghost mesh-msg" data-id="' + esc(n.id) + '">' + esc(LBL_MSG) + '</button>' +
+          '<button type="button" class="btn-ghost mesh-trace"' +
+          (stale ? ' disabled title="' + esc(ageText) + '"' : '') +
+          ' data-id="' + esc(n.id) + '" data-name="' + esc(n.name || "") + '" data-short="' + esc(n.short_name || "") + '">' +
+          esc(LBL_TRACE) + '</button>';
+      }
       return '<div class="wf-pop">' +
         '<div class="wf-pop-head" style="--wf-pop-c:' + MESH_COLOR + '">' +
         '<span class="wf-pop-t"><strong>' + esc(displayName(n)) + '</strong>' +
         '<span class="wf-pop-sub">' + esc(n.id) + '</span></span></div>' +
         '<div class="wf-pop-body">' + lines.join("<br>") + '</div>' +
-        '<div class="wf-pop-actions">' +
-        '<button type="button" class="btn-ghost mesh-msg" data-id="' + esc(n.id) + '">' + esc(LBL_MSG) + '</button>' +
-        '<button type="button" class="btn-ghost mesh-trace"' +
-        (stale ? ' disabled title="' + esc(ageText) + '"' : '') +
-        ' data-id="' + esc(n.id) + '" data-name="' + esc(n.name || "") + '" data-short="' + esc(n.short_name || "") + '">' +
-        esc(LBL_TRACE) + '</button></div></div>';
+        '<div class="wf-pop-actions">' + actions + '</div></div>';
     }
 
     // Starting a traceroute from a popup closes the marker popup so the
@@ -719,8 +725,8 @@
         <td class="muted nowrap">{{.LastSeen}}{{if .Stale}} <span class="badge muted">{{.Inactive}}</span>{{end}}</td>
         <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost mesh-trace" disabled data-seen="{{.LastSeenUnix}}"
             title="{{.Inactive}}">{{tr $.Lang "meshtastic.trace"}}</button>{{else}}
-          <button type="button" class="btn-ghost mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" data-seen="{{.LastSeenUnix}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}
-          <button type="button" class="btn-ghost mesh-msg" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">{{tr $.Lang "meshtastic.msg"}}</button></td>
+          {{if eq $.Role "admin"}}<button type="button" class="btn-ghost mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" data-seen="{{.LastSeenUnix}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}{{end}}
+          {{if eq $.Role "admin"}}<button type="button" class="btn-ghost mesh-msg" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">{{tr $.Lang "meshtastic.msg"}}</button>{{end}}</td>
       </tr>
       {{end}}
     </tbody>

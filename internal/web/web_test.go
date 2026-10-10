@@ -1912,8 +1912,7 @@ func TestIngestEndpointRouting(t *testing.T) {
 
 // TestEmcomRoleFlow pins the restricted emcom role: an emcom directory
 // account signs in with its own password, lands on the shared dashboard,
-// sees the Dashboard and Compose nav entries, and is redirected away from
-// every admin page.
+// and gains Messages/EMCOM only through group membership (admin-assigned).
 func TestEmcomRoleFlow(t *testing.T) {
 	env := newTestEnv(t)
 	if _, err := env.users.CreateUser("ops-user", "", "", "", "emcom", "password123"); err != nil {
@@ -1934,22 +1933,32 @@ func TestEmcomRoleFlow(t *testing.T) {
 		t.Fatalf("emcom login = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
 	}
 
-	resp, html = env.get("/compose")
+	// Without a group the operator has no Messages entry and the compose
+	// route bounces to the dashboard.
+	resp, html = env.get("/dashboard")
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /compose as emcom = %d", resp.StatusCode)
+		t.Fatalf("GET /dashboard as emcom = %d", resp.StatusCode)
 	}
 	if !strings.Contains(html, `<span class="nav-label">Dashboard</span>`) {
 		t.Error("emcom must see the Dashboard nav entry")
 	}
-	if !strings.Contains(html, `<span class="nav-label">Messages</span>`) {
-		t.Error("compose page missing Messages nav entry")
-	}
 	if !strings.Contains(html, `href="/account"`) {
 		t.Error("emcom must see the Account entry in the user menu")
 	}
-	for _, forbidden := range []string{"Access", "Notifications"} {
+	resp, _ = env.get("/compose")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("GET /compose without a group = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, forbidden := range []string{"Access", "Notifications", "Messages", "EMCOM", "Config", "Website"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
-			t.Errorf("emcom must not see %s nav entry", forbidden)
+			t.Errorf("group-less emcom must not see %s nav entry", forbidden)
+		}
+	}
+	// The shared view-only channel pages open for every registered user.
+	for _, path := range []string{"/aprs", "/gsm", "/meshtastic"} {
+		resp, _ := env.get(path)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s as emcom = %d, want 200", path, resp.StatusCode)
 		}
 	}
 
@@ -1959,20 +1968,11 @@ func TestEmcomRoleFlow(t *testing.T) {
 		t.Errorf("GET /dashboard as emcom = %d, want 200", resp.StatusCode)
 	}
 
-	// The EMCOM panel shows only the networks the operator may control:
-	// without an assigned group there is no card, only the
-	// authorization hint. Adding and deleting networks is admin-only —
-	// the controls are hidden and the endpoints redirect to the
-	// dashboard.
-	resp, html = env.get("/emcom")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /emcom as emcom = %d, want 200", resp.StatusCode)
-	}
-	if !strings.Contains(html, "No networks are authorized for you") {
-		t.Errorf("operator without groups must see the authorization hint: %s", html)
-	}
-	if strings.Contains(html, `<article class="emcom-card">`) {
-		t.Errorf("operator without groups must not see network cards: %s", html)
+	// EMCOM and Messages open only through group membership: without an
+	// assigned group the routes bounce to the dashboard.
+	resp, _ = env.get("/emcom")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("GET /emcom without a group = %d %q, want 303 to /dashboard", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	// Network management moved to the Config page: the operator panel
 	// carries neither the add form nor delete buttons.
@@ -2000,7 +2000,16 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if err := env.users.(storage.GroupStore).SetEmcomNetworkGroups(context.Background(), "sp9moa-emcom", []int64{ops.ID}); err != nil {
 		t.Fatal(err)
 	}
+	// With the group assigned, Messages (compose) opens and the EMCOM
+	// panel shows the network card with the level slider.
+	resp, _ = env.get("/compose")
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /compose with a group = %d, want 200", resp.StatusCode)
+	}
 	resp, html = env.get("/emcom")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /emcom after assignment = %d, want 200", resp.StatusCode)
+	}
 	if !strings.Contains(html, `<article class="emcom-card">`) || !strings.Contains(html, `name="level"`) {
 		t.Errorf("authorized operator must see the level controls: %s", html)
 	}
@@ -2399,13 +2408,16 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adminPages := []string{"/users", "/groups", "/access", "/logs", "/traffic", "/aprs?tab=msgs", "/meshtastic"}
+	adminPages := []string{"/users", "/groups", "/access", "/logs", "/traffic", "/website", "/config"}
+	// View-only channel pages open for every registered user; sending
+	// stays admin-only (adminPosts).
+	sharedPages := []string{"/aprs?tab=msgs", "/gsm", "/meshtastic"}
 	// /audit and /notifications merged into /logs tabs: every role gets a
 	// redirect (to the dashboard unless admin).
 	legacyLogPages := []string{"/audit", "/notifications"}
 	adminPartials := []string{"/partials/logs", "/partials/audit", "/partials/traffic", "/partials/notifications"}
-	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions", "/partials/health"}
-	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing", "/api/meshtastic/traceroute", "/config/mesh", "/config/tiles"}
+	sharedPartials := []string{"/partials/status", "/partials/mqtt", "/partials/weather", "/partials/warnings", "/partials/plugins", "/partials/actions", "/partials/health", "/partials/messages", "/partials/gsm", "/partials/meshtastic"}
+	adminPosts := []string{"/users", "/users/2/delete", "/users/2/prefs", "/groups", "/groups/1/delete", "/groups/1/routing", "/api/meshtastic/traceroute", "/config/mesh", "/config/tiles", "/messages/send", "/messages/beacon", "/gsm/send", "/meshtastic/send"}
 
 	loginAs := func(user, pass string) {
 		t.Helper()
@@ -2419,7 +2431,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 
 	// Unauthenticated: pages redirect to /login, partials answer 401 and
 	// POSTs are blocked before any handler runs.
-	for _, p := range append(append([]string{}, adminPages...), legacyLogPages...) {
+	for _, p := range append(append(append([]string{}, adminPages...), legacyLogPages...), sharedPages...) {
 		resp, _ := env.get(p)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
 			t.Errorf("unauthenticated GET %s = %d %q, want 303 /login", p, resp.StatusCode, resp.Header.Get("Location"))
@@ -2468,13 +2480,19 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 			t.Errorf("member POST %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
 		}
 	}
-	for _, p := range []string{"/compose"} {
+	for _, p := range []string{"/compose", "/emcom"} {
 		resp, _ := env.get(p)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
 			t.Errorf("member GET %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
 		}
 	}
 	for _, p := range append(sharedPartials, "/dashboard", "/account") {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("member GET %s = %d, want 200", p, resp.StatusCode)
+		}
+	}
+	for _, p := range sharedPages {
 		resp, _ := env.get(p)
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("member GET %s = %d, want 200", p, resp.StatusCode)
@@ -2502,15 +2520,41 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 			t.Errorf("emcom POST %s = %d %q, want 303 /dashboard", p, resp.StatusCode, resp.Header.Get("Location"))
 		}
 	}
+	if resp, _ := env.get("/compose"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Errorf("emcom GET /compose without a group = %d %q, want 303 /dashboard", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, p := range sharedPages {
+		resp, _ := env.get(p)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("emcom GET %s = %d, want 200", p, resp.StatusCode)
+		}
+	}
+
+	// Group membership opens the shared operator surfaces: after the
+	// admin assigns a group, compose (Messages) answers 200 for the
+	// member.
+	g, err := env.users.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu, err := env.users.GetUserByUsername("member1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserGroups(mu.ID, []int64{g.ID}); err != nil {
+		t.Fatal(err)
+	}
+	env.logout()
+	loginAs("member1", "password123")
 	if resp, _ := env.get("/compose"); resp.StatusCode != http.StatusOK {
-		t.Errorf("emcom GET /compose = %d, want 200", resp.StatusCode)
+		t.Errorf("group member GET /compose = %d, want 200", resp.StatusCode)
 	}
 
 	// Admin: everything listed above opens; the merged /logs tabs answer
 	// through the legacy URLs with a redirect.
 	env.logout()
 	env.login()
-	for _, p := range append(append(append([]string{}, adminPages...), adminPartials...), sharedPartials...) {
+	for _, p := range append(append(append(append([]string{}, adminPages...), adminPartials...), sharedPartials...), sharedPages...) {
 		resp, _ := env.get(p)
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("admin GET %s = %d, want 200", p, resp.StatusCode)
@@ -2609,14 +2653,36 @@ func TestMemberRoleFlow(t *testing.T) {
 			t.Errorf("account page missing checked delivery channel %s", kind)
 		}
 	}
-	for _, forbidden := range []string{"Compose", "Users", "Groups"} {
+	for _, forbidden := range []string{"Access", "Users", "Groups", "Website", "Config", "EMCOM"} {
 		if strings.Contains(html, `<span class="nav-label">`+forbidden+`</span>`) {
 			t.Errorf("member must not see %s nav entry", forbidden)
 		}
 	}
+	// The group member sees the shared operator surfaces: Messages
+	// (compose), APRS, GSM and Meshtastic.
+	for _, want := range []string{"Messages", "APRS", "GSM", "Meshtastic"} {
+		if !strings.Contains(html, `<span class="nav-label">`+want+`</span>`) {
+			t.Errorf("group member missing the %s nav entry", want)
+		}
+	}
 
-	// Compose and every admin page redirect the member to the dashboard.
-	for _, path := range []string{"/compose", "/users", "/groups", "/health", "/logs", "/traffic", "/notifications"} {
+	// The group member opens Messages (compose) and the shared view-only
+	// channel pages; admin pages still redirect to the dashboard.
+	for _, path := range []string{"/compose", "/aprs", "/gsm", "/meshtastic"} {
+		resp, _ := env.get(path)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s as group member = %d, want 200", path, resp.StatusCode)
+		}
+	}
+	_, html = env.get("/aprs")
+	if strings.Contains(html, `action="/messages/send"`) {
+		t.Error("member must not see the APRS send form")
+	}
+	_, html = env.get("/gsm")
+	if strings.Contains(html, `action="/gsm/send"`) {
+		t.Error("member must not see the GSM send form")
+	}
+	for _, path := range []string{"/users", "/groups", "/health", "/logs", "/traffic", "/notifications", "/config", "/website", "/access"} {
 		resp, _ := env.get(path)
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
 			t.Errorf("GET %s as member = %d %q, want 303 to /dashboard", path, resp.StatusCode, resp.Header.Get("Location"))

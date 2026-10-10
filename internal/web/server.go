@@ -412,17 +412,17 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/traffic", s.requireAdminPartial(s.handlePartialTraffic))
 	s.mux.Handle("GET /website", s.requireAdmin(s.handleWebsitePage))
 	s.mux.Handle("GET /api/stats/visits", s.requireAdmin(s.handleVisitorStats))
-	s.mux.Handle("GET /messages", s.requireAdmin(s.handleAPRSMessagesPage))
+	s.mux.Handle("GET /messages", s.requirePage(s.handleAPRSMessagesPage))
 	s.mux.Handle("POST /messages/send", s.requireAdmin(s.handleAPRSSend))
 	s.mux.Handle("POST /messages/beacon", s.requireAdmin(s.handleAPRSBeacon))
-	s.mux.Handle("GET /aprs", s.requireAdmin(s.handleAPRSPage))
-	s.mux.Handle("GET /gsm", s.requireAdmin(s.handleGSMPage))
-	s.mux.Handle("GET /partials/gsm", s.requireAdminPartial(s.handlePartialGSM))
+	s.mux.Handle("GET /aprs", s.requirePage(s.handleAPRSPage))
+	s.mux.Handle("GET /gsm", s.requirePage(s.handleGSMPage))
+	s.mux.Handle("GET /partials/gsm", s.requirePagePartial(s.handlePartialGSM))
 	s.mux.Handle("POST /gsm/send", s.requireAdmin(s.handleGSMSend))
-	s.mux.Handle("GET /meshtastic", s.requireAdmin(s.handleMeshtasticPage))
+	s.mux.Handle("GET /meshtastic", s.requirePage(s.handleMeshtasticPage))
 	s.mux.Handle("GET /meshmap", s.requireAdmin(s.handleMeshMapPage))
-	s.mux.Handle("GET /partials/meshtastic", s.requireAdminPartial(s.handlePartialMeshtastic))
-	s.mux.Handle("GET /partials/messages", s.requireAdminPartial(s.handlePartialMessages))
+	s.mux.Handle("GET /partials/meshtastic", s.requirePagePartial(s.handlePartialMeshtastic))
+	s.mux.Handle("GET /partials/messages", s.requirePagePartial(s.handlePartialMessages))
 	s.mux.Handle("POST /meshtastic/send", s.requireAdmin(s.handleMeshtasticSend))
 	s.mux.Handle("POST /api/meshtastic/traceroute", s.requireAdmin(s.handleMeshtasticTraceroute))
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))
@@ -440,16 +440,18 @@ func (s *Server) routes(static http.Handler) {
 		s.mux.HandleFunc("POST /api/v1/ingest/{id}", s.handleIngest)
 	}
 	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
-	// Compose: admin and emcom sessions issue/update/expire
-	// communications; it is the emcom operator's main surface.
-	s.mux.Handle("GET /compose", s.requireCompose(s.handleComposePage))
-	s.mux.Handle("POST /compose", s.requireCompose(s.handleComposeSave))
-	s.mux.Handle("POST /compose/expire", s.requireCompose(s.handleComposeExpire))
-	// EMCOM networks: admin and emcom sessions use the panel and move
-	// the readiness level. Adding and deleting networks is an
-	// admin-tier structural change and lives on the Config page.
-	s.mux.Handle("GET /emcom", s.requireCompose(s.handleEmcomPage))
-	s.mux.Handle("POST /emcom/{slug}/level", s.requireCompose(s.handleEmcomSetLevel))
+	// Compose ("Messages"): any signed-in user belonging to at least
+	// one group — plus the admin — issues/updates/expires
+	// communications.
+	s.mux.Handle("GET /compose", s.requireGroupMember(s.handleComposePage))
+	s.mux.Handle("POST /compose", s.requireGroupMember(s.handleComposeSave))
+	s.mux.Handle("POST /compose/expire", s.requireGroupMember(s.handleComposeExpire))
+	// EMCOM networks: signed-in group members see the panel and may move
+	// the level of the networks their groups authorize (admin always).
+	// Adding and deleting networks is an admin-tier structural change and
+	// lives on the Config page.
+	s.mux.Handle("GET /emcom", s.requireGroupMember(s.handleEmcomPage))
+	s.mux.Handle("POST /emcom/{slug}/level", s.requireGroupMember(s.handleEmcomSetLevel))
 	s.mux.Handle("POST /config/emcom/add", s.requireAdmin(s.handleEmcomAdd))
 	s.mux.Handle("POST /config/emcom/{slug}/groups", s.requireAdmin(s.handleEmcomSetGroups))
 	s.mux.Handle("POST /config/emcom/{slug}/delete", s.requireAdmin(s.handleEmcomDelete))
@@ -555,21 +557,41 @@ func (s *Server) requirePagePartial(next http.HandlerFunc) http.Handler {
 	})
 }
 
-// requireCompose protects the compose routes: any authenticated admin or
-// emcom session; members are sent back to the dashboard.
-func (s *Server) requireCompose(next http.HandlerFunc) http.Handler {
+// requireGroupMember protects the shared operator surfaces (Messages,
+// EMCOM): the configured admin always passes; every other session must
+// belong to at least one notification group.
+func (s *Server) requireGroupMember(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess := s.sessions.currentSession(r)
 		if sess == nil {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
-		if sess.role == "member" {
+		if sess.role != "admin" && !s.userInAnyGroup(sess.username) {
 			http.Redirect(w, r, landingForRole(sess.role), http.StatusSeeOther)
 			return
 		}
 		next(w, r)
 	})
+}
+
+// userInAnyGroup reports whether the directory user belongs to at least
+// one notification group (fail-closed on store errors).
+func (s *Server) userInAnyGroup(username string) bool {
+	if s.users == nil || username == "" {
+		return false
+	}
+	u, err := s.users.GetUserByUsername(username)
+	if err != nil {
+		s.logger.Warn("web: group-membership check failed", "username", username, "error", err)
+		return false
+	}
+	ids, err := s.users.GroupIDsForUser(u.ID)
+	if err != nil {
+		s.logger.Warn("web: group-membership check failed", "username", username, "error", err)
+		return false
+	}
+	return len(ids) > 0
 }
 
 // requireAdmin protects admin-tier routes: unauthenticated requests go to
@@ -789,11 +811,16 @@ func (s *Server) templateFuncs() template.FuncMap {
 			return i18n.T(lang, "role."+role)
 		},
 		// emcomNav reports whether the EMCOM entry belongs in this
-		// session's sidebar: the admin always sees it; an operator
-		// sees it only when they may change the level of at least one
-		// network (group authorization, every channel).
+		// session's sidebar: the admin always sees it; anyone else sees
+		// it only when at least one network's assigned group covers them.
 		"emcomNav": func(role, username string) bool {
 			return s.emcomNavVisible(role, username)
+		},
+		// messagesNav reports whether the Messages (compose) entry
+		// belongs in this session's sidebar: the admin always sees it;
+		// everyone else only while a member of at least one group.
+		"messagesNav": func(role, username string) bool {
+			return role == "admin" || s.userInAnyGroup(username)
 		},
 		// shortCommit trims full hashes for display (links keep the
 		// full hash; cache-busting query strings must too).

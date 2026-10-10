@@ -824,13 +824,13 @@ func (s *Server) mayControlEmcom(username, slug string) bool {
 
 // emcomNavVisible decides whether the EMCOM sidebar entry belongs to a
 // session: the admin always sees it (they manage networks and may
-// control every level); an emcom operator sees it only when they may
-// change the level of at least one network. Everyone else never does.
+// control every level); everyone else sees it only when they may change
+// the level of at least one network (assigned group membership).
 func (s *Server) emcomNavVisible(role, username string) bool {
 	if role == "admin" {
 		return true
 	}
-	if role != "emcom" || username == "" {
+	if username == "" {
 		return false
 	}
 	for _, net := range s.emcomNetworks() {

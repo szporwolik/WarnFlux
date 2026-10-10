@@ -542,17 +542,19 @@ button:disabled { cursor: not-allowed; }
   padding: 1.5rem 1.25rem 2rem;
 }
 
-/* Dashboard placement: System (1) and the compact MQTT card (2) form the
-   top row. Active warnings (3) span the full width right under them, and
-   Weather (4) takes the full width below — the freed MQTT space goes to
-   the weather panels. Plugins (5) and actions (6) share the last row. */
+/* Dashboard placement (6 cards: System, Stats, Health, MQTT, Plugins,
+   Actions). Column 1 stacks System over the Stats pane, and Health spans
+   both rows in column 2 — so Stats fills the space under System instead of
+   leaving a hole there. The same DOM order keeps Stats right under System
+   on the single-column mobile layout. MQTT, Plugins and Actions span the
+   full width. */
 @media (min-width: 900px) {
   .grid { grid-template-columns: 1fr 1fr; }
   .grid > .card:nth-child(1) { grid-column: 1; grid-row: 1; align-self: start; }
-  .grid > .card:nth-child(2) { grid-column: 2; grid-row: 1; }
-  .grid > .card:nth-child(3) { grid-column: 1 / -1; }
-  .grid > .card:nth-child(4) { grid-column: 1 / -1; }
-  .grid > .card:nth-child(5) { grid-column: 1 / -1; }
+  .grid > .card:nth-child(2) { grid-column: 1; grid-row: 2; align-self: start; }
+  .grid > .card:nth-child(3) { grid-column: 2; grid-row: 1 / span 2; }
+  .grid > .card:nth-child(4),
+  .grid > .card:nth-child(5),
   .grid > .card:nth-child(6) { grid-column: 1 / -1; }
 }
 

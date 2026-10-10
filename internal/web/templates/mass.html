@@ -1,0 +1,69 @@
+{{define "mass"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{tr .Lang "mass.title"}} · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "mass.title"}}</h2>
+      <p class="muted">{{tr .Lang "mass.intro"}}</p>
+      {{if .Msg}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{.Msg}}</span></div>{{end}}
+      {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
+      <form method="post" action="/mass" class="test-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <label class="field field-wide">
+          <span>{{tr .Lang "mass.message"}}</span>
+          <input type="text" name="message" value="{{.Message}}" maxlength="50" data-char-count="50" data-char-out="#mass-count" required>
+          <span class="char-count" id="mass-count">0 / 50</span>
+        </label>
+        <div class="mass-grid">
+          <label class="field">
+            <span>{{tr .Lang "mass.groups"}}</span>
+            <select name="groups" multiple size="6">
+              {{range .Groups}}<option value="{{.ID}}">{{.Name}}{{if .Members}} ({{.Members}}){{end}}</option>{{end}}
+            </select>
+            <span class="muted small">{{tr .Lang "mass.groups_hint"}}</span>
+          </label>
+          <label class="field">
+            <span>{{tr .Lang "mass.networks"}}</span>
+            <select name="networks" multiple size="6">
+              {{range .Networks}}<option value="{{.Slug}}">{{.Name}}</option>{{end}}
+            </select>
+            <span class="muted small">{{tr .Lang "mass.networks_hint"}}</span>
+          </label>
+          <label class="field">
+            <span>{{tr .Lang "mass.users"}}</span>
+            <select name="users" multiple size="6">
+              {{range .Users}}<option value="{{.ID}}">{{.Username}}{{if .APRSCallsigns}} · {{index .APRSCallsigns 0}}{{end}}</option>{{end}}
+            </select>
+            <span class="muted small">{{tr .Lang "mass.users_hint"}}</span>
+          </label>
+        </div>
+        <fieldset class="mass-channels">
+          <legend>{{tr .Lang "mass.channels"}}</legend>
+          {{range .Channels}}
+          <label class="mass-channel">
+            <input type="checkbox" name="channels" value="{{.Kind}}">
+            <span>{{tr $.Lang .Label}}</span>
+          </label>
+          {{end}}
+        </fieldset>
+        <div class="form-footer">
+          <button type="submit" class="btn-primary">{{tr .Lang "mass.send"}}</button>
+        </div>
+      </form>
+    </section>
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
+</body>
+</html>
+{{end}}

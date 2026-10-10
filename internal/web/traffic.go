@@ -58,6 +58,7 @@ type trafficView struct {
 	NavCompose bool
 	NavEmcom   bool
 	NavHelp    bool
+	NavMass    bool
 	NavAccount bool
 	MaxEntries int
 	Receivers  []receiverChoice

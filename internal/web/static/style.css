@@ -690,6 +690,35 @@ button:disabled { cursor: not-allowed; }
 .gh-link:hover { color: var(--text); text-decoration: none; }
 .gh-link .icon { width: 15px; height: 15px; }
 
+/* Mass info form: three pickers side by side, channel checkboxes below. */
+.mass-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.9rem;
+  margin: 0.8rem 0;
+}
+.mass-grid select { min-height: 7.5rem; }
+.mass-channels {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.8rem 0.7rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.2rem;
+}
+.mass-channels legend {
+  padding: 0 0.4rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.mass-channel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
 /* Help page: the manual sections lay out as cards, one per topic. */
 .help-grid {
   display: grid;

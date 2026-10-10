@@ -3,7 +3,7 @@
 {{define "topbar"}}<script>try{if(localStorage.getItem("warnflux-theme")==="light"){document.documentElement.setAttribute("data-theme","light")}}catch(e){}</script>
   <header class="topbar">
     <button type="button" class="menu-btn" id="drawer-toggle" aria-label="Toggle navigation"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-list"></use></svg></button>
-    <span class="topbar-title">{{if .NavUsers}}{{tr .Lang "nav.access"}}{{else if .NavGroups}}{{tr .Lang "nav.access"}}{{else if .NavCompose}}{{tr .Lang "nav.compose"}}{{else if .NavEmcom}}{{tr .Lang "nav.emcom"}}{{else if .NavAccount}}{{tr .Lang "nav.account"}}{{else if .NavLogs}}{{tr .Lang "nav.logs"}}{{else if .NavAPRS}}{{tr .Lang "nav.aprs"}}{{else if .NavGSM}}{{tr .Lang "nav.gsm"}}{{else if .NavMeshtastic}}{{tr .Lang "nav.meshtastic"}}{{else if .NavConfig}}{{tr .Lang "nav.config"}}{{else if .NavHelp}}{{tr .Lang "nav.help"}}{{else}}{{tr .Lang "nav.dashboard"}}{{end}}</span>
+    <span class="topbar-title">{{if .NavUsers}}{{tr .Lang "nav.access"}}{{else if .NavGroups}}{{tr .Lang "nav.access"}}{{else if .NavCompose}}{{tr .Lang "nav.compose"}}{{else if .NavEmcom}}{{tr .Lang "nav.emcom"}}{{else if .NavAccount}}{{tr .Lang "nav.account"}}{{else if .NavLogs}}{{tr .Lang "nav.logs"}}{{else if .NavAPRS}}{{tr .Lang "nav.aprs"}}{{else if .NavGSM}}{{tr .Lang "nav.gsm"}}{{else if .NavMeshtastic}}{{tr .Lang "nav.meshtastic"}}{{else if .NavConfig}}{{tr .Lang "nav.config"}}{{else if .NavHelp}}{{tr .Lang "nav.help"}}{{else if .NavMass}}{{tr .Lang "nav.mass"}}{{else}}{{tr .Lang "nav.dashboard"}}{{end}}</span>
     <span class="topbar-spacer"></span>
     <a class="topbar-home" href="/" title="{{tr .Lang "common.public_page"}}" aria-label="{{tr .Lang "common.public_page"}}">
       <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg>
@@ -55,6 +55,7 @@
       <a class="nav-item{{if .NavGSM}} active{{end}}" href="/gsm"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-telephone"></use></svg><span class="nav-label">{{tr .Lang "nav.gsm"}}</span></a>
       <a class="nav-item{{if .NavMeshtastic}} active{{end}}" href="/meshtastic"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg><span class="nav-label">{{tr .Lang "nav.meshtastic"}}</span></a>
       {{if eq .Role "admin"}}
+      <a class="nav-item{{if .NavMass}} active{{end}}" href="/mass"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg><span class="nav-label">{{tr .Lang "nav.mass"}}</span></a>
       <a class="nav-item{{if or .NavUsers .NavGroups}} active{{end}}" href="/access"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">{{tr .Lang "nav.access"}}</span></a>
       <a class="nav-item{{if .NavWebsite}} active{{end}}" href="/website"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">{{tr .Lang "nav.website"}}</span></a>
       <a class="nav-item{{if .NavConfig}} active{{end}}" href="/config"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-gear"></use></svg><span class="nav-label">{{tr .Lang "nav.config"}}</span></a>

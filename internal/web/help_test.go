@@ -27,8 +27,9 @@ func TestHelpPage(t *testing.T) {
 		t.Fatalf("GET /help = %d", resp.StatusCode)
 	}
 	for _, want := range []string{
-		"How it works", "EMCOM networks", "/emcom &lt;network-id&gt;",
+		"Getting started", "How it works", "EMCOM networks", "/emcom &lt;network-id&gt;",
 		"New message", "Admin", "Alert RCB",
+		"group channel", "delivery channels",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("help page missing %q", want)

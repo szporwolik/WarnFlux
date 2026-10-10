@@ -296,13 +296,13 @@ func TestMessageIDStable(t *testing.T) {
 	if id != MessageID(key) {
 		t.Fatalf("MessageID is not deterministic: %q vs %q", id, MessageID(key))
 	}
-	if len(id) != 11 {
-		t.Fatalf("MessageID = %q, want 11 characters (WX- + 8)", id)
+	if len(id) != 13 {
+		t.Fatalf("MessageID = %q, want 13 characters (WF- + 10)", id)
 	}
-	if !strings.HasPrefix(id, "WX-") {
-		t.Fatalf("MessageID = %q, want the WX- prefix", id)
+	if !strings.HasPrefix(id, "WF-") {
+		t.Fatalf("MessageID = %q, want the WF- prefix", id)
 	}
-	// The suffix is the readable DDHHMMNN code: digits only.
+	// The suffix is the readable MMDDHHMMNN code: digits only.
 	for _, r := range id[3:] {
 		if r < '0' || r > '9' {
 			t.Fatalf("MessageID = %q carries %q outside 0-9", id, r)
@@ -319,30 +319,30 @@ func TestMessageIDStable(t *testing.T) {
 	}
 }
 
-// TestMessageIDReadableFormat pins the time-derived structure: day of
-// month, hour and minute (24h) plus a per-minute sequence that advances
-// within one minute and restarts at 01 in the next.
+// TestMessageIDReadableFormat pins the time-derived structure: month and
+// day of month, hour and minute (24h) plus a per-minute sequence that
+// advances within one minute and restarts at 01 in the next.
 func TestMessageIDReadableFormat(t *testing.T) {
 	at := time.Date(2026, 10, 7, 19, 58, 12, 0, time.UTC)
 	a := MessageIDAt("fmt:a", at)
 	b := MessageIDAt("fmt:b", at)
 	c := MessageIDAt("fmt:c", at.Add(time.Minute))
 
-	re := regexp.MustCompile(`^WX-\d{8}$`)
+	re := regexp.MustCompile(`^WF-\d{10}$`)
 	if !re.MatchString(a) || !re.MatchString(b) || !re.MatchString(c) {
-		t.Fatalf("ids = %q, %q, %q; want WX- + 8 digits", a, b, c)
+		t.Fatalf("ids = %q, %q, %q; want WF- + 10 digits", a, b, c)
 	}
-	if !strings.HasPrefix(a, "WX-071958") {
-		t.Fatalf("id = %q, want the WX-071958 day/hour/minute prefix", a)
+	if !strings.HasPrefix(a, "WF-10071958") {
+		t.Fatalf("id = %q, want the WF-10071958 month/day/hour/minute prefix", a)
 	}
 	if a == b {
 		t.Fatalf("two keys in the same minute share the sequence %q", a)
 	}
-	sa, sb := a[9:], b[9:]
+	sa, sb := a[11:], b[11:]
 	if !(sb > sa) {
 		t.Fatalf("sequence did not advance within the minute: %q then %q", a, b)
 	}
-	if want := "WX-07195901"; c != want {
+	if want := "WF-1007195901"; c != want {
 		t.Fatalf("first id of the next minute = %q, want %q", c, want)
 	}
 }

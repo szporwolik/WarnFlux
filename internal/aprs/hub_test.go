@@ -1699,7 +1699,7 @@ func TestHubAlertCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expiry = %q: %v", *we.Event.ExpiresAt, err)
 	}
-	if d := exp.Sub(time.Now()); d < 3*time.Hour+45*time.Minute || d > 4*time.Hour+15*time.Minute {
+	if d := time.Until(exp); d < 3*time.Hour+45*time.Minute || d > 4*time.Hour+15*time.Minute {
 		t.Fatalf("expiry in %s, want ~4h", d)
 	}
 	sends := tx.sends()

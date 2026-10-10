@@ -34,12 +34,6 @@ type diskProbe interface {
 	FreeBytes(ctx context.Context) (int64, error)
 }
 
-// inboxProbe is the optional storage surface for the durable inbox
-// backlog row (satisfied by *sqlite.Store).
-type inboxProbe interface {
-	InboxCount(ctx context.Context) (int, error)
-}
-
 // healthRow is one subsystem line: name, verdict badge and a one-line
 // operational detail. BadgeClass is "ok" (green), "bad" (red — something
 // that actually matters), "warn" (amber) or "muted" (config-disabled).

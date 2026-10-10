@@ -968,6 +968,23 @@ CREATE TABLE emcom_network_groups (
 );
 `,
 	},
+	{
+		// v56: durable event-key → short message-id assignments. The id an
+		// operator cites must survive a process restart, so the mapping
+		// (and the minute bucket + sequence that produced it) is persisted;
+		// the in-memory cache is seeded from it lazily. Pruned in the
+		// event-cleanup pass once the event is no longer retained.
+		SQL: `
+CREATE TABLE message_ids (
+	event_key     TEXT PRIMARY KEY,
+	msg_id        TEXT NOT NULL,
+	minute        TEXT NOT NULL,
+	seq           INTEGER NOT NULL,
+	created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX idx_message_ids_minute ON message_ids(minute);
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -2271,6 +2288,12 @@ func (s *Store) CleanupEvents(ctx context.Context, olderThan time.Time) (int64, 
 		WHERE updated_at_ms < ?
 		  AND event_key NOT IN (SELECT event_key FROM events)`, olderThan.UTC().UnixMilli()); err != nil {
 		return n, fmt.Errorf("cleanup lifecycle mirror: %w", err)
+	}
+	// The durable message-id assignments follow the same retention: ids of
+	// live events are kept, ids of events (and panel communications) that
+	// no longer exist are dropped.
+	if _, err := s.PruneMessageIDs(ctx, olderThan); err != nil {
+		return n, fmt.Errorf("cleanup message ids: %w", err)
 	}
 	return n, nil
 }

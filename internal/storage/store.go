@@ -282,3 +282,18 @@ type ActiveEventLister interface {
 	// through large datasets in bounded batches.
 	ListActiveEvents(ctx context.Context, afterKey string, limit int) ([]core.HazardEvent, error)
 }
+
+// MessageIDStore is the durable home of the short, human-usable message
+// ids. The daemon wires it into core.SetMessageIDStore so an id an
+// operator already cited survives a process restart, and the event-cleanup
+// pass prunes assignments whose event is no longer retained.
+type MessageIDStore interface {
+	// LoadMessageID returns the persisted id of eventKey, ok=false when
+	// the key was never assigned.
+	LoadMessageID(ctx context.Context, eventKey string) (id string, ok bool, err error)
+	// HighestSeqInMinute returns the largest sequence already handed out
+	// in the given minute bucket (0 when none).
+	HighestSeqInMinute(ctx context.Context, minute string) (int, error)
+	// SaveMessageID durably records one assignment.
+	SaveMessageID(ctx context.Context, a core.MessageIDAssignment) error
+}

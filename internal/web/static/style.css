@@ -718,6 +718,39 @@ button:disabled { cursor: not-allowed; }
 .mass-empty { opacity: 0.6; cursor: default; }
 .mass-empty:hover { border-color: var(--border); }
 
+/* Mass info broadcast: live progress (bar + per-channel chips) shown while
+   the background job delivers the notice. */
+.mass-progress {
+  margin: 1rem 0 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-hi);
+}
+.mass-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.8rem; flex-wrap: wrap; }
+.mass-progress-title { font-weight: 600; font-size: 0.9rem; }
+.mass-progress-where { color: var(--muted); font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.mass-bar { margin-top: 0.6rem; height: 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); overflow: hidden; }
+.mass-bar-fill { display: block; height: 100%; background: var(--accent); transition: width 0.25s ease; }
+.mass-bar-fill.mass-bar-warn { background: var(--warn); }
+.mass-chan-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.7rem; }
+.mass-chan {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.mass-chan.running { border-color: var(--focus); color: var(--text); }
+.mass-chan.done { border-color: var(--ok-border); color: var(--ok); }
+.mass-chan-name { font-weight: 500; }
+.mass-chan-detail { font-variant-numeric: tabular-nums; }
+.mass-progress-summary { margin: 0.8rem 0 0; }
+
 /* Help page: a top-aligned column so the intro card and the section cards
    keep an even gap (the admin .users-main stretch does not apply here). */
 .help-main {

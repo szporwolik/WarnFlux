@@ -8,12 +8,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
-	"github.com/szporwolik/WarnFlux/internal/actions/discord"
-	"github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -53,6 +50,9 @@ type massView struct {
 	Message string
 	Msg     string
 	Error   string
+
+	// Progress is the live broadcast panel (nil when no job is shown).
+	Progress *massProgressView
 
 	Users    []storage.User
 	Groups   []storage.Group
@@ -150,6 +150,12 @@ func (s *Server) handleMassPage(w http.ResponseWriter, r *http.Request) {
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
+	// A job id in the URL resumes the live progress panel (the redirect
+	// after a submit, or a page reload while the broadcast runs).
+	if job := s.massJobs.get(strings.TrimSpace(r.URL.Query().Get("job"))); job != nil {
+		pv := job.progressView(view.Lang)
+		view.Progress = &pv
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "mass", view)
 }
@@ -292,116 +298,30 @@ func (s *Server) handleMassSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
-	recipients := s.massRecipients(ctx, userIDs, groupIDs, slugs)
-
-	var aprsN, smsN, emailN, discordN, meshN, failures int
-
-	if channels["aprs"] && s.aprs != nil {
-		for _, u := range recipients {
-			for _, call := range u.APRSCallsigns {
-				if err := s.aprs.SendMessage(ctx, call, message); err != nil {
-					failures++
-				} else {
-					aprsN++
-				}
-			}
+	// Run the broadcast in the background and hand the page a job id, so
+	// the operator watches live progress instead of a blocked POST.
+	kinds := make([]string, 0, len(channels))
+	for _, kind := range massChannelOrder {
+		if channels[kind] {
+			kinds = append(kinds, kind)
 		}
 	}
-	if channels["sms"] && s.gsm != nil && s.gsm.Enabled() {
-		for _, u := range recipients {
-			if strings.TrimSpace(u.Phone) == "" {
-				continue
-			}
-			if err := s.gsm.Send(ctx, u.Phone, message); err != nil {
-				failures++
-			} else {
-				smsN++
-			}
-		}
-	}
-	if channels["meshtastic"] && s.meshtastic != nil && s.meshtastic.Enabled() {
-		for _, u := range recipients {
-			for _, id := range u.MeshtasticIDs {
-				if err := s.meshtastic.SendContactMessage(ctx, id, message, sess.username); err != nil {
-					failures++
-				} else {
-					meshN++
-				}
-			}
-		}
-	}
-
-	if channels["email"] && s.actions != nil {
-		lang := s.SystemLanguage()
-		subject := i18n.T(lang, "mass.mail_subject")
-		if h := strings.TrimSpace(s.displayHeader1()); h != "" {
-			subject = "[" + h + "] " + subject
-		}
-		app := action.AppInfo{
+	job := s.startMassJob(massSendRequest{
+		message:  message,
+		channels: kinds,
+		userIDs:  userIDs,
+		groupIDs: groupIDs,
+		slugs:    slugs,
+		username: sess.username,
+		lang:     lang,
+		app: action.AppInfo{
 			Version: s.version,
 			Header1: s.displayHeader1(),
 			Domain:  s.DisplayDomain(),
 			RepoURL: repoURL,
-		}
-		for _, st := range s.actions.Statuses() {
-			if st.Type != smtp.Type || !st.Enabled {
-				continue
-			}
-			p, ok := s.actions.Plugin(st.ID)
-			if !ok {
-				continue
-			}
-			mailer, ok := p.(smtp.DirectMailer)
-			if !ok {
-				continue
-			}
-			for _, u := range recipients {
-				if strings.TrimSpace(u.Email) == "" {
-					continue
-				}
-				if err := mailer.SendNotice(ctx, []string{u.Email}, subject, message, app, lang); err != nil {
-					failures++
-				} else {
-					emailN++
-				}
-			}
-			break
-		}
-	}
-	if channels["discord"] && s.actions != nil {
-		for _, st := range s.actions.Statuses() {
-			if st.Type != discord.Type || !st.Enabled {
-				continue
-			}
-			p, ok := s.actions.Plugin(st.ID)
-			if !ok {
-				continue
-			}
-			poster, ok := p.(discord.PlainPoster)
-			if !ok {
-				continue
-			}
-			if err := poster.PostText(ctx, message); err != nil {
-				failures++
-			} else {
-				discordN++
-			}
-			break
-		}
-	}
-
-	s.logger.Info("mass: notice broadcast",
-		"users", len(recipients), "aprs", aprsN, "sms", smsN, "email", emailN,
-		"discord", discordN, "meshtastic", meshN, "failures", failures)
-	s.audit(sess.username, "mass-info", fmt.Sprintf("users=%d aprs=%d sms=%d email=%d discord=%d mesh=%d failures=%d",
-		len(recipients), aprsN, smsN, emailN, discordN, meshN, failures))
-	flash := fmt.Sprintf(i18n.T(lang, "mass.flash.sent"), len(recipients), aprsN, smsN, emailN, discordN, meshN)
-	if failures > 0 {
-		flash += " " + fmt.Sprintf(i18n.T(lang, "mass.flash.failures"), failures)
-	}
-	http.Redirect(w, r, "/mass?msg="+url.QueryEscape(flash), http.StatusSeeOther)
+		},
+	})
+	http.Redirect(w, r, "/mass?job="+url.QueryEscape(job.id), http.StatusSeeOther)
 }
 
 // renderMassError re-renders the form with an error banner and the

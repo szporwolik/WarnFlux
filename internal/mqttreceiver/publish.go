@@ -106,6 +106,25 @@ func (m *Manager) PublishRaw(suffix string, retained bool, payload []byte) error
 	return r.publish(r.cfg.WF.TopicPrefix+"/"+suffix, 1, retained, payload)
 }
 
+// knownFeedTopic reports whether a topic suffix (relative to the protocol
+// prefix) is a document THIS station publishes: the retained active-hazard
+// list and every categorised raw feed. Such a topic can only reach a
+// receiver through a subscription broader than the protocol set — a
+// persistent MQTT session left over from an older config, a temporary UI
+// browse subscription, or an operator filter like "<prefix>/#" — and it
+// carries a document WE built: there is nothing to mirror from it, so it
+// is consumed quietly instead of being counted as a protocol error.
+func knownFeedTopic(suffix string) bool {
+	if suffix == activeListSuffix {
+		return true
+	}
+	return rawCategory(suffix) != 0
+}
+
+// activeListSuffix is the retained whole-fleet active-hazard document the
+// MQTT output plugin publishes under the protocol prefix.
+const activeListSuffix = "active-list"
+
 // rawCategory maps a PublishRaw suffix onto its publish-mask category;
 // 0 means "not classified" (always allowed — unknown future feeds stay
 // on until explicitly categorized).

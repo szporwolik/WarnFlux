@@ -118,6 +118,14 @@ func (in *Ingestor) HandleMessage(_ mqtt.Client, msg mqtt.Message) bool {
 		case TopicEvents:
 			return in.handleEvent(topic, payload, now)
 		default:
+			// Our own feed documents (the Meshtastic node feed, the APRS
+			// packet feed, the active-hazard list, ...) come back when a
+			// subscription is broader than the protocol set. They are not
+			// protocol errors: nothing is mirrored from them.
+			if knownFeedTopic(strings.TrimPrefix(topic, in.prefix+"/")) {
+				in.logger.Debug("receiver: own feed topic ignored", "receiver", in.receiverID, "topic", topic)
+				return true
+			}
 			// Inside the protocol namespace but not a valid protocol
 			// topic: reject, never fall through to generic handling.
 			in.reject(topic, "malformed warnflux protocol topic", nil)

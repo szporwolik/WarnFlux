@@ -134,6 +134,7 @@ type logsView struct {
 	NavCompose    bool
 	NavEmcom      bool
 	NavHelp       bool
+	NavMass       bool
 	NavAccount    bool
 }
 

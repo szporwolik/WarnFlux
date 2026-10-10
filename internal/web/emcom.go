@@ -666,6 +666,7 @@ type emcomView struct {
 	NavCompose       bool
 	NavEmcom         bool
 	NavHelp          bool
+	NavMass          bool
 	NavAccount       bool
 	NavLogs          bool
 	NavAudit         bool

@@ -470,6 +470,10 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /users/{id}/reset", s.requireAdmin(s.handleUserResetPassword))
 	// Config: the offline-mode switch, the local map tile tree and the
 	// MQTT publish mask.
+	// Mass info: a short admin broadcast to selected users over the
+	// chosen channels (not a hazard communication).
+	s.mux.Handle("GET /mass", s.requireAdmin(s.handleMassPage))
+	s.mux.Handle("POST /mass", s.requireAdmin(s.handleMassSend))
 	s.mux.Handle("GET /config", s.requireAdmin(s.handleConfigPage))
 	s.mux.Handle("POST /config/offline", s.requireAdmin(s.handleConfigOffline))
 	s.mux.Handle("POST /config/tiles", s.requireAdmin(s.handleConfigTiles))

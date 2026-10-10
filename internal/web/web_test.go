@@ -4249,10 +4249,11 @@ func (f *fakeMeshMsgs) RecordMeshtasticMessage(_ context.Context, direction, sen
 	return nil
 }
 
-func (f *fakeMeshMsgs) UpdateMeshtasticMessageStatus(_ context.Context, status string, at time.Time, text string) error {
+func (f *fakeMeshMsgs) UpdateMeshtasticMessageStatus(_ context.Context, status, reason string, at time.Time, text string) error {
 	for i := range f.rows {
 		if f.rows[i].Direction == "tx" && f.rows[i].At.Equal(at) && f.rows[i].Text == text {
 			f.rows[i].Status = status
+			f.rows[i].Reason = reason
 		}
 	}
 	return nil
@@ -4394,6 +4395,40 @@ func TestMeshMessageChannelNames(t *testing.T) {
 	}
 	if !strings.Contains(body, "hello") || strings.Contains(body, "LongFast") || strings.Contains(body, "ggg") {
 		t.Errorf("ch0 partial wrong rows: %.300s", body)
+	}
+}
+
+// TestMeshMessageFailureReason pins the operator-visible explanation of a
+// failed send: the device's refusal reason is translated in the history,
+// and a reason the catalogue does not know still shows the raw key
+// instead of disappearing.
+func TestMeshMessageFailureReason(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeMeshMsgs{rows: []storage.MeshMessage{
+		{Direction: "tx", Recipient: "6d2c8f6c", Channel: "dm", Operator: "admin",
+			Text: "bez klucza", Status: "failed", Reason: "pki_no_key", At: time.Now()},
+		{Direction: "tx", Recipient: "deadbeef", Channel: "dm", Operator: "admin",
+			Text: "przyszlosc", Status: "failed", Reason: "res_77", At: time.Now()},
+	}}
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
+	env.login()
+
+	resp, body := env.get("/partials/meshtastic?tab=messages")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "the recipient has not announced its public key") {
+		t.Errorf("failure reason not translated: %.600s", body)
+	}
+	if !strings.Contains(body, "res_77") {
+		t.Errorf("unknown failure reason must stay visible: %.600s", body)
 	}
 }
 

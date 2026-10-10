@@ -129,8 +129,10 @@ type Config struct {
 type Recorder interface {
 	RecordMeshtasticMessage(ctx context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error
 	// UpdateMeshtasticMessageStatus marks the tx delivery state of the
-	// matching row (created at + text).
-	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
+	// matching row (created at + text). Reason is the device's refusal
+	// reason key when the send settled failed without ever reaching the
+	// air (empty otherwise).
+	UpdateMeshtasticMessageStatus(ctx context.Context, status, reason string, at time.Time, text string) error
 	// RecordMeshActionProgress durably marks one successful meshtastic
 	// action transmission keyed by the message VERSION (publisher +
 	// event key + change id) and recipient. It is the action's resume
@@ -253,11 +255,15 @@ type pendingSend struct {
 	echoed  bool   // the id is known (echo or queueStatus paired)
 	status  string
 	retries int
-	// probe marks a traceroute placeholder: it rides the send
+	// probe marks a traceroute/node-info placeholder: it rides the send
 	// bookkeeping so the device's routing acknowledgment settles IT
 	// (never an unrelated text message to the same node) and is never
 	// retransmitted as text.
 	probe bool
+	// failReason carries the device's refusal reason onto the history row
+	// when the send settles failed (the raw Routing_Error is unreadable to
+	// an operator).
+	failReason string
 	// prog carries the durable action-progress identity when the send
 	// came from the meshtastic action: the ledger follows the
 	// TRANSMISSION OUTCOME (recorded on sent/delivered, revoked on
@@ -681,6 +687,11 @@ type Hub struct {
 	pending   map[uint32]*pendingSend // by device-assigned packet id
 	echoQueue []*pendingSend          // sent but the echo (id) not seen yet
 
+	// nodeInfoAsked rate-limits the NodeInfo refresh per peer (the peer's
+	// firmware suppresses a reply to the same requester for hours). Nil
+	// until the first refusal that needs a key refresh.
+	nodeInfoAsked map[uint32]time.Time
+
 	// routeWaiters buffers TRACEROUTE route replies while probes wait,
 	// keyed by the replying node (the destination answers with the full
 	// route; intermediate nodes may answer when it is out of reach).
@@ -1073,10 +1084,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 	conn.Handle(&pb.QueueStatus{}, func(msg proto.Message) error {
 		h.lastRadio.Store(time.Now().UnixNano())
 		if qs, ok := msg.(*pb.QueueStatus); ok {
-			if qs.GetRes() != int32(pb.Routing_NONE) && h.logger != nil {
-				h.logger.Warn("meshtastic: device rejected a send", "res", qs.GetRes(), "id", qs.GetMeshPacketId())
-			}
-			h.pairQueueStatus(qs.GetMeshPacketId())
+			h.pairQueueStatus(qs.GetMeshPacketId(), pb.Routing_Error(qs.GetRes()))
 		}
 		return nil
 	})
@@ -1565,8 +1573,15 @@ func (h *Hub) handleOwnEcho(pkt *pb.MeshPacket, decoded *pb.Data) {
 // pairQueueStatus learns the device-assigned packet id from a queueStatus
 // answer: the device replies to every client send with the mesh packet id
 // that send was given. The oldest unpaired send within the pairing window
-// wins (the queue is FIFO).
-func (h *Hub) pairQueueStatus(id uint32) {
+// wins (the queue is FIFO, so every send must be represented in the echo
+// queue — that is what keeps the positional pairing correct).
+//
+// A non-zero res is the device REFUSING the frame: it never entered the
+// air, so no acknowledgment will ever arrive. Such a send settles failed
+// AT ONCE with the refusal reason instead of marking the frame "sent"
+// and waiting out the acknowledgment window for a message that was never
+// transmitted.
+func (h *Hub) pairQueueStatus(id uint32, res pb.Routing_Error) {
 	if id == 0 {
 		return
 	}
@@ -1579,12 +1594,145 @@ func (h *Hub) pairQueueStatus(id uint32) {
 		h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
 		q.echoed = true
 		q.id = id
+		if res != pb.Routing_NONE {
+			h.sendMu.Unlock()
+			h.rejectSend(q, res)
+			return
+		}
 		h.pending[id] = q
 		h.sendMu.Unlock()
 		h.markStatus(q, TxSent)
 		return
 	}
 	h.sendMu.Unlock()
+}
+
+// rejectSend settles one send the device refused outright: the frame
+// never reached the mesh, the failure is final and it carries the
+// device's reason. A refusal caused by the recipient's unknown public key
+// additionally asks that peer to re-announce its NodeInfo — the radio
+// encrypts direct messages with the peer key it learned from NodeInfo and
+// refuses to fall back to channel encryption, so the refresh is the only
+// thing that can unblock a later attempt.
+func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
+	ps.failReason = sendFailureReason(res)
+	if h.logger != nil {
+		h.logger.Warn("meshtastic: device rejected a send",
+			"res", int32(res), "reason", ps.failReason, "id", ps.id, "to", fmt.Sprintf("%08x", ps.to))
+	}
+	h.markStatus(ps, TxFailed)
+	if !ps.probe && needsNodeInfoRefresh(res) {
+		h.requestNodeInfo(ps.to)
+	}
+}
+
+// sendFailureReason maps the device's refusal code (queueStatus.res, the
+// ROUTING_APP error_reason) onto a stable key shared by the log line, the
+// stored history row and the UI translation. An unknown code keeps its
+// numeric form so a newer firmware enum is never silently swallowed.
+func sendFailureReason(res pb.Routing_Error) string {
+	switch res {
+	case pb.Routing_NO_ROUTE:
+		return "no_route"
+	case pb.Routing_GOT_NAK:
+		return "got_nak"
+	case pb.Routing_TIMEOUT:
+		return "timeout"
+	case pb.Routing_NO_INTERFACE:
+		return "no_interface"
+	case pb.Routing_MAX_RETRANSMIT:
+		return "max_retransmit"
+	case pb.Routing_NO_CHANNEL:
+		return "no_channel"
+	case pb.Routing_TOO_LARGE:
+		return "too_large"
+	case pb.Routing_NO_RESPONSE:
+		return "no_response"
+	case pb.Routing_DUTY_CYCLE_LIMIT:
+		return "duty_cycle"
+	case pb.Routing_BAD_REQUEST:
+		return "bad_request"
+	case pb.Routing_NOT_AUTHORIZED:
+		return "not_authorized"
+	case pb.Routing_PKI_FAILED:
+		return "pki_failed"
+	case pb.Routing_PKI_UNKNOWN_PUBKEY:
+		return "pki_unknown_key"
+	case pb.Routing_ADMIN_BAD_SESSION_KEY:
+		return "admin_bad_session_key"
+	case pb.Routing_ADMIN_PUBLIC_KEY_UNAUTHORIZED:
+		return "admin_unauthorized"
+	case pb.Routing_RATE_LIMIT_EXCEEDED:
+		return "rate_limit"
+	case pb.Routing_PKI_SEND_FAIL_PUBLIC_KEY:
+		return "pki_no_key"
+	default:
+		return fmt.Sprintf("res_%d", int32(res))
+	}
+}
+
+// needsNodeInfoRefresh reports whether a refusal is a missing or unusable
+// PEER KEY — the one refusal a NodeInfo refresh can cure.
+func needsNodeInfoRefresh(res pb.Routing_Error) bool {
+	switch res {
+	case pb.Routing_PKI_FAILED, pb.Routing_PKI_UNKNOWN_PUBKEY, pb.Routing_PKI_SEND_FAIL_PUBLIC_KEY:
+		return true
+	}
+	return false
+}
+
+// nodeInfoRefreshGap rate-limits the NodeInfo refresh per peer: the
+// peer's firmware suppresses a reply to the same requester for hours, so
+// asking more often only spends airtime.
+const nodeInfoRefreshGap = 6 * time.Hour
+
+// requestNodeInfo asks one node's radio to re-announce its NodeInfo (and
+// with it its public key), which is what makes a later direct message to
+// that node possible when the key is missing from the device database.
+// The request rides the send bookkeeping as a placeholder so its own
+// answer pairs with IT — the positional FIFO pairing of the echo queue
+// stays intact and an unrelated text message never consumes its id.
+func (h *Hub) requestNodeInfo(to uint32) {
+	if to == core.BroadcastNodeID.Uint32() {
+		return
+	}
+	now := time.Now()
+	h.mu.Lock()
+	if h.nodeInfoAsked == nil {
+		h.nodeInfoAsked = make(map[uint32]time.Time)
+	}
+	if last, ok := h.nodeInfoAsked[to]; ok && now.Sub(last) < nodeInfoRefreshGap {
+		h.mu.Unlock()
+		return
+	}
+	h.nodeInfoAsked[to] = now
+	conn := h.conn
+	h.mu.Unlock()
+	if conn == nil || !conn.IsConnected() {
+		return
+	}
+	p := &pendingSend{to: to, at: now, lastTry: now, text: "\x00nodeinfo", wantAck: true, probe: true}
+	h.sendMu.Lock()
+	h.echoQueue = append(h.echoQueue, p)
+	h.sendMu.Unlock()
+	err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+		To:      to,
+		WantAck: true,
+		PayloadVariant: &pb.MeshPacket_Decoded{Decoded: &pb.Data{
+			Portnum:      pb.PortNum_NODEINFO_APP,
+			WantResponse: true,
+		}},
+	}}})
+	if err != nil {
+		h.dropPending(p)
+		if h.logger != nil {
+			h.logger.Warn("meshtastic: node info request failed", "to", fmt.Sprintf("%08x", to), "error", err)
+		}
+		return
+	}
+	if h.logger != nil {
+		h.logger.Info("meshtastic: requested node info to refresh the peer key", "to", fmt.Sprintf("%08x", to))
+	}
 }
 
 // pairByRoutingLocked recovers the send behind a ROUTING_APP frame whose
@@ -1666,6 +1814,7 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	switch {
 	case routing.GetErrorReason() != pb.Routing_NONE:
 		status = TxFailed // the modem (self) or an intermediate node reports failed delivery
+		ps.failReason = sendFailureReason(routing.GetErrorReason())
 	case fromSelf:
 		status = TxSent // modem accepted the frame (broadcast "sent" confirmation)
 	}
@@ -1687,6 +1836,9 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	h.sendMu.Unlock()
 	h.markStatus(ps, status)
+	if status == TxFailed && !ps.probe && needsNodeInfoRefresh(routing.GetErrorReason()) {
+		h.requestNodeInfo(ps.to)
+	}
 }
 
 // tracerouteHopLimit is the hop budget of one route probe: far above
@@ -2068,7 +2220,7 @@ func (h *Hub) markStatus(ps *pendingSend, status string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := rec.UpdateMeshtasticMessageStatus(ctx, status, ps.at, ps.text); err != nil && h.logger != nil {
+	if err := rec.UpdateMeshtasticMessageStatus(ctx, status, ps.failReason, ps.at, ps.text); err != nil && h.logger != nil {
 		h.logger.Warn("meshtastic: message status update failed", "status", status, "error", err)
 	}
 	if !ps.prog.active() {

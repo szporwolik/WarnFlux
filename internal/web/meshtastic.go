@@ -40,7 +40,11 @@ type meshtasticMessageView struct {
 	Text          string
 	// Status is the tx delivery state ("", sent, delivered, failed).
 	Status string
-	At     time.Time
+	// ReasonText explains a failed tx row: the device's refusal reason
+	// (a missing recipient key, an unroutable node, ...) in the UI
+	// language. Empty when no reason was reported.
+	ReasonText string
+	At         time.Time
 	// ID is the sender's node id when the row can prefill the send form
 	// (direct messages), empty otherwise.
 	ID string
@@ -349,14 +353,15 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 			hops = 0
 		}
 		view := meshtasticMessageView{
-			Direction: m.Direction,
-			Sender:    m.Sender,
-			Channel:   s.meshtasticChannelName(m.Channel),
-			Hops:      hops,
-			Operator:  m.Operator,
-			Text:      m.Text,
-			Status:    m.Status,
-			At:        m.At,
+			Direction:  m.Direction,
+			Sender:     m.Sender,
+			Channel:    s.meshtasticChannelName(m.Channel),
+			Hops:       hops,
+			Operator:   m.Operator,
+			Text:       m.Text,
+			Status:     m.Status,
+			ReasonText: meshtasticReasonText(s.langFor(r), m.Reason),
+			At:         m.At,
 		}
 		if id := meshtasticNormalizeID(m.Sender); id != "" {
 			view.ID = id
@@ -542,6 +547,21 @@ func meshtasticNormalizeID(s string) string {
 		return ""
 	}
 	return s
+}
+
+// meshtasticReasonText renders a stored device-refusal reason key in the
+// UI language. Only the keys the hub can produce are translated; anything
+// else (a newer firmware enum) falls through to the raw key so the
+// operator still sees a specific value instead of a missing translation.
+func meshtasticReasonText(lang, reason string) string {
+	if reason == "" {
+		return ""
+	}
+	key := "meshtastic.reason." + reason
+	if txt := i18n.T(lang, key); txt != key {
+		return txt
+	}
+	return reason
 }
 
 // meshtasticOwnerFor resolves the directory username for a node id.

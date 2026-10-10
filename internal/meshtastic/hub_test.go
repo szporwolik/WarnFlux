@@ -184,6 +184,17 @@ func dispatchPkt(t *testing.T, r *testRadio, pkt *pb.MeshPacket) {
 	})
 }
 
+// dispatchQueueStatus feeds one device queueStatus answer (the reply to a
+// client send) into the session.
+func dispatchQueueStatus(t *testing.T, r *testRadio, res pb.Routing_Error, id uint32) {
+	t.Helper()
+	r.srv.DispatchToClients(&pb.FromRadio{
+		PayloadVariant: &pb.FromRadio_QueueStatus{
+			QueueStatus: &pb.QueueStatus{Res: int32(res), MeshPacketId: id},
+		},
+	})
+}
+
 // fakeTransportConn is a minimal transportConn stand-in for the dial
 // candidate tests: nothing about the session is exercised, only WHICH
 // serial path the dial ended up opening.
@@ -1018,6 +1029,137 @@ func TestHubModemAckStillSettlesUnanswered(t *testing.T) {
 	}
 }
 
+// TestHubDeviceRefusalFailsSendImmediately pins the diagnosability fix:
+// a device refusal (queueStatus.res) means the frame never reached the
+// air, so the send settles failed AT ONCE and with the refusal reason
+// recorded — instead of being stamped "sent" and left waiting out the
+// acknowledgment window for a message that was never transmitted.
+func TestHubDeviceRefusalFailsSendImmediately(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "6d2c8f6c", "bez klucza", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+
+	dispatchQueueStatus(t, radio, pb.Routing_PKI_SEND_FAIL_PUBLIC_KEY, 4242)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxFailed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if msgs := rec.messages(); len(msgs) != 1 || msgs[0].Status != TxFailed {
+		t.Fatalf("refused send = %v, want an immediate TxFailed", msgs)
+	}
+	if got := rec.reasonFor("bez klucza"); got != "pki_no_key" {
+		t.Fatalf("reason = %q, want pki_no_key", got)
+	}
+	// The refusal is final: nothing may stay pending, or the same row
+	// would settle a second time minutes later.
+	radio.hub.sendMu.Lock()
+	_, lingering := radio.hub.pending[4242]
+	radio.hub.sendMu.Unlock()
+	if lingering {
+		t.Fatal("a refused send stayed pending for an acknowledgment")
+	}
+
+	// A missing recipient key additionally asks the peer to re-announce
+	// its NodeInfo: the radio caches peer keys from NodeInfo (and never
+	// falls back to channel encryption), so the refresh is what unblocks
+	// a later attempt.
+	out := radio.waitOutbound(t, 2)
+	last := out[len(out)-1]
+	if last.GetTo() != 0x6d2c8f6c || last.GetDecoded().GetPortnum() != pb.PortNum_NODEINFO_APP ||
+		!last.GetDecoded().GetWantResponse() {
+		t.Fatalf("node info refresh = %+v, want a want_response NODEINFO_APP to 6d2c8f6c", last)
+	}
+}
+
+// TestHubDeviceRefusalWithoutKeyReason pins that only a PEER KEY refusal
+// spends the extra airtime of a NodeInfo refresh; every other refusal
+// keeps its reason and sends nothing more.
+func TestHubDeviceRefusalWithoutKeyReason(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, "deadbeef", "nie ma trasy", "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+
+	dispatchQueueStatus(t, radio, pb.Routing_NO_ROUTE, 4243)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if msgs := rec.messages(); len(msgs) == 1 && msgs[0].Status == TxFailed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if msgs := rec.messages(); len(msgs) != 1 || msgs[0].Status != TxFailed {
+		t.Fatalf("refused send = %v, want TxFailed", msgs)
+	}
+	if got := rec.reasonFor("nie ma trasy"); got != "no_route" {
+		t.Fatalf("reason = %q, want no_route", got)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if out := radio.outbound(); len(out) != 1 {
+		t.Fatalf("outbound = %d packets, want only the refused message", len(out))
+	}
+}
+
+// TestSendFailureReasonKeys pins the reason keys the log line, the stored
+// history row and the UI translation share. An unknown code keeps its
+// numeric form so a newer firmware enum is never swallowed silently.
+func TestSendFailureReasonKeys(t *testing.T) {
+	cases := map[pb.Routing_Error]string{
+		pb.Routing_NO_ROUTE:                      "no_route",
+		pb.Routing_GOT_NAK:                       "got_nak",
+		pb.Routing_TIMEOUT:                       "timeout",
+		pb.Routing_NO_INTERFACE:                  "no_interface",
+		pb.Routing_MAX_RETRANSMIT:                "max_retransmit",
+		pb.Routing_NO_CHANNEL:                    "no_channel",
+		pb.Routing_TOO_LARGE:                     "too_large",
+		pb.Routing_NO_RESPONSE:                   "no_response",
+		pb.Routing_DUTY_CYCLE_LIMIT:              "duty_cycle",
+		pb.Routing_BAD_REQUEST:                   "bad_request",
+		pb.Routing_NOT_AUTHORIZED:                "not_authorized",
+		pb.Routing_PKI_FAILED:                    "pki_failed",
+		pb.Routing_PKI_UNKNOWN_PUBKEY:            "pki_unknown_key",
+		pb.Routing_ADMIN_BAD_SESSION_KEY:         "admin_bad_session_key",
+		pb.Routing_ADMIN_PUBLIC_KEY_UNAUTHORIZED: "admin_unauthorized",
+		pb.Routing_RATE_LIMIT_EXCEEDED:           "rate_limit",
+		pb.Routing_PKI_SEND_FAIL_PUBLIC_KEY:      "pki_no_key",
+		pb.Routing_Error(99):                     "res_99",
+	}
+	for res, want := range cases {
+		if got := sendFailureReason(res); got != want {
+			t.Errorf("sendFailureReason(%d) = %q, want %q", int32(res), got, want)
+		}
+	}
+	for res, want := range map[pb.Routing_Error]bool{
+		pb.Routing_PKI_FAILED:               true,
+		pb.Routing_PKI_UNKNOWN_PUBKEY:       true,
+		pb.Routing_PKI_SEND_FAIL_PUBLIC_KEY: true,
+		pb.Routing_NO_ROUTE:                 false,
+		pb.Routing_RATE_LIMIT_EXCEEDED:      false,
+	} {
+		if got := needsNodeInfoRefresh(res); got != want {
+			t.Errorf("needsNodeInfoRefresh(%d) = %v, want %v", int32(res), got, want)
+		}
+	}
+}
+
 // TestHubSilentDeviceReconnects pins the radio-silence watchdog: a
 // session with no FromRadio traffic for longer than the silence timeout
 // is torn down and redialed instead of hanging forever.
@@ -1586,6 +1728,7 @@ func TestHubTelemetryStored(t *testing.T) {
 type captureRecorder struct {
 	mu       sync.Mutex
 	got      []Message
+	reasons  map[string]string
 	progress map[string]bool
 	failures map[string]bool
 	rearmed  int
@@ -1598,7 +1741,7 @@ func (c *captureRecorder) RecordMeshtasticMessage(_ context.Context, direction, 
 	return nil
 }
 
-func (c *captureRecorder) UpdateMeshtasticMessageStatus(_ context.Context, status string, at time.Time, text string) error {
+func (c *captureRecorder) UpdateMeshtasticMessageStatus(_ context.Context, status, reason string, at time.Time, text string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i := range c.got {
@@ -1606,7 +1749,20 @@ func (c *captureRecorder) UpdateMeshtasticMessageStatus(_ context.Context, statu
 			c.got[i].Status = status
 		}
 	}
+	if reason != "" {
+		if c.reasons == nil {
+			c.reasons = map[string]string{}
+		}
+		c.reasons[text] = reason
+	}
 	return nil
+}
+
+// reasonFor reports the refusal reason recorded for one sent text.
+func (c *captureRecorder) reasonFor(text string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reasons[text]
 }
 
 // The captureRecorder also keeps the versioned action progress ledger.

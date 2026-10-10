@@ -75,10 +75,10 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 		t.Fatalf("row = %+v, want status empty", rows)
 	}
 
-	if err := s.UpdateMeshtasticMessageStatus(ctx, "sent", at, "hello"); err != nil {
+	if err := s.UpdateMeshtasticMessageStatus(ctx, "sent", "", at, "hello"); err != nil {
 		t.Fatalf("sent: %v", err)
 	}
-	if err := s.UpdateMeshtasticMessageStatus(ctx, "delivered", at, "hello"); err != nil {
+	if err := s.UpdateMeshtasticMessageStatus(ctx, "delivered", "", at, "hello"); err != nil {
 		t.Fatalf("delivered: %v", err)
 	}
 	rows, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx"}, 10, 0)
@@ -93,7 +93,7 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 	if err := s.RecordMeshtasticMessage(ctx, "tx", "", "", "dm", "other", "admin", 0, at); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if err := s.UpdateMeshtasticMessageStatus(ctx, "failed", at, "hello"); err != nil {
+	if err := s.UpdateMeshtasticMessageStatus(ctx, "failed", "pki_no_key", at, "hello"); err != nil {
 		t.Fatalf("failed: %v", err)
 	}
 	rows, err = s.ListMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Direction: "tx"}, 10, 0)
@@ -109,6 +109,11 @@ func TestMeshtasticMessageStatus(t *testing.T) {
 		case "hello":
 			if r.Status != "failed" {
 				t.Fatalf("hello row status = %q, want failed", r.Status)
+			}
+			// The device's refusal reason is stored beside the state so
+			// the history can explain WHY the frame never went out.
+			if r.Reason != "pki_no_key" {
+				t.Fatalf("hello row reason = %q, want pki_no_key", r.Reason)
 			}
 		}
 	}

@@ -86,8 +86,10 @@
           </select>
           <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" data-char-count="133" required>
           <span class="char-count">0 / 133</span>
+          <span class="mesh-send-actions">
           <button type="button" class="btn-ghost mesh-bell" aria-pressed="false" title="{{tr .Lang "meshtastic.bell"}}">🔔</button>
           <button type="submit" class="btn-primary"{{if not .Channels}} disabled{{end}}>{{tr .Lang "meshtastic.send_channel"}}</button>
+          </span>
         </form>
         <form method="post" action="/meshtastic/send" class="mesh-send">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -97,8 +99,10 @@
           <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">!{{.ID}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
           <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" data-char-count="133" required>
           <span class="char-count">0 / 133</span>
+          <span class="mesh-send-actions">
           <button type="button" class="btn-ghost mesh-bell" aria-pressed="false" title="{{tr .Lang "meshtastic.bell"}}">🔔</button>
           <button type="submit" class="btn-primary">{{tr .Lang "meshtastic.send_contact"}}</button>
+          </span>
         </form>      {{else}}
       <form class="wf-csrf-only" hidden><input type="hidden" name="csrf" value="{{.CSRF}}"></form>
       {{end}}      </div>

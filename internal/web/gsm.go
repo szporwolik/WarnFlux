@@ -62,6 +62,7 @@ type gsmView struct {
 	NavConfig        bool
 	NavCompose       bool
 	NavEmcom         bool
+	NavHelp          bool
 	NavAccount       bool
 	NavAudit         bool
 	NavAPRS          bool

@@ -1,0 +1,34 @@
+{{define "help"}}<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{tr .Lang "help.title"}} · {{.AppTitle}}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{.Commit}}">
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/assets/apple-touch-icon.png">
+</head>
+<body class="app">
+  {{template "topbar" .}}
+  {{template "sidebar" .}}
+  <main class="users-main">
+    <section class="card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-question-circle"></use></svg>{{tr .Lang "help.title"}}</h2>
+      <p class="muted">{{tr .Lang "help.intro"}}</p>
+    </section>
+    <div class="help-grid">
+      {{range .Sections}}
+      <section class="card help-sec">
+        <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#{{.Icon}}"></use></svg>{{tr $.Lang .Title}}</h3>
+        <ul class="help-list">
+          {{range .Items}}<li>{{tr $.Lang .}}</li>{{end}}
+        </ul>
+      </section>
+      {{end}}
+    </div>
+  </main>
+  {{template "footer" .}}
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
+</body>
+</html>
+{{end}}

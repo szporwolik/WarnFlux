@@ -4220,3 +4220,50 @@
     update(el);
   });
 })();
+
+// Mass info broadcast: while the notice is delivered in the background the
+// page polls the progress fragment (channels tick off, per-channel user
+// counter), swapping the panel in place until the job reports done.
+(function () {
+  "use strict";
+  var box = document.getElementById("mass-progress");
+  if (!box) { return; }
+  var job = box.getAttribute("data-job");
+  if (!job) { return; }
+  var submitBtn = document.querySelector("form.mass-form button[type=submit]");
+  var timer = null;
+  var POLL_MS = 500;
+
+  function stop() {
+    if (timer) { window.clearInterval(timer); timer = null; }
+    if (submitBtn) { submitBtn.disabled = false; }
+  }
+
+  // A finished job renders the summary and needs no polling; a running one
+  // blocks a second submit until it completes.
+  if (box.getAttribute("data-done") === "1") { return; }
+  if (submitBtn) { submitBtn.disabled = true; }
+
+  function poll() {
+    fetch("/mass/progress?job=" + encodeURIComponent(job), {
+      headers: { "Accept": "text/html" },
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+      .then(function (res) {
+        if (res.status === 401) { window.location.href = "/login"; return null; }
+        if (!res.ok) { stop(); return null; }
+        return res.text();
+      })
+      .then(function (html) {
+        if (html === null || !box) { return; }
+        box.outerHTML = html;
+        box = document.getElementById("mass-progress");
+        if (!box || box.getAttribute("data-done") === "1") { stop(); }
+      })
+      .catch(function () { /* transient error: keep polling */ });
+  }
+
+  timer = window.setInterval(poll, POLL_MS);
+  poll();
+})();

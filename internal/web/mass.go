@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/actions/discord"
 	"github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
@@ -333,7 +334,17 @@ func (s *Server) handleMassSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if channels["email"] && s.actions != nil {
-		subject := i18n.T(s.SystemLanguage(), "mass.mail_subject")
+		lang := s.SystemLanguage()
+		subject := i18n.T(lang, "mass.mail_subject")
+		if h := strings.TrimSpace(s.displayHeader1()); h != "" {
+			subject = "[" + h + "] " + subject
+		}
+		app := action.AppInfo{
+			Version: s.version,
+			Header1: s.displayHeader1(),
+			Domain:  s.DisplayDomain(),
+			RepoURL: repoURL,
+		}
 		for _, st := range s.actions.Statuses() {
 			if st.Type != smtp.Type || !st.Enabled {
 				continue
@@ -350,7 +361,7 @@ func (s *Server) handleMassSend(w http.ResponseWriter, r *http.Request) {
 				if strings.TrimSpace(u.Email) == "" {
 					continue
 				}
-				if err := mailer.SendPlain(ctx, []string{u.Email}, subject, message); err != nil {
+				if err := mailer.SendNotice(ctx, []string{u.Email}, subject, message, app, lang); err != nil {
 					failures++
 				} else {
 					emailN++

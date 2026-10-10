@@ -3,6 +3,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -105,10 +106,12 @@ func (e HazardEvent) Key() string {
 // in mails, on Discord and in the web UI to refer to one specific
 // communication.
 //
-// The id is cached per event key, so one message keeps the same id
-// across renders, channels and repeated sends within the process. A
-// fresh process assigns fresh ids to old events (operators cite the id
-// of the moment). The result is a fixed 13 characters.
+// The id is stable per event key. A process assigns it once and keeps it
+// across renders, channels and repeated sends; when a MessageIDStore is
+// wired (SetMessageIDStore) the assignment is also durable, so a restart
+// never renumbers an event an operator has already cited. Without a
+// store it is only kept in memory and a fresh process mints new ids.
+// The result is a fixed 13 characters.
 func MessageID(eventKey string) string {
 	return MessageIDAt(eventKey, time.Now())
 }
@@ -121,35 +124,110 @@ func MessageIDAt(eventKey string, now time.Time) string {
 	if id, ok := msgIDByKey[eventKey]; ok {
 		return id
 	}
+	// A durable assignment (e.g. from an earlier process) wins over
+	// minting a fresh id: an id already cited must never change.
+	if msgIDStore != nil {
+		if id, ok, err := msgIDStore.LoadMessageID(context.Background(), eventKey); err != nil {
+			msgIDLog("message id lookup failed", "event_key", eventKey, "error", err)
+		} else if ok {
+			msgIDByKey[eventKey] = id
+			return id
+		}
+	}
 	if len(msgIDByKey) >= msgIDCacheCap {
+		// The cache is a bounded hot path; with a store wired it remains
+		// the durable source of truth for evicted keys.
 		clear(msgIDByKey)
 	}
 	minute := now.Format("20060102-1504")
 	if minute != msgIDMinute {
 		msgIDMinute = minute
-		msgIDSeq = 1
-	} else if msgIDSeq < 99 {
+		msgIDSeq = 0
+		// Resume the per-minute sequence from the store so a restart
+		// inside the same minute does not reuse a number already cited.
+		if msgIDStore != nil {
+			if n, err := msgIDStore.HighestSeqInMinute(context.Background(), minute); err != nil {
+				msgIDLog("message id sequence lookup failed", "minute", minute, "error", err)
+			} else {
+				msgIDSeq = n
+			}
+		}
+	}
+	if msgIDSeq < 99 {
 		msgIDSeq++
 	}
 	// Beyond 99 messages per minute the sequence stays at 99 instead of
 	// widening the identifier.
 	id := fmt.Sprintf("WF-%02d%02d%02d%02d%02d", now.Month(), now.Day(), now.Hour(), now.Minute(), msgIDSeq)
 	msgIDByKey[eventKey] = id
+	if msgIDStore != nil {
+		a := MessageIDAssignment{EventKey: eventKey, MsgID: id, Minute: minute, Seq: msgIDSeq, CreatedAt: now}
+		if err := msgIDStore.SaveMessageID(context.Background(), a); err != nil {
+			msgIDLog("message id save failed", "event_key", eventKey, "error", err)
+		}
+	}
 	return id
+}
+
+// MessageIDAssignment is one durable event-key → message-id mapping,
+// carrying the minute bucket and sequence number that produced it so a
+// restarted process can resume the sequence without reusing a number.
+type MessageIDAssignment struct {
+	EventKey string
+	MsgID    string
+	// Minute is the sequence bucket in "20060102-1504" form.
+	Minute    string
+	Seq       int
+	CreatedAt time.Time
+}
+
+// MessageIDStore is the durability seam of the short message ids: the
+// daemon wires its SQLite store so an id an operator already cited
+// survives a restart. Implementations must be safe for concurrent use.
+type MessageIDStore interface {
+	// LoadMessageID returns the persisted id of eventKey, ok=false when
+	// the key was never assigned.
+	LoadMessageID(ctx context.Context, eventKey string) (id string, ok bool, err error)
+	// HighestSeqInMinute returns the largest sequence already handed out
+	// in the given minute bucket (0 when none).
+	HighestSeqInMinute(ctx context.Context, minute string) (int, error)
+	// SaveMessageID durably records one assignment.
+	SaveMessageID(ctx context.Context, a MessageIDAssignment) error
 }
 
 // Message-id generation state: the cache makes ids stable per event key
 // within one process; the minute marker plus sequence yield the readable
-// MMDDHHMMNN suffix.
+// MMDDHHMMNN suffix; the optional store makes the assignments durable.
 var (
 	msgIDMu     sync.Mutex
 	msgIDByKey  = make(map[string]string)
 	msgIDMinute string
 	msgIDSeq    int
+	msgIDStore  MessageIDStore
+	msgIDLogf   func(msg string, args ...any)
 )
 
-// msgIDCacheCap bounds the per-key id cache; beyond it the cache resets
-// and older events receive fresh ids on their next render.
+// SetMessageIDStore wires durable message-id persistence. store may be
+// nil to disable it; logf (may be nil) receives non-fatal lookup/save
+// failures, which never block id assignment.
+func SetMessageIDStore(store MessageIDStore, logf func(msg string, args ...any)) {
+	msgIDMu.Lock()
+	defer msgIDMu.Unlock()
+	msgIDStore = store
+	msgIDLogf = logf
+}
+
+// msgIDLog reports a non-fatal persistence failure through the configured
+// logger, if any.
+func msgIDLog(msg string, args ...any) {
+	if msgIDLogf != nil {
+		msgIDLogf(msg, args...)
+	}
+}
+
+// msgIDCacheCap bounds the per-key id cache; beyond it the cache resets.
+// A wired store keeps the assignments durable, so evicted keys are re-read
+// from it instead of being renumbered.
 const msgIDCacheCap = 4096
 
 // ValidateSource checks a canonical source name. Callers should normalize

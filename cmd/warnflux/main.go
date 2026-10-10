@@ -591,6 +591,10 @@ func run(configPath string, checkConfig bool) error {
 		logger.Info("database migrated", "from", migration.From, "to", migration.To)
 	}
 
+	// Wire durable message ids: an id an operator already cited must not
+	// change when the process restarts.
+	core.SetMessageIDStore(store, logger.Warn)
+
 	ingester := ingest.NewIngester(store, logger, met)
 
 	// Build the plugin manager from the YAML plugin configuration. Unknown

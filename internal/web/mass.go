@@ -58,6 +58,14 @@ type massView struct {
 	Networks []massNetwork
 	Channels []massChannel
 
+	// Sel* carry the submitted selection back into the form after a
+	// validation error, so a failed send does not lose the operator's
+	// picks.
+	SelGroups   map[int64]bool
+	SelNetworks map[string]bool
+	SelUsers    map[int64]bool
+	SelChannels map[string]bool
+
 	NavDashboard     bool
 	NavUsers         bool
 	NavGroups        bool
@@ -83,16 +91,20 @@ type massView struct {
 // buildMassView assembles the page model in a UI language.
 func (s *Server) buildMassView(lang string) massView {
 	v := massView{
-		Lang:     lang,
-		AppTitle: s.cfg.Title,
-		Name:     s.displayName(),
-		Header1:  s.displayHeader1(),
-		Header2:  s.DisplayHeader2(),
-		Tagline:  s.DisplayTagline(),
-		Version:  s.version,
-		Commit:   s.commit,
-		RepoURL:  repoURL,
-		NavMass:  true,
+		Lang:        lang,
+		AppTitle:    s.cfg.Title,
+		Name:        s.displayName(),
+		Header1:     s.displayHeader1(),
+		Header2:     s.DisplayHeader2(),
+		Tagline:     s.DisplayTagline(),
+		Version:     s.version,
+		Commit:      s.commit,
+		RepoURL:     repoURL,
+		NavMass:     true,
+		SelGroups:   map[int64]bool{},
+		SelNetworks: map[string]bool{},
+		SelUsers:    map[int64]bool{},
+		SelChannels: map[string]bool{},
 		Channels: []massChannel{
 			{Kind: "aprs", Label: "mass.ch.aprs"},
 			{Kind: "sms", Label: "mass.ch.sms"},
@@ -391,7 +403,35 @@ func (s *Server) renderMassError(w http.ResponseWriter, r *http.Request, status 
 	view.Role = sess.role
 	view.Message = message
 	view.Error = msg
+	view.SelGroups = intSet(r.PostForm["groups"])
+	view.SelUsers = intSet(r.PostForm["users"])
+	view.SelNetworks = stringSet(r.PostForm["networks"])
+	view.SelChannels = stringSet(r.PostForm["channels"])
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	s.renderL(w, r, "mass", view)
+}
+
+// intSet collects the positive integer form values (group and user ids)
+// into a lookup set for the form's checked state.
+func intSet(values []string) map[int64]bool {
+	set := make(map[int64]bool, len(values))
+	for _, v := range values {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 {
+			set[id] = true
+		}
+	}
+	return set
+}
+
+// stringSet collects the non-empty form values (network slugs, channels)
+// into a lookup set for the form's checked state.
+func stringSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			set[v] = true
+		}
+	}
+	return set
 }

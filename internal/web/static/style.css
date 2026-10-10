@@ -690,34 +690,31 @@ button:disabled { cursor: not-allowed; }
 .gh-link:hover { color: var(--text); text-decoration: none; }
 .gh-link .icon { width: 15px; height: 15px; }
 
-/* Mass info form: three pickers side by side, channel checkboxes below. */
-.mass-grid {
+/* Mass info page: a centered, sectioned form. The three recipient
+   pickers (groups, EMCOM networks, users) sit side by side and fall back
+   to one column on narrow screens; long lists scroll inside the picker.
+   The sections, grids and chips reuse the shared account/form components
+   so the page matches the rest of the interface. */
+.mass-card { max-width: 880px; width: 100%; align-self: center; flex: 0 0 auto; }
+.mass-pickers {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: 0.9rem;
-  margin: 0.8rem 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: 1rem;
 }
-.mass-grid select { min-height: 7.5rem; }
-.mass-channels {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.5rem 0.8rem 0.7rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 1.2rem;
-}
-.mass-channels legend {
-  padding: 0 0.4rem;
+.mass-picker { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+.mass-picker-label {
   font-size: 0.78rem;
+  font-weight: 600;
   color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
-.mass-channel {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.88rem;
-  cursor: pointer;
-}
+.mass-picker-scroll { max-height: 15rem; overflow-y: auto; }
+.mass-picker .page-info { margin: 0; font-size: 0.78rem; }
+/* Empty picker: a non-interactive chip so the field name stays present
+   and the operator sees why there is nothing to tick. */
+.mass-empty { opacity: 0.6; cursor: default; }
+.mass-empty:hover { border-color: var(--border); }
 
 /* Help page: a top-aligned column so the intro card and the section cards
    keep an even gap (the admin .users-main stretch does not apply here). */

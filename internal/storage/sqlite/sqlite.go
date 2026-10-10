@@ -985,6 +985,17 @@ CREATE TABLE message_ids (
 CREATE INDEX idx_message_ids_minute ON message_ids(minute);
 `,
 	},
+	{
+		// v57: why a tx row failed. The device can REFUSE a send outright
+		// (queueStatus.res / a ROUTING_APP error_reason): the frame never
+		// reaches the air, so no acknowledgment follows and the bare
+		// "failed" state told the operator nothing. The reason key (e.g.
+		// "pki_no_key") is stored next to the status and shown in the
+		// message history.
+		SQL: `
+ALTER TABLE meshtastic_messages ADD COLUMN reason TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

@@ -30,10 +30,18 @@ func TestRadioEmcom(t *testing.T) {
 	env := newTestEnvWithUsers(t, store)
 	srv := env.server
 
-	// No arguments: usage + the network list with the numeric id.
+	// No arguments: usage plus ONLY the networks the sender may
+	// change. "radio" has no assigned group → the empty hint.
 	res := srv.RadioEmcom("", "radio")
+	if !res.Handled || !strings.Contains(res.Reply, "no networks authorized for you") ||
+		strings.Contains(res.Reply, "SP9MOA EMCOM") {
+		t.Fatalf("unauthorized list reply = %+v", res)
+	}
+
+	// The configured admin always sees the full list.
+	res = srv.RadioEmcom("", "admin")
 	if !res.Handled || !strings.Contains(res.Reply, "1 = SP9MOA EMCOM (level 0)") {
-		t.Fatalf("list reply = %+v", res)
+		t.Fatalf("admin list reply = %+v", res)
 	}
 
 	// Missing level parameter.
@@ -78,6 +86,12 @@ func TestRadioEmcom(t *testing.T) {
 	}
 	if err := store.SetEmcomNetworkGroups(context.Background(), "sp9moa", []int64{g.ID}); err != nil {
 		t.Fatal(err)
+	}
+
+	// The authorized member now sees the network in the list.
+	res = srv.RadioEmcom("", "sp9oper")
+	if !res.Handled || !strings.Contains(res.Reply, "1 = SP9MOA EMCOM (level 0)") {
+		t.Fatalf("authorized list reply = %+v", res)
 	}
 
 	// A valid transition by the numeric id: confirmation with the name.

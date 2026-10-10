@@ -1919,6 +1919,12 @@ func TestEmcomRoleFlow(t *testing.T) {
 	if _, err := env.users.CreateUser("ops-user", "", "", "", "emcom", "password123"); err != nil {
 		t.Fatal(err)
 	}
+	// One network exists in the mirrored state (as the receiver would
+	// sync it from the broker).
+	env.state.AddOrUpdateInfo("local", "warnflux/info/emcom/emcom/sp9moa-emcom/emcom", state.InfoEntry{
+		Source: "emcom", ProducerID: "emcom", Key: "sp9moa-emcom", Kind: "emcom",
+		ReceivedAt: time.Now(), Payload: []byte(`{"schema_version":1,"network":"SP9MOA EMCOM","slug":"sp9moa-emcom","level":0}`),
+	})
 
 	_, html := env.get("/login")
 	csrf := extractCSRF(t, html)
@@ -1953,15 +1959,20 @@ func TestEmcomRoleFlow(t *testing.T) {
 		t.Errorf("GET /dashboard as emcom = %d, want 200", resp.StatusCode)
 	}
 
-	// The EMCOM panel is the emcom operator's surface: the level slider
-	// is present, but adding and deleting networks is admin-only — the
-	// controls are hidden and the endpoints redirect to the dashboard.
+	// The EMCOM panel shows only the networks the operator may control:
+	// without an assigned group there is no card, only the
+	// authorization hint. Adding and deleting networks is admin-only —
+	// the controls are hidden and the endpoints redirect to the
+	// dashboard.
 	resp, html = env.get("/emcom")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /emcom as emcom = %d, want 200", resp.StatusCode)
 	}
-	if !strings.Contains(html, "data-emcom-slider") || !strings.Contains(html, "data-emcom-save") {
-		t.Errorf("emcom operator must see the level controls: %s", html)
+	if !strings.Contains(html, "No networks are authorized for you") {
+		t.Errorf("operator without groups must see the authorization hint: %s", html)
+	}
+	if strings.Contains(html, `<article class="emcom-card">`) {
+		t.Errorf("operator without groups must not see network cards: %s", html)
 	}
 	// Network management moved to the Config page: the operator panel
 	// carries neither the add form nor delete buttons.
@@ -1972,6 +1983,29 @@ func TestEmcomRoleFlow(t *testing.T) {
 	// selector, which must not count).
 	if strings.Contains(html, `btn-danger btn-small" data-emcom-delete`) {
 		t.Errorf("emcom operator must not see the delete buttons: %s", html)
+	}
+	// After the admin assigns the group to the network, the card with
+	// the level slider appears for the operator.
+	ops, err := env.users.CreateGroup("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u0, err := env.users.GetUserByUsername("ops-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.SetUserGroups(u0.ID, []int64{ops.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.users.(storage.GroupStore).SetEmcomNetworkGroups(context.Background(), "sp9moa-emcom", []int64{ops.ID}); err != nil {
+		t.Fatal(err)
+	}
+	resp, html = env.get("/emcom")
+	if !strings.Contains(html, `<article class="emcom-card">`) || !strings.Contains(html, `name="level"`) {
+		t.Errorf("authorized operator must see the level controls: %s", html)
+	}
+	if strings.Contains(html, "No networks are authorized for you") {
+		t.Errorf("authorized operator must not see the authorization hint: %s", html)
 	}
 	csrf = extractCSRF(t, html)
 	resp, _ = env.postForm("/config/emcom/add", url.Values{"csrf": {csrf}, "name": {"ROGUE"}})

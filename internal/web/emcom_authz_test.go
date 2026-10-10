@@ -140,6 +140,12 @@ func TestEmcomLevelAuthz(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /emcom as operator = %d", resp.StatusCode)
 	}
+	if !strings.Contains(html, "No networks are authorized for you") {
+		t.Fatalf("unauthorized operator must see the hint: %s", html)
+	}
+	if strings.Contains(html, `<article class="emcom-card">`) {
+		t.Fatalf("unauthorized operator must not see network cards: %s", html)
+	}
 	csrf = extractCSRF(t, html)
 
 	// Level change denied: 403 with the emcom page (not a redirect).
@@ -180,6 +186,9 @@ func TestEmcomLevelAuthz(t *testing.T) {
 	resp, html = env.get("/emcom")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /emcom after assignment = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<article class="emcom-card">`) || !strings.Contains(html, `name="level"`) {
+		t.Fatalf("authorized operator must see the network card with the slider: %s", html)
 	}
 	csrf = extractCSRF(t, html)
 	resp, _ = env.postForm("/emcom/"+slug+"/level", url.Values{"csrf": {csrf}, "level": {"1"}})

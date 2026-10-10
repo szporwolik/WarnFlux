@@ -152,8 +152,12 @@ type composeView struct {
 	Source string
 	Form   composeForm
 	Items  []composeItem
-	Msg    string
-	Error  string
+	// External lists the ACTIVE communications that came from other
+	// sources (weather, sensors, ingest feeds...): the operator can
+	// retire a nuisance one right here.
+	External []externalHazardItem
+	Msg      string
+	Error    string
 
 	// ShowForm opens the collapsible compose panel on the initial
 	// render: editing an existing communication or re-rendering after
@@ -196,6 +200,45 @@ type composeView struct {
 	NavConfig        bool
 }
 
+// externalHazardItem is one active communication from another source,
+// shown below the issued list with a retire action.
+type externalHazardItem struct {
+	EventKey  string
+	MsgID     string
+	Source    string
+	Event     string
+	Severity  string
+	Urgency   string
+	Certainty string
+	Headline  string
+	Areas     string
+	UpdatedAt time.Time
+}
+
+// externalHazards projects the active non-compose communications onto
+// the panel list (same merged view the public page uses).
+func (s *Server) externalHazards() []externalHazardItem {
+	var out []externalHazardItem
+	for _, h := range s.activeHazards() {
+		if h.Source == composeSource {
+			continue
+		}
+		out = append(out, externalHazardItem{
+			EventKey:  h.EventKey,
+			MsgID:     core.MessageID(h.EventKey),
+			Source:    h.Source,
+			Event:     h.Event,
+			Severity:  h.Severity,
+			Urgency:   h.Urgency,
+			Certainty: h.Certainty,
+			Headline:  h.Headline,
+			Areas:     strings.Join(h.Areas, ", "),
+			UpdatedAt: h.UpdatedAt,
+		})
+	}
+	return out
+}
+
 // composeFlashKey maps the post-action redirect marker to the banner
 // message i18n key.
 func composeFlashKey(marker string) string {
@@ -206,6 +249,8 @@ func composeFlashKey(marker string) string {
 		return "compose.flash.updated"
 	case "expired":
 		return "compose.flash.expired"
+	case "external-expired":
+		return "compose.flash.external_expired"
 	}
 	return ""
 }
@@ -424,6 +469,80 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("compose: communication expired", "event_key", key)
 	s.audit(sess.username, "compose-expire", key)
 	http.Redirect(w, r, "/compose?msg=expired", http.StatusSeeOther)
+}
+
+// handleExternalExpire retires one ACTIVE communication that came from
+// another source (the operator kills a nuisance alert): the local store
+// records the cancellation (quietly — cancellations never notify), the
+// canonical transition flows through the local ingress and the retained
+// broker document is removed so every instance drops it. A source that
+// re-reports the hazard later revives it — that is a NEW report.
+func (s *Server) handleExternalExpire(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	key := strings.TrimSpace(r.PostFormValue("event_key"))
+	if key == "" {
+		http.Error(w, "missing event key", http.StatusBadRequest)
+		return
+	}
+	var h state.Hazard
+	found := false
+	for _, x := range s.activeHazards() {
+		if x.Source != composeSource && x.EventKey == key {
+			h = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "unknown active communication", http.StatusNotFound)
+		return
+	}
+
+	// LOCAL-FIRST: the store records the cancellation and the canonical
+	// transition rides through the ingress like any other change.
+	if s.events != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		st, err := s.events.Get(ctx, key)
+		if err == nil && st != nil {
+			ev := st.Event
+			ev.Status = core.StatusCancelled
+			_, change, err := s.events.Ingest(ctx, ev, core.Fingerprint(ev))
+			cancel()
+			if err != nil {
+				s.logger.Warn("compose: external expire ingest failed", "event_key", key, "error", err)
+				http.Error(w, "local record save failed", http.StatusServiceUnavailable)
+				return
+			}
+			if change != nil {
+				evt := dispatch.EventForJournalChange(change.ChangeType, change.ID, change.Publisher, change.Event, "panel", time.Now())
+				evt.InboxID = change.InboxID
+				if s.ingress.Enqueue(evt) == dispatch.Rejected {
+					s.logger.Warn("compose: external expire dispatch rejected", "event_key", key)
+				}
+			}
+		} else {
+			cancel()
+			// Mirror-only copy (another instance's document): the broker
+			// tombstone below is the only record.
+		}
+	}
+
+	// Broker tombstone: removes the retained document for every instance
+	// (best-effort; the resync path reconciles on reconnect).
+	if s.pub != nil {
+		go func() {
+			if err := s.pub.ExpireActive(h.Source, key); err != nil {
+				s.logger.Warn("compose: external expire broker sync failed", "event_key", key, "error", err)
+			}
+		}()
+	}
+	s.logger.Info("compose: external communication expired", "event_key", key, "source", h.Source)
+	s.audit(sess.username, "external-expire", key+" source="+h.Source)
+	http.Redirect(w, r, "/compose?msg=external-expired", http.StatusSeeOther)
 }
 
 // scheduleComposeExpiry auto-expires a communication at its expires_at:
@@ -869,6 +988,7 @@ func (s *Server) buildComposeView(lang string, form composeForm) composeView {
 		Source:      composeSource,
 		Form:        form,
 		Items:       s.composeItems(),
+		External:    s.externalHazards(),
 		Severities:  optionList(lang, testSeverityValues),
 		Urgencies:   optionList(lang, testUrgencyValues),
 		Certainties: optionList(lang, testCertaintyValues),

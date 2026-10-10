@@ -536,6 +536,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 		})
 	}
 	return usersView{
+		Lang:       s.langFor(r),
 		AppTitle:   s.cfg.Title,
 		Name:       s.displayName(),
 		Header1:    s.displayHeader1(),
@@ -544,6 +545,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 		Version:    s.version,
 		Commit:     s.commit,
 		RepoURL:    repoURL,
+		CSRF:       s.sessionCSRF(r),
 		Users:      rows,
 		Groups:     groups,
 		Channels:   notify.Channels,
@@ -569,7 +571,6 @@ func (s *Server) renderUsersError(w http.ResponseWriter, r *http.Request, status
 	sess := s.sessions.currentSession(r)
 	view := s.buildAccessView(r, sess, "users")
 	view.Users = s.buildUsersView(r, form, editID, msg)
-	view.Users.CSRF = sess.csrf
 	view.Users.Username = sess.username
 	view.Users.Role = sess.role
 	view.Users.Tab = "users"

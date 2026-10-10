@@ -293,7 +293,6 @@ func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) 
 		routing.Actions = nil
 	}
 	view := s.buildGroupsView(r, groupForm{}, 0, s.csrfFlashMessage(r))
-	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
 	view.RoutingName = group.Name
@@ -487,6 +486,7 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		rows = append(rows, row)
 	}
 	return groupsView{
+		Lang:       s.langFor(r),
 		AppTitle:   s.cfg.Title,
 		Name:       s.displayName(),
 		Header1:    s.displayHeader1(),
@@ -495,6 +495,7 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 		Version:    s.version,
 		Commit:     s.commit,
 		RepoURL:    repoURL,
+		CSRF:       s.sessionCSRF(r),
 		Groups:     rows,
 		Form:       form,
 		EditID:     editID,
@@ -517,7 +518,6 @@ func (s *Server) buildGroupsView(r *http.Request, form groupForm, editID int64, 
 func (s *Server) renderGroupsError(w http.ResponseWriter, r *http.Request, status int, form groupForm, editID int64, msg string) {
 	sess := s.sessions.currentSession(r)
 	view := s.buildGroupsView(r, form, editID, msg)
-	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
 	view.Tab = "groups"

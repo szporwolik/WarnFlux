@@ -195,6 +195,19 @@ func (s *sessionStore) currentSession(r *http.Request) *session {
 	return s.get(c.Value)
 }
 
+// sessionCSRF returns the request session's CSRF token, or "" without a
+// session. It is used to seed the token on partial sub-views (users,
+// groups) that the access page renders with {{template "x" .Sub}}: inside
+// an invoked template the {{$.CSRF}} expression resolves to that template's
+// data (the sub-view), not to the page root, so the sub-view must carry the
+// token itself.
+func (s *Server) sessionCSRF(r *http.Request) string {
+	if sess := s.sessions.currentSession(r); sess != nil {
+		return sess.csrf
+	}
+	return ""
+}
+
 // checkPassword compares the submitted password in constant time.
 func checkPassword(got, want string) bool {
 	if len(got) != len(want) {

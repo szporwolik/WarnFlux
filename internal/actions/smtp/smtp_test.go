@@ -377,7 +377,7 @@ rate_limit_per_minute: -1
 		"WarnFlux notification",
 		"Message: SEVERE · Burza",
 		"Headline: Silny wiatr",
-		"Message ID: WX-",
+		"Message ID: WF-",
 		"source: imgw-meteo",
 		"areas: małopolskie",
 		"instruction: Follow official communications",
@@ -405,7 +405,7 @@ rate_limit_per_minute: -1
 		"background-color:#f0784e;height:4px",
 		"background-color:#f0784e;color:#0f1419",
 		">SEVERE<",
-		">WX-",
+		">WF-",
 		// Branded footer: version and normalized domain. The repository
 		// link must not appear in outbound mails.
 		"Sent by <strong style=\"color:#eef2f5;\">SPOK · WarnFlux</strong> v0.1.0",

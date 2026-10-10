@@ -116,9 +116,9 @@ func TestExecuteSendsToAllRecipients(t *testing.T) {
 		t.Errorf("recipients = %v", tx.sent)
 	}
 	text := tx.sent[0][1]
-	// With the ID suffix reserved, the less important parts (the event
-	// type first) give up space before the headline.
-	if !strings.HasPrefix(text, "WarnFlux SEV") {
+	// With the 13-character ID suffix reserved, the less important parts
+	// (the event type, then the prefix) give up space before the headline.
+	if !strings.HasPrefix(text, "SEV:") {
 		t.Errorf("message = %q", text)
 	}
 	if !strings.Contains(text, "Ostrzezenie dla powiatu krakowskiego") {
@@ -126,7 +126,7 @@ func TestExecuteSendsToAllRecipients(t *testing.T) {
 	}
 	// The stable message ID rides along so one communication can be
 	// cited on the air.
-	if !strings.Contains(text, " ID:WX-") {
+	if !strings.Contains(text, " ID:WF-") {
 		t.Errorf("message ID missing: %q", text)
 	}
 	if len(text) > aprs.MaxMessageText {

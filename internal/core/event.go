@@ -99,16 +99,16 @@ func (e HazardEvent) Key() string {
 }
 
 // MessageID derives the short, human-usable identifier of one hazard.
-// The format is READABLE: "WX-" followed by DDHHMMNN — day of month,
-// hour and minute in 24-hour form, and a per-minute sequence (01-99)
-// assigned in generation order. Operators cite it on the radio, in
-// mails, on Discord and in the web UI to refer to one specific
+// The format is READABLE: "WF-" followed by MMDDHHMMNN — month and day
+// of month, hour and minute in 24-hour form, and a per-minute sequence
+// (01-99) assigned in generation order. Operators cite it on the radio,
+// in mails, on Discord and in the web UI to refer to one specific
 // communication.
 //
 // The id is cached per event key, so one message keeps the same id
 // across renders, channels and repeated sends within the process. A
 // fresh process assigns fresh ids to old events (operators cite the id
-// of the moment). The result is a fixed 11 characters.
+// of the moment). The result is a fixed 13 characters.
 func MessageID(eventKey string) string {
 	return MessageIDAt(eventKey, time.Now())
 }
@@ -133,14 +133,14 @@ func MessageIDAt(eventKey string, now time.Time) string {
 	}
 	// Beyond 99 messages per minute the sequence stays at 99 instead of
 	// widening the identifier.
-	id := fmt.Sprintf("WX-%02d%02d%02d%02d", now.Day(), now.Hour(), now.Minute(), msgIDSeq)
+	id := fmt.Sprintf("WF-%02d%02d%02d%02d%02d", now.Month(), now.Day(), now.Hour(), now.Minute(), msgIDSeq)
 	msgIDByKey[eventKey] = id
 	return id
 }
 
 // Message-id generation state: the cache makes ids stable per event key
 // within one process; the minute marker plus sequence yield the readable
-// DDHHMMNN suffix.
+// MMDDHHMMNN suffix.
 var (
 	msgIDMu     sync.Mutex
 	msgIDByKey  = make(map[string]string)

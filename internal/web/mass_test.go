@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -43,6 +44,9 @@ func TestMassInfoPage(t *testing.T) {
 	resp, _ = env.get("/mass")
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
 		t.Fatalf("member GET /mass = %d %q, want 303 /dashboard", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp, _ = env.get("/mass/progress?job=x"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("member GET /mass/progress = %d %q, want 303 /dashboard", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	env.logout()
 
@@ -100,16 +104,55 @@ func TestMassInfoPage(t *testing.T) {
 		}
 	}
 
-	// A valid send with no attached transports still redirects with the
-	// zero-count flash (recipients were resolved and deduped: alice plus
-	// the admin, who belongs to ops in the fake directory).
+	// A valid send starts a background job and redirects to its progress
+	// page (no transport is attached, so it completes with the zero-count
+	// summary: alice plus the admin, who belongs to ops in the fake
+	// directory).
 	resp, _ = env.postForm("/mass", url.Values{
 		"csrf": {csrf}, "message": {"hello"}, "channels": {"aprs", "email"},
 		"groups": {idStr(g1.ID)}, "users": {idStr(alice.ID)},
 	})
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/mass?msg="+url.QueryEscape(
-		"Sent to 2 users — APRS 0, SMS 0, e-mail 0, Discord 0, Meshtastic 0.") {
-		t.Fatalf("valid send = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	loc := resp.Header.Get("Location")
+	if resp.StatusCode != http.StatusSeeOther || !strings.HasPrefix(loc, "/mass?job=") {
+		t.Fatalf("valid send = %d %q, want 303 /mass?job=…", resp.StatusCode, loc)
+	}
+
+	// The progress fragment ends with the summary once the job is done.
+	job := strings.TrimPrefix(loc, "/mass?job=")
+	var progress string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pr, ph := env.get("/mass/progress?job=" + url.QueryEscape(job))
+		if pr.StatusCode != http.StatusOK {
+			t.Fatalf("GET /mass/progress = %d", pr.StatusCode)
+		}
+		progress = ph
+		if strings.Contains(ph, `data-done="1"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job did not finish; last fragment: %s", ph)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(progress, "Sent to 2 users — APRS 0, SMS 0, e-mail 0, Discord 0, Meshtastic 0.") {
+		t.Errorf("progress summary missing: %s", progress)
+	}
+	// The channel chips are rendered (selected channels only).
+	if !strings.Contains(progress, "APRS") || !strings.Contains(progress, "E-mail") {
+		t.Errorf("progress missing channel chips: %s", progress)
+	}
+
+	// Reopening the progress page keeps the finished panel (the summary is
+	// shown without polling).
+	_, page := env.get("/mass?job=" + url.QueryEscape(job))
+	if !strings.Contains(page, `id="mass-progress"`) || !strings.Contains(page, "Sent to 2 users") {
+		t.Errorf("finished job not shown on the page: %.400s", page)
+	}
+
+	// An unknown job id is a 404 for the poller.
+	if pr, _ := env.get("/mass/progress?job=nope"); pr.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown job = %d, want 404", pr.StatusCode)
 	}
 }
 

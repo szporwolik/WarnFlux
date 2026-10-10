@@ -161,6 +161,16 @@ type Server struct {
 	startedAt time.Time
 	ready     atomic.Bool
 
+	// baseCtx is the server-scoped context: the background Mass info
+	// broadcast runs under it, so it is cancelled on shutdown rather than
+	// when the originating HTTP request ends.
+	baseCtx    context.Context
+	cancelBase context.CancelFunc
+
+	// massJobs tracks the running and recently finished Mass info
+	// broadcasts so the page can poll live progress.
+	massJobs *massJobStore
+
 	tmpl     *template.Template
 	mux      *http.ServeMux
 	httpSrv  *http.Server
@@ -278,7 +288,10 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		startedAt:      time.Now(),
 		mux:            http.NewServeMux(),
 		ingest:         ingest,
+		massJobs:       newMassJobStore(),
 	}
+	ctx, cancelBase := context.WithCancel(context.Background())
+	s.baseCtx, s.cancelBase = ctx, cancelBase
 	// Parsed after construction: the template funcs close over the
 	// server's display timezone (set later via SetTimezone, nil = the
 	// process-local zone).
@@ -474,6 +487,7 @@ func (s *Server) routes(static http.Handler) {
 	// chosen channels (not a hazard communication).
 	s.mux.Handle("GET /mass", s.requireAdmin(s.handleMassPage))
 	s.mux.Handle("POST /mass", s.requireAdmin(s.handleMassSend))
+	s.mux.Handle("GET /mass/progress", s.requireAdmin(s.handleMassProgress))
 	s.mux.Handle("GET /config", s.requireAdmin(s.handleConfigPage))
 	s.mux.Handle("POST /config/offline", s.requireAdmin(s.handleConfigOffline))
 	s.mux.Handle("POST /config/tiles", s.requireAdmin(s.handleConfigTiles))
@@ -533,6 +547,9 @@ func (s *Server) Serve(errCh chan<- error) {
 
 // Shutdown gracefully stops the HTTP server within a bounded context.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.cancelBase != nil {
+		s.cancelBase()
+	}
 	if s.listener == nil {
 		return nil
 	}

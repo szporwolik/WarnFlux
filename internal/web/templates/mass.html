@@ -17,6 +17,7 @@
       <p class="page-info">{{tr .Lang "mass.intro"}}</p>
       {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
       {{if .Error}}{{template "flash-err" .Error}}{{end}}
+      {{if .Progress}}{{template "mass_progress" .Progress}}{{end}}
       <form method="post" action="/mass" class="mass-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
 
@@ -82,3 +83,15 @@
 </body>
 </html>
 {{end}}
+
+{{define "mass_progress"}}<div class="mass-progress" id="mass-progress" data-job="{{.JobID}}" data-done="{{if .Finished}}1{{else}}0{{end}}">
+  <div class="mass-progress-head">
+    <span class="mass-progress-title">{{.Headline}}</span>
+    {{if .Where}}<span class="mass-progress-where">{{.Where}}</span>{{end}}
+  </div>
+  <div class="mass-bar" role="progressbar" aria-valuenow="{{.Percent}}" aria-valuemin="0" aria-valuemax="100"><span class="mass-bar-fill{{if .Failed}} mass-bar-warn{{end}}" style="width: {{.Percent}}%"></span></div>
+  <div class="mass-chan-list">
+    {{range .Channels}}<span class="mass-chan {{.State}}"><span class="mass-chan-name">{{.Label}}</span>{{if .Detail}}<span class="mass-chan-detail">{{.Detail}}</span>{{end}}</span>{{end}}
+  </div>
+  {{if .Summary}}<p class="test-ok mass-progress-summary"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{.Summary}}</span></p>{{end}}
+</div>{{end}}

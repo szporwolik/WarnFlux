@@ -98,7 +98,7 @@ func TestEmcomGroupAssignment(t *testing.T) {
 	}
 
 	// Assignment is replaced, never merged: posting no groups clears it.
-	resp, html = env.get("/config")
+	_, html = env.get("/config")
 	csrf = extractCSRF(t, html)
 	resp, _ = env.postForm("/config/emcom/"+slug+"/groups", url.Values{"csrf": {csrf}})
 	if resp.StatusCode != http.StatusSeeOther {

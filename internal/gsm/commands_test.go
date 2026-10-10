@@ -392,9 +392,9 @@ func TestSMSCommandReplay(t *testing.T) {
 		return dispatch.AcceptedDurable
 	})
 	h.routeMessage("+48600111222", "/debug")
-	w := waitForWritten(t, f, "OK: debug alarm generated")
+	_ = waitForWritten(t, f, "OK: debug alarm generated")
 	h.routeMessage("+48600111222", "/debug")
-	w = waitForWritten(t, f, "\x1A")
+	w := waitForWritten(t, f, "\x1A")
 	if strings.Count(w, "OK: debug alarm generated") < 1 {
 		t.Fatalf("replay reply missing: %q", w)
 	}

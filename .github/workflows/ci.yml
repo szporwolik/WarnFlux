@@ -69,5 +69,5 @@ jobs:
         with:
           # Must mirror the `toolchain` directive in go.mod so the scan
           # runs on the same toolchain the build uses.
-          go-version-input: '1.26.6'
+          go-version-input: '1.26.9'
           go-package: ./...

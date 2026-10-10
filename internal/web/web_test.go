@@ -2041,7 +2041,7 @@ func TestForgotPasswordFlow(t *testing.T) {
 
 	// Wrong email: generic answer, no email.
 	_, html = env.get("/forgot")
-	resp, _ = env.postForm("/forgot", url.Values{
+	_, _ = env.postForm("/forgot", url.Values{
 		"csrf": {extractCSRF(t, html)}, "username": {"member1"}, "email": {"wrong@example.com"},
 	})
 	if sentTo != "" {

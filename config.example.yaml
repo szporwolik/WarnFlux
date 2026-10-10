@@ -726,7 +726,8 @@ gsm:
 
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI). They never automatically receive MQTT
-# events. Built-in types: smtp (email), http_webhook, discord, aprs.
+# events. Built-in types: smtp (email), http_webhook, discord, aprs,
+# aprs-out, sms.
 actions:
 
   # SMTP email action: sends one plain-text email per routed dispatch

@@ -492,32 +492,6 @@ func (s *Server) emcomHazardInMirror(slug string) bool {
 	return false
 }
 
-// emcomHazardActive reports whether the network currently has a raised
-// hazard: the local record (level ≥ 1) is authoritative; mirror-only
-// installations ask the mirror.
-func (s *Server) emcomHazardActive(slug string) bool {
-	if st, ok := s.users.(emcomStore); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		rows, err := st.EmcomNetworks(ctx)
-		cancel()
-		if err != nil {
-			s.logger.Warn("emcom: local network list failed", "error", err)
-		} else {
-			for _, n := range rows {
-				if n.Level < 0 {
-					continue
-				}
-				if n.Slug == slug {
-					return n.Level >= 1
-				}
-			}
-			return false
-		}
-	}
-	return s.emcomHazardInMirror(slug)
-}
-
-// saveEmcomNetwork persists one network to the local record and returns
 // the lifecycle version the store allocated for the transition (nil when
 // no store is attached: mirror-only installations keep the broker
 // document as their record).

@@ -12,52 +12,67 @@
   {{template "topbar" .}}
   {{template "sidebar" .}}
   <main class="users-main">
-    <section class="card">
+    <section class="card mass-card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "mass.title"}}</h2>
-      <p class="muted">{{tr .Lang "mass.intro"}}</p>
-      {{if .Msg}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{.Msg}}</span></div>{{end}}
-      {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
-      <form method="post" action="/mass" class="test-form">
+      <p class="page-info">{{tr .Lang "mass.intro"}}</p>
+      {{if .Msg}}<p class="test-ok"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg>{{.Msg}}</p>{{end}}
+      {{if .Error}}{{template "flash-err" .Error}}{{end}}
+      <form method="post" action="/mass" class="mass-form">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <label class="field field-wide">
-          <span>{{tr .Lang "mass.message"}}</span>
-          <input type="text" name="message" value="{{.Message}}" maxlength="50" data-char-count="50" data-char-out="#mass-count" required>
-          <span class="char-count" id="mass-count">0 / 50</span>
-        </label>
-        <div class="mass-grid">
-          <label class="field">
-            <span>{{tr .Lang "mass.groups"}}</span>
-            <select name="groups" multiple size="6">
-              {{range .Groups}}<option value="{{.ID}}">{{.Name}}{{if .Members}} ({{.Members}}){{end}}</option>{{end}}
-            </select>
-            <span class="muted small">{{tr .Lang "mass.groups_hint"}}</span>
-          </label>
-          <label class="field">
-            <span>{{tr .Lang "mass.networks"}}</span>
-            <select name="networks" multiple size="6">
-              {{range .Networks}}<option value="{{.Slug}}">{{.Name}}</option>{{end}}
-            </select>
-            <span class="muted small">{{tr .Lang "mass.networks_hint"}}</span>
-          </label>
-          <label class="field">
-            <span>{{tr .Lang "mass.users"}}</span>
-            <select name="users" multiple size="6">
-              {{range .Users}}<option value="{{.ID}}">{{.Username}}{{if .APRSCallsigns}} · {{index .APRSCallsigns 0}}{{end}}</option>{{end}}
-            </select>
-            <span class="muted small">{{tr .Lang "mass.users_hint"}}</span>
-          </label>
+
+        <div class="account-section">
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "mass.message"}}</h3>
+          <div class="account-grid">
+            <label class="field field-wide">
+              <input type="text" name="message" value="{{.Message}}" maxlength="50" data-char-count="50" data-char-out="#mass-count" aria-label="{{tr .Lang "mass.message"}}" required>
+              <span class="char-count" id="mass-count">0 / 50</span>
+            </label>
+          </div>
         </div>
-        <fieldset class="mass-channels">
-          <legend>{{tr .Lang "mass.channels"}}</legend>
-          {{range .Channels}}
-          <label class="mass-channel">
-            <input type="checkbox" name="channels" value="{{.Kind}}">
-            <span>{{tr $.Lang .Label}}</span>
-          </label>
-          {{end}}
-        </fieldset>
+
+        <div class="account-section">
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg>{{tr .Lang "mass.recipients"}}</h3>
+          <p class="page-info">{{tr .Lang "mass.recipients_note"}}</p>
+          <div class="mass-pickers">
+            <div class="mass-picker">
+              <span class="mass-picker-label">{{tr .Lang "mass.groups"}}</span>
+              <div class="mass-picker-scroll">
+                <div class="account-channels-grid">
+                  {{range .Groups}}<label class="account-channel"><input type="checkbox" name="groups" value="{{.ID}}"{{if index $.SelGroups .ID}} checked{{end}}><span>{{.Name}}{{if .Members}} ({{.Members}}){{end}}</span></label>{{else}}<label class="account-channel mass-empty"><input type="checkbox" name="groups" value="" disabled><span>{{tr $.Lang "mass.none"}}</span></label>{{end}}
+                </div>
+              </div>
+              <span class="page-info">{{tr .Lang "mass.groups_hint"}}</span>
+            </div>
+            <div class="mass-picker">
+              <span class="mass-picker-label">{{tr .Lang "mass.networks"}}</span>
+              <div class="mass-picker-scroll">
+                <div class="account-channels-grid">
+                  {{range .Networks}}<label class="account-channel"><input type="checkbox" name="networks" value="{{.Slug}}"{{if index $.SelNetworks .Slug}} checked{{end}}><span>{{.Name}}</span></label>{{else}}<label class="account-channel mass-empty"><input type="checkbox" name="networks" value="" disabled><span>{{tr $.Lang "mass.none"}}</span></label>{{end}}
+                </div>
+              </div>
+              <span class="page-info">{{tr .Lang "mass.networks_hint"}}</span>
+            </div>
+            <div class="mass-picker">
+              <span class="mass-picker-label">{{tr .Lang "mass.users"}}</span>
+              <div class="mass-picker-scroll">
+                <div class="account-channels-grid">
+                  {{range .Users}}<label class="account-channel"><input type="checkbox" name="users" value="{{.ID}}"{{if index $.SelUsers .ID}} checked{{end}}><span>{{.Username}}{{if .APRSCallsigns}} · {{index .APRSCallsigns 0}}{{end}}</span></label>{{else}}<label class="account-channel mass-empty"><input type="checkbox" name="users" value="" disabled><span>{{tr $.Lang "mass.none"}}</span></label>{{end}}
+                </div>
+              </div>
+              <span class="page-info">{{tr .Lang "mass.users_hint"}}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="account-section">
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "mass.channels"}}</h3>
+          <div class="account-channels-grid">
+            {{range .Channels}}<label class="account-channel"><input type="checkbox" name="channels" value="{{.Kind}}"{{if index $.SelChannels .Kind}} checked{{end}}><span>{{tr $.Lang .Label}}</span></label>{{end}}
+          </div>
+        </div>
+
         <div class="form-footer">
-          <button type="submit" class="btn-primary">{{tr .Lang "mass.send"}}</button>
+          <button type="submit" class="btn-primary"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "mass.send"}}</button>
         </div>
       </form>
     </section>

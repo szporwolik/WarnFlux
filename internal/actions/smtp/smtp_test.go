@@ -706,3 +706,82 @@ rate_limit_per_minute: 0
 		t.Fatalf("received %d mails, want 1", len(got))
 	}
 }
+
+// TestSendNoticeIsBranded pins the Mass info broadcast mail: a one-off
+// notice must render in the same branded shell as routed notifications
+// (accent bar, embedded logo, system header, footer) with a plain-text
+// alternative and an HTML-escaped body.
+func TestSendNoticeIsBranded(t *testing.T) {
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [ops@example.com]
+starttls: false
+rate_limit_per_minute: -1
+`, port)))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	mailer, ok := p.(smtp.DirectMailer)
+	if !ok {
+		t.Fatal("smtp plugin does not implement DirectMailer")
+	}
+	app := action.AppInfo{
+		Version: "0.7.1",
+		Header1: "SPOK",
+		Domain:  "https://spok.sp9moa.pl",
+		RepoURL: "https://github.com/szporwolik/WarnFlux",
+	}
+	// A non-ASCII subject must be MIME word-encoded; the body must be
+	// HTML-escaped in the HTML part.
+	if err := mailer.SendNotice(ctx, []string{"alice@example.com"},
+		"[SPOK] Wysyłka zbiorcza", "Zbiórka o 18:00 <ważne>", app, "en"); err != nil {
+		t.Fatalf("SendNotice: %v", err)
+	}
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	got := srv.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("mails = %d, want 1", len(got))
+	}
+	m := got[0]
+	if len(m.rcpts) != 1 || m.rcpts[0] != "alice@example.com" {
+		t.Errorf("rcpts = %v, want [alice@example.com]", m.rcpts)
+	}
+	for _, want := range []string{
+		"To: alice@example.com",
+		"Subject: =?utf-8?", // non-ASCII subject is word-encoded
+		// Same branded shell as a routed notification.
+		"Content-Type: multipart/related",
+		"Content-Type: multipart/alternative",
+		"Content-Type: text/html; charset=utf-8",
+		"Content-Type: image/png; name=\"logo.png\"",
+		"Content-ID: <warnflux-logo>",
+		"cid:warnflux-logo",
+		">SPOK</td>",
+		// Notice label, escaped body, timestamp.
+		"Mass info",
+		"Zbiórka o 18:00 &lt;ważne&gt;",
+		"Updated:",
+		// Branded footer with version and normalized domain; no repo link.
+		"Sent by <strong style=\"color:#eef2f5;\">SPOK · WarnFlux</strong> v0.7.1",
+		"spok.sp9moa.pl",
+	} {
+		if !strings.Contains(m.data, want) {
+			t.Errorf("notice mail missing %q:\n%s", want, m.data)
+		}
+	}
+	if strings.Contains(m.data, "github.com") {
+		t.Errorf("notice mail must not link the repository:\n%s", m.data)
+	}
+}

@@ -201,6 +201,17 @@ func (m *Manager) Submit(actionID string, req ActionRequest) error {
 	}
 }
 
+// Plugin returns the enabled instance's plugin, for direct capability
+// calls (panel one-off sends like the mass-info page). Unknown or
+// disabled instances return false.
+func (m *Manager) Plugin(id string) (Plugin, bool) {
+	inst, ok := m.byID[id]
+	if !ok || inst == nil {
+		return nil, false
+	}
+	return inst.plugin, true
+}
+
 // Statuses returns the status of every configured instance (including
 // config-disabled ones), sorted by ID.
 func (m *Manager) Statuses() []Status {

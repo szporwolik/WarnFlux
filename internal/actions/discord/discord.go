@@ -89,11 +89,22 @@ func New(node *yaml.Node) (action.Plugin, error) {
 // Name returns the action type name.
 func (a *discordAction) Name() string { return Type }
 
-// Execute delivers one webhook POST. Non-2xx responses and transport
-// errors are returned as errors; retries are owned by the action
-// instance machinery.
-func (a *discordAction) Execute(ctx context.Context, req action.ActionRequest) error {
-	body, err := json.Marshal(payload{Content: a.messageText(req), Username: a.username})
+// PlainPoster is the optional capability of a discord instance: panel
+// features (mass info) post a plain message to the webhook channel
+// WITHOUT the hazard formatting of the routed Execute path.
+type PlainPoster interface {
+	// PostText delivers one plain content post to the webhook.
+	PostText(ctx context.Context, content string) error
+}
+
+// PostText posts one plain message to the configured webhook.
+func (a *discordAction) PostText(ctx context.Context, content string) error {
+	return a.post(ctx, content, "WarnFlux")
+}
+
+// post delivers one webhook POST with the given User-Agent.
+func (a *discordAction) post(ctx context.Context, content, userAgent string) error {
+	body, err := json.Marshal(payload{Content: content, Username: a.username})
 	if err != nil {
 		return fmt.Errorf("discord: marshal payload: %w", err)
 	}
@@ -102,11 +113,7 @@ func (a *discordAction) Execute(ctx context.Context, req action.ActionRequest) e
 		return fmt.Errorf("discord: build request: %w", err)
 	}
 	hreq.Header.Set("Content-Type", "application/json")
-	if v := strings.TrimSpace(req.App.Version); v != "" {
-		hreq.Header.Set("User-Agent", "WarnFlux/"+v)
-	} else {
-		hreq.Header.Set("User-Agent", "WarnFlux")
-	}
+	hreq.Header.Set("User-Agent", userAgent)
 	resp, err := a.client.Do(hreq)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -120,6 +127,17 @@ func (a *discordAction) Execute(ctx context.Context, req action.ActionRequest) e
 		return fmt.Errorf("discord: webhook answered %s", resp.Status)
 	}
 	return nil
+}
+
+// Execute delivers one webhook POST. Non-2xx responses and transport
+// errors are returned as errors; retries are owned by the action
+// instance machinery.
+func (a *discordAction) Execute(ctx context.Context, req action.ActionRequest) error {
+	ua := "WarnFlux"
+	if v := strings.TrimSpace(req.App.Version); v != "" {
+		ua = "WarnFlux/" + v
+	}
+	return a.post(ctx, a.messageText(req), ua)
 }
 
 // Close releases nothing (stateless per-call client).

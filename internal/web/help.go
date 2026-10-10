@@ -49,6 +49,7 @@ type helpView struct {
 	NavHealth        bool
 	NavConfig        bool
 	NavHelp          bool
+	NavMass          bool
 }
 
 // buildHelpView assembles the manual sections (content lives in i18n).

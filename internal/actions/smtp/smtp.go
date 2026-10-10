@@ -231,6 +231,22 @@ func New(node *yaml.Node) (action.Plugin, error) {
 
 func (p *emailAction) Name() string { return p.id }
 
+// DirectMailer is the optional capability of an smtp instance: panel
+// features (mass info) send plain one-off mails through the instance's
+// configuration WITHOUT the hazard formatting and config.to extras of
+// the routed Execute path.
+type DirectMailer interface {
+	// SendPlain delivers one plain-text mail with the given subject to
+	// each recipient (one SMTP transaction per address).
+	SendPlain(ctx context.Context, to []string, subject, text string) error
+}
+
+// SendPlain sends a plain-text mail through the instance's own
+// configuration. The caller bounds the context.
+func (p *emailAction) SendPlain(ctx context.Context, to []string, subject, text string) error {
+	return Direct(ctx, p.cfg, to, subject, text)
+}
+
 // Execute sends one email for the routed event, one SMTP transaction per
 // unique recipient (config.to plus the matched group's member addresses
 // carried in request.Bcc). A fresh SMTP connection is used per call: the

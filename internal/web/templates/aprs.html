@@ -71,6 +71,7 @@
     <section class="card page-panel" id="panel-msgs" data-panel="panel-msgs"{{if ne .Tab "msgs"}} hidden{{end}}>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "messages.title"}} <span class="count" id="aprs-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
       <div class="aprs-toolbar">
+      {{if eq .Role "admin"}}
         <form method="post" action="/messages/send" class="aprs-send" data-bad-call="{{tr .Lang "messages.bad_callsign"}}">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="text" name="to" placeholder="{{tr .Lang "messages.to_ph"}}" maxlength="9" list="aprs-calls" autocomplete="off" spellcheck="false" required>
@@ -83,6 +84,7 @@
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <button type="submit" class="btn-ghost">{{tr .Lang "messages.beacon_now"}}</button>
         </form>
+      {{end}}
       </div>
       <script>
       (function () {

@@ -184,12 +184,14 @@ func (s *Store) MeshActionFailed(ctx context.Context, actionID string, groupID i
 // UpdateMeshtasticMessageStatus marks the delivery state of the matching
 // TX row (created_at_ms + text): the hub stamps "sent" when the radio
 // transmits the frame, "delivered" on the recipient's acknowledgment,
-// "failed" when the acknowledgment never arrives.
-func (s *Store) UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error {
+// "failed" when the acknowledgment never arrives — or when the device
+// refused the frame outright, in which case reason carries the refusal
+// key the history view translates.
+func (s *Store) UpdateMeshtasticMessageStatus(ctx context.Context, status, reason string, at time.Time, text string) error {
 	if _, err := s.db.ExecContext(ctx, `
-		UPDATE meshtastic_messages SET status = ?
+		UPDATE meshtastic_messages SET status = ?, reason = ?
 		WHERE direction = 'tx' AND created_at_ms = ? AND text = ?`,
-		status, at.UnixMilli(), text); err != nil {
+		status, reason, at.UnixMilli(), text); err != nil {
 		return fmt.Errorf("update mesh message status: %w", err)
 	}
 	return nil
@@ -201,7 +203,7 @@ func (s *Store) UpdateMeshtasticMessageStatus(ctx context.Context, status string
 // by the node, tx addressed to it).
 func (s *Store) ListMeshtasticMessages(ctx context.Context, f storage.MeshtasticMessageFilter, limit, offset int) ([]storage.MeshMessage, error) {
 	query := `
-		SELECT id, direction, sender, recipient, channel, hops, operator, text, status, created_at_ms
+		SELECT id, direction, sender, recipient, channel, hops, operator, text, status, reason, created_at_ms
 		FROM meshtastic_messages` + meshMessageWhere(f)
 	query += ` ORDER BY id DESC LIMIT ? OFFSET ?`
 	args := append(meshMessageArgs(f), limit, offset)
@@ -216,7 +218,7 @@ func (s *Store) ListMeshtasticMessages(ctx context.Context, f storage.Meshtastic
 	for rows.Next() {
 		var m storage.MeshMessage
 		var atMs int64
-		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Recipient, &m.Channel, &m.Hops, &m.Operator, &m.Text, &m.Status, &atMs); err != nil {
+		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Recipient, &m.Channel, &m.Hops, &m.Operator, &m.Text, &m.Status, &m.Reason, &atMs); err != nil {
 			return nil, fmt.Errorf("scan mesh message: %w", err)
 		}
 		m.At = time.UnixMilli(atMs)

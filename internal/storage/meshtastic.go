@@ -16,7 +16,11 @@ const MeshMessageRetentionEntries = 2000
 // Operator is the admin username behind a tx row (rx rows are empty).
 // Status is the tx delivery state: "" (legacy/unknown), "sent" (the
 // radio transmitted it), "delivered" (the recipient acknowledged a
-// direct message) or "failed" (no acknowledgment after the retries).
+// direct message) or "failed" (no acknowledgment after the retries, or
+// the device refused the frame). Reason names the device's refusal reason
+// when one was reported (reason keys like "pki_no_key", "no_route"); it
+// is empty for failures the device did not explain and for every other
+// status.
 type MeshMessage struct {
 	ID        int64
 	Direction string
@@ -29,6 +33,7 @@ type MeshMessage struct {
 	Operator  string
 	Text      string
 	Status    string
+	Reason    string
 	At        time.Time
 }
 
@@ -57,8 +62,9 @@ type MeshtasticMessageFilter struct {
 type MeshtasticMessageStore interface {
 	RecordMeshtasticMessage(ctx context.Context, direction, sender, recipient, channel, text, operator string, hops int, at time.Time) error
 	// UpdateMeshtasticMessageStatus marks the delivery state of the
-	// matching TX row (created at + text).
-	UpdateMeshtasticMessageStatus(ctx context.Context, status string, at time.Time, text string) error
+	// matching TX row (created at + text). Reason carries the device's
+	// refusal reason key of a send that never reached the air.
+	UpdateMeshtasticMessageStatus(ctx context.Context, status, reason string, at time.Time, text string) error
 	ListMeshtasticMessages(ctx context.Context, f MeshtasticMessageFilter, limit, offset int) ([]MeshMessage, error)
 	CountMeshtasticMessages(ctx context.Context, f MeshtasticMessageFilter) (int, error)
 	// MeshtasticPeers returns the distinct node ids that appear in direct

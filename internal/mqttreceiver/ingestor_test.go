@@ -1,6 +1,7 @@
 package mqttreceiver
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -312,6 +313,50 @@ func TestMalformedProtocolIgnored(t *testing.T) {
 	}
 	if env.stats.Malformed.Load() == 0 {
 		t.Error("malformed counter not incremented")
+	}
+}
+
+// TestOwnFeedTopicNotMalformed pins the log-noise fix: a topic this
+// station publishes itself coming back through a broader subscription (a
+// persistent MQTT session, a UI browse, an operator filter like
+// "<prefix>/#") is consumed quietly. It is our own document, not a
+// protocol error, and it must not inflate the malformed counter the
+// dashboard reports as errors — a stale session used to produce one WARN
+// per node in the directory on every reconnect.
+func TestOwnFeedTopicNotMalformed(t *testing.T) {
+	env := newIngestorEnv(t, "local", true, []string{"warnflux/#"})
+	var logs bytes.Buffer
+	env.ingestor.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	for _, topic := range []string{
+		"warnflux/meshtastic/stations/6c740d48",
+		"warnflux/aprs/stations/SP9SPM-10",
+		"warnflux/aprs/packets",
+		"warnflux/aprs/messages",
+		"warnflux/meshtastic/messages",
+		"warnflux/gsm/messages",
+		"warnflux/active-list",
+	} {
+		if ack := env.ingestor.HandleMessage(nil, &testMessage{topic: topic, payload: []byte(`{"x":1}`), retained: true}); !ack {
+			t.Errorf("%s: ack = false, want the message consumed", topic)
+		}
+	}
+	expectNoEvent(t, env.ingress)
+	if n := env.stats.Malformed.Load(); n != 0 {
+		t.Errorf("malformed = %d, want 0 for our own feeds", n)
+	}
+	if strings.Contains(logs.String(), "malformed") {
+		t.Errorf("own feed topics logged as malformed: %s", logs.String())
+	}
+
+	// A topic that is neither a protocol document nor a known feed stays
+	// malformed.
+	env.ingestor.HandleMessage(nil, &testMessage{topic: "warnflux/bogus/thing", payload: []byte("x")})
+	if env.stats.Malformed.Load() == 0 {
+		t.Error("unknown namespace topic must stay malformed")
+	}
+	if !strings.Contains(logs.String(), "malformed") {
+		t.Error("unknown namespace topic must be logged")
 	}
 }
 

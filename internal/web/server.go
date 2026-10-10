@@ -446,6 +446,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /compose", s.requireGroupMember(s.handleComposePage))
 	s.mux.Handle("POST /compose", s.requireGroupMember(s.handleComposeSave))
 	s.mux.Handle("POST /compose/expire", s.requireGroupMember(s.handleComposeExpire))
+	s.mux.Handle("POST /compose/expire-external", s.requireGroupMember(s.handleExternalExpire))
 	// EMCOM networks: signed-in group members see the panel and may move
 	// the level of the networks their groups authorize (admin always).
 	// Adding and deleting networks is an admin-tier structural change and

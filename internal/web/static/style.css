@@ -2630,7 +2630,7 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .key-copy .icon { width: 13px; height: 13px; }
 .key-copy.copied { color: var(--ok, #2e7d32); border-color: var(--ok, #2e7d32); }
 .key-copy.copied .key-short { overflow-wrap: anywhere; }
-/* Short, stable message identifier (WX-XXXXXXXX) shown on every hazard
+/* Short, stable message identifier (WF-MMDDHHMMNN) shown on every hazard
    card and list: the same ID appears in mails, Discord, APRS and
    Meshtastic, so people can cite one specific communication. */
 .msgid {

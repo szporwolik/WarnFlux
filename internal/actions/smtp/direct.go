@@ -18,6 +18,16 @@ import (
 // password-reset mailer (the action worker keeps its own path). The
 // password file form is honoured; callers must bound the context.
 func Direct(ctx context.Context, cfg Config, to []string, subject, text string) error {
+	msg := plainMessage(senderAddress(cfg), to, subject, text)
+	return DirectMessage(ctx, cfg, to, msg)
+}
+
+// DirectMessage sends one already-built RFC 5322 message to the given
+// recipients using the action configuration. It is the shared transport
+// behind the plain (password reset) and the branded (mass notice) senders:
+// a fresh SMTP connection per call, no persistent state. Callers must
+// bound the context.
+func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) error {
 	host := strings.TrimSpace(cfg.Host)
 	if host == "" {
 		return fmt.Errorf("smtp: config.host is required")
@@ -26,10 +36,7 @@ func Direct(ctx context.Context, cfg Config, to []string, subject, text string) 
 	if port == 0 {
 		port = 587
 	}
-	from := strings.TrimSpace(cfg.From)
-	if from == "" {
-		from = "noreply@" + host
-	}
+	from := senderAddress(cfg)
 	password := cfg.Password
 	if cfg.PasswordFile != "" {
 		data, err := os.ReadFile(cfg.PasswordFile)
@@ -108,13 +115,6 @@ func Direct(ctx context.Context, cfg Config, to []string, subject, text string) 
 		}
 	}
 
-	msg := "From: " + from + "\r\n" +
-		"To: " + strings.Join(to, ", ") + "\r\n" +
-		"Subject: " + mime.QEncoding.Encode("utf-8", subject) + "\r\n" +
-		"MIME-Version: 1.0\r\n" +
-		"Content-Type: text/plain; charset=utf-8\r\n" +
-		"\r\n" + text + "\r\n"
-
 	for _, rcpt := range to {
 		if err := client.Mail(from); err != nil {
 			return fmt.Errorf("smtp: mail from: %w", err)
@@ -126,7 +126,7 @@ func Direct(ctx context.Context, cfg Config, to []string, subject, text string) 
 		if err != nil {
 			return fmt.Errorf("smtp: data: %w", err)
 		}
-		if _, err := w.Write([]byte(msg)); err != nil {
+		if _, err := w.Write(msg); err != nil {
 			w.Close()
 			return fmt.Errorf("smtp: write message: %w", err)
 		}
@@ -135,4 +135,24 @@ func Direct(ctx context.Context, cfg Config, to []string, subject, text string) 
 		}
 	}
 	return client.Quit()
+}
+
+// senderAddress resolves the envelope/header From address from the config,
+// falling back to noreply@<host>.
+func senderAddress(cfg Config) string {
+	from := strings.TrimSpace(cfg.From)
+	if from == "" {
+		from = "noreply@" + strings.TrimSpace(cfg.Host)
+	}
+	return from
+}
+
+// plainMessage builds a single-part text/plain RFC 5322 message.
+func plainMessage(from string, to []string, subject, text string) []byte {
+	return []byte("From: " + from + "\r\n" +
+		"To: " + strings.Join(to, ", ") + "\r\n" +
+		"Subject: " + mime.QEncoding.Encode("utf-8", subject) + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" + text + "\r\n")
 }

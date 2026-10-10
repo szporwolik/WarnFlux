@@ -66,6 +66,9 @@ func (s *Server) buildHelpView(lang string) helpView {
 		RepoURL:  repoURL,
 		NavHelp:  true,
 		Sections: []helpSection{
+			{Title: "help.start.title", Icon: "i-lightning-charge", Items: []string{
+				"help.start.1", "help.start.2", "help.start.3", "help.start.4",
+			}},
 			{Title: "help.general.title", Icon: "i-info-circle", Items: []string{
 				"help.general.1", "help.general.2",
 			}},
@@ -85,7 +88,7 @@ func (s *Server) buildHelpView(lang string) helpView {
 				"help.gsm.1", "help.gsm.2",
 			}},
 			{Title: "help.meshtastic.title", Icon: "i-broadcast", Items: []string{
-				"help.meshtastic.1",
+				"help.meshtastic.1", "help.meshtastic.2",
 			}},
 			{Title: "help.account.title", Icon: "i-person", Items: []string{
 				"help.account.1",

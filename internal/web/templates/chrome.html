@@ -48,7 +48,6 @@
     </a>
     <nav class="sidenav">
       <a class="nav-item{{if .NavDashboard}} active{{end}}" href="/dashboard"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-house"></use></svg><span class="nav-label">{{tr .Lang "nav.dashboard"}}</span></a>
-      <a class="nav-item{{if .NavHelp}} active{{end}}" href="/help"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-question-circle"></use></svg><span class="nav-label">{{tr .Lang "nav.help"}}</span></a>
       {{if messagesNav .Role .Username}}<a class="nav-item{{if .NavCompose}} active{{end}}" href="/compose"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg><span class="nav-label">{{tr .Lang "nav.compose"}}</span></a>{{end}}
       {{if emcomNav .Role .Username}}<a class="nav-item{{if .NavEmcom}} active{{end}}" href="/emcom"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-megaphone"></use></svg><span class="nav-label">{{tr .Lang "nav.emcom"}}</span></a>{{end}}
       <a class="nav-item{{if .NavAPRS}} active{{end}}" href="/aprs"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg><span class="nav-label">{{tr .Lang "nav.aprs"}}</span></a>
@@ -60,6 +59,7 @@
       <a class="nav-item{{if .NavWebsite}} active{{end}}" href="/website"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="nav-label">{{tr .Lang "nav.website"}}</span></a>
       <a class="nav-item{{if .NavConfig}} active{{end}}" href="/config"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-gear"></use></svg><span class="nav-label">{{tr .Lang "nav.config"}}</span></a>
       {{end}}
+      <a class="nav-item{{if .NavHelp}} active{{end}}" href="/help"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-question-circle"></use></svg><span class="nav-label">{{tr .Lang "nav.help"}}</span></a>
     </nav>
     <span class="sidebar-spacer"></span>
   </aside>

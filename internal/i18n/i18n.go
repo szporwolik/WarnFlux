@@ -472,6 +472,10 @@ var en = map[string]string{
 
 	// Admin dashboard.
 	"dash.system":          "System",
+	"dash.stats":           "Stats",
+	"dash.stat_users":      "Users",
+	"dash.stat_groups":     "Groups",
+	"dash.stat_emcom":      "EMCOM networks",
 	"dash.version":         "Version",
 	"dash.uptime":          "Uptime",
 	"dash.cpu":             "CPU",
@@ -1380,6 +1384,10 @@ var pl = map[string]string{
 	"map.km":               "km",
 
 	"dash.system":          "System",
+	"dash.stats":           "Statystyki",
+	"dash.stat_users":      "Użytkownicy",
+	"dash.stat_groups":     "Grupy",
+	"dash.stat_emcom":      "Sieci EMCOM",
 	"dash.version":         "Wersja",
 	"dash.uptime":          "Czas pracy",
 	"dash.cpu":             "CPU",

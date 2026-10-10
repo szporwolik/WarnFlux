@@ -958,6 +958,14 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .mesh-send input[name="text"] { flex: 1 1 16rem; }
 .mesh-send .btn-primary { width: auto; flex: none; }
+/* The bell toggle and its send button stay side by side even when the
+   row wraps: they move to the next line as one unit. */
+.mesh-send .mesh-send-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: none;
+}
 /* Bell toggle next to each send button: prefixes the 🔔 alert symbol.
    The active state mirrors the send-form highlight ring. */
 .mesh-bell { font-size: 0.95rem; line-height: 1; padding: 0.4rem 0.65rem; }

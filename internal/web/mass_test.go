@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -76,6 +77,27 @@ func TestMassInfoPage(t *testing.T) {
 	resp, _ = env.postForm("/mass", url.Values{"csrf": {csrf}, "message": {"hello"}, "channels": {"aprs"}})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("no targets = %d, want 422", resp.StatusCode)
+	}
+
+	// A validation error keeps the operator's picks: the re-rendered form
+	// marks the submitted groups, users and channels as checked.
+	resp, html = env.postForm("/mass", url.Values{
+		"csrf": {csrf}, "message": {strings.Repeat("x", 51)},
+		"groups": {idStr(g1.ID)}, "users": {idStr(alice.ID)},
+		"channels": {"aprs", "sms"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("overlong message with picks = %d, want 422", resp.StatusCode)
+	}
+	for _, want := range []string{
+		fmt.Sprintf(`name="groups" value="%d" checked`, g1.ID),
+		fmt.Sprintf(`name="users" value="%d" checked`, alice.ID),
+		`name="channels" value="aprs" checked`,
+		`name="channels" value="sms" checked`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("form lost the submitted selection %q", want)
+		}
 	}
 
 	// A valid send with no attached transports still redirects with the

@@ -166,7 +166,10 @@ func TestSupervisorPanicRecovered(t *testing.T) {
 
 	go s.run(ctx)
 
-	waitFor(t, 2*time.Second, func() bool { return tracker.failures() >= 1 })
+	// The panic must be recorded AND the supervisor must have restarted
+	// the source before the snapshot is read (waiting only on the
+	// failure record races the restart under load).
+	waitFor(t, 2*time.Second, func() bool { return tracker.snapshot().RestartCount >= 1 })
 	st := tracker.snapshot()
 	if !strings.Contains(st.LastError, "boom") {
 		t.Errorf("LastError = %q, want panic value", st.LastError)

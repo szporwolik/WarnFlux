@@ -38,6 +38,7 @@ type websiteView struct {
 	NavConfig  bool
 	NavCompose bool
 	NavEmcom   bool
+	NavHelp    bool
 	NavAccount bool
 }
 

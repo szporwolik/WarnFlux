@@ -57,6 +57,7 @@ type configView struct {
 	NavHealth        bool
 	NavCompose       bool
 	NavEmcom         bool
+	NavHelp          bool
 	NavAccount       bool
 	NavConfig        bool
 

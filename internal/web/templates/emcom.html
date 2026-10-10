@@ -53,7 +53,7 @@
           </form>
         </article>
         {{else}}
-        <p class="empty">{{tr $.Lang "emcom.empty"}}</p>
+        <p class="empty">{{if .NoneAuthorized}}{{tr $.Lang "emcom.none_authorized"}}{{else}}{{tr $.Lang "emcom.empty"}}{{end}}</p>
         {{end}}
       </div>
     </section>

@@ -651,7 +651,11 @@ type emcomView struct {
 	Msg      string
 	Error    string
 	Networks []emcomNetworkView
-	Levels   []emcomLevelView
+	// NoneAuthorized marks an operator panel with no network the user
+	// may control (the networks exist, but no assigned group covers
+	// this user). Admin sessions never see it.
+	NoneAuthorized bool
+	Levels         []emcomLevelView
 	// Groups lists every notification group for the assigned-group
 	// display (read-only on the operator panel).
 	Groups []storage.Group
@@ -720,6 +724,7 @@ func emcomFlashKey(marker string) string {
 func (s *Server) handleEmcomPage(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	view := s.buildEmcomView(s.langFor(r))
+	s.restrictEmcomView(&view, sess.username, sess.role)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
@@ -870,6 +875,7 @@ func (s *Server) buildEmcomView(lang string) emcomView {
 func (s *Server) renderEmcomError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	sess := s.sessions.currentSession(r)
 	view := s.buildEmcomView(s.langFor(r))
+	s.restrictEmcomView(&view, sess.username, sess.role)
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
@@ -877,6 +883,26 @@ func (s *Server) renderEmcomError(w http.ResponseWriter, r *http.Request, status
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	s.renderL(w, r, "emcom", view)
+}
+
+// restrictEmcomView narrows the operator panel to the networks the
+// session may actually control: the admin keeps everything, an emcom
+// operator keeps only networks where an assigned group covers them.
+// NoneAuthorized marks the resulting empty panel (networks exist, none
+// authorized).
+func (s *Server) restrictEmcomView(view *emcomView, username, role string) {
+	if role == "admin" || len(view.Networks) == 0 {
+		return
+	}
+	total := len(view.Networks)
+	allowed := make([]emcomNetworkView, 0, total)
+	for _, n := range view.Networks {
+		if s.mayControlEmcom(username, n.Slug) {
+			allowed = append(allowed, n)
+		}
+	}
+	view.Networks = allowed
+	view.NoneAuthorized = total > 0 && len(allowed) == 0
 }
 
 // handleEmcomAdd creates a new network at level 0 (monitoring). The
@@ -1169,11 +1195,20 @@ func (s *Server) RadioEmcom(args string, by string) radiocli.Result {
 	fields := strings.Fields(args)
 	if len(fields) == 0 {
 		lines := []string{"usage: /emcom <network-id> <level 0-3>"}
+		configured := 0
 		for _, n := range s.emcomNetworks() {
-			lines = append(lines, fmt.Sprintf("%d = %s (level %d)", n.ID, n.Name, n.Level))
+			configured++
+			// Only networks the sender may actually change are listed:
+			// the same group authorization as the panel.
+			if s.mayControlEmcom(by, n.Slug) {
+				lines = append(lines, fmt.Sprintf("%d = %s (level %d)", n.ID, n.Name, n.Level))
+			}
 		}
-		if len(lines) == 1 {
+		switch {
+		case configured == 0:
 			lines = append(lines, "no networks configured")
+		case len(lines) == 1:
+			lines = append(lines, "no networks authorized for you — no groups are assigned to your account")
 		}
 		return radiocli.Result{Handled: true, Reply: strings.Join(lines, "\n")}
 	}

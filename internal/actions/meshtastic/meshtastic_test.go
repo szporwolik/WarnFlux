@@ -75,7 +75,7 @@ func (s *stubSender) revokeProgress(publisher, eventKey string, changeID int64, 
 }
 
 func (s *stubSender) SendContactMessageVersioned(_ context.Context, addr, text, operator string, prog mesh.ProgressRef) error {
-	if err := s.SendContactMessage(nil, addr, text, operator); err != nil {
+	if err := s.SendContactMessage(context.TODO(), addr, text, operator); err != nil {
 		return err
 	}
 	s.progs = append(s.progs, prog)
@@ -84,7 +84,7 @@ func (s *stubSender) SendContactMessageVersioned(_ context.Context, addr, text, 
 }
 
 func (s *stubSender) SendChannelTextVersioned(_ context.Context, idx int, text, operator string, prog mesh.ProgressRef) error {
-	if err := s.SendChannelText(nil, idx, text, operator); err != nil {
+	if err := s.SendChannelText(context.TODO(), idx, text, operator); err != nil {
 		return err
 	}
 	s.progs = append(s.progs, prog)

@@ -1,7 +1,5 @@
 package giosaq
 
-import "time"
-
 // levelsDoc is the GIOŚ PJP API response for
 // /v1/rest/levels/getInformationAboutExceeding: a paginated archive of
 // exceedance records, newest first. The plugin reads only the first page
@@ -100,11 +98,4 @@ type aqPollutant struct {
 	Code      string `json:"code"`
 	LevelID   *int   `json:"level_id,omitempty"`
 	LevelName string `json:"level_name"`
-}
-
-// parsedExceedance is one record after the raw fields were interpreted.
-type parsedExceedance struct {
-	rec         exceedance
-	effectiveAt time.Time
-	pollutant   string
 }

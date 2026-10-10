@@ -61,9 +61,8 @@ type MessageEventHazard struct {
 // sender + content identity: a repeated text replays the reply and
 // never re-executes the command.
 type cmdRecord struct {
-	at        time.Time
-	reply     string
-	retryable bool
+	at    time.Time
+	reply string
 }
 
 // replyWindow bounds one sender's automatic replies.

@@ -814,7 +814,7 @@ func (s *Server) templateFuncs() template.FuncMap {
 			}
 			out := make([]lv, 0, len(levels))
 			for _, l := range levels {
-				out = append(out, lv{Level: l.Level, Name: l.Name, Description: l.Description, Class: l.Class})
+				out = append(out, lv(l))
 			}
 			b, err := json.Marshal(out)
 			if err != nil {

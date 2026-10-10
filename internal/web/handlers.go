@@ -189,6 +189,7 @@ type pageView struct {
 	Role     string
 	Status   statusView
 	Health   healthView
+	Stats    dashStatsView
 	MQTT     mqttView
 	Plugins  pluginsView
 	Actions  actionsView
@@ -643,12 +644,38 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Role:         sess.role,
 		Status:       s.buildStatusView(),
 		Health:       s.buildHealthView(s.langFor(r)),
+		Stats:        s.buildDashboardStats(s.langFor(r)),
 		MQTT:         s.buildMQTTView(snap),
 		Plugins:      s.buildPluginsView(),
 		Actions:      s.buildActionsView(),
 		CSRF:         sess.csrf,
 		NavDashboard: true,
 	})
+}
+
+// dashStatsView is the small numbers pane under the System panel:
+// registered users, notification groups and EMCOM networks.
+type dashStatsView struct {
+	Lang          string
+	Users         int
+	Groups        int
+	EmcomNetworks int
+}
+
+// buildDashboardStats assembles the counts for the dashboard stats pane
+// (fail-soft: a store hiccup only zeroes one tile).
+func (s *Server) buildDashboardStats(lang string) dashStatsView {
+	v := dashStatsView{Lang: lang}
+	if s.users != nil {
+		if _, total, err := s.users.ListUsers(1, 1); err == nil {
+			v.Users = total
+		}
+		if groups, err := s.users.ListAllGroups(); err == nil {
+			v.Groups = len(groups)
+		}
+	}
+	v.EmcomNetworks = len(s.emcomNetworks())
+	return v
 }
 
 func (s *Server) handlePartialStatus(w http.ResponseWriter, r *http.Request) {

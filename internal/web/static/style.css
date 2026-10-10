@@ -690,6 +690,29 @@ button:disabled { cursor: not-allowed; }
 .gh-link:hover { color: var(--text); text-decoration: none; }
 .gh-link .icon { width: 15px; height: 15px; }
 
+/* Help page: the manual sections lay out as cards, one per topic. */
+.help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1rem;
+}
+.help-sec h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.45rem;
+  font-size: 0.95rem;
+}
+.help-sec h3 .icon { width: 17px; height: 17px; color: var(--accent, var(--muted)); }
+.help-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.help-list li { margin-bottom: 0.3rem; }
+
 /* ---- key/value system panel ---- */
 /* Dashboard stats pane: three number tiles in a row, wide cards when the
    viewport narrows. */

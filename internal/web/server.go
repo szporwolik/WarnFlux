@@ -440,6 +440,8 @@ func (s *Server) routes(static http.Handler) {
 		s.mux.HandleFunc("POST /api/v1/ingest/{id}", s.handleIngest)
 	}
 	s.mux.Handle("GET /dashboard", s.requirePage(s.handleDashboard))
+	// Help: the short operator/user manual, open to every signed-in user.
+	s.mux.Handle("GET /help", s.requirePage(s.handleHelpPage))
 	// Compose ("Messages"): any signed-in user belonging to at least
 	// one group — plus the admin — issues/updates/expires
 	// communications.

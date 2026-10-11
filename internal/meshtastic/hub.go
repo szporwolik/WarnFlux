@@ -1313,14 +1313,24 @@ func (h *Hub) hazardsTick() {
 	}
 }
 
+// hazardListHint tells listeners how to ask for the full list: the
+// periodic line carries counters only, so the way to get the details
+// (the public /hazard command, answered as a direct message) rides
+// along whenever the channel budget still has room.
+const hazardListHint = "DM me /hazard for the list"
+
 // hazardSummaryLine renders the periodic channel status: the counters
 // ("1 severe or more, 12 other active") and, when one is configured, the
 // public site holding the details. "0 severe" is worth posting — it
-// tells the channel that nothing above the alert bar is running.
+// tells the channel that nothing above the alert bar is running. The
+// /hazard hint is appended only while it still fits one channel message.
 func (h *Hub) hazardSummaryLine(sum HazardSummary) string {
 	line := fmt.Sprintf("WarnFlux: %d severe or more, %d other active", sum.Severe, sum.Other)
 	if site := strings.TrimSpace(h.cfg.EmcomSite); site != "" {
 		line += " — " + site
+	}
+	if hint := " · " + hazardListHint; len([]rune(line))+len([]rune(hint)) <= meshTextMaxRunes {
+		line += hint
 	}
 	return line
 }

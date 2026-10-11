@@ -1,15 +1,15 @@
 package discord
 
-// The periodic notices mirror what the Meshtastic channel does, so both
-// surfaces read alike: an hourly hazard status line (counters only,
-// nothing while no hazard is active) and a presence line carrying the
-// installation identity with the station uptime every few hours. On
-// Discord each notice goes to the webhook CHANNEL and as a DIRECT
-// MESSAGE to every registered operator — the channel is the shared
-// surface, the direct message the personal one.
+// The periodic notices mirror the Meshtastic group channel: an hourly
+// hazard status line (counters only, nothing while no hazard is active)
+// and a presence line carrying the installation identity with the station
+// uptime every few hours. They are CHANNEL posts, never direct messages:
+// the channel is the shared surface that shows what the station sees,
+// while a private message stays reserved for what concerns that one
+// operator (their alerts, the mass notices and their command answers).
 //
-// Commands stay a direct-message feature: the channel copy never
-// advertises one, the direct-message copy does.
+// The notices advertise no command either — what the station can answer
+// and where it answers it belongs to the manual, not to an hourly line.
 
 import (
 	"context"
@@ -33,11 +33,6 @@ const (
 	noticeTick = time.Minute
 )
 
-// hazardHint tells direct-message readers how to ask for the full list:
-// the status line carries counters only, so the details need a command —
-// which lives in direct messages.
-const hazardHint = "DM me /hazard for the list"
-
 // HazardSummary counts the active hazards the status line reports: the
 // severe-and-above ones (each of them already went out as its own alert)
 // against everything below that bar.
@@ -50,8 +45,7 @@ type HazardSummary struct {
 func (s HazardSummary) Total() int { return s.Severe + s.Other }
 
 // NoticesConfig wires the periodic notices to the station: who the
-// station is, where the details are published and who receives the
-// direct-message copies.
+// station is and where the details are published.
 type NoticesConfig struct {
 	// Identity is the one-line installation banner (version, name,
 	// domain) the presence line carries — the same string the radio
@@ -63,9 +57,6 @@ type NoticesConfig struct {
 	Uptime func() string
 	// Summary reports the active hazard counters.
 	Summary func() HazardSummary
-	// Recipients lists the Discord user ids that receive the
-	// direct-message copies (the directory's registered ids).
-	Recipients func(ctx context.Context) ([]string, error)
 }
 
 // notifier runs the two periodic notices of one instance.
@@ -215,7 +206,7 @@ func (n *notifier) hazardsTick(ctx context.Context) {
 		n.logger.Debug("discord: hazard status skipped", "reason", "no active hazard")
 		return
 	}
-	n.deliver(ctx, cfg, n.hazardStatusText(cfg, sum, false), n.hazardStatusText(cfg, sum, true))
+	n.post(ctx, n.hazardStatusText(cfg, sum))
 }
 
 // uptimeTick sends the presence line when its cadence is due.
@@ -234,48 +225,29 @@ func (n *notifier) uptimeTick(ctx context.Context) {
 	if !due {
 		return
 	}
-	text := n.uptimeText(cfg)
-	n.deliver(ctx, cfg, text, text)
+	n.post(ctx, n.uptimeText(cfg))
 }
 
-// deliver posts one notice on the webhook channel and sends the copy to
-// every registered operator. The two texts differ only in the command
-// hint; both are bounded to Discord's content limit.
-func (n *notifier) deliver(ctx context.Context, cfg NoticesConfig, channelText, dmText string) {
-	if err := n.action.post(ctx, truncateRunes(channelText, maxContentRunes), "WarnFlux"); err != nil {
+// post publishes one notice on the webhook channel, bounded to Discord's
+// content limit. Nothing is ever sent privately here: a periodic line is
+// information for the channel, not a notification about one operator.
+func (n *notifier) post(ctx context.Context, text string) {
+	if err := n.action.post(ctx, truncateRunes(text, maxContentRunes), "WarnFlux"); err != nil {
 		n.logger.Warn("discord: periodic notice failed", "error", err)
-	}
-	if n.action.token == "" || cfg.Recipients == nil {
 		return
 	}
-	ids, err := cfg.Recipients(ctx)
-	if err != nil {
-		n.logger.Warn("discord: notice recipients unavailable", "error", err)
-		return
-	}
-	var sent, failed int
-	for _, id := range ids {
-		if err := n.action.SendDM(ctx, id, dmText); err != nil {
-			failed++
-			n.logger.Warn("discord: notice direct message failed", "user", id, "error", err)
-			continue
-		}
-		sent++
-	}
-	n.logger.Info("discord: periodic notice delivered", "users", sent, "failures", failed)
+	n.logger.Info("discord: periodic notice posted")
 }
 
-// hazardStatusText renders the status line: the counters plus, when one
-// is configured, the public site holding the details. "0 severe" is
-// worth posting — it tells the readers that nothing above the alert bar
-// is running. hint adds the command hint (direct messages only).
-func (n *notifier) hazardStatusText(cfg NoticesConfig, sum HazardSummary, hint bool) string {
+// hazardStatusText renders the status line: the counters plus, when one is
+// configured, the public site holding the details. "0 severe" is worth
+// posting — it tells the channel that nothing above the alert bar is
+// running. No command is advertised: where the station answers is the
+// manual's business.
+func (n *notifier) hazardStatusText(cfg NoticesConfig, sum HazardSummary) string {
 	line := fmt.Sprintf("WarnFlux: %d severe or more, %d other active", sum.Severe, sum.Other)
 	if site := strings.TrimSpace(cfg.Site); site != "" {
 		line += " — " + site
-	}
-	if hint {
-		line += " · " + hazardHint
 	}
 	return line
 }

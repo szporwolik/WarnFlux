@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -173,5 +174,140 @@ func TestMessageTextFallback(t *testing.T) {
 	text := p.(*discordAction).messageText(req)
 	if text != "[WarnFlux] WarnFlux notification" {
 		t.Errorf("fallback = %q", text)
+	}
+}
+
+// TestDirectMessage pins the mass-info path: the instance opens ONE
+// direct-message channel per user id (mentions accepted, non-ids
+// rejected), posts the notice there and reuses the channel afterwards.
+func TestDirectMessage(t *testing.T) {
+	var created, posted []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bot test-token" {
+			t.Errorf("Authorization = %q, want the bot token", got)
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/users/@me/channels":
+			body, _ := io.ReadAll(r.Body)
+			created = append(created, strings.TrimSpace(string(body)))
+			_, _ = w.Write([]byte(`{"id":"dm-42"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/channels/dm-42/messages":
+			body, _ := io.ReadAll(r.Body)
+			posted = append(posted, string(body))
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	restore := apiBase
+	apiBase = server.URL
+	t.Cleanup(func() { apiBase = restore })
+
+	p, err := New(node(t, map[string]any{
+		"url":   "https://discord.com/api/webhooks/1/x",
+		"token": "test-token",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm, ok := DirectMessengerOf(p)
+	if !ok {
+		t.Fatal("a token-configured instance must offer DirectMessenger")
+	}
+
+	// A mention works as well as a bare id.
+	for _, id := range []string{"284112326204850177", "<@!284112326204850177>"} {
+		if err := dm.SendDM(context.Background(), id, "Awaria sieci"); err != nil {
+			t.Fatalf("SendDM(%q): %v", id, err)
+		}
+	}
+	if len(created) != 1 {
+		t.Fatalf("opened %d direct channels, want 1 (cached): %v", len(created), created)
+	}
+	if !strings.Contains(created[0], `"recipient_id":"284112326204850177"`) {
+		t.Errorf("recipient_id payload = %s", created[0])
+	}
+	if len(posted) != 2 {
+		t.Fatalf("posted %d messages, want 2: %v", len(posted), posted)
+	}
+	for _, body := range posted {
+		if !strings.Contains(body, `"content":"Awaria sieci"`) {
+			t.Errorf("message payload = %s", body)
+		}
+	}
+
+	// Profile values that are not user ids are refused, and nothing is
+	// opened for them.
+	if err := dm.SendDM(context.Background(), "sp9spm#1234", "x"); err == nil {
+		t.Fatal("a username must not be accepted as a user id")
+	}
+	if len(created) != 1 {
+		t.Fatalf("a rejected id opened a channel: %v", created)
+	}
+
+	// The webhook-only instance cannot DM.
+	plain, err := New(node(t, map[string]any{"url": "https://discord.com/api/webhooks/1/x"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := DirectMessengerOf(plain); ok {
+		t.Error("an instance without a token must not offer DirectMessenger")
+	}
+	if err := plain.(*discordAction).SendDM(context.Background(), "1", "x"); err == nil {
+		t.Error("SendDM without a token must fail")
+	}
+}
+
+// TestDirectMessageRebuildsStaleChannel pins the 404 recovery: a cached
+// direct-message channel Discord no longer knows is opened again and the
+// message retried once.
+func TestDirectMessageRebuildsStaleChannel(t *testing.T) {
+	var opens, posts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/users/@me/channels":
+			opens++
+			_, _ = w.Write([]byte(`{"id":"dm-` + strconv.Itoa(opens) + `"}`))
+		case strings.HasPrefix(r.URL.Path, "/channels/dm-1/messages"):
+			posts++
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Unknown Channel"}`))
+		case strings.HasPrefix(r.URL.Path, "/channels/dm-2/messages"):
+			posts++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	restore := apiBase
+	apiBase = server.URL
+	t.Cleanup(func() { apiBase = restore })
+
+	p, err := New(node(t, map[string]any{
+		"url": "https://discord.com/api/webhooks/1/x", "token": "t",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm, ok := DirectMessengerOf(p)
+	if !ok {
+		t.Fatal("DirectMessengerOf must accept a token-configured instance")
+	}
+	if err := dm.SendDM(context.Background(), "42", "x"); err != nil {
+		t.Fatalf("SendDM: %v", err)
+	}
+	if opens != 2 || posts != 2 {
+		t.Fatalf("opens = %d, posts = %d, want 2 and 2", opens, posts)
+	}
+
+	// A real failure (not 404) is reported and does not rebuild.
+	apiBase = server.URL + "/gone"
+	if err := dm.SendDM(context.Background(), "42", "x"); err == nil {
+		t.Fatal("a failing post must return an error")
 	}
 }

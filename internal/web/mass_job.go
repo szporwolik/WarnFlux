@@ -285,7 +285,7 @@ func (s *Server) runMassJob(j *massJob) {
 		case "email":
 			s.massChannelEmail(ctx, j, recipients, req.message, req.app, s.SystemLanguage())
 		case "discord":
-			s.massChannelDiscord(ctx, j, req.message)
+			s.massChannelDiscord(ctx, j, recipients, req.message)
 		case "meshtastic":
 			s.massChannelMeshtastic(ctx, j, recipients, req.message, req.username)
 		}
@@ -417,8 +417,16 @@ func (s *Server) massChannelEmail(ctx context.Context, j *massJob, recipients []
 	}
 }
 
-// massDiscordPoster returns the first enabled Discord plain poster, if any.
-func (s *Server) massDiscordPoster() (discord.PlainPoster, bool) {
+// discordDMAvailable reports whether any enabled Discord instance can send
+// a direct message (a bot token is configured).
+func (s *Server) discordDMAvailable() bool {
+	_, ok := s.massDiscordDM()
+	return ok
+}
+
+// massDiscordDM returns the first enabled Discord instance that can send
+// direct messages (i.e. one configured with a bot token).
+func (s *Server) massDiscordDM() (discord.DirectMessenger, bool) {
 	if s.actions == nil {
 		return nil, false
 	}
@@ -430,23 +438,43 @@ func (s *Server) massDiscordPoster() (discord.PlainPoster, bool) {
 		if !ok {
 			continue
 		}
-		if poster, ok := p.(discord.PlainPoster); ok {
-			return poster, true
+		if dm, ok := discord.DirectMessengerOf(p); ok {
+			return dm, true
 		}
 	}
 	return nil, false
 }
 
-func (s *Server) massChannelDiscord(ctx context.Context, j *massJob, message string) {
-	poster, ok := s.massDiscordPoster()
+// massChannelDiscord delivers the notice as a DIRECT MESSAGE to each
+// recipient's own Discord id (the profile's Discord field): a mass notice
+// is personal, and a channel-wide post would notify everyone who happens
+// to be in the channel — including people who never asked for anything.
+// The id must be a numeric user id; profile values that are usernames or
+// handles fail for that recipient, which the panel shows as a failure.
+func (s *Server) massChannelDiscord(ctx context.Context, j *massJob, recipients []storage.User, message string) {
+	dm, ok := s.massDiscordDM()
 	if !ok {
+		// No bot token anywhere: Discord cannot be delivered to
+		// individual users, and the mass panel never posts on the
+		// channel instead.
 		j.setChannelTotal("discord", 0)
+		if s.logger != nil {
+			s.logger.Warn("mass: discord skipped (no bot token configured for direct messages)")
+		}
 		return
 	}
-	// Discord is one channel-wide post, not one per recipient.
-	j.setChannelTotal("discord", 1)
-	err := poster.PostText(ctx, message)
-	j.record("discord", err == nil)
+	eligible := func(u storage.User) bool { return strings.TrimSpace(u.Discord) != "" }
+	j.setChannelTotal("discord", countUsers(recipients, eligible))
+	for _, u := range recipients {
+		if !eligible(u) {
+			continue
+		}
+		err := dm.SendDM(ctx, u.Discord, message)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("mass: discord direct message failed", "user", u.Username, "error", err)
+		}
+		j.record("discord", err == nil)
+	}
 }
 
 // countUsers returns how many recipients satisfy pred.

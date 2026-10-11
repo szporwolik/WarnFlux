@@ -722,7 +722,7 @@ func run(configPath string, checkConfig bool) error {
 		return owners[gsm.CanonicalNumberKey(phone)]
 	})
 
-	// The shared radio CLI: /help lists the commands, /debug fires the
+	// The shared radio CLI: /help lists the commands, /alert raises the
 	// debug alarm; APRS messages, Meshtastic direct messages and SMS
 	// all answer through the same interpreter. Unknown slash messages
 	// answer with the installation banner.
@@ -906,7 +906,7 @@ func run(configPath string, checkConfig bool) error {
 	// routed message events also dispatch locally first.
 	hub.SetSink(&aprsManagerSink{mgmt: receivers, ingress: ingress, logger: logger})
 
-	// /alert and /debug confirm what the LOCAL pipeline accepted:
+	// /alert confirms what the LOCAL pipeline accepted:
 	// durable (inbox row), emergency (RAM-only fallback) or rejection.
 	// The broker publish is only the asynchronous sync copy — its
 	// failure never downgrades a durably accepted local event, and a
@@ -975,7 +975,7 @@ func run(configPath string, checkConfig bool) error {
 		return receivers.PublishRaw(topic, retained, payload)
 	})
 
-	// /alert and /debug confirmations track the local acceptance exactly
+	// /alert confirmations track the local acceptance exactly
 	// like APRS.
 	meshtasticHub.SetEventAcceptor(eventAcceptor)
 

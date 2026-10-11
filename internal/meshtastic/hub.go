@@ -747,7 +747,7 @@ type Hub struct {
 	cmds map[string]*cmdRecord
 
 	// eventAcceptor accepts a marshalled COMMAND event (/alert and
-	// /debug) into the LOCAL pipeline and reports how it was accepted
+	// into the LOCAL pipeline and reports how it was accepted
 	// (durable inbox, emergency RAM fallback or rejection); guarded by
 	// mu. nil falls back to the event sink (tests, legacy wiring).
 	eventAcceptor func(payload []byte) dispatch.Acceptance
@@ -1025,7 +1025,7 @@ func (h *Hub) SetEventSink(fn func(ctx context.Context, topic string, retained b
 }
 
 // SetEventAcceptor installs the LOCAL acceptance path for command
-// events (/alert and /debug): the callback enqueues a marshalled event
+// events (/alert): the callback enqueues a marshalled event
 // into the local pipeline and reports how it was accepted (durable
 // inbox, emergency RAM fallback or rejection). Without it the hub falls
 // back to the event sink (tests, legacy wiring).
@@ -1050,7 +1050,7 @@ func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (ef
 
 // SetCLI attaches the shared radio-command interpreter (optional): a
 // direct message that parses as a command is answered in-band and
-// (except /debug) stays off the alarm pipeline.
+// stays off the alarm pipeline.
 func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
 
 // Run dials the device, performs the client handshake and pumps incoming
@@ -2544,7 +2544,7 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 
 	// Radio CLI: slash-prefixed messages are command attempts and never
 	// become alarms on their own. Public commands (/help) run for
-	// everyone; restricted commands (/debug) run only for
+	// everyone; restricted commands (/alert) run only for
 	// directory-registered senders — the shared interpreter decides.
 	// The same packet delivered again by the mesh (rebroadcast, router
 	// retry) re-sends the previous reply instead of executing the
@@ -2582,17 +2582,6 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 		// even across a restart.
 		reply = res.Reply
 		retryable := false
-		if res.Debug {
-			key := "meshtastic:" + id + ":msg:" + mid
-			eff, exp, prev := h.resolveCommand(key, time.Hour)
-			if prev != "" {
-				reply = prev
-			} else {
-				acc := h.publishRoutedEvent(id, owner, text, mid, eff, exp, res.Reply)
-				reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
-				retryable = acc == dispatch.Rejected
-			}
-		}
 		if res.Alert != nil {
 			ttl := res.Alert.TTL
 			if ttl <= 0 {
@@ -2817,75 +2806,6 @@ func (h *Hub) resolveCommand(key string, ttl time.Duration) (eff, exp time.Time,
 	}
 	eff = time.Now().UTC()
 	return eff, eff.Add(ttl), ""
-}
-
-// publishRoutedEvent bridges one approved direct message into the /events
-// stream as a canonical hazard transition. The directory owner travels
-// in the headline and description so operators see WHO is speaking. mid
-// is the per-packet identity (msgIdentity) that keeps the event key
-// stable across redeliveries, so the storage deduplication collapses
-// rebroadcasts into one alarm. The ChangeID is content-derived: a
-// retransmitted packet never becomes a second delivery. Lifecycle times
-// come from the durable registry (resolveCommand); the result travels
-// on the wire document so the durable inbox acceptance records it
-// transactionally with the lifecycle anchor. The returned acceptance
-// reports how the LOCAL pipeline took the event; the /debug
-// confirmation follows it.
-func (h *Hub) publishRoutedEvent(senderID, owner, text, mid string, eff, exp time.Time, commandResult string) dispatch.Acceptance {
-	h.mu.Lock()
-	name := ""
-	if n := h.nodes[senderID]; n != nil && n.Name != "" {
-		name = n.Name
-	}
-	sink := h.eventSink
-	acceptor := h.eventAcceptor
-	h.mu.Unlock()
-	from := name
-	if from == "" {
-		from = "!" + senderID
-	}
-	sourceID := senderID + ":msg:" + mid
-	nowS := eff.Format(time.RFC3339)
-	expS := exp.Format(time.RFC3339)
-	we := MessageEventWire{
-		SchemaVersion: meshMessageEventSchemaVersion,
-		ChangeID:      radiocli.StableID("meshtastic:msg", sourceID, text),
-		ChangeType:    "new",
-		EventKey:      "meshtastic:" + sourceID,
-		CommandResult: commandResult,
-		Event: MessageEventHazard{
-			Source:      "meshtastic",
-			SourceID:    sourceID,
-			Category:    "meshtastic",
-			Event:       "Meshtastic message",
-			Severity:    "severe",
-			Urgency:     "immediate",
-			Certainty:   "observed",
-			Headline:    fmt.Sprintf("Message from: %s (%s): %s", owner, from, text),
-			Description: fmt.Sprintf("Direct message routed from the Meshtastic network (sender: %s).", owner),
-			EffectiveAt: &nowS,
-			ExpiresAt:   &expS,
-			Status:      "active",
-			ReceivedAt:  nowS,
-			UpdatedAt:   nowS,
-		},
-	}
-	payload, err := json.Marshal(we)
-	if err != nil {
-		return dispatch.Rejected
-	}
-	if acceptor != nil {
-		return acceptor(payload)
-	}
-	// Legacy path (no acceptor installed): best-effort through the
-	// event sink; the hub cannot distinguish local acceptance here.
-	if sink == nil {
-		return dispatch.AcceptedDurable
-	}
-	if err := sink(context.Background(), "events", false, payload); err != nil && h.logger != nil {
-		h.logger.Warn("meshtastic: routed message event publish failed", "error", err)
-	}
-	return dispatch.AcceptedDurable
 }
 
 // confirmation maps the local acceptance of a command event onto the

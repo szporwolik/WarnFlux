@@ -83,7 +83,7 @@ func TestSMSUnknownSenderIgnored(t *testing.T) {
 		ran = true
 		return radiocli.Result{Handled: true, Reply: "ZZZ"}
 	})
-	for _, msg := range []string{"hej", "/zzz", "/debug"} {
+	for _, msg := range []string{"hej", "/zzz", "/alert alarm test"} {
 		h.routeMessage("+48600111222", msg)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -100,10 +100,16 @@ func TestSMSUnknownSenderIgnored(t *testing.T) {
 func TestSMSCommandHelpAuthorized(t *testing.T) {
 	h, f := replyHub(t, 1)
 	h.SetSenderGate(func(string) string { return "sp9kow" })
+	h.mu.Lock()
+	cli := h.cli
+	h.mu.Unlock()
+	cli.RegisterRestricted("alert", "alert", func(string, radiocli.Sender) radiocli.Result {
+		return radiocli.Result{Handled: true, Reply: "OK: alert raised"}
+	})
 	h.routeMessage("+48600111222", "/help")
-	w := waitForWritten(t, f, "/debug")
-	if !strings.Contains(w, "/debug") {
-		t.Fatalf("authorized help missing /debug: %q", w)
+	w := waitForWritten(t, f, "/alert")
+	if !strings.Contains(w, "/alert") {
+		t.Fatalf("authorized help missing /alert: %q", w)
 	}
 }
 
@@ -148,31 +154,6 @@ func TestSMSRestrictedRegistered(t *testing.T) {
 	if !strings.Contains(w, "OK: alert raised") {
 		t.Fatalf("authorized restricted reply missing: %q", w)
 	}
-}
-
-// TestSMSDebugEvent pins the /debug path: an authorized sender's command
-// becomes a canonical "gsm" event through the installed acceptor and the
-// reply is the handler confirmation.
-func TestSMSDebugEvent(t *testing.T) {
-	h, f := replyHub(t, 1)
-	h.SetSenderGate(func(string) string { return "sp9kow" })
-	var mu sync.Mutex
-	var payload string
-	h.SetEventAcceptor(func(p []byte) dispatch.Acceptance {
-		mu.Lock()
-		payload = string(p)
-		mu.Unlock()
-		return dispatch.AcceptedDurable
-	})
-	h.routeMessage("+48600111222", "/debug")
-	w := waitForWritten(t, f, "OK: debug alarm generated")
-	mu.Lock()
-	p := payload
-	mu.Unlock()
-	if !strings.Contains(p, `"source":"gsm"`) || !strings.Contains(p, "gsm:+48600111222:msg:") {
-		t.Fatalf("debug event payload = %q", p)
-	}
-	_ = w
 }
 
 // TestSMSAlertEvent pins the /alert path for a registered sender: a
@@ -379,10 +360,16 @@ func TestSMSReplyBurst(t *testing.T) {
 }
 
 // TestSMSCommandReplay pins the dedup: a repeated command replays the
-// previous reply instead of re-executing (one /debug event total).
+// previous reply instead of re-executing (one routed event total).
 func TestSMSCommandReplay(t *testing.T) {
 	h, f := replyHub(t, 2)
 	h.SetSenderGate(func(string) string { return "sp9kow" })
+	h.mu.Lock()
+	cli := h.cli
+	h.mu.Unlock()
+	cli.RegisterRestricted("alert", "alert", func(args string, _ radiocli.Sender) radiocli.Result {
+		return radiocli.Result{Handled: true, Alert: &radiocli.AlertSpec{Headline: args}, Reply: "OK: alert raised"}
+	})
 	var mu sync.Mutex
 	events := 0
 	h.SetEventAcceptor(func(p []byte) dispatch.Acceptance {
@@ -391,17 +378,17 @@ func TestSMSCommandReplay(t *testing.T) {
 		mu.Unlock()
 		return dispatch.AcceptedDurable
 	})
-	h.routeMessage("+48600111222", "/debug")
-	_ = waitForWritten(t, f, "OK: debug alarm generated")
-	h.routeMessage("+48600111222", "/debug")
+	h.routeMessage("+48600111222", "/alert alarm test")
+	_ = waitForWritten(t, f, "OK: alert raised")
+	h.routeMessage("+48600111222", "/alert alarm test")
 	w := waitForWritten(t, f, "\x1A")
-	if strings.Count(w, "OK: debug alarm generated") < 1 {
+	if strings.Count(w, "OK: alert raised") < 1 {
 		t.Fatalf("replay reply missing: %q", w)
 	}
 	mu.Lock()
 	n := events
 	mu.Unlock()
 	if n != 1 {
-		t.Fatalf("debug events = %d, want 1 (replay must not re-execute)", n)
+		t.Fatalf("routed events = %d, want 1 (replay must not re-execute)", n)
 	}
 }

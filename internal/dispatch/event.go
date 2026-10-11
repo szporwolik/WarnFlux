@@ -190,7 +190,7 @@ type Event struct {
 	MQTT   *MQTTMessage
 
 	// CommandResult is the in-band confirmation a radio command
-	// produced (set by the radio hubs for /alert and /debug). The
+	// produced (set by the radio hubs for /alert). The
 	// durable inbox write records it transactionally with the event's
 	// lifecycle anchor, so a post-restart retransmission replays the
 	// result instead of executing the job again.

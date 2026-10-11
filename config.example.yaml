@@ -1039,7 +1039,7 @@ aprs:
 
   # APRS messages addressed to us are answered in-band exactly like the
   # Meshtastic hub: a plain message answers with the installation
-  # banner, /help lists the commands, and /debug (allow-listed senders
+  # banner, /help lists the commands, and /alert (allow-listed senders
   # only) fires the debug alarm. Only senders whose BASE callsign
   # (SSID-insensitive) is registered on one of the directory users may
   # run commands. Only messages heard by OUR radio (the KISS backend)

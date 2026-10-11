@@ -244,7 +244,7 @@ type Hub struct {
 	senderOwner func(base string) string
 
 	// cli is the shared radio-command interpreter (optional): a message
-	// that parses as a command is answered in-band and (except /debug)
+	// that parses as a command is answered in-band and never
 	// stays off the alarm pipeline; guarded by mu.
 	cli *radiocli.Bot
 
@@ -258,7 +258,7 @@ type Hub struct {
 	cmds map[string]*cmdRecord
 
 	// alertAcceptor accepts a marshalled COMMAND event (/alert and
-	// /debug) into the LOCAL pipeline and reports how it was accepted
+	// into the LOCAL pipeline and reports how it was accepted
 	// (durable inbox, emergency RAM fallback or rejection); guarded by
 	// mu. nil falls back to the generic sink (tests, legacy wiring).
 	eventAcceptor func(payload []byte) dispatch.Acceptance
@@ -453,11 +453,11 @@ func (h *Hub) SetSenderOwner(fn func(base string) string) {
 
 // SetCLI attaches the shared radio-command interpreter (optional): a
 // routed message that parses as a command is answered in-band and
-// (except /debug) stays off the alarm pipeline.
+// stays off the alarm pipeline.
 func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
 
 // SetEventAcceptor installs the LOCAL acceptance path for command
-// events (/alert and /debug): the callback enqueues a marshalled event
+// events (/alert): the callback enqueues a marshalled event
 // into the local pipeline and reports how it was accepted (durable
 // inbox, emergency RAM fallback or rejection). Without it the hub falls
 // back to the generic sink (tests, legacy wiring).
@@ -1001,7 +1001,7 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 
 	// The radio CLI mirrors the Meshtastic hub: every message addressed
 	// to us is answered, commands run only for allow-listed senders and
-	// alarms fire only from explicit commands (/debug). Plain messages
+	// alarms fire only from explicit commands (/alert). Plain messages
 	// never enter the alarm pipeline. ONLY RF-heard messages react —
 	// APRS-IS copies are recorded and displayed, never answered, so an
 	// internet-injected message can't raise an alarm or burn reply
@@ -1022,7 +1022,7 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 			text := strings.TrimSpace(p.Message.Text)
 			if strings.HasPrefix(text, "/") {
 				// The shared interpreter decides: public commands (/help)
-				// run for everyone, restricted ones (/debug) only for
+				// run for everyone, restricted ones (/alert) only for
 				// allow-listed senders.
 				h.routeOrCLI(p)
 			} else if h.bannerAllowed(p.Src) && h.replyAllowed(p.Src) {
@@ -1045,7 +1045,7 @@ func (h *Hub) receiveMessage(p Packet, via string) {
 
 // routeOrCLI handles one slash message: the shared interpreter runs
 // public commands for everyone and restricted commands for allow-listed
-// senders; /debug additionally fires the alarm for authorized senders.
+// senders; /alert raises a hazard for authorized senders.
 // Plain messages never become alarms — they stay in the history and the
 // message feed. A retransmitted packet (the same message heard through
 // RF and APRS-IS) re-sends the previous reply instead of executing the
@@ -1091,17 +1091,6 @@ func (h *Hub) routeOrCLI(p Packet) {
 	// across a restart.
 	reply := res.Reply
 	retryable := false
-	if res.Debug {
-		key := "aprs:" + p.Src + ":msg:" + commandIdentity(p)
-		eff, exp, prev := h.resolveCommand(key, time.Hour)
-		if prev != "" {
-			reply = prev
-		} else {
-			acc := h.publishMessageEvent(p, eff, exp, res.Reply)
-			reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
-			retryable = acc == dispatch.Rejected
-		}
-	}
 	if res.Alert != nil {
 		ttl := res.Alert.TTL
 		if ttl <= 0 {
@@ -1360,78 +1349,6 @@ func (h *Hub) resolveCommand(key string, ttl time.Duration) (eff, exp time.Time,
 	}
 	eff = time.Now().UTC()
 	return eff, eff.Add(ttl), ""
-}
-
-// publishMessageEvent re-publishes one APRS message as a canonical
-// /events payload. The forwarded content starts with
-// "Message from: <callsign with SSID>", the text follows, and our
-// station name is carried as context. Messages from trusted operators
-// are alerts by nature: the default severity is severe.
-//
-// The event identity (event key + source id) is stable per message:
-// sender + message identity (ack id or content digest). Lifecycle times
-// come from the durable registry (resolveCommand) when it exists and
-// the ChangeID derives from the content, so a retransmitted copy maps
-// to byte-identical content: the storage deduplication collapses it
-// into one alarm and one delivery even after a restart. The result
-// (commandResult) travels on the wire document so the durable inbox
-// acceptance records it transactionally with the lifecycle anchor —
-// that anchor is the restart-proof command registry; the in-RAM cache
-// in routeOrCLI additionally stops re-execution in-process.
-//
-// The returned acceptance reports how the LOCAL pipeline took the event
-// (durable, emergency or rejected); the /debug confirmation follows it.
-func (h *Hub) publishMessageEvent(p Packet, eff, exp time.Time, commandResult string) dispatch.Acceptance {
-	nowS := eff.Format(time.RFC3339)
-	expS := exp.Format(time.RFC3339)
-	from := p.Src
-	// Stable identity: sender + message identity. The RF copy and the
-	// APRS-IS copy of the same packet map to the same event, so the
-	// storage deduplication collapses them into one alarm; the command
-	// cache in routeOrCLI already stops re-execution in-process.
-	sourceID := from + ":msg:" + commandIdentity(p)
-	text := strings.TrimSpace(p.Message.Text)
-
-	doc := MessageEventWire{
-		SchemaVersion: messageEventSchemaVersion,
-		ChangeID:      radiocli.StableID("aprs:msg", sourceID, text),
-		ChangeType:    "new",
-		EventKey:      "aprs:" + sourceID,
-		CommandResult: commandResult,
-		Event: MessageEventHazard{
-			Source:      "aprs",
-			SourceID:    sourceID,
-			Event:       "APRS message",
-			Severity:    "severe",
-			Urgency:     "unknown",
-			Certainty:   "unknown",
-			Headline:    "Message from: " + from + ": " + text,
-			Description: "Received by " + h.Name() + " (" + h.cfg.Callsign + ")",
-			EffectiveAt: &nowS,
-			ExpiresAt:   &expS,
-			Areas:       []string{},
-			Status:      "active",
-			ReceivedAt:  nowS,
-			UpdatedAt:   nowS,
-		},
-	}
-	payload, err := json.Marshal(doc)
-	if err != nil {
-		h.logger.Warn("aprs: routed message marshal failed", "error", err)
-		return dispatch.Rejected
-	}
-	h.mu.Lock()
-	acceptor := h.eventAcceptor
-	h.mu.Unlock()
-	if acceptor != nil {
-		return acceptor(payload)
-	}
-	// Legacy path (no acceptor installed): best-effort through the
-	// generic sink; the hub cannot distinguish local acceptance here.
-	if err := h.publishWithTimeout("events", false, payload); err != nil {
-		h.logger.Warn("aprs: routed message publish failed", "callsign", from, "error", err)
-	}
-	return dispatch.AcceptedDurable
 }
 
 // publishAlertEvent raises one operator-requested hazard (/alert) into

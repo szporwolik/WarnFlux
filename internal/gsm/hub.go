@@ -130,7 +130,7 @@ type Hub struct {
 	csq atomic.Int64
 
 	// cli is the shared radio-command interpreter (optional): an SMS
-	// that parses as a command is answered in-band and (except /debug)
+	// that parses as a command is answered in-band and never
 	// never becomes an alarm. Guarded by mu.
 	cli *radiocli.Bot
 	// senderGate resolves the sender's registered directory user by
@@ -138,7 +138,7 @@ type Hub struct {
 	// restricted commands. Guarded by mu.
 	senderGate func(from string) string
 	// eventAcceptor accepts a marshalled COMMAND event (/alert and
-	// /debug) and reports the local pipeline's acceptance. Guarded by
+	// and reports the local pipeline's acceptance. Guarded by
 	// mu.
 	eventAcceptor func(payload []byte) dispatch.Acceptance
 	// eventTimes resolves the durable command registry for one command
@@ -175,7 +175,7 @@ func NewHub(cfg Config, rec MessageRecorder, logger *slog.Logger) *Hub {
 
 // SetCLI attaches the shared radio-command interpreter (optional): an
 // SMS that parses as a command is answered in-band and — except for
-// /debug — never becomes an alarm; plain texts answer with the
+// — never becomes an alarm; plain texts answer with the
 // installation banner. The last registration wins; nil clears it.
 func (h *Hub) SetCLI(b *radiocli.Bot) {
 	h.mu.Lock()
@@ -203,7 +203,7 @@ func (h *Hub) SetSenderGate(fn func(from string) string) {
 }
 
 // SetEventAcceptor installs the LOCAL acceptance path for command
-// events (/debug, /alert): the acceptor receives the marshalled
+// events (/alert): the acceptor receives the marshalled
 // canonical /events payload and reports how the pipeline took it.
 // The last registration wins; nil clears it.
 func (h *Hub) SetEventAcceptor(fn func(payload []byte) dispatch.Acceptance) {

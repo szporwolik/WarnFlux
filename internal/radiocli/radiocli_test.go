@@ -8,8 +8,7 @@ import (
 
 // TestHandle pins the command interpreter: case-insensitive commands,
 // the public/restricted split, the help list per authorization level,
-// the debug pass-through, unknown commands and plain (non-command)
-// messages.
+// unknown commands and plain (non-command) messages.
 func TestHandle(t *testing.T) {
 	b := New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
 
@@ -20,8 +19,8 @@ func TestHandle(t *testing.T) {
 	// /help is public: everyone gets a list, but only of the commands
 	// they may run.
 	res := b.Handle("/help", Sender{})
-	if !res.Handled || res.Debug {
-		t.Fatalf("/help = %+v, want handled without debug", res)
+	if !res.Handled {
+		t.Fatalf("/help = %+v, want handled", res)
 	}
 	if res.Reply == "" || len(res.Reply) > 67 {
 		t.Fatalf("/help reply = %q, want a short list", res.Reply)
@@ -31,34 +30,31 @@ func TestHandle(t *testing.T) {
 			t.Fatalf("public help reply = %q, missing %s", res.Reply, want)
 		}
 	}
-	if strings.Contains(res.Reply, "/debug") {
-		t.Fatalf("public help reply = %q, must not list restricted commands", res.Reply)
+	if strings.Contains(res.Reply, "You are not authorized") {
+		t.Fatalf("public help reply = %q, must not carry a denial", res.Reply)
 	}
 
+	// The bot ships with /help only: restricted commands register on the
+	// instance, so a bare interpreter has nothing else to list.
 	res = b.Handle("/help", Sender{Authorized: true})
-	if !res.Handled || !strings.Contains(res.Reply, "/debug") {
-		t.Fatalf("authorized /help = %+v, want the full list including /debug", res)
+	if !res.Handled || !strings.Contains(res.Reply, "/help") {
+		t.Fatalf("authorized /help = %+v, want the list", res)
 	}
 	if len(res.Reply) > 67 {
 		t.Fatalf("authorized /help = %q, %d chars — over the APRS limit", res.Reply, len(res.Reply))
 	}
 
-	// /debug is restricted: authorized senders fire the debug alarm,
-	// everyone else gets an explicit denial.
-	res = b.Handle("/DEBUG", Sender{Authorized: true})
-	if !res.Handled || !res.Debug || res.Reply == "" {
-		t.Fatalf("/DEBUG = %+v, want debug with a confirmation", res)
+	// /debug was removed: it is an unknown command now, answered with the
+	// banner — for authorized senders too (no debug alarm path exists).
+	res = b.Handle("/debug", Sender{Authorized: true})
+	if !res.Handled || res.Alert != nil {
+		t.Fatalf("/debug = %+v, want an unhandled-command banner, no alarm", res)
 	}
-	res = b.Handle("/debug", Sender{})
-	if !res.Handled || res.Debug || res.Reply == "" {
-		t.Fatalf("unauthorized /debug = %+v, want a denial without debug", res)
+	if !strings.Contains(res.Reply, "/help") {
+		t.Fatalf("/debug reply = %q, want the banner with the /help hint", res.Reply)
 	}
-	if !strings.Contains(res.Reply, "WarnFlux v1.0 - SOSNA") || !strings.Contains(res.Reply, DeniedText) {
-		t.Fatalf("unauthorized /debug reply = %q, want the banner with the denial", res.Reply)
-	}
-	if len(res.Reply) > 67 {
-		t.Fatalf("unauthorized /debug reply = %q, %d chars — over the APRS limit", res.Reply, len(res.Reply))
-	}
+
+	// The denial text stays available for the restricted command path.
 	if b.Denied() != "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl - You are not authorized" {
 		t.Fatalf("Denied() = %q, want identity + denial", b.Denied())
 	}
@@ -66,8 +62,8 @@ func TestHandle(t *testing.T) {
 	// Unknown slash messages answer with the installation banner plus
 	// the /help hint, not a command list.
 	res = b.Handle("/nope", Sender{Authorized: true})
-	if !res.Handled || res.Debug {
-		t.Fatalf("/nope = %+v, want handled without debug", res)
+	if !res.Handled {
+		t.Fatalf("/nope = %+v, want handled", res)
 	}
 	if res.Reply != "WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl | type /help for help" {
 		t.Fatalf("/nope reply = %q, want the identity banner with the /help hint", res.Reply)

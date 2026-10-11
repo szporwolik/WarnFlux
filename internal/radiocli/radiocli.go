@@ -22,9 +22,6 @@ type Result struct {
 	// Reply is the in-band answer sent back to the sender (may be
 	// empty for silent commands).
 	Reply string
-	// Debug asks the channel to generate the debug alarm exactly like
-	// the current default behavior for any inbound message.
-	Debug bool
 	// Alert asks the channel to raise a hazard through its normal
 	// routing pipeline (the /alert command).
 	Alert *AlertSpec
@@ -97,12 +94,13 @@ type Bot struct {
 	public map[string]bool
 }
 
-// New builds a bot with the built-in commands: /help (public, lists the
-// commands the sender may run) and /debug (authorized only, fires the
-// debug alarm). identity is the one-line installation banner (version,
-// installation name, public domain) answered to any slash-prefixed
-// message that is not a recognized command. The same bot serves APRS
-// and Meshtastic — nothing to configure per channel.
+// New builds a bot with the built-in command set (/help is always
+// there and lists what the sender may run; the hazard and channel
+// commands register on the instance). identity is the one-line
+// installation banner (version, installation name, public domain)
+// answered to any slash-prefixed message that is not a recognized
+// command. The same bot serves APRS, Meshtastic and GSM — nothing to
+// configure per channel.
 func New(identity string) *Bot {
 	b := &Bot{
 		identity: identity,
@@ -115,9 +113,6 @@ func New(identity string) *Bot {
 	b.order = append(b.order, "help")
 	b.descs["help"] = "this list"
 	b.public["help"] = true
-	b.RegisterRestricted("debug", "alarm test", func(string, Sender) Result {
-		return Result{Handled: true, Debug: true, Reply: "OK: debug alarm generated"}
-	})
 	return b
 }
 

@@ -208,6 +208,36 @@ func hazardsFromMirror(mirror *state.State, minSeverity string) []meshtastic.Act
 	return out
 }
 
+// hazardSummaryFromMirror counts the active hazards for the periodic
+// channel status line: severe and above (the ones that rang the devices)
+// against everything below the alert bar.
+func hazardSummaryFromMirror(mirror *state.State) meshtastic.HazardSummary {
+	min, _ := severity.Rank(severity.Severe)
+	var sum meshtastic.HazardSummary
+	for _, h := range mirror.Snapshot().Hazards {
+		if r, _ := severity.Rank(h.Severity); r >= min {
+			sum.Severe++
+		} else {
+			sum.Other++
+		}
+	}
+	return sum
+}
+
+// publicSite turns the configured public domain into the link the mesh
+// status line points at: a bare host (the usual configuration) gets the
+// scheme, an explicit URL is kept as it is.
+func publicSite(domain string) string {
+	d := strings.TrimSuffix(strings.TrimSpace(domain), "/")
+	if d == "" {
+		return ""
+	}
+	if strings.Contains(d, "://") {
+		return d
+	}
+	return "https://" + d
+}
+
 // hazardsForRadio renders the active-hazard list for the public /hazard
 // radio command: a header plus one Zulu-windowed line per hazard — the
 // same lines the hourly emcom-channel digest broadcasts, so the command
@@ -687,6 +717,7 @@ func run(configPath string, checkConfig bool) error {
 		EmcomInterval:        cfg.Meshtastic.EmcomInterval,
 		EmcomHazardsInterval: cfg.Meshtastic.EmcomHazardsInterval,
 		EmcomIdentity:        identity,
+		EmcomSite:            publicSite(cfg.Web.Domain),
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
@@ -823,10 +854,13 @@ func run(configPath string, checkConfig bool) error {
 	hazardSource := func() []meshtastic.ActiveHazard {
 		return hazardsFromMirror(mirror, "")
 	}
-	digestSource := func() []meshtastic.ActiveHazard {
-		return hazardsFromMirror(mirror, severity.Severe)
-	}
-	meshtasticHub.SetActiveHazardSource(digestSource)
+	// The periodic status line posts COUNTERS: severe-and-above hazards
+	// already went out as their own alerts (a list here would duplicate
+	// them on the air), so it reports how many are above the alert bar
+	// and how many sit below it, plus where the details live.
+	meshtasticHub.SetHazardSummarySource(func() meshtastic.HazardSummary {
+		return hazardSummaryFromMirror(mirror)
+	})
 	// /hazard: a public command — every active hazard, one Zulu-windowed
 	// line each (the same form the hourly digest broadcasts). The
 	// channels split the reply into one message per line.

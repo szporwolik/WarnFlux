@@ -267,3 +267,37 @@ func TestFormatUptime(t *testing.T) {
 		}
 	}
 }
+
+// TestHazardSummaryFromMirror pins the counters the periodic channel line
+// reports: severe and above (the hazards that rang the devices) against
+// everything below the alert bar, unknown included.
+func TestHazardSummaryFromMirror(t *testing.T) {
+	m := state.New()
+	for _, sev := range []string{"minor", "moderate", "severe", "extreme", "unknown"} {
+		if err := m.AddOrUpdateActive("local", "warnflux/active/x/"+sev, state.Hazard{
+			EventKey: sev, Source: "x", Severity: sev, Headline: sev, Status: "active",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := hazardSummaryFromMirror(m)
+	if got.Severe != 2 || got.Other != 3 || got.Total() != 5 {
+		t.Fatalf("summary = %+v, want 2 severe / 3 other / 5 total", got)
+	}
+}
+
+// TestPublicSite pins the link the mesh status line points at: a bare
+// host (the usual configuration) gets the scheme, an explicit URL stays.
+func TestPublicSite(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"sosna.sp9moa.pl", "https://sosna.sp9moa.pl"},
+		{" sosna.sp9moa.pl/ ", "https://sosna.sp9moa.pl"},
+		{"https://sosna.sp9moa.pl", "https://sosna.sp9moa.pl"},
+		{"http://spok.example.com", "http://spok.example.com"},
+		{"", ""},
+	} {
+		if got := publicSite(tc.in); got != tc.want {
+			t.Errorf("publicSite(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

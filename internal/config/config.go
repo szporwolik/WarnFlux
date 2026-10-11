@@ -196,8 +196,8 @@ type MeshtasticConfig struct {
 	// beacon fires at server start/restart.
 	EmcomInterval time.Duration
 	// EmcomHazardsInterval is the spacing of the periodic active-hazard
-	// digest broadcast on the emcom channel (default 1 hour); 0 disables
-	// the digest (the presence beacon stays on).
+	// status line on the emcom channel (default 1 hour); 0 disables the
+	// line (the presence beacon stays on).
 	EmcomHazardsInterval time.Duration
 	// ChannelAlerts gates hazard broadcasts on the group channel
 	// (startup state; the admin Config page toggles the same switch at
@@ -623,8 +623,8 @@ type fileMeshtastic struct {
 	WatchChannel int `yaml:"watch_channel"`
 	// EmcomInterval is the beacon spacing (default 4h).
 	EmcomInterval *time.Duration `yaml:"emcom_interval"`
-	// EmcomHazardsInterval is the active-hazard digest spacing (default
-	// 1h); 0 disables the digest.
+	// EmcomHazardsInterval is the periodic hazard status line spacing
+	// (default 1h); 0 disables the line.
 	EmcomHazardsInterval *time.Duration `yaml:"emcom_hazards_interval"`
 	// ChannelAlerts / DMAlerts / StationAlerts are the runtime switches
 	// on the admin Config page; pointer fields keep omitted values

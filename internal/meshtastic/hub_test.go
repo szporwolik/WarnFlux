@@ -1454,59 +1454,53 @@ func TestHubEmcomDefaults(t *testing.T) {
 	}
 }
 
-// TestHubHazardDigest pins the hourly active-hazard digest: a header
-// message plus one line per active hazard (Zulu window, headline and
-// description) on the emcom channel, fired on the first maintenance tick
-// after the first session.
+// TestHubHazardDigest pins the periodic channel status line: ONE message
+// with the hazard counters and the public site — never the hazard list,
+// which would repeat on the air what already went out as alerts — on the
+// emcom channel, fired on the first maintenance tick after the first
+// session.
 func TestHubHazardDigest(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
-		EmcomChannel: 1, EmcomHazardsInterval: time.Hour})
-	eff := time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC)
-	exp := eff.Add(3 * time.Hour)
-	radio.hub.SetActiveHazardSource(func() []ActiveHazard {
-		return []ActiveHazard{
-			{Headline: "Burza", Description: "Silne porywy wiatru", EffectiveAt: &eff, ExpiresAt: &exp},
-			{Headline: "Powodz", ExpiresAt: &exp},
-		}
+		EmcomChannel: 1, EmcomHazardsInterval: time.Hour, EmcomSite: "https://sosna.example.pl"})
+	radio.hub.SetHazardSummarySource(func() HazardSummary {
+		return HazardSummary{Severe: 2, Other: 12}
 	})
 	radio.waitConnected(t)
 
 	deadline := time.Now().Add(10 * time.Second)
 	var out []*pb.MeshPacket
 	for time.Now().Before(deadline) {
-		if out = radio.outbound(); len(out) >= 3 {
+		if out = radio.outbound(); len(out) >= 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(out) != 3 {
-		t.Fatalf("outbound = %d packets, want header + 2 lines", len(out))
+	if len(out) != 1 {
+		t.Fatalf("outbound = %d packets, want a single status line", len(out))
 	}
-	for i, p := range out {
-		if p.GetChannel() != 1 {
-			t.Fatalf("digest packet %d channel = %d, want 1", i, p.GetChannel())
-		}
-		if p.GetTo() != core.BroadcastNodeID.Uint32() {
-			t.Fatalf("digest packet %d to = %v, want a broadcast", i, p.GetTo())
-		}
+	p := out[0]
+	if p.GetChannel() != 1 {
+		t.Fatalf("digest channel = %d, want 1", p.GetChannel())
 	}
-	if got := string(out[0].GetDecoded().GetPayload()); got != "WarnFlux active messages: 2" {
-		t.Fatalf("digest header = %q", got)
+	if p.GetTo() != core.BroadcastNodeID.Uint32() {
+		t.Fatalf("digest to = %v, want a broadcast", p.GetTo())
 	}
-	if got, want := string(out[1].GetDecoded().GetPayload()), "2026-10-05 10:00Z-2026-10-05 13:00Z Burza — Silne porywy wiatru"; got != want {
-		t.Fatalf("digest line 1 = %q, want %q", got, want)
+	if got, want := string(p.GetDecoded().GetPayload()), "WarnFlux: 2 severe or more, 12 other active — https://sosna.example.pl"; got != want {
+		t.Fatalf("digest line = %q, want %q", got, want)
 	}
-	if got, want := string(out[2].GetDecoded().GetPayload()), "?-2026-10-05 13:00Z Powodz"; got != want {
-		t.Fatalf("digest line 2 = %q, want %q", got, want)
+
+	// Without a configured site the counters still go out, bare.
+	if got, want := (&Hub{cfg: Config{}}).hazardSummaryLine(HazardSummary{Other: 3}), "WarnFlux: 0 severe or more, 3 other active"; got != want {
+		t.Fatalf("site-less digest line = %q, want %q", got, want)
 	}
 }
 
-// TestHubHazardDigestSilent pins the "only when active" rule: no active
-// hazards, no digest traffic (the header must not be sent for zero).
+// TestHubHazardDigestSilent pins the "only when active" rule: nothing
+// active, no status traffic (not even a zero counter line).
 func TestHubHazardDigestSilent(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
 		EmcomChannel: 1, EmcomHazardsInterval: time.Hour})
-	radio.hub.SetActiveHazardSource(func() []ActiveHazard { return nil })
+	radio.hub.SetHazardSummarySource(func() HazardSummary { return HazardSummary{} })
 	radio.waitConnected(t)
 
 	// The maintenance ticker runs every dmRetryInterval; wait past one
@@ -1526,9 +1520,9 @@ func TestHubHazardDigestDisabled(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
 		EmcomChannel: 1, EmcomHazardsInterval: 0})
 	called := false
-	radio.hub.SetActiveHazardSource(func() []ActiveHazard {
+	radio.hub.SetHazardSummarySource(func() HazardSummary {
 		called = true
-		return []ActiveHazard{{Headline: "x"}}
+		return HazardSummary{Severe: 1}
 	})
 	radio.waitConnected(t)
 	deadline := time.Now().Add(dmRetryInterval + 2*time.Second)

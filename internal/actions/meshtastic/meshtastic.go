@@ -98,22 +98,6 @@ func Register(reg *action.Registry, hub *mesh.Hub) error {
 
 func (a *Action) Name() string { return Type }
 
-// meshBell is the in-band alert marker (BEL): a message carrying it wakes
-// the receiver's device even on a muted channel, so hazard DMs stand out
-// from ordinary traffic. Shared with the panel's bell button so both
-// paths emit the same byte (the 🔔 emoji alone triggers nothing).
-const meshBell = mesh.AlertMarker
-
-// bellText prefixes the notification bell and keeps the total within
-// the channel limit.
-func bellText(text string) string {
-	r := []rune(text)
-	if len(r) > maxMeshMessageChars-1 {
-		r = r[:maxMeshMessageChars-1]
-	}
-	return meshBell + string(r)
-}
-
 // Execute formats the routed hazard as one message and delivers it to
 // every routed group member's registered node ID (direct message), and
 // publishes it on the configured group channel whenever one is set —
@@ -147,7 +131,10 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	}
 	// The group channel always broadcasts in the SYSTEM language; direct
 	// messages use each member's personal language when they picked one.
-	channelText := a.textFor(ctx, req, req.Lang)
+	// BOTH carry the in-band alert marker (BEL): the firmware wakes the
+	// screen through a mute and rings/vibrates on it, which is exactly
+	// what a hazard alert on a shared channel is for.
+	channelText := mesh.AlertText(a.textFor(ctx, req, req.Lang))
 
 	// The durable ledger identity: the message version. Legacy payloads
 	// without a publisher/version get no ledger (fail-open: always
@@ -218,12 +205,12 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		if i < len(req.MeshNodeLangs) && req.MeshNodeLangs[i] != "" {
 			lang = req.MeshNodeLangs[i]
 		}
-		text := a.textFor(ctx, req, lang)
+		text := mesh.AlertText(a.textFor(ctx, req, lang))
 		var err error
 		if ledger {
-			err = a.hub.SendContactMessageVersioned(ctx, id, bellText(text), "system", prog)
+			err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", prog)
 		} else {
-			err = a.hub.SendContactMessage(ctx, id, bellText(text), "system")
+			err = a.hub.SendContactMessage(ctx, id, text, "system")
 		}
 		if err != nil {
 			return fmt.Errorf("meshtastic: %s: %w", id, err)

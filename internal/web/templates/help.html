@@ -16,6 +16,22 @@
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-question-circle"></use></svg>{{tr .Lang "help.title"}}</h2>
       <p class="muted">{{tr .Lang "help.intro"}}</p>
     </section>
+    {{if .Commands}}
+    <section class="card help-cmds">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "help.commands.title"}}</h2>
+      <p class="muted">{{tr .Lang "help.commands.intro"}}</p>
+      <ul class="help-cmd-list">
+        {{range .Commands}}
+        <li>
+          <code class="help-cmd-usage">{{.Usage}}</code>
+          <span class="help-cmd-desc">{{.Description}}</span>
+          <span class="badge {{if .Restricted}}warn{{else}}ok{{end}}">{{if .Restricted}}{{tr $.Lang "help.commands.restricted"}}{{else}}{{tr $.Lang "help.commands.everyone"}}{{end}}</span>
+        </li>
+        {{end}}
+      </ul>
+      <p class="muted help-cmd-note">{{tr .Lang "help.commands.note"}}</p>
+    </section>
+    {{end}}
     <div class="help-grid">
       {{range .Sections}}
       <section class="card help-sec">

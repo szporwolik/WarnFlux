@@ -128,6 +128,36 @@ func TestHandle(t *testing.T) {
 	}
 }
 
+// TestCommands pins the introspection the Help manual renders: the
+// registry order (/help first), the descriptions and the public /
+// restricted split — the manual can never document a different set.
+func TestCommands(t *testing.T) {
+	b := New("WarnFlux v1.0 - SOSNA - sosna.sp9moa.pl")
+	b.Register("hazard", "active messages", func(string, Sender) Result { return Result{Handled: true} })
+	b.RegisterRestricted("alert", "alert", func(string, Sender) Result { return Result{Handled: true} })
+
+	got := b.Commands()
+	if len(got) != 3 {
+		t.Fatalf("Commands() = %d entries, want 3", len(got))
+	}
+	want := []Command{
+		{Name: "help", Description: "this list", Restricted: false},
+		{Name: "hazard", Description: "active messages", Restricted: false},
+		{Name: "alert", Description: "alert", Restricted: true},
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("Commands()[%d] = %+v, want %+v", i, got[i], w)
+		}
+	}
+
+	// The returned slice is a copy: mutating it must not corrupt the bot.
+	got[0].Name = "changed"
+	if b.Commands()[0].Name != "help" {
+		t.Error("Commands() handed out the internal state")
+	}
+}
+
 // TestFitProgressive pins the shared channel fitting: the identity
 // shortens progressively (domain → installation name → the WarnFlux
 // word) and only as the very last resort the payload end is cut.

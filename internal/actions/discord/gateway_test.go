@@ -36,6 +36,7 @@ type fakeGateway struct {
 
 	mu        sync.Mutex
 	upgrades  int
+	urls      []string
 	identify  []map[string]any
 	beats     []int64
 	opened    int // POST /users/@me/channels calls
@@ -119,6 +120,7 @@ func (g *fakeGateway) handleGateway(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	g.mu.Lock()
 	g.upgrades++
+	g.urls = append(g.urls, r.URL.RequestURI())
 	g.conn = conn
 	g.mu.Unlock()
 
@@ -250,6 +252,13 @@ func (g *fakeGateway) sentCount() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.sent)
+}
+
+// upgradeURLs returns the request URIs the client dialled with.
+func (g *fakeGateway) upgradeURLs() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.urls...)
 }
 
 func (g *fakeGateway) upgradeCount() int {
@@ -626,6 +635,13 @@ func TestDMResumesDroppedSession(t *testing.T) {
 				}
 				if seq, _ := d["seq"].(float64); int(seq) != 7 {
 					t.Fatalf("resume seq = %v, want 7", d["seq"])
+				}
+				// The resume endpoint must carry the gateway parameters:
+				// dialled bare it answers INVALID_SESSION.
+				urls := g.upgradeURLs()
+				last := urls[len(urls)-1]
+				if !strings.Contains(last, "v=10") || !strings.Contains(last, "encoding=json") {
+					t.Fatalf("resume dial %q misses the gateway parameters", last)
 				}
 				return
 			}

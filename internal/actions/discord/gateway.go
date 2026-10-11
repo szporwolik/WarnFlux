@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -320,10 +322,7 @@ func (l *dmListener) application(ctx context.Context) (applicationInfo, error) {
 // connect runs one gateway session until it drops. The session state is
 // updated in place, so the next attempt can resume where this one ended.
 func (l *dmListener) connect(ctx context.Context, session *gatewaySession) error {
-	url := gatewayURL
-	if session.url != "" {
-		url = session.url
-	}
+	url := resumeEndpoint(session.url)
 	dialer := *websocket.DefaultDialer
 	dialer.HandshakeTimeout = gatewayHandshakeTimeout
 	raw, resp, err := dialer.DialContext(ctx, url, nil)
@@ -523,6 +522,30 @@ func resumePayload(token string, session *gatewaySession) map[string]any {
 			"seq":        session.seq,
 		},
 	}
+}
+
+// resumeEndpoint completes the endpoint READY handed out with the
+// gateway query parameters: dialled bare, the resume host answers
+// INVALID_SESSION instead of resuming (measured against the live
+// gateway), so the parameters are always carried along.
+func resumeEndpoint(base string) string {
+	base = strings.TrimSuffix(strings.TrimSpace(base), "/")
+	if base == "" {
+		return gatewayURL
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return gatewayURL
+	}
+	q := u.Query()
+	if q.Get("v") == "" {
+		q.Set("v", "10")
+	}
+	if q.Get("encoding") == "" {
+		q.Set("encoding", "json")
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // heartbeatPayload is one heartbeat frame carrying the last sequence

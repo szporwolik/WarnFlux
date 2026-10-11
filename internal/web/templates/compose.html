@@ -115,6 +115,7 @@
         </form>
       </div>
       <h2 class="compose-issued-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-bell"></use></svg>{{tr .Lang "compose.issued"}}</h2>
+      <p class="muted compose-click-hint">{{tr .Lang "compose.click_hint"}}</p>
       {{if .Items}}
       <div class="table-wrap">
         <table class="plugins">
@@ -123,7 +124,10 @@
           </thead>
           <tbody>
             {{range .Items}}
-            <tr>
+            {{/* The row is a click target with keyboard access; it keeps
+                 no ARIA button role so the edit/expire controls inside
+                 it stay reachable for assistive tech. */}}
+            <tr class="hazard-click" tabindex="0" data-key="{{.EventKey}}" title="{{tr $.Lang "compose.click_hint"}}">
               <td><span class="msgid">{{.MsgID}}</span></td>
               <td><span class="sev sev-{{sevClass .Severity}}">{{sevLabel $.Lang .Severity}}</span></td>
               <td><strong>{{.Headline}}</strong></td>
@@ -153,6 +157,7 @@
 
     <section class="card">
       <h2 class="compose-issued-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "compose.external"}}</h2>
+      <p class="muted compose-click-hint">{{tr .Lang "compose.click_hint"}}</p>
       {{if .External}}
       <div class="table-wrap">
         <table class="plugins">
@@ -161,7 +166,10 @@
           </thead>
           <tbody>
             {{range .External}}
-            <tr>
+            {{/* The row is a click target with keyboard access; it keeps
+                 no ARIA button role so the edit/expire controls inside
+                 it stay reachable for assistive tech. */}}
+            <tr class="hazard-click" tabindex="0" data-key="{{.EventKey}}" title="{{tr $.Lang "compose.click_hint"}}">
               <td><span class="msgid">{{.MsgID}}</span></td>
               <td><span class="sev sev-{{sevClass .Severity}}">{{sevLabel $.Lang .Severity}}</span></td>
               <td><strong>{{.Headline}}</strong></td>
@@ -187,6 +195,12 @@
     </section>
   </main>
   {{template "footer" .}}
+  <dialog class="modal hz-modal" id="hz-dialog" aria-labelledby="hz-title">
+    <div id="hz-content"></div>
+    <div class="modal-actions hz-actions">
+      <button type="button" class="btn-ghost btn-small" id="hz-close">{{tr .Lang "popup.close"}}</button>
+    </div>
+  </dialog>
   <script src="/static/app.js?v={{.Commit}}" defer></script>
   <script>
   // The small compose button toggles the form panel; it stays hidden

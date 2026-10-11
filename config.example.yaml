@@ -880,7 +880,9 @@ actions:
   #   group-channel rhythm — same cadence, same wording, same rules. The
   #   status line goes out ONLY while something sits at severe or higher
   #   (the level that already rang the devices): an hourly "0 severe" line
-  #   would train the readers to ignore the one that matters. The channel
+  #   would train the readers to ignore the one that matters. The presence
+  #   line is anchored to a DAILY clock time (06:00 station local time by
+  #   default, like the Meshtastic beacon), never to a restart. The channel
   #   is the station's shared surface, while a private message stays
   #   reserved for what concerns that one operator (their alerts, the mass
   #   notices and their own command answers). The notices need no token.
@@ -948,10 +950,15 @@ actions:
   #     # same cadence (and the same rule) as the Meshtastic channel; 0
   #     # disables it.
   #     hazards_interval: 1h
-  #     # Spacing of the presence line (installation identity + uptime) —
-  #     # the Discord counterpart of the Meshtastic beacon. Also on the
-  #     # channel, never in a private message. Empty = 4h; 0 disables it.
-  #     uptime_interval: 4h
+  #     # Daily clock time of the presence line (installation identity +
+  #     # uptime), the station's local time — the Discord counterpart of the
+  #     # Meshtastic beacon, anchored the same way. Default "06:00"; an
+  #     # explicit "" falls back to uptime_interval below.
+  #     uptime_at: "06:00"
+  #     # SPACING alternative to the anchor (1m..720h): the line then fires
+  #     # every interval from the start. Naming it together with a non-empty
+  #     # uptime_at is a configuration error; "" plus 0 disables the line.
+  #     # uptime_interval: 24h
   #     # Per-request timeout; 0 = default (10s).
   #     timeout: 10s
   #
@@ -1165,13 +1172,24 @@ aprs:
 #   # users (name + key + scan code), so point it at the group channel
 #   # people should join.
 #   emcom_channel: 1      # 0 = beacon disabled
-#   emcom_interval: 4h    # default; the first beacon fires at startup
+#   # Presence beacon: the installation identity with the node count and
+#   # the station uptime ("WarnFlux v0.7.6 - SOSNA - sosna.sp9moa.pl |
+#   # up 2d4h | nodes 12"). It is ANCHORED TO A DAILY CLOCK TIME by
+#   # default, 06:00 station local time — a restart never beacons ahead
+#   # of the schedule. Name emcom_at to move it, or emcom_interval for a
+#   # plain spacing instead (the first beacon then fires at startup);
+#   # naming both is a configuration error, and an empty emcom_at with a
+#   # zero emcom_interval turns the beacon off.
+#   emcom_at: "06:00"     # default
+#   # emcom_interval: 4h  # alternative to emcom_at (1m..720h)
 #   # Periodic hazard status line on the same emcom channel: ONE short
 #   # message with the counters ("1 severe or more, 12 other active")
-#   # and the public site holding the details. It never lists the
-#   # hazards: severe ones already went out as their own alerts, and a
-#   # list would repeat them on the air. Sent only when at least one
-#   # hazard is active; the first line fires at startup.
+#   # and the public site holding the details, plus the "DM me /hazard
+#   # for the list" hint the Discord status line carries too. It never
+#   # lists the hazards: severe ones already went out as their own
+#   # alerts, and a list would repeat them on the air. Sent only while a
+#   # hazard at severe or higher is active, so a quiet channel stays
+#   # quiet instead of reading "0 severe" every hour.
 #   emcom_hazards_interval: 1h  # default; 0 = status line disabled
 #                              # the line goes out only while a hazard at
 #                              # severe or higher is active (same rule as

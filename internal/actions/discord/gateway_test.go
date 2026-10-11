@@ -361,7 +361,17 @@ func (f *listenerFixture) at() time.Time { return time.Unix(0, f.clock.Load()).U
 
 func newListenerFixture(t *testing.T, g *fakeGateway) *listenerFixture {
 	t.Helper()
+	return newListenerFixtureCfg(t, g, nil)
+}
+
+// newListenerFixtureCfg builds the fixture with extra action-config keys
+// (the notice cadence knobs, for instance).
+func newListenerFixtureCfg(t *testing.T, g *fakeGateway, extra map[string]any) *listenerFixture {
+	t.Helper()
 	cfg := map[string]any{"url": g.srv.URL + "/webhook", "token": "bot-token"}
+	for k, v := range extra {
+		cfg[k] = v
+	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -192,8 +192,13 @@ type MeshtasticConfig struct {
 	// install can WATCH the production channel without beaconing on
 	// it. 0 = no extra tab.
 	WatchChannel int
-	// EmcomInterval is the beacon spacing (default 4 hours); the first
-	// beacon fires at server start/restart.
+	// EmcomAt is the daily clock time ("06:00", the station's local time)
+	// the presence beacon is anchored to. Empty together with a zero
+	// EmcomInterval: the default anchor ("06:00").
+	EmcomAt string
+	// EmcomInterval is the beacon SPACING: when set (1m..720h) the beacon
+	// fires every interval from the start instead of once a day; 0 with an
+	// empty EmcomAt disables the beacon.
 	EmcomInterval time.Duration
 	// EmcomHazardsInterval is the spacing of the periodic active-hazard
 	// status line on the emcom channel (default 1 hour); 0 disables the
@@ -621,7 +626,13 @@ type fileMeshtastic struct {
 	// traffic gets a dedicated read-only tab in the message history
 	// (no transmission involved). 0 = no extra tab.
 	WatchChannel int `yaml:"watch_channel"`
-	// EmcomInterval is the beacon spacing (default 4h).
+	// EmcomAt anchors the presence beacon to a daily clock time ("06:00",
+	// station local time). Omitted: "06:00" (or the EmcomInterval spacing
+	// when one is set); "" disables the anchored beacon.
+	EmcomAt *string `yaml:"emcom_at"`
+	// EmcomInterval is the beacon SPACING (1m..720h) — an alternative to
+	// the daily anchor, not a companion: it fires every interval from the
+	// start. Omitted with an omitted EmcomAt: the default anchor "06:00".
 	EmcomInterval *time.Duration `yaml:"emcom_interval"`
 	// EmcomHazardsInterval is the periodic hazard status line spacing
 	// (default 1h); 0 disables the line.
@@ -1224,7 +1235,7 @@ func (f fileConfig) toConfig() Config {
 		}
 	}
 	cfg.Meshtastic = MeshtasticConfig{
-		Baud: 115200, NodeTTL: 30 * time.Minute, EmcomInterval: 4 * time.Hour, EmcomHazardsInterval: 1 * time.Hour,
+		Baud: 115200, NodeTTL: 30 * time.Minute, EmcomHazardsInterval: 1 * time.Hour,
 		ChannelAlerts: true, DMAlerts: true, StationAlerts: false,
 	}
 	if f.Meshtastic != nil {
@@ -1243,6 +1254,12 @@ func (f fileConfig) toConfig() Config {
 		}
 		if f.Meshtastic.EmcomInterval != nil {
 			cfg.Meshtastic.EmcomInterval = *f.Meshtastic.EmcomInterval
+		}
+		if atSet := f.Meshtastic.EmcomAt != nil; atSet {
+			cfg.Meshtastic.EmcomAt = strings.TrimSpace(*f.Meshtastic.EmcomAt)
+		} else if f.Meshtastic.EmcomInterval == nil {
+			// Neither a time nor a spacing: the daily default anchor.
+			cfg.Meshtastic.EmcomAt = BeaconAtDefault
 		}
 		if f.Meshtastic.EmcomHazardsInterval != nil {
 			cfg.Meshtastic.EmcomHazardsInterval = *f.Meshtastic.EmcomHazardsInterval
@@ -1542,6 +1559,14 @@ func (c Config) Validate() error {
 	if c.Meshtastic.Transport == "tcp" && c.Meshtastic.Host == "" {
 		return fmt.Errorf("meshtastic.host is required when meshtastic.transport is \"tcp\"")
 	}
+	if c.Meshtastic.EmcomAt != "" {
+		if _, err := time.Parse(ClockLayout, c.Meshtastic.EmcomAt); err != nil {
+			return fmt.Errorf("meshtastic.emcom_at must be a clock time like %q, got %q", BeaconAtDefault, c.Meshtastic.EmcomAt)
+		}
+		if c.Meshtastic.EmcomInterval != 0 {
+			return fmt.Errorf("meshtastic: set emcom_at (daily beacon) or emcom_interval (spacing), not both")
+		}
+	}
 	if c.Meshtastic.EmcomInterval != 0 &&
 		(c.Meshtastic.EmcomInterval < time.Minute || c.Meshtastic.EmcomInterval > 30*24*time.Hour) {
 		return fmt.Errorf("meshtastic.emcom_interval must be between 1m and 720h, got %s", c.Meshtastic.EmcomInterval)
@@ -1555,6 +1580,14 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
+
+// BeaconAtDefault is the daily clock time the presence beacon uses when
+// the configuration names neither a time nor a spacing, and ClockLayout is
+// how such a time is written.
+const (
+	BeaconAtDefault = "06:00"
+	ClockLayout     = "15:04"
+)
 
 // validateTopicFilter checks a generic MQTT subscription filter: non-empty,
 // bounded, no control characters, '#' only as the last segment.

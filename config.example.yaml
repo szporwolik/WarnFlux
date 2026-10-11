@@ -899,6 +899,30 @@ actions:
   #     channel: 1   # group channel (1-7) every alert is published on;
   #                  # 0 = off (direct messages only, never PRIMARY)
 
+  # SMS action: sends one text message per routed notification through the
+  # shared GSM hub (the serial AT session to the cellular modem) — a fully
+  # local channel, like APRS radio and Meshtastic. Recipients are the
+  # numbers below plus the matched group's members' registered phone
+  # numbers (de-duplicated by digits, each in their notification
+  # language); config.phones may be empty when every recipient is in the
+  # directory. Each message is transliterated and capped at the
+  # single-segment SMS limit. Requires gsm.enabled: true with a working
+  # modem — configuring this action as enabled WITHOUT the GSM hub stops
+  # the daemon from starting (the action cannot be constructed).
+  # - id: sms-alerts
+  #   type: sms
+  #   enabled: false
+  #
+  #   runtime:
+  #     queue_size: 128
+  #     call_timeout: 1m
+  #     shutdown_timeout: 10s
+  #     retries: 1
+  #
+  #   config:
+  #     prefix: "SOSNA"
+  #     phones: ["+48509558155"]  # optional; 32 numbers at most
+
 # Public HTTP ingest endpoints: POST /api/v1/ingest/<id>, protected by an
 # API key. Accepts hazard messages in two shapes:
 #   1. the canonical WarnFlux MQTT /events wire payload (as published on

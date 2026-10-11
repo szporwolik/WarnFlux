@@ -1318,18 +1318,14 @@ func run(configPath string, checkConfig bool) error {
 		if !ok {
 			continue
 		}
-		// The periodic notices ride the webhook (plus a direct message per
-		// registered operator when a token is present), so they are wired
-		// for every Discord instance.
+		// The periodic notices ride the webhook channel alone (they are
+		// never sent to a person), so they need no bot token at all.
 		if notifier, ok := discordaction.NotifierOf(p); ok {
 			notifier.ConfigureNotices(discordaction.NoticesConfig{
 				Identity: identity,
 				Site:     publicSite(cfg.Web.Domain),
 				Uptime:   func() string { return formatUptime(time.Since(processStart)) },
 				Summary:  func() discordaction.HazardSummary { return discordSummaryFromMirror(mirror) },
-				Recipients: func(context.Context) ([]string, error) {
-					return store.DiscordRecipients()
-				},
 			})
 			go notifier.RunNotices(ctx)
 		}

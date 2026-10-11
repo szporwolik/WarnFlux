@@ -344,8 +344,6 @@ type listenerFixture struct {
 	cli      *radiocli.Bot
 	accepted chan MessageEventWire
 	owners   map[string]string
-	// recipients are the Discord ids the notices message directly.
-	recipients []string
 	// summary is what the hazard status line reports.
 	summary HazardSummary
 	// uptime is what the presence line reports.

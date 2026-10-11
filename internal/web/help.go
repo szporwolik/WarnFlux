@@ -2,7 +2,19 @@ package web
 
 import (
 	"net/http"
+
+	"github.com/szporwolik/WarnFlux/internal/i18n"
 )
+
+// helpCommandView is one radio command in the manual. The list itself
+// comes from the shared interpreter (never stale); the usage line and
+// the explanation are translated, with the registry description as the
+// fallback so a freshly registered command still shows up.
+type helpCommandView struct {
+	Usage       string // e.g. "/alert <text>"
+	Description string
+	Restricted  bool
+}
 
 // helpSection is one block of the Help manual: a title, an icon and a
 // short list of instructions (i18n keys, resolved in the page language).
@@ -29,6 +41,9 @@ type helpView struct {
 	Role     string
 
 	Sections []helpSection
+	// Commands is the radio-command reference (empty without an
+	// interpreter).
+	Commands []helpCommandView
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -65,6 +80,7 @@ func (s *Server) buildHelpView(lang string) helpView {
 		Commit:   s.commit,
 		RepoURL:  repoURL,
 		NavHelp:  true,
+		Commands: s.helpCommands(lang),
 		Sections: []helpSection{
 			{Title: "help.start.title", Icon: "i-lightning-charge", Items: []string{
 				"help.start.1", "help.start.2", "help.start.3", "help.start.4",
@@ -112,4 +128,28 @@ func (s *Server) handleHelpPage(w http.ResponseWriter, r *http.Request) {
 	view.Role = sess.role
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "help", view)
+}
+
+// helpCommands renders the radio-command reference from the shared
+// interpreter: every command the station answers, in registration order.
+func (s *Server) helpCommands(lang string) []helpCommandView {
+	if s.radioCLI == nil {
+		return nil
+	}
+	cmds := s.radioCLI.Commands()
+	out := make([]helpCommandView, 0, len(cmds))
+	for _, c := range cmds {
+		usageKey := "help.commands." + c.Name + ".usage"
+		usage := i18n.T(lang, usageKey)
+		if usage == usageKey {
+			usage = "/" + c.Name
+		}
+		descKey := "help.commands." + c.Name + ".desc"
+		desc := i18n.T(lang, descKey)
+		if desc == descKey {
+			desc = c.Description
+		}
+		out = append(out, helpCommandView{Usage: usage, Description: desc, Restricted: c.Restricted})
+	}
+	return out
 }

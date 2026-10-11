@@ -40,6 +40,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/sysinfo"
@@ -69,8 +70,11 @@ type Server struct {
 	aprs       *aprs.Hub
 	meshtastic *meshtastic.Hub
 	gsm        *gsm.Hub
-	ingress    *dispatch.Ingress
-	users      storage.DirectoryStore
+	// radioCLI is the shared radio-command interpreter: the Help manual
+	// lists exactly the commands it accepts (nil = no command section).
+	radioCLI *radiocli.Bot
+	ingress  *dispatch.Ingress
+	users    storage.DirectoryStore
 	// events backs the public archive (180-day history of communications).
 	// nil in minimal constructions (the archive tab then shows an empty
 	// state).
@@ -181,6 +185,10 @@ type Server struct {
 // every toggle is additionally written back to this YAML file so the
 // choice survives restarts. Empty disables persistence.
 func (s *Server) SetConfigFile(path string) { s.configPath = path }
+
+// SetRadioCLI hands the shared radio-command interpreter to the panel so
+// the Help manual can list the commands it really accepts.
+func (s *Server) SetRadioCLI(bot *radiocli.Bot) { s.radioCLI = bot }
 
 // SetTimezone overrides the display timezone for every formatted
 // timestamp (nil = the process-local zone).

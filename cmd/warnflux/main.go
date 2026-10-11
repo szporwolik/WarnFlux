@@ -1099,6 +1099,9 @@ func run(configPath string, checkConfig bool) error {
 		// Panel switches are written back to the YAML file so they
 		// survive restarts.
 		webSrv.SetConfigFile(configPath)
+		// The Help manual lists exactly the commands the interpreter
+		// answers (one source of truth, nothing to keep in sync).
+		webSrv.SetRadioCLI(radioCLI)
 		// Human-facing timestamps ride the configured display timezone:
 		// containers typically run UTC, which would shift every panel
 		// time two hours behind the local wall clock.

@@ -785,6 +785,43 @@ button:disabled { cursor: not-allowed; }
 }
 .help-list li { margin-bottom: 0.3rem; }
 
+/* Help page: the radio-command reference is one wide card (usage, what
+   it does, who may run it) — the grid cards are too narrow for it. */
+.help-cmds h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.45rem;
+  font-size: 1.05rem;
+}
+.help-cmds h2 .icon { width: 18px; height: 18px; color: var(--accent, var(--muted)); }
+.help-cmd-list {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.help-cmd-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--muted-bg);
+}
+.help-cmd-usage {
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.help-cmd-desc { flex: 1 1 14rem; font-size: 0.85rem; line-height: 1.5; color: var(--text); }
+.help-cmd-list .badge { margin-left: auto; white-space: nowrap; }
+.help-cmd-note { margin: 0.7rem 0 0; font-size: 0.8rem; }
+
 /* ---- key/value system panel ---- */
 /* Dashboard stats pane: three number tiles in a row, wide cards when the
    viewport narrows. */

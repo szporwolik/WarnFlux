@@ -2,8 +2,11 @@ package web_test
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/szporwolik/WarnFlux/internal/radiocli"
 )
 
 // TestHelpPage pins the operator manual: every signed-in user sees it,
@@ -51,5 +54,64 @@ func TestHelpPage(t *testing.T) {
 	resp, html = env.get("/help")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(html, "How it works") {
 		t.Fatalf("member GET /help = %d, want the manual", resp.StatusCode)
+	}
+}
+
+// TestHelpPageRadioCommands pins the command reference: the manual lists
+// exactly what the shared interpreter answers (nothing invented), marks
+// the restricted commands, translates both languages and stays absent
+// when no interpreter is wired.
+func TestHelpPageRadioCommands(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	// No interpreter wired: the manual renders without a command list.
+	resp, html := env.get("/help")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /help = %d", resp.StatusCode)
+	}
+	if strings.Contains(html, "Radio commands") {
+		t.Error("command section rendered without an interpreter")
+	}
+
+	bot := radiocli.New("WarnFlux test")
+	bot.Register("weather", "weather", func(string, radiocli.Sender) radiocli.Result {
+		return radiocli.Result{Handled: true}
+	})
+	bot.RegisterRestricted("alert", "alert", func(string, radiocli.Sender) radiocli.Result {
+		return radiocli.Result{Handled: true}
+	})
+	env.server.SetRadioCLI(bot)
+
+	resp, html = env.get("/help")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /help with interpreter = %d", resp.StatusCode)
+	}
+	for _, want := range []string{
+		"Radio commands", "/help", "/weather", "/alert &lt;text&gt;",
+		"everyone", "authorised only", "direct message",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("command section missing %q", want)
+		}
+	}
+
+	// The section follows the UI language like the rest of the manual.
+	u, err := url.Parse(env.srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.client.Jar.SetCookies(u, []*http.Cookie{{Name: "wf_lang", Value: "pl"}})
+	resp, html = env.get("/help")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /help (pl) = %d", resp.StatusCode)
+	}
+	for _, want := range []string{"Komendy radiowe", "/alert &lt;treść&gt;", "Średnia regionalna", "dla wszystkich", "tylko uprawnieni"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("Polish command section missing %q", want)
+		}
+	}
+	if strings.Contains(html, "Region average") {
+		t.Error("Polish command section leaked the English description")
 	}
 }

@@ -129,6 +129,32 @@ func (b *Bot) RegisterRestricted(name, description string, h Handler) {
 	b.register(name, description, false, h)
 }
 
+// Command is one registered radio command as offered to users.
+type Command struct {
+	// Name is the command word, without the leading slash.
+	Name string
+	// Description is the short registry description (English); the
+	// panels show their own translated text and keep this as fallback.
+	Description string
+	// Restricted reports that only allow-listed senders may run it.
+	Restricted bool
+}
+
+// Commands lists the registered commands in registration order (/help
+// first). The Help manual renders exactly what the interpreter accepts,
+// so a command can never go undocumented by accident.
+func (b *Bot) Commands() []Command {
+	out := make([]Command, 0, len(b.order))
+	for _, name := range b.order {
+		out = append(out, Command{
+			Name:        name,
+			Description: b.descs[name],
+			Restricted:  !b.public[name],
+		})
+	}
+	return out
+}
+
 func (b *Bot) register(name, description string, isPublic bool, h Handler) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {

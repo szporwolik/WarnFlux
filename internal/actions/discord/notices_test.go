@@ -1,9 +1,8 @@
 package discord
 
 // The periodic notices are exercised against the same fake server as the
-// inbound path: the webhook posts land on its /webhook handler and the
-// direct-message copies on the REST channel endpoint, so one test sees
-// both surfaces of one notice.
+// inbound path: the posts land on its /webhook handler. A notice is a
+// CHANNEL message — the tests also pin that nothing is sent privately.
 
 import (
 	"context"
@@ -15,19 +14,17 @@ import (
 // configureNotices wires the fixture's notices and makes both due now.
 func (f *listenerFixture) configureNotices() {
 	f.action.ConfigureNotices(NoticesConfig{
-		Identity:   "WarnFlux v0.7.4 - SOSNA - sosna.sp9moa.pl",
-		Site:       "https://sosna.sp9moa.pl",
-		Uptime:     func() string { return f.uptime },
-		Summary:    func() HazardSummary { return f.summary },
-		Recipients: func(context.Context) ([]string, error) { return f.recipients, nil },
+		Identity: "WarnFlux v0.7.4 - SOSNA - sosna.sp9moa.pl",
+		Site:     "https://sosna.sp9moa.pl",
+		Uptime:   func() string { return f.uptime },
+		Summary:  func() HazardSummary { return f.summary },
 	})
 }
 
-func TestNoticesHazardStatusOnChannelAndDirectMessage(t *testing.T) {
+func TestNoticesHazardStatusOnChannel(t *testing.T) {
 	g := newFakeGateway(t)
 	f := newListenerFixture(t, g)
 	f.summary = HazardSummary{Severe: 1, Other: 2}
-	f.recipients = []string{"42"}
 	f.configureNotices()
 
 	f.action.notices.hazardsTick(context.Background())
@@ -38,29 +35,20 @@ func TestNoticesHazardStatusOnChannelAndDirectMessage(t *testing.T) {
 		t.Errorf("channel post = %q, want %q", posts[0].content, want)
 	}
 	if strings.Contains(posts[0].content, "DM me") {
-		t.Error("the channel copy must not advertise a command")
+		t.Error("the channel notice must not advertise a command")
 	}
 
-	// The direct-message copy carries the same numbers plus the hint,
-	// because commands live in direct messages.
-	dm := g.waitSent(0)
-	if wantDM := want + " · " + hazardHint; dm.content != wantDM {
-		t.Errorf("direct message = %q, want %q", dm.content, wantDM)
-	}
-	if dm.channel != "dm-opened" {
-		t.Errorf("direct message channel = %q, want the opened one", dm.channel)
-	}
-	if n := g.openCount(); n != 1 {
-		t.Errorf("opened %d direct-message channels, want 1", n)
+	// A periodic line is information for the channel: nothing is sent to
+	// a person, not even to a registered operator.
+	g.expectNoSend(0, 200*time.Millisecond)
+	if n := g.openCount(); n != 0 {
+		t.Errorf("opened %d direct-message channels, want 0", n)
 	}
 
 	// The cadence is honoured: the next tick is not due yet.
 	f.action.notices.hazardsTick(context.Background())
 	if n := len(g.webhookPosts()); n != 1 {
 		t.Errorf("channel posts = %d, want 1 (not due yet)", n)
-	}
-	if n := g.sentCount(); n != 1 {
-		t.Errorf("direct messages = %d, want 1 (not due yet)", n)
 	}
 
 	// Past the interval the line goes out again.
@@ -73,7 +61,6 @@ func TestNoticesSkipEmptyHazardStatus(t *testing.T) {
 	g := newFakeGateway(t)
 	f := newListenerFixture(t, g)
 	f.summary = HazardSummary{}
-	f.recipients = []string{"42"}
 	f.configureNotices()
 
 	f.action.notices.hazardsTick(context.Background())
@@ -98,7 +85,6 @@ func TestNoticesUptimeLine(t *testing.T) {
 	g := newFakeGateway(t)
 	f := newListenerFixture(t, g)
 	f.uptime = "4h12m"
-	f.recipients = []string{"42"}
 	f.configureNotices()
 
 	f.action.notices.uptimeTick(context.Background())
@@ -108,10 +94,7 @@ func TestNoticesUptimeLine(t *testing.T) {
 	if posts[0].content != want {
 		t.Errorf("channel post = %q, want %q", posts[0].content, want)
 	}
-	dm := g.waitSent(0)
-	if dm.content != want {
-		t.Errorf("direct message = %q, want %q", dm.content, want)
-	}
+	g.expectNoSend(0, 200*time.Millisecond)
 
 	// Once per interval.
 	f.action.notices.uptimeTick(context.Background())
@@ -123,13 +106,12 @@ func TestNoticesUptimeLine(t *testing.T) {
 	g.waitWebhook(2)
 }
 
-func TestNoticesWithoutTokenPostChannelOnly(t *testing.T) {
+func TestNoticesNeedNoBotToken(t *testing.T) {
 	g := newFakeGateway(t)
 	f := newListenerFixture(t, g)
 	f.action.token = ""
 	f.action.dm = nil
 	f.summary = HazardSummary{Severe: 3, Other: 0}
-	f.recipients = []string{"42"}
 	f.configureNotices()
 
 	f.action.notices.hazardsTick(context.Background())
@@ -137,7 +119,7 @@ func TestNoticesWithoutTokenPostChannelOnly(t *testing.T) {
 	if !strings.Contains(posts[0].content, "3 severe or more, 0 other active") {
 		t.Errorf("channel post = %q", posts[0].content)
 	}
-	// A webhook alone cannot reach a person: nothing is attempted.
+	// A webhook alone cannot reach a person — and the notices never try.
 	g.expectNoSend(0, 200*time.Millisecond)
 }
 

@@ -93,11 +93,15 @@ type Config struct {
 	// beacon fires as soon as the first session comes up (server
 	// start/restart).
 	EmcomInterval time.Duration
-	// EmcomHazardsInterval is the spacing of the periodic active-hazard
-	// digest broadcast on the emcom channel (default 1 hour). 0 disables
-	// the digest; the presence beacon stays on its own cadence. The
-	// digest is sent only when at least one hazard is active.
+	// EmcomHazardsInterval is the spacing of the periodic status line
+	// broadcast on the emcom channel (default 1 hour). 0 disables it;
+	// the presence beacon stays on its own cadence. The line is sent
+	// only when at least one hazard is active.
 	EmcomHazardsInterval time.Duration
+	// EmcomSite is the public site the periodic status line points at
+	// (e.g. https://sosna.sp9moa.pl) — where the details of the active
+	// hazards live. Empty = the counters are sent without the pointer.
+	EmcomSite string
 	// EmcomIdentity is the one-line installation banner sent by the
 	// beacon (version, installation name, public domain) — set by main.
 	EmcomIdentity string
@@ -193,11 +197,6 @@ const nodeDirRetention = 30 * 24 * time.Hour
 // defaultEmcomInterval is the spacing between presence beacons on the
 // emcom channel.
 const defaultEmcomInterval = 4 * time.Hour
-
-// maxHazardDigestLines bounds one hourly digest broadcast: the header
-// message plus at most this many hazard lines, so a busy day can never
-// flood the emcom channel.
-const maxHazardDigestLines = 12
 
 // meshTextMaxRunes bounds one outbound channel text message (133 chars
 // per the Meshtastic spec).
@@ -785,10 +784,9 @@ type Hub struct {
 	emcomNext   time.Time
 	hazardsNext time.Time
 
-	// activeHazards supplies the current active hazards for the periodic
-	// digest (set by the application from the dispatch state mirror);
-	// nil disables the digest.
-	activeHazards func() []ActiveHazard
+	// hazardSummary supplies the periodic status counters (set by the
+	// application from the dispatch state mirror); nil disables them.
+	hazardSummary func() HazardSummary
 
 	// cmds remembers executed radio commands by sender + packet
 	// identity; guarded by mu. A redelivered packet is answered with
@@ -897,12 +895,12 @@ type ActiveHazard struct {
 	ExpiresAt   *time.Time
 }
 
-// SetActiveHazardSource attaches the active-hazard supplier for the
-// periodic emcom-channel digest (nil disables the digest). The callback
-// must return the current active hazards, most severe first.
-func (h *Hub) SetActiveHazardSource(fn func() []ActiveHazard) {
+// SetHazardSummarySource attaches the counter supplier for the periodic
+// emcom-channel status line (nil disables it). The callback must return
+// the current counts — the digest posts NUMBERS, never the hazards.
+func (h *Hub) SetHazardSummarySource(fn func() HazardSummary) {
 	h.mu.Lock()
-	h.activeHazards = fn
+	h.hazardSummary = fn
 	h.mu.Unlock()
 }
 
@@ -1264,46 +1262,62 @@ func (h *Hub) beaconTick() {
 	}
 }
 
-// hazardsTick sends the periodic active-hazard digest on the emcom
-// channel: a short header message plus one line per active hazard
-// (bounded by maxHazardDigestLines). Nothing is sent while no hazard is
-// active. The digest is disabled when the emcom channel is off, the
-// interval is 0 or no hazard source is attached.
+// HazardSummary is what the periodic emcom-channel line reports: how
+// many active hazards are severe or higher (each of them already went
+// out as its own alert) and how many sit below that bar. The line
+// carries COUNTERS, never a list — a list would put the same hazards on
+// the air a second time and drown the channel.
+type HazardSummary struct {
+	Severe int
+	Other  int
+}
+
+// Total is the number of active hazards the summary covers.
+func (s HazardSummary) Total() int { return s.Severe + s.Other }
+
+// hazardsTick sends the periodic status line on the emcom channel: the
+// hazard counters plus the public site where the details are. Nothing is
+// sent while no hazard is active, and the line is disabled when the
+// emcom channel is off, the interval is 0 or no source is attached.
 func (h *Hub) hazardsTick() {
 	if h.cfg.EmcomChannel <= 0 || h.cfg.EmcomHazardsInterval <= 0 {
 		return
 	}
 	h.mu.Lock()
 	next := h.hazardsNext
-	src := h.activeHazards
+	src := h.hazardSummary
 	h.mu.Unlock()
 	if next.IsZero() || time.Now().Before(next) || src == nil {
 		return
 	}
 	// Advance the cadence BEFORE reading the source: a slow callback or
-	// a failed send must never fire the digest twice per window.
+	// a failed send must never fire the line twice per window.
 	h.mu.Lock()
 	h.hazardsNext = time.Now().Add(h.cfg.EmcomHazardsInterval)
 	h.mu.Unlock()
 
-	hazards := src()
-	if len(hazards) == 0 {
+	sum := src()
+	if sum.Total() == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	header := fmt.Sprintf("WarnFlux active messages: %d", len(hazards))
-	if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, header, "system"); err != nil && h.logger != nil {
-		h.logger.Warn("meshtastic: hazard digest header failed", "error", err)
+	text := h.hazardSummaryLine(sum)
+	if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, text, "system"); err != nil && h.logger != nil {
+		h.logger.Warn("meshtastic: hazard status line failed", "error", err)
 	}
-	if len(hazards) > maxHazardDigestLines {
-		hazards = hazards[:maxHazardDigestLines]
+}
+
+// hazardSummaryLine renders the periodic channel status: the counters
+// ("1 severe or more, 12 other active") and, when one is configured, the
+// public site holding the details. "0 severe" is worth posting — it
+// tells the channel that nothing above the alert bar is running.
+func (h *Hub) hazardSummaryLine(sum HazardSummary) string {
+	line := fmt.Sprintf("WarnFlux: %d severe or more, %d other active", sum.Severe, sum.Other)
+	if site := strings.TrimSpace(h.cfg.EmcomSite); site != "" {
+		line += " — " + site
 	}
-	for _, hz := range hazards {
-		if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, hazardDigestLine(hz), "system"); err != nil && h.logger != nil {
-			h.logger.Warn("meshtastic: hazard digest line failed", "error", err)
-		}
-	}
+	return line
 }
 
 // hazardDigestLine renders one hazard as a single channel line: the Zulu
@@ -1332,8 +1346,8 @@ func hazardDigestLine(hz ActiveHazard) string {
 }
 
 // HazardDigestLine is the shared one-line formatter for active hazards:
-// the hourly emcom-channel digest broadcasts it and the public /hazard
-// radio command answers with the same lines.
+// the public /hazard radio command answers with these lines (the
+// periodic channel line carries counters only).
 func HazardDigestLine(hz ActiveHazard) string {
 	return hazardDigestLine(hz)
 }

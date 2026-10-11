@@ -1079,11 +1079,13 @@ aprs:
 #   # the shared air.
 #   emcom_channel: 1      # 0 = beacon disabled
 #   emcom_interval: 4h    # default; the first beacon fires at startup
-#   # Periodic active-hazard digest on the same emcom channel: a short
-#   # header plus one line per active hazard (Zulu validity window +
-#   # headline + description, capped at 12 lines). Sent only when at
-#   # least one hazard is active; the first digest fires at startup.
-#   emcom_hazards_interval: 1h  # default; 0 = digest disabled
+#   # Periodic hazard status line on the same emcom channel: ONE short
+#   # message with the counters ("1 severe or more, 12 other active")
+#   # and the public site holding the details. It never lists the
+#   # hazards: severe ones already went out as their own alerts, and a
+#   # list would repeat them on the air. Sent only when at least one
+#   # hazard is active; the first line fires at startup.
+#   emcom_hazards_interval: 1h  # default; 0 = status line disabled
 #   # Read-only tab channel: received traffic on this channel index gets
 #   # a dedicated tab in the message history. It NEVER transmits — a
 #   # secondary install can watch the production channel without

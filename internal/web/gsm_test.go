@@ -352,6 +352,23 @@ func TestGSMPageNamesDirectoryNumbers(t *testing.T) {
 			t.Errorf("gsm history missing %q", want)
 		}
 	}
+
+	// The polled fragment renders the list on its own: it must resolve
+	// the same names (the page is replaced by it every few seconds, so a
+	// name that only lives in the full page would vanish on refresh).
+	respPartial, partial := env.get("/partials/gsm")
+	if respPartial.StatusCode != http.StatusOK {
+		t.Fatalf("GET /partials/gsm = %d, want 200", respPartial.StatusCode)
+	}
+	for _, want := range []string{
+		`<strong>&#43;48600111222</strong> <span class="muted op-name">(sp9abc)</span>`,
+		`0048600111222 <span class="muted op-name">(sp9abc)</span>`,
+		`<strong>48601333444</strong> <span class="muted op-name">(sp9xyz)</span>`,
+	} {
+		if !strings.Contains(partial, want) {
+			t.Errorf("polled gsm fragment missing %q", want)
+		}
+	}
 	// A number nobody registered stays bare — no name span follows it.
 	if strings.Contains(html, `48600999888</strong> <span class="muted op-name"`) {
 		t.Errorf("an unregistered number was named: %s", html)

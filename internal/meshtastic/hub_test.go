@@ -3178,6 +3178,28 @@ func TestHubReplyFitsChannelLimit(t *testing.T) {
 	}
 }
 
+// TestAlertText pins the shared alert marking: the in-band alert
+// character the firmware scans for is PREPENDED (the emoji the official
+// clients add is only a label — it wakes nothing), the text is trimmed
+// and the whole message stays within the channel limit even when the
+// source text is at it.
+func TestAlertText(t *testing.T) {
+	if got := AlertText("  test  "); got != AlertMarker+"test" {
+		t.Fatalf("AlertText = %q, want the marker plus the trimmed text", got)
+	}
+	long := strings.Repeat("x", meshTextMaxRunes+50)
+	got := AlertText(long)
+	if !strings.HasPrefix(got, AlertMarker) {
+		t.Fatalf("alert marker lost: %q", got[:8])
+	}
+	if n := len([]rune(got)); n != meshTextMaxRunes {
+		t.Fatalf("length = %d runes, want the hard cut at %d", n, meshTextMaxRunes)
+	}
+	if !strings.HasSuffix(got, "x") {
+		t.Fatalf("text mangled: %q", got[len(got)-8:])
+	}
+}
+
 // TestHubSendWithoutDevice pins the disconnected send failure: an
 // unconnected hub refuses transmissions instead of panicking.
 func TestHubSendWithoutDevice(t *testing.T) {

@@ -98,10 +98,11 @@ func Register(reg *action.Registry, hub *mesh.Hub) error {
 
 func (a *Action) Name() string { return Type }
 
-// meshBell is the Meshtastic notification trigger (BEL, 0x07): a direct
-// message starting with it rings the receiver's device, so hazard DMs
-// stand out from ordinary traffic.
-const meshBell = "\x07"
+// meshBell is the in-band alert marker (BEL): a message carrying it wakes
+// the receiver's device even on a muted channel, so hazard DMs stand out
+// from ordinary traffic. Shared with the panel's bell button so both
+// paths emit the same byte (the 🔔 emoji alone triggers nothing).
+const meshBell = mesh.AlertMarker
 
 // bellText prefixes the notification bell and keeps the total within
 // the channel limit.

@@ -202,6 +202,27 @@ const maxHazardDigestLines = 12
 // per the Meshtastic spec).
 const meshTextMaxRunes = 133
 
+// AlertMarker is the in-band alert character (ASCII BEL, 0x07) the
+// Meshtastic firmware scans every received payload for: a message
+// carrying it wakes the recipient's screen even when the channel or
+// sender is muted, is styled as an alert and — when the receiver enabled
+// the External Notification alerts — rings its buzzer/vibrator. The 🔔
+// emoji is only a visual label the official clients put in the message
+// text; THIS byte is what makes devices react.
+const AlertMarker = "\x07"
+
+// AlertText marks one outbound text as an alert and bounds it to the
+// channel limit. The marker is prepended (the firmware scans the whole
+// payload, so its position is free) and the text is cut to the limit
+// AFTER it, so a long message never loses its alert flag.
+func AlertText(text string) string {
+	r := []rune(strings.TrimSpace(text))
+	if len(r) > meshTextMaxRunes-1 {
+		r = r[:meshTextMaxRunes-1]
+	}
+	return AlertMarker + string(r)
+}
+
 // cmdDedupWindow is how long a command identity stays remembered: the
 // same packet delivered again by the mesh (rebroadcast, router retry)
 // within this window re-sends the previous reply instead of executing

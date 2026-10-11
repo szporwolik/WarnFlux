@@ -625,6 +625,11 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.text_required")), http.StatusSeeOther)
 		return
 	}
+	if r.PostFormValue("bell") != "" {
+		// The bell toggle marks the message as an ALERT: the firmware
+		// reacts to the in-band alert character, not to the 🔔 symbol.
+		text = mesh.AlertText(text)
+	}
 	var err error
 	if r.PostFormValue("target") == "contact" {
 		// The contact field accepts an 8-hex id, a node name or a short

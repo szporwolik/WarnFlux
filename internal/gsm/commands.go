@@ -3,8 +3,8 @@ package gsm
 // The SMS command path mirrors the APRS and Meshtastic hubs: slash
 // commands run through the shared radiocli interpreter, plain texts
 // answer with the installation banner, restricted commands work only
-// for directory-registered senders (by phone number), and /debug /
-// /alert events flow into the normal routing pipeline through the same
+// for directory-registered senders (by phone number), and /alert
+// events flow into the normal routing pipeline through the same
 // canonical /events documents.
 
 import (
@@ -173,16 +173,6 @@ func (h *Hub) routeMessage(from, text string) {
 	// repeat replays the result and never re-executes it, even across a
 	// restart.
 	reply := res.Reply
-	if res.Debug {
-		key := "gsm:" + from + ":msg:" + radiocli.ContentID(t)
-		eff, exp, prev := h.resolveCommand(key, time.Hour)
-		if prev != "" {
-			reply = prev
-		} else {
-			acc := h.publishMessageEvent(from, t, eff, exp, res.Reply)
-			reply = confirmation(res.Reply, "FAILED: debug alarm rejected", acc)
-		}
-	}
 	if res.Alert != nil {
 		ttl := res.Alert.TTL
 		if ttl <= 0 {
@@ -429,57 +419,6 @@ func (h *Hub) logAcceptance(kind, key string, acc dispatch.Acceptance) {
 	default:
 		h.logger.Info("gsm: event accepted", "kind", kind, "key", key)
 	}
-}
-
-// publishMessageEvent re-publishes one /debug SMS as a canonical
-// /events payload (the "gsm" source) so it enters the normal routing
-// pipeline. The event identity is stable per message (sender + content
-// digest), lifecycle times come from the durable registry and the
-// result travels on the wire document for the transactional inbox
-// anchor. The returned acceptance reports how the LOCAL pipeline took
-// the event.
-func (h *Hub) publishMessageEvent(from, text string, eff, exp time.Time, commandResult string) dispatch.Acceptance {
-	nowS := eff.Format(time.RFC3339)
-	expS := exp.Format(time.RFC3339)
-	sourceID := from + ":msg:" + radiocli.ContentID(text)
-	doc := MessageEventWire{
-		SchemaVersion: messageEventSchemaVersion,
-		ChangeID:      radiocli.StableID("gsm:msg", sourceID, text),
-		ChangeType:    "new",
-		EventKey:      "gsm:" + sourceID,
-		CommandResult: commandResult,
-		Event: MessageEventHazard{
-			Source:      "gsm",
-			SourceID:    sourceID,
-			Event:       "SMS message",
-			Severity:    "severe",
-			Urgency:     "unknown",
-			Certainty:   "unknown",
-			Headline:    "Message from: " + from + ": " + text,
-			Description: "Received by the WarnFlux GSM station",
-			EffectiveAt: &nowS,
-			ExpiresAt:   &expS,
-			Areas:       []string{},
-			Status:      "active",
-			ReceivedAt:  nowS,
-			UpdatedAt:   nowS,
-		},
-	}
-	payload, err := json.Marshal(doc)
-	if err != nil {
-		h.logger.Warn("gsm: routed message marshal failed", "error", err)
-		return dispatch.Rejected
-	}
-	h.mu.Lock()
-	acceptor := h.eventAcceptor
-	h.mu.Unlock()
-	if acceptor == nil {
-		h.logger.Warn("gsm: event dropped — no event acceptor installed", "kind", "debug")
-		return dispatch.AcceptedDurable
-	}
-	acc := acceptor(payload)
-	h.logAcceptance("debug", sourceID, acc)
-	return acc
 }
 
 // publishAlertEvent raises one operator-requested hazard (/alert SMS)

@@ -1485,13 +1485,29 @@ func TestHubHazardDigest(t *testing.T) {
 	if p.GetTo() != core.BroadcastNodeID.Uint32() {
 		t.Fatalf("digest to = %v, want a broadcast", p.GetTo())
 	}
-	if got, want := string(p.GetDecoded().GetPayload()), "WarnFlux: 2 severe or more, 12 other active — https://sosna.example.pl"; got != want {
+	if got, want := string(p.GetDecoded().GetPayload()),
+		"WarnFlux: 2 severe or more, 12 other active — https://sosna.example.pl · DM me /hazard for the list"; got != want {
 		t.Fatalf("digest line = %q, want %q", got, want)
+	}
+	if n := len([]rune(string(p.GetDecoded().GetPayload()))); n > meshTextMaxRunes {
+		t.Fatalf("digest line = %d runes, over the channel limit", n)
 	}
 
 	// Without a configured site the counters still go out, bare.
-	if got, want := (&Hub{cfg: Config{}}).hazardSummaryLine(HazardSummary{Other: 3}), "WarnFlux: 0 severe or more, 3 other active"; got != want {
+	if got, want := (&Hub{cfg: Config{}}).hazardSummaryLine(HazardSummary{Other: 3}),
+		"WarnFlux: 0 severe or more, 3 other active · DM me /hazard for the list"; got != want {
 		t.Fatalf("site-less digest line = %q, want %q", got, want)
+	}
+
+	// A site long enough to fill the message drops the hint instead of
+	// cutting it in half.
+	long := &Hub{cfg: Config{EmcomSite: "https://" + strings.Repeat("x", meshTextMaxRunes) + ".example.pl"}}
+	got := long.hazardSummaryLine(HazardSummary{Severe: 1, Other: 2})
+	if strings.Contains(got, "/hazard") {
+		t.Fatalf("hint must be dropped when it does not fit: %q", got)
+	}
+	if !strings.HasPrefix(got, "WarnFlux: 1 severe or more, 2 other active — https://") {
+		t.Fatalf("counters must survive: %q", got)
 	}
 }
 

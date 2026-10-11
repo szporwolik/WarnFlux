@@ -2,11 +2,15 @@ package web
 
 import (
 	"encoding/base64"
+	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
+	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 
+	"github.com/szporwolik/WarnFlux/internal/actions/discord"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 )
@@ -52,6 +56,10 @@ type helpView struct {
 	// MeshChannel is the installation's own Meshtastic channel (name,
 	// key, share link and scan code) — nil when the station has none.
 	MeshChannel *helpMeshChannelView
+	// Discord is the Discord card (what the station posts there and what
+	// a user must do to be reachable) — nil when the station has no
+	// Discord instance.
+	Discord *helpDiscordView
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -90,6 +98,22 @@ type helpMeshChannelView struct {
 	QR template.URL
 }
 
+// helpDiscordView is the Discord card: the surfaces the station uses
+// there, the cadence of its periodic notices and the few steps a user
+// has to take to be reachable on Discord.
+type helpDiscordView struct {
+	Facts []helpFact
+	Items []string // instruction lines (i18n keys, resolved by the template)
+}
+
+// helpFact is one labelled row of a card ("Channel alerts: enabled").
+type helpFact struct {
+	Label string
+	Value string
+	// On marks an enabled surface (rendered as a positive badge).
+	On bool
+}
+
 // buildHelpView assembles the manual sections (content lives in i18n).
 func (s *Server) buildHelpView(lang string) helpView {
 	return helpView{
@@ -106,6 +130,7 @@ func (s *Server) buildHelpView(lang string) helpView {
 		Commands: s.helpCommands(lang),
 
 		MeshChannel: s.helpMeshChannel(),
+		Discord:     s.helpDiscord(lang),
 		Sections: []helpSection{
 			{Title: "help.start.title", Icon: "i-lightning-charge", Items: []string{
 				"help.start.1", "help.start.2", "help.start.3", "help.start.4",
@@ -130,6 +155,9 @@ func (s *Server) buildHelpView(lang string) helpView {
 			}},
 			{Title: "help.meshtastic.title", Icon: "i-broadcast", Items: []string{
 				"help.meshtastic.1", "help.meshtastic.2",
+			}},
+			{Title: "help.discord.title", Icon: "i-chat-text", Items: []string{
+				"help.discord.section.1", "help.discord.section.2",
 			}},
 			{Title: "help.account.title", Icon: "i-person", Items: []string{
 				"help.account.1",
@@ -165,6 +193,91 @@ func (s *Server) helpMeshChannel() *helpMeshChannelView {
 		}
 	}
 	return view
+}
+
+// helpDiscord describes the station's Discord surface for the Help page:
+// which notices go out, how often, and what a user must register to be
+// messaged privately. Nil when the station runs no Discord instance.
+func (s *Server) helpDiscord(lang string) *helpDiscordView {
+	if s.actions == nil {
+		return nil
+	}
+	var info discord.Info
+	found := false
+	for _, st := range s.actions.Statuses() {
+		if st.Type != discord.Type || !st.Enabled {
+			continue
+		}
+		p, ok := s.actions.Plugin(st.ID)
+		if !ok {
+			continue
+		}
+		if got, ok := discord.InfoOf(p); ok {
+			info, found = got, true
+			if got.DirectMessages {
+				break
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	onOff := func(on bool) string {
+		if on {
+			return i18n.T(lang, "help.discord.on")
+		}
+		return i18n.T(lang, "help.discord.off")
+	}
+	every := func(d time.Duration, note string) string {
+		if d <= 0 {
+			return i18n.T(lang, "help.discord.off")
+		}
+		value := strings.ReplaceAll(i18n.T(lang, "help.discord.every"), "%s", helpDuration(d))
+		if note != "" {
+			value += " " + note
+		}
+		return value
+	}
+	view := &helpDiscordView{
+		Facts: []helpFact{
+			// A configured instance always posts routed alerts on its
+			// webhook channel.
+			{Label: i18n.T(lang, "help.discord.channel"), Value: onOff(true), On: true},
+			{Label: i18n.T(lang, "help.discord.dm"), Value: onOff(info.DirectMessages), On: info.DirectMessages},
+			{Label: i18n.T(lang, "help.discord.status"),
+				Value: every(info.HazardsInterval, i18n.T(lang, "help.discord.status_note")), On: info.HazardsInterval > 0},
+			{Label: i18n.T(lang, "help.discord.uptime"),
+				Value: every(info.UptimeInterval, ""), On: info.UptimeInterval > 0},
+		},
+		Items: []string{
+			"help.discord.item.1", "help.discord.item.2", "help.discord.item.3",
+		},
+	}
+	if !info.DirectMessages {
+		view.Items = view.Items[:1]
+	}
+	return view
+}
+
+// helpDuration renders a notice interval the way an operator reads it
+// ("1h", "30 min", "4h", "2d").
+func helpDuration(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return ""
+	case d < time.Hour:
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	case d < 24*time.Hour:
+		if d%time.Hour == 0 {
+			return fmt.Sprintf("%dh", int(d.Hours()))
+		}
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		if d%(24*time.Hour) == 0 {
+			return fmt.Sprintf("%dd", int(d.Hours())/24)
+		}
+		return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+	}
 }
 
 // handleHelpPage renders the Help manual for any signed-in user.

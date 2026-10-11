@@ -225,6 +225,13 @@ func hazardSummaryFromMirror(mirror *state.State) meshtastic.HazardSummary {
 	return sum
 }
 
+// discordSummaryFromMirror adapts the mirror counters to the Discord
+// notice — the same numbers the Meshtastic status line reports.
+func discordSummaryFromMirror(mirror *state.State) discordaction.HazardSummary {
+	sum := hazardSummaryFromMirror(mirror)
+	return discordaction.HazardSummary{Severe: sum.Severe, Other: sum.Other}
+}
+
 // publicSite turns the configured public domain into the link the mesh
 // status line points at: a bare host (the usual configuration) gets the
 // scheme, an explicit URL is kept as it is.
@@ -1310,6 +1317,21 @@ func run(configPath string, checkConfig bool) error {
 		p, ok := actionsMgr.Plugin(st.ID)
 		if !ok {
 			continue
+		}
+		// The periodic notices ride the webhook (plus a direct message per
+		// registered operator when a token is present), so they are wired
+		// for every Discord instance.
+		if notifier, ok := discordaction.NotifierOf(p); ok {
+			notifier.ConfigureNotices(discordaction.NoticesConfig{
+				Identity: identity,
+				Site:     publicSite(cfg.Web.Domain),
+				Uptime:   func() string { return formatUptime(time.Since(processStart)) },
+				Summary:  func() discordaction.HazardSummary { return discordSummaryFromMirror(mirror) },
+				Recipients: func(context.Context) ([]string, error) {
+					return store.DiscordRecipients()
+				},
+			})
+			go notifier.RunNotices(ctx)
 		}
 		dms, ok := discordaction.DMCommanderOf(p)
 		if !ok {

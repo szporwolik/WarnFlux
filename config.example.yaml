@@ -855,9 +855,61 @@ actions:
   #     # call_timeout still caps the whole call.
   #     timeout: 10s
   #
-  # Discord webhook action: one human-readable message per routed
-  # notification (severity first, then event, headline and areas,
-  # truncated to Discord's 2000-character content limit).
+  # Discord action: routed notifications on a channel AND, with a bot
+  # token, the same notifications plus the station's services as PRIVATE
+  # messages to the operators registered in the directory.
+  #
+  # WHAT IT GIVES YOU
+  # - Channel alerts: one human-readable message per routed notification
+  #   (severity first, then event, headline and areas, truncated to
+  #   Discord's 2000-character content limit) on the webhook's channel.
+  # - Private alerts (token): the same notification as a direct message
+  #   to every routed recipient's own Discord id.
+  # - Commands (token): an operator writes the SAME slash commands the
+  #   radio channels take (/help, /hazard, /ping, /weather, and /alert,
+  #   /emcom for senders the directory knows) in a private message to the
+  #   bot and the station answers there. Channel posts never reach the
+  #   interpreter, and no command is answered on a channel.
+  # - Periodic notices (both surfaces): a hazard status line ("WarnFlux:
+  #   1 severe or more, 5 other active — https://your.site") and a
+  #   presence line (installation identity + uptime). The status line
+  #   stays quiet while nothing is active, so it never trains the readers
+  #   to ignore it; the direct-message copy of it carries the
+  #   "DM me /hazard for the list" hint (the channel copy never
+  #   advertises a command).
+  # - Mass info (token): the admin panel's broadcast delivers a direct
+  #   message per recipient. It NEVER falls back to a channel post.
+  #
+  # SETUP, STEP BY STEP
+  # 1. https://discord.com/developers/applications -> New Application,
+  #    name it after the station.
+  # 2. Bot tab -> Add Bot -> "Reset Token" and copy it into `token:`
+  #    below (treat it like a password: it never belongs in a repository
+  #    — this file is deployment-local). The same page shows the bot
+  #    name and the application id.
+  # 3. Still on the Bot tab -> Privileged Gateway Intents -> switch on
+  #    MESSAGE CONTENT INTENT. Without it Discord delivers the TEXT of
+  #    every direct message as an empty string, so commands cannot work:
+  #    the station notices that, logs what to enable and keeps waiting —
+  #    switching it on later needs no restart. (A bot in fewer than 100
+  #    servers may enable it without verification.)
+  # 4. Invite the bot: OAuth2 -> URL Generator -> scope `bot`, permissions
+  #    `Send Messages` + `Read Message History`, open the generated URL
+  #    and pick the server. A bot can only send a direct message to
+  #    somebody who shares a server with it, so the operators must be on
+  #    that server.
+  # 5. Channel alerts: in the target channel -> Integrations -> Webhooks
+  #    -> New Webhook -> copy the URL into `url:` below. That channel is
+  #    the station's public surface; the webhook needs no bot and no
+  #    token.
+  # 6. Let the operators register their ids: Discord -> User Settings ->
+  #    Advanced -> Developer Mode on, then right-click your own name ->
+  #    Copy User ID (a ~19-digit number). The station's /account page
+  #    takes it in the profile's Discord field — that is where the
+  #    private messages go, and how the station recognises a sender for
+  #    the restricted commands. A username ("name#1234") can NEVER
+  #    authorize a sender.
+  #
   # - id: discord-alerts
   #   type: discord
   #   enabled: false
@@ -869,34 +921,35 @@ actions:
   #     retries: 2
   #
   #   config:
+  #     # Webhook of the channel that carries the routed alerts. Required:
+  #     # it is the one surface that works without a bot.
   #     url: https://discord.com/api/webhooks/1234/secret
   #     # Optional bot display name override (defaults to the webhook's
   #     # own name).
   #     username: "WarnFlux"
-  #     # Optional BOT TOKEN (Developer Portal -> Bot). The webhook posts
-  #     # on the channel; the token additionally lets the station write a
-  #     # DIRECT MESSAGE to a user id, which is how the Mass info panel
-  #     # delivers a notice — each recipient's own Discord id comes from
-  #     # their profile. Without a token Mass info cannot deliver on
-  #     # Discord at all: it never falls back to a channel post.
-  #     #
-  #     # With a token the station also LISTENS: an operator writes the
-  #     # same slash commands the radio channels take (/help, /hazard,
-  #     # /ping, /weather, and /alert, /emcom for senders the directory
-  #     # knows by their profile Discord id — a username can never
-  #     # authorize) in a private message to the bot and the station
-  #     # answers there. Plain messages answer with the installation
-  #     # banner, paced per sender. Direct messages only: channel posts
-  #     # never reach the command interpreter.
-  #     #
-  #     # REQUIRED for that: the privileged MESSAGE CONTENT intent, which
-  #     # only the Developer Portal can switch on
-  #     # (Applications -> your app -> Bot -> Privileged Gateway Intents);
-  #     # without it Discord delivers the text of every direct message as
-  #     # an empty string, so the station logs what to enable and waits
-  #     # instead of opening a useless gateway session.
+  #     # BOT TOKEN from the Developer Portal (Bot tab). Optional, but it
+  #     # is what turns the surfaces above on: private alerts, mass
+  #     # delivery, command answers and the direct-message copies of the
+  #     # periodic notices. Leave it empty and Discord stays channel-only.
+  #     # Treat it like a password: keep it out of repositories (this file
+  #     # is deployment-local) and restrict who can read it.
   #     token: ""
+  #     # Spacing of the hazard status line (on the channel and as a
+  #     # direct message; nothing while no hazard is active). Empty =
+  #     # 1h, the same cadence the Meshtastic channel uses; 0 disables it.
+  #     hazards_interval: 1h
+  #     # Spacing of the presence line (installation identity + uptime) —
+  #     # the Discord counterpart of the Meshtastic beacon. Empty = 4h;
+  #     # 0 disables it. Both notices are also skipped for a user who
+  #     # switched the Discord channel off on the /account page.
+  #     uptime_interval: 4h
   #     # Per-request timeout; 0 = default (10s).
+  #     timeout: 10s
+  #
+  # Note: a direct-message copy is only ever sent to a numeric user id; a
+  # profile carrying a username fails for that recipient (the panel shows
+  # it as a failure). Wrong-token or no-shared-server answers from the
+  # API land in the log with Discord's own reason.
   #
   # Meshtastic action: SOSNA alerts as direct messages to the routed
   # group members' registered node IDs, plus a broadcast on the

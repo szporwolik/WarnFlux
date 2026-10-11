@@ -42,6 +42,7 @@ type fakeGateway struct {
 	beats     []int64
 	opened    int // POST /users/@me/channels calls
 	sent      []sentMessage
+	webhooks  []sentMessage
 	frames    chan map[string]any // frames the test asks the gateway to send
 	ready     chan struct{}       // closed when the first session identified
 	closeCode int                 // close code used right after IDENTIFY (0 = stay open)
@@ -69,6 +70,7 @@ func newFakeGateway(t *testing.T) *fakeGateway {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/gateway", g.handleGateway)
+	mux.HandleFunc("/webhook", g.handleWebhook)
 	mux.HandleFunc("/applications/@me", g.handleApplication)
 	mux.HandleFunc("/users/@me/channels", g.handleOpenDM)
 	mux.HandleFunc("/channels/", g.handleChannelMessage)
@@ -109,6 +111,39 @@ func (g *fakeGateway) handleChannelMessage(w http.ResponseWriter, r *http.Reques
 	g.mu.Unlock()
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"id":"sent"}`))
+}
+
+// handleWebhook records one webhook post (the channel surface).
+func (g *fakeGateway) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Content string `json:"content"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	g.mu.Lock()
+	g.webhooks = append(g.webhooks, sentMessage{channel: "webhook", content: body.Content})
+	g.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// webhookPosts returns the recorded channel posts.
+func (g *fakeGateway) webhookPosts() []sentMessage {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]sentMessage(nil), g.webhooks...)
+}
+
+// waitWebhook blocks until n posts reached the webhook.
+func (g *fakeGateway) waitWebhook(n int) []sentMessage {
+	g.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if posts := g.webhookPosts(); len(posts) >= n {
+			return posts
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	g.t.Fatalf("webhook posts = %d, want %d", len(g.webhookPosts()), n)
+	return nil
 }
 
 func (g *fakeGateway) handleGateway(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +344,12 @@ type listenerFixture struct {
 	cli      *radiocli.Bot
 	accepted chan MessageEventWire
 	owners   map[string]string
+	// recipients are the Discord ids the notices message directly.
+	recipients []string
+	// summary is what the hazard status line reports.
+	summary HazardSummary
+	// uptime is what the presence line reports.
+	uptime string
 	// clock is the fake now the listener reads: the tests move it forward
 	// while the listener runs, so it is shared through an atomic.
 	clock atomic.Int64
@@ -322,7 +363,7 @@ func (f *listenerFixture) at() time.Time { return time.Unix(0, f.clock.Load()).U
 
 func newListenerFixture(t *testing.T, g *fakeGateway) *listenerFixture {
 	t.Helper()
-	cfg := map[string]any{"url": "http://example.invalid/webhook", "token": "bot-token"}
+	cfg := map[string]any{"url": g.srv.URL + "/webhook", "token": "bot-token"}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -353,6 +394,7 @@ func newListenerFixture(t *testing.T, g *fakeGateway) *listenerFixture {
 		t.Fatal("a token-carrying instance must carry the inbound half")
 	}
 	f.dm.now = f.at
+	f.action.notices.now = f.at
 	f.cli.Register("ping", "station alive", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: "Pong from WarnFlux 0.7.4 | uptime 1h"}
 	})

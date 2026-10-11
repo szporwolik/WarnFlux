@@ -577,6 +577,40 @@ func discordUserID(v string) string {
 	return v
 }
 
+// DiscordRecipients returns the Discord id of every user whose profile
+// carries one and whose delivery preferences do not switch the Discord
+// channel off. It is the audience of the periodic notices' direct-message
+// copies: the same opt-out the notification channels honour, so a user who
+// muted Discord on the profile page is not messaged anyway.
+func (s *Store) DiscordRecipients() ([]string, error) {
+	rows, err := s.db.Query(`SELECT discord FROM users u
+		WHERE discord IS NOT NULL AND discord != ''
+		AND NOT EXISTS (SELECT 1 FROM user_channel_opts o WHERE o.user_id = u.id AND o.channel = 'discord')
+		ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("query discord recipients: %w", err)
+	}
+	defer rows.Close()
+	out := make([]string, 0, 8)
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var discord string
+		if err := rows.Scan(&discord); err != nil {
+			return nil, fmt.Errorf("scan discord recipient: %w", err)
+		}
+		id := discordUserID(discord)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate discord recipients: %w", err)
+	}
+	return out, nil
+}
+
 // SetUserLanguage stores the user's preferred notification language
 // (an i18n language code; "" = system default). The admin row may set
 // its own language like any other user.

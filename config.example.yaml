@@ -1076,7 +1076,9 @@ aprs:
 #   # broadcasts there are blocked by policy. Give every installation
 #   # that ingests the same sources its OWN channel: two stations
 #   # beaconing (and alerting) on one channel duplicate every message on
-#   # the shared air.
+#   # the shared air. This channel is also the one the Help page hands to
+#   # users (name + key + scan code), so point it at the group channel
+#   # people should join.
 #   emcom_channel: 1      # 0 = beacon disabled
 #   emcom_interval: 4h    # default; the first beacon fires at startup
 #   # Periodic hazard status line on the same emcom channel: ONE short

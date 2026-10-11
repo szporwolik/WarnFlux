@@ -30,12 +30,14 @@ func TestNoticesHazardStatusOnChannel(t *testing.T) {
 	f.action.notices.hazardsTick(context.Background())
 
 	posts := g.waitWebhook(1)
-	want := "WarnFlux: 1 severe or more, 2 other active — https://sosna.sp9moa.pl"
+	// The status line carries the same "/hazard" hint the Meshtastic
+	// channel appends, so both surfaces read alike.
+	want := "WarnFlux: 1 severe or more, 2 other active — https://sosna.sp9moa.pl · " + hazardListHint
 	if posts[0].content != want {
 		t.Errorf("channel post = %q, want %q", posts[0].content, want)
 	}
-	if strings.Contains(posts[0].content, "DM me") {
-		t.Error("the channel notice must not advertise a command")
+	if !strings.Contains(posts[0].content, "/hazard") {
+		t.Error("the status line must tell the readers how to get the list")
 	}
 
 	// A periodic line is information for the channel: nothing is sent to
@@ -57,27 +59,39 @@ func TestNoticesHazardStatusOnChannel(t *testing.T) {
 	g.waitWebhook(2)
 }
 
-func TestNoticesSkipEmptyHazardStatus(t *testing.T) {
+// TestNoticesSkipQuietHazardStatus pins the severe-or-higher rule: an
+// hourly "0 severe or more, 12 other active" line trains the readers to
+// ignore the line that matters, so only hazards at the alert bar or above
+// reach the channel.
+func TestNoticesSkipQuietHazardStatus(t *testing.T) {
 	g := newFakeGateway(t)
 	f := newListenerFixture(t, g)
 	f.summary = HazardSummary{}
 	f.configureNotices()
 
 	f.action.notices.hazardsTick(context.Background())
-	// Nothing while no hazard is active — neither surface.
-	g.expectNoSend(0, 200*time.Millisecond)
+	// Nothing while no hazard is active at all.
 	if n := len(g.webhookPosts()); n != 0 {
 		t.Fatalf("channel posts = %d, want 0 while nothing is active", n)
 	}
-	// "0 severe, 12 other" IS worth posting: it says nothing sits above
-	// the alert bar. The cadence was consumed by the skipped window, so
-	// the next one has to come round first.
+
+	// Below the bar only: still nothing. The cadence was consumed by the
+	// skipped window, so the next one has to come round first.
 	f.summary = HazardSummary{Other: 12}
 	f.setNow(f.at().Add(defaultHazardsInterval + time.Minute))
 	f.action.notices.hazardsTick(context.Background())
+	if n := len(g.webhookPosts()); n != 0 {
+		t.Fatalf("channel posts = %d, want 0 for below-severe hazards only", n)
+	}
+
+	// One severe hazard and the line goes out, counters and hint alike.
+	f.summary = HazardSummary{Severe: 1, Other: 12}
+	f.setNow(f.at().Add(defaultHazardsInterval + time.Minute))
+	f.action.notices.hazardsTick(context.Background())
 	posts := g.waitWebhook(1)
-	if !strings.Contains(posts[0].content, "0 severe or more, 12 other active") {
-		t.Errorf("channel post = %q", posts[0].content)
+	if !strings.Contains(posts[0].content, "1 severe or more, 12 other active") ||
+		!strings.Contains(posts[0].content, "/hazard") {
+		t.Errorf("channel post = %q, want the counters plus the hint", posts[0].content)
 	}
 }
 

@@ -66,7 +66,7 @@ func TestHelpDiscordCard(t *testing.T) {
 	if facts["Private messages"] != "disabled" {
 		t.Errorf("private messages = %q", facts["Private messages"])
 	}
-	if got := facts["Hazard status"]; got != "every 1h (only while something is active)" {
+	if got := facts["Hazard status"]; got != "every 1h (only for severe or higher alerts)" {
 		t.Errorf("hazard status = %q", got)
 	}
 	if got := facts["Uptime notice"]; got != "every 4h" {
@@ -96,7 +96,7 @@ func TestHelpDiscordCard(t *testing.T) {
 	if facts["Wiadomości prywatne"] != "włączone" {
 		t.Errorf("private messages = %q", facts["Wiadomości prywatne"])
 	}
-	if got := facts["Status zagrożeń"]; got != "co 30 min (tylko gdy coś jest aktywne)" {
+	if got := facts["Status zagrożeń"]; got != "co 30 min (tylko przy alertach severe lub wyżej)" {
 		t.Errorf("hazard status = %q", got)
 	}
 	if got := facts["Powiadomienie uptime"]; got != "co 12h" {

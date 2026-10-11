@@ -31,7 +31,9 @@ const maxSMSChars = 160
 // Config is the action-specific configuration.
 type Config struct {
 	// Phones lists the phone numbers that receive the notification
-	// (besides the matched group members' registered numbers).
+	// besides the matched group members' registered numbers. It may be
+	// empty — a routing rule that relies entirely on the group members'
+	// directory entries is the normal case.
 	Phones []string `yaml:"phones"`
 	// Prefix is prepended to every message (e.g. the system name).
 	Prefix string `yaml:"prefix"`
@@ -69,9 +71,6 @@ func New(node *yaml.Node, hub sender) (action.Plugin, error) {
 		if err := node.Decode(&cfg); err != nil {
 			return nil, fmt.Errorf("sms: decode config: %w", err)
 		}
-	}
-	if len(cfg.Phones) == 0 {
-		return nil, errors.New("sms: config.phones must contain at least one phone number")
 	}
 	if len(cfg.Phones) > maxRecipients {
 		return nil, fmt.Errorf("sms: config.phones has %d recipients, maximum %d", len(cfg.Phones), maxRecipients)
@@ -117,6 +116,11 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 			lang = req.PhoneLangs[i]
 		}
 		add(p, lang)
+	}
+	if len(recipients) == 0 {
+		// Nothing to do: the action may rely entirely on the matched
+		// group's members, and none of them registered a phone number.
+		return nil
 	}
 	var firstErr error
 	failed := 0

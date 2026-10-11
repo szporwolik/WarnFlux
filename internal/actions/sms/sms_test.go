@@ -70,9 +70,6 @@ func ptr(f float64) *float64 { return &f }
 func TestNewValidation(t *testing.T) {
 	hub := &fakeSender{enabled: true}
 
-	if _, err := New(configNode(t, map[string]any{}), hub); err == nil {
-		t.Error("empty phones accepted")
-	}
 	if _, err := New(configNode(t, map[string]any{"phones": []string{"+48600111222", "abc"}}), hub); err == nil {
 		t.Error("invalid phone accepted")
 	}
@@ -81,6 +78,14 @@ func TestNewValidation(t *testing.T) {
 	}
 	if _, err := New(configNode(t, map[string]any{"phones": []string{"+48600111222"}}), &fakeSender{enabled: false}); err == nil {
 		t.Error("disabled hub accepted")
+	}
+	// No static numbers is valid: the routing rule may rely entirely on
+	// the matched group members' registered phones.
+	if _, err := New(configNode(t, map[string]any{}), hub); err != nil {
+		t.Errorf("config without phones rejected: %v", err)
+	}
+	if _, err := New(nil, hub); err != nil {
+		t.Errorf("empty node rejected: %v", err)
 	}
 	p, err := New(configNode(t, map[string]any{
 		"phones": []string{"+48600111222", "509558155"},
@@ -94,6 +99,34 @@ func TestNewValidation(t *testing.T) {
 	}
 	if err := p.Close(context.Background()); err != nil {
 		t.Errorf("Close: %v", err)
+	}
+}
+
+// TestExecuteGroupPhonesOnly pins the routing-rule shape the operator
+// picks when the numbers live in the directory: no static list at all,
+// every recipient coming from the matched group's members — and a no-op
+// (not a failure) when none of them registered one.
+func TestExecuteGroupPhonesOnly(t *testing.T) {
+	hub := &fakeSender{enabled: true}
+	p, err := New(configNode(t, map[string]any{"prefix": "SOSNA"}), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := hazardReq()
+	req.Phones = []string{"+48509558155"}
+	req.PhoneLangs = []string{"pl"}
+	if err := p.Execute(context.Background(), req); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if sent := hub.list(); len(sent) != 1 || sent[0][0] != "+48509558155" {
+		t.Fatalf("sent = %v, want the group member's number only", sent)
+	}
+
+	if err := p.Execute(context.Background(), hazardReq()); err != nil {
+		t.Fatalf("Execute without recipients: %v", err)
+	}
+	if sent := hub.list(); len(sent) != 1 {
+		t.Fatalf("sent = %v, want nothing sent without recipients", sent)
 	}
 }
 

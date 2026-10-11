@@ -867,9 +867,12 @@ actions:
   #   to every routed recipient's own Discord id.
   # - Commands (token): an operator writes the SAME slash commands the
   #   radio channels take (/help, /hazard, /ping, /weather, and /alert,
-  #   /emcom for senders the directory knows) in a private message to the
-  #   bot and the station answers there. Channel posts never reach the
-  #   interpreter, and no command is answered on a channel.
+  #   /emcom) in a private message to the bot and the station answers
+  #   there. Two rules keep the surface closed: channel posts never reach
+  #   the interpreter (no command is ever answered on a channel), and only
+  #   a KNOWN sender is answered at all — one whose profile carries their
+  #   Discord id. Anybody else is dropped in silence, so a stranger on the
+  #   same server cannot list the commands or read the station's answers.
   # - Periodic notices (both surfaces): a hazard status line ("WarnFlux:
   #   1 severe or more, 5 other active — https://your.site") and a
   #   presence line (installation identity + uptime). The status line
@@ -906,9 +909,11 @@ actions:
   #    Advanced -> Developer Mode on, then right-click your own name ->
   #    Copy User ID (a ~19-digit number). The station's /account page
   #    takes it in the profile's Discord field — that is where the
-  #    private messages go, and how the station recognises a sender for
-  #    the restricted commands. A username ("name#1234") can NEVER
-  #    authorize a sender.
+  #    private messages go, and what makes the sender KNOWN: without it
+  #    the station answers nothing in a DM, with it the public commands
+  #    run and the restricted ones (/alert, /emcom) follow the same group
+  #    rules as the radio. A username ("name#1234") can NEVER authorize a
+  #    sender, so the field must hold the numeric id.
   #
   # - id: discord-alerts
   #   type: discord

@@ -7,10 +7,11 @@ package discord
 // conversation. The outbound paths (webhook posts, mass direct messages)
 // are untouched and need no gateway.
 //
-// Direct messages only: channel posts never reach the command
-// interpreter. Restricted commands run for senders the station knows —
-// the sender's Discord user id must sit in the directory (the same
-// profile field the mass panel delivers to).
+// Direct messages only, and only from senders the station knows: the
+// sender's Discord user id must sit in the directory (the same profile
+// field the mass panel delivers to), otherwise the message is dropped
+// without an answer. Channel posts never reach the command interpreter at
+// all, so no command is answered on a channel.
 
 import (
 	"context"

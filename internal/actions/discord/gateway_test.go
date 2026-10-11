@@ -487,22 +487,29 @@ func TestDMCommandRepliesOnIncomingChannel(t *testing.T) {
 	}
 }
 
-func TestDMCommandDeniedForUnknownSender(t *testing.T) {
+func TestDMUnknownSenderIsIgnored(t *testing.T) {
 	g := newFakeGateway(t)
 	f := newListenerFixture(t, g)
 	f.run(t)
 
-	// The sender is not in the directory: the restricted /alert answers
-	// with the denial and raises nothing.
-	f.gateway.pushDM("m1", "999", "/alert flood")
-	got := g.waitSent(0)
-	if !strings.Contains(got.content, radiocli.DeniedText) {
-		t.Errorf("reply = %q, want the denial", got.content)
-	}
+	// A sender the directory does not resolve gets NOTHING: no command
+	// answer, no banner, no alert — the station answers only its own
+	// operators on Discord.
+	f.gateway.pushDM("m1", "999", "/ping")
+	f.gateway.pushDM("m2", "999", "/alert flood")
+	f.gateway.pushDM("m3", "999", "czesc")
+	g.expectNoSend(0, 400*time.Millisecond)
 	select {
 	case doc := <-f.accepted:
-		t.Fatalf("unauthorized sender raised an alert: %+v", doc)
+		t.Fatalf("an unknown sender raised an alert: %+v", doc)
 	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The same station still answers a known operator.
+	f.gateway.pushDM("m4", "42", "/ping")
+	got := g.waitSent(0)
+	if !strings.HasPrefix(got.content, "Pong") {
+		t.Errorf("known operator reply = %q", got.content)
 	}
 }
 

@@ -83,7 +83,7 @@
           <input type="hidden" name="bell" value="">
           <span class="mesh-send-label">{{tr .Lang "meshtastic.form_channel"}}</span>
           <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}"{{if not .Channels}} disabled{{end}}>
-            {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
+            {{range .Channels}}<option value="{{.Idx}}"{{if .Default}} selected{{end}}>ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
           </select>
           <input type="text" name="text" placeholder="{{tr .Lang "meshtastic.text_ph"}}" maxlength="133" data-char-count="133" required>
           <span class="char-count">0 / 133</span>

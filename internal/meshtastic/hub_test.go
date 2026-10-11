@@ -1511,12 +1511,20 @@ func TestHubHazardDigest(t *testing.T) {
 	}
 }
 
-// TestHubHazardDigestSilent pins the "only when active" rule: nothing
-// active, no status traffic (not even a zero counter line).
+// TestHubHazardDigestSilent pins the severe-or-higher rule: a quiet
+// channel is not worth a line, and neither is one carrying only hazards
+// below the alert bar ("0 severe or more, 12 other active" every hour
+// would train the readers to ignore the line that matters).
 func TestHubHazardDigestSilent(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
 		EmcomChannel: 1, EmcomHazardsInterval: time.Hour})
-	radio.hub.SetHazardSummarySource(func() HazardSummary { return HazardSummary{} })
+	var mu sync.Mutex
+	summary := HazardSummary{}
+	radio.hub.SetHazardSummarySource(func() HazardSummary {
+		mu.Lock()
+		defer mu.Unlock()
+		return summary
+	})
 	radio.waitConnected(t)
 
 	// The maintenance ticker runs every dmRetryInterval; wait past one
@@ -1528,6 +1536,22 @@ func TestHubHazardDigestSilent(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+
+	// Only hazards BELOW the bar: still nothing on the air.
+	mu.Lock()
+	summary = HazardSummary{Other: 12}
+	mu.Unlock()
+	deadline = time.Now().Add(dmRetryInterval + 2*time.Second)
+	for time.Now().Before(deadline) {
+		if n := len(radio.outbound()); n > 0 {
+			t.Fatalf("digest sent %d packets for below-severe hazards only", n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// A severe hazard IS worth the line (counters plus the /hazard hint);
+	// that path is pinned by TestHubHazardDigest, and the skipped window
+	// above consumed this cadence, so nothing is expected here yet.
 }
 
 // TestHubHazardDigestDisabled pins the interval-0 switch: no source is

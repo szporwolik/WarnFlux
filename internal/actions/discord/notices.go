@@ -8,8 +8,9 @@ package discord
 // while a private message stays reserved for what concerns that one
 // operator (their alerts, the mass notices and their command answers).
 //
-// The notices advertise no command either — what the station can answer
-// and where it answers it belongs to the manual, not to an hourly line.
+// The status line carries the same "DM me /hazard for the list" hint the
+// Meshtastic channel appends, so the readers of both surfaces learn the
+// same way how to pull the details.
 
 import (
 	"context"
@@ -43,6 +44,16 @@ type HazardSummary struct {
 
 // Total is the number of active hazards the summary covers.
 func (s HazardSummary) Total() int { return s.Severe + s.Other }
+
+// Alarming reports whether the status line is worth posting at all: the
+// channel hears about hazards that sit at severe or higher, the level
+// that already rang the devices.
+func (s HazardSummary) Alarming() bool { return s.Severe > 0 }
+
+// hazardListHint tells channel readers how to ask for the full list: the
+// status line carries counters only. It is the same wording the
+// Meshtastic channel uses, so both surfaces read alike.
+const hazardListHint = "DM me /hazard for the list"
 
 // NoticesConfig wires the periodic notices to the station: who the
 // station is and where the details are published.
@@ -181,9 +192,10 @@ func (n *notifier) run(ctx context.Context) {
 	}
 }
 
-// hazardsTick sends the hazard status line when its cadence is due.
-// Nothing goes out while no hazard is active: an empty status every hour
-// would train the readers to ignore it.
+// hazardsTick posts the hazard status line when its cadence is due.
+// Nothing goes out while nothing sits at severe or higher — the hourly
+// line is there to point at what rang the devices, not to report a quiet
+// channel.
 func (n *notifier) hazardsTick(ctx context.Context) {
 	if n.hazardsInterval <= 0 {
 		return
@@ -202,11 +214,13 @@ func (n *notifier) hazardsTick(ctx context.Context) {
 		return
 	}
 	sum := cfg.Summary()
-	if sum.Total() == 0 {
-		n.logger.Debug("discord: hazard status skipped", "reason", "no active hazard")
+	if !sum.Alarming() {
+		// Nothing at severe or higher: the channel stays quiet instead of
+		// reading "0 severe" every hour.
+		n.logger.Debug("discord: hazard status skipped", "reason", "nothing at severe or higher")
 		return
 	}
-	n.post(ctx, n.hazardStatusText(cfg, sum))
+	n.post(ctx, "hazards", n.hazardStatusText(cfg, sum))
 }
 
 // uptimeTick sends the presence line when its cadence is due.
@@ -225,29 +239,34 @@ func (n *notifier) uptimeTick(ctx context.Context) {
 	if !due {
 		return
 	}
-	n.post(ctx, n.uptimeText(cfg))
+	n.post(ctx, "uptime", n.uptimeText(cfg))
 }
 
 // post publishes one notice on the webhook channel, bounded to Discord's
 // content limit. Nothing is ever sent privately here: a periodic line is
 // information for the channel, not a notification about one operator.
-func (n *notifier) post(ctx context.Context, text string) {
+// kind names which notice went out ("hazards" or "uptime"), so the log
+// tells the two apart at a glance.
+func (n *notifier) post(ctx context.Context, kind, text string) {
 	if err := n.action.post(ctx, truncateRunes(text, maxContentRunes), "WarnFlux"); err != nil {
-		n.logger.Warn("discord: periodic notice failed", "error", err)
+		n.logger.Warn("discord: periodic notice failed", "kind", kind, "error", err)
 		return
 	}
-	n.logger.Info("discord: periodic notice posted")
+	n.logger.Info("discord: periodic notice posted", "kind", kind)
 }
 
 // hazardStatusText renders the status line: the counters plus, when one is
-// configured, the public site holding the details. "0 severe" is worth
-// posting — it tells the channel that nothing above the alert bar is
-// running. No command is advertised: where the station answers is the
-// manual's business.
+// configured, the public site holding the details, and the same hint the
+// Meshtastic channel appends (dropped only if the line would not fit —
+// on Discord it always does). It is only ever called for a summary with
+// something at severe or higher.
 func (n *notifier) hazardStatusText(cfg NoticesConfig, sum HazardSummary) string {
 	line := fmt.Sprintf("WarnFlux: %d severe or more, %d other active", sum.Severe, sum.Other)
 	if site := strings.TrimSpace(cfg.Site); site != "" {
 		line += " — " + site
+	}
+	if hint := " · " + hazardListHint; len([]rune(line))+len([]rune(hint)) <= maxContentRunes {
+		line += hint
 	}
 	return line
 }

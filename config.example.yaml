@@ -874,14 +874,16 @@ actions:
   #   Discord id. Anybody else is dropped in silence, so a stranger on the
   #   same server cannot list the commands or read the station's answers.
   # - Periodic notices (on the channel, never privately): a hazard status
-  #   line ("WarnFlux: 1 severe or more, 5 other active — https://your.site")
-  #   and a presence line (installation identity + uptime), the Discord
-  #   counterpart of the Meshtastic group-channel rhythm. The status line
-  #   stays quiet while nothing is active, so it never trains the readers
-  #   to ignore it, and neither line advertises a command: the channel is
-  #   the station's shared surface, while a private message stays reserved
-  #   for what concerns that one operator (their alerts, the mass notices
-  #   and their own command answers). The notices need no bot token.
+  #   line ("WarnFlux: 1 severe or more, 5 other active — https://your.site
+  #   · DM me /hazard for the list") and a presence line (installation
+  #   identity + uptime), the Discord counterpart of the Meshtastic
+  #   group-channel rhythm — same cadence, same wording, same rules. The
+  #   status line goes out ONLY while something sits at severe or higher
+  #   (the level that already rang the devices): an hourly "0 severe" line
+  #   would train the readers to ignore the one that matters. The channel
+  #   is the station's shared surface, while a private message stays
+  #   reserved for what concerns that one operator (their alerts, the mass
+  #   notices and their own command answers). The notices need no token.
   # - Mass info (token): the admin panel's broadcast delivers a direct
   #   message per recipient. It NEVER falls back to a channel post.
   #
@@ -942,8 +944,9 @@ actions:
   #     # is deployment-local) and restrict who can read it.
   #     token: ""
   #     # Spacing of the hazard status line, posted on the webhook channel
-  #     # (nothing while no hazard is active). Empty = 1h, the same cadence
-  #     # the Meshtastic channel uses; 0 disables it.
+  #     # ONLY while a hazard at severe or higher is active. Empty = 1h, the
+  #     # same cadence (and the same rule) as the Meshtastic channel; 0
+  #     # disables it.
   #     hazards_interval: 1h
   #     # Spacing of the presence line (installation identity + uptime) —
   #     # the Discord counterpart of the Meshtastic beacon. Also on the
@@ -1170,6 +1173,9 @@ aprs:
 #   # list would repeat them on the air. Sent only when at least one
 #   # hazard is active; the first line fires at startup.
 #   emcom_hazards_interval: 1h  # default; 0 = status line disabled
+#                              # the line goes out only while a hazard at
+#                              # severe or higher is active (same rule as
+#                              # the Discord status line)
 #   # Read-only tab channel: received traffic on this channel index gets
 #   # a dedicated tab in the message history. It NEVER transmits — a
 #   # secondary install can watch the production channel without

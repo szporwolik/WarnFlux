@@ -67,6 +67,11 @@ type massView struct {
 	SelUsers    map[int64]bool
 	SelChannels map[string]bool
 
+	// DiscordReady reports that an enabled Discord instance carries a bot
+	// token, so the notice can be delivered as a direct message. Without
+	// one the panel warns instead of silently doing nothing.
+	DiscordReady bool
+
 	NavDashboard     bool
 	NavUsers         bool
 	NavGroups        bool
@@ -113,6 +118,10 @@ func (s *Server) buildMassView(lang string) massView {
 			{Kind: "discord", Label: "mass.ch.discord"},
 			{Kind: "meshtastic", Label: "mass.ch.meshtastic"},
 		},
+		// Discord is delivered as a direct message, which needs a bot
+		// token: without one the notice cannot be sent at all, and the
+		// panel says so instead of posting on the channel.
+		DiscordReady: s.discordDMAvailable(),
 	}
 	if s.users != nil {
 		v.Users = s.loadAllUsers()

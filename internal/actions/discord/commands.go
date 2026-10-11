@@ -89,10 +89,11 @@ func (l *dmListener) seams() (*radiocli.Bot, func(userID string) string) {
 	return l.cli, l.gate
 }
 
-// handleText answers one direct message: a slash text runs the shared
-// command interpreter, anything else gets the installation banner. The
-// interpreter decides on authorization — public commands run for every
-// sender, restricted ones only for senders the directory resolves.
+// handleText answers one direct message from a KNOWN operator: a slash
+// text runs the shared command interpreter, anything else gets the
+// installation banner (paced). A sender the directory does not resolve is
+// dropped before any of that — on Discord the station answers nobody it
+// does not know.
 func (l *dmListener) handleText(ctx context.Context, userID, channelID, text string) {
 	cli, gate := l.seams()
 	if cli == nil {
@@ -106,6 +107,16 @@ func (l *dmListener) handleText(ctx context.Context, userID, channelID, text str
 	owner := ""
 	if gate != nil {
 		owner = gate(userID)
+	}
+	// The station only talks to its own operators here: a Discord id in
+	// the profile is what makes a sender known, and only a known sender
+	// gets an answer — command or banner. Everybody else is dropped in
+	// silence (the SMS channels drop unknown senders exactly the same
+	// way), so a stranger sharing a server cannot read the station's
+	// answers, learn its commands or pull its hazard data.
+	if owner == "" {
+		l.logger.Info("discord: direct message from an unknown sender dropped", "user", userID)
+		return
 	}
 	reply := ""
 	cmd := commandName(text)

@@ -306,3 +306,59 @@ func TestGSMMessagesMergeLegacyParts(t *testing.T) {
 		t.Fatalf("gsm page missing the joined message: %s", html)
 	}
 }
+
+// TestGSMPageNamesDirectoryNumbers pins the From/To naming: a number the
+// directory knows is shown next to the username, across the "+48..." and
+// "0048..." spellings, and ALSO when the profile carries a human form
+// (spaces) that the strict SEND shape rejects — the SEND path keeps
+// offering only sendable numbers.
+func TestGSMPageNamesDirectoryNumbers(t *testing.T) {
+	store := &fakeGSMMsgs{}
+	hub := newTestGSMHub(t)
+	env := newTestEnvWebUsers(t, defaultTestWebConfig(), nil, nil, nil, nil, nil, nil, nil, hub, store)
+
+	// Registered cleanly, and registered the way people type it.
+	if _, err := env.users.CreateUser("sp9abc", "0048600111222", "", "", "member", "pw1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.users.CreateUser("sp9xyz", "+48 601 333 444", "", "", "member", "pw1"); err != nil {
+		t.Fatal(err)
+	}
+	// A number nobody registered stays bare.
+	for _, m := range []struct{ dir, from, to string }{
+		{"rx", "+48600111222", "self"},
+		{"tx", "self", "0048600111222"},
+		{"rx", "48601333444", "self"},
+		{"rx", "+48600999888", "self"},
+	} {
+		if err := store.RecordGSMMessage(context.Background(), m.dir, m.from, m.to, "x", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	env.login()
+	resp, html := env.get("/gsm")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /gsm = %d, want 200", resp.StatusCode)
+	}
+	for _, want := range []string{
+		// rx: the sender column wraps the number in <strong>.
+		`<strong>&#43;48600111222</strong> <span class="muted op-name">(sp9abc)</span>`,
+		// tx: the addressee column holds the number bare.
+		`0048600111222 <span class="muted op-name">(sp9abc)</span>`,
+		`<strong>48601333444</strong> <span class="muted op-name">(sp9xyz)</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("gsm history missing %q", want)
+		}
+	}
+	// A number nobody registered stays bare — no name span follows it.
+	if strings.Contains(html, `48600999888</strong> <span class="muted op-name"`) {
+		t.Errorf("an unregistered number was named: %s", html)
+	}
+	// The spaced profile number never reaches the send picker (it is not
+	// a sendable shape), but it still names the history.
+	if strings.Contains(html, `<option value="&#43;48 601 333 444">`) {
+		t.Error("the send picker offered a number the modem would reject")
+	}
+}

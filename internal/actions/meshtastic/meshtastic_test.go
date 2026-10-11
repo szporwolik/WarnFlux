@@ -163,8 +163,8 @@ func TestExecuteDMsParallelWithChannel(t *testing.T) {
 	if len(stub2.texts) != 2 {
 		t.Fatalf("texts = %v, want the channel text + the belled DM", stub2.texts)
 	}
-	if !strings.HasPrefix(stub2.texts[0], "SOSNA SEVERE") || strings.HasPrefix(stub2.texts[0], "\x07") {
-		t.Fatalf("channel text = %q, want SOSNA SEVERE without the bell", stub2.texts[0])
+	if !strings.HasPrefix(stub2.texts[0], "\x07SOSNA SEVERE") {
+		t.Fatalf("channel text = %q, want the alert marker + SOSNA SEVERE", stub2.texts[0])
 	}
 	if !strings.HasPrefix(stub2.texts[1], "\x07SOSNA SEVERE") {
 		t.Fatalf("DM text = %q, want the bell + SOSNA SEVERE", stub2.texts[1])
@@ -187,8 +187,8 @@ func TestExecuteFailurePropagates(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	// Channel text + belled DM.
-	if len(stub2.texts) != 2 || !strings.HasPrefix(stub2.texts[0], "SOSNA SEVERE Storm") {
-		t.Fatalf("text = %v, want the event-name fallback on the channel", stub2.texts)
+	if len(stub2.texts) != 2 || !strings.HasPrefix(stub2.texts[0], "\x07SOSNA SEVERE Storm") {
+		t.Fatalf("text = %v, want the alert marker + event-name fallback on the channel", stub2.texts)
 	}
 	if !strings.HasPrefix(stub2.texts[1], "\x07SOSNA SEVERE Storm") {
 		t.Fatalf("DM text = %v, want the belled fallback", stub2.texts)

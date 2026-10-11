@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -66,12 +67,18 @@ type discordAction struct {
 	username string
 	token    string
 	client   *http.Client
+	logger   *slog.Logger
 
 	// dmMu guards the direct-message channel cache: opening a DM channel
 	// costs one request, and one notice per recipient would otherwise
 	// pay it again on every broadcast.
 	dmMu       sync.Mutex
 	dmChannels map[string]string
+
+	// dm is the inbound half: it answers the shared radio CLI commands
+	// written in a direct message. nil without a bot token — a webhook
+	// can post on a channel but never read a direct message.
+	dm *dmListener
 }
 
 // apiBase is the Discord REST base. A variable so tests can point an
@@ -102,13 +109,18 @@ func New(node *yaml.Node) (action.Plugin, error) {
 	if strings.ContainsAny(token, " \t\r\n") {
 		return nil, fmt.Errorf("discord: config.token must be a single token without whitespace")
 	}
-	return &discordAction{
+	a := &discordAction{
 		url:        u,
 		username:   strings.TrimSpace(cfg.Username),
 		token:      token,
 		client:     &http.Client{Timeout: timeout},
+		logger:     slog.Default(),
 		dmChannels: map[string]string{},
-	}, nil
+	}
+	if a.token != "" {
+		a.dm = newDMListener(a, a.logger)
+	}
+	return a, nil
 }
 
 // Name returns the action type name.
@@ -216,13 +228,29 @@ func (a *discordAction) dmChannel(ctx context.Context, userID string) (string, e
 	if created.ID == "" {
 		return "", errors.New("discord: direct-message channel not returned")
 	}
+	a.cacheDM(userID, created.ID)
+	return created.ID, nil
+}
+
+// cacheDM remembers one user's direct-message channel.
+func (a *discordAction) cacheDM(userID, channel string) {
 	a.dmMu.Lock()
+	defer a.dmMu.Unlock()
 	if len(a.dmChannels) >= dmCacheLimit {
 		a.dmChannels = map[string]string{}
 	}
-	a.dmChannels[userID] = created.ID
-	a.dmMu.Unlock()
-	return created.ID, nil
+	a.dmChannels[userID] = channel
+}
+
+// replyDM answers one inbound direct message. The message carries its
+// own channel id, so answering costs no extra request — and the cache
+// learns it, so a later notice to the same person skips opening it.
+func (a *discordAction) replyDM(ctx context.Context, userID, channel, content string) error {
+	if channel == "" {
+		return a.SendDM(ctx, userID, content)
+	}
+	a.cacheDM(userID, channel)
+	return a.postChannelMessage(ctx, channel, truncateRunes(strings.TrimSpace(content), maxContentRunes))
 }
 
 // forgetDM drops one cached direct-message channel.
@@ -430,4 +458,5 @@ func truncateRunes(text string, max int) string {
 var (
 	_ action.Plugin   = (*discordAction)(nil)
 	_ DirectMessenger = (*discordAction)(nil)
+	_ DMCommander     = (*discordAction)(nil)
 )

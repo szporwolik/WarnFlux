@@ -840,6 +840,10 @@ button:disabled { cursor: not-allowed; }
   margin-top: 0.7rem;
 }
 .help-meshchan-facts { flex: 1 1 18rem; min-width: 0; }
+/* The share link is one long unbreakable word: let the row wrap and the
+   value shrink, or the card would push the whole page sideways. */
+.help-meshchan-facts .hz-row { flex-wrap: wrap; }
+.help-meshchan-facts .hz-row > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .help-meshchan-key { overflow-wrap: anywhere; }
 .help-meshchan-qr { margin: 0; text-align: center; }
 .help-meshchan-qr img {

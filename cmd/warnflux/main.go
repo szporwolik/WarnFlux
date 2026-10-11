@@ -140,6 +140,47 @@ func dispatchLocalChange(ingress *dispatch.Ingress, logger *slog.Logger, change 
 // default).
 const radioAlertTTL = 4 * time.Hour
 
+// processStart anchors the uptime the /ping command reports: it is taken
+// before configuration, so the answer covers the whole process, however
+// long the startup took.
+var processStart = time.Now()
+
+// pingForRadio renders the public /ping answer: the running version and
+// the process uptime, compact enough for the APRS frame ("<1m" while the
+// station is still starting).
+func pingForRadio(version string) string {
+	up := time.Since(processStart)
+	out := "Pong from WarnFlux"
+	if version != "" {
+		out += " " + version
+	}
+	if up > 0 {
+		out += fmt.Sprintf(", uptime %s", formatUptime(up))
+	}
+	return out
+}
+
+// formatUptime renders an uptime as the shortest round figure that still
+// tells the operator what they asked for: "3d4h12m", "4h12m", "12m"
+// (anything under a minute reports "<1m").
+func formatUptime(d time.Duration) string {
+	if d < time.Minute {
+		return "<1m"
+	}
+	d = d.Round(time.Minute)
+	days := d / (24 * time.Hour)
+	hours := (d % (24 * time.Hour)) / time.Hour
+	mins := (d % time.Hour) / time.Minute
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd%dh%dm", days, hours, mins)
+	case hours > 0:
+		return fmt.Sprintf("%dh%dm", hours, mins)
+	default:
+		return fmt.Sprintf("%dm", mins)
+	}
+}
+
 // hazardsFromMirror projects the dispatch mirror's active hazards,
 // most severe first (Snapshot sorts them). minSeverity keeps only that
 // level and above ("" = the full list).
@@ -791,6 +832,12 @@ func run(configPath string, checkConfig bool) error {
 	// channels split the reply into one message per line.
 	radioCLI.Register("hazard", "active messages", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: hazardsForRadio(hazardSource())}
+	})
+	// /ping: a public command — proof the station is alive, answered to
+	// anybody on any channel: version plus uptime, short enough for the
+	// APRS frame.
+	radioCLI.Register("ping", "station alive", func(string, radiocli.Sender) radiocli.Result {
+		return radiocli.Result{Handled: true, Reply: pingForRadio(resolvedVersion)}
 	})
 	// /weather: a public command — the region average of every current
 	// weather reading (APRS stations + internet providers, gross errors

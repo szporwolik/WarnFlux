@@ -212,3 +212,58 @@ func TestCheckConfigRejectsBadPluginConfig(t *testing.T) {
 		t.Fatal("check-config accepted an unknown plugin field")
 	}
 }
+
+// TestPingForRadio pins the public /ping answer: version and uptime, in
+// a form that still fits the smallest frame we speak (APRS, 67 chars),
+// even after a very long uptime.
+func TestPingForRadio(t *testing.T) {
+	t.Cleanup(func() { processStart = time.Now() })
+	for _, tc := range []struct {
+		version string
+		ago     time.Duration
+		want    string
+	}{
+		{"0.7.3", 3*24*time.Hour + 4*time.Hour + 12*time.Minute, "Pong from WarnFlux 0.7.3, uptime 3d4h12m"},
+		{"0.7.3", 4*time.Hour + 12*time.Minute, "Pong from WarnFlux 0.7.3, uptime 4h12m"},
+		{"0.7.3", 12 * time.Minute, "Pong from WarnFlux 0.7.3, uptime 12m"},
+		{"0.7.3", 30 * time.Second, "Pong from WarnFlux 0.7.3, uptime <1m"},
+		{"0.7.3", 400 * 24 * time.Hour, "Pong from WarnFlux 0.7.3, uptime 400d0h0m"},
+		{"", time.Minute, "Pong from WarnFlux, uptime 1m"},
+	} {
+		processStart = time.Now().Add(-tc.ago)
+		got := pingForRadio(tc.version)
+		if got != tc.want {
+			t.Errorf("pingForRadio(%q, %s) = %q, want %q", tc.version, tc.ago, got, tc.want)
+		}
+		// The APRS frame is the tightest budget we speak (67 chars less
+		// the ack suffix).
+		if n := len([]rune(got)); n > aprs.MaxMessageText-aprs.AckSuffixLen {
+			t.Errorf("pingForRadio(%q, %s) = %d runes — over the APRS frame", tc.version, tc.ago, n)
+		}
+	}
+
+	// A release version with a commit suffix stays within the frame too.
+	processStart = time.Now().Add(-(9*24*time.Hour + 23*time.Hour + 59*time.Minute))
+	if got := pingForRadio("0.7.3-dev+abc1234"); len([]rune(got)) > aprs.MaxMessageText-aprs.AckSuffixLen {
+		t.Errorf("ping reply = %q, %d runes — over the APRS frame", got, len([]rune(got)))
+	}
+}
+
+// TestFormatUptime pins the shortest-round-form rendering.
+func TestFormatUptime(t *testing.T) {
+	for _, tc := range []struct {
+		in   time.Duration
+		want string
+	}{
+		{0, "<1m"},
+		{59 * time.Second, "<1m"},
+		{time.Minute, "1m"},
+		{90 * time.Second, "2m"}, // rounds to the nearest minute
+		{time.Hour + 30*time.Minute, "1h30m"},
+		{25*time.Hour + time.Minute, "1d1h1m"},
+	} {
+		if got := formatUptime(tc.in); got != tc.want {
+			t.Errorf("formatUptime(%s) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

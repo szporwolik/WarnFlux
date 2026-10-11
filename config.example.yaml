@@ -879,6 +879,22 @@ actions:
   #     # delivers a notice — each recipient's own Discord id comes from
   #     # their profile. Without a token Mass info cannot deliver on
   #     # Discord at all: it never falls back to a channel post.
+  #     #
+  #     # With a token the station also LISTENS: an operator writes the
+  #     # same slash commands the radio channels take (/help, /hazard,
+  #     # /ping, /weather, and /alert, /emcom for senders the directory
+  #     # knows by their profile Discord id — a username can never
+  #     # authorize) in a private message to the bot and the station
+  #     # answers there. Plain messages answer with the installation
+  #     # banner, paced per sender. Direct messages only: channel posts
+  #     # never reach the command interpreter.
+  #     #
+  #     # REQUIRED for that: the privileged MESSAGE CONTENT intent, which
+  #     # only the Developer Portal can switch on
+  #     # (Applications -> your app -> Bot -> Privileged Gateway Intents);
+  #     # without it Discord delivers the text of every direct message as
+  #     # an empty string, so the station logs what to enable and waits
+  #     # instead of opening a useless gateway session.
   #     token: ""
   #     # Per-request timeout; 0 = default (10s).
   #

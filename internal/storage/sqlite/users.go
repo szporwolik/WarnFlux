@@ -530,6 +530,53 @@ func (s *Store) PhoneOwners() (map[string]string, error) {
 	return owners, nil
 }
 
+// DiscordOwners returns every registered Discord user id mapped to the
+// username that registered it. The inbound Discord listener uses it as
+// the sender allow-list: the gateway reports the author's numeric user
+// id, which is what a profile must carry (a mention like "<@123>" is
+// accepted, a username is not — a handle can never authorize a sender).
+func (s *Store) DiscordOwners() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT discord, username FROM users WHERE discord IS NOT NULL AND discord != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("query discord owners: %w", err)
+	}
+	defer rows.Close()
+	owners := make(map[string]string)
+	for rows.Next() {
+		var discord, username string
+		if err := rows.Scan(&discord, &username); err != nil {
+			return nil, fmt.Errorf("scan discord owner: %w", err)
+		}
+		key := discordUserID(discord)
+		if key == "" {
+			continue
+		}
+		owners[key] = username
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate discord owners: %w", err)
+	}
+	return owners, nil
+}
+
+// discordUserID reduces a profile Discord value to the numeric user id
+// the gateway reports; "" means the value cannot identify a sender.
+func discordUserID(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "<@")
+	v = strings.TrimPrefix(v, "!")
+	v = strings.TrimSuffix(v, ">")
+	if v == "" {
+		return ""
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return v
+}
+
 // SetUserLanguage stores the user's preferred notification language
 // (an i18n language code; "" = system default). The admin row may set
 // its own language like any other user.

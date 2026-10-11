@@ -345,6 +345,22 @@ func (f *fakeUsers) MeshtasticOwners() (map[string]string, error) {
 	return owners, nil
 }
 
+// DiscordOwners returns each registered Discord user id mapped to the
+// owning username (digits-only keys, mentions folded).
+func (f *fakeUsers) DiscordOwners() (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	owners := make(map[string]string)
+	for _, u := range f.rows {
+		id := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(u.Discord), "<@"), "!"), ">")
+		if id == "" || strings.Trim(id, "0123456789") != "" {
+			continue
+		}
+		owners[id] = u.Username
+	}
+	return owners, nil
+}
+
 // PhoneOwners returns each registered phone number mapped to the owning
 // username (digits-only keys).
 func (f *fakeUsers) PhoneOwners() (map[string]string, error) {

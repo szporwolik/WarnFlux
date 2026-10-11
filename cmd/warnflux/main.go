@@ -24,6 +24,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/actions"
+	discordaction "github.com/szporwolik/WarnFlux/internal/actions/discord"
 	smtp "github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
@@ -1292,6 +1293,37 @@ func run(configPath string, checkConfig bool) error {
 	}
 	if gsmHub.Enabled() {
 		gsmHub.Start(ctx)
+	}
+
+	// Discord direct-message commands: an operator writes the same slash
+	// commands the radio channels take in a PRIVATE message to the bot
+	// and the station answers there. Wired exactly like the radio
+	// channels — the shared CLI, the sender gate resolving the author's
+	// Discord id to a directory user (restricted commands run for those
+	// senders only) and the same /events acceptor for /alert. The
+	// listener needs the privileged Message Content intent; without it it
+	// logs what to enable in the Developer Portal and waits.
+	for _, st := range actionsMgr.Statuses() {
+		if st.Type != discordaction.Type || !st.Enabled {
+			continue
+		}
+		p, ok := actionsMgr.Plugin(st.ID)
+		if !ok {
+			continue
+		}
+		dms, ok := discordaction.DMCommanderOf(p)
+		if !ok {
+			continue
+		}
+		dms.ConfigureDMs(radioCLI, func(userID string) string {
+			owners, err := store.DiscordOwners()
+			if err != nil {
+				logger.Warn("discord: sender allow-list load failed", "error", err)
+				return ""
+			}
+			return owners[userID]
+		}, eventAcceptor, eventTimes)
+		go dms.RunDMs(ctx)
 	}
 
 	// Group routing rule engine: the consumer of the dispatch ingress. It

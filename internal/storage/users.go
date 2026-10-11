@@ -237,6 +237,10 @@ type UserStore interface {
 	// username that registered it (numbers normalized to digits only).
 	// The GSM message bridge uses it as the sender allow-list.
 	PhoneOwners() (map[string]string, error)
+	// DiscordOwners returns every registered Discord user id mapped to
+	// the username that registered it (digits only). The inbound Discord
+	// direct-message listener uses it as the sender allow-list.
+	DiscordOwners() (map[string]string, error)
 	// AllAPRSCallsigns returns the distinct BASE callsigns (SSID
 	// stripped, uppercase) registered for any user, sorted. The APRS
 	// message-routing bridge uses it as the sender allow-list.

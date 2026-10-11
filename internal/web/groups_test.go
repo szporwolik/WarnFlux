@@ -175,14 +175,16 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	}
 
 	// Valid matrix: any-source fallback at severe, rso-specific at
-	// moderate, compose at minor, emcom at severe, an off cell ("")
-	// skipped.
+	// moderate, compose at minor, emcom at severe, the road/incident
+	// sources (gddkia, gios) specific too, an off cell ("") skipped.
 	resp, _ = env.postForm("/groups/1/routing", url.Values{
 		"csrf":                          {csrf},
 		"cell:|logger-action":           {"severe"},
 		"cell:rso|logger-action":        {"moderate"},
 		"cell:compose|logger-action":    {"minor"},
 		"cell:emcom|logger-action":      {"severe"},
+		"cell:gddkia|logger-action":     {"moderate"},
+		"cell:gios|logger-action":       {"severe"},
 		"cell:imgw-meteo|logger-action": {""},
 	})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/groups" {
@@ -202,6 +204,8 @@ func TestGroupRoutingMatrix(t *testing.T) {
 		{Source: "rso", ID: "logger-action", MinSeverity: "moderate"},
 		{Source: "compose", ID: "logger-action", MinSeverity: "minor"},
 		{Source: "emcom", ID: "logger-action", MinSeverity: "severe"},
+		{Source: "gddkia", ID: "logger-action", MinSeverity: "moderate"},
+		{Source: "gios", ID: "logger-action", MinSeverity: "severe"},
 	}
 	if len(r.Actions) != len(want) {
 		t.Fatalf("actions = %+v, want %+v", r.Actions, want)

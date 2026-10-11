@@ -51,9 +51,11 @@ var baseRoutingSources = []sourceOption{
 	{Value: "imgw-meteo", Label: "IMGW meteo"},
 	{Value: "imgw-hydro", Label: "IMGW hydro"},
 	{Value: "rso", Label: "RSO"},
+	{Value: "gddkia", Label: "groups.src.gddkia"},
 	{Value: "rcb", Label: "groups.src.rcb"},
 	{Value: "aprs", Label: "groups.src.aprs"},
 	{Value: "gsm", Label: "groups.src.gsm"},
+	{Value: "gios", Label: "groups.src.gios"},
 	{Value: "giosaq", Label: "groups.src.giosaq"},
 	{Value: "compose", Label: "groups.src.compose"},
 	// EMCOM readiness-level changes flow through the dispatch ingress

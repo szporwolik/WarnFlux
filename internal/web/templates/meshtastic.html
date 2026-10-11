@@ -80,6 +80,7 @@
         <form method="post" action="/meshtastic/send" class="mesh-send mesh-send-active">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="hidden" name="target" value="channel">
+          <input type="hidden" name="bell" value="">
           <span class="mesh-send-label">{{tr .Lang "meshtastic.form_channel"}}</span>
           <select name="channel_idx" id="mesh-channel" title="{{tr .Lang "meshtastic.channel_ph"}}"{{if not .Channels}} disabled{{end}}>
             {{range .Channels}}<option value="{{.Idx}}">ch{{.Idx}}{{if .Label}} · {{.Label}}{{end}}</option>{{end}}
@@ -94,6 +95,7 @@
         <form method="post" action="/meshtastic/send" class="mesh-send">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="hidden" name="target" value="contact">
+          <input type="hidden" name="bell" value="">
           <span class="mesh-send-label">{{tr .Lang "meshtastic.form_dm"}}</span>
           <input type="text" name="contact" id="mesh-contact" placeholder="{{tr .Lang "meshtastic.contact_ph"}}" maxlength="8" list="mesh-contacts">
           <datalist id="mesh-contacts">{{range .Contacts}}<option value="{{.ID}}">!{{.ID}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
@@ -429,15 +431,18 @@
       var form = e.target && e.target.closest ? e.target.closest("form.mesh-send") : null;
       if (form) { setActiveSend(form); }
     });
-    // Bell toggle: prefixes "🔔 " to the text — the Meshtastic alert
-    // symbol that makes receiving devices ring. One per send form;
-    // toggling off removes the prefix again.
+    // Bell toggle: prefixes "🔔 " to the text (a visible label for people
+    // reading the message) and flags the send as an ALERT. The alert
+    // itself is the in-band bell character the firmware reacts to — the
+    // symbol alone wakes no device. One per send form; toggling off
+    // removes the prefix and clears the flag again.
     document.addEventListener("click", function (e) {
       var btn = e.target && e.target.closest ? e.target.closest("button.mesh-bell") : null;
       if (!btn) { return; }
       var form = btn.closest("form.mesh-send");
       var input = form ? form.querySelector("input[name='text']") : null;
       if (!input) { return; }
+      var flag = form.querySelector("input[name='bell']");
       var on = btn.getAttribute("aria-pressed") !== "true";
       var bell = "🔔 ";
       if (on) {
@@ -445,6 +450,7 @@
       } else if (input.value.indexOf(bell) === 0) {
         input.value = input.value.slice(bell.length);
       }
+      if (flag) { flag.value = on ? "1" : ""; }
       btn.setAttribute("aria-pressed", String(on));
       btn.classList.toggle("mesh-bell-on", on);
       input.focus();

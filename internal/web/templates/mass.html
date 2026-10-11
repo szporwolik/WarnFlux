@@ -70,6 +70,7 @@
           <div class="account-channels-grid">
             {{range .Channels}}<label class="account-channel"><input type="checkbox" name="channels" value="{{.Kind}}"{{if index $.SelChannels .Kind}} checked{{end}}><span>{{tr $.Lang .Label}}</span></label>{{end}}
           </div>
+          {{if not .DiscordReady}}<p class="muted mass-note">{{tr .Lang "mass.discord_no_token"}}</p>{{end}}
         </div>
 
         <div class="form-footer">

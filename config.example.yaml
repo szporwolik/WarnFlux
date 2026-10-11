@@ -873,6 +873,13 @@ actions:
   #     # Optional bot display name override (defaults to the webhook's
   #     # own name).
   #     username: "WarnFlux"
+  #     # Optional BOT TOKEN (Developer Portal -> Bot). The webhook posts
+  #     # on the channel; the token additionally lets the station write a
+  #     # DIRECT MESSAGE to a user id, which is how the Mass info panel
+  #     # delivers a notice — each recipient's own Discord id comes from
+  #     # their profile. Without a token Mass info cannot deliver on
+  #     # Discord at all: it never falls back to a channel post.
+  #     token: ""
   #     # Per-request timeout; 0 = default (10s).
   #
   # Meshtastic action: SOSNA alerts as direct messages to the routed

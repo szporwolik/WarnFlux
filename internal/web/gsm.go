@@ -185,11 +185,17 @@ func (s *Server) fillGSMMessages(r *http.Request, v *gsmView) {
 		return
 	}
 	v.Messages = make([]gsmMessageView, 0, len(stored))
-	// The directory index (built with the send-form picker) resolves the
-	// display names in both columns: every registered phone counts, not
-	// just the sendable ones, so a profile typed as "+48 601 234 567"
-	// still names its messages. The canonical key folds "+48..." on
-	// "0048..." so the same user is found either way.
+	// The directory index resolves the display names in both columns:
+	// every registered phone counts, not just the sendable ones, so a
+	// profile typed as "+48 601 234 567" still names its messages. The
+	// canonical key folds "+48..." on "0048..." so the same user is found
+	// either way. The page handler builds the index with the send-form
+	// picker; the polled fragment renders the history alone, so it builds
+	// the same index here — otherwise the names would vanish on the first
+	// refresh.
+	if v.PhoneNames == nil {
+		s.fillGSMPhones(r.Context(), v)
+	}
 	names := v.PhoneNames
 	for _, m := range stored {
 		view := gsmMessageView{

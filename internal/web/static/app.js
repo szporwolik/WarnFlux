@@ -3863,10 +3863,10 @@
       html += '<div class="hz-mini" id="hz-mini-map"></div>';
       html += '<div class="hz-mini-attrib" id="hz-mini-attrib"></div>';
       // Pages without a big map (the compose panel) have no place to
-      // switch to: the button appears only where the hook exists.
-      if (typeof window.__wfShowHazard === "function") {
-        html += '<div class="hz-actions-row"><button type="button" class="hz-map-btn" data-hz-map="' + hzEsc(h.event_key) + '">' + tr("popup.show_map") + "</button></div>";
-      }
+      // switch to: the row is hidden unless the map hook exists — also
+      // when the hook is armed a moment after the popup opened (deep
+      // links render as soon as the payload lands).
+      html += '<div class="hz-actions-row" data-map-row hidden><button type="button" class="hz-map-btn" data-hz-map="' + hzEsc(h.event_key) + '">' + tr("popup.show_map") + "</button></div>";
     }
     var times = [];
     if (h.effective_at) { times.push(tr("map.from") + " " + hzDate(h.effective_at)); }
@@ -3923,10 +3923,20 @@
       }
     }
 
+    // syncMapButton reveals the map shortcut only where a big map can
+    // take over the view.
+    function syncMapButton() {
+      var row = content.querySelector("[data-map-row]");
+      if (!row) { return; }
+      row.hidden = typeof window.__wfShowHazard !== "function";
+    }
+
     function render(data) {
       content.innerHTML = hzRender(data);
+      syncMapButton();
       showModal();
       hzMiniMap(data);
+      window.setTimeout(syncMapButton, 1200);
     }
 
     function openKey(key) {

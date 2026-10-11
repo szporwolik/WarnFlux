@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/schedule"
 )
 
 // configureNotices wires the fixture's notices and makes both due now.
@@ -95,27 +97,67 @@ func TestNoticesSkipQuietHazardStatus(t *testing.T) {
 	}
 }
 
-func TestNoticesUptimeLine(t *testing.T) {
+// TestNoticesUptimeDailyAt pins the presence line's daily anchor: the
+// default is 06:00 station time, exactly like the Meshtastic beacon, so a
+// restart posts nothing until the clock comes round and the line never
+// repeats within a day.
+func TestNoticesUptimeDailyAt(t *testing.T) {
 	g := newFakeGateway(t)
 	f := newListenerFixture(t, g)
-	f.uptime = "4h12m"
+	f.uptime = "1d2h"
 	f.configureNotices()
 
+	// The fixture's clock sits at noon: the line is armed for tomorrow.
 	f.action.notices.uptimeTick(context.Background())
+	if n := len(g.webhookPosts()); n != 0 {
+		t.Fatalf("presence line posted before its anchor (%d posts)", n)
+	}
 
+	// 06:00 the next morning: it goes out, on the channel only.
+	f.setNow(time.Date(2026, 10, 12, 6, 0, 0, 0, time.UTC))
+	f.action.notices.uptimeTick(context.Background())
 	posts := g.waitWebhook(1)
-	want := "WarnFlux v0.7.4 - SOSNA - sosna.sp9moa.pl | up 4h12m"
+	want := "WarnFlux v0.7.4 - SOSNA - sosna.sp9moa.pl | up 1d2h"
 	if posts[0].content != want {
 		t.Errorf("channel post = %q, want %q", posts[0].content, want)
 	}
 	g.expectNoSend(0, 200*time.Millisecond)
 
-	// Once per interval.
+	// Later the same day: nothing (the anchor re-armed for tomorrow).
+	f.setNow(time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC))
 	f.action.notices.uptimeTick(context.Background())
 	if n := len(g.webhookPosts()); n != 1 {
-		t.Errorf("channel posts = %d, want 1 (not due yet)", n)
+		t.Fatalf("presence line repeated within the day (%d posts)", n)
 	}
-	f.setNow(f.at().Add(defaultUptimeInterval + time.Minute))
+
+	// The next morning it comes round again.
+	f.setNow(time.Date(2026, 10, 13, 6, 0, 0, 0, time.UTC))
+	f.action.notices.uptimeTick(context.Background())
+	g.waitWebhook(2)
+}
+
+// TestNoticesUptimeSpacing pins the alternative cadence: an empty anchor
+// plus a spacing posts right away and then every interval.
+func TestNoticesUptimeSpacing(t *testing.T) {
+	g := newFakeGateway(t)
+	f := newListenerFixtureCfg(t, g, map[string]any{"uptime_at": "", "uptime_interval": "12h"})
+	f.uptime = "3h"
+	f.configureNotices()
+
+	f.action.notices.uptimeTick(context.Background())
+	posts := g.waitWebhook(1)
+	if !strings.HasSuffix(posts[0].content, "| up 3h") {
+		t.Errorf("channel post = %q", posts[0].content)
+	}
+	g.expectNoSend(0, 200*time.Millisecond)
+
+	// Not due yet, then due one interval later.
+	f.setNow(f.at().Add(6 * time.Hour))
+	f.action.notices.uptimeTick(context.Background())
+	if n := len(g.webhookPosts()); n != 1 {
+		t.Fatalf("presence line posted early (%d posts)", n)
+	}
+	f.setNow(f.at().Add(7 * time.Hour))
 	f.action.notices.uptimeTick(context.Background())
 	g.waitWebhook(2)
 }
@@ -139,17 +181,27 @@ func TestNoticesNeedNoBotToken(t *testing.T) {
 
 func TestNoticeIntervals(t *testing.T) {
 	cases := []struct {
-		name    string
-		cfg     map[string]any
-		wantErr string
-		hazards time.Duration
-		uptime  time.Duration
+		name     string
+		cfg      map[string]any
+		wantErr  string
+		hazards  time.Duration
+		uptime   time.Duration
+		uptimeAt string
 	}{
-		{"defaults", map[string]any{}, "", defaultHazardsInterval, defaultUptimeInterval},
-		{"explicit", map[string]any{"hazards_interval": "30m", "uptime_interval": "12h"}, "", 30 * time.Minute, 12 * time.Hour},
-		{"disabled", map[string]any{"hazards_interval": "0s", "uptime_interval": "0s"}, "", 0, 0},
-		{"too short", map[string]any{"hazards_interval": "30s"}, "must be between", 0, 0},
-		{"too long", map[string]any{"uptime_interval": "1000h"}, "must be between", 0, 0},
+		// Neither a time nor a spacing: the daily default anchor.
+		{"defaults", map[string]any{}, "", defaultHazardsInterval, 0, schedule.AtDefault},
+		// An explicit spacing is an alternative to the anchor.
+		{"spacing", map[string]any{"hazards_interval": "30m", "uptime_interval": "12h"}, "", 30 * time.Minute, 12 * time.Hour, ""},
+		// An explicit anchor.
+		{"anchor", map[string]any{"uptime_at": "21:30"}, "", defaultHazardsInterval, 0, "21:30"},
+		// An explicitly empty anchor: no daily notice, the spacing applies.
+		{"no anchor", map[string]any{"uptime_at": ""}, "", defaultHazardsInterval, defaultUptimeInterval, ""},
+		// 0 disables the line (what dev uses so only prod posts).
+		{"disabled", map[string]any{"hazards_interval": "0s", "uptime_interval": "0s"}, "", 0, 0, ""},
+		{"both modes", map[string]any{"uptime_at": "06:00", "uptime_interval": "12h"}, "not both", 0, 0, ""},
+		{"bad anchor", map[string]any{"uptime_at": "6 rano"}, "clock time", 0, 0, ""},
+		{"too short", map[string]any{"hazards_interval": "30s"}, "must be between", 0, 0, ""},
+		{"too long", map[string]any{"uptime_interval": "1000h"}, "must be between", 0, 0, ""},
 	}
 	for _, c := range cases {
 		cfg := map[string]any{"url": "http://example.invalid/webhook"}
@@ -168,9 +220,11 @@ func TestNoticeIntervals(t *testing.T) {
 			continue
 		}
 		a := p.(*discordAction)
-		if a.notices.hazardsInterval != c.hazards || a.notices.uptimeInterval != c.uptime {
-			t.Errorf("%s: intervals = %s/%s, want %s/%s", c.name,
-				a.notices.hazardsInterval, a.notices.uptimeInterval, c.hazards, c.uptime)
+		if a.notices.hazardsInterval != c.hazards || a.notices.uptimeInterval != c.uptime ||
+			a.notices.uptimeAt != c.uptimeAt {
+			t.Errorf("%s: cadence = hazards %s / uptime %s at %q, want %s / %s at %q", c.name,
+				a.notices.hazardsInterval, a.notices.uptimeInterval, a.notices.uptimeAt,
+				c.hazards, c.uptime, c.uptimeAt)
 		}
 	}
 }

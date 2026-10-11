@@ -35,6 +35,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
+	"github.com/szporwolik/WarnFlux/internal/schedule"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
@@ -90,9 +91,14 @@ type Config struct {
 	// It never triggers any transmission, so a secondary install can
 	// watch the production channel without beaconing on it. 0 = off.
 	WatchChannel int
-	// EmcomInterval is the beacon spacing (default 4 hours). The first
-	// beacon fires as soon as the first session comes up (server
-	// start/restart).
+	// EmcomAt anchors the presence beacon to a daily clock time ("06:00",
+	// the station's local time): the beacon then fires once a day at that
+	// time and never at startup. It is an alternative to EmcomInterval —
+	// naming both is a configuration error.
+	EmcomAt string
+	// EmcomInterval is the beacon SPACING: it fires every interval, the
+	// first one as soon as the first session comes up (server
+	// start/restart). 0 with an empty EmcomAt turns the beacon off.
 	EmcomInterval time.Duration
 	// EmcomHazardsInterval is the spacing of the periodic status line
 	// broadcast on the emcom channel (default 1 hour). 0 disables it;
@@ -194,10 +200,6 @@ const defaultSilenceTimeout = 2 * time.Minute
 // operation never accumulates an unbounded directory of transient
 // visitors (active mesh members are re-heard well within it).
 const nodeDirRetention = 30 * 24 * time.Hour
-
-// defaultEmcomInterval is the spacing between presence beacons on the
-// emcom channel.
-const defaultEmcomInterval = 4 * time.Hour
 
 // meshTextMaxRunes bounds one outbound channel text message (133 chars
 // per the Meshtastic spec).
@@ -733,6 +735,9 @@ var Dial = func(ctx context.Context, cfg Config) (transportConn, error) {
 type Hub struct {
 	cfg    Config
 	logger *slog.Logger
+	// now is the clock the periodic work reads (nil = time.Now); the tests
+	// inject it to drive the daily beacon anchor.
+	now func() time.Time
 
 	mu        sync.Mutex
 	conn      transportConn
@@ -836,8 +841,14 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if cfg.AckSettleTimeout <= 0 {
 		cfg.AckSettleTimeout = defaultAckSettleTimeout
 	}
-	if cfg.EmcomInterval <= 0 {
-		cfg.EmcomInterval = defaultEmcomInterval
+	cfg.EmcomAt = strings.TrimSpace(cfg.EmcomAt)
+	if cfg.EmcomAt != "" {
+		if !schedule.Valid(cfg.EmcomAt) {
+			return nil, fmt.Errorf("meshtastic: emcom_at must be a clock time like %q, got %q", schedule.AtDefault, cfg.EmcomAt)
+		}
+		if cfg.EmcomInterval > 0 {
+			return nil, errors.New("meshtastic: set emcom_at (daily beacon) or emcom_interval (spacing), not both")
+		}
 	}
 	if cfg.EmcomChannel < 0 || cfg.EmcomChannel > 7 {
 		return nil, errors.New("meshtastic: emcom channel must be 0-7")
@@ -1175,14 +1186,17 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.connected = true
 	h.mu.Unlock()
 	h.lastRadio.Store(time.Now().UnixNano())
-	// The presence beacon fires immediately at server start: the first
-	// session schedules it for now, so the first maintenance tick sends
-	// it. Later sessions are device reconnects and must not reschedule
-	// the cadence — it belongs to the process, not the session.
-	if h.cfg.EmcomChannel > 0 && h.cfg.EmcomIdentity != "" {
+	// The presence beacon is armed by the FIRST session only (later ones
+	// are device reconnects and must not reschedule the cadence — it
+	// belongs to the process, not the session). A configured daily anchor
+	// arms the next clock time, so a restart never beacons ahead of
+	// schedule; the spacing mode arms now, so the first maintenance tick
+	// sends the beacon right away.
+	if h.cfg.EmcomChannel > 0 && h.cfg.EmcomIdentity != "" &&
+		(h.cfg.EmcomAt != "" || h.cfg.EmcomInterval > 0) {
 		h.mu.Lock()
 		if h.emcomNext.IsZero() {
-			h.emcomNext = time.Now()
+			h.emcomNext = h.beaconArm(h.clock())
 		}
 		h.mu.Unlock()
 	}
@@ -1242,19 +1256,44 @@ func (h *Hub) runSession(ctx context.Context) error {
 	}
 }
 
+// clock reads the hub's clock (time.Now unless a test injected one).
+func (h *Hub) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
+}
+
+// beaconArm returns when the beacon becomes due: the daily anchor when one
+// is configured (so a restart never beacons ahead of the clock), otherwise
+// now — the spacing mode beacons as soon as the first session is up.
+func (h *Hub) beaconArm(now time.Time) time.Time {
+	if h.cfg.EmcomAt != "" {
+		return schedule.NextDaily(now, h.cfg.EmcomAt)
+	}
+	return now
+}
+
 // beaconTick sends the periodic presence beacon on the emcom channel
 // (identity + uptime + node count). The PRIMARY channel is never used.
 func (h *Hub) beaconTick() {
 	h.mu.Lock()
 	next := h.emcomNext
 	h.mu.Unlock()
-	if next.IsZero() || time.Now().Before(next) {
+	now := h.clock()
+	if next.IsZero() || now.Before(next) {
 		return
 	}
 	h.mu.Lock()
-	h.emcomNext = time.Now().Add(h.cfg.EmcomInterval)
+	if h.cfg.EmcomAt != "" {
+		// Re-arm for tomorrow: a slow or failed send must never fire the
+		// beacon twice in one day.
+		h.emcomNext = schedule.NextDailyAfter(now, h.cfg.EmcomAt)
+	} else {
+		h.emcomNext = now.Add(h.cfg.EmcomInterval)
+	}
 	nodes := len(h.nodes)
-	up := time.Since(h.startedAt).Round(time.Minute)
+	up := now.Sub(h.startedAt).Round(time.Minute)
 	h.mu.Unlock()
 	text := fmt.Sprintf("%s | up %s | nodes %d", h.cfg.EmcomIdentity, up, nodes)
 	if r := []rune(text); len(r) > meshTextMaxRunes {

@@ -32,6 +32,26 @@
       <p class="muted help-cmd-note">{{tr .Lang "help.commands.note"}}</p>
     </section>
     {{end}}
+    {{with .MeshChannel}}
+    <section class="card help-meshchan">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr $.Lang "help.meshchan.title"}}</h2>
+      <p class="muted">{{tr $.Lang "help.meshchan.intro"}}</p>
+      <div class="help-meshchan-grid">
+        <div class="help-meshchan-facts">
+          <div class="hz-row"><span class="hz-label">{{tr $.Lang "help.meshchan.name"}}</span><span><code>{{.Name}}</code></span></div>
+          <div class="hz-row"><span class="hz-label">{{tr $.Lang "help.meshchan.key"}}</span><span><code class="help-meshchan-key">{{.Key}}</code></span></div>
+          {{if .Link}}<div class="hz-row"><span class="hz-label">{{tr $.Lang "help.meshchan.link"}}</span><span><a href="{{.Link}}" target="_blank" rel="noopener noreferrer">{{.Link}}</a></span></div>{{end}}
+        </div>
+        {{if .QR}}
+        <figure class="help-meshchan-qr">
+          <img src="{{.QR}}" width="256" height="256" alt="{{tr $.Lang "help.meshchan.qr_alt"}}">
+          <figcaption>{{tr $.Lang "help.meshchan.scan"}}</figcaption>
+        </figure>
+        {{end}}
+      </div>
+      <p class="muted help-cmd-note">{{tr $.Lang "help.meshchan.note"}}</p>
+    </section>
+    {{end}}
     <div class="help-grid">
       {{range .Sections}}
       <section class="card help-sec">

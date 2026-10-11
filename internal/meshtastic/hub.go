@@ -10,6 +10,7 @@ package meshtastic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -740,7 +741,11 @@ type Hub struct {
 	self      *SelfInfo
 	nodes     map[string]*Node
 	channels  []string
-	recent    []Message
+	// channelKeys holds the device channel keys by index (parallel to
+	// channels): the Help page renders the installation's own channel for
+	// users to join. Guarded by mu.
+	channelKeys [][]byte
+	recent      []Message
 
 	recorder    Recorder
 	stationSink func(ctx context.Context, topic string, retained bool, payload []byte) error
@@ -1530,10 +1535,18 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 		}
 		idx := int(ch.GetIndex())
 		if idx >= len(h.channels) {
-			h.channels = append(h.channels, make([]string, idx+1-len(h.channels))...)
+			grow := idx + 1 - len(h.channels)
+			h.channels = append(h.channels, make([]string, grow)...)
+			h.channelKeys = append(h.channelKeys, make([][]byte, grow)...)
 		}
 		if name := strings.TrimSpace(ch.GetSettings().GetName()); name != "" {
 			h.channels[idx] = name
+		}
+		// The key is kept next to the name: the Help page hands the
+		// installation's own channel to users (name + key + scan code),
+		// which needs exactly what the device reported.
+		if psk := ch.GetSettings().GetPsk(); len(psk) > 0 {
+			h.channelKeys[idx] = append([]byte(nil), psk...)
 		}
 	}
 	h.mu.Unlock()
@@ -2847,6 +2860,44 @@ func (h *Hub) ChannelLabel(idx int) string {
 		return h.channels[idx]
 	}
 	return fmt.Sprintf("ch%d", idx)
+}
+
+// OwnChannel reports the installation's OWN channel — the configured
+// announcement channel as the device holds it: its index, name and key.
+// ok is false when the beacon channel is disabled, the device has not
+// reported the table yet, or the channel carries no key; the Help page
+// then renders no join card at all.
+func (h *Hub) OwnChannel() (idx int, name string, key []byte, ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	idx = h.cfg.EmcomChannel
+	if idx <= 0 || idx >= len(h.channels) {
+		return 0, "", nil, false
+	}
+	name = h.channels[idx]
+	if name == "" || idx >= len(h.channelKeys) || len(h.channelKeys[idx]) == 0 {
+		return 0, "", nil, false
+	}
+	return idx, name, append([]byte(nil), h.channelKeys[idx]...), true
+}
+
+// ChannelShareURL renders one channel as the Meshtastic share link: the
+// payload is a ChannelSet carrying just this channel (name + key), which
+// the apps accept after the fragment — the same form the phone clients
+// show when sharing a channel. Users scan it (or paste it) to join.
+func ChannelShareURL(name string, key []byte) string {
+	if strings.TrimSpace(name) == "" || len(key) == 0 {
+		return ""
+	}
+	set := &pb.ChannelSet{
+		Settings: []*pb.ChannelSettings{{Name: name, Psk: key}},
+	}
+	raw, err := proto.Marshal(set)
+	if err != nil {
+		return ""
+	}
+	frag := base64.RawURLEncoding.EncodeToString(raw)
+	return "https://meshtastic.org/e/#" + frag
 }
 
 // resolveCommand returns the durable command-registry entry for one

@@ -21,15 +21,18 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/schedule"
 )
 
 // Notice defaults: the same cadence the Meshtastic channel runs, on
 // purpose — an operator reading both surfaces sees the same rhythm.
 const (
 	defaultHazardsInterval = time.Hour
-	defaultUptimeInterval  = 4 * time.Hour
-	minNoticeInterval      = time.Minute
-	maxNoticeInterval      = 720 * time.Hour
+	// defaultUptimeInterval is the presence-line spacing used when the
+	// configuration asks for a spacing instead of the daily anchor.
+	defaultUptimeInterval = 24 * time.Hour
+	minNoticeInterval     = time.Minute
+	maxNoticeInterval     = 720 * time.Hour
 	// noticeTick is how often the notifier checks whether a notice is due.
 	noticeTick = time.Minute
 )
@@ -78,6 +81,9 @@ type notifier struct {
 
 	hazardsInterval time.Duration
 	uptimeInterval  time.Duration
+	// uptimeAt is the daily anchor of the presence line ("" = the spacing
+	// mode; both empty = the line is off).
+	uptimeAt string
 
 	mu          sync.Mutex
 	cfg         NoticesConfig
@@ -85,7 +91,7 @@ type notifier struct {
 	uptimeNext  time.Time
 }
 
-func newNotifier(a *discordAction, logger *slog.Logger, hazards, uptime time.Duration) *notifier {
+func newNotifier(a *discordAction, logger *slog.Logger, hazards, uptime time.Duration, uptimeAt string) *notifier {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -95,6 +101,31 @@ func newNotifier(a *discordAction, logger *slog.Logger, hazards, uptime time.Dur
 		now:             time.Now,
 		hazardsInterval: hazards,
 		uptimeInterval:  uptime,
+		uptimeAt:        uptimeAt,
+	}
+}
+
+// uptimeArm returns when the presence line is next due: the daily anchor
+// (today or tomorrow, station local time) in anchor mode, or now in
+// spacing mode — a restart then posts it right away instead of waiting a
+// whole interval. Both zero/false values mean the line is off.
+func uptimeArm(now time.Time, at string, interval time.Duration, after bool) time.Time {
+	switch {
+	case at != "":
+		if after {
+			// Re-arm after a post: the next day, never the same moment.
+			return schedule.NextDailyAfter(now, at)
+		}
+		return schedule.NextDaily(now, at)
+	case interval > 0:
+		if after {
+			// Re-arm one spacing ahead: the next line is a full interval
+			// away, never a repeat at the same moment.
+			return now.Add(interval)
+		}
+		return now
+	default:
+		return time.Time{}
 	}
 }
 
@@ -112,8 +143,8 @@ func (a *discordAction) ConfigureNotices(cfg NoticesConfig) {
 	if a.notices.hazardsInterval > 0 {
 		a.notices.hazardsNext = now
 	}
-	if a.notices.uptimeInterval > 0 {
-		a.notices.uptimeNext = now
+	if next := uptimeArm(now, a.notices.uptimeAt, a.notices.uptimeInterval, false); !next.IsZero() {
+		a.notices.uptimeNext = next
 	}
 }
 
@@ -142,8 +173,11 @@ func NotifierOf(p action.Plugin) (Notifier, bool) {
 type Info struct {
 	// HazardsInterval is the hazard status line spacing (0 = disabled).
 	HazardsInterval time.Duration
-	// UptimeInterval is the presence line spacing (0 = disabled).
+	// UptimeInterval is the presence line spacing (0 = the line follows
+	// UptimeAt, or is off when that is empty too).
 	UptimeInterval time.Duration
+	// UptimeAt is the daily anchor of the presence line ("" = spacing mode).
+	UptimeAt string
 	// DirectMessages reports a bot token: the station can message people
 	// privately and answer commands in direct messages.
 	DirectMessages bool
@@ -160,6 +194,7 @@ func InfoOf(p action.Plugin) (Info, bool) {
 	if a.notices != nil {
 		info.HazardsInterval = a.notices.hazardsInterval
 		info.UptimeInterval = a.notices.uptimeInterval
+		info.UptimeAt = a.notices.uptimeAt
 	}
 	return info, true
 }
@@ -176,7 +211,7 @@ type Notifier interface {
 
 // run checks the two cadences until ctx is cancelled.
 func (n *notifier) run(ctx context.Context) {
-	if n.hazardsInterval <= 0 && n.uptimeInterval <= 0 {
+	if n.hazardsInterval <= 0 && n.uptimeInterval <= 0 && n.uptimeAt == "" {
 		return
 	}
 	ticker := time.NewTicker(noticeTick)
@@ -223,16 +258,18 @@ func (n *notifier) hazardsTick(ctx context.Context) {
 	n.post(ctx, "hazards", n.hazardStatusText(cfg, sum))
 }
 
-// uptimeTick sends the presence line when its cadence is due.
+// uptimeTick posts the presence line when its cadence is due: once a day at
+// the anchor (re-armed for tomorrow, so a slow or failed post never repeats
+// the line the same day), or every interval in spacing mode.
 func (n *notifier) uptimeTick(ctx context.Context) {
-	if n.uptimeInterval <= 0 {
+	if n.uptimeAt == "" && n.uptimeInterval <= 0 {
 		return
 	}
 	now := n.now()
 	n.mu.Lock()
 	due := !n.uptimeNext.IsZero() && !now.Before(n.uptimeNext)
 	if due {
-		n.uptimeNext = now.Add(n.uptimeInterval)
+		n.uptimeNext = uptimeArm(now, n.uptimeAt, n.uptimeInterval, true)
 	}
 	cfg := n.cfg
 	n.mu.Unlock()

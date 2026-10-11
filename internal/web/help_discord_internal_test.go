@@ -69,7 +69,9 @@ func TestHelpDiscordCard(t *testing.T) {
 	if got := facts["Hazard status"]; got != "every 1h (only for severe or higher alerts)" {
 		t.Errorf("hazard status = %q", got)
 	}
-	if got := facts["Uptime notice"]; got != "every 4h" {
+	// The presence line is anchored to a daily clock time by default — the
+	// same rhythm the Meshtastic beacon follows.
+	if got := facts["Uptime notice"]; got != "daily at 06:00" {
 		t.Errorf("uptime notice = %q", got)
 	}
 	// Without a bot token the DM-specific instructions stay off the card.
@@ -101,6 +103,16 @@ func TestHelpDiscordCard(t *testing.T) {
 	}
 	if got := facts["Powiadomienie uptime"]; got != "co 12h" {
 		t.Errorf("uptime notice = %q", got)
+	}
+	// An anchored line reads as a clock time, not as a spacing.
+	anchored := discordHelpServer(t, map[string]any{
+		"url":       "https://discord.com/api/webhooks/1/x",
+		"uptime_at": "21:30",
+	})
+	for _, f := range anchored.helpDiscord("en").Facts {
+		if f.Label == "Uptime notice" && f.Value != "daily at 21:30" {
+			t.Errorf("anchored uptime notice = %q", f.Value)
+		}
 	}
 	if len(view.Items) != 3 {
 		t.Errorf("items with a token = %v", view.Items)

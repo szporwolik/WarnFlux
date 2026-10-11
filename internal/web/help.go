@@ -238,6 +238,14 @@ func (s *Server) helpDiscord(lang string) *helpDiscordView {
 		}
 		return value
 	}
+	// The presence line is anchored to a daily clock time by default; a
+	// configured spacing reads as "every Nh" instead.
+	var uptime string
+	if at := strings.TrimSpace(info.UptimeAt); at != "" {
+		uptime = strings.ReplaceAll(i18n.T(lang, "help.discord.daily_at"), "%s", at)
+	} else {
+		uptime = every(info.UptimeInterval, "")
+	}
 	view := &helpDiscordView{
 		Facts: []helpFact{
 			// A configured instance always posts routed alerts on its
@@ -247,7 +255,7 @@ func (s *Server) helpDiscord(lang string) *helpDiscordView {
 			{Label: i18n.T(lang, "help.discord.status"),
 				Value: every(info.HazardsInterval, i18n.T(lang, "help.discord.status_note")), On: info.HazardsInterval > 0},
 			{Label: i18n.T(lang, "help.discord.uptime"),
-				Value: every(info.UptimeInterval, ""), On: info.UptimeInterval > 0},
+				Value: uptime, On: info.UptimeAt != "" || info.UptimeInterval > 0},
 		},
 		Items: []string{
 			"help.discord.item.1", "help.discord.item.2", "help.discord.item.3",

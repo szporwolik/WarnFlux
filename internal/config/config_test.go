@@ -104,6 +104,55 @@ func TestMeshtasticHazardsDigestConfig(t *testing.T) {
 	}
 }
 
+// TestMeshtasticBeaconAnchorConfig pins the presence beacon cadence: a
+// daily clock time by default (06:00), a spacing as the alternative, and
+// the two rules that keep the modes unambiguous.
+func TestMeshtasticBeaconAnchorConfig(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, "meshtastic:\n  enabled: false\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Meshtastic.EmcomAt != BeaconAtDefault || cfg.Meshtastic.EmcomInterval != 0 {
+		t.Errorf("defaults = at %q interval %s, want %q / 0",
+			cfg.Meshtastic.EmcomAt, cfg.Meshtastic.EmcomInterval, BeaconAtDefault)
+	}
+
+	cfg, err = Load(writeTempConfig(t, "meshtastic:\n  emcom_at: \"21:30\"\n"))
+	if err != nil {
+		t.Fatalf("Load(at): %v", err)
+	}
+	if cfg.Meshtastic.EmcomAt != "21:30" {
+		t.Errorf("explicit EmcomAt = %q, want 21:30", cfg.Meshtastic.EmcomAt)
+	}
+
+	// The spacing alternative wins over the default anchor, but not over an
+	// explicit one.
+	cfg, err = Load(writeTempConfig(t, "meshtastic:\n  emcom_interval: 4h\n"))
+	if err != nil {
+		t.Fatalf("Load(interval): %v", err)
+	}
+	if cfg.Meshtastic.EmcomAt != "" || cfg.Meshtastic.EmcomInterval != 4*time.Hour {
+		t.Errorf("interval mode = at %q interval %s, want \"\" / 4h",
+			cfg.Meshtastic.EmcomAt, cfg.Meshtastic.EmcomInterval)
+	}
+
+	// An explicit empty anchor with a zero interval turns the beacon off.
+	cfg, err = Load(writeTempConfig(t, "meshtastic:\n  emcom_at: \"\"\n"))
+	if err != nil {
+		t.Fatalf("Load(off): %v", err)
+	}
+	if cfg.Meshtastic.EmcomAt != "" || cfg.Meshtastic.EmcomInterval != 0 {
+		t.Errorf("beacon off = at %q interval %s", cfg.Meshtastic.EmcomAt, cfg.Meshtastic.EmcomInterval)
+	}
+
+	if _, err := Load(writeTempConfig(t, "meshtastic:\n  emcom_at: \"06:00\"\n  emcom_interval: 4h\n")); err == nil {
+		t.Error("anchor plus spacing accepted, want rejection")
+	}
+	if _, err := Load(writeTempConfig(t, "meshtastic:\n  emcom_at: \"6 rano\"\n")); err == nil {
+		t.Error("bogus anchor time accepted, want rejection")
+	}
+}
+
 // TestMeshtasticTransportConfig pins the node-link selection: the
 // default is serial, "tcp" requires a host, unknown values are rejected
 // and the host passes through trimmed.

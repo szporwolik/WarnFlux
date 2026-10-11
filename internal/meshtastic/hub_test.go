@@ -1449,8 +1449,68 @@ func TestHubEmcomDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hub.cfg.EmcomInterval != 4*time.Hour {
-		t.Fatalf("default EmcomInterval = %s, want 4h", hub.cfg.EmcomInterval)
+	// The hub invents nothing: the configuration layer names either a daily
+	// anchor or a spacing, and neither one means the beacon is off.
+	if hub.cfg.EmcomInterval != 0 || hub.cfg.EmcomAt != "" {
+		t.Fatalf("hub invented a beacon cadence: interval=%s at=%q", hub.cfg.EmcomInterval, hub.cfg.EmcomAt)
+	}
+
+	// Both at once is a configuration error, not a silent override.
+	if _, err := NewHub(Config{Enabled: true, Device: "/dev/fake", EmcomAt: "06:00", EmcomInterval: time.Hour},
+		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("anchor plus spacing was accepted")
+	}
+	if _, err := NewHub(Config{Enabled: true, Device: "/dev/fake", EmcomAt: "6 rano"},
+		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("a bogus anchor time was accepted")
+	}
+}
+
+// TestHubBeaconDailyAnchor pins the daily presence beacon: it is armed for
+// the next clock time (never at startup, so a restart cannot beacon ahead
+// of schedule), fires once when that time comes, and re-arms for tomorrow.
+func TestHubBeaconDailyAnchor(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		EmcomChannel: 1, EmcomIdentity: "WarnFlux v0.7.6 - SOSNA", EmcomAt: "06:00"})
+	// The station's clock sits at noon, so the first beacon is due at 06:00
+	// the next morning.
+	noon := time.Date(2026, 10, 12, 12, 0, 0, 0, time.Local)
+	now := noon
+	radio.hub.now = func() time.Time { return now }
+	radio.hub.startedAt = noon
+	radio.waitConnected(t)
+
+	radio.hub.mu.Lock()
+	armed := radio.hub.emcomNext
+	radio.hub.mu.Unlock()
+	if want := time.Date(2026, 10, 13, 6, 0, 0, 0, time.Local); !armed.Equal(want) {
+		t.Fatalf("armed for %s, want %s", armed, want)
+	}
+
+	// Nothing is sent before the anchor.
+	radio.hub.beaconTick()
+	if n := len(radio.outbound()); n != 0 {
+		t.Fatalf("beacon fired before its anchor (%d packets)", n)
+	}
+
+	// Exactly at the anchor it goes out and re-arms for tomorrow.
+	now = time.Date(2026, 10, 13, 6, 0, 0, 0, time.Local)
+	radio.hub.beaconTick()
+	if n := len(radio.outbound()); n != 1 {
+		t.Fatalf("beacon packets at the anchor = %d, want 1", n)
+	}
+	radio.hub.mu.Lock()
+	next := radio.hub.emcomNext
+	radio.hub.mu.Unlock()
+	if want := time.Date(2026, 10, 14, 6, 0, 0, 0, time.Local); !next.Equal(want) {
+		t.Fatalf("re-armed for %s, want %s", next, want)
+	}
+
+	// The same day does not produce a second beacon.
+	now = time.Date(2026, 10, 13, 12, 0, 0, 0, time.Local)
+	radio.hub.beaconTick()
+	if n := len(radio.outbound()); n != 1 {
+		t.Fatalf("beacon repeated within the day (%d packets)", n)
 	}
 }
 

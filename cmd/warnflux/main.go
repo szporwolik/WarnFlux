@@ -722,6 +722,7 @@ func run(configPath string, checkConfig bool) error {
 		NodeTTL:              cfg.Meshtastic.NodeTTL,
 		EmcomChannel:         cfg.Meshtastic.EmcomChannel,
 		WatchChannel:         cfg.Meshtastic.WatchChannel,
+		EmcomAt:              cfg.Meshtastic.EmcomAt,
 		EmcomInterval:        cfg.Meshtastic.EmcomInterval,
 		EmcomHazardsInterval: cfg.Meshtastic.EmcomHazardsInterval,
 		EmcomIdentity:        identity,

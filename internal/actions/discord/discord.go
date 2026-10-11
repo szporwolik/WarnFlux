@@ -26,6 +26,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	"github.com/szporwolik/WarnFlux/internal/schedule"
 )
 
 // Type is the action type name used in the YAML configuration.
@@ -61,9 +62,16 @@ type Config struct {
 	// channel's emcom_hazards_interval. Empty: the default (1h);
 	// 0 disables the notice.
 	HazardsInterval *time.Duration `yaml:"hazards_interval"`
-	// UptimeInterval is the spacing of the presence line (installation
-	// identity plus the station uptime) — the Discord counterpart of the
-	// Meshtastic presence beacon. Empty: the default (4h); 0 disables it.
+	// UptimeAt anchors the presence line to a daily clock time ("06:00",
+	// the station's local time) — the Discord counterpart of the Meshtastic
+	// presence beacon, which is anchored the same way. Omitted: "06:00"
+	// (or the UptimeInterval spacing, when one is set); "" falls back to the
+	// spacing.
+	UptimeAt *string `yaml:"uptime_at"`
+	// UptimeInterval is the presence-line SPACING (1m..720h) — an
+	// alternative to the daily anchor, not a companion: it fires every
+	// interval from the start. Omitted together with UptimeAt: the default
+	// anchor "06:00"; 0 disables the line.
 	UptimeInterval *time.Duration `yaml:"uptime_interval"`
 }
 
@@ -128,7 +136,7 @@ func New(node *yaml.Node) (action.Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	uptime, err := noticeInterval(cfg.UptimeInterval, defaultUptimeInterval, "uptime_interval")
+	uptime, uptimeAt, err := resolveUptime(cfg.UptimeAt, cfg.UptimeInterval)
 	if err != nil {
 		return nil, err
 	}
@@ -140,11 +148,45 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		logger:     slog.Default(),
 		dmChannels: map[string]string{},
 	}
-	a.notices = newNotifier(a, a.logger, hazards, uptime)
+	a.notices = newNotifier(a, a.logger, hazards, uptime, uptimeAt)
 	if a.token != "" {
 		a.dm = newDMListener(a, a.logger)
 	}
 	return a, nil
+}
+
+// resolveUptime decides how the presence line is scheduled: a daily clock
+// time (the default), a fixed spacing, or nothing at all. The rules match
+// the Meshtastic presence beacon exactly.
+//   - uptime_at set and non-empty: the daily anchor (a spacing alongside it
+//     is a configuration error, not a silent override);
+//   - uptime_at set and empty: the spacing from uptime_interval, where 0
+//     disables the line;
+//   - uptime_at omitted with uptime_interval omitted: the default anchor;
+//   - uptime_at omitted with uptime_interval set: the spacing.
+func resolveUptime(at *string, interval *time.Duration) (time.Duration, string, error) {
+	if at != nil {
+		value := strings.TrimSpace(*at)
+		if value != "" {
+			if interval != nil && *interval != 0 {
+				return 0, "", fmt.Errorf("discord: set uptime_at (daily notice) or uptime_interval (spacing), not both")
+			}
+			if !schedule.Valid(value) {
+				return 0, "", fmt.Errorf("discord: config.uptime_at must be a clock time like %q, got %q", schedule.AtDefault, value)
+			}
+			return 0, value, nil
+		}
+		// An explicit empty anchor means "no daily notice".
+	}
+	spacing, err := noticeInterval(interval, defaultUptimeInterval, "uptime_interval")
+	if err != nil {
+		return 0, "", err
+	}
+	if at == nil && interval == nil {
+		// Neither configured: the daily default.
+		return 0, schedule.AtDefault, nil
+	}
+	return spacing, "", nil
 }
 
 // noticeInterval resolves one periodic-notice spacing: an absent value

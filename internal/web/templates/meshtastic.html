@@ -431,11 +431,11 @@
       var form = e.target && e.target.closest ? e.target.closest("form.mesh-send") : null;
       if (form) { setActiveSend(form); }
     });
-    // Bell toggle: prefixes "🔔 " to the text (a visible label for people
-    // reading the message) and flags the send as an ALERT. The alert
-    // itself is the in-band bell character the firmware reacts to — the
-    // symbol alone wakes no device. One per send form; toggling off
-    // removes the prefix and clears the flag again.
+    // Bell toggle: flags the send as an ALERT (the hidden field) and
+    // shows it on the button. The server wraps the message itself — the
+    // 🔔 label people see and the in-band bell character the firmware
+    // reacts to — so the operator never types the framing and the text
+    // keeps one source of truth. One toggle per send form.
     document.addEventListener("click", function (e) {
       var btn = e.target && e.target.closest ? e.target.closest("button.mesh-bell") : null;
       if (!btn) { return; }
@@ -444,12 +444,6 @@
       if (!input) { return; }
       var flag = form.querySelector("input[name='bell']");
       var on = btn.getAttribute("aria-pressed") !== "true";
-      var bell = "🔔 ";
-      if (on) {
-        input.value = bell + input.value;
-      } else if (input.value.indexOf(bell) === 0) {
-        input.value = input.value.slice(bell.length);
-      }
       if (flag) { flag.value = on ? "1" : ""; }
       btn.setAttribute("aria-pressed", String(on));
       btn.classList.toggle("mesh-bell-on", on);

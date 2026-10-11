@@ -23,6 +23,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -3100,25 +3101,68 @@ func TestHubReplyFitsChannelLimit(t *testing.T) {
 	}
 }
 
-// TestAlertText pins the shared alert marking: the in-band alert
-// character the firmware scans for is PREPENDED (the emoji the official
-// clients add is only a label — it wakes nothing), the text is trimmed
-// and the whole message stays within the channel limit even when the
-// source text is at it.
+// TestAlertText pins the shared alert marking: the 🔔 label in front
+// (what the official clients show; a label only), the in-band alert
+// character at the end (the byte the firmware scans for and reacts to)
+// and the hard bound to the channel limit that never loses the marker.
 func TestAlertText(t *testing.T) {
-	if got := AlertText("  test  "); got != AlertMarker+"test" {
-		t.Fatalf("AlertText = %q, want the marker plus the trimmed text", got)
+	if got, want := AlertText("  test  "), "🔔 test "+AlertMarker; got != want {
+		t.Fatalf("AlertText = %q, want %q", got, want)
 	}
 	long := strings.Repeat("x", meshTextMaxRunes+50)
 	got := AlertText(long)
-	if !strings.HasPrefix(got, AlertMarker) {
-		t.Fatalf("alert marker lost: %q", got[:8])
+	if !strings.HasPrefix(got, AlertEmoji+" ") {
+		t.Fatalf("alert label lost: %q", got[:8])
+	}
+	if !strings.HasSuffix(got, " "+AlertMarker) {
+		t.Fatalf("alert marker lost: %q", got[len(got)-8:])
 	}
 	if n := len([]rune(got)); n != meshTextMaxRunes {
 		t.Fatalf("length = %d runes, want the hard cut at %d", n, meshTextMaxRunes)
 	}
-	if !strings.HasSuffix(got, "x") {
-		t.Fatalf("text mangled: %q", got[len(got)-8:])
+	if !strings.Contains(got, "xxx") {
+		t.Fatalf("text mangled: %q", got)
+	}
+}
+
+// TestAlertsAt pins the alarm threshold: only severe and above ring the
+// recipients' devices, and a value outside the canonical scale never
+// does (a malformed severity must not wake anybody).
+func TestAlertsAt(t *testing.T) {
+	for _, tc := range []struct {
+		sev  string
+		want bool
+	}{
+		{severity.Extreme, true},
+		{severity.Severe, true},
+		{severity.Moderate, false},
+		{severity.Minor, false},
+		{severity.Unknown, false},
+		{"", false},
+		{"SEVERE", false}, // providers normalize upstream
+		{"catastrophic", false},
+	} {
+		if got := AlertsAt(tc.sev); got != tc.want {
+			t.Errorf("AlertsAt(%q) = %v, want %v", tc.sev, got, tc.want)
+		}
+	}
+}
+
+// TestPlainText pins the quiet path: trimmed and bounded to the channel
+// limit, with no alert framing at all.
+func TestPlainText(t *testing.T) {
+	if got := PlainText("  test  "); got != "test" {
+		t.Fatalf("PlainText = %q, want the trimmed text", got)
+	}
+	got := PlainText(strings.Repeat("y", meshTextMaxRunes+20))
+	if n := len([]rune(got)); n != meshTextMaxRunes {
+		t.Fatalf("length = %d runes, want the cut at %d", n, meshTextMaxRunes)
+	}
+	if strings.Contains(got, AlertMarker) || strings.Contains(got, AlertEmoji) {
+		t.Fatalf("quiet text carries the alert framing: %q", got)
+	}
+	if n := AlertFramingRunes(); n != len([]rune(AlertEmoji))+3 {
+		t.Fatalf("AlertFramingRunes() = %d, want %d", n, len([]rune(AlertEmoji))+3)
 	}
 }
 

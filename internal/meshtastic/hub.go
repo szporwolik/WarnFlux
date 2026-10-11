@@ -34,6 +34,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -206,21 +207,69 @@ const meshTextMaxRunes = 133
 // Meshtastic firmware scans every received payload for: a message
 // carrying it wakes the recipient's screen even when the channel or
 // sender is muted, is styled as an alert and — when the receiver enabled
-// the External Notification alerts — rings its buzzer/vibrator. The 🔔
-// emoji is only a visual label the official clients put in the message
-// text; THIS byte is what makes devices react.
+// the External Notification alerts — rings its buzzer/vibrator. THIS
+// byte is what makes devices react.
 const AlertMarker = "\x07"
 
-// AlertText marks one outbound text as an alert and bounds it to the
-// channel limit. The marker is prepended (the firmware scans the whole
-// payload, so its position is free) and the text is cut to the limit
-// AFTER it, so a long message never loses its alert flag.
-func AlertText(text string) string {
-	r := []rune(strings.TrimSpace(text))
-	if len(r) > meshTextMaxRunes-1 {
-		r = r[:meshTextMaxRunes-1]
+// AlertEmoji is the visual label the official clients put in front of an
+// alert message (the firmware does not react to it, people do — the
+// notification is recognisable at a glance).
+const AlertEmoji = "🔔"
+
+// AlertMinSeverity is the lowest hazard severity that rings the
+// recipients' devices on the mesh. Severe and above carry the alert
+// marker (the device wakes and rings); everything below travels as a
+// quiet message — a minor notice must not wake a sleeping phone.
+const AlertMinSeverity = severity.Severe
+
+// AlertsAt reports whether one hazard severity is worth an alarm on the
+// mesh. Only the canonical scale decides (severity.Rank): an unknown or
+// malformed value never rings.
+func AlertsAt(sev string) bool {
+	r, ok := severity.Rank(sev)
+	if !ok {
+		return false
 	}
-	return AlertMarker + string(r)
+	min, _ := severity.Rank(AlertMinSeverity)
+	return r >= min
+}
+
+// PlainText bounds one quiet outbound text to the channel limit, with no
+// alert marking (hazards below AlertMinSeverity).
+func PlainText(text string) string {
+	r := []rune(strings.TrimSpace(text))
+	if len(r) > meshTextMaxRunes {
+		r = r[:meshTextMaxRunes]
+	}
+	return string(r)
+}
+
+// alertFraming is the decoration AlertText wraps around a payload: the
+// 🔔 label in front (what the official clients show) and the in-band
+// marker at the end (what the firmware reacts to).
+func alertFraming() (prefix, suffix string) { return AlertEmoji + " ", " " + AlertMarker }
+
+// AlertFramingRunes is the room the alert marking needs around the
+// payload. A caller that bounds a message itself (the action reserves
+// room for the message ID riding at the end) subtracts it BEFORE the
+// final cut, so the framing never eats the tail.
+func AlertFramingRunes() int {
+	prefix, suffix := alertFraming()
+	return len([]rune(prefix)) + len([]rune(suffix))
+}
+
+// AlertText marks one outbound text as an alert and bounds it to the
+// channel limit. The firmware scans the whole payload, so the position
+// of the marker is free; both the label and the marker are framing, so
+// the text is cut to the limit AFTER it — a long message never loses its
+// alert flag.
+func AlertText(text string) string {
+	prefix, suffix := alertFraming()
+	r := []rune(strings.TrimSpace(text))
+	if limit := meshTextMaxRunes - AlertFramingRunes(); len(r) > limit {
+		r = r[:limit]
+	}
+	return prefix + string(r) + suffix
 }
 
 // cmdDedupWindow is how long a command identity stays remembered: the

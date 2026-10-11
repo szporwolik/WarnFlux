@@ -81,8 +81,11 @@ type gsmView struct {
 	To    int
 	Total int
 
-	// Phones feeds the send form's datalist.
-	Phones []gsmPhoneView
+	// Phones feeds the send form's datalist; PhoneNames names a message
+	// number whenever the directory knows it (canonical key -> username),
+	// whatever shape the profile carries.
+	Phones     []gsmPhoneView
+	PhoneNames map[string]string
 
 	// HubEnabled/HubConnected/HubReady report the modem session state.
 	HubEnabled   bool
@@ -100,12 +103,14 @@ type gsmView struct {
 	Sent  bool
 }
 
-// fillGSMPhones collects every directory phone number (with the owning
-// username) for the send form's datalist.
+// fillGSMPhones collects the directory phones: the sendable ones (with
+// the owning username) for the send form's datalist, plus the canonical
+// index that names a message number whenever the directory knows it.
 func (s *Server) fillGSMPhones(ctx context.Context, v *gsmView) {
 	if s.users == nil {
 		return
 	}
+	v.PhoneNames = make(map[string]string)
 	const perPage = 100
 	for page := 1; ; page++ {
 		users, total, err := s.users.ListUsers(page, perPage)
@@ -114,6 +119,17 @@ func (s *Server) fillGSMPhones(ctx context.Context, v *gsmView) {
 		}
 		for _, u := range users {
 			number := strings.TrimSpace(u.Phone)
+			if number == "" {
+				continue
+			}
+			// Every registered phone names its messages, also when the
+			// profile carries a national form or spaces that the strict
+			// SEND shape rejects; only sendable numbers reach the picker.
+			if key := gsm.CanonicalNumberKey(number); key != "" {
+				if _, ok := v.PhoneNames[key]; !ok {
+					v.PhoneNames[key] = u.Username
+				}
+			}
 			if !gsm.ValidNumber(number) {
 				continue
 			}
@@ -169,15 +185,12 @@ func (s *Server) fillGSMMessages(r *http.Request, v *gsmView) {
 		return
 	}
 	v.Messages = make([]gsmMessageView, 0, len(stored))
-	// One pass over the phones resolves display names in both columns.
-	// Keyed canonically so "+48..." and "0048..." find the same user.
-	names := make(map[string]string, len(v.Phones))
-	for _, p := range v.Phones {
-		k := gsm.CanonicalNumberKey(p.Number)
-		if _, ok := names[k]; !ok {
-			names[k] = p.Username
-		}
-	}
+	// The directory index (built with the send-form picker) resolves the
+	// display names in both columns: every registered phone counts, not
+	// just the sendable ones, so a profile typed as "+48 601 234 567"
+	// still names its messages. The canonical key folds "+48..." on
+	// "0048..." so the same user is found either way.
+	names := v.PhoneNames
 	for _, m := range stored {
 		view := gsmMessageView{
 			Direction: m.Direction,

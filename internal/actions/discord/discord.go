@@ -54,6 +54,17 @@ type Config struct {
 	Token string `yaml:"token"`
 	// Timeout bounds one HTTP request; 0 falls back to defaultTimeout.
 	Timeout time.Duration `yaml:"timeout"`
+	// HazardsInterval is the spacing of the periodic hazard status line:
+	// the counters of the active hazards (nothing at all while none is
+	// active), posted on the webhook channel and sent as a direct
+	// message to every registered operator. It mirrors the Meshtastic
+	// channel's emcom_hazards_interval. Empty: the default (1h);
+	// 0 disables the notice.
+	HazardsInterval *time.Duration `yaml:"hazards_interval"`
+	// UptimeInterval is the spacing of the presence line (installation
+	// identity plus the station uptime) — the Discord counterpart of the
+	// Meshtastic presence beacon. Empty: the default (4h); 0 disables it.
+	UptimeInterval *time.Duration `yaml:"uptime_interval"`
 }
 
 // payload is the JSON body Discord accepts on a webhook endpoint.
@@ -79,6 +90,10 @@ type discordAction struct {
 	// written in a direct message. nil without a bot token — a webhook
 	// can post on a channel but never read a direct message.
 	dm *dmListener
+
+	// notices is the periodic half: the hazard status line and the
+	// presence line, on the channel and (with a token) per operator.
+	notices *notifier
 }
 
 // apiBase is the Discord REST base. A variable so tests can point an
@@ -109,6 +124,14 @@ func New(node *yaml.Node) (action.Plugin, error) {
 	if strings.ContainsAny(token, " \t\r\n") {
 		return nil, fmt.Errorf("discord: config.token must be a single token without whitespace")
 	}
+	hazards, err := noticeInterval(cfg.HazardsInterval, defaultHazardsInterval, "hazards_interval")
+	if err != nil {
+		return nil, err
+	}
+	uptime, err := noticeInterval(cfg.UptimeInterval, defaultUptimeInterval, "uptime_interval")
+	if err != nil {
+		return nil, err
+	}
 	a := &discordAction{
 		url:        u,
 		username:   strings.TrimSpace(cfg.Username),
@@ -117,10 +140,29 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		logger:     slog.Default(),
 		dmChannels: map[string]string{},
 	}
+	a.notices = newNotifier(a, a.logger, hazards, uptime)
 	if a.token != "" {
 		a.dm = newDMListener(a, a.logger)
 	}
 	return a, nil
+}
+
+// noticeInterval resolves one periodic-notice spacing: an absent value
+// takes the default, an explicit 0 disables the notice, anything else
+// must sit between one minute and 720 hours.
+func noticeInterval(value *time.Duration, fallback time.Duration, key string) (time.Duration, error) {
+	if value == nil {
+		return fallback, nil
+	}
+	v := *value
+	if v == 0 {
+		return 0, nil
+	}
+	if v < minNoticeInterval || v > maxNoticeInterval {
+		return 0, fmt.Errorf("discord: config.%s must be between %s and %s (0 disables), got %s",
+			key, minNoticeInterval, maxNoticeInterval, v)
+	}
+	return v, nil
 }
 
 // Name returns the action type name.
@@ -459,4 +501,5 @@ var (
 	_ action.Plugin   = (*discordAction)(nil)
 	_ DirectMessenger = (*discordAction)(nil)
 	_ DMCommander     = (*discordAction)(nil)
+	_ Notifier        = (*discordAction)(nil)
 )

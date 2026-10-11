@@ -47,6 +47,56 @@
     });
   }
 
+  // wfTileURL picks the shared base tiles for every admin map: the
+  // station's own tree in offline mode, the light/dark provider
+  // otherwise.
+  function wfTileURL() {
+    if (wfOffline()) {
+      return "/tiles/{z}/{x}/{y}.jpg";
+    }
+    var dark = document.documentElement.getAttribute("data-theme") !== "light";
+    return dark
+      ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+      : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
+  }
+
+  // wfMapAttrib is the matching attribution line for the tiles above.
+  function wfMapAttrib() {
+    return wfOffline()
+      ? "WarnFlux (local tiles)"
+      : '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
+  }
+
+  // wfLoadLeaflet pulls the bundled Leaflet in on demand: admin pages
+  // that only show a map after an interaction never ship it up front.
+  // The callback runs once, also when Leaflet was loaded already.
+  var wfLeafletLoading = null;
+  function wfLoadLeaflet(cb) {
+    if (window.L) { cb(); return; }
+    var done = function () { cb(); };
+    if (wfLeafletLoading) {
+      wfLeafletLoading.push(done);
+      return;
+    }
+    wfLeafletLoading = [done];
+    var flush = function () {
+      var cbs = wfLeafletLoading || [];
+      wfLeafletLoading = null;
+      cbs.forEach(function (fn) { fn(); });
+    };
+    if (!document.querySelector("link[href^='/static/leaflet/leaflet.css']")) {
+      var css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = "/static/leaflet/leaflet.css";
+      document.head.appendChild(css);
+    }
+    var js = document.createElement("script");
+    js.src = "/static/leaflet/leaflet.js";
+    js.onload = flush;
+    js.onerror = flush; // the callers degrade gracefully without a map
+    document.body.appendChild(js);
+  }
+
   // Client-side UI strings, keyed like internal/i18n. The server stamps
   // <html lang> on every page, so table = I18N[lang] works everywhere.
   var I18N = {
@@ -142,6 +192,8 @@
       "popup.updated": "Updated:",
       "popup.valid_until": "Valid until:",
       "popup.location": "Location:",
+      "popup.map": "Location on the map",
+      "popup.loading": "Loading details…",
       "popup.show_map": "Show on map",
       "popup.not_found": "The message is not active anymore.",
       "popup.expired_note": "This alert has expired.",
@@ -267,6 +319,8 @@
       "popup.updated": "Zaktualizowano:",
       "popup.valid_until": "Ważne do:",
       "popup.location": "Położenie:",
+      "popup.map": "Położenie na mapie",
+      "popup.loading": "Wczytuję szczegóły…",
       "popup.show_map": "Pokaż na mapie",
       "popup.not_found": "Komunikat nie jest już aktywny.",
       "popup.expired_note": "Ten alert wygasł.",
@@ -3268,33 +3322,6 @@
     syncInputs();
   }
 
-  function tileURL() {
-    // Offline mode: the station's own tile tree, no internet providers.
-    if (wfOffline()) {
-      return "/tiles/{z}/{x}/{y}.jpg";
-    }
-    var dark = document.documentElement.getAttribute("data-theme") !== "light";
-    return dark
-      ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-      : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
-  }
-
-  function loadLeaflet(cb) {
-    if (window.L) {
-      cb();
-      return;
-    }
-    var css = document.createElement("link");
-    css.rel = "stylesheet";
-    css.href = "/static/leaflet/leaflet.css";
-    document.head.appendChild(css);
-    var s = document.createElement("script");
-    s.src = "/static/leaflet/leaflet.js";
-    s.onload = function () { cb(); };
-    s.onerror = function () { /* the lat/lon inputs still work */ };
-    document.body.appendChild(s);
-  }
-
   if (clearBtn) {
     clearBtn.addEventListener("click", function () {
       if (marker && map) {
@@ -3313,14 +3340,12 @@
     }
     initialized = true;
     map = L.map(mapEl, { attributionControl: false }).setView(center, 11);
-    var pickerBase = L.tileLayer(tileURL(), { maxZoom: 19 }).addTo(map);
+    var pickerBase = L.tileLayer(wfTileURL(), { maxZoom: 19 }).addTo(map);
     // Offline: stretch the deepest local tiles past the tree's limit.
     clampNativeZoom(pickerBase);
     var attribEl = document.getElementById("compose-map-attrib");
     if (attribEl) {
-      attribEl.innerHTML = wfOffline()
-        ? "WarnFlux (local tiles)"
-        : '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
+      attribEl.innerHTML = wfMapAttrib();
     }
     map.on("click", function (e) { dropMarker(e.latlng); });
 
@@ -3344,11 +3369,11 @@
         return;
       }
       panelObserver.disconnect();
-      loadLeaflet(initMap);
+      wfLoadLeaflet(initMap);
     });
     panelObserver.observe(panel, { attributes: true, attributeFilter: ["hidden"] });
   } else {
-    loadLeaflet(initMap);
+    wfLoadLeaflet(initMap);
   }
 })();
 
@@ -3761,19 +3786,33 @@
   }
 
   // hzData reads the hazard JSON embedded in the (polled) alerts fragment
-  // at click time, so refreshes are always picked up.
+  // at click time, so refreshes are always picked up. Any page that lists
+  // messages can embed its own blob (class wf-hazard-data) — the compose
+  // panel does — and keys missing from every blob are fetched from
+  // /api/hazard/<key> instead.
   function hzData() {
-    var node = document.getElementById("home-hazards-data");
-    if (!node) { return {}; }
-    try {
-      var map = {};
-      (JSON.parse(node.textContent) || []).forEach(function (h) {
-        if (h && h.event_key) { map[h.event_key] = h; }
-      });
-      return map;
-    } catch (e) {
-      return {};
+    var map = {};
+    var nodes = document.querySelectorAll("script.wf-hazard-data, #home-hazards-data");
+    for (var i = 0; i < nodes.length; i++) {
+      try {
+        (JSON.parse(nodes[i].textContent) || []).forEach(function (h) {
+          if (h && h.event_key) { map[h.event_key] = h; }
+        });
+      } catch (e) { /* one broken blob must not hide the others */ }
     }
+    return map;
+  }
+
+  // hzFetch loads one hazard (active, compose tombstone or ended) from
+  // the server so a click always lands on the full detail payload.
+  function hzFetch(key, cb) {
+    fetch("/api/hazard/" + encodeURIComponent(key), {
+      headers: { "Accept": "application/json" },
+      cache: "no-store"
+    })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) { cb(data && data.event_key ? data : null); })
+      .catch(function () { cb(null); });
   }
 
   function hzRow(label, value) {
@@ -3817,6 +3856,18 @@
     if (h.latitude != null && h.longitude != null) {
       html += hzRow(tr("popup.location"), Number(h.latitude).toFixed(5) + ", " + Number(h.longitude).toFixed(5));
     }
+    // The map rides directly behind the fields: a long description would
+    // otherwise push the location far below the fold.
+    if (h.latitude != null && h.longitude != null) {
+      html += '<div class="hz-mini-head">' + hzEsc(tr("popup.map")) + "</div>";
+      html += '<div class="hz-mini" id="hz-mini-map"></div>';
+      html += '<div class="hz-mini-attrib" id="hz-mini-attrib"></div>';
+      // Pages without a big map (the compose panel) have no place to
+      // switch to: the button appears only where the hook exists.
+      if (typeof window.__wfShowHazard === "function") {
+        html += '<div class="hz-actions-row"><button type="button" class="hz-map-btn" data-hz-map="' + hzEsc(h.event_key) + '">' + tr("popup.show_map") + "</button></div>";
+      }
+    }
     var times = [];
     if (h.effective_at) { times.push(tr("map.from") + " " + hzDate(h.effective_at)); }
     if (h.expires_at) { times.push(tr("popup.valid_until") + " " + hzDate(h.expires_at)); }
@@ -3826,11 +3877,36 @@
     }
     html += hzBlock(tr("popup.description"), h.description);
     html += hzBlock(tr("popup.instruction"), h.instruction);
-    if (h.latitude != null && h.longitude != null) {
-      html += '<div class="hz-actions-row"><button type="button" class="hz-map-btn" data-hz-map="' + hzEsc(h.event_key) + '">' + tr("popup.show_map") + "</button></div>";
-    }
     html += "</div></div>";
     return html;
+  }
+
+  // hzMiniMap draws the alert's own small map inside the popup (the same
+  // tiles, marker and attribution as the big admin maps). It runs after
+  // the dialog is visible: Leaflet cannot measure a hidden container.
+  function hzMiniMap(h) {
+    var el = document.getElementById("hz-mini-map");
+    if (!el || h.latitude == null || h.longitude == null) { return; }
+    var lat = Number(h.latitude), lon = Number(h.longitude);
+    if (isNaN(lat) || isNaN(lon)) { return; }
+    wfLoadLeaflet(function () {
+      if (!window.L || !document.body.contains(el)) { return; }
+      var map = L.map(el, { attributionControl: false, scrollWheelZoom: false }).setView([lat, lon], 13);
+      var base = L.tileLayer(wfTileURL(), { maxZoom: 19 }).addTo(map);
+      clampNativeZoom(base);
+      var attrib = document.getElementById("hz-mini-attrib");
+      if (attrib) { attrib.innerHTML = wfMapAttrib(); }
+      L.marker([lat, lon], {
+        icon: L.divIcon({
+          className: "hz-mini-pin",
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+          html: '<span class="hz-mini-dot" style="background:' +
+            (HZ_SEV_COLORS[h.severity] || HZ_SEV_COLORS.unknown) + '"></span>'
+        })
+      }).addTo(map);
+      window.setTimeout(function () { map.invalidateSize(); }, 60);
+    });
   }
 
   function initHazardModal() {
@@ -3847,11 +3923,16 @@
       }
     }
 
+    function render(data) {
+      content.innerHTML = hzRender(data);
+      showModal();
+      hzMiniMap(data);
+    }
+
     function openKey(key) {
       var data = hzData()[key];
       if (!data) { return false; }
-      content.innerHTML = hzRender(data);
-      showModal();
+      render(data);
       // Highlight the matching card (deep links land on the list).
       var cards = document.querySelectorAll(".hazard-click");
       for (var i = 0; i < cards.length; i++) {
@@ -3880,35 +3961,15 @@
       (function waitOpen() {
         tries++;
         if (openKey(key)) { return; }
-        fetch("/api/hazard/" + encodeURIComponent(key), {
-          headers: { "Accept": "application/json" },
-          cache: "no-store"
-        })
-          .then(function (res) {
-            if (!res.ok) { return null; }
-            return res.json();
-          })
-          .then(function (data) {
-            if (data && data.event_key) {
-              content.innerHTML = hzRender(data);
-              showModal();
-              return;
-            }
-            if (tries < 8) {
-              window.setTimeout(waitOpen, 2500);
-            } else {
-              content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.not_found") + "</p></div>";
-              showModal();
-            }
-          })
-          .catch(function () {
-            if (tries < 8) {
-              window.setTimeout(waitOpen, 2500);
-            } else {
-              content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.not_found") + "</p></div>";
-              showModal();
-            }
-          });
+        hzFetch(key, function (data) {
+          if (data) { render(data); return; }
+          if (tries < 8) {
+            window.setTimeout(waitOpen, 2500);
+          } else {
+            content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.not_found") + "</p></div>";
+            showModal();
+          }
+        });
       })();
     }
 
@@ -3939,7 +4000,18 @@
 
     document.addEventListener("click", function (e) {
       var card = e.target && e.target.closest ? e.target.closest(".hazard-click") : null;
-      if (card) { openKey(card.getAttribute("data-key")); }
+      if (!card) { return; }
+      // Rows also carry actions (edit, expire, maps): a click on one of
+      // them belongs to that control, never to the detail popup.
+      if (e.target.closest && e.target.closest("a, button, input, select, textarea, label, form")) { return; }
+      var key = card.getAttribute("data-key");
+      if (openKey(key)) { return; }
+      content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.loading") + "</p></div>";
+      showModal();
+      hzFetch(key, function (data) {
+        if (data) { render(data); return; }
+        content.innerHTML = '<div class="hz-body"><p class="muted">' + tr("popup.not_found") + "</p></div>";
+      });
     });
 
     document.addEventListener("keydown", function (e) {
@@ -3951,7 +4023,7 @@
       var card = e.target && e.target.closest ? e.target.closest(".hazard-click") : null;
       if (card) {
         e.preventDefault();
-        openKey(card.getAttribute("data-key"));
+        card.click();
       }
     });
 

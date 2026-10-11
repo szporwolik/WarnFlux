@@ -101,6 +101,10 @@ type meshtasticPeerView struct {
 type meshtasticChannelOption struct {
 	Idx   int
 	Label string
+	// Default marks the station's OWN channel (the one the alerts and
+	// the beacon use): the manual send form opens on it, so an operator
+	// cannot broadcast on the community channel by accident.
+	Default bool
 }
 
 // meshtasticView is the admin Meshtastic page model.
@@ -466,12 +470,13 @@ func (s *Server) fillMeshtasticNodes(r *http.Request, v *meshtasticView) {
 	// receive-only by policy and never offered, and there is no
 	// fallback — when the device has not reported its channels yet, the
 	// list is simply empty.
+	own := s.meshtastic.EmcomChannel()
 	v.Channels = make([]meshtasticChannelOption, 0, len(v.Snap.Channels))
 	for i, name := range v.Snap.Channels {
 		if i == 0 {
 			continue
 		}
-		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: i, Label: name})
+		v.Channels = append(v.Channels, meshtasticChannelOption{Idx: i, Label: name, Default: i == own})
 	}
 	// Directory match: any user who registered a node's id labels it (as
 	// the name when the node carries none, and next to the name

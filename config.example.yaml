@@ -1073,7 +1073,10 @@ aprs:
 #   node_ttl: 30m
 #   # Periodic presence beacon (identity + uptime + node count) on a
 #   # community channel. The default PRIMARY channel is receive-only:
-#   # broadcasts there are blocked by policy.
+#   # broadcasts there are blocked by policy. Give every installation
+#   # that ingests the same sources its OWN channel: two stations
+#   # beaconing (and alerting) on one channel duplicate every message on
+#   # the shared air.
 #   emcom_channel: 1      # 0 = beacon disabled
 #   emcom_interval: 4h    # default; the first beacon fires at startup
 #   # Periodic active-hazard digest on the same emcom channel: a short
@@ -1084,5 +1087,7 @@ aprs:
 #   # Read-only tab channel: received traffic on this channel index gets
 #   # a dedicated tab in the message history. It NEVER transmits — a
 #   # secondary install can watch the production channel without
-#   # beaconing on it. 0 = no extra tab.
+#   # beaconing on it. 0 = no extra tab. The admin send form opens on
+#   # the emcom channel (the station's own), so the watch channel is
+#   # never broadcast on by accident.
 #   watch_channel: 1

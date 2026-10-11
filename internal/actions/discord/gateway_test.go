@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -308,8 +309,16 @@ type listenerFixture struct {
 	cli      *radiocli.Bot
 	accepted chan MessageEventWire
 	owners   map[string]string
-	now      time.Time
+	// clock is the fake now the listener reads: the tests move it forward
+	// while the listener runs, so it is shared through an atomic.
+	clock atomic.Int64
 }
+
+// setNow moves the fake clock.
+func (f *listenerFixture) setNow(at time.Time) { f.clock.Store(at.UnixNano()) }
+
+// at reads the fake clock.
+func (f *listenerFixture) at() time.Time { return time.Unix(0, f.clock.Load()).UTC() }
 
 func newListenerFixture(t *testing.T, g *fakeGateway) *listenerFixture {
 	t.Helper()
@@ -338,12 +347,12 @@ func newListenerFixture(t *testing.T, g *fakeGateway) *listenerFixture {
 		cli:      radiocli.New("WarnFlux 0.7.4 - SOSNA - sosna.sp9moa.pl"),
 		accepted: make(chan MessageEventWire, 4),
 		owners:   map[string]string{"42": "sp9spm"},
-		now:      time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC),
 	}
+	f.setNow(time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	if f.dm == nil {
 		t.Fatal("a token-carrying instance must carry the inbound half")
 	}
-	f.dm.now = func() time.Time { return f.now }
+	f.dm.now = f.at
 	f.cli.Register("ping", "station alive", func(string, radiocli.Sender) radiocli.Result {
 		return radiocli.Result{Handled: true, Reply: "Pong from WarnFlux 0.7.4 | uptime 1h"}
 	})
@@ -543,7 +552,7 @@ func TestDMBannerIsPaced(t *testing.T) {
 	g.expectNoSend(1, 300*time.Millisecond)
 
 	// Past the interval the banner comes back.
-	f.now = f.now.Add(dmBannerInterval + time.Minute)
+	f.setNow(f.at().Add(dmBannerInterval + time.Minute))
 	f.gateway.pushDM("m3", "42", "czesc po przerwie")
 	g.waitSent(1)
 }

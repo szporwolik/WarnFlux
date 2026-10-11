@@ -97,6 +97,68 @@ func TestEnsureAdminUserSyncsPassword(t *testing.T) {
 	}
 }
 
+func TestDiscordRecipients(t *testing.T) {
+	store := newUsersStore(t)
+	a, err := store.CreateUser("alice", "", "", "284112326204850177", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A mention form is folded onto the numeric id.
+	if _, err := store.CreateUser("bob", "", "", "<@!123456789012345678>", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// A username can never be messaged: it is not a user id.
+	if _, err := store.CreateUser("carol", "", "", "sosna_admin", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("dave", "", "", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Eve carries the same id as alice: one recipient, not two.
+	eve, err := store.CreateUser("eve", "", "", "<@284112326204850177>", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.DiscordRecipients()
+	if err != nil {
+		t.Fatalf("DiscordRecipients: %v", err)
+	}
+	want := []string{"284112326204850177", "123456789012345678"}
+	if len(got) != len(want) {
+		t.Fatalf("recipients = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("recipients = %v, want %v", got, want)
+		}
+	}
+
+	// A user who switched the Discord channel off in the profile is left
+	// alone by the periodic notices — but the id stays while ANOTHER
+	// registered user still asks for it.
+	if err := store.SetUserChannelOptOuts(eve.ID, []string{"discord"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.DiscordRecipients()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("recipients while another user wants the id = %v", got)
+	}
+	if err := store.SetUserChannelOptOuts(a.ID, []string{"discord"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.DiscordRecipients()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "123456789012345678" {
+		t.Fatalf("recipients after every carrier opted out = %v", got)
+	}
+}
+
 func TestUsersCRUDAndProtection(t *testing.T) {
 	store := newUsersStore(t)
 	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {

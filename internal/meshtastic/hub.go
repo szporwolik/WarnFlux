@@ -1280,9 +1280,15 @@ type HazardSummary struct {
 // Total is the number of active hazards the summary covers.
 func (s HazardSummary) Total() int { return s.Severe + s.Other }
 
+// Alarming reports whether the status line is worth sending at all: the
+// station speaks up on the channel only for severe-and-above hazards.
+func (s HazardSummary) Alarming() bool { return s.Severe > 0 }
+
 // hazardsTick sends the periodic status line on the emcom channel: the
-// hazard counters plus the public site where the details are. Nothing is
-// sent while no hazard is active, and the line is disabled when the
+// hazard counters plus the public site where the details are. It goes out
+// ONLY while something sits at severe or higher — the level that already
+// rang the devices — because an hourly "0 severe" line would train the
+// channel to ignore the one that matters. The line is disabled when the
 // emcom channel is off, the interval is 0 or no source is attached.
 func (h *Hub) hazardsTick() {
 	if h.cfg.EmcomChannel <= 0 || h.cfg.EmcomHazardsInterval <= 0 {
@@ -1302,7 +1308,7 @@ func (h *Hub) hazardsTick() {
 	h.mu.Unlock()
 
 	sum := src()
-	if sum.Total() == 0 {
+	if !sum.Alarming() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

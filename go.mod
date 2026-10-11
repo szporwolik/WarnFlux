@@ -23,6 +23,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pion/dtls/v3 v3.0.6 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	go.bug.st/serial v1.6.4 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/net v0.49.0 // indirect

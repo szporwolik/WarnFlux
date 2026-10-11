@@ -73,6 +73,12 @@ func TestHelpPageRadioCommands(t *testing.T) {
 	if strings.Contains(html, "Radio commands") {
 		t.Error("command section rendered without an interpreter")
 	}
+	// The "join our Meshtastic channel" card is bound to the station's
+	// own channel: with no hub (and no channel key) it must not render,
+	// so the page never shows a scan code nobody can use.
+	if strings.Contains(html, "Meshtastic group channel") || strings.Contains(html, "data:image/png;base64,") {
+		t.Error("mesh channel card rendered without a known channel")
+	}
 
 	bot := radiocli.New("WarnFlux test")
 	bot.Register("weather", "weather", func(string, radiocli.Sender) radiocli.Result {

@@ -822,6 +822,37 @@ button:disabled { cursor: not-allowed; }
 .help-cmd-list .badge { margin-left: auto; white-space: nowrap; }
 .help-cmd-note { margin: 0.7rem 0 0; font-size: 0.8rem; }
 
+/* Help page: the "join our Meshtastic channel" card — the facts on the
+   left, the scan code on the right, stacking on narrow screens. */
+.help-meshchan h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.45rem;
+  font-size: 1.05rem;
+}
+.help-meshchan h2 .icon { width: 18px; height: 18px; color: var(--accent, var(--muted)); }
+.help-meshchan-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.4rem;
+  align-items: flex-start;
+  margin-top: 0.7rem;
+}
+.help-meshchan-facts { flex: 1 1 18rem; min-width: 0; }
+.help-meshchan-key { overflow-wrap: anywhere; }
+.help-meshchan-qr { margin: 0; text-align: center; }
+.help-meshchan-qr img {
+  display: block;
+  width: 208px;
+  height: 208px;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+.help-meshchan-qr figcaption { margin-top: 0.35rem; font-size: 0.78rem; color: var(--muted); }
+
 /* ---- key/value system panel ---- */
 /* Dashboard stats pane: three number tiles in a row, wide cards when the
    viewport narrows. */

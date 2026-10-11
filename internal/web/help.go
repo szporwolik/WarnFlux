@@ -1,9 +1,14 @@
 package web
 
 import (
+	"encoding/base64"
+	"html/template"
 	"net/http"
 
+	qrcode "github.com/skip2/go-qrcode"
+
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 )
 
 // helpCommandView is one radio command in the manual. The list itself
@@ -44,6 +49,9 @@ type helpView struct {
 	// Commands is the radio-command reference (empty without an
 	// interpreter).
 	Commands []helpCommandView
+	// MeshChannel is the installation's own Meshtastic channel (name,
+	// key, share link and scan code) — nil when the station has none.
+	MeshChannel *helpMeshChannelView
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -67,6 +75,21 @@ type helpView struct {
 	NavMass          bool
 }
 
+// helpMeshChannelView is the "join our channel" card: what users need
+// to add the installation's group channel to their own radio.
+type helpMeshChannelView struct {
+	// Index is the device channel slot the station transmits on.
+	Index int
+	Name  string
+	Key   string
+	// Link is the share link the apps import (may be empty when the
+	// channel cannot be encoded).
+	Link string
+	// QR is a PNG data URI of the share link, rendered locally so the
+	// card works offline.
+	QR template.URL
+}
+
 // buildHelpView assembles the manual sections (content lives in i18n).
 func (s *Server) buildHelpView(lang string) helpView {
 	return helpView{
@@ -81,6 +104,8 @@ func (s *Server) buildHelpView(lang string) helpView {
 		RepoURL:  repoURL,
 		NavHelp:  true,
 		Commands: s.helpCommands(lang),
+
+		MeshChannel: s.helpMeshChannel(),
 		Sections: []helpSection{
 			{Title: "help.start.title", Icon: "i-lightning-charge", Items: []string{
 				"help.start.1", "help.start.2", "help.start.3", "help.start.4",
@@ -117,6 +142,29 @@ func (s *Server) buildHelpView(lang string) helpView {
 			}},
 		},
 	}
+}
+
+// helpMeshChannel describes the installation's own Meshtastic channel for
+// the Help page: name, key, share link and a locally rendered QR code, so
+// a user can join the group channel by scanning it. Nil when the station
+// has no channel of its own (no radio, no key) — the card then stays off
+// the page entirely.
+func (s *Server) helpMeshChannel() *helpMeshChannelView {
+	if s.meshtastic == nil {
+		return nil
+	}
+	idx, name, key, ok := s.meshtastic.OwnChannel()
+	if !ok {
+		return nil
+	}
+	view := &helpMeshChannelView{Index: idx, Name: name, Key: base64.StdEncoding.EncodeToString(key)}
+	view.Link = mesh.ChannelShareURL(name, key)
+	if view.Link != "" {
+		if png, err := qrcode.Encode(view.Link, qrcode.Medium, 256); err == nil {
+			view.QR = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(png))
+		}
+	}
+	return view
 }
 
 // handleHelpPage renders the Help manual for any signed-in user.

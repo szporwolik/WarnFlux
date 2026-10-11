@@ -12,6 +12,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
+	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
 // stubSender records every transmission the action hands to the hub and
@@ -142,7 +143,7 @@ func TestExecuteDMsParallelWithChannel(t *testing.T) {
 		t.Fatalf("broadcasts = %v, want none without a configured channel", stub.channels)
 	}
 	for _, tx := range stub.texts {
-		if !strings.HasPrefix(tx, "\x07SOSNA SEVERE") {
+		if !strings.HasPrefix(tx, "🔔 SOSNA SEVERE") {
 			t.Fatalf("DM text = %q, want the notification bell + SOSNA SEVERE", tx)
 		}
 	}
@@ -163,10 +164,10 @@ func TestExecuteDMsParallelWithChannel(t *testing.T) {
 	if len(stub2.texts) != 2 {
 		t.Fatalf("texts = %v, want the channel text + the belled DM", stub2.texts)
 	}
-	if !strings.HasPrefix(stub2.texts[0], "\x07SOSNA SEVERE") {
+	if !strings.HasPrefix(stub2.texts[0], "🔔 SOSNA SEVERE") {
 		t.Fatalf("channel text = %q, want the alert marker + SOSNA SEVERE", stub2.texts[0])
 	}
-	if !strings.HasPrefix(stub2.texts[1], "\x07SOSNA SEVERE") {
+	if !strings.HasPrefix(stub2.texts[1], "🔔 SOSNA SEVERE") {
 		t.Fatalf("DM text = %q, want the bell + SOSNA SEVERE", stub2.texts[1])
 	}
 }
@@ -187,10 +188,10 @@ func TestExecuteFailurePropagates(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	// Channel text + belled DM.
-	if len(stub2.texts) != 2 || !strings.HasPrefix(stub2.texts[0], "\x07SOSNA SEVERE Storm") {
+	if len(stub2.texts) != 2 || !strings.HasPrefix(stub2.texts[0], "🔔 SOSNA SEVERE Storm") {
 		t.Fatalf("text = %v, want the alert marker + event-name fallback on the channel", stub2.texts)
 	}
-	if !strings.HasPrefix(stub2.texts[1], "\x07SOSNA SEVERE Storm") {
+	if !strings.HasPrefix(stub2.texts[1], "🔔 SOSNA SEVERE Storm") {
 		t.Fatalf("DM text = %v, want the belled fallback", stub2.texts)
 	}
 }
@@ -475,7 +476,7 @@ func fullReq(headline, event, desc string, lat, lon float64, areas []string) act
 // title (APRS normalization transliterates diacritics).
 func TestTextForLocationRidesAlong(t *testing.T) {
 	a := &Action{cfg: Config{Prefix: "SOSNA"}}
-	got := a.textFor(context.Background(), fullReq("Powódź na Rabie", "Flood", "Unikaj brzegów rzeki.", 49.985, 20.065, nil), "")
+	got := a.textFor(context.Background(), fullReq("Powódź na Rabie", "Flood", "Unikaj brzegów rzeki.", 49.985, 20.065, nil), "", maxMeshMessageChars)
 	if len([]rune(got)) > maxMeshMessageChars {
 		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
 	}
@@ -496,7 +497,7 @@ func TestTextForLocationRidesAlong(t *testing.T) {
 func TestTextForTitleAndLocationSurvive(t *testing.T) {
 	a := &Action{cfg: Config{Prefix: "SOSNA"}}
 	huge := strings.Repeat("uwaga ", 80)
-	got := a.textFor(context.Background(), fullReq(huge, "Flood", "", 49.985, 20.065, nil), "")
+	got := a.textFor(context.Background(), fullReq(huge, "Flood", "", 49.985, 20.065, nil), "", maxMeshMessageChars)
 	if len([]rune(got)) > maxMeshMessageChars {
 		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
 	}
@@ -516,7 +517,7 @@ func TestTextForTitleAndLocationSurvive(t *testing.T) {
 // text is cut hard at the limit with the prefix and severity intact.
 func TestTextForHardCutNoLocation(t *testing.T) {
 	a := &Action{cfg: Config{Prefix: "SOSNA"}}
-	got := a.textFor(context.Background(), fullReq(strings.Repeat("abcdefghij", 30), "", "", 0, 0, nil), "")
+	got := a.textFor(context.Background(), fullReq(strings.Repeat("abcdefghij", 30), "", "", 0, 0, nil), "", maxMeshMessageChars)
 	if len([]rune(got)) != maxMeshMessageChars {
 		t.Fatalf("text = %d runes, want the hard cut at %d", len([]rune(got)), maxMeshMessageChars)
 	}
@@ -532,7 +533,7 @@ func TestTextForHardCutNoLocation(t *testing.T) {
 // fills the remaining space and a cut is marked with "...".
 func TestTextForDescriptionTail(t *testing.T) {
 	a := &Action{cfg: Config{Prefix: "SOSNA"}}
-	got := a.textFor(context.Background(), fullReq("Krótki tytuł", "", strings.Repeat("opis ", 80), 0, 0, nil), "")
+	got := a.textFor(context.Background(), fullReq("Krótki tytuł", "", strings.Repeat("opis ", 80), 0, 0, nil), "", maxMeshMessageChars)
 	if len([]rune(got)) > maxMeshMessageChars {
 		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
 	}
@@ -542,5 +543,55 @@ func TestTextForDescriptionTail(t *testing.T) {
 	}
 	if !strings.Contains(got, "Krotki tytul") || !strings.Contains(got, "opis") {
 		t.Errorf("text = %q, the title and the description tail must be present", got)
+	}
+}
+
+// TestExecuteAlarmSeverity pins WHO rings: a severe (or extreme) alert
+// carries the alert framing — the 🔔 label and the in-band BEL marker —
+// on the channel broadcast and on every direct message, while a lower
+// severity travels as a quiet message with no framing at all. Both paths
+// keep the message ID riding at the end intact (the framing room is
+// reserved before the text is laid out).
+func TestExecuteAlarmSeverity(t *testing.T) {
+	framed := func(text string) bool {
+		return strings.HasPrefix(text, mesh.AlertEmoji+" ") && strings.HasSuffix(text, " "+mesh.AlertMarker)
+	}
+	for _, tc := range []struct {
+		sev        string
+		wantAlarms bool
+	}{
+		{severity.Extreme, true},
+		{severity.Severe, true},
+		{severity.Moderate, false},
+		{severity.Minor, false},
+	} {
+		stub := &stubSender{}
+		a := &Action{cfg: Config{Prefix: "SOSNA", Channel: 1}, hub: stub}
+		req := hazardReq([]string{"a0a85934"}, strings.Repeat("długa treść alertu ", 12))
+		req.Event.Hazard.Hazard.EventKey = "imgw-meteo:20261011.1"
+		req.Event.Hazard.Hazard.Severity = tc.sev
+		if err := a.Execute(context.Background(), req); err != nil {
+			t.Fatalf("Execute(%s): %v", tc.sev, err)
+		}
+		if len(stub.texts) != 2 {
+			t.Fatalf("%s: texts = %d, want the channel text + the DM", tc.sev, len(stub.texts))
+		}
+		for i, text := range stub.texts {
+			if got := framed(text); got != tc.wantAlarms {
+				t.Errorf("%s: text[%d] = %q, framed = %v, want %v", tc.sev, i, text, got, tc.wantAlarms)
+			}
+			if n := len([]rune(text)); n > maxMeshMessageChars {
+				t.Errorf("%s: text[%d] = %d runes, over the channel limit %d", tc.sev, i, n, maxMeshMessageChars)
+			}
+			want := "[" + req.Event.Hazard.Hazard.MessageID() + "]"
+			if tc.wantAlarms {
+				// The framing sits AFTER the ID: the text is cut to the
+				// limit first, so the ID never loses runes.
+				want += " " + mesh.AlertMarker
+			}
+			if !strings.HasSuffix(text, want) {
+				t.Errorf("%s: text[%d] = %q, want the message ID %q at the end", tc.sev, i, text, want)
+			}
+		}
 	}
 }

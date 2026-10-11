@@ -626,9 +626,12 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PostFormValue("bell") != "" {
-		// The bell toggle marks the message as an ALERT: the firmware
-		// reacts to the in-band alert character, not to the 🔔 symbol.
+		// The bell toggle marks the message as an ALERT: the server wraps
+		// the text itself (the 🔔 label people see and the in-band marker
+		// the firmware reacts to), so the operator never types framing.
 		text = mesh.AlertText(text)
+	} else {
+		text = mesh.PlainText(text)
 	}
 	var err error
 	if r.PostFormValue("target") == "contact" {

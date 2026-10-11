@@ -129,12 +129,16 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	if !channelOn && !dmOn {
 		return nil // the operator muted every mesh announcement path
 	}
+	// Severe and above RING: both the group broadcast and the direct
+	// messages carry the alert framing (🔔 + the in-band BEL marker), so
+	// the firmware wakes the screen through a mute and rings/vibrates.
+	// Anything below travels as a quiet message — a minor notice must
+	// not wake a sleeping phone at 3 a.m.
+	alert := mesh.AlertsAt(req.Event.Hazard.Hazard.Severity)
+
 	// The group channel always broadcasts in the SYSTEM language; direct
 	// messages use each member's personal language when they picked one.
-	// BOTH carry the in-band alert marker (BEL): the firmware wakes the
-	// screen through a mute and rings/vibrates on it, which is exactly
-	// what a hazard alert on a shared channel is for.
-	channelText := mesh.AlertText(a.textFor(ctx, req, req.Lang))
+	channelText := a.outbound(ctx, req, req.Lang, alert)
 
 	// The durable ledger identity: the message version. Legacy payloads
 	// without a publisher/version get no ledger (fail-open: always
@@ -205,7 +209,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 		if i < len(req.MeshNodeLangs) && req.MeshNodeLangs[i] != "" {
 			lang = req.MeshNodeLangs[i]
 		}
-		text := mesh.AlertText(a.textFor(ctx, req, lang))
+		text := a.outbound(ctx, req, lang, alert)
 		var err error
 		if ledger {
 			err = a.hub.SendContactMessageVersioned(ctx, id, text, "system", prog)
@@ -220,6 +224,23 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 	return nil
 }
 
+// outbound renders one outbound message for the recipient language: the
+// bounded hazard text, carrying the alert framing (🔔 + the in-band
+// marker) exactly when the hazard is severe enough to ring the devices.
+// The framing room is reserved BEFORE the text is laid out, so the
+// message ID riding at the end always survives.
+func (a *Action) outbound(ctx context.Context, req action.ActionRequest, lang string, alert bool) string {
+	limit := maxMeshMessageChars
+	if alert {
+		limit -= mesh.AlertFramingRunes()
+	}
+	text := a.textFor(ctx, req, lang, limit)
+	if alert {
+		return mesh.AlertText(text)
+	}
+	return mesh.PlainText(text)
+}
+
 // textFor builds the bounded outbound message for one routed hazard:
 // prefix + severity + headline first, the LOCATION whenever the hazard
 // carries coordinates or areas (the headline gives up space first, so
@@ -227,7 +248,7 @@ func (a *Action) Execute(ctx context.Context, req action.ActionRequest) error {
 // the description fill whatever room is left. Worst case the text is cut
 // hard at the channel limit — the prefix and severity are never
 // sacrificed.
-func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang string) string {
+func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang string, limit int) string {
 	h := req.Event.Hazard.Hazard
 	lang = i18n.Effective(lang)
 	t := h.For(lang)
@@ -252,7 +273,6 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang str
 	// location and the description tail are never silently cut off to
 	// make space for it.
 	tag := ""
-	limit := maxMeshMessageChars
 	if id := h.MessageID(); id != "" {
 		tag = " [" + id + "]"
 		limit -= len([]rune(tag))

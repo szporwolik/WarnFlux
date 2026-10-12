@@ -5391,3 +5391,118 @@ func TestPasswordResetRevokesLiveSessions(t *testing.T) {
 		t.Errorf("fresh sign-in after the reset = %d, want 200", resp.StatusCode)
 	}
 }
+
+// brokenEmcomStore fails the atomic EMCOM level save: the fault injection
+// for a level change whose notification never lands.
+type brokenEmcomStore struct {
+	*sqlite.Store
+}
+
+func (b *brokenEmcomStore) SaveEmcomNetworkAndEnqueue(ctx context.Context, net storage.EmcomNetwork, ev dispatch.Event) (int64, dispatch.Event, error) {
+	return 0, ev, errors.New("disk broken")
+}
+
+// emcomEnvWithNetwork builds a panel environment around the given store
+// (users may be a fault-injecting wrapper around it) with one level 0
+// network, mirrored the way the broker loopback would.
+func emcomEnvWithNetwork(t *testing.T, users storage.DirectoryStore, store *sqlite.Store) (*testEnv, string) {
+	t.Helper()
+	env := newTestEnvWithUsers(t, users)
+	env.login()
+	resp, html := env.get("/config")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /config = %d", resp.StatusCode)
+	}
+	csrf := extractCSRF(t, html)
+	resp, _ = env.postForm("/config/emcom/add", url.Values{"csrf": {csrf}, "name": {"SP9MOA EMCOM"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/emcom/add = %d, want 303", resp.StatusCode)
+	}
+	// Mirror the retained state document the add published.
+	raw := env.pub.rawSnapshot()
+	if len(raw) == 0 {
+		t.Fatal("no state document published")
+	}
+	env.state.AddOrUpdateInfo("local", "warnflux/info/emcom/emcom/sp9moa-emcom/emcom", state.InfoEntry{
+		Source: "emcom", ProducerID: "emcom", Key: "sp9moa-emcom", Kind: "emcom",
+		ReceivedAt: time.Now(), Payload: raw[len(raw)-1].Payload,
+	})
+	_, html = env.get("/emcom")
+	return env, extractCSRF(t, html)
+}
+
+// TestEmcomLevelChangeRejectsWhenTheNotificationCannotLand pins the
+// reported P1 on the storage side: the network state, its lifecycle and
+// the transition's durable intake row commit together, so a level change
+// whose notification cannot be stored is NOT answered with success — and
+// leaves the network exactly as it was.
+func TestEmcomLevelChangeRejectsWhenTheNotificationCannotLand(t *testing.T) {
+	inner := newLocalPanelStore(t)
+	env, csrf := emcomEnvWithNetwork(t, &brokenEmcomStore{Store: inner}, inner)
+	ctx := context.Background()
+
+	resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("POST level 2 with a broken notification store = %d, want 503 (never a success answer)", resp.StatusCode)
+	}
+	stored, err := inner.EmcomNetworks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 || stored[0].Level != 0 {
+		t.Fatalf("network after the failed level change = %+v, want level 0 untouched", stored)
+	}
+	if pending, err := inner.PendingInboxEvents(ctx, 10); err != nil || len(pending) != 0 {
+		t.Fatalf("pending inbox = %+v, %v; want nothing accepted", pending, err)
+	}
+}
+
+// TestEmcomStandDownIsNotConfirmedWhenTheIntakeRefuses is the reported
+// reproduction: the stand-down path logged the refusal and still answered
+// 303, so the operator believed the network stood down while no durable
+// notification existed — and re-setting level 0 does not recreate it. The
+// refusal must be reported, with the transition already durable for
+// recovery.
+func TestEmcomStandDownIsNotConfirmedWhenTheIntakeRefuses(t *testing.T) {
+	store := newLocalPanelStore(t)
+	env, csrf := emcomEnvWithNetwork(t, store, store)
+	ctx := context.Background()
+
+	resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST level 2 = %d, want 303", resp.StatusCode)
+	}
+	for drainIngress(env) != nil {
+	}
+
+	// The intake stops taking work (shutdown, or a full queue with no
+	// durable acceptance): the stand-down must NOT be confirmed.
+	env.ingress.StopIntake()
+	resp, _ = env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"0"}})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("refused stand-down = %d, want 503 (the old code answered 303)", resp.StatusCode)
+	}
+
+	// The state moved, and the notification is durable for recovery: the
+	// refusal never loses the transition.
+	stored, err := store.EmcomNetworks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 || stored[0].Level != 0 {
+		t.Fatalf("network after the stand-down = %+v, want level 0", stored)
+	}
+	pending, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, row := range pending {
+		if row.Event.Hazard != nil && row.Event.Hazard.Key == "emcom:sp9moa-emcom" && row.Event.Hazard.Notify {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no durable stand-down notification in the inbox: %+v", pending)
+	}
+}

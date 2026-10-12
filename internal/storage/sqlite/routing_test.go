@@ -1553,3 +1553,83 @@ func TestRequeueMarkedDeliveries(t *testing.T) {
 		}
 	}
 }
+
+// TestSaveEmcomNetworkAndEnqueueAtomic pins the reported P1 at the
+// storage boundary: the network state, its lifecycle entry and the
+// transition's durable intake row commit in ONE transaction. Breaking the
+// intake leaves NO state behind — the panel then answers an error instead
+// of a level change whose notification never landed.
+func TestSaveEmcomNetworkAndEnqueueAtomic(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "emcom.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	net := storage.EmcomNetwork{Slug: "sp9moa-emcom", Name: "SP9MOA EMCOM", Level: 2, UpdatedBy: "admin", UpdatedAt: time.Now()}
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition, Origin: dispatch.Origin{Type: "web", ReceiverID: "emcom"},
+		Hazard: &dispatch.HazardTransition{Type: dispatch.TransitionNew, Key: "emcom:sp9moa-emcom", Source: "emcom"}}
+
+	// Break the intake: the inbox table is gone, so a second, separate
+	// write could have failed while the state survived.
+	if _, err := store.db.Exec(`DROP TABLE dispatch_inbox`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SaveEmcomNetworkAndEnqueue(ctx, net, ev); err == nil {
+		t.Fatal("acceptance with a broken intake succeeded, want failure")
+	}
+	var nets int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM emcom_networks`).Scan(&nets); err != nil {
+		t.Fatal(err)
+	}
+	if nets != 0 {
+		t.Fatalf("emcom rows after the failed acceptance = %d, want none (atomic rollback)", nets)
+	}
+
+	// The happy path on a healthy database: state, lifecycle and the
+	// transition's intake row land together, and the returned event
+	// carries the committed identity.
+	fresh, _, err := Open(filepath.Join(t.TempDir(), "emcom-ok.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer fresh.Close()
+	publisher, err := fresh.InstanceID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, stamped, err := fresh.SaveEmcomNetworkAndEnqueue(ctx, net, ev)
+	if err != nil {
+		t.Fatalf("SaveEmcomNetworkAndEnqueue: %v", err)
+	}
+	if id == 0 || stamped.Hazard == nil || stamped.Hazard.ChangeID == 0 {
+		t.Fatalf("acceptance = (id %d, %+v), want a committed row and a stamped transition", id, stamped.Hazard)
+	}
+	if stamped.Hazard.Publisher != publisher {
+		t.Errorf("publisher = %q, want %q", stamped.Hazard.Publisher, publisher)
+	}
+	if blocked, err := fresh.LifecycleBlocks(ctx, publisher, "emcom:sp9moa-emcom", stamped.Hazard.ChangeID); err != nil || blocked {
+		t.Fatalf("the committed version blocked = (%v, %v), want (false, nil)", blocked, err)
+	}
+	pending, err := fresh.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ID != id {
+		t.Fatalf("pending inbox = %+v, want the committed row %d", pending, id)
+	}
+	if got := pending[0].Event.Hazard; got == nil || got.ChangeID != stamped.Hazard.ChangeID || !got.Notify == false {
+		t.Errorf("inbox row identity = %+v, want the stamped transition", got)
+	}
+	// A move that dispatches nothing keeps the state alone.
+	if id, _, err := fresh.SaveEmcomNetworkAndEnqueue(ctx, storage.EmcomNetwork{
+		Slug: "sp9moa-emcom", Name: "SP9MOA EMCOM", Level: 0, UpdatedBy: "admin", UpdatedAt: time.Now(),
+	}, dispatch.Event{Kind: dispatch.EventHazardTransition}); err != nil || id != 0 {
+		t.Fatalf("state-only save = (id %d, %v), want (0, nil)", id, err)
+	}
+	stored, err := fresh.EmcomNetworks(ctx)
+	if err != nil || len(stored) != 1 || stored[0].Level != 0 {
+		t.Fatalf("networks = %+v, %v; want the level 0 record", stored, err)
+	}
+}

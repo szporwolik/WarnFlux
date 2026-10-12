@@ -308,6 +308,11 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   strings.TrimSpace(r.PostFormValue("expires_at")),
 		ReceivedAt:  strings.TrimSpace(r.PostFormValue("received_at")),
 	}
+	// The time fields are shown as ISO stamps with a 24-hour clock. A
+	// value that arrives in another accepted shape is rewritten on the way
+	// in, so the re-rendered form always shows the same format.
+	form.EffectiveAt = canonicalComposeStamp(form.EffectiveAt)
+	form.ExpiresAt = canonicalComposeStamp(form.ExpiresAt)
 	if form.Status == "" {
 		form.Status = "active"
 	}
@@ -763,11 +768,15 @@ func validateComposeForm(lang string, form composeForm) string {
 	return ""
 }
 
-// parseComposeTime parses a datetime-local form value in the server's
-// local zone; RFC 3339 strings (hidden round-trips) are accepted too.
+// parseComposeTime parses one time field in the server's local zone. The
+// form shows ISO stamps ("2026-10-12 14:30"); the older datetime-local "T"
+// form and RFC 3339 strings (hidden round-trips) are accepted too, so a
+// value pasted from elsewhere still works.
 func parseComposeTime(v string) *time.Time {
-	if t, err := time.ParseInLocation("2006-01-02T15:04", v, time.Local); err == nil {
-		return &t
+	for _, layout := range []string{"2006-01-02 15:04", "2006-01-02T15:04"} {
+		if t, err := time.ParseInLocation(layout, v, time.Local); err == nil {
+			return &t
+		}
 	}
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
 		return &t
@@ -775,13 +784,25 @@ func parseComposeTime(v string) *time.Time {
 	return nil
 }
 
-// composeTimeValue formats an optional time for the datetime-local input
-// in the server's display timezone.
+// canonicalComposeStamp rewrites an accepted stamp into the one the form
+// displays, so a value pasted in another shape comes back in the format
+// the station speaks. Unparsable input is returned as typed: validation
+// reports it and the operator still sees what to fix.
+func canonicalComposeStamp(v string) string {
+	t := parseComposeTime(v)
+	if t == nil {
+		return v
+	}
+	return t.Format("2006-01-02 15:04")
+}
+
+// composeTimeValue formats an optional time for the compose time field in
+// the server's display timezone.
 func composeTimeValue(t *time.Time, loc *time.Location) string {
 	if t == nil {
 		return ""
 	}
-	return t.In(loc).Format("2006-01-02T15:04")
+	return t.In(loc).Format("2006-01-02 15:04")
 }
 
 // composeAreas splits the comma/semicolon-separated areas field.

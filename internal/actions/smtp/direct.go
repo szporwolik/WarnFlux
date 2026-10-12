@@ -69,10 +69,11 @@ func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) err
 	}
 
 	// One send is bounded as a whole: the caller's deadline when it has
-	// one, defaultDeadline otherwise (the action worker path applies the
-	// same rule).
+	// one, defaultDeadline only when it does not (the action worker path
+	// applies the same rule). Capping a caller's longer budget at the
+	// default would cut a long recipient list in half.
 	deadline := time.Now().Add(defaultDeadline)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+	if d, ok := ctx.Deadline(); ok {
 		deadline = d
 	}
 

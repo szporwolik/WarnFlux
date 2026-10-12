@@ -49,10 +49,14 @@ const (
 	// maxToRecipients bounds the static recipient list so a config typo
 	// can never build an unbounded RCPT fan-out.
 	maxToRecipients = 64
-	// defaultDeadline bounds one send when the caller context carries no
-	// deadline of its own.
-	defaultDeadline = 30 * time.Second
 )
+
+// defaultDeadline bounds one send when the caller context carries NO
+// deadline of its own. It never caps a caller that brought its own budget
+// (reported P2: a one-minute budget with a 20/minute rate limit delivered
+// ten of twelve mails and the retry started over). A variable so tests can
+// shorten it.
+var defaultDeadline = 30 * time.Second
 
 // Config is the action-specific configuration.
 type Config struct {
@@ -102,6 +106,14 @@ type emailAction struct {
 	roots    *x509.CertPool
 	limiter  *rateLimiter
 	logger   *slog.Logger
+
+	// attemptMu guards the outcome of the LAST failed Execute call: the
+	// worker asks for the narrowed retry right after it returned, so one
+	// slot per instance is enough (an instance executes one call at a
+	// time). attemptID is the request it belongs to.
+	attemptMu   sync.Mutex
+	attemptID   string
+	attemptDone []string
 }
 
 // rateLimiter spaces sends evenly: at most limit emails per minute, one
@@ -276,13 +288,21 @@ func (p *emailAction) SendNoticeMarkdown(ctx context.Context, to []string, subje
 // protocol operation. Each email claims a rate-limit slot before it is
 // sent, so bursts drain as a paced queue instead of hammering the server.
 func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) error {
-	recipients := dedupeRecipients(p.cfg.To, req.Bcc)
+	recipients := pendingRecipients(dedupeRecipients(p.cfg.To, req.Bcc), req.DoneRecipients)
 	if len(recipients) == 0 {
+		if len(req.DoneRecipients) > 0 {
+			// An earlier attempt of THIS job already delivered every
+			// address it covers: a narrowed retry has nothing left to do.
+			return nil
+		}
 		return fmt.Errorf("smtp: no recipients (config.to and request.bcc are empty)")
 	}
 
+	// The caller's budget is the limit when it has one; the default only
+	// fills the gap for a caller without a deadline. Taking the SHORTER of
+	// the two capped every long batch at 30 s (reported P2).
 	deadline := time.Now().Add(defaultDeadline)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+	if d, ok := ctx.Deadline(); ok {
 		deadline = d
 	}
 
@@ -342,6 +362,7 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 	}
 
 	var errs []error
+	var sent []string
 	for _, rcpt := range recipients {
 		// One rate slot per email; a cancelled wait fails the remaining
 		// sends instead of bypassing the limit.
@@ -360,12 +381,77 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 			if !isProtocolError(err) {
 				break
 			}
+			continue
 		}
+		sent = append(sent, rcpt)
 	}
 	if err := client.Quit(); err != nil && len(errs) == 0 {
 		errs = append(errs, fmt.Errorf("smtp: quit: %w", err))
 	}
-	return errors.Join(errs...)
+	if len(errs) > 0 {
+		// Remember which addresses went out: the work that is left is
+		// what a durable retry must cover (see RetryRequest).
+		p.rememberAttempt(req.ID, sent)
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+// RetryRequest reports the request a retried attempt should carry: the
+// addresses that already went out are recorded as done, so the retry
+// covers only the rest instead of starting from the beginning of the list
+// (reported P2). ok=false leaves the request untouched — there is nothing
+// to narrow when the attempt delivered nothing.
+func (p *emailAction) RetryRequest(req action.ActionRequest, _ error) (action.ActionRequest, bool) {
+	p.attemptMu.Lock()
+	defer p.attemptMu.Unlock()
+	if p.attemptID != req.ID || len(p.attemptDone) == 0 {
+		return req, false
+	}
+	done := make(map[string]bool, len(req.DoneRecipients)+len(p.attemptDone))
+	for _, addr := range req.DoneRecipients {
+		done[recipientKey(addr)] = true
+	}
+	req.DoneRecipients = append([]string(nil), req.DoneRecipients...)
+	for _, addr := range p.attemptDone {
+		if key := recipientKey(addr); !done[key] {
+			done[key] = true
+			req.DoneRecipients = append(req.DoneRecipients, addr)
+		}
+	}
+	return req, true
+}
+
+// rememberAttempt keeps the addresses one failed attempt delivered to.
+func (p *emailAction) rememberAttempt(reqID string, sent []string) {
+	p.attemptMu.Lock()
+	p.attemptID = reqID
+	p.attemptDone = append([]string(nil), sent...)
+	p.attemptMu.Unlock()
+}
+
+// pendingRecipients drops the addresses an earlier attempt of the same job
+// already delivered to (action.ActionRequest.DoneRecipients).
+func pendingRecipients(recipients, done []string) []string {
+	if len(done) == 0 {
+		return recipients
+	}
+	seen := make(map[string]bool, len(done))
+	for _, addr := range done {
+		seen[recipientKey(addr)] = true
+	}
+	out := make([]string, 0, len(recipients))
+	for _, addr := range recipients {
+		if !seen[recipientKey(addr)] {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
+// recipientKey normalises one address for comparisons.
+func recipientKey(addr string) string {
+	return strings.ToLower(strings.TrimSpace(addr))
 }
 
 // recipientLang resolves one recipient's notification language: members

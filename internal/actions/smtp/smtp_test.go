@@ -890,3 +890,136 @@ func mimePartOf(t *testing.T, mail, contentType string) string {
 	}
 	return rest
 }
+
+// shortenDefaultDeadline makes the "no caller budget" fallback short
+// enough to observe in a test.
+func shortenDefaultDeadline(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := smtp.DefaultDeadlineForTest()
+	smtp.SetDefaultDeadlineForTest(d)
+	t.Cleanup(func() { smtp.SetDefaultDeadlineForTest(prev) })
+}
+
+// TestBatchUsesTheCallersBudget pins the reported P2: the 30 s default
+// acted as a hard cap, so a one-minute budget with a 20/minute rate limit
+// delivered ten of twelve mails and the retry started over. The caller's
+// deadline now decides.
+func TestBatchUsesTheCallersBudget(t *testing.T) {
+	shortenDefaultDeadline(t, 50*time.Millisecond)
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [visible@example.com]
+starttls: false
+rate_limit_per_minute: 6000
+`, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := hazardReq()
+	for i := 0; i < 19; i++ {
+		req.Bcc = append(req.Bcc, fmt.Sprintf("member%02d@example.com", i))
+	}
+	// 20 mails at 10 ms spacing need ~200 ms: three times the default the
+	// old code capped the batch at, and inside the caller's budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := p.Execute(ctx, req); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := srv.snapshot()
+	if len(got) != 20 {
+		t.Fatalf("delivered %d mails, want 20 (the caller's budget was cut short)", len(got))
+	}
+}
+
+// TestPartialBatchIsNarrowedForTheRetry pins the second half: a batch cut
+// short reports the addresses that DID go out, so the durable retry
+// carries only the rest instead of starting from the beginning of the
+// list.
+func TestPartialBatchIsNarrowedForTheRetry(t *testing.T) {
+	shortenDefaultDeadline(t, 50*time.Millisecond)
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [visible@example.com]
+starttls: false
+rate_limit_per_minute: 6000
+`, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The visible recipient plus ten members; the caller's budget only
+	// covers a few of them.
+	req := hazardReq()
+	for i := 0; i < 10; i++ {
+		req.Bcc = append(req.Bcc, fmt.Sprintf("member%02d@example.com", i))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Millisecond)
+	defer cancel()
+	if err := p.Execute(ctx, req); err == nil {
+		t.Fatal("a batch cut by the deadline reported success")
+	}
+	narrower, ok := p.(action.RetryNarrower)
+	if !ok {
+		t.Fatal("the smtp action cannot narrow a retry")
+	}
+	narrowed, ok := narrower.RetryRequest(req, nil)
+	if !ok {
+		t.Fatal("the partial batch did not narrow the retry")
+	}
+	first := srv.snapshot()
+	want := len(req.Bcc) + 1 // the visible recipient plus the members
+	if len(first) == 0 || len(first) >= want {
+		t.Fatalf("the first attempt delivered %d of %d mails", len(first), want)
+	}
+	if len(narrowed.DoneRecipients) != len(first) {
+		t.Fatalf("done recipients = %v, want the %d delivered addresses", narrowed.DoneRecipients, len(first))
+	}
+
+	// The retry sends the rest — and only the rest. The worker gives it a
+	// fresh budget, which is what bounds it (the default only fills in for
+	// a caller without one).
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer retryCancel()
+	if err := p.Execute(retryCtx, narrowed); err != nil {
+		t.Fatalf("retry Execute: %v", err)
+	}
+	counts := map[string]int{}
+	for _, m := range srv.snapshot() {
+		for _, rcpt := range m.rcpts {
+			counts[rcpt]++
+		}
+	}
+	for i := 0; i < 10; i++ {
+		addr := fmt.Sprintf("member%02d@example.com", i)
+		if counts[addr] != 1 {
+			t.Errorf("%s received %d mails, want exactly 1", addr, counts[addr])
+		}
+	}
+	if counts["visible@example.com"] != 1 {
+		t.Errorf("visible@example.com received %d mails, want exactly 1", counts["visible@example.com"])
+	}
+
+	// Nothing left to send: a narrowed request whose addresses are all
+	// delivered is a successful no-op, not a "no recipients" error.
+	all := narrowed
+	all.DoneRecipients = append(append([]string(nil), narrowed.DoneRecipients...),
+		append([]string{"visible@example.com"}, req.Bcc...)...)
+	if err := p.Execute(retryCtx, all); err != nil {
+		t.Fatalf("retry with nothing left: %v", err)
+	}
+	if got := len(srv.snapshot()); got != want {
+		t.Fatalf("the no-op retry delivered %d mails, want %d in total", got, want)
+	}
+}

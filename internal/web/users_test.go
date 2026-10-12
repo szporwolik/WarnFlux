@@ -1388,7 +1388,7 @@ func TestAccessContactChips(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /access = %d", resp.StatusCode)
 	}
-	if !strings.Contains(html, `<span class="group-chip chip-id chip-bad" title="This is not a numeric Discord id`) {
+	if !strings.Contains(html, `<span class="group-chip chip-id chip-bad" title="This value is not a numeric Discord id`) {
 		t.Error("a handle in the Discord column is not flagged")
 	}
 	if !strings.Contains(html, ">@handle</span>") {

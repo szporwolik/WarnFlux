@@ -1,6 +1,23 @@
 # WarnFlux configuration example.
 # Copy to config.yaml and adjust it for your environment.
 #
+# Sections, in the order they appear below: app, storage, geo, sources,
+# outputs, dispatch, mqtt_publish, web, meshtastic, gsm, actions,
+# ingest_http, aprs. The order carries no meaning to the loader — put the
+# blocks wherever you find them; only the nesting and the spelling of the
+# keys matter (an unknown or misspelled key stops the station at startup
+# instead of being ignored silently).
+#
+# FIRST RUN — before the station does anything useful:
+#   a. web.auth.username / web.auth.password — the admin account you log
+#      in with (the example ships "change-me"; change it, or point
+#      password_file at a Docker secret).
+#   b. storage.path — where warnflux.db lives. Always set it in Docker
+#      (e.g. /data/warnflux.db) so the history survives a container
+#      replacement.
+#   c. web.domain — the public host of this instance, used for deep
+#      links in notifications and for password-reset links.
+#
 # INSTALLING IN ANOTHER REGION — every per-region knob, in one place:
 #   1. aprs.callsign / name / gridsquare / latitude / longitude / radius_km
 #      — the geographic master: the APRS-IS range filter, the geo-scoped
@@ -15,8 +32,9 @@
 #   5. Poland-specific sources (leave disabled outside Poland):
 #      imgw-warnings (TERYT geography + hydro keywords),
 #      rso-* (voivodeships + filter.local),
-#      gddkia-roads, gios-awarie (both inherit the aprs area).
-#   6. web.about / disclaimer / domain / title — branding texts.
+#      gddkia-roads, gios-awarie and giosaq-main (all three inherit the
+#      aprs area).
+#   6. web.title / name / header1 / about / disclaimer — branding texts.
 #   7. outputs + dispatch — MQTT broker and unique client IDs.
 #   8. actions — SMTP credentials, APRS recipients, webhook URLs.
 
@@ -47,8 +65,8 @@ app:
   change_retention: 24h
 
   # How long cancelled/expired current-state records are kept in the
-  # events table, e.g. 4320h (180 days, matching the public home-page
-  # Archive tab). Active events are never cleaned.
+  # events table. Default 720h (30 days); 4320h (180 days) matches the
+  # public home-page Archive tab. Active events are never cleaned.
   event_retention: 4320h
 
   # How long action-fire ledger rows are kept before pruning. Only
@@ -98,9 +116,12 @@ storage:
 #       parents: ["your-powiat"]
 
 # Source plugins: ingest hazard information and emit normalized events.
-# Each instance's config.poll_interval is also editable on the Config page
-# ("Polling and range"), where the accepted range of its plugin is shown;
-# the value is read at startup, so a change applies after a restart.
+# The values below are examples — every plugin validates what it accepts
+# (poll intervals, radii, station lists) and refuses to start on a value
+# out of range; the plugin READMEs and the Config page name the ranges.
+# Each instance's config.poll_interval is editable on the Config page
+# ("Polling and range"), which shows its plugin's accepted range; the
+# value is read at startup, so a change applies after a restart.
 sources:
   # Open-Meteo INFORMATIONAL weather source: publishes ordinary weather
   # snapshots to retained MQTT information topics
@@ -329,6 +350,10 @@ sources:
   #   config:
   #     poll_interval: 6h
   #     request_timeout: 10s
+  #     # Optional service overrides (testing/custom deployments):
+  #     # base_url (GIOŚ API), geocoder_url (GUGiK ULDK, locality ->
+  #     # coordinates) and reverse_url (home position -> voivodeship,
+  #     # Nominatim by default).
   #     # One of the 16 provider voivodeship names. Empty = derived once
   #     # from the aprs position (reverse geocoding).
   #     wojewodztwo: małopolskie
@@ -386,8 +411,9 @@ sources:
   # station state, the packet feed and messages addressed to our callsign
   # on MQTT. Requires aprs.enabled: true.
   #
-  # The plugin also TRANSMITS: the aprs action below (and future rule
-  # wiring) sends APRS text messages to hams through this connection.
+  # The plugin also TRANSMITS: the aprs and aprs-out actions below send
+  # APRS text messages to hams through this connection, and the routing
+  # rules decide when they run.
   # See internal/plugins/sources/aprsinet/README.md.
   #
   # - id: aprs-inet-main
@@ -401,7 +427,7 @@ sources:
   #   config:
   #     # Login callsign. Defaults to aprs.callsign; must be validated
   #     # with the passcode on the APRS-IS server.
-  #     callsign: "SP9MOA-10"
+  #     callsign: "SP9XYZ-10"
   #
   #     # APRS-IS validation code: passcode OR passcode_file.
   #     passcode: "12345"
@@ -491,8 +517,10 @@ outputs:
 # dispatch. They MAY connect to the same broker but MUST use different
 # client IDs.
 dispatch:
-  # Bounded canonical dispatch intake queue; a full queue drops events
-  # (counted and logged) until the durable rule engine exists.
+  # Bounded canonical dispatch intake queue. A full queue drops events
+  # (each drop is counted on the health page and logged) instead of
+  # growing without bound; the routing rule engine consumes the ingress
+  # and is its only reader.
   queue_size: 1024
 
   # One durable inbox write inside Enqueue is bounded by this deadline: a
@@ -590,9 +618,13 @@ mqtt_publish:
 web:
   enabled: true
   listen: ":8080"
-  # The web UI includes a built-in /test page: any logged-in user can
-  # emit a synthetic hazard transition (severity/urgency/certainty) into
-  # the dispatch ingress to exercise the group routing paths.
+  # Admin surfaces live under the same listener: the dashboard, the
+  # traffic and log views, the Config page, the user and group
+  # directories, the notification audit trail and the handbook (/help).
+  # Group members additionally get the Messages page, where an operator
+  # issues a manual communication (severity/urgency/certainty) that
+  # travels the same dispatch ingress and group routing rules as an
+  # automatic event.
 
   # Application name: browser title and footer. Set it to your
   # instance's brand (e.g. SOSNA).
@@ -609,8 +641,10 @@ web:
   header1: ""
   header2: ""
 
-  # Optional one-line motto rendered in the footer on every page.
-  tagline: "od społeczności • dla mieszkańców • w trosce o bezpieczeństwo"
+  # Optional one-line motto rendered in the footer on every page, e.g.
+  # "run by volunteers • for residents". Below: the three texts your
+  # users read — write them in your own language.
+  tagline: "run and maintained by volunteers"
 
   # Optional longer text shown on the public page as a one-time popup
   # (re-opened any time from the question-mark button in the top bar).
@@ -619,23 +653,23 @@ web:
   # always open in a new tab. Leave empty to hide the popup and the
   # button.
   about: |
-    # SOSNA — Społeczny Otwarty System Notyfikacji i Alertów
+    # Your Station — a community hazard notice service
 
-    Krótka informacja o systemie: czym jest, jaki jest zakres
-    działania, skąd pochodzą komunikaty i jak je interpretować.
+    What the service is, which area it covers, where the messages come
+    from and how to read them.
 
-    - Zbieramy komunikaty z oficjalnych źródeł (IMGW, RSO, GDDKiA).
-    - Porządkujemy je i pokazujemy na liście oraz na mapie sytuacyjnej.
-    - Rozsyłamy alerty e-mailem, przez APRS i sieć Meshtastic.
+    - We collect notices from official sources.
+    - We sort them and show them on a list and a situation map.
+    - We forward alerts by e-mail, Discord, APRS and Meshtastic.
 
-    Więcej: [sp9moa.pl](https://sp9moa.pl)
+    More: [example.org](https://example.org)
 
   # Optional notice rendered prominently above the public hazard list,
   # e.g. that the system is unofficial and does not replace official
   # channels. Plain text; line breaks are preserved. Empty hides it.
   disclaimer: |
-    Ten system ma charakter pomocniczy — nie zastępuje oficjalnej
-    komunikacji rządowej ani numerów alarmowych.
+    This service is an auxiliary channel — it does not replace official
+    government communication or the emergency numbers.
 
   # Public domain this instance is served under (host, optional port).
   # Used for absolute deep links in notifications AND as the canonical
@@ -644,7 +678,7 @@ web:
   # the request Host header (a spoofed Host must not redirect a reset
   # to a foreign domain). Empty disables deep links AND the self-service
   # email reset (recovery stays with an administrator on the machine).
-  domain: "sosna.sp9moa.pl"
+  domain: "warnflux.example.org"
 
   # Offline mode: the startup state of the station's offline switch (an
   # admin toggles the same switch at runtime on the admin Config page,
@@ -700,17 +734,39 @@ web:
     # header; both work, appending only risks an extra unused prefix.
     trusted_proxies: []
 
-# Meshtastic Companion link (optional): the Heltec node plugs in over USB
-# and exposes the mesh as a source plus the group/direct announcement
-# actions. The announcement switches below are the STARTUP state; the
-# admin Config page toggles the same switches at runtime and writes them
-# back to this file.
+# Meshtastic Companion link (optional): the node plugs in over USB and
+# exposes the mesh as a source plus the group/direct announcement
+# actions. When enabled, WarnFlux speaks the Companion protocol: adverts
+# populate the /meshtastic "heard nodes" tab, channel and contact
+# messages land in the durable history, and the "meshtastic" action
+# pushes alerts onto the mesh.
 meshtastic:
   enabled: false
-  device: ""
+
+  # The node plugs in over USB serial; a comma-separated list is tried in
+  # order, so a node that re-enumerates after a USB reset (ttyACM0 <->
+  # ttyACM1) is found regardless of the port number it landed on.
+  # device: /dev/ttyACM0
+  # baud: 115200
+
+  # How to reach the node: "serial" (USB CDC, the default) or "tcp" (the
+  # node's WiFi API). With "tcp" the device field is ignored.
+  # transport: serial
+  # host: 192.168.1.40    # transport "tcp" only: the node's address
+  #                       # (host, IP or host:port; the Meshtastic API
+  #                       # port 4403 is appended when missing)
+
+  # Direct messages from directory-registered node IDs become canonical
+  # /events documents (the alarm pipeline), like APRS messages.
+  # route_messages: false
+
+  # How long an unheard neighbour stays in the node list (default 30m).
+  # Editable on the Config page ("Polling and range"); 1m..24h.
+  # node_ttl: 30m
 
   # Hazard announcements on the group channel and as direct messages to
-  # users' registered node IDs (both ON by default).
+  # users' registered node IDs (both ON by default). The Config page
+  # toggles both at runtime and writes them back to this file.
   channel_alerts: true
   dm_alerts: true
 
@@ -718,19 +774,62 @@ meshtastic:
   # the group channel — useful but noisy, OFF by default.
   station_alerts: false
 
+  # Periodic presence beacon (identity + uptime + node count) on a
+  # community channel. The default PRIMARY channel is receive-only:
+  # broadcasts there are blocked by policy. Give every installation that
+  # ingests the same sources its OWN channel: two stations beaconing (and
+  # alerting) on one channel duplicate every message on the shared air.
+  # This channel is also the one the Help page hands to users (name + key
+  # + scan code), so point it at the group channel people should join.
+  # emcom_channel: 1      # 0 = beacon disabled
+
+  # The beacon cadence and emcom_hazards_interval below are editable live
+  # on the Config page ("Periodic lines"), together with the Discord
+  # channel cadence — one form keeps both surfaces in step.
+  # Presence beacon line: the installation identity with the node count
+  # and the station uptime ("WarnFlux <version> - <station> - <domain> |
+  # up 2d4h | nodes 12"). It is ANCHORED TO A DAILY CLOCK TIME by
+  # default, 06:00 station local time — a restart never beacons ahead of
+  # the schedule. Name emcom_at to move it, or emcom_interval for a plain
+  # spacing instead (the first beacon then fires at startup); naming both
+  # is a configuration error, and an empty emcom_at with a zero
+  # emcom_interval turns the beacon off.
+  # emcom_at: "06:00"       # default, station local time
+  # emcom_interval: 4h      # alternative to emcom_at (1m..720h)
+
+  # Periodic hazard status line on the same channel: ONE short message
+  # with the counters ("1 severe or more, 12 other active") and the
+  # public site holding the details, plus the "DM me /hazard for the
+  # list" hint the Discord status line carries too. It never lists the
+  # hazards: severe ones already went out as their own alerts, and a list
+  # would repeat them on the air. Sent only while a hazard at severe or
+  # higher is active, so a quiet channel stays quiet instead of reading
+  # "0 severe" every hour.
+  # emcom_hazards_interval: 1h   # default; 0 = status line disabled
+
+  # Read-only tab channel: received traffic on this channel index gets a
+  # dedicated tab in the message history. It NEVER transmits — a
+  # secondary installation can watch the production channel without
+  # beaconing on it. 0 = no extra tab. The admin send form opens on the
+  # emcom channel (the station's own), so the watch channel is never
+  # broadcast on by accident.
+  # watch_channel: 1
+
 # GSM cellular modem (optional): a serial AT modem (e.g. Huawei E173 on
 # /dev/ttyUSB0) receives and sends SMS. Received messages land in the
-# durable history and later feed the SMS command interpreter; the admin
-# GSM page shows the history and sends messages to phone numbers.
+# durable history and feed the SMS command interpreter (a plain message
+# answers in-band, /help lists the commands); the admin GSM page shows
+# the history and sends messages to phone numbers.
 gsm:
   enabled: false
   # Serial device of the modem's AT port.
   device: ""
 
 # ActionPlugins: explicitly invoked by the group routing rule engine
-# (Groups page in the web UI). They never automatically receive MQTT
-# events. Built-in types: smtp (email), http_webhook, discord, aprs,
-# aprs-out, sms.
+# (Groups page in the web UI), never by an automatic MQTT subscription.
+# Built-in types: smtp (email), http_webhook, discord, meshtastic, aprs,
+# aprs-out, sms. The extra "logger" type is a diagnostic action kept for
+# tests: it only writes to the log and is not wired into routing.
 actions:
 
   # SMTP email action: sends one plain-text email per routed dispatch
@@ -777,7 +876,7 @@ actions:
   #
   # APRS message action: sends one APRS text message per routed dispatch
   # event to the listed ham callsigns, through the shared APRS hub (the
-  # first ready transmitter: aprs-inet today, aprs-radio later). Messages
+  # first ready transmitter: aprs-inet or aprs-radio). Messages
   # are single APRS lines (max 67 characters): "<prefix> <SEVERITY>
   # <event> <headline>". Requires aprs.enabled: true.
   # - id: aprs-hams
@@ -977,7 +1076,7 @@ actions:
   # it as a failure). Wrong-token or no-shared-server answers from the
   # API land in the log with Discord's own reason.
   #
-  # Meshtastic action: SOSNA alerts as direct messages to the routed
+  # Meshtastic action: alerts as direct messages to the routed
   # group members' registered node IDs, plus a broadcast on the
   # configured group channel — the channel broadcast is the base
   # delivery and goes out even when no member registered a node ID
@@ -995,7 +1094,7 @@ actions:
   #     retries: 1
   #
   #   config:
-  #     prefix: "SOSNA"
+  #     prefix: "WarnFlux"
   #     tx_interval: 5s
   #     timeout: 10s
   #     channel: 1   # group channel (1-7) every alert is published on;
@@ -1022,8 +1121,8 @@ actions:
   #     retries: 1
   #
   #   config:
-  #     prefix: "SOSNA"
-  #     phones: ["+48509558155"]  # optional; 32 numbers at most
+  #     prefix: "WarnFlux"
+  #     phones: ["+48123456789"]  # optional; 32 numbers at most
 
 # Public HTTP ingest endpoints: POST /api/v1/ingest/<id>, protected by an
 # API key. Accepts hazard messages in two shapes:
@@ -1079,8 +1178,8 @@ ingest_http:
     password_file: ""
     topic_prefix: ""       # defaults to the mqtt output's prefix
 
-# APRS hub: the shared merge point for every APRS backend (aprs-inet now,
-# aprs-radio later). It maintains ONE retained station-state document per
+# APRS hub: the shared merge point for every APRS backend (aprs-inet and
+# aprs-radio). It maintains ONE retained station-state document per
 # nearby station on MQTT (<topic_prefix>/aprs/stations/<CALLSIGN>), the
 # non-retained packet feed (aprs/packets) and the rx/tx message feed
 # (aprs/messages). APRS plugins require aprs.enabled.
@@ -1088,8 +1187,9 @@ aprs:
   enabled: false
 
   # Our identity: the callsign (with optional -SSID) messages are
-  # addressed to and transmitted from.
-  callsign: "SP9MOA-10"
+  # addressed to and transmitted from. Use YOUR licensed callsign — the
+  # APRS-IS server authenticates the passcode against it.
+  callsign: "SP9XYZ-10"
 
   # Optional display name of our station (e.g. "SOSNA Niepołomice"); it
   # rides along in routed APRS messages. Defaults to the callsign.
@@ -1100,7 +1200,7 @@ aprs:
 
   # Our position as a Maidenhead locator (2, 4, 6 or 8 characters). The
   # station identity (self document, own beacon) uses its center.
-  gridsquare: "JO90WW"
+  gridsquare: "JO90AA"
 
   # Optional exact position of our station (e.g. the antenna's real
   # coordinates from direwolf.conf). When both are set they override the
@@ -1151,69 +1251,3 @@ aprs:
   # react: APRS-IS-delivered copies are recorded and displayed, never
   # answered — an internet-injected message can't raise an alarm.
   # route_messages: false
-
-# Meshtastic Companion serial link (Heltec V4 over USB). When enabled,
-# WarnFlux speaks the Companion protocol: adverts populate the admin
-# /meshtastic "heard nodes" tab, channel/contact messages land in the
-# durable history, and the "meshtastic" action pushes SOSNA alerts onto
-# the mesh.
-# meshtastic:
-#   enabled: true
-#   device: /dev/ttyACM0   # the node plugs in over USB serial; a
-#                          # comma-separated list is tried in order, so
-#                          # a node that re-enumerates after a USB reset
-#                          # (ttyACM0 <-> ttyACM1) is found regardless
-#                          # of the port number it landed on
-#   baud: 115200
-#   # How to reach the node: "serial" (USB CDC, the default) or "tcp"
-#   # (the node's WiFi API). With "tcp" the device field is ignored.
-#   transport: serial
-#   host: 192.168.1.40     # transport "tcp" only: the node's address
-#                          # (host, IP or host:port; the Meshtastic API
-#                          # port 4403 is appended when missing)
-#   route_messages: false  # direct messages from directory-registered
-#                         # node IDs become canonical /events documents
-#                         # (alarm pipeline), like APRS messages
-#   node_ttl: 30m
-#   # Editable on the Config page ("Polling and range"); 1m..24h.
-#   # Periodic presence beacon (identity + uptime + node count) on a
-#   # community channel. The default PRIMARY channel is receive-only:
-#   # broadcasts there are blocked by policy. Give every installation
-#   # that ingests the same sources its OWN channel: two stations
-#   # beaconing (and alerting) on one channel duplicate every message on
-#   # the shared air. This channel is also the one the Help page hands to
-#   # users (name + key + scan code), so point it at the group channel
-#   # people should join.
-#   emcom_channel: 1      # 0 = beacon disabled
-#   # The beacon cadence and emcom_hazards_interval below are also
-#   # editable live on the Config page ("Periodic lines"), together with
-#   # the Discord channel cadence — one form keeps both surfaces in step.
-#   # Presence beacon: the installation identity with the node count and
-#   # the station uptime ("WarnFlux v0.7.6 - SOSNA - sosna.sp9moa.pl |
-#   # up 2d4h | nodes 12"). It is ANCHORED TO A DAILY CLOCK TIME by
-#   # default, 06:00 station local time — a restart never beacons ahead
-#   # of the schedule. Name emcom_at to move it, or emcom_interval for a
-#   # plain spacing instead (the first beacon then fires at startup);
-#   # naming both is a configuration error, and an empty emcom_at with a
-#   # zero emcom_interval turns the beacon off.
-#   emcom_at: "06:00"     # default
-#   # emcom_interval: 4h  # alternative to emcom_at (1m..720h)
-#   # Periodic hazard status line on the same emcom channel: ONE short
-#   # message with the counters ("1 severe or more, 12 other active")
-#   # and the public site holding the details, plus the "DM me /hazard
-#   # for the list" hint the Discord status line carries too. It never
-#   # lists the hazards: severe ones already went out as their own
-#   # alerts, and a list would repeat them on the air. Sent only while a
-#   # hazard at severe or higher is active, so a quiet channel stays
-#   # quiet instead of reading "0 severe" every hour.
-#   emcom_hazards_interval: 1h  # default; 0 = status line disabled
-#                              # the line goes out only while a hazard at
-#                              # severe or higher is active (same rule as
-#                              # the Discord status line)
-#   # Read-only tab channel: received traffic on this channel index gets
-#   # a dedicated tab in the message history. It NEVER transmits — a
-#   # secondary install can watch the production channel without
-#   # beaconing on it. 0 = no extra tab. The admin send form opens on
-#   # the emcom channel (the station's own), so the watch channel is
-#   # never broadcast on by accident.
-#   watch_channel: 1

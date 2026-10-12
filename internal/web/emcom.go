@@ -138,6 +138,11 @@ type emcomNetwork struct {
 // stamp it onto the dispatched transition.
 type emcomStore interface {
 	SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) (int64, error)
+	// SaveEmcomNetworkAndEnqueue commits the network state, its lifecycle
+	// entry and the transition's durable intake row in ONE transaction and
+	// returns the committed row id plus the stamped event — the durable
+	// acceptance the panel may answer for.
+	SaveEmcomNetworkAndEnqueue(ctx context.Context, net storage.EmcomNetwork, ev dispatch.Event) (int64, dispatch.Event, error)
 	// TombstoneEmcomNetwork atomically retires one network: tombstone +
 	// lifecycle + the expiry transition's durable inbox row commit in
 	// one transaction, so a crash or a refused live handoff can never
@@ -1009,20 +1014,58 @@ func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 	net.Level = level
 	net.UpdatedBy = by
 	net.UpdatedAt = time.Now()
-	// The lifecycle version comes from the store's clock-independent
-	// counter when a store is attached; mirror-only installations fall
-	// back to the wall clock (no durable jobs to gate there).
-	version := net.UpdatedAt.UnixMilli()
+	publisher := s.emcomPublisher()
+	// The transition is built BEFORE the state is saved: the store
+	// allocates the version and stamps it onto this event inside the
+	// transaction that commits the state, exactly like the tombstone
+	// path. Mirror-only installations fall back to the wall clock (no
+	// durable jobs to gate there).
+	var transition dispatch.Event
+	var hazard state.Hazard
+	publishesHazard := level >= 1
+	if publishesHazard {
+		hazard = emcomHazard(net, net.UpdatedAt, s.SystemLanguage())
+		typ := dispatch.TransitionNew
+		if wasActive {
+			typ = dispatch.TransitionUpdated
+		}
+		transition = emcomTransition(hazard, typ, publisher, 0, emcomLocalized(net))
+	} else if wasActive {
+		// Back to monitoring: the expiry transition retires the document
+		// everywhere AND carries the Notify flag — the routing engine
+		// starts the notification machine anyway, so people are told the
+		// network stood down. The payload is the deactivation hazard
+		// (previous level's severity, so the same routing cells deliver
+		// it; headline and description explain the drop).
+		transition = emcomTransition(emcomDeactivationHazard(net, prevLevel, net.UpdatedAt, s.SystemLanguage()), dispatch.TransitionExpired, publisher, 0, emcomLocalizedDrop(net, prevLevel))
+		transition.Hazard.Notify = true
+	}
+
 	_, hasStore := s.users.(emcomStore)
 	if hasStore {
-		// LOCAL-FIRST: the local database row is the durable record; the
-		// retained MQTT document is only an asynchronous sync copy.
-		v, err := s.saveEmcomNetwork(net)
+		// LOCAL-FIRST + ATOMIC (P1): the network state, its lifecycle
+		// entry and the transition's durable intake row commit in ONE
+		// transaction, and only then is the level change answered. The old
+		// order saved the state first and let the live handoff write the
+		// notification: a refused handoff (or a failed inbox write with a
+		// full queue) left the state changed with no notification — on the
+		// stand-down path it was only logged, and the operator got a
+		// success answer. Re-setting level 0 does not recreate that
+		// transition.
+		st, _ := s.users.(emcomStore)
+		id, stamped, err := st.SaveEmcomNetworkAndEnqueue(context.Background(), storage.EmcomNetwork{
+			Slug:      net.Slug,
+			Name:      net.Name,
+			Level:     net.Level,
+			UpdatedBy: net.UpdatedBy,
+			UpdatedAt: net.UpdatedAt,
+		}, transition)
 		if err != nil {
 			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
 			return &emcomLevelError{kind: emcomErrSave, err: err}
 		}
-		version = v
+		_ = id
+		transition = stamped
 	} else {
 		// Mirror-only installations keep the broker document as the
 		// record; publishing is required and synchronous there.
@@ -1033,54 +1076,42 @@ func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 			s.logger.Warn("emcom: state publish failed", "slug", slug, "error", err)
 			return &emcomLevelError{kind: emcomErrBroker, err: err}
 		}
+		// Without a store there is no lifecycle ledger to stamp the event
+		// from: the wall clock keeps the dedup identity as it was.
+		if transition.Hazard != nil {
+			transition.Hazard.ChangeID = net.UpdatedAt.UnixMilli()
+		}
 	}
 
-	publisher := s.emcomPublisher()
-	if level >= 1 {
-		// The hazard carries the SAVED network timestamp: the transition
-		// ChangeID (updated_at_ms) then equals the lifecycle version the
-		// store committed with the network state.
-		h := emcomHazard(net, net.UpdatedAt, s.SystemLanguage())
-		typ := dispatch.TransitionNew
-		if wasActive {
-			typ = dispatch.TransitionUpdated
-		}
-		// The transition is durable and routed locally BEFORE any broker
-		// I/O — the panel never depends on the broker round-trip.
-		switch s.ingress.Enqueue(emcomTransition(h, typ, publisher, version, emcomLocalized(net))) {
+	if transition.Hazard != nil {
+		// The durable row is committed (store path): a full live queue
+		// defers the event to intake recovery instead of losing it, and a
+		// stopped intake is REPORTED — never answered with success.
+		switch s.ingress.Enqueue(transition) {
 		case dispatch.Rejected:
-			s.logger.Warn("emcom: local dispatch rejected the transition", "slug", slug)
+			s.logger.Warn("emcom: local dispatch rejected the transition", "slug", slug, "level", level, "inbox_id", transition.InboxID)
 			return &emcomLevelError{kind: emcomErrDispatch, err: errors.New("emcom: local dispatch rejected")}
 		case dispatch.AcceptedEmergency:
 			s.logger.Warn("emcom: transition accepted WITHOUT durable storage (emergency mode; lost on restart)", "slug", slug)
 		}
+	}
+	if publishesHazard {
 		if hasStore {
 			// Broker sync: the state document and the retained hazard,
 			// best-effort (the resync hook republishes on reconnect).
 			s.publishEmcomStateAsync(net, by)
 			if s.pub != nil {
 				go func() {
-					if err := s.pub.PublishActive(emcomSource, h); err != nil {
+					if err := s.pub.PublishActive(emcomSource, hazard); err != nil {
 						s.logger.Warn("emcom: broker hazard sync failed", "slug", slug, "error", err)
 					}
 				}()
 			}
-		} else if err := s.pub.PublishActive(emcomSource, h); err != nil {
+		} else if err := s.pub.PublishActive(emcomSource, hazard); err != nil {
 			s.logger.Warn("emcom: hazard publish failed", "slug", slug, "error", err)
 			return &emcomLevelError{kind: emcomErrBroker, err: err}
 		}
 	} else if wasActive {
-		// Back to monitoring: the expiry transition retires the document
-		// everywhere AND carries the Notify flag — the routing engine
-		// starts the notification machine anyway, so people are told the
-		// network stood down. The payload is the deactivation hazard
-		// (previous level's severity, so the same routing cells deliver
-		// it; headline and description explain the drop).
-		drop := emcomTransition(emcomDeactivationHazard(net, prevLevel, net.UpdatedAt, s.SystemLanguage()), dispatch.TransitionExpired, publisher, version, emcomLocalizedDrop(net, prevLevel))
-		drop.Hazard.Notify = true
-		if s.ingress.Enqueue(drop) == dispatch.Rejected {
-			s.logger.Warn("emcom: local dispatch rejected the deactivation transition", "slug", slug)
-		}
 		if hasStore {
 			s.publishEmcomStateAsync(net, by)
 			if s.pub != nil {
@@ -1092,6 +1123,7 @@ func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 			}
 		} else if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
+			return &emcomLevelError{kind: emcomErrBroker, err: err}
 		}
 	} else if hasStore {
 		s.publishEmcomStateAsync(net, by)

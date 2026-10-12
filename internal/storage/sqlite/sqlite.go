@@ -1846,6 +1846,75 @@ func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) 
 	}
 	defer tx.Rollback()
 
+	version, err := saveEmcomNetworkTx(tx, ctx, publisher, net)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit emcom save for %q: %w", net.Slug, err)
+	}
+	return version, nil
+}
+
+// SaveEmcomNetworkAndEnqueue commits one EMCOM transition — the network
+// state, its lifecycle entry and the dispatch intake row of the
+// transition — in ONE transaction, and returns the committed inbox row id
+// and the stamped event.
+//
+// The panel saves the level change and only then offers the live queue,
+// which is why a handoff refused afterwards used to leave a saved state
+// with no notification while the operator was told the level changed
+// (reported P1: the refusal was a log line on the stand-down path, and
+// the inbox write happened only in the offer, so an inbox failure plus a
+// full queue lost the transition for good — re-setting level 0 does not
+// recreate it). The acceptance is durable BEFORE the answer now: the
+// caller hand the returned event (its InboxID is set) to the intake, and
+// a refusal is reported instead of answered with success, while the row
+// stays in the inbox for recovery.
+func (s *Store) SaveEmcomNetworkAndEnqueue(ctx context.Context, net storage.EmcomNetwork, ev dispatch.Event) (int64, dispatch.Event, error) {
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return 0, ev, fmt.Errorf("publisher id for emcom %q: %w", net.Slug, err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, ev, fmt.Errorf("begin emcom acceptance for %q: %w", net.Slug, err)
+	}
+	defer tx.Rollback()
+
+	version, err := saveEmcomNetworkTx(tx, ctx, publisher, net)
+	if err != nil {
+		return 0, ev, err
+	}
+	if ev.Hazard == nil {
+		// A move that dispatches nothing (level 0 from monitoring): the
+		// state is the whole record.
+		if err := tx.Commit(); err != nil {
+			return 0, ev, fmt.Errorf("commit emcom save for %q: %w", net.Slug, err)
+		}
+		return 0, ev, nil
+	}
+	ev.Hazard.ChangeID = version
+	ev.Hazard.Publisher = publisher
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return 0, ev, fmt.Errorf("encode emcom transition for %q: %w", net.Slug, err)
+	}
+	inboxID, err := insertInboxRow(tx, ctx, data, ev.Origin.ReceiverID, s.now().UnixMilli())
+	if err != nil {
+		return 0, ev, fmt.Errorf("accept emcom transition %q: %w", net.Slug, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, ev, fmt.Errorf("commit emcom acceptance for %q: %w", net.Slug, err)
+	}
+	ev.InboxID = inboxID
+	return inboxID, ev, nil
+}
+
+// saveEmcomNetworkTx upserts one readiness network and its lifecycle
+// entry, and returns the version allocated for it. Called by the saving
+// paths above, always inside their transaction.
+func saveEmcomNetworkTx(tx *sql.Tx, ctx context.Context, publisher string, net storage.EmcomNetwork) (int64, error) {
 	version, err := nextLifecycleVersionTx(tx, ctx)
 	if err != nil {
 		return 0, fmt.Errorf("lifecycle version for emcom %q: %w", net.Slug, err)
@@ -1878,10 +1947,6 @@ func (s *Store) SaveEmcomNetwork(ctx context.Context, net storage.EmcomNetwork) 
 		WHERE excluded.version >= message_lifecycle.version`,
 		publisher, "emcom:"+net.Slug, version, status, net.UpdatedAt.UnixMilli()); err != nil {
 		return 0, fmt.Errorf("record emcom lifecycle %q: %w", net.Slug, err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit emcom save for %q: %w", net.Slug, err)
 	}
 	return version, nil
 }

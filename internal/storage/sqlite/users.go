@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -211,7 +212,16 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 		if err != nil {
 			return storage.User{}, err
 		}
-		res, err := s.db.Exec(`
+		// The new hash and the invalidation of every outstanding reset
+		// link commit together: an edit that re-passwords the account must
+		// not leave a token issued before it usable (reported P1).
+		ctx := context.Background()
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return storage.User{}, fmt.Errorf("begin update user %d: %w", id, err)
+		}
+		defer tx.Rollback()
+		res, err := tx.ExecContext(ctx, `
 			UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?,
 				password_salt = ?, password_hash = ?, updated_at_ms = ?
 			WHERE id = ? AND is_admin = 0`,
@@ -221,6 +231,12 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 				return storage.User{}, storage.ErrUsernameTaken
 			}
 			return storage.User{}, fmt.Errorf("update user %d: %w", id, err)
+		}
+		if err := purgePasswordResetsTx(ctx, tx, id); err != nil {
+			return storage.User{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return storage.User{}, fmt.Errorf("commit update user %d: %w", id, err)
 		}
 		return s.afterUpdate(res, id)
 	}
@@ -737,7 +753,18 @@ func (s *Store) SetUserPassword(userID int64, password string) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`
+	// The new hash and the invalidation of every outstanding reset link
+	// commit together: a changed password must make each token issued
+	// before it worthless, or a stolen recovery link stays a working way
+	// back into the account (reported P1).
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin password change for user %d: %w", userID, err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
 		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?
 		WHERE id = ? AND is_admin = 0`,
 		salt, hash, s.now().UnixMilli(), userID)
@@ -748,6 +775,23 @@ func (s *Store) SetUserPassword(userID int64, password string) error {
 		return fmt.Errorf("set user %d password: %w", userID, err)
 	} else if n == 0 {
 		return storage.ErrUserNotFound
+	}
+	if err := purgePasswordResetsTx(ctx, tx, userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit password change for user %d: %w", userID, err)
+	}
+	return nil
+}
+
+// purgePasswordResetsTx deletes every outstanding reset token of one user
+// inside the caller's transaction. A password change makes each link
+// issued before it worthless — leaving them behind keeps a stolen
+// recovery link a working way back into the account.
+func purgePasswordResetsTx(ctx context.Context, tx *sql.Tx, userID int64) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM password_resets WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("purge reset tokens for user %d: %w", userID, err)
 	}
 	return nil
 }

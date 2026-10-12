@@ -4358,6 +4358,42 @@ func (f *fakeMeshMsgs) MeshtasticPeers(_ context.Context) ([]string, error) {
 	return out, nil
 }
 
+// TestMeshMessagesPartialCarriesNodeState pins the connection pill inside
+// the polled messages fragment: the tab refreshes the node state with the
+// same poll, so a link that dropped cannot leave a stale "connected" on
+// screen for as long as the tab lives (the GSM page had the same defect).
+func TestMeshMessagesPartialCarriesNodeState(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeMeshMsgs{rows: []storage.MeshMessage{
+		{Direction: "rx", Channel: "dm", Sender: "abcd1234", Text: "ggg", At: time.Now()},
+	}}
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
+	env.login()
+
+	// The device link is down in this fixture, so the pill says so — and
+	// it is part of the fragment the poll swaps in.
+	resp, body := env.get("/partials/meshtastic?tab=messages")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("partial = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "msgs-filter") || !strings.Contains(body, "Disconnected") {
+		t.Errorf("messages fragment lacks the node state pill: %.300s", body)
+	}
+
+	// The nodes fragment (map tab) carries the same pill.
+	_, nodes := env.get("/partials/meshtastic")
+	if !strings.Contains(nodes, "msgs-filter") {
+		t.Errorf("nodes fragment lacks the node state pill: %.300s", nodes)
+	}
+}
+
 // TestMeshMessageChannelNames pins the channel display: legacy "ch0" rows
 // keep the raw label (the device provides friendly names when
 // connected), and direct-message senders registered in the directory

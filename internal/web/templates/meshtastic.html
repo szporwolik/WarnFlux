@@ -686,18 +686,7 @@
 {{end}}
 
 {{define "mesh_nodes"}}
-{{if .Snap.Connected}}
-<div class="msgs-filter">
-  <span class="badge ok">{{tr .Lang "meshtastic.connected"}}</span>
-  {{if .Snap.Self.ID}}<span class="badge muted">!{{.Snap.Self.ID}}</span>{{end}}
-  {{if .Snap.Self.LongName}}<span class="badge muted">{{.Snap.Self.LongName}}</span>{{end}}
-  {{if .Snap.Self.HwModel}}<span class="badge muted">{{.Snap.Self.HwModel}}</span>{{end}}
-  {{if .Snap.Self.Firmware}}<span class="badge muted">{{.Snap.Self.Firmware}}</span>{{end}}
-  {{if .Snap.Self.Lat}}<span class="badge muted">{{printf "%.5f, %.5f" .Snap.Self.Lat .Snap.Self.Lon}}</span>{{end}}
-</div>
-{{else}}
-<div class="msgs-filter"><span class="badge bad">{{tr .Lang "meshtastic.disconnected"}}</span></div>
-{{end}}
+{{template "mesh_status" .}}
 
 {{if .Nodes}}
 <div class="msgs-table-wrap">
@@ -741,7 +730,21 @@
 {{end}}
 {{end}}
 
-{{define "mesh_msgs"}}<span id="mesh-msg-total" hidden>{{.Total}}</span>
+{{/* The connection pill belongs to both polled fragments: whichever tab
+     the operator is watching refreshes the node state with it, instead of
+     leaving a stale "connected" over a link that just dropped. */}}
+{{define "mesh_status"}}{{if .Snap.Connected}}<div class="msgs-filter">
+  <span class="badge ok">{{tr .Lang "meshtastic.connected"}}</span>
+  {{if .Snap.Self.ID}}<span class="badge muted">!{{.Snap.Self.ID}}</span>{{end}}
+  {{if .Snap.Self.LongName}}<span class="badge muted">{{.Snap.Self.LongName}}</span>{{end}}
+  {{if .Snap.Self.HwModel}}<span class="badge muted">{{.Snap.Self.HwModel}}</span>{{end}}
+  {{if .Snap.Self.Firmware}}<span class="badge muted">{{.Snap.Self.Firmware}}</span>{{end}}
+  {{if .Snap.Self.Lat}}<span class="badge muted">{{printf "%.5f, %.5f" .Snap.Self.Lat .Snap.Self.Lon}}</span>{{end}}
+</div>
+{{else}}<div class="msgs-filter"><span class="badge bad">{{tr .Lang "meshtastic.disconnected"}}</span></div>
+{{end}}{{end}}
+
+{{define "mesh_msgs"}}{{template "mesh_status" .}}<span id="mesh-msg-total" hidden>{{.Total}}</span>
 {{if .Messages}}
 <div class="msgs-table-wrap">
   <table class="msgs-table">

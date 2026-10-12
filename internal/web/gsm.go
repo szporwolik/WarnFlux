@@ -276,21 +276,7 @@ func (s *Server) handleGSMPage(w http.ResponseWriter, r *http.Request) {
 	}
 	v.Sent = r.URL.Query().Get("sent") == "1"
 	v.Error = r.URL.Query().Get("err")
-	if s.gsm != nil {
-		v.HubEnabled = s.gsm.Enabled()
-		v.HubConnected = s.gsm.Connected()
-		v.HubReady = s.gsm.Ready()
-		v.OperatorName = gsm.OperatorName(s.gsm.Operator())
-		if csq := s.gsm.SignalCSQ(); csq > 0 && csq < 99 {
-			// Standard CSQ→dBm approximation (2*csq-113).
-			v.SignalDetail = fmt.Sprintf("CSQ %d · %d dBm", csq, 2*csq-113)
-			lvl := gsm.SignalLevel(csq)
-			v.SignalBars = make([]bool, 5)
-			for i := range v.SignalBars {
-				v.SignalBars[i] = i < lvl
-			}
-		}
-	}
+	s.fillGSMHub(&v)
 	s.fillGSMPhones(r.Context(), &v)
 	s.fillGSMMessages(r, &v)
 	w.Header().Set("Cache-Control", "no-store")
@@ -344,9 +330,34 @@ func (s *Server) handleGSMSend(w http.ResponseWriter, r *http.Request) {
 // sees new traffic as it happens.
 func (s *Server) handlePartialGSM(w http.ResponseWriter, r *http.Request) {
 	v := gsmView{Dir: "all"}
+	s.fillGSMHub(&v)
 	if s.gsmMsgs != nil {
 		s.fillGSMMessages(r, &v)
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.renderL(w, r, "gsm_msgs", v)
+	s.renderL(w, r, "gsm_live", v)
+}
+
+// fillGSMHub reports the modem session: enabled, connected, ready, the
+// network name and the signal bars. The page renders it through the same
+// fragment the poll refreshes, so a modem that reconnects or a signal
+// that moves shows up without a reload — the session state used to be
+// rendered once and then stayed on screen for as long as the tab lived.
+func (s *Server) fillGSMHub(v *gsmView) {
+	if s.gsm == nil {
+		return
+	}
+	v.HubEnabled = s.gsm.Enabled()
+	v.HubConnected = s.gsm.Connected()
+	v.HubReady = s.gsm.Ready()
+	v.OperatorName = gsm.OperatorName(s.gsm.Operator())
+	if csq := s.gsm.SignalCSQ(); csq > 0 && csq < 99 {
+		// Standard CSQ→dBm approximation (2*csq-113).
+		v.SignalDetail = fmt.Sprintf("CSQ %d · %d dBm", csq, 2*csq-113)
+		lvl := gsm.SignalLevel(csq)
+		v.SignalBars = make([]bool, 5)
+		for i := range v.SignalBars {
+			v.SignalBars[i] = i < lvl
+		}
+	}
 }

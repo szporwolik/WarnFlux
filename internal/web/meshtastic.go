@@ -603,6 +603,11 @@ func (s *Server) handlePartialMeshtastic(w http.ResponseWriter, r *http.Request)
 	}
 	if r.URL.Query().Get("tab") == "messages" {
 		v.Dir = "all"
+		// The messages fragment carries the connection pill too, so the
+		// poll keeps the node state fresh on this tab as well.
+		if s.meshtastic != nil {
+			v.Snap = s.meshtastic.Snapshot()
+		}
 		s.fillMeshtasticMessages(r, &v)
 		w.Header().Set("Cache-Control", "no-store")
 		s.renderL(w, r, "mesh_msgs", v)

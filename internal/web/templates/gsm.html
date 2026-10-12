@@ -15,17 +15,9 @@
     <section class="card">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-telephone"></use></svg>{{tr .Lang "gsm.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "gsm.hint"}}</p>
-      {{if not .HubEnabled}}
-      <p><span class="badge muted">{{tr .Lang "gsm.modem_off"}}</span></p>
-      {{else if and .HubConnected .HubReady}}
-      <p class="gsm-status">
-        <span class="badge ok">{{tr .Lang "gsm.modem_ok"}}</span>
-        {{if .OperatorName}}<span class="gsm-op">{{tr .Lang "gsm.network"}}: <strong>{{.OperatorName}}</strong></span>{{end}}
-        {{if .SignalBars}}<span class="gsm-bars" role="img" aria-label="{{.SignalDetail}}" title="{{.SignalDetail}}">{{range .SignalBars}}<i class="gsm-bar{{if .}} on{{end}}"></i>{{end}}</span>{{end}}
-      </p>
-      {{else}}
-      <p><span class="badge warn">{{tr .Lang "gsm.modem_down"}}</span></p>
-      {{end}}
+      {{/* The modem state refreshes with the history below (one poll, two
+           boxes): it keeps its place at the top of the card. */}}
+      <div id="gsm-status">{{template "gsm_status" .}}</div>
       {{if eq .Role "admin"}}
       <form method="post" action="/gsm/send" class="test-form gsm-send" data-lbl-sent="{{tr .Lang "gsm.sent"}}" data-lbl-failed="{{tr .Lang "gsm.failed"}}">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -59,6 +51,38 @@
   {{template "footer" .}}
   <script src="/static/app.js?v={{.Commit}}" defer></script>
   <script>
+  // Auto-refresh: the modem state and the message history come from ONE
+  // polled response carrying two boxes, each lifted into the element that
+  // owns its id. A session that opens, a modem that drops and an SMS that
+  // arrives all show up in place, without a reload and without touching
+  // the send form the operator may be filling in.
+  var refreshGSM = (function () {
+    "use strict";
+    var POLL_MS = 5000;
+    var last = "";
+    function tick() {
+      fetch("/partials/gsm", {
+        headers: { "Accept": "text/html" },
+        credentials: "same-origin",
+        cache: "no-store"
+      }).then(function (res) {
+        if (res.status === 401) { window.location.href = "/login"; return null; }
+        return res.ok ? res.text() : null;
+      }).then(function (html) {
+        if (html === null || html === last) { return; }
+        last = html;
+        var tmp = document.createElement("template");
+        tmp.innerHTML = html;
+        tmp.content.querySelectorAll("[id]").forEach(function (part) {
+          var now = document.getElementById(part.id);
+          if (now) { now.replaceWith(part.cloneNode(true)); }
+        });
+      }).catch(function () { /* transient — the next poll retries */ });
+    }
+    tick();
+    window.setInterval(tick, POLL_MS);
+    return tick;
+  })();
   // The send form posts via fetch: the page never reloads, the flash
   // updates in place and the polled history refreshes immediately.
   (function () {
@@ -80,14 +104,8 @@
       d.appendChild(span);
       flashBox.replaceChildren(d);
     }
-    function refreshHistory() {
-      var box = document.getElementById("gsm-msgs");
-      if (!box) { return; }
-      fetch("/partials/gsm", { credentials: "same-origin", cache: "no-store" })
-        .then(function (r) { return r.ok ? r.text() : null; })
-        .then(function (html) { if (html) { box.innerHTML = html; } })
-        .catch(function () { /* the regular poll retries */ });
-    }
+    var refreshed = refreshGSM;
+    function refreshHistory() { refreshed(); }
     form.addEventListener("submit", function (e) {
       e.preventDefault();
       var btn = form.querySelector("button[type=submit]");
@@ -121,6 +139,20 @@
 </body>
 </html>
 {{end}}
+
+{{/* One response, two boxes: the page script lifts each part into the
+     element that carries its id, so the modem pill and the history refresh
+     together without a second request. */}}
+{{define "gsm_live"}}<div id="gsm-status">{{template "gsm_status" .}}</div><div id="gsm-msgs">{{template "gsm_msgs" .}}</div>{{end}}
+
+{{define "gsm_status"}}{{if not .HubEnabled}}<p><span class="badge muted">{{tr .Lang "gsm.modem_off"}}</span></p>
+{{else if and .HubConnected .HubReady}}<p class="gsm-status">
+  <span class="badge ok">{{tr .Lang "gsm.modem_ok"}}</span>
+  {{if .OperatorName}}<span class="gsm-op">{{tr .Lang "gsm.network"}}: <strong>{{.OperatorName}}</strong></span>{{end}}
+  {{if .SignalBars}}<span class="gsm-bars" role="img" aria-label="{{.SignalDetail}}" title="{{.SignalDetail}}">{{range .SignalBars}}<i class="gsm-bar{{if .}} on{{end}}"></i>{{end}}</span>{{end}}
+</p>
+{{else}}<p><span class="badge warn">{{tr .Lang "gsm.modem_down"}}</span></p>
+{{end}}{{end}}
 
 {{define "gsm_msgs"}}{{if .Messages}}
 <div class="msgs-table-wrap">

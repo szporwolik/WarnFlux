@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -49,6 +50,9 @@ type smtpServer struct {
 	// implicitTLS wraps the connection in TLS before the SMTP greeting
 	// (SMTPS on port 465 style).
 	implicitTLS bool
+	// refuseRecipient makes the server reject that one envelope recipient
+	// (a mailbox the provider refuses), so a batch can fail part-way.
+	refuseRecipient string
 }
 
 func (s *smtpServer) addr() string { return s.listener.Addr().String() }
@@ -183,13 +187,21 @@ func (s *smtpServer) serve(conn net.Conn) {
 				cur.from = strings.Trim(rest[i:], "<> ")
 			}
 		case "RCPT":
+			addr := ""
+			if i := strings.Index(rest, "<"); i >= 0 {
+				addr = strings.Trim(rest[i:], "<> ")
+			}
+			if s.refuseRecipient != "" && strings.EqualFold(addr, s.refuseRecipient) {
+				if err := write("550 mailbox unavailable"); err != nil {
+					return
+				}
+				continue
+			}
 			if err := write("250 ok"); err != nil {
 				return
 			}
-			if cur != nil {
-				if i := strings.Index(rest, "<"); i >= 0 {
-					cur.rcpts = append(cur.rcpts, strings.Trim(rest[i:], "<> "))
-				}
+			if cur != nil && addr != "" {
+				cur.rcpts = append(cur.rcpts, addr)
 			}
 		case "DATA":
 			if err := write("354 go ahead"); err != nil {
@@ -939,9 +951,9 @@ rate_limit_per_minute: 6000
 }
 
 // TestPartialBatchIsNarrowedForTheRetry pins the second half: a batch cut
-// short reports the addresses that DID go out, so the durable retry
-// carries only the rest instead of starting from the beginning of the
-// list.
+// short reports the addresses that DID go out (with THAT attempt's
+// result), so the durable retry carries only the rest instead of starting
+// from the beginning of the list.
 func TestPartialBatchIsNarrowedForTheRetry(t *testing.T) {
 	shortenDefaultDeadline(t, 50*time.Millisecond)
 	srv := newSMTPServer(t, nil)
@@ -967,17 +979,16 @@ rate_limit_per_minute: 6000
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Millisecond)
 	defer cancel()
-	if err := p.Execute(ctx, req); err == nil {
+	err = p.Execute(ctx, req)
+	if err == nil {
 		t.Fatal("a batch cut by the deadline reported success")
 	}
-	narrower, ok := p.(action.RetryNarrower)
-	if !ok {
-		t.Fatal("the smtp action cannot narrow a retry")
+	var partial action.PartialDelivery
+	if !errors.As(err, &partial) {
+		t.Fatalf("the partial batch reported no progress: %v", err)
 	}
-	narrowed, ok := narrower.RetryRequest(req, nil)
-	if !ok {
-		t.Fatal("the partial batch did not narrow the retry")
-	}
+	narrowed := req
+	narrowed.DoneRecipients = append(append([]string(nil), req.DoneRecipients...), partial.Delivered()...)
 	first := srv.snapshot()
 	want := len(req.Bcc) + 1 // the visible recipient plus the members
 	if len(first) == 0 || len(first) >= want {
@@ -1021,5 +1032,55 @@ rate_limit_per_minute: 6000
 	}
 	if got := len(srv.snapshot()); got != want {
 		t.Fatalf("the no-op retry delivered %d mails, want %d in total", got, want)
+	}
+}
+
+// TestANewAttemptReportsOnlyItsOwnProgress pins the reported P1 on the
+// action: two versions of the same alarm share their request identity, so
+// progress must belong to the attempt that produced it. An attempt that
+// delivered NOTHING (here: the server is gone, so the connect fails) must
+// not report the addresses an earlier attempt delivered — otherwise the
+// new version's retry would skip recipients it never reached.
+func TestANewAttemptReportsOnlyItsOwnProgress(t *testing.T) {
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [visible@example.com]
+starttls: false
+rate_limit_per_minute: -1
+`, port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Version 1: the mailbox of the second member is refused, so the first
+	// one is delivered and the attempt reports exactly that.
+	req := hazardReq()
+	req.Bcc = []string{"sent@example.com", "broken@example.com"}
+	srv.refuseRecipient = "broken@example.com"
+	errV1 := p.Execute(context.Background(), req)
+	var partial action.PartialDelivery
+	if !errors.As(errV1, &partial) {
+		t.Fatalf("version 1 reported no progress: %v", errV1)
+	}
+	// The configured recipient comes first, then the member; the refused
+	// mailbox contributed nothing.
+	want := []string{"visible@example.com", "sent@example.com"}
+	if got := partial.Delivered(); len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("version 1 progress = %v, want %v", got, want)
+	}
+
+	// Version 2 of the SAME alarm (same request identity): nothing leaves
+	// the station, because the server is gone.
+	srv.close()
+	errV2 := p.Execute(context.Background(), req)
+	if errV2 == nil {
+		t.Fatal("version 2 against a dead server reported success")
+	}
+	if errors.As(errV2, &partial) {
+		t.Fatalf("version 2 reported progress it never made: %v", partial.Delivered())
 	}
 }

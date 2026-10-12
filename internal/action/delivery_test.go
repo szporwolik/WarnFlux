@@ -236,12 +236,25 @@ func (p *deliveryPlugin) ExecuteStage(ctx context.Context, req ActionRequest) (D
 
 func (p *deliveryPlugin) Close(ctx context.Context) error { return nil }
 
-// narrowingPlugin is a plugin that delivers to part of its recipients and
-// reports what is left (the capability the SMTP action implements).
+// narrowError is what a plugin that delivers to part of its recipients
+// and then fails returns (action.PartialDelivery).
+type narrowError struct {
+	delivered []string
+}
+
+func (e *narrowError) Error() string { return "synthetic partial failure" }
+
+func (e *narrowError) Delivered() []string { return append([]string(nil), e.delivered...) }
+
+// narrowingPlugin delivers to part of its recipients and reports what
+// went out with the result of THAT attempt (the capability the SMTP
+// action implements through its error).
 type narrowingPlugin struct {
 	mu       sync.Mutex
 	executed []ActionRequest
-	narrowTo []string
+	// deliver is the address list this plugin claims to have delivered in
+	// the attempt it is about to fail.
+	deliver []string
 }
 
 func (p *narrowingPlugin) Name() string { return "logger" }
@@ -249,29 +262,26 @@ func (p *narrowingPlugin) Name() string { return "logger" }
 func (p *narrowingPlugin) Execute(_ context.Context, req ActionRequest) error {
 	p.mu.Lock()
 	p.executed = append(p.executed, req)
+	delivered := p.deliver
 	p.mu.Unlock()
-	return errors.New("synthetic failure")
+	if len(delivered) == 0 {
+		return errors.New("synthetic failure")
+	}
+	return &narrowError{delivered: delivered}
 }
 
 func (p *narrowingPlugin) Close(context.Context) error { return nil }
-
-func (p *narrowingPlugin) RetryRequest(req ActionRequest, _ error) (ActionRequest, bool) {
-	p.mu.Lock()
-	delivered := p.narrowTo
-	p.narrowTo = nil // the second attempt delivers nothing new
-	p.mu.Unlock()
-	if len(delivered) == 0 {
-		return req, false
-	}
-	out := req
-	out.DoneRecipients = append(append([]string(nil), req.DoneRecipients...), delivered...)
-	return out, true
-}
 
 func (p *narrowingPlugin) executions() []ActionRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]ActionRequest(nil), p.executed...)
+}
+
+func (p *narrowingPlugin) setDelivered(addrs ...string) {
+	p.mu.Lock()
+	p.deliver = append([]string(nil), addrs...)
+	p.mu.Unlock()
 }
 
 func waitForDelivery(t *testing.T, cond func() bool, what string) {
@@ -692,11 +702,13 @@ func TestHoldOfflineKeepsDequeuedRequest(t *testing.T) {
 
 // TestInstanceNarrowedRetryPayload pins the reported P2 on the durable
 // path: a plugin that delivered to part of its recipients reports the work
-// that is left, and the RETRY job carries only that — it does not start
-// from the beginning of the list again. The narrowed payload is written
-// with the retry settlement, so it survives a restart.
+// that is left WITH the failed attempt, and the RETRY job carries only
+// that — it does not start from the beginning of the list again. The
+// narrowed payload is written with the retry settlement, so it survives a
+// restart.
 func TestInstanceNarrowedRetryPayload(t *testing.T) {
-	p := &narrowingPlugin{narrowTo: []string{"sent-1@example.net", "sent-2@example.net"}}
+	p := &narrowingPlugin{}
+	p.setDelivered("sent-1@example.net", "sent-2@example.net")
 	_, ms := newDeliveryInstance(t, p, 2)
 
 	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
@@ -735,5 +747,75 @@ func TestInstanceNarrowedRetryPayload(t *testing.T) {
 	if len(recovered.DoneRecipients) != 2 {
 		t.Errorf("stored retry payload done recipients = %v, want the two delivered addresses",
 			recovered.DoneRecipients)
+	}
+}
+
+// TestANewJobNeverInheritsDeliveryProgress pins the reported P1: two
+// versions of the same alarm share their request identity, so progress
+// belongs to the ATTEMPT that produced it. A new job whose attempt
+// delivered nothing must keep its whole recipient list — a progress kept
+// in the plugin (or keyed by the request id alone) would make its retry
+// skip recipients that the new version never reached.
+func TestANewJobNeverInheritsDeliveryProgress(t *testing.T) {
+	p := &narrowingPlugin{}
+	p.setDelivered("first@example.net")
+	// One retry: version 1 spends exactly two attempts, so its window
+	// closes before version 2 starts.
+	_, ms := newDeliveryInstance(t, p, 1)
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	// Version 1: partial delivery, its retry carries the progress.
+	req := ActionRequest{ID: "imgw:1/log", Event: ev,
+		Bcc: []string{"first@example.net", "second@example.net"}}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueueOne(t, ms, payload)
+	waitForDelivery(t, func() bool { return len(p.executions()) >= 2 }, "version 1's retry")
+	if got := p.executions()[1].DoneRecipients; len(got) != 1 || got[0] != "first@example.net" {
+		t.Fatalf("version 1 retry done recipients = %v, want [first@example.net]", got)
+	}
+	waitForDelivery(t, func() bool {
+		ms.mu.Lock()
+		defer ms.mu.Unlock()
+		j := ms.jobs[ms.key(1, "log", "c:1")]
+		return j != nil && j.status == storage.DeliveryFailed && j.next.IsZero()
+	}, "version 1 to exhaust its attempts")
+	afterV1 := len(p.executions())
+	if afterV1 != 2 {
+		t.Fatalf("version 1 ran %d attempts, want 2", afterV1)
+	}
+
+	// Version 2 of the SAME alarm (new dedup key, new job, same request
+	// id): its attempt delivers nothing at all.
+	p.setDelivered()
+	st, queued, err := ms.EnqueueDelivery(context.Background(), storage.DeliveryJob{
+		GroupID: 1, ActionID: "log", EventKey: "imgw:1", DedupKey: "c:2",
+		Payload: payload, FiredAt: time.Now(),
+	})
+	if err != nil || st != storage.DeliverySaved || !queued {
+		t.Fatalf("enqueue version 2 = (%v, %v, %v)", st, queued, err)
+	}
+	waitForDelivery(t, func() bool { return len(p.executions()) >= afterV1+2 },
+		"version 2's attempts to run")
+	for i, got := range p.executions()[afterV1:] {
+		if len(got.DoneRecipients) != 0 {
+			t.Fatalf("version 2 attempt %d inherited done recipients %v", i+1, got.DoneRecipients)
+		}
+	}
+
+	// Nothing was delivered, so nothing was narrowed — not even in the
+	// payload the retry would be recovered from.
+	ms.mu.Lock()
+	stored := ms.jobs[ms.key(1, "log", "c:2")].job.Payload
+	ms.mu.Unlock()
+	var recovered ActionRequest
+	if err := json.Unmarshal(stored, &recovered); err != nil {
+		t.Fatalf("stored version 2 payload: %v", err)
+	}
+	if len(recovered.DoneRecipients) != 0 {
+		t.Fatalf("version 2 retry payload done recipients = %v, want none", recovered.DoneRecipients)
 	}
 }

@@ -106,14 +106,6 @@ type emailAction struct {
 	roots    *x509.CertPool
 	limiter  *rateLimiter
 	logger   *slog.Logger
-
-	// attemptMu guards the outcome of the LAST failed Execute call: the
-	// worker asks for the narrowed retry right after it returned, so one
-	// slot per instance is enough (an instance executes one call at a
-	// time). attemptID is the request it belongs to.
-	attemptMu   sync.Mutex
-	attemptID   string
-	attemptDone []string
 }
 
 // rateLimiter spaces sends evenly: at most limit emails per minute, one
@@ -389,45 +381,37 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 		errs = append(errs, fmt.Errorf("smtp: quit: %w", err))
 	}
 	if len(errs) > 0 {
-		// Remember which addresses went out: the work that is left is
-		// what a durable retry must cover (see RetryRequest).
-		p.rememberAttempt(req.ID, sent)
-		return errors.Join(errs...)
+		joined := errors.Join(errs...)
+		if len(sent) == 0 {
+			return joined
+		}
+		// The addresses THIS attempt delivered ride along with its result:
+		// the worker narrows the retry with them, so it covers only the
+		// rest instead of starting from the beginning of the list
+		// (reported P2). Reporting it here — never in instance state — is
+		// what keeps two versions of the same alarm apart: they share
+		// their request identity, so a stored progress would let the new
+		// version's retry skip recipients it never reached (reported P1).
+		return &partialDeliveryError{delivered: sent, err: joined}
 	}
 	return nil
 }
 
-// RetryRequest reports the request a retried attempt should carry: the
-// addresses that already went out are recorded as done, so the retry
-// covers only the rest instead of starting from the beginning of the list
-// (reported P2). ok=false leaves the request untouched — there is nothing
-// to narrow when the attempt delivered nothing.
-func (p *emailAction) RetryRequest(req action.ActionRequest, _ error) (action.ActionRequest, bool) {
-	p.attemptMu.Lock()
-	defer p.attemptMu.Unlock()
-	if p.attemptID != req.ID || len(p.attemptDone) == 0 {
-		return req, false
-	}
-	done := make(map[string]bool, len(req.DoneRecipients)+len(p.attemptDone))
-	for _, addr := range req.DoneRecipients {
-		done[recipientKey(addr)] = true
-	}
-	req.DoneRecipients = append([]string(nil), req.DoneRecipients...)
-	for _, addr := range p.attemptDone {
-		if key := recipientKey(addr); !done[key] {
-			done[key] = true
-			req.DoneRecipients = append(req.DoneRecipients, addr)
-		}
-	}
-	return req, true
+// partialDeliveryError reports a batch that delivered to SOME recipients
+// and then failed. The addresses that went out ride along, so the retry
+// covers only what is left (action.PartialDelivery).
+type partialDeliveryError struct {
+	delivered []string
+	err       error
 }
 
-// rememberAttempt keeps the addresses one failed attempt delivered to.
-func (p *emailAction) rememberAttempt(reqID string, sent []string) {
-	p.attemptMu.Lock()
-	p.attemptID = reqID
-	p.attemptDone = append([]string(nil), sent...)
-	p.attemptMu.Unlock()
+func (e *partialDeliveryError) Error() string { return e.err.Error() }
+
+func (e *partialDeliveryError) Unwrap() error { return e.err }
+
+// Delivered lists the addresses this attempt delivered to.
+func (e *partialDeliveryError) Delivered() []string {
+	return append([]string(nil), e.delivered...)
 }
 
 // pendingRecipients drops the addresses an earlier attempt of the same job

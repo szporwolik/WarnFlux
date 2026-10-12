@@ -3,8 +3,10 @@ package action
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -419,25 +421,48 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	i.trail.SetOutcome(key, trail.OutcomeFailed)
 }
 
-// narrowRetry asks a plugin that delivers to many recipients in one call
-// what the NEXT attempt still has to do, and encodes it for the durable
-// payload. Actions without that capability — and attempts that delivered
-// nothing — keep the request as it is: there is nothing to narrow then.
+// narrowRetry records the progress the FAILED attempt reported: an action
+// that delivered to part of its recipients returns a PartialDelivery
+// error, and the addresses it names are what the next attempt must skip.
+// Progress therefore belongs to the attempt that produced it — never to
+// shared instance state, which two versions of the same alarm would share
+// through their common request identity (reported P1). Attempts that
+// delivered nothing keep the request as it is.
 func (i *Instance) narrowRetry(req ActionRequest, err error) (ActionRequest, []byte) {
-	narrower, ok := i.plugin.(RetryNarrower)
-	if !ok {
+	var partial PartialDelivery
+	if !errors.As(err, &partial) {
 		return req, nil
 	}
-	narrowed, ok := narrower.RetryRequest(req, err)
-	if !ok {
+	delivered := partial.Delivered()
+	if len(delivered) == 0 {
 		return req, nil
 	}
-	data, merr := json.Marshal(narrowed)
+	req.DoneRecipients = mergeRecipients(req.DoneRecipients, delivered)
+	data, merr := json.Marshal(req)
 	if merr != nil {
 		i.logger.Warn("action: narrowed retry payload encode failed", "action", i.id, "error", merr)
 		return req, nil
 	}
-	return narrowed, data
+	return req, data
+}
+
+// mergeRecipients appends the addresses that are not listed yet, comparing
+// them case-insensitively (an address must never be sent twice).
+func mergeRecipients(done, more []string) []string {
+	out := append([]string(nil), done...)
+	seen := make(map[string]bool, len(done)+len(more))
+	for _, addr := range done {
+		seen[strings.ToLower(strings.TrimSpace(addr))] = true
+	}
+	for _, addr := range more {
+		key := strings.ToLower(strings.TrimSpace(addr))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, addr)
+	}
+	return out
 }
 
 // settleGuarded applies one settlement with the attempt generation and

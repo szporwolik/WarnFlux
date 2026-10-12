@@ -1777,6 +1777,22 @@ func (s *Store) RecordLifecycle(ctx context.Context, publisher, eventKey string,
 // version identity (changeID 0 — panel messages) are judged by the
 // CURRENT state only. An unknown message never blocks (fail-open).
 func (s *Store) LifecycleBlocks(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error) {
+	// A job queued before the ledger had an owner (empty publisher) is
+	// judged by the CURRENT state of the local record as well: the panel
+	// communication it carries may only go out while the local record
+	// still says it is active. The version comparison below can answer
+	// that on its own when the ledger continues the old numbering, but a
+	// database whose counter was seeded differently must not become a
+	// way for retired text to escape (reported P1).
+	if publisher == "" {
+		status, found, err := s.composeStatus(ctx, eventKey)
+		if err != nil {
+			return false, err
+		}
+		if found && status != string(core.StatusActive) {
+			return true, nil
+		}
+	}
 	version, status, ok, err := s.lifecycleRow(ctx, publisher, eventKey)
 	if err != nil || !ok {
 		return false, err
@@ -1812,20 +1828,56 @@ func (s *Store) LifecycleSuperseded(ctx context.Context, publisher, eventKey str
 	return version > changeID, nil
 }
 
+// composeStatus reads the local panel record of one event key; found is
+// false when the key is not a panel communication.
+func (s *Store) composeStatus(ctx context.Context, eventKey string) (status string, found bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT status FROM compose_hazards WHERE event_key = ?`, eventKey).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read compose status for %q: %w", eventKey, err)
+	}
+	return status, true, nil
+}
+
 // lifecycleRow reads the recorded version and status of one message key;
 // ok=false when the ledger has no entry (a producer without local
 // storage).
+//
+// An EMPTY publisher identifies a job queued before the ledger had an
+// owner: panel communications stamped their version under the empty
+// publisher, and the adoption migration handed those ledger rows to the
+// instance WITHOUT rewriting the jobs already queued (payloads in the
+// durable inbox and in action_fires). Such a job must follow THIS
+// instance's row for its key: reading the old row let a communication
+// that had been retired in the meantime pass the delivery gate, because
+// the expiry updates the instance's row (reported P1). The empty-publisher
+// row stays as the fallback, so a database whose rows were never adopted
+// keeps its old behaviour.
 func (s *Store) lifecycleRow(ctx context.Context, publisher, eventKey string) (version int64, status string, ok bool, err error) {
-	err = s.db.QueryRowContext(ctx, `
-		SELECT version, status FROM message_lifecycle
-		WHERE publisher = ? AND event_key = ?`, publisher, eventKey).Scan(&version, &status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, "", false, nil
+	read := func(p string) (int64, string, bool, error) {
+		var v int64
+		var st string
+		err := s.db.QueryRowContext(ctx, `
+			SELECT version, status FROM message_lifecycle
+			WHERE publisher = ? AND event_key = ?`, p, eventKey).Scan(&v, &st)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, "", false, nil
+		}
+		if err != nil {
+			return 0, "", false, fmt.Errorf("read lifecycle for %q: %w", eventKey, err)
+		}
+		return v, st, true, nil
 	}
-	if err != nil {
-		return 0, "", false, fmt.Errorf("read lifecycle for %q: %w", eventKey, err)
+	if publisher == "" {
+		if local, err := s.instanceID(ctx); err == nil && local != "" {
+			if v, st, ok, err := read(local); ok || err != nil {
+				return v, st, ok, err
+			}
+		}
 	}
-	return version, status, true, nil
+	return read(publisher)
 }
 
 // InstanceID returns the persistent publisher UUID of this WarnFlux

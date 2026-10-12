@@ -55,11 +55,15 @@ func (r massSendRequest) markdown() bool { return r.kind == massKindLong }
 // massChannelProgress is the live progress of one delivery channel.
 type massChannelProgress struct {
 	kind   string
-	state  string // pending | running | done
+	state  string // pending | running | done | incomplete
 	total  int
 	done   int
 	sent   int
 	failed int
+	// unsent counts the recipients that were never attempted because the
+	// broadcast ran out of its budget: "done" would read as a complete
+	// delivery (reported P2).
+	unsent int
 }
 
 // massJob is one broadcast running in the background. Its mutable state is
@@ -73,6 +77,9 @@ type massJob struct {
 	recipients int
 	channels   []*massChannelProgress
 	finished   bool
+	// incomplete records that at least one channel ran out of budget: the
+	// job is finished, but not every recipient was reached.
+	incomplete bool
 	summary    string
 }
 
@@ -147,13 +154,36 @@ func (j *massJob) record(kind string, ok bool) {
 	}
 }
 
-// finishChannel marks one channel done.
+// finishChannel closes one channel: a channel that attempted FEWER
+// recipients than it announced ran out of the broadcast budget, so it is
+// marked incomplete and the recipients it never reached are counted as
+// unsent instead of vanishing (reported P2).
 func (j *massJob) finishChannel(kind string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if c := j.channel(kind); c != nil {
-		c.state = "done"
+	c := j.channel(kind)
+	if c == nil {
+		return
 	}
+	if c.done < c.total {
+		c.unsent = c.total - c.done
+		c.state = "incomplete"
+		j.incomplete = true
+		return
+	}
+	c.state = "done"
+}
+
+// unsentTotal reports how many messages of the whole broadcast were never
+// attempted, and which state the channels carry (for the summary).
+func (j *massJob) unsentTotal() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	n := 0
+	for _, c := range j.channels {
+		n += c.unsent
+	}
+	return n
 }
 
 // finish marks the whole job complete with its final summary.
@@ -194,14 +224,15 @@ type massProgressChannel struct {
 // massProgressView is the fully pre-rendered progress fragment (all text is
 // resolved in Go, so the partial needs no template funcs or language).
 type massProgressView struct {
-	JobID    string
-	Finished bool
-	Failed   bool
-	Percent  int
-	Headline string
-	Where    string
-	Summary  string
-	Channels []massProgressChannel
+	JobID      string
+	Finished   bool
+	Failed     bool
+	Incomplete bool
+	Percent    int
+	Headline   string
+	Where      string
+	Summary    string
+	Channels   []massProgressChannel
 }
 
 // progressView snapshots the job for rendering.
@@ -226,10 +257,14 @@ func (j *massJob) progressView(lang string) massProgressView {
 			if v.Where == "" {
 				v.Where = fmt.Sprintf("%s · %s", label, fmt.Sprintf(i18n.T(lang, "mass.progress.user"), c.done, c.total))
 			}
-		case "done":
+		case "done", "incomplete":
 			detail = fmt.Sprintf("%d ✓", c.sent)
 			if c.failed > 0 {
 				detail += fmt.Sprintf(" · %d ✗", c.failed)
+			}
+			if c.unsent > 0 {
+				detail += " · " + fmt.Sprintf(i18n.T(lang, "mass.progress.unsent"), c.unsent)
+				v.Incomplete = true
 			}
 			if c.failed > 0 {
 				v.Failed = true
@@ -243,8 +278,16 @@ func (j *massJob) progressView(lang string) massProgressView {
 		v.Percent = done * 100 / total
 	}
 	if j.finished {
-		v.Percent = 100
+		// An incomplete broadcast must NOT read as 100%: the bar shows how
+		// much of the recipient list was actually reached.
+		if !v.Incomplete {
+			v.Percent = 100
+		}
+		v.Incomplete = v.Incomplete || j.incomplete
 		v.Headline = i18n.T(lang, "mass.progress.done")
+		if v.Incomplete {
+			v.Headline = i18n.T(lang, "mass.progress.incomplete")
+		}
 		v.Where = ""
 		v.Summary = j.summary
 	} else if !j.resolved {
@@ -283,6 +326,14 @@ func (s *Server) runMassJob(j *massJob) {
 	j.setRecipients(len(recipients))
 
 	for _, kind := range req.channels {
+		// The budget is spent: the channel is entered anyway — it stops
+		// at once (the workers check the context) but records its
+		// recipients, so the ones it never reached are counted as unsent
+		// instead of disappearing from the progress and the summary
+		// (reported P2).
+		if ctx.Err() != nil && s.logger != nil {
+			s.logger.Warn("mass: broadcast budget spent, remaining recipients are not attempted", "job", j.id, "channel", kind)
+		}
 		switch kind {
 		case "aprs":
 			s.massChannelAPRS(ctx, j, recipients, req.message)
@@ -305,17 +356,23 @@ func (s *Server) runMassJob(j *massJob) {
 	meshN, meshF := j.channelCounts("meshtastic")
 	failures := aprsF + smsF + emailF + discordF + meshF
 
+	unsent := j.unsentTotal()
 	s.logger.Info("mass: notice broadcast", "kind", req.kind,
 		"users", len(recipients), "aprs", aprsN, "sms", smsN, "email", emailN,
-		"discord", discordN, "meshtastic", meshN, "failures", failures)
+		"discord", discordN, "meshtastic", meshN, "failures", failures, "unsent", unsent)
 	s.audit(req.username, "mass-info", fmt.Sprintf(
-		"kind=%s users=%d aprs=%d sms=%d email=%d discord=%d mesh=%d failures=%d",
-		req.kind, len(recipients), aprsN, smsN, emailN, discordN, meshN, failures))
+		"kind=%s users=%d aprs=%d sms=%d email=%d discord=%d mesh=%d failures=%d unsent=%d",
+		req.kind, len(recipients), aprsN, smsN, emailN, discordN, meshN, failures, unsent))
 
 	summary := fmt.Sprintf(i18n.T(req.lang, "mass.flash.sent"),
 		len(recipients), aprsN, smsN, emailN, discordN, meshN)
 	if failures > 0 {
 		summary += " " + fmt.Sprintf(i18n.T(req.lang, "mass.flash.failures"), failures)
+	}
+	if unsent > 0 {
+		// The operator must see the broadcast as INCOMPLETE, with the
+		// number of messages that never went out and the reason.
+		summary += " " + fmt.Sprintf(i18n.T(req.lang, "mass.flash.incomplete"), unsent)
 	}
 	j.finish(summary)
 }
@@ -333,6 +390,9 @@ func (s *Server) massChannelAPRS(ctx context.Context, j *massJob, recipients []s
 	}
 	j.setChannelTotal("aprs", countUsers(recipients, hasAPRS))
 	for _, u := range recipients {
+		if ctx.Err() != nil {
+			break
+		}
 		if !hasAPRS(u) {
 			continue
 		}
@@ -354,6 +414,9 @@ func (s *Server) massChannelSMS(ctx context.Context, j *massJob, recipients []st
 	eligible := func(u storage.User) bool { return strings.TrimSpace(u.Phone) != "" }
 	j.setChannelTotal("sms", countUsers(recipients, eligible))
 	for _, u := range recipients {
+		if ctx.Err() != nil {
+			break
+		}
 		if !eligible(u) {
 			continue
 		}
@@ -369,6 +432,9 @@ func (s *Server) massChannelMeshtastic(ctx context.Context, j *massJob, recipien
 	}
 	j.setChannelTotal("meshtastic", countUsers(recipients, hasMesh))
 	for _, u := range recipients {
+		if ctx.Err() != nil {
+			break
+		}
 		if !hasMesh(u) {
 			continue
 		}
@@ -417,6 +483,9 @@ func (s *Server) massChannelEmail(ctx context.Context, j *massJob, recipients []
 	eligible := func(u storage.User) bool { return strings.TrimSpace(u.Email) != "" }
 	j.setChannelTotal("email", countUsers(recipients, eligible))
 	for _, u := range recipients {
+		if ctx.Err() != nil {
+			break
+		}
 		if !eligible(u) {
 			continue
 		}
@@ -484,6 +553,9 @@ func (s *Server) massChannelDiscord(ctx context.Context, j *massJob, recipients 
 	eligible := func(u storage.User) bool { return strings.TrimSpace(u.Discord) != "" }
 	j.setChannelTotal("discord", countUsers(recipients, eligible))
 	for _, u := range recipients {
+		if ctx.Err() != nil {
+			break
+		}
 		if !eligible(u) {
 			continue
 		}

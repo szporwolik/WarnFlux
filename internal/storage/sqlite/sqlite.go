@@ -1080,6 +1080,18 @@ type MigrationInfo struct {
 //   - foreign_keys=ON: integrity checks active.
 //   - a single database connection (MaxOpenConns=1): serializes access,
 //     keeps per-connection PRAGMAs stable and avoids SQLITE_BUSY.
+//
+// The single connection comes with one hard rule for this package: no
+// code may query s.db while a transaction of its own is open. The query
+// then waits for the connection the caller itself holds, which never
+// arrives — the process keeps running while every later database
+// operation times out ("context deadline exceeded" on reads, writes and
+// the panel alike) until it is restarted. That is what took the station
+// down once: the ingest transaction stamped an event's message id, and
+// the id lookup queried the database. Helpers reachable from inside a
+// transaction must therefore take the tx (or answer from memory, as the
+// message ids do); see joinLegacyGSMParts and msgid.go for the current
+// shape.
 func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {

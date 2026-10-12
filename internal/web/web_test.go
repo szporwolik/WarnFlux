@@ -708,7 +708,13 @@ func TestDashboardHealthCard(t *testing.T) {
 	for _, want := range []string{
 		`id="health-section"`,
 		"System health",
-		"DEGRADED", // receiver "local" is configured but never dialed in tests
+		// Receiver "local" is configured but never dialed in tests: a
+		// receiver that cannot connect is an outage, so the verdict is red
+		// ("FAULT", not "DEGRADED"). The same vocabulary colours every
+		// card, which is what the source/output table below shows: the
+		// degraded output there is amber, exactly like this verdict is red.
+		`<span class="badge bad health-overall">FAULT</span>`,
+		`class="badge warn">degraded`,
 		">Database</strong>",
 		"ready",
 		">Dispatch queue</strong>",
@@ -716,6 +722,19 @@ func TestDashboardHealthCard(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("dashboard health card missing %q: %s", want, html)
+		}
+	}
+	// The rows the cards share must agree: a degraded source or output is
+	// amber everywhere, never red in one card and amber in the next. The
+	// fixture's disabled instances stay gray instead of posing as faults.
+	for _, absent := range []string{
+		`class="badge bad">degraded`,
+		`class="badge disabled"`,
+		`class="badge degraded"`,
+		`class="badge healthy"`,
+	} {
+		if strings.Contains(html, absent) {
+			t.Errorf("dashboard still uses a retired badge spelling %q", absent)
 		}
 	}
 	// The standalone health page and its sidebar entry are gone.

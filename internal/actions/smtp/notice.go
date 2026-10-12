@@ -10,8 +10,19 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	"github.com/szporwolik/WarnFlux/internal/markdown"
 	"github.com/szporwolik/WarnFlux/internal/sanity"
 )
+
+// noticeBody is one message already rendered for both alternatives of the
+// mail: the plain text and the callout content, the latter as safe HTML so
+// a long notice can carry formatting.
+type noticeBody struct {
+	plain string
+	html  string
+	// markup marks html as renderer output that carries formatting.
+	markup bool
+}
 
 // DirectNotice sends one branded notice email from a free-text message:
 // a plain-text alternative plus the notification-styled HTML part with the
@@ -20,18 +31,36 @@ import (
 // broadcast reads like every other WarnFlux communication. Callers must
 // bound the context.
 func DirectNotice(ctx context.Context, cfg Config, to []string, subject, text string, app action.AppInfo, lang string) error {
-	msg := noticeMessage(ctx, cfg, to, subject, text, app, lang, time.Now())
+	return notice(ctx, cfg, to, subject, text, app, lang, false)
+}
+
+// DirectNoticeMarkdown sends the same branded notice, but renders the
+// message as the markdown subset the composer announces (headings,
+// emphasis, lists, code, links) instead of showing the markers literally.
+// The plain-text alternative carries the flattened message.
+func DirectNoticeMarkdown(ctx context.Context, cfg Config, to []string, subject, text string, app action.AppInfo, lang string) error {
+	return notice(ctx, cfg, to, subject, text, app, lang, true)
+}
+
+// notice prepares the body and builds the message.
+func notice(ctx context.Context, cfg Config, to []string, subject, text string, app action.AppInfo, lang string, md bool) error {
+	src := strings.TrimSpace(sanity.NormalizeText(ctx, sanity.ChannelEmailBody, text))
+	body := noticeBody{plain: src, html: htmlEscaper(src)}
+	if md {
+		body = noticeBody{plain: markdown.Plain(src), html: markdown.HTML(src), markup: true}
+	}
+	msg := noticeMessage(ctx, cfg, to, subject, body, app, lang, time.Now())
 	return DirectMessage(ctx, cfg, to, msg)
 }
 
 // noticeMessage builds the multipart/related notice: a plain-text fallback
 // and the branded HTML body, plus the inline logo. Subject and plain body
 // pass through the shared normalizer like the routed mail.
-func noticeMessage(ctx context.Context, cfg Config, to []string, subject, text string, app action.AppInfo, lang string, now time.Time) []byte {
+func noticeMessage(ctx context.Context, cfg Config, to []string, subject string, body noticeBody, app action.AppInfo, lang string, now time.Time) []byte {
 	lang = i18n.Effective(lang)
 	subject = sanity.NormalizeText(ctx, sanity.ChannelEmailSubject, subject)
-	plain := sanity.NormalizeText(ctx, sanity.ChannelEmailBody, noticePlain(app, text, lang, now))
-	htmlBody := noticeHTML(app, text, lang, now)
+	plain := sanity.NormalizeText(ctx, sanity.ChannelEmailBody, noticePlain(app, body.plain, lang, now))
+	htmlBody := noticeHTML(app, body.html, lang, now, body.markup)
 
 	relatedBoundary := fmt.Sprintf("warnflux-rel-%d", now.UnixNano())
 	altBoundary := fmt.Sprintf("warnflux-alt-%d", now.UnixNano())
@@ -86,8 +115,11 @@ func noticePlain(app action.AppInfo, text, lang string, now time.Time) string {
 
 // noticeHTML renders the branded HTML body in the notification style: the
 // accent bar, the logo + system header, the notice callout, the timestamp
-// and the branded footer.
-func noticeHTML(app action.AppInfo, text, lang string, now time.Time) string {
+// and the branded footer. text is the callout content and must already be
+// safe HTML (escaped for a plain notice, rendered for a markdown one);
+// markup says whether it carries formatting, which decides the callout
+// typography.
+func noticeHTML(app action.AppInfo, text, lang string, now time.Time, markup bool) string {
 	req := action.ActionRequest{App: app}
 	const accent = "#303c46"
 	brand := strings.TrimSpace(app.Header1)
@@ -110,8 +142,13 @@ func noticeHTML(app action.AppInfo, text, lang string, now time.Time) string {
 	fmt.Fprintf(&b, `<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">%s</div>`,
 		htmlEscaper(i18n.T(lang, "mass.mail_subject")))
 
-	fmt.Fprintf(&b, `<div style="margin-top:16px;background-color:#1b232b;border-left:4px solid %s;border-radius:8px;padding:14px 18px;font-size:20px;font-weight:700;color:#eef2f5;line-height:1.4;">%s</div>`,
-		accent, htmlEscaper(strings.TrimSpace(text)))
+	if markup {
+		fmt.Fprintf(&b, `<div style="margin-top:16px;background-color:#1b232b;border-left:4px solid %s;border-radius:8px;padding:14px 18px;font-size:14px;color:#eef2f5;line-height:1.55;word-break:break-word;">%s</div>`,
+			accent, noticeContentStyles(text))
+	} else {
+		fmt.Fprintf(&b, `<div style="margin-top:16px;background-color:#1b232b;border-left:4px solid %s;border-radius:8px;padding:14px 18px;font-size:20px;font-weight:700;color:#eef2f5;line-height:1.4;">%s</div>`,
+			accent, text)
+	}
 
 	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">%s: %s</div>`,
 		htmlEscaper(i18n.T(lang, "mail.updated")), htmlEscaper(humanTime(now)))
@@ -122,4 +159,24 @@ func noticeHTML(app action.AppInfo, text, lang string, now time.Time) string {
 
 	b.WriteString(`</td></tr></table></div>`)
 	return b.String()
+}
+
+// noticeContentStyles adds inline styles to the tags the markdown renderer
+// emits, so a formatted notice keeps reading well in mail clients, which
+// routinely drop <style> blocks: links get a light blue, headings a
+// readable size, lists a normal indent and code a dark chip. The input is
+// our own renderer output, never operator HTML.
+func noticeContentStyles(html string) string {
+	for _, r := range []struct{ old, new string }{
+		{"<h4>", `<h4 style="margin:16px 0 8px;font-size:16px;color:#eef2f5;">`},
+		{"<p>", `<p style="margin:0 0 10px;">`},
+		{"<ul>", `<ul style="margin:0 0 10px;padding-left:20px;">`},
+		{"<li>", `<li style="margin:4px 0;">`},
+		{"<pre>", `<pre style="margin:0 0 10px;padding:10px 12px;background-color:#0f1419;border:1px solid #303c46;border-radius:6px;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#cfd8e3;">`},
+		{"<code>", `<code style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#f3c07b;">`},
+		{"<a ", `<a style="color:#7ab8ff;" `},
+	} {
+		html = strings.ReplaceAll(html, r.old, r.new)
+	}
+	return html
 }

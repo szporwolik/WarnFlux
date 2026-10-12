@@ -12,6 +12,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/actions/discord"
 	"github.com/szporwolik/WarnFlux/internal/actions/smtp"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
+	"github.com/szporwolik/WarnFlux/internal/markdown"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -36,6 +37,7 @@ var massChannelLabel = map[string]string{
 // massSendRequest is the validated broadcast captured at submit time and
 // handed to the background job.
 type massSendRequest struct {
+	kind     string // massKindShort | massKindLong
 	message  string
 	channels []string // selected kinds, in massChannelOrder
 	userIDs  []int64
@@ -45,6 +47,10 @@ type massSendRequest struct {
 	lang     string
 	app      action.AppInfo
 }
+
+// markdown reports whether the message is composed as markdown (the long
+// kind), which decides how e-mail and Discord render it.
+func (r massSendRequest) markdown() bool { return r.kind == massKindLong }
 
 // massChannelProgress is the live progress of one delivery channel.
 type massChannelProgress struct {
@@ -283,9 +289,9 @@ func (s *Server) runMassJob(j *massJob) {
 		case "sms":
 			s.massChannelSMS(ctx, j, recipients, req.message)
 		case "email":
-			s.massChannelEmail(ctx, j, recipients, req.message, req.app, s.SystemLanguage())
+			s.massChannelEmail(ctx, j, recipients, req.message, req.app, s.SystemLanguage(), req.markdown())
 		case "discord":
-			s.massChannelDiscord(ctx, j, recipients, req.message)
+			s.massChannelDiscord(ctx, j, recipients, req.message, req.markdown())
 		case "meshtastic":
 			s.massChannelMeshtastic(ctx, j, recipients, req.message, req.username)
 		}
@@ -299,12 +305,12 @@ func (s *Server) runMassJob(j *massJob) {
 	meshN, meshF := j.channelCounts("meshtastic")
 	failures := aprsF + smsF + emailF + discordF + meshF
 
-	s.logger.Info("mass: notice broadcast",
+	s.logger.Info("mass: notice broadcast", "kind", req.kind,
 		"users", len(recipients), "aprs", aprsN, "sms", smsN, "email", emailN,
 		"discord", discordN, "meshtastic", meshN, "failures", failures)
 	s.audit(req.username, "mass-info", fmt.Sprintf(
-		"users=%d aprs=%d sms=%d email=%d discord=%d mesh=%d failures=%d",
-		len(recipients), aprsN, smsN, emailN, discordN, meshN, failures))
+		"kind=%s users=%d aprs=%d sms=%d email=%d discord=%d mesh=%d failures=%d",
+		req.kind, len(recipients), aprsN, smsN, emailN, discordN, meshN, failures))
 
 	summary := fmt.Sprintf(i18n.T(req.lang, "mass.flash.sent"),
 		len(recipients), aprsN, smsN, emailN, discordN, meshN)
@@ -396,7 +402,9 @@ func (s *Server) massMailer() (smtp.DirectMailer, bool) {
 	return nil, false
 }
 
-func (s *Server) massChannelEmail(ctx context.Context, j *massJob, recipients []storage.User, message string, app action.AppInfo, lang string) {
+// massChannelEmail mails the notice; a markdown message is rendered into
+// the HTML part instead of being shown with its markers.
+func (s *Server) massChannelEmail(ctx context.Context, j *massJob, recipients []storage.User, message string, app action.AppInfo, lang string, md bool) {
 	mailer, ok := s.massMailer()
 	if !ok {
 		j.setChannelTotal("email", 0)
@@ -412,7 +420,12 @@ func (s *Server) massChannelEmail(ctx context.Context, j *massJob, recipients []
 		if !eligible(u) {
 			continue
 		}
-		err := mailer.SendNotice(ctx, []string{u.Email}, subject, message, app, lang)
+		var err error
+		if md {
+			err = mailer.SendNoticeMarkdown(ctx, []string{u.Email}, subject, message, app, lang)
+		} else {
+			err = mailer.SendNotice(ctx, []string{u.Email}, subject, message, app, lang)
+		}
 		j.record("email", err == nil)
 	}
 }
@@ -450,8 +463,10 @@ func (s *Server) massDiscordDM() (discord.DirectMessenger, bool) {
 // is personal, and a channel-wide post would notify everyone who happens
 // to be in the channel — including people who never asked for anything.
 // The id must be a numeric user id; profile values that are usernames or
-// handles fail for that recipient, which the panel shows as a failure.
-func (s *Server) massChannelDiscord(ctx context.Context, j *massJob, recipients []storage.User, message string) {
+// handles fail for that recipient, which the panel shows as a failure. A
+// markdown message is rewritten into what Discord renders (headings have
+// no syntax there, so they become bold lines).
+func (s *Server) massChannelDiscord(ctx context.Context, j *massJob, recipients []storage.User, message string, md bool) {
 	dm, ok := s.massDiscordDM()
 	if !ok {
 		// No bot token anywhere: Discord cannot be delivered to
@@ -462,6 +477,9 @@ func (s *Server) massChannelDiscord(ctx context.Context, j *massJob, recipients 
 			s.logger.Warn("mass: discord skipped (no bot token configured for direct messages)")
 		}
 		return
+	}
+	if md {
+		message = markdown.Discord(message)
 	}
 	eligible := func(u storage.User) bool { return strings.TrimSpace(u.Discord) != "" }
 	j.setChannelTotal("discord", countUsers(recipients, eligible))

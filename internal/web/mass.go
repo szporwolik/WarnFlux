@@ -15,14 +15,87 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
-// massMessageMax bounds the one-shot notice (a short operator broadcast,
-// not a hazard communication).
-const massMessageMax = 50
+// massMessageMax bounds the short one-shot notice (a short operator
+// broadcast, not a hazard communication); massMessageLongMax bounds the
+// long one, which only the surfaces that render markdown well can carry.
+const (
+	massMessageMax     = 50
+	massMessageLongMax = 1000
+)
+
+// The two message kinds of the Mass info composer.
+const (
+	massKindShort = "short"
+	massKindLong  = "long"
+)
+
+// massChannelsByKind lists the channels that can carry a message of a
+// given kind: a short notice fits every surface, a long one goes out over
+// e-mail and Discord only — the two channels that render it as composed.
+var massChannelsByKind = map[string][]string{
+	massKindShort: {"aprs", "sms", "email", "discord", "meshtastic"},
+	massKindLong:  {"email", "discord"},
+}
+
+// massMessageLimit returns the character budget of a message kind.
+func massMessageLimit(kind string) int {
+	if kind == massKindLong {
+		return massMessageLongMax
+	}
+	return massMessageMax
+}
+
+// massNormalizeKind maps a submitted kind onto a known one; an empty value
+// means "short", so older forms and bookmarks keep working.
+func massNormalizeKind(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case massKindLong:
+		return massKindLong
+	default:
+		return massKindShort
+	}
+}
+
+// massChannelAllows reports whether a kind may be delivered over a channel.
+func massChannelAllows(kind, channel string) bool {
+	for _, k := range massChannelsByKind[kind] {
+		if k == channel {
+			return true
+		}
+	}
+	return false
+}
+
+// massChannelKinds renders the kinds a channel accepts as a
+// space-separated list for the form's data attribute, so the client side
+// switch and the server validation can never disagree.
+func massChannelKinds(channel string) string {
+	var kinds []string
+	for _, kind := range []string{massKindShort, massKindLong} {
+		if massChannelAllows(kind, channel) {
+			kinds = append(kinds, kind)
+		}
+	}
+	return strings.Join(kinds, " ")
+}
+
+// massCharLimits renders the character budget per kind for the form, which
+// drives the live counter and the field's maxlength.
+func massCharLimits() string {
+	var parts []string
+	for _, kind := range []string{massKindShort, massKindLong} {
+		parts = append(parts, fmt.Sprintf("%s:%d", kind, massMessageLimit(kind)))
+	}
+	return strings.Join(parts, " ")
+}
 
 // massChannel is one delivery channel offered on the Mass info form.
 type massChannel struct {
 	Kind  string
 	Label string // i18n key
+	// Kinds lists the message kinds this channel can carry ("short" always,
+	// plus "long" for e-mail and Discord).
+	Kinds string
 }
 
 // massNetwork is one EMCOM network selectable as a recipient scope.
@@ -48,8 +121,12 @@ type massView struct {
 
 	// Message echoes the submitted text on a validation error.
 	Message string
-	Msg     string
-	Error   string
+	// Kind is the selected message kind ("short" or "long").
+	Kind string
+	// CharLimits is the character budget per kind, for the live counter.
+	CharLimits string
+	Msg        string
+	Error      string
 
 	// Progress is the live broadcast panel (nil when no job is shown).
 	Progress *massProgressView
@@ -107,16 +184,18 @@ func (s *Server) buildMassView(lang string) massView {
 		Commit:      s.commit,
 		RepoURL:     repoURL,
 		NavMass:     true,
+		Kind:        massKindShort,
+		CharLimits:  massCharLimits(),
 		SelGroups:   map[int64]bool{},
 		SelNetworks: map[string]bool{},
 		SelUsers:    map[int64]bool{},
 		SelChannels: map[string]bool{},
 		Channels: []massChannel{
-			{Kind: "aprs", Label: "mass.ch.aprs"},
-			{Kind: "sms", Label: "mass.ch.sms"},
-			{Kind: "email", Label: "mass.ch.email"},
-			{Kind: "discord", Label: "mass.ch.discord"},
-			{Kind: "meshtastic", Label: "mass.ch.meshtastic"},
+			{Kind: "aprs", Label: "mass.ch.aprs", Kinds: massChannelKinds("aprs")},
+			{Kind: "sms", Label: "mass.ch.sms", Kinds: massChannelKinds("sms")},
+			{Kind: "email", Label: "mass.ch.email", Kinds: massChannelKinds("email")},
+			{Kind: "discord", Label: "mass.ch.discord", Kinds: massChannelKinds("discord")},
+			{Kind: "meshtastic", Label: "mass.ch.meshtastic", Kinds: massChannelKinds("meshtastic")},
 		},
 		// Discord is delivered as a direct message, which needs a bot
 		// token: without one the notice cannot be sent at all, and the
@@ -253,9 +332,11 @@ func (s *Server) MassRecipientsForTest(ctx context.Context, userIDs, groupIDs []
 	return s.massRecipients(ctx, userIDs, groupIDs, slugs)
 }
 
-// handleMassSend broadcasts one short notice to the selected users over
-// the selected channels. Every user receives it once per channel,
-// regardless of how many groups or networks covered them.
+// handleMassSend broadcasts one notice to the selected users over the
+// selected channels. Every user receives it once per channel, regardless
+// of how many groups or networks covered them. A short notice is plain
+// text and fits every channel; a long one is markdown and goes out over
+// e-mail and Discord only.
 func (s *Server) handleMassSend(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
@@ -263,26 +344,46 @@ func (s *Server) handleMassSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lang := s.langFor(r)
-	message := strings.TrimSpace(r.PostFormValue("message"))
-	if message == "" {
-		s.renderMassError(w, r, http.StatusUnprocessableEntity, message, i18n.T(lang, "mass.err.empty"))
+	rawKind := strings.TrimSpace(r.PostFormValue("kind"))
+	kind := massNormalizeKind(rawKind)
+	if rawKind != "" && rawKind != kind {
+		s.renderMassError(w, r, http.StatusUnprocessableEntity, massKindShort,
+			strings.TrimSpace(r.PostFormValue("message")), i18n.T(lang, "mass.err.kind"))
 		return
 	}
-	if utf8.RuneCountInString(message) > massMessageMax {
-		s.renderMassError(w, r, http.StatusUnprocessableEntity, message,
-			fmt.Sprintf(i18n.T(lang, "mass.err.long"), massMessageMax))
+	message := strings.TrimSpace(r.PostFormValue("message"))
+	if message == "" {
+		s.renderMassError(w, r, http.StatusUnprocessableEntity, kind, message, i18n.T(lang, "mass.err.empty"))
+		return
+	}
+	if limit := massMessageLimit(kind); utf8.RuneCountInString(message) > limit {
+		s.renderMassError(w, r, http.StatusUnprocessableEntity, kind, message,
+			fmt.Sprintf(i18n.T(lang, "mass.err.long"), limit))
 		return
 	}
 
 	channels := make(map[string]bool)
+	wrongKind := ""
 	for _, v := range r.PostForm["channels"] {
 		switch v {
 		case "aprs", "sms", "email", "discord", "meshtastic":
+			if !massChannelAllows(kind, v) {
+				wrongKind = v
+				continue
+			}
 			channels[v] = true
 		}
 	}
+	if wrongKind != "" {
+		// Refuse instead of silently dropping a channel the operator
+		// ticked: a notice that quietly skipped part of its audience is
+		// worse than a rejected form.
+		s.renderMassError(w, r, http.StatusUnprocessableEntity, kind, message,
+			i18n.T(lang, "mass.err.channels_kind"))
+		return
+	}
 	if len(channels) == 0 {
-		s.renderMassError(w, r, http.StatusUnprocessableEntity, message, i18n.T(lang, "mass.err.no_channels"))
+		s.renderMassError(w, r, http.StatusUnprocessableEntity, kind, message, i18n.T(lang, "mass.err.no_channels"))
 		return
 	}
 	var userIDs, groupIDs []int64
@@ -303,19 +404,20 @@ func (s *Server) handleMassSend(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(userIDs) == 0 && len(groupIDs) == 0 && len(slugs) == 0 {
-		s.renderMassError(w, r, http.StatusUnprocessableEntity, message, i18n.T(lang, "mass.err.no_targets"))
+		s.renderMassError(w, r, http.StatusUnprocessableEntity, kind, message, i18n.T(lang, "mass.err.no_targets"))
 		return
 	}
 
 	// Run the broadcast in the background and hand the page a job id, so
 	// the operator watches live progress instead of a blocked POST.
 	kinds := make([]string, 0, len(channels))
-	for _, kind := range massChannelOrder {
-		if channels[kind] {
-			kinds = append(kinds, kind)
+	for _, ch := range massChannelOrder {
+		if channels[ch] {
+			kinds = append(kinds, ch)
 		}
 	}
 	job := s.startMassJob(massSendRequest{
+		kind:     kind,
 		message:  message,
 		channels: kinds,
 		userIDs:  userIDs,
@@ -335,12 +437,13 @@ func (s *Server) handleMassSend(w http.ResponseWriter, r *http.Request) {
 
 // renderMassError re-renders the form with an error banner and the
 // submitted message preserved.
-func (s *Server) renderMassError(w http.ResponseWriter, r *http.Request, status int, message, msg string) {
+func (s *Server) renderMassError(w http.ResponseWriter, r *http.Request, status int, kind, message, msg string) {
 	sess := s.sessions.currentSession(r)
 	view := s.buildMassView(s.langFor(r))
 	view.CSRF = sess.csrf
 	view.Username = sess.username
 	view.Role = sess.role
+	view.Kind = massNormalizeKind(kind)
 	view.Message = message
 	view.Error = msg
 	view.SelGroups = intSet(r.PostForm["groups"])

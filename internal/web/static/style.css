@@ -718,6 +718,12 @@ button:disabled { cursor: not-allowed; }
 .mass-empty { opacity: 0.6; cursor: default; }
 .mass-empty:hover { border-color: var(--border); }
 
+/* Mass info composer: a channel the selected message kind cannot carry
+   (e.g. APRS for a long markdown notice) is hidden instead of offered and
+   then rejected — the note under the picker explains why. */
+.account-channel.mass-chan-off { display: none; }
+.mass-md-hint { margin: 0.6rem 0 0; font-size: 0.78rem; }
+
 /* Mass info broadcast: live progress (bar + per-channel chips) shown while
    the background job delivers the notice. */
 .mass-progress {
@@ -2930,7 +2936,9 @@ tr.click-send:hover td { background: var(--surface-hi); }
   min-width: 0;
 }
 .account-grid .field > span { font-size: 0.78rem; font-weight: 500; color: var(--muted); }
-.account-grid .field input {
+.account-grid .field input,
+.account-grid .field select,
+.account-grid .field textarea {
   width: 100%;
   background: var(--input-bg);
   border: 1px solid var(--input-border);
@@ -2939,7 +2947,15 @@ tr.click-send:hover td { background: var(--surface-hi); }
   padding: 0.45rem 0.7rem;
   font-size: 0.9rem;
 }
-.account-grid .field input:focus {
+.account-grid .field textarea {
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 3.5rem;
+}
+.account-grid .field input:focus,
+.account-grid .field select:focus,
+.account-grid .field textarea:focus {
   outline: none;
   border-color: var(--focus);
   box-shadow: 0 0 0 3px var(--focus-ring);

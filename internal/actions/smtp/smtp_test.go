@@ -785,3 +785,108 @@ rate_limit_per_minute: -1
 		t.Errorf("notice mail must not link the repository:\n%s", m.data)
 	}
 }
+
+// TestSendNoticeMarkdownRendersBody pins the long-broadcast mail: the
+// markdown subset a long Mass info notice is composed in must reach the
+// reader as formatting — headings, lists, emphasis, code and links in the
+// HTML part, flattened text in the plain-text alternative — while anything
+// that only looks like markup stays escaped.
+func TestSendNoticeMarkdownRendersBody(t *testing.T) {
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [ops@example.com]
+starttls: false
+rate_limit_per_minute: -1
+`, port)))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	mailer, ok := p.(smtp.DirectMailer)
+	if !ok {
+		t.Fatal("smtp plugin does not implement DirectMailer")
+	}
+	app := action.AppInfo{Version: "0.7.7", Header1: "SPOK", Domain: "spok.sp9moa.pl"}
+	body := "# Radar\n**Pogrubienie** i `kod`.\n\n- jeden\n- dwa\n\nZobacz [mapę](https://sosna.sp9moa.pl) <script>alert(1)</script>"
+	if err := mailer.SendNoticeMarkdown(ctx, []string{"alice@example.com"}, "[SPOK] Wysyłka zbiorcza", body, app, "en"); err != nil {
+		t.Fatalf("SendNoticeMarkdown: %v", err)
+	}
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	got := srv.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("mails = %d, want 1", len(got))
+	}
+	mail := got[0].data
+	html := htmlPartOf(t, mail)
+	for _, want := range []string{
+		`<h4 style=`, "Radar</h4>",
+		"<strong>Pogrubienie</strong>",
+		`<code style=`, "kod</code>",
+		`<ul style=`, `<li style="margin:4px 0;">jeden</li>`,
+		`<a style="color:#7ab8ff;" href="https://sosna.sp9moa.pl"`,
+		// Raw markup in the message never becomes markup.
+		"&lt;script&gt;alert(1)&lt;/script&gt;",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("markdown HTML part missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "<script>") {
+		t.Errorf("markdown HTML part leaked a script tag:\n%s", html)
+	}
+	// The plain-text alternative is flattened: no markers, the link keeps
+	// its label and URL.
+	plain := plainPartOf(t, mail)
+	for _, want := range []string{"Radar", "Pogrubienie i kod.", "- jeden\n- dwa", "mapę (https://sosna.sp9moa.pl)"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("plain part missing %q:\n%s", want, plain)
+		}
+	}
+	for _, bad := range []string{"**", "`", "](https://"} {
+		if strings.Contains(plain, bad) {
+			t.Errorf("plain part kept markdown %q:\n%s", bad, plain)
+		}
+	}
+}
+
+// htmlPartOf returns the text/html body of one captured mail.
+func htmlPartOf(t *testing.T, mail string) string {
+	t.Helper()
+	return mimePartOf(t, mail, "Content-Type: text/html")
+}
+
+// plainPartOf returns the text/plain body of one captured mail.
+func plainPartOf(t *testing.T, mail string) string {
+	t.Helper()
+	return mimePartOf(t, mail, "Content-Type: text/plain")
+}
+
+// mimePartOf slices one MIME part out of a captured mail: from its
+// Content-Type header to the next boundary (whatever the test server did
+// to the line endings).
+func mimePartOf(t *testing.T, mail, contentType string) string {
+	t.Helper()
+	i := strings.Index(mail, contentType)
+	if i < 0 {
+		t.Fatalf("no %q part in:\n%s", contentType, mail)
+	}
+	rest := mail[i:]
+	if j := strings.Index(rest, "\r\n--"); j >= 0 {
+		return rest[:j]
+	}
+	if j := strings.Index(rest, "\n--"); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}

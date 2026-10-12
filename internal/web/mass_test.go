@@ -208,3 +208,94 @@ func TestMassRecipientsDedup(t *testing.T) {
 		t.Fatalf("network+user dedup = %+v", got)
 	}
 }
+
+// TestMassLongKind pins the long-message mode of the Mass info composer:
+// the kind selector drives the character budget and the channel list, the
+// server refuses a channel that cannot carry a long notice (instead of
+// silently dropping it) and accepts a full 1000-character markdown
+// bulletin.
+func TestMassLongKind(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("alice", "", "alice@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := env.users.GetUserByUsername("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.login()
+	resp, html := env.get("/mass")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /mass = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<select id="mass-kind" name="kind"`) {
+		t.Errorf("mass page missing the message kind selector")
+	}
+	if !strings.Contains(html, `<textarea id="mass-message" name="message"`) {
+		t.Errorf("mass page missing the message textarea")
+	}
+	// The character budget and the channel rule travel with the markup, so
+	// the client-side switch and the server agree.
+	for _, want := range []string{
+		`data-char-limits="short:50 long:1000"`,
+		`data-kinds="short long"`,
+		`data-kinds="short"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("mass page missing %q", want)
+		}
+	}
+	csrf := extractCSRF(t, html)
+	target := url.Values{"users": {idStr(alice.ID)}}
+
+	// A short notice still tops out at 50 characters.
+	req := url.Values{"csrf": {csrf}, "kind": {"short"}, "message": {strings.Repeat("x", 51)}, "channels": {"aprs"}}
+	resp, html = env.postForm("/mass", mergeValues(req, target))
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "longer than 50 characters") {
+		t.Fatalf("51-char short message = %d, want 422 with the 50-character limit", resp.StatusCode)
+	}
+
+	// A long one takes 1000 and refuses 1001.
+	long := strings.Repeat("x", 1000)
+	req = url.Values{"csrf": {csrf}, "kind": {"long"}, "message": {long}, "channels": {"email"}}
+	resp, html = env.postForm("/mass", mergeValues(req, target))
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("1000-char long message = %d, want 303 (error: %s)", resp.StatusCode, html)
+	}
+	req = url.Values{"csrf": {csrf}, "kind": {"long"}, "message": {long + "x"}, "channels": {"email"}}
+	resp, html = env.postForm("/mass", mergeValues(req, target))
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "longer than 1000 characters") {
+		t.Fatalf("1001-char long message = %d, want 422 with the 1000-character limit", resp.StatusCode)
+	}
+
+	// A channel that cannot carry a long notice is an error, not a silent
+	// omission: the operator has to see that part of the audience would be
+	// skipped.
+	req = url.Values{"csrf": {csrf}, "kind": {"long"}, "message": {"Bulletin"}, "channels": {"aprs", "email"}}
+	resp, html = env.postForm("/mass", mergeValues(req, target))
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "e-mail or Discord only") {
+		t.Fatalf("long over APRS = %d, want 422 with the channel-kind error", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<option value="long" selected>`) {
+		t.Error("the re-rendered form lost the long kind")
+	}
+
+	// An unknown kind is rejected instead of being guessed.
+	req = url.Values{"csrf": {csrf}, "kind": {"huge"}, "message": {"Hallo"}, "channels": {"email"}}
+	resp, html = env.postForm("/mass", mergeValues(req, target))
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "Unknown message kind") {
+		t.Fatalf("unknown kind = %d, want 422", resp.StatusCode)
+	}
+}
+
+// mergeValues returns a copy of a with b's entries added.
+func mergeValues(a, b url.Values) url.Values {
+	out := url.Values{}
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}

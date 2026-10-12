@@ -956,31 +956,10 @@ func run(configPath string, checkConfig bool) error {
 	// the result after each execution, so a restart never loses a
 	// queued notification.
 	actionsMgr.SetDeliveryStore(store)
-	// Staleness oracle consulted directly before transmission: an alert
-	// superseded by a newer version, cancelled (locally or remotely) or
-	// expired while its job waited in the queue must never hit the
-	// radio. The shared lifecycle ledger covers local, remote and panel
-	// messages; the local events table remains the second layer for
-	// expiry of locally-ingested events.
-	actionsMgr.SetDeliveryGate(func(ctx context.Context, req action.ActionRequest) bool {
-		if h := req.Event.Hazard; h != nil {
-			blocked, err := store.LifecycleBlocks(ctx, h.Publisher, h.Key, h.ChangeID)
-			if err != nil {
-				logger.Warn("actions: lifecycle lookup failed", "event_key", h.Key, "error", err)
-				return true // never suppress on a lookup failure
-			}
-			if blocked {
-				return false
-			}
-			verdict, err := store.HazardActive(ctx, h.Publisher, h.Key, time.Now())
-			if err != nil {
-				logger.Warn("actions: delivery freshness lookup failed", "event_key", h.Key, "error", err)
-				return true // read error: never suppress on a lookup failure
-			}
-			return verdict != storage.HazardInactive
-		}
-		return true
-	})
+	// Staleness oracle consulted directly before transmission, for
+	// every job including stand-down notices (see action.NewLifecycleGate
+	// for the version rule).
+	actionsMgr.SetDeliveryGate(action.NewLifecycleGate(store, logger))
 	// Recovery sweep for the async-failure ledger: a crash between the
 	// failure-marker write and the job re-arm (pre-atomic versions, or
 	// any future split) would leave an accepted job with a durable

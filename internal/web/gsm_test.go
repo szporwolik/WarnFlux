@@ -379,3 +379,84 @@ func TestGSMPageNamesDirectoryNumbers(t *testing.T) {
 		t.Error("the send picker offered a number the modem would reject")
 	}
 }
+
+// TestGSMPartialRefreshesModemStatus pins the polled fragment: it must
+// carry the modem session pill, not only the history. The page used to
+// render the session state once, so a modem that dropped and came back
+// stayed "down" (or "ok") on screen for as long as the tab lived, which
+// reads as auto-refresh being broken.
+func TestGSMPartialRefreshesModemStatus(t *testing.T) {
+	store := &fakeGSMMsgs{}
+	hub := newTestGSMHub(t)
+	env := newTestEnvWebUsers(t, defaultTestWebConfig(), nil, nil, nil, nil, nil, nil, nil, hub, store)
+	env.login()
+
+	if err := store.RecordGSMMessage(context.Background(), "rx", "+48600111222", "self", "witam", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The page carries both boxes the polled response provides: the modem
+	// state keeps its place below the hint, the history lives at the
+	// bottom where the table belongs.
+	_, page := env.get("/gsm")
+	for _, want := range []string{`id="gsm-status"`, `id="gsm-msgs"`} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("gsm page lacks %s: %s", want, page)
+		}
+	}
+	if strings.Index(page, `id="gsm-status"`) > strings.Index(page, `id="gsm-msgs"`) {
+		t.Error("the modem state must stay above the history")
+	}
+
+	resp, partial := env.get("/partials/gsm")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /partials/gsm = %d, want 200", resp.StatusCode)
+	}
+	for _, want := range []string{
+		// The session pill: state, network and signal bars.
+		"Modem connected and ready",
+		"Play",
+		`aria-label="CSQ 26 · -61 dBm"`,
+		`class="gsm-bar on"`,
+		// …and the history it refreshes with, each in its own box so the
+		// script can lift them into place.
+		`<div id="gsm-status">`,
+		`<div id="gsm-msgs">`,
+		"48600111222",
+	} {
+		if !strings.Contains(partial, want) {
+			t.Errorf("the polled fragment lacks %q: %s", want, partial)
+		}
+	}
+	// The page and the fragment render the same tree, so the swap cannot
+	// drop or duplicate markup.
+	if strings.Count(page, `id="gsm-msgs"`) != 1 {
+		t.Errorf("the page carries %d history boxes, want 1", strings.Count(page, `id="gsm-msgs"`))
+	}
+}
+
+// TestGSMPartialStatusFollowsTheHub pins the point of the refresh: the
+// fragment reports the hub's state as it is now, so the poll turns a
+// reconnected modem back to "connected" (and the signal back on) in the
+// browser without a reload.
+func TestGSMPartialStatusFollowsTheHub(t *testing.T) {
+	store := &fakeGSMMsgs{}
+	hub := newTestGSMHub(t)
+	env := newTestEnvWebUsers(t, defaultTestWebConfig(), nil, nil, nil, nil, nil, nil, nil, hub, store)
+	env.login()
+
+	_, before := env.get("/partials/gsm")
+	if !strings.Contains(before, "Modem connected and ready") {
+		t.Fatalf("connected hub was not reported: %s", before)
+	}
+
+	// The modem link drops: the very next poll must say so.
+	hub.Close()
+	_, after := env.get("/partials/gsm")
+	if strings.Contains(after, "Modem connected and ready") {
+		t.Errorf("a dropped modem still reads as connected: %s", after)
+	}
+	if !strings.Contains(after, "Modem not connected") {
+		t.Errorf("the fragment does not report the modem loss: %s", after)
+	}
+}

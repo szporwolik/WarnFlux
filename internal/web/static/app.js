@@ -4268,11 +4268,8 @@
     tickAprs();
     window.setInterval(tickAprs, MSGS_POLL_MS);
   }
-  var tickGsm = poll("gsm-msgs", "/partials/gsm");
-  if (tickGsm) {
-    tickGsm();
-    window.setInterval(tickGsm, MSGS_POLL_MS);
-  }
+  // The GSM page polls on its own (the response carries two boxes: the
+  // modem state and the history), so it is not part of this helper.
   var tickMesh = poll("mesh-msgs", "/partials/meshtastic", "messages");
   if (tickMesh) {
     tickMesh();

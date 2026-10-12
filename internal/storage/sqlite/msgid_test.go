@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -107,5 +109,102 @@ func TestPruneMessageIDsKeepsLiveEvents(t *testing.T) {
 		if ok != want {
 			t.Errorf("LoadMessageID(%q) present=%v, want %v", key, ok, want)
 		}
+	}
+}
+
+// TestMessageIDAccessInsideTransactionDoesNotDeadlock pins the P0 that
+// wedged the panel: the ingest flow stamps an event's message id while
+// its transaction is open, and a store lookup there waited for the very
+// connection the transaction held (16 goroutines parked, every later
+// request hanging, until the daemon was restarted). Serves from memory,
+// so an open transaction cannot block it.
+func TestMessageIDAccessInsideTransactionDoesNotDeadlock(t *testing.T) {
+	store := newUsersStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 15, 30, 0, 0, time.UTC)
+	assignment := core.MessageIDAssignment{
+		EventKey: "compose:17", MsgID: "WF-1012153001",
+		Minute: "20261012-1530", Seq: 1, CreatedAt: now,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		tx, err := store.db.BeginTx(ctx, nil)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer tx.Rollback()
+		// A write first: the transaction holds the connection and its
+		// write lock from here on.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO compose_hazards(event_key, hazard_json, status, updated_at_ms)
+			VALUES('compose:17', '{}', 'active', 0)`); err != nil {
+			done <- err
+			return
+		}
+		if err := store.SaveMessageID(ctx, assignment); err != nil {
+			done <- err
+			return
+		}
+		id, ok, err := store.LoadMessageID(ctx, assignment.EventKey)
+		if err != nil {
+			done <- err
+			return
+		}
+		if !ok || id != assignment.MsgID {
+			done <- fmt.Errorf("LoadMessageID = %q, %v; want %q", id, ok, assignment.MsgID)
+			return
+		}
+		if n, err := store.HighestSeqInMinute(ctx, assignment.Minute); err != nil || n != 1 {
+			done <- fmt.Errorf("HighestSeqInMinute = %d, %v; want 1", n, err)
+			return
+		}
+		done <- tx.Commit()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("message-id access with a transaction open: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("message-id access blocked with a transaction open (single-connection deadlock)")
+	}
+}
+
+// TestMessageIDsSurviveReopen pins the promise the in-memory mirror must
+// keep: an assignment reported as recorded is on disk once the store is
+// closed, and a fresh store serves it without renumbering.
+func TestMessageIDsSurviveReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ids.db")
+	ctx := context.Background()
+	now := time.Date(2026, 10, 12, 15, 30, 0, 0, time.UTC)
+
+	first, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := first.SaveMessageID(ctx, core.MessageIDAssignment{
+		EventKey: "imgw-meteo:7", MsgID: "WF-1012153002",
+		Minute: "20261012-1530", Seq: 2, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveMessageID: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	second, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer second.Close()
+	id, ok, err := second.LoadMessageID(ctx, "imgw-meteo:7")
+	if err != nil || !ok || id != "WF-1012153002" {
+		t.Fatalf("after reopen LoadMessageID = %q, %v, %v; want WF-1012153002", id, ok, err)
+	}
+	if n, err := second.HighestSeqInMinute(ctx, "20261012-1530"); err != nil || n != 2 {
+		t.Fatalf("after reopen HighestSeqInMinute = %d, %v; want 2", n, err)
 	}
 }

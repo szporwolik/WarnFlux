@@ -659,7 +659,10 @@ func run(configPath string, checkConfig bool) error {
 
 	// The database is created and migrated on first startup. Close it only
 	// after all workers have stopped.
-	store, migration, err := sqlite.Open(cfg.Storage.Path)
+	// Message-id assignments are read from inside store transactions
+	// (see internal/storage/sqlite/msgid.go), so the store persists new
+	// ones behind the caller and reports failures here.
+	store, migration, err := sqlite.Open(cfg.Storage.Path, sqlite.WithMessageIDLog(logger.Warn))
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}

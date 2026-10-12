@@ -649,3 +649,192 @@ func TestOperatorAndSignal(t *testing.T) {
 		}
 	}
 }
+
+// quietPort is a serial transport that never delivers a byte: every read
+// is the VTIME tick a real port turns into an immediate empty read.
+type quietPort struct {
+	mu     sync.Mutex
+	writes bytes.Buffer
+	closed bool
+}
+
+func (p *quietPort) Read([]byte) (int, error) {
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return 0, io.EOF
+	}
+	return 0, io.EOF // "no data yet", exactly like the port's idle read
+}
+
+func (p *quietPort) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return 0, io.ErrClosedPipe
+	}
+	return p.writes.Write(b)
+}
+
+func (p *quietPort) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	return nil
+}
+
+func (p *quietPort) written() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.writes.String()
+}
+
+// newQuietHub wires a hub onto a modem that never answers.
+func newQuietHub(t *testing.T) (*Hub, *quietPort) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := NewHub(Config{Enabled: true, Device: "/dev/null"}, &recStub{}, logger)
+	p := &quietPort{}
+	h.SetTransport(p)
+	h.connected.Store(true)
+	t.Cleanup(func() { h.Close() })
+	return h, p
+}
+
+// shortenTimeouts shrinks the exchange budgets for one test (the fake
+// transports cannot reproduce the modem's idle reads, so a real timeout
+// would take the production budget).
+func shortenTimeouts(t *testing.T, at, ack, resync time.Duration) {
+	t.Helper()
+	prevAt, prevAck, prevResync := atTimeout, sendAckTimeout, sendResyncTimeout
+	atTimeout, sendAckTimeout, sendResyncTimeout = at, ack, resync
+	t.Cleanup(func() { atTimeout, sendAckTimeout, sendResyncTimeout = prevAt, prevAck, prevResync })
+}
+
+// TestSendRejectsACancelledRequest pins the reported P1: a request whose
+// context is already cancelled must not touch the modem at all — it used
+// to send AT+CMGS, the body and Ctrl-Z and then answer success.
+func TestSendRejectsACancelledRequest(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	// The modem answers, so a request that ignored the cancellation would
+	// complete and report success (the point of the report) instead of
+	// blocking the test on an unanswered prompt.
+	f.feed("> \r\nOK\r\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := h.Send(ctx, "+48600111222", "Czesc")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("send with a cancelled context = %v, want context.Canceled", err)
+	}
+	if w := f.written(); w != "" {
+		t.Fatalf("a cancelled request wrote to the modem: %q", w)
+	}
+	if rows := rec.list(); len(rows) != 0 {
+		t.Fatalf("a cancelled request wrote history rows: %+v", rows)
+	}
+}
+
+// TestSendLeavesTheQueueWhenCancelledWhileWaiting pins the second half:
+// a caller waiting for a busy modem must be able to give up — it must not
+// transmit once the session finally frees up.
+func TestSendLeavesTheQueueWhenCancelledWhileWaiting(t *testing.T) {
+	h, f, rec := newTestHub(t)
+
+	// The modem does answer, so a request that ignores the cancellation
+	// would go out once the session frees up (the assertion below is about
+	// what was written, not about the modem staying silent).
+	f.feed("> \r\nOK\r\n")
+
+	// The session is busy (another exchange holds it).
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.Send(ctx, "+48600111222", "Czesc") }()
+	time.Sleep(30 * time.Millisecond) // let it reach the queue
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("send = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cancelled request stayed in the modem queue")
+	}
+	if w := f.written(); w != "" {
+		t.Fatalf("a cancelled request wrote to the modem: %q", w)
+	}
+	if rows := rec.list(); len(rows) != 0 {
+		t.Fatalf("a cancelled request wrote history rows: %+v", rows)
+	}
+}
+
+// TestSendFinishesAnExchangeItStarted pins the committed part: once the
+// modem holds the body state, cancelling must not abandon the exchange —
+// the message goes out and the caller learns the true outcome.
+func TestSendFinishesAnExchangeItStarted(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- h.Send(ctx, "+48600111222", "Czesc") }()
+
+	// Up to the prompt the request may still be abandoned ...
+	waitForWritten(t, f, "AT+CMGS=\"+48600111222\"\r")
+	f.feed("> ")
+	// ... but once the body is out the modem only waits for Ctrl-Z.
+	waitForWritten(t, f, "Czesc\x1A")
+	cancel()
+	f.feed("\r\n+CMGS: 1\r\nOK\r\n")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("send = %v, want nil (the message was accepted)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("send did not finish after cancellation")
+	}
+	rows := rec.list()
+	if len(rows) != 1 || rows[0].Text != "Czesc" {
+		t.Fatalf("tx rows = %+v, want the accepted message", rows)
+	}
+}
+
+// TestSendRepairsTheSessionAfterAnUnansweredExchange pins the safe
+// ending: an exchange that ends without an answer abandons a pending body
+// with ESC, probes the modem, and drops a session that stays silent — so
+// the next command never starts from a half-written state.
+func TestSendRepairsTheSessionAfterAnUnansweredExchange(t *testing.T) {
+	shortenTimeouts(t, 30*time.Millisecond, 30*time.Millisecond, 30*time.Millisecond)
+	h, p := newQuietHub(t)
+
+	err := h.Send(context.Background(), "+48600111222", "Czesc")
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("send to a silent modem = %v, want ErrTimeout", err)
+	}
+	w := p.written()
+	if !strings.Contains(w, "AT+CMGS") {
+		t.Fatalf("the send never started: %q", w)
+	}
+	if !strings.Contains(w, "\x1b") {
+		t.Fatalf("the pending body was not abandoned with ESC: %q", w)
+	}
+	if !strings.Contains(w, "AT\r") {
+		t.Fatalf("the session was not probed: %q", w)
+	}
+	// The probe went unanswered too, so the session was dropped: the next
+	// command gets ErrNoModem instead of writing into a stale one.
+	if h.conn != nil {
+		t.Fatal("a silent session was kept open after the repair failed")
+	}
+	shortenTimeouts(t, 30*time.Millisecond, 30*time.Millisecond, 30*time.Millisecond)
+	if err := h.Send(context.Background(), "+48600111222", "Czesc"); !errors.Is(err, ErrNoModem) {
+		t.Fatalf("send after the dropped session = %v, want ErrNoModem", err)
+	}
+}

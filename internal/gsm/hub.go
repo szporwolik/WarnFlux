@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf16"
@@ -82,12 +81,18 @@ var ErrTimeout = errors.New("gsm: modem response timeout")
 // pollInterval is the spacing of the unread-message scan.
 const pollInterval = 10 * time.Second
 
-// atTimeout bounds one AT exchange.
-const atTimeout = 15 * time.Second
+// atTimeout bounds one AT exchange. A variable rather than a constant so
+// tests can shorten it: a fake transport cannot reproduce the VTIME ticks
+// a real serial port turns into idle reads.
+var atTimeout = 15 * time.Second
 
 // sendAckTimeout bounds the wait for the network accept reply after a
 // submitted SMS body (the modem answers when the network takes it).
-const sendAckTimeout = 45 * time.Second
+var sendAckTimeout = 45 * time.Second
+
+// sendResyncTimeout bounds the repair probe that follows an exchange
+// which ended without an answer (see resyncSendLocked).
+var sendResyncTimeout = 2 * time.Second
 
 // received is one consumed inbox record (possibly one part of a
 // concatenated message).
@@ -100,8 +105,35 @@ type received struct {
 	concatSeq   int
 }
 
+// sessionLock serializes the AT exchanges on the serial line (polling,
+// sends and commands never interleave). Unlike a plain mutex it can be
+// acquired WITH a context: a caller whose request was cancelled or timed
+// out while the modem was busy leaves the queue instead of transmitting
+// into a round nobody waits for (reported P1).
+type sessionLock chan struct{}
+
+func newSessionLock() sessionLock { return make(sessionLock, 1) }
+
+// Lock acquires the session unconditionally: the internal callers (poll
+// loop, status refresh, reconnection) have no request to honour.
+func (l sessionLock) Lock() { l <- struct{}{} }
+
+// Unlock releases the session.
+func (l sessionLock) Unlock() { <-l }
+
+// acquire takes the session, giving up with the context's error while it
+// waits.
+func (l sessionLock) acquire(ctx context.Context) error {
+	select {
+	case l <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Hub owns the AT session to one modem. All exchanges serialize under
-// one mutex, so polling, sends and future commands never interleave on
+// one lock, so polling, sends and future commands never interleave on
 // the serial line.
 type Hub struct {
 	cfg    Config
@@ -109,7 +141,7 @@ type Hub struct {
 	rec    MessageRecorder
 	now    func() time.Time
 
-	mu        sync.Mutex
+	mu        sessionLock
 	conn      io.ReadWriteCloser
 	connected atomic.Bool
 	ready     atomic.Bool
@@ -167,6 +199,7 @@ func NewHub(cfg Config, rec MessageRecorder, logger *slog.Logger) *Hub {
 		logger:     logger,
 		rec:        rec,
 		now:        time.Now,
+		mu:         newSessionLock(),
 		cmds:       map[string]*cmdRecord{},
 		replyLast:  map[string]replyWindow{},
 		bannerLast: map[string]time.Time{},
@@ -615,6 +648,17 @@ func (h *Hub) readLine(deadline time.Time) (string, error) {
 // limits: non-GSM-7 characters are transliterated and texts over 160
 // characters are refused. The tx row lands in the durable history only
 // after the modem accepted the message.
+//
+// ctx is honoured up to the moment the transmission is committed: an
+// already cancelled request touches nothing, and a caller waiting for a
+// busy modem leaves the queue instead of transmitting into a round nobody
+// waits for (reported P1: a cancelled request still sent AT+CMGS, the body
+// and Ctrl-Z, and answered success). After AT+CMGS the modem holds the
+// body state and only Ctrl-Z or ESC finishes it, so the exchange runs to
+// its own bounded end even when ctx is cancelled in between — the caller
+// then gets the TRUE outcome, because reporting a cancellation for a
+// message that did go out would invite a duplicate. An exchange that ends
+// without an answer is repaired before the next command.
 func (h *Hub) Send(ctx context.Context, number, text string) error {
 	number = strings.TrimSpace(number)
 	text = strings.TrimSpace(text)
@@ -624,8 +668,18 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 	if text == "" {
 		return fmt.Errorf("gsm: message text must not be empty")
 	}
-	h.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("gsm: send to %s: %w", number, err)
+	}
+	// Waiting for the modem is part of the request: a caller that gave up
+	// while the session was busy must not send afterwards.
+	if err := h.mu.acquire(ctx); err != nil {
+		return fmt.Errorf("gsm: send to %s: %w", number, err)
+	}
 	defer h.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("gsm: send to %s: %w", number, err)
+	}
 	if h.conn == nil || !h.connected.Load() {
 		return ErrNoModem
 	}
@@ -636,16 +690,25 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 	// Both receive and send run in text mode (this firmware family
 	// cannot read stored messages in PDU mode), so no mode switch is
 	// needed around sends.
-	// Wait for the prompt, then submit the body with Ctrl-Z.
+	// Wait for the prompt, then submit the body with Ctrl-Z. From here the
+	// request is committed: the modem waits for the body, so a timeout
+	// leaves a half-written message in the session and is repaired.
 	if _, err := h.exchangePromptLocked(`AT+CMGS="` + number + `"`); err != nil {
+		if errors.Is(err, ErrTimeout) {
+			h.resyncSendLocked()
+		}
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
 	}
 	if _, err := io.WriteString(h.conn, text+"\x1A"); err != nil {
+		h.resyncSendLocked()
 		return fmt.Errorf("gsm: write body: %w", err)
 	}
 	// The network accept reply can take tens of seconds on a busy
 	// channel — a wider budget than the regular exchange timeout.
 	if _, err := h.exchangeLockedTimeout("", "OK", sendAckTimeout); err != nil {
+		if errors.Is(err, ErrTimeout) {
+			h.resyncSendLocked()
+		}
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
 	}
 	h.logger.Info("gsm: sms sent", "to", number, "len", len([]rune(text)))
@@ -659,6 +722,28 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 		}
 	}
 	return nil
+}
+
+// resyncSendLocked repairs the session after an exchange that ended
+// without an answer (or lost its transport): the modem may still be
+// holding a half-written body — it waits for Ctrl-Z — or be left
+// mid-response. ESC abandons a pending body (Ctrl-Z would SEND it) and one
+// AT probe with a short budget brings the command mode back; a session
+// that does not answer either is dropped and reopened, so the next command
+// starts from a known state. The caller holds h.mu.
+func (h *Hub) resyncSendLocked() {
+	if h.conn == nil {
+		return
+	}
+	if _, err := io.WriteString(h.conn, "\x1b"); err != nil {
+		h.logger.Warn("gsm: session repair failed, reconnecting", "error", err)
+		h.reconnectLocked()
+		return
+	}
+	if _, err := h.exchangeLockedTimeout("AT", "OK", sendResyncTimeout); err != nil {
+		h.logger.Warn("gsm: session repair failed, reconnecting", "error", err)
+		h.reconnectLocked()
+	}
 }
 
 // pollLoop scans unread inbox messages every pollInterval and runs the

@@ -453,6 +453,30 @@ func (f *fakeUsers) ConsumePasswordReset(token string) (int64, error) {
 	return id, nil
 }
 
+// ResetPasswordWithToken spends a token and stores the new password, the
+// way the SQLite store does it in one transaction. The fake lives in a
+// single process, so the mutex it already holds is the atomicity.
+func (f *fakeUsers) ResetPasswordWithToken(token, password string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.resets[token]
+	if !ok {
+		return 0, storage.ErrPasswordResetInvalid
+	}
+	for _, u := range f.rows {
+		if u.ID != id {
+			continue
+		}
+		if u.IsAdmin {
+			return 0, storage.ErrUserProtected
+		}
+		delete(f.resets, token)
+		f.passwords[u.Username] = password
+		return id, nil
+	}
+	return 0, storage.ErrUserNotFound
+}
+
 // UserChannelOptOuts returns the disabled delivery-channel kinds for a user.
 func (f *fakeUsers) UserChannelOptOuts(userID int64) (map[string]bool, error) {
 	f.mu.Lock()

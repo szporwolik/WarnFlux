@@ -268,10 +268,16 @@ type UserStore interface {
 	// returns its plaintext form (the store keeps only a hash). Expired
 	// tokens are pruned opportunistically.
 	CreatePasswordReset(userID int64) (string, error)
-	// ConsumePasswordReset validates a plaintext token (constant-time
-	// hash lookup), marks it used and returns the user ID. Expired,
-	// unknown or already-used tokens report ErrPasswordResetInvalid.
+	// ConsumePasswordReset marks a plaintext token used and returns the
+	// user ID. Expired, unknown or already-used tokens report
+	// ErrPasswordResetInvalid.
 	ConsumePasswordReset(token string) (int64, error)
+	// ResetPasswordWithToken spends one reset token and stores the new
+	// password in ONE transaction (the claim is atomic, so parallel
+	// submissions of one link cannot all succeed and overwrite each
+	// other). Expired, unknown or spent tokens report
+	// ErrPasswordResetInvalid; the admin row reports ErrUserProtected.
+	ResetPasswordWithToken(token, password string) (int64, error)
 	// PeekPasswordReset validates a token WITHOUT consuming it (the
 	// reset page checks the link before rendering the form).
 	PeekPasswordReset(token string) error

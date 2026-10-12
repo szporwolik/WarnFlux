@@ -323,28 +323,27 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := s.users.ConsumePasswordReset(token)
+	// One atomic store call spends the token and stores the new password:
+	// parallel submissions of the same link cannot all pass the check and
+	// overwrite each other's password, and a failed password write cannot
+	// burn a link that changed nothing (reported P2).
+	userID, err := s.users.ResetPasswordWithToken(token, password)
 	if errors.Is(err, storage.ErrPasswordResetInvalid) {
 		renderErr("This link is invalid or has expired — request a new one.", true)
 		return
 	}
+	if errors.Is(err, storage.ErrUserProtected) {
+		renderErr("admin pass is defined in the configuration file", true)
+		return
+	}
 	if err != nil {
-		s.logger.Error("web: reset token consume failed", "error", err)
+		s.logger.Error("web: reset password failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	u, err := s.users.GetUser(userID)
 	if err != nil {
 		s.logger.Error("web: reset user lookup failed", "user", userID, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if err := s.users.SetUserPassword(userID, password); err != nil {
-		if errors.Is(err, storage.ErrUserProtected) {
-			renderErr("admin pass is defined in the configuration file", true)
-			return
-		}
-		s.logger.Error("web: reset password set failed", "user", userID, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

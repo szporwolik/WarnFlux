@@ -95,6 +95,13 @@ type ActionRequest struct {
 	// the list and re-sent the mails that had already gone out). The
 	// field travels with the durable job payload.
 	DoneRecipients []string `json:"done_recipients,omitempty"`
+	// UnconfirmedRecipients lists the addresses an EARLIER attempt HANDED
+	// TO THE TRANSPORT without getting a confirmation (the modem took the
+	// SMS and stayed silent). They travel in the durable payload because
+	// the state outlives the attempt that produced it: a retry must not
+	// send them again, and the job keeps reporting the weaker stage while
+	// the list is not empty (reported P2).
+	UnconfirmedRecipients []string `json:"unconfirmed_recipients,omitempty"`
 
 	// JobGroupID and JobDedupKey carry the concrete delivery-job
 	// identity the request was claimed for. The worker stamps them on
@@ -118,6 +125,18 @@ type PartialDelivery interface {
 	Delivered() []string
 }
 
+// PartialUnconfirmed is the optional extension of PartialDelivery for an
+// action that can hand a transmission to the transport without a
+// confirmation (the modem took the SMS body and never answered): the
+// addresses that happened to are reported separately, so the worker keeps
+// them in the durable payload and the job never loses the fact that they
+// were never confirmed (reported P2).
+type PartialUnconfirmed interface {
+	// Unconfirmed lists the addresses THIS attempt handed over without
+	// confirmation.
+	Unconfirmed() []string
+}
+
 // DeliveryStage reports how far one execution got down the transport.
 type DeliveryStage int
 
@@ -130,6 +149,14 @@ const (
 	// StageConfirmed means recipient-level confirmation was observed.
 	// Only channels whose protocol offers confirmations can report it.
 	StageConfirmed
+
+	// StageUnconfirmed means the transport was handed the transmission —
+	// the modem took the SMS body — but did not confirm it inside the
+	// caller's budget. It is neither a proven delivery nor a failure
+	// before transmission: the message may well be on its way, so the
+	// worker settles it as "unconfirmed" (terminal: NEVER resent
+	// automatically) and the operator verifies it (reported P2).
+	StageUnconfirmed
 )
 
 // RequestActionID derives the configured action instance id from a

@@ -179,6 +179,52 @@ func TestPanicIsolation(t *testing.T) {
 	}
 }
 
+// latePlugin commits its work after the call budget has passed — the
+// shape of a serial exchange that cannot be recalled (a modem that takes
+// its time to confirm a submitted SMS): it ignores cancellation and
+// returns success once the device answered.
+type latePlugin struct {
+	work    time.Duration
+	handled atomic.Int64
+}
+
+func (p *latePlugin) Name() string { return "late" }
+
+func (p *latePlugin) Execute(context.Context, action.ActionRequest) error {
+	time.Sleep(p.work)
+	p.handled.Add(1)
+	return nil
+}
+
+func (p *latePlugin) Close(context.Context) error { return nil }
+
+// TestLateCommitIsNotTurnedIntoAFailure pins the reported P1 on the
+// worker side: an operation that took longer than its budget but finished
+// successfully did deliver — inventing a failure for it would repeat the
+// delivery (a second SMS) and, worse, the overrun must not be read as a
+// hung plugin that costs the channel until a process restart.
+func TestLateCommitIsNotTurnedIntoAFailure(t *testing.T) {
+	reg := action.NewRegistry()
+	late := &latePlugin{work: 300 * time.Millisecond}
+	reg.Register("testa", func(*yaml.Node) (action.Plugin, error) { return late, nil })
+	m := newManager(t, reg, []config.Action{{
+		ID: "logger-a", Type: "testa", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: 100 * time.Millisecond, ShutdownTimeout: time.Second},
+	}})
+	if err := m.Submit("logger-a", action.ActionRequest{ID: "r1", Event: sampleEvent()}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return late.handled.Load() == 1 }, "the late call to finish")
+	waitFor(t, func() bool {
+		st := m.Statuses()[0]
+		return st.State == action.StateHealthy && st.Failures == 0
+	}, "the late commit to be recorded as delivered")
+	// The channel is untouched: the next request goes through.
+	if err := m.Submit("logger-a", action.ActionRequest{ID: "r2", Event: sampleEvent()}); err != nil {
+		t.Fatalf("Submit after a late commit: %v", err)
+	}
+}
+
 func TestTimeoutDisablesHungPluginPermanently(t *testing.T) {
 	reg := action.NewRegistry()
 	hung := &recordingPlugin{delay: 500 * time.Millisecond, ignore: true}

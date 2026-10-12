@@ -107,9 +107,10 @@ type Instance struct {
 	offlineFn func() bool
 
 	// metric cells (optional, nil-safe).
-	metricDelivered func(int64)
-	metricFailed    func(int64)
-	metricRetry     func(int64)
+	metricDelivered   func(int64)
+	metricFailed      func(int64)
+	metricRetry       func(int64)
+	metricUnconfirmed func(int64)
 
 	mu     sync.Mutex
 	status Status
@@ -129,18 +130,19 @@ func NewInstance(id, typ string, p Plugin, queueSize int, callTimeout, shutdownT
 		retries = 0
 	}
 	inst := &Instance{
-		id:              id,
-		typ:             typ,
-		plugin:          p,
-		queue:           make(chan ActionRequest, queueSize),
-		callTO:          callTimeout,
-		closeTO:         shutdownTimeout,
-		logger:          logger,
-		trail:           trail,
-		retries:         retries,
-		metricDelivered: func(int64) {},
-		metricFailed:    func(int64) {},
-		metricRetry:     func(int64) {},
+		id:                id,
+		typ:               typ,
+		plugin:            p,
+		queue:             make(chan ActionRequest, queueSize),
+		callTO:            callTimeout,
+		closeTO:           shutdownTimeout,
+		logger:            logger,
+		trail:             trail,
+		retries:           retries,
+		metricDelivered:   func(int64) {},
+		metricFailed:      func(int64) {},
+		metricRetry:       func(int64) {},
+		metricUnconfirmed: func(int64) {},
 		status: Status{
 			ID:            id,
 			Type:          typ,
@@ -154,6 +156,8 @@ func NewInstance(id, typ string, p Plugin, queueSize int, callTimeout, shutdownT
 			"Notification outcomes per action.", "action", id, "result", "delivered")
 		inst.metricFailed = reg.Counter("warnflux_notifications_total",
 			"Notification outcomes per action.", "action", id, "result", "failed")
+		inst.metricUnconfirmed = reg.Counter("warnflux_notifications_total",
+			"Notification outcomes per action.", "action", id, "result", "unconfirmed")
 		inst.metricRetry = reg.Counter("warnflux_notification_retry_total",
 			"Delivery retry attempts per action.", "action", id)
 	}
@@ -357,8 +361,14 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	stage, err := i.executeOnce(req)
 	if err == nil {
 		terminal := storage.DeliveryAccepted
-		if stage == StageConfirmed {
+		switch stage {
+		case StageConfirmed:
 			terminal = storage.DeliveryConfirmed
+		case StageUnconfirmed:
+			// Handed to the transport without confirmation: terminal (a
+			// resend could duplicate the message) but never presented as
+			// a proven delivery (reported P2).
+			terminal = storage.DeliveryUnconfirmed
 		}
 		// The settlement is GUARDED: the store applies it atomically
 		// with the attempt generation and the failure-marker check. A
@@ -382,6 +392,13 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 			} else {
 				i.trail.SetOutcome(key, trail.OutcomeFailed)
 			}
+			return
+		}
+		if stage == StageUnconfirmed {
+			i.metricUnconfirmed(1)
+			i.trail.Add(key, trail.StepDelivered,
+				"handed to the transport without confirmation", time.Now())
+			i.trail.SetOutcome(key, trail.OutcomeUnconfirmed)
 			return
 		}
 		i.metricDelivered(1)
@@ -426,18 +443,35 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 // error, and the addresses it names are what the next attempt must skip.
 // Progress therefore belongs to the attempt that produced it — never to
 // shared instance state, which two versions of the same alarm would share
-// through their common request identity (reported P1). Attempts that
-// delivered nothing keep the request as it is.
+// through their common request identity (reported P1). Addresses the
+// attempt only HANDED OVER (no confirmation) are recorded separately, so
+// a later success does not silently turn them into a delivered batch
+// (reported P2). Attempts that delivered nothing keep the request as it
+// is.
 func (i *Instance) narrowRetry(req ActionRequest, err error) (ActionRequest, []byte) {
 	var partial PartialDelivery
 	if !errors.As(err, &partial) {
 		return req, nil
 	}
 	delivered := partial.Delivered()
-	if len(delivered) == 0 {
+	// An action may also report addresses it handed to the transport
+	// without a confirmation: they are settled too (never resent), but
+	// they stay in their own list so the job keeps reporting the weaker
+	// stage until it is resolved (reported P2).
+	var unconfirmed []string
+	var pu PartialUnconfirmed
+	// errors.As, not a type assertion: the worker wraps a call that timed
+	// out (%w), and a direct assertion then missed the report — the
+	// unconfirmed addresses vanished from the retry payload and the SMS
+	// went out again (reported P2).
+	if errors.As(err, &pu) {
+		unconfirmed = pu.Unconfirmed()
+	}
+	if len(delivered) == 0 && len(unconfirmed) == 0 {
 		return req, nil
 	}
 	req.DoneRecipients = mergeRecipients(req.DoneRecipients, delivered)
+	req.UnconfirmedRecipients = mergeRecipients(req.UnconfirmedRecipients, unconfirmed)
 	data, merr := json.Marshal(req)
 	if merr != nil {
 		i.logger.Warn("action: narrowed retry payload encode failed", "action", i.id, "error", merr)
@@ -572,8 +606,15 @@ func (i *Instance) handle(req ActionRequest) {
 
 	total := i.retries + 1
 	for attempt := 0; ; attempt++ {
-		_, err := i.executeOnce(req)
+		stage, err := i.executeOnce(req)
 		if err == nil {
+			if stage == StageUnconfirmed {
+				i.metricUnconfirmed(1)
+				i.trail.Add(key, trail.StepDelivered,
+					"handed to the transport without confirmation", time.Now())
+				i.trail.SetOutcome(key, trail.OutcomeUnconfirmed)
+				return
+			}
 			i.metricDelivered(1)
 			if attempt > 0 {
 				i.trail.Add(key, trail.StepDelivered,
@@ -655,6 +696,17 @@ func (i *Instance) executeOnce(req ActionRequest) (DeliveryStage, error) {
 		// in-flight goroutine.
 		select {
 		case res := <-done:
+			if res.err == nil {
+				// The call ended after its budget with a truthful
+				// success: an operation that committed something (a
+				// modem that took its time to confirm a submitted SMS)
+				// cannot be undone, and turning it into a failure would
+				// repeat the delivery. Keep the outcome, log the overrun.
+				i.logger.Warn("action call exceeded its budget but succeeded",
+					"action", i.id, "type", i.typ, "budget", i.callTO)
+				i.recordResult(nil)
+				return res.stage, nil
+			}
 			err := fmt.Errorf("callback exceeded %s: %w", i.callTO, res.err)
 			i.recordResult(err)
 			return res.stage, err

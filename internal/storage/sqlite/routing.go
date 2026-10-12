@@ -175,6 +175,8 @@ func statusFromDB(s string) storage.DeliveryStatus {
 		return storage.DeliveryConfirmed
 	case "accepted", "succeeded":
 		return storage.DeliveryAccepted
+	case "unconfirmed":
+		return storage.DeliveryUnconfirmed
 	case "expired":
 		return storage.DeliveryExpired
 	case "failed":
@@ -355,11 +357,12 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 // schedules the retry deadline; a terminal settlement zeroes it.
 func (s *Store) SettleDelivery(ctx context.Context, groupID int64, actionID, dedupKey string, stage storage.DeliveryStatus, nextAttempt time.Time) error {
 	status, ok := map[storage.DeliveryStatus]string{
-		storage.DeliverySaved:     "saved",
-		storage.DeliveryAccepted:  "accepted",
-		storage.DeliveryConfirmed: "confirmed",
-		storage.DeliveryExpired:   "expired",
-		storage.DeliveryFailed:    "failed",
+		storage.DeliverySaved:       "saved",
+		storage.DeliveryAccepted:    "accepted",
+		storage.DeliveryConfirmed:   "confirmed",
+		storage.DeliveryUnconfirmed: "unconfirmed",
+		storage.DeliveryExpired:     "expired",
+		storage.DeliveryFailed:      "failed",
 	}[stage]
 	if !ok {
 		return fmt.Errorf("settle delivery for action %q group %d: unknown stage %v", actionID, groupID, stage)
@@ -426,11 +429,12 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 	}
 
 	status, ok := map[storage.DeliveryStatus]string{
-		storage.DeliverySaved:     "saved",
-		storage.DeliveryAccepted:  "accepted",
-		storage.DeliveryConfirmed: "confirmed",
-		storage.DeliveryExpired:   "expired",
-		storage.DeliveryFailed:    "failed",
+		storage.DeliverySaved:       "saved",
+		storage.DeliveryAccepted:    "accepted",
+		storage.DeliveryConfirmed:   "confirmed",
+		storage.DeliveryUnconfirmed: "unconfirmed",
+		storage.DeliveryExpired:     "expired",
+		storage.DeliveryFailed:      "failed",
 	}[stage]
 	if !ok {
 		return 0, fmt.Errorf("guarded settle for action %q group %d: unknown stage %v", d.ActionID, d.GroupID, stage)

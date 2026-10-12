@@ -5166,3 +5166,133 @@ func TestComposeSaveCommitsRecordBeforeDelivery(t *testing.T) {
 		t.Fatalf("compose records = %+v, want one active record", rows)
 	}
 }
+
+// browser is a second cookie jar over the same test server: the "other
+// device" a test needs to show that revoking sessions really ends them
+// rather than only the one that happened to make the request.
+type browser struct {
+	t      *testing.T
+	url    string
+	client *http.Client
+}
+
+// newBrowser opens an independent browser (own jar, no redirect
+// following, like the environment's client).
+func (e *testEnv) newBrowser() *browser {
+	e.t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return &browser{t: e.t, url: e.srv.URL, client: &http.Client{
+		Jar: jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}}
+}
+
+func (b *browser) get(path string) (*http.Response, string) {
+	b.t.Helper()
+	resp, err := b.client.Get(b.url + path)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp, string(body)
+}
+
+func (b *browser) postForm(path string, values url.Values) (*http.Response, string) {
+	b.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, b.url+path, strings.NewReader(values.Encode()))
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := b.client.Do(req)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp, string(body)
+}
+
+// signIn signs this browser in as one directory user.
+func (b *browser) signIn(username, password string) {
+	b.t.Helper()
+	resp, html := b.get("/login")
+	if resp.StatusCode != http.StatusOK {
+		b.t.Fatalf("GET /login = %d", resp.StatusCode)
+	}
+	resp, _ = b.postForm("/login", url.Values{
+		"csrf": {extractCSRF(b.t, html)}, "username": {username}, "password": {password},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		b.t.Fatalf("sign in as %s = %d, want 303", username, resp.StatusCode)
+	}
+}
+
+// TestPasswordResetRevokesLiveSessions pins the reported P1: completing
+// the e-mail reset ends EVERY live session of that account, not just the
+// one that clicked the link (which normally has none). The reset link is
+// the account-recovery path, so a session an intruder holds must die the
+// moment the owner takes the account back — otherwise the recovery is
+// cosmetic and the thief keeps reading /account.
+func TestPasswordResetRevokesLiveSessions(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("member1", "", "member1@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The owner's browser and a "stolen" one, both signed in.
+	stolen := env.newBrowser()
+	stolen.signIn("member1", "password123")
+	if resp, _ := stolen.get("/account"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stolen session before the reset = %d, want 200", resp.StatusCode)
+	}
+
+	var sentText string
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		sentText = text
+		return nil
+	})
+	_, html := env.get("/forgot")
+	resp, _ := env.postForm("/forgot", url.Values{
+		"csrf": {extractCSRF(t, html)}, "username": {"member1"}, "email": {"member1@example.com"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("forgot submit = %d", resp.StatusCode)
+	}
+	m := regexp.MustCompile(`token=([0-9a-f]+)`).FindStringSubmatch(sentText)
+	if m == nil {
+		t.Fatalf("reset mail has no token link: %s", sentText)
+	}
+
+	// The recovery happens in a browser that is NOT signed in (the mail
+	// link), exactly like the real flow.
+	_, resetHTML := env.get("/reset?token=" + m[1])
+	resp, _ = env.postForm("/reset", url.Values{
+		"csrf": {extractCSRF(t, resetHTML)}, "token": {m[1]}, "password": {"brand-new-password"},
+	})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?reset=1" {
+		t.Fatalf("reset submit = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// The stolen session is gone: it can no longer reach an authenticated
+	// page, and the cookie it holds is cleared.
+	resp, _ = stolen.get("/account")
+	if resp.StatusCode == http.StatusOK {
+		t.Error("the pre-reset session still reaches /account after the reset")
+	}
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Errorf("pre-reset session GET /account = %d %q, want 303 /login", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	// The account still works with the new password.
+	recovered := env.newBrowser()
+	recovered.signIn("member1", "brand-new-password")
+	if resp, _ := recovered.get("/account"); resp.StatusCode != http.StatusOK {
+		t.Errorf("fresh sign-in after the reset = %d, want 200", resp.StatusCode)
+	}
+}

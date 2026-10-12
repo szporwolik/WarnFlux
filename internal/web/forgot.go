@@ -348,7 +348,17 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+
+	// Recovering an account ends every live session of it (P1): the reset
+	// link arrives by e-mail, so the browser that uses it is not the one
+	// that may be holding a stolen session — leaving those sessions alive
+	// handed the intruder continued access to an account the owner just
+	// took back. The reset browser is cleared too, in case it carried one.
+	s.sessions.clearSessionCookie(w)
 	s.audit(u.Username, "password-reset", "")
+	if n := s.sessions.revokeUser(userID); n > 0 {
+		s.audit(u.Username, "sessions-revoked", fmt.Sprintf("user %s sessions=%d", u.Username, n))
+	}
 	http.Redirect(w, r, "/login?reset=1", http.StatusSeeOther)
 }
 

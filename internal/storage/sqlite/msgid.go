@@ -2,8 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -11,63 +9,286 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
-// LoadMessageID returns the persisted short message id of eventKey;
-// ok=false when the key was never assigned.
-func (s *Store) LoadMessageID(ctx context.Context, eventKey string) (string, bool, error) {
-	var id string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT msg_id FROM message_ids WHERE event_key = ?`, eventKey).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
+// Why the mapping also lives in memory:
+//
+// Message ids are read from inside store transactions. The ingest flow
+// writes an event's inbox row while its transaction is open, and the
+// payload carries the id (dispatch.EventForJournalChange). With the
+// single pooled connection Open installs, a database lookup there waits
+// for the very connection the caller holds — a self-deadlock that parked
+// an ingest transaction in LoadMessageID and wedged every later request
+// until the process was restarted. The same holds for the insert: a new
+// assignment written from inside a transaction would wait for the
+// transaction itself.
+//
+// The store therefore serves lookups from memory — loaded once at Open,
+// updated on every assignment and on every prune — and hands new
+// assignments to a single background writer. MessageID's store seam
+// never touches the database from the caller's goroutine, so no caller
+// can block on its own transaction, and the durable rows still land.
+//
+// The in-memory copy is authoritative for lookups: PruneMessageIDs drops
+// exactly the keys its DELETE reported, and an assignment is immutable
+// once recorded, so a key absent from the copy was never assigned.
+
+// messageIDMinuteKeep bounds the in-memory per-minute sequence buckets.
+// The sequence is only ever asked about the current minute, so buckets
+// beyond this window are noise; keeping them would grow without bound.
+const messageIDMinuteKeep = 48 * time.Hour
+
+// initMessageIDs loads the durable assignments into memory and starts
+// the writer that persists new ones.
+func (s *Store) initMessageIDs(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT event_key, msg_id, minute, seq FROM message_ids`)
 	if err != nil {
-		return "", false, fmt.Errorf("load message id for %q: %w", eventKey, err)
+		return fmt.Errorf("load message ids: %w", err)
 	}
-	return id, true, nil
+	defer rows.Close()
+
+	byKey := make(map[string]string)
+	seqIn := make(map[string]int)
+	for rows.Next() {
+		var key, id, minute string
+		var seq int
+		if err := rows.Scan(&key, &id, &minute, &seq); err != nil {
+			return fmt.Errorf("scan message id: %w", err)
+		}
+		byKey[key] = id
+		if seq > seqIn[minute] {
+			seqIn[minute] = seq
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("load message ids: %w", err)
+	}
+
+	wake := make(chan struct{}, 1)
+	stop := make(chan struct{})
+
+	s.msgMu.Lock()
+	s.msgByKey, s.msgSeqIn = byKey, seqIn
+	s.msgWake, s.msgStop = wake, stop
+	s.msgMu.Unlock()
+	s.msgWG.Add(1)
+	go s.messageIDWriter(wake, stop)
+	return nil
+}
+
+// LoadMessageID returns the persisted short message id of eventKey;
+// ok=false when the key was never assigned. It answers from memory and
+// never touches the database, so it is safe to call with a transaction
+// open — where a query would deadlock on the single pooled connection.
+func (s *Store) LoadMessageID(_ context.Context, eventKey string) (string, bool, error) {
+	s.msgMu.Lock()
+	id, ok := s.msgByKey[eventKey]
+	s.msgMu.Unlock()
+	return id, ok, nil
 }
 
 // HighestSeqInMinute returns the largest sequence already handed out in
 // the given minute bucket (0 when none). It lets a restarted process
-// resume the per-minute sequence instead of reusing a number.
-func (s *Store) HighestSeqInMinute(ctx context.Context, minute string) (int, error) {
-	var seq int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(seq), 0) FROM message_ids WHERE minute = ?`, minute).Scan(&seq)
-	if err != nil {
-		return 0, fmt.Errorf("message id sequence for minute %q: %w", minute, err)
-	}
-	return seq, nil
+// resume the per-minute sequence instead of reusing a number. Like
+// LoadMessageID it answers from memory.
+func (s *Store) HighestSeqInMinute(_ context.Context, minute string) (int, error) {
+	s.msgMu.Lock()
+	n := s.msgSeqIn[minute]
+	s.msgMu.Unlock()
+	return n, nil
 }
 
-// SaveMessageID persists one event-key → message-id assignment. The
+// SaveMessageID records one event-key → message-id assignment. The
 // mapping is immutable: the first writer wins, so a replayed assignment
-// never renumbers an already-cited event.
-func (s *Store) SaveMessageID(ctx context.Context, a core.MessageIDAssignment) error {
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO message_ids(event_key, msg_id, minute, seq, created_at_ms)
-		VALUES(?, ?, ?, ?, ?)
-		ON CONFLICT(event_key) DO NOTHING`,
-		a.EventKey, a.MsgID, a.Minute, a.Seq, a.CreatedAt.UTC().UnixMilli()); err != nil {
-		return fmt.Errorf("save message id for %q: %w", a.EventKey, err)
+// never renumbers an already-cited event. The record is queued for the
+// background writer and visible to LoadMessageID immediately, which is
+// what makes it safe to call from inside a transaction.
+func (s *Store) SaveMessageID(_ context.Context, a core.MessageIDAssignment) error {
+	s.msgMu.Lock()
+	if _, exists := s.msgByKey[a.EventKey]; exists {
+		s.msgMu.Unlock()
+		return nil
+	}
+	s.msgByKey[a.EventKey] = a.MsgID
+	if a.Seq > s.msgSeqIn[a.Minute] {
+		s.msgSeqIn[a.Minute] = a.Seq
+	}
+	wake := s.msgWake
+	if wake != nil {
+		s.msgQueue = append(s.msgQueue, a)
+	}
+	s.msgMu.Unlock()
+
+	if wake != nil {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }
 
 // PruneMessageIDs deletes assignments whose event no longer exists (in
-// neither the current-state events nor the panel compose hazards) and that
-// are older than olderThan. Ids of retained events are never touched, so a
-// cited number cannot change while its event is kept.
+// neither the current-state events nor the panel compose hazards) and
+// that are older than olderThan. Ids of retained events are never
+// touched, so a cited number cannot change while its event is kept.
 func (s *Store) PruneMessageIDs(ctx context.Context, olderThan time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
+	// Queued assignments land first: the DELETE must judge the rows that
+	// exist, and a key deleted here is dropped from the mirror below.
+	if err := s.flushMessageIDs(); err != nil && s.msgLogf != nil {
+		s.msgLogf("message id write failed", "error", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `
 		DELETE FROM message_ids
 		WHERE created_at_ms < ?
 		  AND event_key NOT IN (SELECT event_key FROM events)
-		  AND event_key NOT IN (SELECT event_key FROM compose_hazards)`,
-		olderThan.UTC().UnixMilli())
+		  AND event_key NOT IN (SELECT event_key FROM compose_hazards)
+		RETURNING event_key`, olderThan.UTC().UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("prune message ids: %w", err)
 	}
-	return res.RowsAffected()
+	var pruned []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("prune message ids: %w", err)
+		}
+		pruned = append(pruned, key)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, fmt.Errorf("prune message ids: %w", err)
+	}
+
+	s.msgMu.Lock()
+	for _, key := range pruned {
+		delete(s.msgByKey, key)
+	}
+	// Pruned rows may leave a minute bucket with no assignments behind;
+	// the buckets only matter for the minute currently in progress.
+	cutoff := s.now().UTC().Add(-messageIDMinuteKeep).Format("20060102-1504")
+	for minute := range s.msgSeqIn {
+		if minute < cutoff {
+			delete(s.msgSeqIn, minute)
+		}
+	}
+	s.msgMu.Unlock()
+	return int64(len(pruned)), nil
+}
+
+// messageIDWriter persists queued assignments. It runs alone, so its
+// inserts serialize behind (never inside) an open transaction: waiting
+// for the connection there cannot block the caller that queued the row.
+// Both channels are captured here: clearing the store fields on shutdown
+// must not leave this loop selecting on nil.
+func (s *Store) messageIDWriter(wake, stop <-chan struct{}) {
+	defer s.msgWG.Done()
+	for {
+		select {
+		case <-wake:
+		case <-stop:
+			s.drainMessageIDs()
+			return
+		}
+		s.drainMessageIDs()
+	}
+}
+
+// messageIDFlushAttempts bounds the retry loop of a full drain: a
+// database that never accepts the insert must not hang the shutdown.
+const messageIDFlushAttempts = 10
+
+// flushMessageIDs attempts one pass over the queued assignments and
+// leaves a failed batch queued for the next attempt.
+func (s *Store) flushMessageIDs() error {
+	s.msgMu.Lock()
+	if len(s.msgQueue) == 0 {
+		s.msgMu.Unlock()
+		return nil
+	}
+	batch := s.msgQueue
+	s.msgQueue = nil
+	s.msgMu.Unlock()
+
+	if err := s.writeMessageIDs(batch); err != nil {
+		s.msgMu.Lock()
+		s.msgQueue = append(batch, s.msgQueue...)
+		s.msgMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// drainMessageIDs writes every queued assignment, retrying the batch
+// that failed. A failure is not fatal — the ids stay assigned in memory
+// and the rows are written as soon as the database accepts them — but it
+// is never silent: message_ids is what keeps a cited number stable
+// across a restart.
+func (s *Store) drainMessageIDs() {
+	for attempt := 0; attempt < messageIDFlushAttempts; attempt++ {
+		err := s.flushMessageIDs()
+		if err == nil {
+			return
+		}
+		if s.msgLogf != nil {
+			s.msgLogf("message id write failed", "error", err, "attempt", attempt+1)
+		}
+		time.Sleep(time.Second)
+	}
+	s.msgMu.Lock()
+	dropped := len(s.msgQueue)
+	s.msgQueue = nil
+	s.msgMu.Unlock()
+	if dropped > 0 && s.msgLogf != nil {
+		s.msgLogf("message id assignments abandoned", "pending", dropped)
+	}
+}
+
+// writeMessageIDs inserts one batch of assignments; an existing key is
+// left alone because the first assignment is the one already cited.
+func (s *Store) writeMessageIDs(batch []core.MessageIDAssignment) error {
+	for _, a := range batch {
+		if _, err := s.db.ExecContext(context.Background(), `
+			INSERT INTO message_ids(event_key, msg_id, minute, seq, created_at_ms)
+			VALUES(?, ?, ?, ?, ?)
+			ON CONFLICT(event_key) DO NOTHING`,
+			a.EventKey, a.MsgID, a.Minute, a.Seq, a.CreatedAt.UTC().UnixMilli()); err != nil {
+			return fmt.Errorf("save message id for %q: %w", a.EventKey, err)
+		}
+	}
+	return nil
+}
+
+// messageIDShutdownWait bounds how long Close waits for the final flush:
+// a database that no longer accepts writes must not turn a shutdown into
+// a hang.
+const messageIDShutdownWait = 5 * time.Second
+
+// stopMessageIDs drains the queue and stops the writer; called by Close
+// so a shutting-down process never loses an assignment it reported.
+func (s *Store) stopMessageIDs() {
+	s.msgMu.Lock()
+	stop := s.msgStop
+	s.msgStop, s.msgWake = nil, nil
+	s.msgMu.Unlock()
+	if stop == nil {
+		return
+	}
+	close(stop)
+
+	done := make(chan struct{})
+	go func() {
+		s.msgWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(messageIDShutdownWait):
+		if s.msgLogf != nil {
+			s.msgLogf("message id writer did not stop in time")
+		}
+	}
 }
 
 var _ storage.MessageIDStore = (*Store)(nil)

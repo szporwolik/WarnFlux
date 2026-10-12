@@ -289,11 +289,20 @@ type ActiveEventLister interface {
 // pass prunes assignments whose event is no longer retained.
 type MessageIDStore interface {
 	// LoadMessageID returns the persisted id of eventKey, ok=false when
-	// the key was never assigned.
+	// the key was never assigned. Callers may hold a store transaction
+	// open (the ingest flow stamps an event's id while it writes), so an
+	// implementation must not query the database here: with the single
+	// connection the store installs, that waits for the connection the
+	// caller itself holds. Serving from a copy loaded at startup keeps
+	// the lookup safe from anywhere.
 	LoadMessageID(ctx context.Context, eventKey string) (id string, ok bool, err error)
 	// HighestSeqInMinute returns the largest sequence already handed out
-	// in the given minute bucket (0 when none).
+	// in the given minute bucket (0 when none). Same rule as
+	// LoadMessageID: no database query on this path.
 	HighestSeqInMinute(ctx context.Context, minute string) (int, error)
-	// SaveMessageID durably records one assignment.
+	// SaveMessageID records one assignment, first writer wins. It may
+	// persist behind the caller — an implementation can be called from
+	// inside a transaction too — but everything it reported as recorded
+	// must be on disk once the store is closed.
 	SaveMessageID(ctx context.Context, a core.MessageIDAssignment) error
 }

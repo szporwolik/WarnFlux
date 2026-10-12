@@ -54,6 +54,9 @@
       </div>
       <dialog class="modal" id="mesh-trace-dialog" aria-labelledby="mesh-trace-title"
               data-lbl-tracing="{{tr .Lang "meshtastic.trace_tracing"}}"
+              data-lbl-waiting="{{tr .Lang "meshtastic.trace_waiting"}}"
+              data-lbl-probes="{{tr .Lang "meshtastic.trace_probes"}}"
+              data-lbl-cancel-hint="{{tr .Lang "meshtastic.trace_cancel_hint"}}"
               data-lbl-no-reply="{{tr .Lang "meshtastic.trace_no_reply"}}"
               data-lbl-failed="{{tr .Lang "meshtastic.trace_failed"}}"
               data-lbl-hops="{{tr .Lang "meshtastic.trace_hops"}}"
@@ -66,7 +69,7 @@
         <p id="mesh-trace-map-note" class="muted mesh-trace-map-note" hidden></p>
         <div id="mesh-trace-body"></div>
         <div class="modal-actions">
-          <button type="button" class="btn-ghost btn-small" id="mesh-trace-close">{{tr .Lang "common.close"}}</button>
+          <button type="button" class="btn-ghost btn-small" id="mesh-trace-close" title="{{tr .Lang "meshtastic.trace_cancel_hint"}}">{{tr .Lang "common.close"}}</button>
         </div>
       </dialog>
     </section>
@@ -145,8 +148,36 @@
     var mapBox = document.getElementById("mesh-trace-map");
     var mapNote = document.getElementById("mesh-trace-map-note");
     var closeBtn = document.getElementById("mesh-trace-close");
+    // The probe in flight: its abort controller, the local ticker that
+    // keeps the seconds moving and the poller that adds what the radio
+    // reports (frames sent, hops heard so far).
+    var traceAbort = null;
+    var traceTick = null;
+    var tracePoll = null;
+    // Generation counter: a probe that was given up on (or that settled)
+    // must never clear the state of the probe started right after it.
+    var traceGen = 0;
+    function stopTraceTimers() {
+      if (traceTick) { window.clearInterval(traceTick); traceTick = null; }
+      if (tracePoll) { window.clearInterval(tracePoll); tracePoll = null; }
+    }
+    // Closing the dialog gives up on the probe: the server stops probing
+    // the moment the request goes away, so the station stops spending
+    // airtime on an answer nobody is waiting for.
+    function abandonTrace() {
+      traceGen++;
+      stopTraceTimers();
+      if (traceAbort) {
+        try { traceAbort.abort(); } catch (err) { /* already settled */ }
+        traceAbort = null;
+      }
+      busy = false;
+    }
     if (closeBtn) {
-      closeBtn.addEventListener("click", function () { if (dialog && dialog.open) { dialog.close(); } });
+      closeBtn.addEventListener("click", function () {
+        abandonTrace();
+        if (dialog && dialog.open) { dialog.close(); }
+      });
     }
 
     function escT(s) {
@@ -175,6 +206,42 @@
         bodyEl.appendChild(ul);
       }
       if (dialog && !dialog.open) { dialog.showModal(); }
+    }
+
+    // startTraceProgress paints the probe while it is on the air. The
+    // local clock keeps the line moving every half second (so a slow
+    // answer never looks like a hung page), and the poll adds the frames
+    // sent and the hops heard as they arrive: a partial route is drawn
+    // before the probe finishes. The panel is only re-rendered when the
+    // text actually changed, so nothing flickers under the pointer.
+    function startTraceProgress(id, nodeLabel, LBL_TRACING, LBL_WAITING, LBL_PROBES) {
+      var started = Date.now();
+      var st = null;
+      var lastText = "";
+      function paint() {
+        var elapsed = Date.now() - started;
+        var head = "⏱ " + LBL_WAITING + " · " + Math.round(elapsed / 1000) + " s";
+        if (st && st.timeout_ms > 0) { head += " / " + Math.round(st.timeout_ms / 1000) + " s"; }
+        var lines = [head];
+        if (st && st.max_probes > 0) { lines.push("📡 " + LBL_PROBES + ": " + st.probes + "/" + st.max_probes); }
+        var hops = (st && st.hops) || [];
+        hops.forEach(function (h) { lines.push(hopLine(h)); });
+        if (!hops.length) { lines.push("…"); }
+        var text = lines.join("\n");
+        if (text === lastText) { return; }
+        lastText = text;
+        show(LBL_TRACING + ": " + nodeLabel() + "…", lines);
+      }
+      traceTick = window.setInterval(paint, 500);
+      tracePoll = window.setInterval(function () {
+        fetch("/api/meshtastic/traceroute/status?to=" + encodeURIComponent(id), {
+          credentials: "same-origin",
+          cache: "no-store"
+        }).then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) { if (j) { st = j; } })
+          .catch(function () { /* transient — the next poll retries */ });
+      }, 1000);
+      paint();
     }
 
     // --- The flight path: a tiny map inside the dialog showing how the
@@ -351,12 +418,19 @@
       }
       busy = true;
       hideTraceMap();
-      show(LBL_TRACING + ": " + nodeLabel() + "…", ["…"]);
+      var LBL_WAITING = dialog.dataset.lblWaiting || "waiting for a reply";
+      var LBL_PROBES = dialog.dataset.lblProbes || "probes";
+      var ctrl = new AbortController();
+      traceAbort = ctrl;
+      traceGen++;
+      var gen = traceGen;
+      startTraceProgress(id, nodeLabel, LBL_TRACING, LBL_WAITING, LBL_PROBES);
       var csrfEl = document.querySelector('form input[name="csrf"]');
       fetch("/api/meshtastic/traceroute", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         credentials: "same-origin",
+        signal: ctrl.signal,
         body: "csrf=" + encodeURIComponent(csrfEl ? csrfEl.value : "") + "&to=" + encodeURIComponent(id)
       }).then(function (r) {
         if (r.status === 401) { window.location.href = "/login"; }
@@ -389,9 +463,15 @@
         show((j.reached ? "✓ " : "✗ ") + nodeLabel(), lines);
         renderTraceMap(hs, j.reached);
       }).catch(function (err) {
+        if (err && err.name === "AbortError") { return; } // the operator closed it
         hideTraceMap();
         show(LBL_FAILED, [err && err.message ? err.message : String(err)]);
-      }).finally(function () { busy = false; });
+      }).finally(function () {
+        if (gen !== traceGen) { return; } // a newer probe owns the panel
+        busy = false;
+        traceAbort = null;
+        stopTraceTimers();
+      });
     });
   })();
   </script>

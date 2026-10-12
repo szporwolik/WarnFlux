@@ -2,6 +2,8 @@ package web
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -209,5 +211,108 @@ func TestBrokerGateWithoutPublisher(t *testing.T) {
 	g := newBrokerGate(nil)
 	if err := g.publishActive(composeSource, state.Hazard{EventKey: "compose:4"}, 1); !errors.Is(err, errNoBroker) {
 		t.Fatalf("err = %v, want errNoBroker", err)
+	}
+}
+
+// TestBrokerGateKeepsTheVersionBarUnderTablePressure pins the reported
+// P2: the table used to be replaced wholesale once it grew past its cap,
+// which threw away the remembered versions — a retirement of version 2
+// then lost to a publication of version 1. Pressure on the table must not
+// touch a bar, and the table must still stay bounded.
+func TestBrokerGateKeepsTheVersionBarUnderTablePressure(t *testing.T) {
+	pub := &recordingPublisher{}
+	g := newBrokerGate(pub)
+	h := state.Hazard{EventKey: "compose:1", Source: composeSource}
+
+	// The message is retired at version 2.
+	if err := g.retireActive(composeSource, h.EventKey, 2); err != nil {
+		t.Fatal(err)
+	}
+	// Years of unversioned documents fill the table past its cap.
+	for i := 0; i < gateKeyCap+64; i++ {
+		suffix := fmt.Sprintf("info/emcom/emcom/net-%d/emcom", i)
+		if err := g.publishInfo(suffix, []byte("{}"), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The delayed publication of the retired version loses ...
+	if err := g.publishActive(composeSource, h, 1); err != nil {
+		t.Fatal(err)
+	}
+	// ... while the idempotent resync of the current version goes out.
+	if err := g.publishActive(composeSource, h, 2); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"retire:compose:1", "active:compose:1"}
+	var calls []string
+	for _, call := range pub.snapshot() {
+		if strings.Contains(call, "compose:1") {
+			calls = append(calls, call)
+		}
+	}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("calls for the message = %v, want %v (the retired version must not come back)", calls, want)
+	}
+	// The idle pool stays bounded even though the bars do not.
+	g.mu.Lock()
+	keys := len(g.keys)
+	g.mu.Unlock()
+	if keys > gateKeyCap {
+		t.Fatalf("the gate kept %d keys, want at most %d", keys, gateKeyCap)
+	}
+}
+
+// TestBrokerGateKeepsTheLockOfAnInFlightPublication pins the other half
+// of the report: pressure on the table must not hand an in-flight
+// publication's message a second lock, which would let two publications
+// of it overlap — and the second one could then retire what the first was
+// still publishing.
+func TestBrokerGateKeepsTheLockOfAnInFlightPublication(t *testing.T) {
+	pub := &recordingPublisher{}
+	started, release := pub.holdNext()
+	g := newBrokerGate(pub)
+	h := state.Hazard{EventKey: "compose:7", Source: composeSource}
+
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		_ = g.publishActive(composeSource, h, 1)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first publication never reached the broker")
+	}
+
+	// Table pressure while the publication is in flight. The publisher is
+	// held, so the pressure is applied through the gate's own table —
+	// exactly the path that used to replace it wholesale.
+	for i := 0; i < gateKeyCap+64; i++ {
+		g.release(g.key(fmt.Sprintf("info/emcom/emcom/pressure-%d/emcom", i)))
+	}
+
+	// A publication of the SAME message arriving now must meet the one in
+	// flight on its lock instead of running beside it.
+	second := make(chan struct{})
+	go func() {
+		defer close(second)
+		_ = g.retireActive(composeSource, h.EventKey, 2)
+	}()
+	time.Sleep(50 * time.Millisecond) // let it reach the gate
+
+	select {
+	case <-second:
+		t.Fatal("the second publication ran while the first one was in flight")
+	default:
+	}
+	if got := pub.enteredSnapshot(); len(got) != 1 {
+		t.Fatalf("publications in flight = %v, want only the first one", got)
+	}
+	release()
+	<-first
+	<-second
+	want := []string{"active:compose:7", "retire:compose:7"}
+	if got := pub.snapshot(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("calls = %v, want %v", got, want)
 	}
 }

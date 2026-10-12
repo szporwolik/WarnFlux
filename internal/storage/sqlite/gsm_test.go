@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -154,8 +155,8 @@ func TestGSMMessageRetentionOnInsert(t *testing.T) {
 	}
 }
 
-// seedGSMRow inserts one history row directly, the way a pre-v58 process
-// would have: the parts of a long message stored as separate entries.
+// seedGSMRow inserts one history row directly, the way the text-mode
+// ingest stores a message: one row per delivered message.
 func seedGSMRow(t *testing.T, store *Store, direction, from, to, text string, at time.Time) int64 {
 	t.Helper()
 	res, err := store.db.Exec(`
@@ -191,123 +192,64 @@ func gsmRowTexts(t *testing.T, store *Store) map[int64]string {
 	return out
 }
 
-// runLegacyJoin applies the v58 step the way the migration runner does.
-func runLegacyJoin(t *testing.T, store *Store) {
-	t.Helper()
-	tx, err := store.db.Begin()
+// TestGSMHistorySurvivesSchemaUpgrade pins the reported P1: the schema
+// upgrade must never rewrite the SMS history. The v58 step used to join
+// rows that LOOK like the parts of a split message (same sender, same
+// minute, every part but the last of full segment length) and delete the
+// originals — but the stored rows carry no segmentation metadata, so two
+// independent messages from one sender inside one minute look exactly
+// like that. Nothing about the history is touched on upgrade now.
+func TestGSMHistorySurvivesSchemaUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	store, _, err := Open(path)
 	if err != nil {
-		t.Fatalf("begin: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
-	if err := joinLegacyGSMParts(tx); err != nil {
-		tx.Rollback()
-		t.Fatalf("joinLegacyGSMParts: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-}
-
-// TestJoinLegacyGSMPartsIsConservative pins the fix on the stored
-// history: independent messages from one sender within the same minute
-// stay separate (the display used to fuse them), while a run whose parts
-// are all full segments — the signature of a split message — is joined
-// once, and two split messages delivered in the same minute stay two.
-func TestJoinLegacyGSMPartsIsConservative(t *testing.T) {
-	store := openGSMTestStore(t)
-	// Every offset below stays inside one minute: a split message is not
-	// joined across a minute boundary (one message, one delivery).
 	base := time.Date(2026, 10, 8, 19, 7, 0, 0, time.UTC)
-
-	// Independent messages inside one minute: the real case that exposed
-	// the defect ("Test", "Gycji", "Yyy?", "Test diagnostyczny ok").
-	independent := []string{"Test", "Gycji", "Yyy?", "Test diagnostyczny ok"}
-	independentIDs := make([]int64, 0, len(independent))
-	for i, text := range independent {
-		independentIDs = append(independentIDs, seedGSMRow(t, store, "rx", "+48509558155", "self", text, base.Add(time.Duration(i)*time.Second)))
-	}
-	// One split message: two full UCS-2 segments (67 characters) and a
-	// short tail, padded with a zero-width space like the real ones.
 	full := strings.Repeat("a", 67)
-	partIDs := []int64{
-		seedGSMRow(t, store, "rx", "80766589", "self", "\u200b"+full, base),
-		seedGSMRow(t, store, "rx", "80766589", "self", full, base.Add(time.Second)),
-		seedGSMRow(t, store, "rx", "80766589", "self", "tail\u200b", base.Add(2*time.Second)),
-	}
-	// Two split messages delivered in the same minute.
-	secondIDs := []int64{
-		seedGSMRow(t, store, "rx", "8010897121", "self", full, base),
-		seedGSMRow(t, store, "rx", "8010897121", "self", full, base.Add(10*time.Second)),
-		seedGSMRow(t, store, "rx", "8010897121", "self", "first", base.Add(11*time.Second)),
-		seedGSMRow(t, store, "rx", "8010897121", "self", full, base.Add(20*time.Second)),
-		seedGSMRow(t, store, "rx", "8010897121", "self", "second", base.Add(21*time.Second)),
-	}
-	// A sent copy and a senderless row are never part of a received run.
-	txID := seedGSMRow(t, store, "tx", "self", "+48509558155", full, base)
-	emptyID := seedGSMRow(t, store, "rx", "", "self", full, base)
 
-	runLegacyJoin(t, store)
-	got := gsmRowTexts(t, store)
+	// Two independent short messages and two exactly-full-segment
+	// messages, all from one sender inside the same minute.
+	seedGSMRow(t, store, "rx", "80766589", "self", "Test", base)
+	seedGSMRow(t, store, "rx", "80766589", "self", "Yyy?", base.Add(time.Second))
+	seedGSMRow(t, store, "rx", "80766589", "self", full, base.Add(2*time.Second))
+	seedGSMRow(t, store, "rx", "80766589", "self", "tail", base.Add(3*time.Second))
+	seedGSMRow(t, store, "rx", "step", "self", full, base.Add(time.Second))
+	// A sent copy, which no rule ever merged.
+	seedGSMRow(t, store, "tx", "self", "+48509558155", full, base)
+	// A split message as the modem actually delivers it: the parts carry
+	// no header at all, so they stay separate rows.
+	seedGSMRow(t, store, "rx", "8010897121", "self", full, base.Add(time.Minute))
+	seedGSMRow(t, store, "rx", "8010897121", "self", "end", base.Add(time.Minute+time.Second))
 
-	for i, want := range independent {
-		if got[independentIDs[i]] != want {
-			t.Errorf("independent message %d = %q, want %q", independentIDs[i], got[independentIDs[i]], want)
-		}
+	before := gsmRowTexts(t, store)
+	if len(before) != 8 {
+		t.Fatalf("seeded %d rows, want 8", len(before))
 	}
-	// The split message is one row now: the newest part keeps the joined
-	// text (that is where it appeared in the newest-first list), the
-	// earlier part rows are gone and the padding is stripped.
-	if want := full + full + "tail"; got[partIDs[2]] != want {
-		t.Errorf("joined message = %q, want %q", got[partIDs[2]], want)
+	// Rewind the schema version and reopen: this is the upgrade path an
+	// existing database takes.
+	if _, err := store.db.Exec(`PRAGMA user_version = 57`); err != nil {
+		t.Fatal(err)
 	}
-	for _, id := range partIDs[:2] {
-		if _, ok := got[id]; ok {
-			t.Errorf("part row %d survived the join", id)
-		}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if want := full + full + "first"; got[secondIDs[2]] != want {
-		t.Errorf("first same-minute message = %q, want %q", got[secondIDs[2]], want)
-	}
-	if want := full + "second"; got[secondIDs[4]] != want {
-		t.Errorf("second same-minute message = %q, want %q", got[secondIDs[4]], want)
-	}
-	for _, id := range []int64{secondIDs[0], secondIDs[1], secondIDs[3]} {
-		if _, ok := got[id]; ok {
-			t.Errorf("row %d survived although its parts were joined", id)
-		}
-	}
-	if got[txID] != full {
-		t.Errorf("sent copy = %q, want it untouched", got[txID])
-	}
-	if got[emptyID] != full {
-		t.Errorf("senderless row = %q, want it untouched", got[emptyID])
-	}
-	// 14 seeded rows: the three parts collapse to one and the five rows
-	// of the two same-minute messages collapse to two.
-	if want := 4 + 1 + 2 + 2; len(got) != want {
-		t.Errorf("history has %d rows, want %d", len(got), want)
-	}
-}
 
-// TestJoinLegacyGSMPartsIsIdempotent pins that a second pass changes
-// nothing: a joined row no longer looks like a part.
-func TestJoinLegacyGSMPartsIsIdempotent(t *testing.T) {
-	store := openGSMTestStore(t)
-	at := time.Date(2026, 10, 8, 19, 58, 4, 0, time.UTC)
-	full := strings.Repeat("x", 67)
-	seedGSMRow(t, store, "rx", "80766589", "self", full, at)
-	seedGSMRow(t, store, "rx", "80766589", "self", "tail", at.Add(time.Second))
-
-	runLegacyJoin(t, store)
-	first := gsmRowTexts(t, store)
-	runLegacyJoin(t, store)
-	second := gsmRowTexts(t, store)
-
-	if len(first) != 1 || len(second) != 1 {
-		t.Fatalf("rows after joins = %d then %d, want 1 and 1", len(first), len(second))
+	upgraded, info, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
 	}
-	for id, text := range first {
-		if second[id] != text {
-			t.Fatalf("second pass changed row %d: %q -> %q", id, text, second[id])
+	defer upgraded.Close()
+	if info.From != 57 || info.To < 58 {
+		t.Fatalf("migration %d -> %d, want the upgrade to run from 57", info.From, info.To)
+	}
+	after := gsmRowTexts(t, upgraded)
+	if len(after) != len(before) {
+		t.Fatalf("history has %d rows after the upgrade, want %d (rows were joined)", len(after), len(before))
+	}
+	for id, text := range before {
+		if after[id] != text {
+			t.Errorf("row %d = %q after the upgrade, want %q untouched", id, after[id], text)
 		}
 	}
 }

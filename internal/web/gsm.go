@@ -220,9 +220,10 @@ func (s *Server) fillGSMMessages(r *http.Request, v *gsmView) {
 
 // stripSMSDisplay decodes one stored body and removes the zero-width
 // characters senders use as segment padding. Each stored row is shown as
-// it is: the history does not guess which rows belong together (see the
-// v58 migration, which joins the parts stored before the read path
-// stopped guessing).
+// it is: the history never guesses which rows belong together — the rows
+// of a split message carry no segmentation metadata once stored, so
+// joining them would also join independent messages that happen to look
+// alike (see the v58 migration note and the hub's recordBatch).
 func stripSMSDisplay(text string) string {
 	return strings.NewReplacer("\u200B", "", "\uFEFF", "").Replace(gsm.DecodeSMSBody(text))
 }

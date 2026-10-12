@@ -998,14 +998,22 @@ ALTER TABLE meshtastic_messages ADD COLUMN reason TEXT NOT NULL DEFAULT '';
 `,
 	},
 	{
-		// v58: join the split parts of the SMS history stored before the
-		// read path stopped guessing. The old display merged every
-		// consecutive rx row from one sender within the same minute, so
-		// independent messages shown together became one text; the join
-		// now happens once, here, and only for runs that look like a
-		// split message (every part but the last is a full segment).
+		// v58: deliberately empty.
+		//
+		// This step used to join the parts of split SMS messages that were
+		// stored by the text-mode ingest, keeping the newest row and
+		// DELETING the others. The rule (every part but the last is a
+		// full segment — 67 characters for UCS-2, 152/153 for GSM-7) is
+		// only a hint: the stored rows carry no segmentation metadata, so
+		// two independent messages from one sender inside the same minute
+		// can look exactly like a split message, and the upgrade would
+		// then destroy history it cannot reconstruct (reported P1).
+		//
+		// The history is therefore never rewritten: every stored row stays
+		// exactly as the modem delivered it, and the read path shows what
+		// is stored. Reconstructing a split message would have to be a
+		// separate, reversible step — never a destructive migration.
 		SQL: `SELECT 1`,
-		run: joinLegacyGSMParts,
 	},
 	{
 		// v59: panel communications recorded before the compose path
@@ -1124,8 +1132,9 @@ type MigrationInfo struct {
 // down once: the ingest transaction stamped an event's message id, and
 // the id lookup queried the database. Helpers reachable from inside a
 // transaction must therefore take the tx (or answer from memory, as the
-// message ids do); see joinLegacyGSMParts and msgid.go for the current
-// shape.
+// message ids do). Helpers that must run inside a transaction take the
+// *sql.Tx (see recordComposeLifecycleTx); the ones that cannot take it
+// answer from memory (see msgid.go).
 func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {

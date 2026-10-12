@@ -973,8 +973,10 @@ func reassemble(raw []received) []received {
 // messages (some SMSCs emit them) are dropped — they carry nothing to
 // display or route. Text mode stores each part of a long message as a
 // separate entry with no user-data header, so the parts of a long
-// message reach the history as separate rows; nothing joins them by
-// guesswork any more (see the v58 migration for the rows stored before).
+// message reach the history as separate rows. Nothing joins them by
+// guesswork — not at display time and not on upgrade (see the v58
+// migration note): the rows carry no identity to group them by, and a
+// guess would also fuse independent messages that look alike.
 func (h *Hub) recordBatch(raw []received) []received {
 	msgs := reassemble(raw)
 	kept := make([]received, 0, len(msgs))

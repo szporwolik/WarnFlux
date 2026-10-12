@@ -885,6 +885,15 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// Default returns the configuration the station uses when a key is
+// absent: the same values Load fills in for a file that names nothing.
+// Panels quote them as field placeholders, so an operator sees what an
+// empty field means.
+func Default() Config {
+	var f fileConfig
+	return f.toConfig()
+}
+
 // toConfig converts the decoded file representation into a Config with
 // defaults applied for missing values.
 func (f fileConfig) toConfig() Config {

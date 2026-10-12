@@ -223,10 +223,42 @@ func (i *Instance) run(ctx context.Context) {
 				// Hung plugin is disabled: never invoke it again.
 				continue
 			}
+			if i.blocked() {
+				// The offline switch flipped after the check above, so
+				// this request is already out of the queue. Hold it here
+				// instead of letting handle drop it: a hazard accepted a
+				// moment before the operator went offline must still go
+				// out when the station comes back.
+				if !i.holdOffline(ctx) {
+					// Shutting down while offline: put it back so the
+					// drain path records it like any other held request.
+					select {
+					case i.queue <- req:
+					default:
+					}
+					continue
+				}
+			}
 			i.handle(req)
 		case <-time.After(DeliveryPollInterval):
 		}
 	}
+}
+
+// holdOffline waits for the offline switch to go back off, so a request
+// that was dequeued in the moment the switch flipped is delivered rather
+// than dropped. It reports false when the instance stops first (shutdown
+// or the plugin being disabled); the caller then returns the request to
+// the queue for the drain to see.
+func (i *Instance) holdOffline(ctx context.Context) bool {
+	for i.blocked() && !i.disabled.Load() {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(DeliveryPollInterval):
+		}
+	}
+	return !i.disabled.Load()
 }
 
 // runNextJob claims and executes one due durable job. It reports whether

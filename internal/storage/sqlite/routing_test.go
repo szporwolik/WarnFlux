@@ -709,6 +709,100 @@ func TestComposeLifecycleBlocksDelivery(t *testing.T) {
 	}
 }
 
+// TestExpireComposeHazardIfCurrentSkipsEditedMessage pins the conditional
+// expiry (reported P1): the automatic pass lists the communications and
+// then expires them, so it may only write the expiry of the version it
+// READ. An extension that landed in between allocated a newer version and
+// wins — the record, the ledger and the inbox stay untouched.
+func TestExpireComposeHazardIfCurrentSkipsEditedMessage(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+	publisher, err := store.InstanceID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	future := now.Add(2 * time.Hour)
+	state := func(exp time.Time) []byte {
+		t.Helper()
+		b, err := json.Marshal(map[string]any{"event_key": "compose:1", "expires_at": exp.Format(time.RFC3339Nano)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	save := func(exp time.Time) int64 {
+		t.Helper()
+		version, err := store.SaveComposeHazard(ctx, storage.ComposeHazard{
+			EventKey: "compose:1", State: state(exp), Status: "active", UpdatedAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
+	expiryEvent := func() dispatch.Event {
+		return dispatch.Event{Kind: dispatch.EventHazardTransition, Origin: dispatch.Origin{Type: "web", ReceiverID: "compose"},
+			Hazard: &dispatch.HazardTransition{Type: dispatch.TransitionExpired, Key: "compose:1", Source: "compose"}}
+	}
+	expiredRecord := func() storage.ComposeHazard {
+		return storage.ComposeHazard{EventKey: "compose:1", State: state(past), Status: "expired", UpdatedAt: time.Now()}
+	}
+
+	first := save(past)
+	rows, err := store.ComposeHazards(ctx)
+	if err != nil || len(rows) != 1 || rows[0].Version != first {
+		t.Fatalf("ComposeHazards = %+v, %v; want the version %d read with the row", rows, err, first)
+	}
+	// The operator extends the validity while the pass is running.
+	second := save(future)
+
+	before, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, applied, err := store.ExpireComposeHazardIfCurrent(ctx, expiredRecord(), expiryEvent(), first); err != nil || applied {
+		t.Fatalf("expiry of the superseded version = (applied %v, %v), want it refused", applied, err)
+	}
+	after, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("inbox rows %d -> %d, want nothing written for the superseded expiry", len(before), len(after))
+	}
+	rows, err = store.ComposeHazards(ctx)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ComposeHazards = %+v, %v", rows, err)
+	}
+	if rows[0].Status != "active" || rows[0].Version != second || string(rows[0].State) != string(state(future)) {
+		t.Fatalf("record after the refused expiry = (status %q, version %d, state %s), want the extended one untouched",
+			rows[0].Status, rows[0].Version, rows[0].State)
+	}
+	// The version that IS current can be expired, and the expiry carries
+	// a version of its own.
+	id, stamped, applied, err := store.ExpireComposeHazardIfCurrent(ctx, expiredRecord(), expiryEvent(), second)
+	if err != nil || !applied || id == 0 {
+		t.Fatalf("expiry of the current version = (id %d, applied %v, %v), want it written", id, applied, err)
+	}
+	if stamped.Hazard == nil || stamped.Hazard.ChangeID <= second || stamped.Hazard.Publisher != publisher {
+		t.Fatalf("expiry transition = %+v, want the new version under %q", stamped.Hazard, publisher)
+	}
+	rows, err = store.ComposeHazards(ctx)
+	if err != nil || rows[0].Status != "expired" {
+		t.Fatalf("record after the conditional expiry = %+v, %v; want expired", rows, err)
+	}
+	if blocked, err := store.LifecycleBlocks(ctx, publisher, "compose:1", second); err != nil || !blocked {
+		t.Fatalf("the expired version blocked = (%v, %v), want (true, nil)", blocked, err)
+	}
+	// A record without a version under this instance is never expired by
+	// guesswork.
+	if _, _, applied, err := store.ExpireComposeHazardIfCurrent(ctx, expiredRecord(), expiryEvent(), 0); err != nil || applied {
+		t.Fatalf("versionless expiry = (applied %v, %v), want it refused", applied, err)
+	}
+}
+
 // TestComposeSaveAtomic pins the reported P1 at the storage boundary: the
 // compose record and its lifecycle state commit in ONE transaction — a
 // failed save writes NEITHER. Previously the expired record committed
@@ -728,10 +822,15 @@ func TestComposeSaveAtomic(t *testing.T) {
 	if _, err := store.SaveComposeHazard(ctx, h); err == nil {
 		t.Fatal("save with a broken lifecycle table succeeded, want failure")
 	}
-	// Nothing was accepted: the operation failed as a whole.
-	rows, err := store.ComposeHazards(ctx)
-	if err != nil || len(rows) != 0 {
-		t.Fatalf("compose record after the failed save = (%v, %v), want none (atomic rollback)", rows, err)
+	// Nothing was accepted: the operation failed as a whole. The record
+	// is read straight from the table — ComposeHazards joins the ledger,
+	// which this fault injection deliberately removed.
+	var records int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM compose_hazards`).Scan(&records); err != nil {
+		t.Fatal(err)
+	}
+	if records != 0 {
+		t.Fatalf("compose records after the failed save = %d, want none (atomic rollback)", records)
 	}
 }
 

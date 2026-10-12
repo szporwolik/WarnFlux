@@ -135,6 +135,12 @@ func (m *memDeliveryStore) SettleDeliveryGuarded(ctx context.Context, d storage.
 	j.status = stage
 	if stage == storage.DeliveryFailed {
 		j.next = d.NextAttempt
+		// A retryable failure may carry the narrowed payload: only the
+		// work that is still pending goes into the next attempt (see
+		// storage.DeliverySettle.Payload).
+		if len(d.Payload) > 0 && !d.NextAttempt.IsZero() {
+			j.job.Payload = append([]byte(nil), d.Payload...)
+		}
 	} else {
 		j.next = time.Time{}
 	}
@@ -229,6 +235,44 @@ func (p *deliveryPlugin) ExecuteStage(ctx context.Context, req ActionRequest) (D
 }
 
 func (p *deliveryPlugin) Close(ctx context.Context) error { return nil }
+
+// narrowingPlugin is a plugin that delivers to part of its recipients and
+// reports what is left (the capability the SMTP action implements).
+type narrowingPlugin struct {
+	mu       sync.Mutex
+	executed []ActionRequest
+	narrowTo []string
+}
+
+func (p *narrowingPlugin) Name() string { return "logger" }
+
+func (p *narrowingPlugin) Execute(_ context.Context, req ActionRequest) error {
+	p.mu.Lock()
+	p.executed = append(p.executed, req)
+	p.mu.Unlock()
+	return errors.New("synthetic failure")
+}
+
+func (p *narrowingPlugin) Close(context.Context) error { return nil }
+
+func (p *narrowingPlugin) RetryRequest(req ActionRequest, _ error) (ActionRequest, bool) {
+	p.mu.Lock()
+	delivered := p.narrowTo
+	p.narrowTo = nil // the second attempt delivers nothing new
+	p.mu.Unlock()
+	if len(delivered) == 0 {
+		return req, false
+	}
+	out := req
+	out.DoneRecipients = append(append([]string(nil), req.DoneRecipients...), delivered...)
+	return out, true
+}
+
+func (p *narrowingPlugin) executions() []ActionRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]ActionRequest(nil), p.executed...)
+}
 
 func waitForDelivery(t *testing.T, cond func() bool, what string) {
 	t.Helper()
@@ -643,5 +687,53 @@ func TestHoldOfflineKeepsDequeuedRequest(t *testing.T) {
 	inst.disabled.Store(true)
 	if inst.holdOffline(context.Background()) {
 		t.Fatal("holdOffline ignored a disabled plugin")
+	}
+}
+
+// TestInstanceNarrowedRetryPayload pins the reported P2 on the durable
+// path: a plugin that delivered to part of its recipients reports the work
+// that is left, and the RETRY job carries only that — it does not start
+// from the beginning of the list again. The narrowed payload is written
+// with the retry settlement, so it survives a restart.
+func TestInstanceNarrowedRetryPayload(t *testing.T) {
+	p := &narrowingPlugin{narrowTo: []string{"sent-1@example.net", "sent-2@example.net"}}
+	_, ms := newDeliveryInstance(t, p, 2)
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	payload, err := json.Marshal(ActionRequest{
+		ID:    "imgw:1/log",
+		Event: ev,
+		Bcc:   []string{"sent-1@example.net", "sent-2@example.net", "left@example.net"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueueOne(t, ms, payload)
+
+	// Two attempts run: the first delivers part of the list, the second
+	// must be told what is left — and that is what it receives.
+	waitForDelivery(t, func() bool { return len(p.executions()) >= 2 }, "the retry attempt to run")
+	executions := p.executions()
+	if len(executions[0].DoneRecipients) != 0 {
+		t.Errorf("first attempt done recipients = %v, want none", executions[0].DoneRecipients)
+	}
+	if got := executions[1].DoneRecipients; len(got) != 2 ||
+		got[0] != "sent-1@example.net" || got[1] != "sent-2@example.net" {
+		t.Errorf("retry attempt done recipients = %v, want the two delivered addresses", got)
+	}
+
+	// The narrowed payload is what the durable row holds: a job recovered
+	// after a restart would carry the same progress.
+	ms.mu.Lock()
+	stored := ms.jobs[ms.key(1, "log", "c:1")].job.Payload
+	ms.mu.Unlock()
+	var recovered ActionRequest
+	if err := json.Unmarshal(stored, &recovered); err != nil {
+		t.Fatalf("stored retry payload: %v", err)
+	}
+	if len(recovered.DoneRecipients) != 2 {
+		t.Errorf("stored retry payload done recipients = %v, want the two delivered addresses",
+			recovered.DoneRecipients)
 	}
 }

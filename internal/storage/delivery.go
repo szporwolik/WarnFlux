@@ -116,6 +116,13 @@ type DeliverySettle struct {
 	// TxFailed landing between the worker's pre-check and the write
 	// can never be lost (reported P1).
 	Version *DeliveryVersion
+	// Payload, when set, REPLACES the stored job payload as part of a
+	// retryable failure (NextAttempt set): an action that delivered to
+	// part of its recipients before it failed leaves the rest in the
+	// payload, so the next attempt covers only what is still pending
+	// (reported P2: a retried SMTP batch started from the beginning of
+	// the list and re-sent the mails that had already gone out).
+	Payload []byte
 }
 
 // InboxDeliveryStore atomically persists delivery jobs and consumes the

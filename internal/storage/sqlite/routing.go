@@ -439,7 +439,17 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 	if stage == storage.DeliveryFailed && !d.NextAttempt.IsZero() {
 		next = d.NextAttempt.UnixMilli()
 	}
-	if _, err := tx.ExecContext(ctx, `
+	// A retryable failure may carry the narrowed payload: the work that is
+	// still pending replaces the whole batch, in the same statement as the
+	// retry deadline (see storage.DeliverySettle.Payload).
+	if len(d.Payload) > 0 && next != 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE action_fires SET status = ?, next_attempt_at_ms = ?, payload = ?
+			WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
+			status, next, string(d.Payload), d.GroupID, d.ActionID, d.DedupKey); err != nil {
+			return 0, fmt.Errorf("guarded settle for action %q group %d: %w", d.ActionID, d.GroupID, err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `
 		UPDATE action_fires SET status = ?, next_attempt_at_ms = ?
 		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
 		status, next, d.GroupID, d.ActionID, d.DedupKey); err != nil {

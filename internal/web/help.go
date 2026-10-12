@@ -164,7 +164,7 @@ func (s *Server) buildHelpView(lang string) helpView {
 			{Title: "help.meshtastic.title", Icon: "i-broadcast", Items: []string{
 				"help.meshtastic.1", "help.meshtastic.2",
 			}},
-			{Title: "help.discord.title", Icon: "i-chat-text", Items: []string{
+			{Title: "help.discord.title", Icon: "i-discord", Items: []string{
 				"help.discord.section.1", "help.discord.section.2",
 			}},
 			{Title: "help.account.title", Icon: "i-person", Items: []string{

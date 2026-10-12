@@ -186,12 +186,17 @@ type MessageIDAssignment struct {
 // survives a restart. Implementations must be safe for concurrent use.
 type MessageIDStore interface {
 	// LoadMessageID returns the persisted id of eventKey, ok=false when
-	// the key was never assigned.
+	// the key was never assigned. It is called while an ingest or
+	// compose transaction may be open, so implementations must not
+	// issue a database query here (see storage.MessageIDStore for the
+	// single-connection deadlock that causes).
 	LoadMessageID(ctx context.Context, eventKey string) (id string, ok bool, err error)
 	// HighestSeqInMinute returns the largest sequence already handed out
-	// in the given minute bucket (0 when none).
+	// in the given minute bucket (0 when none). Same rule as
+	// LoadMessageID: no database query on this path.
 	HighestSeqInMinute(ctx context.Context, minute string) (int, error)
-	// SaveMessageID durably records one assignment.
+	// SaveMessageID records one assignment, first writer wins. It may be
+	// called with a transaction open and may persist behind the caller.
 	SaveMessageID(ctx context.Context, a MessageIDAssignment) error
 }
 

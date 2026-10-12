@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -1017,10 +1018,32 @@ type Store struct {
 
 	// now is the clock used for timestamps; injectable in tests.
 	now func() time.Time
+
+	// msgLogf reports background message-id write failures (see msgid.go).
+	msgLogf func(msg string, args ...any)
+
+	// Message-id mirror: the assignments are readable from inside store
+	// transactions, where a database query would deadlock on the single
+	// pooled connection. msgMu guards all of it.
+	msgMu    sync.Mutex
+	msgByKey map[string]string
+	msgSeqIn map[string]int
+	msgQueue []core.MessageIDAssignment
+	msgWake  chan struct{}
+	msgStop  chan struct{}
+	msgWG    sync.WaitGroup
 }
 
 // Option customizes a Store during Open.
 type Option func(*Store)
+
+// WithMessageIDLog installs the logger for background message-id write
+// failures. Persistence of new assignments runs behind the caller (see
+// msgid.go), so a failure there cannot be reported to it; without a
+// logger it would be silent.
+func WithMessageIDLog(fn func(msg string, args ...any)) Option {
+	return func(s *Store) { s.msgLogf = fn }
+}
 
 // WithClock sets the clock used for persistence timestamps. It is the
 // deterministic-time seam used by tests across packages (ingest, storage);
@@ -1083,6 +1106,10 @@ func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 	for _, opt := range opts {
 		opt(store)
 	}
+	if err := store.initMessageIDs(context.Background()); err != nil {
+		db.Close()
+		return nil, MigrationInfo{}, err
+	}
 	return store, info, nil
 }
 
@@ -1130,8 +1157,12 @@ func migrate(db *sql.DB, steps []migration) (MigrationInfo, error) {
 	return info, nil
 }
 
-// Close closes the underlying database connection.
-func (s *Store) Close() error { return s.db.Close() }
+// Close drains the queued message-id assignments and closes the
+// underlying database connection.
+func (s *Store) Close() error {
+	s.stopMessageIDs()
+	return s.db.Close()
+}
 
 // Ping verifies the database connection (the web health page's DB row).
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }

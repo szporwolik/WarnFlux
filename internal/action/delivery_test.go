@@ -819,3 +819,209 @@ func TestANewJobNeverInheritsDeliveryProgress(t *testing.T) {
 		t.Fatalf("version 2 retry payload done recipients = %v, want none", recovered.DoneRecipients)
 	}
 }
+
+// unconfirmedPlugin hands its transmission to the transport and never gets
+// a confirmation: it reports StageUnconfirmed with NO error.
+type unconfirmedPlugin struct {
+	mu      sync.Mutex
+	handled int
+}
+
+func (p *unconfirmedPlugin) Name() string { return "unconfirmed" }
+
+func (p *unconfirmedPlugin) Execute(context.Context, ActionRequest) error { return nil }
+
+func (p *unconfirmedPlugin) ExecuteStage(context.Context, ActionRequest) (DeliveryStage, error) {
+	p.mu.Lock()
+	p.handled++
+	p.mu.Unlock()
+	return StageUnconfirmed, nil
+}
+
+func (p *unconfirmedPlugin) Close(context.Context) error { return nil }
+
+func (p *unconfirmedPlugin) attempts() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.handled
+}
+
+// TestUnconfirmedDeliveryIsNeverResent pins the reported P2 on the worker
+// side: a transmission the transport took without confirming finishes as
+// "unconfirmed" — terminal, so the retry budget is never spent on a
+// second (duplicate) transmission.
+func TestUnconfirmedDeliveryIsNeverResent(t *testing.T) {
+	p := &unconfirmedPlugin{}
+	inst, ms := newDeliveryInstance(t, p, 2)
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	payload, err := json.Marshal(ActionRequest{ID: "imgw:1/sms", Event: ev, Bcc: []string{"+48600111222"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueueOne(t, ms, payload)
+
+	waitForDelivery(t, func() bool { return p.attempts() >= 1 }, "the transmission to run")
+	// Give a retry every chance to start: the state must settle as
+	// unconfirmed immediately.
+	time.Sleep(80 * time.Millisecond)
+	if got := p.attempts(); got != 1 {
+		t.Fatalf("the transmission ran %d times, want 1 (an unconfirmed send must never be repeated)", got)
+	}
+	ms.mu.Lock()
+	status := ms.jobs[ms.key(1, "log", "c:1")].status
+	ms.mu.Unlock()
+	if status != storage.DeliveryUnconfirmed {
+		t.Fatalf("settled status = %v, want unconfirmed", status)
+	}
+	// The channel that handed the message over is not reported as broken:
+	// the operator sees the state, not an outage.
+	if st := inst.Status(); st.State != StateHealthy || st.Failures != 0 {
+		t.Fatalf("instance status = %+v, want healthy", st)
+	}
+}
+
+// partialUnconfirmedError is what an action reports when it handed one
+// recipient to the transport without a confirmation and another one failed
+// before transmission: both lists travel with the attempt.
+type partialUnconfirmedError struct {
+	delivered   []string
+	unconfirmed []string
+}
+
+func (e *partialUnconfirmedError) Error() string { return "synthetic partial failure" }
+
+func (e *partialUnconfirmedError) Delivered() []string {
+	return append([]string(nil), e.delivered...)
+}
+
+func (e *partialUnconfirmedError) Unconfirmed() []string {
+	return append([]string(nil), e.unconfirmed...)
+}
+
+// unconfirmedNarrowPlugin mimics the SMS action: the first attempt hands
+// one recipient over without a confirmation and fails on another; the
+// retry sees the unconfirmed recipient in the request and reports the
+// weaker stage, because that fact outlives the attempt that produced it.
+type unconfirmedNarrowPlugin struct {
+	mu       sync.Mutex
+	executed []ActionRequest
+}
+
+func (p *unconfirmedNarrowPlugin) Name() string { return "logger" }
+
+func (p *unconfirmedNarrowPlugin) Close(context.Context) error { return nil }
+
+func (p *unconfirmedNarrowPlugin) Execute(context.Context, ActionRequest) error { return nil }
+
+func (p *unconfirmedNarrowPlugin) ExecuteStage(_ context.Context, req ActionRequest) (DeliveryStage, error) {
+	p.mu.Lock()
+	p.executed = append(p.executed, req)
+	attempt := len(p.executed)
+	p.mu.Unlock()
+	if attempt == 1 {
+		// Wrapped exactly like the worker wraps a call that timed out
+		// (%w): the report must survive the wrapping.
+		return StageAccepted, fmt.Errorf("callback exceeded 10s: %w", &partialUnconfirmedError{
+			unconfirmed: []string{"a@example.net"},
+			// nothing was delivered for sure
+		})
+	}
+	if len(req.UnconfirmedRecipients) > 0 {
+		return StageUnconfirmed, nil
+	}
+	return StageAccepted, nil
+}
+
+func (p *unconfirmedNarrowPlugin) requests() []ActionRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]ActionRequest(nil), p.executed...)
+}
+
+// TestUnconfirmedRecipientsSurviveTheRetryAndTheRestart pins the reported
+// P2 on the durable path: the fact that a recipient was handed over
+// without a confirmation rides in the stored payload, so the retry (also
+// one rebuilt after a restart) never sends it again and the job settles
+// with the weaker stage instead of "delivered".
+func TestUnconfirmedRecipientsSurviveTheRetryAndTheRestart(t *testing.T) {
+	p := &unconfirmedNarrowPlugin{}
+	_, ms := newDeliveryInstance(t, p, 1)
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	payload, err := json.Marshal(ActionRequest{ID: "imgw:1/sms", Event: ev,
+		Bcc: []string{"a@example.net", "b@example.net"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueueOne(t, ms, payload)
+
+	waitForDelivery(t, func() bool { return len(p.requests()) >= 2 }, "the retry to run")
+	attempts := p.requests()
+	if got := attempts[0].UnconfirmedRecipients; len(got) != 0 {
+		t.Fatalf("the first attempt started with unconfirmed recipients %v", got)
+	}
+	if got := attempts[1].UnconfirmedRecipients; len(got) != 1 || got[0] != "a@example.net" {
+		t.Fatalf("the retry did not receive the unconfirmed recipient: %v", got)
+	}
+
+	// The stored payload carries the list: after a restart the retry would
+	// rebuild exactly this request.
+	ms.mu.Lock()
+	stored := ms.jobs[ms.key(1, "log", "c:1")].job.Payload
+	ms.mu.Unlock()
+	var restored ActionRequest
+	if err := json.Unmarshal(stored, &restored); err != nil {
+		t.Fatalf("stored payload: %v", err)
+	}
+	if got := restored.UnconfirmedRecipients; len(got) != 1 || got[0] != "a@example.net" {
+		t.Fatalf("stored unconfirmed recipients = %v, want [a@example.net]", got)
+	}
+
+	// And the job settles with the weaker state, not as a delivery.
+	waitForDelivery(t, func() bool {
+		ms.mu.Lock()
+		defer ms.mu.Unlock()
+		return ms.jobs[ms.key(1, "log", "c:1")].status == storage.DeliveryUnconfirmed
+	}, "the job to settle as unconfirmed")
+}
+
+// TestNarrowRetryReadsWrappedUnconfirmedReports pins the reported P2 on
+// the worker: the unconfirmed list was read through a DIRECT type
+// assertion, so the wrapper the worker itself adds around a timed-out call
+// hid it, the retry payload lost the address and the SMS went out again
+// (three attempts, every one with an empty list).
+func TestNarrowRetryReadsWrappedUnconfirmedReports(t *testing.T) {
+	inst, _ := newDeliveryInstance(t, &narrowingPlugin{}, 1)
+
+	req := ActionRequest{ID: "imgw:1/sms", Bcc: []string{"a@example.net"}}
+	wrapped := fmt.Errorf("callback exceeded 10s: %w", &partialUnconfirmedError{
+		delivered:   []string{"confirmed@example.net"},
+		unconfirmed: []string{"a@example.net"},
+	})
+	narrowed, payload := inst.narrowRetry(req, wrapped)
+	if got := narrowed.UnconfirmedRecipients; len(got) != 1 || got[0] != "a@example.net" {
+		t.Fatalf("unconfirmed recipients = %v, want [a@example.net]", got)
+	}
+	if got := narrowed.DoneRecipients; len(got) != 1 || got[0] != "confirmed@example.net" {
+		t.Fatalf("done recipients = %v, want [confirmed@example.net]", got)
+	}
+	if len(payload) == 0 {
+		t.Fatal("no narrowed payload was produced for the retry")
+	}
+
+	// The payload is what a restarted process rebuilds the job from: both
+	// lists must survive the round trip.
+	var restored ActionRequest
+	if err := json.Unmarshal(payload, &restored); err != nil {
+		t.Fatalf("stored payload: %v", err)
+	}
+	if got := restored.UnconfirmedRecipients; len(got) != 1 || got[0] != "a@example.net" {
+		t.Fatalf("stored unconfirmed recipients = %v, want [a@example.net]", got)
+	}
+	if got := restored.DoneRecipients; len(got) != 1 || got[0] != "confirmed@example.net" {
+		t.Fatalf("stored done recipients = %v, want [confirmed@example.net]", got)
+	}
+}

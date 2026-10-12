@@ -34,6 +34,14 @@ const (
 	// alert must never hit the radio.
 	DeliveryExpired
 
+	// DeliveryUnconfirmed means the transport was handed the
+	// transmission but never confirmed it (the modem took the SMS body
+	// and stayed silent inside the caller's budget). Terminal: the
+	// message may already be on its way, so it is NEVER resent
+	// automatically — the operator sees the state and verifies it
+	// (reported P2).
+	DeliveryUnconfirmed
+
 	// DeliveryFailed means the execution failed and the retry budget is
 	// exhausted (terminal for the scheduler). A replayed transition
 	// re-arms the job with a fresh budget instead of deduplicating it,
@@ -49,6 +57,8 @@ func (s DeliveryStatus) String() string {
 		return "accepted"
 	case DeliveryConfirmed:
 		return "confirmed"
+	case DeliveryUnconfirmed:
+		return "unconfirmed"
 	case DeliveryExpired:
 		return "expired"
 	case DeliveryFailed:

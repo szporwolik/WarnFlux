@@ -38,8 +38,12 @@ type Outcome string
 const (
 	OutcomeSubmitted Outcome = "submitted" // queued to actions, no result yet
 	OutcomeDelivered Outcome = "delivered" // all attempts succeeded
-	OutcomeFailed    Outcome = "failed"    // a delivery attempt failed
-	OutcomeSkipped   Outcome = "skipped"   // deliberately not notified
+	// OutcomeUnconfirmed is a delivery handed to the transport that never
+	// confirmed it: not a proven delivery, not a failure — never resent
+	// automatically (reported P2).
+	OutcomeUnconfirmed Outcome = "unconfirmed"
+	OutcomeFailed      Outcome = "failed"  // a delivery attempt failed
+	OutcomeSkipped     Outcome = "skipped" // deliberately not notified
 )
 
 // Step is one audit entry.

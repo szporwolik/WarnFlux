@@ -1633,3 +1633,59 @@ func TestSaveEmcomNetworkAndEnqueueAtomic(t *testing.T) {
 		t.Fatalf("networks = %+v, %v; want the level 0 record", stored, err)
 	}
 }
+
+// TestUnconfirmedDeliveryIsTerminalAndDurable pins the reported P2 state:
+// a transmission handed to the transport without confirmation settles as
+// "unconfirmed" — never claimed again (no automatic resend), never
+// re-armed by a replayed transition, and still the same after a restart.
+func TestUnconfirmedDeliveryIsTerminalAndDurable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unconfirmed.db")
+	s1, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ctx := context.Background()
+	g, err := s1.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Now()
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "sms", EventKey: "imgw:1", DedupKey: "c:1", Payload: []byte("{}"), FiredAt: at}
+	if _, queued, err := s1.EnqueueDelivery(ctx, job); err != nil || !queued {
+		t.Fatalf("enqueue: (%v, %v)", queued, err)
+	}
+	if _, ok, err := s1.ClaimNextDelivery(ctx, "sms", 2, at); err != nil || !ok {
+		t.Fatalf("claim: (%v, %v)", ok, err)
+	}
+	if err := s1.SettleDelivery(ctx, g.ID, "sms", "c:1", storage.DeliveryUnconfirmed, time.Time{}); err != nil {
+		t.Fatalf("settle unconfirmed: %v", err)
+	}
+	// Terminal: no claim can pick it up again, so the SMS is never resent.
+	if _, ok, err := s1.ClaimNextDelivery(ctx, "sms", 2, at.Add(time.Hour)); err != nil || ok {
+		t.Fatalf("an unconfirmed delivery was claimable again: (%v, %v)", ok, err)
+	}
+	if n, err := s1.PendingDeliveries(ctx, "sms"); err != nil || n != 0 {
+		t.Fatalf("pending = (%d, %v), want (0, nil)", n, err)
+	}
+	// A replayed transition deduplicates on the same state.
+	if st, queued, err := s1.EnqueueDelivery(ctx, job); err != nil || st != storage.DeliveryUnconfirmed || queued {
+		t.Fatalf("replay = (%v, %v, %v), want (unconfirmed, false, nil)", st, queued, err)
+	}
+
+	// The state survives a restart (it is what the operator sees).
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	st, queued, err := s2.EnqueueDelivery(ctx, job)
+	if err != nil || st != storage.DeliveryUnconfirmed || queued {
+		t.Fatalf("after restart = (%v, %v, %v), want (unconfirmed, false, nil)", st, queued, err)
+	}
+	if _, ok, err := s2.ClaimNextDelivery(ctx, "sms", 2, at.Add(time.Hour)); err != nil || ok {
+		t.Fatalf("an unconfirmed delivery became claimable after the restart: (%v, %v)", ok, err)
+	}
+}

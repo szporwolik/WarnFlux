@@ -1493,10 +1493,12 @@ func TestHubBeaconDailyAnchor(t *testing.T) {
 		t.Fatalf("beacon fired before its anchor (%d packets)", n)
 	}
 
-	// Exactly at the anchor it goes out and re-arms for tomorrow.
+	// Exactly at the anchor it goes out and re-arms for tomorrow. The send
+	// reaches the radio asynchronously, so wait for the packet instead of
+	// racing a loaded test machine.
 	now = time.Date(2026, 10, 13, 6, 0, 0, 0, time.Local)
 	radio.hub.beaconTick()
-	if n := len(radio.outbound()); n != 1 {
+	if n := len(radio.waitOutbound(t, 1)); n != 1 {
 		t.Fatalf("beacon packets at the anchor = %d, want 1", n)
 	}
 	radio.hub.mu.Lock()

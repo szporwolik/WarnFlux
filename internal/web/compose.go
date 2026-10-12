@@ -345,7 +345,7 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 				i18n.T(s.langFor(r), "compose.err.no_publisher"))
 			return
 		}
-		if err := s.pub.PublishActive(composeSource, h); err != nil {
+		if err := s.broker.publishActive(composeSource, h, 0); err != nil {
 			s.logger.Warn("compose: publish failed", "event_key", h.EventKey, "error", err)
 			s.renderComposeError(w, r, http.StatusServiceUnavailable, form,
 				"publish failed: "+err.Error())
@@ -424,10 +424,12 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	if hasStore {
 		// Broker sync is asynchronous and best-effort: a down broker
 		// never blocks local delivery (the resync hook republishes the
-		// current state on every receiver reconnect).
+		// current state on every receiver reconnect). The publication
+		// carries the version of the record this save wrote, so a resync
+		// that read an OLDER state can never publish over it.
 		if s.pub != nil {
 			go func() {
-				if err := s.pub.PublishActive(composeSource, h); err != nil {
+				if err := s.broker.publishActive(composeSource, h, savedVersion); err != nil {
 					s.logger.Warn("compose: broker sync failed (local dispatch already durable)",
 						"event_key", h.EventKey, "error", err)
 				}
@@ -472,6 +474,7 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 
 	store, hasStore := s.users.(composeStore)
 	transition := composeTransition(h, dispatch.TransitionExpired)
+	var expiryVersion int64
 	if hasStore {
 		// LOCAL-FIRST + ATOMIC (P1): the expired record, its lifecycle
 		// and the expiry intake row commit in ONE transaction, and the
@@ -490,6 +493,9 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		}
 		transition = stamped
 		transition.InboxID = id
+		if stamped.Hazard != nil {
+			expiryVersion = stamped.Hazard.ChangeID
+		}
 	} else {
 		// Mirror-only: the broker document is the record; the tombstone
 		// publish is required and synchronous (the old contract).
@@ -498,7 +504,7 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "publishing is unavailable: no broker publisher is configured", http.StatusServiceUnavailable)
 			return
 		}
-		if err := s.pub.ExpireActive(composeSource, key); err != nil {
+		if err := s.broker.retireActive(composeSource, key, 0); err != nil {
 			s.logger.Warn("compose: expire failed", "event_key", key, "error", err)
 			http.Error(w, "expire failed: "+err.Error(), http.StatusServiceUnavailable)
 			return
@@ -516,10 +522,12 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 	}
 	if hasStore {
 		// Broker sync is asynchronous and best-effort (the resync hook
-		// republishes the current state on receiver reconnect).
+		// republishes the current state on receiver reconnect). The
+		// retirement carries the SAME version the local record wrote, so
+		// a delayed publication of the superseded state cannot undo it.
 		if s.pub != nil {
 			go func() {
-				if err := s.pub.ExpireActive(composeSource, key); err != nil {
+				if err := s.broker.retireActive(composeSource, key, expiryVersion); err != nil {
 					s.logger.Warn("compose: broker expiry sync failed", "event_key", key, "error", err)
 				}
 			}()
@@ -594,7 +602,7 @@ func (s *Server) handleExternalExpire(w http.ResponseWriter, r *http.Request) {
 	// (best-effort; the resync path reconciles on reconnect).
 	if s.pub != nil {
 		go func() {
-			if err := s.pub.ExpireActive(h.Source, key); err != nil {
+			if err := s.broker.retireActive(h.Source, key, 0); err != nil {
 				s.logger.Warn("compose: external expire broker sync failed", "event_key", key, "error", err)
 			}
 		}()
@@ -624,6 +632,7 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard, version int64) {
 		if cur.ExpiresAt == nil || !cur.ExpiresAt.Equal(expires) {
 			return // re-published with a different expiry; that timer owns it
 		}
+		expiryVersion := version
 		if store, hasStore := s.users.(composeStore); hasStore {
 			// The expired record, its lifecycle and the expiry intake row
 			// commit in ONE transaction, guarded by the version this timer
@@ -646,6 +655,9 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard, version int64) {
 			}
 			transition = stamped
 			transition.InboxID = id
+			if stamped.Hazard != nil {
+				expiryVersion = stamped.Hazard.ChangeID
+			}
 			if s.ingress.Enqueue(transition) == dispatch.Rejected {
 				s.logger.Warn("compose: auto-expiry transition rejected by the stopped intake (recovery will deliver it)", "event_key", key, "inbox_id", id)
 				return
@@ -659,12 +671,12 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard, version int64) {
 			_, hasStore := s.users.(composeStore)
 			if !hasStore {
 				// Mirror-only: the broker document is the record.
-				if err := s.pub.ExpireActive(composeSource, key); err != nil {
+				if err := s.broker.retireActive(composeSource, key, 0); err != nil {
 					s.logger.Warn("compose: auto-expire failed", "event_key", key, "error", err)
 				}
 			} else {
 				go func() {
-					if err := s.pub.ExpireActive(composeSource, key); err != nil {
+					if err := s.broker.retireActive(composeSource, key, expiryVersion); err != nil {
 						s.logger.Warn("compose: auto-expiry broker sync failed", "event_key", key, "error", err)
 					}
 				}()
@@ -731,8 +743,12 @@ func (s *Server) AutoExpireCompose(ctx context.Context) (int, error) {
 			continue
 		}
 		if s.pub != nil {
+			autoVersion := row.Version
+			if stamped.Hazard != nil {
+				autoVersion = stamped.Hazard.ChangeID
+			}
 			go func(key string) {
-				if err := s.pub.ExpireActive(composeSource, key); err != nil {
+				if err := s.broker.retireActive(composeSource, key, autoVersion); err != nil {
 					s.logger.Warn("compose: auto-expiry broker sync failed", "event_key", key, "error", err)
 				}
 			}(row.EventKey)

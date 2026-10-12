@@ -162,6 +162,10 @@ type EmcomNetwork struct {
 	Level     int
 	UpdatedBy string
 	UpdatedAt time.Time
+	// Version is the lifecycle version of the network's event key
+	// ("emcom:<slug>"): the broker publications of this record are
+	// ordered by it (0 = the ledger has no entry).
+	Version int64
 }
 
 // ComposeHazard is one panel-issued communication persisted locally:

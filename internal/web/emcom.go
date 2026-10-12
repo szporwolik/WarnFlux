@@ -517,23 +517,25 @@ func (s *Server) saveEmcomNetwork(net emcomNetwork) (int64, error) {
 // publishEmcomStateAsync publishes the retained state document in the
 // background: broker sync is best-effort and must never block the panel
 // (the resync hook republishes the current state on receiver reconnect).
-func (s *Server) publishEmcomStateAsync(net emcomNetwork, by string) {
+// version is the local record's version (see broker_gate.go).
+func (s *Server) publishEmcomStateAsync(net emcomNetwork, by string, version int64) {
 	if s.pub == nil {
 		return
 	}
 	go func() {
-		if err := s.publishEmcomState(net, by); err != nil {
+		if err := s.publishEmcomState(net, by, version); err != nil {
 			s.logger.Warn("emcom: broker state sync failed", "slug", net.Slug, "error", err)
 		}
 	}()
 }
 
 // publishEmcomState publishes (or deletes, with an empty net) the retained
-// info document of one network.
-func (s *Server) publishEmcomState(net emcomNetwork, by string) error {
+// info document of one network, ordered by the version of the local
+// record it was built from.
+func (s *Server) publishEmcomState(net emcomNetwork, by string, version int64) error {
 	suffix := "info/" + emcomSource + "/" + emcomSource + "/" + net.Slug + "/" + emcomKind
 	if net.Name == "" {
-		return s.pub.PublishRaw(suffix, true, nil)
+		return s.broker.publishInfo(suffix, nil, version)
 	}
 	lvl, _ := emcomLevelAt(net.Level)
 	wire := emcomWire{
@@ -549,7 +551,7 @@ func (s *Server) publishEmcomState(net emcomNetwork, by string) error {
 	if err != nil {
 		return err
 	}
-	return s.pub.PublishRaw(suffix, true, payload)
+	return s.broker.publishInfo(suffix, payload, version)
 }
 
 // noteEmcomRetire remembers an alarm document the broker refused to
@@ -590,12 +592,13 @@ func (s *Server) pendingEmcomRetires() []string {
 // and remembers the slug when the broker refuses: the local level is
 // authoritative, so a published alarm must not outlive it — and a broker
 // outage at the moment of the stand-down is exactly when it would.
-// stage names the caller for the log (stand-down, delete, resync).
-func (s *Server) retireEmcomHazard(slug, stage string) {
+// version is the local record's version (see broker_gate.go) and stage
+// names the caller for the log (stand-down, delete, resync).
+func (s *Server) retireEmcomHazard(slug string, version int64, stage string) {
 	if s.pub == nil || slug == "" {
 		return
 	}
-	if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
+	if err := s.broker.retireActive(emcomSource, emcomEventKey(slug), version); err != nil {
 		s.logger.Warn("emcom: broker hazard retire failed", "slug", slug, "stage", stage, "error", err)
 		s.noteEmcomRetire(slug)
 		return
@@ -629,7 +632,7 @@ func (s *Server) SyncBrokerState() {
 		} else {
 			for _, row := range rows {
 				if row.Status == "expired" {
-					if err := s.pub.ExpireActive(composeSource, row.EventKey); err != nil {
+					if err := s.broker.retireActive(composeSource, row.EventKey, row.Version); err != nil {
 						s.logger.Warn("compose: tombstone resync failed", "event_key", row.EventKey, "error", err)
 					}
 					continue
@@ -638,7 +641,7 @@ func (s *Server) SyncBrokerState() {
 				if err := json.Unmarshal(row.State, &h); err != nil {
 					continue
 				}
-				if err := s.pub.PublishActive(composeSource, h); err != nil {
+				if err := s.broker.publishActive(composeSource, h, row.Version); err != nil {
 					s.logger.Warn("compose: state resync failed", "event_key", row.EventKey, "error", err)
 				}
 			}
@@ -648,7 +651,8 @@ func (s *Server) SyncBrokerState() {
 			if h.Source != composeSource {
 				continue
 			}
-			if err := s.pub.PublishActive(composeSource, h); err != nil {
+			// No local record here, so no version to order by.
+			if err := s.broker.publishActive(composeSource, h, 0); err != nil {
 				s.logger.Warn("compose: state resync failed", "event_key", h.EventKey, "error", err)
 			}
 		}
@@ -661,8 +665,9 @@ func (s *Server) SyncBrokerState() {
 	// an outage must not survive the stand-down (reported P1: a level 0
 	// set while the broker was down left the alarm active).
 	if st, ok := s.users.(emcomStore); ok {
-		raised := map[string]bool{} // networks currently above monitoring
-		retire := map[string]bool{} // networks whose alarm document must go
+		raised := map[string]bool{}         // networks currently above monitoring
+		retire := map[string]bool{}         // networks whose alarm document must go
+		retireVersion := map[string]int64{} // the version each removal belongs to
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		rows, err := st.EmcomNetworks(ctx)
 		cancel()
@@ -671,10 +676,11 @@ func (s *Server) SyncBrokerState() {
 		} else {
 			for _, n := range rows {
 				if n.Level < 0 {
-					if err := s.publishEmcomState(emcomNetwork{Slug: n.Slug}, ""); err != nil {
+					if err := s.publishEmcomState(emcomNetwork{Slug: n.Slug}, "", n.Version); err != nil {
 						s.logger.Warn("emcom: tombstone resync failed", "slug", n.Slug, "error", err)
 					}
 					retire[n.Slug] = true
+					retireVersion[n.Slug] = n.Version
 					continue
 				}
 				lvl, _ := emcomLevelAt(n.Level)
@@ -687,11 +693,11 @@ func (s *Server) SyncBrokerState() {
 					UpdatedAt: n.UpdatedAt,
 				}
 				if n.Level >= 1 {
-					if err := s.publishEmcomState(net, n.UpdatedBy); err != nil {
+					if err := s.publishEmcomState(net, n.UpdatedBy, n.Version); err != nil {
 						s.logger.Warn("emcom: state resync failed", "slug", n.Slug, "error", err)
 						continue
 					}
-					if err := s.pub.PublishActive(emcomSource, emcomHazard(net, now, s.SystemLanguage())); err != nil {
+					if err := s.broker.publishActive(emcomSource, emcomHazard(net, now, s.SystemLanguage()), n.Version); err != nil {
 						s.logger.Warn("emcom: hazard resync failed", "slug", n.Slug, "error", err)
 					} else {
 						// A live alarm supersedes any removal still owed
@@ -701,10 +707,11 @@ func (s *Server) SyncBrokerState() {
 					raised[n.Slug] = true
 					continue
 				}
-				if err := s.publishEmcomState(net, n.UpdatedBy); err != nil {
+				if err := s.publishEmcomState(net, n.UpdatedBy, n.Version); err != nil {
 					s.logger.Warn("emcom: state resync failed", "slug", n.Slug, "error", err)
 				}
 				retire[n.Slug] = true
+				retireVersion[n.Slug] = n.Version
 			}
 		}
 		// Removals the broker refused earlier ride along: a slug the read
@@ -715,7 +722,7 @@ func (s *Server) SyncBrokerState() {
 			}
 		}
 		for slug := range retire {
-			s.retireEmcomHazard(slug, "resync")
+			s.retireEmcomHazard(slug, retireVersion[slug], "resync")
 		}
 	}
 }
@@ -1033,12 +1040,13 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.users.(emcomStore); ok {
 		// LOCAL-FIRST: the local database row is the durable record; the
 		// retained MQTT document is only an asynchronous sync copy.
-		if _, err := s.saveEmcomNetwork(net); err != nil {
+		version, err := s.saveEmcomNetwork(net)
+		if err != nil {
 			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
 			s.renderConfigEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.save"))
 			return
 		}
-		s.publishEmcomStateAsync(net, sess.username)
+		s.publishEmcomStateAsync(net, sess.username, version)
 	} else {
 		// Mirror-only installations keep the broker document as the
 		// record; publishing is required there.
@@ -1047,7 +1055,7 @@ func (s *Server) handleEmcomAdd(w http.ResponseWriter, r *http.Request) {
 				i18n.T(s.langFor(r), "emcom.err.no_broker"))
 			return
 		}
-		if err := s.publishEmcomState(net, sess.username); err != nil {
+		if err := s.publishEmcomState(net, sess.username, 0); err != nil {
 			s.logger.Warn("emcom: publish failed", "slug", slug, "error", err)
 			s.renderConfigEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.publish"))
 			return
@@ -1123,6 +1131,11 @@ func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 		transition.Hazard.Notify = true
 	}
 
+	// levelVersion is the version of the local record this change wrote:
+	// every broker publication of it is ordered by that version, so a
+	// publication built from an older read can never overwrite it
+	// (broker_gate.go).
+	var levelVersion, storedVersion int64
 	_, hasStore := s.users.(emcomStore)
 	if hasStore {
 		// LOCAL-FIRST + ATOMIC (P1): the network state, its lifecycle
@@ -1146,15 +1159,19 @@ func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 			s.logger.Warn("emcom: local save failed", "slug", slug, "error", err)
 			return &emcomLevelError{kind: emcomErrSave, err: err}
 		}
+		if stamped.Hazard != nil {
+			storedVersion = stamped.Hazard.ChangeID
+		}
 		_ = id
 		transition = stamped
+		levelVersion = storedVersion
 	} else {
 		// Mirror-only installations keep the broker document as the
 		// record; publishing is required and synchronous there.
 		if s.pub == nil {
 			return &emcomLevelError{kind: emcomErrBroker, err: errors.New("emcom: no broker configured")}
 		}
-		if err := s.publishEmcomState(net, by); err != nil {
+		if err := s.publishEmcomState(net, by, 0); err != nil {
 			s.logger.Warn("emcom: state publish failed", "slug", slug, "error", err)
 			return &emcomLevelError{kind: emcomErrBroker, err: err}
 		}
@@ -1162,6 +1179,7 @@ func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 		// from: the wall clock keeps the dedup identity as it was.
 		if transition.Hazard != nil {
 			transition.Hazard.ChangeID = net.UpdatedAt.UnixMilli()
+			levelVersion = transition.Hazard.ChangeID
 		}
 	}
 
@@ -1180,34 +1198,35 @@ func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 	if publishesHazard {
 		if hasStore {
 			// Broker sync: the state document and the retained hazard,
-			// best-effort (the resync hook republishes on reconnect).
-			s.publishEmcomStateAsync(net, by)
+			// best-effort (the resync hook republishes on reconnect). Both
+			// carry the version this change wrote.
+			s.publishEmcomStateAsync(net, by, levelVersion)
 			if s.pub != nil {
 				go func() {
-					if err := s.pub.PublishActive(emcomSource, hazard); err != nil {
+					if err := s.broker.publishActive(emcomSource, hazard, levelVersion); err != nil {
 						s.logger.Warn("emcom: broker hazard sync failed", "slug", slug, "error", err)
 					}
 				}()
 			}
-		} else if err := s.pub.PublishActive(emcomSource, hazard); err != nil {
+		} else if err := s.broker.publishActive(emcomSource, hazard, levelVersion); err != nil {
 			s.logger.Warn("emcom: hazard publish failed", "slug", slug, "error", err)
 			return &emcomLevelError{kind: emcomErrBroker, err: err}
 		}
 	} else if wasActive {
 		if hasStore {
-			s.publishEmcomStateAsync(net, by)
+			s.publishEmcomStateAsync(net, by, levelVersion)
 			if s.pub != nil {
 				// A stand-down during a broker outage must not leave the
 				// alarm published: the attempt is best-effort here and the
 				// resync retries whatever it misses.
-				go s.retireEmcomHazard(slug, "stand-down")
+				go s.retireEmcomHazard(slug, levelVersion, "stand-down")
 			}
-		} else if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
+		} else if err := s.broker.retireActive(emcomSource, emcomEventKey(slug), levelVersion); err != nil {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
 			return &emcomLevelError{kind: emcomErrBroker, err: err}
 		}
 	} else if hasStore {
-		s.publishEmcomStateAsync(net, by)
+		s.publishEmcomStateAsync(net, by, levelVersion)
 	}
 	s.logger.Info("emcom: level changed", "slug", slug, "level", level, "by", by)
 	s.audit(by, "emcom-level", fmt.Sprintf("%s=%d", slug, level))
@@ -1409,7 +1428,7 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 				i18n.T(s.langFor(r), "emcom.err.no_broker"))
 			return
 		}
-		if err := s.publishEmcomState(emcomNetwork{Slug: slug}, sess.username); err != nil {
+		if err := s.publishEmcomState(emcomNetwork{Slug: slug}, sess.username, 0); err != nil {
 			s.logger.Warn("emcom: state delete failed", "slug", slug, "error", err)
 			s.renderEmcomError(w, r, http.StatusServiceUnavailable, i18n.T(s.langFor(r), "emcom.err.deleting"))
 			return
@@ -1440,12 +1459,12 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 		// unconditional: the station knows the network is gone, so no
 		// alarm document of it may stay published — even one a previous
 		// stand-down left behind during an outage.
-		s.publishEmcomStateAsync(emcomNetwork{Slug: slug}, sess.username)
+		s.publishEmcomStateAsync(emcomNetwork{Slug: slug}, sess.username, version)
 		if s.pub != nil {
-			go s.retireEmcomHazard(slug, "delete")
+			go s.retireEmcomHazard(slug, version, "delete")
 		}
 	} else if wasActive {
-		if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
+		if err := s.broker.retireActive(emcomSource, emcomEventKey(slug), version); err != nil {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
 		}
 	}

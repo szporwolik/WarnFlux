@@ -2062,11 +2062,21 @@ func (s *Store) TombstoneEmcomNetwork(ctx context.Context, slug string, ev dispa
 	return inboxID, version, nil
 }
 
-// EmcomNetworks returns the persisted readiness networks sorted by name.
+// EmcomNetworks returns the persisted readiness networks sorted by name,
+// each with the lifecycle version of its event key: the broker
+// publications of a network are ordered by that version, so the resync
+// can never publish over a newer panel change (reported P1).
 func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, error) {
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("publisher id for emcom networks: %w", err)
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT net_id, slug, name, level, updated_by, updated_at_ms
-		FROM emcom_networks ORDER BY name`)
+		SELECT n.net_id, n.slug, n.name, n.level, n.updated_by, n.updated_at_ms,
+			COALESCE(l.version, 0)
+		FROM emcom_networks n
+		LEFT JOIN message_lifecycle l ON l.event_key = 'emcom:' || n.slug AND l.publisher = ?
+		ORDER BY n.name`, publisher)
 	if err != nil {
 		return nil, fmt.Errorf("list emcom networks: %w", err)
 	}
@@ -2075,7 +2085,7 @@ func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, erro
 	for rows.Next() {
 		var n storage.EmcomNetwork
 		var ms int64
-		if err := rows.Scan(&n.ID, &n.Slug, &n.Name, &n.Level, &n.UpdatedBy, &ms); err != nil {
+		if err := rows.Scan(&n.ID, &n.Slug, &n.Name, &n.Level, &n.UpdatedBy, &ms, &n.Version); err != nil {
 			return nil, fmt.Errorf("scan emcom network: %w", err)
 		}
 		n.UpdatedAt = time.UnixMilli(ms)

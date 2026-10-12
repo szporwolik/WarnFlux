@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,9 @@ func TestEmcomStandDownWhileBrokerIsDownIsRepairedOnResync(t *testing.T) {
 	}
 	// The state document carries the monitoring level: the broker's copy
 	// agrees with the station again.
+	if doc, ok := env.pub.infoDoc("info/emcom/emcom/sp9moa-emcom/emcom"); !ok || !strings.Contains(doc, `"level":0`) {
+		t.Fatalf("state document on the broker = %q, %v; want level 0", doc, ok)
+	}
 	raw := env.pub.rawSnapshotFor("sp9moa-emcom")
 	if len(raw) == 0 {
 		t.Fatal("the resync published no state document")
@@ -121,6 +125,9 @@ func TestEmcomDeletedNetworkAlarmIsRemovedOnResync(t *testing.T) {
 	raw := env.pub.rawSnapshotFor("sp9moa-emcom")
 	if len(raw) == 0 || raw[len(raw)-1].Payload != nil {
 		t.Fatalf("the resync did not tombstone the state document: %+v", raw)
+	}
+	if doc, ok := env.pub.infoDoc("info/emcom/emcom/sp9moa-emcom/emcom"); ok {
+		t.Fatalf("the resync left the state document of a deleted network on the broker: %q", doc)
 	}
 }
 

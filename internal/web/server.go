@@ -62,10 +62,14 @@ type RouterStatuses interface {
 
 // Server is the HTTP layer of the merged application.
 type Server struct {
-	cfg        config.Web
-	st         *state.State
-	receivers  *mqttreceiver.Manager
-	pub        composePublisher
+	cfg       config.Web
+	st        *state.State
+	receivers *mqttreceiver.Manager
+	pub       composePublisher
+	// broker serializes and orders the retained-document publications of
+	// this station (see broker_gate.go): the panel paths and the resync
+	// must never race over one document.
+	broker     *brokerGate
 	router     RouterStatuses
 	actions    *action.Manager
 	aprs       *aprs.Hub
@@ -297,6 +301,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		st:             st,
 		receivers:      receivers,
 		pub:            pub,
+		broker:         newBrokerGate(pub),
 		router:         router,
 		actions:        actions,
 		aprs:           aprsHub,

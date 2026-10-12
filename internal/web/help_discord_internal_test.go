@@ -16,6 +16,21 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/trail"
 )
 
+// yamlNode marshals a config map into the YAML node the action factories
+// take.
+func yamlNode(t *testing.T, v any) *yaml.Node {
+	t.Helper()
+	data, err := yaml.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n yaml.Node
+	if err := yaml.Unmarshal(data, &n); err != nil {
+		t.Fatal(err)
+	}
+	return &n
+}
+
 // discordHelpServer builds a Server carrying one Discord instance.
 func discordHelpServer(t *testing.T, cfg map[string]any) *Server {
 	t.Helper()
@@ -116,6 +131,24 @@ func TestHelpDiscordCard(t *testing.T) {
 	}
 	if len(view.Items) != 3 {
 		t.Errorf("items with a token = %v", view.Items)
+	}
+
+	// The invite reaches the card (the template renders it as a link) and a
+	// bogus value never makes it into the configuration.
+	invited := discordHelpServer(t, map[string]any{
+		"url":    "https://discord.com/api/webhooks/1/x",
+		"invite": "https://discord.gg/xqfD8xGSh6",
+	})
+	if got := invited.helpDiscord("en").Invite; got != "https://discord.gg/xqfD8xGSh6" {
+		t.Errorf("invite = %q", got)
+	}
+	if got := webhookOnly.helpDiscord("en").Invite; got != "" {
+		t.Errorf("invite without configuration = %q", got)
+	}
+	if _, err := discord.New(yamlNode(t, map[string]any{
+		"url": "https://discord.com/api/webhooks/1/x", "invite": "discord.gg/x",
+	})); err == nil {
+		t.Error("a relative invite was accepted")
 	}
 
 	// Both notices can be switched off: the card says so instead of

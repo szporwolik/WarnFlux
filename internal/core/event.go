@@ -102,9 +102,19 @@ func (e HazardEvent) Key() string {
 // MessageID derives the short, human-usable identifier of one hazard.
 // The format is READABLE: "WF-" followed by MMDDHHMMNN — month and day
 // of month, hour and minute in 24-hour form, and a per-minute sequence
-// (01-99) assigned in generation order. Operators cite it on the radio,
-// in mails, on Discord and in the web UI to refer to one specific
-// communication.
+// assigned in generation order. The sequence is decimal first, so the
+// ids operators exchange on the radio are what they always were
+// ("01".."99"), and beyond that it continues with letter-leading codes
+// ("A0".."ZZ"): one minute carries 1035 distinct ids instead of the 99 a
+// saturating counter allowed — the 100th message of
+// a minute used to reuse the id of the 99th, which left operators unable
+// to name one alarm unambiguously (reported P2). A minute that is spent
+// entirely is handled explicitly: assignments continue in the NEXT
+// minute's bucket — walking past every bucket that is already full —
+// rather than reusing a number, so ids stay unique even then (unreachable
+// at real message rates; the id then shows the bucket its number came
+// from). Operators cite the id on the radio, in mails, on
+// Discord and in the web UI to refer to one specific communication.
 //
 // The id is stable per event key. A process assigns it once and keeps it
 // across renders, channels and repeated sends; when a MessageIDStore is
@@ -140,33 +150,105 @@ func MessageIDAt(eventKey string, now time.Time) string {
 		clear(msgIDByKey)
 	}
 	minute := now.Format("20060102-1504")
-	if minute != msgIDMinute {
+	if minute > msgIDMinute {
+		// A newer minute (or the first assignment of this process): the
+		// counter starts over, resuming the bucket's high-water mark from
+		// the store so a restart inside the same minute never reuses a
+		// number already cited. The bucket only ever moves FORWARD — a
+		// clock that jumps back (or a replayed older timestamp) must not
+		// re-enter a bucket whose numbers are spent.
 		msgIDMinute = minute
-		msgIDSeq = 0
-		// Resume the per-minute sequence from the store so a restart
-		// inside the same minute does not reuse a number already cited.
-		if msgIDStore != nil {
-			if n, err := msgIDStore.HighestSeqInMinute(context.Background(), minute); err != nil {
-				msgIDLog("message id sequence lookup failed", "minute", minute, "error", err)
-			} else {
-				msgIDSeq = n
-			}
-		}
+		msgIDSeq = resumeMsgIDSeq(minute)
 	}
-	if msgIDSeq < 99 {
-		msgIDSeq++
+	// Walk past every SPENT bucket, not just one: after a restart (or a
+	// burst big enough to fill several minutes) the next bucket may be
+	// full as well, and a single step used to leave the sequence above the
+	// capacity — the formatter then returned the last code again and two
+	// messages shared an id (reported P2). The walk is a map read per
+	// bucket, and a fresh bucket always has room, so it terminates.
+	for msgIDSeq >= msgIDSeqCap {
+		msgIDMinute = nextMsgIDBucket(msgIDMinute)
+		msgIDSeq = resumeMsgIDSeq(msgIDMinute)
 	}
-	// Beyond 99 messages per minute the sequence stays at 99 instead of
-	// widening the identifier.
-	id := fmt.Sprintf("WF-%02d%02d%02d%02d%02d", now.Month(), now.Day(), now.Hour(), now.Minute(), msgIDSeq)
+	msgIDSeq++
+	id := "WF-" + msgIDDigits(msgIDMinute) + msgIDSeqText(msgIDSeq)
 	msgIDByKey[eventKey] = id
 	if msgIDStore != nil {
-		a := MessageIDAssignment{EventKey: eventKey, MsgID: id, Minute: minute, Seq: msgIDSeq, CreatedAt: now}
+		a := MessageIDAssignment{EventKey: eventKey, MsgID: id, Minute: msgIDMinute, Seq: msgIDSeq, CreatedAt: now}
 		if err := msgIDStore.SaveMessageID(context.Background(), a); err != nil {
 			msgIDLog("message id save failed", "event_key", eventKey, "error", err)
 		}
 	}
 	return id
+}
+
+// msgIDSeqCap is how many messages one minute can number: the 99 decimal
+// two-digit sequences operators already cite ("01".."99") plus the 936
+// two-character codes that start with a letter ("A0".."ZZ").
+const msgIDSeqCap = 99 + 26*36
+
+// msgIDAlphabet is the character set of the sequence codes.
+const msgIDAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// msgIDSeqText renders one sequence number in the identifier's two
+// characters: "01".."99" keep exactly the decimal form operators cite,
+// and the numbers beyond continue with a letter-leading pair, so an id
+// carrying letters is never one an operator could confuse with a decimal
+// one. The caller holds msgIDMu.
+func msgIDSeqText(seq int) string {
+	switch {
+	case seq < 0:
+		seq = 0
+	case seq > msgIDSeqCap:
+		// Out of range is a bug in the caller (MessageIDAt walks past
+		// spent buckets): clamp to the last code, but SAY so — a silent
+		// clamp would hand out an identifier that already exists.
+		msgIDLog("message id sequence exceeded the capacity", "seq", seq, "capacity", msgIDSeqCap)
+		seq = msgIDSeqCap
+	}
+	if seq <= 99 {
+		return fmt.Sprintf("%02d", seq)
+	}
+	// "A0" is the first letter-leading code: every value below it would
+	// render as two digits.
+	base := len(msgIDAlphabet)
+	v := base*10 + seq - 100
+	return string([]byte{msgIDAlphabet[v/base], msgIDAlphabet[v%base]})
+}
+
+// msgIDDigits renders "MMDDHHMM" from the "20060102-1504" bucket: an id
+// shows the bucket its number was taken from.
+func msgIDDigits(bucket string) string {
+	if len(bucket) != len("20060102-1504") {
+		return bucket
+	}
+	return bucket[4:8] + bucket[9:13]
+}
+
+// nextMsgIDBucket steps one minute forward: the explicitly handled
+// overflow of a bucket whose two characters are spent.
+func nextMsgIDBucket(bucket string) string {
+	t, err := time.Parse("20060102-1504", bucket)
+	if err != nil {
+		return bucket
+	}
+	return t.Add(time.Minute).Format("20060102-1504")
+}
+
+// resumeMsgIDSeq reads the highest sequence already handed out in one
+// bucket from the store (0 without a store, or on a read failure — the
+// caller only ever loses the resume, never uniqueness inside a process).
+// The caller holds msgIDMu.
+func resumeMsgIDSeq(bucket string) int {
+	if msgIDStore == nil {
+		return 0
+	}
+	n, err := msgIDStore.HighestSeqInMinute(context.Background(), bucket)
+	if err != nil {
+		msgIDLog("message id sequence lookup failed", "minute", bucket, "error", err)
+		return 0
+	}
+	return n
 }
 
 // MessageIDAssignment is one durable event-key → message-id mapping,

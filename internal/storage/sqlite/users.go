@@ -833,31 +833,105 @@ func (s *Store) CreatePasswordReset(userID int64) (string, error) {
 	return token, nil
 }
 
-// ConsumePasswordReset validates a plaintext reset token in constant
-// time, marks it used and returns the owning user ID. Unknown, expired or
-// already-used tokens report storage.ErrPasswordResetInvalid.
+// ConsumePasswordReset marks a plaintext reset token used and returns the
+// owning user ID. Unknown, expired and already-used tokens report
+// storage.ErrPasswordResetInvalid.
 func (s *Store) ConsumePasswordReset(token string) (int64, error) {
+	return claimResetToken(context.Background(), s.db, token, s.now().UnixMilli())
+}
+
+// ResetPasswordWithToken spends one reset token and stores the new
+// password in ONE transaction: the token is claimed atomically (only the
+// caller that flips it from unused wins), the new hash is written and
+// every outstanding reset link of that account is dropped, because a
+// password change ends them. Either the account has the new password and
+// the link is spent, or nothing happened at all.
+//
+// The two-step version (validate, then mark, then set the password) let
+// parallel submissions of one link all pass the validation and overwrite
+// each other's password (reported P2), and a failed password write burned
+// a link that changed nothing.
+func (s *Store) ResetPasswordWithToken(token, password string) (int64, error) {
+	// The reset endpoint is public, so a dead link must not cost a
+	// password hash: this check is a cheap filter only, the claim below
+	// is what decides — and it decides for exactly one submission.
+	if err := s.PeekPasswordReset(token); err != nil {
+		return 0, err
+	}
+	// Hashing stays outside the transaction: it takes tens of
+	// milliseconds and must not hold the write lock.
+	salt, hash, err := s.passwordFields(password)
+	if err != nil {
+		return 0, err
+	}
 	now := s.now().UnixMilli()
-	var userID, expires, used int64
-	var hashHex string
-	err := s.db.QueryRow(`
-		SELECT user_id, token_hash, expires_at_ms, used_at_ms
-		FROM password_resets
-		WHERE token_hash = ?`, tokenHashHex(token)).
-		Scan(&userID, &hashHex, &expires, &used)
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin password reset: %w", err)
+	}
+	defer tx.Rollback()
+
+	userID, err := claimResetToken(ctx, tx, token, now)
+	if err != nil {
+		return 0, err
+	}
+	var isAdmin int
+	err = tx.QueryRowContext(ctx, `SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	if isAdmin != 0 {
+		return 0, storage.ErrUserProtected
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?
+		WHERE id = ? AND is_admin = 0`,
+		salt, hash, now, userID)
+	if err != nil {
+		return 0, fmt.Errorf("set user %d password: %w", userID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, fmt.Errorf("set user %d password: %w", userID, err)
+	} else if n == 0 {
+		return 0, storage.ErrUserNotFound
+	}
+	if err := purgePasswordResetsTx(ctx, tx, userID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit password reset for user %d: %w", userID, err)
+	}
+	return userID, nil
+}
+
+// claimResetToken flips one reset token from unused to used and returns
+// its owner. The WHERE clause carries the whole decision — an unknown,
+// expired or already-spent token matches no row — so the statement is
+// atomic: the first caller wins and every later one gets
+// storage.ErrPasswordResetInvalid, whatever the interleaving.
+func claimResetToken(ctx context.Context, q queryRower, token string, now int64) (int64, error) {
+	var userID int64
+	err := q.QueryRowContext(ctx, `
+		UPDATE password_resets SET used_at_ms = ?
+		WHERE token_hash = ? AND used_at_ms = 0 AND expires_at_ms >= ?
+		RETURNING user_id`, now, tokenHashHex(token), now).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, storage.ErrPasswordResetInvalid
 	}
 	if err != nil {
-		return 0, fmt.Errorf("lookup reset token: %w", err)
-	}
-	if used != 0 || expires < now {
-		return 0, storage.ErrPasswordResetInvalid
-	}
-	if _, err := s.db.Exec(`UPDATE password_resets SET used_at_ms = ? WHERE token_hash = ?`, now, hashHex); err != nil {
 		return 0, fmt.Errorf("consume reset token: %w", err)
 	}
 	return userID, nil
+}
+
+// queryRower is the read shape shared by *sql.DB and *sql.Tx, so one
+// statement helper serves both the standalone and the transactional call.
+type queryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // PeekPasswordReset validates a token without consuming it.

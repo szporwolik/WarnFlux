@@ -3286,3 +3286,75 @@ func mustMarshal(t *testing.T, msg proto.Message) []byte {
 	}
 	return b
 }
+
+// TestTracerouteProgress pins the panel's window into a probe in flight:
+// the hub reports the elapsed time, the frames sent and the hops heard so
+// far, then forgets the probe once it settled.
+func TestTracerouteProgress(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+
+	if _, ok := radio.hub.TracerouteProgress("ef010203"); ok {
+		t.Fatal("a probe was reported before one started")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = radio.hub.Traceroute(ctx, "ef010203", 5*time.Second)
+	}()
+
+	// The first frame is on the air: the panel can already say so.
+	radio.waitOutbound(t, 1)
+	waitForHub(t, func() bool {
+		p, ok := radio.hub.TracerouteProgress("ef010203")
+		return ok && p.Probes == 1 && p.MaxProbes == 3 && p.Timeout == 5*time.Second
+	}, "the probe was never reported as sent")
+	p, _ := radio.hub.TracerouteProgress("ef010203")
+	if p.Destination != "ef010203" || p.Elapsed() <= 0 || len(p.Hops) != 0 || p.Reached {
+		t.Fatalf("fresh probe = %+v", p)
+	}
+	// A probe to another node is not this one.
+	if _, ok := radio.hub.TracerouteProgress("abcd1234"); ok {
+		t.Fatal("the progress is not keyed by destination")
+	}
+
+	// The destination answers: the route lands in the progress and the
+	// record disappears once the call returns.
+	reply, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_RouteReply{RouteReply: &pb.RouteDiscovery{
+		Route:   []uint32{0xaaaa0001},
+		SnrBack: []int32{24},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xef010203, To: 0xabcd1234,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, Payload: reply},
+		},
+	})
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("the probe never settled")
+	}
+	if p, ok := radio.hub.TracerouteProgress("ef010203"); ok {
+		t.Fatalf("a settled probe is still reported: %+v", p)
+	}
+}
+
+// waitForHub polls cond for up to two seconds.
+func waitForHub(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal(what)
+}

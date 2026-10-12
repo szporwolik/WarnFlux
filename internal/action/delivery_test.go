@@ -550,3 +550,64 @@ func TestManagerStaleClaimRecovery(t *testing.T) {
 		return p.handled.Load() == 1 && ms.statusOf(1, "log", "c:1") == storage.DeliveryAccepted
 	}, "stale claim recovered and executed")
 }
+
+// TestHoldOfflineKeepsDequeuedRequest pins the hold path of the worker:
+// when the offline switch flips between the loop's check and the receive
+// from the queue, the request must wait for the switch instead of being
+// skipped — a hazard accepted a moment before the operator went offline
+// still has to go out. The wait ends on the switch, on shutdown and on a
+// plugin being disabled (when it does not, the shutdown drain would hang).
+func TestHoldOfflineKeepsDequeuedRequest(t *testing.T) {
+	oldPoll := DeliveryPollInterval
+	DeliveryPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { DeliveryPollInterval = oldPoll })
+
+	// The hold never touches the plugin: it only waits on the switch, the
+	// context and the disabled flag.
+	inst := NewInstance("smtp", "smtp", nil, 4, time.Second, time.Second,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil, 0, nil)
+	var offline atomic.Bool
+	inst.internet = true
+	inst.setOfflineFn(offline.Load)
+
+	// Online: the hold returns at once.
+	if !inst.holdOffline(context.Background()) {
+		t.Fatal("holdOffline returned false while the station was online")
+	}
+
+	// Offline: it waits, and the moment the switch goes off it lets the
+	// request through.
+	offline.Store(true)
+	done := make(chan bool, 1)
+	go func() { done <- inst.holdOffline(context.Background()) }()
+	select {
+	case <-done:
+		t.Fatal("holdOffline let a held request through while offline")
+	case <-time.After(50 * time.Millisecond):
+	}
+	offline.Store(false)
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("holdOffline reported a stop although the switch went off")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("holdOffline did not notice the switch going off")
+	}
+
+	// Shutdown while offline: the caller is told to hand the request back
+	// to the drain instead of waiting forever.
+	offline.Store(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	if inst.holdOffline(ctx) {
+		t.Fatal("holdOffline ignored the cancelled context")
+	}
+
+	// A plugin disabled mid-hold (a hung plugin) must not keep the worker
+	// waiting either.
+	inst.disabled.Store(true)
+	if inst.holdOffline(context.Background()) {
+		t.Fatal("holdOffline ignored a disabled plugin")
+	}
+}

@@ -919,7 +919,8 @@ var en = map[string]string{
 	"compose.err.invalid_effective":  "invalid effective time",
 	"compose.err.invalid_expires":    "invalid expires time",
 	"compose.err.no_publisher":       "publishing is unavailable: no broker publisher is configured",
-	"compose.err.dispatch":           "local dispatch rejected the communication; the intake is unavailable",
+	"compose.err.dispatch":           "local dispatch rejected the communication; it is recorded and delivery resumes after a restart",
+	"compose.err.save":               "the communication was NOT sent: its record could not be written to the local database",
 	// EMCOM panel.
 	"emcom.title":              "EMCOM networks",
 	"emcom.net_id":             "network ID",
@@ -2024,7 +2025,8 @@ var pl = map[string]string{
 	"compose.err.invalid_effective":  "nieprawidłowy czas obowiązywania",
 	"compose.err.invalid_expires":    "nieprawidłowy czas wygaśnięcia",
 	"compose.err.no_publisher":       "publikowanie niedostępne: brak skonfigurowanego brokera",
-	"compose.err.dispatch":           "lokalny dyspozytor odrzucił komunikat; odbiór niedostępny",
+	"compose.err.dispatch":           "lokalny dyspozytor odrzucił komunikat; jest zapisany, a dostarczenie zostanie wznowione po restarcie",
+	"compose.err.save":               "komunikat NIE został wysłany: nie udało się zapisać jego rekordu w lokalnej bazie",
 
 	"emcom.title":              "Sieci EMCOM",
 	"emcom.net_id":             "ID sieci",

@@ -3798,15 +3798,23 @@ func TestComposeLocalFirstNoBroker(t *testing.T) {
 	}
 }
 
-// brokenExpireStore is a store whose compose EXPIRY saves always fail:
+// brokenExpireStore is a store whose compose EXPIRY writes always fail:
 // the reported fault injection for the panel expiry path.
 type brokenExpireStore struct{ *sqlite.Store }
 
-func (b *brokenExpireStore) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) error {
+func (b *brokenExpireStore) SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, error) {
 	if h.Status == "expired" {
-		return errors.New("disk broken")
+		return 0, errors.New("disk broken")
 	}
-	return b.Store.SaveComposeHazard(ctx, h)
+	return b.Store.SaveComposeHazardAndEnqueue(ctx, h, ev)
+}
+
+// brokenSaveStore fails every compose write: the fault injection for the
+// publish path, where the record and its intake row never land.
+type brokenSaveStore struct{ *sqlite.Store }
+
+func (b *brokenSaveStore) SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, error) {
+	return 0, errors.New("disk broken")
 }
 
 // TestComposeExpireSaveFailureRejects pins the reported P1 at the panel
@@ -5073,5 +5081,88 @@ func TestMeshtasticTracerouteStatus(t *testing.T) {
 	resp3, _ := env.get("/api/meshtastic/traceroute/status?to=zz")
 	if resp3.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad node id = %d, want 400", resp3.StatusCode)
+	}
+}
+
+// TestComposeSaveFailureRejects pins the reported P1 at the panel
+// boundary: publishing a communication whose local record cannot be
+// persisted must fail the OPERATION. The old flow enqueued the transition
+// BEFORE writing the record and only logged the write error, so the panel
+// answered "published" for a message whose record never landed — a
+// delivery the station could not rebuild after a restart and nobody could
+// trace or retire. Now the record, its lifecycle and the intake row commit
+// together first; if that fails, nothing is dispatched and the form shows
+// why.
+func TestComposeSaveFailureRejects(t *testing.T) {
+	inner := newLocalPanelStore(t)
+	env := newTestEnvWithUsers(t, &brokenSaveStore{Store: inner})
+	env.login()
+
+	_, html := env.get("/compose")
+	csrf := extractCSRF(t, html)
+	resp, body := env.postForm("/compose", url.Values{
+		"csrf": {csrf}, "event": {"Storm"}, "headline": {"Test storm"}, "severity": {"severe"},
+	})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("compose save with a broken record = %d, want 503", resp.StatusCode)
+	}
+	if !strings.Contains(body, "could not be written") {
+		t.Errorf("the panel does not explain the failure: %.400s", body)
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		t.Errorf("a failed save redirected to %q (silent success)", loc)
+	}
+
+	// Nothing reached the delivery queue.
+	select {
+	case ev := <-env.ingress.Events():
+		t.Fatalf("a transition was dispatched for an unsaved communication: %+v", ev.Hazard)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// And the record really is absent.
+	rows, err := inner.ComposeHazards(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("compose records = %d, want 0", len(rows))
+	}
+}
+
+// TestComposeSaveCommitsRecordBeforeDelivery pins the other half of the
+// same contract: when the record does land, the panel hands the delivery
+// an intake row that is ALREADY committed (the transition carries its
+// inbox id), so intake recovery and the live queue refer to one durable
+// acceptance instead of two independent writes.
+func TestComposeSaveCommitsRecordBeforeDelivery(t *testing.T) {
+	store := newLocalPanelStore(t)
+	env := newTestEnvWithUsers(t, store)
+	env.login()
+
+	_, html := env.get("/compose")
+	csrf := extractCSRF(t, html)
+	resp, _ := env.postForm("/compose", url.Values{
+		"csrf": {csrf}, "event": {"Storm"}, "headline": {"Committed storm"}, "severity": {"severe"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("healthy compose save = %d, want 303", resp.StatusCode)
+	}
+
+	var ev dispatch.Event
+	select {
+	case ev = <-env.ingress.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no transition enqueued")
+	}
+	if ev.InboxID == 0 {
+		t.Error("the dispatched transition carries no committed intake row")
+	}
+	rows, err := store.ComposeHazards(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Status != "active" {
+		t.Fatalf("compose records = %+v, want one active record", rows)
 	}
 }

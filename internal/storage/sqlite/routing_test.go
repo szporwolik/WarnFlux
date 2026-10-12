@@ -661,6 +661,69 @@ func TestComposeSaveAtomic(t *testing.T) {
 	}
 }
 
+// TestComposeEnqueueAtomic pins the remaining half of the reported P1 at
+// the storage boundary: the compose record, its lifecycle state and the
+// dispatch intake row commit together, so breaking the intake leaves NO
+// record behind. The panel then answers an error instead of promising a
+// delivery whose acceptance never landed.
+func TestComposeEnqueueAtomic(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	// Break the intake the way the reported fault injection did: the
+	// inbox table is gone, so a second, separate write could have failed
+	// while the record survived.
+	if _, err := store.db.Exec(`DROP TABLE dispatch_inbox`); err != nil {
+		t.Fatal(err)
+	}
+	h := storage.ComposeHazard{EventKey: "compose:1", State: []byte(`{"x":1}`), Status: "active", UpdatedAt: time.Now()}
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition}
+	if _, err := store.SaveComposeHazardAndEnqueue(ctx, h, ev); err == nil {
+		t.Fatal("acceptance with a broken intake succeeded, want failure")
+	}
+	rows, err := store.ComposeHazards(ctx)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("compose record after the failed acceptance = (%v, %v), want none (atomic rollback)", rows, err)
+	}
+	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || blocked {
+		t.Fatalf("lifecycle after the failed acceptance = (%v, %v), want nothing committed", blocked, err)
+	}
+}
+
+// TestComposeEnqueueCommitsIntakeRow pins the happy path of the same
+// contract: the id the panel gets back IS the committed inbox row, so the
+// live queue and intake recovery refer to one durable acceptance instead
+// of two independent writes.
+func TestComposeEnqueueCommitsIntakeRow(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	h := storage.ComposeHazard{EventKey: "compose:2", State: []byte(`{"x":2}`), Status: "active", UpdatedAt: time.Now()}
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition, Hazard: &dispatch.HazardTransition{
+		Type: dispatch.TransitionNew, Key: "compose:2", Source: "compose",
+	}}
+	id, err := store.SaveComposeHazardAndEnqueue(ctx, h, ev)
+	if err != nil {
+		t.Fatalf("SaveComposeHazardAndEnqueue = %v", err)
+	}
+	if id == 0 {
+		t.Fatal("no inbox row id returned")
+	}
+	items, err := store.PendingInboxEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != id {
+		t.Fatalf("pending inbox = %+v, want exactly the committed row %d", items, id)
+	}
+	if items[0].Event.Hazard == nil || items[0].Event.Hazard.Key != "compose:2" {
+		t.Errorf("inbox row carries %+v, want the compose transition", items[0].Event.Hazard)
+	}
+	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:2", 0); err != nil || blocked {
+		t.Fatalf("active message blocked = (%v, %v), want (false, nil)", blocked, err)
+	}
+}
+
 // TestDeliveryRetryScheduleAndReArm pins the scheduler contract: a
 // failed attempt schedules the next one at the given deadline, the
 // attempt budget caps claims, and a terminally failed job is re-armed

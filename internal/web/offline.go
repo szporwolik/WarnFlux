@@ -264,19 +264,31 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 	s.renderL(w, r, "configpage", v)
 }
 
-// persistConfigYAML applies one panel change to the YAML configuration
-// file. The runtime state has already been flipped; this only makes the
-// change durable.
+// persistConfigYAML runs one panel change and makes it durable. The
+// runtime change and its write are ONE step: handlers apply their setters
+// inside set(), so two concurrent requests can neither lose an edit nor
+// leave the running station disagreeing with the file on disk.
 func (s *Server) persistConfigYAML(change string, set func() error) bool {
-	if s.configPath == "" {
-		return true
-	}
+	s.configSaveMu.Lock()
+	defer s.configSaveMu.Unlock()
 	if err := set(); err != nil {
 		s.logger.Warn("config persist failed", "change", change, "error", err)
 		return false
 	}
-	s.logger.Info("config persisted", "change", change, "path", s.configPath)
+	if s.configPath != "" {
+		s.logger.Info("config persisted", "change", change, "path", s.configPath)
+	}
 	return true
+}
+
+// updateConfigFile writes edits through config.UpdateFile. Stations
+// started without a configuration file (tests, an in-memory setup) keep
+// the runtime change only.
+func (s *Server) updateConfigFile(edits []config.ScalarEdit) error {
+	if s.configPath == "" || len(edits) == 0 {
+		return nil
+	}
+	return config.UpdateFile(s.configPath, edits)
 }
 
 // renderConfigEmcomError re-renders the config page with an error banner
@@ -319,14 +331,14 @@ func (s *Server) handleConfigMqtt(w http.ResponseWriter, r *http.Request) {
 			mask |= uint32(c)
 		}
 	}
-	mqttpolicy.Set(mask)
 	perr := ""
 	if !s.persistConfigYAML("mqtt_publish", func() error {
+		mqttpolicy.Set(mask)
 		edits := make([]config.ScalarEdit, 0, 10)
 		for _, c := range mqttpolicy.List() {
 			edits = append(edits, config.ScalarEdit{Path: "mqtt_publish." + mqttpolicy.Key(c), Value: config.BoolScalar(mask&uint32(c) != 0)})
 		}
-		return config.UpdateFile(s.configPath, edits)
+		return s.updateConfigFile(edits)
 	}) {
 		perr = "&perr=1"
 	}
@@ -349,19 +361,20 @@ func (s *Server) handleConfigTiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
+	on := false
 	switch strings.TrimSpace(r.PostFormValue("tiles")) {
 	case "on":
-		s.forceTiles.Store(true)
+		on = true
 	case "off":
-		s.forceTiles.Store(false)
 	default:
 		http.Error(w, "invalid value", http.StatusBadRequest)
 		return
 	}
 	perr := ""
 	if !s.persistConfigYAML("force_local_tiles", func() error {
-		return config.UpdateFile(s.configPath, []config.ScalarEdit{
-			{Path: "web.force_local_tiles", Value: config.BoolScalar(s.forceTiles.Load())},
+		s.forceTiles.Store(on)
+		return s.updateConfigFile([]config.ScalarEdit{
+			{Path: "web.force_local_tiles", Value: config.BoolScalar(on)},
 		})
 	}) {
 		perr = "&perr=1"
@@ -397,21 +410,28 @@ func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 			fn(true)
 		case "off":
 			fn(false)
-		case "":
-			return true // this switch was not part of the submit
-		default:
-			return false
 		}
 		return true
 	}
-	if !apply(channel, meshtastic.SetChannelAlerts) ||
-		!apply(dm, meshtastic.SetDMAlerts) ||
-		!apply(stations, meshtastic.SetStationAlerts) {
+	valid := func(v string) bool {
+		switch v {
+		case "on", "off", "":
+			return true
+		default:
+			return false
+		}
+	}
+	if !valid(channel) || !valid(dm) || !valid(stations) {
 		http.Error(w, "invalid value", http.StatusBadRequest)
 		return
 	}
 	perr := ""
 	if !s.persistConfigYAML("meshtastic alerts", func() error {
+		// The runtime switches move inside the step, together with the
+		// write that records them.
+		_ = apply(channel, meshtastic.SetChannelAlerts)
+		_ = apply(dm, meshtastic.SetDMAlerts)
+		_ = apply(stations, meshtastic.SetStationAlerts)
 		var edits []config.ScalarEdit
 		if channel != "" {
 			edits = append(edits, config.ScalarEdit{Path: "meshtastic.channel_alerts", Value: config.BoolScalar(meshtastic.ChannelAlerts())})
@@ -422,7 +442,7 @@ func (s *Server) handleConfigMesh(w http.ResponseWriter, r *http.Request) {
 		if stations != "" {
 			edits = append(edits, config.ScalarEdit{Path: "meshtastic.station_alerts", Value: config.BoolScalar(meshtastic.StationAlerts())})
 		}
-		return config.UpdateFile(s.configPath, edits)
+		return s.updateConfigFile(edits)
 	}) {
 		perr = "&perr=1"
 	}
@@ -452,10 +472,10 @@ func (s *Server) handleConfigLang(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid value", http.StatusBadRequest)
 		return
 	}
-	s.SetSystemLanguage(code)
 	perr := ""
 	if !s.persistConfigYAML("system_language", func() error {
-		return config.UpdateFile(s.configPath, []config.ScalarEdit{
+		s.SetSystemLanguage(code)
+		return s.updateConfigFile([]config.ScalarEdit{
 			{Path: "web.system_language", Value: config.StringScalar(code)},
 		})
 	}) {
@@ -498,15 +518,14 @@ func (s *Server) handleConfigContent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.header1.Store(fields["header1"])
-	s.header2.Store(fields["header2"])
-	s.tagline.Store(fields["tagline"])
-	s.about.Store(fields["about"])
-	s.disclaimer.Store(fields["disclaimer"])
-	s.domain.Store(fields["domain"])
-
 	perr := ""
 	if !s.persistConfigYAML("web content", func() error {
+		s.header1.Store(fields["header1"])
+		s.header2.Store(fields["header2"])
+		s.tagline.Store(fields["tagline"])
+		s.about.Store(fields["about"])
+		s.disclaimer.Store(fields["disclaimer"])
+		s.domain.Store(fields["domain"])
 		paths := []struct{ field, path string }{
 			{"header1", "web.header1"}, {"header2", "web.header2"}, {"tagline", "web.tagline"},
 			{"about", "web.about"}, {"disclaimer", "web.disclaimer"}, {"domain", "web.domain"},
@@ -515,7 +534,7 @@ func (s *Server) handleConfigContent(w http.ResponseWriter, r *http.Request) {
 		for _, p := range paths {
 			edits = append(edits, config.ScalarEdit{Path: p.path, Value: config.StringScalar(fields[p.field])})
 		}
-		return config.UpdateFile(s.configPath, edits)
+		return s.updateConfigFile(edits)
 	}) {
 		perr = "&perr=1"
 	}
@@ -547,10 +566,10 @@ func (s *Server) handleConfigOffline(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/config", http.StatusSeeOther)
 		return
 	}
-	s.SetOffline(on)
 	perr := ""
 	if !s.persistConfigYAML("offline_mode", func() error {
-		return config.UpdateFile(s.configPath, []config.ScalarEdit{
+		s.SetOffline(on)
+		return s.updateConfigFile([]config.ScalarEdit{
 			{Path: "web.offline_mode", Value: config.BoolScalar(on)},
 		})
 	}) {

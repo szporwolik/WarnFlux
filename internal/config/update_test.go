@@ -3,11 +3,15 @@ package config
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestUpdateFileRoundTrip pins the surgical YAML editor: values set
@@ -48,6 +52,9 @@ web:
 	}
 	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temp file left behind: %v", err)
+	}
+	if leftovers := tempLeftovers(t, dir); len(leftovers) != 0 {
+		t.Fatalf("temporary files left behind: %v", leftovers)
 	}
 
 	cfg, err := Load(path)
@@ -253,5 +260,130 @@ func TestUpdateFileQuotesClockTime(t *testing.T) {
 	want := "meshtastic:\n  emcom_at: \"07:30\"\n  emcom_interval: 0s\n"
 	if string(got) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// tempLeftovers lists the temporary files a write cycle forgot in dir.
+func tempLeftovers(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range entries {
+		if name := e.Name(); strings.HasSuffix(name, backupSuffix) {
+			continue // the rolling backup is expected
+		} else if strings.Contains(name, ".tmp") {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// TestUpdateFileConcurrentFields pins the P2 report: two Config requests
+// editing DIFFERENT fields of one file must both survive. The update cycle
+// reads the file, patches it and renames a temporary over it, so without
+// serialization each writer patched the bytes the other one had already
+// replaced and one of the two edits silently disappeared; one shared
+// "<path>.tmp" made the two renames collide on top of that.
+func TestUpdateFileConcurrentFields(t *testing.T) {
+	const writers, rounds = 8, 20
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("web:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	last := make([]string, writers)
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for round := 0; round < rounds; round++ {
+				value := fmt.Sprintf("w%d-r%d", i, round)
+				edit := []ScalarEdit{{Path: fmt.Sprintf("web.panel_%d", i), Value: StringScalar(value)}}
+				if err := UpdateFile(path, edit); err != nil {
+					errs <- fmt.Errorf("writer %d round %d: %w", i, round, err)
+					return
+				}
+				last[i] = value
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent UpdateFile: %v", err)
+	}
+	if t.Failed() {
+		return
+	}
+
+	var raw struct {
+		Web map[string]string `yaml:"web"`
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("the file no longer parses: %v\n%s", err, data)
+	}
+	for i := 0; i < writers; i++ {
+		if got := raw.Web[fmt.Sprintf("panel_%d", i)]; got != last[i] {
+			t.Errorf("web.panel_%d = %q, want %q: the edit was lost", i, got, last[i])
+		}
+	}
+	if leftovers := tempLeftovers(t, dir); len(leftovers) != 0 {
+		t.Errorf("temporary files left behind: %v", leftovers)
+	}
+}
+
+// TestUpdateFileConcurrentSameField pins the other half: writers racing
+// for ONE field must leave a whole file holding one of the submitted
+// values — never a truncated or half-written document.
+func TestUpdateFileConcurrentSameField(t *testing.T) {
+	const writers = 16
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("web:\n  title: \"seed\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	values := map[string]bool{}
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		value := fmt.Sprintf("v%03d", i)
+		values[value] = true
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := UpdateFile(path, []ScalarEdit{{Path: "web.title", Value: StringScalar(value)}}); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent UpdateFile: %v", err)
+	}
+	if t.Failed() {
+		return
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("the file no longer parses: %v", err)
+	}
+	if !values[cfg.Web.Title] {
+		t.Errorf("web.title = %q, want one of the submitted values", cfg.Web.Title)
+	}
+	if leftovers := tempLeftovers(t, dir); len(leftovers) != 0 {
+		t.Errorf("temporary files left behind: %v", leftovers)
 	}
 }

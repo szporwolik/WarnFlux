@@ -132,14 +132,14 @@ func (s *Server) handleConfigRetention(w http.ResponseWriter, r *http.Request) {
 	}
 
 	live := s.retentionLimits(submitted)
-	s.applyRetention(live)
 
 	perr := ""
 	if !s.persistConfigYAML("retention and limits", func() error {
+		s.applyRetention(live)
 		if len(edits) == 0 {
 			return nil
 		}
-		return config.UpdateFile(s.configPath, edits)
+		return s.updateConfigFile(edits)
 	}) {
 		perr = "&perr=1"
 	}

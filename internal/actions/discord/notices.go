@@ -178,6 +178,9 @@ type Info struct {
 	UptimeInterval time.Duration
 	// UptimeAt is the daily anchor of the presence line ("" = spacing mode).
 	UptimeAt string
+	// Invite is the public invite to the station's server ("" = none
+	// configured), for the Help page.
+	Invite string
 	// DirectMessages reports a bot token: the station can message people
 	// privately and answer commands in direct messages.
 	DirectMessages bool
@@ -190,7 +193,7 @@ func InfoOf(p action.Plugin) (Info, bool) {
 	if !ok {
 		return Info{}, false
 	}
-	info := Info{DirectMessages: a.token != ""}
+	info := Info{DirectMessages: a.token != "", Invite: a.invite}
 	if a.notices != nil {
 		info.HazardsInterval = a.notices.hazardsInterval
 		info.UptimeInterval = a.notices.uptimeInterval

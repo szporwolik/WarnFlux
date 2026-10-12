@@ -47,6 +47,11 @@ type Config struct {
 	URL string `yaml:"url"`
 	// Username optionally overrides the bot display name of the webhook.
 	Username string `yaml:"username"`
+	// Invite is the optional public invite to the station's server
+	// (https://discord.gg/...). It is shown on the Help page so users can
+	// join with one click instead of hunting for the link; it changes
+	// nothing about the delivery itself.
+	Invite string `yaml:"invite"`
 	// Token is the optional Discord bot token (Developer Portal →
 	// Bot). The webhook above posts on a CHANNEL; the token lets the
 	// station also write a DIRECT MESSAGE to one user id, which the
@@ -86,6 +91,7 @@ type discordAction struct {
 	username string
 	token    string
 	client   *http.Client
+	invite   string
 	logger   *slog.Logger
 
 	// dmMu guards the direct-message channel cache: opening a DM channel
@@ -128,6 +134,13 @@ func New(node *yaml.Node) (action.Plugin, error) {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
+	invite := strings.TrimSpace(cfg.Invite)
+	if invite != "" {
+		iu, err := url.Parse(invite)
+		if err != nil || (iu.Scheme != "http" && iu.Scheme != "https") || iu.Host == "" {
+			return nil, fmt.Errorf("discord: config.invite must be an absolute http(s) URL")
+		}
+	}
 	token := strings.TrimSpace(cfg.Token)
 	if strings.ContainsAny(token, " \t\r\n") {
 		return nil, fmt.Errorf("discord: config.token must be a single token without whitespace")
@@ -145,6 +158,7 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		username:   strings.TrimSpace(cfg.Username),
 		token:      token,
 		client:     &http.Client{Timeout: timeout},
+		invite:     invite,
 		logger:     slog.Default(),
 		dmChannels: map[string]string{},
 	}

@@ -938,6 +938,10 @@ actions:
   #     # Optional bot display name override (defaults to the webhook's
   #     # own name).
   #     username: "WarnFlux"
+  #     # Public invite to the station's server (Discord -> Invite People ->
+  #     # Edit invite link). Optional, but it is what the Help page shows so
+  #     # users join with one click instead of hunting for the link.
+  #     invite: "https://discord.gg/abcdefg"
   #     # BOT TOKEN from the Developer Portal (Bot tab). Optional, but it
   #     # is what turns the surfaces above on: private alerts, mass
   #     # delivery, command answers and the direct-message copies of the

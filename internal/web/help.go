@@ -108,6 +108,9 @@ type helpMeshChannelView struct {
 type helpStatusView struct {
 	Facts []helpFact
 	Items []string // instruction lines (i18n keys, resolved by the template)
+	// Invite is the public server invite of that surface ("" = none). Only
+	// Discord has one: it is what a newcomer actually needs.
+	Invite string
 }
 
 // helpFact is one labelled row of a card ("Channel alerts: enabled").
@@ -274,6 +277,7 @@ func (s *Server) helpDiscord(lang string) *helpStatusView {
 		Items: []string{
 			"help.discord.item.1", "help.discord.item.2", "help.discord.item.3",
 		},
+		Invite: strings.TrimSpace(info.Invite),
 	}
 	if !info.DirectMessages {
 		view.Items = view.Items[:1]

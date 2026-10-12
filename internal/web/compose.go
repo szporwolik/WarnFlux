@@ -60,7 +60,7 @@ type composePublisher interface {
 // and dispatching later is the whole point — an enqueued transition is a
 // promise that the record exists.
 type composeStore interface {
-	SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, error)
+	SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, dispatch.Event, error)
 	DeleteComposeHazard(ctx context.Context, eventKey string) error
 	ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, error)
 }
@@ -374,7 +374,11 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 				i18n.T(s.langFor(r), "compose.err.save"))
 			return
 		}
-		id, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
+		// The store allocates the version of THIS save inside the same
+		// transaction and returns the stamped transition: the version is
+		// what lets the delivery gate hold the text being replaced back
+		// once a correction supersedes it (reported P1).
+		id, stamped, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
 			// Expired communications stay as authoritative tombstones so
 			// a stale broker copy can never revive them.
 			EventKey: h.EventKey, State: stateJSON, Status: form.Status, UpdatedAt: time.Now(),
@@ -388,6 +392,7 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 		// The row is already durable, so the live offer never duplicates
 		// it and a full queue defers delivery to intake recovery instead
 		// of losing the message.
+		transition = stamped
 		transition.InboxID = id
 	}
 
@@ -464,7 +469,7 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		// instead of a silent success) and a crash can never leave an
 		// expired record with an active lifecycle that still allows the
 		// retired message through the delivery queue.
-		id, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
+		id, stamped, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
 			EventKey: key, State: composeStateJSON(h), Status: "expired", UpdatedAt: time.Now(),
 		}, transition)
 		if err != nil {
@@ -472,6 +477,7 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "local record save failed", http.StatusServiceUnavailable)
 			return
 		}
+		transition = stamped
 		transition.InboxID = id
 	} else {
 		// Mirror-only: the broker document is the record; the tombstone
@@ -614,13 +620,14 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard) {
 			// stale message stays active and the expiry-based suppression
 			// covers it; the manual expire remains available.
 			transition := composeTransition(cur, dispatch.TransitionExpired)
-			id, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
+			id, stamped, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
 				EventKey: key, State: composeStateJSON(cur), Status: "expired", UpdatedAt: time.Now(),
 			}, transition)
 			if err != nil {
 				s.logger.Warn("compose: auto-expiry local record failed; keeping the expiry transition unsent", "event_key", key, "error", err)
 				return
 			}
+			transition = stamped
 			transition.InboxID = id
 			if s.ingress.Enqueue(transition) == dispatch.Rejected {
 				s.logger.Warn("compose: auto-expiry transition rejected by the stopped intake (recovery will deliver it)", "event_key", key, "inbox_id", id)
@@ -684,13 +691,14 @@ func (s *Server) AutoExpireCompose(ctx context.Context) (int, error) {
 		// communication stays active and the manual expire remains
 		// available).
 		transition := composeTransition(h, dispatch.TransitionExpired)
-		id, err := cs.SaveComposeHazardAndEnqueue(ctx, storage.ComposeHazard{
+		id, stamped, err := cs.SaveComposeHazardAndEnqueue(ctx, storage.ComposeHazard{
 			EventKey: row.EventKey, State: row.State, Status: "expired", UpdatedAt: now,
 		}, transition)
 		if err != nil {
 			s.logger.Warn("compose: auto-expiry local record failed", "event_key", row.EventKey, "error", err)
 			continue
 		}
+		transition = stamped
 		transition.InboxID = id
 		if s.ingress.Enqueue(transition) == dispatch.Rejected {
 			// The row is durable: recovery delivers it after the restart.

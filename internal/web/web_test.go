@@ -3686,7 +3686,7 @@ func TestComposeAutoExpireReconcile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.SaveComposeHazard(ctx, storage.ComposeHazard{
+		if _, err := store.SaveComposeHazard(ctx, storage.ComposeHazard{
 			EventKey: key, State: b, Status: status, UpdatedAt: now,
 		}); err != nil {
 			t.Fatal(err)
@@ -3802,9 +3802,9 @@ func TestComposeLocalFirstNoBroker(t *testing.T) {
 // the reported fault injection for the panel expiry path.
 type brokenExpireStore struct{ *sqlite.Store }
 
-func (b *brokenExpireStore) SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, error) {
+func (b *brokenExpireStore) SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, dispatch.Event, error) {
 	if h.Status == "expired" {
-		return 0, errors.New("disk broken")
+		return 0, ev, errors.New("disk broken")
 	}
 	return b.Store.SaveComposeHazardAndEnqueue(ctx, h, ev)
 }
@@ -3813,8 +3813,8 @@ func (b *brokenExpireStore) SaveComposeHazardAndEnqueue(ctx context.Context, h s
 // publish path, where the record and its intake row never land.
 type brokenSaveStore struct{ *sqlite.Store }
 
-func (b *brokenSaveStore) SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, error) {
-	return 0, errors.New("disk broken")
+func (b *brokenSaveStore) SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, dispatch.Event, error) {
+	return 0, ev, errors.New("disk broken")
 }
 
 // TestComposeExpireSaveFailureRejects pins the reported P1 at the panel

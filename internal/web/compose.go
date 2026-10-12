@@ -61,6 +61,10 @@ type composePublisher interface {
 // promise that the record exists.
 type composeStore interface {
 	SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, dispatch.Event, error)
+	// ExpireComposeHazardIfCurrent expires one communication only while it
+	// is still the version the caller read; applied=false means a newer
+	// save won and nothing was written.
+	ExpireComposeHazardIfCurrent(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event, expectedVersion int64) (int64, dispatch.Event, bool, error)
 	DeleteComposeHazard(ctx context.Context, eventKey string) error
 	ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, error)
 }
@@ -358,6 +362,10 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transition := composeTransition(h, typ)
+	// savedVersion is the version of the record this save wrote: the
+	// expiry timer carries it so an edit that lands later supersedes the
+	// timer instead of being expired by it.
+	var savedVersion int64
 	if hasStore {
 		// LOCAL-FIRST + ATOMIC (P1): the state, the lifecycle and the
 		// dispatch intake row commit in ONE transaction and only then
@@ -394,6 +402,9 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 		// of losing the message.
 		transition = stamped
 		transition.InboxID = id
+		if stamped.Hazard != nil {
+			savedVersion = stamped.Hazard.ChangeID
+		}
 	}
 
 	switch s.ingress.Enqueue(transition) {
@@ -430,7 +441,7 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	// retained document is removed and the expiry flows through the
 	// canonical ingress like the manual expire action).
 	if form.Status == "active" {
-		s.scheduleComposeExpiry(h)
+		s.scheduleComposeExpiry(h, savedVersion)
 	}
 
 	flash := "published"
@@ -599,7 +610,7 @@ func (s *Server) handleExternalExpire(w http.ResponseWriter, r *http.Request) {
 // lives only in this process; after a restart, the expiry transitions
 // are recovered from the durable inbox and the local record keeps the
 // tombstone.
-func (s *Server) scheduleComposeExpiry(h state.Hazard) {
+func (s *Server) scheduleComposeExpiry(h state.Hazard, version int64) {
 	if h.Status != "active" || h.ExpiresAt == nil || !h.ExpiresAt.After(time.Now()) {
 		return
 	}
@@ -615,16 +626,22 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard) {
 		}
 		if store, hasStore := s.users.(composeStore); hasStore {
 			// The expired record, its lifecycle and the expiry intake row
-			// commit in ONE transaction (the same atomic path the panel
-			// uses): a failed save must not dispatch the expiry — the
-			// stale message stays active and the expiry-based suppression
-			// covers it; the manual expire remains available.
+			// commit in ONE transaction, guarded by the version this timer
+			// was scheduled for: an edit that landed in the meantime (a
+			// longer validity, a correction) allocated a newer version and
+			// must not be expired by this one. A failed save must not
+			// dispatch the expiry either — the stale message stays active
+			// and the manual expire remains available.
 			transition := composeTransition(cur, dispatch.TransitionExpired)
-			id, stamped, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
+			id, stamped, applied, err := store.ExpireComposeHazardIfCurrent(context.Background(), storage.ComposeHazard{
 				EventKey: key, State: composeStateJSON(cur), Status: "expired", UpdatedAt: time.Now(),
-			}, transition)
+			}, transition, version)
 			if err != nil {
 				s.logger.Warn("compose: auto-expiry local record failed; keeping the expiry transition unsent", "event_key", key, "error", err)
+				return
+			}
+			if !applied {
+				s.logger.Info("compose: auto-expiry skipped, the communication changed or carries no version", "event_key", key)
 				return
 			}
 			transition = stamped
@@ -686,16 +703,24 @@ func (s *Server) AutoExpireCompose(ctx context.Context) (int, error) {
 		if h.ExpiresAt == nil || h.ExpiresAt.After(now) {
 			continue
 		}
-		// Record + intake row in ONE transaction (the same atomic path the
-		// panel uses): a failed save must not dispatch the expiry (the
-		// communication stays active and the manual expire remains
-		// available).
+		// Record + intake row in ONE transaction, CONDITIONAL on the
+		// version read above: the pass lists the communications and then
+		// expires them, so an edit landing in between — the operator
+		// extending the validity, a correction — allocated a newer version
+		// and must win instead of being overwritten with the stale content
+		// (reported P1). A failed save must not dispatch the expiry either:
+		// the communication stays active and the manual expire remains
+		// available.
 		transition := composeTransition(h, dispatch.TransitionExpired)
-		id, stamped, err := cs.SaveComposeHazardAndEnqueue(ctx, storage.ComposeHazard{
+		id, stamped, applied, err := cs.ExpireComposeHazardIfCurrent(ctx, storage.ComposeHazard{
 			EventKey: row.EventKey, State: row.State, Status: "expired", UpdatedAt: now,
-		}, transition)
+		}, transition, row.Version)
 		if err != nil {
 			s.logger.Warn("compose: auto-expiry local record failed", "event_key", row.EventKey, "error", err)
+			continue
+		}
+		if !applied {
+			s.logger.Info("compose: auto-expiry skipped, the communication changed or carries no version", "event_key", row.EventKey)
 			continue
 		}
 		transition = stamped

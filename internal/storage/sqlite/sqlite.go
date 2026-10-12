@@ -1007,6 +1007,40 @@ ALTER TABLE meshtastic_messages ADD COLUMN reason TEXT NOT NULL DEFAULT '';
 		SQL: `SELECT 1`,
 		run: joinLegacyGSMParts,
 	},
+	{
+		// v59: panel communications recorded before the compose path
+		// stamped a version live in the ledger under an empty publisher,
+		// which the version-aware paths cannot follow. Adopt them under
+		// the publishing instance, keeping the version and status they
+		// were given, so an automatic expiry can tell an edited
+		// communication from an untouched one.
+		SQL: `SELECT 1`,
+		run: adoptLegacyComposeLifecycle,
+	},
+}
+
+// adoptLegacyComposeLifecycle hands the ledger rows of panel
+// communications recorded under the empty publisher over to this
+// instance (see the v59 migration). A database that has no instance
+// identity yet — a fresh one — has no such rows either.
+func adoptLegacyComposeLifecycle(tx *sql.Tx) error {
+	var instance string
+	err := tx.QueryRow(`SELECT instance_id FROM instance_meta WHERE id = 1`).Scan(&instance)
+	if errors.Is(err, sql.ErrNoRows) || instance == "" {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read instance id for compose adoption: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
+		SELECT ?, event_key, version, status, updated_at_ms
+		FROM message_lifecycle
+		WHERE publisher = '' AND event_key IN (SELECT event_key FROM compose_hazards)
+		ON CONFLICT(publisher, event_key) DO NOTHING`, instance); err != nil {
+		return fmt.Errorf("adopt legacy compose lifecycle rows: %w", err)
+	}
+	return nil
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.
@@ -2150,6 +2184,16 @@ func saveComposeHazardTx(tx *sql.Tx, ctx context.Context, publisher string, h st
 		h.EventKey, string(h.State), h.Status, h.UpdatedAt.UnixMilli()); err != nil {
 		return 0, fmt.Errorf("save compose hazard %q: %w", h.EventKey, err)
 	}
+	if err := recordComposeLifecycleTx(tx, ctx, publisher, h.EventKey, h.Status, version, h.UpdatedAt.UnixMilli()); err != nil {
+		return 0, err
+	}
+	return version, nil
+}
+
+// recordComposeLifecycleTx writes the ledger row of one panel save: the
+// record belongs to the publishing instance and its version is the one
+// just allocated, so a delivery gate can tell one save from the next.
+func recordComposeLifecycleTx(tx *sql.Tx, ctx context.Context, publisher, eventKey, status string, version, atMs int64) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
 		VALUES (?, ?, ?, ?, ?)
@@ -2158,10 +2202,83 @@ func saveComposeHazardTx(tx *sql.Tx, ctx context.Context, publisher string, h st
 			status = excluded.status,
 			updated_at_ms = excluded.updated_at_ms
 		WHERE excluded.version >= message_lifecycle.version`,
-		publisher, h.EventKey, version, h.Status, h.UpdatedAt.UnixMilli()); err != nil {
-		return 0, fmt.Errorf("record compose lifecycle %q: %w", h.EventKey, err)
+		publisher, eventKey, version, status, atMs); err != nil {
+		return fmt.Errorf("record compose lifecycle %q: %w", eventKey, err)
 	}
-	return version, nil
+	return nil
+}
+
+// ExpireComposeHazardIfCurrent writes the expiry of one panel message,
+// but only while the message is STILL the version the caller read.
+//
+// The maintenance passes used to read the list of communications and
+// then write the expiry unconditionally, so an edit landing in between —
+// the operator extending the validity, a correction, a re-post — was
+// overwritten by the old content and the record flipped to expired
+// (reported P1: a message extended by an hour came back as the older
+// text, expired). The version check and the write are one transaction,
+// so no edit can slip between them: a newer save allocated a newer
+// version and simply wins, and the caller learns it was superseded
+// through the applied flag.
+//
+// expectedVersion 0 means the record carries no version under this
+// instance (data written before the panel recorded versions): the expiry
+// is refused rather than guessed — nothing is written and the manual
+// expire stays available. applied reports whether the expiry landed.
+func (s *Store) ExpireComposeHazardIfCurrent(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event, expectedVersion int64) (int64, dispatch.Event, bool, error) {
+	if expectedVersion <= 0 {
+		return 0, ev, false, nil
+	}
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return 0, ev, false, fmt.Errorf("publisher id for compose expiry %q: %w", h.EventKey, err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, ev, false, fmt.Errorf("begin compose expiry for %q: %w", h.EventKey, err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE compose_hazards SET hazard_json = ?, status = ?, updated_at_ms = ?
+		WHERE event_key = ? AND status = 'active'
+		  AND EXISTS (SELECT 1 FROM message_lifecycle
+		              WHERE publisher = ? AND event_key = compose_hazards.event_key
+		                AND version = ? AND status = 'active')`,
+		string(h.State), h.Status, h.UpdatedAt.UnixMilli(), h.EventKey, publisher, expectedVersion)
+	if err != nil {
+		return 0, ev, false, fmt.Errorf("conditional compose expiry for %q: %w", h.EventKey, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, ev, false, fmt.Errorf("conditional compose expiry for %q: %w", h.EventKey, err)
+	}
+	if n == 0 {
+		// The record moved on: the newer save stands and this expiry is
+		// dropped without touching the record, the ledger or the inbox.
+		return 0, ev, false, nil
+	}
+
+	version, err := nextLifecycleVersionTx(tx, ctx)
+	if err != nil {
+		return 0, ev, false, fmt.Errorf("lifecycle version for compose expiry %q: %w", h.EventKey, err)
+	}
+	if err := recordComposeLifecycleTx(tx, ctx, publisher, h.EventKey, h.Status, version, h.UpdatedAt.UnixMilli()); err != nil {
+		return 0, ev, false, err
+	}
+	ev = stampComposeTransition(ev, publisher, version)
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return 0, ev, false, fmt.Errorf("encode compose expiry event for %q: %w", h.EventKey, err)
+	}
+	id, err := insertInboxRow(tx, ctx, data, ev.Origin.ReceiverID, s.now().UnixMilli())
+	if err != nil {
+		return 0, ev, false, fmt.Errorf("accept compose expiry %q: %w", h.EventKey, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, ev, false, fmt.Errorf("commit compose expiry for %q: %w", h.EventKey, err)
+	}
+	return id, ev, true, nil
 }
 
 // DeleteComposeHazard removes one panel-issued communication.
@@ -2175,9 +2292,15 @@ func (s *Store) DeleteComposeHazard(ctx context.Context, eventKey string) error 
 
 // ComposeHazards returns the persisted panel communications.
 func (s *Store) ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, error) {
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("publisher id for compose hazards: %w", err)
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_key, hazard_json, status, updated_at_ms
-		FROM compose_hazards ORDER BY updated_at_ms DESC`)
+		SELECT c.event_key, c.hazard_json, c.status, c.updated_at_ms, COALESCE(l.version, 0)
+		FROM compose_hazards c
+		LEFT JOIN message_lifecycle l ON l.event_key = c.event_key AND l.publisher = ?
+		ORDER BY c.updated_at_ms DESC`, publisher)
 	if err != nil {
 		return nil, fmt.Errorf("list compose hazards: %w", err)
 	}
@@ -2187,7 +2310,7 @@ func (s *Store) ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, er
 		var h storage.ComposeHazard
 		var raw string
 		var ms int64
-		if err := rows.Scan(&h.EventKey, &raw, &h.Status, &ms); err != nil {
+		if err := rows.Scan(&h.EventKey, &raw, &h.Status, &ms, &h.Version); err != nil {
 			return nil, fmt.Errorf("scan compose hazard: %w", err)
 		}
 		h.State = []byte(raw)

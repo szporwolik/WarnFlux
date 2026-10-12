@@ -173,6 +173,12 @@ type ComposeHazard struct {
 	State     []byte
 	Status    string
 	UpdatedAt time.Time
+	// Version is the lifecycle version of this record when it was READ
+	// (ComposeHazards fills it from the ledger under the publishing
+	// instance). The saving paths allocate their own version and ignore
+	// this field; the maintenance passes use it to expire a record only
+	// while it is still the version they read.
+	Version int64
 }
 
 // EventStore persists normalized hazard events together with a durable

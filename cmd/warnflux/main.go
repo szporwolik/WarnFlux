@@ -1311,6 +1311,7 @@ func run(configPath string, checkConfig bool) error {
 	// senders only) and the same /events acceptor for /alert. The
 	// listener needs the privileged Message Content intent; without it it
 	// logs what to enable in the Developer Portal and waits.
+	var discordNotices []discordaction.Notifier
 	for _, st := range actionsMgr.Statuses() {
 		if st.Type != discordaction.Type || !st.Enabled {
 			continue
@@ -1328,6 +1329,7 @@ func run(configPath string, checkConfig bool) error {
 				Uptime:   func() string { return formatUptime(time.Since(processStart)) },
 				Summary:  func() discordaction.HazardSummary { return discordSummaryFromMirror(mirror) },
 			})
+			discordNotices = append(discordNotices, notifier)
 			go notifier.RunNotices(ctx)
 		}
 		dms, ok := discordaction.DMCommanderOf(p)
@@ -1343,6 +1345,18 @@ func run(configPath string, checkConfig bool) error {
 			return owners[userID]
 		}, eventAcceptor, eventTimes)
 		go dms.RunDMs(ctx)
+	}
+
+	// Config page, cadence and polling sections: the panel moves the
+	// periodic lines of both channels at runtime and edits the ranges the
+	// plugins accept — the registry is the single source of those bounds.
+	if webSrv != nil {
+		webSrv.SetPollBounds(registry.SourcePollBounds)
+		webSrv.SetNoticesCadence(func(hazards, uptime time.Duration, uptimeAt string) {
+			for _, n := range discordNotices {
+				n.SetCadence(hazards, uptime, uptimeAt)
+			}
+		})
 	}
 
 	// Group routing rule engine: the consumer of the dispatch ingress. It

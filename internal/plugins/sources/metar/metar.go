@@ -246,5 +246,6 @@ func stationIDs(stations []Station) []string {
 // Register registers the source plugin type. METAR needs no APRS hub:
 // the feed carries the station coordinates.
 func Register(reg *plugin.Registry) error {
+	reg.SetSourcePollBounds(Type, minPollInterval, maxPollInterval)
 	return reg.RegisterSource(Type, New)
 }

@@ -360,5 +360,6 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 
 // Register registers the rso source plugin type.
 func Register(reg *plugin.Registry) error {
+	reg.SetSourcePollBounds(Type, minPollInterval, maxPollInterval)
 	return reg.RegisterSource(Type, New)
 }

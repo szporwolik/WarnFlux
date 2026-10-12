@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// ScalarEdit is one targeted panel change: the value at the dotted
-// mapping path (e.g. "web.force_local_tiles") becomes the given scalar.
+// ScalarEdit is one targeted panel change: the value at the dotted path
+// (e.g. "web.force_local_tiles", or "sources[2].config.poll_interval" to
+// address one list entry) becomes the given scalar.
 type ScalarEdit struct {
 	Path  string
 	Value *yaml.Node
@@ -125,7 +129,21 @@ func buildPatch(root *yaml.Node, e ScalarEdit, indent int, lines []string) (line
 	parts := strings.Split(e.Path, ".")
 	parent, key := root, parts[len(parts)-1]
 	for i, seg := range parts[:len(parts)-1] {
-		next, idx := childMapping(parent, seg)
+		name, item, indexed := splitIndex(seg)
+		next, idx := childMapping(parent, name)
+		if idx >= 0 && indexed {
+			// A list entry: descend into the item the index names, so
+			// "sources[0].config.poll_interval" addresses one instance.
+			items := next
+			if items.Kind != yaml.SequenceNode {
+				return linePatch{}, fmt.Errorf("section %q is not a list", name)
+			}
+			if item < 0 || item >= len(items.Content) {
+				return linePatch{}, fmt.Errorf("list %q has no item %d", name, item)
+			}
+			next = items.Content[item]
+			idx = 0
+		}
 		if idx < 0 {
 			// The section does not exist yet: append the whole missing
 			// tail (section + nested keys) at the end of the current
@@ -147,6 +165,20 @@ func buildPatch(root *yaml.Node, e ScalarEdit, indent int, lines []string) (line
 	anchor := mappingEndLine(parent, lines)
 	rendered := renderKeyed(key, e.Value, indent, childIndent(parent, indent))
 	return linePatch{start: anchor, end: anchor, text: rendered}, nil
+}
+
+// splitIndex splits a path segment into its key and optional list index:
+// "sources[2]" -> ("sources", 2, true), "config" -> ("config", 0, false).
+func splitIndex(seg string) (string, int, bool) {
+	open := strings.IndexByte(seg, '[')
+	if open < 0 || !strings.HasSuffix(seg, "]") {
+		return seg, 0, false
+	}
+	idx, err := strconv.Atoi(seg[open+1 : len(seg)-1])
+	if err != nil {
+		return seg, 0, false
+	}
+	return seg[:open], idx, true
 }
 
 // childMapping finds a key segment inside the mapping and returns its
@@ -287,6 +319,12 @@ func renderValue(value *yaml.Node, indent, keyIndent int) string {
 		}
 		return b.String()
 	}
+	// A clock time is quoted on purpose: YAML 1.1 readers (PyYAML and
+	// friends) resolve a plain 07:30 as a sexagesimal number, so the
+	// documented style keeps the operator's tooling honest.
+	if clockPattern.MatchString(s) {
+		return `"` + s + `"`
+	}
 	if needsQuoting(s) {
 		var buf bytes.Buffer
 		enc := yaml.NewEncoder(&buf)
@@ -308,6 +346,9 @@ func scalarString(n *yaml.Node) string {
 	}
 	return n.Value
 }
+
+// clockPattern matches the daily anchors the Config page writes ("06:00").
+var clockPattern = regexp.MustCompile(`^\d{1,2}:\d{2}$`)
 
 // needsQuoting reports whether a plain YAML rendering of s would be
 // ambiguous or broken.
@@ -358,6 +399,24 @@ func copyFile(src, dst string) error {
 // BoolScalar builds a boolean scalar node.
 func BoolScalar(v bool) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprintf("%v", v)}
+}
+
+// IntScalar builds an integer scalar node.
+func IntScalar(v int) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(v)}
+}
+
+// FloatScalar builds a numeric scalar node (a radius in kilometres, for
+// example, where a whole number reads better than "60.0").
+func FloatScalar(v float64) *yaml.Node {
+	text := strconv.FormatFloat(v, 'f', -1, 64)
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!float", Value: text}
+}
+
+// DurationScalar builds a duration scalar node in the Go spelling the
+// configuration understands ("1h", "30m", "0s").
+func DurationScalar(v time.Duration) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v.String()}
 }
 
 // StringScalar builds a string scalar node. Multi-line strings are

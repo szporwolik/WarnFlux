@@ -83,6 +83,18 @@ type fakeComposePublisher struct {
 	failedRawCount int
 	raw            []fakeRawPublish
 	fail           bool
+
+	// docs is the retained-document model of the broker: what a
+	// subscriber would read back. active:<source>:<event key> for the
+	// retained hazards, raw:<suffix> for the retained info documents.
+	docs map[string]string
+
+	// holdActive, when set, makes PublishActive wait for it before it
+	// records anything: a test keeps one publication in flight (the
+	// delayed resync publish of the reported P1) instead of racing it.
+	holdActive        chan struct{}
+	activeHoldStarted chan struct{}
+	activeHoldOnce    sync.Once
 }
 
 // setFail turns the simulated broker outage on or off.
@@ -90,6 +102,54 @@ func (f *fakeComposePublisher) setFail(fail bool) {
 	f.mu.Lock()
 	f.fail = fail
 	f.mu.Unlock()
+}
+
+// holdActivePublications makes every PublishActive wait for the returned
+// release function; the second result is closed while one publication is
+// waiting in it (so a test knows the delayed publish is in flight).
+func (f *fakeComposePublisher) holdActivePublications() (release func(), started <-chan struct{}) {
+	hold := make(chan struct{})
+	startedCh := make(chan struct{})
+	started = startedCh
+	f.mu.Lock()
+	f.holdActive, f.activeHoldStarted = hold, startedCh
+	f.mu.Unlock()
+	return func() {
+		f.mu.Lock()
+		f.holdActive = nil
+		f.mu.Unlock()
+		close(hold)
+	}, started
+}
+
+// activeDoc returns the retained active document of one source + event
+// key as the broker would serve it.
+func (f *fakeComposePublisher) activeDoc(source, eventKey string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	doc, ok := f.docs["active:"+source+":"+eventKey]
+	return doc, ok
+}
+
+// infoDoc returns the retained raw document of one suffix.
+func (f *fakeComposePublisher) infoDoc(suffix string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	doc, ok := f.docs["raw:"+suffix]
+	return doc, ok
+}
+
+// keepDoc records one retained document in the broker model.
+func (f *fakeComposePublisher) keepDoc(key, payload string) {
+	if f.docs == nil {
+		f.docs = map[string]string{}
+	}
+	f.docs[key] = payload
+}
+
+// dropDoc removes one retained document from the broker model.
+func (f *fakeComposePublisher) dropDoc(key string) {
+	delete(f.docs, key)
 }
 
 // fakeRawPublish is one recorded retained raw publication (EMCOM state).
@@ -101,12 +161,22 @@ type fakeRawPublish struct {
 
 func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) error {
 	f.mu.Lock()
+	hold, started := f.holdActive, f.activeHoldStarted
+	f.mu.Unlock()
+	if hold != nil {
+		if started != nil {
+			f.activeHoldOnce.Do(func() { close(started) })
+		}
+		<-hold
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail {
 		f.failedActive = append(f.failedActive, h.EventKey)
 		return errors.New("broker down")
 	}
 	f.published = append(f.published, h)
+	f.keepDoc("active:"+source+":"+h.EventKey, h.Headline)
 	return nil
 }
 
@@ -118,6 +188,7 @@ func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
 		return errors.New("broker down")
 	}
 	f.expired = append(f.expired, eventKey)
+	f.dropDoc("active:" + source + ":" + eventKey)
 	return nil
 }
 
@@ -129,6 +200,11 @@ func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload 
 		return errors.New("broker down")
 	}
 	f.raw = append(f.raw, fakeRawPublish{Suffix: suffix, Retained: retained, Payload: append([]byte(nil), payload...)})
+	if payload == nil {
+		f.dropDoc("raw:" + suffix)
+	} else {
+		f.keepDoc("raw:"+suffix, string(payload))
+	}
 	return nil
 }
 

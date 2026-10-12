@@ -80,6 +80,16 @@ func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) err
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	dialer := &net.Dialer{Timeout: 15 * time.Second, Deadline: deadline}
 
+	// One slot per recipient from the budget shared with the action
+	// instance: the provider counts routed notifications and one-off
+	// notices together. The first slot is claimed BEFORE the connection,
+	// so a paced send never holds an idle SMTP session open while it
+	// waits for its turn.
+	limiter := sharedLimiter(cfg)
+	if err := limiter.wait(ctx); err != nil {
+		return fmt.Errorf("smtp: rate limit: %w", err)
+	}
+
 	var conn net.Conn
 	var err error
 	implicit := cfg.ImplicitTLS != nil && *cfg.ImplicitTLS
@@ -88,7 +98,12 @@ func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) err
 		if tErr != nil {
 			return tErr
 		}
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tc)
+		// DialContext covers the handshake too (HandshakeContext under
+		// the hood). tls.DialWithDialer never saw the context, so a relay
+		// that accepted the connection and then stayed silent during TLS
+		// held the send until the deadline — password resets included
+		// (reported P2).
+		conn, err = (&tls.Dialer{NetDialer: dialer, Config: tc}).DialContext(ctx, "tcp", addr)
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
@@ -137,7 +152,12 @@ func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) err
 		}
 	}
 
-	for _, rcpt := range to {
+	for i, rcpt := range to {
+		if i > 0 {
+			if err := limiter.wait(ctx); err != nil {
+				return fmt.Errorf("smtp: rate limit: %w", err)
+			}
+		}
 		if err := client.Mail(from); err != nil {
 			return fmt.Errorf("smtp: mail from: %w", err)
 		}

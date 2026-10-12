@@ -26,6 +26,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -110,46 +111,197 @@ type emailAction struct {
 
 // rateLimiter spaces sends evenly: at most limit emails per minute, one
 // slot at a time. It is deliberately primitive — a token bucket or a
-// sliding window is not needed for a single sequential worker.
+// sliding window is not needed for a single sequential worker. An
+// interval of zero paces nothing: the account is unlimited.
+//
+// Senders queue in FIFO order and the slot is charged when a waiter's turn
+// ACTUALLY comes. Nothing is reserved on joining, so a request cancelled in
+// any position — first, middle or last — leaves no budget behind (reported
+// P2: returning only the last reservation kept ten seconds of the shared
+// budget after ten cancelled waiters).
 type rateLimiter struct {
 	mu       sync.Mutex
 	next     time.Time
 	interval time.Duration
+	// queue holds the senders waiting for a slot, head first; changed is
+	// closed (and replaced) whenever the queue moves, so a waiter behind
+	// the head wakes up instead of polling.
+	//
+	// A waiter is identified by a COUNTER, never by a pointer: two
+	// addresses of an empty struct can be equal, so several waiters used to
+	// believe they were first in line and the pace disappeared (reported
+	// P2: a required 100 ms spacing measured about 3 µs).
+	queue   []uint64
+	nextID  uint64
+	changed chan struct{}
 }
 
+// newRateLimiter always returns a limiter, also for a rate that disables
+// the pacing (zero interval): the shared account budget is one OBJECT
+// whose pace changes — a negative limit used to store no limiter at all,
+// so a later positive configuration could never switch the limit back on
+// (reported P2).
 func newRateLimiter(perMinute int) *rateLimiter {
+	return &rateLimiter{interval: rateInterval(perMinute), changed: make(chan struct{})}
+}
+
+// rateInterval maps a configured rate onto the pacing: 0 or less sends
+// without pacing (a negative value disables the limit), a positive value
+// spaces the slots evenly.
+func rateInterval(perMinute int) time.Duration {
 	if perMinute <= 0 {
-		return nil
+		return 0
 	}
-	return &rateLimiter{interval: time.Minute / time.Duration(perMinute)}
+	return time.Minute / time.Duration(perMinute)
+}
+
+// setPerMinute re-paces a limiter that a reloaded configuration shares;
+// every slot reads the interval, so a change applies from the next send on.
+func (l *rateLimiter) setPerMinute(perMinute int) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.interval = rateInterval(perMinute)
+	l.mu.Unlock()
+}
+
+// The provider counts every message on the account, so routed
+// notifications and the panel's one-off notices must claim from ONE
+// limiter: the panel used to bypass the configured limit entirely
+// (reported P2). Limiter are shared per endpoint (host, port, user) — the
+// identity of the account the budget belongs to — and follow the most
+// recently constructed configuration (a station sends through one
+// account; two instances on the same one share the pace of the last).
+var (
+	limiterMu     sync.Mutex
+	limiterShared = map[string]*rateLimiter{}
+)
+
+// sharedLimiter returns the budget of the account cfg sends through. A
+// SEND never re-paces the shared limiter: a caller handing over a raw
+// configuration (rate unset) used to switch the limit off for the routed
+// alarms too (reported P2). The rate is normalized on creation, so an
+// unset limit means the 30/min default even there.
+func sharedLimiter(cfg Config) *rateLimiter {
+	return accountLimiter(cfg, false)
+}
+
+// configuredLimiter is the construction path: it creates the account
+// budget or re-paces it, so a reloaded configuration applies to every
+// sender of the account.
+func configuredLimiter(cfg Config) *rateLimiter {
+	return accountLimiter(cfg, true)
+}
+
+func accountLimiter(cfg Config, configure bool) *rateLimiter {
+	rate := cfg.RateLimitPerMinute
+	if rate == 0 {
+		rate = defaultRateLimitPerMinute
+	}
+	key := strings.ToLower(strings.TrimSpace(cfg.Host)) + ":" +
+		strconv.Itoa(cfg.Port) + ":" + strings.TrimSpace(cfg.Username)
+	limiterMu.Lock()
+	defer limiterMu.Unlock()
+	l, ok := limiterShared[key]
+	if !ok {
+		l = newRateLimiter(rate)
+		limiterShared[key] = l
+		return l
+	}
+	// The entry is always a limiter object (also when the account sends
+	// without pacing), so a later configuration can pace it again.
+	if configure {
+		l.setPerMinute(rate)
+	}
+	return l
 }
 
 // wait claims the next send slot. It blocks until the slot's time has
 // arrived or ctx is cancelled; a cancelled ctx returns ctx.Err() so the
 // action worker counts a failure instead of silently sending anyway.
+//
+// The budget is charged when the turn comes, never when the request joins
+// the queue: a sender that gives up — whatever its position — costs
+// nothing, so a broadcast that ran out of its own budget cannot push the
+// next alarm minutes into the future (reported P1 and P2).
 func (l *rateLimiter) wait(ctx context.Context) error {
 	if l == nil {
 		return nil
 	}
-	l.mu.Lock()
-	now := time.Now()
-	start := l.next
-	if start.Before(now) {
-		start = now
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	l.next = start.Add(l.interval)
+	l.mu.Lock()
+	l.nextID++
+	me := l.nextID
+	l.queue = append(l.queue, me)
+	l.broadcastLocked()
 	l.mu.Unlock()
 
-	delay := time.Until(start)
-	if delay <= 0 {
-		return nil
+	for {
+		l.mu.Lock()
+		if len(l.queue) == 0 || l.queue[0] != me {
+			// Someone ahead: wait for the queue to move.
+			changed := l.changed
+			l.mu.Unlock()
+			select {
+			case <-changed:
+				continue
+			case <-ctx.Done():
+				l.leave(me)
+				return ctx.Err()
+			}
+		}
+		start := l.next
+		if now := time.Now(); start.Before(now) {
+			start = now
+		}
+		l.mu.Unlock()
+
+		if delay := time.Until(start); delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				l.leave(me)
+				return ctx.Err()
+			}
+		}
+
+		// My turn: only now does this send cost anything.
+		l.mu.Lock()
+		if l.queue[0] == me {
+			l.next = time.Now().Add(l.interval)
+			l.queue = l.queue[1:]
+			l.broadcastLocked()
+			l.mu.Unlock()
+			return nil
+		}
+		l.mu.Unlock()
 	}
-	select {
-	case <-time.After(delay):
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+}
+
+// leave drops a waiter that gave up, in ANY position, and lets the send
+// behind it take the slot it never used.
+func (l *rateLimiter) leave(me uint64) {
+	l.mu.Lock()
+	for i, w := range l.queue {
+		if w == me {
+			l.queue = append(l.queue[:i], l.queue[i+1:]...)
+			break
+		}
 	}
+	l.broadcastLocked()
+	l.mu.Unlock()
+}
+
+// broadcastLocked wakes every waiter after the queue moved. The caller
+// holds l.mu.
+func (l *rateLimiter) broadcastLocked() {
+	close(l.changed)
+	l.changed = make(chan struct{})
 }
 
 // New builds an SMTP action instance from its raw YAML configuration.
@@ -192,6 +344,13 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		no := false
 		cfg.ImplicitTLS = &no
 	}
+	// Normalize BEFORE the instance keeps its copy: the panel and the
+	// password-reset mailer send through p.cfg, and an unset rate limit
+	// kept as 0 would switch the shared budget off on their first send
+	// (reported P2).
+	if cfg.RateLimitPerMinute == 0 {
+		cfg.RateLimitPerMinute = defaultRateLimitPerMinute
+	}
 
 	p := &emailAction{id: Type, cfg: cfg, logger: slog.Default()}
 
@@ -225,10 +384,11 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		p.roots = roots
 	}
 
-	if cfg.RateLimitPerMinute == 0 {
-		cfg.RateLimitPerMinute = defaultRateLimitPerMinute
-	}
-	p.limiter = newRateLimiter(cfg.RateLimitPerMinute)
+	// The instance shares the account's budget with the direct senders
+	// (panel notices, the password-reset mailer), so a broadcast cannot
+	// slip past the configured limit. This is the CONSTRUCTION path: it may
+	// re-pace an existing limiter (a reloaded configuration applies).
+	p.limiter = configuredLimiter(cfg)
 
 	return p, nil
 }
@@ -310,7 +470,11 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 			MinVersion: tls.VersionTLS12,
 			RootCAs:    p.roots,
 		}
-		tlsConn, err := tls.DialWithDialer(&dialer, "tcp", addr, tlsCfg)
+		// DialContext covers the handshake too (HandshakeContext under
+		// the hood): tls.DialWithDialer never saw the context, so a peer
+		// that accepted the connection and then stayed silent during TLS
+		// held the call until the deadline (reported P2).
+		tlsConn, err := (&tls.Dialer{NetDialer: &dialer, Config: tlsCfg}).DialContext(ctx, "tcp", addr)
 		if err != nil {
 			return fmt.Errorf("smtp: tls connect to %s: %w", addr, err)
 		}

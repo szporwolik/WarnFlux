@@ -837,6 +837,9 @@ button:disabled { cursor: not-allowed; }
   margin: 0 0 0.45rem;
   font-size: 1.05rem;
 }
+/* One icon colour for every card on this page (the accent): the Discord
+   card used to wear the service's own blurple mark at a larger size,
+   which made that one heading read as a different kind of thing. */
 .help-meshchan h2 .icon { width: 18px; height: 18px; color: var(--accent, var(--muted)); }
 .help-meshchan-grid {
   display: flex;
@@ -844,13 +847,6 @@ button:disabled { cursor: not-allowed; }
   gap: 1.4rem;
   align-items: flex-start;
   margin-top: 0.7rem;
-}
-/* The Discord card wears the service's own mark, in its own colour: the
-   logo is recognised before the label is read. */
-.help-discord h2 .icon {
-  color: #5865f2;
-  width: 22px;
-  height: 22px;
 }
 .help-meshchan-facts { flex: 1 1 18rem; min-width: 0; }
 /* The share link is one long unbreakable word: let the row wrap and the

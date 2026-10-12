@@ -245,6 +245,13 @@ func DirectMessengerOf(p action.Plugin) (DirectMessenger, bool) {
 	return a, true
 }
 
+// UsableUserID reports whether a profile Discord value can receive a
+// direct message: this station needs a numeric user id (a bare snowflake
+// or a mention like "<@123>"). A username or handle — the natural thing to
+// type into a profile — cannot be resolved by the bot, so the panels can
+// flag it instead of promising a delivery that will fail.
+func UsableUserID(v string) bool { return normalizeUserID(v) != "" }
+
 // dmCacheLimit bounds the direct-message channel cache.
 const dmCacheLimit = 512
 

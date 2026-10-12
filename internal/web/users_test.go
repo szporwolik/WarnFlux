@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1326,5 +1327,71 @@ func TestUsersModalPrefsApply(t *testing.T) {
 	}
 	if opts, _ := env.users.UserChannelOptOuts(2); !opts["smtp"] || opts["aprs"] {
 		t.Fatalf("opt-outs after plain save = %v, want unchanged", opts)
+	}
+}
+
+// TestAccessContactChips pins how the access table presents one account:
+// every contact value is a chip like the callsigns and the groups, an
+// e-mail is a mailto: link, a numeric id reads as one monospace token, and
+// the "updated" column carries a full date — a bare clock cannot be placed
+// in time at all.
+func TestAccessContactChips(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	csrf := env.csrfFromPage("/users")
+	resp, html := env.postForm("/users", url.Values{
+		"csrf": {csrf}, "username": {"chipuser"}, "password": {"password123"},
+		"phone": {"+48123456789"}, "email": {"chip@example.com"},
+		"discord": {"123456789012345678"}, "meshtastic_ids": {"6b623d8c"},
+		"aprs_callsigns": {"SP9CHP"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create chipuser = %d: %s", resp.StatusCode, html)
+	}
+
+	resp, html = env.get("/access")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /access = %d", resp.StatusCode)
+	}
+	for _, want := range []string{
+		// html/template escapes the leading "+" of the phone.
+		`<span class="group-chip">&#43;48123456789</span>`,
+		`<a class="group-chip" href="mailto:chip@example.com"`,
+		`<span class="group-chip chip-id" title="Numeric Discord user id`,
+		`<span class="group-chip chip-id" title="6b623d8c">!6b623d8c</span>`,
+		`<span class="group-chip">SP9CHP</span>`,
+		">123456789012345678</span>",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("access table missing %q", want)
+		}
+	}
+	// The updated column shows a date and a time, not a bare clock.
+	if !regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}`).MatchString(html) {
+		t.Error("the access table shows no date+time timestamp")
+	}
+	// The value cell no longer prints the address as bare text.
+	if strings.Contains(html, "<td>chip@example.com</td>") {
+		t.Error("the e-mail is still rendered as bare text")
+	}
+
+	// A Discord value that the bot cannot resolve (a handle, not a numeric
+	// id) is flagged in place with the reason in its tooltip.
+	resp, html = env.postForm("/users", url.Values{
+		"csrf": {csrf}, "username": {"handleuser"}, "password": {"password123"},
+		"discord": {"@handle"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create handleuser = %d: %s", resp.StatusCode, html)
+	}
+	resp, html = env.get("/access")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /access = %d", resp.StatusCode)
+	}
+	if !strings.Contains(html, `<span class="group-chip chip-id chip-bad" title="This is not a numeric Discord id`) {
+		t.Error("a handle in the Discord column is not flagged")
+	}
+	if !strings.Contains(html, ">@handle</span>") {
+		t.Error("the handle itself is not shown")
 	}
 }

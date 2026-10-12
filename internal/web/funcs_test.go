@@ -77,7 +77,7 @@ func TestTimezoneDisplay(t *testing.T) {
 	if got := pl.templateFuncs()["timeFull"].(func(time.Time) string)(instant); got != "2026-10-08 02:23:45" {
 		t.Errorf("warsaw timeFull = %q", got)
 	}
-	if got := pl.templateFuncs()["timeShort"].(func(time.Time) string)(instant); got != "02:23:45" {
+	if got := pl.templateFuncs()["timeShort"].(func(time.Time) string)(instant); got != "2026-10-08 02:23" {
 		t.Errorf("warsaw timeShort = %q", got)
 	}
 	if got := pl.templateFuncs()["timeHMS"].(func(string) string)("2026-10-08T00:23:45Z"); got != "02:23:45" {

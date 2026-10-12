@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/actions/discord"
 	"github.com/szporwolik/WarnFlux/internal/appinfo"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/config"
@@ -878,6 +879,12 @@ func (s *Server) templateFuncs() template.FuncMap {
 			}
 			return s
 		},
+		// discordOK reports whether a profile Discord value can receive a
+		// direct message at all: the bot needs a numeric user id, so a
+		// handle is worth flagging in the account table.
+		"discordOK": func(v string) bool {
+			return discord.UsableUserID(v)
+		},
 		// jsonLevels serializes the EMCOM readiness levels for the
 		// panel's slider script (the official names and descriptions).
 		"jsonLevels": func(levels []emcomLevelView) template.JS {
@@ -897,11 +904,16 @@ func (s *Server) templateFuncs() template.FuncMap {
 			}
 			return template.JS(b)
 		},
+		// timeShort renders a compact timestamp for the tables: the date
+		// plus the minute. A bare clock cannot be placed in time at all —
+		// "12:14" of which day? — while seconds would only add noise to a
+		// column that is read at a glance. The seconds stay available in
+		// timeFull, used where a single event is inspected in detail.
 		"timeShort": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"
 			}
-			return t.In(loc).Format("15:04:05")
+			return t.In(loc).Format("2006-01-02 15:04")
 		},
 		// Trail steps carry RFC3339 timestamps as strings (JSON shape);
 		// these two helpers render them for the notifications page.

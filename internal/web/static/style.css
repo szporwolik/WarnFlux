@@ -1587,6 +1587,21 @@ tr.click-send:hover td { background: var(--surface-hi); }
   color: var(--text);
   white-space: nowrap;
 }
+/* Account values read as chips like every other setting in the access
+   tables. A mail chip is a mailto: link, so it keeps the chip look while
+   staying visibly clickable. */
+a.group-chip { color: var(--text); text-decoration: none; }
+a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
+/* Numeric ids (Discord user id, Meshtastic node id) read as one token. */
+.chip-id {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: -0.02em;
+}
+/* A stored value that cannot be delivered at all (a Discord handle where
+   the bot needs a numeric id) is flagged in place, with the reason in the
+   tooltip — the operator sees it before an alert silently fails. */
+.chip-bad { border-color: var(--warn-border); color: var(--warn); }
 
 /* ---- users modal: membership + delivery-channel sections ---- */
 .modal-section { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }

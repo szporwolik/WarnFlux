@@ -203,3 +203,63 @@ func TestEmcomResyncKeepsRaisedNetworksActive(t *testing.T) {
 		t.Fatalf("the resync retired the alarm of a raised network (ok=%d failed=%d)", ok, failed)
 	}
 }
+
+// TestEmcomResyncKeepsARaisedAlarmWhenItsStatePublishFails pins the
+// reported P1: with a removal still owed (an earlier stand-down the
+// broker refused), the resync used to classify a network only WHILE
+// publishing its state document — a failing info publish therefore left
+// it looking retired, and the replay of the stale removal carried version
+// 0, which the version guard never rejects. The alarm the operator had
+// just raised again was taken down. The local record decides, before any
+// MQTT operation, and a removal that a newer record superseded is
+// forgotten instead of replayed.
+func TestEmcomResyncKeepsARaisedAlarmWhenItsStatePublishFails(t *testing.T) {
+	env, csrf := emcomResyncEnv(t, 2)
+	const eventKey = "emcom:sp9moa-emcom"
+
+	// The broker is down: the stand-down cannot remove the alarm, so the
+	// removal stays pending.
+	env.pub.setFail(true)
+	resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"0"}})
+	if resp.StatusCode != 303 {
+		t.Fatalf("POST level 0 = %d, want 303", resp.StatusCode)
+	}
+	waitForEmcomRetireAttempt(t, env, eventKey)
+	attempts0, failed0 := env.pub.expireAttempts(eventKey)
+
+	// The operator raises the network again (the alarm went out before).
+	env.pub.setFail(false)
+	resp, _ = env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"2"}})
+	if resp.StatusCode != 303 {
+		t.Fatalf("POST level 2 = %d, want 303", resp.StatusCode)
+	}
+
+	// The resync cannot publish the state document (only that fails), so
+	// the removal must not be replayed over the live alarm.
+	env.pub.setFailRaw(true)
+	env.server.SyncBrokerState()
+
+	if ok, failed := env.pub.expireAttempts(eventKey); ok != attempts0 || failed != failed0 {
+		t.Fatalf("the resync retired the alarm of a raised network (ok=%d failed=%d, want %d/%d)",
+			ok, failed, attempts0, failed0)
+	}
+	if _, ok := env.pub.activeDoc("emcom", eventKey); !ok {
+		t.Fatal("the resync dropped the alarm document of an active network")
+	}
+
+	// The obsolete removal is forgotten: the recovery resync publishes
+	// the state again and still keeps the alarm.
+	env.pub.setFailRaw(false)
+	env.server.SyncBrokerState()
+
+	if ok, failed := env.pub.expireAttempts(eventKey); ok != attempts0 || failed != failed0 {
+		t.Fatalf("a superseded removal was replayed after the recovery (ok=%d failed=%d, want %d/%d)",
+			ok, failed, attempts0, failed0)
+	}
+	if _, ok := env.pub.activeDoc("emcom", eventKey); !ok {
+		t.Fatal("the recovered resync dropped the alarm document of an active network")
+	}
+	if doc, ok := env.pub.infoDoc("info/emcom/emcom/sp9moa-emcom/emcom"); !ok || !strings.Contains(doc, `"level":2`) {
+		t.Fatalf("state document on the broker = %q, %v; want level 2", doc, ok)
+	}
+}

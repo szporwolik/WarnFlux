@@ -83,6 +83,10 @@ type fakeComposePublisher struct {
 	failedRawCount int
 	raw            []fakeRawPublish
 	fail           bool
+	// failRaw simulates a broker that refuses only the retained state
+	// documents (the info payloads) while the active-hazard documents
+	// still go through — the reported P1 resync ordering.
+	failRaw bool
 
 	// docs is the retained-document model of the broker: what a
 	// subscriber would read back. active:<source>:<event key> for the
@@ -101,6 +105,13 @@ type fakeComposePublisher struct {
 func (f *fakeComposePublisher) setFail(fail bool) {
 	f.mu.Lock()
 	f.fail = fail
+	f.mu.Unlock()
+}
+
+// setFailRaw refuses only the retained state documents (see failRaw).
+func (f *fakeComposePublisher) setFailRaw(fail bool) {
+	f.mu.Lock()
+	f.failRaw = fail
 	f.mu.Unlock()
 }
 
@@ -195,7 +206,7 @@ func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
 func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.fail {
+	if f.fail || f.failRaw {
 		f.failedRawCount++
 		return errors.New("broker down")
 	}

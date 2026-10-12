@@ -81,11 +81,13 @@ type Server struct {
 	ingress  *dispatch.Ingress
 	users    storage.DirectoryStore
 	// emcomRetireMu guards emcomRetirePending: the EMCOM alarm documents
-	// the broker refused to remove. A stand-down that happened while the
+	// the broker refused to remove, each with the version of the record
+	// that ordered the removal. A stand-down that happened while the
 	// broker was down would otherwise leave an active alarm published, so
-	// the resync retries the removal until it lands (see emcom.go).
+	// the resync retries the removal until it lands — but never over a
+	// record that was raised again since (see emcom.go).
 	emcomRetireMu      sync.Mutex
-	emcomRetirePending map[string]bool
+	emcomRetirePending map[string]int64
 	// events backs the public archive (180-day history of communications).
 	// nil in minimal constructions (the archive tab then shows an empty
 	// state).

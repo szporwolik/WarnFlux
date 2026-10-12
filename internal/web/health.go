@@ -120,16 +120,17 @@ func (s *Server) buildHealthView(lang string) healthView {
 	}
 	// Low-disk alarm: below the configured threshold the DB row turns red
 	// and the operator sees exactly how much room is left on the card.
-	if s.minFreeBytes > 0 {
+	minFree := s.minFreeBytes.Load()
+	if minFree > 0 {
 		if dp, ok := s.users.(diskProbe); ok {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			free, err := dp.FreeBytes(ctx)
 			cancel()
 			if err != nil {
 				s.logger.Warn("health: free space check failed", "error", err)
-			} else if free < s.minFreeBytes {
+			} else if free < minFree {
 				v.DB.BadgeClass, v.DB.BadgeText = "bad", i18n.T(lang, "health.badge.low_disk")
-				v.DB.Detail += " · " + fmt.Sprintf(i18n.T(lang, "health.db_free"), free>>20, s.minFreeBytes>>20)
+				v.DB.Detail += " · " + fmt.Sprintf(i18n.T(lang, "health.db_free"), free>>20, minFree>>20)
 				bad = true
 			}
 		}

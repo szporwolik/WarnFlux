@@ -106,7 +106,8 @@ type Server struct {
 
 	// minFreeBytes is the low-disk alarm threshold: below it the health
 	// DB row turns red and the retention policy shortens (0 = disabled).
-	minFreeBytes int64
+	// Atomic: the Config page moves it while requests are served.
+	minFreeBytes atomic.Int64
 
 	// offline is the runtime offline-mode switch (startup value from the
 	// config; an admin toggles it on the Config page). offlineOn is the
@@ -137,6 +138,9 @@ type Server struct {
 	// noticesCadence applies a cadence change to the live Discord notice
 	// runners (see SetNoticesCadence).
 	noticesCadence func(hazards, uptime time.Duration, uptimeAt string)
+	// retentionApply carries the retention windows and the low-disk
+	// threshold to the running station (see SetRetentionApplier).
+	retentionApply func(RetentionLimits)
 
 	// Runtime branding/content fields: initialized from the config at
 	// startup, editable on the Config page and persisted to the YAML
@@ -509,6 +513,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /config/mesh", s.requireAdmin(s.handleConfigMesh))
 	s.mux.Handle("POST /config/cadence", s.requireAdmin(s.handleConfigCadence))
 	s.mux.Handle("POST /config/polling", s.requireAdmin(s.handleConfigPolling))
+	s.mux.Handle("POST /config/retention", s.requireAdmin(s.handleConfigRetention))
 	s.mux.Handle("POST /config/lang", s.requireAdmin(s.handleConfigLang))
 	s.mux.Handle("POST /config/content", s.requireAdmin(s.handleConfigContent))
 	s.mux.Handle("POST /config/mqtt", s.requireAdmin(s.handleConfigMqtt))
@@ -537,10 +542,10 @@ func (s *Server) MarkReady() { s.ready.Store(true) }
 
 // SetStorageAlarm installs the low-disk alarm threshold in bytes (0
 // disables the alarm): below it the health DB row turns red, /metrics
-// reports the free space, and the dispatch inbox retention shortens.
-// Must be called before serving traffic.
+// reports the free space, and the dispatch inbox retention shortens. The
+// Config page moves it at runtime.
 func (s *Server) SetStorageAlarm(minFreeBytes int64) {
-	s.minFreeBytes = minFreeBytes
+	s.minFreeBytes.Store(minFreeBytes)
 }
 
 // Bind creates the listening socket. It fails startup when the address is

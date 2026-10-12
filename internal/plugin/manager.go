@@ -31,6 +31,20 @@ const (
 	activeReadPageSize = 256
 )
 
+// Retention is the live cleanup window of the maintenance loop: how long
+// acknowledged journal records and cancelled/expired current-state rows
+// are kept. Zero disables the corresponding cleanup.
+func (m *Manager) Retention() (change, event time.Duration) {
+	return time.Duration(m.changeRetention.Load()), time.Duration(m.eventRetention.Load())
+}
+
+// SetRetention replaces the live cleanup windows, so an operator shortens
+// or lengthens them from the Config page without a restart.
+func (m *Manager) SetRetention(change, event time.Duration) {
+	m.changeRetention.Store(int64(change))
+	m.eventRetention.Store(int64(event))
+}
+
 // IngestFunc is the core ingestion entry point injected by the application.
 type IngestFunc func(ctx context.Context, event core.HazardEvent) (ingest.Result, core.EventChange, error)
 
@@ -67,6 +81,11 @@ type Manager struct {
 	expireFn ExpireFunc
 	store    storage.EventStore
 	opts     ManagerOptions
+	// changeRetention / eventRetention are the live cleanup windows: the
+	// Config page tunes them and the maintenance loop reads the current
+	// setting on every pass, so a change needs no restart.
+	changeRetention atomic.Int64
+	eventRetention  atomic.Int64
 
 	eventQueue chan *queuedEvent
 	// queueMu serializes enqueue against the shutdown drain's final sweep:
@@ -107,6 +126,8 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		eventQueue: make(chan *queuedEvent, defaultEventQueueSize),
 		emitWait:   emitWaitTimeout,
 	}
+	m.changeRetention.Store(int64(opts.ChangeRetention))
+	m.eventRetention.Store(int64(opts.EventRetention))
 
 	for _, cfg := range sourceCfgs {
 		tracker := m.statuses.add(cfg.ID, cfg.Type, KindSource)
@@ -578,8 +599,9 @@ func (m *Manager) maintenance(ctx context.Context) {
 					m.logger.Warn("expiration check failed", "error", err)
 				}
 			}
-			if m.store != nil && m.opts.ChangeRetention > 0 {
-				if n, err := m.store.CleanupChanges(ctx, now.Add(-m.opts.ChangeRetention)); err != nil {
+			change, event := m.Retention()
+			if m.store != nil && change > 0 {
+				if n, err := m.store.CleanupChanges(ctx, now.Add(-change)); err != nil {
 					if ctx.Err() == nil {
 						m.logger.Warn("journal cleanup failed", "error", err)
 					}
@@ -587,8 +609,8 @@ func (m *Manager) maintenance(ctx context.Context) {
 					m.logger.Info("journal cleanup", "deleted_changes", n)
 				}
 			}
-			if m.store != nil && m.opts.EventRetention > 0 {
-				if n, err := m.store.CleanupEvents(ctx, now.Add(-m.opts.EventRetention)); err != nil {
+			if m.store != nil && event > 0 {
+				if n, err := m.store.CleanupEvents(ctx, now.Add(-event)); err != nil {
 					if ctx.Err() == nil {
 						m.logger.Warn("event cleanup failed", "error", err)
 					}

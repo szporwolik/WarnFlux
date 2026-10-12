@@ -243,6 +243,7 @@ func distKm(lat1, lon1, lat2, lon2 float64) float64 {
 // Register registers the source plugin type. The APRS hub provides the
 // default area of interest.
 func Register(reg *plugin.Registry, hub *aprs.Hub) error {
+	reg.SetSourcePollBounds(Type, minPollInterval, maxPollInterval)
 	return reg.RegisterSource(Type, func(node *yaml.Node) (plugin.SourcePlugin, error) {
 		return New(node, hub)
 	})

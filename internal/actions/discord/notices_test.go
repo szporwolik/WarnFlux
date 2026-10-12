@@ -247,3 +247,69 @@ func TestNoticesRunStopsOnCancel(t *testing.T) {
 		t.Fatal("RunNotices did not return after the context was cancelled")
 	}
 }
+
+// TestNoticesSetCadenceLive pins the Config-page path: a running notifier
+// takes a new cadence without a restart. A spacing switched on becomes due
+// at once, the daily anchor re-arms to the next occurrence, and a channel
+// silenced completely is left silenced.
+func TestNoticesSetCadenceLive(t *testing.T) {
+	g := newFakeGateway(t)
+	// The defaults both surfaces ship: the status line every hour and the
+	// presence line anchored at 06:00.
+	f := newListenerFixture(t, g)
+	f.summary = HazardSummary{Severe: 2, Other: 1}
+	f.uptime = "5m"
+	f.configureNotices()
+
+	// The status line is due at the start, the presence line waits for the
+	// anchor the fixture's clock has already passed.
+	f.action.notices.hazardsTick(context.Background())
+	f.action.notices.uptimeTick(context.Background())
+	posts := g.waitWebhook(1)
+	if !strings.Contains(posts[0].content, "2 severe or more") {
+		t.Errorf("status line = %q", posts[0].content)
+	}
+	if n := len(g.webhookPosts()); n != 1 {
+		t.Fatalf("presence line posted before its anchor (%d posts)", n)
+	}
+
+	// The panel moves the spacing and the anchor: the status line holds
+	// for its new window, the presence line moves to tomorrow's hour.
+	f.action.SetCadence(30*time.Minute, 0, "05:00")
+	f.setNow(f.at().Add(20 * time.Minute))
+	f.action.notices.hazardsTick(context.Background())
+	if n := len(g.webhookPosts()); n != 1 {
+		t.Fatalf("status line repeated inside its new window (%d posts)", n)
+	}
+	f.setNow(f.at().Add(20 * time.Minute))
+	f.action.notices.hazardsTick(context.Background())
+	g.waitWebhook(2)
+
+	// A spacing replaces the anchor, and the line it moves is the morning
+	// one: it goes out at once instead of waiting another day.
+	f.action.SetCadence(30*time.Minute, 12*time.Hour, "")
+	f.action.notices.uptimeTick(context.Background())
+	posts = g.waitWebhook(3)
+	if !strings.HasSuffix(posts[2].content, "| up 5m") {
+		t.Errorf("presence line = %q", posts[2].content)
+	}
+	f.setNow(f.at().Add(6 * time.Hour))
+	f.action.notices.uptimeTick(context.Background())
+	if n := len(g.webhookPosts()); n != 3 {
+		t.Fatalf("presence line repeated inside its window (%d posts)", n)
+	}
+
+	// A channel silenced completely — the development arrangement, where
+	// production owns the webhook — stays silent whatever the panel sends.
+	silent := newListenerFixtureCfg(t, g, map[string]any{
+		"hazards_interval": "0s", "uptime_at": "", "uptime_interval": "0s",
+	})
+	silent.summary = HazardSummary{Severe: 2}
+	silent.configureNotices()
+	silent.action.SetCadence(time.Minute, time.Minute, "06:00")
+	silent.action.notices.hazardsTick(context.Background())
+	silent.action.notices.uptimeTick(context.Background())
+	if n := len(g.webhookPosts()); n != 3 {
+		t.Fatalf("a silenced channel started announcing (%d posts)", n)
+	}
+}

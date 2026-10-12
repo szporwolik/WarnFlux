@@ -134,6 +134,47 @@
       </div>
     </section>
 
+    <section class="config-sec" id="cfg-cadence">
+      <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg>{{tr .Lang "config.sec.cadence"}}</h3>
+      <div class="config-block">
+        <div class="config-row">
+          <span class="config-row-title">{{tr .Lang "config.cadence.head"}}</span>
+          <button type="submit" form="config-cadence-form" class="btn-primary">{{tr .Lang "common.save"}}</button>
+        </div>
+        <form method="post" action="/config/cadence" id="config-cadence-form" class="config-content-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <label class="config-field"><span>{{tr .Lang "config.cadence.anchor"}}</span>
+            <input type="text" name="anchor" maxlength="5" placeholder="06:00" value="{{.Cadence.Anchor}}"></label>
+          <label class="config-field"><span>{{tr .Lang "config.cadence.interval"}}</span>
+            <input type="text" name="interval" maxlength="16" placeholder="24h" value="{{.Cadence.Interval}}"></label>
+          <label class="config-field"><span>{{tr .Lang "config.cadence.hazards"}}</span>
+            <input type="text" name="hazards" maxlength="16" placeholder="1h" value="{{.Cadence.Hazards}}"></label>
+        </form>
+        <p class="config-hint">{{tr .Lang "config.cadence.hint"}}</p>
+        {{if .Cadence.Discord}}<p class="config-hint">{{tr .Lang "config.cadence.discord"}}</p>{{end}}
+      </div>
+    </section>
+
+    <section class="config-sec" id="cfg-range">
+      <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-speedometer2"></use></svg>{{tr .Lang "config.sec.range"}}</h3>
+      <div class="config-block">
+        <div class="config-row">
+          <span class="config-row-title">{{tr .Lang "config.range.head"}}</span>
+          <button type="submit" form="config-range-form" class="btn-primary">{{tr .Lang "common.save"}}</button>
+        </div>
+        <form method="post" action="/config/polling" id="config-range-form" class="config-content-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          {{range .PollFields}}
+          <label class="config-field"><span>{{if .Title}}{{.Title}} — {{end}}{{tr $.Lang .Label}}</span>
+            <input type="hidden" name="path_{{.Index}}" value="{{.Path}}">
+            <input type="text" name="value_{{.Index}}" maxlength="16" placeholder="{{.Placeholder}}" value="{{.Value}}">
+            {{if and .Min .Max}}<span class="config-field-hint">{{tr $.Lang "config.range.between"}} {{.Min}}..{{.Max}}</span>{{end}}</label>
+          {{end}}
+        </form>
+        <p class="config-hint">{{tr .Lang "config.range.hint"}}</p>
+      </div>
+    </section>
+
     <section class="config-sec" id="cfg-mqtt">
       <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr .Lang "config.sec.mqtt"}}</h3>
       <div class="config-block">

@@ -292,8 +292,8 @@ func TestGSMSendTooLong(t *testing.T) {
 // TestGSMMessagesKeepIndependentMessagesApart pins the reported P2: the
 // history used to glue every consecutive rx row from one sender within
 // the same minute, so two independent SMSes shown one text. Each stored
-// message is shown as it is; the parts of a split message are joined
-// once by the v58 migration, not guessed at display time.
+// message is shown as it is: nothing joins the rows of a split message
+// any more, at display time or on upgrade.
 func TestGSMMessagesKeepIndependentMessagesApart(t *testing.T) {
 	store := &fakeGSMMsgs{}
 	hub := newTestGSMHub(t)

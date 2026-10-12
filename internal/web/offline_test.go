@@ -650,7 +650,7 @@ func TestConfigCadenceSection(t *testing.T) {
 
 	// The section renders the live cadence and the accepted spelling.
 	_, page := env.get("/config")
-	if !strings.Contains(page, "Cadence of the periodic announcements") {
+	if !strings.Contains(page, "Periodic announcement schedule") {
 		t.Fatalf("cadence section missing from the page")
 	}
 	if !strings.Contains(page, `name="anchor" maxlength="5" placeholder="06:00" value="06:00"`) {
@@ -705,7 +705,7 @@ func TestConfigCadenceSection(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad anchor = %d, want 400", resp.StatusCode)
 	}
-	if !strings.Contains(bad, "Daily hour") || !strings.Contains(bad, "HH:MM") {
+	if !strings.Contains(bad, "Fixed hour") || !strings.Contains(bad, "HH:MM") {
 		t.Errorf("the banner does not name the refused field: %.300s", bad)
 	}
 	if _, _, _, calls := seen(); calls != 1 {
@@ -936,7 +936,7 @@ func TestConfigLimitsSection(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("out-of-range queue = %d, want 400", resp.StatusCode)
 	}
-	if !strings.Contains(bad, "Intake queue size") || !strings.Contains(bad, "1..100000") {
+	if !strings.Contains(bad, "Inbound queue size") || !strings.Contains(bad, "1..100000") {
 		t.Errorf("the banner does not name the field: %.300s", bad)
 	}
 	mu.Lock()

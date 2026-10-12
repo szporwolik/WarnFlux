@@ -88,6 +88,13 @@ type ActionRequest struct {
 	// App identifies the running application (version, domain, repo);
 	// populated by the rule engine.
 	App AppInfo `json:"app"`
+	// DoneRecipients lists the addresses an EARLIER attempt of this job
+	// already delivered to. An action that fans out per recipient skips
+	// them, so a retry narrowed by the worker covers only what is left
+	// (reported P2: a retried SMTP batch started from the beginning of
+	// the list and re-sent the mails that had already gone out). The
+	// field travels with the durable job payload.
+	DoneRecipients []string `json:"done_recipients,omitempty"`
 
 	// JobGroupID and JobDedupKey carry the concrete delivery-job
 	// identity the request was claimed for. The worker stamps them on
@@ -96,6 +103,18 @@ type ActionRequest struct {
 	// and re-arm to THIS job, not the whole action+version.
 	JobGroupID  int64  `json:"-"`
 	JobDedupKey string `json:"-"`
+}
+
+// RetryNarrower is the optional capability of an action that delivers to
+// MANY recipients in one call: after an attempt that failed part-way it
+// reports the request the next attempt should carry (typically the same
+// request with the addresses that already went out recorded in
+// ActionRequest.DoneRecipients), so a retry never repeats a delivery.
+// Actions without it keep the whole request, exactly as before.
+type RetryNarrower interface {
+	// RetryRequest returns the request to persist for the retry after the
+	// attempt that produced err failed. ok=false persists nothing.
+	RetryRequest(req ActionRequest, err error) (ActionRequest, bool)
 }
 
 // DeliveryStage reports how far one execution got down the transport.

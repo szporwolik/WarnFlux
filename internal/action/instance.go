@@ -296,14 +296,14 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	if len(job.Payload) == 0 {
 		i.logger.Warn("action: delivery job without payload settled as accepted",
 			"action", i.id, "event_key", key)
-		i.settleGuarded(job, storage.DeliveryAccepted, time.Time{}, ActionRequest{})
+		i.settleGuarded(job, storage.DeliveryAccepted, time.Time{}, ActionRequest{}, nil)
 		return
 	}
 	var req ActionRequest
 	if err := json.Unmarshal(job.Payload, &req); err != nil {
 		i.logger.Error("action: delivery payload corrupt",
 			"action", i.id, "event_key", key, "error", err)
-		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req)
+		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, nil)
 		i.trail.Add(key, trail.StepFailed, "job payload corrupt", time.Now())
 		i.trail.SetOutcome(key, trail.OutcomeFailed)
 		return
@@ -318,7 +318,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		if exp := req.Event.Hazard.Hazard.ExpiresAt; exp != nil && !exp.After(time.Now()) {
 			i.logger.Info("action: queued alert expired before transmission",
 				"action", i.id, "event_key", key)
-			i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req)
+			i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req, nil)
 			i.trail.Add(key, trail.StepSkipped,
 				"skipped: hazard expired before transmission", time.Now())
 			return
@@ -339,7 +339,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	if i.gate != nil && !i.gate(context.Background(), req) {
 		i.logger.Info("action: queued alert superseded before transmission",
 			"action", i.id, "event_key", key)
-		i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req)
+		i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req, nil)
 		i.trail.Add(key, trail.StepSkipped,
 			"skipped: hazard no longer active before transmission", time.Now())
 		return
@@ -368,7 +368,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		if job.Attempts < max {
 			next = time.Now().Add(RetryBackoff)
 		}
-		applied := i.settleGuarded(job, terminal, next, req)
+		applied := i.settleGuarded(job, terminal, next, req, nil)
 		if applied == storage.DeliveryFailed {
 			i.metricFailed(1)
 			i.trail.Add(key, trail.StepFailed,
@@ -398,7 +398,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		fmt.Sprintf("attempt %d/%d failed: %v", job.Attempts, max, err), time.Now())
 	if i.disabled.Load() {
 		// A hung plugin was disabled mid-attempt: never re-invoke it.
-		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req)
+		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, nil)
 		i.trail.SetOutcome(key, trail.OutcomeFailed)
 		return
 	}
@@ -406,13 +406,38 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		i.metricRetry(1)
 		i.trail.Add(key, trail.StepRetry,
 			fmt.Sprintf("retrying in %s", RetryBackoff), time.Now())
-		i.settleGuarded(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff), req)
+		// An action that delivered to part of its recipients reports the
+		// work that is left: the retry payload carries only that, so the
+		// next attempt never repeats a delivery (reported P2).
+		req, retryPayload := i.narrowRetry(req, err)
+		i.settleGuarded(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff), req, retryPayload)
 		return
 	}
 	// Budget spent: terminal failure. A replayed transition re-arms the
 	// job instead of suppressing the alert.
-	i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req)
+	i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, nil)
 	i.trail.SetOutcome(key, trail.OutcomeFailed)
+}
+
+// narrowRetry asks a plugin that delivers to many recipients in one call
+// what the NEXT attempt still has to do, and encodes it for the durable
+// payload. Actions without that capability — and attempts that delivered
+// nothing — keep the request as it is: there is nothing to narrow then.
+func (i *Instance) narrowRetry(req ActionRequest, err error) (ActionRequest, []byte) {
+	narrower, ok := i.plugin.(RetryNarrower)
+	if !ok {
+		return req, nil
+	}
+	narrowed, ok := narrower.RetryRequest(req, err)
+	if !ok {
+		return req, nil
+	}
+	data, merr := json.Marshal(narrowed)
+	if merr != nil {
+		i.logger.Warn("action: narrowed retry payload encode failed", "action", i.id, "error", merr)
+		return req, nil
+	}
+	return narrowed, data
 }
 
 // settleGuarded applies one settlement with the attempt generation and
@@ -421,7 +446,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 // actually applied (a downgraded failure included). Settlement errors
 // only log: the job stays running and the stale-claim recovery
 // re-queues it (at-least-once).
-func (i *Instance) settleGuarded(job storage.DeliveryJob, stage storage.DeliveryStatus, next time.Time, req ActionRequest) storage.DeliveryStatus {
+func (i *Instance) settleGuarded(job storage.DeliveryJob, stage storage.DeliveryStatus, next time.Time, req ActionRequest, retryPayload []byte) storage.DeliveryStatus {
 	d := storage.DeliverySettle{
 		GroupID:     job.GroupID,
 		ActionID:    job.ActionID,
@@ -429,6 +454,7 @@ func (i *Instance) settleGuarded(job storage.DeliveryJob, stage storage.Delivery
 		Stage:       stage,
 		NextAttempt: next,
 		Attempts:    job.Attempts,
+		Payload:     retryPayload,
 	}
 	if h := req.Event.Hazard; h != nil && h.Publisher != "" && h.ChangeID > 0 {
 		d.Version = &storage.DeliveryVersion{
@@ -546,6 +572,9 @@ func (i *Instance) handle(req ActionRequest) {
 			i.metricRetry(1)
 			i.trail.Add(key, trail.StepRetry,
 				fmt.Sprintf("retrying in %s", RetryBackoff), time.Now())
+			// The next attempt must not repeat what this one delivered
+			// (see narrowRetry).
+			req, _ = i.narrowRetry(req, err)
 			time.Sleep(RetryBackoff)
 			continue
 		}

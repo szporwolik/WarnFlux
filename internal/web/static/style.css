@@ -226,6 +226,13 @@ body {
   letter-spacing: -0.006em;
 }
 
+/* Form controls do NOT inherit the page font: without this every button,
+   select and tab in the panel renders in the browser's default sans
+   (Arial) while all the text around it is Inter. A control that asks for
+   another family — the mono timestamp fields, the log viewer — sets it
+   itself and still wins. */
+button, input, select, textarea { font-family: inherit; }
+
 h1 { font-family: var(--font-sans); font-size: 1rem; font-weight: 600; margin: 0; }
 h2 { font-family: var(--font-sans); font-size: 1rem; font-weight: 600; margin: 0 0 0.75rem; color: var(--text); }
 h3 { font-family: var(--font-sans); font-size: 0.9rem; font-weight: 600; margin: 0.75rem 0 0.5rem; }
@@ -235,6 +242,10 @@ a:hover { text-decoration: underline; }
 
 .muted { color: var(--muted); }
 .mono, .reason { font-family: var(--font-mono); font-size: 0.8rem; }
+/* Inline code is machine text like every .mono element above: without this
+   a <code> in a help page or the About text fell back to the browser's own
+   monospace while the station embeds JetBrains Mono for exactly this. */
+code, kbd, samp { font-family: var(--font-mono); }
 
 /* Icons: local SVG sprite via <use>; block display avoids inline-baseline
    offsets, 18px keeps them optically balanced with the 0.9rem UI text. */
@@ -712,7 +723,9 @@ button:disabled { cursor: not-allowed; }
   letter-spacing: 0.03em;
 }
 .mass-picker-scroll { max-height: 15rem; overflow-y: auto; }
-.mass-picker .page-info { margin: 0; font-size: 0.78rem; }
+/* Every note on this page is the same size: one page mixing 0.78rem and
+   0.8rem notes reads as carelessness rather than hierarchy. */
+.mass-picker .page-info { margin: 0; font-size: 0.8rem; }
 /* Empty picker: a non-interactive chip so the field name stays present
    and the operator sees why there is nothing to tick. */
 .mass-empty { opacity: 0.6; cursor: default; }
@@ -722,7 +735,11 @@ button:disabled { cursor: not-allowed; }
    (e.g. APRS for a long markdown notice) is hidden instead of offered and
    then rejected — the note under the picker explains why. */
 .account-channel.mass-chan-off { display: none; }
-.mass-md-hint { margin: 0.6rem 0 0; font-size: 0.78rem; }
+.mass-md-hint { margin: 0.6rem 0 0; font-size: 0.8rem; }
+/* The Discord-token warning is a note like the section notes above it; it
+   had no rule at all and so rendered at the body size, 1.5px larger than
+   every note surrounding it. */
+.mass-note { margin: 0.6rem 0 0; font-size: 0.8rem; }
 
 /* Mass info broadcast: live progress (bar + per-channel chips) shown while
    the background job delivers the notice. */
@@ -1696,7 +1713,7 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 .log-card { display: flex; flex-direction: column; gap: 0.5rem; }
 .log-hint { margin: 0; }
 .log-viewer {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.74rem;
   line-height: 1.45;
   height: 65vh;
@@ -1753,7 +1770,7 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
   background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.74rem;
   line-height: 1.5;
 }
@@ -2639,6 +2656,11 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 .leaflet-container .leaflet-tooltip-bottom:before { border-bottom-color: var(--surface-raised); }
 .leaflet-container .leaflet-tooltip-left:before { border-left-color: var(--surface-raised); }
 .leaflet-container .leaflet-tooltip-right:before { border-right-color: var(--surface-raised); }
+/* Leaflet draws its zoom buttons in a monospace system font (18px, 22px on
+   touch); they were the only text left in the panel that is not Inter. The
+   size stays Leaflet's — it centres the glyph in a fixed box. */
+.leaflet-container .leaflet-control-zoom-in,
+.leaflet-container .leaflet-control-zoom-out { font-family: var(--font-sans); }
 
 /* Unified popup banner on the combined map: colored head strip with the
    category glyph + title, then the detail body on the themed surface. */
@@ -2821,7 +2843,7 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
   background: none;
   color: var(--muted);
   font: inherit;
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.82rem;
   cursor: pointer;
 }
@@ -2839,7 +2861,7 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
   border-radius: 6px;
   background: var(--chip-bg, rgba(127, 127, 127, 0.08));
   color: var(--link);
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.78rem;
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -2848,7 +2870,7 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 /* Raw key prefix shown next to a resolved username in the mesh message
    history: subtle, mono, smaller than the name. */
 .short-key {
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.8em;
   font-weight: 400;
   color: var(--muted);

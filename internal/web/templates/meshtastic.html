@@ -665,8 +665,8 @@
       if (n.distance_km) { lines.push(Number(n.distance_km).toFixed(1) + " km"); }
       var actions = "";
       if (window.WF_ADMIN === true) {
-        actions = '<button type="button" class="btn-ghost mesh-msg" data-id="' + esc(n.id) + '">' + esc(LBL_MSG) + '</button>' +
-          '<button type="button" class="btn-ghost mesh-trace"' +
+        actions = '<button type="button" class="btn-ghost btn-small mesh-msg" data-id="' + esc(n.id) + '">' + esc(LBL_MSG) + '</button>' +
+          '<button type="button" class="btn-ghost btn-small mesh-trace"' +
           (stale ? ' disabled title="' + esc(ageText) + '"' : '') +
           ' data-id="' + esc(n.id) + '" data-name="' + esc(n.name || "") + '" data-short="' + esc(n.short_name || "") + '">' +
           esc(LBL_TRACE) + '</button>';
@@ -796,10 +796,10 @@
         <td class="nowrap">{{range .Sends}}<span class="badge muted">{{tr $.Lang (printf "meshtastic.sig_%s" .)}}</span> {{end}}{{if not .Sends}}<span class="muted">—</span>{{end}}</td>
         <td class="muted nowrap"{{if .Lat}} title="{{printf "%.5f, %.5f" .Lat .Lon}}"{{end}}>{{if .DistKM}}{{printf "%.1f" .DistKM}} km · {{printf "%.0f" .BearingDeg}}° {{.Cardinal}}{{else if .Lat}}—{{else}}<span class="badge muted">{{tr $.Lang "meshmap.nopos"}}</span>{{end}}</td>
         <td class="muted nowrap">{{.LastSeen}}{{if .Stale}} <span class="badge muted">{{.Inactive}}</span>{{end}}</td>
-        <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost mesh-trace" disabled data-seen="{{.LastSeenUnix}}"
+        <td class="nowrap">{{if .Stale}}<button type="button" class="btn-ghost btn-small mesh-trace" disabled data-seen="{{.LastSeenUnix}}"
             title="{{.Inactive}}">{{tr $.Lang "meshtastic.trace"}}</button>{{else}}
-          {{if eq $.Role "admin"}}<button type="button" class="btn-ghost mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" data-seen="{{.LastSeenUnix}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}{{end}}
-          {{if eq $.Role "admin"}}<button type="button" class="btn-ghost mesh-msg" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">{{tr $.Lang "meshtastic.msg"}}</button>{{end}}</td>
+          {{if eq $.Role "admin"}}<button type="button" class="btn-ghost btn-small mesh-trace" data-id="{{.ID}}" data-name="{{.Name}}" data-short="{{.Short}}" data-seen="{{.LastSeenUnix}}" title="{{tr $.Lang "meshtastic.trace"}}">{{tr $.Lang "meshtastic.trace"}}</button>{{end}}{{end}}
+          {{if eq $.Role "admin"}}<button type="button" class="btn-ghost btn-small mesh-msg" data-id="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">{{tr $.Lang "meshtastic.msg"}}</button>{{end}}</td>
       </tr>
       {{end}}
     </tbody>

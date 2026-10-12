@@ -1,6 +1,8 @@
 package web_test
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -949,3 +951,126 @@ func TestConfigLimitsSection(t *testing.T) {
 
 // neverRetentionForTest is the sentinel the page writes for "-1".
 func neverRetentionForTest() time.Duration { return -1 * time.Second }
+
+// TestConfigConcurrentPanelWrites pins the P2 report on the panel side:
+// Config requests that are in flight at the same time must all reach the
+// file, and the running station must agree with the file they produced.
+// The runtime switch and its write are one serialized step, so a request
+// cannot flip the state and then have its edit overwritten by a neighbour
+// that read the file before it.
+func TestConfigConcurrentPanelWrites(t *testing.T) {
+	t.Cleanup(func() {
+		meshtastic.SetChannelAlerts(true)
+		meshtastic.SetDMAlerts(true)
+		meshtastic.SetStationAlerts(false)
+	})
+	env := newTestEnv(t)
+	env.login()
+	path := panelConfig(t, env)
+	csrf := env.csrfFromPage("/config")
+
+	post := func(target string, form url.Values) error {
+		req, err := http.NewRequest(http.MethodPost, env.srv.URL+target, strings.NewReader(form.Encode()))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := env.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode != http.StatusSeeOther {
+			return fmt.Errorf("POST %s = %d, want 303", target, resp.StatusCode)
+		}
+		if loc := resp.Header.Get("Location"); strings.Contains(loc, "perr=1") {
+			return fmt.Errorf("POST %s reported a persistence failure (%s)", target, loc)
+		}
+		return nil
+	}
+
+	// Three writers, one field each, racing for the same file. Every
+	// writer reports the value it submitted last, so the file must hold
+	// exactly those values once the dust settles.
+	const rounds = 9
+	type writer struct {
+		target string
+		form   string
+		values []string
+	}
+	writers := []writer{
+		{"/config/tiles", "tiles", []string{"on", "off", "on"}},
+		{"/config/lang", "lang", []string{"pl", "en", "pl"}},
+		{"/config/mesh", "stations", []string{"on", "off", "on"}},
+	}
+	// The value each writer submits last; only that one may survive. The
+	// writers alternate, so a lost final write leaves the previous value
+	// behind instead of the submitted one.
+	settled := func(w writer) string { return w.values[(rounds-1)%len(w.values)] }
+	form := map[string]string{
+		"/config/tiles": "tiles",
+		"/config/lang":  "lang",
+		"/config/mesh":  "stations",
+	}
+	errs := make(chan error, len(writers))
+	var wg sync.WaitGroup
+	for _, w := range writers {
+		wg.Add(1)
+		go func(w writer) {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				form := url.Values{"csrf": {csrf}, form[w.target]: {w.values[i%len(w.values)]}}
+				if err := post(w.target, form); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent config write: %v", err)
+	}
+	if t.Failed() {
+		return
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if got, want := cfg.Web.ForceLocalTiles, settled(writers[0]) == "on"; got != want {
+		t.Errorf("web.force_local_tiles = %t, want %t: the edit was lost", got, want)
+	}
+	if got, want := cfg.Web.SystemLanguage, settled(writers[1]); got != want {
+		t.Errorf("web.system_language = %q, want %q: the edit was lost", got, want)
+	}
+	if got, want := cfg.Meshtastic.StationAlerts, settled(writers[2]) == "on"; got != want {
+		t.Errorf("meshtastic.station_alerts = %t, want %t: the edit was lost", got, want)
+	}
+	// The station runs what the file says: the panel renders the LIVE
+	// runtime state, so the switches and the select must show the values
+	// the writes ended with.
+	_, page := env.get("/config")
+	for _, want := range []string{
+		`id="tiles-switch"` + map[bool]string{true: " checked", false: ""}[settled(writers[0]) == "on"],
+		`id="mesh-stations-switch"` + map[bool]string{true: " checked", false: ""}[settled(writers[2]) == "on"],
+		`<option value="` + settled(writers[1]) + `" selected>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the running station disagrees with the file: %s missing from the panel", want)
+		}
+	}
+	// No temporary file is left behind next to the configuration.
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("temporary file left next to the configuration: %s", e.Name())
+		}
+	}
+}

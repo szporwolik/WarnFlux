@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -33,7 +35,23 @@ type ScalarEdit struct {
 // settings and never reformats the operator's file. The write is atomic
 // (temporary file + rename) with a rolling backup <path>.bak-panel
 // before the first change.
+//
+// The whole read-modify-write cycle is serialized per file, and every
+// write uses its OWN temporary name. Several Config requests can be in
+// flight at once (two admins, or one admin with two tabs open): without
+// the lock each edit is computed from the bytes the other one already
+// replaced, so one change silently disappears, and a shared "<path>.tmp"
+// makes the two renames collide (reported P2: parallel edits of two
+// fields lost one change and failed the rename).
 func UpdateFile(path string, edits []ScalarEdit) error {
+	unlock := lockFileUpdate(path)
+	defer unlock()
+	return updateFileLocked(path, edits)
+}
+
+// updateFileLocked is the read-modify-write cycle; the caller holds the
+// file lock (see UpdateFile).
+func updateFileLocked(path string, edits []ScalarEdit) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %q: %w", path, err)
@@ -54,15 +72,59 @@ func UpdateFile(path string, edits []ScalarEdit) error {
 	if _, err := os.Stat(path + backupSuffix); errors.Is(err, fs.ErrNotExist) {
 		_ = copyFile(path, path+backupSuffix)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, current, info.Mode().Perm()); err != nil {
-		return fmt.Errorf("write %q: %w", tmp, err)
+	// A temporary name of its own: two writers can never fight over one
+	// path, and a leftover from a killed process is never mistaken for
+	// live data.
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary file for %q: %w", path, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(current); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write %q: %w", tmpName, err)
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("chmod %q: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close %q: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("replace %q: %w", path, err)
 	}
 	return nil
+}
+
+// fileUpdateLocks serializes the update cycle per file path; one process
+// edits the station's configuration file, so an in-process lock is the
+// whole contract (see UpdateFile).
+var (
+	fileUpdateLocksMu sync.Mutex
+	fileUpdateLocks   = map[string]*sync.Mutex{}
+)
+
+// lockFileUpdate returns the release function of the file's update lock.
+func lockFileUpdate(path string) func() {
+	key := path
+	if abs, err := filepath.Abs(path); err == nil {
+		key = abs
+	}
+	fileUpdateLocksMu.Lock()
+	mu, ok := fileUpdateLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		fileUpdateLocks[key] = mu
+	}
+	fileUpdateLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 // applyEdit computes and applies one edit against the given content and

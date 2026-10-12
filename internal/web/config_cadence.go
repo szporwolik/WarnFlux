@@ -226,11 +226,10 @@ func (s *Server) handleConfigCadence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.applyCadence(anchor, interval, hazards)
-
 	perr := ""
 	if !s.persistConfigYAML("periodic cadence", func() error {
-		return config.UpdateFile(s.configPath, s.cadenceEdits(anchor, interval, hazards))
+		s.applyCadence(anchor, interval, hazards)
+		return s.updateConfigFile(s.cadenceEdits(anchor, interval, hazards))
 	}) {
 		perr = "&perr=1"
 	}
@@ -416,7 +415,7 @@ func (s *Server) handleConfigPolling(w http.ResponseWriter, r *http.Request) {
 	}
 	perr := ""
 	if !s.persistConfigYAML("polling and range", func() error {
-		return config.UpdateFile(s.configPath, edits)
+		return s.updateConfigFile(edits)
 	}) {
 		perr = "&perr=1"
 	}

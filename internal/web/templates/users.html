@@ -18,11 +18,11 @@
             {{$u := .}}
             <tr>
               <td><strong>{{.Username}}</strong></td>
-              <td>{{if .Phone}}{{.Phone}}{{else}}<span class="muted">—</span>{{end}}</td>
-              <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">—</span>{{end}}</td>
-              <td>{{if .Discord}}{{.Discord}}{{else}}<span class="muted">—</span>{{end}}</td>
+              <td>{{if .Phone}}<span class="group-chip">{{.Phone}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+              <td>{{if .Email}}<a class="group-chip" href="mailto:{{.Email}}" title="{{.Email}}">{{.Email}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
+              <td>{{if .Discord}}{{if discordOK .Discord}}<span class="group-chip chip-id" title="{{tr $.Lang "users.discord_hint"}}">{{.Discord}}</span>{{else}}<span class="group-chip chip-id chip-bad" title="{{tr $.Lang "users.discord_bad"}}">{{.Discord}}</span>{{end}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td>{{range .APRSCallsigns}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-              <td>{{range .MeshtasticIDs}}<span class="group-chip mesh-key" title="{{.}}">!{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+              <td>{{range .MeshtasticIDs}}<span class="group-chip chip-id" title="{{.}}">!{{.}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
               <td>
                 <div class="groups-cell">
                 {{range $u.GroupNames}}<span class="group-chip">{{.}}</span>{{else}}<span class="muted">—</span>{{end}}
@@ -79,7 +79,7 @@
         <input type="text" name="email" id="user-edit-email" value="{{.Form.Email}}" maxlength="128">
       </label>
       <label class="modal-field">{{tr .Lang "users.discord"}}
-        <input type="text" name="discord" id="user-edit-discord" value="{{.Form.Discord}}" maxlength="128">
+        <input type="text" name="discord" id="user-edit-discord" value="{{.Form.Discord}}" maxlength="128" title="{{tr .Lang "users.discord_hint"}}">
       </label>
       {{if .AdminEdit}}
       <label class="modal-field">{{tr .Lang "users.role"}}

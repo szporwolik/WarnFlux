@@ -28,6 +28,11 @@ type memStore struct {
 	savedDeletes map[string][]storage.PendingDelete
 	loadDeletes  map[string][]storage.PendingDelete
 	saveErr      error
+
+	// Retention surface: cleanupHook observes the journal cleanup cutoff
+	// and changeCleanupN counts the passes.
+	cleanupHook    func(time.Time)
+	changeCleanupN int
 }
 
 func newMemStore() *memStore {
@@ -94,8 +99,26 @@ func (m *memStore) SyncOutputs(_ context.Context, enabled []storage.OutputRef) e
 	return nil
 }
 
-func (m *memStore) CleanupChanges(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
-func (m *memStore) CleanupEvents(_ context.Context, _ time.Time) (int64, error)  { return 0, nil }
+func (m *memStore) CleanupChanges(_ context.Context, cutoff time.Time) (int64, error) {
+	m.mu.Lock()
+	m.changeCleanupN++
+	hook := m.cleanupHook
+	m.mu.Unlock()
+	if hook != nil {
+		hook(cutoff)
+	}
+	return 0, nil
+}
+
+func (m *memStore) CleanupEvents(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
+
+// changeCleanups reports how often the journal cleanup ran.
+func (m *memStore) changeCleanups() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.changeCleanupN
+}
+
 func (m *memStore) Get(_ context.Context, key string) (*storage.StoredEvent, error) {
 	return nil, storage.ErrNotFound
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
+	"github.com/szporwolik/WarnFlux/internal/web"
 )
 
 // TestConfigPageAdminOnly proves the config section is admin-only: an
@@ -849,3 +850,102 @@ func TestConfigPollingNoOpSave(t *testing.T) {
 		t.Errorf("an unchanged save wrote a backup (err=%v)", err)
 	}
 }
+
+// TestConfigLimitsSection pins the retention editor: the live windows
+// reach the running station, every row lands in the file, "-1" means
+// "never prune" and a value outside the loader's own range is refused
+// before anything is written.
+func TestConfigLimitsSection(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	base := "web:\n  enabled: true\n  auth:\n    username: admin\n    password: secret123\napp:\n  change_retention: 24h\n"
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.server.SetConfigFile(path)
+
+	var mu sync.Mutex
+	var got []web.RetentionLimits
+	env.server.SetRetentionApplier(func(l web.RetentionLimits) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, l)
+	})
+	csrf := env.csrfFromPage("/config")
+
+	_, page := env.get("/config")
+	if !strings.Contains(page, "Retention and limits") {
+		t.Fatalf("the limits section is missing from the page")
+	}
+	// The placeholders quote the loader's own defaults.
+	for _, want := range []string{`placeholder="720h"`, `placeholder="100"`, "never prune"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page lacks %q", want)
+		}
+	}
+
+	resp, _ := env.postForm("/config/retention", url.Values{
+		"csrf":   {csrf},
+		"path_0": {"app.change_retention"}, "value_0": {"48h"},
+		"path_1": {"app.event_retention"}, "value_1": {""},
+		"path_2": {"app.notification_retention"}, "value_2": {"-1"},
+		"path_3": {"dispatch.inbox_retention"}, "value_3": {"0"},
+		"path_4": {"storage.min_free_mb"}, "value_4": {"250"},
+		"path_5": {"dispatch.queue_size"}, "value_5": {"2048"},
+		"path_6": {"app.log_max_size_mb"}, "value_6": {"50"},
+		"path_7": {"app.log_max_backups"}, "value_7": {"5"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/retention = %d, want 303", resp.StatusCode)
+	}
+	mu.Lock()
+	last := got[len(got)-1]
+	calls := len(got)
+	mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("the live applier ran %d times, want 1", calls)
+	}
+	// The untouched row keeps the default it fell back to.
+	if last.Change != 48*time.Hour || last.Event != 30*24*time.Hour {
+		t.Fatalf("windows = change %s event %s", last.Change, last.Event)
+	}
+	if last.Notification >= 0 || last.Inbox != 0 || last.MinFreeMB != 250 {
+		t.Fatalf("limits = %+v", last)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.App.ChangeRetention != 48*time.Hour || cfg.App.NotificationRetention != neverRetentionForTest() {
+		t.Fatalf("file = change %s notification %s", cfg.App.ChangeRetention, cfg.App.NotificationRetention)
+	}
+	if cfg.Storage.MinFreeMB != 250 || cfg.Dispatch.QueueSize != 2048 || cfg.App.LogMaxSizeMB != 50 || cfg.App.LogMaxBackups != 5 {
+		t.Fatalf("file limits = %+v %+v %+v", cfg.Storage, cfg.Dispatch, cfg.App)
+	}
+	// Rows the operator left alone were not written at all.
+	if _, ok := config.ScalarAt(path, "app.event_retention"); ok {
+		t.Errorf("an empty field was written to the file")
+	}
+
+	// The alarm moves at once, and a refused value reaches nothing.
+	csrf = env.csrfFromPage("/config")
+	resp, bad := env.postForm("/config/retention", url.Values{
+		"csrf": {csrf}, "path_0": {"dispatch.queue_size"}, "value_0": {"999999"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("out-of-range queue = %d, want 400", resp.StatusCode)
+	}
+	if !strings.Contains(bad, "Intake queue size") || !strings.Contains(bad, "1..100000") {
+		t.Errorf("the banner does not name the field: %.300s", bad)
+	}
+	mu.Lock()
+	calls = len(got)
+	mu.Unlock()
+	if calls != 1 {
+		t.Errorf("a refused value reached the live station (%d calls)", calls)
+	}
+}
+
+// neverRetentionForTest is the sentinel the page writes for "-1".
+func neverRetentionForTest() time.Duration { return -1 * time.Second }

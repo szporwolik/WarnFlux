@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1652,5 +1654,64 @@ func TestInfoQueueFullBehavior(t *testing.T) {
 	case <-runDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("manager did not stop")
+	}
+}
+
+// TestManagerRetentionLive pins the Config-page path of the cleanup
+// windows: the maintenance loop reads the live retention, so an operator
+// tuning it from the panel does not wait for a restart — and a window
+// left at zero keeps the cleanup off entirely.
+func TestManagerRetentionLive(t *testing.T) {
+	store := newMemStore()
+	calls := make(chan time.Time, 4)
+	store.cleanupHook = func(cutoff time.Time) { calls <- cutoff }
+
+	m := &Manager{
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		store:     store,
+		opts:      ManagerOptions{ExpirationInterval: 10 * time.Millisecond, ChangeRetention: 24 * time.Hour},
+		accepting: atomic.Bool{},
+	}
+	m.accepting.Store(true)
+	m.changeRetention.Store(int64(24 * time.Hour))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.maintenance(ctx)
+
+	first := waitCutoff(t, calls)
+	if age := time.Since(first); age < 23*time.Hour || age > 25*time.Hour {
+		t.Fatalf("first cleanup cutoff is %s old, want ~24h", age)
+	}
+
+	// The panel shortens the window: the next pass honours it at once.
+	m.SetRetention(2*time.Hour, 0)
+	second := waitCutoff(t, calls)
+	if age := time.Since(second); age < time.Hour || age > 3*time.Hour {
+		t.Fatalf("cutoff after the change is %s old, want ~2h", age)
+	}
+
+	// Zero switches the journal cleanup off while the event window keeps
+	// its own: the loop must stop cleaning the journal, not stop running.
+	m.SetRetention(0, 6*time.Hour)
+	time.Sleep(80 * time.Millisecond)
+	if n := store.changeCleanups(); n != 2 {
+		t.Fatalf("journal cleanups = %d, want 2 (a zero window must stay off)", n)
+	}
+	select {
+	case cutoff := <-calls:
+		t.Fatalf("unexpected extra cleanup at %s", cutoff)
+	default:
+	}
+}
+
+// waitCutoff waits for one cleanup cutoff.
+func waitCutoff(t *testing.T, calls <-chan time.Time) time.Time {
+	t.Helper()
+	select {
+	case c := <-calls:
+		return c
+	case <-time.After(2 * time.Second):
+		t.Fatal("the maintenance loop never cleaned the journal")
+		return time.Time{}
 	}
 }

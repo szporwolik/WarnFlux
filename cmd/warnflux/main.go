@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1394,12 +1395,26 @@ func run(configPath string, checkConfig bool) error {
 	// older than the configured retention is pruned at startup and then
 	// hourly. Pending jobs (saved, running or a scheduled retry) never
 	// age out. A negative retention disables pruning entirely.
-	if cfg.App.NotificationRetention > 0 {
+	//
+	// The window and the low-disk threshold are live: the Config page
+	// tunes them and the loops read the current setting on every pass, so
+	// a change needs no restart (the loops always run, a disabled cleanup
+	// is simply a zero window).
+	notificationRetention := &atomic.Int64{}
+	notificationRetention.Store(int64(cfg.App.NotificationRetention))
+	inboxRetention := &atomic.Int64{}
+	inboxRetention.Store(int64(cfg.Dispatch.InboxRetention))
+	storageMinFreeMB := &atomic.Int64{}
+	storageMinFreeMB.Store(cfg.Storage.MinFreeMB)
+	{
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			prune := func() {
-				cutoff := time.Now().Add(-cfg.App.NotificationRetention)
+				if d := time.Duration(notificationRetention.Load()); d <= 0 {
+					return
+				}
+				cutoff := time.Now().Add(-time.Duration(notificationRetention.Load()))
 				n, err := store.PruneActionFires(cutoff)
 				if err != nil {
 					logger.Warn("routing: fire ledger prune failed", "error", err)
@@ -1431,7 +1446,7 @@ func run(configPath string, checkConfig bool) error {
 	// audit log. Below the low-disk alarm threshold the cutoff shortens
 	// so auxiliary data stops competing with primary storage on a full
 	// card. A retention of 0 disables pruning.
-	if cfg.Dispatch.InboxRetention > 0 {
+	{
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1439,10 +1454,14 @@ func run(configPath string, checkConfig bool) error {
 			if interval <= 0 {
 				interval = time.Minute
 			}
-			minFree := cfg.Storage.MinFreeMB * 1024 * 1024
 			prune := func() {
+				retention := time.Duration(inboxRetention.Load())
+				if retention <= 0 {
+					return
+				}
 				now := time.Now()
-				cutoff := now.Add(-cfg.Dispatch.InboxRetention)
+				cutoff := now.Add(-retention)
+				minFree := storageMinFreeMB.Load() * 1024 * 1024
 				lowDisk := false
 				if minFree > 0 {
 					if free, err := store.FreeBytes(ctx); err != nil {
@@ -1454,7 +1473,7 @@ func run(configPath string, checkConfig bool) error {
 							cutoff = short
 						}
 						logger.Warn("storage: low disk space, shortening inbox retention",
-							"free_mb", free/1024/1024, "min_free_mb", cfg.Storage.MinFreeMB)
+							"free_mb", free/1024/1024, "min_free_mb", storageMinFreeMB.Load())
 					}
 				}
 				n, err := store.PruneInbox(ctx, cutoff)
@@ -1506,6 +1525,18 @@ func run(configPath string, checkConfig bool) error {
 				}
 			}
 		}()
+	}
+
+	// Config page, "retention and limits" section: the panel moves the
+	// windows the loops above honour, the plugin manager's journal/event
+	// cleanup and the low-disk alarm at runtime.
+	if webSrv != nil {
+		webSrv.SetRetentionApplier(func(l web.RetentionLimits) {
+			manager.SetRetention(l.Change, l.Event)
+			notificationRetention.Store(int64(l.Notification))
+			inboxRetention.Store(int64(l.Inbox))
+			storageMinFreeMB.Store(l.MinFreeMB)
+		})
 	}
 
 	// Durable APRS message history: pruned to the retention bound at

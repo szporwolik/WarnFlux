@@ -70,6 +70,9 @@ type scalarFieldView struct {
 	// Min / Max are the accepted ends, rendered as the field hint.
 	Min string
 	Max string
+	// Hint is an optional extra i18n key shown under the field (a rule the
+	// range alone cannot express, such as "-1 means never").
+	Hint string
 }
 
 // SetPollBounds installs the per-source poll_interval ranges the plugins

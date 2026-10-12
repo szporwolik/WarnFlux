@@ -103,10 +103,18 @@ func init() {
 	}
 }
 
-// gsm7Septets returns the septet count of text (each extension-table
+// MaxSeptets is the payload of one text-mode message: this station sends
+// a single segment (concatenation is the network's job), so a message
+// must fit in 160 septets — NOT 160 characters, because the characters of
+// the GSM-7 extension table cost two septets each.
+const MaxSeptets = 160
+
+// Septets returns the septet count of text (each extension-table
 // character costs two septets) or -1 when any character is outside the
-// GSM-7 alphabet.
-func gsm7Septets(text string) int {
+// GSM-7 alphabet. Text mode measures messages this way: a headline of 81
+// '^' is 162 septets and does not fit one SMS even though it is only 81
+// characters (reported P2).
+func Septets(text string) int {
 	n := 0
 	for _, r := range text {
 		if _, ok := gsm7ToSeptet[r]; ok {
@@ -120,6 +128,29 @@ func gsm7Septets(text string) int {
 		return -1
 	}
 	return n
+}
+
+// FitGSM7 cuts ALREADY TRANSLITERATED text down to a septet budget: a
+// character that does not fit is dropped whole (half of an
+// extension-table character cannot go on the wire), so the result always
+// fits one text-mode message. Text that already fits comes back
+// unchanged.
+func FitGSM7(text string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	used := 0
+	for i, r := range text {
+		cost := 1
+		if _, ok := gsm7ToExt[r]; ok {
+			cost = 2
+		}
+		if used+cost > budget {
+			return text[:i]
+		}
+		used += cost
+	}
+	return text
 }
 
 // utf16Units counts the UTF-16 code units of text.
@@ -138,8 +169,8 @@ func utf16Units(text string) int {
 // SMSegments reports how many SMS segments the text occupies and
 // whether it must travel as UCS-2 (any non-GSM-7 character forces it).
 func SMSegments(text string) (segs int, ucs2 bool) {
-	if n := gsm7Septets(text); n >= 0 {
-		if n <= 160 {
+	if n := Septets(text); n >= 0 {
+		if n <= MaxSeptets {
 			return 1, false
 		}
 		return (n + 152) / 153, false

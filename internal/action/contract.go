@@ -105,16 +105,17 @@ type ActionRequest struct {
 	JobDedupKey string `json:"-"`
 }
 
-// RetryNarrower is the optional capability of an action that delivers to
-// MANY recipients in one call: after an attempt that failed part-way it
-// reports the request the next attempt should carry (typically the same
-// request with the addresses that already went out recorded in
-// ActionRequest.DoneRecipients), so a retry never repeats a delivery.
-// Actions without it keep the whole request, exactly as before.
-type RetryNarrower interface {
-	// RetryRequest returns the request to persist for the retry after the
-	// attempt that produced err failed. ok=false persists nothing.
-	RetryRequest(req ActionRequest, err error) (ActionRequest, bool)
+// PartialDelivery is the error an action returns when it delivered to
+// SOME of its recipients and then failed: the addresses that went out ride
+// along with THAT attempt, so the worker can narrow the retry to the work
+// still pending (ActionRequest.DoneRecipients). Progress travels with the
+// result on purpose — an action that kept it in its own state would have
+// to guess which request the next attempt belongs to, and two versions of
+// the same alarm share their request identity (reported P1).
+type PartialDelivery interface {
+	error
+	// Delivered lists the addresses THIS attempt delivered to.
+	Delivered() []string
 }
 
 // DeliveryStage reports how far one execution got down the transport.

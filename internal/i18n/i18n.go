@@ -965,7 +965,7 @@ var en = map[string]string{
 
 	// Health page.
 	"health.title":              "System health",
-	"health.hint":               "Only operational problems are marked red; configured-off components stay gray.",
+	"health.hint":               "The verdict is the worst finding: red — something that should be running is not, amber — it runs with limits (or is held), gray — it is switched off. The rows below describe their own subsystem.",
 	"health.queue_detail":       "%d / %d in flight · %d processed · %d dropped (full)",
 	"health.pending":            "Pending notifications",
 	"health.pending_detail":     "queued action requests",
@@ -976,6 +976,7 @@ var en = map[string]string{
 	"health.badge.drops":        "DROPS",
 	"health.badge.no_broker":    "NO BROKER",
 	"health.badge.degraded":     "DEGRADED",
+	"health.badge.fault":        "FAULT",
 	"health.badge.not_started":  "not started",
 	"health.badge.low_disk":     "LOW DISK",
 	"health.badge.emergency":    "EMERGENCY",
@@ -2052,7 +2053,7 @@ var pl = map[string]string{
 	"emcom.err.dispatch":       "Lokalny dyspozytor odrzucił komunikat; odbiór niedostępny.",
 
 	"health.title":              "Stan systemu",
-	"health.hint":               "Na czerwono oznaczane są tylko problemy operacyjne; wyłączone komponenty pozostają szare.",
+	"health.hint":               "Werdykt to najpoważniejsze znalezisko: czerwony — coś, co powinno działać, nie działa; pomarańczowy — działa z ograniczeniami (albo jest wstrzymane); szary — jest wyłączone. Wiersze poniżej opisują swoje podsystemy.",
 	"health.queue_detail":       "%d / %d w locie · %d przetworzonych · %d porzuconych (pełna)",
 	"health.pending":            "Oczekujące powiadomienia",
 	"health.pending_detail":     "zakolejkowane żądania akcji",
@@ -2063,6 +2064,7 @@ var pl = map[string]string{
 	"health.badge.drops":        "STRATY",
 	"health.badge.no_broker":    "BRAK BROKERA",
 	"health.badge.degraded":     "OGRANICZONY",
+	"health.badge.fault":        "AWARIA",
 	"health.badge.not_started":  "nieuruchomiony",
 	"health.badge.low_disk":     "MAŁO MIEJSCA",
 	"health.badge.emergency":    "AWARYJNY",

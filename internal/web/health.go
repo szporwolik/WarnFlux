@@ -48,11 +48,49 @@ type healthRow struct {
 // dashboard (the former /health page moved there); the plugins, MQTT and
 // actions cards already carry the per-component detail.
 type healthView struct {
-	Lang    string
-	Overall string // ok | degraded
-	DB      healthRow
-	Queue   healthRow
-	Pending healthRow
+	Lang string
+	// Overall is the verdict as a badge class (badges.go): "ok" (green),
+	// "warn" (amber — something is limited or held) or "bad" (red —
+	// something that should run does not). OverallText is that class
+	// spelled out for the operator.
+	Overall     string
+	OverallText string
+	DB          healthRow
+	Queue       healthRow
+	Pending     healthRow
+}
+
+// worse returns the more severe of two badge classes: the health verdict
+// is the worst finding, never an average.
+func worse(a, b string) string {
+	rank := func(class string) int {
+		switch class {
+		case badgeBad:
+			return 3
+		case badgeWarn:
+			return 2
+		case badgeOK:
+			return 1
+		default:
+			return 0
+		}
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
+}
+
+// verdictText spells a verdict out in the page language.
+func verdictText(lang, class string) string {
+	switch class {
+	case badgeBad:
+		return i18n.T(lang, "health.badge.fault")
+	case badgeWarn:
+		return i18n.T(lang, "health.badge.degraded")
+	default:
+		return i18n.T(lang, "health.badge.ok")
+	}
 }
 
 // handleHealthLegacy keeps the old /health URL working: the page moved
@@ -71,29 +109,32 @@ func (s *Server) handlePartialHealth(w http.ResponseWriter, r *http.Request) {
 	s.renderL(w, r, "health", s.buildHealthView(s.langFor(r)))
 }
 
-// buildHealthView assembles the rows and the overall verdict. Only
-// genuinely operational problems are red: a source in a degraded state, a
-// disconnected receiver, an unhealthy action, a DB failure or a full
-// dispatch queue. Config-disabled subsystems stay gray.
+// buildHealthView assembles the rows and the overall verdict. The verdict
+// is the worst finding, in the vocabulary every other card uses: red when
+// something that should run does not (a stopped plugin, a disconnected
+// receiver, an unhealthy action, a DB failure, a full queue), amber when
+// something is limited or held (a degraded or suspended plugin, dispatch
+// drops), green otherwise. Switched-off subsystems stay gray and never
+// colour the verdict — the operator turned them off on purpose. The
+// per-component rows live in the plugin, MQTT and action cards next to
+// this one.
 func (s *Server) buildHealthView(lang string) healthView {
-	v := healthView{Overall: "ok"}
-	bad := false
+	v := healthView{}
+	verdict := badgeOK
 
-	// Degraded sources and disconnected receivers still flip the overall
-	// verdict; their per-component rows live in the plugins and MQTT
-	// cards next to this one.
 	for _, st := range s.router.Statuses() {
-		if st.Kind != plugin.KindSource {
-			continue
-		}
+		// Sources and outputs both carry the station's traffic: a plugin
+		// that is not running is as visible here as one that is limping.
 		switch st.State {
-		case plugin.StateDegraded, plugin.StateStarting, plugin.StateStopping:
-			bad = true
+		case plugin.StateDegraded, plugin.StateSuspended:
+			verdict = worse(verdict, badgeWarn)
+		case plugin.StateStopped:
+			verdict = worse(verdict, badgeBad)
 		}
 	}
 	for _, rs := range s.receivers.Statuses() {
 		if rs.Enabled && !rs.Connected {
-			bad = true
+			verdict = worse(verdict, badgeBad)
 		}
 	}
 
@@ -102,12 +143,12 @@ func (s *Server) buildHealthView(lang string) healthView {
 	for _, as := range s.actions.Statuses() {
 		pending += as.QueueDepth
 		if as.State == action.StateDegraded {
-			bad = true
+			verdict = worse(verdict, badgeWarn)
 		}
 	}
 
 	// Database.
-	v.DB = healthRow{Name: i18n.T(lang, "dash.database"), BadgeClass: "ok", BadgeText: "OK", Detail: i18n.T(lang, "dash.ready")}
+	v.DB = healthRow{Name: i18n.T(lang, "dash.database"), BadgeClass: badgeOK, BadgeText: "OK", Detail: i18n.T(lang, "dash.ready")}
 	if pinger, ok := s.users.(dbPinger); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err := pinger.Ping(ctx)
@@ -115,7 +156,7 @@ func (s *Server) buildHealthView(lang string) healthView {
 		if err != nil {
 			v.DB.BadgeClass, v.DB.BadgeText = "bad", i18n.T(lang, "health.badge.error")
 			v.DB.Detail = err.Error()
-			bad = true
+			verdict = worse(verdict, badgeBad)
 		}
 	}
 	// Low-disk alarm: below the configured threshold the DB row turns red
@@ -131,7 +172,7 @@ func (s *Server) buildHealthView(lang string) healthView {
 			} else if free < minFree {
 				v.DB.BadgeClass, v.DB.BadgeText = "bad", i18n.T(lang, "health.badge.low_disk")
 				v.DB.Detail += " · " + fmt.Sprintf(i18n.T(lang, "health.db_free"), free>>20, minFree>>20)
-				bad = true
+				verdict = worse(verdict, badgeBad)
 			}
 		}
 	}
@@ -140,7 +181,7 @@ func (s *Server) buildHealthView(lang string) healthView {
 	received, droppedFull, _, depth, cap := s.ingress.Stats()
 	v.Queue = healthRow{
 		Name:       i18n.T(lang, "dash.dispatch_queue"),
-		BadgeClass: "ok",
+		BadgeClass: badgeOK,
 		BadgeText:  "OK",
 		Detail:     fmt.Sprintf(i18n.T(lang, "health.queue_detail"), depth, cap, received, droppedFull),
 	}
@@ -152,19 +193,20 @@ func (s *Server) buildHealthView(lang string) healthView {
 		if v.Queue.BadgeClass == "ok" {
 			v.Queue.BadgeClass, v.Queue.BadgeText = "warn", i18n.T(lang, "health.badge.emergency")
 		}
-		bad = true
+		verdict = worse(verdict, badgeWarn)
 	}
 	if depth >= cap {
 		v.Queue.BadgeClass, v.Queue.BadgeText = "bad", i18n.T(lang, "health.badge.full")
-		bad = true
+		verdict = worse(verdict, badgeBad)
 	} else if droppedFull > 0 {
 		v.Queue.BadgeClass, v.Queue.BadgeText = "warn", i18n.T(lang, "health.badge.drops")
+		verdict = worse(verdict, badgeWarn)
 	}
 
 	// Pending notifications: queued action requests waiting for a worker.
 	v.Pending = healthRow{
 		Name:       i18n.T(lang, "health.pending"),
-		BadgeClass: "ok",
+		BadgeClass: badgeOK,
 		BadgeText:  fmt.Sprintf("%d", pending),
 		Detail:     i18n.T(lang, "health.pending_detail"),
 	}
@@ -172,9 +214,11 @@ func (s *Server) buildHealthView(lang string) healthView {
 		v.Pending.BadgeClass = "warn"
 	}
 
-	if bad {
-		v.Overall = "degraded"
-	}
+	// The row badges describe their own subsystem; the verdict is the
+	// worst *problem* among them. Pending work stays out of it on purpose:
+	// a station with something in flight is busy, not broken.
+	v.Overall = verdict
+	v.OverallText = verdictText(lang, verdict)
 	return v
 }
 

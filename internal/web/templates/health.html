@@ -1,6 +1,6 @@
 {{define "health"}}<section class="card health-card" id="health-section">
   <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-heart-pulse"></use></svg>{{tr .Lang "health.title"}}
-    <span class="badge {{if eq .Overall "ok"}}ok{{else}}bad{{end}} health-overall">{{if eq .Overall "ok"}}{{tr .Lang "health.badge.ok"}}{{else}}{{tr .Lang "health.badge.degraded"}}{{end}}</span>
+    <span class="badge {{.Overall}} health-overall">{{.OverallText}}</span>
   </h2>
   <p class="muted log-hint">{{tr .Lang "health.hint"}}</p>
 

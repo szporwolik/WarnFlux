@@ -183,9 +183,21 @@ func TestComposeTimePrefillControls(t *testing.T) {
 		`class="field-quick"`,
 		`id="compose-expires-hint"`,
 		"count from the effective time",
+		// Both time fields are plain ISO stamps with a 24-hour clock, and
+		// both carry a format hint so the two cells stay symmetric. A
+		// datetime-local control would render in the browser's locale
+		// (a US browser shows "10/12/2026, 02:30 PM").
+		`name="effective_at" id="compose-effective" class="compose-stamp"`,
+		`name="expires_at" id="compose-expires" class="compose-stamp"`,
+		`pattern="\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}"`,
+		`id="compose-stamp-hint"`,
+		"ISO format, 24-hour clock",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("compose form lacks %q", want)
 		}
+	}
+	if strings.Contains(html, `type="datetime-local"`) {
+		t.Error("the compose form still uses a locale-rendered datetime-local control")
 	}
 }

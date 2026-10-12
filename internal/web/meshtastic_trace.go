@@ -6,7 +6,54 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 )
+
+// traceStatus is the progress of one route probe, as the panel polls it
+// while the answer is on the air.
+type traceStatus struct {
+	Active    bool                       `json:"active"`
+	ElapsedMS int64                      `json:"elapsed_ms"`
+	TimeoutMS int64                      `json:"timeout_ms"`
+	Probes    int                        `json:"probes"`
+	MaxProbes int                        `json:"max_probes"`
+	Reached   bool                       `json:"reached"`
+	Hops      []meshtastic.TracerouteHop `json:"hops"`
+}
+
+// handleMeshtasticTracerouteStatus reports the probe currently on the air
+// (admin only, read-only): the panel polls it once a second so the
+// operator sees the elapsed time, the frames sent and the hops heard so
+// far instead of one frozen "tracing…" line.
+func (s *Server) handleMeshtasticTracerouteStatus(w http.ResponseWriter, r *http.Request) {
+	if s.meshtastic == nil || !s.meshtastic.Enabled() {
+		http.Error(w, "meshtastic disabled", http.StatusNotFound)
+		return
+	}
+	to := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("to")), "!"))
+	if len(to) != 8 || strings.Trim(to, "0123456789abcdef") != "" {
+		http.Error(w, "node id must be 8 hex characters", http.StatusBadRequest)
+		return
+	}
+	st := traceStatus{}
+	if p, ok := s.meshtastic.TracerouteProgress(to); ok {
+		st = traceStatus{
+			Active:    true,
+			ElapsedMS: p.Elapsed().Milliseconds(),
+			TimeoutMS: p.Timeout.Milliseconds(),
+			Probes:    p.Probes,
+			MaxProbes: p.MaxProbes,
+			Reached:   p.Reached,
+			Hops:      p.Hops,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(st); err != nil {
+		s.logger.Warn("web: encode meshtastic traceroute status failed", "error", err)
+	}
+}
 
 // handleMeshtasticTraceroute runs one route probe to a heard node and
 // returns the discovered hops as JSON (admin only; CSRF-guarded because

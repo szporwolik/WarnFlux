@@ -543,6 +543,37 @@ type TracerouteResult struct {
 	ElapsedMS int64           `json:"elapsed_ms"`
 }
 
+// TraceProgress is a snapshot of a route probe that is still on the air:
+// what the operator watches while the answer travels back. The probe
+// refreshes it as it goes, so the panel can show that the station is
+// still listening instead of leaving one frozen "tracing…" line on
+// screen for the whole window.
+type TraceProgress struct {
+	// Destination is the probed node id (8 hex characters).
+	Destination string
+	// Started is when the first frame went out, Timeout the probe budget.
+	Started time.Time
+	Timeout time.Duration
+	// Probes counts the frames sent so far (re-probes included) and
+	// MaxProbes the ceiling: silence is retried on a lossy mesh.
+	Probes    int
+	MaxProbes int
+	// Hops are the hops the answer carried (empty while nothing came
+	// back). A route probe hears its answer in one frame — the nodes
+	// along the way extend it — so this fills in when the radio answers.
+	Hops []TracerouteHop
+	// Reached reports that the destination itself answered.
+	Reached bool
+}
+
+// Elapsed is how long the probe has been running.
+func (p TraceProgress) Elapsed() time.Duration {
+	if p.Started.IsZero() {
+		return 0
+	}
+	return time.Since(p.Started)
+}
+
 // Message is one received or sent text message.
 type Message struct {
 	Direction string // rx | tx
@@ -749,6 +780,11 @@ type Hub struct {
 	// cadence is the live cadence of the periodic lines (seeded from the
 	// configuration, changed by the Config page). Guarded by mu.
 	cadence Cadence
+	// traces holds the route probes in flight, keyed by destination node
+	// number: the panel reads it to report progress while the answer is
+	// on the air. Guarded by traceMu.
+	traces  map[uint32]*TraceProgress
+	traceMu sync.Mutex
 	// channelKeys holds the device channel keys by index (parallel to
 	// channels): the Help page renders the installation's own channel for
 	// users to join. Guarded by mu.
@@ -883,6 +919,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		return &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
 			pending: make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
 			routeWaiters: make(map[uint32][]chan routeReply),
+			traces:       make(map[uint32]*TraceProgress),
 			bannerLast:   make(map[string]time.Time), replyLast: make(map[string]replyWindow),
 			startedAt: time.Now()}, nil
 	}
@@ -897,6 +934,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		pending:      make(map[uint32]*pendingSend),
 		cmds:         make(map[string]*cmdRecord),
 		routeWaiters: make(map[uint32][]chan routeReply),
+		traces:       make(map[uint32]*TraceProgress),
 		bannerLast:   make(map[string]time.Time),
 		replyLast:    make(map[string]replyWindow),
 		startedAt:    time.Now(),
@@ -2132,6 +2170,8 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 
 	ch := h.registerRouteWaiter(uint32(dest))
 	defer h.unregisterRouteWaiter(uint32(dest), ch)
+	h.beginTrace(uint32(dest), idStr, timeout)
+	defer h.endTrace(uint32(dest))
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -2179,6 +2219,7 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 			return fmt.Errorf("meshtastic: traceroute send failed: %w", err)
 		}
 		probes = append(probes, p)
+		h.traceSent(uint32(dest))
 		if h.logger != nil {
 			h.logger.Info("meshtastic: traceroute probe sent", "to", idStr, "timeout", timeout)
 		}
@@ -2232,13 +2273,89 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 			if rep.from == uint32(dest) {
 				res.Reached = true
 				res.ElapsedMS = time.Since(started).Milliseconds()
+				h.traceHeard(uint32(dest), res, true)
 				return res, nil
 			}
 			if len(res.Hops) > len(best.Hops) {
 				best = res
 			}
+			h.traceHeard(uint32(dest), res, false)
 		}
 	}
+}
+
+// beginTrace records a probe that is going on the air, so the panel can
+// follow it. The previous record for the same destination (a probe that
+// timed out a moment ago) is replaced.
+func (h *Hub) beginTrace(dest uint32, id string, timeout time.Duration) {
+	h.traceMu.Lock()
+	defer h.traceMu.Unlock()
+	if h.traces == nil {
+		h.traces = make(map[uint32]*TraceProgress)
+	}
+	h.traces[dest] = &TraceProgress{
+		Destination: id,
+		Started:     time.Now(),
+		Timeout:     timeout,
+		MaxProbes:   1 + tracerouteExtraProbes,
+	}
+}
+
+// traceSent counts one frame that went out for the running probe.
+func (h *Hub) traceSent(dest uint32) {
+	h.traceMu.Lock()
+	defer h.traceMu.Unlock()
+	if p := h.traces[dest]; p != nil {
+		p.Probes++
+	}
+}
+
+// traceHeard records what came back: the hops of the answering node's
+// route (kept when it is longer than what is already there) and whether
+// the destination itself answered.
+func (h *Hub) traceHeard(dest uint32, res TracerouteResult, reached bool) {
+	h.traceMu.Lock()
+	defer h.traceMu.Unlock()
+	p := h.traces[dest]
+	if p == nil {
+		return
+	}
+	if reached || len(res.Hops) > len(p.Hops) {
+		p.Hops = res.Hops
+	}
+	if reached {
+		p.Reached = true
+	}
+}
+
+// endTrace drops the record once the probe settled.
+func (h *Hub) endTrace(dest uint32) {
+	h.traceMu.Lock()
+	defer h.traceMu.Unlock()
+	delete(h.traces, dest)
+}
+
+// TracerouteProgress reports the route probe currently on the air for
+// addr, if any: elapsed time, frames sent so far and the hops heard up to
+// this moment. ok is false when no probe to that node is running.
+func (h *Hub) TracerouteProgress(addr string) (TraceProgress, bool) {
+	id := normalizeMeshID(addr)
+	if len(id) != 8 {
+		return TraceProgress{}, false
+	}
+	dest, err := strconv.ParseUint(id, 16, 32)
+	if err != nil {
+		return TraceProgress{}, false
+	}
+	h.traceMu.Lock()
+	defer h.traceMu.Unlock()
+	p := h.traces[uint32(dest)]
+	if p == nil {
+		return TraceProgress{}, false
+	}
+	out := *p
+	out.Hops = append([]TracerouteHop(nil), p.Hops...)
+	return out, true
 }
 
 // registerRouteWaiter subscribes one probe to route replies from dest.

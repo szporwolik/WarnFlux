@@ -5039,3 +5039,39 @@ func TestSessionRevocation(t *testing.T) {
 	}
 	wantRevoked("after deletion")
 }
+
+// TestMeshtasticTracerouteStatus pins the progress endpoint the panel
+// polls while a probe is on the air: admin-only, keyed by node id, and
+// honest about nothing running (active:false rather than an error).
+func TestMeshtasticTracerouteStatus(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, nil)
+
+	// Anonymous: the endpoint is admin-only.
+	resp, _ := env.get("/api/meshtastic/traceroute/status?to=ef010203")
+	if resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous status = %d, want a redirect or 401", resp.StatusCode)
+	}
+
+	env.login()
+	resp2, body := env.get("/api/meshtastic/traceroute/status?to=ef010203")
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp2.StatusCode)
+	}
+	if !strings.Contains(body, `"active":false`) {
+		t.Errorf("idle station must report active:false, got %s", body)
+	}
+
+	// A malformed id is refused before anything is probed.
+	resp3, _ := env.get("/api/meshtastic/traceroute/status?to=zz")
+	if resp3.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad node id = %d, want 400", resp3.StatusCode)
+	}
+}

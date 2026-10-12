@@ -70,17 +70,21 @@
         {{/* The two time fields carry prefill buttons: the operator picks
              "now" or a typical lifetime instead of typing a stamp. The
              buttons sit NEXT TO the label, never inside it — a label may
-             contain only the control it labels. */}}
+             contain only the control it labels. The stamps are plain text
+             in ISO form on purpose: a datetime-local control renders in
+             the BROWSER's locale, so a US browser would show "10/12/2026,
+             02:30 PM" — ambiguous, and not what the station speaks. */}}
         <div class="field">
           <label for="compose-effective"><span>{{tr .Lang "compose.effective"}}</span></label>
-          <input type="datetime-local" name="effective_at" id="compose-effective" value="{{.Form.EffectiveAt}}">
+          <input type="text" name="effective_at" id="compose-effective" class="compose-stamp" value="{{.Form.EffectiveAt}}" placeholder="2026-10-12 14:30" maxlength="16" pattern="\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}" autocomplete="off" spellcheck="false" aria-describedby="compose-stamp-hint">
           <div class="field-quick">
             <button type="button" class="btn-ghost btn-small" id="compose-effective-now">{{tr .Lang "compose.now"}}</button>
           </div>
+          <span class="field-note" id="compose-stamp-hint">{{tr .Lang "compose.time_hint"}}</span>
         </div>
         <div class="field">
           <label for="compose-expires"><span>{{tr .Lang "compose.expires"}}</span></label>
-          <input type="datetime-local" name="expires_at" id="compose-expires" value="{{.Form.ExpiresAt}}" aria-describedby="compose-expires-hint">
+          <input type="text" name="expires_at" id="compose-expires" class="compose-stamp" value="{{.Form.ExpiresAt}}" placeholder="2026-10-12 18:30" maxlength="16" pattern="\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}" autocomplete="off" spellcheck="false" aria-describedby="compose-expires-hint">
           <div class="field-quick" role="group" aria-label="{{tr .Lang "compose.expires"}}">
             <button type="button" class="btn-ghost btn-small" data-compose-add="1">+1h</button>
             <button type="button" class="btn-ghost btn-small" data-compose-add="4">+4h</button>
@@ -285,13 +289,16 @@
     var effective = form.querySelector("[name=effective_at]");
     var expires = form.querySelector("[name=expires_at]");
     function pad(n) { return (n < 10 ? "0" : "") + n; }
+    // The station speaks one stamp format: ISO date, 24-hour clock.
     function stamp(d) {
       return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
-             "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+             " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
     }
     function parseField(el) {
       if (!el || !el.value) { return null; }
-      var d = new Date(el.value); // a timezone-less stamp parses as local
+      // "2026-10-12 14:30" without a zone is a local stamp; the space is
+      // normalised to the "T" the Date parser expects.
+      var d = new Date(el.value.trim().replace(" ", "T"));
       return isNaN(d.getTime()) ? null : d;
     }
     function base() {

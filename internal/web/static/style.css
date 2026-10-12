@@ -1351,6 +1351,11 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .test-form .field {
   display: grid;
   gap: 0.3rem;
+  /* Keep every control at its natural height: without this a field whose
+     cell is stretched by a taller neighbour (the time fields carry quick
+     buttons and a hint) inflates its select/input to fill the leftover
+     space — a 70px status dropdown next to a 34px one. */
+  align-content: start;
   font-size: 0.85rem;
   font-weight: 500;
   color: var(--text);
@@ -1358,8 +1363,13 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .test-form .field span { color: var(--muted); font-weight: 500; }
 /* Prefill buttons under a field (compose: "now", "+1h" …): they belong to
    the field they fill, so they sit in its own grid cell. */
-.test-form .field-quick { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.test-form .field-quick { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.35rem; }
+/* The quick buttons are one row of equal chips: same height whatever the
+   label length, so "Teraz" matches "+1h". */
+.test-form .field-quick .btn-small { min-width: 3.1rem; line-height: 1.2; }
 .test-form .field-note { font-size: 0.75rem; font-weight: 400; }
+/* ISO stamps read as machine values: monospace keeps the digits aligned. */
+.test-form .compose-stamp { font-family: var(--font-mono); letter-spacing: 0.01em; }
 .test-form input,
 .test-form select {
   background: var(--input-bg);

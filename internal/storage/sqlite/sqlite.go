@@ -1719,16 +1719,9 @@ func (s *Store) RecordLifecycle(ctx context.Context, publisher, eventKey string,
 // version identity (changeID 0 — panel messages) are judged by the
 // CURRENT state only. An unknown message never blocks (fail-open).
 func (s *Store) LifecycleBlocks(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error) {
-	var version int64
-	var status string
-	err := s.db.QueryRowContext(ctx, `
-		SELECT version, status FROM message_lifecycle
-		WHERE publisher = ? AND event_key = ?`, publisher, eventKey).Scan(&version, &status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read lifecycle for %q: %w", eventKey, err)
+	version, status, ok, err := s.lifecycleRow(ctx, publisher, eventKey)
+	if err != nil || !ok {
+		return false, err
 	}
 	if changeID > 0 {
 		if version > changeID {
@@ -1740,6 +1733,41 @@ func (s *Store) LifecycleBlocks(ctx context.Context, publisher, eventKey string,
 		return false, nil
 	}
 	return status != string(core.StatusActive), nil
+}
+
+// LifecycleSuperseded reports whether a NEWER version of the message is
+// already recorded. Unlike LifecycleBlocks it says nothing about the
+// terminal status of the SAME version: a stand-down notice is exactly
+// that — a terminal transition that still has to be told — so only a
+// version that came after it may hold it back (reported P1: an EMCOM
+// cancellation queued at version 9 still reached the channels after the
+// network was raised again at version 10). Without a version identity
+// (changeID <= 0) nothing can be compared and nothing is held back.
+func (s *Store) LifecycleSuperseded(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error) {
+	if changeID <= 0 {
+		return false, nil
+	}
+	version, _, ok, err := s.lifecycleRow(ctx, publisher, eventKey)
+	if err != nil || !ok {
+		return false, err
+	}
+	return version > changeID, nil
+}
+
+// lifecycleRow reads the recorded version and status of one message key;
+// ok=false when the ledger has no entry (a producer without local
+// storage).
+func (s *Store) lifecycleRow(ctx context.Context, publisher, eventKey string) (version int64, status string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `
+		SELECT version, status FROM message_lifecycle
+		WHERE publisher = ? AND event_key = ?`, publisher, eventKey).Scan(&version, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", false, nil
+	}
+	if err != nil {
+		return 0, "", false, fmt.Errorf("read lifecycle for %q: %w", eventKey, err)
+	}
+	return version, status, true, nil
 }
 
 // InstanceID returns the persistent publisher UUID of this WarnFlux

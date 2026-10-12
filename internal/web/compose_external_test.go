@@ -157,3 +157,35 @@ func TestComposeRowDetailPopup(t *testing.T) {
 		}
 	}
 }
+
+// TestComposeTimePrefillControls pins the prefill controls of the compose
+// form: the "now" button and the lifetime buttons must be there and must
+// be plain buttons (pressing one never publishes), each labelled with the
+// lifetime it adds. The script behind them reads the operator's browser
+// clock, so this markup is the contract the test can hold.
+func TestComposeTimePrefillControls(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	_, html := env.get("/compose")
+
+	for _, want := range []string{
+		`id="compose-effective"`,
+		`<button type="button" class="btn-ghost btn-small" id="compose-effective-now">Now</button>`,
+		`id="compose-expires"`,
+		`<button type="button" class="btn-ghost btn-small" data-compose-add="1">+1h</button>`,
+		`<button type="button" class="btn-ghost btn-small" data-compose-add="4">+4h</button>`,
+		`<button type="button" class="btn-ghost btn-small" data-compose-add="12">+12h</button>`,
+		`<button type="button" class="btn-ghost btn-small" data-compose-add="24">+24h</button>`,
+		// A label may only contain the control it labels, so the buttons
+		// live next to it and the field grid keeps them together.
+		`<label for="compose-effective"><span>Effective at</span></label>`,
+		`<label for="compose-expires"><span>Expires at</span></label>`,
+		`class="field-quick"`,
+		`id="compose-expires-hint"`,
+		"count from the effective time",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("compose form lacks %q", want)
+		}
+	}
+}

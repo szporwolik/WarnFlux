@@ -1354,6 +1354,10 @@ tr.click-send:hover td { background: var(--surface-hi); }
   color: var(--text);
 }
 .test-form .field span { color: var(--muted); font-weight: 500; }
+/* Prefill buttons under a field (compose: "now", "+1h" …): they belong to
+   the field they fill, so they sit in its own grid cell. */
+.test-form .field-quick { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.test-form .field-note { font-size: 0.75rem; font-weight: 400; }
 .test-form input,
 .test-form select {
   background: var(--input-bg);

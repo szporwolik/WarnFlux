@@ -67,14 +67,28 @@
             {{range .Statuses}}<option value="{{.Value}}" {{if eq .Value $.Form.Status}}selected{{end}}>{{.Label}}</option>{{end}}
           </select>
         </label>
-        <label class="field">
-          <span>{{tr .Lang "compose.effective"}}</span>
-          <input type="datetime-local" name="effective_at" value="{{.Form.EffectiveAt}}">
-        </label>
-        <label class="field">
-          <span>{{tr .Lang "compose.expires"}}</span>
-          <input type="datetime-local" name="expires_at" value="{{.Form.ExpiresAt}}">
-        </label>
+        {{/* The two time fields carry prefill buttons: the operator picks
+             "now" or a typical lifetime instead of typing a stamp. The
+             buttons sit NEXT TO the label, never inside it — a label may
+             contain only the control it labels. */}}
+        <div class="field">
+          <label for="compose-effective"><span>{{tr .Lang "compose.effective"}}</span></label>
+          <input type="datetime-local" name="effective_at" id="compose-effective" value="{{.Form.EffectiveAt}}">
+          <div class="field-quick">
+            <button type="button" class="btn-ghost btn-small" id="compose-effective-now">{{tr .Lang "compose.now"}}</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="compose-expires"><span>{{tr .Lang "compose.expires"}}</span></label>
+          <input type="datetime-local" name="expires_at" id="compose-expires" value="{{.Form.ExpiresAt}}" aria-describedby="compose-expires-hint">
+          <div class="field-quick" role="group" aria-label="{{tr .Lang "compose.expires"}}">
+            <button type="button" class="btn-ghost btn-small" data-compose-add="1">+1h</button>
+            <button type="button" class="btn-ghost btn-small" data-compose-add="4">+4h</button>
+            <button type="button" class="btn-ghost btn-small" data-compose-add="12">+12h</button>
+            <button type="button" class="btn-ghost btn-small" data-compose-add="24">+24h</button>
+          </div>
+          <span class="field-note" id="compose-expires-hint">{{tr .Lang "compose.expires_hint"}}</span>
+        </div>
         <label class="field field-wide">
           <span>{{tr .Lang "compose.areas"}}</span>
           <input type="text" name="areas" value="{{.Form.Areas}}" maxlength="500" placeholder="{{tr .Lang "compose.ph.areas"}}">
@@ -255,6 +269,52 @@
         setField("certainty", t.certainty);
         var headline = document.querySelector("form.test-form [name=headline]");
         if (headline) { headline.focus(); }
+      });
+    });
+  })();
+  // Time prefills: "Now" stamps the effective time, the +Nh buttons stamp
+  // the expiry. Both read the OPERATOR'S browser clock — always fresh,
+  // unlike a value rendered into the page — which is the same zone the
+  // station formats its times in. The expiry counts from the effective
+  // time when that one lies in the future (an alert scheduled for
+  // tomorrow must not expire today) and from now otherwise.
+  (function () {
+    "use strict";
+    var form = document.querySelector("form.test-form");
+    if (!form) { return; }
+    var effective = form.querySelector("[name=effective_at]");
+    var expires = form.querySelector("[name=expires_at]");
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    function stamp(d) {
+      return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+             "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+    }
+    function parseField(el) {
+      if (!el || !el.value) { return null; }
+      var d = new Date(el.value); // a timezone-less stamp parses as local
+      return isNaN(d.getTime()) ? null : d;
+    }
+    function base() {
+      var start = parseField(effective);
+      var current = new Date();
+      return start && start > current ? start : current;
+    }
+    var now = document.getElementById("compose-effective-now");
+    if (now && effective) {
+      now.addEventListener("click", function () {
+        effective.value = stamp(new Date());
+        effective.focus();
+      });
+    }
+    form.querySelectorAll("[data-compose-add]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        if (!expires) { return; }
+        var hours = parseFloat(btn.getAttribute("data-compose-add"));
+        if (isNaN(hours)) { return; }
+        var at = base();
+        at.setMinutes(at.getMinutes() + Math.round(hours * 60));
+        expires.value = stamp(at);
+        expires.focus();
       });
     });
   })();

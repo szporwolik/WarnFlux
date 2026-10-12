@@ -555,16 +555,20 @@ func (s *Server) publishEmcomState(net emcomNetwork, by string, version int64) e
 }
 
 // noteEmcomRetire remembers an alarm document the broker refused to
-// remove, so the resync can retry it.
-func (s *Server) noteEmcomRetire(slug string) {
+// remove, together with the version of the local record that ordered the
+// removal: a later resync may only replay it while that record is still
+// the newest word on the network.
+func (s *Server) noteEmcomRetire(slug string, version int64) {
 	if slug == "" {
 		return
 	}
 	s.emcomRetireMu.Lock()
 	if s.emcomRetirePending == nil {
-		s.emcomRetirePending = map[string]bool{}
+		s.emcomRetirePending = map[string]int64{}
 	}
-	s.emcomRetirePending[slug] = true
+	if prev, ok := s.emcomRetirePending[slug]; !ok || version > prev {
+		s.emcomRetirePending[slug] = version
+	}
 	s.emcomRetireMu.Unlock()
 }
 
@@ -576,15 +580,15 @@ func (s *Server) clearEmcomRetire(slug string) {
 }
 
 // pendingEmcomRetires lists the networks whose alarm document is still
-// published although the station retired it (sorted for stable logs).
-func (s *Server) pendingEmcomRetires() []string {
+// published although the station retired it, with the version of the
+// removal (sorted for stable logs).
+func (s *Server) pendingEmcomRetires() map[string]int64 {
 	s.emcomRetireMu.Lock()
 	defer s.emcomRetireMu.Unlock()
-	out := make([]string, 0, len(s.emcomRetirePending))
-	for slug := range s.emcomRetirePending {
-		out = append(out, slug)
+	out := make(map[string]int64, len(s.emcomRetirePending))
+	for slug, version := range s.emcomRetirePending {
+		out[slug] = version
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -600,7 +604,7 @@ func (s *Server) retireEmcomHazard(slug string, version int64, stage string) {
 	}
 	if err := s.broker.retireActive(emcomSource, emcomEventKey(slug), version); err != nil {
 		s.logger.Warn("emcom: broker hazard retire failed", "slug", slug, "stage", stage, "error", err)
-		s.noteEmcomRetire(slug)
+		s.noteEmcomRetire(slug, version)
 		return
 	}
 	s.clearEmcomRetire(slug)
@@ -674,13 +678,24 @@ func (s *Server) SyncBrokerState() {
 		if err != nil {
 			s.logger.Warn("emcom: state resync read failed", "error", err)
 		} else {
+			// The LOCAL record decides what is active — before any MQTT
+			// operation. Classifying while publishing let a failing state
+			// document leave a raised network looking retired, and the
+			// stale removal that followed took the live alarm down
+			// (reported P1).
+			for _, n := range rows {
+				if n.Level >= 1 {
+					raised[n.Slug] = true
+					continue
+				}
+				retire[n.Slug] = true
+				retireVersion[n.Slug] = n.Version
+			}
 			for _, n := range rows {
 				if n.Level < 0 {
 					if err := s.publishEmcomState(emcomNetwork{Slug: n.Slug}, "", n.Version); err != nil {
 						s.logger.Warn("emcom: tombstone resync failed", "slug", n.Slug, "error", err)
 					}
-					retire[n.Slug] = true
-					retireVersion[n.Slug] = n.Version
 					continue
 				}
 				lvl, _ := emcomLevelAt(n.Level)
@@ -692,33 +707,35 @@ func (s *Server) SyncBrokerState() {
 					UpdatedBy: n.UpdatedBy,
 					UpdatedAt: n.UpdatedAt,
 				}
-				if n.Level >= 1 {
-					if err := s.publishEmcomState(net, n.UpdatedBy, n.Version); err != nil {
-						s.logger.Warn("emcom: state resync failed", "slug", n.Slug, "error", err)
-						continue
-					}
-					if err := s.broker.publishActive(emcomSource, emcomHazard(net, now, s.SystemLanguage()), n.Version); err != nil {
-						s.logger.Warn("emcom: hazard resync failed", "slug", n.Slug, "error", err)
-					} else {
-						// A live alarm supersedes any removal still owed
-						// for this network.
-						s.clearEmcomRetire(n.Slug)
-					}
-					raised[n.Slug] = true
-					continue
-				}
 				if err := s.publishEmcomState(net, n.UpdatedBy, n.Version); err != nil {
 					s.logger.Warn("emcom: state resync failed", "slug", n.Slug, "error", err)
+					continue
 				}
-				retire[n.Slug] = true
-				retireVersion[n.Slug] = n.Version
+				if n.Level < 1 {
+					continue
+				}
+				if err := s.broker.publishActive(emcomSource, emcomHazard(net, now, s.SystemLanguage()), n.Version); err != nil {
+					s.logger.Warn("emcom: hazard resync failed", "slug", n.Slug, "error", err)
+					continue
+				}
+				// A live alarm supersedes any removal still owed for this
+				// network.
+				s.clearEmcomRetire(n.Slug)
 			}
 		}
-		// Removals the broker refused earlier ride along: a slug the read
-		// cannot account for (its row is gone) still owes the removal.
-		for _, slug := range s.pendingEmcomRetires() {
-			if !raised[slug] {
-				retire[slug] = true
+		// Removals the broker refused earlier ride along, but only while
+		// they still belong to the newest local state: a network raised
+		// again since the failed removal keeps its alarm, and a slug the
+		// read cannot account for (its row is gone) still owes the
+		// removal at the version that ordered it.
+		for slug, version := range s.pendingEmcomRetires() {
+			if raised[slug] {
+				s.clearEmcomRetire(slug)
+				continue
+			}
+			retire[slug] = true
+			if version > retireVersion[slug] {
+				retireVersion[slug] = version
 			}
 		}
 		for slug := range retire {

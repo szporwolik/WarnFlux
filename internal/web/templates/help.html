@@ -83,13 +83,13 @@
           <span><span class="badge {{if .On}}ok{{else}}warn{{end}}">{{.Value}}</span></span>
         </div>
         {{end}}
+        {{if .Invite}}
+        <div class="hz-row hz-row-invite">
+          <span class="hz-label">{{tr $.Lang "help.discord.invite"}}</span>
+          <span><a href="{{.Invite}}" target="_blank" rel="noopener noreferrer">{{.Invite}}</a></span>
+        </div>
+        {{end}}
       </div>
-      {{if .Invite}}
-      <div class="hz-row hz-row-invite">
-        <span class="hz-label">{{tr $.Lang "help.discord.invite"}}</span>
-        <span><a href="{{.Invite}}" target="_blank" rel="noopener noreferrer">{{.Invite}}</a></span>
-      </div>
-      {{end}}
       <ul class="help-list">
         {{range .Items}}<li>{{tr $.Lang .}}</li>{{end}}
       </ul>

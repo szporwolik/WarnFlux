@@ -4280,9 +4280,17 @@
 // Live character counters for the send forms: elements marked
 // data-char-count="N" get a fixed N-character limit with a live
 // counter. The matching counter lives in the element selected by
-// data-char-out or the sibling .char-count.
+// data-char-out or the sibling .char-count. An SMS form adds
+// data-char-septets: a text-mode message is measured in GSM-7 septets,
+// where the extension-table characters cost two.
 (function () {
   "use strict";
+  var GSM7_EXTENDED = "^{}[]~|\\\u20ac";
+  function septets(text) {
+    return Array.from(text || "").reduce(function (n, ch) {
+      return n + (GSM7_EXTENDED.indexOf(ch) === -1 ? 1 : 2);
+    }, 0);
+  }
   function update(el) {
     var lim = parseInt(el.getAttribute("data-char-count"), 10);
     if (!lim) { return; }
@@ -4290,7 +4298,9 @@
       ? document.querySelector(el.getAttribute("data-char-out"))
       : el.nextElementSibling;
     if (!out || !out.classList.contains("char-count")) { return; }
-    var used = Array.from(el.value || "").length;
+    var used = el.hasAttribute("data-char-septets")
+      ? septets(el.value)
+      : Array.from(el.value || "").length;
     out.textContent = used + " / " + lim;
     out.classList.toggle("warn", used >= lim);
   }

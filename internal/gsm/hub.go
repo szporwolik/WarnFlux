@@ -78,6 +78,14 @@ var ErrModemRejected = errors.New("gsm: modem rejected")
 // ErrTimeout is returned when the modem does not answer an AT exchange.
 var ErrTimeout = errors.New("gsm: modem response timeout")
 
+// ErrUnconfirmed reports a message the modem accepted — the body went out
+// with Ctrl-Z — whose confirmation did not arrive inside the CALLER's
+// budget. From Ctrl-Z on the modem owns the message, so this is a missing
+// confirmation, not a missing transmission: a caller must not report
+// "nothing was sent" (that invites a duplicate), and the channel is
+// healthy — the exchange only needs a repair before the next command.
+var ErrUnconfirmed = errors.New("gsm: sms committed, confirmation not received")
+
 // pollInterval is the spacing of the unread-message scan.
 const pollInterval = 10 * time.Second
 
@@ -93,6 +101,12 @@ var sendAckTimeout = 45 * time.Second
 // sendResyncTimeout bounds the repair probe that follows an exchange
 // which ended without an answer (see resyncSendLocked).
 var sendResyncTimeout = 2 * time.Second
+
+// sendAckMargin is the slice of the CALLER's budget Send keeps for
+// itself after the confirmation window: the worker disables an action
+// whose call overruns its deadline, and that would take the whole channel
+// down for a message that did go out (see Send).
+var sendAckMargin = 250 * time.Millisecond
 
 // received is one consumed inbox record (possibly one part of a
 // concatenated message).
@@ -155,6 +169,13 @@ type Hub struct {
 	// storage is the active SMS storage id ("SM" or "ME") — guarded
 	// by mu, chosen by initLocked.
 	storage string
+
+	// sendDirty marks a session that owes a repair before the next
+	// command: Send sets it when a confirmation window was cut short by
+	// the caller's budget (repairing right there would make the call
+	// overrun), and the next exchange runs the repair first (see
+	// repairDirtyLocked). Guarded by mu.
+	sendDirty bool
 
 	// operator and csq are the last modem status (network name and
 	// signal quality); refreshed periodically by the poll loop.
@@ -513,6 +534,9 @@ func (h *Hub) exchangeLocked(cmd, expect string) ([]string, error) {
 // exchangeLockedTimeout is exchangeLocked with an explicit response
 // budget (the modem's SMS-accept reply can take tens of seconds).
 func (h *Hub) exchangeLockedTimeout(cmd, expect string, timeout time.Duration) ([]string, error) {
+	// The repair runs first: it may drop a session that stayed silent,
+	// and the command must not be written into that one.
+	h.repairDirtyLocked()
 	if h.conn == nil {
 		return nil, ErrNoModem
 	}
@@ -549,11 +573,15 @@ func (h *Hub) exchangeLockedTimeout(cmd, expect string, timeout time.Duration) (
 	}
 }
 
-// exchangePromptLocked sends one AT command and waits for the SMS text
+// exchangePromptCtxLocked sends one AT command and waits for the SMS text
 // prompt ('> ') — Huawei-style modems answer it WITHOUT a trailing
-// newline, so the line-based exchange would time out. The caller holds
-// h.mu.
-func (h *Hub) exchangePromptLocked(cmd string) ([]string, error) {
+// newline, so the line-based exchange would time out. The context is
+// honoured: a caller that gives up while the modem takes its time gets
+// its own error, commits nothing and can abandon the pending message
+// instead of sending into nobody's request. The caller holds h.mu.
+func (h *Hub) exchangePromptCtxLocked(ctx context.Context, cmd string) ([]string, error) {
+	// See exchangeLockedTimeout: the repair may drop the session.
+	h.repairDirtyLocked()
 	if h.conn == nil {
 		return nil, ErrNoModem
 	}
@@ -564,10 +592,13 @@ func (h *Hub) exchangePromptLocked(cmd string) ([]string, error) {
 	var lines []string
 	var partial strings.Builder
 	for {
+		if err := ctx.Err(); err != nil {
+			return lines, err
+		}
 		if h.now().After(deadline) {
 			return lines, ErrTimeout
 		}
-		b, err := h.readByte(deadline)
+		b, err := h.readByteCtx(ctx, deadline)
 		if err != nil {
 			return lines, err
 		}
@@ -601,8 +632,19 @@ func (h *Hub) exchangePromptLocked(cmd string) ([]string, error) {
 // read (io.EOF) — retry until the deadline or a real failure; a
 // silently dead modem can no longer stall the session forever.
 func (h *Hub) readByte(deadline time.Time) (byte, error) {
+	return h.readByteCtx(context.Background(), deadline)
+}
+
+// readByteCtx is readByte for a caller that may give up while the modem
+// stays silent: this loop is where the waiting happens, so the context
+// has to end it here — a check in the caller would only run between
+// reads (a modem that owes the SMS text prompt keeps them coming).
+func (h *Hub) readByteCtx(ctx context.Context, deadline time.Time) (byte, error) {
 	var one [1]byte
 	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		if h.now().After(deadline) {
 			return 0, ErrTimeout
 		}
@@ -646,19 +688,28 @@ func (h *Hub) readLine(deadline time.Time) (string, error) {
 // messages (CMS ERROR 500) and does not split long text-mode sends
 // (CMS ERROR 305), so sending uses text mode with the single-segment
 // limits: non-GSM-7 characters are transliterated and texts over 160
-// characters are refused. The tx row lands in the durable history only
+// SEPTETS are refused (an extension-table character costs two, so 81 '^'
+// do not fit one message). The tx row lands in the durable history only
 // after the modem accepted the message.
 //
 // ctx is honoured up to the moment the transmission is committed: an
-// already cancelled request touches nothing, and a caller waiting for a
-// busy modem leaves the queue instead of transmitting into a round nobody
-// waits for (reported P1: a cancelled request still sent AT+CMGS, the body
+// already cancelled request touches nothing, a caller waiting for a busy
+// modem leaves the queue instead of transmitting into a round nobody
+// waits for, and one waiting for the text prompt abandons the pending
+// message (reported P1: a cancelled request still sent AT+CMGS, the body
 // and Ctrl-Z, and answered success). After AT+CMGS the modem holds the
-// body state and only Ctrl-Z or ESC finishes it, so the exchange runs to
-// its own bounded end even when ctx is cancelled in between — the caller
-// then gets the TRUE outcome, because reporting a cancellation for a
-// message that did go out would invite a duplicate. An exchange that ends
-// without an answer is repaired before the next command.
+// body state and only Ctrl-Z sends it — ESC drops it — so the body is
+// written only for a caller that is still there, and the caller that
+// gives up before that point gets its own error.
+//
+// From Ctrl-Z on the modem owns the message, so the wait for the network
+// accept reply runs to the END OF THE CALLER'S BUDGET at most: the worker
+// disables an action whose call overruns its deadline, and a started
+// transmission must never cost the channel. A window cut short by that
+// budget is reported as ErrUnconfirmed (the message may well be on its
+// way), and the repair the exchange needs is deferred to the next command
+// instead of overrunning the call. An exchange that ends without an
+// answer is repaired before the next command.
 func (h *Hub) Send(ctx context.Context, number, text string) error {
 	number = strings.TrimSpace(number)
 	text = strings.TrimSpace(text)
@@ -684,28 +735,60 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 		return ErrNoModem
 	}
 	text = TransliterateGSM7(text)
-	if len([]rune(text)) > 160 {
+	// The limit is septets, not characters: the extension-table symbols
+	// (^ { } [ ] ~ | \ €) cost two each, so counting characters let over-
+	// sized messages through to the modem (reported P2).
+	if n := Septets(text); n < 0 || n > MaxSeptets {
 		return ErrTooLong
 	}
 	// Both receive and send run in text mode (this firmware family
 	// cannot read stored messages in PDU mode), so no mode switch is
 	// needed around sends.
-	// Wait for the prompt, then submit the body with Ctrl-Z. From here the
-	// request is committed: the modem waits for the body, so a timeout
-	// leaves a half-written message in the session and is repaired.
-	if _, err := h.exchangePromptLocked(`AT+CMGS="` + number + `"`); err != nil {
-		if errors.Is(err, ErrTimeout) {
-			h.resyncSendLocked()
+	// Wait for the prompt: nothing is committed yet, so a caller that
+	// gives up here is honoured — the pending message is abandoned with
+	// ESC and no body is written.
+	if _, err := h.exchangePromptCtxLocked(ctx, `AT+CMGS="`+number+`"`); err != nil {
+		if errors.Is(err, ErrTimeout) || ctx.Err() != nil {
+			h.deferRepairLocked()
 		}
 		return fmt.Errorf("gsm: send to %s: %w", number, err)
 	}
+	if err := ctx.Err(); err != nil {
+		// The modem is waiting for the body while the caller is gone:
+		// ESC drops the pending message without sending anything.
+		h.deferRepairLocked()
+		return fmt.Errorf("gsm: send to %s: %w", number, err)
+	}
+	// Commit the body: from here the modem owns the message.
 	if _, err := io.WriteString(h.conn, text+"\x1A"); err != nil {
 		h.resyncSendLocked()
 		return fmt.Errorf("gsm: write body: %w", err)
 	}
 	// The network accept reply can take tens of seconds on a busy
-	// channel — a wider budget than the regular exchange timeout.
-	if _, err := h.exchangeLockedTimeout("", "OK", sendAckTimeout); err != nil {
+	// channel — a wider budget than the regular exchange timeout, but
+	// never wider than what the caller still has: the window keeps room
+	// for the caller's deadline (the worker disables an overrunning
+	// action) and, when the MODEM's own budget ends the wait first, for
+	// the inline repair that follows it.
+	ack := sendAckTimeout
+	cutShort := false
+	if dl, ok := ctx.Deadline(); ok {
+		if left := dl.Sub(h.now()) - sendAckMargin - sendResyncTimeout; left < ack {
+			ack, cutShort = left, true
+		}
+	}
+	if ack <= 0 {
+		h.deferRepairLocked()
+		return fmt.Errorf("gsm: send to %s: %w", number, ErrUnconfirmed)
+	}
+	if _, err := h.exchangeLockedTimeout("", "OK", ack); err != nil {
+		if errors.Is(err, ErrTimeout) && cutShort {
+			// The caller's budget ended the wait, not the modem: report
+			// the committed message and repair before the next command,
+			// so this call stays inside the deadline the worker enforces.
+			h.deferRepairLocked()
+			return fmt.Errorf("gsm: send to %s: %w", number, ErrUnconfirmed)
+		}
 		if errors.Is(err, ErrTimeout) {
 			h.resyncSendLocked()
 		}
@@ -744,6 +827,24 @@ func (h *Hub) resyncSendLocked() {
 		h.logger.Warn("gsm: session repair failed, reconnecting", "error", err)
 		h.reconnectLocked()
 	}
+}
+
+// deferRepairLocked hands the session repair a cut-short confirmation
+// window owed to the next command: waiting for it here would push the
+// call past its caller's deadline, which is the one thing a committed
+// transmission must not do (the worker disables such an action).
+func (h *Hub) deferRepairLocked() { h.sendDirty = true }
+
+// repairDirtyLocked runs the deferred repair once, before a command
+// writes into a session that may still owe (or hold) an answer. The
+// repair gets the session's own budget: the caller that set the flag is
+// already gone. The caller holds h.mu.
+func (h *Hub) repairDirtyLocked() {
+	if !h.sendDirty {
+		return
+	}
+	h.sendDirty = false
+	h.resyncSendLocked()
 }
 
 // pollLoop scans unread inbox messages every pollInterval and runs the

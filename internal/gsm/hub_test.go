@@ -501,6 +501,58 @@ func TestSendTooLong160(t *testing.T) {
 	}
 }
 
+// TestSendCountsSeptetsNotCharacters pins the reported P2: the cap
+// counted characters, but the extension-table symbols cost two septets
+// each, so 81 '^' (162 septets) went out although they cannot fit one
+// text-mode message. 80 fit, 81 are refused before the modem is touched.
+func TestSendCountsSeptetsNotCharacters(t *testing.T) {
+	// The transport idles instead of blocking, so a message the fix
+	// refuses never waits for a response the test did not script.
+	shortenTimeouts(t, 30*time.Millisecond, 30*time.Millisecond, 30*time.Millisecond)
+	h, p := newQuietHub(t)
+	p.send("> \r\nOK\r\n")
+	if err := h.Send(context.Background(), "+48600111222", strings.Repeat("^", 80)); err != nil {
+		t.Fatalf("send(80 '^' = 160 septets) = %v, want nil", err)
+	}
+	if w := p.written(); !strings.Contains(w, strings.Repeat("^", 80)+"\x1A") {
+		t.Fatalf("the accepted message was not submitted: %q", w)
+	}
+
+	before := p.written()
+	err := h.Send(context.Background(), "+48600111222", strings.Repeat("^", 81))
+	if !errors.Is(err, ErrTooLong) {
+		t.Fatalf("send(81 '^' = 162 septets) = %v, want ErrTooLong", err)
+	}
+	if p.written() != before {
+		t.Fatalf("the oversized message reached the modem: %q", p.written()[len(before):])
+	}
+}
+
+// TestFitGSM7KeepsTheSeptetBudget pins the shared fitter: the formatter
+// and the automatic replies must fit in 160 septets, dropping a symbol
+// that only half fits instead of sending it truncated.
+func TestFitGSM7KeepsTheSeptetBudget(t *testing.T) {
+	if got := FitGSM7(strings.Repeat("[", 200), MaxSeptets); Septets(got) != MaxSeptets || len([]rune(got)) != 80 {
+		t.Fatalf("fit(200 '[') = %d chars / %d septets, want 80 / 160", len([]rune(got)), Septets(got))
+	}
+	// 159 plain characters leave room for half of one extension-table
+	// symbol: it is dropped whole.
+	got := FitGSM7(strings.Repeat("A", 159)+"^", MaxSeptets)
+	if Septets(got) != 159 || strings.HasSuffix(got, "^") {
+		t.Fatalf("fit(159 'A' + '^') = %q (%d septets), want the 159 characters", got, Septets(got))
+	}
+	// Text that already fits is untouched, and the reply formatter uses
+	// the same budget.
+	short := "OK: /status"
+	if FitGSM7(short, MaxSeptets) != short {
+		t.Fatalf("a short text was changed: %q", FitGSM7(short, MaxSeptets))
+	}
+	reply := fitReply(strings.Repeat("[", 200))
+	if Septets(reply) > MaxSeptets || len([]rune(reply)) != 80 {
+		t.Fatalf("reply = %d chars / %d septets, want 80 / 160", len([]rune(reply)), Septets(reply))
+	}
+}
+
 func TestSendValidates(t *testing.T) {
 	h, _, rec := newTestHub(t)
 	if err := h.Send(context.Background(), "abc", "x"); err == nil {
@@ -651,19 +703,24 @@ func TestOperatorAndSignal(t *testing.T) {
 }
 
 // quietPort is a serial transport that never delivers a byte: every read
-// is the VTIME tick a real port turns into an immediate empty read.
+// is the VTIME tick a real port turns into an immediate empty read. Feed
+// lets a test hand it the scripted part of a response first; everything
+// after that stays "no data yet".
 type quietPort struct {
 	mu     sync.Mutex
 	writes bytes.Buffer
+	feed   bytes.Buffer
 	closed bool
 }
 
-func (p *quietPort) Read([]byte) (int, error) {
+func (p *quietPort) Read(b []byte) (int, error) {
 	p.mu.Lock()
-	closed := p.closed
-	p.mu.Unlock()
-	if closed {
+	defer p.mu.Unlock()
+	if p.closed {
 		return 0, io.EOF
+	}
+	if p.feed.Len() > 0 {
+		return p.feed.Read(b[:1])
 	}
 	return 0, io.EOF // "no data yet", exactly like the port's idle read
 }
@@ -688,6 +745,13 @@ func (p *quietPort) written() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.writes.String()
+}
+
+// send feeds a scripted response to the quiet transport.
+func (p *quietPort) send(s string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.feed.WriteString(s)
 }
 
 // newQuietHub wires a hub onto a modem that never answers.
@@ -806,11 +870,13 @@ func TestSendFinishesAnExchangeItStarted(t *testing.T) {
 	}
 }
 
-// TestSendRepairsTheSessionAfterAnUnansweredExchange pins the safe
-// ending: an exchange that ends without an answer abandons a pending body
-// with ESC, probes the modem, and drops a session that stays silent — so
-// the next command never starts from a half-written state.
-func TestSendRepairsTheSessionAfterAnUnansweredExchange(t *testing.T) {
+// TestSendRepairsTheSessionBeforeTheNextCommand pins the safe ending: an
+// exchange that ends without an answer abandons a pending body with ESC
+// and probes the modem — so the next command never starts from a
+// half-written state — but the repair runs BEFORE THAT COMMAND, not
+// inside the call: a repair that outlasts the caller's budget is exactly
+// what makes the worker disable a committed channel.
+func TestSendRepairsTheSessionBeforeTheNextCommand(t *testing.T) {
 	shortenTimeouts(t, 30*time.Millisecond, 30*time.Millisecond, 30*time.Millisecond)
 	h, p := newQuietHub(t)
 
@@ -822,19 +888,103 @@ func TestSendRepairsTheSessionAfterAnUnansweredExchange(t *testing.T) {
 	if !strings.Contains(w, "AT+CMGS") {
 		t.Fatalf("the send never started: %q", w)
 	}
+	if strings.Contains(w, "\x1b") {
+		t.Fatalf("the repair ran inside the call's budget: %q", w)
+	}
+	if rows := p.written(); strings.Contains(rows, "Czesc") {
+		t.Fatalf("the body was written although the prompt never came: %q", rows)
+	}
+	// The next command runs the repair first: ESC abandons the pending
+	// body, the probe goes unanswered and the session is dropped, so the
+	// command is refused instead of being written into a stale session.
+	if err := h.Send(context.Background(), "+48600111222", "Czesc"); !errors.Is(err, ErrNoModem) {
+		t.Fatalf("send after the failed repair = %v, want ErrNoModem", err)
+	}
+	w = p.written()
 	if !strings.Contains(w, "\x1b") {
 		t.Fatalf("the pending body was not abandoned with ESC: %q", w)
 	}
 	if !strings.Contains(w, "AT\r") {
 		t.Fatalf("the session was not probed: %q", w)
 	}
-	// The probe went unanswered too, so the session was dropped: the next
-	// command gets ErrNoModem instead of writing into a stale one.
 	if h.conn != nil {
 		t.Fatal("a silent session was kept open after the repair failed")
 	}
-	shortenTimeouts(t, 30*time.Millisecond, 30*time.Millisecond, 30*time.Millisecond)
-	if err := h.Send(context.Background(), "+48600111222", "Czesc"); !errors.Is(err, ErrNoModem) {
-		t.Fatalf("send after the dropped session = %v, want ErrNoModem", err)
+}
+
+// TestSendStaysInsideTheCallersBudget pins the reported P1: from Ctrl-Z
+// on the modem owns the message, but a slow confirmation must not outlive
+// the caller's budget. The worker disables an action whose call overruns
+// its deadline, which would take the whole SMS channel down (until a
+// process restart) for a message that did go out. The wait is therefore
+// bounded by the caller's deadline, a cut-short window is reported as an
+// unconfirmed commit (never as "nothing was sent"), and the repair it
+// needs is deferred to the next command.
+func TestSendStaysInsideTheCallersBudget(t *testing.T) {
+	// The modem budget is far wider than the caller's: only the caller
+	// can end this wait.
+	shortenTimeouts(t, 30*time.Millisecond, 10*time.Second, 30*time.Millisecond)
+	h, p := newQuietHub(t)
+	p.send("> \r\n") // the prompt; the accept reply never comes
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := h.Send(ctx, "+48600111222", "Czesc")
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrUnconfirmed) {
+		t.Fatalf("send with a slow modem = %v, want ErrUnconfirmed", err)
+	}
+	if elapsed > 400*time.Millisecond {
+		t.Fatalf("send outlived the caller's budget (%s)", elapsed)
+	}
+	w := p.written()
+	if !strings.Contains(w, "Czesc\x1A") {
+		t.Fatalf("the body was not committed: %q", w)
+	}
+	if strings.Contains(w, "\x1b") {
+		t.Fatalf("the repair ran inside the caller's budget: %q", w)
+	}
+
+	// The next command repairs the session first (ESC + probe), so the
+	// channel keeps working after an unconfirmed send.
+	p.send("OK\r\n> \r\n+CMGS: 7\r\nOK\r\n")
+	if err := h.Send(context.Background(), "+48600111222", "Drugi"); err != nil {
+		t.Fatalf("send after an unconfirmed one = %v, want nil", err)
+	}
+	w = p.written()
+	if !strings.Contains(w, "\x1b") || !strings.Contains(w, "AT\r") {
+		t.Fatalf("the deferred repair did not run: %q", w)
+	}
+}
+
+// TestSendAbandonsAPendingBodyWhenTheCallerGivesUp pins the pre-commit
+// half of the same report: while the modem takes its time to offer the
+// text prompt, the caller's deadline still ends the request — the body is
+// never written on its behalf, and the pending message is abandoned
+// before the next command instead.
+func TestSendAbandonsAPendingBodyWhenTheCallerGivesUp(t *testing.T) {
+	shortenTimeouts(t, 5*time.Second, 5*time.Second, 30*time.Millisecond)
+	h, p := newQuietHub(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := h.Send(ctx, "+48600111222", "Czesc")
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("send for a caller that gave up = %v, want the context error", err)
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("send waited for the modem after the caller gave up (%s)", elapsed)
+	}
+	w := p.written()
+	if !strings.Contains(w, "AT+CMGS") {
+		t.Fatalf("the send never started: %q", w)
+	}
+	if strings.Contains(w, "Czesc") {
+		t.Fatalf("the body was written for a caller that is gone: %q", w)
 	}
 }

@@ -402,10 +402,11 @@ func openSerial(path string) (io.ReadWriteCloser, error) {
 // initLocked runs the modem setup: echo off, text-mode SMS, pinned TE
 // character set and the preferred message storage. TEXT mode is the
 // only mode this firmware family supports for reading stored messages
-// (verified live on the E173: PDU-mode AT+CMGR returns nothing), so
-// long messages arrive as separate stored parts (merged at display)
-// and non-GSM-7 bodies arrive as UCS-2 hex that DecodeSMSBody
-// converts. CSCS="IRA" is pinned because the text-mode send path needs
+// (verified live on the E173: PDU-mode AT+CMGR returns nothing), so a
+// long message arrives as separate stored parts with no user-data
+// header — the parts carry no identity to group them by (reassemble
+// joins what a PDU delivers) and each is stored on its own. Non-GSM-7
+// bodies arrive as UCS-2 hex that DecodeSMSBody converts. CSCS="IRA" is pinned because the text-mode send path needs
 // it (a leftover UCS2 setting would make the modem reject ASCII
 // AT+CMGS commands). The caller holds h.mu.
 func (h *Hub) initLocked() bool {
@@ -971,8 +972,9 @@ func reassemble(raw []received) []received {
 // recordBatch persists and reports one drained batch. Empty shell
 // messages (some SMSCs emit them) are dropped — they carry nothing to
 // display or route. Text mode stores each part of a long message as a
-// separate entry with no user-data header, so the web layer merges
-// same-sender same-minute parts at display.
+// separate entry with no user-data header, so the parts of a long
+// message reach the history as separate rows; nothing joins them by
+// guesswork any more (see the v58 migration for the rows stored before).
 func (h *Hub) recordBatch(raw []received) []received {
 	msgs := reassemble(raw)
 	kept := make([]received, 0, len(msgs))

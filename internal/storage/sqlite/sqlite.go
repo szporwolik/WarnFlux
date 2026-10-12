@@ -997,6 +997,16 @@ CREATE INDEX idx_message_ids_minute ON message_ids(minute);
 ALTER TABLE meshtastic_messages ADD COLUMN reason TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v58: join the split parts of the SMS history stored before the
+		// read path stopped guessing. The old display merged every
+		// consecutive rx row from one sender within the same minute, so
+		// independent messages shown together became one text; the join
+		// now happens once, here, and only for runs that look like a
+		// split message (every part but the last is a full segment).
+		SQL: `SELECT 1`,
+		run: joinLegacyGSMParts,
+	},
 }
 
 // eventColumns is the canonical column list used for SELECT and JOINs.

@@ -289,21 +289,56 @@ func TestGSMSendTooLong(t *testing.T) {
 // split rows imported by the old text-mode pipeline: consecutive rx
 // rows from one sender within the same minute render as ONE message in
 // reading order (the list is newest-first, the parts are ascending).
-func TestGSMMessagesMergeLegacyParts(t *testing.T) {
+// TestGSMMessagesKeepIndependentMessagesApart pins the reported P2: the
+// history used to glue every consecutive rx row from one sender within
+// the same minute, so two independent SMSes shown one text. Each stored
+// message is shown as it is; the parts of a split message are joined
+// once by the v58 migration, not guessed at display time.
+func TestGSMMessagesKeepIndependentMessagesApart(t *testing.T) {
 	store := &fakeGSMMsgs{}
 	hub := newTestGSMHub(t)
 	env := newTestEnvWebUsers(t, defaultTestWebConfig(), nil, nil, nil, nil, nil, nil, nil, hub, store)
 	base := time.Date(2026, 10, 8, 19, 58, 4, 0, time.Local)
-	for i, part := range []string{"Kod weryfikacyjny: 3275. ", "Jesli nie wiesz czego dotyczy, ", "skontaktuj sie z nami.\u200B"} {
+	texts := []string{"Kod weryfikacyjny: 3275.", "Jesli nie wiesz czego dotyczy,", "skontaktuj sie z nami."}
+	for i, part := range texts {
 		if err := store.RecordGSMMessage(context.Background(), "rx", "80766589", "self", part, base.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	env.login()
 	_, html := env.get("/gsm")
-	joined := "Kod weryfikacyjny: 3275. Jesli nie wiesz czego dotyczy, skontaktuj sie z nami."
-	if !strings.Contains(html, joined) {
-		t.Fatalf("gsm page missing the joined message: %s", html)
+
+	for _, want := range texts {
+		if !strings.Contains(html, want) {
+			t.Fatalf("gsm page missing the message %q: %s", want, html)
+		}
+	}
+	// The fuse itself must be gone: no row may carry another one's text.
+	// (The old merge concatenated the parts without a separator, so this
+	// is exactly what the page showed.)
+	if glued := strings.Join(texts, ""); strings.Contains(html, glued) {
+		t.Fatalf("gsm page joined independent messages into %q", glued)
+	}
+}
+
+// TestGSMMessagesKeepSentCopies pins the other half of the old guess:
+// only rx rows were candidates for joining, and a tx row never merges
+// with anything — the station's own sends always stay separate rows.
+func TestGSMMessagesKeepSentCopies(t *testing.T) {
+	store := &fakeGSMMsgs{}
+	hub := newTestGSMHub(t)
+	env := newTestEnvWebUsers(t, defaultTestWebConfig(), nil, nil, nil, nil, nil, nil, nil, hub, store)
+	base := time.Date(2026, 10, 8, 19, 58, 4, 0, time.Local)
+	if err := store.RecordGSMMessage(context.Background(), "tx", "self", "+48509558155", "Pong", base); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordGSMMessage(context.Background(), "tx", "self", "+48509558155", "Pong", base.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	env.login()
+	_, html := env.get("/gsm")
+	if strings.Contains(html, "PongPong") {
+		t.Fatal("two sent messages were joined into one row")
 	}
 }
 

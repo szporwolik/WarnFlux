@@ -129,6 +129,15 @@ type Server struct {
 	// EMCOM group posts) use it.
 	systemLang atomic.Value
 
+	// configSaveMu serializes one "apply the runtime change and persist
+	// it" step of the admin Config page: two requests in flight (two
+	// admins, or one admin with two tabs) used to interleave their runtime
+	// setters and their file writes, so the file could end up describing a
+	// state the station was not running, and the two writes shared one
+	// temporary name (reported P2). config.UpdateFile serializes its own
+	// read-modify-write cycle per file on top of this.
+	configSaveMu sync.Mutex
+
 	// configPath is the YAML file the admin Config page writes its
 	// switches back to (empty = persistence disabled, e.g. tests).
 	configPath string

@@ -291,6 +291,7 @@ func TestValidateSizeCaps(t *testing.T) {
 }
 
 func TestMessageIDStable(t *testing.T) {
+	cleanMsgIDState(t)
 	key := EventKey("imgw-meteo", "1234567890")
 	id := MessageID(key)
 	if id != MessageID(key) {
@@ -302,10 +303,17 @@ func TestMessageIDStable(t *testing.T) {
 	if !strings.HasPrefix(id, "WF-") {
 		t.Fatalf("MessageID = %q, want the WF- prefix", id)
 	}
-	// The suffix is the readable MMDDHHMMNN code: digits only.
-	for _, r := range id[3:] {
+	// The suffix is the readable MMDDHHMMNN code: the time part is digits
+	// and the sequence starts decimal (it continues with letters past 99,
+	// see TestMessageIDScalesPastTheDecimalSequence).
+	for _, r := range id[3:11] {
 		if r < '0' || r > '9' {
-			t.Fatalf("MessageID = %q carries %q outside 0-9", id, r)
+			t.Fatalf("MessageID = %q carries %q outside 0-9 in the time part", id, r)
+		}
+	}
+	for _, r := range id[11:] {
+		if !strings.ContainsRune(msgIDAlphabet, r) {
+			t.Fatalf("MessageID = %q carries %q outside the id alphabet", id, r)
 		}
 	}
 	// Different keys must produce different IDs (per-minute sequence).
@@ -323,14 +331,15 @@ func TestMessageIDStable(t *testing.T) {
 // day of month, hour and minute (24h) plus a per-minute sequence that
 // advances within one minute and restarts at 01 in the next.
 func TestMessageIDReadableFormat(t *testing.T) {
+	cleanMsgIDState(t)
 	at := time.Date(2026, 10, 7, 19, 58, 12, 0, time.UTC)
 	a := MessageIDAt("fmt:a", at)
 	b := MessageIDAt("fmt:b", at)
 	c := MessageIDAt("fmt:c", at.Add(time.Minute))
 
-	re := regexp.MustCompile(`^WF-\d{10}$`)
+	re := regexp.MustCompile(`^WF-\d{8}[0-9A-Z]{2}$`)
 	if !re.MatchString(a) || !re.MatchString(b) || !re.MatchString(c) {
-		t.Fatalf("ids = %q, %q, %q; want WF- + 10 digits", a, b, c)
+		t.Fatalf("ids = %q, %q, %q; want WF- + 8 digits + the sequence", a, b, c)
 	}
 	if !strings.HasPrefix(a, "WF-10071958") {
 		t.Fatalf("id = %q, want the WF-10071958 month/day/hour/minute prefix", a)

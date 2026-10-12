@@ -1007,26 +1007,11 @@ func (s *Server) templateFuncs() template.FuncMap {
 			}
 			return false
 		},
-		"pluginClass": func(st plugin.PluginState) string {
-			switch st {
-			case plugin.StateRunning:
-				return "healthy"
-			case plugin.StateDegraded, plugin.StateSuspended:
-				return "degraded"
-			default:
-				return "disabled"
-			}
-		},
-		"actionClass": func(st action.InstanceState) string {
-			switch st {
-			case action.StateHealthy:
-				return "healthy"
-			case action.StateDegraded:
-				return "degraded"
-			default:
-				return "disabled"
-			}
-		},
+		// pluginClass / actionClass map a runtime state onto the shared
+		// severity vocabulary (see badges.go), so the same condition looks
+		// the same in every card.
+		"pluginClass": pluginBadgeClass,
+		"actionClass": actionBadgeClass,
 		"heartbeatClass": func(freshness string) string {
 			switch freshness {
 			case "fresh":

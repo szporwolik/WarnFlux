@@ -1074,6 +1074,12 @@ type Store struct {
 	// msgLogf reports background message-id write failures (see msgid.go).
 	msgLogf func(msg string, args ...any)
 
+	// msgRetry is the delay schedule the message-id writer walks through
+	// after a failed write; nil means the production schedule. Tests
+	// shorten it, so a broken database does not have to be tolerated for
+	// minutes.
+	msgRetry []time.Duration
+
 	// Message-id mirror: the assignments are readable from inside store
 	// transactions, where a database query would deadlock on the single
 	// pooled connection. msgMu guards all of it.
@@ -1095,6 +1101,15 @@ type Option func(*Store)
 // logger it would be silent.
 func WithMessageIDLog(fn func(msg string, args ...any)) Option {
 	return func(s *Store) { s.msgLogf = fn }
+}
+
+// WithMessageIDRetry replaces the retry schedule of the background
+// message-id writer (see msgid.go). The production schedule is
+// deliberately slow — a batch the database refuses is retried, never
+// dropped, for as long as the station runs — so tests inject a short one
+// instead of waiting it out.
+func WithMessageIDRetry(delays []time.Duration) Option {
+	return func(s *Store) { s.msgRetry = append([]time.Duration(nil), delays...) }
 }
 
 // WithClock sets the clock used for persistence timestamps. It is the

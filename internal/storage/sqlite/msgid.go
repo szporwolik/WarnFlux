@@ -30,6 +30,12 @@ import (
 // The in-memory copy is authoritative for lookups: PruneMessageIDs drops
 // exactly the keys its DELETE reported, and an assignment is immutable
 // once recorded, so a key absent from the copy was never assigned.
+//
+// A writer behind the caller owes it durability: the assignment is
+// reported as recorded, and operators cite the number on the air. A batch
+// the database refuses is therefore retried and kept for as long as the
+// station runs (only shutdown, which cannot wait forever, gives up), so a
+// transient write failure delays the row instead of losing it.
 
 // messageIDMinuteKeep bounds the in-memory per-minute sequence buckets.
 // The sequence is only ever asked about the current minute, so buckets
@@ -102,6 +108,11 @@ func (s *Store) HighestSeqInMinute(_ context.Context, minute string) (int, error
 // never renumbers an already-cited event. The record is queued for the
 // background writer and visible to LoadMessageID immediately, which is
 // what makes it safe to call from inside a transaction.
+//
+// The queue is the record of assignments that are in memory but not yet
+// in message_ids. It is never dropped while the station runs (see
+// messageIDWriter), so "assigned in memory" always implies "still queued
+// or already written": a replayed assignment needs no repair.
 func (s *Store) SaveMessageID(_ context.Context, a core.MessageIDAssignment) error {
 	s.msgMu.Lock()
 	if _, exists := s.msgByKey[a.EventKey]; exists {
@@ -118,12 +129,7 @@ func (s *Store) SaveMessageID(_ context.Context, a core.MessageIDAssignment) err
 	}
 	s.msgMu.Unlock()
 
-	if wake != nil {
-		select {
-		case wake <- struct{}{}:
-		default:
-		}
-	}
+	wakeMessageIDWriter(wake)
 	return nil
 }
 
@@ -182,25 +188,76 @@ func (s *Store) PruneMessageIDs(ctx context.Context, olderThan time.Time) (int64
 // for the connection there cannot block the caller that queued the row.
 // Both channels are captured here: clearing the store fields on shutdown
 // must not leave this loop selecting on nil.
+//
+// A batch the database refuses is retried on a growing delay and KEPT.
+// Giving up would be a silent renumbering: the id is already assigned in
+// memory (and may already be on the air), so the row it never wrote is
+// the only thing linking the number to the event — a restart would hand
+// that event a different one. Only shutdown gives up, on its own bound
+// (see finalFlushMessageIDs).
 func (s *Store) messageIDWriter(wake, stop <-chan struct{}) {
 	defer s.msgWG.Done()
+	attempt := 0
 	for {
 		select {
-		case <-wake:
 		case <-stop:
-			s.drainMessageIDs()
+			s.finalFlushMessageIDs()
 			return
+		case <-wake:
 		}
-		s.drainMessageIDs()
+		for {
+			err := s.flushMessageIDs()
+			if err == nil {
+				attempt = 0
+				break
+			}
+			delay := s.messageIDRetryDelay(attempt)
+			attempt++
+			if s.msgLogf != nil {
+				s.msgLogf("message id write failed", "error", err, "attempt", attempt, "retry_in", delay)
+			}
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-stop:
+				timer.Stop()
+				s.finalFlushMessageIDs()
+				return
+			}
+		}
 	}
 }
 
-// messageIDFlushAttempts bounds the retry loop of a full drain: a
-// database that never accepts the insert must not hang the shutdown.
-const messageIDFlushAttempts = 10
+// messageIDRetrySchedule is the delay the writer waits after a failed
+// write, growing with every attempt; its last step repeats for as long as
+// the station runs, because the queue is never dropped while it does.
+var messageIDRetrySchedule = []time.Duration{
+	100 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	2 * time.Second,
+	5 * time.Second,
+	15 * time.Second,
+}
+
+// messageIDRetryDelay returns the delay after the given zero-based
+// failed attempt, from the store's schedule.
+func (s *Store) messageIDRetryDelay(attempt int) time.Duration {
+	sched := s.msgRetry
+	if len(sched) == 0 {
+		sched = messageIDRetrySchedule
+	}
+	if attempt >= len(sched) {
+		attempt = len(sched) - 1
+	}
+	return sched[attempt]
+}
 
 // flushMessageIDs attempts one pass over the queued assignments and
-// leaves a failed batch queued for the next attempt.
+// leaves a failed batch queued for the next attempt. The nudge on the
+// failure path covers the callers outside the writer (PruneMessageIDs):
+// a batch re-queued by them must not wait for the next assignment before
+// anyone retries it.
 func (s *Store) flushMessageIDs() error {
 	s.msgMu.Lock()
 	if len(s.msgQueue) == 0 {
@@ -214,34 +271,24 @@ func (s *Store) flushMessageIDs() error {
 	if err := s.writeMessageIDs(batch); err != nil {
 		s.msgMu.Lock()
 		s.msgQueue = append(batch, s.msgQueue...)
+		wake := s.msgWake
 		s.msgMu.Unlock()
+		wakeMessageIDWriter(wake)
 		return err
 	}
 	return nil
 }
 
-// drainMessageIDs writes every queued assignment, retrying the batch
-// that failed. A failure is not fatal — the ids stay assigned in memory
-// and the rows are written as soon as the database accepts them — but it
-// is never silent: message_ids is what keeps a cited number stable
-// across a restart.
-func (s *Store) drainMessageIDs() {
-	for attempt := 0; attempt < messageIDFlushAttempts; attempt++ {
-		err := s.flushMessageIDs()
-		if err == nil {
-			return
-		}
-		if s.msgLogf != nil {
-			s.msgLogf("message id write failed", "error", err, "attempt", attempt+1)
-		}
-		time.Sleep(time.Second)
+// wakeMessageIDWriter nudges the writer without blocking: the wake
+// channel holds one token, so a burst of assignments collapses into one
+// drain (which takes the whole queue anyway).
+func wakeMessageIDWriter(wake chan struct{}) {
+	if wake == nil {
+		return
 	}
-	s.msgMu.Lock()
-	dropped := len(s.msgQueue)
-	s.msgQueue = nil
-	s.msgMu.Unlock()
-	if dropped > 0 && s.msgLogf != nil {
-		s.msgLogf("message id assignments abandoned", "pending", dropped)
+	select {
+	case wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -264,6 +311,46 @@ func (s *Store) writeMessageIDs(batch []core.MessageIDAssignment) error {
 // a database that no longer accepts writes must not turn a shutdown into
 // a hang.
 const messageIDShutdownWait = 5 * time.Second
+
+// messageIDShutdownFlush bounds the last-chance write attempt inside that
+// wait. It is deliberately NOT the runtime schedule: while the station
+// runs the queue is kept forever, but a process that is exiting cannot
+// wait for the database to come back, so the writer has to be finished
+// before Close stops waiting for it.
+const messageIDShutdownFlush = 3 * time.Second
+
+// finalFlushMessageIDs is the last chance to persist the queue before the
+// process exits: bounded retries inside messageIDShutdownFlush, then a
+// loud give-up naming the assignments that were lost.
+func (s *Store) finalFlushMessageIDs() {
+	deadline := time.Now().Add(messageIDShutdownFlush)
+	for {
+		err := s.flushMessageIDs()
+		if err == nil {
+			return
+		}
+		left := time.Until(deadline)
+		if left <= 0 {
+			s.msgMu.Lock()
+			pending := len(s.msgQueue)
+			s.msgQueue = nil
+			s.msgMu.Unlock()
+			if pending > 0 && s.msgLogf != nil {
+				s.msgLogf("message id assignments abandoned at shutdown",
+					"pending", pending, "error", err)
+			}
+			return
+		}
+		if s.msgLogf != nil {
+			s.msgLogf("message id write failed", "error", err, "shutdown_flush_left", left)
+		}
+		delay := s.messageIDRetryDelay(0)
+		if delay > left {
+			delay = left
+		}
+		time.Sleep(delay)
+	}
+}
 
 // stopMessageIDs drains the queue and stops the writer; called by Close
 // so a shutting-down process never loses an assignment it reported.

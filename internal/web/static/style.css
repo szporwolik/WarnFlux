@@ -839,6 +839,13 @@ button:disabled { cursor: not-allowed; }
   align-items: flex-start;
   margin-top: 0.7rem;
 }
+/* The Discord card wears the service's own mark, in its own colour: the
+   logo is recognised before the label is read. */
+.help-discord h2 .icon {
+  color: #5865f2;
+  width: 22px;
+  height: 22px;
+}
 .help-meshchan-facts { flex: 1 1 18rem; min-width: 0; }
 /* The share link is one long unbreakable word: let the row wrap and the
    value shrink, or the card would push the whole page sideways. */

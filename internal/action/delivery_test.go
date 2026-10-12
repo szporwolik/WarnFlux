@@ -415,15 +415,19 @@ func TestInstanceDurableGateSkips(t *testing.T) {
 	}
 }
 
-// TestInstanceDurableGateIgnoredForNotify pins the deliberate exception:
-// a terminal transition flagged Notify is the stand-down notice — it
-// must transmit even when the lifecycle oracle reports the hazard is no
-// longer active (the gate is never consulted).
-func TestInstanceDurableGateIgnoredForNotify(t *testing.T) {
+// TestInstanceDurableNotifyIsGated pins the reported P1: the staleness
+// gate is consulted for a stand-down notice too. Skipping it here let a
+// queued cancellation reach the channels after the operator had raised
+// the network again — the gate decides what a Notify may say (see
+// NewLifecycleGate: a newer version holds it back, its own terminal
+// state does not).
+func TestInstanceDurableNotifyIsGated(t *testing.T) {
 	p := &deliveryPlugin{}
 	inst, ms := newDeliveryInstance(t, p, 1)
+	var gated ActionRequest
 	inst.setDeliveryGate(func(ctx context.Context, req ActionRequest) bool {
-		return false // lifecycle says: no longer active
+		gated = req
+		return false // a newer version superseded this notice
 	})
 
 	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
@@ -438,8 +442,38 @@ func TestInstanceDurableGateIgnoredForNotify(t *testing.T) {
 	enqueueOne(t, ms, payload)
 
 	waitForDelivery(t, func() bool {
+		return ms.statusOf(1, "log", "c:1") == storage.DeliveryExpired
+	}, "superseded notify payload settled as expired")
+	if got := p.handled.Load(); got != 0 {
+		t.Errorf("plugin invoked %d times for a superseded notice, want 0", got)
+	}
+	if gated.Event.Hazard == nil || !gated.Event.Hazard.Notify || gated.Event.Hazard.ChangeID != 9 {
+		t.Errorf("gate received %+v, want the notice with its version identity (changeID 9, Notify)", gated.Event.Hazard)
+	}
+}
+
+// TestInstanceDurableNotifyTransmittedWhenCurrent pins the other half: a
+// notice whose version is still the current one goes out, terminal
+// hazard or not — that is its whole purpose.
+func TestInstanceDurableNotifyTransmittedWhenCurrent(t *testing.T) {
+	p := &deliveryPlugin{}
+	inst, ms := newDeliveryInstance(t, p, 1)
+	inst.setDeliveryGate(func(ctx context.Context, req ActionRequest) bool { return true })
+
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Key: "emcom:net", Source: "emcom", ChangeID: 9, Publisher: "pub-1", Notify: true,
+			Type: dispatch.TransitionExpired,
+			Hazard: dispatch.Hazard{
+				EventKey: "emcom:net", Severity: "severe",
+				Headline: "NET: level 0 – Monitoring",
+			}}}
+	payload, _ := json.Marshal(ActionRequest{ID: "emcom:net/log", Event: ev})
+	enqueueOne(t, ms, payload)
+
+	waitForDelivery(t, func() bool {
 		return p.handled.Load() == 1
-	}, "notify payload transmitted despite the gate")
+	}, "current notify payload transmitted")
 	if got := ms.statusOf(1, "log", "c:1"); got != storage.DeliveryAccepted && got != storage.DeliveryConfirmed {
 		t.Errorf("job status = %s, want accepted/confirmed (transmitted)", got)
 	}

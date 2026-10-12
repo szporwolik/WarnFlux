@@ -325,12 +325,18 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		}
 	}
 	// Staleness gate DIRECTLY BEFORE the transmission: the hazard may
-	// have expired while the job sat in the queue, or a newer
-	// cancellation may already be known. Either way the stale alert
-	// must never hit the radio — settle as expired, a terminal state
-	// that deduplicates replays. A Notify transition is the deliberate
-	// exception: its whole point is telling people the hazard ended.
-	if i.gate != nil && !(req.Event.Hazard != nil && req.Event.Hazard.Notify) && !i.gate(context.Background(), req) {
+	// have expired while the job sat in the queue, or a newer version
+	// may already be known. Either way the stale alert must never hit
+	// the radio — settle as expired, a terminal state that deduplicates
+	// replays.
+	//
+	// The gate is asked for EVERY job, including a stand-down notice
+	// flagged Notify: being terminal only excuses the notice's own
+	// version, not a version that came after it, and that decision
+	// belongs to the gate (see NewLifecycleGate). Skipping the check
+	// here let a queued cancellation reach the channels after the
+	// operator had already raised the network again (reported P1).
+	if i.gate != nil && !i.gate(context.Background(), req) {
 		i.logger.Info("action: queued alert superseded before transmission",
 			"action", i.id, "event_key", key)
 		i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req)

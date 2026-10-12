@@ -483,7 +483,10 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 	// store already knows. This is a deliberate skip — the inbox row
 	// (if any) is consumed. Notify transitions bypass it: the lifecycle
 	// ledger has just recorded THIS transition as terminal, and the
-	// stand-down notice must still go out.
+	// stand-down notice must still be scheduled. Whether it reaches the
+	// channels is decided later, directly before transmission, by the
+	// delivery gate — which holds a notice back when a newer version has
+	// superseded it (see action.NewLifecycleGate).
 	if !ev.Hazard.Notify && !e.hazardFresh(ctx, ev) {
 		e.transitionsSkipped.Add(1)
 		e.logger.Debug("routing: stale transition skipped",

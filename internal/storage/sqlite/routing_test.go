@@ -597,6 +597,52 @@ func TestLifecycleBlocksVersionSemantics(t *testing.T) {
 	}
 }
 
+// TestLifecycleSupersededVersionSemantics pins the narrower verdict the
+// stand-down notice is judged by (reported P1): only a version that came
+// AFTER the message holds it back. The terminal status of the very
+// version being delivered must not — that is what the notice is
+// reporting — which is exactly where LifecycleBlocks answers "block".
+func TestLifecycleSupersededVersionSemantics(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	if superseded, err := store.LifecycleSuperseded(ctx, "pub", "emcom:net", 9); err != nil || superseded {
+		t.Fatalf("unknown message = (%v, %v), want (false, nil)", superseded, err)
+	}
+	// Version 9 stands down the network: the notice for it is current.
+	if err := store.RecordLifecycle(ctx, "pub", "emcom:net", 9, "expired"); err != nil {
+		t.Fatal(err)
+	}
+	if superseded, _ := store.LifecycleSuperseded(ctx, "pub", "emcom:net", 9); superseded {
+		t.Fatal("the notice of the current version must not be held back by its own terminal state")
+	}
+	if blocked, _ := store.LifecycleBlocks(ctx, "pub", "emcom:net", 9); !blocked {
+		t.Fatal("LifecycleBlocks must keep blocking that same version (the alert-path rule)")
+	}
+	// The operator raises the network again: a newer version supersedes
+	// the queued notice.
+	if err := store.RecordLifecycle(ctx, "pub", "emcom:net", 10, "active"); err != nil {
+		t.Fatal(err)
+	}
+	if superseded, _ := store.LifecycleSuperseded(ctx, "pub", "emcom:net", 9); !superseded {
+		t.Fatal("a notice superseded by an active newer version must be held back")
+	}
+	if superseded, _ := store.LifecycleSuperseded(ctx, "pub", "emcom:net", 10); superseded {
+		t.Fatal("the current version is not superseded")
+	}
+	if superseded, _ := store.LifecycleSuperseded(ctx, "pub", "emcom:net", 11); superseded {
+		t.Fatal("a newer unknown version must not be held back")
+	}
+	// Without a version identity there is nothing to compare.
+	if superseded, _ := store.LifecycleSuperseded(ctx, "pub", "emcom:net", 0); superseded {
+		t.Fatal("a versionless notice must not be held back")
+	}
+	// A different publisher is a different message.
+	if superseded, _ := store.LifecycleSuperseded(ctx, "other", "emcom:net", 9); superseded {
+		t.Fatal("another publisher's ledger must not supersede this notice")
+	}
+}
+
 // TestComposeLifecycleBlocksDelivery pins the reported P1 end to end at
 // the store level: SaveComposeHazard feeds the lifecycle ledger, so an
 // expired panel message blocks its queued delivery and an older save can

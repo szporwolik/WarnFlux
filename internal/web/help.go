@@ -59,7 +59,10 @@ type helpView struct {
 	// Discord is the Discord card (what the station posts there and what
 	// a user must do to be reachable) — nil when the station has no
 	// Discord instance.
-	Discord *helpDiscordView
+	Discord *helpStatusView
+	// MeshStatus is the Meshtastic card — nil when the station runs no
+	// radio.
+	MeshStatus *helpStatusView
 
 	NavDashboard     bool
 	NavUsers         bool
@@ -98,10 +101,11 @@ type helpMeshChannelView struct {
 	QR template.URL
 }
 
-// helpDiscordView is the Discord card: the surfaces the station uses
-// there, the cadence of its periodic notices and the few steps a user
-// has to take to be reachable on Discord.
-type helpDiscordView struct {
+// helpStatusView is the "what the station does on this surface" card: the
+// live facts (which alert paths are on, the cadence of the periodic lines)
+// plus the few steps a user has to take to be reachable there. Discord and
+// Meshtastic render the same shape, so the two surfaces read alike.
+type helpStatusView struct {
 	Facts []helpFact
 	Items []string // instruction lines (i18n keys, resolved by the template)
 }
@@ -131,6 +135,7 @@ func (s *Server) buildHelpView(lang string) helpView {
 
 		MeshChannel: s.helpMeshChannel(),
 		Discord:     s.helpDiscord(lang),
+		MeshStatus:  s.helpMeshStatus(lang),
 		Sections: []helpSection{
 			{Title: "help.start.title", Icon: "i-lightning-charge", Items: []string{
 				"help.start.1", "help.start.2", "help.start.3", "help.start.4",
@@ -195,10 +200,41 @@ func (s *Server) helpMeshChannel() *helpMeshChannelView {
 	return view
 }
 
+// helpOnOff renders a switch state for the status cards.
+func helpOnOff(lang string, on bool) string {
+	if on {
+		return i18n.T(lang, "help.notice.on")
+	}
+	return i18n.T(lang, "help.notice.off")
+}
+
+// helpEvery renders a periodic spacing ("every 1h"), with an optional note
+// appended; a zero spacing reads as "disabled".
+func helpEvery(lang string, d time.Duration, note string) string {
+	if d <= 0 {
+		return i18n.T(lang, "help.notice.off")
+	}
+	value := strings.ReplaceAll(i18n.T(lang, "help.notice.every"), "%s", helpDuration(d))
+	if note != "" {
+		value += " " + note
+	}
+	return value
+}
+
+// helpCadence renders a periodic line's schedule: the daily anchor
+// ("daily at 06:00") when one is configured, otherwise the spacing, and
+// "disabled" when neither is.
+func helpCadence(lang string, at string, d time.Duration) string {
+	if at = strings.TrimSpace(at); at != "" {
+		return strings.ReplaceAll(i18n.T(lang, "help.notice.daily_at"), "%s", at)
+	}
+	return helpEvery(lang, d, "")
+}
+
 // helpDiscord describes the station's Discord surface for the Help page:
 // which notices go out, how often, and what a user must register to be
 // messaged privately. Nil when the station runs no Discord instance.
-func (s *Server) helpDiscord(lang string) *helpDiscordView {
+func (s *Server) helpDiscord(lang string) *helpStatusView {
 	if s.actions == nil {
 		return nil
 	}
@@ -222,40 +258,18 @@ func (s *Server) helpDiscord(lang string) *helpDiscordView {
 	if !found {
 		return nil
 	}
-	onOff := func(on bool) string {
-		if on {
-			return i18n.T(lang, "help.discord.on")
-		}
-		return i18n.T(lang, "help.discord.off")
-	}
-	every := func(d time.Duration, note string) string {
-		if d <= 0 {
-			return i18n.T(lang, "help.discord.off")
-		}
-		value := strings.ReplaceAll(i18n.T(lang, "help.discord.every"), "%s", helpDuration(d))
-		if note != "" {
-			value += " " + note
-		}
-		return value
-	}
-	// The presence line is anchored to a daily clock time by default; a
-	// configured spacing reads as "every Nh" instead.
-	var uptime string
-	if at := strings.TrimSpace(info.UptimeAt); at != "" {
-		uptime = strings.ReplaceAll(i18n.T(lang, "help.discord.daily_at"), "%s", at)
-	} else {
-		uptime = every(info.UptimeInterval, "")
-	}
-	view := &helpDiscordView{
+	view := &helpStatusView{
 		Facts: []helpFact{
 			// A configured instance always posts routed alerts on its
 			// webhook channel.
-			{Label: i18n.T(lang, "help.discord.channel"), Value: onOff(true), On: true},
-			{Label: i18n.T(lang, "help.discord.dm"), Value: onOff(info.DirectMessages), On: info.DirectMessages},
+			{Label: i18n.T(lang, "help.discord.channel"), Value: helpOnOff(lang, true), On: true},
+			{Label: i18n.T(lang, "help.discord.dm"), Value: helpOnOff(lang, info.DirectMessages), On: info.DirectMessages},
 			{Label: i18n.T(lang, "help.discord.status"),
-				Value: every(info.HazardsInterval, i18n.T(lang, "help.discord.status_note")), On: info.HazardsInterval > 0},
+				Value: helpEvery(lang, info.HazardsInterval, i18n.T(lang, "help.notice.severe_note")),
+				On:    info.HazardsInterval > 0},
 			{Label: i18n.T(lang, "help.discord.uptime"),
-				Value: uptime, On: info.UptimeAt != "" || info.UptimeInterval > 0},
+				Value: helpCadence(lang, info.UptimeAt, info.UptimeInterval),
+				On:    info.UptimeAt != "" || info.UptimeInterval > 0},
 		},
 		Items: []string{
 			"help.discord.item.1", "help.discord.item.2", "help.discord.item.3",
@@ -265,6 +279,31 @@ func (s *Server) helpDiscord(lang string) *helpDiscordView {
 		view.Items = view.Items[:1]
 	}
 	return view
+}
+
+// helpMeshStatus describes the station's Meshtastic surface: the two alert
+// paths, the cadence of the periodic lines and what a user has to register
+// to be reached privately. Nil when no radio is configured.
+func (s *Server) helpMeshStatus(lang string) *helpStatusView {
+	if s.meshtastic == nil || !s.meshtastic.Enabled() {
+		return nil
+	}
+	facts := s.meshtastic.Status()
+	return &helpStatusView{
+		Facts: []helpFact{
+			{Label: i18n.T(lang, "help.meshstat.channel"), Value: helpOnOff(lang, facts.ChannelAlerts), On: facts.ChannelAlerts},
+			{Label: i18n.T(lang, "help.meshstat.dm"), Value: helpOnOff(lang, facts.DMAlerts), On: facts.DMAlerts},
+			{Label: i18n.T(lang, "help.meshstat.status"),
+				Value: helpEvery(lang, facts.HazardsInterval, i18n.T(lang, "help.notice.severe_note")),
+				On:    facts.HazardsInterval > 0},
+			{Label: i18n.T(lang, "help.meshstat.beacon"),
+				Value: helpCadence(lang, facts.BeaconAt, facts.BeaconInterval),
+				On:    facts.BeaconAt != "" || facts.BeaconInterval > 0},
+		},
+		Items: []string{
+			"help.meshstat.item.1", "help.meshstat.item.2", "help.meshstat.item.3",
+		},
+	}
 }
 
 // helpDuration renders a notice interval the way an operator reads it

@@ -37,6 +37,11 @@ const (
 	// defaultTimeout bounds one request when the config omits it. The
 	// action instance's call_timeout still caps the whole call.
 	defaultTimeout = 10 * time.Second
+
+	// maxLocationInError caps the Location a redirect reports before it
+	// lands in an error (and a log line).
+	maxLocationInError = 200
+
 	// maxHeaders bounds the configured header map.
 	maxHeaders = 32
 )
@@ -139,8 +144,18 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		cfg:     cfg,
 		url:     u,
 		timeout: timeout,
-		client:  &http.Client{Timeout: timeout},
-		logger:  slog.Default(),
+		client: &http.Client{
+			Timeout: timeout,
+			// A webhook is delivered by the response to THIS POST. With
+			// the default policy a 3xx is followed as a bodyless GET: an
+			// endpoint that sent the client to a login page answered 200
+			// and the alert was reported delivered although it never
+			// arrived (reported P2). The redirect is surfaced instead.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		logger: slog.Default(),
 	}
 	if cfg.TokenFile != "" {
 		info, err := os.Stat(cfg.TokenFile)
@@ -168,9 +183,9 @@ func New(node *yaml.Node) (action.Plugin, error) {
 // Name returns the action type name.
 func (p *webhookAction) Name() string { return Type }
 
-// Execute delivers one webhook POST. Non-2xx responses and transport
-// errors are returned as errors; the action instance machinery owns
-// retries.
+// Execute delivers one webhook POST. Non-2xx responses (redirects
+// included — see the redirect policy) and transport errors are returned
+// as errors; the action instance machinery owns retries.
 func (p *webhookAction) Execute(ctx context.Context, req action.ActionRequest) error {
 	payload := p.buildPayload(req)
 	body, err := json.Marshal(payload)
@@ -206,9 +221,27 @@ func (p *webhookAction) Execute(ctx context.Context, req action.ActionRequest) e
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4*1024))
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		if loc := redirectLocation(resp); loc != "" {
+			return fmt.Errorf("http_webhook: endpoint answered %s (redirect to %s), so the POST was not delivered — point config.url at the webhook itself",
+				resp.Status, loc)
+		}
 		return fmt.Errorf("http_webhook: endpoint answered %s", resp.Status)
 	}
 	return nil
+}
+
+// redirectLocation reports where a 3xx response wanted to send the request
+// (empty for other responses). The value comes from the endpoint, so it is
+// capped before it reaches a log line.
+func redirectLocation(resp *http.Response) string {
+	if resp.StatusCode < 300 || resp.StatusCode > 399 {
+		return ""
+	}
+	loc := strings.TrimSpace(resp.Header.Get("Location"))
+	if len(loc) > maxLocationInError {
+		loc = loc[:maxLocationInError] + "…"
+	}
+	return loc
 }
 
 // Close releases nothing (stateless per-call client).

@@ -82,6 +82,9 @@ type configView struct {
 	Groups []storage.Group
 	// MeshChannel is the runtime switch for hazard broadcasts on the
 	// Meshtastic group channel.
+	Cadence    cadenceView
+	PollFields []scalarFieldView
+
 	MeshChannel bool
 	// MeshDM is the runtime switch for hazard direct messages to users'
 	// registered node IDs.
@@ -205,6 +208,8 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		MqttRows:        s.mqttRows(),
 		EmcomNetworks:   s.emcomNetworkViews(lang),
 		Groups:          groups,
+		Cadence:         s.cadenceFor(),
+		PollFields:      s.pollFieldsFor(),
 		MeshChannel:     meshtastic.ChannelAlerts(),
 		MeshDM:          meshtastic.DMAlerts(),
 		MeshStations:    meshtastic.StationAlerts(),
@@ -241,6 +246,12 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		v.Msg = i18n.T(lang, "config.lang.saved")
 	case "content":
 		v.Msg = i18n.T(lang, "config.content.saved")
+	case "cadence":
+		v.Msg = i18n.T(lang, "config.cadence.saved")
+	case "polling":
+		v.Msg = i18n.T(lang, "config.range.saved")
+	case "polling-none":
+		v.Msg = i18n.T(lang, "config.range.none")
 	}
 	if r.URL.Query().Get("perr") == "1" {
 		v.Error = i18n.T(lang, "config.persist_failed")

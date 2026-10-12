@@ -131,6 +131,13 @@ type Server struct {
 	// switches back to (empty = persistence disabled, e.g. tests).
 	configPath string
 
+	// pollBounds reports the poll_interval range a source plugin accepts;
+	// nil keeps the poll fields read-only (see SetPollBounds).
+	pollBounds func(sourceType string) (time.Duration, time.Duration, bool)
+	// noticesCadence applies a cadence change to the live Discord notice
+	// runners (see SetNoticesCadence).
+	noticesCadence func(hazards, uptime time.Duration, uptimeAt string)
+
 	// Runtime branding/content fields: initialized from the config at
 	// startup, editable on the Config page and persisted to the YAML
 	// file. All view builders read them through the Display* getters,
@@ -500,6 +507,8 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /config/offline", s.requireAdmin(s.handleConfigOffline))
 	s.mux.Handle("POST /config/tiles", s.requireAdmin(s.handleConfigTiles))
 	s.mux.Handle("POST /config/mesh", s.requireAdmin(s.handleConfigMesh))
+	s.mux.Handle("POST /config/cadence", s.requireAdmin(s.handleConfigCadence))
+	s.mux.Handle("POST /config/polling", s.requireAdmin(s.handleConfigPolling))
 	s.mux.Handle("POST /config/lang", s.requireAdmin(s.handleConfigLang))
 	s.mux.Handle("POST /config/content", s.requireAdmin(s.handleConfigContent))
 	s.mux.Handle("POST /config/mqtt", s.requireAdmin(s.handleConfigMqtt))

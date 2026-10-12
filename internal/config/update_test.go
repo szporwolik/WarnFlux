@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestUpdateFileRoundTrip pins the surgical YAML editor: values set
@@ -174,5 +175,83 @@ func TestUpdateFileQuoting(t *testing.T) {
 	}
 	if cfg.Web.Tagline != "on: #tak" {
 		t.Errorf("tagline = %q, want the quoted round-trip", cfg.Web.Tagline)
+	}
+}
+
+// TestUpdateFileListIndexPath pins the list-entry path support: an operator
+// edits ONE source instance's poll interval, and the rest of the file —
+// comments, other instances, formatting — stays byte-identical.
+func TestUpdateFileListIndexPath(t *testing.T) {
+	const src = `app:
+  log_level: info
+
+sources:
+  - id: weather-home
+    type: openmeteo
+    config:
+      poll_interval: 30m # dev shares the budget
+      request_timeout: 10s
+  - id: planes
+    type: adsb
+    config:
+      poll_interval: 3m
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateFile(path, []ScalarEdit{
+		{Path: "sources[0].config.poll_interval", Value: DurationScalar(2 * time.Hour)},
+	}); err != nil {
+		t.Fatalf("UpdateFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(src, "poll_interval: 30m # dev shares the budget", "poll_interval: 2h0m0s # dev shares the budget", 1)
+	if string(got) != want {
+		t.Fatalf("file after the edit:\n%s\nwant:\n%s", got, want)
+	}
+
+	// The second instance is untouched, and an out-of-range index is an
+	// error rather than a silent no-op.
+	if err := UpdateFile(path, []ScalarEdit{
+		{Path: "sources[5].config.poll_interval", Value: DurationScalar(time.Minute)},
+	}); err == nil {
+		t.Fatal("an out-of-range list index was accepted")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(got) {
+		t.Fatalf("the failed edit changed the file:\n%s", after)
+	}
+}
+
+// TestUpdateFileQuotesClockTime pins the anchor spelling: a plain 07:30
+// is a sexagesimal number to YAML 1.1 readers, so the panel writes it the
+// way the example config does.
+func TestUpdateFileQuotesClockTime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("meshtastic:\n  emcom_at: \"06:00\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateFile(path, []ScalarEdit{
+		{Path: "meshtastic.emcom_at", Value: StringScalar("07:30")},
+		{Path: "meshtastic.emcom_interval", Value: DurationScalar(0)},
+	}); err != nil {
+		t.Fatalf("UpdateFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "meshtastic:\n  emcom_at: \"07:30\"\n  emcom_interval: 0s\n"
+	if string(got) != want {
+		t.Fatalf("file:\n%s\nwant:\n%s", got, want)
 	}
 }

@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
@@ -607,5 +609,243 @@ func TestConfigPersistFailureFlag(t *testing.T) {
 	_, page := env.get("/config?msg=mesh&perr=1")
 	if !strings.Contains(page, "config.yaml") {
 		t.Errorf("persistence warning missing from the page: %s", page)
+	}
+}
+
+// TestConfigCadenceSection pins the live periodic cadence: the panel moves
+// the presence anchor and the hazard spacing on the Meshtastic hub (the
+// Discord runner gets the same values), and the file keeps them.
+func TestConfigCadenceSection(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	base := "web:\n  enabled: true\n  auth:\n    username: admin\n    password: secret123\n" +
+		"meshtastic:\n  emcom_at: \"06:00\"\n" +
+		"actions:\n" +
+		"  - id: sosna\n    type: discord\n    config:\n      invite: \"https://discord.gg/x\"\n" +
+		"  - id: sosdev\n    type: discord\n    config:\n      hazards_interval: \"0s\"\n      uptime_interval: \"0s\"\n"
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.server.SetConfigFile(path)
+
+	var mu sync.Mutex
+	var got struct {
+		hazards, uptime time.Duration
+		at              string
+		calls           int
+	}
+	env.server.SetNoticesCadence(func(hazards, uptime time.Duration, uptimeAt string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got.hazards, got.uptime, got.at, got.calls = hazards, uptime, uptimeAt, got.calls+1
+	})
+	seen := func() (string, time.Duration, time.Duration, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return got.at, got.uptime, got.hazards, got.calls
+	}
+	csrf := env.csrfFromPage("/config")
+
+	// The section renders the live cadence and the accepted spelling.
+	_, page := env.get("/config")
+	if !strings.Contains(page, "Cadence of the periodic announcements") {
+		t.Fatalf("cadence section missing from the page")
+	}
+	if !strings.Contains(page, `name="anchor" maxlength="5" placeholder="06:00" value="06:00"`) {
+		t.Errorf("the daily hour is not shown in the field")
+	}
+
+	resp, _ := env.postForm("/config/cadence", url.Values{
+		"csrf": {csrf}, "anchor": {"07:30"}, "interval": {""}, "hazards": {"2h"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/cadence = %d, want 303", resp.StatusCode)
+	}
+	if at, up, hz, calls := seen(); calls != 1 || at != "07:30" || up != 0 || hz != 2*time.Hour {
+		t.Fatalf("live surfaces got at=%q uptime=%s hazards=%s calls=%d", at, up, hz, calls)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.Meshtastic.EmcomAt != "07:30" || cfg.Meshtastic.EmcomInterval != 0 || cfg.Meshtastic.EmcomHazardsInterval != 2*time.Hour {
+		t.Fatalf("meshtastic config = %+v", cfg.Meshtastic)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The Discord instance carries the same cadence, so the channel
+	// announces in step with the mesh.
+	for _, want := range []string{"uptime_at: \"07:30\"", "hazards_interval: 2h0m0s", "invite: \"https://discord.gg/x\""} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("config file lacks %q:\n%s", want, raw)
+		}
+	}
+	// The second instance silenced both of its lines (the development
+	// arrangement, where production owns the webhook): the panel leaves it
+	// alone instead of waking it up.
+	if n := strings.Count(string(raw), "hazards_interval: 2h0m0s"); n != 2 {
+		t.Fatalf("the new spacing reached %d instances, want 2:\n%s", n, raw)
+	}
+	silent := string(raw)[strings.Index(string(raw), "id: sosdev"):]
+	if !strings.Contains(silent, `hazards_interval: "0s"`) || !strings.Contains(silent, "uptime_interval: \"0s\"") {
+		t.Errorf("a silenced instance was modified:\n%s", silent)
+	}
+	if strings.Contains(silent, "uptime_at") {
+		t.Errorf("a silenced instance gained an anchor:\n%s", silent)
+	}
+
+	// A refused value changes nothing and names the field.
+	resp, bad := env.postForm("/config/cadence", url.Values{
+		"csrf": {csrf}, "anchor": {"6"}, "interval": {""}, "hazards": {"2h"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad anchor = %d, want 400", resp.StatusCode)
+	}
+	if !strings.Contains(bad, "Daily hour") || !strings.Contains(bad, "HH:MM") {
+		t.Errorf("the banner does not name the refused field: %.300s", bad)
+	}
+	if _, _, _, calls := seen(); calls != 1 {
+		t.Errorf("a refused value reached the live surfaces (calls=%d)", calls)
+	}
+	resp, _ = env.postForm("/config/cadence", url.Values{
+		"csrf": {csrf}, "anchor": {"07:00"}, "interval": {"24h"}, "hazards": {""},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("anchor + interval = %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestConfigPollingSection pins the range and polling editor: it writes
+// the values, refuses what the consumer would refuse and stays silent
+// about rows the operator left alone.
+func TestConfigPollingSection(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	base := "web:\n  enabled: true\n  auth:\n    username: admin\n    password: secret123\naprs:\n  radius_km: 60\n  station_ttl: 60m\nmeshtastic:\n  node_ttl: 30m\nsources:\n  - id: weather-home\n    type: openmeteo\n    config:\n      poll_interval: 30m\n  - id: planes\n    type: adsb\n    config:\n      poll_interval: 3m\n"
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.server.SetConfigFile(path)
+	env.server.SetPollBounds(func(sourceType string) (time.Duration, time.Duration, bool) {
+		if sourceType == "openmeteo" {
+			return time.Minute, 24 * time.Hour, true
+		}
+		if sourceType == "adsb" {
+			return 5 * time.Second, 5 * time.Minute, true
+		}
+		return 0, 0, false
+	})
+	csrf := env.csrfFromPage("/config")
+
+	_, page := env.get("/config")
+	if !strings.Contains(page, "Polling and range") {
+		t.Fatalf("the polling section is missing from the page")
+	}
+	// Every row carries its instance and the accepted range.
+	for _, want := range []string{"weather-home (openmeteo)", "planes (adsb)", "accepted: 5s..5m", "Poll interval"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page lacks %q", want)
+		}
+	}
+
+	// Rows are addressed by path, so an empty one is skipped: the first
+	// row is left alone, the second gets 4m.
+	resp, _ := env.postForm("/config/polling", url.Values{
+		"csrf":   {csrf},
+		"path_0": {"aprs.radius_km"}, "value_0": {""},
+		"path_1": {"aprs.station_ttl"}, "value_1": {"90m"},
+		"path_2": {"meshtastic.node_ttl"}, "value_2": {"1h"},
+		"path_3": {"sources[0].config.poll_interval"}, "value_3": {"2h"},
+		"path_4": {"sources[1].config.poll_interval"}, "value_4": {"4m"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/polling = %d, want 303", resp.StatusCode)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.APRS.RadiusKM != 60 || cfg.APRS.StationTTL != 90*time.Minute {
+		t.Fatalf("aprs = radius %v ttl %s", cfg.APRS.RadiusKM, cfg.APRS.StationTTL)
+	}
+	raw, _ := os.ReadFile(path)
+	for _, want := range []string{"radius_km: 60", "station_ttl: 1h30m0s", "node_ttl: 1h0m0s", "poll_interval: 2h0m0s", "poll_interval: 4m0s"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("config file lacks %q:\n%s", want, raw)
+		}
+	}
+
+	// A value outside the plugin's own range is refused, and the refusal
+	// names the plugin.
+	resp, bad := env.postForm("/config/polling", url.Values{
+		"csrf": {csrf}, "path_0": {"sources[1].config.poll_interval"}, "value_0": {"30m"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("out-of-range poll = %d, want 400", resp.StatusCode)
+	}
+	if !strings.Contains(bad, "adsb accepts 5s..5m") {
+		t.Errorf("the banner does not name the plugin range: %.300s", bad)
+	}
+	resp, _ = env.postForm("/config/polling", url.Values{
+		"csrf": {csrf}, "path_0": {"aprs.radius_km"}, "value_0": {"1500"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("out-of-range radius = %d, want 400", resp.StatusCode)
+	}
+	// An all-empty form is a no-op with its own flash.
+	resp, _ = env.postForm("/config/polling", url.Values{
+		"csrf": {csrf}, "path_0": {"aprs.radius_km"}, "value_0": {""},
+	})
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "msg=polling-none") {
+		t.Fatalf("Location = %q, want the nothing-to-save flash", loc)
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != string(raw) {
+		t.Fatalf("a refused edit changed the file:\n%s", after)
+	}
+}
+
+// TestConfigPollingNoOpSave pins the churn-free rule: saving the form
+// unchanged leaves the file bytes and the audit trail alone, even though
+// the field spells a duration shorter than the file's own spelling.
+func TestConfigPollingNoOpSave(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	base := "web:\n  enabled: true\n  auth:\n    username: admin\n    password: secret123\naprs:\n  radius_km: 30\nsources:\n  - id: weather-home\n    type: openmeteo\n    config:\n      poll_interval: 2h0m0s\n"
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.server.SetConfigFile(path)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	csrf := env.csrfFromPage("/config")
+	resp, _ := env.postForm("/config/polling", url.Values{
+		"csrf":   {csrf},
+		"path_0": {"aprs.radius_km"}, "value_0": {"30"},
+		"path_1": {"sources[0].config.poll_interval"}, "value_1": {"2h"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /config/polling = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "msg=polling-none") {
+		t.Fatalf("Location = %q, want the nothing-to-save flash", loc)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("an unchanged save rewrote the file:\n%s", after)
+	}
+	if _, err := os.Stat(path + ".bak-panel"); !os.IsNotExist(err) {
+		t.Errorf("an unchanged save wrote a backup (err=%v)", err)
 	}
 }

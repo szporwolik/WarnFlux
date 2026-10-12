@@ -79,13 +79,14 @@ type notifier struct {
 	logger *slog.Logger
 	now    func() time.Time
 
+	mu sync.Mutex
+	// The cadence sits under the mutex too: the Config page moves the
+	// morning line or the status spacing at runtime, without a restart.
 	hazardsInterval time.Duration
 	uptimeInterval  time.Duration
 	// uptimeAt is the daily anchor of the presence line ("" = the spacing
 	// mode; both empty = the line is off).
-	uptimeAt string
-
-	mu          sync.Mutex
+	uptimeAt    string
 	cfg         NoticesConfig
 	hazardsNext time.Time
 	uptimeNext  time.Time
@@ -195,9 +196,11 @@ func InfoOf(p action.Plugin) (Info, bool) {
 	}
 	info := Info{DirectMessages: a.token != "", Invite: a.invite}
 	if a.notices != nil {
+		a.notices.mu.Lock()
 		info.HazardsInterval = a.notices.hazardsInterval
 		info.UptimeInterval = a.notices.uptimeInterval
 		info.UptimeAt = a.notices.uptimeAt
+		a.notices.mu.Unlock()
 	}
 	return info, true
 }
@@ -210,12 +213,18 @@ type Notifier interface {
 	ConfigureNotices(cfg NoticesConfig)
 	// RunNotices blocks until ctx is cancelled, emitting the notices.
 	RunNotices(ctx context.Context)
+	// SetCadence replaces the live cadence of both lines: the Config page
+	// moves the anchor or the spacing without a restart.
+	SetCadence(hazards, uptime time.Duration, uptimeAt string)
 }
 
 // run checks the two cadences until ctx is cancelled.
 func (n *notifier) run(ctx context.Context) {
-	if n.hazardsInterval <= 0 && n.uptimeInterval <= 0 && n.uptimeAt == "" {
-		return
+	// The loop keeps running even when both lines are off: the Config
+	// page switches them on at runtime, and a stopped loop could never
+	// pick that up.
+	if !n.anyLine() {
+		n.logger.Debug("discord: periodic notices idle", "reason", "both lines are off")
 	}
 	ticker := time.NewTicker(noticeTick)
 	defer ticker.Stop()
@@ -230,17 +239,66 @@ func (n *notifier) run(ctx context.Context) {
 	}
 }
 
+// anyLine reports whether either periodic line is enabled.
+func (n *notifier) anyLine() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.hazardsInterval > 0 || n.uptimeInterval > 0 || n.uptimeAt != ""
+}
+
+// SetCadence replaces the live cadence and re-arms both lines: a new
+// anchor takes effect now instead of at the previously scheduled hour,
+// and a spacing switched on from off becomes due immediately. The
+// per-minute tick is the granule, so nothing fires twice.
+//
+// A channel silenced completely stays silent: the cadence reaches the
+// surfaces that announce, so a development instance sharing the
+// production webhook is never woken up by a save. Switching it back on
+// is a configuration change.
+func (a *discordAction) SetCadence(hazards, uptime time.Duration, uptimeAt string) {
+	n := a.notices
+	if n == nil {
+		return
+	}
+	now := n.now()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.hazardsInterval <= 0 && n.uptimeAt == "" && n.uptimeInterval <= 0 {
+		return
+	}
+	// Each line re-arms on its own change, so a save that moves the morning
+	// line never pushes the status line's window along with it.
+	if n.hazardsInterval != hazards {
+		n.hazardsInterval = hazards
+		switch {
+		case hazards <= 0:
+			n.hazardsNext = time.Time{}
+		case n.hazardsNext.IsZero():
+			n.hazardsNext = now
+		default:
+			// The new spacing starts now: an operator shortening the
+			// interval expects the next line a shorter wait away.
+			n.hazardsNext = now.Add(hazards)
+		}
+	}
+	if n.uptimeAt != uptimeAt || n.uptimeInterval != uptime {
+		n.uptimeAt, n.uptimeInterval = uptimeAt, uptime
+		if uptimeAt == "" && uptime <= 0 {
+			n.uptimeNext = time.Time{}
+		} else {
+			n.uptimeNext = uptimeArm(now, uptimeAt, uptime, false)
+		}
+	}
+}
+
 // hazardsTick posts the hazard status line when its cadence is due.
 // Nothing goes out while nothing sits at severe or higher — the hourly
 // line is there to point at what rang the devices, not to report a quiet
 // channel.
 func (n *notifier) hazardsTick(ctx context.Context) {
-	if n.hazardsInterval <= 0 {
-		return
-	}
 	now := n.now()
 	n.mu.Lock()
-	due := !n.hazardsNext.IsZero() && !now.Before(n.hazardsNext)
+	due := n.hazardsInterval > 0 && !n.hazardsNext.IsZero() && !now.Before(n.hazardsNext)
 	if due {
 		// Advance the cadence BEFORE reading the source: a slow callback
 		// or a failed delivery must never fire the line twice per window.
@@ -265,12 +323,10 @@ func (n *notifier) hazardsTick(ctx context.Context) {
 // the anchor (re-armed for tomorrow, so a slow or failed post never repeats
 // the line the same day), or every interval in spacing mode.
 func (n *notifier) uptimeTick(ctx context.Context) {
-	if n.uptimeAt == "" && n.uptimeInterval <= 0 {
-		return
-	}
 	now := n.now()
 	n.mu.Lock()
-	due := !n.uptimeNext.IsZero() && !now.Before(n.uptimeNext)
+	on := n.uptimeAt != "" || n.uptimeInterval > 0
+	due := on && !n.uptimeNext.IsZero() && !now.Before(n.uptimeNext)
 	if due {
 		n.uptimeNext = uptimeArm(now, n.uptimeAt, n.uptimeInterval, true)
 	}

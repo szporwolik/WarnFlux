@@ -746,6 +746,9 @@ type Hub struct {
 	self      *SelfInfo
 	nodes     map[string]*Node
 	channels  []string
+	// cadence is the live cadence of the periodic lines (seeded from the
+	// configuration, changed by the Config page). Guarded by mu.
+	cadence Cadence
 	// channelKeys holds the device channel keys by index (parallel to
 	// channels): the Help page renders the installation's own channel for
 	// users to join. Guarded by mu.
@@ -877,7 +880,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
-		return &Hub{cfg: cfg, logger: logger, nodes: make(map[string]*Node),
+		return &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
 			pending: make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
 			routeWaiters: make(map[uint32][]chan routeReply),
 			bannerLast:   make(map[string]time.Time), replyLast: make(map[string]replyWindow),
@@ -889,6 +892,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	return &Hub{
 		cfg:          cfg,
 		logger:       logger,
+		cadence:      cadenceOf(cfg),
 		nodes:        make(map[string]*Node),
 		pending:      make(map[uint32]*pendingSend),
 		cmds:         make(map[string]*cmdRecord),
@@ -1193,7 +1197,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 	// schedule; the spacing mode arms now, so the first maintenance tick
 	// sends the beacon right away.
 	if h.cfg.EmcomChannel > 0 && h.cfg.EmcomIdentity != "" &&
-		(h.cfg.EmcomAt != "" || h.cfg.EmcomInterval > 0) {
+		(h.cadence.BeaconAt != "" || h.cadence.BeaconInterval > 0) {
 		h.mu.Lock()
 		if h.emcomNext.IsZero() {
 			h.emcomNext = h.beaconArm(h.clock())
@@ -1203,7 +1207,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 	// The active-hazard digest follows the same rule: the first session
 	// schedules it for now so a restart resyncs the mesh promptly; the
 	// hourly cadence survives device reconnects.
-	if h.cfg.EmcomChannel > 0 && h.cfg.EmcomHazardsInterval > 0 {
+	if h.cfg.EmcomChannel > 0 && h.cadence.HazardsInterval > 0 {
 		h.mu.Lock()
 		if h.hazardsNext.IsZero() {
 			h.hazardsNext = time.Now()
@@ -1256,6 +1260,55 @@ func (h *Hub) runSession(ctx context.Context) error {
 	}
 }
 
+// Cadence is the live cadence of the two periodic mesh lines: the
+// presence beacon (a daily clock anchor or a spacing) and the hazard
+// status line. It starts from the configuration and the Config page can
+// change it at runtime, so an operator moves the morning beacon without a
+// restart.
+type Cadence struct {
+	// BeaconAt is the daily clock time ("06:00"); "" = the spacing applies.
+	BeaconAt string
+	// BeaconInterval is the presence spacing (0 = anchor mode, or off when
+	// the anchor is empty too).
+	BeaconInterval time.Duration
+	// HazardsInterval is the status line spacing (0 = off).
+	HazardsInterval time.Duration
+}
+
+// cadenceOf seeds the live cadence from the configuration.
+func cadenceOf(cfg Config) Cadence {
+	return Cadence{
+		BeaconAt:        cfg.EmcomAt,
+		BeaconInterval:  cfg.EmcomInterval,
+		HazardsInterval: cfg.EmcomHazardsInterval,
+	}
+}
+
+// SetCadence replaces the live cadence and re-arms the beacon, so a new
+// anchor takes effect now instead of at the previously scheduled hour.
+func (h *Hub) SetCadence(c Cadence) {
+	now := h.clock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cadence == c {
+		return
+	}
+	h.cadence = c
+	if h.cfg.EmcomChannel > 0 && h.cfg.EmcomIdentity != "" && (c.BeaconAt != "" || c.BeaconInterval > 0) {
+		h.emcomNext = h.beaconArm(now)
+	}
+	if c.HazardsInterval > 0 && h.hazardsNext.IsZero() {
+		h.hazardsNext = now
+	}
+}
+
+// ReportCadence returns the live cadence.
+func (h *Hub) ReportCadence() Cadence {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cadence
+}
+
 // StatusFacts is what the station says it does over Meshtastic: the two
 // alert paths, the two periodic lines and where the group channel sits.
 // The Help page renders it — the same shape as the Discord card, so the two
@@ -1277,15 +1330,17 @@ type StatusFacts struct {
 	BeaconInterval time.Duration
 }
 
-// Status reports what the station sends over Meshtastic right now.
+// Status reports what the station sends over Meshtastic right now (the
+// live cadence, not the one the process started with).
 func (h *Hub) Status() StatusFacts {
+	c := h.ReportCadence()
 	return StatusFacts{
 		Channel:         h.cfg.EmcomChannel,
 		ChannelAlerts:   ChannelAlerts(),
 		DMAlerts:        DMAlerts(),
-		HazardsInterval: h.cfg.EmcomHazardsInterval,
-		BeaconAt:        h.cfg.EmcomAt,
-		BeaconInterval:  h.cfg.EmcomInterval,
+		HazardsInterval: c.HazardsInterval,
+		BeaconAt:        c.BeaconAt,
+		BeaconInterval:  c.BeaconInterval,
 	}
 }
 
@@ -1299,10 +1354,11 @@ func (h *Hub) clock() time.Time {
 
 // beaconArm returns when the beacon becomes due: the daily anchor when one
 // is configured (so a restart never beacons ahead of the clock), otherwise
-// now — the spacing mode beacons as soon as the first session is up.
+// now — the spacing mode beacons as soon as the first session is up. The
+// caller holds h.mu (it reads the cadence straight off the hub).
 func (h *Hub) beaconArm(now time.Time) time.Time {
-	if h.cfg.EmcomAt != "" {
-		return schedule.NextDaily(now, h.cfg.EmcomAt)
+	if h.cadence.BeaconAt != "" {
+		return schedule.NextDaily(now, h.cadence.BeaconAt)
 	}
 	return now
 }
@@ -1318,12 +1374,13 @@ func (h *Hub) beaconTick() {
 		return
 	}
 	h.mu.Lock()
-	if h.cfg.EmcomAt != "" {
+	c := h.cadence
+	if c.BeaconAt != "" {
 		// Re-arm for tomorrow: a slow or failed send must never fire the
 		// beacon twice in one day.
-		h.emcomNext = schedule.NextDailyAfter(now, h.cfg.EmcomAt)
+		h.emcomNext = schedule.NextDailyAfter(now, c.BeaconAt)
 	} else {
-		h.emcomNext = now.Add(h.cfg.EmcomInterval)
+		h.emcomNext = now.Add(c.BeaconInterval)
 	}
 	nodes := len(h.nodes)
 	up := now.Sub(h.startedAt).Round(time.Minute)
@@ -1363,7 +1420,7 @@ func (s HazardSummary) Alarming() bool { return s.Severe > 0 }
 // channel to ignore the one that matters. The line is disabled when the
 // emcom channel is off, the interval is 0 or no source is attached.
 func (h *Hub) hazardsTick() {
-	if h.cfg.EmcomChannel <= 0 || h.cfg.EmcomHazardsInterval <= 0 {
+	if h.cfg.EmcomChannel <= 0 || h.ReportCadence().HazardsInterval <= 0 {
 		return
 	}
 	h.mu.Lock()
@@ -1376,7 +1433,7 @@ func (h *Hub) hazardsTick() {
 	// Advance the cadence BEFORE reading the source: a slow callback or
 	// a failed send must never fire the line twice per window.
 	h.mu.Lock()
-	h.hazardsNext = time.Now().Add(h.cfg.EmcomHazardsInterval)
+	h.hazardsNext = time.Now().Add(h.cadence.HazardsInterval)
 	h.mu.Unlock()
 
 	sum := src()

@@ -242,6 +242,7 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 // Register registers the source plugin type; hub provides the default
 // geographic scope.
 func Register(reg *plugin.Registry, hub *aprs.Hub) error {
+	reg.SetSourcePollBounds(Type, minPollInterval, maxPollInterval)
 	return reg.RegisterSource(Type, func(node *yaml.Node) (plugin.SourcePlugin, error) {
 		return New(node, hub)
 	})

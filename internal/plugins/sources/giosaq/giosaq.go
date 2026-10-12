@@ -505,6 +505,7 @@ func aqSnapshot(ref stationRef, idx aqIndex) (core.InformationMessage, error) {
 // Register registers the source plugin type; hub optionally provides the
 // area scope for the station air-quality layer.
 func Register(reg *plugin.Registry, hub *aprs.Hub) error {
+	reg.SetSourcePollBounds(Type, minPollInterval, maxPollInterval)
 	return reg.RegisterSource(Type, func(node *yaml.Node) (plugin.SourcePlugin, error) {
 		return New(node, hub)
 	})

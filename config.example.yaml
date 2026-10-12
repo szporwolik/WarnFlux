@@ -98,6 +98,9 @@ storage:
 #       parents: ["your-powiat"]
 
 # Source plugins: ingest hazard information and emit normalized events.
+# Each instance's config.poll_interval is also editable on the Config page
+# ("Polling and range"), where the accepted range of its plugin is shown;
+# the value is read at startup, so a change applies after a restart.
 sources:
   # Open-Meteo INFORMATIONAL weather source: publishes ordinary weather
   # snapshots to retained MQTT information topics
@@ -949,6 +952,9 @@ actions:
   #     # Treat it like a password: keep it out of repositories (this file
   #     # is deployment-local) and restrict who can read it.
   #     token: ""
+  #     # The three cadence knobs below are also editable on the Config
+  #     # page ("Periodic lines"), which writes them here and on the
+  #     # Meshtastic beacon at once so both channels announce in step.
   #     # Spacing of the hazard status line, posted on the webhook channel
   #     # ONLY while a hazard at severe or higher is active. Empty = 1h, the
   #     # same cadence (and the same rule) as the Meshtastic channel; 0
@@ -1105,7 +1111,8 @@ aprs:
   # longitude: 20.2075
 
   # "Nearby" radius in kilometers: the fallback for the operational-area
-  # radius when area_radius_km is unset.
+  # radius when area_radius_km is unset. Editable on the Config page
+  # ("Polling and range"); 1..1000.
   radius_km: 60
 
   # Operational area (the territory we serve): the home-map range circle,
@@ -1120,7 +1127,8 @@ aprs:
 
   # How long a station stays in the retained MQTT state after its last
   # packet before the topic is deleted (empty retained payload). Longer
-  # values keep rarely-beaconing stations visible on the map.
+  # values keep rarely-beaconing stations visible on the map. Editable on
+  # the Config page ("Polling and range"); 1m..24h.
   station_ttl: 60m
 
   # How long a heard APRS bulletin (BLNn broadcast) stays in the
@@ -1167,6 +1175,7 @@ aprs:
 #                         # node IDs become canonical /events documents
 #                         # (alarm pipeline), like APRS messages
 #   node_ttl: 30m
+#   # Editable on the Config page ("Polling and range"); 1m..24h.
 #   # Periodic presence beacon (identity + uptime + node count) on a
 #   # community channel. The default PRIMARY channel is receive-only:
 #   # broadcasts there are blocked by policy. Give every installation
@@ -1176,6 +1185,9 @@ aprs:
 #   # users (name + key + scan code), so point it at the group channel
 #   # people should join.
 #   emcom_channel: 1      # 0 = beacon disabled
+#   # The beacon cadence and emcom_hazards_interval below are also
+#   # editable live on the Config page ("Periodic lines"), together with
+#   # the Discord channel cadence — one form keeps both surfaces in step.
 #   # Presence beacon: the installation identity with the node count and
 #   # the station uptime ("WarnFlux v0.7.6 - SOSNA - sosna.sp9moa.pl |
 #   # up 2d4h | nodes 12"). It is ANCHORED TO A DAILY CLOCK TIME by

@@ -3232,6 +3232,8 @@ tr.click-send:hover td { background: var(--surface-hi); }
   color: var(--muted);
 }
 .config-field.wide { grid-column: 1 / -1; }
+/* Accepted range under an editable scalar (polling and cadence fields). */
+.config-field-hint { color: var(--muted); font-size: 0.72rem; font-weight: 400; }
 .config-field input,
 .config-field textarea {
   background: var(--input-bg);

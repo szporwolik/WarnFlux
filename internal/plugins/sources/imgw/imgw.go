@@ -352,5 +352,6 @@ func sourceFor(feed string) string {
 
 // Register registers the imgw source plugin type.
 func Register(reg *plugin.Registry) error {
+	reg.SetSourcePollBounds(Type, minPollInterval, maxPollInterval)
 	return reg.RegisterSource(Type, New)
 }

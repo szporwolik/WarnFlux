@@ -483,5 +483,6 @@ func buildAirQualityPayload(loc Location, resp *AirQualityResponse, generated ti
 
 // Register registers the openmeteo source plugin type.
 func Register(reg *plugin.Registry) error {
+	reg.SetSourcePollBounds(Type, minPollInterval, maxPollInterval)
 	return reg.RegisterSource(Type, New)
 }

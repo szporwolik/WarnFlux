@@ -243,6 +243,10 @@ type DirectMailer interface {
 	// the notification-styled HTML with the embedded logo and footer) so a
 	// broadcast looks like every routed notification.
 	SendNotice(ctx context.Context, to []string, subject, text string, app action.AppInfo, lang string) error
+	// SendNoticeMarkdown delivers the same branded notice, but renders the
+	// body as the markdown subset a long broadcast is composed in, instead
+	// of showing the markers literally.
+	SendNoticeMarkdown(ctx context.Context, to []string, subject, text string, app action.AppInfo, lang string) error
 }
 
 // SendPlain sends a plain-text mail through the instance's own
@@ -255,6 +259,12 @@ func (p *emailAction) SendPlain(ctx context.Context, to []string, subject, text 
 // configuration. The caller bounds the context.
 func (p *emailAction) SendNotice(ctx context.Context, to []string, subject, text string, app action.AppInfo, lang string) error {
 	return DirectNotice(ctx, p.cfg, to, subject, text, app, lang)
+}
+
+// SendNoticeMarkdown sends a branded notice with a markdown-rendered body
+// through the instance's own configuration.
+func (p *emailAction) SendNoticeMarkdown(ctx context.Context, to []string, subject, text string, app action.AppInfo, lang string) error {
+	return DirectNoticeMarkdown(ctx, p.cfg, to, subject, text, app, lang)
 }
 
 // Execute sends one email for the routed event, one SMTP transaction per

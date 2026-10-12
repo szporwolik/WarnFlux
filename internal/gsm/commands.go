@@ -91,10 +91,9 @@ const bannerGlobalInterval = 10 * time.Second
 // (command answers, banners, denials): at most replyBurst replies per
 // replyBurstWindow per phone.
 const (
-	replyBurst     = 5
-	replyBurstWin  = time.Minute
-	replySendWait  = 90 * time.Second
-	maxSMSReplyLen = 160 // one text-mode SMS, after transliteration
+	replyBurst    = 5
+	replyBurstWin = time.Minute
+	replySendWait = 90 * time.Second
 )
 
 // isRCBSender reports whether the SMS originator is the national Alert
@@ -233,14 +232,11 @@ func (h *Hub) sendReply(to, text string) {
 }
 
 // fitReply renders one automatic reply so it always fits a single
-// text-mode SMS: transliteration first (the modem cannot send PDU),
-// then a hard 160-character cap.
+// text-mode SMS: transliteration first (the modem cannot send PDU), then
+// a hard 160-SEPTET cap — a reply full of extension-table characters must
+// not be refused by Send for lack of room (see FitGSM7).
 func fitReply(text string) string {
-	text = TransliterateGSM7(text)
-	if r := []rune(text); len(r) > maxSMSReplyLen {
-		return string(r[:maxSMSReplyLen])
-	}
-	return text
+	return FitGSM7(TransliterateGSM7(text), MaxSeptets)
 }
 
 // publishRCBEvent converts one received Alert RCB SMS into a canonical

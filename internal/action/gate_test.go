@@ -2,6 +2,7 @@ package action
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
+	_ "modernc.org/sqlite"
 )
 
 // fakeGateStore is the gate's storage seam, scripted per test.
@@ -240,5 +242,169 @@ func TestComposeCorrectionStopsTheReplacedText(t *testing.T) {
 	}
 	if gate(ctx, ActionRequest{ID: "compose:net/log", Event: south}) {
 		t.Fatal("the expired message's earlier text passed the gate")
+	}
+}
+
+// legacyComposeStore builds a database in the state an OLD station leaves
+// behind: a panel communication whose lifecycle row has no version-aware
+// owner (the empty publisher), and the schema rolled back so the adoption
+// migration runs on the next open — the real upgrade path. counter is
+// the version counter the upgrade continues from (it was seeded ABOVE
+// the legacy wall-clock versions when the counter was introduced).
+func legacyComposeStore(t *testing.T, key string, version, counter int64, status string) *sqlite.Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "legacy-compose.db")
+	created, _, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// The database has an instance identity long before the ledger gains
+	// an owner: every ingest stamps it (v24).
+	if _, err := created.InstanceID(context.Background()); err != nil {
+		t.Fatalf("instance id: %v", err)
+	}
+	if err := created.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Write the pre-upgrade rows as the old binary left them, then roll
+	// the schema version back so opening runs the migration again.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO compose_hazards(event_key, hazard_json, status, updated_at_ms)
+		VALUES(?, '{}', 'active', 0)`, key); err != nil {
+		t.Fatalf("seed compose row: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO message_lifecycle(publisher, event_key, version, status, updated_at_ms)
+		VALUES('', ?, ?, ?, 0)`, key, version, status); err != nil {
+		t.Fatalf("seed legacy lifecycle: %v", err)
+	}
+	if _, err := raw.Exec(`UPDATE lifecycle_versions SET next = ?`, counter); err != nil {
+		t.Fatalf("seed the version counter: %v", err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 58`); err != nil {
+		t.Fatalf("roll back the schema version: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+	upgraded, info, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { upgraded.Close() })
+	if info.From != 58 {
+		t.Fatalf("schema upgrade started at %d, want 58", info.From)
+	}
+	return upgraded
+}
+
+// expireCompose records the retirement of one communication through the
+// same path the panel uses.
+func expireCompose(t *testing.T, store *sqlite.Store, key string) dispatch.Event {
+	t.Helper()
+	expire := dispatch.Event{
+		Kind:   dispatch.EventHazardTransition,
+		Origin: dispatch.Origin{Type: "web", ReceiverID: "compose"},
+		Hazard: &dispatch.HazardTransition{
+			// The payload of the job that was queued BEFORE the upgrade:
+			// it carries no publisher identity.
+			Type:   dispatch.TransitionExpired,
+			Key:    key,
+			Source: "compose",
+			Hazard: dispatch.Hazard{EventKey: key, Severity: "severe"},
+		},
+	}
+	_, stamped, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
+		EventKey: key, State: []byte(`{}`), Status: "expired", UpdatedAt: time.Now(),
+	}, expire)
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	return stamped
+}
+
+// TestLegacyComposeJobFollowsTheAdoptedLifecycle pins the reported P1 on
+// the delivery gate with the real storage: a job queued before the ledger
+// had an owner (publisher "") must follow the version the INSTANCE now
+// records. Reading the old row let a communication that was retired in
+// the meantime pass the gate and go out with its stale text.
+func TestLegacyComposeJobFollowsTheAdoptedLifecycle(t *testing.T) {
+	ctx := context.Background()
+	const key = "compose:legacy"
+	store := legacyComposeStore(t, key, 100, 100, "active")
+	gate := NewLifecycleGate(store, nil)
+
+	legacyJob := ActionRequest{ID: key + "/log", Event: dispatch.Event{
+		Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Type: dispatch.TransitionNew, Key: key, Source: "compose",
+			Publisher: "", ChangeID: 100, // queued before the upgrade
+			Hazard: dispatch.Hazard{EventKey: key, Severity: "severe", Headline: "Ewakuacja na północ"},
+		},
+	}}
+	// While the communication is live the queued job may still go out.
+	if !gate(ctx, legacyJob) {
+		t.Fatal("an active communication was held back")
+	}
+
+	expireCompose(t, store, key)
+	if gate(ctx, legacyJob) {
+		t.Fatal("a retired communication passed the delivery gate: the legacy job read the old lifecycle row")
+	}
+
+	// A second, untouched communication keeps its legacy job deliverable:
+	// the compatibility rule must not block what is still live.
+	other := "compose:legacy-active"
+	store2 := legacyComposeStore(t, other, 200, 200, "active")
+	gate2 := NewLifecycleGate(store2, nil)
+	live := ActionRequest{ID: other + "/log", Event: dispatch.Event{
+		Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Type: dispatch.TransitionNew, Key: other, Source: "compose",
+			Publisher: "", ChangeID: 200,
+			Hazard: dispatch.Hazard{EventKey: other, Severity: "severe"},
+		},
+	}}
+	if !gate2(ctx, live) {
+		t.Fatal("an untouched legacy communication was held back")
+	}
+}
+
+// TestLegacyComposeJobIsJudgedByTheCurrentRecord covers the harder half of
+// the same report: a database whose version counter does NOT continue the
+// old numbering (the legacy row is newer than anything the ledger will
+// allocate). The version comparison alone cannot hold such a job back, so
+// the current state of the local panel record decides.
+func TestLegacyComposeJobIsJudgedByTheCurrentRecord(t *testing.T) {
+	ctx := context.Background()
+	const key = "compose:legacy-domain"
+	// Counter below the legacy version: the adoption keeps the old
+	// version, and nothing the station records later can outrank it.
+	store := legacyComposeStore(t, key, 1_700_000_000_000, 1, "active")
+	gate := NewLifecycleGate(store, nil)
+
+	legacyJob := ActionRequest{ID: key + "/log", Event: dispatch.Event{
+		Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{
+			Type: dispatch.TransitionNew, Key: key, Source: "compose",
+			Publisher: "", ChangeID: 1_700_000_000_000,
+			Hazard: dispatch.Hazard{EventKey: key, Severity: "severe", Headline: "Ewakuacja na północ"},
+		},
+	}}
+	if !gate(ctx, legacyJob) {
+		t.Fatal("an active communication was held back")
+	}
+	expireCompose(t, store, key)
+
+	// The ledger row cannot represent the retirement (its version is
+	// higher than anything the counter allocates), so the local record is
+	// what keeps the old job out.
+	if blocked, err := store.LifecycleBlocks(ctx, "", key, 1_700_000_000_000); err != nil || !blocked {
+		t.Fatalf("LifecycleBlocks(legacy) = (%v, %v), want (true, nil)", blocked, err)
+	}
+	if gate(ctx, legacyJob) {
+		t.Fatal("a retired communication passed the delivery gate")
 	}
 }

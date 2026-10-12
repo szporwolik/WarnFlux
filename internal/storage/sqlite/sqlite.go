@@ -2037,19 +2037,29 @@ func (s *Store) UserInGroups(ctx context.Context, username string, groupIDs []in
 // an expired record with an ACTIVE lifecycle — the delivery queue then
 // still allowed the retired message). The lifecycle version comes from
 // the database-owned monotonic counter, independent of the wall clock.
-func (s *Store) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) error {
+//
+// The version is allocated here, in the same transaction as the record,
+// and returned so the caller can stamp it onto the transition it
+// dispatches: that identity is what lets a correction supersede the
+// delivery of the text it replaces (reported P1).
+func (s *Store) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) (int64, error) {
+	publisher, err := s.instanceID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("publisher id for compose %q: %w", h.EventKey, err)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin compose save for %q: %w", h.EventKey, err)
+		return 0, fmt.Errorf("begin compose save for %q: %w", h.EventKey, err)
 	}
 	defer tx.Rollback()
-	if err := saveComposeHazardTx(tx, ctx, h); err != nil {
-		return err
+	version, err := saveComposeHazardTx(tx, ctx, publisher, h)
+	if err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit compose save for %q: %w", h.EventKey, err)
+		return 0, fmt.Errorf("commit compose save for %q: %w", h.EventKey, err)
 	}
-	return nil
+	return version, nil
 }
 
 // SaveComposeHazardAndEnqueue commits one panel-issued communication, its
@@ -2062,43 +2072,73 @@ func (s *Store) SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) 
 //
 // A crash after the commit leaves the row in the inbox, where intake
 // recovery re-delivers it — durable acceptance, not a lost message.
-func (s *Store) SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, error) {
-	data, err := json.Marshal(ev)
+//
+// The returned event is the stamped one: the version allocated inside
+// this transaction (and the publisher that owns it) is part of the
+// inbox payload, so every delivery job derived from it carries the same
+// identity. The caller must hand THAT event to the live queue — it is
+// what makes the store able to hold an older text back before a newer
+// correction (reported P1: a correction saved while the previous text
+// was still queued did not stop it).
+func (s *Store) SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, dispatch.Event, error) {
+	publisher, err := s.instanceID(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("encode compose inbox event for %q: %w", h.EventKey, err)
+		return 0, ev, fmt.Errorf("publisher id for compose %q: %w", h.EventKey, err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin compose acceptance for %q: %w", h.EventKey, err)
+		return 0, ev, fmt.Errorf("begin compose acceptance for %q: %w", h.EventKey, err)
 	}
 	defer tx.Rollback()
 
-	if err := saveComposeHazardTx(tx, ctx, h); err != nil {
-		return 0, err
+	version, err := saveComposeHazardTx(tx, ctx, publisher, h)
+	if err != nil {
+		return 0, ev, err
+	}
+	ev = stampComposeTransition(ev, publisher, version)
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return 0, ev, fmt.Errorf("encode compose inbox event for %q: %w", h.EventKey, err)
 	}
 	// Panel transitions carry no command result, so the plain inbox row
 	// is the whole acceptance record (see AppendEvent).
 	id, err := insertInboxRow(tx, ctx, data, ev.Origin.ReceiverID, s.now().UnixMilli())
 	if err != nil {
-		return 0, fmt.Errorf("accept compose %q: %w", h.EventKey, err)
+		return 0, ev, fmt.Errorf("accept compose %q: %w", h.EventKey, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit compose acceptance for %q: %w", h.EventKey, err)
+		return 0, ev, fmt.Errorf("commit compose acceptance for %q: %w", h.EventKey, err)
 	}
-	return id, nil
+	return id, ev, nil
+}
+
+// stampComposeTransition writes the version identity of a panel-issued
+// message onto its transition: the publisher instance and the version
+// allocated for THIS save. Delivery gate lookups and the dedup identity
+// both read it, so a saved text can be superseded by the next one.
+func stampComposeTransition(ev dispatch.Event, publisher string, version int64) dispatch.Event {
+	if ev.Hazard != nil {
+		ev.Hazard.Publisher = publisher
+		ev.Hazard.ChangeID = version
+	}
+	return ev
 }
 
 // saveComposeHazardTx upserts the panel record and joins the same state to
-// the common lifecycle ledger (empty publisher — panel jobs are
-// versionless and judged by the CURRENT status), so a queued delivery of
-// this message is blocked once the panel cancels or expires it. The
-// lifecycle version comes from the database-owned monotonic counter,
-// independent of the wall clock. Called by the saving paths above, always
-// inside their transaction.
-func saveComposeHazardTx(tx *sql.Tx, ctx context.Context, h storage.ComposeHazard) error {
+// the common lifecycle ledger under the publisher that owns it, and
+// returns the version it allocated. Recording the version (instead of
+// the empty publisher used before) is what lets the delivery gate tell
+// one save from the next: a queued text is blocked once the panel
+// replaces it (a newer version), cancels it or expires it (this version
+// turns terminal) — the versionless form could only see the current
+// status, so a corrected text still went out (reported P1). The version
+// comes from the database-owned monotonic counter, independent of the
+// wall clock. Called by the saving paths above, always inside their
+// transaction.
+func saveComposeHazardTx(tx *sql.Tx, ctx context.Context, publisher string, h storage.ComposeHazard) (int64, error) {
 	version, err := nextLifecycleVersionTx(tx, ctx)
 	if err != nil {
-		return fmt.Errorf("lifecycle version for compose %q: %w", h.EventKey, err)
+		return 0, fmt.Errorf("lifecycle version for compose %q: %w", h.EventKey, err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -2108,20 +2148,20 @@ func saveComposeHazardTx(tx *sql.Tx, ctx context.Context, h storage.ComposeHazar
 			hazard_json = excluded.hazard_json, status = excluded.status,
 			updated_at_ms = excluded.updated_at_ms`,
 		h.EventKey, string(h.State), h.Status, h.UpdatedAt.UnixMilli()); err != nil {
-		return fmt.Errorf("save compose hazard %q: %w", h.EventKey, err)
+		return 0, fmt.Errorf("save compose hazard %q: %w", h.EventKey, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO message_lifecycle (publisher, event_key, version, status, updated_at_ms)
-		VALUES ('', ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(publisher, event_key) DO UPDATE SET
 			version = excluded.version,
 			status = excluded.status,
 			updated_at_ms = excluded.updated_at_ms
 		WHERE excluded.version >= message_lifecycle.version`,
-		h.EventKey, version, h.Status, h.UpdatedAt.UnixMilli()); err != nil {
-		return fmt.Errorf("record compose lifecycle %q: %w", h.EventKey, err)
+		publisher, h.EventKey, version, h.Status, h.UpdatedAt.UnixMilli()); err != nil {
+		return 0, fmt.Errorf("record compose lifecycle %q: %w", h.EventKey, err)
 	}
-	return nil
+	return version, nil
 }
 
 // DeleteComposeHazard removes one panel-issued communication.

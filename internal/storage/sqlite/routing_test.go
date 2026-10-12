@@ -643,41 +643,69 @@ func TestLifecycleSupersededVersionSemantics(t *testing.T) {
 	}
 }
 
-// TestComposeLifecycleBlocksDelivery pins the reported P1 end to end at
-// the store level: SaveComposeHazard feeds the lifecycle ledger, so an
-// expired panel message blocks its queued delivery and an older save can
-// never revive it.
+// TestComposeLifecycleBlocksDelivery pins the panel version rule end to
+// end at the store level. Saving a message allocates a version in the
+// same transaction and records it under the publisher that owns it, so
+// the delivery of a queued text is held back not only when the panel
+// cancels or expires it, but also when a CORRECTION replaces it
+// (reported P1: without a version the queue only saw the current status,
+// so "ewakuacja na północ" still went out after "ewakuacja na południe"
+// was saved).
 func TestComposeLifecycleBlocksDelivery(t *testing.T) {
 	store := newRoutingStore(t)
 	ctx := context.Background()
+	publisher, err := store.InstanceID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	save := func(status string, at time.Time) int64 {
+		t.Helper()
+		version, err := store.SaveComposeHazard(ctx, storage.ComposeHazard{
+			EventKey: "compose:1", State: []byte(`{"x":1}`), Status: status, UpdatedAt: at,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
 
-	h := storage.ComposeHazard{EventKey: "compose:1", State: []byte(`{"x":1}`), Status: "active", UpdatedAt: base}
-	if err := store.SaveComposeHazard(ctx, h); err != nil {
-		t.Fatal(err)
+	first := save("active", base)
+	if blocked, err := store.LifecycleBlocks(ctx, publisher, "compose:1", first); err != nil || blocked {
+		t.Fatalf("the current active version blocked = (%v, %v), want (false, nil)", blocked, err)
 	}
-	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || blocked {
-		t.Fatalf("active panel message blocked = (%v, %v), want (false, nil)", blocked, err)
+
+	// The correction: a new version for the same message.
+	second := save("active", base.Add(time.Minute))
+	if second <= first {
+		t.Fatalf("version %d is not newer than %d", second, first)
 	}
-	h.Status = "expired"
-	h.UpdatedAt = base.Add(time.Minute)
-	if err := store.SaveComposeHazard(ctx, h); err != nil {
-		t.Fatal(err)
+	if blocked, _ := store.LifecycleBlocks(ctx, publisher, "compose:1", first); !blocked {
+		t.Fatal("the corrected text (version first) must be held back before transmission")
 	}
-	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || !blocked {
-		t.Fatalf("expired panel message blocked = (%v, %v), want (true, nil)", blocked, err)
+	if blocked, _ := store.LifecycleBlocks(ctx, publisher, "compose:1", second); blocked {
+		t.Fatal("the correction itself must go out")
 	}
-	// A re-posted form is a NEW transition: the lifecycle version comes
-	// from the database-owned counter (strictly increasing, independent
-	// of the form's timestamps), so the message is re-activated and the
-	// fresh state governs the delivery queue.
-	h.Status = "active"
-	h.UpdatedAt = base.Add(-time.Minute)
-	if err := store.SaveComposeHazard(ctx, h); err != nil {
-		t.Fatal(err)
+
+	// Expiring the correction turns ITS version terminal.
+	third := save("expired", base.Add(2*time.Minute))
+	if blocked, _ := store.LifecycleBlocks(ctx, publisher, "compose:1", third); !blocked {
+		t.Fatal("an expired panel message must block its own queued delivery")
 	}
-	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:1", 0); err != nil || blocked {
-		t.Fatalf("re-posted panel message blocked = (%v, %v), want (false, nil — a re-posted form is a newer transition)", blocked, err)
+	if blocked, _ := store.LifecycleBlocks(ctx, publisher, "compose:1", second); !blocked {
+		t.Fatal("the superseded text must stay blocked after the expiry")
+	}
+
+	// A re-posted form is a NEW transition: the fresh version governs the
+	// queue again while every older one stays held back.
+	fourth := save("active", base.Add(-time.Minute))
+	if blocked, _ := store.LifecycleBlocks(ctx, publisher, "compose:1", fourth); blocked {
+		t.Fatal("a re-posted form is a newer transition and must go out")
+	}
+	for _, old := range []int64{first, second, third} {
+		if blocked, _ := store.LifecycleBlocks(ctx, publisher, "compose:1", old); !blocked {
+			t.Fatalf("version %d must stay held back after the re-post", old)
+		}
 	}
 }
 
@@ -697,7 +725,7 @@ func TestComposeSaveAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := storage.ComposeHazard{EventKey: "compose:1", State: []byte(`{"x":1}`), Status: "expired", UpdatedAt: time.Now()}
-	if err := store.SaveComposeHazard(ctx, h); err == nil {
+	if _, err := store.SaveComposeHazard(ctx, h); err == nil {
 		t.Fatal("save with a broken lifecycle table succeeded, want failure")
 	}
 	// Nothing was accepted: the operation failed as a whole.
@@ -724,7 +752,7 @@ func TestComposeEnqueueAtomic(t *testing.T) {
 	}
 	h := storage.ComposeHazard{EventKey: "compose:1", State: []byte(`{"x":1}`), Status: "active", UpdatedAt: time.Now()}
 	ev := dispatch.Event{Kind: dispatch.EventHazardTransition}
-	if _, err := store.SaveComposeHazardAndEnqueue(ctx, h, ev); err == nil {
+	if _, _, err := store.SaveComposeHazardAndEnqueue(ctx, h, ev); err == nil {
 		t.Fatal("acceptance with a broken intake succeeded, want failure")
 	}
 	rows, err := store.ComposeHazards(ctx)
@@ -748,9 +776,14 @@ func TestComposeEnqueueCommitsIntakeRow(t *testing.T) {
 	ev := dispatch.Event{Kind: dispatch.EventHazardTransition, Hazard: &dispatch.HazardTransition{
 		Type: dispatch.TransitionNew, Key: "compose:2", Source: "compose",
 	}}
-	id, err := store.SaveComposeHazardAndEnqueue(ctx, h, ev)
+	id, stamped, err := store.SaveComposeHazardAndEnqueue(ctx, h, ev)
 	if err != nil {
 		t.Fatalf("SaveComposeHazardAndEnqueue = %v", err)
+	}
+	// The version identity is allocated inside the transaction and comes
+	// back on the event the panel hands to the live queue.
+	if stamped.Hazard == nil || stamped.Hazard.ChangeID == 0 || stamped.Hazard.Publisher == "" {
+		t.Fatalf("stamped transition = %+v, want a publisher and a version", stamped.Hazard)
 	}
 	if id == 0 {
 		t.Fatal("no inbox row id returned")
@@ -765,8 +798,14 @@ func TestComposeEnqueueCommitsIntakeRow(t *testing.T) {
 	if items[0].Event.Hazard == nil || items[0].Event.Hazard.Key != "compose:2" {
 		t.Errorf("inbox row carries %+v, want the compose transition", items[0].Event.Hazard)
 	}
-	if blocked, err := store.LifecycleBlocks(ctx, "", "compose:2", 0); err != nil || blocked {
-		t.Fatalf("active message blocked = (%v, %v), want (false, nil)", blocked, err)
+	// The DURABLE row carries the same identity as the returned event:
+	// every delivery job derived from it is judged by that version.
+	if got := items[0].Event.Hazard; got.ChangeID != stamped.Hazard.ChangeID || got.Publisher != stamped.Hazard.Publisher {
+		t.Errorf("inbox row identity = (version %d, publisher %q), want (%d, %q)",
+			got.ChangeID, got.Publisher, stamped.Hazard.ChangeID, stamped.Hazard.Publisher)
+	}
+	if blocked, err := store.LifecycleBlocks(ctx, stamped.Hazard.Publisher, "compose:2", stamped.Hazard.ChangeID); err != nil || blocked {
+		t.Fatalf("current active message blocked = (%v, %v), want (false, nil)", blocked, err)
 	}
 }
 

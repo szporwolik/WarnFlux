@@ -159,3 +159,86 @@ func TestLifecycleGateAgainstTheStore(t *testing.T) {
 		t.Fatal("the current stand-down notice (version 11) was suppressed")
 	}
 }
+
+// saveComposeTransition records one panel-issued communication through
+// the real compose path and returns the stamped transition the panel
+// would hand to the live queue.
+func saveComposeTransition(t *testing.T, store *sqlite.Store, headline string) dispatch.Event {
+	t.Helper()
+	ev := dispatch.Event{
+		Kind:   dispatch.EventHazardTransition,
+		Origin: dispatch.Origin{Type: "web", ReceiverID: "compose"},
+		Hazard: &dispatch.HazardTransition{
+			Type:   dispatch.TransitionNew,
+			Key:    "compose:net",
+			Source: "compose",
+			Hazard: dispatch.Hazard{EventKey: "compose:net", Severity: "severe", Headline: headline},
+		},
+	}
+	_, stamped, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
+		EventKey: "compose:net", State: []byte(`{"headline":"` + headline + `"}`),
+		Status: "active", UpdatedAt: time.Now(),
+	}, ev)
+	if err != nil {
+		t.Fatalf("SaveComposeHazardAndEnqueue: %v", err)
+	}
+	return stamped
+}
+
+// TestComposeCorrectionStopsTheReplacedText is the reported P1 on the
+// panel path, end to end: "ewakuacja na północ" is saved, then corrected
+// to "ewakuacja na południe" while the first text is still queued. The
+// correction goes out; the text it replaced is held back before
+// transmission.
+func TestComposeCorrectionStopsTheReplacedText(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "compose-gate.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	gate := NewLifecycleGate(store, nil)
+
+	north := saveComposeTransition(t, store, "Ewakuacja na północ")
+	south := saveComposeTransition(t, store, "Ewakuacja na południe")
+
+	// The panel must be able to tell the two apart: the version is
+	// allocated per save and recorded under the publisher that owns it.
+	if north.Hazard.Publisher == "" || north.Hazard.ChangeID == 0 {
+		t.Fatalf("first save carries no version identity: %+v", north.Hazard)
+	}
+	if south.Hazard.ChangeID <= north.Hazard.ChangeID {
+		t.Fatalf("correction version %d is not newer than %d", south.Hazard.ChangeID, north.Hazard.ChangeID)
+	}
+
+	if !gate(ctx, ActionRequest{ID: "compose:net/log", Event: south}) {
+		t.Fatal("the correction was held back")
+	}
+	if gate(ctx, ActionRequest{ID: "compose:net/log", Event: north}) {
+		t.Fatal("the replaced text still passed the gate and would be transmitted")
+	}
+
+	// Expiring the corrected message keeps blocking that same text.
+	expire := dispatch.Event{
+		Kind:   dispatch.EventHazardTransition,
+		Origin: dispatch.Origin{Type: "web", ReceiverID: "compose"},
+		Hazard: &dispatch.HazardTransition{
+			Type:   dispatch.TransitionExpired,
+			Key:    south.Hazard.Key,
+			Source: "compose",
+			Hazard: dispatch.Hazard{EventKey: south.Hazard.Key, Severity: "severe", Headline: "Ewakuacja na południe"},
+		},
+	}
+	_, expired, err := store.SaveComposeHazardAndEnqueue(ctx, storage.ComposeHazard{
+		EventKey: south.Hazard.Key, State: []byte(`{}`), Status: "expired", UpdatedAt: time.Now(),
+	}, expire)
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	if gate(ctx, ActionRequest{ID: "compose:net/log", Event: expired}) {
+		t.Fatal("an expired message still passed the gate")
+	}
+	if gate(ctx, ActionRequest{ID: "compose:net/log", Event: south}) {
+		t.Fatal("the expired message's earlier text passed the gate")
+	}
+}

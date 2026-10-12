@@ -68,8 +68,16 @@ func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) err
 		return tc, nil
 	}
 
+	// One send is bounded as a whole: the caller's deadline when it has
+	// one, defaultDeadline otherwise (the action worker path applies the
+	// same rule).
+	deadline := time.Now().Add(defaultDeadline)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	dialer := &net.Dialer{Timeout: 15 * time.Second, Deadline: deadline}
 
 	var conn net.Conn
 	var err error
@@ -86,14 +94,27 @@ func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) err
 	if err != nil {
 		return fmt.Errorf("smtp: dial %s: %w", addr, err)
 	}
+	defer conn.Close()
+
+	// The deadline is armed BEFORE the greeting is read. net/smtp's
+	// NewClient waits for the server's banner, so a server that accepts
+	// the connection and then says nothing blocked this call for good —
+	// the deadline used to be set only after the handshake, and the
+	// context was never consulted at all (reported P2: password resets
+	// and every send on this transport could hang forever).
+	_ = conn.SetDeadline(deadline)
+
+	// Cancelling the context closes the connection, which unblocks any
+	// protocol operation already in flight instead of waiting for the
+	// deadline.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		conn.Close()
 		return fmt.Errorf("smtp: hello: %w", err)
 	}
 	defer client.Close()
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	if !implicit {
 		startTLS := cfg.StartTLS == nil || *cfg.StartTLS

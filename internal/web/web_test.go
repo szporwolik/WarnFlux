@@ -72,12 +72,24 @@ type testEnv struct {
 // fakeComposePublisher records the communications the compose module
 // publishes; the test drives the state mirror itself to simulate the
 // broker loopback. fail simulates a down broker (every publish errors).
+// The snapshot helpers take the lock, so a test may flip fail while a
+// best-effort publish goroutine is running.
 type fakeComposePublisher struct {
-	mu        sync.Mutex
-	published []state.Hazard
-	expired   []string
-	raw       []fakeRawPublish
-	fail      bool
+	mu             sync.Mutex
+	published      []state.Hazard
+	expired        []string
+	failedExpired  []string
+	failedActive   []string
+	failedRawCount int
+	raw            []fakeRawPublish
+	fail           bool
+}
+
+// setFail turns the simulated broker outage on or off.
+func (f *fakeComposePublisher) setFail(fail bool) {
+	f.mu.Lock()
+	f.fail = fail
+	f.mu.Unlock()
 }
 
 // fakeRawPublish is one recorded retained raw publication (EMCOM state).
@@ -88,32 +100,35 @@ type fakeRawPublish struct {
 }
 
 func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.fail {
+		f.failedActive = append(f.failedActive, h.EventKey)
 		return errors.New("broker down")
 	}
-	f.mu.Lock()
 	f.published = append(f.published, h)
-	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.fail {
+		f.failedExpired = append(f.failedExpired, eventKey)
 		return errors.New("broker down")
 	}
-	f.mu.Lock()
 	f.expired = append(f.expired, eventKey)
-	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.fail {
+		f.failedRawCount++
 		return errors.New("broker down")
 	}
-	f.mu.Lock()
 	f.raw = append(f.raw, fakeRawPublish{Suffix: suffix, Retained: retained, Payload: append([]byte(nil), payload...)})
-	f.mu.Unlock()
 	return nil
 }
 
@@ -130,6 +145,39 @@ func (f *fakeComposePublisher) expiredSnapshot() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.expired...)
+}
+
+// expireAttempts counts how often one event key's removal was attempted
+// or refused (a failed attempt proves a best-effort retire ran while the
+// simulated broker was down).
+func (f *fakeComposePublisher) expireAttempts(eventKey string) (ok, failed int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, k := range f.expired {
+		if k == eventKey {
+			ok++
+		}
+	}
+	for _, k := range f.failedExpired {
+		if k == eventKey {
+			failed++
+		}
+	}
+	return ok, failed
+}
+
+// rawSnapshotFor returns the raw publications whose suffix ends with the
+// given network slug and kind.
+func (f *fakeComposePublisher) rawSnapshotFor(slug string) []fakeRawPublish {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []fakeRawPublish
+	for _, r := range f.raw {
+		if strings.HasSuffix(r.Suffix, "/"+slug+"/emcom") {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // rawSnapshot returns a copy of the recorded raw publications.

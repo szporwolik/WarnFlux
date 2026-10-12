@@ -552,10 +552,65 @@ func (s *Server) publishEmcomState(net emcomNetwork, by string) error {
 	return s.pub.PublishRaw(suffix, true, payload)
 }
 
+// noteEmcomRetire remembers an alarm document the broker refused to
+// remove, so the resync can retry it.
+func (s *Server) noteEmcomRetire(slug string) {
+	if slug == "" {
+		return
+	}
+	s.emcomRetireMu.Lock()
+	if s.emcomRetirePending == nil {
+		s.emcomRetirePending = map[string]bool{}
+	}
+	s.emcomRetirePending[slug] = true
+	s.emcomRetireMu.Unlock()
+}
+
+// clearEmcomRetire forgets one remembered removal.
+func (s *Server) clearEmcomRetire(slug string) {
+	s.emcomRetireMu.Lock()
+	delete(s.emcomRetirePending, slug)
+	s.emcomRetireMu.Unlock()
+}
+
+// pendingEmcomRetires lists the networks whose alarm document is still
+// published although the station retired it (sorted for stable logs).
+func (s *Server) pendingEmcomRetires() []string {
+	s.emcomRetireMu.Lock()
+	defer s.emcomRetireMu.Unlock()
+	out := make([]string, 0, len(s.emcomRetirePending))
+	for slug := range s.emcomRetirePending {
+		out = append(out, slug)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// retireEmcomHazard removes one network's alarm document from the broker
+// and remembers the slug when the broker refuses: the local level is
+// authoritative, so a published alarm must not outlive it — and a broker
+// outage at the moment of the stand-down is exactly when it would.
+// stage names the caller for the log (stand-down, delete, resync).
+func (s *Server) retireEmcomHazard(slug, stage string) {
+	if s.pub == nil || slug == "" {
+		return
+	}
+	if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
+		s.logger.Warn("emcom: broker hazard retire failed", "slug", slug, "stage", stage, "error", err)
+		s.noteEmcomRetire(slug)
+		return
+	}
+	s.clearEmcomRetire(slug)
+}
+
 // SyncBrokerState re-publishes the current local-first state (panel
 // communications and EMCOM networks/hazards) to the broker. It is
 // invoked on every receiver (re)connect so broker outages never lose
-// panel state permanently. Best-effort: failures are logged.
+// panel state permanently — including the EMCOM alarm documents that
+// must be GONE after a stand-down: a level at or below monitoring (and a
+// deleted network) has its alarm document removed here, and a removal
+// the broker refused is retried on the next resync. Best-effort:
+// failures are logged.
 func (s *Server) SyncBrokerState() {
 	if s.pub == nil {
 		return
@@ -600,8 +655,14 @@ func (s *Server) SyncBrokerState() {
 	}
 
 	// EMCOM networks: live rows publish their state (and the hazard
-	// document when raised); tombstones remove stale broker copies.
+	// document when raised); a network at monitoring or below — and a
+	// deleted one — must have its alarm document REMOVED. The local level
+	// is what the operator set, so a document the broker kept from before
+	// an outage must not survive the stand-down (reported P1: a level 0
+	// set while the broker was down left the alarm active).
 	if st, ok := s.users.(emcomStore); ok {
+		raised := map[string]bool{} // networks currently above monitoring
+		retire := map[string]bool{} // networks whose alarm document must go
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		rows, err := st.EmcomNetworks(ctx)
 		cancel()
@@ -613,6 +674,7 @@ func (s *Server) SyncBrokerState() {
 					if err := s.publishEmcomState(emcomNetwork{Slug: n.Slug}, ""); err != nil {
 						s.logger.Warn("emcom: tombstone resync failed", "slug", n.Slug, "error", err)
 					}
+					retire[n.Slug] = true
 					continue
 				}
 				lvl, _ := emcomLevelAt(n.Level)
@@ -624,16 +686,36 @@ func (s *Server) SyncBrokerState() {
 					UpdatedBy: n.UpdatedBy,
 					UpdatedAt: n.UpdatedAt,
 				}
-				if err := s.publishEmcomState(net, n.UpdatedBy); err != nil {
-					s.logger.Warn("emcom: state resync failed", "slug", n.Slug, "error", err)
-					continue
-				}
 				if n.Level >= 1 {
+					if err := s.publishEmcomState(net, n.UpdatedBy); err != nil {
+						s.logger.Warn("emcom: state resync failed", "slug", n.Slug, "error", err)
+						continue
+					}
 					if err := s.pub.PublishActive(emcomSource, emcomHazard(net, now, s.SystemLanguage())); err != nil {
 						s.logger.Warn("emcom: hazard resync failed", "slug", n.Slug, "error", err)
+					} else {
+						// A live alarm supersedes any removal still owed
+						// for this network.
+						s.clearEmcomRetire(n.Slug)
 					}
+					raised[n.Slug] = true
+					continue
 				}
+				if err := s.publishEmcomState(net, n.UpdatedBy); err != nil {
+					s.logger.Warn("emcom: state resync failed", "slug", n.Slug, "error", err)
+				}
+				retire[n.Slug] = true
 			}
+		}
+		// Removals the broker refused earlier ride along: a slug the read
+		// cannot account for (its row is gone) still owes the removal.
+		for _, slug := range s.pendingEmcomRetires() {
+			if !raised[slug] {
+				retire[slug] = true
+			}
+		}
+		for slug := range retire {
+			s.retireEmcomHazard(slug, "resync")
 		}
 	}
 }
@@ -1115,11 +1197,10 @@ func (s *Server) setEmcomLevel(slug string, level int, by string) error {
 		if hasStore {
 			s.publishEmcomStateAsync(net, by)
 			if s.pub != nil {
-				go func() {
-					if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
-						s.logger.Warn("emcom: broker hazard retire failed", "slug", slug, "error", err)
-					}
-				}()
+				// A stand-down during a broker outage must not leave the
+				// alarm published: the attempt is best-effort here and the
+				// resync retries whatever it misses.
+				go s.retireEmcomHazard(slug, "stand-down")
 			}
 		} else if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
 			s.logger.Warn("emcom: hazard retire failed", "slug", slug, "error", err)
@@ -1354,14 +1435,14 @@ func (s *Server) handleEmcomDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if hasStore {
 		// Broker sync: tombstone the state document and retire the
-		// hazard, best-effort (the resync hook republishes on reconnect).
+		// hazard, best-effort (the resync hook republishes on reconnect
+		// and retries a removal the broker refused). The removal is
+		// unconditional: the station knows the network is gone, so no
+		// alarm document of it may stay published — even one a previous
+		// stand-down left behind during an outage.
 		s.publishEmcomStateAsync(emcomNetwork{Slug: slug}, sess.username)
-		if wasActive && s.pub != nil {
-			go func() {
-				if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {
-					s.logger.Warn("emcom: broker hazard retire failed", "slug", slug, "error", err)
-				}
-			}()
+		if s.pub != nil {
+			go s.retireEmcomHazard(slug, "delete")
 		}
 	} else if wasActive {
 		if err := s.pub.ExpireActive(emcomSource, emcomEventKey(slug)); err != nil {

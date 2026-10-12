@@ -932,6 +932,10 @@ actions:
   # Generic HTTP webhook action: one JSON POST per routed notification.
   # Covers Discord, Slack-compatible gateways, ntfy, Gotify bridges,
   # Home Assistant and SMS gateways — anything accepting a webhook POST.
+  # The endpoint must answer the POST itself with 2xx: a 3xx is a failed
+  # delivery (following it would re-send the alert as a bodyless GET to
+  # whatever page it points at, e.g. a login form), so point url at the
+  # final webhook address.
   # - id: wh-discord
   #   type: http_webhook
   #   enabled: false

@@ -217,3 +217,37 @@ func TestCloseIsIdempotent(t *testing.T) {
 		t.Errorf("second Close = %v", err)
 	}
 }
+
+// TestRedirectIsADeliveryFailure pins the reported P2: the default client
+// policy followed a 302, re-issued the POST as a bodyless GET at the
+// login page, and reported the alert delivered when that page answered
+// 200. A redirect now fails the delivery, and the target is never asked
+// to serve the alert.
+func TestRedirectIsADeliveryFailure(t *testing.T) {
+	var targetHits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hook" {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		targetHits = append(targetHits, r.Method+" "+string(body))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p, err := New(node(t, map[string]any{"url": srv.URL + "/hook"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.Execute(context.Background(), hazardRequest())
+	if err == nil {
+		t.Fatal("a redirect was reported as a successful delivery")
+	}
+	if !strings.Contains(err.Error(), "302") || !strings.Contains(err.Error(), "/login") {
+		t.Fatalf("Execute = %v, want the redirect (302 to /login) named", err)
+	}
+	if len(targetHits) != 0 {
+		t.Fatalf("the redirect target was asked to carry the alert: %v", targetHits)
+	}
+}

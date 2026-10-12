@@ -52,6 +52,25 @@
       <p class="muted help-cmd-note">{{tr $.Lang "help.meshchan.note"}}</p>
     </section>
     {{end}}
+    {{with .MeshStatus}}
+    <section class="card help-meshchan help-meshstat">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr $.Lang "help.meshtastic.title"}}</h2>
+      <p class="muted">{{tr $.Lang "help.meshstat.intro"}}</p>
+      <div class="help-meshchan-grid">
+        <div class="help-meshchan-facts">
+          {{range .Facts}}
+          <div class="hz-row">
+            <span class="hz-label">{{.Label}}</span>
+            <span><span class="badge {{if .On}}ok{{else}}warn{{end}}">{{.Value}}</span></span>
+          </div>
+          {{end}}
+        </div>
+      </div>
+      <ul class="help-list">
+        {{range .Items}}<li>{{tr $.Lang .}}</li>{{end}}
+      </ul>
+    </section>
+    {{end}}
     {{with .Discord}}
     <section class="card help-meshchan help-discord">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-chat-text"></use></svg>{{tr $.Lang "help.discord.title"}}</h2>

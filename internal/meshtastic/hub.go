@@ -1256,6 +1256,39 @@ func (h *Hub) runSession(ctx context.Context) error {
 	}
 }
 
+// StatusFacts is what the station says it does over Meshtastic: the two
+// alert paths, the two periodic lines and where the group channel sits.
+// The Help page renders it — the same shape as the Discord card, so the two
+// surfaces describe themselves alike.
+type StatusFacts struct {
+	// Channel is the group channel index (0 = none: no channel line and no
+	// commands on the air).
+	Channel int
+	// ChannelAlerts reports whether routed alerts go on the group channel.
+	ChannelAlerts bool
+	// DMAlerts reports whether routed alerts go to registered node ids.
+	DMAlerts bool
+	// HazardsInterval is the periodic status line spacing (0 = off).
+	HazardsInterval time.Duration
+	// BeaconAt is the daily presence anchor ("" = the spacing applies).
+	BeaconAt string
+	// BeaconInterval is the presence spacing (0 = anchor mode, or off when
+	// the anchor is empty too).
+	BeaconInterval time.Duration
+}
+
+// Status reports what the station sends over Meshtastic right now.
+func (h *Hub) Status() StatusFacts {
+	return StatusFacts{
+		Channel:         h.cfg.EmcomChannel,
+		ChannelAlerts:   ChannelAlerts(),
+		DMAlerts:        DMAlerts(),
+		HazardsInterval: h.cfg.EmcomHazardsInterval,
+		BeaconAt:        h.cfg.EmcomAt,
+		BeaconInterval:  h.cfg.EmcomInterval,
+	}
+}
+
 // clock reads the hub's clock (time.Now unless a test injected one).
 func (h *Hub) clock() time.Time {
 	if h.now != nil {

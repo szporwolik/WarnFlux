@@ -22,13 +22,27 @@
         <input type="hidden" name="csrf" value="{{.CSRF}}">
 
         <div class="account-section">
+          <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "mass.kind"}}</h3>
+          <div class="account-grid">
+            <label class="field field-wide" for="mass-kind">
+              <select id="mass-kind" name="kind" aria-label="{{tr .Lang "mass.kind"}}">
+                <option value="short"{{if ne .Kind "long"}} selected{{end}}>{{tr .Lang "mass.kind.short"}}</option>
+                <option value="long"{{if eq .Kind "long"}} selected{{end}}>{{tr .Lang "mass.kind.long"}}</option>
+              </select>
+            </label>
+          </div>
+          <p class="page-info">{{tr .Lang "mass.kind.hint"}}</p>
+        </div>
+
+        <div class="account-section">
           <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-pencil-square"></use></svg>{{tr .Lang "mass.message"}}</h3>
           <div class="account-grid">
             <label class="field field-wide">
-              <input type="text" name="message" value="{{.Message}}" maxlength="50" data-char-count="50" data-char-out="#mass-count" aria-label="{{tr .Lang "mass.message"}}" required>
+              <textarea id="mass-message" name="message" rows="3" maxlength="50" data-char-count="50" data-char-limits="{{.CharLimits}}" data-char-out="#mass-count" aria-label="{{tr .Lang "mass.message"}}" required>{{.Message}}</textarea>
               <span class="char-count" id="mass-count">0 / 50</span>
             </label>
           </div>
+          <p class="page-info mass-md-hint" id="mass-md-hint">{{tr .Lang "mass.md_hint"}}</p>
         </div>
 
         <div class="account-section">
@@ -67,9 +81,10 @@
 
         <div class="account-section">
           <h3><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "mass.channels"}}</h3>
-          <div class="account-channels-grid">
-            {{range .Channels}}<label class="account-channel"><input type="checkbox" name="channels" value="{{.Kind}}"{{if index $.SelChannels .Kind}} checked{{end}}><span>{{tr $.Lang .Label}}</span></label>{{end}}
+          <div class="account-channels-grid" id="mass-channels">
+            {{range .Channels}}<label class="account-channel" data-kinds="{{.Kinds}}"><input type="checkbox" name="channels" value="{{.Kind}}"{{if index $.SelChannels .Kind}} checked{{end}}><span>{{tr $.Lang .Label}}</span></label>{{end}}
           </div>
+          <p class="page-info mass-kind-note" id="mass-kind-note">{{tr .Lang "mass.long_channels_note"}}</p>
           {{if not .DiscordReady}}<p class="muted mass-note">{{tr .Lang "mass.discord_no_token"}}</p>{{end}}
         </div>
 

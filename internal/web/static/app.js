@@ -4300,6 +4300,62 @@
   });
 })();
 
+// Mass info composer: the message kind decides how much text may be written
+// and which channels can carry it. A short notice is the classic
+// radio-friendly broadcast that fits every surface; a long one is up to
+// 1000 characters of markdown and goes out over e-mail and Discord only —
+// the two channels that render it as composed. The budget and the allowed
+// channels come from the markup (data-char-limits, data-kinds), so the
+// server stays the single source of truth.
+(function () {
+  "use strict";
+  var select = document.getElementById("mass-kind");
+  if (!select) { return; }
+  var box = document.getElementById("mass-message");
+  var channels = Array.prototype.slice.call(
+    document.querySelectorAll("#mass-channels .account-channel"));
+  var mdHint = document.getElementById("mass-md-hint");
+  var kindNote = document.getElementById("mass-kind-note");
+
+  function limits() {
+    var out = {};
+    if (!box) { return out; }
+    (box.getAttribute("data-char-limits") || "").split(/\s+/).forEach(function (pair) {
+      var kv = pair.split(":");
+      if (kv.length === 2) { out[kv[0]] = parseInt(kv[1], 10); }
+    });
+    return out;
+  }
+
+  function apply() {
+    var mode = select.value;
+    var budget = limits()[mode];
+    if (box) {
+      if (budget) {
+        box.maxLength = budget;
+        box.setAttribute("data-char-count", String(budget));
+      }
+      box.rows = mode === "long" ? 12 : 3;
+      box.dispatchEvent(new Event("input"));
+    }
+    channels.forEach(function (label) {
+      var kinds = (label.getAttribute("data-kinds") || "").split(/\s+/);
+      var input = label.querySelector("input");
+      var ok = kinds.indexOf(mode) !== -1;
+      label.classList.toggle("mass-chan-off", !ok);
+      if (input) {
+        input.disabled = !ok;
+        if (!ok) { input.checked = false; }
+      }
+    });
+    if (mdHint) { mdHint.hidden = mode !== "long"; }
+    if (kindNote) { kindNote.hidden = mode !== "long"; }
+  }
+
+  select.addEventListener("change", apply);
+  apply();
+})();
+
 // Mass info broadcast: while the notice is delivered in the background the
 // page polls the progress fragment (channels tick off, per-channel user
 // counter), swapping the panel in place until the job reports done.

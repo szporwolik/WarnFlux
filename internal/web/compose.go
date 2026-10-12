@@ -53,8 +53,14 @@ type composePublisher interface {
 // communications (satisfied by *sqlite.Store): the transition is routed
 // from the local record and the retained MQTT document is only an
 // asynchronous sync copy.
+//
+// Writing goes through SaveComposeHazardAndEnqueue: the record, its
+// lifecycle state and the dispatch intake row commit in ONE transaction,
+// and only its returned row id is handed to the live queue. Saving first
+// and dispatching later is the whole point — an enqueued transition is a
+// promise that the record exists.
 type composeStore interface {
-	SaveComposeHazard(ctx context.Context, h storage.ComposeHazard) error
+	SaveComposeHazardAndEnqueue(ctx context.Context, h storage.ComposeHazard, ev dispatch.Event) (int64, error)
 	DeleteComposeHazard(ctx context.Context, eventKey string) error
 	ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, error)
 }
@@ -324,7 +330,7 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 
 	h := composeHazardFromForm(form, time.Now())
 
-	_, hasStore := s.users.(composeStore)
+	store, hasStore := s.users.(composeStore)
 	if !hasStore {
 		// Mirror-only installations keep the broker document as the
 		// record: publishing is required and synchronous (the old
@@ -343,10 +349,6 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// LOCAL-FIRST: the transition is persisted (the dispatch inbox rows
-	// are the durable record) and routed locally BEFORE any broker I/O —
-	// the panel works without a broker. The retained MQTT document is an
-	// asynchronous sync copy for other instances.
 	typ := dispatch.TransitionNew
 	if form.EventKey != "" {
 		typ = dispatch.TransitionUpdated
@@ -354,9 +356,48 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	if form.Status == "expired" {
 		typ = dispatch.TransitionExpired
 	}
-	switch s.ingress.Enqueue(composeTransition(h, typ)) {
+
+	transition := composeTransition(h, typ)
+	if hasStore {
+		// LOCAL-FIRST + ATOMIC (P1): the state, the lifecycle and the
+		// dispatch intake row commit in ONE transaction and only then
+		// does the transition enter the live queue. The old order
+		// (enqueue first, record later, save error only logged) answered
+		// "published" for a message whose record never landed: the panel
+		// view could not be rebuilt after a restart and the message
+		// could not be traced or retired. A failed save now rejects the
+		// operation and nothing is dispatched.
+		stateJSON, err := json.Marshal(h)
+		if err != nil {
+			s.logger.Warn("compose: local record marshal failed", "event_key", h.EventKey, "error", err)
+			s.renderComposeError(w, r, http.StatusServiceUnavailable, form,
+				i18n.T(s.langFor(r), "compose.err.save"))
+			return
+		}
+		id, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
+			// Expired communications stay as authoritative tombstones so
+			// a stale broker copy can never revive them.
+			EventKey: h.EventKey, State: stateJSON, Status: form.Status, UpdatedAt: time.Now(),
+		}, transition)
+		if err != nil {
+			s.logger.Warn("compose: local record save failed", "event_key", h.EventKey, "error", err)
+			s.renderComposeError(w, r, http.StatusServiceUnavailable, form,
+				i18n.T(s.langFor(r), "compose.err.save"))
+			return
+		}
+		// The row is already durable, so the live offer never duplicates
+		// it and a full queue defers delivery to intake recovery instead
+		// of losing the message.
+		transition.InboxID = id
+	}
+
+	switch s.ingress.Enqueue(transition) {
 	case dispatch.Rejected:
-		s.logger.Warn("compose: local dispatch rejected the transition", "event_key", h.EventKey)
+		// The record is durable; only the live hop did not happen (the
+		// intake is stopped, i.e. the station is shutting down). Intake
+		// recovery delivers the row after the restart, so the operator
+		// still gets an explicit answer instead of a silent success.
+		s.logger.Warn("compose: local dispatch rejected the transition", "event_key", h.EventKey, "inbox_id", transition.InboxID)
 		s.renderComposeError(w, r, http.StatusServiceUnavailable, form,
 			i18n.T(s.langFor(r), "compose.err.dispatch"))
 		return
@@ -365,16 +406,6 @@ func (s *Server) handleComposeSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if hasStore {
-		// The local record: expired communications stay as authoritative
-		// tombstones so a stale broker copy can never revive them.
-		if stateJSON, err := json.Marshal(h); err != nil {
-			s.logger.Warn("compose: local record marshal failed", "event_key", h.EventKey, "error", err)
-		} else if err := s.users.(composeStore).SaveComposeHazard(context.Background(), storage.ComposeHazard{
-			EventKey: h.EventKey, State: stateJSON, Status: form.Status, UpdatedAt: time.Now(),
-		}); err != nil {
-			s.logger.Warn("compose: local record save failed", "event_key", h.EventKey, "error", err)
-		}
-
 		// Broker sync is asynchronous and best-effort: a down broker
 		// never blocks local delivery (the resync hook republishes the
 		// current state on every receiver reconnect).
@@ -423,21 +454,25 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, hasStore := s.users.(composeStore)
+	store, hasStore := s.users.(composeStore)
+	transition := composeTransition(h, dispatch.TransitionExpired)
 	if hasStore {
-		// LOCAL-FIRST + ATOMIC (P1): the local record and its lifecycle
-		// state commit in ONE transaction BEFORE the expiry transition
-		// is dispatched — a failed save rejects the operation (the form
-		// sees the failure instead of a silent success) and a crash can
-		// never leave an expired record with an active lifecycle that
-		// still allows the retired message through the delivery queue.
-		if err := s.users.(composeStore).SaveComposeHazard(context.Background(), storage.ComposeHazard{
+		// LOCAL-FIRST + ATOMIC (P1): the expired record, its lifecycle
+		// and the expiry intake row commit in ONE transaction, and the
+		// transition reaches the live queue only after that commit — a
+		// failed write rejects the operation (the form sees the failure
+		// instead of a silent success) and a crash can never leave an
+		// expired record with an active lifecycle that still allows the
+		// retired message through the delivery queue.
+		id, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
 			EventKey: key, State: composeStateJSON(h), Status: "expired", UpdatedAt: time.Now(),
-		}); err != nil {
+		}, transition)
+		if err != nil {
 			s.logger.Warn("compose: local expiry record failed", "event_key", key, "error", err)
 			http.Error(w, "local record save failed", http.StatusServiceUnavailable)
 			return
 		}
+		transition.InboxID = id
 	} else {
 		// Mirror-only: the broker document is the record; the tombstone
 		// publish is required and synchronous (the old contract).
@@ -453,10 +488,10 @@ func (s *Server) handleComposeExpire(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// LOCAL-FIRST: the expiry transition is durable and routed locally
-	// after the acceptance above, before any broker I/O.
-	if s.ingress.Enqueue(composeTransition(h, dispatch.TransitionExpired)) == dispatch.Rejected {
-		s.logger.Warn("compose: local dispatch rejected the expiry transition", "event_key", key)
+	// LOCAL-FIRST: the expiry transition is routed locally after the
+	// acceptance above, before any broker I/O.
+	if s.ingress.Enqueue(transition) == dispatch.Rejected {
+		s.logger.Warn("compose: local dispatch rejected the expiry transition", "event_key", key, "inbox_id", transition.InboxID)
 		if hasStore {
 			http.Error(w, "dispatch intake rejected the expiry", http.StatusServiceUnavailable)
 			return
@@ -572,20 +607,26 @@ func (s *Server) scheduleComposeExpiry(h state.Hazard) {
 		if cur.ExpiresAt == nil || !cur.ExpiresAt.Equal(expires) {
 			return // re-published with a different expiry; that timer owns it
 		}
-		if _, hasStore := s.users.(composeStore); hasStore {
-			// The local record commits ATOMICALLY with the lifecycle
-			// state (one transaction): a failed save must not dispatch
-			// the expiry — the stale message stays active and the
-			// expiry-based suppression covers it; the manual expire
-			// remains available.
-			if err := s.users.(composeStore).SaveComposeHazard(context.Background(), storage.ComposeHazard{
+		if store, hasStore := s.users.(composeStore); hasStore {
+			// The expired record, its lifecycle and the expiry intake row
+			// commit in ONE transaction (the same atomic path the panel
+			// uses): a failed save must not dispatch the expiry — the
+			// stale message stays active and the expiry-based suppression
+			// covers it; the manual expire remains available.
+			transition := composeTransition(cur, dispatch.TransitionExpired)
+			id, err := store.SaveComposeHazardAndEnqueue(context.Background(), storage.ComposeHazard{
 				EventKey: key, State: composeStateJSON(cur), Status: "expired", UpdatedAt: time.Now(),
-			}); err != nil {
+			}, transition)
+			if err != nil {
 				s.logger.Warn("compose: auto-expiry local record failed; keeping the expiry transition unsent", "event_key", key, "error", err)
 				return
 			}
-		}
-		if s.ingress.Enqueue(composeTransition(cur, dispatch.TransitionExpired)) == dispatch.Rejected {
+			transition.InboxID = id
+			if s.ingress.Enqueue(transition) == dispatch.Rejected {
+				s.logger.Warn("compose: auto-expiry transition rejected by the stopped intake (recovery will deliver it)", "event_key", key, "inbox_id", id)
+				return
+			}
+		} else if s.ingress.Enqueue(composeTransition(cur, dispatch.TransitionExpired)) == dispatch.Rejected {
 			s.logger.Warn("compose: dispatch queue full, auto-expiry transition rejected", "event_key", key)
 			return
 		}
@@ -638,17 +679,22 @@ func (s *Server) AutoExpireCompose(ctx context.Context) (int, error) {
 		if h.ExpiresAt == nil || h.ExpiresAt.After(now) {
 			continue
 		}
-		// Local record first: a failed save must not dispatch the
-		// expiry (the communication stays active and the manual expire
-		// remains available).
-		if err := cs.SaveComposeHazard(ctx, storage.ComposeHazard{
+		// Record + intake row in ONE transaction (the same atomic path the
+		// panel uses): a failed save must not dispatch the expiry (the
+		// communication stays active and the manual expire remains
+		// available).
+		transition := composeTransition(h, dispatch.TransitionExpired)
+		id, err := cs.SaveComposeHazardAndEnqueue(ctx, storage.ComposeHazard{
 			EventKey: row.EventKey, State: row.State, Status: "expired", UpdatedAt: now,
-		}); err != nil {
+		}, transition)
+		if err != nil {
 			s.logger.Warn("compose: auto-expiry local record failed", "event_key", row.EventKey, "error", err)
 			continue
 		}
-		if s.ingress.Enqueue(composeTransition(h, dispatch.TransitionExpired)) == dispatch.Rejected {
-			s.logger.Warn("compose: dispatch queue full, auto-expiry transition rejected", "event_key", row.EventKey)
+		transition.InboxID = id
+		if s.ingress.Enqueue(transition) == dispatch.Rejected {
+			// The row is durable: recovery delivers it after the restart.
+			s.logger.Warn("compose: auto-expiry transition rejected by the stopped intake (recovery will deliver it)", "event_key", row.EventKey, "inbox_id", id)
 			continue
 		}
 		if s.pub != nil {

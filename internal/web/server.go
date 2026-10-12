@@ -76,6 +76,12 @@ type Server struct {
 	radioCLI *radiocli.Bot
 	ingress  *dispatch.Ingress
 	users    storage.DirectoryStore
+	// emcomRetireMu guards emcomRetirePending: the EMCOM alarm documents
+	// the broker refused to remove. A stand-down that happened while the
+	// broker was down would otherwise leave an active alarm published, so
+	// the resync retries the removal until it lands (see emcom.go).
+	emcomRetireMu      sync.Mutex
+	emcomRetirePending map[string]bool
 	// events backs the public archive (180-day history of communications).
 	// nil in minimal constructions (the archive tab then shows an empty
 	// state).

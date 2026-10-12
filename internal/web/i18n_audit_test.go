@@ -49,8 +49,8 @@ func TestTemplateKeysTranslated(t *testing.T) {
 	dynRe := regexp.MustCompile(`printf "([a-zA-Z0-9._-]+)\.(%[sd])"`)
 	strVariants := map[string][]string{
 		"compose.status": {"active", "expired"},
-		"notif.outcome":  {"delivered", "failed", "skipped", "submitted"},
-		"notif.status":   {"saved", "running", "failed", "succeeded", "accepted", "confirmed", "expired"},
+		"notif.outcome":  {"delivered", "failed", "skipped", "submitted", "unconfirmed"},
+		"notif.status":   {"saved", "running", "failed", "succeeded", "accepted", "confirmed", "unconfirmed", "expired"},
 		"config.mqtt":    {"events", "active", "info", "status", "save"},
 		"lang":           {"en", "pl"},
 	}

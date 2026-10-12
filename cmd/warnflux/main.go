@@ -560,6 +560,11 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 	return nil
 }
 
+// resetMailTimeout bounds one self-service password-reset email: the
+// panel waits for it, so it must not be unbounded, and it must not
+// depend on the browser still being there.
+const resetMailTimeout = 30 * time.Second
+
 func main() {
 	fs := flag.NewFlagSet("warnflux", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultConfigPath, "path to YAML configuration file")
@@ -1232,7 +1237,14 @@ func run(configPath string, checkConfig bool) error {
 			var sc smtp.Config
 			if err := a.Config.Decode(&sc); err == nil {
 				webSrv.SetPasswordResetMailer(func(to, subject, text string) error {
-					return smtp.Direct(context.Background(), sc, []string{to}, subject, text)
+					// The send must not outlive the request that asked
+					// for it: a server that stops answering would
+					// otherwise hold the handler for good. The context
+					// is deliberately not the request's own — the mail
+					// still goes out when the browser is gone.
+					ctx, cancel := context.WithTimeout(context.Background(), resetMailTimeout)
+					defer cancel()
+					return smtp.Direct(ctx, sc, []string{to}, subject, text)
 				})
 			}
 			break

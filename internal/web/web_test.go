@@ -3740,6 +3740,101 @@ func TestComposeAutoExpireReconcile(t *testing.T) {
 	}
 }
 
+// raceExpireStore is the reported race in one type: the maintenance pass
+// reads the list of communications and, exactly between that read and the
+// conditional write it issues next, the operator saves an extension. The
+// pass keeps the stale rows it read.
+type raceExpireStore struct {
+	*sqlite.Store
+	// onRead runs once, from inside the first ComposeHazards call.
+	onRead func()
+}
+
+func (r *raceExpireStore) ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, error) {
+	rows, err := r.Store.ComposeHazards(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if r.onRead != nil {
+		onRead := r.onRead
+		r.onRead = nil
+		onRead()
+	}
+	return rows, err
+}
+
+// TestComposeAutoExpireKeepsTheExtendedMessage is the reported P1: a
+// communication extended while the maintenance pass runs must not be
+// overwritten with the state the pass read and flipped to expired. The
+// pass may only expire the version it read; a newer save wins.
+func TestComposeAutoExpireKeepsTheExtendedMessage(t *testing.T) {
+	inner := newLocalPanelStore(t)
+	store := &raceExpireStore{Store: inner}
+	env := newTestEnvWithUsers(t, store)
+	ctx := context.Background()
+	now := time.Now()
+	past := now.Add(-time.Hour)
+
+	// An active communication whose validity already passed: the pass
+	// wants to expire it.
+	seedState := func(exp *time.Time) []byte {
+		t.Helper()
+		b, err := json.Marshal(state.Hazard{
+			EventKey: "compose:extended", Source: "compose", Headline: "Ewakuacja",
+			Severity: "severe", ExpiresAt: exp, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if _, err := inner.SaveComposeHazard(ctx, storage.ComposeHazard{
+		EventKey: "compose:extended", State: seedState(&past), Status: "active", UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The extension lands between the read and the write.
+	extended := now.Add(2 * time.Hour)
+	store.onRead = func() {
+		if _, err := inner.SaveComposeHazard(context.Background(), storage.ComposeHazard{
+			EventKey: "compose:extended", State: seedState(&extended), Status: "active", UpdatedAt: time.Now(),
+		}); err != nil {
+			t.Errorf("extend: %v", err)
+		}
+	}
+
+	n, err := env.server.AutoExpireCompose(ctx)
+	if err != nil {
+		t.Fatalf("AutoExpireCompose = %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("AutoExpireCompose expired %d, want 0 (the extension won)", n)
+	}
+
+	rows, err := inner.ComposeHazards(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Status != "active" {
+		t.Fatalf("communication = %+v, want it still active", rows)
+	}
+	var got state.Hazard
+	if err := json.Unmarshal(rows[0].State, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(extended) {
+		t.Fatalf("validity = %v, want the extended %v (the pass overwrote it)", got.ExpiresAt, extended)
+	}
+	// Nothing was dispatched and the broker document was not retired:
+	// the communication is still live.
+	if ev := drainIngress(env); ev != nil {
+		t.Fatalf("expiry transition enqueued for an extended communication: %+v", ev)
+	}
+	if got := env.pub.expiredSnapshot(); len(got) != 0 {
+		t.Fatalf("broker retirement = %v, want none", got)
+	}
+}
+
 // TestComposeLocalFirstNoBroker pins the P1 fix: a communication is
 // persisted and routed locally even when the broker is unreachable — the
 // save succeeds (303), the transition hits the ingress and the issued

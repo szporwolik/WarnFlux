@@ -32,7 +32,7 @@ ingest HTTP endpoints answer 503 until paho reconnects.
 | Component | Behavior without internet |
 |---|---|
 | aprs-inet | reconnects with exponential backoff (2s → 2min); a session that ran ≥ 1 min resets the backoff so recovery after a single drop is fast |
-| IMGW / GIOŚ / GDDKiA / RSO / Open-Meteo / METAR / ADS-B / burze.dzis.net | poll fails → source marked degraded on the health page; snapshots are skipped, never half-applied (reconciliation runs only on a complete pass, so a failed locality query never looks like a withdrawn alert) |
+| IMGW / GIOŚ / GDDKiA / RSO / Open-Meteo / METAR / ADS-B / burze.dzis.net | poll fails → source marked degraded on the health page; snapshots are skipped, never half-applied (reconciliation runs only on a complete pass, so a failed locality query never looks like a withdrawn alert; each source instance reconciles only the events it owns, so two instances of one plugin type never withdraw each other's alerts) |
 | SMTP action | per-call deadline, bounded retries with backoff, then a clear trail entry (`/notifications`) |
 | MQTT output | at-least-once journal: the worker suspends on repeated failures and replays from the journal cursor after recovery |
 | ingest HTTP | 503 until the broker connection is back |

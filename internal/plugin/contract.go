@@ -88,6 +88,11 @@ type SourceFilterReporter interface {
 // across process restarts. A source whose correctness depends on this
 // capability should fail clearly when it is absent instead of silently
 // running without reconciliation.
+//
+// The result is scoped to the CALLING SOURCE INSTANCE: only events this
+// instance produced are returned, so the reconciliation of a snapshot
+// source can never withdraw the events of a sibling instance of the same
+// plugin type (two instances publish under the same source slug).
 type SourceActiveEventReader interface {
 	ListSourceActiveEvents(ctx context.Context, source string) ([]core.HazardEvent, error)
 }

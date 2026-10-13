@@ -146,18 +146,28 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 		if err != nil {
 			return nil, fmt.Errorf("source %q (type %q): invalid configuration: %w", cfg.ID, cfg.Type, err)
 		}
-		// Per-source emitter: the ProducerID stamped on information
-		// messages is the configured source instance ID, never a value the
-		// plugin chooses. The same wrapper reports operational source
-		// health into this source's status tracker.
+		// Per-source emitter: the identity stamped on everything this
+		// instance produces — the ProducerID of information messages and
+		// the Producer of hazard events — is the configured source
+		// instance ID, never a value the plugin chooses. The same wrapper
+		// reports operational source health into this source's status
+		// tracker and scopes the active-event read to this instance.
 		srcID := cfg.ID
 		emit := &sourceEmitter{
 			EmitterFunc: EmitterFunc{
-				EmitFn: m.emit,
+				EmitFn: func(ctx context.Context, event core.HazardEvent) error {
+					// Two instances of one plugin type publish under the
+					// same source slug, so the owner is what tells their
+					// events apart. A plugin cannot claim an event for
+					// another instance (or hide behind one).
+					event.Producer = srcID
+					return m.emit(ctx, event)
+				},
 				EmitInformationFn: func(ctx context.Context, message core.InformationMessage) error {
 					return m.emitInformation(ctx, srcID, message)
 				},
 			},
+			source:  srcID,
 			tracker: tracker,
 			store:   store,
 		}
@@ -199,6 +209,10 @@ func NewManager(reg *Registry, sourceCfgs []config.Source, outputCfgs []config.O
 // still owns lifecycle states).
 type sourceEmitter struct {
 	EmitterFunc
+	// source is the configured source instance ID (the YAML source id),
+	// not the plugin type: it is the owner of every event this instance
+	// produces and the scope of its active-event reads.
+	source  string
 	tracker *statusTracker
 	store   storage.EventStore
 }
@@ -232,8 +246,17 @@ func (e *sourceEmitter) ReportSourceFiltered(n int) {
 // ListSourceActiveEvents implements the optional SourceActiveEventReader
 // capability: it pages through the authoritative current active events
 // (storage.ActiveEventLister, bounded pages) and returns only the events
-// of the requested source. This is the minimal read-only surface a
-// snapshot source gets — never arbitrary database access.
+// of the requested source THAT THIS INSTANCE OWNS. This is the minimal
+// read-only surface a snapshot source gets — never arbitrary database
+// access — and it is what keeps two instances of one plugin type from
+// reconciling (withdrawing) each other's events: the reader returns
+// nothing that another instance produced.
+//
+// An event without an owner (stored before the producer column existed,
+// or received from an ingest endpoint or another station) is not returned
+// either: the next time the owning instance reports the same key the row
+// is adopted (see Store.Ingest), so a pre-upgrade alert becomes reachable
+// again instead of being reconciled away by a sibling.
 func (e *sourceEmitter) ListSourceActiveEvents(ctx context.Context, source string) ([]core.HazardEvent, error) {
 	if err := core.ValidateSource(source); err != nil {
 		return nil, err
@@ -250,7 +273,7 @@ func (e *sourceEmitter) ListSourceActiveEvents(ctx context.Context, source strin
 			return nil, err
 		}
 		for _, ev := range page {
-			if ev.Source == source {
+			if ev.Source == source && ev.Producer == e.source {
 				out = append(out, ev)
 			}
 		}

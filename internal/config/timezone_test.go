@@ -64,3 +64,44 @@ func TestPinTimezoneIfAbsent(t *testing.T) {
 	}
 	_ = time.UTC
 }
+
+// TestPinLocalZone pins the reported drift: the daily anchors (the beacon and
+// the notice lines) are documented as "station local time" but were resolved
+// with time.Now(), which follows the HOST zone — a distroless container has
+// none, so "06:00" fired at 06:00 UTC (08:00 in Poland in summer). The
+// station's zone must become the process's local zone.
+func TestPinLocalZone(t *testing.T) {
+	previous := time.Local
+	t.Cleanup(func() { time.Local = previous })
+
+	loc, name := PinLocalZone("Europe/Warsaw")
+	if name != "Europe/Warsaw" || loc.String() != "Europe/Warsaw" {
+		t.Fatalf("PinLocalZone = (%v, %q), want Europe/Warsaw", loc, name)
+	}
+	if time.Local != loc {
+		t.Errorf("process local zone = %v, want the station zone %v", time.Local, loc)
+	}
+	// The reading the anchors are built from: it must be the station's
+	// wall clock, whatever the host is (this test may run anywhere).
+	if got, want := time.Now().Location().String(), loc.String(); got != want {
+		t.Errorf("time.Now() zone = %q, want %q", got, want)
+	}
+	// The anchor itself, as the scheduler resolves it.
+	anchor, err := time.Parse("15:04", "06:00")
+	if err != nil {
+		t.Fatalf("parse anchor: %v", err)
+	}
+	now := time.Now()
+	next := time.Date(now.Year(), now.Month(), now.Day(), anchor.Hour(), anchor.Minute(), 0, 0, now.Location())
+	if next.Before(now) {
+		next = next.AddDate(0, 0, 1)
+	}
+	if got := next.In(loc).Format("15:04"); got != "06:00" {
+		t.Errorf("anchor resolves to %s station time, want 06:00", got)
+	}
+	// No configured zone keeps the detected host zone (the historical
+	// behaviour) instead of failing.
+	if detected, _ := PinLocalZone(""); detected == nil {
+		t.Error("PinLocalZone(\"\") returned no zone")
+	}
+}

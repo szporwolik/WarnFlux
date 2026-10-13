@@ -1039,6 +1039,22 @@ ALTER TABLE meshtastic_messages ADD COLUMN reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE events ADD COLUMN producer TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v61: the favorites THIS station set on the radio for the nodes
+		// registered in the user directory. The radio keeps favorites
+		// forever, so pinning a node whose owner later leaves the
+		// directory would leave a star nobody owns — and the station has
+		// no way to tell its own stars from the ones an operator tapped
+		// on the device. This table is that missing memory: a node listed
+		// here may be unpinned when it leaves the directory, everything
+		// else is left untouched.
+		SQL: `
+CREATE TABLE meshtastic_favorites (
+	node_id      INTEGER PRIMARY KEY,
+	pinned_at_ms INTEGER NOT NULL
+);
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

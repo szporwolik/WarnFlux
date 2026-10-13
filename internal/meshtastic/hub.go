@@ -226,6 +226,12 @@ const defaultHeartbeatInterval = 30 * time.Second
 // the user directory when the configuration does not say.
 const defaultPinInterval = 6 * time.Hour
 
+// defaultTombstoneRetry is how long a station-document removal the broker
+// refused waits before it is attempted again. The maintenance tick is seconds
+// apart, so without a pace a broker outage would retry (and log) the same
+// removals several times a minute.
+const defaultTombstoneRetry = time.Minute
+
 // pinRetryDelay is how soon a pin pass that did not get through is repeated.
 // A radio that was reconnecting (or a directory that was briefly unreadable)
 // must not wait out a whole interval with a half-applied favorite list.
@@ -541,9 +547,14 @@ type Node struct {
 	DistKM     float64
 	BearingDeg float64
 	LastSeen   time.Time
-	// tombstoned records that the node's retained station document was
-	// already removed (the node itself stays in the persistent directory).
-	tombstoned bool
+	// tombstoned records that the BROKER CONFIRMED the removal of the node's
+	// retained station document (the node itself stays in the persistent
+	// directory until nodeDirRetention). tombstoneTried is when that removal
+	// was last attempted: it paces the retries of an attempt the broker has
+	// not accepted, and a node heard again after it counts as active — its
+	// document is due again the next time it goes quiet.
+	tombstoned     bool
+	tombstoneTried time.Time
 }
 
 // cmdRecord is the remembered outcome of one radio command, keyed by
@@ -938,6 +949,14 @@ type Hub struct {
 	// (defaultHeartbeatInterval when unset; the tests shorten it).
 	heartbeatEvery time.Duration
 
+	// stationMu orders the retained station feed: a position publish and the
+	// removal of a document for the same node must never interleave, or a node
+	// that just spoke would be left without its document.
+	stationMu sync.Mutex
+	// tombstoneRetry paces a removal the broker refused
+	// (defaultTombstoneRetry when unset; the tests shorten it).
+	tombstoneRetry time.Duration
+
 	// nodeStore persists the heard-node directory across restarts
 	// (optional; nil = directory lives in RAM only).
 	nodeStore   NodeStore
@@ -1214,8 +1233,9 @@ func (h *Hub) SetRecorder(r Recorder) { h.mu.Lock(); h.recorder = r; h.mu.Unlock
 func (h *Hub) SetNodeStore(store NodeStore) { h.mu.Lock(); h.nodeStore = store; h.mu.Unlock() }
 
 // SetStationSink attaches the MQTT station publisher (optional): every
-// heard node becomes a retained document under meshtastic/stations/<id>
-// and is tombstoned when its NodeTTL expires.
+// heard node becomes a retained document under meshtastic/stations/<id>,
+// removed once its NodeTTL expires (a removal the broker refused is retried,
+// and a node heard again publishes its document again).
 func (h *Hub) SetStationSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
 	h.mu.Lock()
 	h.stationSink = fn
@@ -2368,18 +2388,33 @@ func (h *Hub) setFavorite(id uint32, favorite bool) error {
 }
 
 // expireNodes cleans the MQTT station feed: nodes unheard for longer
-// than NodeTTL get their retained document tombstoned (once). Nodes
-// unheard for longer than nodeDirRetention are dropped from the
-// directory entirely, so memory and the persisted table stay bounded.
+// than NodeTTL get their retained document removed, and nodes unheard for
+// longer than nodeDirRetention are dropped from the directory entirely, so
+// memory and the persisted table stay bounded.
+//
+// A removal counts only once the broker CONFIRMED it (see
+// publishStationRemoval): an attempt that failed is retried, paced by
+// tombstoneRetry, and a node heard again in the meantime keeps its document —
+// the next time it goes quiet the removal is published again, so a returning
+// node never leaves a stale document behind.
 func (h *Hub) expireNodes() {
 	h.mu.Lock()
 	now := time.Now()
-	var stale []*Node
+	var idle []string
 	for _, n := range h.nodes {
-		if !n.tombstoned && now.Sub(n.LastSeen) > h.cfg.NodeTTL {
-			n.tombstoned = true
-			stale = append(stale, n)
+		if n.LastSeen.After(n.tombstoneTried) {
+			// The node spoke after the last removal attempt: whatever the
+			// broker did with that attempt, this node is active again.
+			n.tombstoned = false
 		}
+		if n.tombstoned || now.Sub(n.LastSeen) <= h.cfg.NodeTTL {
+			continue
+		}
+		if !n.tombstoneTried.IsZero() && now.Sub(n.tombstoneTried) < h.tombstoneRetryDelay() {
+			continue // the broker has not taken the last attempt yet
+		}
+		n.tombstoneTried = now
+		idle = append(idle, n.ID)
 	}
 	for id, n := range h.nodes {
 		if now.Sub(n.LastSeen) > nodeDirRetention {
@@ -2389,13 +2424,56 @@ func (h *Hub) expireNodes() {
 	}
 	sink := h.stationSink
 	h.mu.Unlock()
-	for _, n := range stale {
-		if sink != nil {
-			if err := sink(context.Background(), "meshtastic/stations/"+n.ID, true, nil); err != nil && h.logger != nil {
-				h.logger.Warn("meshtastic: station tombstone failed", "id", n.ID, "error", err)
-			}
-		}
+	if sink == nil {
+		return
 	}
+	for _, id := range idle {
+		h.publishStationRemoval(sink, id)
+	}
+}
+
+// tombstoneRetryDelay is the pause between removal attempts the broker has not
+// accepted yet.
+func (h *Hub) tombstoneRetryDelay() time.Duration {
+	if h.tombstoneRetry > 0 {
+		return h.tombstoneRetry
+	}
+	return defaultTombstoneRetry
+}
+
+// publishStationRemoval removes one retained station document and records the
+// removal only when the broker CONFIRMED it: a refused publish is retried by a
+// later pass, and a node that published again while this removal was waiting
+// keeps its document.
+//
+// The whole step runs under stationMu, which the position publish takes too:
+// the two operations for one node can never interleave, so the last one to run
+// decides what the broker holds — and a node that just spoke always leaves its
+// document behind.
+func (h *Hub) publishStationRemoval(sink func(ctx context.Context, topic string, retained bool, payload []byte) error, id string) {
+	h.stationMu.Lock()
+	defer h.stationMu.Unlock()
+	h.mu.Lock()
+	n := h.nodes[id]
+	stillIdle := n != nil && !n.tombstoned && time.Since(n.LastSeen) > h.cfg.NodeTTL
+	h.mu.Unlock()
+	if !stillIdle {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := sink(ctx, "meshtastic/stations/"+id, true, nil); err != nil {
+		if h.logger != nil {
+			h.logger.Warn("meshtastic: station removal failed, will retry",
+				"id", id, "retry_in", h.tombstoneRetryDelay(), "error", err)
+		}
+		return
+	}
+	h.mu.Lock()
+	if cur := h.nodes[id]; cur != nil {
+		cur.tombstoned = true
+	}
+	h.mu.Unlock()
 }
 
 // handlePacket consumes one mesh packet delivered from the radio.
@@ -4201,6 +4279,10 @@ func (h *Hub) recordMessage(direction, sender, recipient, channel, text, operato
 // The sink is called without the hub lock held: sinks perform network
 // I/O and must never block the hub state.
 func (h *Hub) publishStation(n *Node) {
+	// The station feed is ordered against the removal of a document for the
+	// same node (see publishStationRemoval).
+	h.stationMu.Lock()
+	defer h.stationMu.Unlock()
 	h.mu.Lock()
 	sink := h.stationSink
 	h.mu.Unlock()

@@ -2,6 +2,7 @@ package burzedzis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1223,5 +1224,193 @@ func TestStormValidityOutlivesTheBucketBoundary(t *testing.T) {
 		if err := ev.Validate(); err != nil {
 			t.Fatalf("a detection at %v does not validate: %v", at, err)
 		}
+	}
+}
+
+// refusingEmitter refuses the publications it is told to refuse, the way a
+// full disk does: the event is NOT recorded and nothing is persisted.
+type refusingEmitter struct {
+	fakeEmitter
+	// refuseNames the source slugs whose publications are refused.
+	refuse []string
+	// denyAll refuses every publication, whatever its source.
+	denyAll bool
+}
+
+func (f *refusingEmitter) refused(ev core.HazardEvent) bool {
+	if f.denyAll {
+		return true
+	}
+	for _, name := range f.refuse {
+		if ev.Source == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *refusingEmitter) Emit(ctx context.Context, ev core.HazardEvent) error {
+	if f.refused(ev) {
+		return errors.New("disk full")
+	}
+	return f.fakeEmitter.Emit(ctx, ev)
+}
+
+// TestEmitFailuresDegradeTheSource pins the reported P2: a cycle whose
+// publications were all refused must not leave the source looking healthy.
+// The events are not lost — the provider still has them in force, so the next
+// poll publishes them again — but until one succeeds the source is degraded,
+// and a clean cycle restores it.
+func TestEmitFailuresDegradeTheSource(t *testing.T) {
+	srv := providerStub(t)
+	defer srv.Close()
+
+	// Every refusal of either family must reach the health report. The
+	// warning pass and the nowcast are separate publishers, so each is
+	// exercised on its own: a refusal that only ever surfaced as a log line
+	// left the source looking healthy (the reported reproduction returned a
+	// clean cycle for an emitter that refused everything).
+	cases := []struct {
+		name              string
+		extra             string
+		refuse            []string
+		denyAll           bool
+		warningsPublished int
+		stormsPublished   int
+	}{
+		{name: "both families refused", extra: "storm_tracking: true\n", denyAll: true, warningsPublished: 6, stormsPublished: 1},
+		{name: "warnings only refused", extra: "", denyAll: true, warningsPublished: 6},
+		{name: "nowcast only refused", extra: "storm_tracking: true\n", refuse: []string{TypeStorm}, warningsPublished: 6, stormsPublished: 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := newSource(t, srv.URL, c.extra)
+			emit := &refusingEmitter{refuse: c.refuse, denyAll: c.denyAll}
+			ctx := context.Background()
+
+			err := src.pollOnce(ctx, emit)
+			src.reportPoll(ctx, emit, err)
+			if err == nil {
+				t.Fatal("a cycle whose publications were refused reported no error")
+			}
+			if len(emit.degraded) != 1 {
+				t.Fatalf("health reports = %d degraded, want the refused cycle to be one", len(emit.degraded))
+			}
+			if !strings.Contains(emit.degraded[0].Error(), "disk full") {
+				t.Errorf("the degraded report does not name the refused publication: %v", emit.degraded[0])
+			}
+			if emit.healthy != 0 {
+				t.Errorf("the refused cycle also reported the source healthy (%d times)", emit.healthy)
+			}
+			if got := emit.lastStats(); !strings.Contains(got, "undelivered: ") {
+				t.Errorf("status line = %q, want it to name the undelivered events", got)
+			}
+
+			// The very next cycle publishes the same events again and is
+			// clean: a refusal is retried, never a lost alert.
+			publishedBefore := len(emit.events(Type))
+			stormsBefore := len(emit.events(TypeStorm))
+			emit.refuse, emit.denyAll = nil, false
+			err = src.pollOnce(ctx, emit)
+			src.reportPoll(ctx, emit, err)
+			if err != nil {
+				t.Fatalf("the retried cycle failed: %v", err)
+			}
+			if emit.healthy != 1 {
+				t.Errorf("health reports = %d healthy, want the successful cycle to restore it", emit.healthy)
+			}
+			if len(emit.degraded) != 1 {
+				t.Errorf("the successful cycle added a degraded report (%d total)", len(emit.degraded))
+			}
+			if published := len(emit.events(Type)) - publishedBefore; published != c.warningsPublished {
+				t.Errorf("the retried cycle published %d warnings, want %d", published, c.warningsPublished)
+			}
+			if storms := len(emit.events(TypeStorm)) - stormsBefore; storms != c.stormsPublished {
+				t.Errorf("the retried cycle published %d lightning events, want %d", storms, c.stormsPublished)
+			}
+			if got := emit.lastStats(); strings.Contains(got, "undelivered") {
+				t.Errorf("status line after the successful retry = %q", got)
+			}
+		})
+	}
+}
+
+// TestEmitRefusalsAreDownstreamOfTheHealthReport: with the nowcast off, a
+// cycle whose WARNING publications were all refused is still degraded — this
+// is the reproduction from the ticket, which used to return a clean cycle.
+func TestEmitRefusalsAreDownstreamOfTheHealthReport(t *testing.T) {
+	srv := providerStub(t)
+	defer srv.Close()
+	src := sourceFromYAML(t, "api_key: test-key\nbase_url: "+srv.URL+"\nlocations: [Niepołomice]\n")
+	emit := &refusingEmitter{denyAll: true}
+	ctx := context.Background()
+
+	err := src.pollOnce(ctx, emit)
+	src.reportPoll(ctx, emit, err)
+	if err == nil {
+		t.Fatal("an emitter that refused every warning left the cycle clean")
+	}
+	if len(emit.degraded) == 0 {
+		t.Fatal("the source was not reported degraded")
+	}
+	if got := emit.lastStats(); !strings.Contains(got, "undelivered: 6") {
+		t.Errorf("status line = %q, want the six refused warnings", got)
+	}
+}
+
+// TestHealthIsNotReportedWhileShuttingDown: a cycle that failed because the
+// station is stopping must not be reported — the supervisor owns the
+// shutdown state.
+func TestHealthIsNotReportedWhileShuttingDown(t *testing.T) {
+	srv := providerStub(t)
+	defer srv.Close()
+	src := newSource(t, srv.URL, "storm_tracking: true\n")
+	emit := &refusingEmitter{denyAll: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	src.reportPoll(ctx, emit, errors.New("disk full"))
+	if len(emit.degraded) != 0 || emit.healthy != 0 {
+		t.Errorf("a cancelled cycle reported health: %d degraded, %d healthy", len(emit.degraded), emit.healthy)
+	}
+}
+
+// unreadableStateEmitter publishes normally but cannot read the durable
+// current state back: reconciliation of both families fails.
+type unreadableStateEmitter struct {
+	fakeEmitter
+}
+
+func (f *unreadableStateEmitter) ListSourceActiveEvents(context.Context, string) ([]core.HazardEvent, error) {
+	return nil, errors.New("database is locked")
+}
+
+// TestUnreadableStateDegradesTheSource: a cycle that cannot reconcile its
+// withdrawals has not finished its job either — a withdrawn alert would hang
+// until its window ends — so it must degrade the source, not just log.
+func TestUnreadableStateDegradesTheSource(t *testing.T) {
+	srv := providerStub(t)
+	defer srv.Close()
+	src := newSource(t, srv.URL, "storm_tracking: true\n")
+	emit := &unreadableStateEmitter{}
+	ctx := context.Background()
+
+	err := src.pollOnce(ctx, emit)
+	src.reportPoll(ctx, emit, err)
+	if err == nil {
+		t.Fatal("a cycle that could not read its own active state reported no error")
+	}
+	if !strings.Contains(err.Error(), "database is locked") {
+		t.Errorf("the cycle error does not name the failed read: %v", err)
+	}
+	if len(emit.degraded) != 1 {
+		t.Fatalf("health reports = %d degraded, want one", len(emit.degraded))
+	}
+	if emit.healthy != 0 {
+		t.Errorf("the degraded cycle also reported the source healthy (%d times)", emit.healthy)
+	}
+	if len(emit.events(Type)) != 6 || len(emit.events(TypeStorm)) != 1 {
+		t.Errorf("publication must not be affected by the failed read: %d warnings, %d lightning",
+			len(emit.events(Type)), len(emit.events(TypeStorm)))
 	}
 }

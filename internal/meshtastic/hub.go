@@ -396,7 +396,30 @@ type pendingSend struct {
 	// TRANSMISSION OUTCOME (recorded on sent/delivered, revoked on
 	// failed) instead of the accept handoff.
 	prog ProgressRef
+
+	// favorite carries the change to the radio's favorites this frame asks
+	// for when it IS one of those admin frames. It rides the send bookkeeping
+	// so the DEVICE's answer settles the change: a frame written to the
+	// transport is not a confirmation, and a refused one must never be
+	// remembered as applied.
+	favorite *favoriteChange
+	// favoriteSettled marks the change as already answered (a send can settle
+	// more than once: only the first verdict counts).
+	favoriteSettled atomic.Bool
 }
+
+// favoriteChange is one requested change to the radio's favorites: the star of
+// node is to be set (or taken back).
+type favoriteChange struct {
+	node uint32
+	set  bool
+}
+
+// finalOnModemAck reports whether the modem's own acknowledgment is the FINAL
+// result of the frame. A favorite change is a LOCAL admin frame: no recipient
+// exists to acknowledge it, unlike a direct message, so the delivery window
+// does not apply.
+func (ps *pendingSend) finalOnModemAck() bool { return ps.favorite != nil }
 
 // ProgressRef identifies one durable action-progress entry (the
 // versioned resume ledger of the meshtastic action). The zero value
@@ -2011,9 +2034,8 @@ func (h *Hub) pinUserNodes(force bool) {
 			failed = true
 			continue
 		}
-		h.rememberFavorite(id, true)
-		h.markRadioFavorite(id, true)
-		h.pinLog(slog.LevelInfo, "meshtastic: user node pinned as favorite on the radio", "node", meshIDString(id))
+		// Nothing is recorded here: the frame has only been written, and the
+		// device's answer settles what the star actually is (settleFavorite).
 	}
 	for _, id := range pinned {
 		if desired[id] {
@@ -2025,10 +2047,8 @@ func (h *Hub) pinUserNodes(force bool) {
 			failed = true
 			continue
 		}
-		h.rememberFavorite(id, false)
-		h.markRadioFavorite(id, false)
-		h.pinLog(slog.LevelInfo, "meshtastic: node left the user directory, favorite removed from the radio",
-			"node", meshIDString(id))
+		// As above: the star is taken out of the ledger and the confirmation
+		// only when the device confirms it has been removed.
 	}
 	if failed {
 		next = now.Add(pinRetryDelay)
@@ -2147,6 +2167,9 @@ func (h *Hub) flushFavorites() bool {
 	defer cancel()
 	if err := store.SaveMeshtasticFavorites(ctx, ids); err != nil {
 		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger save failed, will retry", "error", err)
+		// The change landed outside a pass (the device settles a favorite
+		// whenever it answers), so the retry is scheduled here.
+		h.favoriteRetry()
 		return false
 	}
 	h.mu.Lock()
@@ -2196,6 +2219,52 @@ func (h *Hub) markRadioFavorite(id uint32, favorite bool) {
 	h.mu.Unlock()
 }
 
+// settleFavorite applies the DEVICE's verdict on one favorite frame. Only a
+// frame the device accepted changes anything: the star is then recorded as
+// OURS — the ledger is what takes it back when its owner leaves the directory
+// — and as CONFIRMED, so a later pass does not re-send it.
+//
+// A refusal, or an answer that never came, leaves both untouched, retracts a
+// confirmation that no longer matches the radio, and brings the next pass
+// forward: the station must never believe in a star the radio does not have.
+func (h *Hub) settleFavorite(ps *pendingSend, status string) {
+	op := ps.favorite
+	if op == nil || !ps.favoriteSettled.CompareAndSwap(false, true) {
+		return
+	}
+	if status == TxSent || status == TxDelivered {
+		h.rememberFavorite(op.node, op.set)
+		h.markRadioFavorite(op.node, op.set)
+		if op.set {
+			h.pinLog(slog.LevelInfo, "meshtastic: user node pinned as favorite on the radio", "node", meshIDString(op.node))
+		} else {
+			h.pinLog(slog.LevelInfo, "meshtastic: node left the user directory, favorite removed from the radio",
+				"node", meshIDString(op.node))
+		}
+		h.flushFavorites()
+		return
+	}
+	// The radio refused the frame (or never answered). The star keeps whatever
+	// state the radio really has: a refused SET is not confirmed, and a failed
+	// REMOVE means the star is still there.
+	h.markRadioFavorite(op.node, !op.set)
+	h.pinLog(slog.LevelWarn, "meshtastic: the radio did not apply a favorite change, will retry",
+		"node", meshIDString(op.node), "set", op.set, "reason", ps.failReason)
+	h.favoriteRetry()
+}
+
+// favoriteRetry brings the next pin pass forward: a change the radio refused
+// (or never answered) is attempted again in minutes, not a whole interval
+// later.
+func (h *Hub) favoriteRetry() {
+	h.mu.Lock()
+	next := time.Now().Add(pinRetryDelay)
+	if h.pinNext.IsZero() || next.Before(h.pinNext) {
+		h.pinNext = next
+	}
+	h.mu.Unlock()
+}
+
 // armPinNext schedules the next pin pass.
 func (h *Hub) armPinNext(next time.Time) {
 	h.mu.Lock()
@@ -2219,6 +2288,10 @@ func meshIDString(id uint32) string { return fmt.Sprintf("%08x", id) }
 // that came in over the local API itself (no channel, no admin session, no
 // encryption), which is exactly what the phone app does when a star is
 // tapped.
+//
+// Returning nil only means the frame was WRITTEN: the device answers with the
+// packet id and a routing result, and that answer is what settles the change
+// (see settleFavorite). Callers must not record the star before it.
 func (h *Hub) setFavorite(id uint32, favorite bool) error {
 	if id == 0 || id == core.BroadcastNodeID.Uint32() {
 		return fmt.Errorf("meshtastic: %08x is not a node that can be favorited", id)
@@ -2252,7 +2325,11 @@ func (h *Hub) setFavorite(id uint32, favorite bool) error {
 	// text message can never consume the id (same bookkeeping as the
 	// NodeInfo refresh).
 	at := time.Now()
-	ps := &pendingSend{to: uint32(selfNum), at: at, lastTry: at, text: "\x00favorite", wantAck: true, probe: true}
+	ps := &pendingSend{
+		to: uint32(selfNum), at: at, lastTry: at, text: "\x00favorite",
+		wantAck: true, probe: true,
+		favorite: &favoriteChange{node: id, set: favorite},
+	}
 	h.sendMu.Lock()
 	h.echoQueue = append(h.echoQueue, ps)
 	h.sendMu.Unlock()
@@ -2403,7 +2480,11 @@ func (h *Hub) pairQueueStatus(id uint32, res pb.Routing_Error) {
 			h.rejectSend(q, res)
 			return
 		}
-		h.pending[id] = q
+		if !q.finalOnModemAck() {
+			// A favorite change is answered by the modem itself: it never
+			// enters the delivery window that waits for a recipient ack.
+			h.pending[id] = q
+		}
 		h.sendMu.Unlock()
 		h.markStatus(q, TxSent)
 		return
@@ -2628,7 +2709,7 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// live firmware: it is expected on some device builds and absent on
 	// others — the keep is correct either way.)
 	final := true
-	if fromSelf && routing.GetErrorReason() == pb.Routing_NONE && ps.wantAck {
+	if fromSelf && routing.GetErrorReason() == pb.Routing_NONE && ps.wantAck && !ps.finalOnModemAck() {
 		final = false
 		if h.logger != nil {
 			h.logger.Info("meshtastic: modem ack for direct message, recipient ack still expected",
@@ -3009,10 +3090,18 @@ func (h *Hub) retryPending(now time.Time) {
 	for i := 0; i < len(h.echoQueue); {
 		q := h.echoQueue[i]
 		if q.probe {
+			// A favorite change needs the answer that settles it: keep the
+			// placeholder for the pairing window, then read silence as a
+			// refusal (the star is not confirmed and the pass tries again).
+			if q.favorite != nil && now.Sub(q.lastTry) < dmAckTimeout {
+				i++
+				continue
+			}
 			// Traceroute placeholders are never retransmitted: the
 			// probe wait already timed out (the device may still
 			// answer; the reply is dropped as an orphan).
 			h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+			h.settleFavorite(q, TxFailed)
 			continue
 		}
 		if !q.echoed && !q.wantAck && now.Sub(q.lastTry) > 5*time.Minute {
@@ -3095,6 +3184,9 @@ func (h *Hub) dropPendingLocked(ps *pendingSend) {
 // worker) is revived for a retry within the attempt budget.
 func (h *Hub) markStatus(ps *pendingSend, status string) {
 	ps.status = status
+	// The verdict on a favorite frame is hub bookkeeping and must land even
+	// when no message history is attached (which is how the tests run).
+	h.settleFavorite(ps, status)
 	h.mu.Lock()
 	rec := h.recorder
 	h.mu.Unlock()

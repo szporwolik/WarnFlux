@@ -5,6 +5,8 @@ import (
 	"errors"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -99,6 +101,25 @@ func hubPinNext(h *Hub) time.Time {
 	return h.pinNext
 }
 
+// hubConfirmed reports whether the hub believes the radio carries the star.
+func hubConfirmed(h *Hub, id uint32) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.radioFavorites[id]
+}
+
+// answerFavorites plays the DEVICE: the firmware answers EVERY client send with
+// a queueStatus, and that answer is what settles a favorite change (the test
+// device only answers channel requests, so a change stays in flight until a
+// test says how the radio replied). n answers cover n in-flight frames.
+func answerFavorites(t *testing.T, radio *testRadio, res pb.Routing_Error, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		// The test device assigns id 1 to every packet (NextPacketID).
+		dispatchQueueStatus(t, radio, res, 1)
+	}
+}
+
 // adminFavoriteOps returns the favorite operations in the order the device
 // received them: "+node" for a star that was set, "-node" for one taken back.
 // The counts and the order matter — a node that is removed and registered
@@ -121,6 +142,22 @@ func (c *capturingConn) adminFavoriteOps() []string {
 			out = append(out, "+"+meshIDString(v.SetFavoriteNode))
 		case *pb.AdminMessage_RemoveFavoriteNode:
 			out = append(out, "-"+meshIDString(v.RemoveFavoriteNode))
+		}
+	}
+	return out
+}
+
+// adminFavoriteSets returns the node numbers of every set_favorite_node frame
+// in the order they went out (the COUNT matters: a node that is removed and
+// registered again must be set twice).
+func (c *capturingConn) adminFavoriteSets() []uint32 {
+	var out []uint32
+	for _, op := range c.adminFavoriteOps() {
+		if strings.HasPrefix(op, "+") {
+			id, err := strconv.ParseUint(op[1:], 16, 32)
+			if err == nil {
+				out = append(out, uint32(id))
+			}
 		}
 	}
 	return out
@@ -242,6 +279,8 @@ func TestPinUserNodesRemembersItsOwnStars(t *testing.T) {
 		})
 	radio.waitConnected(t)
 
+	waitFor(t, "both favorite frames", func() bool { return len(cap.adminFavorites()) == 2 })
+	answerFavorites(t, radio, pb.Routing_NONE, 2)
 	waitFor(t, "the ledger write", func() bool { return len(ledger.snapshot()) == 2 })
 	if got := ledger.snapshot(); len(got) != 2 || got[0] != 0x6d2c8f6c || got[1] != 0xdeadbeef {
 		t.Fatalf("ledger = %08x, want the two pinned nodes", got)
@@ -299,12 +338,15 @@ func TestPinUserNodesUnpinsNodesThatLeftTheDirectory(t *testing.T) {
 				})
 			radio.waitConnected(t)
 
-			// The removal frames and the ledger write that follows them are
-			// two steps: wait for BOTH, or the assertion below reads the
-			// ledger the pass has not written back yet.
-			waitFor(t, "the removals and their ledger write", func() bool {
-				return len(cap.adminFavoriteRemovals()) == len(c.removed) &&
-					len(ledger.snapshot()) == len(c.want)
+			// The removals reach the ledger only once the DEVICE confirms
+			// them (a frame written to the transport proves nothing), and the
+			// ledger write follows that answer.
+			waitFor(t, "the removal frames", func() bool {
+				return len(cap.adminFavoriteRemovals()) == len(c.removed)
+			})
+			answerFavorites(t, radio, pb.Routing_NONE, len(c.removed))
+			waitFor(t, "the ledger write", func() bool {
+				return len(ledger.snapshot()) == len(c.want)
 			})
 			got := cap.adminFavoriteRemovals()
 			sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
@@ -398,7 +440,7 @@ func TestPinUserNodesRetriesSoonAfterAFailedPass(t *testing.T) {
 	if h.pinned[0x6d2c8f6c] {
 		t.Error("the failed pin is remembered as ours")
 	}
-	if got := time.Until(h.pinNext); got > pinRetryDelay+time.Second {
+	if got := time.Until(hubPinNext(h)); got > pinRetryDelay+time.Second {
 		t.Errorf("next pass in %s, want ~%s after a failed one", got, pinRetryDelay)
 	}
 }
@@ -455,13 +497,13 @@ func TestPinUserNodesIntervalGatesThePass(t *testing.T) {
 	// No session: the pass must not even try to send, and must have armed
 	// the next window.
 	h.pinUserNodes(false)
-	first := h.pinNext
+	first := hubPinNext(h)
 	if first.IsZero() {
 		t.Fatal("the pass did not arm its next window")
 	}
 	h.pinUserNodes(false)
-	if !h.pinNext.Equal(first) {
-		t.Errorf("a second pass inside the interval re-armed it: %v -> %v", first, h.pinNext)
+	if got := hubPinNext(h); !got.Equal(first) {
+		t.Errorf("a second pass inside the interval re-armed it: %v -> %v", first, got)
 	}
 }
 
@@ -506,19 +548,17 @@ func TestPinUserNodesRepinsWhatTheRadioLost(t *testing.T) {
 		})
 	radio.waitConnected(t)
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, ok := cap.adminFavorites()[0x6d2c8f6c]; ok {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if _, ok := cap.adminFavorites()[0x6d2c8f6c]; !ok {
-		t.Fatalf("the star the ledger owns was not re-asserted after the radio lost it: %v", cap.adminFavorites())
-	}
-	if got := ledger.snapshot(); len(got) != 1 || got[0] != 0x6d2c8f6c {
-		t.Fatalf("ledger = %08x, want the single owned node", got)
-	}
+	waitFor(t, "the re-asserted star", func() bool {
+		_, ok := cap.adminFavorites()[0x6d2c8f6c]
+		return ok
+	})
+	// The radio accepts it, and only then is the star real for the station
+	// (ledger + confirmation).
+	answerFavorites(t, radio, pb.Routing_NONE, 1)
+	waitFor(t, "the ledger entry", func() bool {
+		got := ledger.snapshot()
+		return len(got) == 1 && got[0] == 0x6d2c8f6c
+	})
 }
 
 // TestPinUserNodesTrustsTheRadioThatConfirmsItsStars: the other side of the
@@ -573,10 +613,14 @@ func TestPinUserNodesRetriesAFailedLedgerSave(t *testing.T) {
 		})
 	radio.waitConnected(t)
 
-	// The star goes out and is remembered in RAM, but the store refuses it.
-	// The pass arms its next window AFTER the flush, so that is the signal
-	// that everything it was going to do has been done.
-	waitFor(t, "the failed save to settle", func() bool { return !hubPinNext(radio.hub).IsZero() })
+	// The star goes out and the device accepts it — the ledger change now
+	// exists, but the store refuses to keep it. A shortened next window is
+	// the signal that the failed write was noticed.
+	waitFor(t, "the pin frame", func() bool { return len(cap.adminFavoriteSets()) == 1 })
+	answerFavorites(t, radio, pb.Routing_NONE, 1)
+	waitFor(t, "the failed save to settle", func() bool {
+		return radio.hub.dirtyFavorites() && time.Until(hubPinNext(radio.hub)) <= pinRetryDelay+time.Second
+	})
 	if ledger.saveAttempts() == 0 {
 		t.Fatal("the pass never tried to save the ledger")
 	}
@@ -692,10 +736,21 @@ func TestPinUserNodesReAddsANodeAfterItWasRemoved(t *testing.T) {
 	}
 	setDirectory(node)
 	radio.hub.pinUserNodes(true)
+	waitFor(t, "the star", func() bool { return len(cap.adminFavoriteSets()) == 1 })
+	answerFavorites(t, radio, pb.Routing_NONE, 1)
+	waitFor(t, "the ledger entry", func() bool { return len(ledger.snapshot()) == 1 })
+
 	setDirectory()
 	radio.hub.pinUserNodes(true)
+	waitFor(t, "the removal", func() bool { return len(cap.adminFavoriteRemovals()) == 1 })
+	answerFavorites(t, radio, pb.Routing_NONE, 1)
+	waitFor(t, "the ledger to clear", func() bool { return len(ledger.snapshot()) == 0 })
+
 	setDirectory(node)
 	radio.hub.pinUserNodes(true)
+	waitFor(t, "the star again", func() bool { return len(cap.adminFavoriteSets()) == 2 })
+	answerFavorites(t, radio, pb.Routing_NONE, 1)
+	waitFor(t, "the ledger entry again", func() bool { return len(ledger.snapshot()) == 1 })
 
 	want := []string{"+" + meshIDString(node), "-" + meshIDString(node), "+" + meshIDString(node)}
 	if got := cap.adminFavoriteOps(); !slices.Equal(got, want) {
@@ -706,5 +761,100 @@ func TestPinUserNodesReAddsANodeAfterItWasRemoved(t *testing.T) {
 	}
 	if radio.hub.dirtyFavorites() {
 		t.Error("the ledger stayed dirty after a successful write")
+	}
+}
+
+// TestPinUserNodesDoesNotBelieveAStarTheDeviceRefused pins the acceptance case
+// of the ticket: the transport write succeeds, the RADIO then refuses the frame
+// (Routing_BAD_REQUEST). Nothing may be remembered as pinned — no star in the
+// ledger, no confirmation — and the station must try again instead of skipping
+// a star the radio never accepted.
+func TestPinUserNodesDoesNotBelieveAStarTheDeviceRefused(t *testing.T) {
+	const node = 0x6d2c8f6c
+	ledger := &memFavoriteStore{}
+	cap := &capturingConn{}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
+		testRadioOpts{
+			nodes: []*pb.NodeInfo{},
+			wrap: func(t transportConn) transportConn {
+				cap.transportConn = t
+				return cap
+			},
+			setup: func(h *Hub) {
+				h.SetFavoriteStore(ledger)
+				h.SetUserNodes(func() ([]uint32, error) { return []uint32{node}, nil })
+			},
+		})
+	radio.waitConnected(t)
+
+	waitFor(t, "the pin frame", func() bool { return len(cap.adminFavoriteSets()) == 1 })
+	answerFavorites(t, radio, pb.Routing_BAD_REQUEST, 1)
+	waitFor(t, "the refusal to settle", func() bool {
+		return time.Until(hubPinNext(radio.hub)) <= pinRetryDelay+time.Second
+	})
+	if got := ledger.snapshot(); len(got) != 0 {
+		t.Fatalf("ledger = %08x, want nothing (the radio refused the star)", got)
+	}
+	if hubConfirmed(radio.hub, node) {
+		t.Error("the refused star counts as confirmed on the radio")
+	}
+
+	// The retry (the next pass) sends the frame again — the refused one was
+	// not written off as done.
+	radio.hub.pinUserNodes(true)
+	waitFor(t, "the retry frame", func() bool { return len(cap.adminFavoriteSets()) == 2 })
+	if got := cap.adminFavoriteOps(); !slices.Equal(got, []string{"+" + meshIDString(node), "+" + meshIDString(node)}) {
+		t.Fatalf("favorite operations = %v, want the pin attempted twice", got)
+	}
+
+	// This time the radio accepts: only now does the star exist for the
+	// station.
+	answerFavorites(t, radio, pb.Routing_NONE, 1)
+	waitFor(t, "the accepted star", func() bool {
+		got := ledger.snapshot()
+		return len(got) == 1 && got[0] == node
+	})
+	if !hubConfirmed(radio.hub, node) {
+		t.Error("the accepted star is not confirmed")
+	}
+}
+
+// TestFavoriteUnansweredIsNotConfirmed pins the timeout half of the same rule
+// on the maintenance tick: a favorite frame the device never answers keeps its
+// pairing window, and once that closes the change counts as not applied (with
+// the next pass brought forward) instead of silently staying "in flight".
+func TestFavoriteUnansweredIsNotConfirmed(t *testing.T) {
+	const node = 0x6d2c8f6c
+	h := &Hub{}
+	h.lastRadio.Store(time.Now().UnixNano())
+
+	fresh := &pendingSend{
+		to: 0xabcd1234, at: time.Now(), lastTry: time.Now(), text: "\x00favorite",
+		wantAck: true, probe: true, favorite: &favoriteChange{node: node, set: true},
+	}
+	h.echoQueue = []*pendingSend{fresh}
+	h.retryPending(time.Now())
+	if len(h.echoQueue) != 1 {
+		t.Fatal("a frame still inside its pairing window was dropped")
+	}
+	if !hubPinNext(h).IsZero() {
+		t.Error("an in-flight frame armed the retry")
+	}
+
+	// Past the pairing window the answer can no longer arrive: the change is
+	// not applied and the pass comes forward.
+	fresh.lastTry = time.Now().Add(-dmAckTimeout - time.Minute)
+	h.retryPending(time.Now())
+	if len(h.echoQueue) != 0 {
+		t.Error("the unanswered frame stayed in the echo queue")
+	}
+	if h.dirtyFavorites() {
+		t.Error("an unanswered star was written to the ledger")
+	}
+	if hubConfirmed(h, node) {
+		t.Error("an unanswered star counts as confirmed")
+	}
+	if got := time.Until(hubPinNext(h)); got > pinRetryDelay+time.Second {
+		t.Errorf("next pass in %s, want ~%s after an unanswered frame", got, pinRetryDelay)
 	}
 }

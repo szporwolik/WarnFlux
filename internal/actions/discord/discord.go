@@ -224,6 +224,13 @@ func noticeInterval(value *time.Duration, fallback time.Duration, key string) (t
 // Name returns the action type name.
 func (a *discordAction) Name() string { return Type }
 
+// SharedDestination implements the optional capability: a routed delivery is
+// one post in the channel this webhook belongs to, shared by everyone. Two
+// groups following the same sources would therefore post the same alert twice
+// (reported P2), so the routing engine collapses their deliveries into one and
+// hands it the union of their mentions.
+func (a *discordAction) SharedDestination() bool { return true }
+
 // DirectMessenger is the optional capability of an instance holding a bot
 // token: panel features (mass info) deliver a plain notice as a DIRECT
 // MESSAGE to one user id, so each recipient gets their own private

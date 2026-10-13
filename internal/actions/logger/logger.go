@@ -61,6 +61,12 @@ func New(node *yaml.Node) (action.Plugin, error) {
 
 func (p *loggerAction) Name() string { return p.id }
 
+// SharedDestination implements the optional capability: this action writes
+// into ONE log, and its line names the action, never the group, so two
+// matching groups would print the very same line twice. Collapsing them keeps
+// the log an audit of ALERTS instead of an audit of routing rows.
+func (p *loggerAction) SharedDestination() bool { return true }
+
 // Execute logs concise event metadata only. It never logs full payloads.
 func (p *loggerAction) Execute(ctx context.Context, req action.ActionRequest) error {
 	select {

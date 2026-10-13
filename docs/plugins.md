@@ -241,6 +241,34 @@ are dropped outright (spam hygiene). The one exception is the national
 Alert RCB broadcast sender, which is never answered but generates a
 24-hour severe `rcb` hazard through the routing matrix.
 
+## Deliveries to a shared destination
+
+A routed alert becomes one delivery job per matching group. That is right for
+actions that address a per-group recipient list (mail, SMS, APRS, Meshtastic):
+each group's own members must be addressed by that group's own message. It is
+WRONG for an action that posts to one place shared by everyone — a Discord
+channel, a webhook — where two matching groups would post the same alert
+twice, under one identity nobody can tell apart (reported P2).
+
+Concretely, the built-in `discord` (one channel), `http_webhook` (one URL,
+payload built from the event alone) and `logger` (one log, line names the
+action — never the group) actions implement it; `smtp`, `sms`, `aprs` and
+`meshtastic` do not, because they address each group's own members.
+
+An action plugin of that kind therefore implements the optional capability:
+
+```go
+func (a *myAction) SharedDestination() bool { return true }
+```
+
+The routing engine asks the action manager
+(`action.SharedDestinationReporter`) and collapses the deliveries of every
+matching group into ONE job per alert: the first matching group owns the
+delivery, the others contribute their recipients (all recipient lists are
+union-merged, case-insensitively, keeping the first occurrence and the order)
+and are counted as matched. A group below its own threshold never contributes,
+and an action whose capability cannot be read keeps the per-group behaviour.
+
 ## Mandatory rules
 
 - Respect context cancellation; do not block past it.

@@ -278,6 +278,16 @@ type fakeActions struct {
 	aprss    [][]string          // one APRSCallsigns list per submission, in order
 	discords [][]string          // one DiscordHandles list per submission, in order
 	err      error
+	// shared marks the action IDs delivered to ONE shared destination (a
+	// channel post); unset = per-group delivery (the pre-existing model).
+	shared map[string]bool
+}
+
+// SharedDestination implements action.SharedDestinationReporter.
+func (f *fakeActions) SharedDestination(actionID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.shared[actionID]
 }
 
 func (f *fakeActions) Submit(id string, req action.ActionRequest) error {
@@ -1518,5 +1528,99 @@ func TestRemoteActiveNotSuppressedByLocalCancellation(t *testing.T) {
 	waitFor(t, func() bool { return e.Stats().ActionsFired == 1 }, "remote active delivered despite the local cancellation")
 	if got := store.payloadCount("log"); got != 1 {
 		t.Fatalf("jobs queued = %d, want 1 for the remote publisher", got)
+	}
+}
+
+// TestEngineSharedDestinationPostsOnce pins the reported P2: two groups
+// following the same sources and wired to the same CHANNEL action must
+// produce ONE message per alert — carrying the recipients of both groups —
+// while an action with per-recipient delivery still fires once per group.
+func TestEngineSharedDestinationPostsOnce(t *testing.T) {
+	store := &fakeStore{
+		rules: []storage.GroupRouting{
+			{GroupID: 1, Name: "SP9MOA", Actions: []storage.ChannelAssignment{
+				asn("discord", "unknown"), asn("mail", "unknown")}},
+			{GroupID: 2, Name: "SP9MOA Kids", Actions: []storage.ChannelAssignment{
+				asn("discord", "unknown"), asn("mail", "unknown")}},
+		},
+		// The Kids group repeats a handle the first group also has: the
+		// merged message must not mention anyone twice.
+		discordBcc: map[int64][]string{1: {"@spm"}, 2: {"@kid", "@spm"}},
+		bcc:        map[int64][]string{1: {"spm@example.org"}, 2: {"kid@example.org"}},
+	}
+	acts := &fakeActions{shared: map[string]bool{"discord": true}}
+	e, feed := startEngine(t, store, acts)
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	waitFor(t, func() bool { return store.payloadCount("mail") == 2 }, "both groups mailed")
+
+	// The channel action produced exactly ONE durable delivery ...
+	if got := store.payloadCount("discord"); got != 1 {
+		t.Fatalf("discord deliveries = %d, want 1 (one message per alert, not per group)", got)
+	}
+	// ... and it is the union of the matching groups' mentions, owner
+	// first, without duplicates.
+	payloads := store.payloadsFor("discord")
+	var req action.ActionRequest
+	if err := json.Unmarshal(payloads[0], &req); err != nil {
+		t.Fatalf("decode the channel payload: %v", err)
+	}
+	if got := strings.Join(req.DiscordHandles, ","); got != "@spm,@kid" {
+		t.Errorf("mentions = %q, want the union of both groups (@spm,@kid)", got)
+	}
+	// The per-recipient action is unchanged: one message per group, with
+	// that group's own recipients.
+	mails := store.payloadsFor("mail")
+	if len(mails) != 2 {
+		t.Fatalf("mail deliveries = %d, want 2 (one per group)", len(mails))
+	}
+	seen := map[string]bool{}
+	for _, raw := range mails {
+		var mreq action.ActionRequest
+		if err := json.Unmarshal(raw, &mreq); err != nil {
+			t.Fatalf("decode a mail payload: %v", err)
+		}
+		seen[strings.Join(mreq.Bcc, ",")] = true
+	}
+	if !seen["spm@example.org"] || !seen["kid@example.org"] {
+		t.Errorf("mail recipients = %v, want each group addressed on its own", seen)
+	}
+
+	stats := e.Stats()
+	if stats.ActionsFired != 3 {
+		t.Errorf("actions fired = %d, want 3 (1 channel + 2 mail)", stats.ActionsFired)
+	}
+	if stats.RulesMatched != 2 {
+		t.Errorf("groups matched = %d, want 2 (the merged group was matched too)", stats.RulesMatched)
+	}
+}
+
+// TestEngineSharedDestinationKeepsThresholds: the merge only folds groups
+// that MATCHED on their own; a group whose cell is above the alert's severity
+// neither delivers nor contributes.
+func TestEngineSharedDestinationKeepsThresholds(t *testing.T) {
+	store := &fakeStore{
+		rules: []storage.GroupRouting{
+			{GroupID: 1, Name: "spok", Actions: []storage.ChannelAssignment{asn("discord", "unknown")}},
+			{GroupID: 2, Name: "rsp", Actions: []storage.ChannelAssignment{asn("discord", "extreme")}},
+		},
+		discordBcc: map[int64][]string{1: {"@spm"}, 2: {"@kid"}},
+	}
+	acts := &fakeActions{shared: map[string]bool{"discord": true}}
+	e, feed := startEngine(t, store, acts)
+
+	feed <- hazardEvent("severe", dispatch.TransitionNew)
+	waitFor(t, func() bool { return store.payloadCount("discord") == 1 }, "the channel action fired once")
+
+	payloads := store.payloadsFor("discord")
+	var req action.ActionRequest
+	if err := json.Unmarshal(payloads[0], &req); err != nil {
+		t.Fatalf("decode the channel payload: %v", err)
+	}
+	if got := strings.Join(req.DiscordHandles, ","); got != "@spm" {
+		t.Errorf("mentions = %q, want only the group that matched (@spm)", got)
+	}
+	if s := e.Stats(); s.RulesMatched != 1 {
+		t.Errorf("groups matched = %d, want 1 (the extreme-only group is below the alert)", s.RulesMatched)
 	}
 }

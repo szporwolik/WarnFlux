@@ -203,6 +203,34 @@ type Plugin interface {
 	Close(ctx context.Context) error
 }
 
+// SharedDestination is an OPTIONAL plugin capability: the action delivers to
+// ONE place shared by every recipient (a Discord channel post, a webhook)
+// instead of to a per-recipient list (mail, SMS, APRS, Meshtastic).
+//
+// The routing engine collapses several matching groups into ONE delivery for
+// such an action, with the union of their recipients. Without it the same
+// alert is posted once per group — two groups following the same sources post
+// the same message twice on the same channel, which is the reported failure
+// (and it cannot be told apart in a channel, because a webhook posts under one
+// identity).
+type SharedDestination interface {
+	// SharedDestination reports whether the action posts to one shared
+	// place instead of a per-group recipient list.
+	SharedDestination() bool
+}
+
+// SharedDestinationReporter is the read side the routing engine uses on an
+// ActionSubmitter (the action manager): it reports the capability above per
+// configured action. A submitter that does not implement it simply never
+// merges deliveries.
+type SharedDestinationReporter interface {
+	// SharedDestination reports whether the configured action with this
+	// ID is a shared destination. Unknown and disabled instances report
+	// false: the routing engine must keep today's behaviour when it cannot
+	// tell.
+	SharedDestination(actionID string) bool
+}
+
 // ConfirmingPlugin is an optional extension for actions whose transport
 // can prove recipient-level delivery synchronously. The worker prefers
 // it over Execute and persists the reported stage.

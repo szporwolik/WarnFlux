@@ -2056,7 +2056,8 @@ func TestIngestEndpointRouting(t *testing.T) {
 	_, html := env.get("/groups/1/routing")
 	for _, want := range []string{
 		`name="cell:news|logger-action"`,
-		"news (ingest)",
+		">REST API</span>",
+		"POST /api/v1/ingest/news",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("routing page missing ingest source %q: %s", want, html)
@@ -5715,6 +5716,39 @@ func TestAPRSSendKeepsTheDirectionFilter(t *testing.T) {
 		loc := post(tc.path, url.Values{"dir": {tc.dir}, "to": {"SP9XXX"}, "text": {"hi"}})
 		if !strings.HasPrefix(loc, tc.want) || !strings.Contains(loc, "err=") {
 			t.Errorf("POST %s with dir=%q = %q, want %q with an error", tc.path, tc.dir, loc, tc.want)
+		}
+	}
+}
+
+// TestIngestRoutingRowLabel pins the REST API row label: one configured
+// endpoint reads as "REST API" (the route and id live in the row popover),
+// while several endpoints keep their ids apart.
+func TestIngestRoutingRowLabel(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusAccepted) })
+
+	single := newTestEnvWithIngest(t, map[string]http.Handler{"news": handler})
+	single.login()
+	if _, err := single.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+	_, html := single.get("/groups/1/routing")
+	if !strings.Contains(html, ">REST API</span>") {
+		t.Errorf("single endpoint row is not labelled REST API: %s", html)
+	}
+	if strings.Contains(html, "news (ingest)") {
+		t.Error("single endpoint row still shows the raw id label")
+	}
+
+	// Two endpoints share the label, so the id stays in it.
+	multi := newTestEnvWithIngest(t, map[string]http.Handler{"news": handler, "alerts": handler})
+	multi.login()
+	if _, err := multi.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+	_, html = multi.get("/groups/1/routing")
+	for _, want := range []string{"REST API (alerts)", "REST API (news)"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("routing page missing %q: %s", want, html)
 		}
 	}
 }

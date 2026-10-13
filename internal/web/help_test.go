@@ -33,6 +33,8 @@ func TestHelpPage(t *testing.T) {
 		"Getting started", "How it works", "EMCOM networks", "/emcom &lt;network-id&gt;",
 		"New message", "Admin", "Alert RCB",
 		"group channel", "delivery channels",
+		// The REST API section documents the public ingest endpoint.
+		"REST API (integrations)", "POST /api/v1/ingest/",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("help page missing %q", want)

@@ -123,9 +123,14 @@ func (s *Server) routingSourcesFor(lang string) []sourceOption {
 		})
 	}
 	for _, id := range ids {
+		label := i18n.T(lang, "groups.src.ingest")
+		if len(ids) > 1 {
+			// Several endpoints share one row label, so keep the id.
+			label = trfSafe(i18n.T(lang, "groups.src.ingest_named"), id)
+		}
 		out = append(out, sourceOption{
 			Value: id,
-			Label: trfSafe(i18n.T(lang, "groups.src.ingest"), id),
+			Label: label,
 			Desc:  "sources.ingest.desc",
 			// The endpoint route is carried in the slug line instead of a
 			// link: there is no page to open, only the POST target.

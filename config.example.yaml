@@ -498,6 +498,8 @@ sources:
   #     storm_direct_km: 3
   #     storm_direct_severity: extreme  # ...right overhead
   #     storm_ttl: 30m                  # validity bucket of one detection
+  #                                     # (extended past the bucket end when
+  #                                     # it would fall before the next poll)
   #     storm_update_interval: 15m      # republish an unchanged detection at most this often
 
   # APRS-IS source: connects to an APRS-IS server, subscribes to packets

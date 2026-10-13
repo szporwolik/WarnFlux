@@ -1158,3 +1158,70 @@ func (f *activeEmitter) activeOf(source string) []core.HazardEvent {
 	}
 	return out
 }
+
+// TestStormValidityOutlivesTheBucketBoundary pins the reported P2: a
+// detection made one second before its validity bucket ends must not expire
+// a second later, before the station checks again. Every emitted detection
+// is valid until the next measurement AND the next scheduled re-publish, and
+// a storm that simply continues keeps one window (so it neither lapses nor
+// re-notifies merely because the bucket boundary was crossed).
+func TestStormValidityOutlivesTheBucketBoundary(t *testing.T) {
+	src := sourceFromYAML(t, "api_key: test-key\nbase_url: https://burze.dzis.net\nlocations: [Niepołomice]\n"+
+		"storm_tracking: true\nstorm_ttl: 30m\nstorm_update_interval: 15m\npoll_interval: 5m\n")
+	st := stormAt(t, 4.99)
+	margin := src.cfg.StormUpdateInterval + src.cfg.PollInterval
+
+	// The worst case: one second before the bucket ends (12:30 with a 30m
+	// TTL), i.e. where the bucket alone granted a one-second validity.
+	edge := time.Date(2026, 10, 13, 12, 29, 59, 0, time.UTC)
+	first := src.stormEvent(st, edge)
+	if first.ExpiresAt == nil {
+		t.Fatal("the detection carries no expiry")
+	}
+	if want := edge.Add(margin); first.ExpiresAt.Before(want) {
+		t.Errorf("a detection at %v is valid to %v, want at least %v: it would lapse before the next poll",
+			edge, first.ExpiresAt, want)
+	}
+
+	// The window does slide when it has to stay ahead of the next poll —
+	// that is not news, so it must not re-publish within the update
+	// interval: only a severity change or the interval itself does.
+	slid := src.stormEvent(st, edge.Add(11*time.Minute))
+	if slid.ExpiresAt.Equal(*first.ExpiresAt) {
+		t.Fatalf("the fixture no longer crosses an extension point (both windows end at %v)", first.ExpiresAt)
+	}
+	if core.Fingerprint(slid) == core.Fingerprint(first) {
+		t.Error("a slid window must change the fingerprint (the core records content changes by it)")
+	}
+	state := stormState{severity: first.Severity, at: edge}
+	seen := true
+	if src.shouldPublish(state, seen, slid, edge.Add(11*time.Minute)) {
+		t.Error("a window that slid to stay valid was re-published inside the update interval")
+	}
+	if !src.shouldPublish(state, seen, slid, edge.Add(src.cfg.StormUpdateInterval)) {
+		t.Error("the update interval must re-publish the detection")
+	}
+	escalated := src.stormEvent(stormAt(t, 1.2), edge.Add(11*time.Minute))
+	if !src.shouldPublish(state, seen, escalated, edge.Add(time.Minute)) {
+		t.Error("an escalating storm must be published without waiting for the interval")
+	}
+	if !src.shouldPublish(stormState{}, false, first, edge) {
+		t.Error("the first detection of a locality must be published")
+	}
+
+	// Whatever the moment, the alert outlives the next cycle: a continuous
+	// storm can never be gone from the station's active state between two
+	// polls.
+	for at := edge; at.Before(edge.Add(2 * time.Hour)); at = at.Add(time.Minute) {
+		ev := src.stormEvent(st, at)
+		if !ev.ExpiresAt.After(at.Add(margin)) {
+			t.Fatalf("a detection at %v is valid only to %v, want later than %v", at, ev.ExpiresAt, at.Add(margin))
+		}
+		if ev.EffectiveAt == nil || ev.EffectiveAt.After(at) {
+			t.Fatalf("a detection at %v claims to be effective from %v", at, ev.EffectiveAt)
+		}
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("a detection at %v does not validate: %v", at, err)
+		}
+	}
+}

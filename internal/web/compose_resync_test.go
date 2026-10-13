@@ -66,9 +66,10 @@ func TestBrokerResyncCannotResurrectARetiredCommunication(t *testing.T) {
 	if resp.StatusCode != 303 {
 		t.Fatalf("POST /compose = %d, want 303", resp.StatusCode)
 	}
-	if _, ok := env.pub.activeDoc("compose", key); !ok {
-		t.Fatal("the panel published no retained active document")
-	}
+	// The panel publishes asynchronously (local-first): wait for the
+	// specific document instead of asserting right after the redirect
+	// (reported P2: six flaky tests).
+	env.pub.awaitActiveDoc(t, "compose", key)
 
 	// The resync reads the ACTIVE state and gets held inside its publish:
 	// exactly the window the report describes.
@@ -97,16 +98,18 @@ func TestBrokerResyncCannotResurrectARetiredCommunication(t *testing.T) {
 	if got := composeStatusOf(t, store, key); got != "expired" {
 		t.Fatalf("local record status = %q, want expired", got)
 	}
-	// Give the retire a moment to reach the broker BEFORE the delayed
-	// publication lands (without the fix that is the reported order: the
-	// tombstone followed by the earlier active state).
-	time.Sleep(150 * time.Millisecond)
+	// The tombstone is QUEUED behind the in-flight publication (one lock per
+	// document), so it cannot reach the broker yet: the wait above is the
+	// local record being retired, which is what allocates the newer version
+	// the delayed publication has to lose against.
 
 	release()
 	<-resynced
 
-	// Nothing may put the retired alarm back: the resync's copy is older
-	// than the version the expiry wrote.
+	// The queued tombstone now goes out, and nothing may put the retired
+	// alarm back afterwards: the resync's copy is older than the version
+	// the expiry wrote.
+	env.pub.awaitExpired(t, key)
 	deadline = time.Now().Add(2 * time.Second)
 	for {
 		if _, ok := env.pub.activeDoc("compose", key); !ok {
@@ -149,8 +152,10 @@ func TestBrokerResyncKeepsTheRetiredStateRetired(t *testing.T) {
 	if resp.StatusCode != 303 {
 		t.Fatalf("POST /compose/expire = %d, want 303", resp.StatusCode)
 	}
-	// The panel's own activation publish happened before the expiry; what
-	// must not happen is another one after it.
+	// Both panel operations publish asynchronously: wait for each before
+	// reading the counters they feed.
+	env.pub.awaitPublished(t, key, 1)
+	env.pub.awaitExpired(t, key)
 	publishesBefore := publishesFor(env, key)
 	env.server.SyncBrokerState()
 	if doc, ok := env.pub.activeDoc("compose", key); ok {

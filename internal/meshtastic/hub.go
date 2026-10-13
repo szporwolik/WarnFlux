@@ -877,6 +877,12 @@ type Hub struct {
 	favoriteStore FavoriteStore
 	pinned        map[uint32]bool
 	pinnedLoaded  bool
+	// favoritesDirty marks ledger changes the store has not accepted yet
+	// (favoritesRev guards against clearing the flag for a snapshot a newer
+	// change has already made obsolete): a write that failed must not be
+	// forgotten, or a restart loses which stars are the station's own.
+	favoritesDirty bool
+	favoritesRev   uint64
 
 	// radioFavorites is what the DEVICE said about its own node table when
 	// it last handed it over (node -> starred). Owning a star is no proof
@@ -1950,18 +1956,27 @@ func (h *Hub) pinUserNodes(force bool) {
 	}
 	h.mu.Unlock()
 
+	next := now.Add(interval)
+	// Whatever this pass wrote down goes to the store even when the pass
+	// itself gives up early, and a store that refuses the write is retried
+	// soon — the pending change survives in the flag, not in this call.
+	defer func() {
+		if !h.flushFavorites() {
+			next = now.Add(pinRetryDelay)
+		}
+		h.armPinNext(next)
+	}()
+
 	// The ledger first: without knowing our own stars the station cannot
 	// tell them from the operator's, and must not touch the radio.
 	pinned, err := h.loadFavorites()
 	if err != nil {
 		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger load failed, favorites left unchanged", "error", err)
-		h.armPinNext(now.Add(interval))
 		return
 	}
 	want, err := provider()
 	if err != nil {
 		h.pinLog(slog.LevelWarn, "meshtastic: user node list unavailable, favorites left unchanged", "error", err)
-		h.armPinNext(now.Add(interval))
 		return
 	}
 	desired := make(map[uint32]bool, len(want))
@@ -1985,7 +2000,7 @@ func (h *Hub) pinUserNodes(force bool) {
 	// was lost with a node-db reset (or never reached a swapped device) and
 	// is set again here. A star the radio confirms needs no traffic — which
 	// is the normal state of a healthy installation.
-	changed, failed := false, false
+	failed := false
 	for id := range desired {
 		if confirmed[id] {
 			continue
@@ -1998,7 +2013,6 @@ func (h *Hub) pinUserNodes(force bool) {
 		}
 		h.rememberFavorite(id, true)
 		h.markRadioFavorite(id)
-		changed = true
 		h.pinLog(slog.LevelInfo, "meshtastic: user node pinned as favorite on the radio", "node", meshIDString(id))
 	}
 	for _, id := range pinned {
@@ -2012,18 +2026,12 @@ func (h *Hub) pinUserNodes(force bool) {
 			continue
 		}
 		h.rememberFavorite(id, false)
-		changed = true
 		h.pinLog(slog.LevelInfo, "meshtastic: node left the user directory, favorite removed from the radio",
 			"node", meshIDString(id))
 	}
-	if changed {
-		h.saveFavorites()
-	}
 	if failed {
-		h.armPinNext(now.Add(pinRetryDelay))
-		return
+		next = now.Add(pinRetryDelay)
 	}
-	h.armPinNext(now.Add(interval))
 }
 
 // loadFavorites returns the favorites this station set on the radio, reading
@@ -2076,9 +2084,9 @@ func (h *Hub) loadFavorites() ([]uint32, error) {
 	return out, nil
 }
 
-// rememberFavorite records (or drops) one star in the in-memory ledger. The
-// caller saves the ledger once the pass is done, so a half-applied pass costs
-// at most a repeated admin frame.
+// rememberFavorite records (or drops) one star in the in-memory ledger and
+// marks it unsaved; the pass flushes it at the end (flushFavorites), so a
+// half-applied pass costs at most a repeated admin frame.
 func (h *Hub) rememberFavorite(id uint32, pinned bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2087,30 +2095,67 @@ func (h *Hub) rememberFavorite(id uint32, pinned bool) {
 	}
 	if pinned {
 		h.pinned[id] = true
-		return
+	} else {
+		delete(h.pinned, id)
 	}
-	delete(h.pinned, id)
+	h.favoritesRev++
+	h.favoritesDirty = true
+}
+
+// dirtyFavorites reports whether the ledger holds changes the store has not
+// accepted yet.
+func (h *Hub) dirtyFavorites() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.favoritesDirty
 }
 
 // saveFavorites writes the ledger back (a small snapshot, at most once per
 // pass). A failure only costs a stale ledger — the radio already carries the
 // star — so it is logged, never propagated.
-func (h *Hub) saveFavorites() {
+// flushFavorites writes the ledger when it holds changes the store has not
+// accepted yet, and reports whether nothing is left pending. A failed write
+// KEEPS the flag (that is the whole point: the radio carries the stars, but
+// only the ledger makes them OURS after a restart, and only the ledger lets a
+// later pass take a star back), so the next pass retries it without any new
+// change from the directory.
+func (h *Hub) flushFavorites() bool {
 	h.mu.Lock()
+	if !h.favoritesDirty {
+		h.mu.Unlock()
+		return true
+	}
 	store := h.favoriteStore
+	rev := h.favoritesRev
 	ids := make([]uint32, 0, len(h.pinned))
 	for id := range h.pinned {
 		ids = append(ids, id)
 	}
 	h.mu.Unlock()
 	if store == nil {
-		return
+		// RAM-only mode (no store attached): nothing to write to, which is
+		// not a failure — the process cannot lose what it never persisted.
+		h.mu.Lock()
+		if h.favoritesRev == rev {
+			h.favoritesDirty = false
+		}
+		h.mu.Unlock()
+		return true
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := store.SaveMeshtasticFavorites(ctx, ids); err != nil {
-		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger save failed", "error", err)
+		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger save failed, will retry", "error", err)
+		return false
 	}
+	h.mu.Lock()
+	// A change made while the write was in flight is not covered by this
+	// snapshot: the flag stays set for it.
+	if h.favoritesRev == rev {
+		h.favoritesDirty = false
+	}
+	h.mu.Unlock()
+	return true
 }
 
 // PinnedNodes returns the node numbers this station set as favorites on the

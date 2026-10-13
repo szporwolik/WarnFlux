@@ -32,6 +32,22 @@
       <p class="muted help-cmd-note">{{tr .Lang "help.commands.note"}}</p>
     </section>
     {{end}}
+    <section class="card help-meshchan help-mqtt">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr .Lang "help.mqtt.title"}}</h2>
+      <p class="muted">{{tr .Lang "help.mqtt.intro"}}</p>
+      {{with .MQTT}}
+      <div class="help-meshchan-facts">
+        {{if .ID}}<div class="hz-row"><span class="hz-label">{{tr $.Lang "help.mqtt.instance"}}</span><span><code>{{.ID}}</code></span></div>{{end}}
+        {{if .Prefix}}<div class="hz-row"><span class="hz-label">{{tr $.Lang "help.mqtt.prefix"}}</span><span><code>{{.Prefix}}</code></span></div>{{end}}
+        {{if .QoS}}<div class="hz-row"><span class="hz-label">{{tr $.Lang "help.mqtt.qos"}}</span><span><code>{{.QoS}}</code></span></div>{{end}}
+        <div class="hz-row"><span class="hz-label">{{tr $.Lang "help.mqtt.heartbeat"}}</span><span>{{if .Heartbeat}}<code>{{.Heartbeat}}</code>{{else}}{{tr $.Lang "help.notice.off"}}{{end}}</span></div>
+      </div>
+      {{end}}
+      <ul class="help-list">
+        {{range .MQTTItems}}<li>{{tr $.Lang .}}</li>{{end}}
+      </ul>
+      <p class="muted help-cmd-note">{{tr .Lang "help.mqtt.note"}}</p>
+    </section>
     {{with .MeshChannel}}
     <section class="card help-meshchan">
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr $.Lang "help.meshchan.title"}}</h2>

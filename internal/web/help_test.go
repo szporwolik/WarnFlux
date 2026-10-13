@@ -1,8 +1,11 @@
 package web_test
 
 import (
+	"html"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -121,5 +124,55 @@ func TestHelpPageRadioCommands(t *testing.T) {
 	}
 	if strings.Contains(html, "Region average") {
 		t.Error("Polish command section leaked the English description")
+	}
+}
+
+// TestHelpPageMQTTSection pins the MQTT card: the topic layout, what stays
+// retained and the live values of the configured output instance.
+func TestHelpPageMQTTSection(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+
+	// Without a readable configuration file the card still explains the
+	// layout (with the generic <prefix> placeholder); only the instance
+	// rows are absent.
+	_, page := env.get("/help")
+	text := html.UnescapeString(page)
+	for _, want := range []string{
+		"MQTT (publication)",
+		"Status heartbeat",
+		"<prefix>/events",
+		"NOT retained",
+		"<prefix>/active/<source>/<id>",
+		"RETAINED active view",
+		"<prefix>/info/...",
+		"<prefix>/status",
+		"Last Will",
+		"<prefix>/aprs/...",
+		"WF-",
+		"MQTT mask",
+		"$SYS",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the MQTT card is missing %q", want)
+		}
+	}
+	if strings.Contains(text, "Output instance") {
+		t.Error("the card names an output instance although no config is readable")
+	}
+
+	// With a configuration file the card names the real instance values.
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	base := "outputs:\n  - id: mqtt-local\n    type: mqtt\n    enabled: true\n    config:\n      topic_prefix: sosdev\n      qos: 1\n      heartbeat_interval: 30s\n"
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.server.SetConfigFile(path)
+	_, page = env.get("/help")
+	text = html.UnescapeString(page)
+	for _, want := range []string{"Output instance", "mqtt-local", "Topic prefix", "sosdev", "QoS", "30s"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the MQTT card does not show %q", want)
+		}
 	}
 }

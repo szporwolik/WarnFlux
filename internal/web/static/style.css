@@ -2221,6 +2221,9 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 .channel-icon { width: 1.4rem; height: 1.4rem; flex-shrink: 0; color: var(--brand); margin-top: 0.1rem; }
 .channel-body h3 { font-size: 1rem; margin: 0 0 0.2rem; }
 .channel-body p { margin: 0; font-size: 0.85rem; }
+/* Provider reference under a source row: the data belongs to the provider,
+   so the page points at it (discreet, one line). */
+.channel-body .channel-ref { margin-top: 0.3rem; }
 /* Unofficial-system notice above the tabs (web.disclaimer): a discreet
    informational line, not a warning. */
 .home-disclaimer {

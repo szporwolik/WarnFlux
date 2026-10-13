@@ -144,6 +144,10 @@ type publicChannelView struct {
 	Icon        string
 	Name        string
 	Description string
+	// URL is the provider's own page, shown as a reference next to the
+	// description ("where the data really comes from"). Delivery media do
+	// not carry one: there is no single page behind "email".
+	URL string
 }
 
 // mapEventView is the public JSON shape of one geo-located active hazard

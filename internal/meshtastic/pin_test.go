@@ -858,3 +858,145 @@ func TestFavoriteUnansweredIsNotConfirmed(t *testing.T) {
 		t.Errorf("next pass in %s, want ~%s after an unanswered frame", got, pinRetryDelay)
 	}
 }
+
+// gatedFavoriteStore is a ledger whose FIRST write is held until the test
+// releases it, so two flushes can be made to overlap and the order in which
+// they finish can be forced.
+type gatedFavoriteStore struct {
+	mu        sync.Mutex
+	ids       []uint32
+	saves     int
+	started   chan struct{} // closed when the first write is entered
+	second    chan struct{} // closed when a SECOND write reaches the store
+	firstWait chan struct{} // closed by the test to let that first write land
+}
+
+func (g *gatedFavoriteStore) LoadMeshtasticFavorites(context.Context) ([]uint32, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]uint32(nil), g.ids...), nil
+}
+
+func (g *gatedFavoriteStore) SaveMeshtasticFavorites(_ context.Context, ids []uint32) error {
+	g.mu.Lock()
+	g.saves++
+	first := g.saves == 1
+	second := g.saves == 2
+	g.mu.Unlock()
+	if second {
+		close(g.second)
+	}
+	if first {
+		close(g.started)
+		<-g.firstWait
+	}
+	g.mu.Lock()
+	g.ids = append([]uint32(nil), ids...)
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *gatedFavoriteStore) snapshot() []uint32 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := append([]uint32(nil), g.ids...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func newGatedFavoriteStore() *gatedFavoriteStore {
+	return &gatedFavoriteStore{
+		started:   make(chan struct{}),
+		second:    make(chan struct{}),
+		firstWait: make(chan struct{}),
+	}
+}
+
+// TestOverlappingFavoriteWritesKeepTheNewestLedger pins the acceptance case of
+// the ticket: an older flush must never overwrite a newer ledger. The first
+// write is held inside the store while a second change and a second flush
+// happen, and only then is the older write allowed to land — the store must end
+// up holding the NEWEST set, not whatever finished last.
+func TestOverlappingFavoriteWritesKeepTheNewestLedger(t *testing.T) {
+	store := newGatedFavoriteStore()
+	h := &Hub{}
+	h.SetFavoriteStore(store)
+	h.rememberFavorite(0x11111111, true)
+
+	older := make(chan bool, 1)
+	go func() { older <- h.flushFavorites() }()
+	<-store.started // the older snapshot is inside the store, not written yet
+
+	// A newer change arrives while that write is still in flight, and asks for
+	// a flush of its own.
+	h.rememberFavorite(0x22222222, true)
+	newer := make(chan bool, 1)
+	go func() { newer <- h.flushFavorites() }()
+
+	// Give the newer flush every chance to reach the store while the older
+	// write is still held: with nothing serializing them it lands there first
+	// and the held write overwrites it afterwards. With the writes serialized
+	// it cannot get there at all, and this simply times out.
+	select {
+	case <-store.second:
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	close(store.firstWait) // the older write lands LAST if nothing serializes
+	<-older
+	<-newer
+
+	got := store.snapshot()
+	if len(got) != 2 || got[0] != 0x11111111 || got[1] != 0x22222222 {
+		t.Fatalf("store = %08x, want the newest ledger (both nodes)", got)
+	}
+	if h.dirtyFavorites() {
+		t.Error("the store holds the newest ledger but the hub still reports pending changes")
+	}
+
+	// And the same rule for the store it is talking to: the last value is a
+	// full snapshot, so a re-read after a restart sees it.
+	reloaded, err := store.LoadMeshtasticFavorites(context.Background())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(reloaded) != 2 {
+		t.Fatalf("reloaded ledger = %08x, want both nodes", reloaded)
+	}
+}
+
+// TestFavoriteWriteRacingAChangeKeepsAPendingRetry pins the other half: a
+// change made while a write is in flight is NOT covered by that snapshot, so
+// the flag stays set and the next flush writes the newest ledger.
+func TestFavoriteWriteRacingAChangeKeepsAPendingRetry(t *testing.T) {
+	store := newGatedFavoriteStore()
+	h := &Hub{}
+	h.SetFavoriteStore(store)
+	h.rememberFavorite(0x11111111, true)
+
+	done := make(chan bool, 1)
+	go func() { done <- h.flushFavorites() }()
+	<-store.started
+	h.rememberFavorite(0x22222222, true) // lands inside the in-flight write
+	close(store.firstWait)
+	if ok := <-done; !ok {
+		t.Fatal("the write itself reported failure")
+	}
+	if !h.dirtyFavorites() {
+		t.Fatal("a change made during the write was marked saved")
+	}
+	if got := store.snapshot(); len(got) != 1 || got[0] != 0x11111111 {
+		t.Fatalf("store = %08x, want only the snapshot that was in flight", got)
+	}
+
+	// The pending change is written by the next flush.
+	if !h.flushFavorites() {
+		t.Fatal("the retried write reported failure")
+	}
+	if got := store.snapshot(); len(got) != 2 {
+		t.Fatalf("store = %08x, want the newest ledger", got)
+	}
+	if h.dirtyFavorites() {
+		t.Error("the flag survived the retried write")
+	}
+}

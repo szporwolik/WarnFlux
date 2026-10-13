@@ -906,6 +906,11 @@ type Hub struct {
 	// forgotten, or a restart loses which stars are the station's own.
 	favoritesDirty bool
 	favoritesRev   uint64
+	// favoriteSaveMu serializes the WHOLE flush (snapshot + write): two flushes
+	// may overlap (the pass and a device answer), and without it the older
+	// snapshot could land last and overwrite the newer ledger — with the dirty
+	// flag already cleared, so nothing would notice or repair it.
+	favoriteSaveMu sync.Mutex
 
 	// radioFavorites is what the DEVICE said about its own node table when
 	// it last handed it over (node -> starred). Owning a star is no proof
@@ -2140,7 +2145,15 @@ func (h *Hub) dirtyFavorites() bool {
 // only the ledger makes them OURS after a restart, and only the ledger lets a
 // later pass take a star back), so the next pass retries it without any new
 // change from the directory.
+//
+// Flushes are serialized end to end: the revision check protects against a
+// change made DURING a write, but it cannot protect the store from an older
+// snapshot arriving after a newer one.
 func (h *Hub) flushFavorites() bool {
+	// The snapshot and the write that carries it are ONE step: a flush that
+	// starts later must never land earlier (see favoriteSaveMu).
+	h.favoriteSaveMu.Lock()
+	defer h.favoriteSaveMu.Unlock()
 	h.mu.Lock()
 	if !h.favoritesDirty {
 		h.mu.Unlock()

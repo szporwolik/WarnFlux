@@ -66,6 +66,29 @@ cache fresh, which cost 24 hours of monitoring after one bad minute — the
 tests pin both behaviours (`TestResolveSurvivesProviderFailure`,
 `TestResolveDistinguishesUnknownFromUnreachable`).
 
+### An answer has to prove it is the operation's payload
+
+`xml.Unmarshal` succeeding proves nothing: a maintenance page, a plain
+`<html>` document or an empty SOAP body all parse cleanly and leave every
+field at its zero value. Because the warnings answer is a COMPLETE snapshot
+per point (a degree of 0 means "not in force"), reading such a document as
+"nothing is in force" would reconcile every live warning of the source away —
+a silent withdrawal of real alerts.
+
+So the client validates what it decoded, before the adapter ever sees it:
+
+- the operation element and its `return` payload must be present, and the
+  fields the provider always ships (all six warning phenomena with their
+  windows, `liczba`/`odleglosc`/`okres`, `y`/`x`) must be there — decoding is
+  into pointers, so a MISSING element is distinguishable from a legitimate 0;
+- a document that fails those checks returns an error (`the answer carries no
+  <operation>/return payload …`), which makes the pass fail, which in turn
+  skips the reconciliation — no cancellation, and the poll reports the source
+  as degraded;
+- a COMPLETE envelope whose window is merely unreadable is a different thing:
+  that phenomenon is rejected by name (`Rejected`) and drops out of the alert
+  set, while the rest of the answer is used.
+
 ## Severity mapping
 
 Degrees map onto the canonical scale (`1 → moderate`, `2 → severe`,

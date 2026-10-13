@@ -57,13 +57,38 @@ const warningsStorm = `<?xml version="1.0" encoding="UTF-8"?>
 <traba xsi:type="xsd:int">0</traba><traba_od_dnia xsi:type="xsd:string">0</traba_od_dnia><traba_do_dnia xsi:type="xsd:string">0</traba_do_dnia>
 </return></ns1:ostrzezenia_pogodoweResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>`
 
-// warningsUnreadable carries a degree with an unreadable window.
+// warningsUnreadable is a COMPLETE envelope (all six phenomena, as the
+// provider always ships them) whose wind and rain windows cannot be read.
 const warningsUnreadable = `<?xml version="1.0" encoding="UTF-8"?>
 <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="https://burze.dzis.net/soap.php">
 <SOAP-ENV:Body><ns1:ostrzezenia_pogodoweResponse><return xsi:type="ns1:MyComplexTypeOstrzezenia">
+<mroz xsi:type="xsd:int">0</mroz><mroz_od_dnia xsi:type="xsd:string">0</mroz_od_dnia><mroz_do_dnia xsi:type="xsd:string">0</mroz_do_dnia>
+<upal xsi:type="xsd:int">0</upal><upal_od_dnia xsi:type="xsd:string">0</upal_od_dnia><upal_do_dnia xsi:type="xsd:string">0</upal_do_dnia>
 <wiatr xsi:type="xsd:int">2</wiatr><wiatr_od_dnia xsi:type="xsd:string">brak</wiatr_od_dnia><wiatr_do_dnia xsi:type="xsd:string">0</wiatr_do_dnia>
 <opad xsi:type="xsd:int">2</opad><opad_od_dnia xsi:type="xsd:string">2026-10-13 18:00:00</opad_od_dnia><opad_do_dnia xsi:type="xsd:string">2026-10-13 12:00:00</opad_do_dnia>
+<burza xsi:type="xsd:int">0</burza><burza_od_dnia xsi:type="xsd:string">0</burza_od_dnia><burza_do_dnia xsi:type="xsd:string">0</burza_do_dnia>
+<traba xsi:type="xsd:int">0</traba><traba_od_dnia xsi:type="xsd:string">0</traba_od_dnia><traba_do_dnia xsi:type="xsd:string">0</traba_do_dnia>
 </return></ns1:ostrzezenia_pogodoweResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>`
+
+// warningsIncomplete is missing a whole phenomenon (tornado): the provider
+// never does that, so the document is not the operation's payload.
+const warningsIncomplete = `<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="https://burze.dzis.net/soap.php">
+<SOAP-ENV:Body><ns1:ostrzezenia_pogodoweResponse><return xsi:type="ns1:MyComplexTypeOstrzezenia">
+<mroz xsi:type="xsd:int">0</mroz><mroz_od_dnia xsi:type="xsd:string">0</mroz_od_dnia><mroz_do_dnia xsi:type="xsd:string">0</mroz_do_dnia>
+<upal xsi:type="xsd:int">0</upal><upal_od_dnia xsi:type="xsd:string">0</upal_od_dnia><upal_do_dnia xsi:type="xsd:string">0</upal_do_dnia>
+<wiatr xsi:type="xsd:int">0</wiatr><wiatr_od_dnia xsi:type="xsd:string">0</wiatr_od_dnia><wiatr_do_dnia xsi:type="xsd:string">0</wiatr_do_dnia>
+<opad xsi:type="xsd:int">0</opad><opad_od_dnia xsi:type="xsd:string">0</opad_od_dnia><opad_do_dnia xsi:type="xsd:string">0</opad_do_dnia>
+<burza xsi:type="xsd:int">0</burza><burza_od_dnia xsi:type="xsd:string">0</burza_od_dnia><burza_do_dnia xsi:type="xsd:string">0</burza_do_dnia>
+</return></ns1:ostrzezenia_pogodoweResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>`
+
+// maintenancePage is what a proxy or the provider itself answers with HTTP
+// 200 when it is being worked on: valid XML, no SOAP at all.
+const maintenancePage = `<!DOCTYPE html><html><body><h1>maintenance</h1></body></html>`
+
+// emptySOAPBody is a well-formed envelope with nothing inside.
+const emptySOAPBody = `<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body/></SOAP-ENV:Envelope>`
 
 // stormDetected is the provider's own test-data shape: a count, a distance
 // and a compass direction.
@@ -254,5 +279,72 @@ func TestDirectionNames(t *testing.T) {
 		if got := DirectionName(code); got != want {
 			t.Errorf("DirectionName(%q) = %q, want %q", code, got, want)
 		}
+	}
+}
+
+// TestIncompleteAnswersAreErrors pins the reported P1: a successful
+// xml.Unmarshal does NOT prove the SOAP answer is there. A maintenance page
+// parses into an empty struct, and reading that as "no warnings are in force"
+// would reconcile every live warning of the source away.
+func TestIncompleteAnswersAreErrors(t *testing.T) {
+	noReturn := `<?xml version="1.0" encoding="UTF-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><ns1:ostrzezenia_pogodoweResponse xmlns:ns1="https://burze.dzis.net/soap.php"/></SOAP-ENV:Body></SOAP-ENV:Envelope>`
+
+	cases := []struct {
+		name  string
+		reply string
+	}{
+		{"maintenance page", maintenancePage},
+		{"empty SOAP body", emptySOAPBody},
+		{"operation without return", noReturn},
+		{"missing phenomenon", warningsIncomplete},
+	}
+	for _, c := range cases {
+		srv := soapServer(t, map[string]string{"ostrzezenia_pogodowe": c.reply}, nil)
+		got, err := testClient(t, srv.URL).Warnings(context.Background(), Locality{Name: "Niepołomice", Lat: 50.02, Lon: 20.13})
+		srv.Close()
+		if err == nil {
+			t.Errorf("%s: Warnings = %+v, want an error (an unreadable answer must never look like a quiet point)", c.name, got)
+			continue
+		}
+		if !strings.Contains(err.Error(), "payload") && !strings.Contains(err.Error(), "incomplete warning answer") {
+			t.Errorf("%s: error = %v, want it to name the unreadable answer", c.name, err)
+		}
+		if len(got.InForce) != 0 {
+			t.Errorf("%s: returned %d warnings with an error", c.name, len(got.InForce))
+		}
+	}
+
+	// The same rule for the other two operations: a maintenance page must
+	// not look like a locality at 0/0 (which would be a "typo") or like a
+	// quiet sky.
+	for _, op := range []string{"miejscowosc", "szukaj_burzy"} {
+		srv := soapServer(t, map[string]string{op: maintenancePage}, nil)
+		client := testClient(t, srv.URL)
+		switch op {
+		case "miejscowosc":
+			loc, err := client.Locality(context.Background(), "Niepołomice")
+			if err == nil || errors.Is(err, ErrUnknownLocality) {
+				t.Errorf("%s: maintenance page gave %+v, %v (it must fail, and never look like a typo)", op, loc, err)
+			}
+		case "szukaj_burzy":
+			st, err := client.Storm(context.Background(), Locality{Name: "Niepołomice", Lat: 50.02, Lon: 20.13}, 25)
+			if err == nil {
+				t.Errorf("%s: maintenance page gave %+v, want an error", op, st)
+			}
+		}
+		srv.Close()
+	}
+
+	// A complete envelope whose windows are unreadable still yields the
+	// per-phenomenon rejection (that is a provider data defect, not a wrong
+	// document), so the two rules stay distinguishable.
+	srv := soapServer(t, map[string]string{"ostrzezenia_pogodowe": warningsUnreadable}, nil)
+	defer srv.Close()
+	got, err := testClient(t, srv.URL).Warnings(context.Background(), Locality{Name: "Niepołomice", Lat: 50.02, Lon: 20.13})
+	if err != nil {
+		t.Fatalf("a complete envelope with bad windows must decode: %v", err)
+	}
+	if len(got.Rejected) != 2 || len(got.InForce) != 0 {
+		t.Errorf("rejected/in force = %v/%d, want the two unreadable windows rejected", got.Rejected, len(got.InForce))
 	}
 }

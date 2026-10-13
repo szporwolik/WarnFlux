@@ -658,11 +658,13 @@ func run(configPath string, checkConfig bool) error {
 	// storage.path explicitly.
 	cfg.Storage.Path = resolveStoragePath(cfg.Storage.Path, logger)
 
-	// The display zone is resolved BEFORE anything renders a time: the
-	// configured IANA name, else the host's zone (detected), else UTC. The
-	// resolved name is reported so an operator never has to guess which
-	// clock the panel shows.
-	zoneLoc, zoneName := config.Timezone(cfg.App.Timezone)
+	// The station zone is resolved BEFORE anything renders or schedules a
+	// time: the configured IANA name, else the host's zone (detected), else
+	// UTC. It also becomes the PROCESS's local zone, because the daily
+	// anchors (beacon "06:00", notice lines) are documented as station local
+	// time while a container carries no zone of its own. The resolved name is
+	// reported so an operator never has to guess which clock the panel shows.
+	zoneLoc, zoneName := config.PinLocalZone(cfg.App.Timezone)
 	zoneSource := "app.timezone"
 	if strings.TrimSpace(cfg.App.Timezone) == "" {
 		zoneSource = "detected on this host"

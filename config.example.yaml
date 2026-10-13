@@ -43,7 +43,11 @@ app:
   log_level: info
 
   # IANA timezone used for every human-facing timestamp (admin panels,
-  # public pages, notification mails — they always name the zone).
+  # public pages, notification mails — they always name the zone) AND for
+  # every wall-clock schedule: it becomes the process's own local zone, so
+  # the daily anchors documented as "station local time" (the Meshtastic
+  # beacon, the Discord status line — 06:00 by default) fire at 06:00 here
+  # and not at 06:00 in whatever zone the container carries.
   # Containers usually run UTC, so set it explicitly: 0.8.3 detects the
   # host zone on the FIRST start and pins it here, which keeps the panel
   # clock stable afterwards. Empty = the host zone. Storage and logs are

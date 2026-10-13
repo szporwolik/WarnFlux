@@ -95,6 +95,22 @@ func Timezone(configured string) (*time.Location, string) {
 	return time.UTC, "UTC"
 }
 
+// PinLocalZone makes the process's local zone the STATION zone and returns
+// it. "Station local time" in this codebase — the beacon and notice anchors
+// ("06:00" by default), anything resolved with time.Now() — means
+// app.timezone, never whatever zone the host happens to carry: a distroless
+// container has none, so a daily anchor documented as 06:00 station local
+// time would fire at 06:00 UTC, two hours late in Poland in summer.
+//
+// Storage and the log stream are unaffected by this: epochs are stored, log
+// lines are converted explicitly to UTC, and the panel formats every
+// timestamp through the configured zone anyway.
+func PinLocalZone(configured string) (*time.Location, string) {
+	loc, name := Timezone(configured)
+	time.Local = loc
+	return loc, name
+}
+
 // PinTimezoneIfAbsent writes app.timezone into the configuration file
 // when the key is absent, so the zone an installation displays is a
 // decision recorded on disk instead of a property of whichever host it

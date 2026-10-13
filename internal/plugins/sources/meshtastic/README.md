@@ -83,6 +83,15 @@ app). A restart is the quickest way to force one. Verify with a message from
 the admin panel (Meshtastic → send to that node id); a DM that still fails
 belongs to a node whose key changed — it must announce again.
 
+**The station pins them.** Because the key comes from the node and can be
+evicted from a full node table, WarnFlux marks every node id registered in the
+user directory as a FAVORITE on the radio (`meshtastic.pin_user_nodes`, ON by
+default): the firmware never evicts a favorite and keeps favorites across a
+node-db reset, so the station's own people stay messageable without waiting
+for their next announcement. The pass runs right after the handshake and then
+every `pin_user_nodes_interval` (default 6h); it only ever ADDS favorites, so
+a star set by hand on the device is never removed.
+
 The same applies to every DM path: routed group members' node ids, the
 `/alert` direct message and the mass-info DMs. Watching the reason column of
 the message history (and the log lines `meshtastic: device rejected a send`

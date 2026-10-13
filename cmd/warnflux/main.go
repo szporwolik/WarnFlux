@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -769,6 +770,8 @@ func run(configPath string, checkConfig bool) error {
 		EmcomHazardsInterval: cfg.Meshtastic.EmcomHazardsInterval,
 		EmcomIdentity:        identity,
 		EmcomSite:            publicSite(cfg.Web.Domain),
+		PinUserNodes:         cfg.Meshtastic.PinUserNodes,
+		PinInterval:          cfg.Meshtastic.PinUserNodesInterval,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
@@ -785,6 +788,27 @@ func run(configPath string, checkConfig bool) error {
 	// The heard-node directory persists in SQLite so restarts and quiet
 	// periods do not empty the node list.
 	meshtasticHub.SetNodeStore(store)
+	// The nodes registered in the user directory are pinned as FAVORITES on
+	// the radio: the firmware never evicts a favorite from its node database,
+	// so the public key a direct message is encrypted with survives a full
+	// node table and a node-db reset. A node whose key was evicted can only
+	// be messaged after it announces itself again (see the plugin README).
+	meshtasticHub.SetUserNodes(func() []uint32 {
+		owners, err := store.MeshtasticOwners()
+		if err != nil {
+			logger.Warn("meshtastic: node pinning list load failed", "error", err)
+			return nil
+		}
+		out := make([]uint32, 0, len(owners))
+		for id := range owners {
+			n, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(id), "!"), 16, 32)
+			if err != nil || n == 0 {
+				continue
+			}
+			out = append(out, uint32(n))
+		}
+		return out
+	})
 	// Meshtastic direct-message routing trusts registered operators: the
 	// sender's node id (8 hex) must belong to a user's registered mesh
 	// node list. Without the gate no mesh message becomes a hazard event.

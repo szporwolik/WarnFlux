@@ -1786,7 +1786,7 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
   line-height: 1.45;
   text-align: left;
   white-space: normal;
-  box-shadow: 0 10px 26px rgb(0 0 0 / 0.3);
+  box-shadow: var(--shadow-pop);
 }
 /* Invisible bridge: the pointer can travel from the icon to the popover. */
 .src-help-pop::before {

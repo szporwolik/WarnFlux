@@ -82,10 +82,10 @@
         <div class="matrix-grid" style="grid-template-columns:max-content repeat({{len .Actions}}, minmax(0, 1fr))">
 	        <span class="matrix-head matrix-corner">{{tr .Lang "groups.matrix_corner"}}</span>
           {{range .Actions}}<span class="matrix-head" title="{{.ID}}">{{.ID}}</span>{{end}}
-          {{range .RoutingMatrix}}
+          {{range $i, $row := .RoutingMatrix}}
           <span class="matrix-src-cell">
-            <span class="matrix-src">{{.Label}}</span>
-            {{if .Desc}}<span class="src-help" tabindex="0" role="button" aria-label="{{tr $.Lang "groups.routeinfo.more"}}">?<span class="src-help-pop">{{.Desc}}{{if .Slug}}<code>{{.Slug}}</code>{{end}}{{if .Feed}}<a class="src-help-link{{if .FeedOut}} is-ext{{end}}" href="{{.Feed}}"{{if .FeedOut}} target="_blank" rel="noopener"{{end}}>{{.FeedText}}</a>{{end}}</span></span>{{end}}
+            <span class="matrix-src">{{$row.Label}}</span>
+            {{if $row.Desc}}<span class="src-help" tabindex="0" role="button" aria-label="{{tr $.Lang "groups.routeinfo.more"}}" aria-describedby="src-help-{{$i}}">?<span class="src-help-pop" id="src-help-{{$i}}">{{$row.Desc}}{{if $row.Slug}}<code>{{$row.Slug}}</code>{{end}}{{if $row.Feed}}<a class="src-help-link{{if $row.FeedOut}} is-ext{{end}}" href="{{$row.Feed}}"{{if $row.FeedOut}} target="_blank" rel="noopener"{{end}}>{{$row.FeedText}}</a>{{end}}</span></span>{{end}}
           </span>
           {{range .Cells}}{{$cell := .}}
           <select name="cell:{{$cell.Source}}|{{$cell.Action}}" class="matrix-sev" title="{{$cell.Action}} via {{if $cell.Source}}{{$cell.Source}}{{else}}{{tr $.Lang "groups.routing.any"}}{{end}}">

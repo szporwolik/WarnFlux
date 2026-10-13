@@ -55,6 +55,41 @@ it, so a second instance would drive the same session twice.
   on the Config page.
 - **Probes**: on-demand traceroute and range probes from the admin panel.
 
+## Direct messages need the peer's key (PKI)
+
+Group announcements are channel BROADCASTS: they are encrypted with the
+channel key, so every node on the channel receives them and nothing else is
+needed. A DIRECT message is different: firmware 2.5+ encrypts it with the
+RECIPIENT's public key, which the radio can only have learned from that node's
+**NodeInfo**. When the key is missing the radio refuses the frame outright —
+it never falls back to channel encryption, because a direct message must not
+be readable by the whole channel — and the message history records the reason
+`pki_no_key` ("the recipient has not announced its public key (it must
+broadcast NodeInfo)"). The frame never reaches the air: the alert was on the
+group channel, only the DM is missing.
+
+The station does what it can about it: on such a refusal the hub asks that
+peer to re-announce its NodeInfo (`NODEINFO_APP` with `want_response`, so the
+answer comes straight back to us), at most once per peer per 6 hours — the
+peer's firmware throttles replies to the same requester for hours, so asking
+more often only spends airtime. A node that has never announced (fresh node, a
+factory reset or a reflash that changed its key) stays undeliverable by DM
+until it does.
+
+What an operator can do: bring the node on the air and let it announce —
+every device broadcasts its NodeInfo at boot and then every
+`node_info_broadcast_secs` (default about 3 hours, configurable in the phone
+app). A restart is the quickest way to force one. Verify with a message from
+the admin panel (Meshtastic → send to that node id); a DM that still fails
+belongs to a node whose key changed — it must announce again.
+
+The same applies to every DM path: routed group members' node ids, the
+`/alert` direct message and the mass-info DMs. Watching the reason column of
+the message history (and the log lines `meshtastic: device rejected a send`
+and `meshtastic: requested node info to refresh the peer key`) tells the two
+apart: a missing KEY is fixed on the peer, a missing ROUTE is a radio
+coverage problem.
+
 `internal/meshtastic/hub.go` is the authoritative implementation; the
 `meshtastic:` section of `config.example.yaml` documents every key. The mesh
 session is local-only (serial or a LAN TCP node), so the offline-mode switch

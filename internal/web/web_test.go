@@ -5641,3 +5641,80 @@ func TestEmcomStandDownIsNotConfirmedWhenTheIntakeRefuses(t *testing.T) {
 		t.Fatalf("no durable stand-down notification in the inbox: %+v", pending)
 	}
 }
+
+// TestMeshtasticSendKeepsTheChannelTab pins the reported annoyance: after
+// a send on the group channel the panel dropped the operator on the DM
+// tab, although the channel form lives on its own tab (dir=ch<idx>). The
+// bounces now carry that tab — the success one included, which goes
+// through the same URL builder asserted below (this harness has no live
+// radio link, so the send itself cannot succeed here).
+func TestMeshtasticSendKeepsTheChannelTab(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, &fakeMeshMsgs{})
+	env.login()
+	csrf := env.csrfFromPage("/meshtastic?tab=msgs")
+
+	post := func(values url.Values) string {
+		values.Set("csrf", csrf)
+		resp, _ := env.postForm("/meshtastic/send", values)
+		return resp.Header.Get("Location")
+	}
+
+	// A channel form keeps its own tab on a validation bounce.
+	if loc := post(url.Values{"target": {"channel"}, "channel_idx": {"3"}, "text": {" "}}); !strings.HasPrefix(loc, "/meshtastic?tab=msgs&dir=ch3&") {
+		t.Errorf("empty text on ch3 = %q, want the ch3 tab", loc)
+	}
+	// The channel field may be absent: the default selection is ch1.
+	if loc := post(url.Values{"target": {"channel"}, "text": {" "}}); !strings.HasPrefix(loc, "/meshtastic?tab=msgs&dir=ch1&") {
+		t.Errorf("empty text without a channel field = %q, want the ch1 tab", loc)
+	}
+	// An unusable index names no tab: the operator gets the error alone.
+	if loc := post(url.Values{"target": {"channel"}, "channel_idx": {"9"}, "text": {"x"}}); strings.Contains(loc, "dir=") || !strings.Contains(loc, "err=") {
+		t.Errorf("bad channel = %q, want an error without a tab", loc)
+	}
+	// Direct messages stay on the default tab.
+	if loc := post(url.Values{"target": {"contact"}, "contact": {"nosuch"}, "text": {"hi"}}); strings.Contains(loc, "dir=") {
+		t.Errorf("unknown contact = %q, want the DM tab", loc)
+	}
+}
+
+// TestAPRSSendKeepsTheDirectionFilter pins the sibling of the meshtastic
+// annoyance: the APRS send and beacon forms live on the messages tab,
+// where the operator may be reading rx or tx only. A send used to bounce
+// them to the unfiltered list; the filter now travels with the form.
+func TestAPRSSendKeepsTheDirectionFilter(t *testing.T) {
+	env := newTestEnvAll(t, nil, nil, nil, nil, nil, &fakeMeshMsgs{})
+	env.login()
+	csrf := env.csrfFromPage("/aprs?tab=msgs&dir=tx")
+
+	post := func(path string, values url.Values) string {
+		values.Set("csrf", csrf)
+		resp, _ := env.postForm(path, values)
+		return resp.Header.Get("Location")
+	}
+
+	// No APRS hub in this environment: the bounce is the "no hub" error,
+	// which is enough to pin where it points.
+	for _, tc := range []struct {
+		path string
+		dir  string
+		want string
+	}{
+		{path: "/messages/send", dir: "tx", want: "/aprs?tab=msgs&dir=tx&"},
+		{path: "/messages/beacon", dir: "rx", want: "/aprs?tab=msgs&dir=rx&"},
+		{path: "/messages/send", dir: "all", want: "/aprs?tab=msgs&"},
+		{path: "/messages/send", dir: "bogus", want: "/aprs?tab=msgs&"},
+	} {
+		loc := post(tc.path, url.Values{"dir": {tc.dir}, "to": {"SP9XXX"}, "text": {"hi"}})
+		if !strings.HasPrefix(loc, tc.want) || !strings.Contains(loc, "err=") {
+			t.Errorf("POST %s with dir=%q = %q, want %q with an error", tc.path, tc.dir, loc, tc.want)
+		}
+	}
+}

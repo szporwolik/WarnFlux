@@ -418,13 +418,14 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork, lang string) 
 	}
 }
 
-// hazardTime renders an optional time as RFC3339 (empty for nil) for the
-// client-side JSON payloads.
+// hazardTime renders an optional time as RFC3339 in UTC (empty for nil)
+// for the client-side JSON payloads: the machine-readable stamps stay on
+// one clock no matter which zone the station host runs in.
 func hazardTime(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.Format(time.RFC3339)
+	return t.UTC().Format(time.RFC3339)
 }
 
 // hazardJSONFromState builds the client-side detail payload from one
@@ -446,7 +447,7 @@ func hazardJSONFromState(h state.Hazard, areas, lang string) homeHazardJSON {
 		Certainty:   h.Certainty,
 		EffectiveAt: hazardTime(h.EffectiveAt),
 		ExpiresAt:   hazardTime(h.ExpiresAt),
-		UpdatedAt:   h.UpdatedAt.Format(time.RFC3339),
+		UpdatedAt:   h.UpdatedAt.UTC().Format(time.RFC3339),
 		Latitude:    h.Latitude,
 		Longitude:   h.Longitude,
 	}
@@ -471,7 +472,7 @@ func hazardJSONFromEvent(ev core.HazardEvent) homeHazardJSON {
 		Certainty:   ev.Certainty,
 		EffectiveAt: hazardTime(ev.EffectiveAt),
 		ExpiresAt:   hazardTime(ev.ExpiresAt),
-		UpdatedAt:   ev.UpdatedAt.Format(time.RFC3339),
+		UpdatedAt:   ev.UpdatedAt.UTC().Format(time.RFC3339),
 		Latitude:    ev.Latitude,
 		Longitude:   ev.Longitude,
 	}

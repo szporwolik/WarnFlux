@@ -529,7 +529,11 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 			text += "\n" + i18n.T(lang, "discord.areas") + ": " + strings.Join(h.Hazard.Areas, ", ")
 		}
 		if h.Hazard.ExpiresAt != nil {
-			text += "\n" + i18n.T(lang, "discord.valid_until") + ": " + h.Hazard.ExpiresAt.Format(time.RFC3339)
+			// The validity is shown in the STATION's zone and says which
+			// one: a bare RFC3339 stamp would silently be UTC.
+			zoneLoc, zoneName := action.DisplayZone(req.App)
+			text += "\n" + i18n.T(lang, "discord.valid_until") + ": " +
+				h.Hazard.ExpiresAt.In(zoneLoc).Format("2006-01-02 15:04") + " (" + zoneName + ")"
 		}
 		if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
 			text += "\n" + desc

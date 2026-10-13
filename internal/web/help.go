@@ -11,6 +11,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/szporwolik/WarnFlux/internal/actions/discord"
+	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
 )
@@ -23,6 +24,17 @@ type helpCommandView struct {
 	Usage       string // e.g. "/alert <text>"
 	Description string
 	Restricted  bool
+}
+
+// helpMQTTView is the MQTT card of the manual: the live values of the
+// configured output instance plus the topic families the station
+// publishes. Prefix/QoS/Heartbeat are read from the configuration file
+// ("" when the panel cannot read it) — never credentials.
+type helpMQTTView struct {
+	ID        string
+	Prefix    string
+	QoS       string
+	Heartbeat string
 }
 
 // helpSection is one block of the Help manual: a title, an icon and a
@@ -53,6 +65,11 @@ type helpView struct {
 	// Commands is the radio-command reference (empty without an
 	// interpreter).
 	Commands []helpCommandView
+	// MQTT is the broker card (what the station publishes and what stays
+	// retained) — always rendered, with the live instance values when the
+	// panel can read the configuration file. MQTTItems are its i18n keys.
+	MQTT      helpMQTTView
+	MQTTItems []string
 	// MeshChannel is the installation's own Meshtastic channel (name,
 	// key, share link and scan code) — nil when the station has none.
 	MeshChannel *helpMeshChannelView
@@ -135,6 +152,12 @@ func (s *Server) buildHelpView(lang string) helpView {
 		RepoURL:  repoURL,
 		NavHelp:  true,
 		Commands: s.helpCommands(lang),
+
+		MQTT: s.helpMQTT(),
+		MQTTItems: []string{
+			"help.mqtt.1", "help.mqtt.2", "help.mqtt.3", "help.mqtt.4",
+			"help.mqtt.5", "help.mqtt.6", "help.mqtt.7",
+		},
 
 		MeshChannel: s.helpMeshChannel(),
 		Discord:     s.helpDiscord(lang),
@@ -365,6 +388,32 @@ func (s *Server) helpCommands(lang string) []helpCommandView {
 			desc = c.Description
 		}
 		out = append(out, helpCommandView{Usage: usage, Description: desc, Restricted: c.Restricted})
+	}
+	return out
+}
+
+// helpMQTT builds the MQTT card: the values of the first configured MQTT
+// output instance (read from the file, never credentials) and nothing else
+// — the topic layout itself lives in i18n.
+func (s *Server) helpMQTT() helpMQTTView {
+	out := helpMQTTView{}
+	if s.configPath == "" {
+		return out
+	}
+	insts, err := config.Instances(s.configPath, "outputs")
+	if err != nil {
+		return out
+	}
+	for _, in := range insts {
+		if in.Type != "mqtt" {
+			continue
+		}
+		out.ID = in.ID
+		out.Prefix = strings.Trim(strings.TrimSpace(s.scalarOr(in.ConfigPath("outputs")+".topic_prefix", "")), `"'`)
+		out.QoS = strings.Trim(strings.TrimSpace(s.scalarOr(in.ConfigPath("outputs")+".qos", "1")), `"'`)
+		hb := strings.Trim(strings.TrimSpace(s.scalarOr(in.ConfigPath("outputs")+".heartbeat_interval", "")), `"'`)
+		out.Heartbeat = hb
+		return out
 	}
 	return out
 }

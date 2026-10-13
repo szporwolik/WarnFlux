@@ -90,6 +90,13 @@ func TestNewValidation(t *testing.T) {
 	if s.cfg.PollInterval != defaultPollInterval || s.cfg.TrackWindow != defaultTrackWindow {
 		t.Errorf("defaults = poll %v track %v", s.cfg.PollInterval, s.cfg.TrackWindow)
 	}
+	// The default request timeout must cover a COLD connection to a distant
+	// API. 15s did not (measured: up to 8s for DNS+TCP+TLS setup alone, and
+	// a 10s budget produced "degraded" reports on a cold poll), so the
+	// default stays at 30s and this test makes lowering it deliberate.
+	if s.cfg.RequestTimeout != 30*time.Second {
+		t.Errorf("default request_timeout = %s, want 30s (a cold connection to a distant provider costs seconds)", s.cfg.RequestTimeout)
+	}
 }
 
 func TestClientAdsbLol(t *testing.T) {

@@ -182,7 +182,10 @@ sources:
 
     config:
       poll_interval: 15m
-      request_timeout: 10s
+      # The provider sits behind a distant edge and its API speaks HTTP/2:
+      # a cold connection (DNS + TCP + TLS) costs seconds, so the timeout is
+      # a safety net rather than a latency budget.
+      request_timeout: 30s
       # base_url: "https://aviationweather.gov/api/data"
 
       stations:
@@ -209,7 +212,10 @@ sources:
       # base_url: "https://api.adsb.lol"      # or http://10.0.0.20:8080 for tar1090
       # Polite anonymous rate limit (plugin also honors 429 Retry-After).
       poll_interval: 60s
-      request_timeout: 15s
+      # A cold connection to a distant API (DNS + TCP + TLS + HTTP/2) can
+      # take seconds on a slow link: the timeout is a safety net, not a
+      # latency budget.
+      request_timeout: 30s
       track_window: 5m
 
   # IMGW-PIB public warnings: a real HAZARD source consuming the official

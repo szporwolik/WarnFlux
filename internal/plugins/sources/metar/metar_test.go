@@ -148,6 +148,13 @@ func TestNewValidation(t *testing.T) {
 	if s.cfg.BaseURL != defaultBaseURL {
 		t.Errorf("base_url = %q", s.cfg.BaseURL)
 	}
+	// The default request timeout must cover a COLD connection to a distant
+	// edge: DNS + TCP + TLS/HTTP2 setup measured 5-6s here and crossed 10s
+	// on a slow link, which a 10s budget reported as "source degraded". The
+	// default stays at 30s and this test makes lowering it deliberate.
+	if s.cfg.RequestTimeout != 30*time.Second {
+		t.Errorf("default request_timeout = %s, want 30s (the provider sits behind a distant edge)", s.cfg.RequestTimeout)
+	}
 }
 
 func TestPollOncePublishesWeather(t *testing.T) {

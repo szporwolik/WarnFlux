@@ -234,6 +234,7 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	for _, wantStr := range []string{
 		"Routing · ops",
 		"other sources",
+		"WarnFlux messages",
 		`name="cell:|logger-action"`,
 		`name="cell:rso|logger-action"`,
 		`name="cell:compose|logger-action"`,

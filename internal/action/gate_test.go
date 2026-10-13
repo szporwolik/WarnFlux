@@ -283,6 +283,14 @@ func legacyComposeStore(t *testing.T, key string, version, counter int64, status
 	if _, err := raw.Exec(`UPDATE lifecycle_versions SET next = ?`, counter); err != nil {
 		t.Fatalf("seed the version counter: %v", err)
 	}
+	// The version counter is a contract: the database must genuinely be
+	// at the v58 SCHEMA, not merely carry the number, or the reopened
+	// upgrade would re-run a step whose column is already there. v60 adds
+	// the producer column of the events table, so it is dropped again here
+	// (a migration that changes the schema must be mirrored here too).
+	if _, err := raw.Exec(`ALTER TABLE events DROP COLUMN producer`); err != nil {
+		t.Fatalf("drop the producer column: %v", err)
+	}
 	if _, err := raw.Exec(`PRAGMA user_version = 58`); err != nil {
 		t.Fatalf("roll back the schema version: %v", err)
 	}

@@ -513,7 +513,10 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 		}
 	}
 	// Reconciliation only runs on a complete snapshot pass: a failed
-	// locality must not be mistaken for a withdrawn warning.
+	// locality must not be mistaken for a withdrawn warning. Both the pass
+	// and the protection below are scoped to THIS instance's events by the
+	// emitter (SourceActiveEventReader), so a second configured instance
+	// following other localities never withdraws these alerts.
 	if failed == 0 {
 		reconcile := true
 		if len(rejected) > 0 {
@@ -664,7 +667,8 @@ type rejectedPhenomenon struct {
 
 // protectRejected adds the live events of the rejected phenomena back into the
 // "still in force" set, so the reconciliation of this cycle cannot read an
-// unreadable date as a withdrawal. The identity of a warning is
+// unreadable date as a withdrawal. The read is scoped to this source instance
+// (the emitter only returns the events it owns). The identity of a warning is
 // "<locality>:<phenomenon>:<window start>", so the pair is matched as a prefix.
 func protectRejected(ctx context.Context, emit plugin.Emitter, keys map[string]bool, rejected []rejectedPhenomenon) error {
 	reader, ok := emit.(plugin.SourceActiveEventReader)

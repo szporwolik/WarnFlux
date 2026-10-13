@@ -128,6 +128,13 @@ storage:
 # Each instance's config.poll_interval is editable on the Config page
 # ("Polling and range"), which shows its plugin's accepted range; the
 # value is read at startup, so a change applies after a restart.
+#
+# A source INSTANCE (its id, e.g. burze-main) owns the events it produces:
+# full-snapshot sources reconcile the provider's disappearances against
+# their own events only, so a second instance of the same plugin type (e.g.
+# a second burzedzis instance following other localities) never withdraws
+# the alerts of the first. Events are routed and displayed by the plugin
+# TYPE, though — two instances of one type share the same routing row.
 sources:
   # Open-Meteo INFORMATIONAL weather source: publishes ordinary weather
   # snapshots to retained MQTT information topics

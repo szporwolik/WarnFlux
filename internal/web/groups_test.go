@@ -221,7 +221,7 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	_, html = env.get("/groups")
 	for _, wantStr := range []string{
 		"logger-action",
-		"other sources",
+		"Other sources",
 		"rso",
 		"compose",
 		"emcom",
@@ -233,7 +233,7 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	_, html = env.get("/groups/1/routing")
 	for _, wantStr := range []string{
 		"Routing · ops",
-		"other sources",
+		"Other sources",
 		"WarnFlux messages",
 		`name="cell:|logger-action"`,
 		`name="cell:rso|logger-action"`,

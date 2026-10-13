@@ -3,6 +3,7 @@ package meshtastic
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -96,6 +97,33 @@ func hubPinNext(h *Hub) time.Time {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.pinNext
+}
+
+// adminFavoriteOps returns the favorite operations in the order the device
+// received them: "+node" for a star that was set, "-node" for one taken back.
+// The counts and the order matter — a node that is removed and registered
+// again must be set, taken back and set again.
+func (c *capturingConn) adminFavoriteOps() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, msg := range c.sent {
+		decoded := msg.GetPacket().GetDecoded()
+		if decoded == nil || decoded.GetPortnum() != pb.PortNum_ADMIN_APP {
+			continue
+		}
+		admin := &pb.AdminMessage{}
+		if err := proto.Unmarshal(decoded.GetPayload(), admin); err != nil {
+			continue
+		}
+		switch v := admin.GetPayloadVariant().(type) {
+		case *pb.AdminMessage_SetFavoriteNode:
+			out = append(out, "+"+meshIDString(v.SetFavoriteNode))
+		case *pb.AdminMessage_RemoveFavoriteNode:
+			out = append(out, "-"+meshIDString(v.RemoveFavoriteNode))
+		}
+	}
+	return out
 }
 
 // memFavoriteStore is the in-memory ledger of the stars this station set on
@@ -620,5 +648,63 @@ func TestFlushFavoritesKeepsThePendingFlag(t *testing.T) {
 	ram.rememberFavorite(0xa0a85934, true)
 	if !ram.flushFavorites() || ram.dirtyFavorites() {
 		t.Error("a hub without a store stayed dirty")
+	}
+}
+
+// TestPinUserNodesReAddsANodeAfterItWasRemoved pins the acceptance sequence of
+// the ticket: register a node, remove it from the directory, register the SAME
+// node again. That is three operations on the radio — set, remove, set — and
+// the last one used to be skipped: the removal cleared the ledger but left the
+// node remembered as confirmed, so the station believed the radio still had a
+// star it had just taken back.
+func TestPinUserNodesReAddsANodeAfterItWasRemoved(t *testing.T) {
+	const node = 0x6d2c8f6c
+	ledger := &memFavoriteStore{}
+	cap := &capturingConn{}
+	var mu sync.Mutex
+	var directory []uint32
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
+		testRadioOpts{
+			// The radio reports no favorites of its own: every star in this
+			// test comes from the pass.
+			nodes: []*pb.NodeInfo{},
+			wrap: func(t transportConn) transportConn {
+				cap.transportConn = t
+				return cap
+			},
+			setup: func(h *Hub) {
+				h.SetFavoriteStore(ledger)
+				h.SetUserNodes(func() ([]uint32, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					return append([]uint32(nil), directory...), nil
+				})
+			},
+		})
+	radio.waitConnected(t)
+	// The handshake pass has run (an empty directory: nothing to do).
+	waitFor(t, "the handshake pass", func() bool { return !hubPinNext(radio.hub).IsZero() })
+
+	setDirectory := func(ids ...uint32) {
+		mu.Lock()
+		directory = ids
+		mu.Unlock()
+	}
+	setDirectory(node)
+	radio.hub.pinUserNodes(true)
+	setDirectory()
+	radio.hub.pinUserNodes(true)
+	setDirectory(node)
+	radio.hub.pinUserNodes(true)
+
+	want := []string{"+" + meshIDString(node), "-" + meshIDString(node), "+" + meshIDString(node)}
+	if got := cap.adminFavoriteOps(); !slices.Equal(got, want) {
+		t.Fatalf("favorite operations = %v, want %v", got, want)
+	}
+	if got := ledger.snapshot(); len(got) != 1 || got[0] != node {
+		t.Fatalf("ledger = %08x, want the node registered again", got)
+	}
+	if radio.hub.dirtyFavorites() {
+		t.Error("the ledger stayed dirty after a successful write")
 	}
 }

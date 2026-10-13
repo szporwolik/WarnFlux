@@ -2012,7 +2012,7 @@ func (h *Hub) pinUserNodes(force bool) {
 			continue
 		}
 		h.rememberFavorite(id, true)
-		h.markRadioFavorite(id)
+		h.markRadioFavorite(id, true)
 		h.pinLog(slog.LevelInfo, "meshtastic: user node pinned as favorite on the radio", "node", meshIDString(id))
 	}
 	for _, id := range pinned {
@@ -2026,6 +2026,7 @@ func (h *Hub) pinUserNodes(force bool) {
 			continue
 		}
 		h.rememberFavorite(id, false)
+		h.markRadioFavorite(id, false)
 		h.pinLog(slog.LevelInfo, "meshtastic: node left the user directory, favorite removed from the radio",
 			"node", meshIDString(id))
 	}
@@ -2176,15 +2177,22 @@ func (h *Hub) PinnedNodes() []string {
 	return out
 }
 
-// markRadioFavorite records a star the device just accepted, so the rest of
-// this session does not re-send it (the next handshake reads the device's own
-// report anyway).
-func (h *Hub) markRadioFavorite(id uint32) {
+// markRadioFavorite records what the device now carries for one node. It
+// mirrors BOTH directions: a star the device accepted is skipped for the rest
+// of the session, and a star it took back stops counting as confirmed —
+// otherwise a node that is removed and later registered again would be left
+// without a star, because the confirmation of the first pin outlives the
+// removal. (The next handshake reads the device's own report anyway.)
+func (h *Hub) markRadioFavorite(id uint32, favorite bool) {
 	h.mu.Lock()
 	if h.radioFavorites == nil {
 		h.radioFavorites = map[uint32]bool{}
 	}
-	h.radioFavorites[id] = true
+	if favorite {
+		h.radioFavorites[id] = true
+	} else {
+		delete(h.radioFavorites, id)
+	}
 	h.mu.Unlock()
 }
 

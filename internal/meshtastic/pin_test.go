@@ -74,6 +74,30 @@ func (c *capturingConn) adminFavoriteRemovals() []uint32 {
 	return out
 }
 
+// waitFor polls cond until it holds, with a deadline. A pass sends its frames
+// and writes the ledger in separate steps, so a test waits for the STATE it
+// asserts instead of assuming it follows the frame it happened to see (the
+// write lands later — and only the wait makes that reliable).
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// hubPinNext reads the pass schedule under the hub's lock: the session
+// goroutine owns the field, so a test that peeked at it bare would race.
+func hubPinNext(h *Hub) time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pinNext
+}
+
 // memFavoriteStore is the in-memory ledger of the stars this station set on
 // the radio (the FavoriteStore the hub writes to).
 type memFavoriteStore struct {
@@ -147,13 +171,10 @@ func TestPinUserNodesMarksFavorites(t *testing.T) {
 	radio.waitConnected(t)
 
 	var favorites map[uint32]uint32
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if favorites = cap.adminFavorites(); len(favorites) == 2 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, "both favorite frames", func() bool {
+		favorites = cap.adminFavorites()
+		return len(favorites) == 2
+	})
 	if len(favorites) != 2 {
 		t.Fatalf("favorite frames = %v, want both registered nodes", favorites)
 	}
@@ -193,13 +214,7 @@ func TestPinUserNodesRemembersItsOwnStars(t *testing.T) {
 		})
 	radio.waitConnected(t)
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(ledger.snapshot()) == 2 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, "the ledger write", func() bool { return len(ledger.snapshot()) == 2 })
 	if got := ledger.snapshot(); len(got) != 2 || got[0] != 0x6d2c8f6c || got[1] != 0xdeadbeef {
 		t.Fatalf("ledger = %08x, want the two pinned nodes", got)
 	}
@@ -256,13 +271,13 @@ func TestPinUserNodesUnpinsNodesThatLeftTheDirectory(t *testing.T) {
 				})
 			radio.waitConnected(t)
 
-			deadline := time.Now().Add(3 * time.Second)
-			for time.Now().Before(deadline) {
-				if len(cap.adminFavoriteRemovals()) == len(c.removed) {
-					break
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
+			// The removal frames and the ledger write that follows them are
+			// two steps: wait for BOTH, or the assertion below reads the
+			// ledger the pass has not written back yet.
+			waitFor(t, "the removals and their ledger write", func() bool {
+				return len(cap.adminFavoriteRemovals()) == len(c.removed) &&
+					len(ledger.snapshot()) == len(c.want)
+			})
 			got := cap.adminFavoriteRemovals()
 			sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
 			if len(got) != len(c.removed) {
@@ -322,7 +337,9 @@ func TestPinUserNodesNeverUnpinsOnABadDirectory(t *testing.T) {
 					},
 				})
 			radio.waitConnected(t)
-			time.Sleep(150 * time.Millisecond)
+			// The pass has run once it armed its next window: whatever it
+			// wanted to send would have gone out by then.
+			waitFor(t, "the pass to finish", func() bool { return !hubPinNext(radio.hub).IsZero() })
 			if got := cap.adminFavoriteRemovals(); len(got) != 0 {
 				t.Fatalf("favorites were removed after a failed read: %08x", got)
 			}
@@ -497,7 +514,7 @@ func TestPinUserNodesTrustsTheRadioThatConfirmsItsStars(t *testing.T) {
 			},
 		})
 	radio.waitConnected(t)
-	time.Sleep(150 * time.Millisecond)
+	waitFor(t, "the pass to finish", func() bool { return !hubPinNext(radio.hub).IsZero() })
 	if got := cap.adminFavorites(); len(got) != 0 {
 		t.Fatalf("set_favorite_node frames = %v, want none (the radio still has the star)", got)
 	}
@@ -529,13 +546,9 @@ func TestPinUserNodesRetriesAFailedLedgerSave(t *testing.T) {
 	radio.waitConnected(t)
 
 	// The star goes out and is remembered in RAM, but the store refuses it.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if ledger.saveAttempts() > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// The pass arms its next window AFTER the flush, so that is the signal
+	// that everything it was going to do has been done.
+	waitFor(t, "the failed save to settle", func() bool { return !hubPinNext(radio.hub).IsZero() })
 	if ledger.saveAttempts() == 0 {
 		t.Fatal("the pass never tried to save the ledger")
 	}
@@ -545,7 +558,7 @@ func TestPinUserNodesRetriesAFailedLedgerSave(t *testing.T) {
 	if !radio.hub.dirtyFavorites() {
 		t.Fatal("the unsaved ledger change was forgotten")
 	}
-	if got := time.Until(radio.hub.pinNext); got > pinRetryDelay+time.Second {
+	if got := time.Until(hubPinNext(radio.hub)); got > pinRetryDelay+time.Second {
 		t.Errorf("next pass in %s, want ~%s after a failed save", got, pinRetryDelay)
 	}
 
@@ -555,13 +568,7 @@ func TestPinUserNodesRetriesAFailedLedgerSave(t *testing.T) {
 	before := ledger.saveAttempts()
 	ledger.failSaves(nil)
 	radio.hub.pinUserNodes(true)
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := ledger.snapshot(); len(got) == 1 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, "the retried ledger write", func() bool { return len(ledger.snapshot()) == 1 })
 	if got := ledger.snapshot(); len(got) != 1 || got[0] != 0x6d2c8f6c {
 		t.Fatalf("store = %08x, want the retried ledger", got)
 	}

@@ -37,11 +37,18 @@ type channelOption struct {
 // sourceOption is one input-plugin (hazard event source) row of the
 // routing matrix. An empty Value is the "any source" fallback row;
 // Members lists the concrete event sources a grouped row stands for (nil
-// for a plain single-source row).
+// for a plain single-source row). Desc is the i18n key of the popover
+// description, Feed the provider page (https://…) or the in-app page
+// (/…) the row's events come from.
 type sourceOption struct {
 	Value   string
 	Label   string
 	Members []string
+	Desc    string
+	Feed    string
+	// SlugText overrides the popover slug line: ingest rows show their
+	// POST route instead of an event source slug.
+	SlugText string
 }
 
 // values returns the concrete event source slugs this row covers.
@@ -50,6 +57,18 @@ func (o sourceOption) values() []string {
 		return []string{o.Value}
 	}
 	return o.Members
+}
+
+// slugList renders the covered event sources for the row popover. The
+// fallback row covers no source of its own, so it renders nothing.
+func (o sourceOption) slugList() string {
+	if o.SlugText != "" {
+		return o.SlugText
+	}
+	if o.Value == "" && len(o.Members) == 0 {
+		return ""
+	}
+	return strings.Join(o.values(), ", ")
 }
 
 const (
@@ -69,19 +88,19 @@ const (
 // so they match "any" (or their own row when it exists here). Labels are
 // translated per UI language in routingSourcesFor.
 var baseRoutingSources = []sourceOption{
-	{Value: "", Label: "groups.routing.any"},
-	{Value: srcIMGW, Members: []string{"imgw-meteo", "imgw-hydro"}, Label: "groups.routing.imgw"},
-	{Value: "rso", Label: "RSO"},
-	{Value: "gddkia", Label: "groups.src.gddkia"},
-	{Value: "rcb", Label: "groups.src.rcb"},
-	{Value: "aprs", Label: "groups.src.aprs"},
-	{Value: "gsm", Label: "groups.src.gsm"},
-	{Value: "gios", Label: "groups.src.gios"},
-	{Value: "giosaq", Label: "groups.src.giosaq"},
-	{Value: "compose", Label: "groups.src.compose"},
+	{Value: "", Label: "groups.routing.any", Desc: "groups.routing.any_desc"},
+	{Value: srcIMGW, Members: []string{"imgw-meteo", "imgw-hydro"}, Label: "groups.routing.imgw", Desc: "sources.imgw.desc", Feed: "https://danepubliczne.imgw.pl/api/data"},
+	{Value: "rso", Label: "RSO", Desc: "sources.rso.desc", Feed: "https://komunikaty.tvp.pl"},
+	{Value: "gddkia", Label: "groups.src.gddkia", Desc: "sources.gddkia.desc", Feed: "https://www.archiwum.gddkia.gov.pl/dane/zima_html/utrdane.xml"},
+	{Value: "rcb", Label: "groups.src.rcb", Desc: "sources.rcb.desc", Feed: "/gsm"},
+	{Value: "aprs", Label: "groups.src.aprs", Desc: "sources.aprs.desc", Feed: "/aprs"},
+	{Value: "gsm", Label: "groups.src.gsm", Desc: "sources.gsm.desc", Feed: "/gsm"},
+	{Value: "gios", Label: "groups.src.gios", Desc: "sources.gios.desc", Feed: "https://dane.gios.gov.pl"},
+	{Value: "giosaq", Label: "groups.src.giosaq", Desc: "sources.giosaq.desc", Feed: "https://api.gios.gov.pl/pjp-api"},
+	{Value: "compose", Label: "groups.src.compose", Desc: "sources.compose.desc", Feed: "/compose"},
 	// EMCOM readiness-level changes flow through the dispatch ingress
 	// like every other source, so groups can route them explicitly.
-	{Value: "emcom", Label: "groups.src.emcom"},
+	{Value: "emcom", Label: "groups.src.emcom", Desc: "sources.emcom.desc", Feed: "/emcom"},
 }
 
 // routingSourcesFor returns the full matrix row set for a UI language:
@@ -95,10 +114,23 @@ func (s *Server) routingSourcesFor(lang string) []sourceOption {
 	sort.Strings(ids)
 	out := make([]sourceOption, 0, len(baseRoutingSources)+len(ids))
 	for _, src := range baseRoutingSources {
-		out = append(out, sourceOption{Value: src.Value, Label: i18n.T(lang, src.Label), Members: src.Members})
+		out = append(out, sourceOption{
+			Value:   src.Value,
+			Label:   i18n.T(lang, src.Label),
+			Members: src.Members,
+			Desc:    src.Desc,
+			Feed:    src.Feed,
+		})
 	}
 	for _, id := range ids {
-		out = append(out, sourceOption{Value: id, Label: trfSafe(i18n.T(lang, "groups.src.ingest"), id)})
+		out = append(out, sourceOption{
+			Value: id,
+			Label: trfSafe(i18n.T(lang, "groups.src.ingest"), id),
+			Desc:  "sources.ingest.desc",
+			// The endpoint route is carried in the slug line instead of a
+			// link: there is no page to open, only the POST target.
+			SlugText: "POST /api/v1/ingest/" + id,
+		})
 	}
 	return out
 }
@@ -122,10 +154,21 @@ type matrixCell struct {
 	Mixed bool
 }
 
-// matrixSourceRow is one source row of the popover grid.
+// matrixSourceRow is one source row of the routing grid, with the popover
+// content describing where the row's events come from.
 type matrixSourceRow struct {
 	Label string
-	Cells []matrixCell
+	// Slug line of the popover: the covered event source slugs, or the
+	// ingest route. Empty for the fallback row.
+	Slug string
+	// Desc is the translated popover text ("" = no popover).
+	Desc string
+	// Feed is the link target, FeedText its translated label. FeedOut
+	// marks an external provider page (opened in a new tab).
+	Feed     string
+	FeedText string
+	FeedOut  bool
+	Cells    []matrixCell
 }
 
 // cellKey identifies one popover cell.
@@ -323,7 +366,7 @@ func (s *Server) handleGroupRoutingPage(w http.ResponseWriter, r *http.Request) 
 	view.Role = sess.role
 	view.RoutingName = group.Name
 	view.RoutingID = group.ID
-	view.RoutingMatrix = buildMatrix(routing.Actions, s.availableActions(), s.routingSourcesFor(s.langFor(r)))
+	view.RoutingMatrix = buildMatrix(routing.Actions, s.availableActions(), s.routingSourcesFor(s.langFor(r)), s.langFor(r))
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "group_routing", view)
 }
@@ -450,15 +493,36 @@ func (s *Server) availableActions() []channelOption {
 // buildMatrix lays out the popover grid: one row per known source, one
 // severity select per action, prefilled with the saved severity ("" when
 // the cell is unassigned). A grouped row reports the severity shared by
-// its member sources, or Mixed when they disagree.
-func buildMatrix(assignments []storage.ChannelAssignment, actions []channelOption, sources []sourceOption) []matrixSourceRow {
+// its member sources, or Mixed when they disagree. lang localizes the
+// per-row popover (source description and feed link).
+func buildMatrix(assignments []storage.ChannelAssignment, actions []channelOption, sources []sourceOption, lang string) []matrixSourceRow {
 	saved := make(map[string]string, len(assignments))
 	for _, a := range assignments {
 		saved[cellKey(a.Source, a.ID)] = a.MinSeverity
 	}
 	rows := make([]matrixSourceRow, 0, len(sources))
 	for _, src := range sources {
-		row := matrixSourceRow{Label: src.Label, Cells: make([]matrixCell, 0, len(actions))}
+		row := matrixSourceRow{
+			Label: src.Label,
+			Slug:  src.slugList(),
+		}
+		if src.Desc != "" {
+			row.Desc = i18n.T(lang, src.Desc)
+			if row.Desc == src.Desc {
+				// Missing translation: never show a raw key in the popover.
+				row.Desc = ""
+			}
+		}
+		if row.Desc != "" && src.Feed != "" {
+			row.Feed = src.Feed
+			row.FeedOut = strings.HasPrefix(src.Feed, "http")
+			if row.FeedOut {
+				row.FeedText = i18n.T(lang, "groups.routeinfo.feed")
+			} else {
+				row.FeedText = i18n.T(lang, "groups.routeinfo.panel")
+			}
+		}
+		row.Cells = make([]matrixCell, 0, len(actions))
 		for _, act := range actions {
 			sev, mixed := rowCell(src, act.ID, saved)
 			row.Cells = append(row.Cells, matrixCell{

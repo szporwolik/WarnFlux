@@ -1735,6 +1735,85 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
   text-overflow: ellipsis;
 }
 .matrix-grid .matrix-sev { width: 100%; max-width: 100%; }
+/* Each source row carries a "?" affordance with a popover describing the
+   source and linking to its feed. The popover lives in a sibling of the
+   ellipsised label so the clipping there cannot cut it off. */
+.matrix-src-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.matrix-src-cell .matrix-src { min-width: 0; }
+.src-help {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--input-bg);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  outline: none;
+}
+.src-help:hover,
+.src-help:focus-visible { border-color: var(--accent); color: var(--accent); }
+.src-help-pop {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  z-index: 30;
+  display: none;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 20rem;
+  max-width: 70vw;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-hi);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.3);
+}
+/* Invisible bridge: the pointer can travel from the icon to the popover. */
+.src-help-pop::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -0.45rem;
+  height: 0.45rem;
+}
+.src-help:hover .src-help-pop,
+.src-help:focus .src-help-pop,
+.src-help:focus-within .src-help-pop { display: flex; }
+.src-help-pop code {
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.src-help-link {
+  align-self: flex-start;
+  color: var(--accent);
+  font-size: 0.75rem;
+  text-decoration: none;
+}
+.src-help-link:hover { text-decoration: underline; }
+.src-help-link.is-ext::after { content: " ↗"; }
+
 .matrix-sev {
   background: var(--input-bg);
   border: 1px solid var(--input-border);

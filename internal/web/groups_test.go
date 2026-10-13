@@ -363,3 +363,44 @@ func assertAssignments(t *testing.T, env *testEnv, want map[storage.ChannelAssig
 		}
 	}
 }
+
+// TestGroupRoutingSourcePopovers pins the per-row "?" affordance: every
+// matrix row carries a popover with the source description, its event
+// source slugs (or the ingest route) and a link to the provider page or
+// the in-app page.
+func TestGroupRoutingSourcePopovers(t *testing.T) {
+	env := newTestEnvWithIngest(t, map[string]http.Handler{"news": http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusAccepted) })})
+	env.login()
+	if _, err := env.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+	_, html := env.get("/groups/1/routing")
+
+	for _, want := range []string{
+		`class="src-help"`, // the affordance
+		"About this source",
+		// Provider description reused from the public sources list.
+		"Serious industrial accidents reported to the environmental inspectorate.",
+		// External feed link (new tab).
+		`href="https://dane.gios.gov.pl" target="_blank" rel="noopener"`,
+		// In-app link for panel-authored events.
+		`href="/compose"`,
+		// Grouped row lists both event sources it covers.
+		"imgw-meteo, imgw-hydro",
+		// Fallback row explains itself instead of naming a source.
+		"Default rule:",
+		// Ingest rows carry their HTTP route.
+		"POST /api/v1/ingest/news",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("routing popovers missing %q", want)
+		}
+	}
+
+	rows := strings.Count(html, `class="matrix-src-cell"`)
+	icons := strings.Count(html, `class="src-help"`)
+	if rows == 0 || rows != icons {
+		t.Errorf("rows with a cell = %d, popovers = %d, want equal and non-zero", rows, icons)
+	}
+}

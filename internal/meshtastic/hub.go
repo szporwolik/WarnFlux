@@ -1982,6 +1982,11 @@ func (h *Hub) pinUserNodes(force bool) {
 	if interval <= 0 {
 		interval = defaultPinInterval
 	}
+	// This pass CONSUMES the due time: leaving it in the past would make every
+	// later tick run the pass again (the maintenance tick is seconds apart).
+	// The end of the pass arms the next one, and a retry asked for while it
+	// runs still wins because arming never postpones (see schedulePinNext).
+	h.pinNext = time.Time{}
 	h.mu.Unlock()
 
 	next := now.Add(interval)

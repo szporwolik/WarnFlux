@@ -1047,3 +1047,81 @@ func TestRefusalAfterAPassKeepsTheRetry(t *testing.T) {
 		t.Fatalf("next pass in %s, want the retry (%s)", got, pinRetryDelay)
 	}
 }
+
+// TestPinPassRunsOncePerInterval pins the cadence: the pass CONSUMES the due
+// time when it starts, so a pass that ran its course is not repeated by every
+// later maintenance tick (they are five seconds apart) just because the due
+// time it read is now in the past.
+func TestPinPassRunsOncePerInterval(t *testing.T) {
+	var mu sync.Mutex
+	runs := 0
+	refuse := false
+	h := &Hub{
+		cfg:  Config{PinUserNodes: true, PinInterval: time.Hour},
+		conn: &fakeTransportConn{},
+		self: &SelfInfo{ID: "abcd1234"},
+	}
+	h.SetUserNodes(func() ([]uint32, error) {
+		mu.Lock()
+		runs++
+		if refuse {
+			// A refusal that arrives while this pass is still working.
+			h.favoriteRetry()
+		}
+		mu.Unlock()
+		return []uint32{0x6d2c8f6c}, nil
+	})
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return runs
+	}
+
+	// The first pass runs and arms its own window.
+	h.pinUserNodes(false)
+	if got := count(); got != 1 {
+		t.Fatalf("passes = %d, want 1", got)
+	}
+	if got := time.Until(hubPinNext(h)); got < time.Hour-time.Minute {
+		t.Fatalf("next pass in %s, want the interval", got)
+	}
+	// A tick right after it changes nothing.
+	h.pinUserNodes(false)
+	if got := count(); got != 1 {
+		t.Fatalf("passes = %d, a tick inside the interval ran the pass again", got)
+	}
+
+	// The interval elapses: the next pass runs ...
+	h.mu.Lock()
+	h.pinNext = time.Now().Add(-time.Second)
+	h.mu.Unlock()
+	h.pinUserNodes(false)
+	if got := count(); got != 2 {
+		t.Fatalf("passes = %d, want 2 after the interval elapsed", got)
+	}
+	// ... and the tick five seconds later must NOT run a third one.
+	h.pinUserNodes(false)
+	if got := count(); got != 2 {
+		t.Fatalf("passes = %d, want 2 (the due time was not consumed)", got)
+	}
+
+	// The same holds for a refusal: the retry is five minutes away, so the
+	// following ticks must not hammer the radio with the refused command.
+	mu.Lock()
+	refuse = true
+	mu.Unlock()
+	h.mu.Lock()
+	h.pinNext = time.Now().Add(-time.Second)
+	h.mu.Unlock()
+	h.pinUserNodes(false)
+	if got := count(); got != 3 {
+		t.Fatalf("passes = %d, want 3", got)
+	}
+	if got := time.Until(hubPinNext(h)); got > pinRetryDelay+time.Second {
+		t.Fatalf("next pass in %s, want the retry (%s)", got, pinRetryDelay)
+	}
+	h.pinUserNodes(false)
+	if got := count(); got != 3 {
+		t.Fatalf("passes = %d, a tick inside the retry window retried the refused command", got)
+	}
+}

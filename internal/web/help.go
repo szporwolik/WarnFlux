@@ -176,6 +176,9 @@ func (s *Server) buildHelpView(lang string) helpView {
 			{Title: "help.config.title", Icon: "i-gear", Items: []string{
 				"help.config.1",
 			}},
+			{Title: "help.api.title", Icon: "i-puzzle", Items: []string{
+				"help.api.1", "help.api.2", "help.api.3", "help.api.4", "help.api.5",
+			}},
 		},
 	}
 }

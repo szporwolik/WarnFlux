@@ -178,14 +178,14 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	// moderate, compose at minor, emcom at severe, the road/incident
 	// sources (gddkia, gios) specific too, an off cell ("") skipped.
 	resp, _ = env.postForm("/groups/1/routing", url.Values{
-		"csrf":                          {csrf},
-		"cell:|logger-action":           {"severe"},
-		"cell:rso|logger-action":        {"moderate"},
-		"cell:compose|logger-action":    {"minor"},
-		"cell:emcom|logger-action":      {"severe"},
-		"cell:gddkia|logger-action":     {"moderate"},
-		"cell:gios|logger-action":       {"severe"},
-		"cell:imgw-meteo|logger-action": {""},
+		"csrf":                       {csrf},
+		"cell:|logger-action":        {"severe"},
+		"cell:rso|logger-action":     {"moderate"},
+		"cell:compose|logger-action": {"minor"},
+		"cell:emcom|logger-action":   {"severe"},
+		"cell:gddkia|logger-action":  {"moderate"},
+		"cell:gios|logger-action":    {"severe"},
+		"cell:imgw|logger-action":    {""},
 	})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/groups" {
 		t.Fatalf("routing save = %d %q, want redirect to /groups", resp.StatusCode, resp.Header.Get("Location"))
@@ -257,5 +257,107 @@ func TestGroupRoutingMatrix(t *testing.T) {
 	}
 	if len(r.Actions) != 0 {
 		t.Fatalf("routing after clear = %+v", r)
+	}
+}
+
+// TestGroupRoutingIMGWGroup pins the grouped IMGW row: the matrix shows one
+// line for the two IMGW plugins, saving it writes the threshold for both
+// event sources, and a legacy divergence is preserved (not silently
+// flattened) until the operator picks a value.
+func TestGroupRoutingIMGWGroup(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	if _, err := env.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+	csrf := env.csrfFromPage("/groups")
+
+	// One posted IMGW cell lands as two assignments (meteo + hydro).
+	resp, _ := env.postForm("/groups/1/routing", url.Values{
+		"csrf":                    {csrf},
+		"cell:imgw|logger-action": {"severe"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("grouped routing save = %d, want redirect", resp.StatusCode)
+	}
+	assertAssignments(t, env, map[storage.ChannelAssignment]bool{
+		{Source: "imgw-meteo", ID: "logger-action", MinSeverity: "severe"}: true,
+		{Source: "imgw-hydro", ID: "logger-action", MinSeverity: "severe"}: true,
+	})
+
+	// The grid renders exactly one IMGW row and no per-plugin rows.
+	_, html := env.get("/groups/1/routing")
+	if !strings.Contains(html, `name="cell:imgw|logger-action"`) {
+		t.Errorf("grouped IMGW row missing: %s", html)
+	}
+	for _, gone := range []string{`name="cell:imgw-meteo|logger-action"`, `name="cell:imgw-hydro|logger-action"`} {
+		if strings.Contains(html, gone) {
+			t.Errorf("per-plugin row %q still rendered: %s", gone, html)
+		}
+	}
+
+	// Legacy divergence (e.g. set before the rows were grouped) is shown as
+	// "differs per source" instead of an arbitrary single value.
+	if err := env.users.SetGroupRouting(1, []storage.ChannelAssignment{
+		{Source: "imgw-meteo", ID: "logger-action", MinSeverity: "severe"},
+		{Source: "imgw-hydro", ID: "logger-action", MinSeverity: "minor"},
+	}); err != nil {
+		t.Fatalf("SetGroupRouting: %v", err)
+	}
+	_, html = env.get("/groups/1/routing")
+	if !strings.Contains(html, `value="mixed" selected`) {
+		t.Errorf("divergent IMGW cell not marked as mixed: %s", html)
+	}
+
+	// Saving the mixed cell keeps both members untouched.
+	resp, _ = env.postForm("/groups/1/routing", url.Values{
+		"csrf":                    {csrf},
+		"cell:imgw|logger-action": {"mixed"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("mixed routing save = %d, want redirect", resp.StatusCode)
+	}
+	assertAssignments(t, env, map[storage.ChannelAssignment]bool{
+		{Source: "imgw-meteo", ID: "logger-action", MinSeverity: "severe"}: true,
+		{Source: "imgw-hydro", ID: "logger-action", MinSeverity: "minor"}:  true,
+	})
+
+	// A concrete severity flattens both members again.
+	resp, _ = env.postForm("/groups/1/routing", url.Values{
+		"csrf":                    {csrf},
+		"cell:imgw|logger-action": {"moderate"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("concrete routing save = %d, want redirect", resp.StatusCode)
+	}
+	assertAssignments(t, env, map[storage.ChannelAssignment]bool{
+		{Source: "imgw-meteo", ID: "logger-action", MinSeverity: "moderate"}: true,
+		{Source: "imgw-hydro", ID: "logger-action", MinSeverity: "moderate"}: true,
+	})
+
+	// "mixed" is only meaningful for a grouped row.
+	resp, html = env.postForm("/groups/1/routing", url.Values{
+		"csrf":                {csrf},
+		"cell:|logger-action": {"mixed"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(html, "mixed severity") {
+		t.Fatalf("mixed on single-source cell = %d %s", resp.StatusCode, html)
+	}
+}
+
+// assertAssignments compares the stored routing matrix with the expected set.
+func assertAssignments(t *testing.T, env *testEnv, want map[storage.ChannelAssignment]bool) {
+	t.Helper()
+	r, err := env.users.GroupRouting(1)
+	if err != nil {
+		t.Fatalf("GroupRouting: %v", err)
+	}
+	if len(r.Actions) != len(want) {
+		t.Fatalf("actions = %+v, want %d cells", r.Actions, len(want))
+	}
+	for _, a := range r.Actions {
+		if !want[a] {
+			t.Fatalf("actions = %+v, unexpected %+v", r.Actions, a)
+		}
 	}
 }

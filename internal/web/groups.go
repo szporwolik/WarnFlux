@@ -35,11 +35,33 @@ type channelOption struct {
 }
 
 // sourceOption is one input-plugin (hazard event source) row of the
-// routing matrix. An empty Value is the "any source" fallback row.
+// routing matrix. An empty Value is the "any source" fallback row;
+// Members lists the concrete event sources a grouped row stands for (nil
+// for a plain single-source row).
 type sourceOption struct {
-	Value string
-	Label string
+	Value   string
+	Label   string
+	Members []string
 }
+
+// values returns the concrete event source slugs this row covers.
+func (o sourceOption) values() []string {
+	if len(o.Members) == 0 {
+		return []string{o.Value}
+	}
+	return o.Members
+}
+
+const (
+	// srcIMGW is the grouped routing row of the two IMGW plugins: they
+	// emit distinct event sources with the same operational meaning, so
+	// the matrix offers one row and stores the chosen threshold for
+	// both. The group value itself is never persisted.
+	srcIMGW = "imgw"
+	// sevMixed is the select value of a grouped cell whose members carry
+	// different thresholds. Saving it keeps every member as it is.
+	sevMixed = "mixed"
+)
 
 // baseRoutingSources lists the built-in hazard event source slugs offered
 // as matrix rows. "" is the any-source fallback. Sources of events
@@ -48,8 +70,7 @@ type sourceOption struct {
 // translated per UI language in routingSourcesFor.
 var baseRoutingSources = []sourceOption{
 	{Value: "", Label: "groups.routing.any"},
-	{Value: "imgw-meteo", Label: "IMGW meteo"},
-	{Value: "imgw-hydro", Label: "IMGW hydro"},
+	{Value: srcIMGW, Members: []string{"imgw-meteo", "imgw-hydro"}, Label: "groups.routing.imgw"},
 	{Value: "rso", Label: "RSO"},
 	{Value: "gddkia", Label: "groups.src.gddkia"},
 	{Value: "rcb", Label: "groups.src.rcb"},
@@ -74,7 +95,7 @@ func (s *Server) routingSourcesFor(lang string) []sourceOption {
 	sort.Strings(ids)
 	out := make([]sourceOption, 0, len(baseRoutingSources)+len(ids))
 	for _, src := range baseRoutingSources {
-		out = append(out, sourceOption{Value: src.Value, Label: i18n.T(lang, src.Label)})
+		out = append(out, sourceOption{Value: src.Value, Label: i18n.T(lang, src.Label), Members: src.Members})
 	}
 	for _, id := range ids {
 		out = append(out, sourceOption{Value: id, Label: trfSafe(i18n.T(lang, "groups.src.ingest"), id)})
@@ -96,6 +117,9 @@ type matrixCell struct {
 	Source string // "" = any source
 	Action string // action instance ID
 	Sev    string // current severity, "" = cell off
+	// Mixed marks a grouped row whose members disagree: the select shows
+	// the "differs per source" option instead of a single severity.
+	Mixed bool
 }
 
 // matrixSourceRow is one source row of the popover grid.
@@ -324,7 +348,20 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actions, err := parseMatrixCells(r, s.routingSources(), s.availableActions())
+	// The current cells are needed to keep a grouped row untouched when it
+	// is left on "differs per source": SetGroupRouting replaces the whole
+	// matrix, so preserved cells must be re-submitted explicitly.
+	current, err := s.users.GroupRouting(id)
+	if err != nil {
+		if errors.Is(err, storage.ErrGroupNotFound) {
+			s.renderGroupsError(w, r, http.StatusNotFound, groupForm{}, 0, groupErrorMessage(s.langFor(r), err))
+			return
+		}
+		s.logger.Warn("web: group routing unavailable", "group", id, "error", err)
+		current.Actions = nil
+	}
+
+	actions, err := parseMatrixCells(r, s.routingSources(), s.availableActions(), current.Actions)
 	if err != nil {
 		s.renderGroupsError(w, r, http.StatusUnprocessableEntity, groupForm{}, 0, err.Error())
 		return
@@ -340,16 +377,22 @@ func (s *Server) handleGroupRouting(w http.ResponseWriter, r *http.Request) {
 
 // parseMatrixCells reads the posted routing grid. Form field names are
 // "cell:<source>|<action>" and values are canonical severities; an empty
-// value means the cell is off and is skipped. Unknown sources, unknown
-// action IDs or invalid severities are rejected.
-func parseMatrixCells(r *http.Request, sources []sourceOption, allowed []channelOption) ([]storage.ChannelAssignment, error) {
-	knownSrc := make(map[string]bool, len(sources))
+// value means the cell is off and is skipped. A grouped row (IMGW) is
+// expanded into one assignment per member source, and sevMixed keeps the
+// current members untouched. Unknown sources, unknown action IDs or
+// invalid severities are rejected.
+func parseMatrixCells(r *http.Request, sources []sourceOption, allowed []channelOption, current []storage.ChannelAssignment) ([]storage.ChannelAssignment, error) {
+	knownSrc := make(map[string]sourceOption, len(sources))
 	for _, o := range sources {
-		knownSrc[o.Value] = true
+		knownSrc[o.Value] = o
 	}
 	knownAct := make(map[string]bool, len(allowed))
 	for _, o := range allowed {
 		knownAct[o.ID] = true
+	}
+	existing := make(map[string]string, len(current))
+	for _, a := range current {
+		existing[cellKey(a.Source, a.ID)] = a.MinSeverity
 	}
 	out := make([]storage.ChannelAssignment, 0, len(r.PostForm))
 	for key, values := range r.PostForm {
@@ -360,20 +403,34 @@ func parseMatrixCells(r *http.Request, sources []sourceOption, allowed []channel
 		if !ok {
 			return nil, fmt.Errorf("malformed routing cell %q in routing form", key)
 		}
-		if !knownSrc[src] {
+		row, ok := knownSrc[src]
+		if !ok {
 			return nil, fmt.Errorf("unknown source %q in routing form", src)
 		}
 		if !knownAct[id] {
 			return nil, fmt.Errorf("unknown action or output id %q in routing form", id)
 		}
 		sev := strings.ToLower(strings.TrimSpace(values[len(values)-1]))
+		if sev == sevMixed {
+			if len(row.Members) < 2 {
+				return nil, fmt.Errorf("mixed severity for single-source cell %q", key)
+			}
+			for _, member := range row.values() {
+				if cur, ok := existing[cellKey(member, id)]; ok {
+					out = append(out, storage.ChannelAssignment{Source: member, ID: id, MinSeverity: cur})
+				}
+			}
+			continue
+		}
 		if sev == "" {
 			continue // cell left on "—": not assigned
 		}
 		if !severity.Valid(sev) {
 			return nil, fmt.Errorf("invalid severity for cell %q", key)
 		}
-		out = append(out, storage.ChannelAssignment{Source: src, ID: id, MinSeverity: sev})
+		for _, member := range row.values() {
+			out = append(out, storage.ChannelAssignment{Source: member, ID: id, MinSeverity: sev})
+		}
 	}
 	return out, nil
 }
@@ -392,7 +449,8 @@ func (s *Server) availableActions() []channelOption {
 
 // buildMatrix lays out the popover grid: one row per known source, one
 // severity select per action, prefilled with the saved severity ("" when
-// the cell is unassigned).
+// the cell is unassigned). A grouped row reports the severity shared by
+// its member sources, or Mixed when they disagree.
 func buildMatrix(assignments []storage.ChannelAssignment, actions []channelOption, sources []sourceOption) []matrixSourceRow {
 	saved := make(map[string]string, len(assignments))
 	for _, a := range assignments {
@@ -402,15 +460,31 @@ func buildMatrix(assignments []storage.ChannelAssignment, actions []channelOptio
 	for _, src := range sources {
 		row := matrixSourceRow{Label: src.Label, Cells: make([]matrixCell, 0, len(actions))}
 		for _, act := range actions {
+			sev, mixed := rowCell(src, act.ID, saved)
 			row.Cells = append(row.Cells, matrixCell{
 				Source: src.Value,
 				Action: act.ID,
-				Sev:    saved[cellKey(src.Value, act.ID)],
+				Sev:    sev,
+				Mixed:  mixed,
 			})
 		}
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// rowCell resolves the severity shown for one cell of a source row: the
+// value shared by every member source ("" when the cell is off), or
+// mixed=true when the members carry different thresholds.
+func rowCell(src sourceOption, actionID string, saved map[string]string) (string, bool) {
+	values := src.values()
+	sev := saved[cellKey(values[0], actionID)]
+	for _, member := range values[1:] {
+		if saved[cellKey(member, actionID)] != sev {
+			return "", true
+		}
+	}
+	return sev, false
 }
 
 // validateGroupForm returns a user-facing message for invalid input.

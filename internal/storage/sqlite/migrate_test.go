@@ -669,3 +669,54 @@ func TestMigrationLegacyCursorWithoutTypeResetsOnSync(t *testing.T) {
 		t.Errorf("cursor = %d after same-type sync, want 3 (preserved)", ack)
 	}
 }
+
+// TestWithMigrationCeiling pins the upgrade-fixture seam: a database opened
+// with a ceiling stops at exactly that schema — the real steps, so an old
+// station's database is reproduced rather than imitated — and the next open
+// replays the remaining ones. A test that instead rewinds user_version over a
+// current schema keeps the columns and tables of the newer releases and only
+// notices when a later migration collides with one of them.
+func TestWithMigrationCeiling(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ceiling.db")
+	old, info, err := Open(path, WithMigrationCeiling(2))
+	if err != nil {
+		t.Fatalf("Open at v2: %v", err)
+	}
+	if info.From != 0 || info.To != 2 {
+		t.Fatalf("fixture migration = %+v, want {From:0 To:2}", info)
+	}
+	var version int
+	if err := old.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 2 {
+		t.Fatalf("user_version = %d, %v; want 2", version, err)
+	}
+	// v3 adds changes.event_snapshot: a v2 database must not already have it.
+	if _, err := old.db.Exec(`SELECT event_snapshot FROM changes`); err == nil {
+		t.Error("a column of a newer migration is present in the v2 fixture")
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	upgraded, info, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer upgraded.Close()
+	if info.From != 2 || info.To != len(migrations) {
+		t.Fatalf("upgrade = %+v, want {From:2 To:%d}", info, len(migrations))
+	}
+	if _, err := upgraded.db.Exec(`SELECT event_snapshot FROM changes`); err != nil {
+		t.Errorf("the upgrade did not add the v3 column: %v", err)
+	}
+
+	// A ceiling at the head (or zero) is not a ceiling: production opens the
+	// current schema.
+	fresh, info, err := Open(filepath.Join(t.TempDir(), "head.db"), WithMigrationCeiling(len(migrations)))
+	if err != nil {
+		t.Fatalf("Open at head: %v", err)
+	}
+	defer fresh.Close()
+	if info.To != len(migrations) {
+		t.Fatalf("head migration = %+v, want %d", info, len(migrations))
+	}
+}

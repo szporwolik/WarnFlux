@@ -245,6 +245,11 @@ func TestComposeCorrectionStopsTheReplacedText(t *testing.T) {
 	}
 }
 
+// legacyComposeSchema is the schema version an old station ran before the
+// lifecycle adoption arrived (v59): the fixture is built at exactly this
+// version, so the upgrade under test is the real one.
+const legacyComposeSchema = 58
+
 // legacyComposeStore builds a database in the state an OLD station leaves
 // behind: a panel communication whose lifecycle row has no version-aware
 // owner (the empty publisher), and the schema rolled back so the adoption
@@ -254,9 +259,18 @@ func TestComposeCorrectionStopsTheReplacedText(t *testing.T) {
 func legacyComposeStore(t *testing.T, key string, version, counter int64, status string) *sqlite.Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacy-compose.db")
-	created, _, err := sqlite.Open(path)
+	// The fixture is built AT v58 — the real schema of that release, step by
+	// step — so the reopen below replays the genuine upgrade path. Rewinding
+	// user_version over a current schema is not the same thing: every later
+	// migration then has to be mirrored here by hand (dropping the column of
+	// v60, the table of v61, ...) and the test stops covering the real
+	// upgrade the moment a step is forgotten.
+	created, at, err := sqlite.Open(path, sqlite.WithMigrationCeiling(legacyComposeSchema))
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("Open at v%d: %v", legacyComposeSchema, err)
+	}
+	if at.To != legacyComposeSchema {
+		t.Fatalf("fixture schema = %d, want %d", at.To, legacyComposeSchema)
 	}
 	// The database has an instance identity long before the ledger gains
 	// an owner: every ingest stamps it (v24).
@@ -266,8 +280,7 @@ func legacyComposeStore(t *testing.T, key string, version, counter int64, status
 	if err := created.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	// Write the pre-upgrade rows as the old binary left them, then roll
-	// the schema version back so opening runs the migration again.
+	// Write the pre-upgrade rows as the old binary left them.
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open raw: %v", err)
@@ -283,27 +296,18 @@ func legacyComposeStore(t *testing.T, key string, version, counter int64, status
 	if _, err := raw.Exec(`UPDATE lifecycle_versions SET next = ?`, counter); err != nil {
 		t.Fatalf("seed the version counter: %v", err)
 	}
-	// The version counter is a contract: the database must genuinely be
-	// at the v58 SCHEMA, not merely carry the number, or the reopened
-	// upgrade would re-run a step whose column is already there. v60 adds
-	// the producer column of the events table, so it is dropped again here
-	// (a migration that changes the schema must be mirrored here too).
-	if _, err := raw.Exec(`ALTER TABLE events DROP COLUMN producer`); err != nil {
-		t.Fatalf("drop the producer column: %v", err)
-	}
-	if _, err := raw.Exec(`PRAGMA user_version = 58`); err != nil {
-		t.Fatalf("roll back the schema version: %v", err)
-	}
 	if err := raw.Close(); err != nil {
 		t.Fatalf("close raw: %v", err)
 	}
+	// Reopening without a ceiling runs every step after v58 for real and
+	// reports where it started.
 	upgraded, info, err := sqlite.Open(path)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { upgraded.Close() })
-	if info.From != 58 {
-		t.Fatalf("schema upgrade started at %d, want 58", info.From)
+	if info.From != legacyComposeSchema {
+		t.Fatalf("schema upgrade started at %d, want %d", info.From, legacyComposeSchema)
 	}
 	return upgraded
 }

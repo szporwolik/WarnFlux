@@ -658,9 +658,20 @@ func run(configPath string, checkConfig bool) error {
 	// storage.path explicitly.
 	cfg.Storage.Path = resolveStoragePath(cfg.Storage.Path, logger)
 
+	// The display zone is resolved BEFORE anything renders a time: the
+	// configured IANA name, else the host's zone (detected), else UTC. The
+	// resolved name is reported so an operator never has to guess which
+	// clock the panel shows.
+	zoneLoc, zoneName := config.Timezone(cfg.App.Timezone)
+	zoneSource := "app.timezone"
+	if strings.TrimSpace(cfg.App.Timezone) == "" {
+		zoneSource = "detected on this host"
+	}
+
 	logger.Info("configuration loaded", "path", configPath,
 		"log_level", cfg.App.LogLevel, "log_file", cfg.App.LogFile,
 		"storage_driver", cfg.Storage.Driver, "storage_path", cfg.Storage.Path)
+	logger.Info("display time zone", "zone", zoneName, "source", zoneSource)
 
 	// The panel writes its changes back into this file, and a read-only
 	// mount makes them vanish on the next restart. Say so once at startup:
@@ -683,6 +694,18 @@ func run(configPath string, checkConfig bool) error {
 
 	if migration.From == 0 {
 		logger.Info("database initialized", "schema_version", migration.To)
+		// First run: the zone this installation displays becomes an
+		// explicit choice on disk instead of a property of whichever host
+		// it happened to start on. An existing key is never rewritten.
+		if strings.TrimSpace(cfg.App.Timezone) == "" {
+			if written, err := config.PinTimezoneIfAbsent(configPath, zoneName); err != nil {
+				logger.Warn("could not pin the display time zone in the configuration file",
+					"path", configPath, "zone", zoneName, "error", err)
+			} else if written {
+				logger.Info("display time zone pinned in the configuration file",
+					"path", configPath, "zone", zoneName)
+			}
+		}
 	} else if migration.To > migration.From {
 		logger.Info("database migrated", "from", migration.From, "to", migration.To)
 	}
@@ -1188,17 +1211,11 @@ func run(configPath string, checkConfig bool) error {
 		// The Help manual lists exactly the commands the interpreter
 		// answers (one source of truth, nothing to keep in sync).
 		webSrv.SetRadioCLI(radioCLI)
-		// Human-facing timestamps ride the configured display timezone:
-		// containers typically run UTC, which would shift every panel
-		// time two hours behind the local wall clock.
-		if cfg.App.Timezone != "" {
-			if loc, err := time.LoadLocation(cfg.App.Timezone); err == nil {
-				webSrv.SetTimezone(loc)
-			} else {
-				logger.Warn("app.timezone unavailable, keeping the process-local zone",
-					"timezone", cfg.App.Timezone, "error", err)
-			}
-		}
+		// Human-facing timestamps ride the RESOLVED display zone (the
+		// configured name, else the detected host zone, else UTC): a
+		// container without app.timezone would otherwise render UTC
+		// without saying so.
+		webSrv.SetTimezone(zoneLoc)
 		// Radio channels (APRS, Meshtastic, SMS) share the panel's EMCOM
 		// transition logic through the /emcom command. The sender's
 		// directory username drives the per-network authorization.
@@ -1368,10 +1385,11 @@ func run(configPath string, checkConfig bool) error {
 	routingCtx, cancelRouting := context.WithCancel(ctx)
 	defer cancelRouting()
 	ruleEngine := routing.New(store, actionsMgr, logger, action.AppInfo{
-		Version: resolvedVersion,
-		Header1: cfg.Web.Header1,
-		Domain:  cfg.Web.Domain,
-		RepoURL: appinfo.RepoURL,
+		Version:  resolvedVersion,
+		Header1:  cfg.Web.Header1,
+		Domain:   cfg.Web.Domain,
+		RepoURL:  appinfo.RepoURL,
+		Timezone: zoneName,
 	}, trails, met)
 	// Broadcast channels (APRS, EMCOM group posts) follow the system
 	// notification language; the admin Config page switches it live.
@@ -1783,9 +1801,9 @@ func run(configPath string, checkConfig bool) error {
 // app.log_max_backups rotated copies. capture additionally receives every
 // line (the in-memory ring buffer behind the /logs viewer).
 func newLogger(app config.App, capture io.Writer) (*slog.Logger, io.Closer, error) {
-	level := app.SlogLevel()
+	opts := logHandlerOptions(app.SlogLevel())
 	if app.LogFile == "" {
-		logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, capture), &slog.HandlerOptions{Level: level}))
+		logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, capture), opts))
 		return logger, nopCloser{}, nil
 	}
 
@@ -1803,10 +1821,27 @@ func newLogger(app config.App, capture io.Writer) (*slog.Logger, io.Closer, erro
 		MaxBackups: maxBackups,
 		LocalTime:  true,
 	}
-	logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, rotator, capture), &slog.HandlerOptions{
-		Level: level,
-	}))
+	logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, rotator, capture), opts))
 	return logger, rotator, nil
+}
+
+// logHandlerOptions returns the option set every logger variant shares. Log
+// timestamps are UTC (RFC3339 with "Z"), the way machine-readable logs are
+// read: the station's display zone applies to the panel and the
+// notifications, never to the log stream — a "13:01+02:00" line means
+// nothing to a collector that does not know this host.
+func logHandlerOptions(level slog.Level) *slog.HandlerOptions {
+	return &slog.HandlerOptions{
+		Level: level,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				if t, ok := a.Value.Any().(time.Time); ok {
+					return slog.Time(slog.TimeKey, t.UTC())
+				}
+			}
+			return a
+		},
+	}
 }
 
 type nopCloser struct{}

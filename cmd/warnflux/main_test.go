@@ -370,3 +370,42 @@ func TestLoggerRotatedFilesStayBounded(t *testing.T) {
 		})
 	}
 }
+
+// TestLoggerStampsUTC pins the log time policy: the log stream is read by
+// machines and collectors, so every line carries a UTC RFC3339 stamp with
+// "Z" — never the station's display zone — and that holds for both logger
+// variants (with and without a log file).
+func TestLoggerStampsUTC(t *testing.T) {
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = devnull
+	defer func() { os.Stdout = old; devnull.Close() }()
+
+	for _, name := range []string{"stdout only", "rotating file"} {
+		app := config.App{}
+		if name == "rotating file" {
+			app.LogFile = filepath.Join(t.TempDir(), "warnflux.log")
+		}
+		var buf strings.Builder
+		logger, closer, err := newLogger(app, &buf)
+		if err != nil {
+			t.Fatalf("%s: newLogger: %v", name, err)
+		}
+		if closer == nil {
+			t.Fatalf("%s: newLogger returned a nil closer", name)
+		}
+		logger.Info("tick")
+		_ = closer.Close()
+
+		line := strings.TrimSpace(buf.String())
+		if line == "" {
+			t.Fatalf("%s: the captured ring buffer stayed empty", name)
+		}
+		if !strings.HasPrefix(line, "time=") || !strings.Contains(line, "Z level=INFO msg=tick") {
+			t.Errorf("%s: log line = %q, want a UTC (Z) stamp", name, line)
+		}
+	}
+}

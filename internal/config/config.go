@@ -130,10 +130,12 @@ type Geo struct {
 // App holds general application settings.
 type App struct {
 	LogLevel string
-	// Timezone is the IANA zone name used for every human-facing
-	// timestamp (admin panels, message history). Empty = the
-	// process-local zone. Containers typically run UTC, so the default
-	// is Europe/Warsaw regardless of the host zone.
+	// Timezone is the IANA zone name ("Europe/Warsaw") used for every
+	// human-facing timestamp: the panels, the public pages and the
+	// notification bodies, which always NAME it. Storage (epoch
+	// milliseconds) and the log stream stay UTC. Empty = the host zone
+	// (TZ, then /etc/timezone, then /etc/localtime), which the first
+	// start pins into this file so the choice survives a host move.
 	Timezone           string
 	ExpirationInterval time.Duration
 	// ChangeRetention is how long acknowledged journal records are kept

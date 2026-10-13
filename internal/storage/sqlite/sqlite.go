@@ -2140,7 +2140,7 @@ func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, erro
 		if err := rows.Scan(&n.ID, &n.Slug, &n.Name, &n.Level, &n.UpdatedBy, &ms, &n.Version); err != nil {
 			return nil, fmt.Errorf("scan emcom network: %w", err)
 		}
-		n.UpdatedAt = time.UnixMilli(ms)
+		n.UpdatedAt = time.UnixMilli(ms).UTC()
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -2465,7 +2465,7 @@ func (s *Store) ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, er
 			return nil, fmt.Errorf("scan compose hazard: %w", err)
 		}
 		h.State = []byte(raw)
-		h.UpdatedAt = time.UnixMilli(ms)
+		h.UpdatedAt = time.UnixMilli(ms).UTC()
 		out = append(out, h)
 	}
 	return out, rows.Err()

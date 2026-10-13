@@ -387,3 +387,44 @@ func TestUpdateFileConcurrentSameField(t *testing.T) {
 		t.Errorf("temporary files left behind: %v", leftovers)
 	}
 }
+
+// TestCheckWritable pins the startup probe: the panel stages its writer's
+// temporary file NEXT TO the configuration, so the directory matters as
+// much as the file — a read-only mount must be reported before an
+// operator loses an edit to it.
+func TestCheckWritable(t *testing.T) {
+	if err := CheckWritable(""); err != nil {
+		t.Fatalf("a station without a configuration file must not report an error, got %v", err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("app:\n  log_level: info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckWritable(path); err != nil {
+		t.Fatalf("a writable configuration reported as broken: %v", err)
+	}
+	// The probe must not leave anything behind.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.yaml" {
+		t.Fatalf("the probe left files behind: %v", entries)
+	}
+
+	if err := CheckWritable(filepath.Join(dir, "missing.yaml")); err == nil {
+		t.Fatal("a missing configuration file must be reported")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions are not enforced")
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := CheckWritable(path); err == nil {
+		t.Fatal("a read-only directory must be reported: the writer stages its temporary file there")
+	}
+}

@@ -24,6 +24,32 @@ type ScalarEdit struct {
 	Value *yaml.Node
 }
 
+// CheckWritable reports whether a panel change could be made durable at
+// path. Both the file AND its directory have to be writable: the writer
+// stages a temporary file next to the configuration and renames it into
+// place, so a read-only mount (`:ro` in Docker, a read-only rootfs)
+// fails there even when the file itself looks writable. An empty path
+// means the station runs without a configuration file and keeps its
+// changes in memory only — that is not an error.
+func CheckWritable(path string) error {
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	_ = f.Close()
+	probe, err := os.CreateTemp(filepath.Dir(path), ".warnflux-write-probe-*")
+	if err != nil {
+		return fmt.Errorf("stage a file next to %q: %w", path, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
 // UpdateFile applies the requested scalar edits DIRECTLY to the file
 // bytes: values of existing keys are replaced in place (their line
 // ranges come from the parsed node tree), missing keys are appended at

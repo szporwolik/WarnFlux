@@ -5752,3 +5752,83 @@ func TestIngestRoutingRowLabel(t *testing.T) {
 		}
 	}
 }
+
+// TestLoginBodyLimit pins the anonymous-form body cap: an oversized sign-in
+// body is refused with 413 before it is parsed, throttled or not, and an
+// oversized field inside a legal body is refused with 400.
+func TestLoginBodyLimit(t *testing.T) {
+	env := newTestEnv(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+
+	postRaw := func(body string, csrf string) *http.Response {
+		t.Helper()
+		if csrf != "" {
+			body += "&csrf=" + csrf
+		}
+		req, err := http.NewRequest(http.MethodPost, env.srv.URL+"/login", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp
+	}
+
+	// A large body from an anonymous client is refused before any parsing.
+	big := "username=" + strings.Repeat("a", 8<<20) + "&password=x"
+	if resp := postRaw(big, ""); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized anonymous login = %d, want 413", resp.StatusCode)
+	}
+
+	// Five wrong credentials spend the account budget (the fifth locks the
+	// account), so the next attempt is throttled with 429.
+	resp, err := client.Get(env.srv.URL + "/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /login = %d", resp.StatusCode)
+	}
+	csrf := extractCSRF(t, string(body))
+	for i := 0; i < 5; i++ {
+		if resp := postRaw("username=admin&password=wrong", csrf); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("failed login %d = %d, want 401", i+1, resp.StatusCode)
+		}
+	}
+	if resp := postRaw("username=admin&password=wrong", csrf); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("throttled login = %d, want 429", resp.StatusCode)
+	}
+
+	// Oversized bodies are still refused with 413 while the account is
+	// blocked — they are never buffered to log a username.
+	if resp := postRaw(big, csrf); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized login while throttled = %d, want 413", resp.StatusCode)
+	}
+
+	// A field longer than any real account, inside a legal body.
+	oversizedField := "username=" + strings.Repeat("u", 1024) + "&password=wrong"
+	if resp := postRaw(oversizedField, csrf); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized username field = %d, want 400", resp.StatusCode)
+	}
+
+	// The rejected attempts left nothing large behind: the log ring stays
+	// inside its byte budget and no line carries a payload-sized field.
+	total := 0
+	for _, l := range env.logs.Snapshot(0) {
+		total += len(l.Text)
+		if len(l.Text) > web.MaxLogLineBytes+64 {
+			t.Errorf("log line of %d bytes exceeds the cap: %q", len(l.Text), l.Text[:120])
+		}
+	}
+	if total > web.MaxLogBytes {
+		t.Errorf("log buffer holds %d bytes, want <= %d", total, web.MaxLogBytes)
+	}
+}

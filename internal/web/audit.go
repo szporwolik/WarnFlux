@@ -64,6 +64,11 @@ func (s *Server) handlePartialAudit(w http.ResponseWriter, r *http.Request) {
 // it, and a database-backed user store persists it (pruned to the
 // retention bound by the store).
 func (s *Server) audit(user, action, detail string) {
+	// Every field is bounded: the audit trail (memory buffer AND database
+	// rows) must not be sized by whatever a request happened to send.
+	user = truncateRunes(user, maxLoggedRunes)
+	action = truncateRunes(action, maxLoggedRunes)
+	detail = truncateRunes(detail, maxAuditDetailRunes)
 	if s.auditLog != nil {
 		s.auditLog.Add(user, action, detail)
 	}

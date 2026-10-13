@@ -81,8 +81,20 @@ func newTestTable() *testNodeTable {
 	}
 }
 
-func newTestRadio(t *testing.T, cfg Config) *testRadio {
+// testRadioOpts tunes the harness: wrap decorates every dialled transport
+// (to make the link misbehave) and setup runs on the hub BEFORE its
+// session goroutine starts, so a test can still write its fields.
+type testRadioOpts struct {
+	wrap  func(transportConn) transportConn
+	setup func(*Hub)
+}
+
+func newTestRadio(t *testing.T, cfg Config, opts ...testRadioOpts) *testRadio {
 	t.Helper()
+	opt := testRadioOpts{}
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	table := newTestTable()
 	radio := &testRadio{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -111,9 +123,16 @@ func newTestRadio(t *testing.T, cfg Config) *testRadio {
 		if err != nil {
 			return nil, err
 		}
-		return &clientAdapter{t: client.NewTransport(sc, client.TransportConfig{
+		var out transportConn = &clientAdapter{t: client.NewTransport(sc, client.TransportConfig{
 			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		})}, nil
+		})}
+		// wrap lets a test make the link misbehave: the decorator runs
+		// for EVERY dial, so the replacement session is wrapped too and
+		// the test can tell a rebuilt link from the first.
+		if opt.wrap != nil {
+			out = opt.wrap(out)
+		}
+		return out, nil
 	}
 	t.Cleanup(func() {
 		Dial = oldDial
@@ -123,6 +142,9 @@ func newTestRadio(t *testing.T, cfg Config) *testRadio {
 	hub, err := NewHub(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewHub: %v", err)
+	}
+	if opt.setup != nil {
+		opt.setup(hub)
 	}
 	radio.hub = hub
 	radio.runErr = make(chan error, 1)
@@ -3355,6 +3377,175 @@ func waitForHub(t *testing.T, cond func() bool, what string) {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal(what)
+}
+
+// breakableLink decorates every dialled transport so a test can break the
+// write of ONE named text frame the way a socket the peer closed does
+// ("broken pipe"). The break is armed explicitly and matched by payload,
+// so a frame the hub sends on its own (a NodeInfo request, a beacon, a
+// CLI reply) can never consume it.
+type breakableLink struct {
+	mu     sync.Mutex
+	text   string
+	failed bool
+}
+
+func (b *breakableLink) decorate(c transportConn) transportConn {
+	return &breakableConn{transportConn: c, link: b}
+}
+
+// breakSendOfText arms the failure for the next frame carrying text.
+func (b *breakableLink) breakSendOfText(text string) {
+	b.mu.Lock()
+	b.text, b.failed = text, false
+	b.mu.Unlock()
+}
+
+type breakableConn struct {
+	transportConn
+	link *breakableLink
+}
+
+func (c *breakableConn) SendToRadio(msg *pb.ToRadio) error {
+	if pkt := msg.GetPacket(); pkt != nil {
+		c.link.mu.Lock()
+		fail := c.link.text != "" && !c.link.failed &&
+			string(pkt.GetDecoded().GetPayload()) == c.link.text
+		if fail {
+			c.link.failed = true
+		}
+		c.link.mu.Unlock()
+		if fail {
+			return errors.New("write tcp 172.30.0.2:51242->10.0.0.121:4403: write: broken pipe")
+		}
+	}
+	return c.transportConn.SendToRadio(msg)
+}
+
+// TestHubSendRebuildsTheLinkAfterABrokenFrame pins the reported prod
+// failure: sending on the group channel answered "write: broken pipe"
+// and the message was lost, because a send that met a link the peer had
+// already closed gave up instead of rebuilding it. The frame must now
+// ride a fresh session and reach the device.
+func TestHubSendRebuildsTheLinkAfterABrokenFrame(t *testing.T) {
+	link := &breakableLink{}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour},
+		testRadioOpts{wrap: link.decorate})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	link.breakSendOfText("SOSNA test")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := radio.hub.SendChannelText(ctx, 1, "SOSNA test", "admin"); err != nil {
+		t.Fatalf("send on a closed link must ride a rebuilt session, got %v", err)
+	}
+	if got := radio.dials.Load(); got != 2 {
+		t.Errorf("dials = %d, want 2 (the broken link plus its replacement)", got)
+	}
+	out := radio.waitOutbound(t, 1)
+	if len(out) != 1 || string(out[0].GetDecoded().GetPayload()) != "SOSNA test" {
+		t.Fatalf("outbound = %v, want the frame delivered on the rebuilt link", out)
+	}
+	if msgs := rec.messages(); len(msgs) != 1 {
+		t.Fatalf("history rows = %d, want exactly one: the retry must not duplicate the row", len(msgs))
+	}
+}
+
+// TestHubSendWaitsOutAReconnect pins the other half of the reported
+// failure: a send that landed while the link was being rebuilt answered
+// "device not connected" at once. It must wait for the replacement
+// session and then go out.
+func TestHubSendWaitsOutAReconnect(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
+	radio.waitConnected(t)
+
+	// Ask for a rebuild the way a dead link does, and wait until the hub
+	// reports the link down — the send below lands inside that window.
+	dialsBefore := radio.dials.Load()
+	radio.hub.requestReconnect()
+	waitForHub(t, func() bool { return !radio.hub.Connected() }, "the session never went down")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := radio.hub.SendChannelText(ctx, 1, "link wait", "admin"); err != nil {
+		t.Fatalf("send during a reconnect must wait for the link, got %v", err)
+	}
+	if got := radio.dials.Load(); got <= dialsBefore {
+		t.Errorf("dials = %d, want the session rebuilt past %d", got, dialsBefore)
+	}
+	out := radio.waitOutbound(t, 1)
+	if len(out) != 1 || string(out[0].GetDecoded().GetPayload()) != "link wait" {
+		t.Fatalf("outbound = %v, want the frame delivered after the wait", out)
+	}
+}
+
+// heartbeatBreaker fails the heartbeat write on the FIRST dialled
+// transport only, so the replacement session is healthy.
+type heartbeatBreaker struct {
+	mu    sync.Mutex
+	dials int
+	seen  atomic.Int32
+}
+
+func (b *heartbeatBreaker) decorate(c transportConn) transportConn {
+	b.mu.Lock()
+	b.dials++
+	first := b.dials == 1
+	b.mu.Unlock()
+	return &heartbeatConn{transportConn: c, breakIt: first, seen: &b.seen}
+}
+
+type heartbeatConn struct {
+	transportConn
+	breakIt bool
+	seen    *atomic.Int32
+}
+
+func (c *heartbeatConn) SendToRadio(msg *pb.ToRadio) error {
+	if msg.GetHeartbeat() != nil {
+		c.seen.Add(1)
+		if c.breakIt {
+			return errors.New("write tcp 172.30.0.2:51242->10.0.0.121:4403: write: broken pipe")
+		}
+	}
+	return c.transportConn.SendToRadio(msg)
+}
+
+// TestHubHeartbeatRebuildsADeadLink pins the keepalive: the client pings
+// the device with the protocol heartbeat, so a socket the peer closed
+// surfaces as a failed write and the session is rebuilt at once, instead
+// of sitting dead until the silence watchdog fires two minutes later.
+func TestHubHeartbeatRebuildsADeadLink(t *testing.T) {
+	hb := &heartbeatBreaker{}
+	// A silence timeout far beyond the test keeps the watchdog out of the
+	// picture: only the heartbeat can explain the rebuild.
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		SilenceTimeout: time.Minute}, testRadioOpts{
+		wrap:  hb.decorate,
+		setup: func(h *Hub) { h.heartbeatEvery = 30 * time.Millisecond },
+	})
+	radio.waitConnected(t)
+
+	waitForHubTimeout(t, 15*time.Second, func() bool { return radio.dials.Load() >= 2 },
+		"a failed heartbeat never rebuilt the session")
+	if got := hb.seen.Load(); got == 0 {
+		t.Fatal("no heartbeat was ever written to the device")
+	}
+}
+
+// waitForHubTimeout is waitForHub with an explicit budget.
+func waitForHubTimeout(t *testing.T, budget time.Duration, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal(what)
 }

@@ -195,6 +195,33 @@ const (
 // within this window.
 const defaultSilenceTimeout = 2 * time.Minute
 
+// defaultHeartbeatInterval is how often the client pings the device with
+// the protocol's heartbeat frame. The heartbeat doubles as a keepalive —
+// an idle TCP session the peer closes fails the write with "broken pipe"
+// instead of hanging silently — and as a liveness probe: a dead link
+// surfaces within one interval instead of waiting out the silence
+// watchdog.
+const defaultHeartbeatInterval = 30 * time.Second
+
+// linkSendWait bounds how long a send waits for a live session before it
+// gives up. The session goroutine rebuilds the link on its own after a
+// drop, so a send that lands inside the reconnect window only has to
+// wait instead of failing.
+const linkSendWait = 10 * time.Second
+
+// connPollInterval is how often a waiting send re-checks the session.
+const connPollInterval = 100 * time.Millisecond
+
+// errDeviceNotConnected is the send-path error when no session is live.
+// The panel shows this wording verbatim.
+var errDeviceNotConnected = errors.New("meshtastic: device not connected")
+
+// errReconnectRequested ends the current session on purpose: the link is
+// known dead (a failed send or heartbeat), so the session goroutine
+// rebuilds it immediately — without the failure noise or the growing
+// backoff of a real outage.
+var errReconnectRequested = errors.New("reconnect requested")
+
 // nodeDirRetention bounds the heard-node directory: nodes unheard for
 // this long are dropped from memory and persistence, so 24/7/365
 // operation never accumulates an unbounded directory of transient
@@ -820,6 +847,15 @@ type Hub struct {
 	// (defaultSilenceTimeout) of total radio silence.
 	lastRadio atomic.Int64
 
+	// reconnect asks the session goroutine to rebuild a link that died
+	// under a send: an operator's message must not wait out the silence
+	// watchdog while the socket is already gone. Buffered — one pending
+	// rebuild is enough.
+	reconnect chan struct{}
+	// heartbeatEvery is how often the session pings the device
+	// (defaultHeartbeatInterval when unset; the tests shorten it).
+	heartbeatEvery time.Duration
+
 	// nodeStore persists the heard-node directory across restarts
 	// (optional; nil = directory lives in RAM only).
 	nodeStore   NodeStore
@@ -921,6 +957,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 			routeWaiters: make(map[uint32][]chan routeReply),
 			traces:       make(map[uint32]*TraceProgress),
 			bannerLast:   make(map[string]time.Time), replyLast: make(map[string]replyWindow),
+			reconnect: make(chan struct{}, 1),
 			startedAt: time.Now()}, nil
 	}
 	if cfg.Device == "" {
@@ -937,6 +974,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		traces:       make(map[uint32]*TraceProgress),
 		bannerLast:   make(map[string]time.Time),
 		replyLast:    make(map[string]replyWindow),
+		reconnect:    make(chan struct{}, 1),
 		startedAt:    time.Now(),
 	}, nil
 }
@@ -1177,7 +1215,14 @@ func (h *Hub) Run(ctx context.Context) error {
 		h.lastErr = err
 		h.conn = nil
 		h.mu.Unlock()
-		h.logger.Warn("meshtastic: device session ended, reconnecting", "error", err)
+		if errors.Is(err, errReconnectRequested) {
+			// The link is known dead (a failed send or heartbeat): rebuild
+			// it at once and quietly instead of treating it as an outage.
+			h.logger.Info("meshtastic: rebuilding the device link")
+			backoff = time.Second
+		} else {
+			h.logger.Warn("meshtastic: device session ended, reconnecting", "error", err)
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -1228,6 +1273,13 @@ func (h *Hub) runSession(ctx context.Context) error {
 	h.connected = true
 	h.mu.Unlock()
 	h.lastRadio.Store(time.Now().UnixNano())
+	// A reconnect request filed while this session was being dialled
+	// belonged to the previous link: drop it, so it cannot tear down the
+	// fresh session.
+	select {
+	case <-h.reconnect:
+	default:
+	}
 	// The presence beacon is armed by the FIRST session only (later ones
 	// are device reconnects and must not reschedule the cadence — it
 	// belongs to the process, not the session). A configured daily anchor
@@ -1266,16 +1318,38 @@ func (h *Hub) runSession(ctx context.Context) error {
 		}
 	}
 
-	// Maintenance: expire unheard neighbours and watch the transport.
+	// Maintenance: expire unheard neighbours, keep the link warm and watch
+	// the transport.
 	ticker := time.NewTicker(dmRetryInterval)
 	defer ticker.Stop()
+	lastHeartbeat := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-h.reconnect:
+			return errReconnectRequested
 		case <-ticker.C:
 			if !conn.IsConnected() {
 				return errors.New("device disconnected")
+			}
+			// The heartbeat is the only liveness probe that does not
+			// depend on the mesh being busy. A write that fails means the
+			// peer closed the socket, so end the session and let the
+			// reconnect loop rebuild it instead of waiting out the
+			// silence watchdog.
+			every := h.heartbeatEvery
+			if every <= 0 {
+				every = defaultHeartbeatInterval
+			}
+			if time.Since(lastHeartbeat) >= every {
+				if err := conn.SendToRadio(heartbeatFrame()); err != nil {
+					return fmt.Errorf("heartbeat write failed: %w", err)
+				}
+				lastHeartbeat = time.Now()
+				if h.logger != nil {
+					h.logger.Debug("meshtastic: heartbeat sent")
+				}
 			}
 			// A healthy node emits FromRadio traffic (queueStatus,
 			// telemetry) constantly; total silence means the serial
@@ -2156,7 +2230,7 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 	conn := h.conn
 	h.mu.Unlock()
 	if conn == nil || !conn.IsConnected() {
-		return TracerouteResult{}, errors.New("meshtastic: device not connected")
+		return TracerouteResult{}, errDeviceNotConnected
 	}
 
 	// The probe payload is an EMPTY RouteDiscovery protobuf (the firmware
@@ -2191,7 +2265,7 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 		c := h.conn
 		h.mu.Unlock()
 		if c == nil || !c.IsConnected() {
-			return errors.New("meshtastic: device not connected")
+			return errDeviceNotConnected
 		}
 		// Each probe rides the send path as a placeholder so its ROUTING
 		// ack pairs up like any other send.
@@ -3372,6 +3446,83 @@ func normalizeMeshID(addr string) string {
 	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(addr), "!"))
 }
 
+// requestReconnect asks the session goroutine to rebuild the device link
+// at once: the current one is known dead (a send or a heartbeat could not
+// write to it). Safe to call with no session running.
+func (h *Hub) requestReconnect() {
+	if h.reconnect == nil {
+		return
+	}
+	select {
+	case h.reconnect <- struct{}{}:
+	default: // a rebuild is already pending
+	}
+}
+
+// awaitConn returns the live device session, waiting up to wait for one
+// to come back. The session goroutine rebuilds the link on its own after
+// a drop, so a send that lands inside that window only has to wait.
+// When stale is not nil the caller needs a REPLACEMENT session (the one
+// it holds is dead-but-not-yet-noticed), so the stale transport never
+// satisfies the wait.
+func (h *Hub) awaitConn(ctx context.Context, wait time.Duration, stale transportConn) (transportConn, error) {
+	deadline := time.Now().Add(wait)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	for {
+		h.mu.Lock()
+		conn := h.conn
+		h.mu.Unlock()
+		if conn != nil && conn != stale && conn.IsConnected() {
+			return conn, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !time.Now().Before(deadline) {
+			return nil, errDeviceNotConnected
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(connPollInterval):
+		}
+	}
+}
+
+// heartbeatFrame is the protocol's keepalive: the device reads it as "the
+// client is still here", and the write itself exercises the socket.
+func heartbeatFrame() *pb.ToRadio {
+	return &pb.ToRadio{PayloadVariant: &pb.ToRadio_Heartbeat{Heartbeat: &pb.Heartbeat{}}}
+}
+
+// retrySendOnAFreshLink rebuilds the session and transmits the frame
+// again on the replacement. cause is the write error that lost the old
+// link: it stays the reported error when the link does not come back,
+// because "broken pipe" names the cause better than a follow-up timeout.
+func (h *Hub) retrySendOnAFreshLink(ctx context.Context, ps *pendingSend, msg *pb.ToRadio, stale transportConn, cause error) error {
+	if ctx.Err() != nil {
+		return cause
+	}
+	h.requestReconnect()
+	// Wait for the REPLACEMENT session: the live-but-dead link would only
+	// fail the write again (the socket is closed, the session just has not
+	// noticed yet).
+	conn, err := h.awaitConn(ctx, linkSendWait, stale)
+	if err != nil {
+		return cause
+	}
+	// The echo (the device assigns the packet id) pairs by FIFO order and
+	// by age: refresh the stamp so a slow rebuild cannot age the entry out
+	// of the pairing window.
+	ps.lastTry = time.Now()
+	if err := conn.SendToRadio(msg); err != nil {
+		return err
+	}
+	return nil
+}
+
 // sendText transmits one text message and records it as TX. Broadcasts
 // carry the target channel index; direct messages leave the channel to
 // the device. prog attaches the durable action-progress identity when
@@ -3379,11 +3530,9 @@ func normalizeMeshID(addr string) string {
 func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLabel, text, operator string, prog ProgressRef) error {
 	h.sendMu.Lock()
 	defer h.sendMu.Unlock()
-	h.mu.Lock()
-	conn := h.conn
-	h.mu.Unlock()
-	if conn == nil || !conn.IsConnected() {
-		return errors.New("meshtastic: device not connected")
+	conn, err := h.awaitConn(ctx, linkSendWait, nil)
+	if err != nil {
+		return err
 	}
 	wantAck := to != core.BroadcastNodeID.Uint32()
 	pkt := &pb.MeshPacket{
@@ -3430,9 +3579,18 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 	h.recordMessage("tx", "", recipient, channelLabel, text, operator, 0, at)
 
 	if err := conn.SendToRadio(msg); err != nil {
-		h.dropPendingLocked(ps)
-		h.markStatus(ps, TxFailed)
-		return fmt.Errorf("meshtastic: send failed: %w", err)
+		// The link died under the frame: a socket the peer closed fails
+		// every write with "broken pipe", and without a rebuild this send
+		// would stay broken until the silence watchdog noticed (up to two
+		// minutes). Rebuild the session and give the frame one more chance
+		// on the fresh link — a write that fails this early never reached
+		// the device, so the retry cannot duplicate it on the air.
+		if retryErr := h.retrySendOnAFreshLink(ctx, ps, msg, conn, err); retryErr != nil {
+			h.dropPendingLocked(ps)
+			h.markStatus(ps, TxFailed)
+			return fmt.Errorf("meshtastic: send failed: %w", retryErr)
+		}
+		return nil
 	}
 	return nil
 }

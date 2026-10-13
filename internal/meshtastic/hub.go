@@ -72,8 +72,9 @@ type Config struct {
 	// NodeTTL bounds how long an unheard neighbour stays in the node list.
 	NodeTTL time.Duration
 	// SilenceTimeout declares a session dead after this long without ANY
-	// FromRadio traffic (defaultSilenceTimeout when unset). Tests shorten
-	// it; production runs with the default.
+	// FromRadio traffic (defaultSilenceTimeout when unset). A quiet mesh
+	// idles for minutes at a time, so the configuration may raise it; the
+	// tests shorten it.
 	SilenceTimeout time.Duration
 	// AckSettleTimeout is how long a device-confirmed direct message
 	// waits for the recipient's acknowledgment before settling failed
@@ -192,8 +193,14 @@ const (
 // defaultSilenceTimeout is how long the session tolerates a completely
 // silent device (no FromRadio traffic at all) before it is declared dead
 // and reconnected. A healthy node emits queueStatus/telemetry well
-// within this window.
+// within this window, but a quiet mesh can idle for minutes at a time —
+// hence the configurable meshtastic.silence_timeout.
 const defaultSilenceTimeout = 2 * time.Minute
+
+// minSilenceTimeout is the floor for a configured silence timeout: below
+// it the watchdog would tear the session down between two quiet
+// heartbeats, which is a reconnect storm rather than a liveness check.
+const minSilenceTimeout = 15 * time.Second
 
 // defaultHeartbeatInterval is how often the client pings the device with
 // the protocol's heartbeat frame. The heartbeat doubles as a keepalive —
@@ -933,6 +940,10 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	}
 	if cfg.EmcomHazardsInterval < 0 {
 		return nil, errors.New("meshtastic: emcom hazards interval must not be negative (0 disables)")
+	}
+	if cfg.SilenceTimeout != 0 && cfg.SilenceTimeout < minSilenceTimeout {
+		return nil, fmt.Errorf("meshtastic: silence_timeout must be 0 (built-in %s) or at least %s",
+			defaultSilenceTimeout, minSilenceTimeout)
 	}
 	if cfg.BannerMinInterval <= 0 {
 		cfg.BannerMinInterval = bannerMinInterval

@@ -547,14 +547,24 @@ type Node struct {
 	DistKM     float64
 	BearingDeg float64
 	LastSeen   time.Time
-	// tombstoned records that the BROKER CONFIRMED the removal of the node's
-	// retained station document (the node itself stays in the persistent
-	// directory until nodeDirRetention). tombstoneTried is when that removal
-	// was last attempted: it paces the retries of an attempt the broker has
-	// not accepted, and a node heard again after it counts as active — its
-	// document is due again the next time it goes quiet.
-	tombstoned     bool
-	tombstoneTried time.Time
+}
+
+// nodeTombstone is one removal the broker still owes for a node's retained
+// station document. It lives OUTSIDE the node directory: the directory drops a
+// node once it has been quiet for nodeDirRetention, and a removal queued just
+// before that (or one the broker refused) must stay alive until the broker
+// confirmed it — through a restart as well.
+type nodeTombstone struct {
+	// quietSince is the node's LastSeen when the removal was queued. A node
+	// heard AFTER it is active again: the removal is void (and its document
+	// has been published again by the very packet that woke it).
+	quietSince time.Time
+	// tried is the last publish attempt (zero = never), which paces the
+	// retries and lets a restored entry be attempted again.
+	tried time.Time
+	// confirmed reports that the broker took the removal; the entry then only
+	// remembers that this node's quiet period has already been handled.
+	confirmed bool
 }
 
 // cmdRecord is the remembered outcome of one radio command, keyed by
@@ -953,6 +963,9 @@ type Hub struct {
 	// removal of a document for the same node must never interleave, or a node
 	// that just spoke would be left without its document.
 	stationMu sync.Mutex
+	// tombstones holds the removals the broker has not confirmed yet, keyed by
+	// node id (independent of the node directory, see nodeTombstone).
+	tombstones map[string]*nodeTombstone
 	// tombstoneRetry paces a removal the broker refused
 	// (defaultTombstoneRetry when unset; the tests shorten it).
 	tombstoneRetry time.Duration
@@ -1054,7 +1067,8 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
 		return &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
-			pending: make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
+			tombstones: make(map[string]*nodeTombstone),
+			pending:    make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
 			routeWaiters: make(map[uint32][]chan routeReply),
 			traces:       make(map[uint32]*TraceProgress),
 			bannerLast:   make(map[string]time.Time), replyLast: make(map[string]replyWindow),
@@ -1069,6 +1083,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		logger:       logger,
 		cadence:      cadenceOf(cfg),
 		nodes:        make(map[string]*Node),
+		tombstones:   make(map[string]*nodeTombstone),
 		pending:      make(map[uint32]*pendingSend),
 		cmds:         make(map[string]*cmdRecord),
 		routeWaiters: make(map[uint32][]chan routeReply),
@@ -1749,7 +1764,20 @@ func (h *Hub) restoreNodes(ctx context.Context) {
 		return
 	}
 	h.mu.Lock()
+	if h.tombstones == nil {
+		h.tombstones = make(map[string]*nodeTombstone)
+	}
+	pending := 0
 	for _, n := range nodes {
+		if n.PendingRemoval {
+			// The removal never reached the broker before the station stopped:
+			// it is owed again. This entry is the only thing that remembers the
+			// node when the directory has dropped it long ago.
+			if h.tombstones[n.ID] == nil {
+				h.tombstones[n.ID] = &nodeTombstone{quietSince: n.LastSeen}
+				pending++
+			}
+		}
 		if cur := h.nodes[n.ID]; cur != nil {
 			continue // live knowledge wins
 		}
@@ -1766,7 +1794,7 @@ func (h *Hub) restoreNodes(ctx context.Context) {
 	}
 	h.mu.Unlock()
 	if len(nodes) > 0 {
-		h.logger.Info("meshtastic: restored node directory", "nodes", len(nodes))
+		h.logger.Info("meshtastic: restored node directory", "nodes", len(nodes), "pending_removals", pending)
 	}
 }
 
@@ -1780,11 +1808,12 @@ func (h *Hub) persistNodes() {
 		h.mu.Unlock()
 		return
 	}
-	nodes := make([]storage.MeshtasticNode, 0, len(h.nodes))
+	nodes := make([]storage.MeshtasticNode, 0, len(h.nodes)+len(h.tombstones))
 	cutoff := time.Now().Add(-nodeDirRetention)
 	for _, n := range h.nodes {
 		// Defense in depth: the directory prune in expireNodes already
-		// dropped these, but a persisted save must never resurrect them.
+		// dropped these, but a persisted save must never resurrect them —
+		// unless the broker still owes their removal (below).
 		if n.LastSeen.Before(cutoff) {
 			continue
 		}
@@ -1797,6 +1826,21 @@ func (h *Hub) persistNodes() {
 			LastSeen: n.LastSeen,
 			Sends:    append([]string(nil), n.Sends...),
 			Hops:     n.Hops,
+			// A quiet node whose removal the broker has not confirmed keeps
+			// that work alive across a restart.
+			PendingRemoval: h.openRemovalLocked(n.ID) != nil,
+		})
+	}
+	// A removal outlives the directory: its node may be gone from memory
+	// entirely, so the pending work gets a row of its own.
+	for id, tb := range h.tombstones {
+		if tb.confirmed || h.nodes[id] != nil {
+			continue
+		}
+		nodes = append(nodes, storage.MeshtasticNode{
+			ID:             id,
+			LastSeen:       tb.quietSince,
+			PendingRemoval: true,
 		})
 	}
 	h.lastPersist = time.Now()
@@ -2387,47 +2431,72 @@ func (h *Hub) setFavorite(id uint32, favorite bool) error {
 	return nil
 }
 
-// expireNodes cleans the MQTT station feed: nodes unheard for longer
-// than NodeTTL get their retained document removed, and nodes unheard for
-// longer than nodeDirRetention are dropped from the directory entirely, so
-// memory and the persisted table stay bounded.
+// expireNodes cleans the MQTT station feed: nodes unheard for longer than
+// NodeTTL have their retained document removed, and nodes unheard for longer
+// than nodeDirRetention are dropped from the directory entirely, so memory and
+// the persisted table stay bounded.
 //
-// A removal counts only once the broker CONFIRMED it (see
-// publishStationRemoval): an attempt that failed is retried, paced by
-// tombstoneRetry, and a node heard again in the meantime keeps its document —
-// the next time it goes quiet the removal is published again, so a returning
-// node never leaves a stale document behind.
+// The removals live in their own ledger (h.tombstones), NOT in the directory:
+// the directory drops a node long before the broker necessarily took the
+// removal, and a dropped node would silently lose the pending work. A removal
+// is queued once, retried (paced by tombstoneRetry) until the broker CONFIRMED
+// it, and voided when the node is heard again — that very packet published its
+// document again.
 func (h *Hub) expireNodes() {
 	h.mu.Lock()
 	now := time.Now()
-	var idle []string
-	for _, n := range h.nodes {
-		if n.LastSeen.After(n.tombstoneTried) {
-			// The node spoke after the last removal attempt: whatever the
-			// broker did with that attempt, this node is active again.
-			n.tombstoned = false
-		}
-		if n.tombstoned || now.Sub(n.LastSeen) <= h.cfg.NodeTTL {
-			continue
-		}
-		if !n.tombstoneTried.IsZero() && now.Sub(n.tombstoneTried) < h.tombstoneRetryDelay() {
-			continue // the broker has not taken the last attempt yet
-		}
-		n.tombstoneTried = now
-		idle = append(idle, n.ID)
+	if h.tombstones == nil {
+		h.tombstones = make(map[string]*nodeTombstone)
 	}
+	// A node heard after its removal was queued is active again: the removal
+	// is void, and the next quiet period queues a fresh one.
+	for id, tb := range h.tombstones {
+		if n := h.nodes[id]; n != nil && n.LastSeen.After(tb.quietSince) {
+			delete(h.tombstones, id)
+			h.nodesDirty = true
+		}
+	}
+	// Every quiet node owes the broker a removal ...
+	for id, n := range h.nodes {
+		if h.tombstones[id] == nil && now.Sub(n.LastSeen) > h.cfg.NodeTTL {
+			h.tombstones[id] = &nodeTombstone{quietSince: n.LastSeen}
+			h.nodesDirty = true
+		}
+	}
+	// The directory forgets a node long before the broker necessarily did.
 	for id, n := range h.nodes {
 		if now.Sub(n.LastSeen) > nodeDirRetention {
 			delete(h.nodes, id)
 			h.nodesDirty = true
 		}
 	}
+	// A CONFIRMED removal of a node the directory no longer holds has nothing
+	// left to protect: the next appearance of that node publishes a fresh
+	// document. An unconfirmed one keeps its entry (and its persisted row), so
+	// the work survives both the directory prune and a restart.
+	for id, tb := range h.tombstones {
+		if tb.confirmed && h.nodes[id] == nil {
+			delete(h.tombstones, id)
+			h.nodesDirty = true
+		}
+	}
+	var due []string
+	for id, tb := range h.tombstones {
+		if tb.confirmed {
+			continue // the node stays quiet, the broker already took it
+		}
+		if !tb.tried.IsZero() && now.Sub(tb.tried) < h.tombstoneRetryDelay() {
+			continue // the broker has not taken the last attempt yet
+		}
+		tb.tried = now
+		due = append(due, id)
+	}
 	sink := h.stationSink
 	h.mu.Unlock()
 	if sink == nil {
 		return
 	}
-	for _, id := range idle {
+	for _, id := range due {
 		h.publishStationRemoval(sink, id)
 	}
 }
@@ -2441,10 +2510,20 @@ func (h *Hub) tombstoneRetryDelay() time.Duration {
 	return defaultTombstoneRetry
 }
 
+// openRemovalLocked returns the removal the broker still owes for one node, or
+// nil when there is none (a confirmed removal is not owed any more).
+func (h *Hub) openRemovalLocked(id string) *nodeTombstone {
+	tb := h.tombstones[id]
+	if tb == nil || tb.confirmed {
+		return nil
+	}
+	return tb
+}
+
 // publishStationRemoval removes one retained station document and records the
-// removal only when the broker CONFIRMED it: a refused publish is retried by a
-// later pass, and a node that published again while this removal was waiting
-// keeps its document.
+// removal only when the broker CONFIRMED it: a refused publish stays queued (a
+// later pass retries it), and a node that published again while this removal
+// was waiting keeps its document.
 //
 // The whole step runs under stationMu, which the position publish takes too:
 // the two operations for one node can never interleave, so the last one to run
@@ -2454,10 +2533,16 @@ func (h *Hub) publishStationRemoval(sink func(ctx context.Context, topic string,
 	h.stationMu.Lock()
 	defer h.stationMu.Unlock()
 	h.mu.Lock()
-	n := h.nodes[id]
-	stillIdle := n != nil && !n.tombstoned && time.Since(n.LastSeen) > h.cfg.NodeTTL
+	tb := h.openRemovalLocked(id)
+	// The node may have spoken (or been restored) since this removal was
+	// queued: an active node keeps its document.
+	if tb != nil {
+		if n := h.nodes[id]; n != nil && n.LastSeen.After(tb.quietSince) {
+			tb = nil
+		}
+	}
 	h.mu.Unlock()
-	if !stillIdle {
+	if tb == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2470,8 +2555,9 @@ func (h *Hub) publishStationRemoval(sink func(ctx context.Context, topic string,
 		return
 	}
 	h.mu.Lock()
-	if cur := h.nodes[id]; cur != nil {
-		cur.tombstoned = true
+	if cur := h.openRemovalLocked(id); cur != nil {
+		cur.confirmed = true
+		h.nodesDirty = true
 	}
 	h.mu.Unlock()
 }

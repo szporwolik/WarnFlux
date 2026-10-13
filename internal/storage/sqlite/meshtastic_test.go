@@ -20,6 +20,10 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 		{ID: "a0a85934", Name: "Meshtastic 5934", Short: "SPM", Lat: 50.02, Lon: 20.0, LastSeen: seen, Sends: []string{"telemetry", "text"}, Hops: 3},
 		{ID: "b0b85934", Name: "Other", LastSeen: seen.Add(-time.Hour)},
 		{ID: "c0c85934", Name: "Unheard", LastSeen: seen.Add(-time.Minute), Hops: -1},
+		// A node that still owes the broker a removal of its retained
+		// document (migration v62): the flag has to survive the round trip,
+		// or the removal is lost with the restart.
+		{ID: "d0d85934", Name: "Gone", LastSeen: seen.Add(-40 * 24 * time.Hour), PendingRemoval: true},
 	}
 	if err := s.SaveMeshtasticNodes(ctx, nodes); err != nil {
 		t.Fatalf("save: %v", err)
@@ -28,8 +32,13 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(got) != 3 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" || got[2].ID != "c0c85934" {
-		t.Fatalf("nodes = %+v, want all three ids", got)
+	if len(got) != 4 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" ||
+		got[2].ID != "c0c85934" || got[3].ID != "d0d85934" {
+		t.Fatalf("nodes = %+v, want all four ids", got)
+	}
+	if got[3].PendingRemoval != true || got[0].PendingRemoval || got[1].PendingRemoval || got[2].PendingRemoval {
+		t.Fatalf("pending removal flags = %v %v %v %v, want only d0d85934",
+			got[0].PendingRemoval, got[1].PendingRemoval, got[2].PendingRemoval, got[3].PendingRemoval)
 	}
 	if got[0].Name != "Meshtastic 5934" || got[0].Short != "SPM" || got[0].Lat != 50.02 {
 		t.Fatalf("first node = %+v", got[0])

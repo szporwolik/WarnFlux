@@ -19,21 +19,16 @@
            boxes): it keeps its place at the top of the card. */}}
       <div id="gsm-status">{{template "gsm_status" .}}</div>
       {{if eq .Role "admin"}}
-      <form method="post" action="/gsm/send" class="test-form gsm-send" data-lbl-sent="{{tr .Lang "gsm.sent"}}" data-lbl-failed="{{tr .Lang "gsm.failed"}}">
+      <form method="post" action="/gsm/send" class="gsm-send gsm-send-active" data-lbl-sent="{{tr .Lang "gsm.sent"}}" data-lbl-failed="{{tr .Lang "gsm.failed"}}">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <label class="field">
-          <span>{{tr .Lang "gsm.number"}}</span>
-          <input type="tel" name="number" placeholder="{{tr .Lang "gsm.number_ph"}}" maxlength="20" list="gsm-phones" autocomplete="off" spellcheck="false" required>
-          <datalist id="gsm-phones">{{range .Phones}}<option value="{{.Number}}">{{.Number}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
-        </label>
-        <label class="field field-wide">
-          <span>{{tr .Lang "gsm.text"}}</span>
-          <textarea name="text" rows="3" data-char-count="160" data-char-septets="1" data-char-out="#gsm-count" placeholder="{{tr .Lang "gsm.text_ph"}}" required></textarea>
-          <span class="char-count" id="gsm-count">0 / 160</span>
-        </label>
-        <div class="test-actions">
+        <span class="gsm-send-label">{{tr .Lang "gsm.form_msg"}}</span>
+        <input type="tel" name="number" placeholder="{{tr .Lang "gsm.number_ph"}}" maxlength="20" list="gsm-phones" autocomplete="off" spellcheck="false" required>
+        <datalist id="gsm-phones">{{range .Phones}}<option value="{{.Number}}">{{.Number}}{{if .Username}} · {{.Username}}{{end}}</option>{{end}}</datalist>
+        <textarea name="text" rows="3" data-char-count="160" data-char-septets="1" data-char-out="#gsm-count" placeholder="{{tr .Lang "gsm.text_ph"}}" required></textarea>
+        <span class="char-count" id="gsm-count">0 / 160</span>
+        <span class="gsm-send-actions">
           <button type="submit" class="btn-primary">{{tr .Lang "gsm.send"}}</button>
-        </div>
+        </span>
       </form>
       {{end}}
       <div id="gsm-flash">

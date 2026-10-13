@@ -1144,8 +1144,9 @@ tr.click-send:hover td { background: var(--surface-hi); }
 }
 .aprs-toolbar .aprs-send { flex: 0 1 36rem; margin-bottom: 0; }
 /* The beacon block holds one button: it takes its own width instead of
-   the form's column. */
-.aprs-toolbar .aprs-beacon { flex: none; }
+   the form's column and sits level with the top of the send form, so the
+   two actions read as one row rather than the beacon hanging below. */
+.aprs-toolbar .aprs-beacon { flex: none; align-self: flex-start; }
 .mesh-send {
   display: flex;
   flex-wrap: wrap;
@@ -1153,7 +1154,11 @@ tr.click-send:hover td { background: var(--surface-hi); }
   align-items: center;
   margin-bottom: 0.9rem;
 }
-.mesh-send input[type="text"], .mesh-send select {
+/* One look for the fields of every send block: the meshtastic, APRS and
+   GSM forms read as the same control. */
+.mesh-send input, .mesh-send select, .mesh-send textarea,
+.aprs-send input, .aprs-send select, .aprs-send textarea,
+.gsm-send input, .gsm-send select, .gsm-send textarea {
   background: var(--input-bg);
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
@@ -1165,26 +1170,32 @@ tr.click-send:hover td { background: var(--surface-hi); }
    message goes. The Message action on the map prefills the DM form and
    moves the highlight there; typing into the other form moves it back. */
 .mesh-send,
-.aprs-send {
+.aprs-send,
+.gsm-send {
   border-radius: var(--radius);
   padding: 0.2rem 0.45rem;
   transition: box-shadow 0.15s ease, opacity 0.15s ease;
 }
 .mesh-send-active,
-.aprs-send-active {
+.aprs-send-active,
+.gsm-send-active {
   box-shadow: 0 0 0 2px var(--accent);
   background: var(--accent-soft, var(--surface-hi));
 }
 .mesh-send:not(.mesh-send-active),
-.aprs-send:not(.aprs-send-active) { opacity: 0.72; }
+.aprs-send:not(.aprs-send-active),
+.gsm-send:not(.gsm-send-active) { opacity: 0.72; }
 .mesh-send:not(.mesh-send-active):hover,
 .mesh-send:not(.mesh-send-active):focus-within,
 .aprs-send:not(.aprs-send-active):hover,
-.aprs-send:not(.aprs-send-active):focus-within { opacity: 1; }
+.aprs-send:not(.aprs-send-active):focus-within,
+.gsm-send:not(.gsm-send-active):hover,
+.gsm-send:not(.gsm-send-active):focus-within { opacity: 1; }
 /* Each send form carries a small full-width label so the channel
    broadcast and the direct-message form read as separate sections. */
 .mesh-send-label,
-.aprs-send-label {
+.aprs-send-label,
+.gsm-send-label {
   flex-basis: 100%;
   font-size: 0.72rem;
   font-weight: 600;
@@ -1196,11 +1207,13 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .mesh-send input[name="text"],
 .aprs-send input[name="text"] { flex: 1 1 16rem; }
 .mesh-send .btn-primary,
-.aprs-send .btn-primary { width: auto; flex: none; }
+.aprs-send .btn-primary,
+.gsm-send .btn-primary { width: auto; flex: none; }
 /* The bell toggle and its send button stay side by side even when the
    row wraps: they move to the next line as one unit. */
 .mesh-send .mesh-send-actions,
-.aprs-send .aprs-send-actions {
+.aprs-send .aprs-send-actions,
+.gsm-send .gsm-send-actions {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -1228,6 +1241,19 @@ tr.click-send:hover td { background: var(--surface-hi); }
   padding: 0.4rem 0.6rem;
   font-size: 0.85rem;
 }
+/* The GSM block is a proper column: the number on the first row, the
+   message (a textarea) across the whole block, then the action. */
+.gsm-send {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.9rem;
+}
+.gsm-send input[name="number"] { flex: 0 1 12rem; }
+.gsm-send textarea { flex: 1 1 100%; resize: vertical; min-height: 3.2rem; }
+.gsm-send .char-count { margin-left: auto; }
+
 .aprs-send input[name="to"] { flex: 0 1 10rem; }
 .aprs-send input.invalid { border-color: var(--bad-border); box-shadow: 0 0 0 2px var(--bad-bg); }
 

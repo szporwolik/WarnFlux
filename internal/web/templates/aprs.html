@@ -84,10 +84,9 @@
             <button type="submit" class="btn-primary">{{tr .Lang "messages.send"}}</button>
           </span>
         </form>
-        <form method="post" action="/messages/beacon" class="aprs-send aprs-beacon">
+        <form method="post" action="/messages/beacon" class="aprs-send aprs-beacon" title="{{tr .Lang "messages.form_beacon"}}">
           <input type="hidden" name="csrf" value="{{.CSRF}}">
           <input type="hidden" name="dir" value="{{.Dir}}">
-          <span class="aprs-send-label">{{tr .Lang "messages.form_beacon"}}</span>
           <span class="aprs-send-actions">
             <button type="submit" class="btn-ghost">{{tr .Lang "messages.beacon_now"}}</button>
           </span>

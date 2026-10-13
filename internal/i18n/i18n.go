@@ -394,6 +394,8 @@ var en = map[string]string{
 	"messages.st_no_ack":     "unacknowledged",
 	"messages.beacon_failed": "beacon failed: %s",
 	"messages.beacon_now":    "Send beacon now",
+	"messages.form_msg":      "Message to a station",
+	"messages.form_beacon":   "Position beacon",
 	"messages.to_ph":         "Callsign (e.g. SP9XXX)",
 	"messages.bad_callsign":  "Invalid callsign (e.g. SP9ABC-7)",
 
@@ -1511,6 +1513,8 @@ var pl = map[string]string{
 	"messages.st_no_ack":     "bez potwierdzenia",
 	"messages.beacon_failed": "beacon nie powiódł się: %s",
 	"messages.beacon_now":    "Wyślij beacon teraz",
+	"messages.form_msg":      "Wiadomość do stacji",
+	"messages.form_beacon":   "Beacon pozycji",
 	"messages.to_ph":         "Znak (np. SP9XXX)",
 	"messages.bad_callsign":  "Nieprawidłowy znak (np. SP9ABC-7)",
 

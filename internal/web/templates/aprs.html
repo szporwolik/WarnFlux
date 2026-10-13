@@ -177,6 +177,14 @@
     var map = null;
     var stationsLayer = null;
     var baseLayer = null;
+    // onPanelShown runs when the map tab becomes the active one: the map
+    // is built once (Leaflet needs a visible container to size itself),
+    // later activations only resize it, and every activation refreshes
+    // the data so the operator never looks at a stale list.
+    function onPanelShown() {
+      initMap();
+      refresh();
+    }
     function initMap() {
       if (map) {
         map.invalidateSize();
@@ -211,8 +219,6 @@
           fill: false, interactive: false
         }).addTo(map);
       }
-      refresh();
-      window.setInterval(refresh, 30 * 1000);
     }
 
     function esc(s) {
@@ -298,7 +304,7 @@
     var fittedOnce = false;
 
     function render() {
-      stationsLayer.clearLayers();
+      if (stationsLayer) { stationsLayer.clearLayers(); }
       var bounds = L.latLngBounds([]);
       var counts = { all: 0, inet: 0, radio: 0 };
       allStations.forEach(function (s) {
@@ -307,6 +313,9 @@
         counts.all++;
         if (v.inet) { counts.inet++; }
         if (v.radio) { counts.radio++; }
+        // No map yet (the page is on the messages tab): the directory
+        // below still renders from the same data.
+        if (!stationsLayer) { return; }
         if (filter === "inet" && !v.inet) { return; }
         if (filter === "radio" && !v.radio) { return; }
         var marker = L.marker([s.position.latitude, s.position.longitude], {
@@ -325,7 +334,7 @@
         b.textContent = (f === "all" ? "ALL" : f === "inet" ? "APRS-IS" : "APRS-RF") + " (" + n + ")";
       });
       renderDirTable();
-      if (!fittedOnce) {
+      if (!fittedOnce && map) {
         if (bounds.isValid()) {
           map.fitBounds(bounds.pad(0.2), { maxZoom: 13 });
         } else if (radius > 0) {
@@ -500,9 +509,25 @@
       });
     });
 
+    // The directory below the map is data-driven too, so it must not wait
+    // for the map: the page is often opened with the messages tab active
+    // (a sent message, or a directory-row click that navigates here), and
+    // the list used to stay empty (and stale) until the map tab was shown
+    // or the page reloaded. Poll from the start, wherever the page landed.
     var panel = document.getElementById("panel-map");
-    if (panel && !panel.hidden) { initMap(); }
-    if (panel) { panel.addEventListener("panel-shown", initMap); }
+    if (panel && !panel.hidden) {
+      onPanelShown();
+    } else {
+      refresh();
+    }
+    if (panel) { panel.addEventListener("panel-shown", onPanelShown); }
+    window.setInterval(refresh, 30 * 1000);
+    // Browsers throttle (and can suspend) timers in a background tab, so a
+    // tab left in the background shows a stale directory on return:
+    // refresh as soon as the page is visible again.
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) { refresh(); }
+    });
   })();
   </script>
 </body>

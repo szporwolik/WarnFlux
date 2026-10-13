@@ -155,6 +155,27 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The SEND is reserved before anything costly happens: one slot from the
+	// concurrency gate (a slow mailer must not stack up work) and the atomic
+	// cooldown reservation on the (username, IP) key. Parallel requests for
+	// the same account therefore serialise here — exactly one of them creates
+	// a token and calls the mailer — instead of all passing a check that is
+	// only recorded once the slower ones are already sending.
+	if !s.loginLimiter.acquireReset() {
+		s.logger.Warn("web: forgot sheds a concurrent reset", "remote", r.RemoteAddr, "username", username)
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
+		return
+	}
+	defer s.loginLimiter.releaseReset()
+	if !s.loginLimiter.reserveCooldown(limiterKey, forgotSendCooldown) {
+		s.logger.Warn("web: forgot throttled (cooldown already taken)", "remote", r.RemoteAddr, "username", username)
+		wait := s.loginLimiter.retryIn(limiterKey)
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(wait.Seconds())+1))
+		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
+		return
+	}
+
 	token, err := s.users.CreatePasswordReset(u.ID)
 	if err != nil {
 		s.logger.Error("web: password reset token failed", "username", username, "error", err)
@@ -173,7 +194,6 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	origin := s.resetOrigin()
 	if origin == "" || s.resetMailer == nil || s.OfflineMode() {
 		s.logger.Warn("web: password reset offline (web.domain not configured, no mailer, or offline mode)", "username", username)
-		s.loginLimiter.recordCooldown(limiterKey, forgotSendCooldown)
 		view("", i18n.T(lang, "forgot.offline"), "")
 		return
 	}
@@ -189,9 +209,8 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		view(i18n.T(lang, "forgot.mail_failed"), "", "")
 		return
 	}
-	// A successful send imposes a cooldown, it does not clear the key:
-	// repeat sends for the same user+IP must wait.
-	s.loginLimiter.recordCooldown(limiterKey, forgotSendCooldown)
+	// The cooldown was reserved before the send and does not clear the key:
+	// repeat sends for the same user+IP wait for it.
 	view("", "", i18n.T(lang, "forgot.sent"))
 }
 

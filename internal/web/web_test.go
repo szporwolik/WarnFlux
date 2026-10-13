@@ -5973,3 +5973,107 @@ func TestLoginBodyLimit(t *testing.T) {
 		t.Errorf("log buffer holds %d bytes, want <= %d", total, web.MaxLogBytes)
 	}
 }
+
+// TestForgotPasswordParallelRequestsSendOnce pins the flood fix: the public
+// recovery endpoint reserves the send ATOMICALLY (before the token and the
+// mailer) behind a concurrency gate, so a burst of parallel requests for one
+// account produces exactly one email. The mailer is held open while all
+// requests arrive, which is precisely the window the old code leaked through.
+func TestForgotPasswordParallelRequestsSendOnce(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("member1", "", "member1@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	sends := 0
+	inMailer := make(chan struct{}, 8)
+	release := make(chan struct{})
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		mu.Lock()
+		sends++
+		mu.Unlock()
+		inMailer <- struct{}{}
+		<-release
+		return nil
+	})
+
+	// Every request needs its own CSRF cookie + token (the page rotates the
+	// cookie), so each goroutine acts like a separate client.
+	const parallel = 8
+	type attempt struct {
+		client *http.Client
+		csrf   string
+	}
+	attempts := make([]attempt, 0, parallel)
+	for i := 0; i < parallel; i++ {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &http.Client{Jar: jar}
+		resp, err := client.Get(env.srv.URL + "/forgot")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		attempts = append(attempts, attempt{client: client, csrf: extractCSRF(t, string(body))})
+	}
+
+	type result struct {
+		status int
+		body   string
+	}
+	results := make(chan result, parallel)
+	for _, a := range attempts {
+		go func(a attempt) {
+			form := url.Values{
+				"csrf":     {a.csrf},
+				"username": {"member1"},
+				"email":    {"member1@example.com"},
+			}
+			resp, err := a.client.PostForm(env.srv.URL+"/forgot", form)
+			if err != nil {
+				results <- result{status: -1, body: err.Error()}
+				return
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			results <- result{status: resp.StatusCode, body: string(body)}
+		}(a)
+	}
+
+	// Let the burst arrive. The winner parks inside the mailer; every request
+	// that is shed answers without it. (The grace only bounds how long the
+	// burst needs to land — nothing waits for the mailer to return.)
+	got := 0
+	grace := time.After(500 * time.Millisecond)
+collect:
+	for got < parallel {
+		select {
+		case <-results:
+			got++
+		case <-grace:
+			break collect
+		}
+	}
+	close(release)
+	for got < parallel {
+		select {
+		case <-results:
+			got++
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of %d requests finished", got, parallel)
+		}
+	}
+
+	mu.Lock()
+	sent := sends
+	mu.Unlock()
+	if sent != 1 {
+		t.Fatalf("mailer calls = %d, want exactly 1 (parallel requests for one account)", sent)
+	}
+	if len(inMailer) != 1 {
+		t.Fatalf("mailer entries = %d, want 1", len(inMailer))
+	}
+}

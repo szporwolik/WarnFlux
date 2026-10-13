@@ -182,6 +182,25 @@ The lightning nowcast escalates with proximity to the nearest discharge:
   locality query failed — an incomplete snapshot must never look like "the
   provider withdrew everything".
 
+## Health
+
+The source is healthy only when a cycle did everything it is responsible for.
+AN error of the cycle degrades it — the provider being unreachable, a locality
+name the directory does not know, a publication the store refused (a full
+disk, a busy database) and a reconciliation that could not be read all count:
+
+- a refused publication is retried by the next poll (the event is still in
+  force at the provider, and the plugin only records a detection it actually
+  published), so the alert is late, never lost — and the status line says
+  `undelivered: N` until it lands;
+- a reconciliation that could not read the durable state leaves the alerts in
+  place (never a false withdrawal) and degrades the source for that cycle,
+  because a withdrawal would otherwise hang until its window ends.
+
+The reverse — deciding health from the events alone — is exactly the bug this
+rule closes: a cycle that published nothing because every `Emit` failed used
+to look like a clean poll.
+
 Every event carries the locality name in its headline, its areas and its
 description, plus the provider's coordinates. The instruction section stays
 empty: the provider publishes no recommendation, and the station does not

@@ -163,6 +163,15 @@ The lightning nowcast escalates with proximity to the nearest discharge:
   bucket and re-published at most once per `storm_update_interval`, so a
   drifting count does not re-notify on every poll; the first quiet poll
   cancels it, and the validity retires it if the station stops.
+  The window is never allowed to end before the next cycle can refresh it
+  (it is extended past the bucket boundary, by whole buckets, until it
+  outlives `poll_interval + storm_update_interval`): a detection made one
+  second before a boundary stays an alert instead of lapsing a second later,
+  and a continuous storm never disappears between two polls. Refreshing the
+  window is deliberately NOT what drives the notification — only a severity
+  change or `storm_update_interval` does — so a sliding window is not news
+  and the alert cannot re-notify on every poll while it is being kept
+  alive.
   That dedup memory is kept only for the detections that are in force: the
   quiet poll that cancels a storm also forgets it, so a storm returning
   inside the same `storm_ttl` bucket with the same severity is published as

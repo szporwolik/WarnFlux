@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/burzedzis"
+	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/snapshotutil"
 )
@@ -13,9 +14,8 @@ import (
 // stormState remembers what was last published for one locality. The
 // lightning facts move with every poll, and a fingerprint change is a
 // notification, so the plugin publishes a detection when something that
-// matters to a reader changed (severity, validity bucket) or when the
-// configured update interval has passed — never merely because a count
-// drifted by one.
+// matters to a reader changed (severity) or when the configured update
+// interval has passed — never merely because a count drifted by one.
 //
 // The memory is kept ONLY for the detections that are in force: it is
 // dropped as soon as a complete pass finds no discharges around a locality
@@ -24,8 +24,22 @@ import (
 // unchanged repeat of something the station no longer shows.
 type stormState struct {
 	severity string
-	expires  time.Time
 	at       time.Time
+}
+
+// shouldPublish reports whether one detection has to be published now. The
+// rule is deliberately about the NOTIFICATION, never about the event's
+// validity: a detection is news when its severity changed or when the update
+// interval has passed. The validity window travels with the event and is
+// refreshed by the publication itself (see stormEvent), so a window that
+// simply slid to stay ahead of the next poll is not a reason to notify —
+// keeping the two apart is what stops a long storm from re-notifying with
+// every poll (reported P2).
+func (s *Source) shouldPublish(prev stormState, seen bool, ev core.HazardEvent, now time.Time) bool {
+	if !seen {
+		return true
+	}
+	return prev.severity != ev.Severity || now.Sub(prev.at) >= s.cfg.StormUpdateInterval
 }
 
 // forgetStormsOutside drops the dedup memory of every locality whose
@@ -79,8 +93,7 @@ func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []bu
 		s.mu.Lock()
 		prev, seen := s.storm[id]
 		s.mu.Unlock()
-		if seen && prev.severity == ev.Severity && prev.expires.Equal(*ev.ExpiresAt) &&
-			now.Sub(prev.at) < s.cfg.StormUpdateInterval {
+		if !s.shouldPublish(prev, seen, ev, now) {
 			skipped++
 			continue
 		}
@@ -92,7 +105,7 @@ func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []bu
 			continue
 		}
 		s.mu.Lock()
-		s.storm[id] = stormState{severity: ev.Severity, expires: *ev.ExpiresAt, at: now}
+		s.storm[id] = stormState{severity: ev.Severity, at: now}
 		s.mu.Unlock()
 		emitted++
 	}

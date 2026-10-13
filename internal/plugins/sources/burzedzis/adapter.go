@@ -107,8 +107,28 @@ func (s *Source) stormEvent(st burzedzis.Storm, now time.Time) core.HazardEvent 
 	// still there keeps the same validity window (and therefore the same
 	// event fingerprint) while its facts are unchanged, so an unchanged
 	// detection is never re-notified merely because time passed.
+	//
+	// A bucket ends at a fixed wall-clock moment, though, and that would
+	// make a detection made just before the boundary valid for a second:
+	// the station checks again minutes later, so the alert would lapse
+	// while the storm is still there (reported P2). The window is therefore
+	// never allowed to end before the next poll can refresh it — the
+	// validity outlives both the next measurement and the next scheduled
+	// re-publish. Extending it is free of notification cost, because the
+	// update interval, not the expiry, decides when a detection is
+	// re-published (see stormState).
 	bucket := now.UTC().Truncate(s.cfg.StormTTL)
+	for bucket.Add(s.cfg.StormTTL).Sub(now) < s.cfg.StormUpdateInterval+s.cfg.PollInterval {
+		bucket = bucket.Add(s.cfg.StormTTL)
+	}
 	effective := bucket.Add(-window)
+	if effective.After(now) {
+		// Only a pathological configuration pushes the bucket that far
+		// ahead (a poll interval longer than storm_ttl). The observation
+		// the detection describes still ended now, and "valid from" must
+		// never read as a moment in the future.
+		effective = now.Add(-window)
+	}
 	expires := bucket.Add(s.cfg.StormTTL)
 
 	nearest := ""

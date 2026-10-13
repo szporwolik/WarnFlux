@@ -201,6 +201,18 @@ func (m *Manager) Submit(actionID string, req ActionRequest) error {
 	}
 }
 
+// SharedDestination implements SharedDestinationReporter: it reports whether
+// this action delivers to one place shared by every recipient, so the routing
+// engine can post one message per alert instead of one per matching group.
+func (m *Manager) SharedDestination(actionID string) bool {
+	inst, ok := m.byID[actionID]
+	if !ok || inst == nil {
+		return false
+	}
+	shared, ok := inst.plugin.(SharedDestination)
+	return ok && shared.SharedDestination()
+}
+
 // Plugin returns the enabled instance's plugin, for direct capability
 // calls (panel one-off sends like the mass-info page). Unknown or
 // disabled instances return false.

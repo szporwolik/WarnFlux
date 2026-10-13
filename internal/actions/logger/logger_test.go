@@ -84,3 +84,22 @@ func TestExecuteAndClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 }
+
+// TestSharedDestination pins the capability the routing engine keys on: the
+// logged line names the action, never the group, so two groups following the
+// same sources must log the same alert once (reported P2).
+func TestSharedDestination(t *testing.T) {
+	var p action.Plugin
+	built, err := logger.New(cfgNode("info"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p = built
+	shared, ok := p.(action.SharedDestination)
+	if !ok {
+		t.Fatal("the logger action does not report a shared destination")
+	}
+	if !shared.SharedDestination() {
+		t.Error("SharedDestination() = false, want true (one log line per alert)")
+	}
+}

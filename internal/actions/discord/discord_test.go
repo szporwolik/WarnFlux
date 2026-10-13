@@ -311,3 +311,23 @@ func TestDirectMessageRebuildsStaleChannel(t *testing.T) {
 		t.Fatal("a failing post must return an error")
 	}
 }
+
+// TestSharedDestination pins the capability the routing engine keys on: a
+// webhook posts into ONE channel, so two groups following the same sources
+// must produce one message instead of two (reported P2). Losing this method
+// silently brings the duplicate back.
+func TestSharedDestination(t *testing.T) {
+	var p action.Plugin
+	built, err := New(node(t, map[string]any{"url": "https://discord.com/api/webhooks/1/abc"}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p = built
+	shared, ok := p.(action.SharedDestination)
+	if !ok {
+		t.Fatal("the discord action does not report a shared destination")
+	}
+	if !shared.SharedDestination() {
+		t.Error("SharedDestination() = false, want true (a webhook posts into one channel)")
+	}
+}

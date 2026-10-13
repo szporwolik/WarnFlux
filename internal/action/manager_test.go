@@ -307,3 +307,44 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// channelPlugin is a recording plugin that also reports a shared destination.
+type channelPlugin struct{ recordingPlugin }
+
+func (p *channelPlugin) SharedDestination() bool { return true }
+
+// TestManagerSharedDestination proves the read side the routing engine uses:
+// only an action whose plugin reports the capability is treated as a shared
+// destination, and unknown IDs never are (the engine must keep its per-group
+// behaviour when it cannot tell).
+func TestManagerSharedDestination(t *testing.T) {
+	reg := action.NewRegistry()
+	if err := reg.Register("channel", func(_ *yaml.Node) (action.Plugin, error) {
+		return &channelPlugin{recordingPlugin: recordingPlugin{name: "channel"}}, nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := reg.Register("perrecipient", func(_ *yaml.Node) (action.Plugin, error) {
+		return &recordingPlugin{name: "perrecipient"}, nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	m := newManager(t, reg, []config.Action{
+		{ID: "channel", Type: "channel", Enabled: true, Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: time.Second}},
+		{ID: "mail", Type: "perrecipient", Enabled: true, Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: time.Second}},
+		{ID: "off", Type: "channel", Enabled: false, Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: time.Second}},
+	})
+
+	if !m.SharedDestination("channel") {
+		t.Error("SharedDestination(channel) = false, want true")
+	}
+	if m.SharedDestination("mail") {
+		t.Error("SharedDestination(mail) = true, want false (per-recipient delivery)")
+	}
+	if m.SharedDestination("off") {
+		t.Error("SharedDestination(off) = true, want false (a disabled instance delivers nothing)")
+	}
+	if m.SharedDestination("nope") {
+		t.Error("SharedDestination(nope) = true, want false (unknown action)")
+	}
+}

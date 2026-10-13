@@ -98,6 +98,12 @@ pins survives a restart (it is a small table in the database), and a pass that
 could not read the directory or could not reach the radio changes nothing and
 is retried within minutes.
 
+The list is ownership, not the radio's state. On every handshake the station
+reads the favorites the device reports in its own node table and re-sets any of
+its stars the device no longer has — that is how a node-db reset (or a
+replacement radio, which starts with an empty table) repairs itself at the next
+session. A radio that still reports the stars costs no admin traffic at all.
+
 The same applies to every DM path: routed group members' node ids, the
 `/alert` direct message and the mass-info DMs. Watching the reason column of
 the message history (and the log lines `meshtastic: device rejected a send`

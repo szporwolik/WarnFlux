@@ -216,8 +216,17 @@ func TestPinUserNodesUnpinsNodesThatLeftTheDirectory(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ledger := &memFavoriteStore{ids: c.pinned}
 			cap := &capturingConn{}
+			// The radio states that it still carries the star of the node
+			// that stays in the directory: the pass has nothing to re-send.
+			var deviceNodes []*pb.NodeInfo
+			if len(c.want) > 0 {
+				starred := nodeInfo(c.want[0], "SPM", "SPM")
+				starred.IsFavorite = true
+				deviceNodes = append(deviceNodes, starred)
+			}
 			radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
 				testRadioOpts{
+					nodes: deviceNodes,
 					wrap: func(t transportConn) transportConn {
 						cap.transportConn = t
 						return cap
@@ -252,7 +261,7 @@ func TestPinUserNodesUnpinsNodesThatLeftTheDirectory(t *testing.T) {
 			// The node that is still registered keeps its star: no frame
 			// about it at all.
 			if favs := cap.adminFavorites(); len(favs) != 0 {
-				t.Fatalf("set_favorite_node frames = %v, want none (the remaining node was already pinned)", favs)
+				t.Fatalf("set_favorite_node frames = %v, want none (the radio confirmed the remaining star)", favs)
 			}
 		})
 	}
@@ -319,7 +328,7 @@ func TestPinUserNodesRetriesSoonAfterAFailedPass(t *testing.T) {
 	h.SetUserNodes(func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil })
 
 	// No session: the admin frame cannot go out.
-	h.pinUserNodes()
+	h.pinUserNodes(false)
 	if got := ledger.snapshot(); len(got) != 0 {
 		t.Fatalf("ledger = %08x, want nothing (the pin never reached the radio)", got)
 	}
@@ -382,12 +391,12 @@ func TestPinUserNodesIntervalGatesThePass(t *testing.T) {
 	h.SetUserNodes(func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil })
 	// No session: the pass must not even try to send, and must have armed
 	// the next window.
-	h.pinUserNodes()
+	h.pinUserNodes(false)
 	first := h.pinNext
 	if first.IsZero() {
 		t.Fatal("the pass did not arm its next window")
 	}
-	h.pinUserNodes()
+	h.pinUserNodes(false)
 	if !h.pinNext.Equal(first) {
 		t.Errorf("a second pass inside the interval re-armed it: %v -> %v", first, h.pinNext)
 	}
@@ -407,5 +416,74 @@ func TestPinnedNodesReportsItsOwnStars(t *testing.T) {
 	h.rememberFavorite(0x6d2c8f6c, false)
 	if got := h.PinnedNodes(); len(got) != 1 || got[0] != "a0a85934" {
 		t.Fatalf("PinnedNodes after unpinning = %v, want only a0a85934", got)
+	}
+}
+
+// TestPinUserNodesRepinsWhatTheRadioLost pins the ticket: the ledger says the
+// station OWNS the star, which is not the same as the radio having it. A
+// node-db reset (or a swapped device) leaves the ledger intact and the
+// favorites gone — the pass must set them again at the next session instead of
+// trusting its own bookkeeping.
+func TestPinUserNodesRepinsWhatTheRadioLost(t *testing.T) {
+	ledger := &memFavoriteStore{ids: []uint32{0x6d2c8f6c}}
+	cap := &capturingConn{}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
+		testRadioOpts{
+			// A radio whose node table holds no favorites at all: exactly
+			// what a node-db reset leaves behind.
+			nodes: []*pb.NodeInfo{nodeInfo(0xdeadbeef, "PL-KR-MAKI", "MK")},
+			wrap: func(t transportConn) transportConn {
+				cap.transportConn = t
+				return cap
+			},
+			setup: func(h *Hub) {
+				h.SetFavoriteStore(ledger)
+				h.SetUserNodes(func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil })
+			},
+		})
+	radio.waitConnected(t)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := cap.adminFavorites()[0x6d2c8f6c]; ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := cap.adminFavorites()[0x6d2c8f6c]; !ok {
+		t.Fatalf("the star the ledger owns was not re-asserted after the radio lost it: %v", cap.adminFavorites())
+	}
+	if got := ledger.snapshot(); len(got) != 1 || got[0] != 0x6d2c8f6c {
+		t.Fatalf("ledger = %08x, want the single owned node", got)
+	}
+}
+
+// TestPinUserNodesTrustsTheRadioThatConfirmsItsStars: the other side of the
+// same rule — a radio that reports the star costs no admin traffic, so a
+// reconnecting station does not re-send every favorite on every session.
+func TestPinUserNodesTrustsTheRadioThatConfirmsItsStars(t *testing.T) {
+	starred := nodeInfo(0x6d2c8f6c, "SPM", "SPM")
+	starred.IsFavorite = true
+	ledger := &memFavoriteStore{ids: []uint32{0x6d2c8f6c}}
+	cap := &capturingConn{}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
+		testRadioOpts{
+			nodes: []*pb.NodeInfo{starred},
+			wrap: func(t transportConn) transportConn {
+				cap.transportConn = t
+				return cap
+			},
+			setup: func(h *Hub) {
+				h.SetFavoriteStore(ledger)
+				h.SetUserNodes(func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil })
+			},
+		})
+	radio.waitConnected(t)
+	time.Sleep(150 * time.Millisecond)
+	if got := cap.adminFavorites(); len(got) != 0 {
+		t.Fatalf("set_favorite_node frames = %v, want none (the radio still has the star)", got)
+	}
+	if got := cap.adminFavoriteRemovals(); len(got) != 0 {
+		t.Fatalf("remove_favorite_node frames = %08x, want none", got)
 	}
 }

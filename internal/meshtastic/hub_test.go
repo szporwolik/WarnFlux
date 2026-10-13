@@ -87,6 +87,9 @@ func newTestTable() *testNodeTable {
 type testRadioOpts struct {
 	wrap  func(transportConn) transportConn
 	setup func(*Hub)
+	// nodes overrides the device node table served at the handshake (nil =
+	// the default table). The radio states its own favorites through it.
+	nodes []*pb.NodeInfo
 }
 
 func newTestRadio(t *testing.T, cfg Config, opts ...testRadioOpts) *testRadio {
@@ -96,6 +99,9 @@ func newTestRadio(t *testing.T, cfg Config, opts ...testRadioOpts) *testRadio {
 		opt = opts[0]
 	}
 	table := newTestTable()
+	if opt.nodes != nil {
+		table.all = opt.nodes
+	}
 	radio := &testRadio{}
 	ctx, cancel := context.WithCancel(context.Background())
 	radio.cancel = cancel

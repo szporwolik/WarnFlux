@@ -20,6 +20,7 @@
           <div class="channel-body">
             <h3>{{.Name}}</h3>
             <p class="muted">{{.Description}}</p>
+            {{if .URL}}<p class="channel-ref"><a class="home-sub-link is-ext" href="{{.URL}}" target="_blank" rel="noopener">{{tr $.Lang "groups.routeinfo.feed"}} ↗</a></p>{{end}}
           </div>
         </article>
         {{end}}

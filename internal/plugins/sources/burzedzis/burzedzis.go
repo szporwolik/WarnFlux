@@ -470,6 +470,7 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 	failed := 0
 	warnKeys := make(map[string]bool, len(points))
 	warnEmitted := 0
+	rejected := make([]rejectedPhenomenon, 0)
 	for _, at := range points {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -483,8 +484,17 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 			}
 			continue
 		}
-		for _, rejected := range snap.Rejected {
-			slog.Warn("burzedzis warning rejected: the provider published no readable window", "locality", at.Name, "phenomenon", rejected)
+		for _, rej := range snap.Rejected {
+			// A phenomenon with a degree but no readable window is UNKNOWN,
+			// not withdrawn: the alert already published for it must survive
+			// this cycle, and the operator must see that the answer was
+			// incomplete.
+			rejected = append(rejected, rejectedPhenomenon{locality: slug(at.Name), phenomenon: rej.Phenomenon.Key})
+			slog.Warn("burzedzis warning rejected: the provider published a degree without a readable window; keeping the alert already in force",
+				"locality", at.Name, "phenomenon", rej.Phenomenon.Key, "field", rej.Field, "value", rej.Reason)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("locality %s: the %s warning carries no readable %s (%q)", at.Name, rej.Phenomenon.Key, rej.Field, rej.Reason)
+			}
 		}
 		for _, in := range snap.InForce {
 			if !in.To.After(time.Now()) {
@@ -505,10 +515,23 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 	// Reconciliation only runs on a complete snapshot pass: a failed
 	// locality must not be mistaken for a withdrawn warning.
 	if failed == 0 {
-		if n, err := snapshotutil.Reconcile(ctx, emit, Type, warnKeys, time.Now()); err != nil {
-			slog.Warn("burzedzis warning reconciliation failed", "error", err)
-		} else if n > 0 {
-			slog.Info("burzedzis withdrawn warnings cancelled", "count", n)
+		reconcile := true
+		if len(rejected) > 0 {
+			// The rejected phenomena are unknown, so the events behind them
+			// are put back into the "still in force" set: an unreadable date
+			// must never read as a withdrawal. Everything else reconciles
+			// normally, so a real withdrawal in the same cycle still lands.
+			if err := protectRejected(ctx, emit, warnKeys, rejected); err != nil {
+				reconcile = false
+				slog.Warn("burzedzis reconciliation skipped: the alerts of the rejected phenomena cannot be protected", "error", err)
+			}
+		}
+		if reconcile {
+			if n, err := snapshotutil.Reconcile(ctx, emit, Type, warnKeys, time.Now()); err != nil {
+				slog.Warn("burzedzis warning reconciliation failed", "error", err)
+			} else if n > 0 {
+				slog.Info("burzedzis withdrawn warnings cancelled", "count", n)
+			}
 		}
 	} else {
 		slog.Warn("burzedzis reconciliation skipped: the snapshot is incomplete", "failed_locality_queries", failed)
@@ -533,6 +556,13 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 		}
 		if len(unknown) > 0 {
 			summary += " · unknown: " + strings.Join(unknown, ", ")
+		}
+		if len(rejected) > 0 {
+			names := make([]string, 0, len(rejected))
+			for _, rej := range rejected {
+				names = append(names, rej.phenomenon)
+			}
+			summary += " · incomplete answer: " + strings.Join(names, ", ")
 		}
 		stats.ReportSourceStats(summary)
 	}
@@ -623,6 +653,37 @@ func (s *Source) resolve(ctx context.Context) error {
 		slog.Info("burzedzis localities pending a retry", "count", retrying, "next_poll", s.cfg.PollInterval)
 	}
 	return firstErr
+}
+
+// rejectedPhenomenon names one phenomenon the provider published a degree for
+// without a readable window: the pair that identifies the alerts to protect.
+type rejectedPhenomenon struct {
+	locality   string
+	phenomenon string
+}
+
+// protectRejected adds the live events of the rejected phenomena back into the
+// "still in force" set, so the reconciliation of this cycle cannot read an
+// unreadable date as a withdrawal. The identity of a warning is
+// "<locality>:<phenomenon>:<window start>", so the pair is matched as a prefix.
+func protectRejected(ctx context.Context, emit plugin.Emitter, keys map[string]bool, rejected []rejectedPhenomenon) error {
+	reader, ok := emit.(plugin.SourceActiveEventReader)
+	if !ok {
+		return fmt.Errorf("emitter lacks the source active-event reader")
+	}
+	active, err := reader.ListSourceActiveEvents(ctx, Type)
+	if err != nil {
+		return fmt.Errorf("read current active events: %w", err)
+	}
+	for _, ev := range active {
+		for _, rej := range rejected {
+			if strings.HasPrefix(ev.SourceID, rej.locality+":"+rej.phenomenon+":") {
+				keys[ev.Key()] = true
+				slog.Info("burzedzis alert kept: its window could not be read this cycle", "event_key", ev.Key())
+			}
+		}
+	}
+	return nil
 }
 
 // snapshotPoints returns the known coordinates in CONFIG order (the order the

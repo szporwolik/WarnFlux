@@ -191,8 +191,17 @@ func TestWarningsSnapshot(t *testing.T) {
 			t.Errorf("%s: rejected = %v, want %v", c.name, got.Rejected, c.reject)
 		}
 		for i, want := range c.reject {
-			if i < len(got.Rejected) && !strings.Contains(got.Rejected[i], want) {
-				t.Errorf("%s: rejected[%d] = %q, want it to name %q", c.name, i, got.Rejected[i], want)
+			if i >= len(got.Rejected) {
+				continue
+			}
+			// A rejection names the phenomenon (for the protection of the
+			// alerts already in force) and the raw value that could not be
+			// read (for the operator).
+			if got.Rejected[i].Phenomenon.Key != want {
+				t.Errorf("%s: rejected[%d] = %q, want the %q phenomenon", c.name, i, got.Rejected[i].Phenomenon.Key, want)
+			}
+			if got.Rejected[i].Field == "" || got.Rejected[i].Reason == "" {
+				t.Errorf("%s: rejected[%d] carries no field/reason: %+v", c.name, i, got.Rejected[i])
 			}
 		}
 	}

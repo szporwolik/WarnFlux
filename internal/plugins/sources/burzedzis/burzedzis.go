@@ -135,8 +135,9 @@ type Config struct {
 	StormDirectKM       float64 `yaml:"storm_direct_km"`
 	StormDirectSeverity string  `yaml:"storm_direct_severity"`
 	// StormTTL is the validity bucket of one detection: the event stays
-	// valid to the end of its bucket and the next quiet poll cancels it
-	// earlier.
+	// valid to the end of its bucket — extended past the bucket boundary
+	// when that end would fall before the next poll could refresh it — and
+	// the next quiet poll cancels it earlier.
 	StormTTL time.Duration `yaml:"storm_ttl"`
 	// StormUpdateInterval bounds how often a detection whose severity did
 	// not change is re-published; the facts of a drifting storm change with

@@ -59,3 +59,27 @@ func TestMeshOwnerFor(t *testing.T) {
 		t.Fatalf("unknown id owner = %q, want empty", got)
 	}
 }
+
+// TestMeshtasticChannelIndex pins the channel field contract shared by
+// the send handler and its redirect: empty means the default channel 1,
+// and only 1..7 are broadcastable (0 is the receive-only PRIMARY).
+func TestMeshtasticChannelIndex(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{in: "", want: 1, ok: true},
+		{in: " 1 ", want: 1, ok: true},
+		{in: "7", want: 7, ok: true},
+		{in: "0", ok: false},
+		{in: "8", ok: false},
+		{in: "-1", ok: false},
+		{in: "abc", ok: false},
+	} {
+		got, ok := meshtasticChannelIndex(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("meshtasticChannelIndex(%q) = %d, %v; want %d, %v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}

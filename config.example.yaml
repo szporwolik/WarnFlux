@@ -58,7 +58,7 @@ app:
   log_max_backups: 5
 
   # How often to check for and mark expired events, e.g. 1m, 30s.
-  expiration_interval: 1m
+  expiration_interval: 30s
 
   # How long acknowledged journal records are kept before deletion,
   # e.g. 24h. Must be > 0.
@@ -147,7 +147,7 @@ sources:
       # API): published on the same air_quality information kind the
       # GIOŚ station layer uses, so the home map renders town air quality
       # next to the official stations. One extra request per location.
-      air_quality: false
+      air_quality: true
 
       api_key: ""
       api_key_file: ""
@@ -400,7 +400,7 @@ sources:
   #     station_poll_interval: 15m
   #     # Only stations within this many kilometres of the area centre
   #     # are published (default: aprs.area_radius_km).
-  #     station_radius_km: 35
+  #     station_radius_km: 32
   #     # Area-centre overrides (default: aprs area).
   #     # center_lat: 50.0562
   #     # center_lon: 20.0610
@@ -709,7 +709,7 @@ web:
   # runtime on the Config page. Personal messages (email, direct
   # Meshtastic messages) use each recipient's own language choice from
   # the user directory instead.
-  system_language: ""
+  system_language: "pl"
 
   auth:
     # The admin account is ALWAYS configured here (or via password_file):
@@ -723,6 +723,9 @@ web:
     password_file: ""
 
     # Set to true when serving behind TLS (session cookie becomes Secure).
+    # Leave it false for plain HTTP: a Secure cookie is never sent back,
+    # so the login could not complete. (The reference installation runs
+    # this true behind its reverse proxy.)
     secure_cookie: false
 
     # Trusted reverse proxies (single IPs or CIDRs). Only requests whose
@@ -751,14 +754,14 @@ meshtastic:
 
   # How to reach the node: "serial" (USB CDC, the default) or "tcp" (the
   # node's WiFi API). With "tcp" the device field is ignored.
-  # transport: serial
+  # transport: tcp
   # host: 192.168.1.40    # transport "tcp" only: the node's address
   #                       # (host, IP or host:port; the Meshtastic API
   #                       # port 4403 is appended when missing)
 
   # Direct messages from directory-registered node IDs become canonical
   # /events documents (the alarm pipeline), like APRS messages.
-  # route_messages: false
+  # route_messages: true
 
   # How long an unheard neighbour stays in the node list (default 30m).
   # Editable on the Config page ("Polling and range"); 1m..24h.
@@ -823,7 +826,7 @@ meshtastic:
 gsm:
   enabled: false
   # Serial device of the modem's AT port.
-  device: ""
+  device: "/dev/ttyUSB0"
 
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI), never by an automatic MQTT subscription.
@@ -854,14 +857,14 @@ actions:
   #
   #   config:
   #     host: smtp.example.com
-  #     port: 587
+  #     port: 465
   #     from: warnflux@example.com
   #     to: ["ops@example.com"]
   #     username: ""
   #     password: ""
   #     password_file: ""
-  #     implicit_tls: false
-  #     starttls: true
+  #     implicit_tls: true
+  #     starttls: false
   #     ca_file: ""
   #     # The subject bracket comes from web.header1 (e.g. "[SPOK]");
   #     # subject_prefix is only a fallback when the application identity
@@ -1169,7 +1172,7 @@ ingest_http:
 
     # Requests per minute per endpoint (token bucket, one minute burst).
     # 0 = default (60); negative = unlimited. 429 carries a Retry-After.
-    rate_limit_per_minute: 0
+    rate_limit_per_minute: 60
 
     # Broker settings are OPTIONAL: when empty, the endpoint inherits the
     # broker, credentials and topic prefix of the primary MQTT output
@@ -1217,7 +1220,7 @@ aprs:
   # "Nearby" radius in kilometers: the fallback for the operational-area
   # radius when area_radius_km is unset. Editable on the Config page
   # ("Polling and range"); 1..1000.
-  radius_km: 60
+  radius_km: 32
 
   # Operational area (the territory we serve): the home-map range circle,
   # the compose map picker, the APRS-IS collection filter and the
@@ -1227,7 +1230,7 @@ aprs:
   # stays at latitude/longitude.
   # area_latitude: 50.0562
   # area_longitude: 20.0610
-  # area_radius_km: 0
+  # area_radius_km: 32
 
   # How long a station stays in the retained MQTT state after its last
   # packet before the topic is deleted (empty retained payload). Longer
@@ -1254,4 +1257,4 @@ aprs:
   # run commands. Only messages heard by OUR radio (the KISS backend)
   # react: APRS-IS-delivered copies are recorded and displayed, never
   # answered — an internet-injected message can't raise an alarm.
-  # route_messages: false
+  # route_messages: true

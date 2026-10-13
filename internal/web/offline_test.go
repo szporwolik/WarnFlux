@@ -947,6 +947,20 @@ func TestConfigLimitsSection(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("a refused value reached the live station (%d calls)", calls)
 	}
+
+	// Zero kept log copies is refused too (reported P2): it would keep
+	// every rotated file forever.
+	csrf = env.csrfFromPage("/config")
+	resp, bad = env.postForm("/config/retention", url.Values{
+		"csrf": {csrf}, "path_0": {"app.log_max_backups"}, "value_0": {"0"},
+	})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(bad, "1..100") {
+		t.Fatalf("zero log backups = %d %s, want 400 naming the range", resp.StatusCode, bad)
+	}
+	// The file keeps the value the earlier save wrote (5), not the refused 0.
+	if v, ok := config.ScalarAt(path, "app.log_max_backups"); !ok || strings.TrimSpace(v) != "5" {
+		t.Errorf("the refused value changed the file: %q (present=%v)", v, ok)
+	}
 }
 
 // neverRetentionForTest is the sentinel the page writes for "-1".

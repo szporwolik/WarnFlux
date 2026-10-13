@@ -54,7 +54,10 @@ app:
   # Rotate the log file once it grows beyond this size (megabytes).
   log_max_size_mb: 10
 
-  # How many rotated log files to keep.
+  # How many rotated log files to keep. Must be at least 1: with 0 the
+  # rotation library keeps every archived file forever (no age limit is
+  # configured), so the log history would grow without bound. The loader
+  # refuses 0 for that reason.
   log_max_backups: 5
 
   # How often to check for and mark expired events, e.g. 1m, 30s.

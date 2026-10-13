@@ -185,6 +185,14 @@ type NodeStore interface {
 	SaveMeshtasticNodes(ctx context.Context, nodes []storage.MeshtasticNode) error
 }
 
+// FavoriteStore persists the node numbers THIS station set as favorites on
+// the radio (implemented by storage stores). Optional: without a store the
+// hub still tracks its own stars for the lifetime of the process.
+type FavoriteStore interface {
+	LoadMeshtasticFavorites(ctx context.Context) ([]uint32, error)
+	SaveMeshtasticFavorites(ctx context.Context, ids []uint32) error
+}
+
 // Tx delivery states.
 const (
 	TxSent      = "sent"      // the radio transmitted the frame
@@ -217,6 +225,11 @@ const defaultHeartbeatInterval = 30 * time.Second
 // defaultPinInterval is how often the radio's favorites are reconciled with
 // the user directory when the configuration does not say.
 const defaultPinInterval = 6 * time.Hour
+
+// pinRetryDelay is how soon a pin pass that did not get through is repeated.
+// A radio that was reconnecting (or a directory that was briefly unreadable)
+// must not wait out a whole interval with a half-applied favorite list.
+const pinRetryDelay = 5 * time.Minute
 
 // linkSendWait bounds how long a send waits for a live session before it
 // gives up. The session goroutine rebuilds the link on its own after a
@@ -854,8 +867,16 @@ type Hub struct {
 
 	// userNodes supplies the node numbers registered in the user directory
 	// (nil = nothing to pin); pinNext arms the next pin pass.
-	userNodes func() []uint32
+	userNodes func() ([]uint32, error)
 	pinNext   time.Time
+
+	// favoriteStore is the ledger of the favorites THIS station set on the
+	// radio; pinned mirrors it, pinnedLoaded marks whether the store was
+	// read (a failed read stays unloaded, and the pass then touches
+	// nothing — see pinUserNodes).
+	favoriteStore FavoriteStore
+	pinned        map[uint32]bool
+	pinnedLoaded  bool
 
 	// routeWaiters buffers TRACEROUTE route replies while probes wait,
 	// keyed by the replying node (the destination answers with the full
@@ -1848,10 +1869,23 @@ func positionDeg(pos *pb.Position) (lat, lon float64) {
 // SetUserNodes supplies the node numbers registered in the user directory:
 // the nodes this station is expected to be able to send a DIRECT message to.
 // They are pinned as favorites on the radio (see pinUserNodes). A nil
-// provider — the default — leaves the radio's favorites alone.
-func (h *Hub) SetUserNodes(nodes func() []uint32) {
+// provider — the default — leaves the radio's favorites alone, and so does a
+// provider that returns an error: a directory that cannot be read is not an
+// empty directory, and reconciling against it would unpin the very keys the
+// station must keep.
+func (h *Hub) SetUserNodes(nodes func() ([]uint32, error)) {
 	h.mu.Lock()
 	h.userNodes = nodes
+	h.mu.Unlock()
+}
+
+// SetFavoriteStore attaches the ledger of the favorites this station set on
+// the radio (optional). Without it the hub still remembers its own stars for
+// the lifetime of the process, but a restart forgets which ones were its own
+// and it then refuses to unpin anything.
+func (h *Hub) SetFavoriteStore(store FavoriteStore) {
+	h.mu.Lock()
+	h.favoriteStore = store
 	h.mu.Unlock()
 }
 
@@ -1863,9 +1897,18 @@ func (h *Hub) SetUserNodes(nodes func() []uint32) {
 // and survive a node-db reset, which makes them the one durable place this
 // pin can live.
 //
-// The pass runs on the maintenance tick: at most once per PinInterval, never
-// blocking, and a radio that refuses the admin message only logs a warning —
-// a failed pin must never disturb the mesh session.
+// The pass reconciles in BOTH directions: every node in the directory is set
+// as a favorite, and a favorite this station set for a node that has since
+// left the directory is removed again — the radio keeps favorites forever, so
+// without the second half the node table would slowly fill with stars for
+// people the station no longer serves. Only stars this station set itself are
+// ever removed; a node the operator starred on the device is left alone, which
+// is exactly what the ledger of its own pins is for.
+//
+// The pass runs on the maintenance tick: at most once per PinInterval, and a
+// radio that refuses the admin message only logs a warning — a failed pass
+// must never disturb the mesh session. A pass that did not get through is
+// retried after pinRetryDelay instead of a whole interval later.
 func (h *Hub) pinUserNodes() {
 	if !h.cfg.PinUserNodes {
 		return
@@ -1881,26 +1924,172 @@ func (h *Hub) pinUserNodes() {
 	if interval <= 0 {
 		interval = defaultPinInterval
 	}
-	h.pinNext = now.Add(interval)
 	h.mu.Unlock()
 
-	for _, id := range provider() {
-		if id == 0 {
+	// The ledger first: without knowing our own stars the station cannot
+	// tell them from the operator's, and must not touch the radio.
+	pinned, err := h.loadFavorites()
+	if err != nil {
+		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger load failed, favorites left unchanged", "error", err)
+		h.armPinNext(now.Add(interval))
+		return
+	}
+	want, err := provider()
+	if err != nil {
+		h.pinLog(slog.LevelWarn, "meshtastic: user node list unavailable, favorites left unchanged", "error", err)
+		h.armPinNext(now.Add(interval))
+		return
+	}
+	desired := make(map[uint32]bool, len(want))
+	for _, id := range want {
+		if id != 0 && id != core.BroadcastNodeID.Uint32() {
+			desired[id] = true
+		}
+	}
+	owns := make(map[uint32]bool, len(pinned))
+	for _, id := range pinned {
+		owns[id] = true
+	}
+
+	changed, failed := false, false
+	for id := range desired {
+		if owns[id] {
 			continue
 		}
 		if err := h.setFavorite(id, true); err != nil {
-			if h.logger != nil {
-				h.logger.Warn("meshtastic: pinning a user node as favorite failed",
-					"node", fmt.Sprintf("%08x", id), "error", err)
-			}
+			h.pinLog(slog.LevelWarn, "meshtastic: pinning a user node as favorite failed",
+				"node", meshIDString(id), "error", err)
+			failed = true
 			continue
 		}
-		if h.logger != nil {
-			h.logger.Info("meshtastic: user node pinned as favorite on the radio",
-				"node", fmt.Sprintf("%08x", id))
+		h.rememberFavorite(id, true)
+		changed = true
+		h.pinLog(slog.LevelInfo, "meshtastic: user node pinned as favorite on the radio", "node", meshIDString(id))
+	}
+	for _, id := range pinned {
+		if desired[id] {
+			continue
+		}
+		if err := h.setFavorite(id, false); err != nil {
+			h.pinLog(slog.LevelWarn, "meshtastic: unpinning a node that left the user directory failed",
+				"node", meshIDString(id), "error", err)
+			failed = true
+			continue
+		}
+		h.rememberFavorite(id, false)
+		changed = true
+		h.pinLog(slog.LevelInfo, "meshtastic: node left the user directory, favorite removed from the radio",
+			"node", meshIDString(id))
+	}
+	if changed {
+		h.saveFavorites()
+	}
+	if failed {
+		h.armPinNext(now.Add(pinRetryDelay))
+		return
+	}
+	h.armPinNext(now.Add(interval))
+}
+
+// loadFavorites returns the favorites this station set on the radio, reading
+// the ledger from the store on first use. A failed read is NOT cached: the
+// next pass tries again, and until then the pass leaves the radio alone.
+func (h *Hub) loadFavorites() ([]uint32, error) {
+	h.mu.Lock()
+	loaded := h.pinnedLoaded
+	h.mu.Unlock()
+	if !loaded {
+		h.mu.Lock()
+		store := h.favoriteStore
+		h.mu.Unlock()
+		if store != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ids, err := store.LoadMeshtasticFavorites(ctx)
+			cancel()
+			if err != nil {
+				return nil, err
+			}
+			h.mu.Lock()
+			if h.pinned == nil {
+				h.pinned = make(map[uint32]bool, len(ids))
+			}
+			for _, id := range ids {
+				h.pinned[id] = true
+			}
+			h.pinnedLoaded = true
+			h.mu.Unlock()
+		} else {
+			h.mu.Lock()
+			if h.pinned == nil {
+				h.pinned = map[uint32]bool{}
+			}
+			h.pinnedLoaded = true
+			h.mu.Unlock()
 		}
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]uint32, 0, len(h.pinned))
+	for id := range h.pinned {
+		out = append(out, id)
+	}
+	return out, nil
 }
+
+// rememberFavorite records (or drops) one star in the in-memory ledger. The
+// caller saves the ledger once the pass is done, so a half-applied pass costs
+// at most a repeated admin frame.
+func (h *Hub) rememberFavorite(id uint32, pinned bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pinned == nil {
+		h.pinned = map[uint32]bool{}
+	}
+	if pinned {
+		h.pinned[id] = true
+		return
+	}
+	delete(h.pinned, id)
+}
+
+// saveFavorites writes the ledger back (a small snapshot, at most once per
+// pass). A failure only costs a stale ledger — the radio already carries the
+// star — so it is logged, never propagated.
+func (h *Hub) saveFavorites() {
+	h.mu.Lock()
+	store := h.favoriteStore
+	ids := make([]uint32, 0, len(h.pinned))
+	for id := range h.pinned {
+		ids = append(ids, id)
+	}
+	h.mu.Unlock()
+	if store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := store.SaveMeshtasticFavorites(ctx, ids); err != nil {
+		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger save failed", "error", err)
+	}
+}
+
+// armPinNext schedules the next pin pass.
+func (h *Hub) armPinNext(next time.Time) {
+	h.mu.Lock()
+	h.pinNext = next
+	h.mu.Unlock()
+}
+
+// pinLog writes one pin-pass line; the tests build hubs without a logger.
+func (h *Hub) pinLog(level slog.Level, msg string, args ...any) {
+	if h.logger == nil {
+		return
+	}
+	h.logger.Log(context.Background(), level, msg, args...)
+}
+
+// meshIDString renders a node number the way the UI and the logs do.
+func meshIDString(id uint32) string { return fmt.Sprintf("%08x", id) }
 
 // setFavorite asks the DEVICE to add or remove one node in its favorites.
 // The admin frame is addressed to our own node: the firmware handles a packet

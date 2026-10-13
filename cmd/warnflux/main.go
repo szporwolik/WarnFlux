@@ -793,11 +793,16 @@ func run(configPath string, checkConfig bool) error {
 	// so the public key a direct message is encrypted with survives a full
 	// node table and a node-db reset. A node whose key was evicted can only
 	// be messaged after it announces itself again (see the plugin README).
-	meshtasticHub.SetUserNodes(func() []uint32 {
+	// The ledger of the stars this station set lets the pass take one back
+	// when its owner leaves the directory, without touching a star the
+	// operator tapped on the device.
+	meshtasticHub.SetFavoriteStore(store)
+	meshtasticHub.SetUserNodes(func() ([]uint32, error) {
 		owners, err := store.MeshtasticOwners()
 		if err != nil {
-			logger.Warn("meshtastic: node pinning list load failed", "error", err)
-			return nil
+			// The hub keeps the last known pins: a directory it cannot
+			// read must never look like an empty one.
+			return nil, err
 		}
 		out := make([]uint32, 0, len(owners))
 		for id := range owners {
@@ -807,7 +812,7 @@ func run(configPath string, checkConfig bool) error {
 			}
 			out = append(out, uint32(n))
 		}
-		return out
+		return out, nil
 	})
 	// Meshtastic direct-message routing trusts registered operators: the
 	// sender's node id (8 hex) must belong to a user's registered mesh

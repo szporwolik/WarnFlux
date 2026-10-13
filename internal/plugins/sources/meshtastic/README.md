@@ -89,8 +89,14 @@ user directory as a FAVORITE on the radio (`meshtastic.pin_user_nodes`, ON by
 default): the firmware never evicts a favorite and keeps favorites across a
 node-db reset, so the station's own people stay messageable without waiting
 for their next announcement. The pass runs right after the handshake and then
-every `pin_user_nodes_interval` (default 6h); it only ever ADDS favorites, so
-a star set by hand on the device is never removed.
+every `pin_user_nodes_interval` (default 6h). It reconciles both ways: a node
+that leaves the user directory gets its star taken back — the radio keeps
+favorites forever, so without that the node table would slowly fill with pins
+for people the station stopped serving. Only stars the station set itself are
+ever removed; a star tapped on the device by hand stays. The list of its own
+pins survives a restart (it is a small table in the database), and a pass that
+could not read the directory or could not reach the radio changes nothing and
+is retried within minutes.
 
 The same applies to every DM path: routed group members' node ids, the
 `/alert` direct message and the mass-info DMs. Watching the reason column of

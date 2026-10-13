@@ -885,6 +885,9 @@ meshtastic:
   # must be encrypted with survives a full node table. Without this a
   # node whose key was pruned can only be messaged after it announces
   # itself again ("recipient has not announced its public key").
+  # A node that leaves the user directory gets its star taken back, so the
+  # radio does not accumulate pins for people the station stopped serving;
+  # stars tapped on the device by hand are never touched.
   pin_user_nodes: true
   # pin_user_nodes_interval: 6h    # 1m..24h
 

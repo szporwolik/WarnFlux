@@ -381,3 +381,51 @@ func (s *Store) SaveMeshtasticNodes(ctx context.Context, nodes []storage.Meshtas
 	}
 	return nil
 }
+
+// LoadMeshtasticFavorites returns the node numbers this station pinned as
+// favorites on the radio (see the v61 migration).
+func (s *Store) LoadMeshtasticFavorites(ctx context.Context) ([]uint32, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT node_id FROM meshtastic_favorites ORDER BY node_id`)
+	if err != nil {
+		return nil, fmt.Errorf("load meshtastic favorites: %w", err)
+	}
+	defer rows.Close()
+	var out []uint32
+	for rows.Next() {
+		var id uint32
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan meshtastic favorite: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SaveMeshtasticFavorites replaces the pinned set with the given snapshot
+// (one transaction; the set holds one row per registered user node).
+func (s *Store) SaveMeshtasticFavorites(ctx context.Context, ids []uint32) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save meshtastic favorites: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM meshtastic_favorites`); err != nil {
+		return fmt.Errorf("save meshtastic favorites: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT OR REPLACE INTO meshtastic_favorites (node_id, pinned_at_ms) VALUES (?, ?)`)
+	if err != nil {
+		return fmt.Errorf("save meshtastic favorites: %w", err)
+	}
+	defer stmt.Close()
+	now := time.Now().UnixMilli()
+	for _, id := range ids {
+		if _, err := stmt.ExecContext(ctx, id, now); err != nil {
+			return fmt.Errorf("save meshtastic favorite %08x: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("save meshtastic favorites: %w", err)
+	}
+	return nil
+}

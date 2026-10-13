@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -410,5 +411,50 @@ func TestMeshtasticMessagePeerFilter(t *testing.T) {
 	}
 	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "dm"}); err != nil || n != 5 {
 		t.Fatalf("dm count = %d, %v", n, err)
+	}
+}
+
+// TestMeshtasticFavoritesPersist pins the pinned-favorite ledger: the set
+// survives a restart (that is the whole point — after a restart the station
+// must still know which stars it owns) and a save is a full snapshot, so a
+// node that left the user directory disappears from it.
+func TestMeshtasticFavoritesPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	s := openTempAt(t, path)
+	ctx := context.Background()
+
+	if got, err := s.LoadMeshtasticFavorites(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("fresh store favorites = %v, %v", got, err)
+	}
+	if err := s.SaveMeshtasticFavorites(ctx, []uint32{0x6d2c8f6c, 0xdeadbeef}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := s.LoadMeshtasticFavorites(ctx)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got) != 2 || got[0] != 0x6d2c8f6c || got[1] != 0xdeadbeef {
+		t.Fatalf("favorites = %08x, want both nodes", got)
+	}
+
+	reopened := openTempAt(t, path)
+	if got, err = reopened.LoadMeshtasticFavorites(ctx); err != nil || len(got) != 2 {
+		t.Fatalf("after reopen = %08x, %v", got, err)
+	}
+
+	// Snapshot semantics: one node left the directory.
+	if err := s.SaveMeshtasticFavorites(ctx, []uint32{0xdeadbeef}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if got, err = s.LoadMeshtasticFavorites(ctx); err != nil || len(got) != 1 || got[0] != 0xdeadbeef {
+		t.Fatalf("after replace = %08x, %v", got, err)
+	}
+	// A repeated node id never yields a second row (the delta save is a
+	// snapshot, but a caller bug must not turn into a failed pass).
+	if err := s.SaveMeshtasticFavorites(ctx, []uint32{0xdeadbeef, 0xdeadbeef}); err != nil {
+		t.Fatalf("save duplicate: %v", err)
+	}
+	if got, err = s.LoadMeshtasticFavorites(ctx); err != nil || len(got) != 1 {
+		t.Fatalf("duplicate save = %08x, %v", got, err)
 	}
 }

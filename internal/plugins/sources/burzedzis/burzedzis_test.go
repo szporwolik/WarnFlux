@@ -158,8 +158,23 @@ func cityFixture(lat, lon float64) string {
 		`</return></ns1:miejscowoscResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>`
 }
 
+// fixtureWindow is the validity window of the warning fixtures, computed
+// relative to the moment the fixture is built. The provider publishes naive
+// WARSAW-LOCAL timestamps and the source skips the warnings that are over, so
+// a fixed calendar date would quietly turn every "warnings in force" test
+// into a failure once the wall clock passes it (reported P2).
+func fixtureWindow() (string, string) {
+	warsaw, err := time.LoadLocation("Europe/Warsaw")
+	if err != nil {
+		warsaw = time.UTC
+	}
+	now := time.Now().In(warsaw)
+	return now.Add(-time.Hour).Format("2006-01-02 15:04:05"),
+		now.Add(6 * time.Hour).Format("2006-01-02 15:04:05")
+}
+
 // warningsFixture renders the provider's warning envelope with every
-// phenomenon at the given degree and one fixed UTC window.
+// phenomenon at the given degree and one window around the present.
 func warningsFixture(degree int) string {
 	if degree == 0 {
 		return `<?xml version="1.0" encoding="UTF-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body>` +
@@ -178,7 +193,7 @@ func warningsFixture(degree int) string {
 func level(key string, degree int) string {
 	from, to := "0", "0"
 	if degree > 0 {
-		from, to = "2026-10-13 14:00:00", "2026-10-13 20:00:00"
+		from, to = fixtureWindow()
 	}
 	return "<" + key + ">" + strconv.Itoa(degree) + "</" + key + ">" +
 		"<" + key + "_od_dnia>" + from + "</" + key + "_od_dnia>" +
@@ -1413,4 +1428,56 @@ func TestUnreadableStateDegradesTheSource(t *testing.T) {
 		t.Errorf("publication must not be affected by the failed read: %d warnings, %d lightning",
 			len(emit.events(Type)), len(emit.events(TypeStorm)))
 	}
+}
+
+// TestWarningFixtureFollowsTheClock pins the reported P2: the provider
+// fixtures must describe a window that is in force NOW, on whatever date the
+// suite runs. The source skips a warning whose window is already over, so a
+// fixed calendar date quietly disabled every "warnings in force" assertion
+// once the wall clock passed it.
+func TestWarningFixtureFollowsTheClock(t *testing.T) {
+	warsaw, err := time.LoadLocation("Europe/Warsaw")
+	if err != nil {
+		t.Fatalf("load Europe/Warsaw: %v", err)
+	}
+	from, to := fixtureWindow()
+	start, err := time.ParseInLocation("2006-01-02 15:04:05", from, warsaw)
+	if err != nil {
+		t.Fatalf("parse the fixture window start %q: %v", from, err)
+	}
+	end, err := time.ParseInLocation("2006-01-02 15:04:05", to, warsaw)
+	if err != nil {
+		t.Fatalf("parse the fixture window end %q: %v", to, err)
+	}
+
+	now := time.Now()
+	if !start.Before(now) {
+		t.Errorf("the fixture window starts at %s, which is not before %s: the source would publish nothing", from, now)
+	}
+	if !end.After(now) {
+		t.Errorf("the fixture window ends at %s, which is not after %s: the source would skip every warning", to, now)
+	}
+
+	// The source's own rule, on the same fixture: the windows it parses must
+	// survive the "already over" skip.
+	if _, err := srcWarningIsInForce(t); err != nil {
+		t.Error(err)
+	}
+}
+
+// srcWarningIsInForce polls the provider stub once and reports whether the
+// fixture's warnings were published instead of being skipped as over.
+func srcWarningIsInForce(t *testing.T) (int, error) {
+	t.Helper()
+	srv := providerStub(t)
+	defer srv.Close()
+	src := newSource(t, srv.URL, "")
+	emit := &fakeEmitter{}
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		return 0, fmt.Errorf("pollOnce: %w", err)
+	}
+	if got := len(emit.events(Type)); got != 6 {
+		return got, fmt.Errorf("published %d warnings, want 6 (the fixture must be in force)", got)
+	}
+	return 6, nil
 }

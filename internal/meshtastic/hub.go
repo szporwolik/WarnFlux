@@ -2010,13 +2010,18 @@ func (h *Hub) loadFavorites() ([]uint32, error) {
 				return nil, err
 			}
 			h.mu.Lock()
-			if h.pinned == nil {
-				h.pinned = make(map[uint32]bool, len(ids))
+			// A pass that loaded the ledger while this read was in flight
+			// already knows the pins AND what it did with them: merging a
+			// stale snapshot could resurrect a star it just took back.
+			if !h.pinnedLoaded {
+				if h.pinned == nil {
+					h.pinned = make(map[uint32]bool, len(ids))
+				}
+				for _, id := range ids {
+					h.pinned[id] = true
+				}
+				h.pinnedLoaded = true
 			}
-			for _, id := range ids {
-				h.pinned[id] = true
-			}
-			h.pinnedLoaded = true
 			h.mu.Unlock()
 		} else {
 			h.mu.Lock()
@@ -2071,6 +2076,24 @@ func (h *Hub) saveFavorites() {
 	if err := store.SaveMeshtasticFavorites(ctx, ids); err != nil {
 		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger save failed", "error", err)
 	}
+}
+
+// PinnedNodes returns the node numbers this station set as favorites on the
+// radio, normalized to lowercase 8-hex ids. Nodes the operator starred on the
+// device are not listed: the station only knows about its own pins. The
+// ledger is read on first use, so the admin page shows the pins of a previous
+// process too — before the first pass of this one.
+func (h *Hub) PinnedNodes() []string {
+	ids, err := h.loadFavorites()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, meshIDString(id))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // armPinNext schedules the next pin pass.

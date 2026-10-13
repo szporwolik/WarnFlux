@@ -785,7 +785,7 @@
     <tbody>
       {{range .Nodes}}
       <tr class="click-send" data-key="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">
-        <td><strong>{{if .Name}}{{.Name}}{{else}}—{{end}}{{if .Short}} <span class="muted short-name">({{.Short}})</span>{{end}}{{if and .Name .Owner}} <span class="muted op-name">({{.Owner}})</span>{{end}}</strong></td>
+        <td>{{if .Pinned}}<span class="pin-star" title="{{tr $.Lang "meshtastic.node_pinned"}}">★</span> {{end}}<strong>{{if .Name}}{{.Name}}{{else}}—{{end}}{{if .Short}} <span class="muted short-name">({{.Short}})</span>{{end}}{{if and .Name .Owner}} <span class="muted op-name">({{.Owner}})</span>{{end}}</strong></td>
         <td class="muted nowrap">
           <button type="button" class="key-copy" data-key="{{.ID}}" title="{{tr $.Lang "meshtastic.copy_id"}}">
             <span class="key-short">!{{.ID}}</span>

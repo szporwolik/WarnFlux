@@ -392,3 +392,20 @@ func TestPinUserNodesIntervalGatesThePass(t *testing.T) {
 		t.Errorf("a second pass inside the interval re-armed it: %v -> %v", first, h.pinNext)
 	}
 }
+
+// TestPinnedNodesReportsItsOwnStars: the admin page reads the ledger through
+// the hub, so a pin made by a PREVIOUS process still shows (the ledger is
+// loaded on first use) and a pin the station took back no longer does.
+func TestPinnedNodesReportsItsOwnStars(t *testing.T) {
+	ledger := &memFavoriteStore{ids: []uint32{0xa0a85934, 0x6d2c8f6c}}
+	h := &Hub{}
+	h.SetFavoriteStore(ledger)
+	got := h.PinnedNodes()
+	if len(got) != 2 || got[0] != "6d2c8f6c" || got[1] != "a0a85934" {
+		t.Fatalf("PinnedNodes = %v, want the persisted pins as sorted 8-hex ids", got)
+	}
+	h.rememberFavorite(0x6d2c8f6c, false)
+	if got := h.PinnedNodes(); len(got) != 1 || got[0] != "a0a85934" {
+		t.Fatalf("PinnedNodes after unpinning = %v, want only a0a85934", got)
+	}
+}

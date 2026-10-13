@@ -163,6 +163,11 @@ The lightning nowcast escalates with proximity to the nearest discharge:
   bucket and re-published at most once per `storm_update_interval`, so a
   drifting count does not re-notify on every poll; the first quiet poll
   cancels it, and the validity retires it if the station stops.
+  That dedup memory is kept only for the detections that are in force: the
+  quiet poll that cancels a storm also forgets it, so a storm returning
+  inside the same `storm_ttl` bucket with the same severity is published as
+  an ACTIVE alarm in the first cycle of its return — it is news, not a
+  repeat of something the station still shows.
 - Reconciliation reads the durable current state
   (`SourceActiveEventReader`), so it is restart-safe and skipped whenever a
   locality query failed — an incomplete snapshot must never look like "the

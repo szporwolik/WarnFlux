@@ -16,10 +16,30 @@ import (
 // matters to a reader changed (severity, validity bucket) or when the
 // configured update interval has passed — never merely because a count
 // drifted by one.
+//
+// The memory is kept ONLY for the detections that are in force: it is
+// dropped as soon as a complete pass finds no discharges around a locality
+// (see forgetStormsOutside), because those events are cancelled in that same
+// pass. A memory outliving its event would read the storm's return as an
+// unchanged repeat of something the station no longer shows.
 type stormState struct {
 	severity string
 	expires  time.Time
 	at       time.Time
+}
+
+// forgetStormsOutside drops the dedup memory of every locality whose
+// detection is not in the pass: those events are not in force any more (the
+// reconciliation cancelled them or the expiration worker ended them), so the
+// next discharges around that locality are news again.
+func (s *Source) forgetStormsOutside(ids map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.storm {
+		if !ids[id] {
+			delete(s.storm, id)
+		}
+	}
 }
 
 // pollStorm searches for lightning around every point, publishes the
@@ -31,6 +51,7 @@ type stormState struct {
 func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []burzedzis.Locality, reconcile bool) (int, error) {
 	now := time.Now()
 	keys := make(map[string]bool, len(points))
+	ids := make(map[string]bool, len(points))
 	emitted, failed, skipped := 0, 0, 0
 	var firstErr error
 
@@ -53,6 +74,7 @@ func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []bu
 		ev := s.stormEvent(st, now)
 		keys[ev.Key()] = true
 
+		ids[ev.SourceID] = true
 		id := ev.SourceID
 		s.mu.Lock()
 		prev, seen := s.storm[id]
@@ -79,8 +101,20 @@ func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []bu
 		n, err := snapshotutil.Reconcile(ctx, emit, TypeStorm, keys, now)
 		if err != nil {
 			slog.Warn("burzedzis lightning reconciliation failed", "error", err)
-		} else if n > 0 {
-			slog.Info("burzedzis storms cancelled (no discharges around those localities)", "count", n)
+		} else {
+			// The pass was complete and every detection not in ids is now
+			// cancelled, so the dedup memory of those localities goes with
+			// it: a storm that returns — even with the same severity and
+			// inside the same validity bucket, i.e. reading as an unchanged
+			// repeat — must publish an ACTIVE alarm again in this very
+			// cycle instead of staying silent until the update interval
+			// passes (reported P2). Dropping the entry only ever costs a
+			// redundant emit when the event is in fact still in force; the
+			// core de-duplicates it by fingerprint.
+			s.forgetStormsOutside(ids)
+			if n > 0 {
+				slog.Info("burzedzis storms cancelled (no discharges around those localities)", "count", n)
+			}
 		}
 	}
 	if skipped > 0 {

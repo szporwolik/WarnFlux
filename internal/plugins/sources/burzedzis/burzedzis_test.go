@@ -1036,3 +1036,125 @@ func TestUnreadableWindowKeepsTheAlert(t *testing.T) {
 		}
 	}
 }
+
+// TestReturningStormIsPublishedAfterItsCancellation pins the reported P2:
+// after "discharges → silence → discharges" the returning storm carries the
+// same severity and the same validity bucket as the detection that was
+// cancelled, so the dedup memory of the first one must not swallow it — the
+// alarm has to be published (active) in the FIRST cycle of the return, not
+// after the update interval.
+func TestReturningStormIsPublishedAfterItsCancellation(t *testing.T) {
+	var mu sync.Mutex
+	storming := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		text := strings.TrimSpace(string(body))
+		mu.Lock()
+		storm := storming
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		switch {
+		case strings.Contains(text, "<miejscowosc "):
+			_, _ = io.WriteString(w, cityFixture(50.02, 20.13))
+		case strings.Contains(text, "<ostrzezenia_pogodowe "):
+			_, _ = io.WriteString(w, warningsFixture(0))
+		case strings.Contains(text, "<szukaj_burzy "):
+			if storm {
+				_, _ = io.WriteString(w, stormFixture(999, 4.99, "NW", 15))
+				return
+			}
+			_, _ = io.WriteString(w, stormFixture(0, 0, "", 20))
+		default:
+			t.Errorf("unexpected SOAP body: %s", text)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	src := sourceFromYAML(t, "api_key: test-key\nbase_url: "+srv.URL+"\nlocations: [Niepołomice]\nstorm_tracking: true\nstorm_update_interval: 15m\n")
+	// The emitter behaves like the store: what was published is the active
+	// state the next pass reconciles against, and a cancellation takes it
+	// out of that state.
+	emit := newActiveEmitter()
+
+	// The storm is over the locality: published and in force.
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		t.Fatalf("first pollOnce: %v", err)
+	}
+	first := emit.activeOf(TypeStorm)
+	if len(first) != 1 {
+		t.Fatalf("first poll published %d lightning events, want 1", len(first))
+	}
+
+	// The sky goes quiet: the nowcast is cancelled.
+	mu.Lock()
+	storming = false
+	mu.Unlock()
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		t.Fatalf("second pollOnce: %v", err)
+	}
+	if live := emit.activeOf(TypeStorm); len(live) != 0 {
+		t.Fatalf("the quiet pass kept %d lightning events in force", len(live))
+	}
+	if _, ok := src.storm[first[0].SourceID]; ok {
+		t.Error("the dedup memory of the cancelled storm survived its cancellation")
+	}
+
+	// The discharges come back with the SAME severity and inside the same
+	// validity bucket, well inside the update interval: the alarm must be
+	// active again.
+	mu.Lock()
+	storming = true
+	mu.Unlock()
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		t.Fatalf("third pollOnce: %v", err)
+	}
+	live := emit.activeOf(TypeStorm)
+	if len(live) != 1 {
+		t.Fatalf("the returning storm left %d active lightning events, want 1", len(live))
+	}
+	if live[0].Key() != first[0].Key() {
+		t.Errorf("the returning storm is %q, want the same identity %q", live[0].Key(), first[0].Key())
+	}
+	if live[0].Severity != first[0].Severity || !live[0].ExpiresAt.Equal(*first[0].ExpiresAt) {
+		t.Errorf("the returning storm is %s/%v, want the same facts as %s/%v",
+			live[0].Severity, live[0].ExpiresAt, first[0].Severity, first[0].ExpiresAt)
+	}
+}
+
+// activeEmitter is a fake emitter that keeps the active state it is given,
+// the way the store does: an emit updates it (a cancelled event leaves it).
+type activeEmitter struct {
+	fakeEmitter
+}
+
+func newActiveEmitter() *activeEmitter { return &activeEmitter{} }
+
+func (f *activeEmitter) Emit(ctx context.Context, ev core.HazardEvent) error {
+	f.mu.Lock()
+	kept := f.active[:0]
+	for _, prev := range f.active {
+		if prev.Key() != ev.Key() {
+			kept = append(kept, prev)
+		}
+	}
+	f.active = kept
+	if ev.Status == core.StatusActive {
+		f.active = append(f.active, ev)
+	}
+	f.mu.Unlock()
+	return f.fakeEmitter.Emit(ctx, ev)
+}
+
+// activeOf returns the recorded active events of one source.
+func (f *activeEmitter) activeOf(source string) []core.HazardEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []core.HazardEvent
+	for _, ev := range f.active {
+		if ev.Source == source {
+			out = append(out, ev)
+		}
+	}
+	return out
+}

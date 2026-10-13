@@ -1000,3 +1000,50 @@ func TestFavoriteWriteRacingAChangeKeepsAPendingRetry(t *testing.T) {
 		t.Error("the flag survived the retried write")
 	}
 }
+
+// TestRefusalDuringAPassKeepsTheRetry pins the acceptance case of the ticket:
+// the radio can refuse a frame while the pass that sent it is still working,
+// and the retry that refusal asks for must survive the end of the cycle. The
+// directory callback runs INSIDE the pass, so the retry is requested
+// deterministically before the pass arms its next window (no timing involved).
+func TestRefusalDuringAPassKeepsTheRetry(t *testing.T) {
+	// A live link (nothing fails to write), so the pass WOULD arm its full
+	// interval when it ends.
+	h := &Hub{
+		cfg:  Config{PinUserNodes: true, PinInterval: 6 * time.Hour},
+		conn: &fakeTransportConn{},
+		self: &SelfInfo{ID: "abcd1234"},
+	}
+	h.SetUserNodes(func() ([]uint32, error) {
+		// Exactly what settleFavorite does when the device refuses a frame
+		// that is still in flight.
+		h.favoriteRetry()
+		return []uint32{0x6d2c8f6c}, nil
+	})
+	h.pinUserNodes(false)
+
+	if got := time.Until(hubPinNext(h)); got > pinRetryDelay+time.Second {
+		t.Fatalf("next pass in %s, want the retry (%s) the refusal asked for", got, pinRetryDelay)
+	}
+}
+
+// TestRefusalAfterAPassKeepsTheRetry is the other half of the same rule: an
+// answer that arrives once the cycle is over already survives (nothing
+// overwrites it afterwards).
+func TestRefusalAfterAPassKeepsTheRetry(t *testing.T) {
+	h := &Hub{
+		cfg:  Config{PinUserNodes: true, PinInterval: 6 * time.Hour},
+		conn: &fakeTransportConn{},
+		self: &SelfInfo{ID: "abcd1234"},
+	}
+	h.SetUserNodes(func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil })
+	h.pinUserNodes(false)
+	if got := time.Until(hubPinNext(h)); got < time.Hour {
+		t.Fatalf("a clean pass armed %s, want the interval", got)
+	}
+	h.favoriteRetry()
+
+	if got := time.Until(hubPinNext(h)); got > pinRetryDelay+time.Second {
+		t.Fatalf("next pass in %s, want the retry (%s)", got, pinRetryDelay)
+	}
+}

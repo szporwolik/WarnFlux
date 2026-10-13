@@ -156,7 +156,7 @@ func (s *Server) buildHelpView(lang string) helpView {
 		MQTT: s.helpMQTT(),
 		MQTTItems: []string{
 			"help.mqtt.1", "help.mqtt.2", "help.mqtt.3", "help.mqtt.4",
-			"help.mqtt.5", "help.mqtt.6", "help.mqtt.7",
+			"help.mqtt.5", "help.mqtt.6", "help.mqtt.7", "help.mqtt.8",
 		},
 
 		MeshChannel: s.helpMeshChannel(),
@@ -167,7 +167,7 @@ func (s *Server) buildHelpView(lang string) helpView {
 				"help.start.1", "help.start.2", "help.start.3", "help.start.4",
 			}},
 			{Title: "help.general.title", Icon: "i-info-circle", Items: []string{
-				"help.general.1", "help.general.2",
+				"help.general.1", "help.general.2", "help.general.3",
 			}},
 			{Title: "help.dashboard.title", Icon: "i-house", Items: []string{
 				"help.dashboard.1", "help.dashboard.2",

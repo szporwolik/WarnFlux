@@ -816,10 +816,21 @@ func messageURL(req action.ActionRequest, key string) string {
 	return scheme + domain + "/message/" + url.PathEscape(key)
 }
 
-// humanTime renders one event timestamp in the local wall-clock style
-// (no RFC3339 zone noise) for the human-readable bodies.
-func humanTime(t time.Time) string {
-	return t.Format("2006-01-02 15:04")
+// humanTime renders one event timestamp in the STATION's display zone (no
+// RFC3339 noise) for the human-readable bodies. The zone itself is named
+// once, next to the mail's own timestamp, so a reader can never mistake a
+// UTC time for a local one.
+func humanTime(t time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return t.In(loc).Format("2006-01-02 15:04")
+}
+
+// mailTime renders the mail's own timestamp with the zone it belongs to:
+// "2026-10-13 15:04 (Europe/Warsaw)".
+func mailTime(now time.Time, loc *time.Location, zone string) string {
+	return humanTime(now, loc) + " (" + zone + ")"
 }
 
 // The instruction section is the PROVIDER's own text and nothing else: a
@@ -835,7 +846,8 @@ func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
 	lang = i18n.Effective(lang)
 	var b strings.Builder
 	b.WriteString(i18n.T(lang, "mail.head") + "\n")
-	fmt.Fprintf(&b, "%s: %s\n\n", i18n.T(lang, "mail.time"), humanTime(now))
+	zoneLoc, zoneName := action.DisplayZone(req.App)
+	fmt.Fprintf(&b, "%s: %s\n\n", i18n.T(lang, "mail.time"), mailTime(now, zoneLoc, zoneName))
 
 	ev := req.Event
 	switch ev.Kind {
@@ -880,10 +892,10 @@ func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
 			fmt.Fprintf(&b, "%s: %.5f, %.5f\n", i18n.T(lang, "mail.location"), *h.Hazard.Latitude, *h.Hazard.Longitude)
 		}
 		if h.Hazard.EffectiveAt != nil {
-			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.effective_from"), humanTime(*h.Hazard.EffectiveAt))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.effective_from"), humanTime(*h.Hazard.EffectiveAt, zoneLoc))
 		}
 		if h.Hazard.ExpiresAt != nil {
-			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.valid_until"), humanTime(*h.Hazard.ExpiresAt))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.valid_until"), humanTime(*h.Hazard.ExpiresAt, zoneLoc))
 		}
 		if link := messageURL(req, h.Key); link != "" {
 			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.details"), link)
@@ -977,6 +989,7 @@ func emcomLevelColor(level int) string {
 // reader sees only what a human needs.
 func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
 	lang = i18n.Effective(lang)
+	zoneLoc, zoneName := action.DisplayZone(req.App)
 	accent := "#303c46"
 	if ev := req.Event; ev.Kind == dispatch.EventHazardTransition && ev.Hazard != nil {
 		accent = severityColor(ev.Hazard.Hazard.Severity)
@@ -1008,7 +1021,7 @@ func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
 		if ev.Hazard != nil {
 			link = messageURL(req, ev.Hazard.Key)
 		}
-		b.WriteString(hazardHTML(ev, link, lang))
+		b.WriteString(hazardHTML(ev, link, zoneLoc, lang))
 	case dispatch.EventMQTTMessage:
 		m := ev.MQTT
 		if m != nil {
@@ -1020,7 +1033,7 @@ func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
 			htmlEscaper(i18n.T(lang, "mail.dispatch_event")))
 	}
 
-	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">%s: %s</div>`, htmlEscaper(i18n.T(lang, "mail.updated")), htmlEscaper(humanTime(now)))
+	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">%s: %s</div>`, htmlEscaper(i18n.T(lang, "mail.updated")), htmlEscaper(mailTime(now, zoneLoc, zoneName)))
 
 	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #303c46;padding-top:14px;font-size:12px;color:#87939e;">`)
 	b.WriteString(footerHTML(req, lang))
@@ -1031,7 +1044,7 @@ func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
 }
 
 // hazardHTML renders the focused, human-readable summary block.
-func hazardHTML(ev dispatch.Event, link, lang string) string {
+func hazardHTML(ev dispatch.Event, link string, zoneLoc *time.Location, lang string) string {
 	lang = i18n.Effective(lang)
 	h := ev.Hazard
 	if h == nil {
@@ -1126,10 +1139,10 @@ func hazardHTML(ev dispatch.Event, link, lang string) string {
 		b.WriteString(chips.String())
 	}
 	if h.Hazard.EffectiveAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.effective_from")), htmlEscaper(humanTime(*h.Hazard.EffectiveAt)))
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.effective_from")), htmlEscaper(humanTime(*h.Hazard.EffectiveAt, zoneLoc)))
 	}
 	if h.Hazard.ExpiresAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.valid_until")), htmlEscaper(humanTime(*h.Hazard.ExpiresAt)))
+		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.valid_until")), htmlEscaper(humanTime(*h.Hazard.ExpiresAt, zoneLoc)))
 	}
 	if link != "" {
 		// A table cell with bgcolor + background-color renders as a solid

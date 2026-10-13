@@ -37,6 +37,26 @@ type AppInfo struct {
 	Domain string `json:"domain"`
 	// RepoURL is the public repository link.
 	RepoURL string `json:"repo_url"`
+	// Timezone is the station's display zone (IANA name, "UTC" when the
+	// host cannot be detected): notification bodies render their
+	// timestamps in it and NAME it, so a reader never has to guess which
+	// clock a mail shows. Storage and logs stay UTC.
+	Timezone string `json:"timezone,omitempty"`
+}
+
+// DisplayZone resolves the station's display zone from the application
+// metadata carried by a request: the IANA name when set, UTC otherwise.
+// Notification bodies render their timestamps with it and NAME it, so a
+// reader never mistakes a UTC time for a local one; storage and the log
+// stream stay UTC either way.
+func DisplayZone(app AppInfo) (*time.Location, string) {
+	name := strings.TrimSpace(app.Timezone)
+	if name != "" {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc, loc.String()
+		}
+	}
+	return time.UTC, "UTC"
 }
 
 // ActionRequest is the minimal execution request handed to one action.

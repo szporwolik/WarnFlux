@@ -17,6 +17,11 @@
       <span class="health-detail">{{.Queue.Detail}}</span>
     </div>
     <div class="health-row">
+      <span class="health-name"><strong>{{.Zone.Name}}</strong></span>
+      <span class="badge {{.Zone.BadgeClass}}">{{.Zone.BadgeText}}</span>
+      <span class="health-detail">{{.Zone.Detail}}</span>
+    </div>
+    <div class="health-row">
       <span class="health-name"><strong>{{.Pending.Name}}</strong></span>
       <span class="badge {{.Pending.BadgeClass}}">{{.Pending.BadgeText}}</span>
       <span class="health-detail">{{.Pending.Detail}}</span>

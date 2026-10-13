@@ -58,6 +58,10 @@ type healthView struct {
 	DB          healthRow
 	Queue       healthRow
 	Pending     healthRow
+	// Zone names the zone every human-facing timestamp of THIS panel uses
+	// (and, when it is UTC, says so instead of leaving the operator to
+	// guess). Storage and the log stream are always UTC.
+	Zone healthRow
 }
 
 // worse returns the more severe of two badge classes: the health verdict
@@ -145,6 +149,25 @@ func (s *Server) buildHealthView(lang string) healthView {
 		if as.State == action.StateDegraded {
 			verdict = worse(verdict, badgeWarn)
 		}
+	}
+
+	// Display time zone: the panel never shows a nameless clock. A named
+	// IANA zone is quoted as it is; an unnamed process zone reports its
+	// offset instead of pretending to be something it may not be.
+	zoneName := s.displayLoc().String()
+	if zoneName == "Local" {
+		_, offset := time.Now().In(s.displayLoc()).Zone()
+		sign := "+"
+		if offset < 0 {
+			sign, offset = "-", -offset
+		}
+		zoneName = fmt.Sprintf("Local (UTC%s%02d:%02d)", sign, offset/3600, (offset%3600)/60)
+	}
+	v.Zone = healthRow{
+		Name:       i18n.T(lang, "dash.timezone"),
+		BadgeClass: badgeOK,
+		BadgeText:  zoneName,
+		Detail:     i18n.T(lang, "dash.timezone.detail") + " " + zoneName,
 	}
 
 	// Database.

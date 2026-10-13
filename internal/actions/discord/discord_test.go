@@ -102,7 +102,7 @@ func TestExecuteDeliversDiscordPayload(t *testing.T) {
 		t.Errorf("username = %v", body["username"])
 	}
 	content, _ := body["content"].(string)
-	for _, want := range []string{"[SOSNA]", "SEVERE", "Storm", "Strong wind warning", "Areas: powiat wielicki", "Valid until: 2026-09-25T17:00:00Z", "For: ada#1234, @bob"} {
+	for _, want := range []string{"[SOSNA]", "SEVERE", "Storm", "Strong wind warning", "Areas: powiat wielicki", "Valid until: 2026-09-25 17:00 (UTC)", "For: ada#1234, @bob"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("content = %q, want mention of %q", content, want)
 		}
@@ -135,7 +135,7 @@ func TestMessageTextSpeaksSystemLanguage(t *testing.T) {
 	req.DiscordHandles = []string{"ada#1234"}
 	text := p.(*discordAction).messageText(req)
 	for _, want := range []string{
-		"POWAŻNE", "Obszary: powiat wielicki", "Ważny do: 2026-09-25T17:00:00Z",
+		"POWAŻNE", "Obszary: powiat wielicki", "Ważny do: 2026-09-25 17:00 (UTC)",
 		"Dla: ada#1234", "Szczegóły: https://sosna.sp9moa.pl/message/imgw-meteo:1",
 	} {
 		if !strings.Contains(text, want) {

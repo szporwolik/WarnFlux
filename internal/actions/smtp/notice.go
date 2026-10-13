@@ -106,7 +106,8 @@ func noticePlain(app action.AppInfo, text, lang string, now time.Time) string {
 	req := action.ActionRequest{App: app}
 	var b strings.Builder
 	b.WriteString(i18n.T(lang, "mass.mail_subject") + "\n")
-	fmt.Fprintf(&b, "%s: %s\n\n", i18n.T(lang, "mail.time"), humanTime(now))
+	zoneLoc, zoneName := action.DisplayZone(req.App)
+	fmt.Fprintf(&b, "%s: %s\n\n", i18n.T(lang, "mail.time"), mailTime(now, zoneLoc, zoneName))
 	b.WriteString(strings.TrimSpace(text))
 	b.WriteString("\n\n--\n")
 	b.WriteString(footerText(req, lang))
@@ -121,6 +122,7 @@ func noticePlain(app action.AppInfo, text, lang string, now time.Time) string {
 // typography.
 func noticeHTML(app action.AppInfo, text, lang string, now time.Time, markup bool) string {
 	req := action.ActionRequest{App: app}
+	zoneLoc, zoneName := action.DisplayZone(req.App)
 	const accent = "#303c46"
 	brand := strings.TrimSpace(app.Header1)
 	if brand == "" {
@@ -151,7 +153,7 @@ func noticeHTML(app action.AppInfo, text, lang string, now time.Time, markup boo
 	}
 
 	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">%s: %s</div>`,
-		htmlEscaper(i18n.T(lang, "mail.updated")), htmlEscaper(humanTime(now)))
+		htmlEscaper(i18n.T(lang, "mail.updated")), htmlEscaper(mailTime(now, zoneLoc, zoneName)))
 
 	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #303c46;padding-top:14px;font-size:12px;color:#87939e;">`)
 	b.WriteString(footerHTML(req, lang))

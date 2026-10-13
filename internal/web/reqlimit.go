@@ -71,15 +71,3 @@ func truncateRunes(s string, maxRunes int) string {
 	}
 	return string([]rune(s)[:maxRunes]) + "…"
 }
-
-// truncateBytes cuts s to at most max bytes without splitting a rune.
-func truncateBytes(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
-}

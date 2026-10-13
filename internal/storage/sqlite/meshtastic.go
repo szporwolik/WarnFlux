@@ -221,7 +221,7 @@ func (s *Store) ListMeshtasticMessages(ctx context.Context, f storage.Meshtastic
 		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Recipient, &m.Channel, &m.Hops, &m.Operator, &m.Text, &m.Status, &m.Reason, &atMs); err != nil {
 			return nil, fmt.Errorf("scan mesh message: %w", err)
 		}
-		m.At = time.UnixMilli(atMs)
+		m.At = time.UnixMilli(atMs).UTC()
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -343,7 +343,7 @@ func (s *Store) LoadMeshtasticNodes(ctx context.Context) ([]storage.MeshtasticNo
 		if err := rows.Scan(&n.ID, &n.Name, &n.Short, &n.Lat, &n.Lon, &seenMs, &sends, &n.Hops); err != nil {
 			return nil, fmt.Errorf("scan meshtastic node: %w", err)
 		}
-		n.LastSeen = time.UnixMilli(seenMs)
+		n.LastSeen = time.UnixMilli(seenMs).UTC()
 		if sends != "" {
 			n.Sends = strings.Split(sends, ",")
 		}

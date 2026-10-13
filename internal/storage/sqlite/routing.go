@@ -344,7 +344,7 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 			return storage.DeliveryJob{}, false, fmt.Errorf("read claimed delivery job for action %q: %w", actionID, err)
 		}
 		job.Payload = []byte(payload)
-		job.FiredAt = time.UnixMilli(firedAt)
+		job.FiredAt = time.UnixMilli(firedAt).UTC()
 		if err := tx.Commit(); err != nil {
 			return storage.DeliveryJob{}, false, fmt.Errorf("commit delivery claim for action %q: %w", actionID, err)
 		}

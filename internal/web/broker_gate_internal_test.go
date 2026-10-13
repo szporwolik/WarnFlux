@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
 
 // recordingPublisher is a raw publisher that records the calls, in order,
@@ -78,6 +80,46 @@ func (p *recordingPublisher) snapshot() []string {
 	return append([]string(nil), p.calls...)
 }
 
+// fakeLedger is the durable version ledger of the tests: it remembers the
+// newest version recorded for one event key, exactly like the SQLite
+// lifecycle ledger does for local documents.
+type fakeLedger struct {
+	mu       sync.Mutex
+	versions map[string]int64
+	lookups  int
+}
+
+func newFakeLedger() *fakeLedger {
+	return &fakeLedger{versions: map[string]int64{}}
+}
+
+// record stores a version under the publisher the gate resolves for local
+// documents (the instance row).
+func (l *fakeLedger) record(eventKey string, version int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if version > l.versions[eventKey] {
+		l.versions[eventKey] = version
+	}
+}
+
+func (l *fakeLedger) LifecycleSuperseded(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lookups++
+	version, ok := l.versions[eventKey]
+	if !ok {
+		return false, nil
+	}
+	return version > changeID, nil
+}
+
+func (l *fakeLedger) lookupCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lookups
+}
+
 // enteredSnapshot lists the publications that REACHED the publisher,
 // whether or not they finished.
 func (p *recordingPublisher) enteredSnapshot() []string {
@@ -92,7 +134,7 @@ func (p *recordingPublisher) enteredSnapshot() []string {
 // resurrected a communication the panel had already retired).
 func TestBrokerGateDropsSupersededPublications(t *testing.T) {
 	pub := &recordingPublisher{}
-	g := newBrokerGate(pub)
+	g := newBrokerGate(pub, nil)
 	h := state.Hazard{EventKey: "compose:1", Source: composeSource, Status: "active"}
 
 	// The expiry writes version 7 and retires the document.
@@ -137,7 +179,7 @@ func TestBrokerGateDropsSupersededPublications(t *testing.T) {
 func TestBrokerGateSerializesOneMessage(t *testing.T) {
 	pub := &recordingPublisher{}
 	started, release := pub.holdNext()
-	g := newBrokerGate(pub)
+	g := newBrokerGate(pub, nil)
 	h := state.Hazard{EventKey: "compose:9", Source: composeSource}
 
 	first := make(chan struct{})
@@ -180,7 +222,7 @@ func TestBrokerGateSerializesOneMessage(t *testing.T) {
 // for a later versioned one.
 func TestBrokerGateKeepsUnversionedPublications(t *testing.T) {
 	pub := &recordingPublisher{}
-	g := newBrokerGate(pub)
+	g := newBrokerGate(pub, nil)
 	h := state.Hazard{EventKey: "compose:3", Source: composeSource}
 
 	if err := g.retireActive(composeSource, h.EventKey, 9); err != nil {
@@ -208,7 +250,7 @@ func TestBrokerGateKeepsUnversionedPublications(t *testing.T) {
 // TestBrokerGateWithoutPublisher pins the degraded mode: a station with
 // no broker reports the missing publisher instead of panicking.
 func TestBrokerGateWithoutPublisher(t *testing.T) {
-	g := newBrokerGate(nil)
+	g := newBrokerGate(nil, nil)
 	if err := g.publishActive(composeSource, state.Hazard{EventKey: "compose:4"}, 1); !errors.Is(err, errNoBroker) {
 		t.Fatalf("err = %v, want errNoBroker", err)
 	}
@@ -218,10 +260,28 @@ func TestBrokerGateWithoutPublisher(t *testing.T) {
 // P2: the table used to be replaced wholesale once it grew past its cap,
 // which threw away the remembered versions — a retirement of version 2
 // then lost to a publication of version 1. Pressure on the table must not
-// touch a bar, and the table must still stay bounded.
+// touch a bar, and the table must still stay bounded. It runs in both
+// modes: memory-only (the bar itself is kept) and ledger-backed (the bar
+// may be evicted, because the ledger still answers for it).
 func TestBrokerGateKeepsTheVersionBarUnderTablePressure(t *testing.T) {
+	for _, mode := range []string{"memory", "ledger"} {
+		t.Run(mode, func(t *testing.T) {
+			testBrokerGateKeepsTheVersionBarUnderTablePressure(t, mode)
+		})
+	}
+}
+
+func testBrokerGateKeepsTheVersionBarUnderTablePressure(t *testing.T, mode string) {
 	pub := &recordingPublisher{}
-	g := newBrokerGate(pub)
+	var ledger *fakeLedger
+	var g *brokerGate
+	if mode == "ledger" {
+		ledger = newFakeLedger()
+		g = newBrokerGate(pub, ledger)
+		ledger.record("compose:1", 2)
+	} else {
+		g = newBrokerGate(pub, nil)
+	}
 	h := state.Hazard{EventKey: "compose:1", Source: composeSource}
 
 	// The message is retired at version 2.
@@ -270,7 +330,7 @@ func TestBrokerGateKeepsTheVersionBarUnderTablePressure(t *testing.T) {
 func TestBrokerGateKeepsTheLockOfAnInFlightPublication(t *testing.T) {
 	pub := &recordingPublisher{}
 	started, release := pub.holdNext()
-	g := newBrokerGate(pub)
+	g := newBrokerGate(pub, nil)
 	h := state.Hazard{EventKey: "compose:7", Source: composeSource}
 
 	first := make(chan struct{})
@@ -314,5 +374,108 @@ func TestBrokerGateKeepsTheLockOfAnInFlightPublication(t *testing.T) {
 	want := []string{"active:compose:7", "retire:compose:7"}
 	if got := pub.snapshot(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("calls = %v, want %v", got, want)
+	}
+}
+
+// TestBrokerGateBoundsTheVersionedTable pins the reported P2: entries that
+// remember a version used to be kept forever, so a station publishing
+// messages for years grew without bound (and every insertion at capacity
+// scanned the whole table). With the durable ledger the gate may evict
+// them, and the ledger still keeps a delayed publication of an older
+// version out — the ordering rule must not depend on the table surviving.
+func TestBrokerGateBoundsTheVersionedTable(t *testing.T) {
+	pub := &recordingPublisher{}
+	ledger := newFakeLedger()
+	g := newBrokerGate(pub, ledger)
+
+	// Long-running publication and retirement: every message carries its
+	// own version, so nothing here is trivially evictable.
+	over := gateKeyCap + gateEvictBatch
+	for i := 0; i < over; i++ {
+		key := fmt.Sprintf("compose:%d", i)
+		h := state.Hazard{EventKey: key, Source: composeSource}
+		ledger.record(key, 3)
+		if err := g.retireActive(composeSource, key, 3); err != nil {
+			t.Fatalf("retire %s: %v", key, err)
+		}
+		if err := g.publishActive(composeSource, h, 3); err != nil {
+			t.Fatalf("publish %s: %v", key, err)
+		}
+	}
+
+	g.mu.Lock()
+	keys := len(g.keys)
+	g.mu.Unlock()
+	if keys > gateKeyCap {
+		t.Fatalf("gate kept %d keys, want at most %d", keys, gateKeyCap)
+	}
+	if keys >= over {
+		t.Fatalf("gate kept every one of the %d documents: memory is not bounded", over)
+	}
+	// The durable ledger is consulted once per (re)created bar, never per
+	// insertion into a full table.
+	if n := ledger.lookupCount(); n > over*2+64 {
+		t.Errorf("durable version lookups = %d, want proportional to the %d documents", n, over)
+	}
+
+	// The oldest document's bar was evicted; a delayed publication built
+	// from an older version still loses against the ledger.
+	before := len(pub.snapshot())
+	if err := g.publishActive(composeSource, state.Hazard{EventKey: "compose:0", Source: composeSource}, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(pub.snapshot()); got != before {
+		t.Fatalf("a superseded publication reached the broker: %v", pub.snapshot()[before:])
+	}
+	// Its current version may still be published (an idempotent resync).
+	if err := g.publishActive(composeSource, state.Hazard{EventKey: "compose:0", Source: composeSource}, 3); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(pub.snapshot()); got != before+1 {
+		t.Fatalf("the current version was dropped: %v", pub.snapshot()[before:])
+	}
+}
+
+// TestBrokerGateUsesTheDurableLedger pins the wiring of the fallback: the
+// production store must satisfy the ledger interface, and a publication
+// arriving with no in-memory bar (an evicted entry, or a fresh process)
+// must still lose to the version the store recorded — otherwise a delayed
+// publication could resurrect a retired alarm.
+func TestBrokerGateUsesTheDurableLedger(t *testing.T) {
+	store, _, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ledger := lifecycleLedger(store)
+	if ledger == nil {
+		t.Fatal("the store does not satisfy gateLedger: the durable fallback would never engage")
+	}
+	instance, err := store.InstanceID(context.Background())
+	if err != nil {
+		t.Fatalf("instance id: %v", err)
+	}
+	// The panel retires "compose:1" at version 9 (the ledger records it
+	// under the instance identity, which the empty publisher resolves).
+	if err := store.RecordLifecycle(context.Background(), instance, "compose:1", 9, "expired"); err != nil {
+		t.Fatalf("record lifecycle: %v", err)
+	}
+
+	pub := &recordingPublisher{}
+	g := newBrokerGate(pub, ledger)
+	h := state.Hazard{EventKey: "compose:1", Source: composeSource}
+	if err := g.publishActive(composeSource, h, 5); err != nil {
+		t.Fatal(err)
+	}
+	if got := pub.snapshot(); len(got) != 0 {
+		t.Fatalf("a superseded publication reached the broker: %v", got)
+	}
+	// The current version still goes out (idempotent resync).
+	if err := g.publishActive(composeSource, h, 9); err != nil {
+		t.Fatal(err)
+	}
+	if got := pub.snapshot(); len(got) != 1 {
+		t.Fatalf("calls = %v, want the current version only", got)
 	}
 }

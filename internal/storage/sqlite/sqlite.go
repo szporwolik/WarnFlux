@@ -1102,6 +1102,13 @@ type Store struct {
 	// now is the clock used for timestamps; injectable in tests.
 	now func() time.Time
 
+	// migrationCeiling stops the schema upgrade at this version when the
+	// database is opened (0 = the head schema). It exists for upgrade
+	// FIXTURES: a test builds a database exactly as an older release left
+	// it — the REAL v1..vN schema, not a hand-rolled subset of the current
+	// one — and then reopens it so the remaining steps run for real.
+	migrationCeiling int
+
 	// msgLogf reports background message-id write failures (see msgid.go).
 	msgLogf func(msg string, args ...any)
 
@@ -1141,6 +1148,20 @@ func WithMessageIDLog(fn func(msg string, args ...any)) Option {
 // instead of waiting it out.
 func WithMessageIDRetry(delays []time.Duration) Option {
 	return func(s *Store) { s.msgRetry = append([]time.Duration(nil), delays...) }
+}
+
+// WithMigrationCeiling stops the schema upgrade at the given version, so the
+// database is left at exactly the schema that release had. It is a FIXTURE
+// seam for upgrade tests — production opens the head schema — because a test
+// that rewinds user_version over the current schema (or drops the columns a
+// newer migration added) silently stops testing the real upgrade path as soon
+// as another migration lands.
+//
+// A ceiling below the head returns a plain SCHEMA HANDLE: the in-memory
+// mirrors a live store loads are not started, because the tables they read
+// may not exist yet at that version.
+func WithMigrationCeiling(version int) Option {
+	return func(s *Store) { s.migrationCeiling = version }
 }
 
 // WithClock sets the clock used for persistence timestamps. It is the
@@ -1207,19 +1228,29 @@ func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 		}
 	}
 
-	info, err := migrate(db, migrations)
-	if err != nil {
-		db.Close()
-		return nil, MigrationInfo{}, err
-	}
-
 	store := &Store{db: db, now: time.Now, path: path}
 	for _, opt := range opts {
 		opt(store)
 	}
-	if err := store.initMessageIDs(context.Background()); err != nil {
+	steps := migrations
+	fixture := false
+	if store.migrationCeiling > 0 && store.migrationCeiling < len(steps) {
+		steps = steps[:store.migrationCeiling]
+		fixture = true
+	}
+	info, err := migrate(db, steps)
+	if err != nil {
 		db.Close()
 		return nil, MigrationInfo{}, err
+	}
+	// A store on an old fixture schema is a schema handle, not a live store:
+	// the mirrors the head schema loads at startup read tables an older
+	// release did not have yet.
+	if !fixture {
+		if err := store.initMessageIDs(context.Background()); err != nil {
+			db.Close()
+			return nil, MigrationInfo{}, err
+		}
 	}
 	return store, info, nil
 }

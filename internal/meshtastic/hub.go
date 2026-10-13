@@ -1992,7 +1992,8 @@ func (h *Hub) pinUserNodes(force bool) {
 		if !h.flushFavorites() {
 			next = now.Add(pinRetryDelay)
 		}
-		h.armPinNext(next)
+		// Never postpones a retry the device asked for while this pass ran.
+		h.schedulePinNext(next)
 	}()
 
 	// The ledger first: without knowing our own stars the station cannot
@@ -2270,18 +2271,19 @@ func (h *Hub) settleFavorite(ps *pendingSend, status string) {
 // (or never answered) is attempted again in minutes, not a whole interval
 // later.
 func (h *Hub) favoriteRetry() {
+	h.schedulePinNext(time.Now().Add(pinRetryDelay))
+}
+
+// schedulePinNext arms the next pin pass WITHOUT ever postponing one that is
+// already due earlier. A retry is asked for the moment the radio answers, and
+// that answer can arrive while the pass that sent the frame is still running:
+// the pass's own interval must not overwrite it on the way out, or a refused
+// node would stay unprotected for a whole interval.
+func (h *Hub) schedulePinNext(next time.Time) {
 	h.mu.Lock()
-	next := time.Now().Add(pinRetryDelay)
 	if h.pinNext.IsZero() || next.Before(h.pinNext) {
 		h.pinNext = next
 	}
-	h.mu.Unlock()
-}
-
-// armPinNext schedules the next pin pass.
-func (h *Hub) armPinNext(next time.Time) {
-	h.mu.Lock()
-	h.pinNext = next
 	h.mu.Unlock()
 }
 

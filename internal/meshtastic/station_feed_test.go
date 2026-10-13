@@ -401,3 +401,55 @@ func TestStationRemovalSurvivesARestart(t *testing.T) {
 		t.Fatal("the removal was not confirmed after the restart")
 	}
 }
+
+// TestStationRemovalDoesNotOutliveTheNodesReturn pins the acceptance case of the
+// ticket: a removal that never reached the broker, a node that came back (its
+// document published again), a directory save, and a restart. The pending flag
+// is still set when the save happens — the node was quiet only moments before —
+// so the restored removal must NOT be applied to the fresh activity: the
+// document of an active node is never removed.
+func TestStationRemovalDoesNotOutliveTheNodesReturn(t *testing.T) {
+	store := &memNodeStore{}
+	down := newRecordingStationSink()
+	down.setFail(errors.New("broker unreachable"))
+	h := newStationFeedHub(t, down)
+	h.SetNodeStore(store)
+	h.SeedNode("aaaa0007", "returner", "RET", 0, 0, time.Now().Add(-2*time.Hour), nil)
+
+	// Quiet: the removal is queued and fails (the broker is down).
+	h.expireNodes()
+	if !removalPending(h, "aaaa0007") {
+		t.Fatal("the removal was not queued")
+	}
+
+	// The node is heard again — that packet published its document again — and
+	// the directory is saved BEFORE the next expire pass could void the entry
+	// (the tick persists right after expiring, and a packet can land in
+	// between).
+	heardNow(h, "aaaa0007", &Telemetry{Voltage: 4.2})
+	h.mu.Lock()
+	h.lastPersist = time.Time{}
+	h.mu.Unlock()
+	h.persistNodes()
+	waitFor(t, "the directory save", func() bool {
+		rows, err := store.LoadMeshtasticNodes(context.Background())
+		return err == nil && len(rows) > 0
+	})
+
+	// A restart on the same store, with a broker that works.
+	back := newRecordingStationSink()
+	restarted := newStationFeedHub(t, back)
+	restarted.SetNodeStore(store)
+	restarted.restoreNodes(context.Background())
+	restarted.expireNodes()
+
+	if got := back.operations(); len(got) != 0 {
+		t.Fatalf("broker operations = %v, want none (the node is active, its document stays)", got)
+	}
+	if !inDirectory(restarted, "aaaa0007") {
+		t.Error("the active node is missing from the directory")
+	}
+	if removalPending(restarted, "aaaa0007") || removalConfirmed(restarted, "aaaa0007") {
+		t.Error("a removal was carried over from activity that came before the node's return")
+	}
+}

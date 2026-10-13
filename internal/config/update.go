@@ -349,6 +349,18 @@ func replacePatch(parent *yaml.Node, pairIdx int, key string, value *yaml.Node, 
 			text:  renderKeyed(key, value, indent, v.Column-1),
 		}
 	}
+	// A list (or any nested block) spans several lines: the whole block is
+	// replaced, because rewriting only its first line would leave the old
+	// items behind. Comments inside the block go with it — the panel owns
+	// the value it writes.
+	if v.Kind != yaml.ScalarNode {
+		keyNode := parent.Content[pairIdx]
+		lead := indent
+		if keyNode.Column > 0 {
+			lead = keyNode.Column - 1
+		}
+		return linePatch{start: keyNode.Line - 1, end: nodeEndLine(v), text: renderKeyed(key, value, indent, lead)}
+	}
 	// Inline scalar: rebuild just this line, preserving any trailing
 	// inline comment. renderKeyed carries the original indentation
 	// itself (keyIndent = the old leading whitespace).
@@ -368,9 +380,16 @@ func replacePatch(parent *yaml.Node, pairIdx int, key string, value *yaml.Node, 
 }
 
 // renderKeyed renders "key: value" with value content indented by
-// keyIndent (the key's own column) for block scalars.
+// keyIndent (the key's own column) for block scalars and lists. A value
+// that renders as a block (a literal scalar, a list) carries its own
+// newline, so the separator is dropped for it.
 func renderKeyed(key string, value *yaml.Node, indent, keyIndent int) string {
-	return strings.Repeat(" ", keyIndent) + key + ": " + renderValue(value, indent, keyIndent)
+	rendered := renderValue(value, indent, keyIndent)
+	sep := " "
+	if strings.HasPrefix(rendered, "\n") {
+		sep = ""
+	}
+	return strings.Repeat(" ", keyIndent) + key + ":" + sep + rendered
 }
 
 // renderNested renders a chain of nested keys ending in value, e.g.
@@ -392,6 +411,9 @@ func renderNested(segments []string, value *yaml.Node, indent, base int) string 
 // renderValue renders just the value part (no key prefix); block scalars
 // indent their content by keyIndent+indent.
 func renderValue(value *yaml.Node, indent, keyIndent int) string {
+	if value.Kind == yaml.SequenceNode {
+		return renderSequence(value, indent, keyIndent)
+	}
 	if value.Kind != yaml.ScalarNode {
 		return scalarString(value)
 	}
@@ -424,6 +446,32 @@ func renderValue(value *yaml.Node, indent, keyIndent int) string {
 		return `""`
 	}
 	return s
+}
+
+// renderSequence renders a block sequence under its key, one item per
+// line, the way an operator writes a list by hand:
+//
+//	locations:
+//	  - Niepołomice
+//	  - Kraków
+//
+// An empty list renders as "[]" so the key never dangles without a value.
+func renderSequence(value *yaml.Node, indent, keyIndent int) string {
+	if len(value.Content) == 0 {
+		return "[]"
+	}
+	itemIndent := keyIndent + indent
+	var b strings.Builder
+	for _, item := range value.Content {
+		if item.Kind != yaml.ScalarNode {
+			// Nested structures are outside the panel's vocabulary:
+			// render them compactly instead of dropping them.
+			b.WriteString("\n" + strings.Repeat(" ", itemIndent) + "- " + scalarString(item))
+			continue
+		}
+		b.WriteString("\n" + strings.Repeat(" ", itemIndent) + "- " + renderValue(item, indent, itemIndent+2))
+	}
+	return b.String()
 }
 
 // scalarString renders any non-string scalar node (bools are handled by
@@ -505,6 +553,16 @@ func FloatScalar(v float64) *yaml.Node {
 // configuration understands ("1h", "30m", "0s").
 func DurationScalar(v time.Duration) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v.String()}
+}
+
+// StringListScalar builds a YAML sequence of strings: the list-valued
+// settings the Config page edits (a source's localities).
+func StringListScalar(values []string) *yaml.Node {
+	n := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, v := range values {
+		n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v})
+	}
+	return n
 }
 
 // StringScalar builds a string scalar node. Multi-line strings are

@@ -18,6 +18,7 @@ package burzedzis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -155,12 +156,20 @@ type Source struct {
 	cfg    Config
 	client *burzedzis.Client
 	plan   severityPlan
-	// locations are the resolved points; names that the directory does not
-	// know are reported and skipped until the next refresh.
-	mu       sync.Mutex
-	points   []burzedzis.Locality
-	unknown  []string
-	resolved time.Time
+	// points holds the last GOOD coordinates per configured locality name.
+	// A failed lookup never overwrites them: a momentary 503 must not blind
+	// the station for a whole refresh interval.
+	mu      sync.Mutex
+	points  map[string]burzedzis.Locality
+	unknown map[string]bool
+	// retry names the localities whose lookup failed (transport, refusal,
+	// unreadable answer). They are looked up again on the very next poll,
+	// and a pass with failures never counts as a refresh.
+	retry map[string]bool
+	// refreshed is when the last COMPLETE pass ran: every configured name
+	// answered (an unknown name is an answer too). It bounds the periodic
+	// re-resolution.
+	refreshed time.Time
 	// storm remembers the last published detection per locality.
 	storm map[string]stormState
 }
@@ -234,10 +243,13 @@ func New(node *yaml.Node) (plugin.SourcePlugin, error) {
 	}
 
 	src := &Source{
-		cfg:    cfg,
-		client: burzedzis.NewClient(cfg.BaseURL, key, cfg.RequestTimeout),
-		plan:   plan,
-		storm:  make(map[string]stormState),
+		cfg:     cfg,
+		client:  burzedzis.NewClient(cfg.BaseURL, key, cfg.RequestTimeout),
+		plan:    plan,
+		points:  make(map[string]burzedzis.Locality),
+		unknown: make(map[string]bool),
+		retry:   make(map[string]bool),
+		storm:   make(map[string]stormState),
 	}
 	if len(locations) == 0 {
 		slog.Warn("burzedzis: no localities configured; the source stays idle until the Config page (or the file) lists one",
@@ -439,11 +451,18 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 		}
 		return nil
 	}
-	if err := s.resolve(ctx); err != nil {
-		return err
+	// A failed locality lookup degrades the source but must not stop the
+	// cycle: the localities we already know keep being watched, and the
+	// error still reaches the health report.
+	resolveErr := s.resolve(ctx)
+	if resolveErr != nil {
+		slog.Warn("burzedzis locality resolution incomplete; polling the known localities", "error", resolveErr)
 	}
 	points, unknown := s.snapshotPoints()
 	if len(points) == 0 {
+		if resolveErr != nil {
+			return fmt.Errorf("no locality could be resolved: %w", resolveErr)
+		}
 		return fmt.Errorf("none of the configured localities could be resolved (%s)", strings.Join(unknown, ", "))
 	}
 
@@ -520,69 +539,112 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 	slog.Info("burzedzis feed processed",
 		"localities", len(points), "warnings", warnEmitted, "lightning", stormEmitted,
 		"unknown_localities", unknown, "failed_queries", failed)
+	if firstErr == nil {
+		firstErr = resolveErr
+	}
 	return firstErr
 }
 
 // resolve looks the configured locality names up in the provider's
-// directory, at most once per locality_refresh. Unknown names are kept in
-// the report instead of failing the poll: a typo must show up as a named
-// gap, never as a silent absence of alerts.
+// directory. The two failures are deliberately kept apart:
+//
+//   - "the directory does not know this name" (ErrUnknownLocality) is a fact
+//     about the NAME. The name is recorded, reported in the status line and
+//     dropped from the point list — the Config page refuses such a name on
+//     save, so this is the hand-edited-file case.
+//   - every other failure (a refused request, HTTP 503, a timeout, an
+//     unreadable answer) is a fact about the NETWORK. The coordinates already
+//     known for that name are KEPT, the name is queued for the next poll, the
+//     pass does not count as a refresh and the poll reports the source as
+//     degraded. A momentary outage therefore never costs 24 hours of
+//     monitoring.
 func (s *Source) resolve(ctx context.Context) error {
+	now := time.Now()
 	s.mu.Lock()
-	fresh := !s.resolved.IsZero() &&
-		(s.cfg.LocalityRefresh <= 0 || time.Since(s.resolved) < s.cfg.LocalityRefresh)
+	refreshDue := s.refreshed.IsZero() ||
+		s.cfg.LocalityRefresh <= 0 || now.Sub(s.refreshed) >= s.cfg.LocalityRefresh
+	due := make([]string, 0, len(s.cfg.Locations))
+	for _, name := range s.cfg.Locations {
+		if refreshDue || s.retry[name] {
+			due = append(due, name)
+			continue
+		}
+		if _, ok := s.points[name]; !ok && !s.unknown[name] {
+			due = append(due, name)
+		}
+	}
 	s.mu.Unlock()
-	if fresh {
+	if len(due) == 0 {
 		return nil
 	}
 
-	points := make([]burzedzis.Locality, 0, len(s.cfg.Locations))
-	unknown := make([]string, 0)
+	failed := false
 	var firstErr error
-	for _, name := range s.cfg.Locations {
+	for _, name := range due {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		loc, err := s.client.Locality(ctx, name)
 		if err != nil {
-			if burzedzis.IsFault(err) {
-				// A refused request (key, quota) is not a typo: keep the
-				// resolved points and let the poll report the fault.
-				if firstErr == nil {
-					firstErr = err
-				}
+			if errors.Is(err, burzedzis.ErrUnknownLocality) {
+				s.mu.Lock()
+				s.unknown[name] = true
+				delete(s.points, name)
+				delete(s.retry, name)
+				s.mu.Unlock()
+				slog.Warn("burzedzis locality unknown to the provider (check the spelling on the Config page)", "locality", name, "error", err)
 				continue
 			}
-			unknown = append(unknown, name)
-			slog.Warn("burzedzis locality unknown to the provider", "locality", name, "error", err)
+			// Not a typo: keep what we have and come back next poll.
+			failed = true
+			s.mu.Lock()
+			s.retry[name] = true
+			s.mu.Unlock()
+			slog.Warn("burzedzis locality lookup failed; keeping the last known coordinates", "locality", name, "error", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("locality %s: %w", name, err)
+			}
 			continue
 		}
-		points = append(points, loc)
+		s.mu.Lock()
+		s.points[name] = loc
+		delete(s.unknown, name)
+		delete(s.retry, name)
+		s.mu.Unlock()
 	}
 
 	s.mu.Lock()
-	s.points = points
-	s.unknown = unknown
-	if firstErr == nil {
-		s.resolved = time.Now()
+	if !failed {
+		s.refreshed = now
 	}
+	retrying := len(s.retry)
 	s.mu.Unlock()
-
-	if firstErr != nil {
-		return firstErr
+	if retrying > 0 {
+		slog.Info("burzedzis localities pending a retry", "count", retrying, "next_poll", s.cfg.PollInterval)
 	}
-	if len(unknown) > 0 {
-		slog.Warn("burzedzis localities skipped (check the spelling on the Config page)", "unknown", unknown)
-	}
-	return nil
+	return firstErr
 }
 
-// snapshotPoints returns the resolved points and the names that could not
-// be resolved.
+// snapshotPoints returns the known coordinates in CONFIG order (the order the
+// operator wrote them) plus the names the directory does not know. A name
+// whose lookup failed keeps its last good coordinates and simply does not
+// appear in the unknown list.
 func (s *Source) snapshotPoints() ([]burzedzis.Locality, []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]burzedzis.Locality(nil), s.points...), append([]string(nil), s.unknown...)
+	points := make([]burzedzis.Locality, 0, len(s.points))
+	for _, name := range s.cfg.Locations {
+		if loc, ok := s.points[name]; ok {
+			points = append(points, loc)
+		}
+	}
+	unknown := make([]string, 0, len(s.unknown))
+	for _, name := range s.cfg.Locations {
+		if s.unknown[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	return points, unknown
 }
 
 // Register wires the plugin into the registry and declares the accepted

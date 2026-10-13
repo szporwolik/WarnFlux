@@ -649,3 +649,207 @@ func TestRoman(t *testing.T) {
 		}
 	}
 }
+
+// flakyDirectory is the provider's directory with a switch: it answers
+// normally, or with a transient failure (HTTP 503 / a maintenance page), or
+// with the 0/0 the provider uses for a name it does not know.
+type flakyDirectory struct {
+	mu      sync.Mutex
+	mode    string
+	unknown map[string]bool
+}
+
+// refuse makes the directory answer 0/0 for that name (its "I do not know
+// this locality" answer), whatever the global mode is.
+func (d *flakyDirectory) refuse(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.unknown == nil {
+		d.unknown = make(map[string]bool)
+	}
+	d.unknown[name] = true
+}
+
+func (d *flakyDirectory) set(mode string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.mode = mode
+}
+
+func (d *flakyDirectory) refused(name string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.unknown[name]
+}
+
+func (d *flakyDirectory) get() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.mode == "" {
+		return "ok"
+	}
+	return d.mode
+}
+
+func (d *flakyDirectory) start(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		text := strings.TrimSpace(string(body))
+		switch {
+		case strings.Contains(text, "<miejscowosc "):
+			name := ""
+			if i := strings.Index(text, "<nazwa>"); i >= 0 {
+				rest := text[i+len("<nazwa>"):]
+				name = rest[:strings.Index(rest, "</nazwa>")]
+			}
+			if d.refused(name) {
+				w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+				_, _ = io.WriteString(w, cityFixture(0, 0))
+				return
+			}
+			switch d.get() {
+			case "503":
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			case "maintenance":
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = io.WriteString(w, "<html><body>maintenance</body></html>")
+				return
+			case "unknown":
+				w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+				_, _ = io.WriteString(w, cityFixture(0, 0))
+				return
+			}
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, cityFixture(50.02, 20.13))
+		case strings.Contains(text, "<ostrzezenia_pogodowe "):
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, warningsFixture(3))
+		case strings.Contains(text, "<szukaj_burzy "):
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, stormFixture(0, 0, "", 20))
+		default:
+			t.Errorf("unexpected SOAP body: %s", text)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestResolveSurvivesProviderFailure pins the reported P1: a transient
+// directory failure (HTTP 503) used to be classified as "unknown locality",
+// which wiped the resolved coordinates AND marked the cache fresh — 24 hours
+// without monitoring. A failure must keep the last good coordinates, report
+// the source as degraded and be retried on the next poll.
+func TestResolveSurvivesProviderFailure(t *testing.T) {
+	dir := &flakyDirectory{}
+	srv := dir.start(t)
+	src := sourceFromYAML(t, "api_key: test-key\nbase_url: "+srv.URL+
+		"\nlocations: [Niepołomice]\nlocality_refresh: 30m\n")
+
+	// 1. A healthy pass resolves the locality.
+	emit := &fakeEmitter{}
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		t.Fatalf("healthy pollOnce: %v", err)
+	}
+	if got := emit.events(Type); len(got) != 6 {
+		t.Fatalf("healthy pass emitted %d warnings, want 6", len(got))
+	}
+	src.mu.Lock()
+	refreshed := src.refreshed
+	resolved := len(src.points)
+	src.mu.Unlock()
+	if refreshed.IsZero() || resolved != 1 {
+		t.Fatalf("healthy pass did not cache the locality: refreshed=%v points=%d", refreshed, resolved)
+	}
+
+	// 2. The directory fails the next refresh (as it does when the refresh
+	//    window has elapsed): the station must keep watching.
+	staleStamp := time.Now().Add(-src.cfg.LocalityRefresh - time.Minute) // refresh is due
+	src.mu.Lock()
+	src.refreshed = staleStamp
+	src.mu.Unlock()
+	dir.set("503")
+
+	emit = &fakeEmitter{}
+	err := src.pollOnce(context.Background(), emit)
+	if err == nil {
+		t.Fatal("a failed locality lookup must be reported (the source is degraded)")
+	}
+	if got := emit.events(Type); len(got) != 6 {
+		t.Errorf("a directory outage stopped the warnings: %d events, want 6", len(got))
+	}
+	src.mu.Lock()
+	kept, hasCoords := src.points["Niepołomice"]
+	isUnknown := src.unknown["Niepołomice"]
+	retry, advanced := src.retry["Niepołomice"], src.refreshed.After(staleStamp)
+	src.mu.Unlock()
+	if !hasCoords || isUnknown {
+		t.Errorf("a 503 was classified as an unknown locality: hasCoords=%v unknown=%v kept=%v", hasCoords, isUnknown, kept)
+	}
+	if !retry {
+		t.Error("the failed lookup was not queued for the next poll")
+	}
+	if advanced {
+		t.Error("a pass with a failure was marked as a completed refresh (the retry would wait a full interval)")
+	}
+	if got, _ := src.snapshotPoints(); len(got) != 1 {
+		t.Errorf("the locality disappeared from the point list: %v", got)
+	}
+
+	// 3. The provider recovers: the very next poll resolves and watches
+	//    again, without a restart and without waiting for the refresh.
+	dir.set("ok")
+	emit = &fakeEmitter{}
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		t.Fatalf("pollOnce after recovery: %v", err)
+	}
+	if got := emit.events(Type); len(got) != 6 {
+		t.Errorf("after recovery the pass emitted %d warnings, want 6", len(got))
+	}
+	src.mu.Lock()
+	retry, fresh := src.retry["Niepołomice"], !src.refreshed.IsZero()
+	src.mu.Unlock()
+	if retry || !fresh {
+		t.Errorf("recovery did not clear the retry queue (retry=%v refreshed=%v)", retry, fresh)
+	}
+}
+
+// TestResolveDistinguishesUnknownFromUnreachable: only the provider's 0/0
+// answer makes a name unknown; a transient failure for a name that already
+// has coordinates keeps them, so both kinds of trouble are reported for what
+// they are.
+func TestResolveDistinguishesUnknownFromUnreachable(t *testing.T) {
+	dir := &flakyDirectory{}
+	srv := dir.start(t)
+	src := sourceFromYAML(t, "api_key: test-key\nbase_url: "+srv.URL+
+		"\nlocations: [Niepołomice, Kraków]\nlocality_refresh: 30m\n")
+
+	// A healthy pass resolves both.
+	if err := src.pollOnce(context.Background(), &fakeEmitter{}); err != nil {
+		t.Fatalf("healthy pollOnce: %v", err)
+	}
+	if got, _ := src.snapshotPoints(); len(got) != 2 {
+		t.Fatalf("resolved points = %v, want 2", got)
+	}
+
+	// The directory stops knowing one name and fails (503) on the other.
+	dir.refuse("Kraków")
+	dir.set("503")
+	src.mu.Lock()
+	src.refreshed = time.Now().Add(-src.cfg.LocalityRefresh - time.Minute)
+	src.mu.Unlock()
+	if err := src.pollOnce(context.Background(), &fakeEmitter{}); err == nil {
+		t.Fatal("the transient failure must be reported (the source is degraded)")
+	}
+
+	points, unknown := src.snapshotPoints()
+	if len(points) != 1 || points[0].Name != "Niepołomice" {
+		t.Errorf("points = %v, want only the name that has known coordinates", points)
+	}
+	if len(unknown) != 1 || unknown[0] != "Kraków" {
+		t.Errorf("unknown = %v, want only the name the directory refused", unknown)
+	}
+}

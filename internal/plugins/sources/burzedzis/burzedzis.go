@@ -412,7 +412,6 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	if _, ok := emit.(plugin.SourceActiveEventReader); !ok {
 		return fmt.Errorf("emitter lacks the source active-event reader; burzedzis withdrawal reconciliation would be unsafe")
 	}
-	reporter, _ := emit.(plugin.SourceHealthReporter)
 	slog.Info("burzedzis plugin started",
 		"base_url", s.cfg.BaseURL, "poll_interval", s.cfg.PollInterval,
 		"locations", s.cfg.Locations, "storm_tracking", s.cfg.StormTracking,
@@ -423,15 +422,7 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 		if ctx.Err() != nil {
 			break
 		}
-		err := s.pollOnce(ctx, emit)
-		if err != nil && ctx.Err() == nil {
-			slog.Warn("burzedzis poll failed", "error", err)
-			if reporter != nil {
-				reporter.ReportSourceDegraded(err)
-			}
-		} else if err == nil && reporter != nil {
-			reporter.ReportSourceHealthy()
-		}
+		s.reportPoll(ctx, emit, s.pollOnce(ctx, emit))
 		timer := time.NewTimer(s.cfg.PollInterval)
 		select {
 		case <-ctx.Done():
@@ -443,8 +434,35 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	return nil
 }
 
+// reportPoll maps the outcome of one cycle onto the source's operational
+// health. ANY error of the cycle degrades the source: an unreadable provider
+// answer, a locality the directory does not know, a publication the store
+// refused and a reconciliation that could not be read are all "this source
+// did not do its job this time". Reporting health from the events alone would
+// be the opposite: a cycle that published nothing because every Emit failed
+// would count as a clean poll and report the source healthy. A cycle that
+// failed while the station is shutting down is not reported at all — the loop
+// is ending, and the supervisor owns the shutdown state.
+func (s *Source) reportPoll(ctx context.Context, emit plugin.Emitter, err error) {
+	reporter, ok := emit.(plugin.SourceHealthReporter)
+	if !ok {
+		return
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("burzedzis poll failed", "error", err)
+		reporter.ReportSourceDegraded(err)
+		return
+	}
+	reporter.ReportSourceHealthy()
+}
+
 // pollOnce resolves the localities (cached), publishes the warnings in
-// force and, with storm_tracking on, the lightning nowcast.
+// force and, with storm_tracking on, the lightning nowcast. It returns the
+// first error of the cycle; the publications that failed are retried by the
+// next one.
 func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 	if len(s.cfg.Locations) == 0 {
 		if stats, ok := emit.(plugin.SourceStatsReporter); ok {
@@ -471,6 +489,7 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 	failed := 0
 	warnKeys := make(map[string]bool, len(points))
 	warnEmitted := 0
+	undelivered := 0
 	rejected := make([]rejectedPhenomenon, 0)
 	for _, at := range points {
 		if ctx.Err() != nil {
@@ -507,7 +526,15 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
+				// The event is NOT dropped: it stays in force at the
+				// provider, so the next poll publishes it again — until
+				// then the alert really is missing, which is what the
+				// health report has to say.
+				undelivered++
 				slog.Warn("burzedzis emit failed; retrying on the next poll", "event_key", ev.Key(), "error", err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("publishing the warning of %s: %w", in.Point.Name, err)
+				}
 				continue
 			}
 			warnEmitted++
@@ -528,11 +555,20 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 			if err := protectRejected(ctx, emit, warnKeys, rejected); err != nil {
 				reconcile = false
 				slog.Warn("burzedzis reconciliation skipped: the alerts of the rejected phenomena cannot be protected", "error", err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("protecting the alerts of the rejected phenomena: %w", err)
+				}
 			}
 		}
 		if reconcile {
 			if n, err := snapshotutil.Reconcile(ctx, emit, Type, warnKeys, time.Now()); err != nil {
 				slog.Warn("burzedzis warning reconciliation failed", "error", err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("reconciling the withdrawn warnings: %w", err)
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 			} else if n > 0 {
 				slog.Info("burzedzis withdrawn warnings cancelled", "count", n)
 			}
@@ -543,13 +579,15 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 
 	stormEmitted := 0
 	if s.cfg.StormTracking {
-		n, err := s.pollStorm(ctx, emit, points, failed == 0)
+		n, undeliveredStorms, err := s.pollStorm(ctx, emit, points, failed == 0)
 		stormEmitted = n
+		undelivered += undeliveredStorms
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
-			slog.Warn("burzedzis lightning search failed", "error", err)
+			// The message names what failed (the search, the publication);
+			// pollStorm logs the detail.
 		}
 	}
 
@@ -568,11 +606,17 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 			}
 			summary += " · incomplete answer: " + strings.Join(names, ", ")
 		}
+		if undelivered > 0 {
+			// The events are not lost — they stay in force at the provider
+			// and are retried — but the operator must see that the source
+			// is degraded because the station could not publish them.
+			summary += fmt.Sprintf(" · undelivered: %d", undelivered)
+		}
 		stats.ReportSourceStats(summary)
 	}
 	slog.Info("burzedzis feed processed",
 		"localities", len(points), "warnings", warnEmitted, "lightning", stormEmitted,
-		"unknown_localities", unknown, "failed_queries", failed)
+		"unknown_localities", unknown, "failed_queries", failed, "undelivered", undelivered)
 	if firstErr == nil {
 		firstErr = resolveErr
 	}

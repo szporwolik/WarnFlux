@@ -2,6 +2,7 @@ package burzedzis
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -62,16 +63,21 @@ func (s *Source) forgetStormsOutside(ids map[string]bool) {
 // cancelled by this poll instead of waiting for its validity to lapse.
 // reconciliation is false when the caller's warning pass was incomplete —
 // an incomplete search must never look like a quiet sky.
-func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []burzedzis.Locality, reconcile bool) (int, error) {
+//
+// It returns how many detections were published and how many could NOT be,
+// plus the first error of the poll: an unreadable search and a refused
+// publication are both facts about this cycle, and the caller turns them
+// into the source's health.
+func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []burzedzis.Locality, reconcile bool) (int, int, error) {
 	now := time.Now()
 	keys := make(map[string]bool, len(points))
 	ids := make(map[string]bool, len(points))
-	emitted, failed, skipped := 0, 0, 0
+	emitted, failed, skipped, undelivered := 0, 0, 0, 0
 	var firstErr error
 
 	for _, at := range points {
 		if ctx.Err() != nil {
-			return emitted, ctx.Err()
+			return emitted, undelivered, ctx.Err()
 		}
 		st, err := s.client.Storm(ctx, at, s.cfg.StormRadiusKM)
 		if err != nil {
@@ -99,9 +105,17 @@ func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []bu
 		}
 		if err := emit.Emit(ctx, ev); err != nil {
 			if ctx.Err() != nil {
-				return emitted, ctx.Err()
+				return emitted, undelivered, ctx.Err()
 			}
+			// Retried on the next poll (the dedup memory is only written
+			// below, on success), and this cycle is degraded until it
+			// works: a storm nobody was told about is exactly what the
+			// health report is for.
+			undelivered++
 			slog.Warn("burzedzis lightning emit failed; retrying on the next poll", "event_key", ev.Key(), "error", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("publishing the lightning detection of %s: %w", at.Name, err)
+			}
 			continue
 		}
 		s.mu.Lock()
@@ -114,6 +128,12 @@ func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []bu
 		n, err := snapshotutil.Reconcile(ctx, emit, TypeStorm, keys, now)
 		if err != nil {
 			slog.Warn("burzedzis lightning reconciliation failed", "error", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("reconciling the cancelled nowcast: %w", err)
+			}
+			if ctx.Err() != nil {
+				return emitted, undelivered, ctx.Err()
+			}
 		} else {
 			// The pass was complete and every detection not in ids is now
 			// cancelled, so the dedup memory of those localities goes with
@@ -133,5 +153,5 @@ func (s *Source) pollStorm(ctx context.Context, emit plugin.Emitter, points []bu
 	if skipped > 0 {
 		slog.Debug("burzedzis lightning detections unchanged; published once per update interval", "skipped", skipped)
 	}
-	return emitted, firstErr
+	return emitted, undelivered, firstErr
 }

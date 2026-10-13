@@ -99,12 +99,146 @@ type fakeComposePublisher struct {
 	holdActive        chan struct{}
 	activeHoldStarted chan struct{}
 	activeHoldOnce    sync.Once
+
+	// notify is closed and replaced on every recorded state change, so a
+	// test can WAIT for a specific publication instead of asserting right
+	// after the HTTP call. Publications are asynchronous by design
+	// (reported P2: six flaky tests).
+	notify chan struct{}
+}
+
+// signalLocked wakes every waiter; the caller holds f.mu.
+func (f *fakeComposePublisher) signalLocked() {
+	if f.notify == nil {
+		return
+	}
+	close(f.notify)
+	f.notify = make(chan struct{})
+}
+
+// notifyLocked returns the channel a waiter blocks on; the caller holds
+// f.mu.
+func (f *fakeComposePublisher) notifyLocked() chan struct{} {
+	if f.notify == nil {
+		f.notify = make(chan struct{})
+	}
+	return f.notify
+}
+
+// await waits until ready reports true, waking on every recorded state
+// change and never sleeping for a fixed time. ready runs with f.mu held.
+func (f *fakeComposePublisher) await(t *testing.T, what string, ready func() bool) {
+	t.Helper()
+	const limit = 5 * time.Second
+	deadline := time.Now().Add(limit)
+	for {
+		f.mu.Lock()
+		if ready() {
+			f.mu.Unlock()
+			return
+		}
+		ch := f.notifyLocked()
+		f.mu.Unlock()
+		timer := time.NewTimer(time.Until(deadline))
+		select {
+		case <-ch:
+			timer.Stop()
+		case <-timer.C:
+			t.Fatalf("timed out after %s waiting for %s", limit, what)
+		}
+	}
+}
+
+// awaitActiveDoc waits until the broker model holds the retained active
+// document of one source + event key, and returns it.
+func (f *fakeComposePublisher) awaitActiveDoc(t *testing.T, source, eventKey string) string {
+	t.Helper()
+	key := "active:" + source + ":" + eventKey
+	f.await(t, "the retained active document of "+key, func() bool { _, ok := f.docs[key]; return ok })
+	doc, _ := f.activeDoc(source, eventKey)
+	return doc
+}
+
+// awaitPublished waits until at least min hazards of one event key reached
+// the broker (failures do not count).
+func (f *fakeComposePublisher) awaitPublished(t *testing.T, eventKey string, min int) {
+	t.Helper()
+	f.await(t, fmt.Sprintf("%d publication(s) of %s", min, eventKey), func() bool {
+		n := 0
+		for _, h := range f.published {
+			if h.EventKey == eventKey {
+				n++
+			}
+		}
+		return n >= min
+	})
+}
+
+// awaitExpireAttempt waits until a removal of eventKey was attempted,
+// successfully or against a down broker.
+func (f *fakeComposePublisher) awaitExpireAttempt(t *testing.T, eventKey string) {
+	t.Helper()
+	f.await(t, "a removal attempt of "+eventKey, func() bool {
+		ok, failed := 0, 0
+		for _, k := range f.expired {
+			if k == eventKey {
+				ok++
+			}
+		}
+		for _, k := range f.failedExpired {
+			if k == eventKey {
+				failed++
+			}
+		}
+		return ok+failed > 0
+	})
+}
+
+// awaitExpired waits until a removal of eventKey reached the broker.
+func (f *fakeComposePublisher) awaitExpired(t *testing.T, eventKey string) {
+	t.Helper()
+	f.await(t, "a successful removal of "+eventKey, func() bool {
+		for _, k := range f.expired {
+			if k == eventKey {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// awaitInfoDoc waits until the retained raw document of one suffix exists
+// (and contains substr) and returns it.
+func (f *fakeComposePublisher) awaitInfoDoc(t *testing.T, suffix, substr string) string {
+	t.Helper()
+	key := "raw:" + suffix
+	f.await(t, "the retained document "+key, func() bool {
+		doc, ok := f.docs[key]
+		return ok && strings.Contains(doc, substr)
+	})
+	doc, _ := f.infoDoc(suffix)
+	return doc
+}
+
+// awaitRawFor waits until a retained state document of one network slug
+// was published.
+func (f *fakeComposePublisher) awaitRawFor(t *testing.T, slug string) {
+	t.Helper()
+	f.await(t, "a state document of "+slug, func() bool {
+		for _, r := range f.raw {
+			if strings.HasSuffix(r.Suffix, "/"+slug+"/emcom") {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // setFail turns the simulated broker outage on or off.
 func (f *fakeComposePublisher) setFail(fail bool) {
 	f.mu.Lock()
 	f.fail = fail
+	f.signalLocked()
 	f.mu.Unlock()
 }
 
@@ -112,6 +246,7 @@ func (f *fakeComposePublisher) setFail(fail bool) {
 func (f *fakeComposePublisher) setFailRaw(fail bool) {
 	f.mu.Lock()
 	f.failRaw = fail
+	f.signalLocked()
 	f.mu.Unlock()
 }
 
@@ -184,10 +319,12 @@ func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) erro
 	defer f.mu.Unlock()
 	if f.fail {
 		f.failedActive = append(f.failedActive, h.EventKey)
+		f.signalLocked()
 		return errors.New("broker down")
 	}
 	f.published = append(f.published, h)
 	f.keepDoc("active:"+source+":"+h.EventKey, h.Headline)
+	f.signalLocked()
 	return nil
 }
 
@@ -196,10 +333,12 @@ func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
 	defer f.mu.Unlock()
 	if f.fail {
 		f.failedExpired = append(f.failedExpired, eventKey)
+		f.signalLocked()
 		return errors.New("broker down")
 	}
 	f.expired = append(f.expired, eventKey)
 	f.dropDoc("active:" + source + ":" + eventKey)
+	f.signalLocked()
 	return nil
 }
 
@@ -208,6 +347,7 @@ func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload 
 	defer f.mu.Unlock()
 	if f.fail || f.failRaw {
 		f.failedRawCount++
+		f.signalLocked()
 		return errors.New("broker down")
 	}
 	f.raw = append(f.raw, fakeRawPublish{Suffix: suffix, Retained: retained, Payload: append([]byte(nil), payload...)})
@@ -216,6 +356,7 @@ func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload 
 	} else {
 		f.keepDoc("raw:"+suffix, string(payload))
 	}
+	f.signalLocked()
 	return nil
 }
 

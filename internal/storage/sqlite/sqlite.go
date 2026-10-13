@@ -1055,6 +1055,16 @@ CREATE TABLE meshtastic_favorites (
 );
 `,
 	},
+	{
+		// v62: the node rows that still owe the broker a removal of their
+		// retained station document. The row keeps the node's last known
+		// observation, so a removal queued just before the directory dropped
+		// the node (nodeDirRetention) is attempted again after a restart
+		// instead of leaving an obsolete retained document on the broker.
+		SQL: `
+ALTER TABLE meshtastic_nodes ADD COLUMN pending_removal INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

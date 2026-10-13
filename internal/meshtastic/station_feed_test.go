@@ -118,7 +118,10 @@ func quietFor(h *Hub, id string, d time.Duration) {
 	h.mu.Lock()
 	if n := h.nodes[id]; n != nil {
 		n.LastSeen = time.Now().Add(-d)
-		n.tombstoneTried = time.Now().Add(-d)
+	}
+	if tb := h.tombstones[id]; tb != nil {
+		tb.quietSince = time.Now().Add(-d)
+		tb.tried = time.Now().Add(-d)
 	}
 	h.mu.Unlock()
 }
@@ -134,11 +137,20 @@ func heardNow(h *Hub, id string, telemetry *Telemetry) {
 	h.mu.Unlock()
 }
 
-func tombstoneRecorded(h *Hub, id string) bool {
+// removalConfirmed reports whether the broker already took the removal.
+func removalConfirmed(h *Hub, id string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	n := h.nodes[id]
-	return n != nil && n.tombstoned
+	tb := h.tombstones[id]
+	return tb != nil && tb.confirmed
+}
+
+// removalPending reports whether the broker still owes the removal.
+func removalPending(h *Hub, id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	tb := h.tombstones[id]
+	return tb != nil && !tb.confirmed
 }
 
 // TestStationRemovalIsRetriedAfterABrokerOutage pins the first ticket case: the
@@ -155,7 +167,7 @@ func TestStationRemovalIsRetriedAfterABrokerOutage(t *testing.T) {
 	if got := sink.attemptCount(); got != 1 {
 		t.Fatalf("attempts = %d, want the removal to be tried", got)
 	}
-	if tombstoneRecorded(h, "aaaa0001") {
+	if removalConfirmed(h, "aaaa0001") {
 		t.Fatal("a removal the broker refused was recorded as done")
 	}
 
@@ -169,7 +181,7 @@ func TestStationRemovalIsRetriedAfterABrokerOutage(t *testing.T) {
 	if got := sink.removals(); len(got) != 1 {
 		t.Fatalf("removals = %v, want the removal to have landed", got)
 	}
-	if !tombstoneRecorded(h, "aaaa0001") {
+	if !removalConfirmed(h, "aaaa0001") {
 		t.Fatal("the confirmed removal was not recorded")
 	}
 
@@ -201,14 +213,14 @@ func TestStationRemovalFollowsANodeThatComesBack(t *testing.T) {
 	if got := sink.removals(); len(got) != 1 {
 		t.Fatalf("removals = %v, want the removal", got)
 	}
-	if !tombstoneRecorded(h, "bbbb0002") {
+	if !removalConfirmed(h, "bbbb0002") {
 		t.Fatal("the removal was not recorded")
 	}
 
 	// Back on the air: the removal state is void, the node is active again.
 	heardNow(h, "bbbb0002", &Telemetry{Voltage: 4.1})
 	h.expireNodes()
-	if tombstoneRecorded(h, "bbbb0002") {
+	if removalConfirmed(h, "bbbb0002") {
 		t.Fatal("a node heard again is still marked as removed")
 	}
 	if got := sink.removals(); len(got) != 1 {
@@ -268,5 +280,124 @@ func TestStationFeedOrdersRemovalAndPositionPublish(t *testing.T) {
 	ops := sink.operations()
 	if len(ops) != 2 || ops[0] != "remove:meshtastic/stations/cccc0003" || ops[1] != "publish:meshtastic/stations/cccc0003" {
 		t.Fatalf("broker operations = %v, want the removal first and the position publish last", ops)
+	}
+}
+
+func inDirectory(h *Hub, id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.nodes[id] != nil
+}
+
+// TestStationRemovalOutlivesTheDirectory pins the first ticket case: a node
+// restored from the broker (an obsolete retained document) whose local entry is
+// already past nodeDirRetention. The directory drops it, and the broker must
+// still receive the removal — the pending work cannot live in a map that no
+// longer holds the node.
+func TestStationRemovalOutlivesTheDirectory(t *testing.T) {
+	sink := newRecordingStationSink()
+	h := newStationFeedHub(t, sink)
+	h.SeedNode("dddd0004", "ghost", "GHO", 0, 0, time.Now().Add(-(nodeDirRetention + 24*time.Hour)), nil)
+
+	h.expireNodes()
+
+	if inDirectory(h, "dddd0004") {
+		t.Fatal("a node unheard for over the retention stayed in the directory")
+	}
+	if got := sink.removals(); len(got) != 1 {
+		t.Fatalf("removals = %v, want the removal of the dropped node's document", got)
+	}
+	if !removalConfirmed(h, "dddd0004") {
+		t.Fatal("the removal was not recorded as confirmed")
+	}
+}
+
+// TestStationRemovalSurvivesTheRetentionBoundary pins the second ticket case:
+// the removal fails during a broker outage, and the node then ages past
+// nodeDirRetention. The pending work must survive the directory prune and still
+// reach the broker once it is back.
+func TestStationRemovalSurvivesTheRetentionBoundary(t *testing.T) {
+	sink := newRecordingStationSink()
+	sink.setFail(errors.New("broker unreachable"))
+	h := newStationFeedHub(t, sink)
+	h.SeedNode("eeee0005", "leaver", "LEA", 0, 0, time.Now().Add(-2*time.Hour), nil)
+
+	h.expireNodes()
+	if got := sink.attemptCount(); got != 1 {
+		t.Fatalf("attempts = %d, want the failed removal", got)
+	}
+
+	// Time passes with the broker still down: the node is now past the
+	// retention as well, so the directory drops it.
+	quietFor(h, "eeee0005", nodeDirRetention+time.Hour)
+	h.expireNodes()
+	if inDirectory(h, "eeee0005") {
+		t.Fatal("the directory should have dropped the node")
+	}
+	if !removalPending(h, "eeee0005") {
+		t.Fatal("the pending removal was lost with the directory entry")
+	}
+
+	// The broker comes back: the removal is still owed and finally lands.
+	sink.setFail(nil)
+	quietFor(h, "eeee0005", nodeDirRetention+time.Hour)
+	h.expireNodes()
+	if got := sink.removals(); len(got) != 1 {
+		t.Fatalf("removals = %v, want the removal after the recovery", got)
+	}
+	if !removalConfirmed(h, "eeee0005") {
+		t.Fatal("the removal was not confirmed")
+	}
+}
+
+// TestStationRemovalSurvivesARestart pins the acceptance requirement: pending
+// work is persisted with the directory, so a station that stops with an
+// unconfirmed removal (the broker was down) still removes the document after it
+// starts again.
+func TestStationRemovalSurvivesARestart(t *testing.T) {
+	store := &memNodeStore{}
+	sink := newRecordingStationSink()
+	sink.setFail(errors.New("broker unreachable"))
+	h := newStationFeedHub(t, sink)
+	h.SetNodeStore(store)
+	h.SeedNode("ffff0006", "drifter", "DRI", 0, 0, time.Now().Add(-(nodeDirRetention + 24*time.Hour)), nil)
+
+	h.expireNodes() // the attempt fails, the node leaves the directory
+	if inDirectory(h, "ffff0006") {
+		t.Fatal("the node should have been dropped")
+	}
+	// Force the directory save (the hub throttles it to once per 30s).
+	h.mu.Lock()
+	h.lastPersist = time.Time{}
+	h.mu.Unlock()
+	h.persistNodes()
+	waitFor(t, "the pending removal to be persisted", func() bool {
+		rows, err := store.LoadMeshtasticNodes(context.Background())
+		if err != nil {
+			return false
+		}
+		for _, row := range rows {
+			if row.ID == "ffff0006" && row.PendingRemoval {
+				return true
+			}
+		}
+		return false
+	})
+
+	// A NEW hub on the same store, with a broker that works: the removal is
+	// owed again and lands.
+	back := newRecordingStationSink()
+	restarted := newStationFeedHub(t, back)
+	restarted.SetNodeStore(store)
+	restarted.restoreNodes(context.Background())
+	if !removalPending(restarted, "ffff0006") {
+		t.Fatal("the pending removal did not survive the restart")
+	}
+	restarted.expireNodes()
+	if got := back.removals(); len(got) != 1 {
+		t.Fatalf("removals = %v, want the removal after the restart", got)
+	}
+	if !removalConfirmed(restarted, "ffff0006") {
+		t.Fatal("the removal was not confirmed after the restart")
 	}
 }

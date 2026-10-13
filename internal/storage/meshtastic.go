@@ -83,6 +83,10 @@ type MeshtasticNode struct {
 	LastSeen time.Time
 	Sends    []string
 	Hops     int
+	// PendingRemoval marks a node whose retained MQTT document still has to be
+	// removed: the row keeps the removal alive after the node itself left the
+	// directory (nodeDirRetention), and across a restart.
+	PendingRemoval bool
 }
 
 // MeshtasticNodeStore persists the heard-node directory across restarts:

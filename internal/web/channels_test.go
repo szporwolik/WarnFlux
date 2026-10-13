@@ -1,7 +1,6 @@
 package web
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
@@ -73,9 +72,11 @@ func TestPublicSources(t *testing.T) {
 		{ID: "aprs-radio-main", Type: "aprs-radio", Kind: plugin.KindSource, State: plugin.StateRunning},
 		{ID: "future-x", Type: "something-new", Kind: plugin.KindSource, State: plugin.StateRunning},
 	}
-	got := publicSources(statuses, i18n.LangEN)
+	// The station's own feeds: no ingest endpoint and no EMCOM network here,
+	// so only the messages row is added.
+	got := publicSources(statuses, operatorSources{}, i18n.LangEN)
 	// One row per FEED: the two APRS flavours collapse into one row.
-	want := []string{"RSO / Alert RCB", "IMGW-PIB", "burze.dzis.net (storms)", "GIOŚ (air quality)", "APRS network", "ADS-B aircraft"}
+	want := []string{"RSO / Alert RCB", "IMGW-PIB", "burze.dzis.net (storms)", "GIOŚ (air quality)", "APRS network", "ADS-B aircraft", "WarnFlux messages"}
 	if len(got) != len(want) {
 		t.Fatalf("sources = %+v, want %v", got, want)
 	}
@@ -86,22 +87,34 @@ func TestPublicSources(t *testing.T) {
 		if got[i].Icon == "" || got[i].Description == "" {
 			t.Errorf("source %s lacks icon/description: %+v", name, got[i])
 		}
-		// Every source row carries the provider's own page: the data belongs
-		// to the provider and the reader must be able to reach it (the
-		// burze.dzis.net API terms require exactly that attribution).
-		if got[i].URL == "" || !strings.HasPrefix(got[i].URL, "https://") {
-			t.Errorf("source %s has no provider reference: %+v", name, got[i])
-		}
 	}
 	byName := map[string]publicChannelView{}
 	for _, v := range got {
 		byName[v.Name] = v
 	}
-	if url := byName["burze.dzis.net (storms)"].URL; url != "https://burze.dzis.net/" {
-		t.Errorf("storm source reference = %q, want the provider's page", url)
+	// Every PROVIDER row carries the provider's own page: the data belongs to
+	// the provider and the reader must be able to reach it (the
+	// burze.dzis.net API terms require exactly that attribution).
+	for name, wantURL := range map[string]string{
+		"RSO / Alert RCB":         "https://komunikaty.tvp.pl/",
+		"IMGW-PIB":                "https://danepubliczne.imgw.pl/",
+		"burze.dzis.net (storms)": "https://burze.dzis.net/",
+		"GIOŚ (air quality)":      "https://powietrze.gios.gov.pl/",
+		"APRS network":            "https://www.aprs-is.net/",
+		"ADS-B aircraft":          "https://adsb.lol/",
+	} {
+		row, ok := byName[name]
+		if !ok {
+			t.Errorf("source row %q is missing", name)
+			continue
+		}
+		if row.URL != wantURL {
+			t.Errorf("source %s reference = %q, want %q", name, row.URL, wantURL)
+		}
 	}
-	if url := byName["APRS network"].URL; url != "https://www.aprs-is.net/" {
-		t.Errorf("APRS reference = %q", url)
+	// The station's own feeds have no provider behind them.
+	if row := byName["WarnFlux messages"]; row.URL != "" {
+		t.Errorf("the station's own messages carry a provider reference: %q", row.URL)
 	}
 	// Delivery media are not a web service: no reference under them.
 	for _, v := range publicChannels([]action.Status{{ID: "smtp-a", Type: "smtp", Enabled: true, State: action.StateHealthy}}, i18n.LangEN) {
@@ -111,8 +124,8 @@ func TestPublicSources(t *testing.T) {
 	}
 
 	// Polish: names and descriptions come from the page catalog.
-	gotPL := publicSources(statuses, i18n.LangPL)
-	wantPL := []string{"RSO / Alert RCB", "IMGW-PIB", "burze.dzis.net (burze)", "GIOŚ (jakość powietrza)", "Sieć APRS", "Samoloty ADS-B"}
+	gotPL := publicSources(statuses, operatorSources{}, i18n.LangPL)
+	wantPL := []string{"RSO / Alert RCB", "IMGW-PIB", "burze.dzis.net (burze)", "GIOŚ (jakość powietrza)", "Sieć APRS", "Samoloty ADS-B", "Komunikaty WarnFlux"}
 	if len(gotPL) != len(wantPL) {
 		t.Fatalf("pl sources = %+v, want %v", gotPL, wantPL)
 	}
@@ -122,6 +135,45 @@ func TestPublicSources(t *testing.T) {
 		}
 		if gotPL[i].Description == "" || gotPL[i].Description == got[i].Description {
 			t.Errorf("pl source %s leaks the English description: %+v", name, gotPL[i])
+		}
+	}
+}
+
+// TestPublicOperatorSources pins the feeds that are not plugins: the station
+// has no foreign provider at all in this fixture, yet the page must still say
+// where data comes from — its own messages always, its REST API only when an
+// endpoint exists, EMCOM only when a network is managed.
+func TestPublicOperatorSources(t *testing.T) {
+	names := func(op operatorSources) []string {
+		var out []string
+		for _, v := range publicSources(nil, op, i18n.LangEN) {
+			out = append(out, v.Name)
+		}
+		return out
+	}
+
+	bare := names(operatorSources{})
+	if len(bare) != 1 || bare[0] != "WarnFlux messages" {
+		t.Fatalf("bare station sources = %v, want only the messages row", bare)
+	}
+	full := names(operatorSources{Ingest: 1, Emcom: 2})
+	want := []string{"WarnFlux messages", "REST API", "EMCOM network"}
+	if len(full) != len(want) {
+		t.Fatalf("operator sources = %v, want %v", full, want)
+	}
+	for i := range want {
+		if full[i] != want[i] {
+			t.Errorf("operator source %d = %q, want %q", i, full[i], want[i])
+		}
+	}
+	// The REST API row is the ingest feed the routing matrix names REST API,
+	// and it carries the station's own endpoint claim, not a provider link.
+	for _, v := range publicSources(nil, operatorSources{Ingest: 1}, i18n.LangPL) {
+		if v.Name == "REST API" && v.URL != "" {
+			t.Errorf("the operator's own endpoint carries a provider reference: %q", v.URL)
+		}
+		if v.Name == "REST API" && v.Description == "" {
+			t.Error("the REST API row has no description")
 		}
 	}
 }

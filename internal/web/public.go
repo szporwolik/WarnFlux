@@ -78,7 +78,10 @@ func (s *Server) handleSourcesPage(w http.ResponseWriter, r *http.Request) {
 		v.Channels = publicChannels(s.actions.Statuses(), lang)
 	}
 	if s.router != nil {
-		v.Sources = publicSources(s.router.Statuses(), lang)
+		v.Sources = publicSources(s.router.Statuses(), operatorSources{
+			Ingest: len(s.ingest),
+			Emcom:  len(s.emcomNetworks()),
+		}, lang)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "sources_page", v)

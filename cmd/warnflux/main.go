@@ -481,8 +481,6 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 		Baud:          cfg.Meshtastic.Baud,
 		RouteMessages: cfg.Meshtastic.RouteMessages,
 		NodeTTL:       cfg.Meshtastic.NodeTTL,
-
-		SilenceTimeout: cfg.Meshtastic.SilenceTimeout,
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
@@ -739,7 +737,6 @@ func run(configPath string, checkConfig bool) error {
 		Baud:                 cfg.Meshtastic.Baud,
 		RouteMessages:        cfg.Meshtastic.RouteMessages,
 		NodeTTL:              cfg.Meshtastic.NodeTTL,
-		SilenceTimeout:       cfg.Meshtastic.SilenceTimeout,
 		EmcomChannel:         cfg.Meshtastic.EmcomChannel,
 		WatchChannel:         cfg.Meshtastic.WatchChannel,
 		EmcomAt:              cfg.Meshtastic.EmcomAt,

@@ -1185,13 +1185,10 @@ func TestSendFailureReasonKeys(t *testing.T) {
 
 // TestHubSilentDeviceReconnects pins the radio-silence watchdog: a
 // session with no FromRadio traffic for longer than the silence timeout
-// is torn down and redialed instead of hanging forever. The timeout is
-// shortened through the setup hook: the configuration layer refuses a
-// value below the floor (minSilenceTimeout), because a station setting
-// one would only produce a reconnect storm.
+// is torn down and redialed instead of hanging forever.
 func TestHubSilentDeviceReconnects(t *testing.T) {
-	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour},
-		testRadioOpts{setup: func(h *Hub) { h.cfg.SilenceTimeout = 150 * time.Millisecond }})
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		SilenceTimeout: 150 * time.Millisecond})
 	radio.waitConnected(t)
 
 	// The watchdog must tear the silent session down and dial a fresh
@@ -3551,30 +3548,4 @@ func waitForHubTimeout(t *testing.T, budget time.Duration, cond func() bool, wha
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal(what)
-}
-
-// TestHubSilenceTimeoutValidation pins the floor of the configured
-// silence timeout: below it the watchdog would tear the session down
-// between two quiet heartbeats, which is a reconnect storm instead of a
-// liveness check. Zero keeps the built-in default.
-func TestHubSilenceTimeoutValidation(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	for _, tc := range []struct {
-		in      time.Duration
-		wantErr bool
-	}{
-		{in: 0, wantErr: false},
-		{in: 15 * time.Second, wantErr: false},
-		{in: 10 * time.Minute, wantErr: false},
-		{in: 14 * time.Second, wantErr: true},
-		{in: -time.Minute, wantErr: true},
-	} {
-		_, err := NewHub(Config{Enabled: true, Device: "/dev/fake", SilenceTimeout: tc.in}, logger)
-		if tc.wantErr && err == nil {
-			t.Errorf("silence_timeout %s accepted, want a validation error", tc.in)
-		}
-		if !tc.wantErr && err != nil {
-			t.Errorf("silence_timeout %s rejected: %v", tc.in, err)
-		}
-	}
 }

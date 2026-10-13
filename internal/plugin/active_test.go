@@ -433,7 +433,8 @@ func (s *captureSource) emitter() Emitter {
 
 // TestSourceEmitterListSourceActiveEvents proves the optional
 // SourceActiveEventReader capability end to end: the per-source emitter
-// pages the authoritative SQLite active state and filters by source.
+// pages the authoritative SQLite active state and returns only the active
+// events of the requested source THAT THIS INSTANCE OWNS.
 func TestSourceEmitterListSourceActiveEvents(t *testing.T) {
 	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
@@ -465,27 +466,39 @@ func TestSourceEmitterListSourceActiveEvents(t *testing.T) {
 	}()
 	waitFor(t, 3*time.Second, func() bool { return capture.emitter() != nil })
 
+	// The events the instance OWNED are published through its own
+	// emitter, the way a source plugin hands them over: that is what
+	// stamps the producer the reader scopes on.
+	emit := capture.emitter()
 	one := eventFor("cap-one")
 	two := eventFor("cap-two")
 	other := eventFor("cap-other")
 	other.Source = "other-src"
 	other.SourceID = "x"
-	if _, _, err := ing.Ingest(ctx, one); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := ing.Ingest(ctx, two); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := ing.Ingest(ctx, other); err != nil {
-		t.Fatal(err)
+	for _, ev := range []core.HazardEvent{one, two, other} {
+		if err := emit.Emit(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cancelled := eventFor("cap-cancelled")
-	if _, _, err := ing.Ingest(ctx, cancelled); err != nil {
+	if err := emit.Emit(ctx, cancelled); err != nil {
 		t.Fatal(err)
 	}
 	cancelled.Status = core.StatusCancelled
-	if _, _, err := ing.Ingest(ctx, cancelled); err != nil {
+	if err := emit.Emit(ctx, cancelled); err != nil {
 		t.Fatal(err)
+	}
+	// A row another INSTANCE of the same source type produced, and a row
+	// with no owner at all (stored before the owner existed, or received
+	// from an ingest endpoint): neither belongs to this instance, so its
+	// reconciliation must not see them.
+	sibling := eventFor("cap-sibling")
+	sibling.Producer = "sibling"
+	unowned := eventFor("cap-unowned")
+	for _, ev := range []core.HazardEvent{sibling, unowned} {
+		if _, _, err := ing.Ingest(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	reader, ok := capture.emitter().(SourceActiveEventReader)
@@ -511,6 +524,12 @@ func TestSourceEmitterListSourceActiveEvents(t *testing.T) {
 	}
 	if keys[other.Key()] {
 		t.Errorf("event %q from another source leaked in", other.Key())
+	}
+	if keys[sibling.Key()] {
+		t.Errorf("event %q of a sibling instance leaked in", sibling.Key())
+	}
+	if keys[unowned.Key()] {
+		t.Errorf("unowned event %q leaked in", unowned.Key())
 	}
 
 	cancel()

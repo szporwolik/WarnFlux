@@ -103,6 +103,27 @@ So the client validates what it decoded, before the adapter ever sees it:
   whole reconciliation is skipped for the cycle (no cancellation at all);
   nothing is ever cancelled on incomplete evidence.
 
+### Two instances, one provider
+
+Several instances of this plugin may be configured (e.g. `burze-main` for
+Niepołomice and `burze-krakow` for Kraków). They publish under the SAME event
+source slug (`burzedzis`), so the reconciliation of one instance must not read
+the alerts of the other as withdrawn — its own snapshot knows nothing about
+them. Each instance therefore reads back only the events it OWNS: the manager
+stamps every event with the configured source id (its "producer"), and the
+`SourceActiveEventReader` returns nothing else. A locality followed by both
+instances stays ONE alert with one number (identity is
+`source`+`source_id`, and the producer is not part of it); whoever reports it
+last owns it.
+
+Two consequences worth knowing when planning a second instance:
+
+- the routing matrix addresses the plugin TYPE, so both instances match the
+  same `burzedzis` (and `burzedzis-burza`) rows — split the localities across
+  instances only when one set of routing rules fits both;
+- each instance polls the provider for its own localities, so the request
+  budget, `poll_interval` and the plugin's status entry are per instance.
+
 ## Severity mapping
 
 Degrees map onto the canonical scale (`1 → moderate`, `2 → severe`,

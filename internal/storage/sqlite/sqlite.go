@@ -1025,6 +1025,20 @@ ALTER TABLE meshtastic_messages ADD COLUMN reason TEXT NOT NULL DEFAULT '';
 		SQL: `SELECT 1`,
 		run: adoptLegacyComposeLifecycle,
 	},
+	{
+		// v60: the producer (the configured source INSTANCE) of an event.
+		// Two instances of one plugin type publish under the same source
+		// slug, so without an owner a full-snapshot source reconciles the
+		// disappearances of its sibling's events away (reported P1).
+		//
+		// Rows written before this migration keep '' — the next ingest of
+		// the same key backfills it (a snapshot source re-emits its in-force
+		// set every poll, and the duplicate path adopts the producer), and
+		// until then such a row is simply not owned by any instance.
+		SQL: `
+ALTER TABLE events ADD COLUMN producer TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel
@@ -1058,7 +1072,8 @@ const eventColumns = `event_key, source, source_id, fingerprint, status,
 category, event, severity, provider_severity, urgency, certainty,
 headline, description, instruction,
 effective_at, expires_at_ms, latitude, longitude,
-areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at`
+areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at,
+producer`
 
 // Store is a SQLite-backed storage.EventStore.
 type Store struct {
@@ -1269,10 +1284,10 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	}
 	defer tx.Rollback()
 
-	var storedFp, storedStatus, storedReceived, storedFirstSeen string
+	var storedFp, storedStatus, storedReceived, storedFirstSeen, storedProducer string
 	err = tx.QueryRowContext(ctx,
-		"SELECT fingerprint, status, received_at, first_seen_at FROM events WHERE event_key = ?", key,
-	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen)
+		"SELECT fingerprint, status, received_at, first_seen_at, producer FROM events WHERE event_key = ?", key,
+	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen, &storedProducer)
 
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -1313,6 +1328,14 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 		return 0, nil, fmt.Errorf("get event %q: %w", key, err)
 	}
 
+	// The producer is CORE-owned: a path that carries none (the broker
+	// loopback, an ingest endpoint, another station's event) must never
+	// wipe the owner the instance reconciliation depends on — the stored
+	// one is kept instead.
+	if event.Producer == "" {
+		event.Producer = storedProducer
+	}
+
 	// Existing event: compare content fingerprint and lifecycle status.
 	contentSame := storedFp == fingerprint
 	incomingCancelled := event.Status == core.StatusCancelled
@@ -1340,8 +1363,15 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	}
 
 	if duplicate {
+		// The producer is written along with the touch: a row stored before
+		// the producer existed (or by a path that carried none) is thus
+		// ADOPTED by the instance that keeps reporting the event, and its
+		// disappearances reconcile again. The value is the stored one
+		// whenever the incoming event carries no owner, so nothing changes
+		// in the common path.
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE events SET last_seen_at = ?, last_seen_at_ms = ? WHERE event_key = ?", formatTime(now), nowMs, key); err != nil {
+			"UPDATE events SET last_seen_at = ?, last_seen_at_ms = ?, producer = ? WHERE event_key = ?",
+			formatTime(now), nowMs, event.Producer, key); err != nil {
 			return 0, nil, fmt.Errorf("touch event %q: %w", key, err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -2897,8 +2927,9 @@ INSERT INTO events (
 	category, event, severity, provider_severity, urgency, certainty,
 	headline, description, instruction,
 	effective_at, expires_at, expires_at_ms, latitude, longitude,
-	areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at,
+	producer
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(event_key) DO NOTHING`
 
 func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen, updated time.Time, expiresMs int64) []any {
@@ -2912,6 +2943,7 @@ func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen,
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
 		formatTime(received), formatTime(firstSeen), formatTime(lastSeen), lastSeen.UTC().UnixMilli(), formatTime(updated),
+		event.Producer,
 	}
 }
 
@@ -2941,7 +2973,8 @@ UPDATE events SET
 	category = ?, event = ?, severity = ?, provider_severity = ?, urgency = ?, certainty = ?,
 	headline = ?, description = ?, instruction = ?,
 	effective_at = ?, expires_at = ?, expires_at_ms = ?, latitude = ?, longitude = ?,
-	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, last_seen_at_ms = ?, updated_at = ?
+	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, last_seen_at_ms = ?, updated_at = ?,
+	producer = ?
 	WHERE event_key = ?`
 
 func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expiresMs int64) []any {
@@ -2955,6 +2988,7 @@ func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expir
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
 		formatTime(received), formatTime(now), now.UTC().UnixMilli(), formatTime(orNow(event.UpdatedAt, now)),
+		event.Producer,
 	}, event.Key())
 }
 
@@ -3665,6 +3699,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (co
 		&effectiveAt, &expiresMs, &lat, &lon,
 		&areasJSON, &event.SourceURL,
 		&received, &first, &last, &lastSeenMs, &updated,
+		&event.Producer,
 	}
 	if err := scan(dests...); err != nil {
 		return event, err

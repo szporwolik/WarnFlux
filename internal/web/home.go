@@ -251,7 +251,7 @@ func (s *Server) handlePartialHome(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildHomeAlertsView(lang string) homeView {
 	v := homeView{}
 	nets := s.emcomNetworks()
-	s.fillHomeHazards(&v, nets)
+	s.fillHomeHazards(&v, nets, lang)
 	s.fillHomeEmcomState(&v, lang, nets)
 	return v
 }
@@ -277,7 +277,7 @@ func (s *Server) buildHomeView(lang string) homeView {
 
 	// One EMCOM read serves both the hazard list and the header chips.
 	nets := s.emcomNetworks()
-	s.fillHomeHazards(&v, nets)
+	s.fillHomeHazards(&v, nets, lang)
 
 	if s.aprs != nil && s.aprs.Enabled() {
 		v.AprsEnabled = true
@@ -346,7 +346,7 @@ func displayAreas(tokens []string) []string {
 // severity-split groups (one per level), counts and the client-side JSON
 // payload. nets carries the already-read EMCOM network list (nil = read
 // it here).
-func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
+func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork, lang string) {
 	hazards := s.collectHazards(nets)
 	v.ActiveCount = len(hazards)
 
@@ -391,7 +391,10 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork) {
 			key = severity.Moderate
 		}
 		buckets[key].Hazards = append(buckets[key].Hazards, view)
-		hazardsJSON = append(hazardsJSON, hazardJSONFromState(h, view.Areas))
+		// The inline payload feeds the page's own popups and lists, so it
+		// carries the page language as well (the canonical type stays on
+		// the machine APIs).
+		hazardsJSON = append(hazardsJSON, hazardJSONFromState(h, view.Areas, lang))
 	}
 	if b, err := json.Marshal(hazardsJSON); err == nil {
 		v.HazardsJSON = template.JS(b)
@@ -425,14 +428,15 @@ func hazardTime(t *time.Time) string {
 }
 
 // hazardJSONFromState builds the client-side detail payload from one
-// state hazard; areas carries the pre-joined display form.
-func hazardJSONFromState(h state.Hazard, areas string) homeHazardJSON {
+// state hazard; areas carries the pre-joined display form. lang renders
+// the canonical event type for the page's own reader.
+func hazardJSONFromState(h state.Hazard, areas, lang string) homeHazardJSON {
 	return homeHazardJSON{
 		EventKey:    h.EventKey,
 		MsgID:       core.MessageID(h.EventKey),
 		Severity:    h.Severity,
 		Headline:    h.Headline,
-		Event:       h.Event,
+		Event:       i18n.EventName(lang, h.Event),
 		Source:      h.Source,
 		Areas:       areas,
 		Description: h.Description,
@@ -486,12 +490,12 @@ func (s *Server) handleHazardByKey(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, h := range s.activeHazards() {
 		if h.EventKey == key {
-			writeHazardJSON(w, hazardJSONFromState(h, strings.Join(displayAreas(h.Areas), ", ")))
+			writeHazardJSON(w, hazardJSONFromState(h, strings.Join(displayAreas(h.Areas), ", "), s.langFor(r)))
 			return
 		}
 	}
 	if h, ok := s.composeHazard(key); ok {
-		writeHazardJSON(w, hazardJSONFromState(h, strings.Join(displayAreas(h.Areas), ", ")))
+		writeHazardJSON(w, hazardJSONFromState(h, strings.Join(displayAreas(h.Areas), ", "), s.langFor(r)))
 		return
 	}
 	if s.events != nil {

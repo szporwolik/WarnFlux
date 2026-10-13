@@ -267,7 +267,7 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang str
 	sev := strings.ToUpper(i18n.T(lang, "severity."+strings.ToLower(strings.TrimSpace(h.Severity))))
 	headline := norm(t.Headline)
 	if headline == "" {
-		headline = norm(h.Event)
+		headline = norm(i18n.EventName(lang, h.Event))
 	}
 	head := strings.TrimSpace(a.cfg.Prefix)
 	if sev != "" {

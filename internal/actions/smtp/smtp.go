@@ -772,7 +772,7 @@ func subjectOf(cfg Config, req action.ActionRequest, lang string) string {
 		}
 		text := strings.TrimSpace(h.Hazard.For(lang).Headline)
 		if text == "" {
-			text = h.Hazard.Event
+			text = i18n.EventName(lang, h.Hazard.Event)
 		}
 		sev := i18n.T(lang, "severity."+strings.ToLower(strings.TrimSpace(h.Hazard.Severity)))
 		base = fmt.Sprintf("%s: %s", strings.ToUpper(sev), text)
@@ -856,7 +856,9 @@ func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
 			break
 		}
 		t := h.Hazard.For(lang)
-		event := strings.TrimSpace(h.Hazard.Event)
+		// The canonical event type is a machine identity; the reader gets
+		// their own language (reported: "Road works" in a Polish mail).
+		event := i18n.EventName(lang, h.Hazard.Event)
 		headline := strings.TrimSpace(t.Headline)
 		if headline == "" {
 			headline = event
@@ -1058,13 +1060,14 @@ func hazardHTML(ev dispatch.Event, link, lang string) string {
 	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="display:inline-block;background-color:%s;color:#0f1419;padding:5px 16px;border-radius:12px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span>%s</div>`,
 		badge, htmlEscaper(strings.ToUpper(sev)), idChip)
 
+	event := i18n.EventName(lang, h.Hazard.Event)
 	headline := strings.TrimSpace(t.Headline)
 	if headline == "" {
-		headline = h.Hazard.Event
+		headline = event
 	}
 	fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">%s</div>`, htmlEscaper(headline))
-	if headline != h.Hazard.Event {
-		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
+	if headline != event && event != "" {
+		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(event))
 	}
 
 	// EMCOM notifications carry a structured rendering (summary sentence,

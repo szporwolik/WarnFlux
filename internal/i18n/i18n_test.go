@@ -3,6 +3,7 @@ package i18n
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +73,71 @@ func TestFromRequest(t *testing.T) {
 				t.Fatalf("FromRequest() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestEventName pins the canonical event-type translation: a built-in
+// producer stamps one machine identity ("Road works"), and every channel
+// that shows it to a human renders it in that reader's language.
+func TestEventName(t *testing.T) {
+	cases := []struct {
+		name      string
+		lang      string
+		canonical string
+		want      string
+	}{
+		{"english", "en", "Road works", "Road works"},
+		{"polish", "pl", "Road works", "Roboty drogowe"},
+		{"case insensitive", "pl", "  road closure ", "Droga zamknięta"},
+		{"traffic", "pl", "Alternating traffic", "Ruch wahadłowy"},
+		{"accident", "pl", "Industrial accident", "Awaria przemysłowa"},
+		{"chemical", "pl", "Chemical release", "Uwolnienie substancji chemicznej"},
+		{"qualifier kept", "pl", "Air quality exceedance (PM10)", "Przekroczenie jakości powietrza (PM10)"},
+		{"unknown unchanged", "pl", "Burze z gradem", "Burze z gradem"},
+		{"operator text unchanged", "pl", "Powódź na Wiśle", "Powódź na Wiśle"},
+		{"empty", "pl", "", ""},
+		{"unsupported language falls back", "de", "Road works", "Road works"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EventName(tc.lang, tc.canonical); got != tc.want {
+				t.Errorf("EventName(%q, %q) = %q, want %q", tc.lang, tc.canonical, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCanonicalEventTypesHaveTranslations pins the producer contract: every
+// event type a built-in producer stamps on a hazard — listed with the file
+// that stamps it — must have a translation entry, so no canonical English
+// type can leak into a Polish mail, SMS, mesh, Discord message or page.
+// (Provider text such as IMGW/RSO names is deliberately passed through.)
+func TestCanonicalEventTypesHaveTranslations(t *testing.T) {
+	producers := map[string]string{
+		"Road works":             "internal/plugins/sources/gddkia/adapter.go",
+		"Road closure":           "internal/plugins/sources/gddkia/adapter.go",
+		"Alternating traffic":    "internal/plugins/sources/gddkia/adapter.go",
+		"Industrial accident":    "internal/plugins/sources/gios/adapter.go",
+		"Chemical release":       "internal/plugins/sources/gios/adapter.go",
+		"Air quality exceedance": "internal/plugins/sources/giosaq/adapter.go",
+		"EMCOM":                  "internal/web/emcom.go",
+		"SMS alert":              "internal/gsm/commands.go",
+		"Alert RCB":              "internal/gsm/commands.go",
+		"APRS alert":             "internal/aprs/hub.go",
+	}
+	for name, producer := range producers {
+		if _, ok := eventNameKeys[strings.ToLower(name)]; !ok {
+			t.Errorf("event type %q (%s) has no translation entry", name, producer)
+			continue
+		}
+		if got := EventName("pl", name); got == "" {
+			t.Errorf("event type %q (%s) has no Polish rendering", name, producer)
+		}
+		// Names that are identical in both languages on purpose.
+		if name != "EMCOM" && name != "Alert RCB" {
+			if pl, en := EventName("pl", name), EventName("en", name); pl == en {
+				t.Errorf("event type %q (%s) is not translated", name, producer)
+			}
+		}
 	}
 }

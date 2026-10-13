@@ -540,6 +540,23 @@ func meshInactiveText(lang string, d time.Duration) string {
 	}
 }
 
+// meshtasticChannelIndex parses the send form's channel field: an empty
+// field means the default selection (channel 1, the installation's own
+// secondary channel), and only 1..7 are broadcastable because channel 0
+// is the receive-only PRIMARY channel. The second result reports whether
+// the field held a usable index.
+func meshtasticChannelIndex(raw string) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 1, true
+	}
+	idx, err := strconv.Atoi(raw)
+	if err != nil || idx < 1 || idx > 7 {
+		return 0, false
+	}
+	return idx, true
+}
+
 // meshtasticNormalizeID canonicalizes a Meshtastic node id: lowercase,
 // 8 hex chars, no '!' / 0x prefix. Returns "" for anything else.
 func meshtasticNormalizeID(s string) string {
@@ -630,9 +647,29 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, i18n.T(s.langFor(r), "meshtastic.hub_not_configured"), http.StatusBadGateway)
 		return
 	}
+	// The channel form posts from its own tab (dir=ch<idx>): every bounce
+	// below returns the operator there instead of dropping them on the DM
+	// tab, so neither a validation error nor a successful send loses the
+	// context they were working in.
+	channelDir := ""
+	if r.PostFormValue("target") != "contact" {
+		if idx, ok := meshtasticChannelIndex(r.PostFormValue("channel_idx")); ok {
+			channelDir = fmt.Sprintf("ch%d", idx)
+		}
+	}
+	page := func(params ...string) string {
+		u := "/meshtastic?tab=msgs"
+		if channelDir != "" {
+			u += "&dir=" + channelDir
+		}
+		for i := 0; i+1 < len(params); i += 2 {
+			u += "&" + params[i] + "=" + url.QueryEscape(params[i+1])
+		}
+		return u
+	}
 	text := strings.TrimSpace(r.PostFormValue("text"))
 	if text == "" {
-		http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.text_required")), http.StatusSeeOther)
+		http.Redirect(w, r, page("err", i18n.T(s.langFor(r), "meshtastic.text_required")), http.StatusSeeOther)
 		return
 	}
 	if r.PostFormValue("bell") != "" {
@@ -653,29 +690,25 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 			id = s.meshtastic.ResolveNode(r.PostFormValue("contact"))
 		}
 		if id == "" {
-			http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(fmt.Sprintf(
+			http.Redirect(w, r, page("err", fmt.Sprintf(
 				i18n.T(s.langFor(r), "meshtastic.contact_not_found"), r.PostFormValue("contact"))), http.StatusSeeOther)
 			return
 		}
 		err = s.meshtastic.SendContactMessage(r.Context(), id, text, sess.username)
 	} else {
-		idx := 1
-		if raw := strings.TrimSpace(r.PostFormValue("channel_idx")); raw != "" {
-			parsed, parseErr := strconv.Atoi(raw)
-			if parseErr != nil || parsed < 1 || parsed > 7 {
-				http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.bad_channel")), http.StatusSeeOther)
-				return
-			}
-			idx = parsed
+		idx, ok := meshtasticChannelIndex(r.PostFormValue("channel_idx"))
+		if !ok {
+			http.Redirect(w, r, page("err", i18n.T(s.langFor(r), "meshtastic.bad_channel")), http.StatusSeeOther)
+			return
 		}
 		err = s.meshtastic.SendChannelText(r.Context(), idx, text, sess.username)
 	}
 	if err != nil {
 		s.logger.Warn("web: meshtastic send failed", "target", r.PostFormValue("target"), "error", err)
 		flash := fmt.Sprintf(i18n.T(s.langFor(r), "meshtastic.send_failed"), err)
-		http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(flash), http.StatusSeeOther)
+		http.Redirect(w, r, page("err", flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "meshtastic-send", text)
-	http.Redirect(w, r, "/meshtastic?tab=msgs&sent=1", http.StatusSeeOther)
+	http.Redirect(w, r, page("sent", "1"), http.StatusSeeOther)
 }

@@ -1789,10 +1789,18 @@ func newLogger(app config.App, capture io.Writer) (*slog.Logger, io.Closer, erro
 		return logger, nopCloser{}, nil
 	}
 
+	// Never leave the rotated history unbounded: lumberjack deletes
+	// nothing when MaxBackups is 0 and no age limit is set, so a zero value
+	// (only reachable through a construction that skipped the config
+	// validation) falls back to the shipped default.
+	maxBackups := app.LogMaxBackups
+	if maxBackups <= 0 {
+		maxBackups = config.Default().App.LogMaxBackups
+	}
 	rotator := &lumberjack.Logger{
 		Filename:   app.LogFile,
 		MaxSize:    app.LogMaxSizeMB,
-		MaxBackups: app.LogMaxBackups,
+		MaxBackups: maxBackups,
 		LocalTime:  true,
 	}
 	logger := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stdout, rotator, capture), &slog.HandlerOptions{

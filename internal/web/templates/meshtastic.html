@@ -820,9 +820,15 @@
   {{if .Snap.Self.HwModel}}<span class="badge muted">{{.Snap.Self.HwModel}}</span>{{end}}
   {{if .Snap.Self.Firmware}}<span class="badge muted">{{.Snap.Self.Firmware}}</span>{{end}}
   {{if .Snap.Self.Lat}}<span class="badge muted">{{printf "%.5f, %.5f" .Snap.Self.Lat .Snap.Self.Lon}}</span>{{end}}
+  {{template "mesh_removals" .}}
 </div>
-{{else}}<div class="msgs-filter"><span class="badge bad">{{tr .Lang "meshtastic.disconnected"}}</span></div>
+{{else}}<div class="msgs-filter"><span class="badge bad">{{tr .Lang "meshtastic.disconnected"}}</span>{{template "mesh_removals" .}}</div>
 {{end}}{{end}}
+
+{{/* The station feed's backlog: how many document removals the broker still
+     owes, and how many were abandoned because that backlog hit its bound (a
+     broker that stayed away too long). */}}
+{{define "mesh_removals"}}{{if .Snap.PendingRemovals}}<span class="badge muted" title="{{tr .Lang "meshtastic.removals_pending"}}">{{tr .Lang "meshtastic.removals_label"}} {{.Snap.PendingRemovals}}</span>{{end}}{{if .Snap.RemovalsDropped}}<span class="badge bad" title="{{tr .Lang "meshtastic.removals_dropped"}}">{{tr .Lang "meshtastic.removals_label"}} {{.Snap.RemovalsDropped}}</span>{{end}}{{end}}
 
 {{define "mesh_msgs"}}{{template "mesh_status" .}}<span id="mesh-msg-total" hidden>{{.Total}}</span>
 {{if .Messages}}

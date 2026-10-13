@@ -3,11 +3,14 @@ package meshtastic
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // recordingStationSink plays the broker: it records the station-feed
@@ -283,6 +286,16 @@ func TestStationFeedOrdersRemovalAndPositionPublish(t *testing.T) {
 	}
 }
 
+// oldNodeID builds a valid 8-hex node id for a batch of historical nodes
+// (SeedNode ignores anything that is not exactly 8 hex digits).
+func oldNodeID(n int) string { return fmt.Sprintf("%08x", 0x10000000+n) }
+
+func directorySize(h *Hub) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.nodes)
+}
+
 func inDirectory(h *Hub, id string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -451,5 +464,90 @@ func TestStationRemovalDoesNotOutliveTheNodesReturn(t *testing.T) {
 	}
 	if removalPending(restarted, "aaaa0007") || removalConfirmed(restarted, "aaaa0007") {
 		t.Error("a removal was carried over from activity that came before the node's return")
+	}
+}
+
+// TestStationRemovalBacklogIsBounded pins the bound: a broker that never takes
+// the removals must not let the station grow without limit. Batches of old
+// nodes keep arriving; the backlog stops at its bound, the directory still
+// empties, and every abandoned removal is COUNTED (the overflow metric) instead
+// of disappearing silently.
+func TestStationRemovalBacklogIsBounded(t *testing.T) {
+	sink := newRecordingStationSink()
+	sink.setFail(errors.New("broker unreachable"))
+	h := newStationFeedHub(t, sink)
+
+	const batches, perBatch = 6, 100
+	seeded := 0
+	for batch := 0; batch < batches; batch++ {
+		for i := 0; i < perBatch; i++ {
+			seeded++
+			h.SeedNode(oldNodeID(seeded), "old", "", 0, 0,
+				time.Now().Add(-(nodeDirRetention + time.Hour)), nil)
+		}
+		h.expireNodes()
+		if got := directorySize(h); got != 0 {
+			t.Fatalf("directory = %d nodes after batch %d, want none (all past retention)", got, batch+1)
+		}
+		pending, _ := h.StationRemovals()
+		if pending > maxPendingStationRemovals {
+			t.Fatalf("backlog = %d after batch %d, want at most %d", pending, batch+1, maxPendingStationRemovals)
+		}
+	}
+
+	pending, dropped := h.StationRemovals()
+	if pending != maxPendingStationRemovals {
+		t.Fatalf("backlog = %d, want the bound %d", pending, maxPendingStationRemovals)
+	}
+	if want := seeded - maxPendingStationRemovals; dropped != want {
+		t.Fatalf("dropped = %d, want %d (every abandoned removal is counted)", dropped, want)
+	}
+	snap := h.Snapshot()
+	if snap.PendingRemovals != maxPendingStationRemovals || snap.RemovalsDropped != dropped {
+		t.Fatalf("snapshot backlog = %d/%d, want the same numbers as the metric (%d/%d)",
+			snap.PendingRemovals, snap.RemovalsDropped, maxPendingStationRemovals, dropped)
+	}
+}
+
+// TestStationRemovalNeedsAStationFeed: an installation without a station feed
+// never published a document, so it must not build a removal backlog for nodes
+// that merely went quiet.
+func TestStationRemovalNeedsAStationFeed(t *testing.T) {
+	h := newStationFeedHub(t, nil)
+	for i := 1; i <= 50; i++ {
+		h.SeedNode(oldNodeID(i), "old", "", 0, 0, time.Now().Add(-(nodeDirRetention + time.Hour)), nil)
+	}
+	h.expireNodes()
+
+	if pending, dropped := h.StationRemovals(); pending != 0 || dropped != 0 {
+		t.Fatalf("backlog = %d/%d without a station feed, want none", pending, dropped)
+	}
+	if got := directorySize(h); got != 0 {
+		t.Fatalf("directory = %d nodes, want none past retention", got)
+	}
+}
+
+// TestStationRemovalBacklogIsBoundedOnLoad pins the bounded READ: a database
+// written with a longer backlog (an older station, or one that ran with a
+// bigger bound) does not get loaded into memory in full — the excess is counted
+// and reported.
+func TestStationRemovalBacklogIsBoundedOnLoad(t *testing.T) {
+	rows := make([]storage.MeshtasticNode, 0, maxPendingStationRemovals+25)
+	for i := 0; i < maxPendingStationRemovals+25; i++ {
+		rows = append(rows, storage.MeshtasticNode{
+			ID:             oldNodeID(i),
+			LastSeen:       time.Now().Add(-2 * time.Hour),
+			PendingRemoval: true,
+			PendingSince:   time.Now().Add(-2 * time.Hour),
+		})
+	}
+	store := &memNodeStore{nodes: rows}
+	h := newStationFeedHub(t, newRecordingStationSink())
+	h.SetNodeStore(store)
+	h.restoreNodes(context.Background())
+
+	if pending, dropped := h.StationRemovals(); pending != maxPendingStationRemovals || dropped != 25 {
+		t.Fatalf("restored backlog = %d/%d, want %d pending and 25 dropped",
+			pending, dropped, maxPendingStationRemovals)
 	}
 }

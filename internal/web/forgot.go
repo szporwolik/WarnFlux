@@ -82,8 +82,7 @@ func (s *Server) handleForgotPage(w http.ResponseWriter, r *http.Request) {
 // enumeration); only the configured admin account gets an explicit
 // message: its password is defined in the configuration file.
 func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if !parseAuthForm(w, r) {
 		return
 	}
 	if err := validateRequestHost(r.Host); err != nil {
@@ -97,6 +96,10 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.ToLower(strings.TrimSpace(r.PostFormValue("username")))
 	email := strings.TrimSpace(r.PostFormValue("email"))
+	if len(username) > maxAuthUsernameBytes || len(email) > maxAuthEmailBytes {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 
 	view := func(errMsg, noteMsg, okMsg string) {
 		csrf, err := newCSRFCookiePath(w, s.cfg.Auth.SecureCookie, "/")
@@ -246,6 +249,10 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if len(token) > maxAuthTokenBytes {
+		// A token never comes close to this: refuse before the lookup.
+		token = ""
+	}
 	csrf, err := newCSRFCookiePath(w, s.cfg.Auth.SecureCookie, "/")
 	if err != nil {
 		s.logger.Error("web: reset csrf token generation failed", "error", err)
@@ -277,8 +284,7 @@ func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
 
 // handleResetSubmit consumes the token and replaces the password.
 func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if !parseAuthForm(w, r) {
 		return
 	}
 	if err := validateRequestHost(r.Host); err != nil {
@@ -292,6 +298,10 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	token := strings.TrimSpace(r.PostFormValue("token"))
 	password := r.PostFormValue("password")
+	if len(token) > maxAuthTokenBytes || len(password) > maxAuthPasswordBytes {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 
 	renderErr := func(msg string, expired bool) {
 		csrf, err := newCSRFCookiePath(w, s.cfg.Auth.SecureCookie, "/")

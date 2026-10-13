@@ -2,6 +2,7 @@ package mqttreceiver
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -35,6 +36,8 @@ type browseClient struct {
 	cleanSess   bool
 	// subscribeTimeout makes Subscribe report a broker that never acks.
 	subscribeTimeout bool
+	// connectTimeout makes Connect report a broker that never answers.
+	connectTimeout bool
 }
 
 // timeoutToken is a paho token fake that never completes.
@@ -50,7 +53,11 @@ func newBrowseClient() *browseClient { return &browseClient{connected: true} }
 func (c *browseClient) Connect() mqtt.Token {
 	c.mu.Lock()
 	c.connects++
+	stalled := c.connectTimeout
 	c.mu.Unlock()
+	if stalled {
+		return &timeoutToken{}
+	}
 	return &testToken{}
 }
 func (c *browseClient) Disconnect(uint) {
@@ -77,6 +84,13 @@ func (c *browseClient) Unsubscribe(...string) mqtt.Token {
 }
 func (c *browseClient) Publish(string, byte, bool, interface{}) mqtt.Token { return &testToken{} }
 func (c *browseClient) IsConnected() bool                                  { return c.connected }
+
+// connectionAttempts reports how many connects this client saw.
+func (c *browseClient) connectionAttempts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connects
+}
 
 // deliver simulates the broker pushing one message to the current handler.
 func (c *browseClient) deliver(msg mqtt.Message) {
@@ -343,4 +357,130 @@ func TestReceiverBrowseCleansUpOnCancelAndTimeout(t *testing.T) {
 	}
 	assertProbeDropped(t, probeSlow)
 	assertProdUntouched(t, prodSlow)
+}
+
+// browseFactoryReceiver builds a receiver whose throwaway clients are all
+// fake and recorded, so a test can count how many browses ever connected.
+func browseFactoryReceiver(t *testing.T) (*Receiver, func() []*browseClient) {
+	t.Helper()
+	r := &Receiver{
+		cfg:    config.Receiver{ID: "t", Enabled: true, ClientID: "warnflux-t"},
+		client: newBrowseClient(),
+		logger: testLogger(),
+	}
+	var mu sync.Mutex
+	var probes []*browseClient
+	r.newBrowseClient = func(*mqtt.ClientOptions) mqttClient {
+		c := newBrowseClient()
+		mu.Lock()
+		probes = append(probes, c)
+		mu.Unlock()
+		return c
+	}
+	return r, func() []*browseClient {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]*browseClient(nil), probes...)
+	}
+}
+
+// waitForCond polls cond until it holds or the timeout expires.
+func waitForCond(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// TestQueuedBrowseLeavesTheQueueOnCancel pins the reported P2: a browse that
+// waits for the single browse slot must leave the queue when its request is
+// cancelled, and must never connect after it was abandoned. A series of
+// closed previews used to queue up and connect one by one, loading the broker
+// and delaying the browses behind them.
+func TestQueuedBrowseLeavesTheQueueOnCancel(t *testing.T) {
+	r, probes := browseFactoryReceiver(t)
+
+	// One browse holds the slot for its collection window.
+	holding := make(chan error, 1)
+	go func() {
+		_, err := r.Browse(context.Background(), "aprs/#", 600*time.Millisecond, 10)
+		holding <- err
+	}()
+	waitForCond(t, 2*time.Second, "the holding browse to connect", func() bool {
+		got := probes()
+		return len(got) == 1 && got[0].connectionAttempts() == 1
+	})
+
+	// A second request queues behind it and is cancelled while it waits.
+	ctx, cancel := context.WithCancel(context.Background())
+	queued := make(chan error, 1)
+	go func() {
+		_, err := r.Browse(ctx, "aprs/#", time.Second, 10)
+		queued <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-queued:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the cancelled queued browse = %v, want the cancellation", err)
+		}
+	case <-time.After(400 * time.Millisecond):
+		t.Fatal("the cancelled browse stayed in the queue instead of leaving it")
+	}
+	if got := probes(); len(got) != 1 {
+		t.Fatalf("the abandoned request opened %d browse clients, want none", len(got)-1)
+	}
+
+	// The holder finishes on its own; the abandoned request must not have
+	// connected behind it.
+	if err := <-holding; err != nil {
+		t.Fatalf("the holding browse failed: %v", err)
+	}
+	for i, probe := range probes() {
+		if probe.connectionAttempts() != 1 {
+			t.Errorf("browse client %d connected %d times, want one (only the holder)", i, probe.connectionAttempts())
+		}
+	}
+}
+
+// TestBrowseConnectHonorsCancellation pins the third part of the reported
+// P2: waiting for the broker's answer must not outlive the request. Before
+// the fix the connect token was awaited with a bare timeout, so a closed
+// preview kept a connection attempt — and a goroutine — until the broker
+// answered or the timeout expired.
+func TestBrowseConnectHonorsCancellation(t *testing.T) {
+	prod, probe := newBrowseClient(), newBrowseClient()
+	probe.connectTimeout = true
+	r := newBrowseReceiverPair(prod, probe)
+	r.cfg.ConnectTimeout = 5 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.Browse(ctx, "aprs/#", time.Second, 10)
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the connect wait = %v, want the cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a browse whose connect never answers ignored the cancellation")
+	}
+	probe.mu.Lock()
+	disconnects := probe.disconnects
+	probe.mu.Unlock()
+	if disconnects != 1 {
+		t.Errorf("the abandoned connect was disconnected %d times, want 1 (no half-open session)", disconnects)
+	}
+	assertProdUntouched(t, prod)
 }

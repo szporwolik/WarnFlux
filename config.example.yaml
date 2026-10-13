@@ -764,15 +764,6 @@ meshtastic:
   # Editable on the Config page ("Polling and range"); 1m..24h.
   # node_ttl: 30m
 
-  # How long the session tolerates a COMPLETELY silent device (no traffic
-  # from the radio at all) before the link is declared dead and dialled
-  # again (default 2m; minimum 15s). A quiet mesh idles for minutes at a
-  # time, and every timeout costs a reconnect — raise it on such a
-  # station. The client also pings the device with a heartbeat every 30s,
-  # so a socket the peer CLOSED is still noticed immediately whatever
-  # this value says.
-  # silence_timeout: 2m
-
   # Hazard announcements on the group channel and as direct messages to
   # users' registered node IDs (both ON by default). The Config page
   # toggles both at runtime and writes them back to this file.

@@ -81,6 +81,9 @@ type memFavoriteStore struct {
 	ids     []uint32
 	saves   int
 	loadErr error
+	// saveErr makes the store refuse writes, the way a locked database or a
+	// full disk does; clearing it simulates the storage coming back.
+	saveErr error
 }
 
 func (m *memFavoriteStore) LoadMeshtasticFavorites(context.Context) ([]uint32, error) {
@@ -95,9 +98,24 @@ func (m *memFavoriteStore) LoadMeshtasticFavorites(context.Context) ([]uint32, e
 func (m *memFavoriteStore) SaveMeshtasticFavorites(_ context.Context, ids []uint32) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.ids = append([]uint32(nil), ids...)
 	m.saves++
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	m.ids = append([]uint32(nil), ids...)
 	return nil
+}
+
+func (m *memFavoriteStore) failSaves(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.saveErr = err
+}
+
+func (m *memFavoriteStore) saveAttempts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.saves
 }
 
 func (m *memFavoriteStore) snapshot() []uint32 {
@@ -485,5 +503,115 @@ func TestPinUserNodesTrustsTheRadioThatConfirmsItsStars(t *testing.T) {
 	}
 	if got := cap.adminFavoriteRemovals(); len(got) != 0 {
 		t.Fatalf("remove_favorite_node frames = %08x, want none", got)
+	}
+}
+
+// TestPinUserNodesRetriesAFailedLedgerSave pins the ticket: the in-memory
+// ledger changes before the store accepts it, so a failed write must stay
+// pending — otherwise the next pass sees "nothing changed", never tries again,
+// and a restart loses which stars are the station's own.
+func TestPinUserNodesRetriesAFailedLedgerSave(t *testing.T) {
+	ledger := &memFavoriteStore{}
+	ledger.failSaves(errors.New("database is locked"))
+	cap := &capturingConn{}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
+		testRadioOpts{
+			nodes: []*pb.NodeInfo{nodeInfo(0xdeadbeef, "PL-KR-MAKI", "MK")},
+			wrap: func(t transportConn) transportConn {
+				cap.transportConn = t
+				return cap
+			},
+			setup: func(h *Hub) {
+				h.SetFavoriteStore(ledger)
+				h.SetUserNodes(func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil })
+			},
+		})
+	radio.waitConnected(t)
+
+	// The star goes out and is remembered in RAM, but the store refuses it.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if ledger.saveAttempts() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if ledger.saveAttempts() == 0 {
+		t.Fatal("the pass never tried to save the ledger")
+	}
+	if got := ledger.snapshot(); len(got) != 0 {
+		t.Fatalf("store = %08x, want nothing (the write failed)", got)
+	}
+	if !radio.hub.dirtyFavorites() {
+		t.Fatal("the unsaved ledger change was forgotten")
+	}
+	if got := time.Until(radio.hub.pinNext); got > pinRetryDelay+time.Second {
+		t.Errorf("next pass in %s, want ~%s after a failed save", got, pinRetryDelay)
+	}
+
+	// The store comes back: the next pass writes the ledger WITHOUT any new
+	// change from the directory, and without re-sending the star the radio
+	// already carries.
+	before := ledger.saveAttempts()
+	ledger.failSaves(nil)
+	radio.hub.pinUserNodes(true)
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := ledger.snapshot(); len(got) == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := ledger.snapshot(); len(got) != 1 || got[0] != 0x6d2c8f6c {
+		t.Fatalf("store = %08x, want the retried ledger", got)
+	}
+	if ledger.saveAttempts() <= before {
+		t.Error("the pending ledger was not written again")
+	}
+	if radio.hub.dirtyFavorites() {
+		t.Error("the flag survived a successful write")
+	}
+	if got := len(cap.adminFavorites()); got != 1 {
+		t.Errorf("set_favorite_node frames = %d, want 1 (the retry must not re-pin)", got)
+	}
+}
+
+// TestFlushFavoritesKeepsThePendingFlag pins the flag contract itself: a failed
+// write leaves the change pending, a later write clears it, and a hub with no
+// store at all (RAM-only mode) is not permanently dirty.
+func TestFlushFavoritesKeepsThePendingFlag(t *testing.T) {
+	ledger := &memFavoriteStore{}
+	ledger.failSaves(errors.New("disk full"))
+	h := &Hub{}
+	h.SetFavoriteStore(ledger)
+	h.rememberFavorite(0x6d2c8f6c, true)
+
+	if h.flushFavorites() {
+		t.Error("a failed write reported success")
+	}
+	if !h.dirtyFavorites() {
+		t.Error("the pending change was dropped after a failed write")
+	}
+	if got := ledger.snapshot(); len(got) != 0 {
+		t.Fatalf("store = %08x, want nothing", got)
+	}
+	ledger.failSaves(nil)
+	if !h.flushFavorites() {
+		t.Error("the recovered write reported failure")
+	}
+	if h.dirtyFavorites() {
+		t.Error("the flag survived a successful write")
+	}
+	if got := ledger.snapshot(); len(got) != 1 || got[0] != 0x6d2c8f6c {
+		t.Fatalf("store = %08x, want the pinned node", got)
+	}
+	if h.flushFavorites() != true || ledger.saveAttempts() != 2 {
+		t.Errorf("a clean ledger was written again (%d attempts)", ledger.saveAttempts())
+	}
+
+	ram := &Hub{}
+	ram.rememberFavorite(0xa0a85934, true)
+	if !ram.flushFavorites() || ram.dirtyFavorites() {
+		t.Error("a hub without a store stayed dirty")
 	}
 }

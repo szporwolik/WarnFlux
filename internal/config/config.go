@@ -23,11 +23,14 @@ const (
 	// DefaultConfigPath is used when no --config flag is provided.
 	DefaultConfigPath = "config.yaml"
 
-	defaultLogLevel           = "info"
-	defaultTimezone           = "Europe/Warsaw"
-	defaultExpirationInterval = time.Minute
-	defaultChangeRetention    = 24 * time.Hour
-	defaultEventRetention     = 30 * 24 * time.Hour
+	defaultLogLevel = "info"
+	defaultTimezone = "Europe/Warsaw"
+	// defaultPinUserNodesInterval is how often the radio's favorites are
+	// reconciled with the user directory.
+	defaultPinUserNodesInterval = 6 * time.Hour
+	defaultExpirationInterval   = time.Minute
+	defaultChangeRetention      = 24 * time.Hour
+	defaultEventRetention       = 30 * 24 * time.Hour
 	// Bounds the action-fire dedup ledger; negative disables pruning.
 	defaultNotificationRetention = 30 * 24 * time.Hour
 	defaultStorageDriver         = "sqlite"
@@ -219,6 +222,17 @@ type MeshtasticConfig struct {
 	// StationAlerts gates APRS station range announcements on the group
 	// channel. Useful but noisy — default OFF.
 	StationAlerts bool
+	// PinUserNodes marks the node IDs registered in the user directory as
+	// FAVORITES on the radio. The firmware never evicts a favorite from its
+	// node database, so the public key a direct message needs survives an
+	// unheard night, a full node table and even a node-db reset — without it
+	// the DM fails with "recipient has not announced its public key".
+	// Default ON.
+	PinUserNodes bool
+	// PinUserNodesInterval is how often the pin pass re-runs: it catches a
+	// node registered since the last pass and re-pins one whose favorite was
+	// cleared on the device. Default 6h; 1m..24h.
+	PinUserNodesInterval time.Duration
 }
 
 // APRSConfig holds the shared APRS hub settings (top-level "aprs:"). The
@@ -642,6 +656,13 @@ type fileMeshtastic struct {
 	// EmcomHazardsInterval is the periodic hazard status line spacing
 	// (default 1h); 0 disables the line.
 	EmcomHazardsInterval *time.Duration `yaml:"emcom_hazards_interval"`
+	// PinUserNodes marks the node IDs registered in the user directory as
+	// favorites on the radio (the firmware keeps favorites when its node
+	// database is pruned or reset). Default ON; pin_user_nodes_interval
+	// (1m..24h, default 6h) is how often the pass re-runs.
+	PinUserNodes         *bool          `yaml:"pin_user_nodes"`
+	PinUserNodesInterval *time.Duration `yaml:"pin_user_nodes_interval"`
+
 	// ChannelAlerts / DMAlerts / StationAlerts are the runtime switches
 	// on the admin Config page; pointer fields keep omitted values
 	// distinguishable from explicit false (channel/dm default ON,
@@ -1251,6 +1272,7 @@ func (f fileConfig) toConfig() Config {
 	cfg.Meshtastic = MeshtasticConfig{
 		Baud: 115200, NodeTTL: 30 * time.Minute, EmcomHazardsInterval: 1 * time.Hour,
 		ChannelAlerts: true, DMAlerts: true, StationAlerts: false,
+		PinUserNodes: true, PinUserNodesInterval: defaultPinUserNodesInterval,
 	}
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
@@ -1286,6 +1308,12 @@ func (f fileConfig) toConfig() Config {
 		}
 		if v := f.Meshtastic.StationAlerts; v != nil {
 			cfg.Meshtastic.StationAlerts = *v
+		}
+		if v := f.Meshtastic.PinUserNodes; v != nil {
+			cfg.Meshtastic.PinUserNodes = *v
+		}
+		if v := f.Meshtastic.PinUserNodesInterval; v != nil {
+			cfg.Meshtastic.PinUserNodesInterval = *v
 		}
 	}
 	if f.Geo != nil {
@@ -1591,6 +1619,10 @@ func (c Config) Validate() error {
 	if v := c.Meshtastic.EmcomHazardsInterval; v != 0 &&
 		(v < time.Minute || v > 30*24*time.Hour) {
 		return fmt.Errorf("meshtastic.emcom_hazards_interval must be between 1m and 720h (0 disables), got %s", v)
+	}
+	if v := c.Meshtastic.PinUserNodesInterval; v != 0 &&
+		(v < time.Minute || v > 24*time.Hour) {
+		return fmt.Errorf("meshtastic.pin_user_nodes_interval must be between 1m and 24h, got %s", v)
 	}
 	if c.GSM.Enabled && c.GSM.Device == "" {
 		return fmt.Errorf("gsm.device is required when gsm.enabled is true")

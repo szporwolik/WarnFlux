@@ -71,6 +71,17 @@ type Config struct {
 	RouteMessages bool
 	// NodeTTL bounds how long an unheard neighbour stays in the node list.
 	NodeTTL time.Duration
+	// PinUserNodes keeps the node IDs registered in the user directory as
+	// FAVORITES on the radio. The firmware protects favorites when it prunes
+	// its node database and keeps them across a node-db reset, so the public
+	// key a DIRECT message is encrypted with survives an unheard night — a
+	// node whose key was evicted can only be messaged after it announces
+	// itself again ("recipient has not announced its public key").
+	PinUserNodes bool
+	// PinInterval is how often the pin pass re-runs (default
+	// defaultPinInterval when unset): it catches a node registered since the
+	// last pass and re-pins one whose favorite was cleared on the device.
+	PinInterval time.Duration
 	// SilenceTimeout declares a session dead after this long without ANY
 	// FromRadio traffic (defaultSilenceTimeout when unset). Tests shorten
 	// it; production runs with the default.
@@ -202,6 +213,10 @@ const defaultSilenceTimeout = 2 * time.Minute
 // surfaces within one interval instead of waiting out the silence
 // watchdog.
 const defaultHeartbeatInterval = 30 * time.Second
+
+// defaultPinInterval is how often the radio's favorites are reconciled with
+// the user directory when the configuration does not say.
+const defaultPinInterval = 6 * time.Hour
 
 // linkSendWait bounds how long a send waits for a live session before it
 // gives up. The session goroutine rebuilds the link on its own after a
@@ -837,6 +852,11 @@ type Hub struct {
 	// until the first refusal that needs a key refresh.
 	nodeInfoAsked map[uint32]time.Time
 
+	// userNodes supplies the node numbers registered in the user directory
+	// (nil = nothing to pin); pinNext arms the next pin pass.
+	userNodes func() []uint32
+	pinNext   time.Time
+
 	// routeWaiters buffers TRACEROUTE route replies while probes wait,
 	// keyed by the replying node (the destination answers with the full
 	// route; intermediate nodes may answer when it is out of reach).
@@ -1305,6 +1325,10 @@ func (h *Hub) runSession(ctx context.Context) error {
 		h.mu.Unlock()
 	}
 	h.populateFromState(conn.State())
+	// The pin pass runs right after the handshake (now that our own node
+	// number is known) and then on its own cadence: a restart re-pins what a
+	// node-db reset may have cleared, without waiting out the interval.
+	h.pinUserNodes()
 
 	if h.logger != nil {
 		h.mu.Lock()
@@ -1363,6 +1387,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 				return errors.New("device radio silent")
 			}
 			h.expireNodes()
+			h.pinUserNodes()
 			h.retryPending(time.Now())
 			h.persistNodes()
 			h.beaconTick()
@@ -1818,6 +1843,119 @@ func positionDeg(pos *pb.Position) (lat, lon float64) {
 		return 0, 0
 	}
 	return float64(pos.GetLatitudeI()) / 1e7, float64(pos.GetLongitudeI()) / 1e7
+}
+
+// SetUserNodes supplies the node numbers registered in the user directory:
+// the nodes this station is expected to be able to send a DIRECT message to.
+// They are pinned as favorites on the radio (see pinUserNodes). A nil
+// provider — the default — leaves the radio's favorites alone.
+func (h *Hub) SetUserNodes(nodes func() []uint32) {
+	h.mu.Lock()
+	h.userNodes = nodes
+	h.mu.Unlock()
+}
+
+// pinUserNodes keeps the radio's node database from evicting the public keys
+// of the people this station serves. The firmware refuses a direct message to
+// a node whose key it does not hold and only learns it from that node's
+// NodeInfo, so a key pruned out of a full node table costs the operator a
+// message until the node announces itself again. Favorites are NEVER evicted
+// and survive a node-db reset, which makes them the one durable place this
+// pin can live.
+//
+// The pass runs on the maintenance tick: at most once per PinInterval, never
+// blocking, and a radio that refuses the admin message only logs a warning —
+// a failed pin must never disturb the mesh session.
+func (h *Hub) pinUserNodes() {
+	if !h.cfg.PinUserNodes {
+		return
+	}
+	h.mu.Lock()
+	provider := h.userNodes
+	now := h.clock()
+	if provider == nil || now.Before(h.pinNext) {
+		h.mu.Unlock()
+		return
+	}
+	interval := h.cfg.PinInterval
+	if interval <= 0 {
+		interval = defaultPinInterval
+	}
+	h.pinNext = now.Add(interval)
+	h.mu.Unlock()
+
+	for _, id := range provider() {
+		if id == 0 {
+			continue
+		}
+		if err := h.setFavorite(id, true); err != nil {
+			if h.logger != nil {
+				h.logger.Warn("meshtastic: pinning a user node as favorite failed",
+					"node", fmt.Sprintf("%08x", id), "error", err)
+			}
+			continue
+		}
+		if h.logger != nil {
+			h.logger.Info("meshtastic: user node pinned as favorite on the radio",
+				"node", fmt.Sprintf("%08x", id))
+		}
+	}
+}
+
+// setFavorite asks the DEVICE to add or remove one node in its favorites.
+// The admin frame is addressed to our own node: the firmware handles a packet
+// that came in over the local API itself (no channel, no admin session, no
+// encryption), which is exactly what the phone app does when a star is
+// tapped.
+func (h *Hub) setFavorite(id uint32, favorite bool) error {
+	if id == 0 || id == core.BroadcastNodeID.Uint32() {
+		return fmt.Errorf("meshtastic: %08x is not a node that can be favorited", id)
+	}
+	h.mu.Lock()
+	conn := h.conn
+	self := h.self
+	h.mu.Unlock()
+	if conn == nil || !conn.IsConnected() {
+		return errDeviceNotConnected
+	}
+	if self == nil || self.ID == "" {
+		return errors.New("meshtastic: our own node number is not known yet")
+	}
+	selfNum, err := strconv.ParseUint(normalizeMeshID(self.ID), 16, 32)
+	if err != nil {
+		return fmt.Errorf("meshtastic: our own node number %q is unreadable", self.ID)
+	}
+	admin := &pb.AdminMessage{}
+	if favorite {
+		admin.PayloadVariant = &pb.AdminMessage_SetFavoriteNode{SetFavoriteNode: id}
+	} else {
+		admin.PayloadVariant = &pb.AdminMessage_RemoveFavoriteNode{RemoveFavoriteNode: id}
+	}
+	payload, err := proto.Marshal(admin)
+	if err != nil {
+		return fmt.Errorf("meshtastic: encode the favorite request: %w", err)
+	}
+	// The device answers the frame like any other local packet; the
+	// placeholder keeps its answer paired with THIS send, so an unrelated
+	// text message can never consume the id (same bookkeeping as the
+	// NodeInfo refresh).
+	at := time.Now()
+	ps := &pendingSend{to: uint32(selfNum), at: at, lastTry: at, text: "\x00favorite", wantAck: true, probe: true}
+	h.sendMu.Lock()
+	h.echoQueue = append(h.echoQueue, ps)
+	h.sendMu.Unlock()
+	err = conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+		To:      uint32(selfNum),
+		WantAck: true,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ADMIN_APP, Payload: payload},
+		},
+	}}})
+	if err != nil {
+		h.dropPending(ps)
+		return fmt.Errorf("meshtastic: favorite request write failed: %w", err)
+	}
+	return nil
 }
 
 // expireNodes cleans the MQTT station feed: nodes unheard for longer

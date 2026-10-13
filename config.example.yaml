@@ -878,6 +878,16 @@ meshtastic:
   # the group channel — useful but noisy, OFF by default.
   station_alerts: false
 
+  # Pin the node IDs registered in the user directory as FAVORITES on
+  # the radio (default ON, re-checked every pin_user_nodes_interval).
+  # The firmware never evicts a favorite from its node database and keeps
+  # favorites across a node-db reset, so the public key a DIRECT message
+  # must be encrypted with survives a full node table. Without this a
+  # node whose key was pruned can only be messaged after it announces
+  # itself again ("recipient has not announced its public key").
+  pin_user_nodes: true
+  # pin_user_nodes_interval: 6h    # 1m..24h
+
   # Periodic presence beacon (identity + uptime + node count) on a
   # community channel. The default PRIMARY channel is receive-only:
   # broadcasts there are blocked by policy. Give every installation that

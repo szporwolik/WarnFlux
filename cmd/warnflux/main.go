@@ -662,6 +662,14 @@ func run(configPath string, checkConfig bool) error {
 		"log_level", cfg.App.LogLevel, "log_file", cfg.App.LogFile,
 		"storage_driver", cfg.Storage.Driver, "storage_path", cfg.Storage.Path)
 
+	// The panel writes its changes back into this file, and a read-only
+	// mount makes them vanish on the next restart. Say so once at startup:
+	// an operator should not discover a lost edit as a surprise.
+	if err := config.CheckWritable(configPath); err != nil {
+		logger.Warn("configuration file is not writable: panel changes will not survive a restart",
+			"path", configPath, "error", err)
+	}
+
 	// The database is created and migrated on first startup. Close it only
 	// after all workers have stopped.
 	// Message-id assignments are read from inside store transactions

@@ -101,6 +101,13 @@ var sourceKinds = map[string]channelKind{
 	"openmeteo":  {Icon: "i-sun", Key: "sources.openmeteo", URL: "https://open-meteo.com/"},
 	"metar":      {Icon: "i-cloud-sun", Key: "sources.metar", URL: "https://aviationweather.gov/"},
 	"adsb":       {Icon: "i-lightning-charge", Key: "sources.adsb", URL: "https://adsb.lol/"},
+	// Feeds that are NOT plugins: the station's own messages, the operator's
+	// public HTTP endpoints and the EMCOM readiness levels. They are rows of
+	// the routing matrix too, so the public list must not pretend the
+	// station only listens to foreign providers.
+	"compose": {Icon: "i-pencil-square", Key: "sources.compose"},
+	"ingest":  {Icon: "i-puzzle", Key: "sources.ingest"},
+	"emcom":   {Icon: "i-megaphone", Key: "sources.emcom"},
 }
 
 // sourceRank orders the public source list: official alert feeds first,
@@ -109,14 +116,26 @@ var sourceRank = map[string]int{
 	"rso": 1, "imgw": 2, "gddkia": 3, "burzedzis": 4, "gios": 5, "giosaq": 6,
 	"aprs-inet": 7, "aprs-radio": 7, "meshtastic": 8, "openmeteo": 9,
 	"adsb": 10, "metar": 11,
+	// The station's own feeds close the list: they are not providers.
+	"compose": 12, "ingest": 13, "emcom": 14,
 }
 
-// publicSources builds the friendly public source list from plugin
-// statuses: enabled SOURCE instances only, one row per feed (duplicate
-// instances of one type collapse), unknown types hidden, in a stable
-// friendly order. Names and descriptions come from the page language
-// catalog.
-func publicSources(statuses []plugin.PluginStatus, lang string) []publicChannelView {
+// operatorSources is what the public source list needs beyond the plugin
+// statuses: the feeds the station produces itself rather than receiving from
+// a provider. They are shown only when they exist (an endpoint, a network),
+// except the station's own messages, which every installation can issue.
+type operatorSources struct {
+	// Ingest is the number of configured public HTTP ingest endpoints.
+	Ingest int
+	// Emcom is the number of managed EMCOM networks.
+	Emcom int
+}
+
+// publicSources builds the friendly public source list: every enabled SOURCE
+// instance, one row per feed (duplicate instances of one type collapse),
+// unknown types hidden, plus the operator-side feeds, in a stable friendly
+// order. Names and descriptions come from the page language catalog.
+func publicSources(statuses []plugin.PluginStatus, op operatorSources, lang string) []publicChannelView {
 	// One row per FEED, not per plugin type: the two APRS flavours are one
 	// network to the reader, and a station running both must not list it
 	// twice.
@@ -145,6 +164,28 @@ func publicSources(statuses []plugin.PluginStatus, lang string) []publicChannelV
 			rank: sourceRank[st.Type],
 		})
 	}
+	// The station's own feeds, appended before the ordering so the rank map
+	// stays the single place that decides the reading order.
+	add := func(slug string) {
+		kind := sourceKinds[slug]
+		out = append(out, ranked{
+			view: publicChannelView{
+				Icon:        kind.Icon,
+				Name:        i18n.T(lang, kind.Key+".name"),
+				Description: i18n.T(lang, kind.Key+".desc"),
+				URL:         kind.URL,
+			},
+			rank: sourceRank[slug],
+		})
+	}
+	add("compose") // every station can issue its own messages
+	if op.Ingest > 0 {
+		add("ingest")
+	}
+	if op.Emcom > 0 {
+		add("emcom")
+	}
+
 	sort.SliceStable(out, func(i, j int) bool { return out[i].rank < out[j].rank })
 	views := make([]publicChannelView, len(out))
 	for i, r := range out {

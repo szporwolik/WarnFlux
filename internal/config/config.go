@@ -153,7 +153,10 @@ type App struct {
 	LogFile string
 	// LogMaxSizeMB is the rotation threshold in megabytes.
 	LogMaxSizeMB int
-	// LogMaxBackups is how many rotated files are retained.
+	// LogMaxBackups is how many rotated files are retained. It must be at
+	// least 1: the rotation library deletes nothing when the count is 0
+	// and no age limit is set, so zero would keep the log history forever
+	// (the configuration validation rejects it).
 	LogMaxBackups int
 }
 
@@ -1317,8 +1320,11 @@ func (c Config) Validate() error {
 	if c.App.LogMaxSizeMB <= 0 {
 		return fmt.Errorf("app.log_max_size_mb must be greater than 0, got %d", c.App.LogMaxSizeMB)
 	}
-	if c.App.LogMaxBackups < 0 {
-		return fmt.Errorf("app.log_max_backups must not be negative, got %d", c.App.LogMaxBackups)
+	// Zero would mean "keep every rotated file forever": the rotation
+	// library deletes nothing when the backup count is 0 and no age limit
+	// is configured, so the log history would grow without bound.
+	if c.App.LogMaxBackups <= 0 {
+		return fmt.Errorf("app.log_max_backups must be greater than 0, got %d (zero would keep every rotated log forever)", c.App.LogMaxBackups)
 	}
 	if c.Storage.Driver != "sqlite" {
 		return fmt.Errorf("storage.driver must be %q, got %q", "sqlite", c.Storage.Driver)

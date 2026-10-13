@@ -21,12 +21,14 @@ const (
 	// The inbox window is the pending-dispatch safety net.
 	inboxRetentionMax = 720 * time.Hour
 	// Queue and log limits.
-	queueSizeMin   = 1
-	queueSizeMax   = 100_000
-	minFreeMBMax   = 10_000_000
-	logSizeMBMin   = 1
-	logSizeMBMax   = 10_000
-	logBackupsMin  = 0
+	queueSizeMin = 1
+	queueSizeMax = 100_000
+	minFreeMBMax = 10_000_000
+	logSizeMBMin = 1
+	logSizeMBMax = 10_000
+	// A positive minimum: zero backups would let the rotated log history
+	// grow without bound (lumberjack deletes nothing at 0).
+	logBackupsMin  = 1
 	logBackupsMax  = 100
 	minFreeMBMin   = 0
 	neverRetention = -1 * time.Second

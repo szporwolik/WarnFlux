@@ -42,6 +42,7 @@ itself plus the map providers listed under *Frontend*.
 | `gios` | `dane.gios.gov.pl`, geocoders `services.gugik.gov.pl`, `nominatim.openstreetmap.org` | Serious-incident feed |
 | `giosaq` | `api.gios.gov.pl` | Air-quality stations |
 | `gddkia` | `archiwum.gddkia.gov.pl` | Winter road conditions |
+| `burzedzis` | `burze.dzis.net` | Point storm/wind warnings + lightning detection (also `burzedzis-burza`) |
 | `metar` | `aviationweather.gov` | METAR |
 | `adsb` | `api.adsb.lol` or the operator's LAN Tar1090 | Aircraft |
 | `aprs-inet` | `rotate.aprs2.net:14580` | APRS-IS feed (TX fails over to the radio when suspended) |

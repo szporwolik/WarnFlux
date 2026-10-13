@@ -1,6 +1,9 @@
 package meshtastic
 
 import (
+	"context"
+	"errors"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +52,62 @@ func (c *capturingConn) adminFavorites() map[uint32]uint32 {
 	return out
 }
 
+// adminFavoriteRemovals returns the node numbers of every
+// remove_favorite_node frame that went out.
+func (c *capturingConn) adminFavoriteRemovals() []uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []uint32
+	for _, msg := range c.sent {
+		decoded := msg.GetPacket().GetDecoded()
+		if decoded == nil || decoded.GetPortnum() != pb.PortNum_ADMIN_APP {
+			continue
+		}
+		admin := &pb.AdminMessage{}
+		if err := proto.Unmarshal(decoded.GetPayload(), admin); err != nil {
+			continue
+		}
+		if fav, ok := admin.GetPayloadVariant().(*pb.AdminMessage_RemoveFavoriteNode); ok {
+			out = append(out, fav.RemoveFavoriteNode)
+		}
+	}
+	return out
+}
+
+// memFavoriteStore is the in-memory ledger of the stars this station set on
+// the radio (the FavoriteStore the hub writes to).
+type memFavoriteStore struct {
+	mu      sync.Mutex
+	ids     []uint32
+	saves   int
+	loadErr error
+}
+
+func (m *memFavoriteStore) LoadMeshtasticFavorites(context.Context) ([]uint32, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.loadErr != nil {
+		return nil, m.loadErr
+	}
+	return append([]uint32(nil), m.ids...), nil
+}
+
+func (m *memFavoriteStore) SaveMeshtasticFavorites(_ context.Context, ids []uint32) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ids = append([]uint32(nil), ids...)
+	m.saves++
+	return nil
+}
+
+func (m *memFavoriteStore) snapshot() []uint32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := append([]uint32(nil), m.ids...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
 // TestPinUserNodesMarksFavorites pins the feature: the node IDs registered in
 // the user directory are sent to the radio as favorites right after the
 // handshake, so the firmware never evicts their public keys (a node whose key
@@ -62,7 +121,9 @@ func TestPinUserNodesMarksFavorites(t *testing.T) {
 				return cap
 			},
 			setup: func(h *Hub) {
-				h.SetUserNodes(func() []uint32 { return []uint32{0x6d2c8f6c, 0xdeadbeef} })
+				h.SetUserNodes(func() ([]uint32, error) {
+					return []uint32{0x6d2c8f6c, 0xdeadbeef}, nil
+				})
 			},
 		})
 	radio.waitConnected(t)
@@ -93,6 +154,187 @@ func TestPinUserNodesMarksFavorites(t *testing.T) {
 	}
 }
 
+// TestPinUserNodesRemembersItsOwnStars: the pass writes down which stars it
+// set, so a later pass (or a restarted process) can tell them from the ones an
+// operator tapped on the device.
+func TestPinUserNodesRemembersItsOwnStars(t *testing.T) {
+	ledger := &memFavoriteStore{}
+	cap := &capturingConn{}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
+		testRadioOpts{
+			wrap: func(t transportConn) transportConn {
+				cap.transportConn = t
+				return cap
+			},
+			setup: func(h *Hub) {
+				h.SetFavoriteStore(ledger)
+				h.SetUserNodes(func() ([]uint32, error) {
+					return []uint32{0x6d2c8f6c, 0xdeadbeef}, nil
+				})
+			},
+		})
+	radio.waitConnected(t)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(ledger.snapshot()) == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := ledger.snapshot(); len(got) != 2 || got[0] != 0x6d2c8f6c || got[1] != 0xdeadbeef {
+		t.Fatalf("ledger = %08x, want the two pinned nodes", got)
+	}
+}
+
+// TestPinUserNodesUnpinsNodesThatLeftTheDirectory pins the other half of the
+// feature: favorites the station set for a node that is no longer registered
+// are taken back, so the radio does not accumulate stars for people the
+// station stopped serving. An EMPTY directory is a real answer and must
+// unpin; a directory that cannot be read is not (covered below).
+func TestPinUserNodesUnpinsNodesThatLeftTheDirectory(t *testing.T) {
+	cases := []struct {
+		name    string
+		pinned  []uint32
+		want    []uint32
+		removed []uint32
+	}{
+		{
+			name:    "one owner left",
+			pinned:  []uint32{0x6d2c8f6c, 0xdeadbeef},
+			want:    []uint32{0x6d2c8f6c},
+			removed: []uint32{0xdeadbeef},
+		},
+		{
+			name:    "directory emptied",
+			pinned:  []uint32{0xdeadbeef, 0x11223344},
+			want:    nil,
+			removed: []uint32{0x11223344, 0xdeadbeef},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ledger := &memFavoriteStore{ids: c.pinned}
+			cap := &capturingConn{}
+			radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
+				testRadioOpts{
+					wrap: func(t transportConn) transportConn {
+						cap.transportConn = t
+						return cap
+					},
+					setup: func(h *Hub) {
+						h.SetFavoriteStore(ledger)
+						h.SetUserNodes(func() ([]uint32, error) { return c.want, nil })
+					},
+				})
+			radio.waitConnected(t)
+
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				if len(cap.adminFavoriteRemovals()) == len(c.removed) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			got := cap.adminFavoriteRemovals()
+			sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+			if len(got) != len(c.removed) {
+				t.Fatalf("removed favorites = %08x, want %08x", got, c.removed)
+			}
+			for i, id := range c.removed {
+				if got[i] != id {
+					t.Fatalf("removed favorites = %08x, want %08x", got, c.removed)
+				}
+			}
+			if ledger := ledger.snapshot(); len(ledger) != len(c.want) {
+				t.Fatalf("ledger = %08x, want %08x", ledger, c.want)
+			}
+			// The node that is still registered keeps its star: no frame
+			// about it at all.
+			if favs := cap.adminFavorites(); len(favs) != 0 {
+				t.Fatalf("set_favorite_node frames = %v, want none (the remaining node was already pinned)", favs)
+			}
+		})
+	}
+}
+
+// TestPinUserNodesNeverUnpinsOnABadDirectory: a directory that cannot be read
+// (or a ledger that cannot be read) must leave the radio's favorites exactly
+// as they are — unpinning there would strip the keys of precisely the people
+// the station has to keep messaging.
+func TestPinUserNodesNeverUnpinsOnABadDirectory(t *testing.T) {
+	readErr := errors.New("database is locked")
+	cases := []struct {
+		name     string
+		ledger   *memFavoriteStore
+		provider func() ([]uint32, error)
+	}{
+		{
+			name:     "directory read failed",
+			ledger:   &memFavoriteStore{ids: []uint32{0x6d2c8f6c, 0xdeadbeef}},
+			provider: func() ([]uint32, error) { return nil, readErr },
+		},
+		{
+			name:     "ledger read failed",
+			ledger:   &memFavoriteStore{ids: []uint32{0x6d2c8f6c, 0xdeadbeef}, loadErr: readErr},
+			provider: func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cap := &capturingConn{}
+			radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", PinUserNodes: true},
+				testRadioOpts{
+					wrap: func(t transportConn) transportConn {
+						cap.transportConn = t
+						return cap
+					},
+					setup: func(h *Hub) {
+						h.SetFavoriteStore(c.ledger)
+						h.SetUserNodes(c.provider)
+					},
+				})
+			radio.waitConnected(t)
+			time.Sleep(150 * time.Millisecond)
+			if got := cap.adminFavoriteRemovals(); len(got) != 0 {
+				t.Fatalf("favorites were removed after a failed read: %08x", got)
+			}
+			if got := capeSetFrames(cap); len(got) != 0 {
+				t.Fatalf("favorites were set after a failed read: %v", got)
+			}
+			if got := c.ledger.snapshot(); len(got) != 2 {
+				t.Fatalf("ledger was rewritten after a failed read: %08x", got)
+			}
+		})
+	}
+}
+
+// TestPinUserNodesRetriesSoonAfterAFailedPass: a star the radio refused is not
+// written down as ours (the station must never claim a pin it did not make),
+// and the pass is re-armed in minutes rather than a whole interval later.
+func TestPinUserNodesRetriesSoonAfterAFailedPass(t *testing.T) {
+	ledger := &memFavoriteStore{}
+	h := &Hub{cfg: Config{PinUserNodes: true, PinInterval: time.Hour}}
+	h.SetFavoriteStore(ledger)
+	h.SetUserNodes(func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil })
+
+	// No session: the admin frame cannot go out.
+	h.pinUserNodes()
+	if got := ledger.snapshot(); len(got) != 0 {
+		t.Fatalf("ledger = %08x, want nothing (the pin never reached the radio)", got)
+	}
+	if h.pinned[0x6d2c8f6c] {
+		t.Error("the failed pin is remembered as ours")
+	}
+	if got := time.Until(h.pinNext); got > pinRetryDelay+time.Second {
+		t.Errorf("next pass in %s, want ~%s after a failed one", got, pinRetryDelay)
+	}
+}
+
+// capeSetFrames is the set_favorite_node counterpart used where only the
+// absence of traffic matters.
+func capeSetFrames(c *capturingConn) map[uint32]uint32 { return c.adminFavorites() }
+
 // TestPinUserNodesDisabledAndEmpty: the pass is inert when the feature is off
 // or when nothing is registered, so a station that never pinned anything
 // sends no admin traffic at all.
@@ -117,7 +359,7 @@ func TestPinUserNodesDisabledAndEmpty(t *testing.T) {
 					},
 					setup: func(h *Hub) {
 						if c.nodes != nil {
-							h.SetUserNodes(func() []uint32 { return c.nodes })
+							h.SetUserNodes(func() ([]uint32, error) { return c.nodes, nil })
 						}
 					},
 				})
@@ -137,7 +379,7 @@ func TestPinUserNodesDisabledAndEmpty(t *testing.T) {
 // seconds.
 func TestPinUserNodesIntervalGatesThePass(t *testing.T) {
 	h := &Hub{cfg: Config{PinUserNodes: true, PinInterval: time.Hour}}
-	h.SetUserNodes(func() []uint32 { return []uint32{0x6d2c8f6c} })
+	h.SetUserNodes(func() ([]uint32, error) { return []uint32{0x6d2c8f6c}, nil })
 	// No session: the pass must not even try to send, and must have armed
 	// the next window.
 	h.pinUserNodes()

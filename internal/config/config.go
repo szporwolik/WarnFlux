@@ -658,8 +658,9 @@ type fileMeshtastic struct {
 	EmcomHazardsInterval *time.Duration `yaml:"emcom_hazards_interval"`
 	// PinUserNodes marks the node IDs registered in the user directory as
 	// favorites on the radio (the firmware keeps favorites when its node
-	// database is pruned or reset). Default ON; pin_user_nodes_interval
-	// (1m..24h, default 6h) is how often the pass re-runs.
+	// database is pruned or reset) and takes the star back once its owner
+	// leaves the directory. Default ON; pin_user_nodes_interval (1m..24h,
+	// default 6h) is how often the pass re-runs.
 	PinUserNodes         *bool          `yaml:"pin_user_nodes"`
 	PinUserNodesInterval *time.Duration `yaml:"pin_user_nodes_interval"`
 

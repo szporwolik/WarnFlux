@@ -68,6 +68,19 @@ func IsFault(err error) bool {
 	return errors.As(err, &f)
 }
 
+// errNoPayload reports an answer that parsed as XML but does not carry the
+// operation's own payload — an empty SOAP body, a slightly different
+// document, or the maintenance page the provider (and any proxy in front of
+// it) returns with HTTP 200.
+//
+// This matters more here than anywhere else: the warnings answer is a
+// COMPLETE snapshot per point, so reading an empty document as "nothing is in
+// force" would reconcile every live warning away. An unreadable answer has to
+// be an error, never an empty snapshot.
+func errNoPayload(operation string) error {
+	return fmt.Errorf("the answer carries no %s/return payload (empty SOAP body, maintenance page or another service?)", operation)
+}
+
 // Client talks to one burze.dzis.net installation.
 type Client struct {
 	baseURL string
@@ -97,7 +110,11 @@ func (c *Client) Locality(ctx context.Context, name string) (Locality, error) {
 	if err := c.call(ctx, cityRequest{NS: soapNS, Name: name, Key: c.key}, &doc); err != nil {
 		return Locality{}, err
 	}
-	lat, lon := doc.Body.City.Return.CoordY, doc.Body.City.Return.CoordX
+	ret := doc.Body.City.Return
+	if ret == nil || ret.CoordY == nil || ret.CoordX == nil {
+		return Locality{}, errNoPayload("miejscowosc")
+	}
+	lat, lon := *ret.CoordY, *ret.CoordX
 	if lat == 0 && lon == 0 {
 		return Locality{}, fmt.Errorf("%q: %w", name, ErrUnknownLocality)
 	}
@@ -113,7 +130,10 @@ func (c *Client) Warnings(ctx context.Context, at Locality) (Warnings, error) {
 	if err := c.call(ctx, req, &doc); err != nil {
 		return Warnings{}, err
 	}
-	return doc.Body.Return.snapshot(at), nil
+	if doc.Body.Return == nil {
+		return Warnings{}, errNoPayload("ostrzezenia_pogodowe")
+	}
+	return doc.Body.Return.snapshot(at)
 }
 
 // Storm searches for lightning discharges around one point within radiusKM
@@ -126,15 +146,18 @@ func (c *Client) Storm(ctx context.Context, at Locality, radiusKM int) (Storm, e
 		return Storm{}, err
 	}
 	ret := doc.Body.Return
+	if ret == nil || ret.Count == nil || ret.Distance == nil || ret.Window == nil {
+		return Storm{}, errNoPayload("szukaj_burzy")
+	}
 	return Storm{
 		Locality:   at.Name,
 		Lat:        at.Lat,
 		Lon:        at.Lon,
 		RadiusKM:   radiusKM,
-		Count:      ret.Count,
-		DistanceKM: ret.Distance,
+		Count:      *ret.Count,
+		DistanceKM: *ret.Distance,
 		Direction:  strings.TrimSpace(ret.Direction),
-		WindowMins: ret.Window,
+		WindowMins: *ret.Window,
 	}, nil
 }
 

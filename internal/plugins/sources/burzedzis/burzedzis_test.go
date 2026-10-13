@@ -853,3 +853,86 @@ func TestResolveDistinguishesUnknownFromUnreachable(t *testing.T) {
 		t.Errorf("unknown = %v, want only the name the directory refused", unknown)
 	}
 }
+
+// TestUnreadableAnswersCancelNothing pins the reported P1 at the source level:
+// the provider (or a proxy in front of it) answers HTTP 200 with a maintenance
+// page, which parses as valid XML with nothing inside. Reading that as "nothing
+// is in force" would reconcile every live warning away, so the pass must fail
+// and the reconciliation must be skipped.
+func TestUnreadableAnswersCancelNothing(t *testing.T) {
+	broken := map[string]bool{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		text := strings.TrimSpace(string(body))
+		mu.Lock()
+		warnDown, stormDown := broken["warnings"], broken["storm"]
+		mu.Unlock()
+		switch {
+		case strings.Contains(text, "<miejscowosc "):
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, cityFixture(50.02, 20.13))
+		case strings.Contains(text, "<ostrzezenia_pogodowe "):
+			if warnDown {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = io.WriteString(w, "<!DOCTYPE html><html><body>maintenance</body></html>")
+				return
+			}
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, warningsFixture(0))
+		case strings.Contains(text, "<szukaj_burzy "):
+			if stormDown {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = io.WriteString(w, "<!DOCTYPE html><html><body>maintenance</body></html>")
+				return
+			}
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, stormFixture(0, 0, "", 20))
+		default:
+			t.Errorf("unexpected SOAP body: %s", text)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	src := newSource(t, srv.URL, "storm_tracking: true\n")
+	now := time.Now()
+	liveWarning := src.warningEvent(warningOf(t, "storm", 2, now.Add(-time.Hour), now.Add(3*time.Hour), point("Niepołomice", 50.02, 20.13)))
+	liveStorm := src.stormEvent(stormAt(t, 4), now)
+	emit := &fakeEmitter{active: []core.HazardEvent{liveWarning, liveStorm}}
+
+	mu.Lock()
+	broken["warnings"] = true
+	broken["storm"] = true
+	mu.Unlock()
+
+	if err := src.pollOnce(context.Background(), emit); err == nil {
+		t.Fatal("an unreadable answer must be reported (the source is degraded)")
+	}
+	for _, ev := range emit.events("") {
+		if ev.Status == core.StatusCancelled {
+			t.Errorf("an unreadable answer cancelled %q", ev.Key())
+		}
+	}
+
+	// The provider recovers: the live warning stays in force (it was never
+	// cancelled) and the pass reports healthy again.
+	mu.Lock()
+	broken["warnings"] = false
+	broken["storm"] = false
+	mu.Unlock()
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		t.Fatalf("pollOnce after recovery: %v", err)
+	}
+	cancelled := 0
+	for _, ev := range emit.events("") {
+		if ev.Status == core.StatusCancelled {
+			cancelled++
+		}
+	}
+	// The warning was withdrawn by the provider's own quiet snapshot, so ONE
+	// cancellation is correct now — and the storm event goes the same way.
+	if cancelled != 2 {
+		t.Errorf("cancellations after the quiet snapshot = %d, want 2 (the live warning and the storm)", cancelled)
+	}
+}

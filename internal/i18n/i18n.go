@@ -1273,7 +1273,6 @@ var en = map[string]string{
 	"mail.empty_change":         "<empty change>",
 	"mail.dispatch_event":       "Dispatch event",
 	"mail.mqtt_on":              "MQTT message on %s",
-	"mail.default_instruction":  "Follow official communications and obey the instructions of emergency services.",
 
 	// EMCOM notification payloads (per-language hazard texts).
 	"emcom.headline":     "%s: level %d – %s",
@@ -2414,7 +2413,6 @@ var pl = map[string]string{
 	"mail.empty_change":         "<pusta zmiana>",
 	"mail.dispatch_event":       "Zdarzenie dispatch",
 	"mail.mqtt_on":              "Wiadomość MQTT na %s",
-	"mail.default_instruction":  "Postępuj zgodnie z oficjalnymi komunikatami i poleceniami służb ratunkowych.",
 
 	// Treści powiadomień EMCOM (teksty zagrożeń per język).
 	"emcom.headline":     "%s: poziom %d — %s",

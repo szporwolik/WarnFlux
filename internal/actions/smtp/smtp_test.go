@@ -392,7 +392,8 @@ rate_limit_per_minute: -1
 		"Message ID: WF-",
 		"source: imgw-meteo",
 		"areas: małopolskie",
-		"instruction: Follow official communications",
+		// The source (imgw) ships no instruction, so the mail carries no
+		// instruction section at all — nothing is invented for it.
 		// Multipart/alternative with the human-first HTML part.
 		"Content-Type: multipart/related",
 		"Content-Type: multipart/alternative",

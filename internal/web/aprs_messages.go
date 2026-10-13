@@ -179,6 +179,21 @@ func (s *Server) handlePartialMessages(w http.ResponseWriter, r *http.Request) {
 	s.renderL(w, r, "aprs_msgs", v)
 }
 
+// aprsMsgsURL builds one /aprs messages redirect for the send and beacon
+// forms: the direction filter they were submitted from travels with it, so
+// a send (or a refusal) never drops the operator on a different list than
+// the one they were reading. "all" is the default view and stays implicit.
+func aprsMsgsURL(dir string, params ...string) string {
+	u := "/aprs?tab=msgs"
+	if dir == "rx" || dir == "tx" {
+		u += "&dir=" + dir
+	}
+	for i := 0; i+1 < len(params); i += 2 {
+		u += "&" + params[i] + "=" + url.QueryEscape(params[i+1])
+	}
+	return u
+}
+
 // handleAPRSSend transmits one APRS message from the admin panel with an
 // ack id and waits briefly for the addressee's ack. The outcome lands in
 // the durable history status and is reported back via the page flash.
@@ -188,8 +203,9 @@ func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
+	dir := r.PostFormValue("dir")
 	if s.aprs == nil {
-		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
+		http.Redirect(w, r, aprsMsgsURL(dir, "err", i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
 		return
 	}
 	to := strings.TrimSpace(r.PostFormValue("to"))
@@ -204,16 +220,16 @@ func (s *Server) handleAPRSSend(w http.ResponseWriter, r *http.Request) {
 			key = "messages.send_no_ack"
 		}
 		flash := fmt.Sprintf(i18n.T(lang, key), err)
-		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(flash), http.StatusSeeOther)
+		http.Redirect(w, r, aprsMsgsURL(dir, "err", flash), http.StatusSeeOther)
 		return
 	}
 	if !acked {
 		flash := i18n.T(lang, "messages.send_no_ack")
-		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(flash), http.StatusSeeOther)
+		http.Redirect(w, r, aprsMsgsURL(dir, "err", flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "aprs-send", to)
-	http.Redirect(w, r, "/aprs?tab=msgs&sent=1", http.StatusSeeOther)
+	http.Redirect(w, r, aprsMsgsURL(dir, "sent", "1"), http.StatusSeeOther)
 }
 
 // handleAPRSBeacon forces an immediate position beacon through the radio
@@ -224,15 +240,16 @@ func (s *Server) handleAPRSBeacon(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
+	dir := r.PostFormValue("dir")
 	if s.aprs == nil {
-		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
+		http.Redirect(w, r, aprsMsgsURL(dir, "err", i18n.T(s.langFor(r), "messages.err.no_hub")), http.StatusSeeOther)
 		return
 	}
 	if err := s.aprs.SendBeacon(r.Context()); err != nil {
 		flash := fmt.Sprintf(i18n.T(s.langFor(r), "messages.beacon_failed"), err)
-		http.Redirect(w, r, "/aprs?tab=msgs&err="+url.QueryEscape(flash), http.StatusSeeOther)
+		http.Redirect(w, r, aprsMsgsURL(dir, "err", flash), http.StatusSeeOther)
 		return
 	}
 	s.audit(sess.username, "aprs-beacon", "")
-	http.Redirect(w, r, "/aprs?tab=msgs&beacon=1", http.StatusSeeOther)
+	http.Redirect(w, r, aprsMsgsURL(dir, "beacon", "1"), http.StatusSeeOther)
 }

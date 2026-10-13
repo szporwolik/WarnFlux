@@ -80,6 +80,9 @@ type configView struct {
 	// Groups lists every notification group (the EMCOM assignment
 	// checkboxes).
 	Groups []storage.Group
+	// Storm is the storm-localities section: the localities of every
+	// burze.dzis.net source instance in the configuration file.
+	Storm stormView
 	// MeshChannel is the runtime switch for hazard broadcasts on the
 	// Meshtastic group channel.
 	Cadence     cadenceView
@@ -209,6 +212,7 @@ func (s *Server) buildConfigView(sess *session, lang string) configView {
 		MqttRows:        s.mqttRows(),
 		EmcomNetworks:   s.emcomNetworkViews(lang),
 		Groups:          groups,
+		Storm:           s.buildStormView(),
 		Cadence:         s.cadenceFor(),
 		PollFields:      s.pollFieldsFor(),
 		LimitFields:     s.retentionFieldsFor(),
@@ -256,6 +260,14 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 		v.Msg = i18n.T(lang, "config.range.none")
 	case "retention":
 		v.Msg = i18n.T(lang, "config.limits.saved")
+	case "storm":
+		v.Msg = i18n.T(lang, "config.storm.saved")
+	case "storm-unverified":
+		v.Msg = i18n.T(lang, "config.storm.saved_unverified")
+	case "storm-none-changes":
+		v.Msg = i18n.T(lang, "config.storm.unchanged")
+	case "storm-none":
+		v.Msg = i18n.T(lang, "config.storm.absent")
 	}
 	if r.URL.Query().Get("perr") == "1" {
 		v.Error = i18n.T(lang, "config.persist_failed")

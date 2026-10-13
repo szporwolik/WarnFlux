@@ -175,6 +175,31 @@
       </div>
     </section>
 
+    <section class="config-sec" id="cfg-storm">
+      <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-lightning-charge"></use></svg>{{tr .Lang "config.sec.storm"}}</h3>
+      <div class="config-block">
+        <div class="config-row">
+          <span class="config-row-title">{{tr .Lang "config.storm.head"}}</span>
+          {{if .Storm.Sources}}<button type="submit" form="config-storm-form" class="btn-primary">{{tr .Lang "common.save"}}</button>{{end}}
+        </div>
+        {{if .Storm.Sources}}
+        <form method="post" action="/config/storm" id="config-storm-form" class="config-content-form">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          {{range .Storm.Sources}}
+          <label class="config-field"><span>{{.Title}} — {{tr $.Lang "config.storm.field"}}</span>
+            <input type="hidden" name="path_{{.Index}}" value="{{.Path}}">
+            <input type="text" name="locations_{{.Index}}" maxlength="2000" value="{{.Field}}" placeholder="{{tr $.Lang "config.storm.placeholder"}}">
+          </label>
+          <p class="config-hint">{{tr $.Lang "config.storm.spelling"}} {{if not .HasKey}}{{tr $.Lang "config.storm.nokey"}} {{end}}{{printf (tr $.Lang "config.storm.limit") $.Storm.Max $.Storm.MaxLen}}</p>
+          {{end}}
+        </form>
+        <p class="config-hint">{{tr .Lang "config.storm.desc"}} {{tr .Lang "config.storm.restart"}}</p>
+        {{else}}
+        <p class="config-hint">{{tr .Lang "config.storm.absent"}}</p>
+        {{end}}
+      </div>
+    </section>
+
     <section class="config-sec" id="cfg-limits">
       <h3 class="config-sec-head"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-trash"></use></svg>{{tr .Lang "config.sec.limits"}}</h3>
       <div class="config-block">

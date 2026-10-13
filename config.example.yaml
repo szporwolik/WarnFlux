@@ -33,7 +33,7 @@
 #      imgw-warnings (TERYT geography + hydro keywords),
 #      rso-* (voivodeships + filter.local),
 #      gddkia-roads, gios-awarie and giosaq-main (all three inherit the
-#      aprs area).
+#      aprs area), burze-main (its own locality list).
 #   6. web.title / name / header1 / about / disclaimer — branding texts.
 #   7. outputs + dispatch — MQTT broker and unique client IDs.
 #   8. actions — SMTP credentials, APRS recipients, webhook URLs.
@@ -410,6 +410,82 @@ sources:
   #     # Area-centre overrides (default: aprs area).
   #     # center_lat: 50.0562
   #     # center_lon: 20.0610
+
+  # burze.dzis.net (storm and severe-weather service): the official Polish
+  # warnings in force for the localities this installation follows, plus the
+  # lightning discharges detected around them. One instance publishes TWO
+  # sources: "burzedzis" (warnings, source slug = the plugin type) and
+  # "burzedzis-burza" (the lightning nowcast) — the routing matrix offers a
+  # row for each, so a group can wire the storm to the fast channels without
+  # also wiring a first-degree frost warning.
+  #
+  # Every alert NAMES the locality it applies to (headline, areas and
+  # description), because the provider answers per point, not per region.
+  #
+  # Severity: the provider's degrees map 1 -> moderate, 2 -> severe,
+  # 3 -> extreme, with a per-phenomenon FLOOR. The wind family (funnel,
+  # storm, wind) is floored at severe at every degree — a thunderstorm or a
+  # strong-wind warning is never a minor event; the floor can be raised but
+  # not lowered. The lightning nowcast follows the distance of the nearest
+  # discharge: farther than storm_near_km -> storm_severity, closer ->
+  # storm_near_severity, right overhead (storm_direct_km) ->
+  # storm_direct_severity.
+  #
+  # Request budget: each poll costs one warnings request and one lightning
+  # request PER LOCALITY (the locality directory is resolved once and
+  # cached), so keep poll_interval sane for long lists.
+  # The localities are editable on the Config page ("Storm localities").
+  # See internal/plugins/sources/burzedzis/README.md. POLAND-ONLY.
+  #
+  # - id: burze-main
+  #   type: burzedzis
+  #   enabled: false
+  #
+  #   runtime:
+  #     restart: true
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     # API key from the burze.dzis.net account (API section). Required:
+  #     # without one the provider refuses every call. Use api_key_file
+  #     # instead to keep the key in a Docker secret.
+  #     api_key: ""
+  #     api_key_file: ""
+  #     # base_url: https://burze.dzis.net
+  #
+  #     poll_interval: 5m        # the provider's storm window is 10-20 min
+  #     request_timeout: 20s
+  #
+  #     # The localities to follow. The directory is DIACRITIC-SENSITIVE:
+  #     # "Niepołomice" resolves, "Niepolomice" does not (the provider
+  #     # answers 0/0 for it, which is also its "return test data" point —
+  #     # the plugin refuses such a point and names it in its status).
+  #     # Max 50 per instance.
+  #     locations: ["Niepołomice", "Kraków"]
+  #     locality_refresh: 24h    # re-resolve the names at most this often
+  #
+  #     # Degree -> canonical severity, and the per-phenomenon floor.
+  #     degree1_severity: moderate
+  #     degree2_severity: severe
+  #     degree3_severity: extreme
+  #     tornado_min_severity: severe    # traba
+  #     storm_min_severity: severe      # burza
+  #     wind_min_severity: severe       # wiatr
+  #     rain_min_severity: minor        # opad (the degree scale decides)
+  #     heat_min_severity: minor        # upał
+  #     frost_min_severity: minor       # mróz
+  #
+  #     # Lightning nowcast (source burzedzis-burza).
+  #     storm_tracking: true
+  #     storm_radius_km: 25             # the provider's own default
+  #     storm_min_lightnings: 1         # discharges needed for an event
+  #     storm_severity: moderate        # nearest discharge farther away
+  #     storm_near_km: 10
+  #     storm_near_severity: severe     # ...closer than this
+  #     storm_direct_km: 3
+  #     storm_direct_severity: extreme  # ...right overhead
+  #     storm_ttl: 30m                  # validity bucket of one detection
+  #     storm_update_interval: 15m      # republish an unchanged detection at most this often
 
   # APRS-IS source: connects to an APRS-IS server, subscribes to packets
   # around the configured position (aprs.gridsquare + aprs.radius_km) and

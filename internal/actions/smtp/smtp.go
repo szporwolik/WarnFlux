@@ -822,21 +822,11 @@ func humanTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04")
 }
 
-// defaultInstruction returns the fallback instruction section text for
-// hazards that carry none, in lang: every alert mail answers the reader's
-// first question — what am I supposed to do.
-func defaultInstruction(lang string) string {
-	return i18n.T(lang, "mail.default_instruction")
-}
-
-// effectiveInstruction returns the hazard's own instruction or the
-// default when none was provided.
-func effectiveInstruction(t dispatch.HazardText, lang string) string {
-	if instr := strings.TrimSpace(t.Instruction); instr != "" {
-		return instr
-	}
-	return defaultInstruction(lang)
-}
+// The instruction section is the PROVIDER's own text and nothing else: a
+// source that shipped none gets no section at all. Inventing advice
+// ("follow official communications") would put words in the provider's
+// mouth — the reader cannot tell our sentence from theirs, and an alert
+// carrying no recommendation is a complete alert.
 
 // bodyOfPlain renders the human-first plain text: severity and headline
 // up front, then the description, the instruction, the areas and the
@@ -877,7 +867,9 @@ func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
 		if desc := strings.TrimSpace(t.Description); desc != "" {
 			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.description"), desc)
 		}
-		fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.instruction"), effectiveInstruction(t, lang))
+		if instr := strings.TrimSpace(t.Instruction); instr != "" {
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.instruction"), instr)
+		}
 		if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
 			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.roads"), strings.Join(roads, ", "))
 		}
@@ -1093,16 +1085,21 @@ func hazardHTML(ev dispatch.Event, link, lang string) string {
 			}
 			b.WriteString(`</div>`)
 		}
-		// The operator instruction sits in its own callout box.
-		fmt.Fprintf(&b, `<div style="margin-top:18px;background-color:#1b232b;border:1px solid #303c46;border-radius:8px;padding:12px 16px;">
+		// The provider instruction sits in its own callout box. No
+		// instruction from the source means no box.
+		if instr := strings.TrimSpace(t.Instruction); instr != "" {
+			fmt.Fprintf(&b, `<div style="margin-top:18px;background-color:#1b232b;border:1px solid #303c46;border-radius:8px;padding:12px 16px;">
 <div style="color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div>
 <div style="margin-top:6px;color:#eef2f5;font-size:13px;line-height:1.5;">%s</div></div>`,
-			htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(effectiveInstruction(t, lang)))
+				htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(instr))
+		}
 	} else {
 		if desc := strings.TrimSpace(t.Description); desc != "" {
 			fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.description")), htmlEscaper(desc))
 		}
-		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(effectiveInstruction(t, lang)))
+		if instr := strings.TrimSpace(t.Instruction); instr != "" {
+			fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(instr))
+		}
 	}
 	if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
 		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%.5f, %.5f</span></div>`, htmlEscaper(i18n.T(lang, "mail.location")), *h.Hazard.Latitude, *h.Hazard.Longitude)

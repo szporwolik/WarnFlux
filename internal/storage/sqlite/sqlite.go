@@ -1061,8 +1061,14 @@ CREATE TABLE meshtastic_favorites (
 		// observation, so a removal queued just before the directory dropped
 		// the node (nodeDirRetention) is attempted again after a restart
 		// instead of leaving an obsolete retained document on the broker.
+		//
+		// pending_since_ms is the observation that removal refers to, kept
+		// apart from last_seen_ms: the node may have been heard again between
+		// the removal being queued and the save, and a restored removal must
+		// never be applied to an activity that came after it.
 		SQL: `
 ALTER TABLE meshtastic_nodes ADD COLUMN pending_removal INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE meshtastic_nodes ADD COLUMN pending_since_ms INTEGER;
 `,
 	},
 }

@@ -87,6 +87,11 @@ type MeshtasticNode struct {
 	// removed: the row keeps the removal alive after the node itself left the
 	// directory (nodeDirRetention), and across a restart.
 	PendingRemoval bool
+	// PendingSince is the observation the pending removal refers to (the
+	// node's LastSeen when it was queued). It is stored SEPARATELY from
+	// LastSeen because the node may have been heard again since: a restored
+	// removal is only valid while the node has not spoken after it.
+	PendingSince time.Time
 }
 
 // MeshtasticNodeStore persists the heard-node directory across restarts:

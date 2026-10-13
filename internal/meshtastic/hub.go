@@ -1773,8 +1773,17 @@ func (h *Hub) restoreNodes(ctx context.Context) {
 			// The removal never reached the broker before the station stopped:
 			// it is owed again. This entry is the only thing that remembers the
 			// node when the directory has dropped it long ago.
+			//
+			// The reference is the observation the removal was queued AGAINST,
+			// never the node's current LastSeen: the node may have been heard
+			// again (and its document published again) before the save, and a
+			// removal must never be applied to activity that came after it.
+			since := n.PendingSince
+			if since.IsZero() {
+				since = n.LastSeen
+			}
 			if h.tombstones[n.ID] == nil {
-				h.tombstones[n.ID] = &nodeTombstone{quietSince: n.LastSeen}
+				h.tombstones[n.ID] = &nodeTombstone{quietSince: since}
 				pending++
 			}
 		}
@@ -1817,7 +1826,17 @@ func (h *Hub) persistNodes() {
 		if n.LastSeen.Before(cutoff) {
 			continue
 		}
-		nodes = append(nodes, storage.MeshtasticNode{
+		// A quiet node whose removal the broker has not confirmed keeps that
+		// work alive across a restart — but only while the node really is
+		// quiet: a removal the node has already invalidated (it spoke again
+		// since) is dropped here as well, so a save can never turn fresh
+		// activity into the basis of an old removal.
+		pending := h.openRemovalLocked(n.ID)
+		if pending != nil && n.LastSeen.After(pending.quietSince) {
+			delete(h.tombstones, n.ID)
+			pending = nil
+		}
+		row := storage.MeshtasticNode{
 			ID:       n.ID,
 			Name:     n.Name,
 			Short:    n.Short,
@@ -1826,10 +1845,12 @@ func (h *Hub) persistNodes() {
 			LastSeen: n.LastSeen,
 			Sends:    append([]string(nil), n.Sends...),
 			Hops:     n.Hops,
-			// A quiet node whose removal the broker has not confirmed keeps
-			// that work alive across a restart.
-			PendingRemoval: h.openRemovalLocked(n.ID) != nil,
-		})
+		}
+		if pending != nil {
+			row.PendingRemoval = true
+			row.PendingSince = pending.quietSince
+		}
+		nodes = append(nodes, row)
 	}
 	// A removal outlives the directory: its node may be gone from memory
 	// entirely, so the pending work gets a row of its own.
@@ -1841,6 +1862,7 @@ func (h *Hub) persistNodes() {
 			ID:             id,
 			LastSeen:       tb.quietSince,
 			PendingRemoval: true,
+			PendingSince:   tb.quietSince,
 		})
 	}
 	h.lastPersist = time.Now()
@@ -2535,10 +2557,13 @@ func (h *Hub) publishStationRemoval(sink func(ctx context.Context, topic string,
 	h.mu.Lock()
 	tb := h.openRemovalLocked(id)
 	// The node may have spoken (or been restored) since this removal was
-	// queued: an active node keeps its document.
+	// queued — the removal is only ever about a node that is still quiet, and
+	// that is checked here and not only where the entry was queued.
 	if tb != nil {
-		if n := h.nodes[id]; n != nil && n.LastSeen.After(tb.quietSince) {
-			tb = nil
+		if n := h.nodes[id]; n != nil {
+			if n.LastSeen.After(tb.quietSince) || time.Since(n.LastSeen) <= h.cfg.NodeTTL {
+				tb = nil
+			}
 		}
 	}
 	h.mu.Unlock()

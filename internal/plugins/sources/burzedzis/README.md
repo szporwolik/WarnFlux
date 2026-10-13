@@ -47,6 +47,25 @@ An unresolved name (resolved once, cached) is reported in the source's status
 line (`unknown: …`) and logged — a typo shows up as a named gap, never as
 silence.
 
+### The two kinds of failure are kept apart
+
+Only the provider's own 0/0 answer (ErrUnknownLocality) marks a name as
+unknown and drops its coordinates. Everything else — a refused request, HTTP
+503, a timeout, an unreadable answer — is a fact about the network, not about
+the name:
+
+- the coordinates already resolved for that locality are KEPT, so the station
+  keeps watching through a provider outage;
+- the name is queued and looked up again on the very next poll (a transient
+  failure never waits for `locality_refresh`);
+- the pass does not count as a completed refresh, and the poll reports the
+  source as degraded.
+
+Treating a 503 as "unknown locality" used to wipe the point list and mark the
+cache fresh, which cost 24 hours of monitoring after one bad minute — the
+tests pin both behaviours (`TestResolveSurvivesProviderFailure`,
+`TestResolveDistinguishesUnknownFromUnreachable`).
+
 ## Severity mapping
 
 Degrees map onto the canonical scale (`1 → moderate`, `2 → severe`,

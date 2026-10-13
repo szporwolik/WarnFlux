@@ -167,71 +167,89 @@ type stormRequest struct {
 type cityResponse struct {
 	Body struct {
 		City struct {
-			Return struct {
-				CoordY float64 `xml:"y"`
-				CoordX float64 `xml:"x"`
-			} `xml:"return"`
+			Return *cityPoint `xml:"return"`
 		} `xml:"miejscowoscResponse"`
 	} `xml:"Body"`
 }
 
+// cityPoint is one directory answer. The coordinates are pointers so a
+// missing element is distinguishable from a legitimate 0.
+type cityPoint struct {
+	CoordY *float64 `xml:"y"`
+	CoordX *float64 `xml:"x"`
+}
+
 type warningsResponse struct {
 	Body struct {
-		Return warningLevels `xml:"ostrzezenia_pogodoweResponse>return"`
+		Return *warningLevels `xml:"ostrzezenia_pogodoweResponse>return"`
 	} `xml:"Body"`
 }
 
 // warningLevels mirrors the provider's warning envelope: one degree and one
 // window per phenomenon, all of them always present.
 type warningLevels struct {
-	Frost      int    `xml:"mroz"`
-	FrostFrom  string `xml:"mroz_od_dnia"`
-	FrostTo    string `xml:"mroz_do_dnia"`
-	Heat       int    `xml:"upal"`
-	HeatFrom   string `xml:"upal_od_dnia"`
-	HeatTo     string `xml:"upal_do_dnia"`
-	Wind       int    `xml:"wiatr"`
-	WindFrom   string `xml:"wiatr_od_dnia"`
-	WindTo     string `xml:"wiatr_do_dnia"`
-	Rain       int    `xml:"opad"`
-	RainFrom   string `xml:"opad_od_dnia"`
-	RainTo     string `xml:"opad_do_dnia"`
-	Storm      int    `xml:"burza"`
-	StormFrom  string `xml:"burza_od_dnia"`
-	StormTo    string `xml:"burza_do_dnia"`
-	Funnel     int    `xml:"traba"`
-	FunnelFrom string `xml:"traba_od_dnia"`
-	FunnelTo   string `xml:"traba_do_dnia"`
+	Frost      *int    `xml:"mroz"`
+	FrostFrom  *string `xml:"mroz_od_dnia"`
+	FrostTo    *string `xml:"mroz_do_dnia"`
+	Heat       *int    `xml:"upal"`
+	HeatFrom   *string `xml:"upal_od_dnia"`
+	HeatTo     *string `xml:"upal_do_dnia"`
+	Wind       *int    `xml:"wiatr"`
+	WindFrom   *string `xml:"wiatr_od_dnia"`
+	WindTo     *string `xml:"wiatr_do_dnia"`
+	Rain       *int    `xml:"opad"`
+	RainFrom   *string `xml:"opad_od_dnia"`
+	RainTo     *string `xml:"opad_do_dnia"`
+	Storm      *int    `xml:"burza"`
+	StormFrom  *string `xml:"burza_od_dnia"`
+	StormTo    *string `xml:"burza_do_dnia"`
+	Funnel     *int    `xml:"traba"`
+	FunnelFrom *string `xml:"traba_od_dnia"`
+	FunnelTo   *string `xml:"traba_do_dnia"`
 }
 
-// degreeOf returns the raw degree and window of one phenomenon.
-func (l warningLevels) degreeOf(key string) (int, string, string) {
+// phenomenon returns the raw degree and window of one phenomenon, and refuses
+// an envelope that does not carry them. The provider always ships all six
+// phenomena (a degree of 0 means "not in force"), so a missing element proves
+// the document is NOT the operation's payload — a maintenance page parses as
+// an empty envelope, and reading that as "nothing is in force" would reconcile
+// every live warning away.
+func (l *warningLevels) phenomenon(key string) (degree int, from, to string, err error) {
+	var d *int
+	var f, t *string
 	switch key {
 	case "tornado":
-		return l.Funnel, l.FunnelFrom, l.FunnelTo
+		d, f, t = l.Funnel, l.FunnelFrom, l.FunnelTo
 	case "storm":
-		return l.Storm, l.StormFrom, l.StormTo
+		d, f, t = l.Storm, l.StormFrom, l.StormTo
 	case "wind":
-		return l.Wind, l.WindFrom, l.WindTo
+		d, f, t = l.Wind, l.WindFrom, l.WindTo
 	case "rain":
-		return l.Rain, l.RainFrom, l.RainTo
+		d, f, t = l.Rain, l.RainFrom, l.RainTo
 	case "heat":
-		return l.Heat, l.HeatFrom, l.HeatTo
+		d, f, t = l.Heat, l.HeatFrom, l.HeatTo
 	case "frost":
-		return l.Frost, l.FrostFrom, l.FrostTo
+		d, f, t = l.Frost, l.FrostFrom, l.FrostTo
 	default:
-		return 0, "", ""
+		return 0, "", "", fmt.Errorf("unknown phenomenon %q", key)
 	}
+	if d == nil || f == nil || t == nil {
+		return 0, "", "", fmt.Errorf("the %s elements are missing from the warning envelope", key)
+	}
+	return *d, *f, *t, nil
 }
 
 // snapshot converts the raw envelope into the warnings in force for one
 // point. A phenomenon that carries a degree but no readable window is
 // rejected by name instead of being guessed at: an alert with invented
 // validity would be worse than no alert.
-func (l warningLevels) snapshot(at Locality) Warnings {
+func (l *warningLevels) snapshot(at Locality) (Warnings, error) {
 	out := Warnings{Point: at}
 	for _, ph := range Phenomena {
-		degree, from, to := l.degreeOf(ph.Key)
+		degree, from, to, err := l.phenomenon(ph.Key)
+		if err != nil {
+			return Warnings{}, fmt.Errorf("incomplete warning answer: %w", err)
+		}
 		if degree <= 0 {
 			continue
 		}
@@ -251,16 +269,21 @@ func (l warningLevels) snapshot(at Locality) Warnings {
 		}
 		out.InForce = append(out.InForce, Warning{Phenomenon: ph, Degree: degree, From: start, To: end, Point: at})
 	}
-	return out
+	return out, nil
 }
 
 type stormResponse struct {
 	Body struct {
-		Return struct {
-			Count     int     `xml:"liczba"`
-			Distance  float64 `xml:"odleglosc"`
-			Direction string  `xml:"kierunek"`
-			Window    int     `xml:"okres"`
-		} `xml:"szukaj_burzyResponse>return"`
+		Return *stormAnswer `xml:"szukaj_burzyResponse>return"`
 	} `xml:"Body"`
+}
+
+// stormAnswer is one lightning search result. The numbers are pointers: the
+// provider always sends them, so a missing one means the document is not this
+// operation's payload.
+type stormAnswer struct {
+	Count     *int     `xml:"liczba"`
+	Distance  *float64 `xml:"odleglosc"`
+	Direction string   `xml:"kierunek"`
+	Window    *int     `xml:"okres"`
 }

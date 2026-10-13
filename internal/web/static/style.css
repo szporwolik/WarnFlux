@@ -2995,6 +2995,10 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 }
 /* Admin username behind a sent mesh message, next to the TX sender. */
 .op-name { font-weight: 500; font-size: 0.85em; }
+
+/* A node the station pinned as a radio favorite: the firmware never evicts
+   its public key, so direct messages to it keep working. */
+.pin-star { color: var(--warn); font-size: 0.95em; cursor: help; }
 /* Compressed forecast strip on the report card: the next three days as
    icon + max-temperature chips (full forecast: title attributes). */
 .hw-fcast {

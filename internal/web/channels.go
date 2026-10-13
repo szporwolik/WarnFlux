@@ -84,6 +84,7 @@ var sourceKinds = map[string]channelKind{
 	"gddkia":     {Icon: "i-speedometer2", Key: "sources.gddkia"},
 	"gios":       {Icon: "i-shield-lock", Key: "sources.gios"},
 	"giosaq":     {Icon: "i-heart-pulse", Key: "sources.giosaq"},
+	"burzedzis":  {Icon: "i-lightning-charge", Key: "sources.burzedzis"},
 	"aprs-inet":  {Icon: "i-broadcast-pin", Key: "sources.aprs"},
 	"aprs-radio": {Icon: "i-broadcast-pin", Key: "sources.aprs"},
 	"meshtastic": {Icon: "i-broadcast", Key: "sources.meshtastic"},
@@ -95,9 +96,9 @@ var sourceKinds = map[string]channelKind{
 // sourceRank orders the public source list: official alert feeds first,
 // informational feeds last.
 var sourceRank = map[string]int{
-	"rso": 1, "imgw": 2, "gddkia": 3, "gios": 4, "giosaq": 5,
-	"aprs-inet": 6, "aprs-radio": 6, "meshtastic": 7, "openmeteo": 8,
-	"adsb": 9, "metar": 10,
+	"rso": 1, "imgw": 2, "gddkia": 3, "burzedzis": 4, "gios": 5, "giosaq": 6,
+	"aprs-inet": 7, "aprs-radio": 7, "meshtastic": 8, "openmeteo": 9,
+	"adsb": 10, "metar": 11,
 }
 
 // publicSources builds the friendly public source list from plugin

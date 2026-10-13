@@ -97,6 +97,11 @@ var baseRoutingSources = []sourceOption{
 	{Value: "gsm", Label: "groups.src.gsm", Desc: "sources.gsm.desc", Feed: "/gsm"},
 	{Value: "gios", Label: "groups.src.gios", Desc: "sources.gios.desc", Feed: "https://dane.gios.gov.pl"},
 	{Value: "giosaq", Label: "groups.src.giosaq", Desc: "sources.giosaq.desc", Feed: "https://api.gios.gov.pl/pjp-api"},
+	{Value: "burzedzis", Label: "groups.src.burzedzis", Desc: "sources.burzedzis.desc", Feed: "https://burze.dzis.net/?page=severe_weather_alert_map_poland"},
+	// The lightning nowcast of the same provider travels under its own
+	// slug, so a group can wire "a storm is over us right now" to the fast
+	// channels without also wiring every third-degree frost warning.
+	{Value: "burzedzis-burza", Label: "groups.src.burzedzis_storm", Desc: "sources.burzedzis.storm_desc", Feed: "https://burze.dzis.net/?page=storm_report_map_of_poland"},
 	{Value: "compose", Label: "groups.src.compose", Desc: "sources.compose.desc", Feed: "/compose"},
 	// EMCOM readiness-level changes flow through the dispatch ingress
 	// like every other source, so groups can route them explicitly.

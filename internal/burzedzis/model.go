@@ -65,7 +65,20 @@ type Warning struct {
 type Warnings struct {
 	Point    Locality
 	InForce  []Warning
-	Rejected []string
+	Rejected []Rejected
+}
+
+// Rejected is one phenomenon the provider published a degree for but no
+// readable window. It is neither in force nor withdrawn: the phenomenon is
+// simply unknown, and whoever consumes the snapshot must keep whatever it
+// already knows about that locality and phenomenon (see the source's
+// reconciliation) instead of reading the gap as a withdrawal.
+type Rejected struct {
+	Phenomenon Phenomenon
+	// Field names the element that could not be read ("from", "to") and
+	// Reason carries what the provider put there.
+	Field  string
+	Reason string
 }
 
 // Storm is one lightning search result: how many discharges were recorded
@@ -255,16 +268,16 @@ func (l *warningLevels) snapshot(at Locality) (Warnings, error) {
 		}
 		start, err := ParseUTC(from)
 		if err != nil {
-			out.Rejected = append(out.Rejected, ph.Key+" (from "+strings.TrimSpace(from)+")")
+			out.Rejected = append(out.Rejected, Rejected{Phenomenon: ph, Field: "from", Reason: strings.TrimSpace(from)})
 			continue
 		}
 		end, err := ParseUTC(to)
 		if err != nil {
-			out.Rejected = append(out.Rejected, ph.Key+" (to "+strings.TrimSpace(to)+")")
+			out.Rejected = append(out.Rejected, Rejected{Phenomenon: ph, Field: "to", Reason: strings.TrimSpace(to)})
 			continue
 		}
 		if !end.After(start) {
-			out.Rejected = append(out.Rejected, ph.Key+" (window ends before it starts)")
+			out.Rejected = append(out.Rejected, Rejected{Phenomenon: ph, Field: "window", Reason: "ends before it starts"})
 			continue
 		}
 		out.InForce = append(out.InForce, Warning{Phenomenon: ph, Degree: degree, From: start, To: end, Point: at})

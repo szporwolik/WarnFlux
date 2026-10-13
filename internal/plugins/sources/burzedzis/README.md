@@ -85,9 +85,23 @@ So the client validates what it decoded, before the adapter ever sees it:
   <operation>/return payload …`), which makes the pass fail, which in turn
   skips the reconciliation — no cancellation, and the poll reports the source
   as degraded;
-- a COMPLETE envelope whose window is merely unreadable is a different thing:
-  that phenomenon is rejected by name (`Rejected`) and drops out of the alert
-  set, while the rest of the answer is used.
+- a COMPLETE envelope whose window is merely unreadable is a different thing.
+  That phenomenon carries a degree the station cannot place on the timeline, so
+  it is reported as `Rejected{Phenomenon, Field, Reason}`. It drops out of the
+  alert set (it must never be published blind), and the pass counts as
+  incomplete: the poll reports the source as degraded via the status line
+  (`incomplete answer: <phenomenon>`).
+
+  A rejected phenomenon is UNKNOWN, not withdrawn, and this is the trap the
+  station guards against: the identity of a warning is
+  `<locality>:<phenomenon>:<window start>`, and a fresh window would look like
+  a new alert with the old one gone. Before reconciling, the adapter therefore
+  reads its live events (`SourceActiveEventReader`) and puts every event whose
+  id starts with `<locality>:<phenomenon>:` back into the "still in force"
+  set — so the alert already published survives the unreadable cycle, while
+  every OTHER withdrawal of the same pass still lands. If that read fails, the
+  whole reconciliation is skipped for the cycle (no cancellation at all);
+  nothing is ever cancelled on incomplete evidence.
 
 ## Severity mapping
 

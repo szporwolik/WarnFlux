@@ -936,3 +936,103 @@ func TestUnreadableAnswersCancelNothing(t *testing.T) {
 		t.Errorf("cancellations after the quiet snapshot = %d, want 2 (the live warning and the storm)", cancelled)
 	}
 }
+
+// TestUnreadableWindowKeepsTheAlert pins the reported P1: a phenomenon that
+// carries a degree but no readable window is UNKNOWN, not withdrawn. The alert
+// already published for it must survive the cycle (and the source must report
+// the incomplete answer), while a genuinely complete quiet snapshot still
+// cancels it.
+func TestUnreadableWindowKeepsTheAlert(t *testing.T) {
+	// A complete envelope whose storm window cannot be read.
+	badWindow := `<?xml version="1.0" encoding="UTF-8"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body>` +
+		`<ns1:ostrzezenia_pogodoweResponse xmlns:ns1="https://burze.dzis.net/soap.php"><return>` +
+		level("mroz", 0) + level("upal", 0) + level("wiatr", 0) + level("opad", 0) +
+		"<burza>2</burza><burza_od_dnia>brak</burza_od_dnia><burza_do_dnia>0</burza_do_dnia>" +
+		level("traba", 0) +
+		`</return></ns1:ostrzezenia_pogodoweResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>`
+
+	var mu sync.Mutex
+	broken := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		text := strings.TrimSpace(string(body))
+		mu.Lock()
+		bad := broken
+		mu.Unlock()
+		switch {
+		case strings.Contains(text, "<miejscowosc "):
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, cityFixture(50.02, 20.13))
+		case strings.Contains(text, "<ostrzezenia_pogodowe "):
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			if bad {
+				_, _ = io.WriteString(w, badWindow)
+				return
+			}
+			_, _ = io.WriteString(w, warningsFixture(0))
+		case strings.Contains(text, "<szukaj_burzy "):
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, stormFixture(0, 0, "", 20))
+		default:
+			t.Errorf("unexpected SOAP body: %s", text)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	src := newSource(t, srv.URL, "storm_tracking: true\n")
+	now := time.Now()
+	// The alert the station published for an EARLIER storm window: its key is
+	// not part of this cycle's snapshot, so only the protection keeps it.
+	live := src.warningEvent(warningOf(t, "storm", 2, now.Add(-2*time.Hour), now.Add(2*time.Hour), point("Niepołomice", 50.02, 20.13)))
+	// A second live alert for a DIFFERENT phenomenon, which the provider
+	// withdraws in the same cycle: it must still be cancelled.
+	withdrawn := src.warningEvent(warningOf(t, "rain", 2, now.Add(-time.Hour), now.Add(3*time.Hour), point("Niepołomice", 50.02, 20.13)))
+	emit := &fakeEmitter{active: []core.HazardEvent{live, withdrawn}}
+
+	err := src.pollOnce(context.Background(), emit)
+	if err == nil {
+		t.Fatal("an incomplete answer must be reported (the source is degraded)")
+	}
+	cancelled := map[string]bool{}
+	kept := 0
+	for _, ev := range emit.events(Type) {
+		if ev.Status == core.StatusCancelled {
+			cancelled[ev.Key()] = true
+			continue
+		}
+		kept++
+	}
+	if cancelled[live.Key()] {
+		t.Error("an unreadable window cancelled the alert already in force")
+	}
+	if !cancelled[withdrawn.Key()] {
+		t.Error("a genuine withdrawal in the same cycle was lost: the reconciliation must still run")
+	}
+	if kept != 0 {
+		t.Errorf("the unreadable storm warning must not be published as an alert, got %d events", kept)
+	}
+	if got := emit.lastStats(); !strings.Contains(got, "incomplete answer: storm") {
+		t.Errorf("the status line does not report the incomplete answer: %q", got)
+	}
+
+	// A complete, quiet snapshot withdraws the alert: the protection only
+	// applies to the cycle that could not read the window.
+	mu.Lock()
+	broken = false
+	mu.Unlock()
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		t.Fatalf("pollOnce after the provider recovered: %v", err)
+	}
+	if !cancelled[live.Key()] {
+		stillCancelled := false
+		for _, ev := range emit.events(Type) {
+			if ev.Key() == live.Key() && ev.Status == core.StatusCancelled {
+				stillCancelled = true
+			}
+		}
+		if !stillCancelled {
+			t.Error("the complete quiet snapshot did not withdraw the alert")
+		}
+	}
+}

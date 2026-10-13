@@ -46,6 +46,48 @@ func T(lang, key string) string {
 	return key
 }
 
+// eventNameKeys maps the canonical (English) event type a built-in
+// producer stamps on a hazard onto its translation key. Producer text
+// that is already human-readable in the provider's own language (IMGW and
+// RSO names), an ingest payload, and an operator-authored compose event
+// have no entry: those are rendered exactly as they arrived.
+var eventNameKeys = map[string]string{
+	"road works":             "event.road_works",
+	"road closure":           "event.road_closure",
+	"alternating traffic":    "event.alternating_traffic",
+	"industrial accident":    "event.industrial_accident",
+	"chemical release":       "event.chemical_release",
+	"air quality exceedance": "event.air_quality_exceedance",
+	"emcom":                  "event.emcom",
+	"sms alert":              "event.sms_alert",
+	"alert rcb":              "event.alert_rcb",
+	"aprs alert":             "event.aprs_alert",
+}
+
+// EventName renders the canonical event type of a hazard for one language.
+// The name is a machine identity shared across installations (it also
+// travels to the broker and to webhook consumers), so producers keep it in
+// one canonical form and every channel that shows it to a human translates
+// it here — an English "Road works" must not reach a Polish reader.
+//
+// An unknown name is returned unchanged, and a trailing qualifier is kept:
+// "Air quality exceedance (PM10)" becomes "<translated base> (PM10)".
+func EventName(lang, canonical string) string {
+	name := strings.TrimSpace(canonical)
+	if name == "" {
+		return ""
+	}
+	if key, ok := eventNameKeys[strings.ToLower(name)]; ok {
+		return T(lang, key)
+	}
+	if base, qualifier, ok := strings.Cut(name, " ("); ok {
+		if key, ok := eventNameKeys[strings.ToLower(strings.TrimSpace(base))]; ok {
+			return T(lang, key) + " (" + qualifier
+		}
+	}
+	return name
+}
+
 // Effective resolves lang to a supported code: "" and unsupported codes
 // resolve to the default language (English).
 func Effective(lang string) string {
@@ -1185,11 +1227,21 @@ var en = map[string]string{
 	"config.lang.saved": "System language updated.",
 
 	// Severity names for notification bodies and subject lines.
-	"severity.unknown":  "unknown",
-	"severity.minor":    "minor",
-	"severity.moderate": "moderate",
-	"severity.severe":   "severe",
-	"severity.extreme":  "extreme",
+	"severity.unknown":             "unknown",
+	"severity.minor":               "minor",
+	"severity.moderate":            "moderate",
+	"severity.severe":              "severe",
+	"event.road_works":             "Road works",
+	"event.road_closure":           "Road closure",
+	"event.alternating_traffic":    "Alternating traffic",
+	"event.industrial_accident":    "Industrial accident",
+	"event.chemical_release":       "Chemical release",
+	"event.air_quality_exceedance": "Air quality exceedance",
+	"event.emcom":                  "EMCOM",
+	"event.sms_alert":              "SMS alert",
+	"event.alert_rcb":              "Alert RCB",
+	"event.aprs_alert":             "APRS alert",
+	"severity.extreme":             "extreme",
 
 	// Notification boilerplate (email subjects and bodies).
 	"notif.subject.transition":  "hazard transition",
@@ -2316,11 +2368,21 @@ var pl = map[string]string{
 	"config.lang.saved": "Język systemu zaktualizowany.",
 
 	// Nazwy wagi dla treści powiadomień i tematów.
-	"severity.unknown":  "nieznane",
-	"severity.minor":    "drobne",
-	"severity.moderate": "umiarkowane",
-	"severity.severe":   "poważne",
-	"severity.extreme":  "ekstremalne",
+	"severity.unknown":             "nieznane",
+	"severity.minor":               "drobne",
+	"severity.moderate":            "umiarkowane",
+	"severity.severe":              "poważne",
+	"event.road_works":             "Roboty drogowe",
+	"event.road_closure":           "Droga zamknięta",
+	"event.alternating_traffic":    "Ruch wahadłowy",
+	"event.industrial_accident":    "Awaria przemysłowa",
+	"event.chemical_release":       "Uwolnienie substancji chemicznej",
+	"event.air_quality_exceedance": "Przekroczenie jakości powietrza",
+	"event.emcom":                  "EMCOM",
+	"event.sms_alert":              "Alert SMS",
+	"event.alert_rcb":              "Alert RCB",
+	"event.aprs_alert":             "Alert APRS",
+	"severity.extreme":             "ekstremalne",
 
 	// Szablony powiadomień (tematy i treści e-maili).
 	"notif.subject.transition":  "przejście zagrożenia",

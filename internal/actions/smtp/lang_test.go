@@ -120,3 +120,31 @@ func TestBuildMessagePerRecipientLanguage(t *testing.T) {
 		t.Errorf("recipientLang(static To) = %q, want system language en", got)
 	}
 }
+
+// TestMailTranslatesTheEventType pins the reported leak: the canonical
+// event type ("Road works") is a machine identity, but it must reach a
+// Polish reader in Polish — in the subject, the plain body and the HTML
+// body alike.
+func TestMailTranslatesTheEventType(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	req := hazardReq()
+	req.Lang = "pl"
+	req.Event.Hazard.Key = "gddkia:abc"
+	req.Event.Hazard.Source = "gddkia"
+	req.Event.Hazard.Hazard = dispatch.Hazard{
+		EventKey: "gddkia:abc",
+		Event:    "Road works",
+		Severity: "minor",
+		Headline: "",
+	}
+
+	raw := string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"x@y.z"}}, req, "pl", now))
+	for what, got := range map[string]string{"mail": raw} {
+		if strings.Contains(got, "Road works") {
+			t.Errorf("%s still carries the canonical English event type:\n%s", what, got)
+		}
+		if !strings.Contains(got, "Roboty drogowe") {
+			t.Errorf("%s does not carry the translated event type:\n%s", what, got)
+		}
+	}
+}

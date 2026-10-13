@@ -858,6 +858,12 @@ func (s *Server) templateFuncs() template.FuncMap {
 		"tr": func(lang, key string) string {
 			return i18n.T(lang, key)
 		},
+		// eventName renders a canonical event type (a machine identity
+		// shared with the broker and webhook consumers) in the page
+		// language, so an English type never reaches a Polish page.
+		"eventName": func(lang, canonical string) string {
+			return i18n.EventName(lang, canonical)
+		},
 		// trf resolves a translation key with format args in the page language.
 		"trf": func(lang, key string, args ...any) string {
 			return fmt.Sprintf(i18n.T(lang, key), args...)

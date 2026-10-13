@@ -514,13 +514,14 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 			text = fmt.Sprintf("[%s] %s", prefix, i18n.T(lang, "discord.hazard_transition"))
 			break
 		}
+		event := i18n.EventName(lang, h.Hazard.Event)
 		headline := strings.TrimSpace(h.Hazard.Headline)
 		if headline == "" {
-			headline = h.Hazard.Event
+			headline = event
 		}
 		text = fmt.Sprintf("[%s] %s: %s — %s", prefix,
 			strings.ToUpper(i18n.T(lang, "sev."+strings.ToLower(h.Hazard.Severity))),
-			h.Hazard.Event, headline)
+			event, headline)
 		if id := h.Hazard.MessageID(); id != "" {
 			text += "\n" + i18n.T(lang, "discord.message_id") + ": " + id
 		}

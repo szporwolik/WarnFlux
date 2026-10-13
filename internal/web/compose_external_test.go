@@ -12,6 +12,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
+	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
 
@@ -199,5 +200,57 @@ func TestComposeTimePrefillControls(t *testing.T) {
 	}
 	if strings.Contains(html, `type="datetime-local"`) {
 		t.Error("the compose form still uses a locale-rendered datetime-local control")
+	}
+}
+
+// TestPublicPagesTranslateTheEventType pins the public half of the reported
+// leak: a canonical event type ("Road works") is a machine identity, so the
+// public warning list and the archive must render it in the page language.
+func TestPublicPagesTranslateTheEventType(t *testing.T) {
+	env := newTestEnv(t)
+	if err := env.state.AddOrUpdateActive("local", "warnflux/active/gddkia/typing", state.Hazard{
+		EventKey: "gddkia:typing",
+		Source:   "gddkia",
+		Event:    "Road works",
+		Severity: "minor",
+		Headline: "S7 — zwężenie pasa",
+		Status:   "active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := env.get("/lang/pl"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("GET /lang/pl = %d, want 303", resp.StatusCode)
+	}
+	_, page := env.get("/")
+	if !strings.Contains(page, "Roboty drogowe") {
+		t.Errorf("the public list does not translate the event type: %.400s", page)
+	}
+	if strings.Contains(page, "Road works") {
+		t.Error("the public list leaked the canonical English event type")
+	}
+
+	// The archive renders the same field from the PERSISTED history, so it
+	// needs a real event store.
+	archStore, _, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = archStore.Close() })
+	ended := archiveEvent("road", "S7 — zamknięty pas")
+	ended.Event = "Road closure"
+	ended.Severity = "severe"
+	if _, _, err := archStore.Ingest(context.Background(), ended, "fp-road"); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	archEnv := newTestEnvWithStore(t, archStore)
+	if resp, _ := archEnv.get("/lang/pl"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("GET /lang/pl = %d, want 303", resp.StatusCode)
+	}
+	_, page = archEnv.get("/archive")
+	if !strings.Contains(page, "Droga zamknięta") {
+		t.Errorf("the archive does not translate the event type: %.400s", page)
+	}
+	if strings.Contains(page, "Road closure") {
+		t.Error("the archive leaked the canonical English event type")
 	}
 }

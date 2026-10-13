@@ -182,6 +182,12 @@ type MeshtasticConfig struct {
 	// NodeTTL bounds how long an unheard neighbour stays in the node
 	// list.
 	NodeTTL time.Duration
+	// SilenceTimeout declares the device link dead after this long with
+	// no traffic FROM the radio (default 2m when zero). Raise it on a
+	// quiet mesh: every timeout tears the session down and dials again.
+	// The client pings the device every 30s, so a closed socket is
+	// noticed at once regardless of this value.
+	SilenceTimeout time.Duration
 	// EmcomChannel is the device channel index (1-7) for the periodic
 	// presence beacon; 0 disables the beacon. The default PRIMARY
 	// channel is never used for broadcasts.
@@ -618,6 +624,13 @@ type fileMeshtastic struct {
 	Baud          *int           `yaml:"baud"`
 	RouteMessages bool           `yaml:"route_messages"`
 	NodeTTL       *time.Duration `yaml:"node_ttl"`
+	// SilenceTimeout declares the device link dead after this long
+	// without ANY traffic from the radio (default 2m). A quiet mesh
+	// produces long idle stretches, and every timeout costs a reconnect:
+	// raise it on a station whose mesh is quiet — a CLOSED socket is
+	// still noticed within one heartbeat (30s), so the long timeout only
+	// delays the "link alive but silent" verdict. 0 or omitted = 2m.
+	SilenceTimeout *time.Duration `yaml:"silence_timeout"`
 	// EmcomChannel is the device channel index (1-7) for the periodic
 	// presence beacon; 0 disables the beacon. The default PRIMARY
 	// channel is never used for broadcasts.
@@ -1260,6 +1273,9 @@ func (f fileConfig) toConfig() Config {
 		}
 		if f.Meshtastic.NodeTTL != nil {
 			cfg.Meshtastic.NodeTTL = *f.Meshtastic.NodeTTL
+		}
+		if f.Meshtastic.SilenceTimeout != nil {
+			cfg.Meshtastic.SilenceTimeout = *f.Meshtastic.SilenceTimeout
 		}
 		if f.Meshtastic.EmcomInterval != nil {
 			cfg.Meshtastic.EmcomInterval = *f.Meshtastic.EmcomInterval

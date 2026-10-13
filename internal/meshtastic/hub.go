@@ -878,6 +878,13 @@ type Hub struct {
 	pinned        map[uint32]bool
 	pinnedLoaded  bool
 
+	// radioFavorites is what the DEVICE said about its own node table when
+	// it last handed it over (node -> starred). Owning a star is no proof
+	// the radio still carries it: a node-db reset or a swapped device
+	// leaves our ledger intact and the favorites gone, so the pass
+	// re-asserts an owned node unless THIS map confirms it.
+	radioFavorites map[uint32]bool
+
 	// routeWaiters buffers TRACEROUTE route replies while probes wait,
 	// keyed by the replying node (the destination answers with the full
 	// route; intermediate nodes may answer when it is out of reach).
@@ -1347,9 +1354,11 @@ func (h *Hub) runSession(ctx context.Context) error {
 	}
 	h.populateFromState(conn.State())
 	// The pin pass runs right after the handshake (now that our own node
-	// number is known) and then on its own cadence: a restart re-pins what a
-	// node-db reset may have cleared, without waiting out the interval.
-	h.pinUserNodes()
+	// number is known and the device has stated which favorites it still
+	// carries) and then on its own cadence. It is FORCED here: a session is
+	// the only moment the radio's node table is read, and a node-db reset or
+	// a swapped device must be repaired without waiting out the interval.
+	h.pinUserNodes(true)
 
 	if h.logger != nil {
 		h.mu.Lock()
@@ -1408,7 +1417,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 				return errors.New("device radio silent")
 			}
 			h.expireNodes()
-			h.pinUserNodes()
+			h.pinUserNodes(false)
 			h.retryPending(time.Now())
 			h.persistNodes()
 			h.beaconTick()
@@ -1776,6 +1785,15 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 		h.self.Firmware = md.GetFirmwareVersion()
 		h.self.HwModel = strings.TrimPrefix(md.GetHwModel().String(), "HW_MODEL_")
 	}
+	// The device states its own favorites here: the pass uses this (and not
+	// its ledger) as the proof that a star is actually set on the radio.
+	stars := make(map[uint32]bool)
+	for _, ni := range st.Nodes() {
+		if ni != nil && ni.GetIsFavorite() && ni.GetNum() != 0 {
+			stars[ni.GetNum()] = true
+		}
+	}
+	h.radioFavorites = stars
 	for _, ni := range st.Nodes() {
 		if ni == nil {
 			continue
@@ -1905,18 +1923,24 @@ func (h *Hub) SetFavoriteStore(store FavoriteStore) {
 // ever removed; a node the operator starred on the device is left alone, which
 // is exactly what the ledger of its own pins is for.
 //
-// The pass runs on the maintenance tick: at most once per PinInterval, and a
-// radio that refuses the admin message only logs a warning — a failed pass
-// must never disturb the mesh session. A pass that did not get through is
-// retried after pinRetryDelay instead of a whole interval later.
-func (h *Hub) pinUserNodes() {
+// The ledger is ownership, NOT the radio's state. A star it lists is
+// re-asserted unless the DEVICE reports the node as favorite, so a node-db
+// reset (or a swapped radio) is repaired at the next session, while a healthy
+// radio — which confirms every star it kept — costs no admin traffic at all.
+//
+// The pass runs on the maintenance tick (and forced right after a handshake):
+// at most once per PinInterval, and a radio that refuses the admin message
+// only logs a warning — a failed pass must never disturb the mesh session. A
+// pass that did not get through is retried after pinRetryDelay instead of a
+// whole interval later.
+func (h *Hub) pinUserNodes(force bool) {
 	if !h.cfg.PinUserNodes {
 		return
 	}
 	h.mu.Lock()
 	provider := h.userNodes
 	now := h.clock()
-	if provider == nil || now.Before(h.pinNext) {
+	if provider == nil || (!force && now.Before(h.pinNext)) {
 		h.mu.Unlock()
 		return
 	}
@@ -1946,14 +1970,24 @@ func (h *Hub) pinUserNodes() {
 			desired[id] = true
 		}
 	}
-	owns := make(map[uint32]bool, len(pinned))
-	for _, id := range pinned {
-		owns[id] = true
+	// The device's own report of its favorites is the only proof a star is
+	// actually set; the ledger says whose star it is, never that it is still
+	// there.
+	h.mu.Lock()
+	confirmed := make(map[uint32]bool, len(h.radioFavorites))
+	for id := range h.radioFavorites {
+		confirmed[id] = true
 	}
+	h.mu.Unlock()
 
+	// Every node the directory requires must be a favorite on the radio. The
+	// ledger does not excuse one: an owned star the device no longer reports
+	// was lost with a node-db reset (or never reached a swapped device) and
+	// is set again here. A star the radio confirms needs no traffic — which
+	// is the normal state of a healthy installation.
 	changed, failed := false, false
 	for id := range desired {
-		if owns[id] {
+		if confirmed[id] {
 			continue
 		}
 		if err := h.setFavorite(id, true); err != nil {
@@ -1963,6 +1997,7 @@ func (h *Hub) pinUserNodes() {
 			continue
 		}
 		h.rememberFavorite(id, true)
+		h.markRadioFavorite(id)
 		changed = true
 		h.pinLog(slog.LevelInfo, "meshtastic: user node pinned as favorite on the radio", "node", meshIDString(id))
 	}
@@ -2094,6 +2129,18 @@ func (h *Hub) PinnedNodes() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// markRadioFavorite records a star the device just accepted, so the rest of
+// this session does not re-send it (the next handshake reads the device's own
+// report anyway).
+func (h *Hub) markRadioFavorite(id uint32) {
+	h.mu.Lock()
+	if h.radioFavorites == nil {
+		h.radioFavorites = map[uint32]bool{}
+	}
+	h.radioFavorites[id] = true
+	h.mu.Unlock()
 }
 
 // armPinNext schedules the next pin pass.

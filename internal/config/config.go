@@ -230,8 +230,10 @@ type MeshtasticConfig struct {
 	// Default ON.
 	PinUserNodes bool
 	// PinUserNodesInterval is how often the pin pass re-runs: it catches a
-	// node registered since the last pass and re-pins one whose favorite was
-	// cleared on the device. Default 6h; 1m..24h.
+	// node registered since the last pass. The station keeps the list of its
+	// own stars and re-sets those the device no longer reports (a node-db
+	// reset, a replacement radio) at every session, so this interval only
+	// paces the tidy-up of the directory. Default 6h; 1m..24h.
 	PinUserNodesInterval time.Duration
 }
 

@@ -396,10 +396,21 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 		}
 		var gid int64
 		var aid, dkey string
+		// ONE budget policy, everywhere: the budget the job was claimed
+		// with is the one that governs it (max_attempts on the row; a row
+		// claimed before the column existed falls back to the action's
+		// current budget). Comparing the attempt counter against the
+		// CONFIGURATION here while SettleSpentRetries used the row let a
+		// lowered limit hide a job from the worker without ever ending it:
+		// neither executed nor pruned, forever (reported P2). maxAttempts
+		// still REFRESHES the row on every claim, so a configuration change
+		// applies from that claim on.
 		err = tx.QueryRowContext(ctx, `
 			SELECT group_id, action_id, dedup_key FROM action_fires
 			WHERE action_id = ? AND status IN ('saved','failed')
-			  AND next_attempt_at_ms <= ? AND (attempts < ? OR status = 'saved')
+			  AND next_attempt_at_ms <= ?
+			  AND (attempts < CASE WHEN max_attempts > 0 THEN max_attempts ELSE ? END
+			       OR status = 'saved')
 			ORDER BY next_attempt_at_ms ASC, fired_at_ms ASC
 			LIMIT 1`, actionID, now.UnixMilli(), maxAttempts).Scan(&gid, &aid, &dkey)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -431,9 +442,9 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 		var payload string
 		var firedAt int64
 		err = tx.QueryRowContext(ctx, `
-			SELECT group_id, action_id, event_key, dedup_key, payload, attempts, fired_at_ms
+			SELECT group_id, action_id, event_key, dedup_key, payload, attempts, fired_at_ms, max_attempts
 			FROM action_fires WHERE group_id = ? AND action_id = ? AND dedup_key = ?`, gid, aid, dkey).
-			Scan(&job.GroupID, &job.ActionID, &job.EventKey, &job.DedupKey, &payload, &job.Attempts, &firedAt)
+			Scan(&job.GroupID, &job.ActionID, &job.EventKey, &job.DedupKey, &payload, &job.Attempts, &firedAt, &job.MaxAttempts)
 		if err != nil {
 			tx.Rollback()
 			return storage.DeliveryJob{}, false, fmt.Errorf("read claimed delivery job for action %q: %w", actionID, err)
@@ -679,10 +690,12 @@ func (s *Store) PruneActionFires(cutoff time.Time) (int64, error) {
 // releases still carry it; ending them here makes the ordinary retention take
 // them like any other completed job. Returns how many rows were ended.
 //
-// The budget is the one the ROW was claimed with (a configuration change
-// between the claim and this sweep must not resurrect or end the wrong job);
-// maxAttempts is the action's current budget, used for rows claimed before
-// the row recorded its own.
+// The budget is the one the ROW was claimed with — the same policy the claim
+// filter follows, so a job the worker refuses to claim is exactly the one this
+// ends (a lowered configuration used to hide a job from the worker while this
+// kept believing in the budget the job was claimed with, leaving it neither
+// executed nor pruned). maxAttempts is the action's current budget, used only
+// for rows claimed before the row recorded its own.
 func (s *Store) SettleSpentRetries(ctx context.Context, actionID string, maxAttempts int) (int64, error) {
 	if maxAttempts < 1 {
 		maxAttempts = 1

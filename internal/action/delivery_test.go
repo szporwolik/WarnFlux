@@ -103,6 +103,7 @@ func (m *memDeliveryStore) ClaimNextDelivery(ctx context.Context, actionID strin
 	}
 	best.status = runningStatus
 	best.job.Attempts++
+	best.job.MaxAttempts = maxAttempts
 	best.next = now.Add(5 * time.Minute) // claim lease
 	return best.job, true, nil
 }

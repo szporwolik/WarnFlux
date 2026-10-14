@@ -314,7 +314,15 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	}
 	i.handled.Add(1)
 	key := job.EventKey
-	max := i.retries + 1
+	// The budget the CLAIM admitted this job under, refreshed with every
+	// claim (see ClaimNextDelivery): the worker's retry decision must follow
+	// the same policy as the claim filter and the retry sweep, or a job could
+	// be scheduled for a retry its own budget no longer allows. Rows claimed
+	// before the store recorded the budget fall back to the configuration.
+	max := job.MaxAttempts
+	if max < 1 {
+		max = i.retries + 1
+	}
 
 	// Rows migrated from before the payload era carry no payload; their
 	// claim already stood for "accepted". Settle them as accepted so a

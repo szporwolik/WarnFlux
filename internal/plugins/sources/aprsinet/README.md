@@ -25,6 +25,14 @@ messages through the nearest i-gate to the target station.
 **This plugin publishes station state and messages, not HazardEvents.**
 Nothing here touches the hazard journal or the `/events` topic.
 
+**The APRS page shows this link.** The panel's `/aprs` page carries a link
+card (the same shape as the GSM modem pill) with one badge per backend: the
+internet link this plugin provides and the radio link the `aprs-radio` plugin
+provides. The badge is green while the plugin runs, warning when it is
+configured but down (with the plugin's own error next to it) and muted when no
+plugin of that type exists — so "APRS-IS is up, RF is down" is visible at a
+glance, refreshed by the card's own poll.
+
 ## Complementary backends (no duplicate topics)
 
 aprs-inet is the first of two planned backends; **aprs-radio** (KISS/TNC

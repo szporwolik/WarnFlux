@@ -673,6 +673,12 @@ type SelfInfo struct {
 type Snapshot struct {
 	Connected bool
 	Self      SelfInfo
+	// Device is the configured link (serial path or host:port) and
+	// LastError the reason the session is not running — the two facts the
+	// panel puts next to the connection pill so an operator sees WHICH link
+	// is down and WHY without reading the log.
+	Device    string
+	LastError string
 	// Channels are the device channel names by index.
 	Channels []string
 	// Nodes is the full node directory (recent and long-gone alike);
@@ -5170,6 +5176,12 @@ func (h *Hub) Snapshot() Snapshot {
 		snap.Nodes = append(snap.Nodes, c)
 	}
 	sort.Slice(snap.Nodes, func(i, j int) bool { return snap.Nodes[i].ID < snap.Nodes[j].ID })
+	// The link facts ride along with the state: the panel shows the device
+	// path and the last error next to the connection pill.
+	snap.Device = h.cfg.Device
+	if h.lastErr != nil {
+		snap.LastError = h.lastErr.Error()
+	}
 	return snap
 }
 

@@ -3579,3 +3579,19 @@ func waitForHubTimeout(t *testing.T, budget time.Duration, cond func() bool, wha
 	}
 	t.Fatal(what)
 }
+
+// TestHubSnapshotReportsTheLink pins the two facts the panel shows next to the
+// connection pill: WHICH link the hub runs and why it stopped. Both are read
+// under the lock the snapshot already holds, so an operator never sees the
+// device path of a hub that is still starting next to the error of the link
+// that just died.
+func TestHubSnapshotReportsTheLink(t *testing.T) {
+	hub := &Hub{cfg: Config{Device: "/dev/ttyUSB0"}}
+	if snap := hub.Snapshot(); snap.Device != "/dev/ttyUSB0" || snap.LastError != "" {
+		t.Fatalf("idle snapshot = (device %q, error %q), want the device and no error", snap.Device, snap.LastError)
+	}
+	hub.lastErr = errors.New("device disconnected")
+	if snap := hub.Snapshot(); snap.LastError != "device disconnected" {
+		t.Fatalf("snapshot error = %q, want the session error", snap.LastError)
+	}
+}

@@ -65,8 +65,11 @@ type testEnv struct {
 	users    storage.DirectoryStore
 	logs     *web.LogBuffer
 	traffic  *mqttreceiver.TrafficBuffer
-	trails   *trail.Recorder
-	metrics  *metrics.Registry
+	// router is the fake plugin manager: a test may replace its statuses to
+	// drive the link cards (APRS-IS / RF) and the plugin panels.
+	router  *fakeRouter
+	trails  *trail.Recorder
+	metrics *metrics.Registry
 }
 
 // fakeComposePublisher records the communications the compose module
@@ -563,7 +566,7 @@ func newTestEnvWebUsers(t *testing.T, cfg config.Web, users storage.DirectorySto
 		return http.ErrUseLastResponse // observe redirects instead of following
 	}}
 
-	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, pub: pub, users: users2, logs: logs, traffic: traffic, trails: trails, metrics: met}
+	return &testEnv{t: t, srv: ts, server: srv, state: st, ingress: ingress, actions: actions, client: client, receiver: receivers, pub: pub, users: users2, logs: logs, traffic: traffic, router: router, trails: trails, metrics: met}
 }
 
 type nopAction struct{}
@@ -4763,7 +4766,7 @@ func TestMeshMessagesPartialCarriesNodeState(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("partial = %d", resp.StatusCode)
 	}
-	if !strings.Contains(body, "msgs-filter") || !strings.Contains(body, "Disconnected") {
+	if !strings.Contains(body, "msgs-filter") || !strings.Contains(body, "Device not connected") {
 		t.Errorf("messages fragment lacks the node state pill: %.300s", body)
 	}
 

@@ -55,6 +55,16 @@ it, so a second instance would drive the same session twice.
   on the Config page.
 - **Probes**: on-demand traceroute and range probes from the admin panel.
 
+## The panel shows the device link
+
+The `/meshtastic` page opens with a link pill shaped like the GSM modem one:
+`Device connected and ready` (green) while the session runs, `Device not
+connected` (warning) when it dropped — and next to it the device the hub was
+configured with (`meshtastic.device`, e.g. `/dev/ttyUSB0`) plus the error that
+ended the last session, so an operator sees WHICH link is down and WHY without
+reading the log. The pill rides along with the polled node and message
+fragments, so it follows a link that drops or comes back without a reload.
+
 ## Direct messages need the peer's key (PKI)
 
 Group announcements are channel BROADCASTS: they are encrypted with the

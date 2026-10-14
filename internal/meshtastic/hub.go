@@ -2669,6 +2669,23 @@ func (h *Hub) expireNodes() {
 // caller may be the packet path or the maintenance loop, and a broker that
 // stopped answering must not stall either of them.
 func (h *Hub) enqueueStationFeed(job feedJob) {
+	if h.feedQueue == nil {
+		// No queue at all: this hub was assembled without the constructor (an
+		// embedding, or a test literal). Publishing inline keeps the feed
+		// working instead of dropping every document on the floor.
+		h.mu.Lock()
+		sink := h.stationSink
+		h.mu.Unlock()
+		if sink == nil {
+			return
+		}
+		if job.doc == nil {
+			h.publishStationRemoval(context.Background(), sink, job.id)
+			return
+		}
+		h.publishStationDoc(context.Background(), sink, job)
+		return
+	}
 	select {
 	case h.feedQueue <- job:
 	default:

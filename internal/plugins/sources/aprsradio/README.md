@@ -13,9 +13,10 @@ a hardware TNC bridge...). While connected it:
   (default path `WIDE1-1`).
 
 The `/aprs` page reports this link in the APRS link card next to the
-APRS-IS one: green while the KISS session is up, warning (with the connection
-error) when Direwolf is not answering, and muted when no `aprs-radio` plugin is
-configured at all.
+APRS-IS one: green while the KISS session is up, warning (with the plugin state
+badge and the connection error) when Direwolf is not answering, muted when this
+plugin is disabled on purpose, and muted with "not configured" when no
+`aprs-radio` plugin exists at all.
 
 ## Configuration
 

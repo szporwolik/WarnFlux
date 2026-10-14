@@ -29,8 +29,10 @@ Nothing here touches the hazard journal or the `/events` topic.
 card (the same shape as the GSM modem pill) with one badge per backend: the
 internet link this plugin provides and the radio link the `aprs-radio` plugin
 provides. The badge is green while the plugin runs, warning when it is
-configured but down (with the plugin's own error next to it) and muted when no
-plugin of that type exists — so "APRS-IS is up, RF is down" is visible at a
+configured but down (with the plugin state as its own badge and the plugin's
+error next to it), muted when the station switched that backend OFF — disabled
+is a decision, not a failure — and muted with "not configured" when no plugin
+of that type exists at all. So "APRS-IS is up, RF is off" is visible at a
 glance, refreshed by the card's own poll.
 
 ## Complementary backends (no duplicate topics)

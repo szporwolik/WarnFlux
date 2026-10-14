@@ -576,7 +576,7 @@
      warning — because nothing was configured to be down. */}}
 {{define "aprs_links"}}<p class="link-status">
   {{range .Links}}<span class="badge {{.Badge}}">{{tr $.Lang .LabelKey}}: {{tr $.Lang .TextKey}}</span>
-  {{if .State}}<span class="link-state">{{tr $.Lang "aprs.link_state"}} {{.State}}</span>
+  {{if .StateKey}}<span class="badge muted">{{tr $.Lang .StateKey}}</span>
   {{end}}{{if .Detail}}<span class="link-detail">{{.Detail}}</span>
   {{end}}{{end}}
 </p>{{end}}

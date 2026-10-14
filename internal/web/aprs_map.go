@@ -160,9 +160,10 @@ type aprsLinkView struct {
 	// Detail carries the plugin's own report: its one-line stats summary
 	// while it runs, or the error that took it down.
 	Detail string
-	// State is the plugin state name, shown next to the badge while the link
-	// is not running (starting, degraded, stopped, failed).
-	State string
+	// StateKey is the i18n key of the plugin state, shown as its own badge
+	// while the link is neither running nor deliberately off (starting,
+	// degraded, stopped…). Empty when the state needs no explanation.
+	StateKey string
 }
 
 // backendPluginTypes maps the two APRS links onto the plugin types that
@@ -183,15 +184,17 @@ func (s *Server) fillAPRSLinks(v *aprsMapView) {
 	}
 }
 
-// aprsLink summarizes every plugin instance of one backend type: the link is
-// UP only when one of them is running, and a link with no plugin at all is
-// simply not configured (muted, not a warning).
+// aprsLink summarizes every plugin instance of one backend type. The link is
+// UP only when one of them is running; a backend the station deliberately
+// switched OFF is muted ("disabled", not a failure), and one that is meant to
+// run but is not gets a warning badge plus the state it is stuck in.
 func (s *Server) aprsLink(labelKey, pluginType string) aprsLinkView {
 	link := aprsLinkView{LabelKey: labelKey, TextKey: "aprs.link_off", Badge: "muted"}
 	if s.router == nil {
 		return link
 	}
-	configured, running := false, false
+	configured, running, allDisabled := false, false, true
+	var broken plugin.PluginState
 	for _, st := range s.router.Statuses() {
 		if st.Type != pluginType {
 			continue
@@ -204,21 +207,27 @@ func (s *Server) aprsLink(labelKey, pluginType string) aprsLinkView {
 			}
 			continue
 		}
-		// A backend that is not running explains itself: the last error it
-		// hit, or the state it is stuck in.
-		if link.State == "" {
-			link.State = string(st.State)
+		if st.State != plugin.StateDisabled {
+			allDisabled = false
+		}
+		if broken == "" {
+			broken = st.State
 			link.Detail = st.LastError
 		}
 	}
 	switch {
 	case running:
 		link.TextKey, link.Badge = "aprs.link_ok", "ok"
-		link.State = ""
-	case configured:
-		link.TextKey, link.Badge = "aprs.link_down", "warn"
-	default:
+		link.StateKey = ""
+	case !configured:
 		link.Detail = ""
+	case allDisabled:
+		// Nothing is broken: the station simply does not run this backend.
+		link.TextKey, link.Badge = "aprs.link_disabled", "muted"
+		link.StateKey, link.Detail = "", ""
+	default:
+		link.TextKey, link.Badge = "aprs.link_down", "warn"
+		link.StateKey = "dash." + string(broken)
 	}
 	return link
 }

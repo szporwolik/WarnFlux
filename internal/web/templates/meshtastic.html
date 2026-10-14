@@ -819,17 +819,19 @@
 {{/* The connection pill belongs to both polled fragments: whichever tab
      the operator is watching refreshes the node state with it, instead of
      leaving a stale "connected" over a link that just dropped. */}}
-{{define "mesh_status"}}{{if .Snap.Connected}}<div class="msgs-filter">
-  <span class="badge ok">{{tr .Lang "meshtastic.connected"}}</span>
+{{define "mesh_status"}}<div class="msgs-filter">
+  {{if .Snap.Connected}}<span class="badge ok">{{tr .Lang "meshtastic.device_ok"}}</span>
+  {{else}}<span class="badge warn">{{tr .Lang "meshtastic.device_down"}}</span>
+  {{end}}
+  {{if .Snap.Device}}<span class="link-detail">{{tr .Lang "meshtastic.device"}}: {{.Snap.Device}}</span>{{end}}
   {{if .Snap.Self.ID}}<span class="badge muted">!{{.Snap.Self.ID}}</span>{{end}}
   {{if .Snap.Self.LongName}}<span class="badge muted">{{.Snap.Self.LongName}}</span>{{end}}
   {{if .Snap.Self.HwModel}}<span class="badge muted">{{.Snap.Self.HwModel}}</span>{{end}}
   {{if .Snap.Self.Firmware}}<span class="badge muted">{{.Snap.Self.Firmware}}</span>{{end}}
   {{if .Snap.Self.Lat}}<span class="badge muted">{{printf "%.5f, %.5f" .Snap.Self.Lat .Snap.Self.Lon}}</span>{{end}}
+  {{if and (not .Snap.Connected) .Snap.LastError}}<span class="link-detail">{{trf .Lang "meshtastic.last_error" .Snap.LastError}}</span>{{end}}
   {{template "mesh_removals" .}}
-</div>
-{{else}}<div class="msgs-filter"><span class="badge bad">{{tr .Lang "meshtastic.disconnected"}}</span>{{template "mesh_removals" .}}</div>
-{{end}}{{end}}
+</div>{{end}}
 
 {{/* The station feed's backlog: how many document removals the broker still
      owes, and how many were abandoned because that backlog hit its bound (a

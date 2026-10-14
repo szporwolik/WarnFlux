@@ -197,8 +197,18 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.users.CreatePasswordReset(u.ID)
+	// The token is bound to the address that was verified above: should the
+	// account move to another mailbox while this request is in flight, no
+	// link is issued at all — the request described the previous one.
+	token, err := s.users.CreatePasswordReset(u.ID, u.Email)
 	if err != nil {
+		if errors.Is(err, storage.ErrRecoveryEmailChanged) {
+			s.logger.Warn("web: password reset refused (recovery address changed during the request)",
+				"remote", r.RemoteAddr, "ip", s.clientIP(r), "username", logValue(username))
+			s.audit(username, "password-reset-requested", "address-changed "+logValue(u.Email))
+			view("", "", i18n.T(lang, "forgot.sent"))
+			return
+		}
 		s.logger.Error("web: password reset token failed", "username", username, "error", err)
 		s.loginLimiter.record(limiterKey, false)
 		view("", "", i18n.T(lang, "forgot.sent"))

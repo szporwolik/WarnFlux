@@ -11,6 +11,22 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
+// issueResetToken creates one reset link for the account's CURRENT recovery
+// address: the tests that only need a token go through the same conditional
+// path the panel uses.
+func issueResetToken(t *testing.T, store *Store, userID int64) string {
+	t.Helper()
+	u, err := store.GetUser(userID)
+	if err != nil {
+		t.Fatalf("GetUser(%d): %v", userID, err)
+	}
+	token, err := store.CreatePasswordReset(userID, u.Email)
+	if err != nil {
+		t.Fatalf("CreatePasswordReset(%d): %v", userID, err)
+	}
+	return token
+}
+
 // TestPasswordChangePurgesResetTokens pins the reported P1 at the storage
 // boundary: a password change invalidates every reset link issued BEFORE
 // it, in the same transaction as the new hash. Otherwise a link stolen
@@ -31,10 +47,7 @@ func TestPasswordChangePurgesResetTokens(t *testing.T) {
 	}
 
 	// A reset link issued before the change dies with it.
-	token, err := store.CreatePasswordReset(u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := issueResetToken(t, store, u.ID)
 	if err := store.SetUserPassword(u.ID, "first-change-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -44,10 +57,7 @@ func TestPasswordChangePurgesResetTokens(t *testing.T) {
 
 	// The same holds for the edit path an administrator uses to set a new
 	// password (UpdateUser with a password).
-	token, err = store.CreatePasswordReset(u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token = issueResetToken(t, store, u.ID)
 	if _, err := store.UpdateUser(u.ID, "alice", "", "alice@example.com", "", "member", "second-change-2"); err != nil {
 		t.Fatal(err)
 	}
@@ -61,10 +71,7 @@ func TestPasswordChangePurgesResetTokens(t *testing.T) {
 	// An edit that leaves the password alone must NOT invalidate a link
 	// the owner asked for: only a password change or a new recovery
 	// address ends the recovery path.
-	token, err = store.CreatePasswordReset(u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token = issueResetToken(t, store, u.ID)
 	if _, err := store.UpdateUser(u.ID, "alice", "+48600000000", "alice@example.com", "", "member", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -95,17 +102,11 @@ func TestEmailChangePurgesResetTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bobToken, err := store.CreatePasswordReset(bob.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bobToken := issueResetToken(t, store, bob.ID)
 
 	// The address only matters when it really changes: re-typing it with
 	// other case and stray blanks keeps the pending link usable.
-	token, err := store.CreatePasswordReset(alice.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := issueResetToken(t, store, alice.ID)
 	if _, err := store.UpdateUser(alice.ID, "alice", "", "  ALICE@Example.com ", "", "member", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -135,15 +136,71 @@ func TestEmailChangePurgesResetTokens(t *testing.T) {
 
 	// A link issued to the current address works: the change does not shut
 	// the account out of recovery.
-	fresh, err := store.CreatePasswordReset(alice.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fresh := issueResetToken(t, store, alice.ID)
 	if _, err := store.ResetPasswordWithToken(fresh, "recovered-password-2"); err != nil {
 		t.Fatalf("fresh reset to the current address = %v", err)
 	}
 	if _, err := store.Authenticate("alice", "recovered-password-2"); err != nil {
 		t.Errorf("the recovered password does not authenticate: %v", err)
+	}
+}
+
+// TestCreatePasswordResetNeedsTheCurrentAddress pins the reported P2 at the
+// storage boundary: the panel's /forgot flow reads the account, then issues
+// the token and mails it to the address it read. Issuing a token for anything
+// other than the address the caller verified is what let a request suspended
+// across an address change mint a working link for the PREVIOUS mailbox — the
+// insert carries the expectation in its own WHERE clause.
+func TestCreatePasswordResetNeedsTheCurrentAddress(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "forgot-race.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := store.CreateUser("alice", "", "alice@example.com", "", "member", "start-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The address the caller read: the link is issued and usable.
+	token := issueResetToken(t, store, u.ID)
+	if err := store.PeekPasswordReset(token); err != nil {
+		t.Fatalf("PeekPasswordReset: %v", err)
+	}
+
+	// A request holding a stale expectation is refused outright: no token at
+	// all is created for it.
+	if _, err := store.CreatePasswordReset(u.ID, "previous@example.com"); !errors.Is(err, storage.ErrRecoveryEmailChanged) {
+		t.Fatalf("token for a stale address = %v, want ErrRecoveryEmailChanged", err)
+	}
+
+	// The account moves to another mailbox.
+	if _, err := store.UpdateUser(u.ID, "alice", "", "alice@new.example.com", "", "member", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The expectation from before the move is refused...
+	if _, err := store.CreatePasswordReset(u.ID, "alice@example.com"); !errors.Is(err, storage.ErrRecoveryEmailChanged) {
+		t.Fatalf("token after the address moved = %v, want ErrRecoveryEmailChanged", err)
+	}
+	// ...the link issued before it is dead (the change purged it)...
+	if err := store.PeekPasswordReset(token); !errors.Is(err, storage.ErrPasswordResetInvalid) {
+		t.Fatalf("peek of the pre-move link = %v, want ErrPasswordResetInvalid", err)
+	}
+	// ...and recovery keeps working through the CURRENT address.
+	fresh := issueResetToken(t, store, u.ID)
+	if _, err := store.ResetPasswordWithToken(fresh, "recovered-password-2"); err != nil {
+		t.Fatalf("ResetPasswordWithToken = %v", err)
+	}
+	if _, err := store.Authenticate("alice", "recovered-password-2"); err != nil {
+		t.Errorf("the recovered password does not authenticate: %v", err)
+	}
+
+	// The read-only admin row still reports its own error.
+	if _, err := store.CreatePasswordReset(1, ""); !errors.Is(err, storage.ErrUserProtected) {
+		t.Errorf("token for the admin row = %v, want ErrUserProtected", err)
 	}
 }
 
@@ -170,10 +227,7 @@ func TestResetTokenIsSingleUseUnderConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := store.CreatePasswordReset(u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := issueResetToken(t, store, u.ID)
 	const attempts = 50
 	passwords := make([]string, attempts)
 	for i := range passwords {
@@ -239,10 +293,7 @@ func TestConsumePasswordResetIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := store.CreatePasswordReset(u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := issueResetToken(t, store, u.ID)
 
 	const attempts = 50
 	var okCount, unexpected atomic.Int64

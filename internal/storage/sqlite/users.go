@@ -963,18 +963,14 @@ func purgePasswordResetsTx(ctx context.Context, tx *sql.Tx, userID int64) error 
 // CreatePasswordReset issues a one-time reset token (64 hex chars) for a
 // regular user, stores only its SHA-256 hash and returns the plaintext
 // once. Expired tokens are pruned opportunistically.
-func (s *Store) CreatePasswordReset(userID int64) (string, error) {
-	var isAdmin int
-	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", storage.ErrUserNotFound
-	}
-	if err != nil {
-		return "", fmt.Errorf("inspect user %d: %w", userID, err)
-	}
-	if isAdmin != 0 {
-		return "", storage.ErrUserProtected
-	}
+//
+// The token is bound to the recovery address the caller verified: the INSERT
+// carries the address in its own WHERE clause, so a request suspended between
+// reading the account and issuing the link cannot mint a token for a mailbox
+// the account has already left. An address change committing first leaves no
+// token at all; one committing later purges the token in its own transaction
+// (reported P2).
+func (s *Store) CreatePasswordReset(userID int64, expectedEmail string) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("generate reset token: %w", err)
@@ -988,13 +984,41 @@ func (s *Store) CreatePasswordReset(userID int64) (string, error) {
 	if _, err := s.db.Exec(`DELETE FROM password_resets WHERE user_id = ? OR expires_at_ms < ?`, userID, now); err != nil {
 		return "", fmt.Errorf("prune reset tokens: %w", err)
 	}
-	if _, err := s.db.Exec(`
+	// One statement decides and inserts: it only matches the account while
+	// the address is still the expected one.
+	var issued int64
+	err := s.db.QueryRow(`
 		INSERT INTO password_resets (user_id, token_hash, expires_at_ms, created_at_ms)
-		VALUES (?, ?, ?, ?)`,
-		userID, hex.EncodeToString(sum[:]), expires, now); err != nil {
+		SELECT id, ?, ?, ? FROM users
+		WHERE id = ? AND is_admin = 0 AND email = ?
+		RETURNING user_id`,
+		hex.EncodeToString(sum[:]), expires, now, userID, expectedEmail).Scan(&issued)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", s.resetRefusal(userID)
+	}
+	if err != nil {
 		return "", fmt.Errorf("store reset token: %w", err)
 	}
 	return token, nil
+}
+
+// resetRefusal explains why the conditional insert matched nothing: the
+// account is gone, it is the read-only admin row, or its recovery address is
+// no longer the one the caller verified.
+func (s *Store) resetRefusal(userID int64) error {
+	var isAdmin int
+	var email string
+	err := s.db.QueryRow(`SELECT is_admin, email FROM users WHERE id = ?`, userID).Scan(&isAdmin, &email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	if isAdmin != 0 {
+		return storage.ErrUserProtected
+	}
+	return storage.ErrRecoveryEmailChanged
 }
 
 // ConsumePasswordReset marks a plaintext reset token used and returns the

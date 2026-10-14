@@ -1006,6 +1006,8 @@ type Hub struct {
 	// the cap refused since the last sweep (reported there, not per event).
 	peerKeysMax     int
 	peerKeysSkipped int
+	// nodeInfoAskedMax overrides the refresh cooldown cap.
+	nodeInfoAskedMax int
 
 	// userNodes supplies the node numbers registered in the user directory
 	// (nil = nothing to pin); pinNext arms the next pin pass.
@@ -2745,20 +2747,18 @@ func (h *Hub) expireNodes() {
 			h.nodesDirty = true
 		}
 	}
-	// The per-peer bookkeeping goes with the node the directory just dropped: a
-	// key mark is panel evidence for a row this station no longer holds, and a
-	// refresh entry this old rate-limits nothing (its gap has long passed).
-	// Without this the two maps keep one entry per node EVER heard while the
-	// directory itself stays bounded — memory growing on a long connection with
-	// nothing left to show for it.
+	// A key mark is panel evidence for a row this station holds, so it goes
+	// with the node the directory just dropped: without this the map keeps one
+	// entry per node EVER heard while the directory itself stays bounded.
+	//
+	// The refresh cooldown is NOT touched here. It rate-limits a question the
+	// station already asked — and the peer that never answered is exactly the
+	// one missing from the directory: dropping its entry would let every later
+	// PKI refusal ask again on the next maintenance pass. It expires by its own
+	// clock instead (see sweepPeerState).
 	for pid := range h.peerKeys {
 		if h.nodes[meshIDString(pid)] == nil {
 			delete(h.peerKeys, pid)
-		}
-	}
-	for pid := range h.nodeInfoAsked {
-		if h.nodes[meshIDString(pid)] == nil {
-			delete(h.nodeInfoAsked, pid)
 		}
 	}
 	// A CONFIRMED removal of a node the directory no longer holds has nothing
@@ -3312,6 +3312,11 @@ const nodeInfoRefreshGap = 6 * time.Hour
 // a mark is a hint rebuilt at every handshake, so a cap costs an operator
 // nothing but a hint, while the map otherwise grows with every node ever heard.
 const maxPeerKeyMarks = 4096
+
+// maxNodeInfoRefreshEntries caps the refresh cooldown map: one small entry per
+// peer asked within the gap, so this bound only matters on a mesh that answers
+// none of them.
+const maxNodeInfoRefreshEntries = 4096
 
 // requestNodeInfo asks one node's radio to re-announce its NodeInfo (and
 // with it its public key), which is what makes a later direct message to
@@ -4294,6 +4299,23 @@ func (h *Hub) sweepPeerState(now time.Time) {
 			delete(h.nodeInfoAsked, id)
 		}
 	}
+	// The cap is a safety net, not the usual bound: entries live six hours, so
+	// the map is already bounded by the peers asked within one gap. Under real
+	// pressure the OLDEST questions go first — they are the closest to their
+	// own expiry — because the alternative (refusing to remember a question)
+	// would let that peer be asked again on every refusal.
+	expired := 0
+	for len(h.nodeInfoAsked) > h.maxNodeInfoAsked() {
+		var oldest uint32
+		var oldestAt time.Time
+		for id, at := range h.nodeInfoAsked {
+			if oldestAt.IsZero() || at.Before(oldestAt) {
+				oldest, oldestAt = id, at
+			}
+		}
+		delete(h.nodeInfoAsked, oldest)
+		expired++
+	}
 	skipped, marks, asked := h.peerKeysSkipped, len(h.peerKeys), len(h.nodeInfoAsked)
 	h.peerKeysSkipped = 0
 	h.mu.Unlock()
@@ -4301,6 +4323,19 @@ func (h *Hub) sweepPeerState(now time.Time) {
 		h.logger.Warn("meshtastic: peer key marks are at the cap, new ones are not remembered",
 			"skipped", skipped, "cap", h.maxPeerKeys(), "marks", marks, "refreshes_waiting", asked)
 	}
+	if expired > 0 && h.logger != nil {
+		h.logger.Warn("meshtastic: too many peers wait for their node info, the oldest questions are forgotten",
+			"forgotten", expired, "cap", h.maxNodeInfoAsked(), "waiting", asked)
+	}
+}
+
+// maxNodeInfoAsked caps the refresh cooldown map (a field so tests can shrink
+// it).
+func (h *Hub) maxNodeInfoAsked() int {
+	if h.nodeInfoAskedMax > 0 {
+		return h.nodeInfoAskedMax
+	}
+	return maxNodeInfoRefreshEntries
 }
 
 // receivePosition updates a node's position (and our own).

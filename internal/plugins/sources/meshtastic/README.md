@@ -129,6 +129,13 @@ then stops remembering new ones, saying so in the log
 (`meshtastic: peer key marks are at the cap, new ones are not remembered`) —
 never growing in silence.
 
+The refresh cooldown is deliberately NOT tied to the directory: the peer that
+never answered is exactly the one missing from it, so dropping the entry with
+the node would let every later refusal ask again on the next maintenance pass.
+It expires by its own clock, and its own cap (4096 entries) drops the OLDEST
+questions first — the ones closest to expiry — reporting it as
+`too many peers wait for their node info, the oldest questions are forgotten`.
+
 Two more reasons come from the STATION, not the device, and name a failure the
 radio itself never reported: `no_response` — the device transmitted the frame
 and the recipient never acknowledged it (the acknowledgment window,

@@ -52,7 +52,11 @@ func (m *memDeliveryStore) EnqueueDelivery(ctx context.Context, job storage.Deli
 	defer m.mu.Unlock()
 	k := m.key(job.GroupID, job.ActionID, job.DedupKey)
 	if j, ok := m.jobs[k]; ok {
-		if j.status == storage.DeliveryFailed {
+		// Only a TERMINAL failure (no deadline left) is re-armed by a
+		// duplicate; a job waiting for its scheduled retry keeps its
+		// payload, its attempt count and its deadline (mirrors the SQLite
+		// store — the payload merge of a re-arm is the store's business).
+		if j.status == storage.DeliveryFailed && j.next.IsZero() {
 			j.job = job
 			j.status = storage.DeliverySaved
 			j.next = time.Time{}

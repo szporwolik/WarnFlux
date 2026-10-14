@@ -156,8 +156,12 @@ type InboxDeliveryStore interface {
 type DeliveryStore interface {
 	// EnqueueDelivery persists one job. It returns the stored job state
 	// and whether THIS call made the job pending: queued=true for a
-	// fresh insert or a re-armed terminal failure, queued=false when the
-	// transition was deduplicated (already pending or delivered).
+	// fresh insert or a re-armed TERMINAL failure, queued=false when the
+	// transition was deduplicated (already pending or delivered). A job
+	// waiting for its scheduled retry is deduplicated like any other: it
+	// keeps the payload that records what earlier attempts already
+	// delivered, its attempt count and its deadline. Re-arming it would
+	// start the work over and could serve one recipient twice.
 	EnqueueDelivery(ctx context.Context, job DeliveryJob) (DeliveryStatus, bool, error)
 
 	// ClaimNextDelivery atomically claims the next due job of one

@@ -387,6 +387,21 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The SAME concurrency gate the login form uses guards this public
+	// endpoint: hashing a password is expensive and the store's token check
+	// is a cheap filter that many parallel submissions of one valid link all
+	// pass (a single claim decides afterwards), so without the gate a token
+	// holder bought as many simultaneous PBKDF2 computations as the client
+	// cared to send. The excess is shed here, before the hash is computed
+	// (reported P2).
+	if !s.loginLimiter.acquireHash() {
+		s.logger.Warn("web: reset hash gate full", "remote", r.RemoteAddr)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
+		return
+	}
+	defer s.loginLimiter.releaseHash()
+
 	// One atomic store call spends the token and stores the new password:
 	// parallel submissions of the same link cannot all pass the check and
 	// overwrite each other's password, and a failed password write cannot

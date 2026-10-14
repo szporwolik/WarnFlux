@@ -37,6 +37,12 @@ type fakeUsers struct {
 	// failChannelOptOuts makes the channel write fail: the account handler
 	// must survive a preference write that blows up after a password change.
 	failChannelOptOuts error
+	// hashDelay widens the password computation (the fake stores plaintext,
+	// so nothing is actually hashed): the callers' concurrency gate is what
+	// the tests assert, and a real hash costs tens of milliseconds.
+	hashDelay time.Duration
+	hashBusy  int
+	hashPeak  int
 	// readPause/readResume, when set, park the next directory read (a
 	// password verification or an account lookup) after it computed its
 	// answer and before the caller sees it — the window a concurrent
@@ -171,6 +177,41 @@ func (f *fakeUsers) byUsernameLocked(username string) (storage.User, error) {
 		}
 	}
 	return storage.User{}, storage.ErrUserNotFound
+}
+
+// setHashDelay widens the fake's password computation for one test.
+func (f *fakeUsers) setHashDelay(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hashDelay = d
+}
+
+// beginHash models one password computation: it counts the callers that are
+// inside the computation at the same time (peak included) and returns the
+// call that ends this one. Together with setHashDelay it makes the shared
+// hash budget observable from a test.
+func (f *fakeUsers) beginHash() func() {
+	f.mu.Lock()
+	f.hashBusy++
+	if f.hashBusy > f.hashPeak {
+		f.hashPeak = f.hashBusy
+	}
+	delay := f.hashDelay
+	f.mu.Unlock()
+	time.Sleep(delay)
+	return func() {
+		f.mu.Lock()
+		f.hashBusy--
+		f.mu.Unlock()
+	}
+}
+
+// hashPeakObserved reports the highest number of simultaneous password
+// computations seen so far.
+func (f *fakeUsers) hashPeakObserved() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hashPeak
 }
 
 // pauseNextRead parks the next directory read after it computed its answer
@@ -348,6 +389,8 @@ func (f *fakeUsers) overrideRole(id int64, role string) {
 }
 
 func (f *fakeUsers) Authenticate(username, password string) (storage.User, error) {
+	done := f.beginHash()
+	defer done()
 	f.mu.Lock()
 	u, err := f.verifyLocked(username, password)
 	f.mu.Unlock()
@@ -633,6 +676,8 @@ func (f *fakeUsers) ConsumePasswordReset(token string) (int64, error) {
 // way the SQLite store does it in one transaction. The fake lives in a
 // single process, so the mutex it already holds is the atomicity.
 func (f *fakeUsers) ResetPasswordWithToken(token, password string) (int64, error) {
+	done := f.beginHash()
+	defer done()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id, ok := f.resets[token]

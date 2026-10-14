@@ -59,7 +59,8 @@ func TestPasswordChangePurgesResetTokens(t *testing.T) {
 	}
 
 	// An edit that leaves the password alone must NOT invalidate a link
-	// the owner asked for: only a password change ends the recovery path.
+	// the owner asked for: only a password change or a new recovery
+	// address ends the recovery path.
 	token, err = store.CreatePasswordReset(u.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +70,80 @@ func TestPasswordChangePurgesResetTokens(t *testing.T) {
 	}
 	if _, err := store.ConsumePasswordReset(token); err != nil {
 		t.Errorf("a password-less edit invalidated a live reset link: %v", err)
+	}
+}
+
+// TestEmailChangePurgesResetTokens pins the reported P2: an edit that moved
+// the account to another mailbox left the links mailed to the PREVIOUS one
+// alive, so whoever still read that mailbox could set the account's
+// password. The change of address ends them in the same transaction as the
+// edit — while an edit that only re-types the same address leaves them be.
+func TestEmailChangePurgesResetTokens(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "email-reset.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.CreateUser("alice", "", "alice@example.com", "", "member", "start-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.CreateUser("bob", "", "bob@example.com", "", "member", "start-password-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobToken, err := store.CreatePasswordReset(bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The address only matters when it really changes: re-typing it with
+	// other case and stray blanks keeps the pending link usable.
+	token, err := store.CreatePasswordReset(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateUser(alice.ID, "alice", "", "  ALICE@Example.com ", "", "member", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PeekPasswordReset(token); err != nil {
+		t.Errorf("re-typing the same recovery address ended a live reset link: %v", err)
+	}
+
+	// Moving the account to another mailbox kills every link issued before
+	// it, so the previous owner of the address cannot set a password.
+	if _, err := store.UpdateUser(alice.ID, "alice", "", "alice@new.example.com", "", "member", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsumePasswordReset(token); !errors.Is(err, storage.ErrPasswordResetInvalid) {
+		t.Errorf("token issued before the address change = %v, want ErrPasswordResetInvalid", err)
+	}
+	if err := store.PeekPasswordReset(token); !errors.Is(err, storage.ErrPasswordResetInvalid) {
+		t.Errorf("peek after the address change = %v, want ErrPasswordResetInvalid", err)
+	}
+	// The edit still touches nothing else — the password stays, the other
+	// account's pending link stays.
+	if _, err := store.Authenticate("alice", "start-password-1"); err != nil {
+		t.Errorf("an address-only edit broke the password: %v", err)
+	}
+	if err := store.PeekPasswordReset(bobToken); err != nil {
+		t.Errorf("changing alice's address ended bob's reset link: %v", err)
+	}
+
+	// A link issued to the current address works: the change does not shut
+	// the account out of recovery.
+	fresh, err := store.CreatePasswordReset(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResetPasswordWithToken(fresh, "recovered-password-2"); err != nil {
+		t.Fatalf("fresh reset to the current address = %v", err)
+	}
+	if _, err := store.Authenticate("alice", "recovered-password-2"); err != nil {
+		t.Errorf("the recovered password does not authenticate: %v", err)
 	}
 }
 

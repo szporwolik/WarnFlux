@@ -1153,9 +1153,15 @@ func TestSettleSpentRetriesEndsOrphanedJobs(t *testing.T) {
 	plant("mesh", "c:spent", 1)
 	// A budget of three: one attempt out of three, a real retry.
 	plant("smtp", "c:open", 3)
+	// A row claimed before the release that recorded its budget: only the
+	// action's current budget can decide it.
+	plant("mesh", "c:legacy", 1)
+	if _, err := store.db.Exec(`UPDATE action_fires SET max_attempts = 0 WHERE dedup_key = 'c:legacy'`); err != nil {
+		t.Fatalf("clear the recorded budget: %v", err)
+	}
 
-	if n, err := store.SettleSpentRetries(ctx, "mesh", 1); err != nil || n != 1 {
-		t.Fatalf("SettleSpentRetries(mesh) = (%d, %v), want the spent job", n, err)
+	if n, err := store.SettleSpentRetries(ctx, "mesh", 1); err != nil || n != 2 {
+		t.Fatalf("SettleSpentRetries(mesh) = (%d, %v), want the spent job and the legacy one", n, err)
 	}
 	if n, err := store.SettleSpentRetries(ctx, "smtp", 3); err != nil || n != 0 {
 		t.Fatalf("SettleSpentRetries(smtp) = (%d, %v), want nothing", n, err)
@@ -1164,11 +1170,11 @@ func TestSettleSpentRetriesEndsOrphanedJobs(t *testing.T) {
 	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(2*time.Hour)); err != nil || !ok {
 		t.Fatalf("claim of the open job = (%v, %v), want (true, nil)", ok, err)
 	}
-	// ...while the ended one waits for nothing and the completed-job
-	// retention takes it.
+	// ...while the ended ones wait for nothing and the completed-job
+	// retention takes them.
 	pruned, err := store.PruneActionFires(at.Add(3 * time.Hour))
-	if err != nil || pruned != 1 {
-		t.Fatalf("retention pruned %d rows (%v), want the ended job", pruned, err)
+	if err != nil || pruned != 2 {
+		t.Fatalf("retention pruned %d rows (%v), want the ended jobs", pruned, err)
 	}
 }
 
@@ -1230,6 +1236,60 @@ func TestTerminalSettleStoresThePayload(t *testing.T) {
 	}
 	if got := strings.Join(payload.Done, ","); got != "a@example.com" {
 		t.Errorf("re-armed payload progress = %q, want the recipient the last attempt served", got)
+	}
+}
+
+// TestLoweredBudgetFollowsTheRecordedOne pins the single budget policy (the
+// reported P2): the claim compared the attempt counter against the CURRENT
+// configuration while SettleSpentRetries used the budget recorded on the row,
+// so lowering the limit hid a job from the worker without ever ending it —
+// neither executed nor pruned, forever. The recorded budget governs the job
+// now; a configuration change applies from the next claim on.
+func TestLoweredBudgetFollowsTheRecordedOne(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	// Claimed while the action allowed three attempts: one attempt is spent
+	// and the retry waits an hour away.
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "mesh", EventKey: "imgw:1", DedupKey: "c:lowered", Payload: []byte("{}"), FiredAt: at}
+	if _, _, err := store.EnqueueDelivery(ctx, job); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 3, at); err != nil || !ok {
+		t.Fatalf("claim with budget 3: (%v, %v)", ok, err)
+	}
+	if err := store.SettleDelivery(ctx, g.ID, "mesh", "c:lowered", storage.DeliveryFailed, at.Add(time.Hour)); err != nil {
+		t.Fatalf("settle retryable: %v", err)
+	}
+
+	// The operator lowers the limit to one attempt. The job keeps the budget
+	// it was claimed with, so it CONTINUES instead of vanishing from both the
+	// worker's view and the sweep's...
+	claimed, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at.Add(2*time.Hour))
+	if err != nil || !ok || claimed.Attempts != 2 {
+		t.Fatalf("claim under the lowered limit = (%+v, %v, %v), want the job to continue (attempts 2)", claimed, ok, err)
+	}
+	// ...and that claim recorded the configured budget on the row.
+	if err := store.SettleDelivery(ctx, g.ID, "mesh", "c:lowered", storage.DeliveryFailed, at.Add(3*time.Hour)); err != nil {
+		t.Fatalf("settle retryable: %v", err)
+	}
+	// Now the budget really is spent: the sweep ends the job and retention
+	// takes it, so nothing waits for a retry that can never happen.
+	if n, err := store.SettleSpentRetries(ctx, "mesh", 1); err != nil || n != 1 {
+		t.Fatalf("SettleSpentRetries = (%d, %v), want the spent job", n, err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at.Add(4*time.Hour)); err != nil || ok {
+		t.Fatalf("claim after the sweep = (%v, %v), want (false, nil)", ok, err)
+	}
+	pruned, err := store.PruneActionFires(at.Add(5 * time.Hour))
+	if err != nil || pruned != 1 {
+		t.Fatalf("retention pruned %d rows (%v), want the ended job", pruned, err)
 	}
 }
 

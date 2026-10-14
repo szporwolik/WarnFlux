@@ -696,3 +696,127 @@ func TestHubPeerKeyMarksAreCapped(t *testing.T) {
 		t.Fatalf("directory = %d, want the %d held nodes", got, len(held))
 	}
 }
+
+// TestHubNodeInfoCooldownSurvivesMaintenance pins the ticket case: the peer
+// that never answered is exactly the one MISSING from the node directory, so a
+// cleanup that drops its cooldown entry (because "the node is gone") lets every
+// later PKI refusal ask again on the next maintenance pass — the radio spends
+// airtime on a peer that is not answering.
+func TestHubNodeInfoCooldownSurvivesMaintenance(t *testing.T) {
+	radio, _ := refusedTextSend(t, pb.Routing_PKI_UNKNOWN_PUBKEY, "Test")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	send := func() *captureRecorder {
+		t.Helper()
+		rec := &captureRecorder{}
+		radio.hub.SetRecorder(rec)
+		if err := radio.hub.SendContactMessage(ctx, fmt.Sprintf("%08x", peerKeyNode), "Test", "admin"); err != nil {
+			t.Fatalf("SendContactMessage: %v", err)
+		}
+		return rec
+	}
+	// The fake device queues one echo per send instead of echoing on its own,
+	// so a refusal dispatch must cover every queued send for the NEWEST one to
+	// be the one that settles (the harness pairs them oldest first).
+	refuse := func(base uint32) {
+		radio.hub.sendMu.Lock()
+		queued := len(radio.hub.echoQueue)
+		radio.hub.sendMu.Unlock()
+		for i := 0; i < queued; i++ {
+			dispatchQueueStatus(t, radio, pb.Routing_PKI_UNKNOWN_PUBKEY, base+uint32(i))
+		}
+	}
+	asked := func() int { return nodeInfoRequests(radio) }
+	waitFor(t, "the first node info request", func() bool { return asked() == 1 })
+
+	// The premise: this peer never announced, so the directory does not hold it.
+	radio.hub.mu.Lock()
+	_, inDirectory := radio.hub.nodes[meshIDString(peerKeyNode)]
+	entries := len(radio.hub.nodeInfoAsked)
+	radio.hub.mu.Unlock()
+	if inDirectory {
+		t.Fatal("the test peer is in the directory: the case cannot be reproduced")
+	}
+	if entries != 1 {
+		t.Fatalf("refresh entries = %d, want the one just asked", entries)
+	}
+
+	// Maintenance runs (the directory prune, the sweeps, the ledger passes):
+	// the cooldown must still be there.
+	radio.hub.expireNodes()
+	radio.hub.sweepPeerState(time.Now())
+	radio.hub.mu.Lock()
+	entries = len(radio.hub.nodeInfoAsked)
+	radio.hub.mu.Unlock()
+	if entries != 1 {
+		t.Fatalf("refresh entries after maintenance = %d, want the cooldown kept", entries)
+	}
+
+	// A second refused message for the same peer stays silent: the question was
+	// asked and the answer never came, so asking again is wasted airtime.
+	rec := send()
+	refuse(7001)
+	waitFor(t, "the second refusal to settle", func() bool {
+		msgs := rec.messages()
+		return len(msgs) == 1 && msgs[0].Status == TxFailed
+	})
+	if got := asked(); got != 1 {
+		t.Fatalf("node info requests = %d, want the six-hour cooldown to hold", got)
+	}
+
+	// Once the gap has passed the question is allowed again (the entry expires
+	// by its own clock, not by the directory).
+	radio.hub.mu.Lock()
+	for id := range radio.hub.nodeInfoAsked {
+		radio.hub.nodeInfoAsked[id] = time.Now().Add(-nodeInfoRefreshGap - time.Minute)
+	}
+	radio.hub.mu.Unlock()
+	radio.hub.sweepPeerState(time.Now())
+	rec = send()
+	refuse(7002)
+	waitFor(t, "the question after the gap", func() bool { return asked() == 2 })
+}
+
+// nodeInfoRequests counts the NodeInfo refresh frames on the wire: the only
+// proof that a rate limit actually held.
+func nodeInfoRequests(r *testRadio) int {
+	n := 0
+	for _, p := range r.outbound() {
+		if p.GetDecoded().GetPortnum() == pb.PortNum_NODEINFO_APP && p.GetDecoded().GetWantResponse() {
+			n++
+		}
+	}
+	return n
+}
+
+// TestHubNodeInfoRefreshCooldownIsCapped pins the safety net: the cooldown map
+// is bounded in entries too, and the entries that go first are the OLDEST
+// questions (the ones closest to their own expiry) — refusing to remember a
+// question would let a peer be asked again on every refusal.
+func TestHubNodeInfoRefreshCooldownIsCapped(t *testing.T) {
+	logs := &logCapture{}
+	h := newBareHubWithLogs(t, logs)
+	h.nodeInfoAskedMax = 2
+	for i := 0; i < 4; i++ {
+		h.requestNodeInfo(peerKeyNode + uint32(i))
+		h.mu.Lock()
+		h.nodeInfoAsked[peerKeyNode+uint32(i)] = time.Now().Add(-time.Duration(4-i) * time.Minute)
+		h.mu.Unlock()
+	}
+	h.sweepPeerState(time.Now())
+	h.mu.Lock()
+	entries, kept := len(h.nodeInfoAsked), map[uint32]bool{}
+	for id := range h.nodeInfoAsked {
+		kept[id] = true
+	}
+	h.mu.Unlock()
+	if entries != 2 {
+		t.Fatalf("refresh entries = %d, want the cap of 2", entries)
+	}
+	if !kept[peerKeyNode+3] || !kept[peerKeyNode+2] {
+		t.Fatalf("kept = %v, want the two NEWEST questions", kept)
+	}
+	if !strings.Contains(logs.String(), "too many peers wait for their node info") {
+		t.Fatalf("the cap was silent; log lines: %s", logs.String())
+	}
+}

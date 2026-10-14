@@ -439,6 +439,28 @@ type pendingSend struct {
 	// favoriteSettled marks the change as already answered (a send can settle
 	// more than once: only the first verdict counts).
 	favoriteSettled atomic.Bool
+	// keyTried marks a message that was already re-sent once because the
+	// recipient's public key arrived after this very message was refused for
+	// missing it. A second refusal must not start the wait again: a peer that
+	// keeps announcing a key the radio cannot use would otherwise have the
+	// station re-sending the same text forever.
+	keyTried bool
+}
+
+// keyWaitWindow bounds the wait for a peer key once the radio refused a
+// message for missing it. The NodeInfo refresh sent at the refusal is
+// answered by the peer's firmware — normally within seconds — and a key that
+// never lands leaves the message failed, exactly as before.
+const keyWaitWindow = 5 * time.Minute
+
+// keyRetry is one direct message the radio refused because the recipient's
+// public key was absent from its node database. The station has already asked
+// that peer to re-announce its NodeInfo; this holds the message until that
+// key lands so the work is finished instead of dying on a technicality the
+// operator can neither see nor fix.
+type keyRetry struct {
+	ps   *pendingSend
+	when time.Time
 }
 
 // favoriteChange is one requested change to the radio's favorites: the star of
@@ -940,6 +962,12 @@ type Hub struct {
 	// firmware suppresses a reply to the same requester for hours). Nil
 	// until the first refusal that needs a key refresh.
 	nodeInfoAsked map[uint32]time.Time
+
+	// keyRetries holds the direct messages refused for a missing peer key,
+	// keyed by the peer: the NodeInfo refresh is already on its way and the
+	// message goes out again once that key lands (see retryAfterKey). Nil
+	// until the first such refusal.
+	keyRetries map[uint32]*keyRetry
 
 	// userNodes supplies the node numbers registered in the user directory
 	// (nil = nothing to pin); pinNext arms the next pin pass.
@@ -1538,6 +1566,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 			h.expireNodes()
 			h.pinUserNodes(false)
 			h.retryPending(time.Now())
+			h.expireKeyRetries(time.Now())
 			h.persistNodes()
 			h.beaconTick()
 			h.hazardsTick()
@@ -2917,7 +2946,86 @@ func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
 	}
 	h.markStatus(ps, TxFailed)
 	if !ps.probe && needsNodeInfoRefresh(res) {
+		h.awaitPeerKey(ps)
 		h.requestNodeInfo(ps.to)
+	}
+}
+
+// awaitPeerKey remembers one message the radio refused because the peer's
+// public key was missing, so the NodeInfo that lands next can finish what the
+// operator started. Only a message the operator asked for qualifies, and only
+// its FIRST such refusal: the retry is refused with the same reason when the
+// key was not the real problem, and re-arming the wait then would keep the
+// station re-sending the same text at every NodeInfo.
+func (h *Hub) awaitPeerKey(ps *pendingSend) {
+	if ps.keyTried || !ps.wantAck || ps.text == "" {
+		return
+	}
+	h.mu.Lock()
+	if h.keyRetries == nil {
+		h.keyRetries = make(map[uint32]*keyRetry)
+	}
+	h.keyRetries[ps.to] = &keyRetry{ps: ps, when: h.clock()}
+	h.mu.Unlock()
+}
+
+// takeKeyRetry hands over the message waiting for one peer's key, if any is
+// still within the window. The entry is consumed either way: a key that
+// arrives too late no longer belongs to the refusal that asked for it.
+func (h *Hub) takeKeyRetry(to uint32) *keyRetry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	kr := h.keyRetries[to]
+	if kr == nil {
+		return nil
+	}
+	delete(h.keyRetries, to)
+	if h.clock().Sub(kr.when) > keyWaitWindow {
+		return nil
+	}
+	return kr
+}
+
+// retryAfterKey re-sends one direct message the radio refused for a missing
+// peer key: that key just arrived with this NodeInfo, and the text the
+// operator already typed must not be left behind failed. The retry keeps the
+// original history row (same timestamp, same text), so the panel flips THE
+// MESSAGE to sent/delivered instead of growing a duplicate nobody typed.
+func (h *Hub) retryAfterKey(kr *keyRetry) {
+	if kr == nil || kr.ps == nil {
+		return
+	}
+	ps := kr.ps
+	ps.keyTried = true
+	ps.failReason = ""
+	ps.status = ""
+	ps.id = 0
+	ps.echoed = false
+	ps.retries = 0
+	if h.logger != nil {
+		h.logger.Info("meshtastic: peer key received, retrying the direct message",
+			"to", fmt.Sprintf("%08x", ps.to))
+	}
+	h.resend(ps)
+}
+
+// expireKeyRetries drops the waits whose window ran out: the refusal stands
+// and the operator re-sends by hand (the panel shows why it failed).
+func (h *Hub) expireKeyRetries(now time.Time) {
+	h.mu.Lock()
+	var expired []uint32
+	for to, kr := range h.keyRetries {
+		if now.Sub(kr.when) > keyWaitWindow {
+			delete(h.keyRetries, to)
+			expired = append(expired, to)
+		}
+	}
+	h.mu.Unlock()
+	if len(expired) > 0 && h.logger != nil {
+		for _, to := range expired {
+			h.logger.Warn("meshtastic: the peer key never arrived, the message stays failed",
+				"to", fmt.Sprintf("%08x", to))
+		}
 	}
 }
 
@@ -3824,6 +3932,12 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	copyN := *n
 	copyN.Telemetry = cloneTelemetry(n.Telemetry)
 	h.mu.Unlock()
+	// A NodeInfo is also how the radio learns the peer key it needs to
+	// encrypt direct messages: when one was refused for a missing key, this
+	// is the answer that refusal was waiting for.
+	if len(user.GetPublicKey()) > 0 {
+		h.retryAfterKey(h.takeKeyRetry(pkt.GetFrom()))
+	}
 	h.publishStation(&copyN)
 }
 

@@ -179,6 +179,10 @@ type composeView struct {
 	Urgencies   []option
 	Certainties []option
 	Statuses    []option
+	// EventChoices are the canonical event types offered as hints under the
+	// event field: a suggestion is a name every channel translates, while
+	// the field itself stays free text.
+	EventChoices []i18n.EventSuggestion
 
 	// Latitude/Longitude are the optional event coordinates for the
 	// compose map picker; 0 when the APRS hub is disabled (no picker).
@@ -1095,25 +1099,26 @@ func composeItemFrom(h state.Hazard, status string) composeItem {
 // buildComposeView assembles the page model in a UI language.
 func (s *Server) buildComposeView(lang string, form composeForm) composeView {
 	view := composeView{
-		AppTitle:    s.cfg.Title,
-		Name:        s.displayName(),
-		Header1:     s.displayHeader1(),
-		Header2:     s.DisplayHeader2(),
-		Tagline:     s.DisplayTagline(),
-		Version:     s.version,
-		Commit:      s.commit,
-		RepoURL:     repoURL,
-		Source:      composeSource,
-		Form:        form,
-		Items:       s.composeItems(),
-		External:    s.externalHazards(),
-		Severities:  optionList(lang, testSeverityValues),
-		Urgencies:   optionList(lang, testUrgencyValues),
-		Certainties: optionList(lang, testCertaintyValues),
-		Statuses:    composeStatusesFor(lang),
-		NavCompose:  true,
-		OfflineMode: s.OfflineMode(),
-		ForceTiles:  s.forceTiles.Load(),
+		AppTitle:     s.cfg.Title,
+		Name:         s.displayName(),
+		Header1:      s.displayHeader1(),
+		Header2:      s.DisplayHeader2(),
+		Tagline:      s.DisplayTagline(),
+		Version:      s.version,
+		Commit:       s.commit,
+		RepoURL:      repoURL,
+		Source:       composeSource,
+		Form:         form,
+		Items:        s.composeItems(),
+		External:     s.externalHazards(),
+		Severities:   optionList(lang, testSeverityValues),
+		EventChoices: i18n.EventSuggestions(lang),
+		Urgencies:    optionList(lang, testUrgencyValues),
+		Certainties:  optionList(lang, testCertaintyValues),
+		Statuses:     composeStatusesFor(lang),
+		NavCompose:   true,
+		OfflineMode:  s.OfflineMode(),
+		ForceTiles:   s.forceTiles.Load(),
 		// Editing opens the panel on the initial render; a fresh page
 		// starts with the issued list and a collapsed panel.
 		ShowForm: form.EventKey != "",

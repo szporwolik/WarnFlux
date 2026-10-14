@@ -1440,6 +1440,23 @@ tr.click-send:hover td { background: var(--surface-hi); }
 .gsm-bar:nth-child(5) { height: 18px; }
 .gsm-bar.on { background: var(--accent); }
 
+/* Compose form: the notification preview and the field hints. The preview
+   shows the line a channel will send before it is sent. */
+.field-hint { display: block; margin-top: 0.25rem; font-size: 0.78rem; line-height: 1.4; }
+.compose-preview {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  font-size: 0.85rem;
+}
+.compose-preview code { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text); }
+
 /* ---- test signal page ---- */
 .test-form {
   display: grid;

@@ -69,6 +69,49 @@ var eventNameKeys = map[string]string{
 	"heat warning":           "event.heat_warning",
 	"frost warning":          "event.frost_warning",
 	"lightning nearby":       "event.lightning_nearby",
+	"information":            "event.information",
+	"hazard":                 "event.hazard",
+	"weather alert":          "event.weather_alert",
+	"test":                   "event.test",
+}
+
+// eventSuggestionNames are the event types the compose form offers as
+// suggestions, in the order an operator reads them: the compose vocabulary
+// first, then the warning types the sources stamp, then the station's own.
+// They are suggestions, not a whitelist — the field stays free text, because
+// an operator may need a name this station has never seen — but a suggestion
+// is a name every channel already translates, which is what a typed "Brak"
+// (once shown to readers as "[SOSNA] POWAŻNE: Brak — Mup") is not.
+var eventSuggestionNames = []string{
+	"Information", "Hazard", "Weather alert", "Test", "EMCOM",
+	"Thunderstorm warning", "Tornado warning", "Strong wind warning",
+	"Heavy rain warning", "Heat warning", "Frost warning", "Lightning nearby",
+	"Air quality exceedance", "Industrial accident", "Chemical release",
+	"Road works", "Road closure", "Alternating traffic",
+}
+
+// EventSuggestion is one hint of the compose form's event-type field.
+type EventSuggestion struct {
+	// Value is the canonical name that goes on the wire.
+	Value string
+	// Label is that name in the operator's language.
+	Label string
+}
+
+// EventSuggestions returns the canonical event types with the rendering the
+// operator reads in lang, sorted by that label.
+func EventSuggestions(lang string) []EventSuggestion {
+	out := make([]EventSuggestion, 0, len(eventSuggestionNames))
+	for _, name := range eventSuggestionNames {
+		out = append(out, EventSuggestion{Value: name, Label: EventName(lang, name)})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Label != out[j].Label {
+			return out[i].Label < out[j].Label
+		}
+		return out[i].Value < out[j].Value
+	})
+	return out
 }
 
 // EventName renders the canonical event type of a hazard for one language.
@@ -202,6 +245,7 @@ var en = map[string]string{
 	"help.messages.title":   "Messages",
 	"help.messages.1":       "Issue a new communication with New message; edit or expire the issued ones right here.",
 	"help.messages.2":       "Below the issued list are active alerts from other sources — retire an irrelevant one with Expire.",
+	"help.messages.3":       "The message form suggests the standard event types and shows the line the notification will read before you send it: a headline repeating the event type is printed once, and a name taken from the suggestions is translated for every reader.",
 	"help.emcom.title":      "EMCOM networks",
 	"help.emcom.1":          "Every network has a readiness level 0–3: move the slider and save.",
 	"help.emcom.2":          "You may change a level only when an assigned group covers you — the admin assigns the groups.",
@@ -1047,6 +1091,8 @@ var en = map[string]string{
 	"compose.update":                 "Update message",
 	"compose.expire":                 "Expire",
 	"compose.ph.event":               "Storm, Flood, …",
+	"compose.event_hint":             "Pick a suggestion or type your own name — a suggestion is a name every channel (mail, SMS, mesh, Discord, the public page) already translates.",
+	"compose.preview":                "Notifications will read:",
 	"compose.ph.headline":            "Short summary for the public page",
 	"compose.ph.areas":               "comma-separated slugs",
 	"compose.err.invalid_key":        "invalid event key",
@@ -1321,6 +1367,10 @@ var en = map[string]string{
 	"event.heat_warning":           "Heat warning",
 	"event.frost_warning":          "Frost warning",
 	"event.lightning_nearby":       "Lightning nearby",
+	"event.information":            "Information",
+	"event.hazard":                 "Hazard",
+	"event.weather_alert":          "Weather alert",
+	"event.test":                   "Test",
 	"severity.extreme":             "extreme",
 
 	// Notification boilerplate (email subjects and bodies).
@@ -1430,6 +1480,7 @@ var pl = map[string]string{
 	"help.messages.title":   "Komunikaty",
 	"help.messages.1":       "Nowy komunikat wydasz przyciskiem Nowa wiadomość; tutaj je edytujesz i wygaszasz.",
 	"help.messages.2":       "Poniżej wydanych są aktywne alerty z innych źródeł — nieistotny wygaszisz przyciskiem Wygasz.",
+	"help.messages.3":       "Formularz komunikatu podpowiada standardowe typy zdarzeń i pokazuje linię powiadomienia jeszcze przed wysłaniem: nagłówek powtarzający typ zdarzenia jest drukowany raz, a nazwa z podpowiedzi jest tłumaczona dla każdego odbiorcy.",
 	"help.emcom.title":      "Sieci EMCOM",
 	"help.emcom.1":          "Każda sieć ma poziom gotowości 0–3: przesuń suwak i zapisz.",
 	"help.emcom.2":          "Poziom zmienisz tylko, gdy obejmuje Cię przypisana grupa — grupy przypisuje administrator.",
@@ -2262,6 +2313,8 @@ var pl = map[string]string{
 	"compose.update":                 "Zaktualizuj komunikat",
 	"compose.expire":                 "Wygasz",
 	"compose.ph.event":               "Burza, powódź, …",
+	"compose.event_hint":             "Wybierz podpowiedź albo wpisz własną nazwę — podpowiedź jest nazwą, którą każdy kanał (mail, SMS, mesh, Discord, strona publiczna) już tłumaczy.",
+	"compose.preview":                "Powiadomienie wyjdzie jako:",
 	"compose.ph.headline":            "Krótkie podsumowanie dla strony publicznej",
 	"compose.ph.areas":               "nazwy oddzielone przecinkami",
 	"compose.err.invalid_key":        "nieprawidłowy klucz zdarzenia",
@@ -2530,6 +2583,10 @@ var pl = map[string]string{
 	"event.heat_warning":           "Ostrzeżenie przed upałem",
 	"event.frost_warning":          "Ostrzeżenie przed mrozem",
 	"event.lightning_nearby":       "Wyładowania w pobliżu",
+	"event.information":            "Informacja",
+	"event.hazard":                 "Zagrożenie",
+	"event.weather_alert":          "Alert pogodowy",
+	"event.test":                   "Test",
 	"severity.extreme":             "ekstremalne",
 
 	// Szablony powiadomień (tematy i treści e-maili).

@@ -1935,12 +1935,14 @@ func TestHubDeleteKeepsANewerDocument(t *testing.T) {
 		_, pending := hub.pendingDeletes[StationsTopicPrefix+"SP9BCK"]
 		return !pending
 	})
-	time.Sleep(50 * time.Millisecond) // the maintenance tick keeps running
-	for _, payload := range sink.payloads(StationsTopicPrefix + "SP9BCK") {
-		if payload == nil {
-			t.Fatal("the document of a station that came back was removed")
-		}
-	}
+	// The removal may well have gone out in the pass that ran while the comeback
+	// was still queued (the worker applies observations between passes): what
+	// must never happen is the broker being left WITHOUT the document, so the
+	// LAST payload for that station has to be the document itself.
+	waitFor(t, func() bool {
+		payloads := sink.payloads(StationsTopicPrefix + "SP9BCK")
+		return len(payloads) > 0 && payloads[len(payloads)-1] != nil
+	})
 	hub.mu.Lock()
 	_, back := hub.stations["SP9BCK"]
 	hub.mu.Unlock()

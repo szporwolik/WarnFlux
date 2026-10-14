@@ -439,6 +439,28 @@ type pendingSend struct {
 	// favoriteSettled marks the change as already answered (a send can settle
 	// more than once: only the first verdict counts).
 	favoriteSettled atomic.Bool
+	// keyTried marks a message that was already re-sent once because the
+	// recipient's public key arrived after this very message was refused for
+	// missing it. A second refusal must not start the wait again: a peer that
+	// keeps announcing a key the radio cannot use would otherwise have the
+	// station re-sending the same text forever.
+	keyTried bool
+}
+
+// keyWaitWindow bounds the wait for a peer key once the radio refused a
+// message for missing it. The NodeInfo refresh sent at the refusal is
+// answered by the peer's firmware — normally within seconds — and a key that
+// never lands leaves the message failed, exactly as before.
+const keyWaitWindow = 5 * time.Minute
+
+// keyRetry is one direct message the radio refused because the recipient's
+// public key was absent from its node database. The station has already asked
+// that peer to re-announce its NodeInfo; this holds the message until that
+// key lands so the work is finished instead of dying on a technicality the
+// operator can neither see nor fix.
+type keyRetry struct {
+	ps   *pendingSend
+	when time.Time
 }
 
 // favoriteChange is one requested change to the radio's favorites: the star of
@@ -941,6 +963,12 @@ type Hub struct {
 	// until the first refusal that needs a key refresh.
 	nodeInfoAsked map[uint32]time.Time
 
+	// keyRetries holds the direct messages refused for a missing peer key,
+	// keyed by the peer: the NodeInfo refresh is already on its way and the
+	// message goes out again once that key lands (see retryAfterKey). Nil
+	// until the first such refusal.
+	keyRetries map[uint32]*keyRetry
+
 	// userNodes supplies the node numbers registered in the user directory
 	// (nil = nothing to pin); pinNext arms the next pin pass.
 	userNodes func() ([]uint32, error)
@@ -971,6 +999,14 @@ type Hub struct {
 	// leaves our ledger intact and the favorites gone, so the pass
 	// re-asserts an owned node unless THIS map confirms it.
 	radioFavorites map[uint32]bool
+
+	// peerKeys records which nodes announced a PUBLIC KEY — the one thing a
+	// radio needs to encrypt a direct message to them (it refuses the frame
+	// without it, see needsNodeInfoRefresh). It is the LATEST evidence: the
+	// device's own node table at the handshake, then every NodeInfo heard.
+	// It never claims more than that — a node whose key changed has to
+	// announce again — and it is memory-only (radio state, not directory).
+	peerKeys map[uint32]bool
 
 	// routeWaiters buffers TRACEROUTE route replies while probes wait,
 	// keyed by the replying node (the destination answers with the full
@@ -1538,6 +1574,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 			h.expireNodes()
 			h.pinUserNodes(false)
 			h.retryPending(time.Now())
+			h.expireKeyRetries(time.Now())
 			h.persistNodes()
 			h.beaconTick()
 			h.hazardsTick()
@@ -1971,12 +2008,23 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 	// The device states its own favorites here: the pass uses this (and not
 	// its ledger) as the proof that a star is actually set on the radio.
 	stars := make(map[uint32]bool)
+	// The peer key is what a direct message needs (the device refuses the
+	// frame without it), so the same handshake says which nodes the radio
+	// can encrypt to at all — the panel tells an operator BEFORE they type.
+	keys := make(map[uint32]bool, len(st.Nodes()))
 	for _, ni := range st.Nodes() {
-		if ni != nil && ni.GetIsFavorite() && ni.GetNum() != 0 {
+		if ni == nil || ni.GetNum() == 0 {
+			continue
+		}
+		if ni.GetIsFavorite() {
 			stars[ni.GetNum()] = true
+		}
+		if len(ni.GetUser().GetPublicKey()) > 0 {
+			keys[ni.GetNum()] = true
 		}
 	}
 	h.radioFavorites = stars
+	h.peerKeys = keys
 	for _, ni := range st.Nodes() {
 		if ni == nil {
 			continue
@@ -2364,6 +2412,25 @@ func (h *Hub) PinnedNodes() []string {
 	for _, id := range ids {
 		out = append(out, meshIDString(id))
 	}
+	sort.Strings(out)
+	return out
+}
+
+// PeerKeyNodes returns the node ids whose NodeInfo announced a PUBLIC KEY —
+// exactly the key a radio needs to encrypt a direct message to that node.
+// The list is the latest evidence the station has (the device's node table at
+// the handshake, then every announcement heard); a node missing from it has
+// either never announced or announced without a key, and a direct message to
+// it will be refused until its firmware changes that.
+func (h *Hub) PeerKeyNodes() []string {
+	h.mu.Lock()
+	out := make([]string, 0, len(h.peerKeys))
+	for id, ok := range h.peerKeys {
+		if ok {
+			out = append(out, meshIDString(id))
+		}
+	}
+	h.mu.Unlock()
 	sort.Strings(out)
 	return out
 }
@@ -2910,14 +2977,98 @@ func (h *Hub) pairQueueStatus(id uint32, res pb.Routing_Error) {
 // refuses to fall back to channel encryption, so the refresh is the only
 // thing that can unblock a later attempt.
 func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
-	ps.failReason = sendFailureReason(res)
+	reason := sendFailureReason(res)
+	h.sendMu.Lock()
+	ps.failReason = reason
+	h.sendMu.Unlock()
 	if h.logger != nil {
 		h.logger.Warn("meshtastic: device rejected a send",
-			"res", int32(res), "reason", ps.failReason, "id", ps.id, "to", fmt.Sprintf("%08x", ps.to))
+			"res", int32(res), "reason", reason, "id", ps.id, "to", fmt.Sprintf("%08x", ps.to))
 	}
 	h.markStatus(ps, TxFailed)
 	if !ps.probe && needsNodeInfoRefresh(res) {
+		h.awaitPeerKey(ps)
 		h.requestNodeInfo(ps.to)
+	}
+}
+
+// awaitPeerKey remembers one message the radio refused because the peer's
+// public key was missing, so the NodeInfo that lands next can finish what the
+// operator started. Only a message the operator asked for qualifies, and only
+// its FIRST such refusal: the retry is refused with the same reason when the
+// key was not the real problem, and re-arming the wait then would keep the
+// station re-sending the same text at every NodeInfo.
+func (h *Hub) awaitPeerKey(ps *pendingSend) {
+	if ps.keyTried || !ps.wantAck || ps.text == "" {
+		return
+	}
+	h.mu.Lock()
+	if h.keyRetries == nil {
+		h.keyRetries = make(map[uint32]*keyRetry)
+	}
+	h.keyRetries[ps.to] = &keyRetry{ps: ps, when: h.clock()}
+	h.mu.Unlock()
+}
+
+// takeKeyRetry hands over the message waiting for one peer's key, if any is
+// still within the window. The entry is consumed either way: a key that
+// arrives too late no longer belongs to the refusal that asked for it.
+func (h *Hub) takeKeyRetry(to uint32) *keyRetry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	kr := h.keyRetries[to]
+	if kr == nil {
+		return nil
+	}
+	delete(h.keyRetries, to)
+	if h.clock().Sub(kr.when) > keyWaitWindow {
+		return nil
+	}
+	return kr
+}
+
+// retryAfterKey re-sends one direct message the radio refused for a missing
+// peer key: that key just arrived with this NodeInfo, and the text the
+// operator already typed must not be left behind failed. The retry keeps the
+// original history row (same timestamp, same text), so the panel flips THE
+// MESSAGE to sent/delivered instead of growing a duplicate nobody typed.
+func (h *Hub) retryAfterKey(kr *keyRetry) {
+	if kr == nil || kr.ps == nil {
+		return
+	}
+	ps := kr.ps
+	h.sendMu.Lock()
+	ps.keyTried = true
+	ps.failReason = ""
+	ps.status = ""
+	ps.id = 0
+	ps.echoed = false
+	ps.retries = 0
+	h.sendMu.Unlock()
+	if h.logger != nil {
+		h.logger.Info("meshtastic: peer key received, retrying the direct message",
+			"to", fmt.Sprintf("%08x", ps.to))
+	}
+	h.resend(ps)
+}
+
+// expireKeyRetries drops the waits whose window ran out: the refusal stands
+// and the operator re-sends by hand (the panel shows why it failed).
+func (h *Hub) expireKeyRetries(now time.Time) {
+	h.mu.Lock()
+	var expired []uint32
+	for to, kr := range h.keyRetries {
+		if now.Sub(kr.when) > keyWaitWindow {
+			delete(h.keyRetries, to)
+			expired = append(expired, to)
+		}
+	}
+	h.mu.Unlock()
+	if len(expired) > 0 && h.logger != nil {
+		for _, to := range expired {
+			h.logger.Warn("meshtastic: the peer key never arrived, the message stays failed",
+				"to", fmt.Sprintf("%08x", to))
+		}
 	}
 }
 
@@ -3493,7 +3644,16 @@ func (h *Hub) retryPending(now time.Time) {
 			continue
 		}
 		delete(h.pending, id)
-		h.markStatus(ps, TxFailed)
+		// The device transmitted the frame and the firmware's own
+		// retransmissions are spent: the RECIPIENT never acknowledged it.
+		// Record that verdict — a failed row without a reason tells the
+		// operator nothing about where the message stopped.
+		ps.failReason = "no_response"
+		if h.logger != nil {
+			h.logger.Warn("meshtastic: no acknowledgment from the recipient, giving up the message",
+				"id", ps.id, "to", fmt.Sprintf("%08x", ps.to), "waited", now.Sub(ps.lastTry).Round(time.Second))
+		}
+		h.markStatusLocked(ps, TxFailed)
 	}
 	// Unpaired direct messages whose id never arrived (the device may
 	// have been busy) are retransmitted.
@@ -3524,7 +3684,16 @@ func (h *Hub) retryPending(now time.Time) {
 		}
 		h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
 		if q.retries >= dmMaxRetries {
-			h.markStatus(q, TxFailed)
+			// The device never assigned the frame an id even after the
+			// retries: it may never have left the radio at all. That is a
+			// DIFFERENT verdict from an unacknowledged delivery, so it
+			// carries its own reason.
+			q.failReason = "not_confirmed"
+			if h.logger != nil {
+				h.logger.Warn("meshtastic: the device never confirmed the send, giving up the message",
+					"to", fmt.Sprintf("%08x", q.to), "retries", q.retries)
+			}
+			h.markStatusLocked(q, TxFailed)
 			continue
 		}
 		q.retries++
@@ -3555,8 +3724,8 @@ func (h *Hub) resend(ps *pendingSend) {
 			},
 		},
 	}
-	ps.lastTry = time.Now()
 	h.sendMu.Lock()
+	ps.lastTry = time.Now()
 	h.echoQueue = append(h.echoQueue, ps)
 	h.sendMu.Unlock()
 	if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: pkt}}); err != nil {
@@ -3593,6 +3762,16 @@ func (h *Hub) dropPendingLocked(ps *pendingSend) {
 // re-arm sink: the delivery job (already settled as accepted by the
 // worker) is revived for a retry within the attempt budget.
 func (h *Hub) markStatus(ps *pendingSend, status string) {
+	h.sendMu.Lock()
+	defer h.sendMu.Unlock()
+	h.markStatusLocked(ps, status)
+}
+
+// markStatusLocked assumes sendMu is already held. It exists because the
+// send bookkeeping fields (status, failReason) are touched from two
+// goroutines: the packet path settles an acknowledgment while the
+// maintenance loop settles a timeout, and both read the OTHER's field.
+func (h *Hub) markStatusLocked(ps *pendingSend, status string) {
 	ps.status = status
 	// The verdict on a favorite frame is hub bookkeeping and must land even
 	// when no message history is attached (which is how the tests run).
@@ -3807,6 +3986,18 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 		h.mu.Unlock()
 		return
 	}
+	// Remember whether this announcement carried a public key: it is what
+	// decides whether the radio can encrypt a direct message to that node,
+	// and the panel shows it next to the name.
+	asked := h.askedForNodeInfoLocked(pkt.GetFrom())
+	if h.peerKeys == nil {
+		h.peerKeys = make(map[uint32]bool)
+	}
+	if len(user.GetPublicKey()) > 0 {
+		h.peerKeys[pkt.GetFrom()] = true
+	} else {
+		delete(h.peerKeys, pkt.GetFrom())
+	}
 	n := h.nodes[id]
 	if n == nil {
 		n = &Node{ID: id}
@@ -3824,7 +4015,31 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	copyN := *n
 	copyN.Telemetry = cloneTelemetry(n.Telemetry)
 	h.mu.Unlock()
+	// A NodeInfo is also how the radio learns the peer key it needs to
+	// encrypt direct messages: when one was refused for a missing key, this
+	// is the answer that refusal was waiting for.
+	if len(user.GetPublicKey()) > 0 {
+		h.retryAfterKey(h.takeKeyRetry(pkt.GetFrom()))
+	} else if asked && h.logger != nil {
+		// The station asked THIS peer for its NodeInfo and the answer
+		// carried no key: a direct message to it stays impossible until
+		// its firmware starts announcing one, so do not send the operator
+		// hunting for a route problem.
+		h.logger.Warn("meshtastic: the peer answered its NodeInfo without a public key, direct messages stay impossible",
+			"node", id)
+	}
 	h.publishStation(&copyN)
+}
+
+// askedForNodeInfoLocked reports whether the station asked this peer for its
+// NodeInfo recently (a refresh only lands once per nodeInfoRefreshGap, so a
+// timestamp inside that gap marks the answer to OUR request).
+func (h *Hub) askedForNodeInfoLocked(to uint32) bool {
+	asked, ok := h.nodeInfoAsked[to]
+	if !ok {
+		return false
+	}
+	return h.clock().Sub(asked) <= nodeInfoRefreshGap
 }
 
 // receivePosition updates a node's position (and our own).
@@ -4539,7 +4754,7 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		// the device, so the retry cannot duplicate it on the air.
 		if retryErr := h.retrySendOnAFreshLink(ctx, ps, msg, conn, err); retryErr != nil {
 			h.dropPendingLocked(ps)
-			h.markStatus(ps, TxFailed)
+			h.markStatusLocked(ps, TxFailed)
 			return fmt.Errorf("meshtastic: send failed: %w", retryErr)
 		}
 		return nil

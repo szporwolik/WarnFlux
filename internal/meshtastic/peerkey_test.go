@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,6 +77,33 @@ func refusedTextSend(t *testing.T, res pb.Routing_Error, text string) (*testRadi
 	return radio, rec
 }
 
+// keyWaitCount counts the messages waiting for a peer key: the wait is a queue
+// PER PEER now, so the length of the map is the number of peers, not messages.
+func keyWaitCount(h *Hub) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.keyWaitsLocked()
+}
+
+// logCapture collects the hub's log lines for assertions (the hub logs from
+// its own goroutines, so the buffer needs the lock).
+type logCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *logCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *logCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
 // peerKeyNode is the node every test here addresses its direct message to.
 const peerKeyNode = 0x6d2c8f6c
 
@@ -116,10 +146,7 @@ func TestHubPeerKeyArrivalRetriesTheDirectMessage(t *testing.T) {
 		msgs := rec.messages()
 		return len(msgs) == 1 && msgs[0].Status == TxSent
 	})
-	radio.hub.mu.Lock()
-	waiting := len(radio.hub.keyRetries)
-	radio.hub.mu.Unlock()
-	if waiting != 0 {
+	if waiting := keyWaitCount(radio.hub); waiting != 0 {
 		t.Fatalf("key waits left = %d, want the wait consumed by the retry", waiting)
 	}
 }
@@ -134,10 +161,7 @@ func TestHubPeerKeyWithoutAKeyDoesNotRetry(t *testing.T) {
 	if got := textFramesTo(radio, peerKeyNode, "Test"); got != 1 {
 		t.Fatalf("transmissions = %d, want no retry without a peer key", got)
 	}
-	radio.hub.mu.Lock()
-	waiting := len(radio.hub.keyRetries)
-	radio.hub.mu.Unlock()
-	if waiting != 1 {
+	if waiting := keyWaitCount(radio.hub); waiting != 1 {
 		t.Fatalf("key waits = %d, want the message still waiting for the key", waiting)
 	}
 }
@@ -159,10 +183,7 @@ func TestHubPeerKeyRetryHappensOnce(t *testing.T) {
 	if got := textFramesTo(radio, peerKeyNode, "Test"); got != 2 {
 		t.Fatalf("transmissions = %d, want exactly one retry", got)
 	}
-	radio.hub.mu.Lock()
-	waiting := len(radio.hub.keyRetries)
-	radio.hub.mu.Unlock()
-	if waiting != 0 {
+	if waiting := keyWaitCount(radio.hub); waiting != 0 {
 		t.Fatalf("key waits = %d, want none after a refused retry", waiting)
 	}
 }
@@ -173,13 +194,13 @@ func TestHubPeerKeyRetryHappensOnce(t *testing.T) {
 func TestHubPeerKeyWaitWindowIsBounded(t *testing.T) {
 	hub := &Hub{}
 	ps := &pendingSend{to: peerKeyNode, text: "Test", wantAck: true}
-	hub.keyRetries = map[uint32]*keyRetry{
-		peerKeyNode: {ps: ps, when: time.Now().Add(-keyWaitWindow - time.Minute)},
+	hub.keyRetries = map[uint32][]*keyRetry{
+		peerKeyNode: {{ps: ps, when: time.Now().Add(-keyWaitWindow - time.Minute)}},
 	}
-	if kr := hub.takeKeyRetry(peerKeyNode); kr != nil {
+	if kept := hub.takeKeyRetry(peerKeyNode); len(kept) != 0 {
 		t.Fatal("a key that arrived after the window still retried the message")
 	}
-	hub.keyRetries[peerKeyNode] = &keyRetry{ps: ps, when: time.Now().Add(-keyWaitWindow - time.Minute)}
+	hub.keyRetries[peerKeyNode] = []*keyRetry{{ps: ps, when: time.Now().Add(-keyWaitWindow - time.Minute)}}
 	hub.expireKeyRetries(time.Now())
 	if _, ok := hub.keyRetries[peerKeyNode]; ok {
 		t.Fatal("a stale wait was kept")
@@ -303,10 +324,156 @@ func TestHubRoutingRefusalRecoversTheSameWay(t *testing.T) {
 		msgs := rec.messages()
 		return len(msgs) == 1 && msgs[0].Status == TxSent
 	})
-	radio.hub.mu.Lock()
-	waiting := len(radio.hub.keyRetries)
-	radio.hub.mu.Unlock()
-	if waiting != 0 {
+	if waiting := keyWaitCount(radio.hub); waiting != 0 {
 		t.Fatalf("key waits left = %d, want the wait consumed by the retry", waiting)
+	}
+}
+
+// TestHubPeerKeyRefusalKeepsEveryMessageForThePeer pins the ticket case: two
+// messages to the SAME node refused for the missing key before it lands. The
+// wait is a queue per peer, not a single slot — the second refusal must not
+// push the first message out — so one key announcement re-sends BOTH, once
+// each.
+func TestHubPeerKeyRefusalKeepsEveryMessageForThePeer(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, text := range []string{"One", "Two"} {
+		if err := radio.hub.SendContactMessage(ctx, fmt.Sprintf("%08x", peerKeyNode), text, "admin"); err != nil {
+			t.Fatalf("SendContactMessage(%s): %v", text, err)
+		}
+	}
+	// The device refuses both, for the same missing key (the ids pair the
+	// sends in order: the device answers every client send).
+	dispatchQueueStatus(t, radio, pb.Routing_PKI_UNKNOWN_PUBKEY, 4242)
+	dispatchQueueStatus(t, radio, pb.Routing_PKI_UNKNOWN_PUBKEY, 6001)
+	waitFor(t, "both refusals to settle the messages", func() bool {
+		msgs := rec.messages()
+		if len(msgs) != 2 {
+			return false
+		}
+		for _, m := range msgs {
+			if m.Status != TxFailed {
+				return false
+			}
+		}
+		return true
+	})
+	for _, text := range []string{"One", "Two"} {
+		if got := rec.reasonFor(text); got != "pki_unknown_key" {
+			t.Fatalf("reason for %q = %q, want pki_unknown_key", text, got)
+		}
+		if got := textFramesTo(radio, peerKeyNode, text); got != 1 {
+			t.Fatalf("transmissions of %q before the key = %d, want only the refused one", text, got)
+		}
+	}
+	if waiting := keyWaitCount(radio.hub); waiting != 2 {
+		t.Fatalf("key waits = %d, want one per refused message", waiting)
+	}
+
+	// ONE key announcement releases both messages, once each.
+	dispatchPkt(t, radio, peerNodeInfo(peerKeyNode, "ZAY0", "ZAY0", bytes.Repeat([]byte{0x33}, 32)))
+	waitFor(t, "both messages to be re-sent", func() bool {
+		return textFramesTo(radio, peerKeyNode, "One") == 2 && textFramesTo(radio, peerKeyNode, "Two") == 2
+	})
+	if waiting := keyWaitCount(radio.hub); waiting != 0 {
+		t.Fatalf("key waits = %d, want the queue consumed by the retries", waiting)
+	}
+
+	// A second announcement of the same key arms nothing: one retry per
+	// message, not one per NodeInfo.
+	dispatchPkt(t, radio, peerNodeInfo(peerKeyNode, "ZAY0", "ZAY0", bytes.Repeat([]byte{0x33}, 32)))
+	time.Sleep(150 * time.Millisecond)
+	for _, text := range []string{"One", "Two"} {
+		if got := textFramesTo(radio, peerKeyNode, text); got != 2 {
+			t.Fatalf("transmissions of %q = %d, want exactly one retry", text, got)
+		}
+	}
+}
+
+// TestHubPeerKeyRefusalQueueIsBounded pins the bound and its explicitness: past
+// the per-peer limit the message is NOT remembered — it keeps its failed row
+// and the hub says so in the log, instead of the queue growing silently and
+// pretending the retry is still coming.
+func TestHubPeerKeyRefusalQueueIsBounded(t *testing.T) {
+	logs := &logCapture{}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: time.Hour}, testRadioOpts{
+		setup: func(h *Hub) {
+			h.logger = slog.New(slog.NewTextHandler(logs, nil))
+			h.keyRetryPerPeerMax = 2
+		},
+	})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	texts := []string{"One", "Two", "Three"}
+	for _, text := range texts {
+		if err := radio.hub.SendContactMessage(ctx, fmt.Sprintf("%08x", peerKeyNode), text, "admin"); err != nil {
+			t.Fatalf("SendContactMessage(%s): %v", text, err)
+		}
+	}
+	for i, id := range []uint32{4242, 6001, 6002} {
+		dispatchQueueStatus(t, radio, pb.Routing_PKI_UNKNOWN_PUBKEY, id)
+		_ = i
+	}
+	waitFor(t, "all three refusals to settle failed", func() bool {
+		msgs := rec.messages()
+		if len(msgs) != 3 {
+			return false
+		}
+		for _, m := range msgs {
+			if m.Status != TxFailed {
+				return false
+			}
+		}
+		return true
+	})
+	if waiting := keyWaitCount(radio.hub); waiting != 2 {
+		t.Fatalf("key waits = %d, want the per-peer bound of 2", waiting)
+	}
+	if log := logs.String(); !strings.Contains(log, "too many messages wait for a peer key") {
+		t.Fatalf("the overflow was silent; log lines: %s", log)
+	}
+
+	// The two remembered messages go out again; the refused third one stays
+	// failed with its reason (the panel shows why).
+	dispatchPkt(t, radio, peerNodeInfo(peerKeyNode, "ZAY0", "ZAY0", bytes.Repeat([]byte{0x44}, 32)))
+	waitFor(t, "the remembered messages to be re-sent", func() bool {
+		return textFramesTo(radio, peerKeyNode, "One") == 2 && textFramesTo(radio, peerKeyNode, "Two") == 2
+	})
+	time.Sleep(100 * time.Millisecond)
+	if got := textFramesTo(radio, peerKeyNode, "Three"); got != 1 {
+		t.Fatalf("transmissions of the overflowed message = %d, want it left failed", got)
+	}
+	if gone := keyWaitCount(radio.hub); gone != 0 {
+		t.Fatalf("key waits = %d, want the queue drained", gone)
+	}
+}
+
+// TestHubPeerKeyRefusalTotalQueueIsBounded pins the second bound: the whole
+// hub keeps at most keyRetryTotal messages, so many peers with missing keys
+// cannot grow the wait queue together.
+func TestHubPeerKeyRefusalTotalQueueIsBounded(t *testing.T) {
+	logs := &logCapture{}
+	hub := &Hub{}
+	hub.logger = slog.New(slog.NewTextHandler(logs, nil))
+	hub.keyRetryTotalMax = 2
+	for i := 0; i < 4; i++ {
+		hub.awaitPeerKey(&pendingSend{to: peerKeyNode + uint32(i), text: "Test", wantAck: true})
+	}
+	if waiting := keyWaitCount(hub); waiting != 2 {
+		t.Fatalf("key waits = %d, want the total bound of 2", waiting)
+	}
+	if log := logs.String(); !strings.Contains(log, "too many messages wait for a peer key") {
+		t.Fatalf("the overflow was silent; log lines: %s", log)
 	}
 }

@@ -80,6 +80,17 @@ announced (fresh node, a factory reset or a reflash that changed its key)
 stays undeliverable by DM until it does, and the message stays failed with the
 refusal reason attached.
 
+The wait is kept per PEER and holds every message that peer owes an answer to
+(the operator may have typed two texts before the key landed): they go out one
+after another when the key arrives, each re-sent exactly once, each with its
+own five-minute deadline. Two bounds keep that memory finite — four messages
+per peer and thirty-two in the whole hub. Past them the message is not
+remembered, and the hub says so out loud (`meshtastic: too many messages wait
+for a peer key, this one stays failed`): that text keeps its failed row and
+its reason, so it is visible instead of silently lost. The same recovery runs
+whichever way the refusal arrives — the device's `queueStatus` answer or a
+`ROUTING_APP` frame carrying the error.
+
 The heard-nodes table has a two-way filter next to its heading — every node,
 or `★ Pinned only` for the nodes the station keeps on the radio. It is a view
 switch: nothing is hidden from the radio or the station feed by it.

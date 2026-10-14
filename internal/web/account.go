@@ -284,6 +284,16 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// A self-service password change revokes every session of the user (this
+	// one included) HERE, before anything else can fail: the new password is
+	// already stored, so a later failure (the notification channels, the
+	// language) must not leave the old sessions usable with it.
+	passwordChanged := password != ""
+	if passwordChanged {
+		s.sessions.revokeUser(u.ID)
+		s.audit(sess.username, "account-password", "")
+		s.sessions.clearSessionCookie(w)
+	}
 	if err := s.users.SetUserChannelOptOuts(u.ID, optOuts); err != nil {
 		s.logger.Warn("web: account channel update failed", "username", sess.username, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -295,12 +305,9 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A self-service password change revokes every session of the user
-	// (including this one): they sign in again with the new password.
-	if password != "" {
-		s.sessions.revokeUser(u.ID)
-		s.audit(sess.username, "account-password", "")
-		s.sessions.clearSessionCookie(w)
+	// The password change already revoked the sessions above; the operator
+	// signs in again with the new one.
+	if passwordChanged {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}

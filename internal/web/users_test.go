@@ -34,7 +34,10 @@ type fakeUsers struct {
 	routing     map[int64]storage.GroupRouting // groupID -> routing
 	passwords   map[string]string              // username -> plaintext (fake)
 	channelOpts map[int64]map[string]bool      // userID -> disabled delivery-channel kinds
-	resets      map[string]int64               // plaintext reset token -> userID
+	// failChannelOptOuts makes the channel write fail: the account handler
+	// must survive a preference write that blows up after a password change.
+	failChannelOptOuts error
+	resets             map[string]int64 // plaintext reset token -> userID
 	// deliveries seeds the durable delivery-ledger rows served in the
 	// notifications details view (RecentDeliveries).
 	deliveries []storage.DeliveryRecord
@@ -526,6 +529,9 @@ func (f *fakeUsers) UserChannelOptOuts(userID int64) (map[string]bool, error) {
 func (f *fakeUsers) SetUserChannelOptOuts(userID int64, kinds []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failChannelOptOuts != nil {
+		return f.failChannelOptOuts
+	}
 	found := false
 	for _, u := range f.rows {
 		if u.ID == userID {

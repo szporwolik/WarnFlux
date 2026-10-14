@@ -2839,6 +2839,12 @@ func (h *Hub) openRemovalLocked(id string) *nodeTombstone {
 // later pass retries it), and a node that published again while this removal
 // was waiting keeps its document.
 //
+// The confirmation is written for the ACTIVITY VERSION this step removed (the
+// entry's quietSince) — never for whatever the node's LastSeen happens to be by
+// then, and never for a replacement entry a later quiet period queued. Anything
+// else would mark a document the broker still holds as gone, and that document
+// would then never be removed.
+//
 // The whole step runs under stationMu, which the position publish takes too:
 // the two operations for one node can never interleave, so the last one to run
 // decides what the broker holds — and a node that just spoke always leaves its
@@ -2875,14 +2881,22 @@ func (h *Hub) publishStationRemoval(parent context.Context, sink func(ctx contex
 		return
 	}
 	h.mu.Lock()
-	if cur := h.openRemovalLocked(id); cur != nil {
+	// The broker took the removal of the document that was on the topic when
+	// this step started: that is the ACTIVITY VERSION the entry names
+	// (tb.quietSince) — never the node's current LastSeen. A node that spoke
+	// while the publish was in flight has just published a NEW document;
+	// marking that newer version as removed would leave it on the broker
+	// forever, because the next TTL crossing would skip the node.
+	//
+	// A replacement entry (the node spoke, this removal was voided, a later
+	// quiet period queued fresh work) is not confirmed by this publish either:
+	// it names a different activity version, whose document the broker still
+	// holds. Only the entry this step actually published gets confirmed.
+	if cur := h.openRemovalLocked(id); cur != nil && cur == tb {
 		cur.confirmed = true
-		// The removal is a fact about an ACTIVITY VERSION: record it on the
-		// node (its row survives a restart) so nothing queues it again while
-		// the node stays quiet.
-		if n := h.nodes[id]; n != nil && n.LastSeen.After(n.RemovedSince) {
-			n.RemovedSince = n.LastSeen
-		}
+	}
+	if n := h.nodes[id]; n != nil && tb.quietSince.After(n.RemovedSince) {
+		n.RemovedSince = tb.quietSince
 		h.nodesDirty = true
 	}
 	h.mu.Unlock()

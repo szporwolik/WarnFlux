@@ -221,3 +221,92 @@ func TestHubPeerKeyNodesFollowsTheEvidence(t *testing.T) {
 	dispatchPkt(t, radio, peerNodeInfo(0x6d2c8f6c, "SPM", "SPM", nil))
 	waitFor(t, "the withdrawn key", func() bool { return !peerKeySet(radio.hub)["6d2c8f6c"] })
 }
+
+// routingRefusedTextSend drives one direct message into the refusal the radio
+// reports through the other path: the device ACCEPTS the frame first (a
+// queueStatus that pairs the packet id) and the refusal then arrives as a
+// ROUTING_APP frame carrying the routing error. Both paths must start the same
+// recovery — that is the whole point of the test below.
+func routingRefusedTextSend(t *testing.T, res pb.Routing_Error, text string) (*testRadio, *captureRecorder) {
+	t.Helper()
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := radio.hub.SendContactMessage(ctx, fmt.Sprintf("%08x", peerKeyNode), text, "admin"); err != nil {
+		t.Fatalf("SendContactMessage: %v", err)
+	}
+	// The device took the frame (no error), which is what pairs the id.
+	dispatchQueueStatus(t, radio, pb.Routing_NONE, 4242)
+	routing, err := proto.Marshal(&pb.Routing{Variant: &pb.Routing_ErrorReason{ErrorReason: res}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xabcd1234, To: 0xabcd1234, Id: 4242,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ROUTING_APP, RequestId: 4242, Payload: routing},
+		},
+	})
+	waitFor(t, "the routing refusal to settle the message", func() bool {
+		msgs := rec.messages()
+		return len(msgs) == 1 && msgs[0].Status == TxFailed
+	})
+	return radio, rec
+}
+
+// TestHubRoutingRefusalRecoversTheSameWay pins the ticket case: a PKI refusal
+// that arrives as a ROUTING_APP error must start the SAME recovery as the one
+// the device reports in a queueStatus. Asking for the peer's NodeInfo without
+// remembering the message means the key arrives and the operator's text stays
+// failed — the recovery has to be one code path, not two.
+func TestHubRoutingRefusalRecoversTheSameWay(t *testing.T) {
+	radio, rec := routingRefusedTextSend(t, pb.Routing_PKI_UNKNOWN_PUBKEY, "Test")
+	if got := rec.reasonFor("Test"); got != "pki_unknown_key" {
+		t.Fatalf("reason = %q, want pki_unknown_key", got)
+	}
+
+	waitFor(t, "the node info request", func() bool {
+		for _, p := range radio.outbound() {
+			if p.GetTo() == peerKeyNode && p.GetDecoded().GetPortnum() == pb.PortNum_NODEINFO_APP &&
+				p.GetDecoded().GetWantResponse() {
+				return true
+			}
+		}
+		return false
+	})
+	if got := textFramesTo(radio, peerKeyNode, "Test"); got != 1 {
+		t.Fatalf("transmissions before the key = %d, want only the refused one", got)
+	}
+
+	// The peer answers with its key: the message goes out again, once.
+	dispatchPkt(t, radio, peerNodeInfo(peerKeyNode, "ZAY0", "ZAY0", bytes.Repeat([]byte{0x11}, 32)))
+	waitFor(t, "the message to be re-sent", func() bool { return textFramesTo(radio, peerKeyNode, "Test") == 2 })
+
+	// Exactly one retry: another announcement of the same key arms nothing.
+	dispatchPkt(t, radio, peerNodeInfo(peerKeyNode, "ZAY0", "ZAY0", bytes.Repeat([]byte{0x22}, 32)))
+	time.Sleep(100 * time.Millisecond)
+	if got := textFramesTo(radio, peerKeyNode, "Test"); got != 2 {
+		t.Fatalf("transmissions = %d, want exactly one retry", got)
+	}
+
+	// The retry keeps the original history row, so the panel flips THE message
+	// instead of showing a duplicate nobody typed. The device acks every client
+	// send in order: the NodeInfo request, then the retried text.
+	dispatchQueueStatus(t, radio, pb.Routing_NONE, 5150)
+	dispatchQueueStatus(t, radio, pb.Routing_NONE, 5151)
+	waitFor(t, "the retried message to settle sent", func() bool {
+		msgs := rec.messages()
+		return len(msgs) == 1 && msgs[0].Status == TxSent
+	})
+	radio.hub.mu.Lock()
+	waiting := len(radio.hub.keyRetries)
+	radio.hub.mu.Unlock()
+	if waiting != 0 {
+		t.Fatalf("key waits left = %d, want the wait consumed by the retry", waiting)
+	}
+}

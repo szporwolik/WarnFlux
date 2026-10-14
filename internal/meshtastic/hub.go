@@ -3034,8 +3034,7 @@ func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
 	}
 	h.markStatus(ps, TxFailed)
 	if !ps.probe && needsNodeInfoRefresh(res) {
-		h.awaitPeerKey(ps)
-		h.requestNodeInfo(ps.to)
+		h.recoverFromKeyRefusal(ps)
 	}
 }
 
@@ -3330,8 +3329,23 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	h.sendMu.Unlock()
 	h.markStatus(ps, status)
 	if status == TxFailed && !ps.probe && needsNodeInfoRefresh(routing.GetErrorReason()) {
-		h.requestNodeInfo(ps.to)
+		h.recoverFromKeyRefusal(ps)
 	}
+}
+
+// recoverFromKeyRefusal handles the one refusal a NodeInfo refresh can cure —
+// the peer's public key is missing or unusable, so the frame never entered the
+// air. BOTH paths that report a refusal (the device's queueStatus answer and a
+// ROUTING_APP frame carrying the error) come through here, so neither can end
+// up asking for the key without also remembering the message that needs it:
+// without the wait the key would arrive and the operator's text would stay
+// failed for good.
+//
+// The retry limit lives in awaitPeerKey (a message already re-sent once never
+// arms another wait), so the recovery stays "one NodeInfo ask, one re-send".
+func (h *Hub) recoverFromKeyRefusal(ps *pendingSend) {
+	h.awaitPeerKey(ps)
+	h.requestNodeInfo(ps.to)
 }
 
 // tracerouteHopLimit is the hop budget of one route probe: far above

@@ -1071,6 +1071,21 @@ ALTER TABLE meshtastic_nodes ADD COLUMN pending_removal INTEGER NOT NULL DEFAULT
 ALTER TABLE meshtastic_nodes ADD COLUMN pending_since_ms INTEGER;
 `,
 	},
+	{
+		// v63: the observation whose station document the broker already
+		// confirmed REMOVING. The removal ledger only remembers work that is
+		// still owed, so a restart could not tell a node whose document was
+		// removed from one whose document is still on the broker: every
+		// restart re-queued the same removals (harmless empty publishes), and
+		// the ones that did not fit the backlog bound were counted as dropped
+		// again and again — the panel showed "MQTT removals: 310" on a station
+		// that owed nothing. With this column the removal of a document is a
+		// fact of the NODE's activity version: nothing is queued again until
+		// the node is heard after it.
+		SQL: `
+ALTER TABLE meshtastic_nodes ADD COLUMN removed_since_ms INTEGER;
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

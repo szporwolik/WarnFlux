@@ -596,6 +596,11 @@ type Node struct {
 	DistKM     float64
 	BearingDeg float64
 	LastSeen   time.Time
+	// RemovedSince is the observation whose retained station document the
+	// broker CONFIRMED removing. It travels with the node (and its row), so a
+	// restart never queues that removal again while the node stays quiet — and
+	// a node heard after it becomes eligible again.
+	RemovedSince time.Time
 }
 
 // nodeTombstone is one removal the broker still owes for a node's retained
@@ -664,9 +669,13 @@ type Snapshot struct {
 	// NodeTTL is the freshness bound used to filter the live feed.
 	NodeTTL time.Duration
 	// PendingRemovals is how many station documents the broker still owes a
-	// removal, RemovalsDropped how many were abandoned because that backlog
-	// hit its bound (a broker that stayed down too long).
+	// removal, RemovalsWaiting how many quiet nodes are due one that had no
+	// room in the ledger (they are offered again as the broker confirms what
+	// is in flight — waiting is not a loss), RemovalsDropped the genuine
+	// overflow: rows restored from a database whose backlog is longer than
+	// the ledger bound.
 	PendingRemovals int
+	RemovalsWaiting int
 	RemovalsDropped int
 }
 
@@ -1039,15 +1048,16 @@ type Hub struct {
 	// does not answer must not make the session loop — heartbeat, silence
 	// watchdog, message retry, shutdown — wait for it.
 	feedQueue chan feedJob
-	// removalsDropped counts the removals abandoned because that backlog hit
-	// maxPendingStationRemovals (the overflow metric).
+	// removalsDropped counts the removals a RESTORE could not take over
+	// because the ledger bound was already reached (the only genuine overflow:
+	// what a run queues is bounded, what it defers is not lost).
 	removalsDropped int
-	// abandonedRemovals remembers the refused removals by node id, together
-	// with the activity version they referred to. Without it the next pass
-	// would queue the same node again, push another entry out, and count
-	// another abandonment — the same removals churning forever without any new
-	// data (and re-arming the retry pace on every pass).
-	abandonedRemovals map[string]time.Time
+	// removalsWaiting is how many quiet nodes are due a removal that had no
+	// room in the ledger in the last pass (the backlog gauge, see
+	// StationRemovals).
+	removalsWaiting int
+	// pendingRemovalsMax overrides the ledger bound (tests shrink it).
+	pendingRemovalsMax int
 	// tombstoneRetry paces a removal the broker refused
 	// (defaultTombstoneRetry when unset; the tests shorten it).
 	tombstoneRetry time.Duration
@@ -1884,14 +1894,15 @@ func (h *Hub) restoreNodes(ctx context.Context) {
 			continue // live knowledge wins
 		}
 		h.nodes[n.ID] = &Node{
-			ID:       n.ID,
-			Name:     n.Name,
-			Short:    n.Short,
-			Lat:      n.Lat,
-			Lon:      n.Lon,
-			LastSeen: n.LastSeen,
-			Sends:    append([]string(nil), n.Sends...),
-			Hops:     n.Hops,
+			ID:           n.ID,
+			Name:         n.Name,
+			Short:        n.Short,
+			Lat:          n.Lat,
+			Lon:          n.Lon,
+			LastSeen:     n.LastSeen,
+			Sends:        append([]string(nil), n.Sends...),
+			Hops:         n.Hops,
+			RemovedSince: n.RemovedSince,
 		}
 	}
 	h.mu.Unlock()
@@ -1937,14 +1948,15 @@ func (h *Hub) persistNodes() {
 			pending = nil
 		}
 		row := storage.MeshtasticNode{
-			ID:       n.ID,
-			Name:     n.Name,
-			Short:    n.Short,
-			Lat:      n.Lat,
-			Lon:      n.Lon,
-			LastSeen: n.LastSeen,
-			Sends:    append([]string(nil), n.Sends...),
-			Hops:     n.Hops,
+			ID:           n.ID,
+			Name:         n.Name,
+			Short:        n.Short,
+			Lat:          n.Lat,
+			Lon:          n.Lon,
+			LastSeen:     n.LastSeen,
+			Sends:        append([]string(nil), n.Sends...),
+			Hops:         n.Hops,
+			RemovedSince: n.RemovedSince,
 		}
 		if pending != nil {
 			row.PendingRemoval = true
@@ -2583,30 +2595,30 @@ func (h *Hub) setFavorite(id uint32, favorite bool) error {
 	return nil
 }
 
-// queueRemovalLocked records one removal the broker owes. The backlog is
-// BOUNDED (maxPendingStationRemovals): past it the most obsolete entry is
-// abandoned so a broker that stays away cannot grow the station without bound.
-// The abandonment is counted, never silent.
+// queueRemovalLocked records one removal the broker owes. The ledger is
+// BOUNDED (maxPendingRemovals): past it the removal is DEFERRED — the node
+// stays eligible and a later pass offers it again once the broker has worked
+// off what is in flight. Nothing is remembered and nothing is counted here:
+// the work simply waits, which is what an obsolete document on a broker that
+// is not answering deserves (the ledger cannot grow past its bound, because
+// what waits is the node directory itself, pruned by nodeDirRetention).
 func (h *Hub) queueRemovalLocked(id string, quietSince time.Time) bool {
 	if h.tombstones[id] != nil {
 		return false
 	}
-	if h.pendingRemovalsLocked() >= maxPendingStationRemovals {
-		// No room: REFUSE this removal and remember the refusal for this
-		// activity version. Evicting an older entry instead (or simply queueing
-		// again next pass) would drop and re-count the same removals on every
-		// pass — without a single new observation.
-		if h.abandonedRemovals == nil {
-			h.abandonedRemovals = make(map[string]time.Time)
-		}
-		if prev, seen := h.abandonedRemovals[id]; !seen || !prev.Equal(quietSince) {
-			h.abandonedRemovals[id] = quietSince
-			h.removalsDropped++
-		}
+	if h.pendingRemovalsLocked() >= h.maxRemovals() {
 		return false
 	}
 	h.tombstones[id] = &nodeTombstone{quietSince: quietSince}
 	return true
+}
+
+// maxRemovals is the removal-ledger bound (a field so tests can shrink it).
+func (h *Hub) maxRemovals() int {
+	if h.pendingRemovalsMax > 0 {
+		return h.pendingRemovalsMax
+	}
+	return maxPendingStationRemovals
 }
 
 // pendingRemovalsLocked counts the removals waiting for the broker (a
@@ -2621,15 +2633,15 @@ func (h *Hub) pendingRemovalsLocked() int {
 	return n
 }
 
-// StationRemovals reports the station-document removals still waiting for the
-// broker and how many were abandoned because that backlog hit its bound. It is
-// the overflow metric: a non-zero drop count means obsolete retained documents
-// were left behind on purpose, because the broker did not take them for long
-// enough to keep queueing them.
-func (h *Hub) StationRemovals() (pending, dropped int) {
+// StationRemovals reports the removals in flight at the broker and how many
+// are waiting for room in that ledger. "Waiting" is not a failure: it is the
+// station's own backlog of quiet nodes, worked off as the broker confirms the
+// removals ahead of them. A non-zero "dropped" is the genuine overflow — rows
+// restored from a database whose backlog is longer than the ledger bound.
+func (h *Hub) StationRemovals() (pending, deferred, dropped int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.pendingRemovalsLocked(), h.removalsDropped
+	return h.pendingRemovalsLocked(), h.removalsWaiting, h.removalsDropped
 }
 
 // expireNodes cleans the MQTT station feed: nodes unheard for longer than
@@ -2660,38 +2672,45 @@ func (h *Hub) expireNodes() {
 	// Every quiet node owes the broker a removal — but only when this
 	// installation HAS a station feed: a document nobody ever published cannot
 	// be owed to the broker, and queueing it would be pure growth.
-	// A refusal is remembered only while its node stays quiet with the SAME
-	// observation: a node heard again (or one the directory dropped) is
-	// considered afresh — it may well find room the next time it goes quiet.
-	for id, since := range h.abandonedRemovals {
-		if n := h.nodes[id]; n == nil || !n.LastSeen.Equal(since) {
-			delete(h.abandonedRemovals, id)
-		}
-	}
-	queued, dropped := 0, 0
+	//
+	// A node whose document the broker already confirmed removing stays out of
+	// it until the node is heard again (`RemovedSince`): that is what keeps a
+	// restart from re-queueing removals that are already done.
+	queued := 0
+	var waiting []string
 	if h.stationSink != nil {
 		for id, n := range h.nodes {
 			if h.tombstones[id] != nil || now.Sub(n.LastSeen) <= h.cfg.NodeTTL {
 				continue
 			}
-			if _, refused := h.abandonedRemovals[id]; refused {
-				continue // no room for it a moment ago, and nothing changed
+			if !n.LastSeen.After(n.RemovedSince) {
+				continue // its document is already gone (nothing heard since)
 			}
-			before := h.removalsDropped
 			if h.queueRemovalLocked(id, n.LastSeen) {
 				queued++
+				continue
 			}
-			if h.removalsDropped > before {
-				dropped++
-			}
+			waiting = append(waiting, id)
 		}
-		if queued > 0 || dropped > 0 {
+		if queued > 0 {
 			h.nodesDirty = true
 		}
 	}
+	h.removalsWaiting = len(waiting)
 	// The directory forgets a node long before the broker necessarily did.
+	forced := make(map[string]bool, len(waiting))
+	for _, id := range waiting {
+		forced[id] = true
+	}
 	for id, n := range h.nodes {
 		if now.Sub(n.LastSeen) > nodeDirRetention {
+			// A node leaving the directory while its removal was still WAITING
+			// for room has nothing left to defer to: the directory was the
+			// queue. That is the one genuine loss, so it is counted instead of
+			// disappearing silently.
+			if forced[id] {
+				h.removalsDropped++
+			}
 			delete(h.nodes, id)
 			h.nodesDirty = true
 		}
@@ -2718,9 +2737,17 @@ func (h *Hub) expireNodes() {
 		due = append(due, id)
 	}
 	h.mu.Unlock()
-	if dropped > 0 && h.logger != nil {
-		h.logger.Warn("meshtastic: station removal backlog is full, obsolete documents left on the broker",
-			"dropped", dropped, "backlog", maxPendingStationRemovals)
+	if len(waiting) > 0 && h.logger != nil {
+		// Not a failure and not a loss: the documents wait their turn while the
+		// broker works off the removals already in flight.
+		h.logger.Debug("meshtastic: station removals waiting for room in the ledger",
+			"waiting", len(waiting), "in_flight", h.pendingRemovalsLocked(), "ledger", h.maxRemovals())
+	}
+	if dropped := h.removalsDropped; dropped > 0 && h.logger != nil {
+		// Only a node that left the directory while its removal was still
+		// waiting lands here: the directory WAS its queue.
+		h.logger.Warn("meshtastic: station removals left the directory before the broker took them",
+			"dropped", dropped, "ledger", h.maxRemovals())
 	}
 	// The removals go to the feed worker, NEVER out from here: a broker that
 	// keeps the connection open but does not confirm publications would
@@ -2850,6 +2877,12 @@ func (h *Hub) publishStationRemoval(parent context.Context, sink func(ctx contex
 	h.mu.Lock()
 	if cur := h.openRemovalLocked(id); cur != nil {
 		cur.confirmed = true
+		// The removal is a fact about an ACTIVITY VERSION: record it on the
+		// node (its row survives a restart) so nothing queues it again while
+		// the node stays quiet.
+		if n := h.nodes[id]; n != nil && n.LastSeen.After(n.RemovedSince) {
+			n.RemovedSince = n.LastSeen
+		}
 		h.nodesDirty = true
 	}
 	h.mu.Unlock()
@@ -4891,6 +4924,7 @@ func (h *Hub) Snapshot() Snapshot {
 		// The feed's backlog is part of the station's state: an operator has
 		// to see a broker that has not taken its removals for a while.
 		PendingRemovals: h.pendingRemovalsLocked(),
+		RemovalsWaiting: h.removalsWaiting,
 		RemovalsDropped: h.removalsDropped,
 	}
 	if h.self != nil {

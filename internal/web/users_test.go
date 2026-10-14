@@ -239,6 +239,40 @@ func (f *fakeUsers) Authenticate(username, password string) (storage.User, error
 	return storage.User{}, storage.ErrBadCredentials
 }
 
+// GetUserByEmail resolves the address exactly like the SQLite store: only an
+// address carried by ONE account identifies it.
+func (f *fakeUsers) GetUserByEmail(email string) (storage.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var found []storage.User
+	for _, u := range f.rows {
+		if u.Email != "" && strings.EqualFold(u.Email, email) {
+			found = append(found, u)
+		}
+	}
+	if len(found) != 1 {
+		return storage.User{}, storage.ErrUserNotFound
+	}
+	return found[0], nil
+}
+
+// AuthenticateByEmail mirrors the store: the address must name one account and
+// the password must be that account's.
+func (f *fakeUsers) AuthenticateByEmail(email, password string) (storage.User, error) {
+	u, err := f.GetUserByEmail(email)
+	if err != nil {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	if u.IsAdmin || u.Role == "" {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	want, ok := f.passwords[u.Username]
+	if !ok || want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(password)) != 1 {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	return u, nil
+}
+
 func (f *fakeUsers) DeleteUser(id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

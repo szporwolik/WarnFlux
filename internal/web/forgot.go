@@ -147,10 +147,23 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u, err := s.users.GetUserByUsername(username)
+	if err != nil && looksLikeEmail(username) {
+		// The operator typed the address as the login (the same habit that
+		// makes the login form accept it): resolve the account by address,
+		// then the standing rule still applies — the typed address must be
+		// the account's own.
+		u, err = s.users.GetUserByEmail(username)
+	}
 	if err != nil || u.IsAdmin || strings.TrimSpace(u.Email) == "" ||
 		!strings.EqualFold(strings.TrimSpace(u.Email), email) {
 		s.loginLimiter.record(limiterKey, false)
-		// Generic answer — no account enumeration.
+		// The answer stays generic (no account enumeration), but the station
+		// RECORDS what it refused: without this line a request that never
+		// matched an account is invisible both in the log and in the audit
+		// trail, and "my reset mail never came" has no answer anywhere.
+		s.logger.Warn("web: password reset refused (no account with that username and e-mail)",
+			"remote", r.RemoteAddr, "ip", s.clientIP(r), "username", logValue(username))
+		s.audit(username, "password-reset-requested", "no-match "+logValue(email))
 		view("", "", i18n.T(lang, "forgot.sent"))
 		return
 	}
@@ -194,6 +207,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	origin := s.resetOrigin()
 	if origin == "" || s.resetMailer == nil || s.OfflineMode() {
 		s.logger.Warn("web: password reset offline (web.domain not configured, no mailer, or offline mode)", "username", username)
+		s.audit(username, "password-reset-requested", "offline")
 		view("", i18n.T(lang, "forgot.offline"), "")
 		return
 	}
@@ -206,11 +220,14 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := s.resetMailer(strings.TrimSpace(u.Email), subject, body); err != nil {
 		s.logger.Warn("web: password reset email failed", "username", username, "error", err)
 		s.loginLimiter.record(limiterKey, false)
+		s.audit(username, "password-reset-requested", "send-failed "+logValue(err.Error()))
 		view(i18n.T(lang, "forgot.mail_failed"), "", "")
 		return
 	}
 	// The cooldown was reserved before the send and does not clear the key:
 	// repeat sends for the same user+IP wait for it.
+	s.logger.Info("web: password reset email sent", "username", u.Username)
+	s.audit(u.Username, "password-reset-requested", "sent")
 	view("", "", i18n.T(lang, "forgot.sent"))
 }
 

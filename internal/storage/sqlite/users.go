@@ -140,6 +140,50 @@ func (s *Store) GetUserByUsername(username string) (storage.User, error) {
 	return s.userByID(id)
 }
 
+// GetUserByEmail returns the one user carrying that e-mail address (case
+// insensitive). An address shared by more than one account is ambiguous and
+// reports storage.ErrUserNotFound, exactly like an unknown one: nothing may
+// decide which of them a password reset, or a login, refers to.
+func (s *Store) GetUserByEmail(email string) (storage.User, error) {
+	id, err := s.uniqueUserBy(`WHERE email = ? COLLATE NOCASE AND email <> ''`, email)
+	if err != nil {
+		if errors.Is(err, storage.ErrBadCredentials) {
+			return storage.User{}, storage.ErrUserNotFound
+		}
+		return storage.User{}, err
+	}
+	return s.userByID(id)
+}
+
+// uniqueUserBy resolves a selector that must name exactly one row: no row and
+// several rows both report storage.ErrBadCredentials (an ambiguous identifier
+// is no identifier).
+func (s *Store) uniqueUserBy(where string, arg any) (int64, error) {
+	rows, err := s.db.Query(`SELECT id FROM users `+where, arg)
+	if err != nil {
+		return 0, fmt.Errorf("lookup user: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, fmt.Errorf("lookup user: %w", err)
+		}
+		ids = append(ids, id)
+		if len(ids) > 1 {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("lookup user: %w", err)
+	}
+	if len(ids) != 1 {
+		return 0, storage.ErrBadCredentials
+	}
+	return ids[0], nil
+}
+
 // CreateUser inserts a new regular user. A duplicate username (case
 // insensitive) reports storage.ErrUsernameTaken.
 func (s *Store) CreateUser(username, phone, email, discord, role, password string) (storage.User, error) {
@@ -271,17 +315,34 @@ func (s *Store) afterUpdate(res sql.Result, id int64) (storage.User, error) {
 // role or without a stored password can never sign in; the admin row
 // signs in through the configured auth account only.
 func (s *Store) Authenticate(username, password string) (storage.User, error) {
+	return s.authenticate(`WHERE username = ? COLLATE NOCASE`, username, password)
+}
+
+// AuthenticateByEmail signs in the account an operator addressed by its e-mail
+// address. The address must identify exactly ONE account: two accounts sharing
+// an address (nothing in the schema forbids it) make the identifier ambiguous,
+// and an ambiguous identifier must never sign anybody in.
+func (s *Store) AuthenticateByEmail(email, password string) (storage.User, error) {
+	id, err := s.uniqueUserBy(`WHERE email = ? COLLATE NOCASE AND email <> ''`, email)
+	if err != nil {
+		return storage.User{}, err
+	}
+	return s.authenticate(`WHERE id = ?`, id, password)
+}
+
+// authenticate verifies the password of the row one selector names.
+func (s *Store) authenticate(where string, arg any, password string) (storage.User, error) {
 	var id, isAdmin int64
 	var role, saltHex, hashHex string
 	err := s.db.QueryRow(`
 		SELECT id, is_admin, role, password_salt, password_hash
-		FROM users WHERE username = ? COLLATE NOCASE`, username).
+		FROM users `+where, arg).
 		Scan(&id, &isAdmin, &role, &saltHex, &hashHex)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.User{}, storage.ErrBadCredentials
 	}
 	if err != nil {
-		return storage.User{}, fmt.Errorf("authenticate %q: %w", username, err)
+		return storage.User{}, fmt.Errorf("authenticate: %w", err)
 	}
 	if isAdmin != 0 || role == "" || saltHex == "" || hashHex == "" || !verifyPassword(password, saltHex, hashHex) {
 		return storage.User{}, storage.ErrBadCredentials

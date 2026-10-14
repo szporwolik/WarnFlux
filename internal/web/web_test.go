@@ -6077,3 +6077,105 @@ collect:
 		t.Fatalf("mailer entries = %d, want 1", len(inMailer))
 	}
 }
+
+// TestLoginAcceptsTheEmailAddress pins the sign-in the production report asked
+// for: the operator typed their E-MAIL ADDRESS as the login (the audit trail of
+// the real panel shows exactly that), so the account's own address signs them
+// in with the account's password.
+func TestLoginAcceptsTheEmailAddress(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("sq9mup", "", "sq9mup@example.com", "", "member", "member-pass-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A wrong password stays wrong — the address is not a bypass.
+	_, html := env.get("/login")
+	bad := url.Values{"csrf": {extractCSRF(t, html)},
+		"username": {"sq9mup@example.com"}, "password": {"not-the-password"}}
+	if resp := env.postFormClose("/login", bad, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("login by e-mail with a wrong password = %d, want 401", resp.StatusCode)
+	}
+
+	_, html = env.get("/login")
+	form := url.Values{"csrf": {extractCSRF(t, html)},
+		"username": {"sq9mup@example.com"}, "password": {"member-pass-1"}}
+	resp := env.postFormClose("/login", form, nil)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("login by e-mail = %d, want 303", resp.StatusCode)
+	}
+	if resp, _ := env.get("/dashboard"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard after the e-mail login = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestForgotAcceptsTheEmailAddress pins the same habit on the reset form: the
+// address in the username field resolves the account, so the reset mail goes
+// out instead of the request silently matching nothing.
+func TestForgotAcceptsTheEmailAddress(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("sq9mup", "", "sq9mup@example.com", "", "member", "member-pass-1"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var sent []string
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		sent = append(sent, to)
+		if !strings.Contains(text, "/reset?token=") {
+			t.Errorf("reset mail carries no link: %s", text)
+		}
+		return nil
+	})
+
+	_, html := env.get("/forgot")
+	form := url.Values{"csrf": {extractCSRF(t, html)},
+		"username": {"sq9mup@example.com"}, "email": {"sq9mup@example.com"}}
+	resp := env.postFormClose("/forgot", form, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /forgot = %d, want the rendered page", resp.StatusCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 1 || sent[0] != "sq9mup@example.com" {
+		t.Fatalf("reset mails = %v, want one to the account's address", sent)
+	}
+}
+
+// TestForgotRecordsARefusedRequest pins the diagnosability that was missing on
+// production: a request whose (username, e-mail) pair matches no account is
+// answered generically — no enumeration — but the station RECORDS it, in the
+// audit trail and in the log, so "the reset mail never came" can be told apart
+// from "no request ever matched an account".
+func TestForgotRecordsARefusedRequest(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("member1", "", "member1@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		calls++
+		return nil
+	})
+
+	// The common confusion: the address typed as the LOGIN while a different
+	// address is given as the account's — nothing matches.
+	_, html := env.get("/forgot")
+	form := url.Values{"csrf": {extractCSRF(t, html)},
+		"username": {"member1"}, "email": {"other@example.com"}}
+	resp := env.postFormClose("/forgot", form, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /forgot = %d, want the rendered page", resp.StatusCode)
+	}
+	if calls != 0 {
+		t.Fatalf("mailer calls = %d, want none for an unmatched pair", calls)
+	}
+
+	env.login()
+	_, audit := env.get("/partials/audit?after=0")
+	if !strings.Contains(audit, "password-reset-requested") || !strings.Contains(audit, "no-match") {
+		t.Fatalf("the refused request is not in the audit trail: %s", audit)
+	}
+	// The same outcome also goes to the log line the /logs viewer shows; this
+	// harness discards log output, so the audit trail above is the assertion.
+}

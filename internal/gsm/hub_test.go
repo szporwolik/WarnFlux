@@ -501,27 +501,43 @@ func TestSendTooLong160(t *testing.T) {
 	}
 }
 
-// TestSendCountsSeptetsNotCharacters pins the reported P2: the cap
-// counted characters, but the extension-table symbols cost two septets
-// each, so 81 '^' (162 septets) went out although they cannot fit one
-// text-mode message. 80 fit, 81 are refused before the modem is touched.
-func TestSendCountsSeptetsNotCharacters(t *testing.T) {
+// TestSendCountsTheBodyItWrites pins the cap and the fold together: the limit
+// is measured on the text the modem RECEIVES (after transliteration), a message
+// that fits is submitted, and one that does not never touches the modem. The
+// extension-table characters are folded into basic ones on the way — this
+// modem answers +CMS ERROR 305 for a body carrying them (see TransliterateGSM7
+// and gsm7ExtFold), so they must not survive into the body either.
+func TestSendCountsTheBodyItWrites(t *testing.T) {
 	// The transport idles instead of blocking, so a message the fix
 	// refuses never waits for a response the test did not script.
 	shortenTimeouts(t, 30*time.Millisecond, 30*time.Millisecond, 30*time.Millisecond)
 	h, p := newQuietHub(t)
 	p.send("> \r\nOK\r\n")
-	if err := h.Send(context.Background(), "+48600111222", strings.Repeat("^", 80)); err != nil {
-		t.Fatalf("send(80 '^' = 160 septets) = %v, want nil", err)
+	if err := h.Send(context.Background(), "+48600111222", strings.Repeat("A", 160)); err != nil {
+		t.Fatalf("send(160 plain) = %v, want nil", err)
 	}
-	if w := p.written(); !strings.Contains(w, strings.Repeat("^", 80)+"\x1A") {
+	if w := p.written(); !strings.Contains(w, strings.Repeat("A", 160)+"\x1A") {
 		t.Fatalf("the accepted message was not submitted: %q", w)
 	}
 
+	// The fold is what the modem needs: the same send with the separator the
+	// SMS formatter uses must arrive WITHOUT the pipe.
+	p2 := p
+	p2.send("> \r\nOK\r\n")
+	if err := h.Send(context.Background(), "+48600111222", "SOSNA | EMCOM [WF-1]"); err != nil {
+		t.Fatalf("send with separators = %v, want nil", err)
+	}
+	if w := p2.written(); strings.ContainsAny(w[strings.Index(w, "SOSNA"):], "|[]") {
+		t.Fatalf("extension characters reached the modem: %q", w)
+	}
+	if !strings.Contains(p2.written(), "SOSNA / EMCOM (WF-1)") {
+		t.Fatalf("the folded body is not what the modem was given: %q", p2.written())
+	}
+
 	before := p.written()
-	err := h.Send(context.Background(), "+48600111222", strings.Repeat("^", 81))
+	err := h.Send(context.Background(), "+48600111222", strings.Repeat("A", 161))
 	if !errors.Is(err, ErrTooLong) {
-		t.Fatalf("send(81 '^' = 162 septets) = %v, want ErrTooLong", err)
+		t.Fatalf("send(161 plain) = %v, want ErrTooLong", err)
 	}
 	if p.written() != before {
 		t.Fatalf("the oversized message reached the modem: %q", p.written()[len(before):])
@@ -547,9 +563,15 @@ func TestFitGSM7KeepsTheSeptetBudget(t *testing.T) {
 	if FitGSM7(short, MaxSeptets) != short {
 		t.Fatalf("a short text was changed: %q", FitGSM7(short, MaxSeptets))
 	}
+	// A reply full of extension-table characters is FOLDED first, so it fits a
+	// single segment as 160 basic septets and carries no escape character the
+	// modem would refuse.
 	reply := fitReply(strings.Repeat("[", 200))
-	if Septets(reply) > MaxSeptets || len([]rune(reply)) != 80 {
-		t.Fatalf("reply = %d chars / %d septets, want 80 / 160", len([]rune(reply)), Septets(reply))
+	if Septets(reply) > MaxSeptets || len([]rune(reply)) != 160 {
+		t.Fatalf("reply = %d chars / %d septets, want 160 / 160", len([]rune(reply)), Septets(reply))
+	}
+	if strings.ContainsAny(reply, "[]{}|\\~^€") {
+		t.Fatalf("the reply still carries extension characters: %q", reply)
 	}
 }
 

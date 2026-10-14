@@ -318,10 +318,12 @@ func TestEveryRecipientDoneIsASuccess(t *testing.T) {
 	}
 }
 
-// TestTextFitsTheSeptetBudget pins the reported P2 on the formatter: a
-// headline full of extension-table symbols (two septets each) must be cut
-// to ONE text-mode message instead of producing a text the hub has to
-// refuse, while the symbols themselves stay intact.
+// TestTextFitsTheSeptetBudget pins the formatter against both halves of the
+// production failure. A headline full of GSM-7 EXTENSION symbols must come out
+// as text the modem actually takes: the symbols are FOLDED (this modem answers
+// +CMS ERROR 305 for a body carrying them, so a text that keeps them is a text
+// that is never delivered) and the whole message fits ONE segment, cut on the
+// septet budget rather than a character count.
 func TestTextFitsTheSeptetBudget(t *testing.T) {
 	hub := &fakeSender{enabled: true}
 	p, err := New(configNode(t, map[string]any{
@@ -341,16 +343,22 @@ func TestTextFitsTheSeptetBudget(t *testing.T) {
 	if n := gsm.Septets(text); n < 0 || n > gsm.MaxSeptets {
 		t.Fatalf("text = %d septets, want <= %d (%q)", n, gsm.MaxSeptets, text)
 	}
-	if !strings.Contains(text, "[") {
-		t.Fatalf("text lost the headline content: %q", text)
+	if strings.ContainsAny(text, "[]{}|\\~^€") {
+		t.Fatalf("the text still carries a character this modem refuses: %q", text)
 	}
-	// The cut happens on the septet budget, not on a character count: the
-	// result is far shorter than 160 characters.
-	if n := len([]rune(text)); n >= gsm.MaxSeptets {
-		t.Fatalf("text = %d characters; the budget was counted in characters", n)
+	if !strings.Contains(text, "(") {
+		t.Fatalf("text lost the headline content: %q", text)
 	}
 	if err := p.Execute(context.Background(), req); err != nil {
 		t.Fatalf("Execute with an extended headline = %v, want the fitted message", err)
+	}
+
+	// A long PLAIN headline is still cut to one message: the fold must not
+	// have taken the budget check away.
+	req.Event.Hazard.Hazard.Headline = strings.Repeat("A", 400)
+	text = a.textFor(context.Background(), req, "pl")
+	if n := gsm.Septets(text); n < 0 || n > gsm.MaxSeptets {
+		t.Fatalf("long plain text = %d septets, want <= %d", n, gsm.MaxSeptets)
 	}
 }
 

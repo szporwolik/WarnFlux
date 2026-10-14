@@ -823,7 +823,9 @@
   {{if .Snap.Connected}}<span class="badge ok">{{tr .Lang "meshtastic.device_ok"}}</span>
   {{else}}<span class="badge warn">{{tr .Lang "meshtastic.device_down"}}</span>
   {{end}}
-  {{if .Snap.Device}}<span class="link-detail">{{tr .Lang "meshtastic.device"}}: {{.Snap.Device}}</span>{{end}}
+  {{/* The device is one more value in the badge row, like the node id and the
+       firmware next to it; the label it used to carry lives in the tooltip. */}}
+  {{if .Snap.Device}}<span class="badge muted" title="{{tr .Lang "meshtastic.device"}}">{{.Snap.Device}}</span>{{end}}
   {{if .Snap.Self.ID}}<span class="badge muted">!{{.Snap.Self.ID}}</span>{{end}}
   {{if .Snap.Self.LongName}}<span class="badge muted">{{.Snap.Self.LongName}}</span>{{end}}
   {{if .Snap.Self.HwModel}}<span class="badge muted">{{.Snap.Self.HwModel}}</span>{{end}}

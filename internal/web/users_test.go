@@ -290,6 +290,63 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 	return storage.User{}, storage.ErrUserNotFound
 }
 
+// UpdateUserProfile mirrors the store: the profile fields and (optionally) the
+// password change, while the username and the role are left exactly as they
+// are — the point of the self-service path.
+func (f *fakeUsers) UpdateUserProfile(id int64, phone, email, discord, password string) (storage.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID != id {
+			continue
+		}
+		if f.rows[i].IsAdmin {
+			// The admin row's identity is config-owned; only contact
+			// fields update (mirrors the SQLite store).
+			f.rows[i].Phone = phone
+			f.rows[i].Email = email
+			f.rows[i].Discord = discord
+			f.rows[i].UpdatedAt = time.Now()
+			return f.rows[i], nil
+		}
+		addressChanged := f.rows[i].Email != email
+		f.rows[i].Phone = phone
+		f.rows[i].Email = email
+		f.rows[i].Discord = discord
+		f.rows[i].UpdatedAt = time.Now()
+		if password != "" {
+			f.passwords[f.rows[i].Username] = password
+			f.bumpAuthVersionLocked(id)
+		}
+		if addressChanged {
+			// The store purges outstanding reset links with the address
+			// change, in the same transaction.
+			for token, owner := range f.resets {
+				if owner == id {
+					delete(f.resets, token)
+				}
+			}
+		}
+		return f.rows[i], nil
+	}
+	return storage.User{}, storage.ErrUserNotFound
+}
+
+// overrideRole changes the account's role WITHOUT the session-invalidating
+// path an admin edit normally takes. It models a decision that reached the row
+// while the operator's profile form was open, so a test can prove the profile
+// save writes no identity at all.
+func (f *fakeUsers) overrideRole(id int64, role string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID == id {
+			f.rows[i].Role = role
+			return
+		}
+	}
+}
+
 func (f *fakeUsers) Authenticate(username, password string) (storage.User, error) {
 	f.mu.Lock()
 	u, err := f.verifyLocked(username, password)

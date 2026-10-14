@@ -44,6 +44,11 @@ func ParseWarsawLocal(s string) (time.Time, error) {
 // SQLite current state (via the optional SourceActiveEventReader), so it is
 // safe across process restarts and never depends on plugin-local memory.
 //
+// The read is scoped to the CALLING SOURCE INSTANCE by the emitter, so two
+// instances of this plugin type never cancel each other's events: an
+// instance only ever sees (and so only ever withdraws) the events it
+// produced itself.
+//
 // Events whose ExpiresAt has already passed are left alone: the core
 // expiration worker owns their EXPIRED transition.
 func Reconcile(ctx context.Context, emit plugin.Emitter, source string, snapshotKeys map[string]bool, now time.Time) (int, error) {

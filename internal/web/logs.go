@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -14,6 +15,18 @@ import (
 
 // DefaultLogLines bounds the in-memory log viewer buffer.
 const DefaultLogLines = 1000
+
+// Byte budgets of the log buffer. A line count alone is NOT a memory
+// bound: a single line can be arbitrarily long (a plugin echoing a
+// provider response, a user-controlled field), so the buffer also caps
+// the line length and the total size.
+const (
+	// MaxLogLineBytes caps one buffered line; the tail is replaced by a
+	// byte-count note.
+	MaxLogLineBytes = 4096
+	// MaxLogBytes caps the whole buffer.
+	MaxLogBytes = 1 << 20
+)
 
 // logLine is one buffered log line delivered to the viewer.
 type logLine struct {
@@ -31,6 +44,10 @@ type LogBuffer struct {
 	max     int
 	nextSeq int64
 	partial []byte
+	// dropped counts the bytes of the current, over-long line that were
+	// discarded; it is reported with the line once it terminates.
+	dropped int
+	bytes   int
 	lines   []logLine
 }
 
@@ -46,33 +63,74 @@ var logLevelRE = regexp.MustCompile(`\blevel=(DEBUG|INFO|WARN|ERROR)\b`)
 
 // Write implements io.Writer: it appends bytes, splitting on newlines and
 // keeping an unterminated tail for the next write. It always accepts the
-// full write (a log buffer must never fail the logger).
+// full write (a log buffer must never fail the logger). Memory stays
+// bounded whatever the writer does: the tail is capped at MaxLogLineBytes
+// and the bytes beyond it are dropped, counted and reported with the line.
 func (b *LogBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.partial = append(b.partial, p...)
-	for {
-		if i := bytes.IndexByte(b.partial, '\n'); i >= 0 {
-			line := strings.TrimSuffix(string(b.partial[:i]), "\r")
-			b.appendLine(line)
-			b.partial = b.partial[i+1:]
-			continue
+	n := len(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			b.appendTail(p)
+			break
 		}
-		break
+		b.appendTail(p[:i])
+		b.flushLine()
+		p = p[i+1:]
 	}
-	return len(p), nil
+	return n, nil
+}
+
+// appendTail adds p to the pending line, keeping at most MaxLogLineBytes
+// of it and counting what did not fit.
+func (b *LogBuffer) appendTail(p []byte) {
+	room := MaxLogLineBytes - len(b.partial)
+	if room <= 0 {
+		b.dropped += len(p)
+		return
+	}
+	if len(p) <= room {
+		b.partial = append(b.partial, p...)
+		return
+	}
+	b.partial = append(b.partial, p[:room]...)
+	b.dropped += len(p) - room
+}
+
+// flushLine emits the pending line, noting any dropped bytes.
+func (b *LogBuffer) flushLine() {
+	text := strings.TrimSuffix(string(b.partial), "\r")
+	if b.dropped > 0 {
+		text += fmt.Sprintf(" … (+%d bytes)", b.dropped)
+	}
+	b.dropped = 0
+	// Reuse the tail buffer: a long line must not leave a copy behind.
+	b.partial = b.partial[:0]
+	b.appendLine(text)
 }
 
 func (b *LogBuffer) appendLine(text string) {
+	text = strings.ToValidUTF8(text, "\uFFFD")
 	b.nextSeq++
 	level := ""
 	if m := logLevelRE.FindStringSubmatch(text); m != nil {
 		level = strings.ToLower(m[1])
 	}
 	b.lines = append(b.lines, logLine{Seq: b.nextSeq, Level: level, Text: text})
-	if len(b.lines) > b.max {
-		b.lines = b.lines[len(b.lines)-b.max:]
+	b.bytes += len(text)
+	b.evict()
+}
+
+// evict drops the oldest lines until the line count and the byte budget
+// are both satisfied. A single line is capped at MaxLogLineBytes, which is
+// far below MaxLogBytes, so the newest line always survives.
+func (b *LogBuffer) evict() {
+	for len(b.lines) > 1 && (len(b.lines) > b.max || b.bytes > MaxLogBytes) {
+		b.bytes -= len(b.lines[0].Text)
+		b.lines = b.lines[1:]
 	}
 }
 

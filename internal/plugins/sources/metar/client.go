@@ -82,6 +82,12 @@ type Client struct {
 }
 
 // NewClient builds an API client. baseURL must already be validated.
+//
+// The client deliberately keeps the DEFAULT transport: it negotiates HTTP/2,
+// and this provider needs it. Its edge answers an HTTP/1.1 request with
+// binary HTTP/2 frames ("malformed HTTP status code"), so a hand-rolled
+// transport without ForceAttemptHTTP2 breaks the source outright — the
+// timeout belongs on the client, not on a replacement transport.
 func NewClient(baseURL string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL: baseURL,

@@ -62,7 +62,10 @@ type meshtasticNodeView struct {
 	Hops int
 	// Owner is the directory username whose registered node id matches
 	// the node's id (empty when nobody registered it).
-	Owner      string
+	Owner string
+	// Pinned marks a node the station keeps as a FAVORITE on the radio, so
+	// the firmware never evicts its public key (see the plugin README).
+	Pinned     bool
 	Lat        float64
 	Lon        float64
 	DistKM     float64
@@ -481,6 +484,12 @@ func (s *Server) fillMeshtasticNodes(r *http.Request, v *meshtasticView) {
 	// Directory match: any user who registered a node's id labels it (as
 	// the name when the node carries none, and next to the name
 	// otherwise). The public home page never sees this.
+	// The pins the station set: only its own stars, so the table marks the
+	// nodes whose key it keeps alive rather than the operator's own picks.
+	pinned := make(map[string]bool)
+	for _, id := range s.meshtastic.PinnedNodes() {
+		pinned[id] = true
+	}
 	v.Nodes = make([]meshtasticNodeView, 0, len(v.Snap.Nodes))
 	// Newest first: the directory reads like a live feed.
 	ordered := append([]mesh.Node(nil), v.Snap.Nodes...)
@@ -504,6 +513,7 @@ func (s *Server) fillMeshtasticNodes(r *http.Request, v *meshtasticView) {
 			Name:  name,
 			Short: n.Short,
 			Sends: n.Sends, Hops: n.Hops, Owner: owner,
+			Pinned:       pinned[meshtasticNormalizeID(n.ID)],
 			Lat:          n.Lat,
 			Lon:          n.Lon,
 			DistKM:       n.DistKM,

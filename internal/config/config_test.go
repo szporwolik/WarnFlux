@@ -456,6 +456,13 @@ func TestLoadLogRotation(t *testing.T) {
 	if _, err := Load(writeTempConfig(t, "app:\n  log_max_size_mb: 0\n")); err == nil {
 		t.Fatal("expected error for log_max_size_mb 0, got nil")
 	}
+	// Zero backups would keep every rotated file forever (reported P2).
+	if _, err := Load(writeTempConfig(t, "app:\n  log_max_backups: 0\n")); err == nil {
+		t.Fatal("expected error for log_max_backups 0, got nil")
+	}
+	if _, err := Load(writeTempConfig(t, "app:\n  log_max_backups: -1\n")); err == nil {
+		t.Fatal("expected error for log_max_backups -1, got nil")
+	}
 }
 
 func TestLoadIngestHTTP(t *testing.T) {

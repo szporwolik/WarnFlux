@@ -306,6 +306,10 @@ type loginLimiter struct {
 	// hashGate bounds concurrent costly password-hash computations
 	// (bcrypt/argon2 are deliberately expensive).
 	hashGate chan struct{}
+	// resetGate bounds concurrent password-reset send attempts: the public
+	// recovery endpoint must not let a burst stack up mailer work (and burn
+	// reset tokens) for as long as delivery takes.
+	resetGate chan struct{}
 }
 
 type loginFail struct {
@@ -326,12 +330,17 @@ const (
 	// maxLoginHashConcurrency bounds simultaneous password-hash
 	// computations; further attempts are shed before burning CPU.
 	maxLoginHashConcurrency = 4
+	// maxResetMailConcurrency bounds simultaneous password-reset SEND
+	// attempts; further requests are shed with 429 instead of queueing
+	// behind a slow mailer.
+	maxResetMailConcurrency = 2
 )
 
 func newLoginLimiter() *loginLimiter {
 	return &loginLimiter{
-		fails:    make(map[string]loginFail),
-		hashGate: make(chan struct{}, maxLoginHashConcurrency),
+		fails:     make(map[string]loginFail),
+		hashGate:  make(chan struct{}, maxLoginHashConcurrency),
+		resetGate: make(chan struct{}, maxResetMailConcurrency),
 	}
 }
 
@@ -388,17 +397,39 @@ func (l *loginLimiter) record(key string, ok bool) {
 	l.sweepLocked()
 }
 
-// recordCooldown stamps a fixed cooldown on a key after a SUCCESSFUL
-// action whose repetition must be limited too (password-reset emails):
-// unlike a login success, the key is NOT cleared — repeat requests wait.
-func (l *loginLimiter) recordCooldown(key string, d time.Duration) {
+// reserveCooldown is the atomic form of recordCooldown: it stamps the cooldown
+// for key and reports whether THIS caller won it. The check and the stamp
+// happen under one lock, so parallel requests for the same key cannot all pass
+// the gate before the first of them records anything — exactly what a
+// password-reset flood needs, because the costly part (token + mail) happens
+// between the check and the record otherwise.
+func (l *loginLimiter) reserveCooldown(key string, d time.Duration) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	f := l.fails[key]
+	f, ok := l.fails[key]
+	if ok && time.Until(f.locked) > 0 {
+		return false
+	}
+	// The failure counter (if any) is kept: a request that also counts
+	// against the brute-force budgets must not be forgiven by reserving.
 	f.locked = time.Now().Add(d)
 	l.fails[key] = f
 	l.sweepLocked()
+	return true
 }
+
+// acquireReset takes one password-reset send slot, without waiting: a slow
+// mailer must not accumulate work behind it.
+func (l *loginLimiter) acquireReset() bool {
+	select {
+	case l.resetGate <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *loginLimiter) releaseReset() { <-l.resetGate }
 
 // recordGlobalFailure counts one failed attempt against the fleet-wide
 // budget: below the budget nothing happens, past it the login form locks

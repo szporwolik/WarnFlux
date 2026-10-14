@@ -772,7 +772,7 @@ func subjectOf(cfg Config, req action.ActionRequest, lang string) string {
 		}
 		text := strings.TrimSpace(h.Hazard.For(lang).Headline)
 		if text == "" {
-			text = h.Hazard.Event
+			text = i18n.EventName(lang, h.Hazard.Event)
 		}
 		sev := i18n.T(lang, "severity."+strings.ToLower(strings.TrimSpace(h.Hazard.Severity)))
 		base = fmt.Sprintf("%s: %s", strings.ToUpper(sev), text)
@@ -816,27 +816,28 @@ func messageURL(req action.ActionRequest, key string) string {
 	return scheme + domain + "/message/" + url.PathEscape(key)
 }
 
-// humanTime renders one event timestamp in the local wall-clock style
-// (no RFC3339 zone noise) for the human-readable bodies.
-func humanTime(t time.Time) string {
-	return t.Format("2006-01-02 15:04")
-}
-
-// defaultInstruction returns the fallback instruction section text for
-// hazards that carry none, in lang: every alert mail answers the reader's
-// first question — what am I supposed to do.
-func defaultInstruction(lang string) string {
-	return i18n.T(lang, "mail.default_instruction")
-}
-
-// effectiveInstruction returns the hazard's own instruction or the
-// default when none was provided.
-func effectiveInstruction(t dispatch.HazardText, lang string) string {
-	if instr := strings.TrimSpace(t.Instruction); instr != "" {
-		return instr
+// humanTime renders one event timestamp in the STATION's display zone (no
+// RFC3339 noise) for the human-readable bodies. The zone itself is named
+// once, next to the mail's own timestamp, so a reader can never mistake a
+// UTC time for a local one.
+func humanTime(t time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
 	}
-	return defaultInstruction(lang)
+	return t.In(loc).Format("2006-01-02 15:04")
 }
+
+// mailTime renders the mail's own timestamp with the zone it belongs to:
+// "2026-10-13 15:04 (Europe/Warsaw)".
+func mailTime(now time.Time, loc *time.Location, zone string) string {
+	return humanTime(now, loc) + " (" + zone + ")"
+}
+
+// The instruction section is the PROVIDER's own text and nothing else: a
+// source that shipped none gets no section at all. Inventing advice
+// ("follow official communications") would put words in the provider's
+// mouth — the reader cannot tell our sentence from theirs, and an alert
+// carrying no recommendation is a complete alert.
 
 // bodyOfPlain renders the human-first plain text: severity and headline
 // up front, then the description, the instruction, the areas and the
@@ -845,7 +846,8 @@ func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
 	lang = i18n.Effective(lang)
 	var b strings.Builder
 	b.WriteString(i18n.T(lang, "mail.head") + "\n")
-	fmt.Fprintf(&b, "%s: %s\n\n", i18n.T(lang, "mail.time"), humanTime(now))
+	zoneLoc, zoneName := action.DisplayZone(req.App)
+	fmt.Fprintf(&b, "%s: %s\n\n", i18n.T(lang, "mail.time"), mailTime(now, zoneLoc, zoneName))
 
 	ev := req.Event
 	switch ev.Kind {
@@ -856,7 +858,9 @@ func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
 			break
 		}
 		t := h.Hazard.For(lang)
-		event := strings.TrimSpace(h.Hazard.Event)
+		// The canonical event type is a machine identity; the reader gets
+		// their own language (reported: "Road works" in a Polish mail).
+		event := i18n.EventName(lang, h.Hazard.Event)
 		headline := strings.TrimSpace(t.Headline)
 		if headline == "" {
 			headline = event
@@ -875,7 +879,9 @@ func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
 		if desc := strings.TrimSpace(t.Description); desc != "" {
 			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.description"), desc)
 		}
-		fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.instruction"), effectiveInstruction(t, lang))
+		if instr := strings.TrimSpace(t.Instruction); instr != "" {
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.instruction"), instr)
+		}
 		if roads := roadNumbers(h.Hazard.Areas); len(roads) > 0 {
 			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.roads"), strings.Join(roads, ", "))
 		}
@@ -886,10 +892,10 @@ func bodyOfPlain(req action.ActionRequest, lang string, now time.Time) string {
 			fmt.Fprintf(&b, "%s: %.5f, %.5f\n", i18n.T(lang, "mail.location"), *h.Hazard.Latitude, *h.Hazard.Longitude)
 		}
 		if h.Hazard.EffectiveAt != nil {
-			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.effective_from"), humanTime(*h.Hazard.EffectiveAt))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.effective_from"), humanTime(*h.Hazard.EffectiveAt, zoneLoc))
 		}
 		if h.Hazard.ExpiresAt != nil {
-			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.valid_until"), humanTime(*h.Hazard.ExpiresAt))
+			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.valid_until"), humanTime(*h.Hazard.ExpiresAt, zoneLoc))
 		}
 		if link := messageURL(req, h.Key); link != "" {
 			fmt.Fprintf(&b, "%s: %s\n", i18n.T(lang, "mail.details"), link)
@@ -983,6 +989,7 @@ func emcomLevelColor(level int) string {
 // reader sees only what a human needs.
 func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
 	lang = i18n.Effective(lang)
+	zoneLoc, zoneName := action.DisplayZone(req.App)
 	accent := "#303c46"
 	if ev := req.Event; ev.Kind == dispatch.EventHazardTransition && ev.Hazard != nil {
 		accent = severityColor(ev.Hazard.Hazard.Severity)
@@ -1014,7 +1021,7 @@ func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
 		if ev.Hazard != nil {
 			link = messageURL(req, ev.Hazard.Key)
 		}
-		b.WriteString(hazardHTML(ev, link, lang))
+		b.WriteString(hazardHTML(ev, link, zoneLoc, lang))
 	case dispatch.EventMQTTMessage:
 		m := ev.MQTT
 		if m != nil {
@@ -1026,7 +1033,7 @@ func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
 			htmlEscaper(i18n.T(lang, "mail.dispatch_event")))
 	}
 
-	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">%s: %s</div>`, htmlEscaper(i18n.T(lang, "mail.updated")), htmlEscaper(humanTime(now)))
+	fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;">%s: %s</div>`, htmlEscaper(i18n.T(lang, "mail.updated")), htmlEscaper(mailTime(now, zoneLoc, zoneName)))
 
 	b.WriteString(`<div style="margin-top:24px;border-top:1px solid #303c46;padding-top:14px;font-size:12px;color:#87939e;">`)
 	b.WriteString(footerHTML(req, lang))
@@ -1037,7 +1044,7 @@ func bodyOfHTML(req action.ActionRequest, lang string, now time.Time) string {
 }
 
 // hazardHTML renders the focused, human-readable summary block.
-func hazardHTML(ev dispatch.Event, link, lang string) string {
+func hazardHTML(ev dispatch.Event, link string, zoneLoc *time.Location, lang string) string {
 	lang = i18n.Effective(lang)
 	h := ev.Hazard
 	if h == nil {
@@ -1058,13 +1065,14 @@ func hazardHTML(ev dispatch.Event, link, lang string) string {
 	fmt.Fprintf(&b, `<div style="margin-top:16px;"><span style="display:inline-block;background-color:%s;color:#0f1419;padding:5px 16px;border-radius:12px;font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.05em;">%s</span>%s</div>`,
 		badge, htmlEscaper(strings.ToUpper(sev)), idChip)
 
+	event := i18n.EventName(lang, h.Hazard.Event)
 	headline := strings.TrimSpace(t.Headline)
 	if headline == "" {
-		headline = h.Hazard.Event
+		headline = event
 	}
 	fmt.Fprintf(&b, `<div style="font-size:22px;font-weight:700;color:#eef2f5;margin-top:14px;">%s</div>`, htmlEscaper(headline))
-	if headline != h.Hazard.Event {
-		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(h.Hazard.Event))
+	if headline != event && event != "" {
+		fmt.Fprintf(&b, `<div style="color:#87939e;margin-top:6px;">%s</div>`, htmlEscaper(event))
 	}
 
 	// EMCOM notifications carry a structured rendering (summary sentence,
@@ -1090,16 +1098,21 @@ func hazardHTML(ev dispatch.Event, link, lang string) string {
 			}
 			b.WriteString(`</div>`)
 		}
-		// The operator instruction sits in its own callout box.
-		fmt.Fprintf(&b, `<div style="margin-top:18px;background-color:#1b232b;border:1px solid #303c46;border-radius:8px;padding:12px 16px;">
+		// The provider instruction sits in its own callout box. No
+		// instruction from the source means no box.
+		if instr := strings.TrimSpace(t.Instruction); instr != "" {
+			fmt.Fprintf(&b, `<div style="margin-top:18px;background-color:#1b232b;border:1px solid #303c46;border-radius:8px;padding:12px 16px;">
 <div style="color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div>
 <div style="margin-top:6px;color:#eef2f5;font-size:13px;line-height:1.5;">%s</div></div>`,
-			htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(effectiveInstruction(t, lang)))
+				htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(instr))
+		}
 	} else {
 		if desc := strings.TrimSpace(t.Description); desc != "" {
 			fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.description")), htmlEscaper(desc))
 		}
-		fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(effectiveInstruction(t, lang)))
+		if instr := strings.TrimSpace(t.Instruction); instr != "" {
+			fmt.Fprintf(&b, `<div style="margin-top:16px;color:#87939e;font-size:12px;text-transform:uppercase;letter-spacing:.06em;">%s</div><div style="margin-top:6px;color:#eef2f5;line-height:1.5;">%s</div>`, htmlEscaper(i18n.T(lang, "mail.instruction")), htmlEscaper(instr))
+		}
 	}
 	if h.Hazard.Latitude != nil && h.Hazard.Longitude != nil {
 		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%.5f, %.5f</span></div>`, htmlEscaper(i18n.T(lang, "mail.location")), *h.Hazard.Latitude, *h.Hazard.Longitude)
@@ -1126,10 +1139,10 @@ func hazardHTML(ev dispatch.Event, link, lang string) string {
 		b.WriteString(chips.String())
 	}
 	if h.Hazard.EffectiveAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.effective_from")), htmlEscaper(humanTime(*h.Hazard.EffectiveAt)))
+		fmt.Fprintf(&b, `<div style="margin-top:14px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.effective_from")), htmlEscaper(humanTime(*h.Hazard.EffectiveAt, zoneLoc)))
 	}
 	if h.Hazard.ExpiresAt != nil {
-		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.valid_until")), htmlEscaper(humanTime(*h.Hazard.ExpiresAt)))
+		fmt.Fprintf(&b, `<div style="margin-top:4px;color:#87939e;font-size:13px;">%s: <span style="color:#eef2f5;">%s</span></div>`, htmlEscaper(i18n.T(lang, "mail.valid_until")), htmlEscaper(humanTime(*h.Hazard.ExpiresAt, zoneLoc)))
 	}
 	if link != "" {
 		// A table cell with bgcolor + background-color renders as a solid

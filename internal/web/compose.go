@@ -986,7 +986,7 @@ func composeFormFromHazard(h state.Hazard, loc *time.Location) composeForm {
 		Longitude:   composeCoordValue(h.Longitude),
 		EffectiveAt: composeTimeValue(h.EffectiveAt, loc),
 		ExpiresAt:   composeTimeValue(h.ExpiresAt, loc),
-		ReceivedAt:  h.ReceivedAt.Format(time.RFC3339),
+		ReceivedAt:  h.ReceivedAt.UTC().Format(time.RFC3339),
 	}
 }
 

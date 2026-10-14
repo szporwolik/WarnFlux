@@ -344,7 +344,7 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 			return storage.DeliveryJob{}, false, fmt.Errorf("read claimed delivery job for action %q: %w", actionID, err)
 		}
 		job.Payload = []byte(payload)
-		job.FiredAt = time.UnixMilli(firedAt)
+		job.FiredAt = time.UnixMilli(firedAt).UTC()
 		if err := tx.Commit(); err != nil {
 			return storage.DeliveryJob{}, false, fmt.Errorf("commit delivery claim for action %q: %w", actionID, err)
 		}
@@ -556,11 +556,15 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]storage.Deli
 // survive retention — a long offline stretch, a disabled action or a
 // paused system must not lose them. Removing a pending job would need a
 // separate validity policy with an explicit outcome and an audit trail.
+//
+// 'unconfirmed' is TERMINAL (the message may already be on its way, so it
+// is never resent automatically) and therefore ages out with the other
+// settled rows: keeping it forever would retain its payload indefinitely.
 func (s *Store) PruneActionFires(cutoff time.Time) (int64, error) {
 	res, err := s.db.Exec(`
 		DELETE FROM action_fires
 		WHERE fired_at_ms < ?
-		  AND (status IN ('accepted','confirmed','expired','succeeded')
+		  AND (status IN ('accepted','confirmed','unconfirmed','expired','succeeded')
 		       OR (status = 'failed' AND next_attempt_at_ms = 0))`,
 		cutoff.UnixMilli())
 	if err != nil {

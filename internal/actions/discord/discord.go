@@ -154,10 +154,21 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		return nil, err
 	}
 	a := &discordAction{
-		url:        u,
-		username:   strings.TrimSpace(cfg.Username),
-		token:      token,
-		client:     &http.Client{Timeout: timeout},
+		url:      u,
+		username: strings.TrimSpace(cfg.Username),
+		token:    token,
+		client: &http.Client{
+			Timeout: timeout,
+			// A message is delivered by the response to THIS request. With
+			// the default policy a 3xx is followed as a bodyless GET: a
+			// webhook that answered 302 towards a login page answered 200 in
+			// the end and the alert was reported delivered although it never
+			// arrived (reported P2). The redirect is surfaced as the failure
+			// it is.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		invite:     invite,
 		logger:     slog.Default(),
 		dmChannels: map[string]string{},
@@ -223,6 +234,13 @@ func noticeInterval(value *time.Duration, fallback time.Duration, key string) (t
 
 // Name returns the action type name.
 func (a *discordAction) Name() string { return Type }
+
+// SharedDestination implements the optional capability: a routed delivery is
+// one post in the channel this webhook belongs to, shared by everyone. Two
+// groups following the same sources would therefore post the same alert twice
+// (reported P2), so the routing engine collapses their deliveries into one and
+// hands it the union of their mentions.
+func (a *discordAction) SharedDestination() bool { return true }
 
 // DirectMessenger is the optional capability of an instance holding a bot
 // token: panel features (mass info) deliver a plain notice as a DIRECT
@@ -514,13 +532,14 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 			text = fmt.Sprintf("[%s] %s", prefix, i18n.T(lang, "discord.hazard_transition"))
 			break
 		}
+		event := i18n.EventName(lang, h.Hazard.Event)
 		headline := strings.TrimSpace(h.Hazard.Headline)
 		if headline == "" {
-			headline = h.Hazard.Event
+			headline = event
 		}
 		text = fmt.Sprintf("[%s] %s: %s — %s", prefix,
 			strings.ToUpper(i18n.T(lang, "sev."+strings.ToLower(h.Hazard.Severity))),
-			h.Hazard.Event, headline)
+			event, headline)
 		if id := h.Hazard.MessageID(); id != "" {
 			text += "\n" + i18n.T(lang, "discord.message_id") + ": " + id
 		}
@@ -528,7 +547,11 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 			text += "\n" + i18n.T(lang, "discord.areas") + ": " + strings.Join(h.Hazard.Areas, ", ")
 		}
 		if h.Hazard.ExpiresAt != nil {
-			text += "\n" + i18n.T(lang, "discord.valid_until") + ": " + h.Hazard.ExpiresAt.Format(time.RFC3339)
+			// The validity is shown in the STATION's zone and says which
+			// one: a bare RFC3339 stamp would silently be UTC.
+			zoneLoc, zoneName := action.DisplayZone(req.App)
+			text += "\n" + i18n.T(lang, "discord.valid_until") + ": " +
+				h.Hazard.ExpiresAt.In(zoneLoc).Format("2006-01-02 15:04") + " (" + zoneName + ")"
 		}
 		if desc := strings.TrimSpace(h.Hazard.Description); desc != "" {
 			text += "\n" + desc

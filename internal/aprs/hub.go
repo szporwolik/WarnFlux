@@ -92,6 +92,41 @@ type hubOp struct {
 	via string
 }
 
+// pendingDelete is one retained-document removal the broker has not confirmed.
+// It lives in its OWN ledger rather than in the stations/bulletins maps: those
+// forget an entry the moment it expires, so a removal whose publish failed had
+// nothing left to retry (reported P2).
+type pendingDelete struct {
+	// suffix is the MQTT suffix (the ledger key as well).
+	suffix string
+	// callsign identifies a station removal ("" for a bulletin).
+	callsign string
+	// bulletinID identifies a bulletin removal.
+	bulletinID string
+	// since is the observation the removal refers to (the station's last heard
+	// time, or the bulletin's receipt time). A document that comes back with a
+	// NEWER observation is a new version — the removal is void.
+	since int64
+	// tried is the last publish attempt (unix seconds, 0 = never).
+	tried int64
+}
+
+// Removal ledger bounds.
+const (
+	// deleteRetryDelay paces a removal the broker has not accepted, so a broker
+	// outage does not retry the same documents on every maintenance tick.
+	deleteRetryDelay = 30 * time.Second
+	// deletePassBudget bounds the time ONE maintenance pass spends on removals:
+	// the pass also runs the tick's other work (station expiry, digests, ack
+	// waits), and a broker that holds the connection without answering would
+	// otherwise hold it for every pending removal at once.
+	deletePassBudget = 2 * time.Second
+	// maxPendingDeletes bounds the ledger: past it the most obsolete entry is
+	// abandoned (counted, never silent), so a long broker outage cannot grow
+	// the hub without bound.
+	maxPendingDeletes = 512
+)
+
 // stationRecord is the merged runtime state of one nearby station. It is
 // owned by the single hub worker goroutine (no locking needed).
 type stationRecord struct {
@@ -215,8 +250,11 @@ type Hub struct {
 	weatherSink  func(context.Context, WeatherReport) error
 	stations     map[string]*stationRecord
 	transmitters map[string]Transmitter
-	seenDigests  map[string]int64 // digest -> last seen unix
-	recent       []MessageDocument
+	// pendingDeletes holds the retained-document removals the broker has not
+	// confirmed, keyed by suffix (guarded by mu, see pendingDelete).
+	pendingDeletes map[string]*pendingDelete
+	seenDigests    map[string]int64 // digest -> last seen unix
+	recent         []MessageDocument
 
 	ops  chan hubOp
 	tick time.Duration
@@ -227,6 +265,11 @@ type Hub struct {
 	dropped   atomic.Int64
 	filtered  atomic.Int64
 	expired   atomic.Int64
+	// deletesDropped counts the removals abandoned because the ledger hit its
+	// bound (the overflow metric).
+	deletesDropped atomic.Int64
+	// deleteRetry overrides deleteRetryDelay (tests).
+	deleteRetry time.Duration
 	// msgSeq numbers outbound message ids (the {id} ack suffix).
 	msgSeq atomic.Int64
 	// pending holds one result channel per in-flight message id; guarded
@@ -364,21 +407,22 @@ func NewHub(cfg HubConfig, logger *slog.Logger) (*Hub, error) {
 	}
 
 	return &Hub{
-		cfg:          cfg,
-		logger:       logger,
-		now:          time.Now,
-		stations:     make(map[string]*stationRecord),
-		bulletins:    make(map[string]int64),
-		cmds:         make(map[string]*cmdRecord),
-		bannerLast:   make(map[string]time.Time),
-		replyLast:    make(map[string]replyWindow),
-		weatherCache: make(map[string]weatherEntry),
-		transmitters: make(map[string]Transmitter),
-		seenDigests:  make(map[string]int64),
-		ops:          make(chan hubOp, opsQueueSize),
-		tick:         tickInterval,
-		selfDelay:    startupPublishDelay,
-		pending:      make(map[string]*ackWait),
+		cfg:            cfg,
+		logger:         logger,
+		now:            time.Now,
+		stations:       make(map[string]*stationRecord),
+		pendingDeletes: make(map[string]*pendingDelete),
+		bulletins:      make(map[string]int64),
+		cmds:           make(map[string]*cmdRecord),
+		bannerLast:     make(map[string]time.Time),
+		replyLast:      make(map[string]replyWindow),
+		weatherCache:   make(map[string]weatherEntry),
+		transmitters:   make(map[string]Transmitter),
+		seenDigests:    make(map[string]int64),
+		ops:            make(chan hubOp, opsQueueSize),
+		tick:           tickInterval,
+		selfDelay:      startupPublishDelay,
+		pending:        make(map[string]*ackWait),
 	}, nil
 }
 
@@ -1771,6 +1815,21 @@ func (h *Hub) maintenance() {
 	windowCutoff := now.Add(-packetDigestWindow).Unix()
 
 	h.mu.Lock()
+	// Every removal the broker has not confirmed lives in its own ledger. A
+	// document that came back with a NEWER observation than the removal refers
+	// to is a new version: the removal is void (and its document stays).
+	for suffix, del := range h.pendingDeletes {
+		if del.callsign != "" {
+			if rec := h.stations[del.callsign]; rec != nil && rec.state.lastHeard > del.since {
+				delete(h.pendingDeletes, suffix)
+			}
+			continue
+		}
+		if at, ok := h.bulletins[del.bulletinID]; ok && at > del.since {
+			delete(h.pendingDeletes, suffix)
+		}
+	}
+	queued, overflow := 0, 0
 	var stale []*stationRecord
 	for callsign, rec := range h.stations {
 		if rec.self {
@@ -1787,12 +1846,65 @@ func (h *Hub) maintenance() {
 		}
 	}
 	bulletCutoff := now.Add(-h.cfg.BulletinTTL).Unix()
-	var staleBulletins []string
+	type staleBulletin struct {
+		id string
+		at int64
+	}
+	var staleBulletins []staleBulletin
 	for id, at := range h.bulletins {
 		if at < bulletCutoff {
-			staleBulletins = append(staleBulletins, id)
+			staleBulletins = append(staleBulletins, staleBulletin{id: id, at: at})
 			delete(h.bulletins, id)
 		}
+	}
+	// The removals go into the ledger, bounded: past the bound the most
+	// obsolete entry is abandoned (counted below, never silently).
+	add := func(del *pendingDelete) {
+		if _, ok := h.pendingDeletes[del.suffix]; ok {
+			return
+		}
+		if len(h.pendingDeletes) >= maxPendingDeletes {
+			victim, oldest := "", int64(0)
+			for suffix, cur := range h.pendingDeletes {
+				if victim == "" || cur.since < oldest {
+					victim, oldest = suffix, cur.since
+				}
+			}
+			if victim == "" {
+				return
+			}
+			delete(h.pendingDeletes, victim)
+			overflow++
+		}
+		h.pendingDeletes[del.suffix] = del
+		queued++
+	}
+	for _, rec := range stale {
+		add(&pendingDelete{
+			suffix:   StationsTopicPrefix + rec.callsign,
+			callsign: rec.callsign,
+			since:    rec.state.lastHeard,
+		})
+	}
+	for _, b := range staleBulletins {
+		add(&pendingDelete{
+			suffix:     BulletinsTopicPrefix + b.id,
+			bulletinID: b.id,
+			since:      b.at,
+		})
+	}
+	// What is due now: never tried, or tried longer ago than the pace.
+	retry := h.deleteRetry
+	if retry <= 0 {
+		retry = deleteRetryDelay
+	}
+	due := make([]*pendingDelete, 0, len(h.pendingDeletes))
+	for _, del := range h.pendingDeletes {
+		if del.tried != 0 && now.Unix()-del.tried < int64(retry.Seconds()) {
+			continue
+		}
+		del.tried = now.Unix()
+		due = append(due, del)
 	}
 	// Ack waits beyond the hard validity window are dropped: their acks
 	// can never confirm an exchange whose validity already lapsed.
@@ -1817,16 +1929,28 @@ func (h *Hub) maintenance() {
 	}
 	h.mu.Unlock()
 
-	for _, rec := range stale {
-		if err := h.publishWithTimeout(StationsTopicPrefix+rec.callsign, true, nil); err != nil {
-			h.logger.Warn("aprs: station state delete failed", "callsign", rec.callsign, "error", err)
+	if overflow > 0 {
+		h.deletesDropped.Add(int64(overflow))
+		h.logger.Warn("aprs: retained-document removal ledger is full, the most obsolete removals were abandoned",
+			"dropped", overflow, "ledger", maxPendingDeletes)
+	}
+	// One pass spends a bounded budget on removals: the tick has other work and
+	// a broker that keeps the connection without answering must not hold it.
+	deadline := time.Now().Add(deletePassBudget)
+	for _, del := range due {
+		if time.Now().After(deadline) {
+			break
+		}
+		if err := h.publishWithTimeout(del.suffix, true, nil); err != nil {
+			h.logger.Warn("aprs: retained document delete failed, will retry",
+				"topic", del.suffix, "retry_in", retry, "error", err)
 			continue
 		}
-		h.expired.Add(1)
-	}
-	for _, id := range staleBulletins {
-		if err := h.publishWithTimeout(BulletinsTopicPrefix+id, true, nil); err != nil {
-			h.logger.Warn("aprs: bulletin delete failed", "id", id, "error", err)
+		h.mu.Lock()
+		delete(h.pendingDeletes, del.suffix)
+		h.mu.Unlock()
+		if del.callsign != "" {
+			h.expired.Add(1)
 		}
 	}
 	for _, rec := range dirty {

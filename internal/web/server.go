@@ -303,7 +303,7 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		st:             st,
 		receivers:      receivers,
 		pub:            pub,
-		broker:         newBrokerGate(pub),
+		broker:         newBrokerGate(pub, lifecycleLedger(users)),
 		router:         router,
 		actions:        actions,
 		aprs:           aprsHub,
@@ -542,6 +542,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("POST /config/lang", s.requireAdmin(s.handleConfigLang))
 	s.mux.Handle("POST /config/content", s.requireAdmin(s.handleConfigContent))
 	s.mux.Handle("POST /config/mqtt", s.requireAdmin(s.handleConfigMqtt))
+	s.mux.Handle("POST /config/storm", s.requireAdmin(s.handleConfigStorm))
 	// Local map tiles ({z}/{x}/{y}.jpg under web.tiles_dir) for offline
 	// mode. Registered unconditionally; empty tiles_dir yields 404s.
 	s.mux.HandleFunc("GET /tiles/{z}/{x}/{y}", s.handleTile)
@@ -857,6 +858,12 @@ func (s *Server) templateFuncs() template.FuncMap {
 		// tr/trf resolve a translation key in the page's language.
 		"tr": func(lang, key string) string {
 			return i18n.T(lang, key)
+		},
+		// eventName renders a canonical event type (a machine identity
+		// shared with the broker and webhook consumers) in the page
+		// language, so an English type never reaches a Polish page.
+		"eventName": func(lang, canonical string) string {
+			return i18n.EventName(lang, canonical)
 		},
 		// trf resolves a translation key with format args in the page language.
 		"trf": func(lang, key string, args ...any) string {

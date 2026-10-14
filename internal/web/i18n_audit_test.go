@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"os"
 	"regexp"
 	"strconv"
@@ -134,5 +135,32 @@ func TestClientDictParity(t *testing.T) {
 		if !en[key] {
 			t.Errorf("client code uses %q but neither dict defines it", key)
 		}
+	}
+}
+
+// TestClientHelpersAreNotShadowed pins the other half of the tr()/trf()
+// contract: a local (or parameter) named tr/trf hides the global helper, so
+// every "tr(...)" in that scope throws a TypeError at runtime instead of
+// returning a string. That is exactly how the MQTT browser broke: a row
+// variable named "tr" in the render loop made the first cell throw, the
+// promise chain rejected and the panel showed only "browse failed" — for
+// every non-empty result, on dev and on production.
+func TestClientHelpersAreNotShadowed(t *testing.T) {
+	src, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	shadowRe := regexp.MustCompile(`(?m)\b(var|let|const)\s+(tr|trf)\s*=`)
+	for _, m := range shadowRe.FindAllSubmatchIndex(src, -1) {
+		line := 1 + bytes.Count(src[:m[0]], []byte("\n"))
+		t.Errorf("static/app.js:%d declares %q, which shadows the tr()/trf() helper and throws a TypeError in that scope: %s",
+			line, string(src[m[4]:m[5]]), strings.TrimSpace(string(src[m[0]:m[1]])))
+	}
+	// A parameter shadowing the helper is just as fatal.
+	paramRe := regexp.MustCompile(`function\s*\([^)]*\b(tr|trf)\b[^)]*\)`)
+	for _, m := range paramRe.FindAllSubmatchIndex(src, -1) {
+		line := 1 + bytes.Count(src[:m[0]], []byte("\n"))
+		t.Errorf("static/app.js:%d takes a parameter named %q, which shadows the tr()/trf() helper: %s",
+			line, string(src[m[2]:m[3]]), strings.TrimSpace(string(src[m[0]:m[1]])))
 	}
 }

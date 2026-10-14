@@ -332,6 +332,16 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		ingest:         ingest,
 		massJobs:       newMassJobStore(),
 	}
+	// Sessions are checked against the account's credential version on every
+	// use, so a login that was suspended between the password check and the
+	// session insert cannot outlive a password reset or a role change.
+	s.sessions.version = func(userID int64) (int64, bool) {
+		v, err := users.AuthVersion(userID)
+		if err != nil {
+			return 0, false
+		}
+		return v, true
+	}
 	ctx, cancelBase := context.WithCancel(context.Background())
 	s.baseCtx, s.cancelBase = ctx, cancelBase
 	// Parsed after construction: the template funcs close over the
@@ -473,6 +483,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /aprs", s.requirePage(s.handleAPRSPage))
 	s.mux.Handle("GET /gsm", s.requirePage(s.handleGSMPage))
 	s.mux.Handle("GET /partials/gsm", s.requirePagePartial(s.handlePartialGSM))
+	s.mux.Handle("GET /partials/aprs-links", s.requirePagePartial(s.handlePartialAPRSLinks))
 	s.mux.Handle("POST /gsm/send", s.requireAdmin(s.handleGSMSend))
 	s.mux.Handle("GET /meshtastic", s.requirePage(s.handleMeshtasticPage))
 	s.mux.Handle("GET /meshmap", s.requireAdmin(s.handleMeshMapPage))

@@ -39,6 +39,12 @@ type session struct {
 	// user ID, so stale sessions never keep old privileges.
 	userID   int64
 	username string
+	// authVersion is the account's credential version at the moment its
+	// password was verified. The session only stays valid while the account
+	// still carries that version: a password reset or a role change landing
+	// between the verification and the session insert therefore cannot
+	// produce a usable session (reported P2).
+	authVersion int64
 	// role is the access tier: "admin" (everything) or "emcom" (compose
 	// only). Set once at login, never from the client.
 	role      string
@@ -53,6 +59,10 @@ type sessionStore struct {
 	mu     sync.Mutex
 	m      map[string]*session
 	secure bool
+	// version reports the account's CURRENT credential version (the second
+	// value is false when the account is gone or unreadable). The server
+	// wires it to the user store; nil leaves sessions unchecked.
+	version func(userID int64) (int64, bool)
 }
 
 func newSessionStore(secure bool) *sessionStore {
@@ -63,7 +73,7 @@ func newSessionStore(secure bool) *sessionStore {
 // is enforced explicitly: at the global cap with every session still
 // valid the creation is REJECTED (caller returns 503), and at the
 // per-user cap the OLDEST session of that user is EVICTED.
-func (s *sessionStore) newSession(userID int64, username, role string) (token string, sess *session, err error) {
+func (s *sessionStore) newSession(userID int64, username, role string, authVersion int64) (token string, sess *session, err error) {
 	tok, err := randomToken()
 	if err != nil {
 		return "", nil, err
@@ -73,12 +83,13 @@ func (s *sessionStore) newSession(userID int64, username, role string) (token st
 		return "", nil, err
 	}
 	sess = &session{
-		userID:    userID,
-		username:  username,
-		role:      role,
-		csrf:      csrf,
-		createdAt: time.Now(),
-		expires:   time.Now().Add(sessionTTL),
+		userID:      userID,
+		username:    username,
+		role:        role,
+		authVersion: authVersion,
+		csrf:        csrf,
+		createdAt:   time.Now(),
+		expires:     time.Now().Add(sessionTTL),
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,13 +197,39 @@ func (s *sessionStore) clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-// currentSession extracts the authenticated session from the request.
+// currentSession extracts the authenticated session from the request,
+// dropping one whose account no longer carries the credentials it was opened
+// with.
 func (s *sessionStore) currentSession(r *http.Request) *session {
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
 		return nil
 	}
-	return s.get(c.Value)
+	sess := s.get(c.Value)
+	if sess == nil {
+		return nil
+	}
+	if !s.credentialsCurrent(sess) {
+		s.delete(c.Value)
+		return nil
+	}
+	return sess
+}
+
+// credentialsCurrent reports whether the session still belongs to the
+// account's CURRENT credential version. The version travelled from the
+// statement that verified the password, so a login parked between the
+// verification and the session insert answers with the version the reset
+// replaced and dies here — re-reading the account just before the insert
+// would only move the window (reported P2). The config-owned admin row
+// (userID 0) has no directory version and is never checked; an account that
+// cannot be read at all fails closed.
+func (s *sessionStore) credentialsCurrent(sess *session) bool {
+	if s.version == nil || sess.userID == 0 {
+		return true
+	}
+	current, ok := s.version(sess.userID)
+	return ok && current == sess.authVersion
 }
 
 // sessionCSRF returns the request session's CSRF token, or "" without a

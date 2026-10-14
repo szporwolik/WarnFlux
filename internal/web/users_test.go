@@ -34,7 +34,22 @@ type fakeUsers struct {
 	routing     map[int64]storage.GroupRouting // groupID -> routing
 	passwords   map[string]string              // username -> plaintext (fake)
 	channelOpts map[int64]map[string]bool      // userID -> disabled delivery-channel kinds
-	resets      map[string]int64               // plaintext reset token -> userID
+	// failChannelOptOuts makes the channel write fail: the account handler
+	// must survive a preference write that blows up after a password change.
+	failChannelOptOuts error
+	// hashDelay widens the password computation (the fake stores plaintext,
+	// so nothing is actually hashed): the callers' concurrency gate is what
+	// the tests assert, and a real hash costs tens of milliseconds.
+	hashDelay time.Duration
+	hashBusy  int
+	hashPeak  int
+	// readPause/readResume, when set, park the next directory read (a
+	// password verification or an account lookup) after it computed its
+	// answer and before the caller sees it — the window a concurrent
+	// credential or address change must cover.
+	readPause  chan struct{}
+	readResume chan struct{}
+	resets     map[string]int64 // plaintext reset token -> userID
 	// deliveries seeds the durable delivery-ledger rows served in the
 	// notifications details view (RecentDeliveries).
 	deliveries []storage.DeliveryRecord
@@ -146,13 +161,104 @@ func (f *fakeUsers) GetUser(id int64) (storage.User, error) {
 
 func (f *fakeUsers) GetUserByUsername(username string) (storage.User, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	u, err := f.byUsernameLocked(username)
+	f.mu.Unlock()
+	// The account was read; the caller has not acted on it yet. A test parks
+	// here to let its recovery address change in between.
+	f.pausedRead()
+	return u, err
+}
+
+// byUsernameLocked is the lock-free lookup behind GetUserByUsername.
+func (f *fakeUsers) byUsernameLocked(username string) (storage.User, error) {
 	for _, u := range f.rows {
 		if strings.EqualFold(u.Username, username) {
 			return u, nil
 		}
 	}
 	return storage.User{}, storage.ErrUserNotFound
+}
+
+// setHashDelay widens the fake's password computation for one test.
+func (f *fakeUsers) setHashDelay(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hashDelay = d
+}
+
+// beginHash models one password computation: it counts the callers that are
+// inside the computation at the same time (peak included) and returns the
+// call that ends this one. Together with setHashDelay it makes the shared
+// hash budget observable from a test.
+func (f *fakeUsers) beginHash() func() {
+	f.mu.Lock()
+	f.hashBusy++
+	if f.hashBusy > f.hashPeak {
+		f.hashPeak = f.hashBusy
+	}
+	delay := f.hashDelay
+	f.mu.Unlock()
+	time.Sleep(delay)
+	return func() {
+		f.mu.Lock()
+		f.hashBusy--
+		f.mu.Unlock()
+	}
+}
+
+// hashPeakObserved reports the highest number of simultaneous password
+// computations seen so far.
+func (f *fakeUsers) hashPeakObserved() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hashPeak
+}
+
+// pauseNextRead parks the next directory read after it computed its answer
+// (nil clears the hook). It exists so a test can land a change in the window
+// between what the handler read and what it does next — the session insert of
+// a login, or the reset token of a /forgot request.
+func (f *fakeUsers) pauseNextRead(pause, resume chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readPause, f.readResume = pause, resume
+}
+
+// pausedRead hands the hook to the caller of a read and blocks until the test
+// releases it. The lock is NOT held while parked.
+func (f *fakeUsers) pausedRead() {
+	f.mu.Lock()
+	pause, resume := f.readPause, f.readResume
+	f.mu.Unlock()
+	if pause == nil {
+		return
+	}
+	pause <- struct{}{}
+	<-resume
+}
+
+// AuthVersion mirrors the store: the account's current credential version.
+func (f *fakeUsers) AuthVersion(userID int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.rows {
+		if u.ID == userID {
+			return u.AuthVersion, nil
+		}
+	}
+	return 0, storage.ErrUserNotFound
+}
+
+// bumpAuthVersionLocked mirrors the SQLite store: every edit that retires the
+// account's sessions (password, role, username) raises its version, so a
+// session opened from an older one fails its next credential check.
+func (f *fakeUsers) bumpAuthVersionLocked(userID int64) {
+	for i := range f.rows {
+		if f.rows[i].ID == userID {
+			f.rows[i].AuthVersion++
+			return
+		}
+	}
 }
 
 func (f *fakeUsers) CreateUser(username, phone, email, discord, role, password string) (storage.User, error) {
@@ -166,7 +272,7 @@ func (f *fakeUsers) CreateUser(username, phone, email, discord, role, password s
 	now := time.Now()
 	u := storage.User{
 		ID: f.nextID, Username: username, Phone: phone, Email: email, Discord: discord, Role: role,
-		CreatedAt: now, UpdatedAt: now,
+		AuthVersion: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	f.nextID++
 	f.rows = append(f.rows, u)
@@ -202,12 +308,16 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 			}
 		}
 		oldName := f.rows[i].Username
+		oldRole := f.rows[i].Role
 		f.rows[i].Username = username
 		f.rows[i].Phone = phone
 		f.rows[i].Email = email
 		f.rows[i].Discord = discord
 		f.rows[i].Role = role
 		f.rows[i].UpdatedAt = time.Now()
+		if password != "" || oldRole != role || oldName != username {
+			f.bumpAuthVersionLocked(id)
+		}
 		if password != "" {
 			f.passwords[username] = password
 		} else if username != oldName {
@@ -221,9 +331,77 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 	return storage.User{}, storage.ErrUserNotFound
 }
 
-func (f *fakeUsers) Authenticate(username, password string) (storage.User, error) {
+// UpdateUserProfile mirrors the store: the profile fields and (optionally) the
+// password change, while the username and the role are left exactly as they
+// are — the point of the self-service path.
+func (f *fakeUsers) UpdateUserProfile(id int64, phone, email, discord, password string) (storage.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID != id {
+			continue
+		}
+		if f.rows[i].IsAdmin {
+			// The admin row's identity is config-owned; only contact
+			// fields update (mirrors the SQLite store).
+			f.rows[i].Phone = phone
+			f.rows[i].Email = email
+			f.rows[i].Discord = discord
+			f.rows[i].UpdatedAt = time.Now()
+			return f.rows[i], nil
+		}
+		addressChanged := f.rows[i].Email != email
+		f.rows[i].Phone = phone
+		f.rows[i].Email = email
+		f.rows[i].Discord = discord
+		f.rows[i].UpdatedAt = time.Now()
+		if password != "" {
+			f.passwords[f.rows[i].Username] = password
+			f.bumpAuthVersionLocked(id)
+		}
+		if addressChanged {
+			// The store purges outstanding reset links with the address
+			// change, in the same transaction.
+			for token, owner := range f.resets {
+				if owner == id {
+					delete(f.resets, token)
+				}
+			}
+		}
+		return f.rows[i], nil
+	}
+	return storage.User{}, storage.ErrUserNotFound
+}
+
+// overrideRole changes the account's role WITHOUT the session-invalidating
+// path an admin edit normally takes. It models a decision that reached the row
+// while the operator's profile form was open, so a test can prove the profile
+// save writes no identity at all.
+func (f *fakeUsers) overrideRole(id int64, role string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID == id {
+			f.rows[i].Role = role
+			return
+		}
+	}
+}
+
+func (f *fakeUsers) Authenticate(username, password string) (storage.User, error) {
+	done := f.beginHash()
+	defer done()
+	f.mu.Lock()
+	u, err := f.verifyLocked(username, password)
+	f.mu.Unlock()
+	// The password is verified; the caller has not stored its session yet.
+	// A test parks here to let a reset or a role change land in between.
+	f.pausedRead()
+	return u, err
+}
+
+// verifyLocked resolves one username/password pair against the fake's rows.
+func (f *fakeUsers) verifyLocked(username, password string) (storage.User, error) {
 	want, ok := f.passwords[username]
 	if !ok || want == "" {
 		return storage.User{}, storage.ErrBadCredentials
@@ -237,6 +415,40 @@ func (f *fakeUsers) Authenticate(username, password string) (storage.User, error
 		}
 	}
 	return storage.User{}, storage.ErrBadCredentials
+}
+
+// GetUserByEmail resolves the address exactly like the SQLite store: only an
+// address carried by ONE account identifies it.
+func (f *fakeUsers) GetUserByEmail(email string) (storage.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var found []storage.User
+	for _, u := range f.rows {
+		if u.Email != "" && strings.EqualFold(u.Email, email) {
+			found = append(found, u)
+		}
+	}
+	if len(found) != 1 {
+		return storage.User{}, storage.ErrUserNotFound
+	}
+	return found[0], nil
+}
+
+// AuthenticateByEmail mirrors the store: the address must name one account and
+// the password must be that account's.
+func (f *fakeUsers) AuthenticateByEmail(email, password string) (storage.User, error) {
+	u, err := f.GetUserByEmail(email)
+	if err != nil {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	if u.IsAdmin || u.Role == "" {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	want, ok := f.passwords[u.Username]
+	if !ok || want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(password)) != 1 {
+		return storage.User{}, storage.ErrBadCredentials
+	}
+	return u, nil
 }
 
 func (f *fakeUsers) DeleteUser(id int64) error {
@@ -404,13 +616,17 @@ func (f *fakeUsers) SetUserPassword(userID int64, password string) error {
 			return storage.ErrUserProtected
 		}
 		f.passwords[u.Username] = password
+		f.bumpAuthVersionLocked(userID)
 		return nil
 	}
 	return storage.ErrUserNotFound
 }
 
-// CreatePasswordReset issues a one-time token (fake: stored in plaintext).
-func (f *fakeUsers) CreatePasswordReset(userID int64) (string, error) {
+// CreatePasswordReset issues a one-time token (fake: stored in plaintext) for
+// the account's CURRENT recovery address — the fake holds its state under one
+// mutex, so the address check and the insert are atomic here exactly as they
+// are in the single SQL statement of the SQLite store.
+func (f *fakeUsers) CreatePasswordReset(userID int64, expectedEmail string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.rows {
@@ -419,6 +635,9 @@ func (f *fakeUsers) CreatePasswordReset(userID int64) (string, error) {
 		}
 		if u.IsAdmin {
 			return "", storage.ErrUserProtected
+		}
+		if u.Email != expectedEmail {
+			return "", storage.ErrRecoveryEmailChanged
 		}
 		raw := make([]byte, 16)
 		if _, err := rand.Read(raw); err != nil {
@@ -457,6 +676,8 @@ func (f *fakeUsers) ConsumePasswordReset(token string) (int64, error) {
 // way the SQLite store does it in one transaction. The fake lives in a
 // single process, so the mutex it already holds is the atomicity.
 func (f *fakeUsers) ResetPasswordWithToken(token, password string) (int64, error) {
+	done := f.beginHash()
+	defer done()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id, ok := f.resets[token]
@@ -472,6 +693,7 @@ func (f *fakeUsers) ResetPasswordWithToken(token, password string) (int64, error
 		}
 		delete(f.resets, token)
 		f.passwords[u.Username] = password
+		f.bumpAuthVersionLocked(id)
 		return id, nil
 	}
 	return 0, storage.ErrUserNotFound
@@ -492,6 +714,9 @@ func (f *fakeUsers) UserChannelOptOuts(userID int64) (map[string]bool, error) {
 func (f *fakeUsers) SetUserChannelOptOuts(userID int64, kinds []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failChannelOptOuts != nil {
+		return f.failChannelOptOuts
+	}
 	found := false
 	for _, u := range f.rows {
 		if u.ID == userID {

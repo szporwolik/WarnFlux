@@ -69,6 +69,49 @@ var eventNameKeys = map[string]string{
 	"heat warning":           "event.heat_warning",
 	"frost warning":          "event.frost_warning",
 	"lightning nearby":       "event.lightning_nearby",
+	"information":            "event.information",
+	"hazard":                 "event.hazard",
+	"weather alert":          "event.weather_alert",
+	"test":                   "event.test",
+}
+
+// eventSuggestionNames are the event types the compose form offers as
+// suggestions, in the order an operator reads them: the compose vocabulary
+// first, then the warning types the sources stamp, then the station's own.
+// They are suggestions, not a whitelist — the field stays free text, because
+// an operator may need a name this station has never seen — but a suggestion
+// is a name every channel already translates, which is what a typed "Brak"
+// (once shown to readers as "[SOSNA] POWAŻNE: Brak — Mup") is not.
+var eventSuggestionNames = []string{
+	"Information", "Hazard", "Weather alert", "Test", "EMCOM",
+	"Thunderstorm warning", "Tornado warning", "Strong wind warning",
+	"Heavy rain warning", "Heat warning", "Frost warning", "Lightning nearby",
+	"Air quality exceedance", "Industrial accident", "Chemical release",
+	"Road works", "Road closure", "Alternating traffic",
+}
+
+// EventSuggestion is one hint of the compose form's event-type field.
+type EventSuggestion struct {
+	// Value is the canonical name that goes on the wire.
+	Value string
+	// Label is that name in the operator's language.
+	Label string
+}
+
+// EventSuggestions returns the canonical event types with the rendering the
+// operator reads in lang, sorted by that label.
+func EventSuggestions(lang string) []EventSuggestion {
+	out := make([]EventSuggestion, 0, len(eventSuggestionNames))
+	for _, name := range eventSuggestionNames {
+		out = append(out, EventSuggestion{Value: name, Label: EventName(lang, name)})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Label != out[j].Label {
+			return out[i].Label < out[j].Label
+		}
+		return out[i].Value < out[j].Value
+	})
+	return out
 }
 
 // EventName renders the canonical event type of a hazard for one language.
@@ -202,6 +245,7 @@ var en = map[string]string{
 	"help.messages.title":   "Messages",
 	"help.messages.1":       "Issue a new communication with New message; edit or expire the issued ones right here.",
 	"help.messages.2":       "Below the issued list are active alerts from other sources — retire an irrelevant one with Expire.",
+	"help.messages.3":       "The message form suggests the standard event types and shows the line the notification will read before you send it: a headline repeating the event type is printed once, and a name taken from the suggestions is translated for every reader.",
 	"help.emcom.title":      "EMCOM networks",
 	"help.emcom.1":          "Every network has a readiness level 0–3: move the slider and save.",
 	"help.emcom.2":          "You may change a level only when an assigned group covers you — the admin assigns the groups.",
@@ -215,7 +259,7 @@ var en = map[string]string{
 	"help.meshtastic.1":     "Node map and messages; sending and traceroutes are admin-only.",
 	"help.meshtastic.2":     "Set the group channel on your own device so group alerts reach your node — the administrator gives the channel name and key. Alerts of severe and higher severity ring the device (🔔 + an in-band marker); switch on External Notification so your node actually sounds.",
 	"help.account.title":    "Account",
-	"help.account.1":        "Edit your own contact data, password and delivery channels here. Your username, role and group membership are managed by an administrator.",
+	"help.account.1":        "Edit your own contact data, password and delivery channels here. Your username, role and group membership are managed by an administrator. You can sign in with either your username or the e-mail address registered on the account; the password reset form asks for both, and the reset link always goes to that registered address. Changing that address cancels every reset link already sent to the previous one.",
 	"help.access.title":     "Access (admin)",
 	"help.access.1":         "Users, roles, groups, memberships and the routing matrix.",
 	"help.config.title":     "Config (admin)",
@@ -352,6 +396,17 @@ var en = map[string]string{
 	"gsm.text":                "Message",
 	"gsm.text_ph":             "SMS text",
 	"gsm.none":                "No SMS messages yet.",
+	"aprs.links_title":        "APRS links",
+	"aprs.is":                 "APRS-IS",
+	"aprs.rf":                 "RF (Direwolf)",
+	"aprs.link_ok":            "connected and ready",
+	"aprs.link_down":          "not connected",
+	"aprs.link_off":           "not configured",
+	"aprs.link_disabled":      "disabled",
+	"meshtastic.device_ok":    "Device connected and ready",
+	"meshtastic.device_down":  "Device not connected",
+	"meshtastic.device":       "Device",
+	"meshtastic.last_error":   "Last error: %s",
 	"gsm.modem_ok":            "Modem connected and ready",
 	"gsm.modem_down":          "Modem not connected",
 	"gsm.modem_off":           "GSM disabled in the configuration",
@@ -373,8 +428,6 @@ var en = map[string]string{
 	"meshtastic.me":           "me",
 	"meshtastic.channel":      "Channel",
 	"meshtastic.hops":         "via %d hops",
-	"meshtastic.connected":    "Connected",
-	"meshtastic.disconnected": "Disconnected",
 	"meshtastic.send":         "Send",
 	"meshtastic.sent":         "Message accepted by the device — the delivery state updates in the history.",
 	"meshtastic.st_sent":      "sent",
@@ -1038,6 +1091,8 @@ var en = map[string]string{
 	"compose.update":                 "Update message",
 	"compose.expire":                 "Expire",
 	"compose.ph.event":               "Storm, Flood, …",
+	"compose.event_hint":             "Pick a suggestion or type your own name — a suggestion is a name every channel (mail, SMS, mesh, Discord, the public page) already translates.",
+	"compose.preview":                "Notifications will read:",
 	"compose.ph.headline":            "Short summary for the public page",
 	"compose.ph.areas":               "comma-separated slugs",
 	"compose.err.invalid_key":        "invalid event key",
@@ -1224,7 +1279,7 @@ var en = map[string]string{
 	"account.email":                "Email",
 	"account.discord":              "Discord",
 	"account.password":             "Password",
-	"account.password_note":        "Leave empty to keep the current password. The role is managed by an administrator.",
+	"account.password_note":        "Leave empty to keep the current password. The role is managed by an administrator; changing the password signs you out of every session, including this one.",
 	"account.new_password":         "New password",
 	"account.password_placeholder": "leave empty to keep the current one",
 	"account.groups":               "Notification groups",
@@ -1236,19 +1291,19 @@ var en = map[string]string{
 	"account.no_groups":            "No groups configured yet.",
 
 	// Login page.
-	"login.username": "Username",
+	"login.username": "Username or e-mail",
 	"login.password": "Password",
 	"login.forgot":   "Forgot password?",
 	"login.disabled": "Account creation is disabled.",
 	"login.back":     "← Back to the public page",
-	"login.error":    "Invalid username or password.",
+	"login.error":    "Invalid username/e-mail or password.",
 	"login.expired":  "Your session expired — please sign in again.",
 	"login.tagline":  "Alerts in. Action out.",
 	"login.reset_ok": "Password updated — sign in with your new password.",
 
 	// Forgot page.
 	"forgot.title": "Forgot password",
-	"forgot.hint":  "Enter your username and the email you registered with. We will send a reset link.",
+	"forgot.hint":  "Enter your username (or the e-mail address you sign in with) and the email registered on the account. We will send a reset link.",
 	"forgot.send":  "Send reset link",
 	"forgot.back":  "← Back to sign in", "forgot.email": "Registered email",
 	"forgot.note":        "A one-time link will be sent to the account's registered email address.",
@@ -1312,6 +1367,10 @@ var en = map[string]string{
 	"event.heat_warning":           "Heat warning",
 	"event.frost_warning":          "Frost warning",
 	"event.lightning_nearby":       "Lightning nearby",
+	"event.information":            "Information",
+	"event.hazard":                 "Hazard",
+	"event.weather_alert":          "Weather alert",
+	"event.test":                   "Test",
 	"severity.extreme":             "extreme",
 
 	// Notification boilerplate (email subjects and bodies).
@@ -1421,6 +1480,7 @@ var pl = map[string]string{
 	"help.messages.title":   "Komunikaty",
 	"help.messages.1":       "Nowy komunikat wydasz przyciskiem Nowa wiadomość; tutaj je edytujesz i wygaszasz.",
 	"help.messages.2":       "Poniżej wydanych są aktywne alerty z innych źródeł — nieistotny wygaszisz przyciskiem Wygasz.",
+	"help.messages.3":       "Formularz komunikatu podpowiada standardowe typy zdarzeń i pokazuje linię powiadomienia jeszcze przed wysłaniem: nagłówek powtarzający typ zdarzenia jest drukowany raz, a nazwa z podpowiedzi jest tłumaczona dla każdego odbiorcy.",
 	"help.emcom.title":      "Sieci EMCOM",
 	"help.emcom.1":          "Każda sieć ma poziom gotowości 0–3: przesuń suwak i zapisz.",
 	"help.emcom.2":          "Poziom zmienisz tylko, gdy obejmuje Cię przypisana grupa — grupy przypisuje administrator.",
@@ -1434,7 +1494,7 @@ var pl = map[string]string{
 	"help.meshtastic.1":     "Mapa węzłów i wiadomości; wysyłka i traceroute są tylko dla administratora.",
 	"help.meshtastic.2":     "Ustaw kanał grupowy na własnym urządzeniu, aby alerty grupowe docierały do Twojego węzła — nazwę kanału i klucz poda administrator. Alerty o ważności poważnej i wyższej dzwonią (🔔 + znak w treści); włącz w radiu powiadomienia zewnętrzne, aby Twój węzeł faktycznie dzwonił.",
 	"help.account.title":    "Konto",
-	"help.account.1":        "Tutaj edytujesz własne dane kontaktowe, hasło i kanały dostarczania. Nazwą użytkownika, rolą i członkostwem w grupach zarządza administrator.",
+	"help.account.1":        "Tutaj edytujesz własne dane kontaktowe, hasło i kanały dostarczania. Nazwą użytkownika, rolą i członkostwem w grupach zarządza administrator. Zalogujesz się nazwą użytkownika albo adresem e-mail zarejestrowanym na koncie; formularz resetu hasła pyta o jedno i drugie, a link do resetu zawsze idzie na ten zarejestrowany adres. Zmiana tego adresu unieważnia każdy link do resetu wysłany już na poprzedni.",
 	"help.access.title":     "Dostęp (admin)",
 	"help.access.1":         "Użytkownicy, role, grupy, członkostwa i macierz routingu.",
 	"help.config.title":     "Konfiguracja (admin)",
@@ -1571,6 +1631,17 @@ var pl = map[string]string{
 	"gsm.text":                                "Treść",
 	"gsm.text_ph":                             "Treść SMS",
 	"gsm.none":                                "Brak wiadomości SMS.",
+	"aprs.links_title":                        "Łącza APRS",
+	"aprs.is":                                 "APRS-IS",
+	"aprs.rf":                                 "RF (Direwolf)",
+	"aprs.link_ok":                            "połączone i gotowe",
+	"aprs.link_down":                          "brak połączenia",
+	"aprs.link_off":                           "nieskonfigurowane",
+	"aprs.link_disabled":                      "wyłączone",
+	"meshtastic.device_ok":                    "Urządzenie połączone i gotowe",
+	"meshtastic.device_down":                  "Urządzenie niepołączone",
+	"meshtastic.device":                       "Urządzenie",
+	"meshtastic.last_error":                   "Ostatni błąd: %s",
 	"gsm.modem_ok":                            "Modem połączony i gotowy",
 	"gsm.modem_down":                          "Modem niepołączony",
 	"gsm.modem_off":                           "GSM wyłączone w konfiguracji",
@@ -1592,8 +1663,6 @@ var pl = map[string]string{
 	"meshtastic.me":                           "ja",
 	"meshtastic.channel":                      "Kanał",
 	"meshtastic.hops":                         "przez %d przeskoków",
-	"meshtastic.connected":                    "Połączony",
-	"meshtastic.disconnected":                 "Rozłączony",
 	"meshtastic.send":                         "Wyślij",
 	"meshtastic.sent":                         "Urządzenie przyjęło wiadomość — stan dostarczenia aktualizuje się w historii.",
 	"meshtastic.st_sent":                      "nadano",
@@ -2244,6 +2313,8 @@ var pl = map[string]string{
 	"compose.update":                 "Zaktualizuj komunikat",
 	"compose.expire":                 "Wygasz",
 	"compose.ph.event":               "Burza, powódź, …",
+	"compose.event_hint":             "Wybierz podpowiedź albo wpisz własną nazwę — podpowiedź jest nazwą, którą każdy kanał (mail, SMS, mesh, Discord, strona publiczna) już tłumaczy.",
+	"compose.preview":                "Powiadomienie wyjdzie jako:",
 	"compose.ph.headline":            "Krótkie podsumowanie dla strony publicznej",
 	"compose.ph.areas":               "nazwy oddzielone przecinkami",
 	"compose.err.invalid_key":        "nieprawidłowy klucz zdarzenia",
@@ -2425,7 +2496,7 @@ var pl = map[string]string{
 	"account.email":                "E-mail",
 	"account.discord":              "Discord",
 	"account.password":             "Hasło",
-	"account.password_note":        "Pozostaw puste, aby zachować obecne hasło. Rolą zarządza administrator.",
+	"account.password_note":        "Pozostaw puste, aby zachować obecne hasło. Rolą zarządza administrator; zmiana hasła wylogowuje ze wszystkich sesji, także z tej.",
 	"account.new_password":         "Nowe hasło",
 	"account.password_placeholder": "pozostaw puste, aby zachować obecne",
 	"account.groups":               "Grupy powiadomień",
@@ -2436,18 +2507,18 @@ var pl = map[string]string{
 	"account.saved":                "Konto zaktualizowane.",
 	"account.no_groups":            "Nie skonfigurowano jeszcze żadnych grup.",
 
-	"login.username": "Nazwa użytkownika",
+	"login.username": "Nazwa użytkownika lub e-mail",
 	"login.password": "Hasło",
 	"login.forgot":   "Nie pamiętasz hasła?",
 	"login.disabled": "Tworzenie kont jest wyłączone.",
 	"login.back":     "← Wróć do strony publicznej",
-	"login.error":    "Nieprawidłowa nazwa użytkownika lub hasło.",
+	"login.error":    "Nieprawidłowa nazwa użytkownika/e-mail lub hasło.",
 	"login.expired":  "Twoja sesja wygasła — zaloguj się ponownie.",
 	"login.tagline":  "Alerty wchodzą. Akcja rusza.",
 	"login.reset_ok": "Hasło zaktualizowane — zaloguj się nowym hasłem.",
 
 	"forgot.title":       "Odzyskiwanie hasła",
-	"forgot.hint":        "Podaj nazwę użytkownika i e-mail, na który się zarejestrowałeś. Wyślemy link do resetu.",
+	"forgot.hint":        "Podaj nazwę użytkownika (albo adres e-mail, którym się logujesz) i e-mail zarejestrowany na koncie. Wyślemy link do resetu.",
 	"forgot.send":        "Wyślij link resetujący",
 	"forgot.back":        "← Wróć do logowania",
 	"forgot.email":       "Zarejestrowany e-mail",
@@ -2512,6 +2583,10 @@ var pl = map[string]string{
 	"event.heat_warning":           "Ostrzeżenie przed upałem",
 	"event.frost_warning":          "Ostrzeżenie przed mrozem",
 	"event.lightning_nearby":       "Wyładowania w pobliżu",
+	"event.information":            "Informacja",
+	"event.hazard":                 "Zagrożenie",
+	"event.weather_alert":          "Alert pogodowy",
+	"event.test":                   "Test",
 	"severity.extreme":             "ekstremalne",
 
 	// Szablony powiadomień (tematy i treści e-maili).

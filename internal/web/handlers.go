@@ -511,6 +511,14 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, r *http.Request, errMsg,
 	})
 }
 
+// looksLikeEmail reports whether a login string is an e-mail address rather
+// than a username: the panel accepts both, and the address lookup only makes
+// sense for the former.
+func looksLikeEmail(login string) bool {
+	at := strings.IndexByte(login, '@')
+	return at > 0 && at < len(login)-1
+}
+
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	// The body is capped BEFORE it is parsed, so an anonymous request —
 	// including one that is already throttled — can never make the server
@@ -585,11 +593,31 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	// that role.
 	role := ""
 	var userID int64
+	// authVersion is the credential version the password was verified
+	// against; the session carries it and dies if the account moves on.
+	var authVersion int64
+	// sessionName is the CANONICAL account name that goes into the session:
+	// every authorization step and the account page look the user up by it
+	// (GetUserByUsername), so a session opened with the typed e-mail address
+	// would find no groups and no account at all.
+	sessionName := username
 	if checkUsername(username, s.cfg.Auth.Username) && checkPassword(password, s.cfg.Auth.Password) {
 		role = "admin"
 	} else if u, err := s.users.Authenticate(username, password); err == nil && u.Role != "" {
 		role = u.Role
 		userID = u.ID
+		authVersion = u.AuthVersion
+		sessionName = u.Username
+	} else if looksLikeEmail(acct) {
+		// The operator typed the account's e-mail address as the login (the
+		// panel answers the same credentials either way). Only when that
+		// address identifies exactly ONE account — see AuthenticateByEmail.
+		if u, err := s.users.AuthenticateByEmail(username, password); err == nil && u.Role != "" {
+			role = u.Role
+			userID = u.ID
+			authVersion = u.AuthVersion
+			sessionName = u.Username
+		}
 	}
 
 	if role == "" {
@@ -604,7 +632,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.loginLimiter.record("acct\x00"+acct, true)
-	token, _, err := s.sessions.newSession(userID, username, role)
+	token, _, err := s.sessions.newSession(userID, sessionName, role, authVersion)
 	if err != nil {
 		if errors.Is(err, errSessionCapacity) {
 			http.Error(w, "session capacity exhausted, try again later", http.StatusServiceUnavailable)
@@ -614,7 +642,13 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	s.audit(username, "login", "role="+role)
+	// The audit names the account (so its rows line up with every later
+	// action) and keeps the identifier that was typed while they differ.
+	detail := "role=" + role
+	if !strings.EqualFold(sessionName, username) {
+		detail += " login=" + logValue(username)
+	}
+	s.audit(sessionName, "login", detail)
 	s.sessions.setSessionCookie(w, token)
 	http.Redirect(w, r, landingForRole(role), http.StatusSeeOther)
 }

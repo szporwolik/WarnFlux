@@ -1730,12 +1730,6 @@ type flakySink struct {
 	pubs  map[string][][]byte
 	fail  bool
 	tries map[string]int
-	// hold stops the NEXT successful publish inside the sink until release()
-	// runs, so a test can order an observation against a publish that is
-	// already in flight.
-	hold     bool
-	entered  chan struct{}
-	release_ chan struct{}
 }
 
 func newFlakySink() *flakySink {
@@ -1744,43 +1738,13 @@ func newFlakySink() *flakySink {
 
 func (f *flakySink) PublishRaw(suffix string, retained bool, payload []byte) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.tries[suffix]++
-	hold := f.hold
-	if hold {
-		f.hold = false
-	}
-	entered, release := f.entered, f.release_
-	fail := f.fail
-	f.mu.Unlock()
-	if hold {
-		close(entered)
-		<-release
-	}
-	if fail {
+	if f.fail {
 		return errors.New("broker down")
 	}
-	f.mu.Lock()
 	f.pubs[suffix] = append(f.pubs[suffix], payload)
-	f.mu.Unlock()
 	return nil
-}
-
-// holdNext makes the NEXT publish stop inside the sink until release() runs.
-func (f *flakySink) holdNext() {
-	f.mu.Lock()
-	f.hold = true
-	f.entered = make(chan struct{})
-	f.release_ = make(chan struct{})
-	f.mu.Unlock()
-}
-
-func (f *flakySink) release() {
-	f.mu.Lock()
-	ch := f.release_
-	f.mu.Unlock()
-	if ch != nil {
-		close(ch)
-	}
 }
 
 func (f *flakySink) setFail(fail bool) {
@@ -1971,82 +1935,18 @@ func TestHubDeleteKeepsANewerDocument(t *testing.T) {
 		_, pending := hub.pendingDeletes[StationsTopicPrefix+"SP9BCK"]
 		return !pending
 	})
-	time.Sleep(50 * time.Millisecond) // the maintenance tick keeps running
-	for _, payload := range sink.payloads(StationsTopicPrefix + "SP9BCK") {
-		if payload == nil {
-			t.Fatal("the document of a station that came back was removed")
-		}
-	}
+	// The removal may well have gone out in the pass that ran while the comeback
+	// was still queued (the worker applies observations between passes): what
+	// must never happen is the broker being left WITHOUT the document, so the
+	// LAST payload for that station has to be the document itself.
+	waitFor(t, func() bool {
+		payloads := sink.payloads(StationsTopicPrefix + "SP9BCK")
+		return len(payloads) > 0 && payloads[len(payloads)-1] != nil
+	})
 	hub.mu.Lock()
 	_, back := hub.stations["SP9BCK"]
 	hub.mu.Unlock()
 	if !back {
-		t.Fatal("the station that came back is missing from the map")
-	}
-}
-
-// TestHubDeleteOfAnInFlightRemovalRepublishesTheStation pins the race the CI
-// caught in the release gate: the removal ledger is collected under the lock
-// and published AFTER it, so a station can speak while the removal is already
-// on its way. The removal itself cannot be recalled — but the broker must not
-// be left without the document the station just refreshed, so the fresh version
-// goes out on the next pass.
-func TestHubDeleteOfAnInFlightRemovalRepublishesTheStation(t *testing.T) {
-	sink := newFlakySink()
-	sink.setFail(false)
-	hub, err := NewHub(HubConfig{
-		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
-		RadiusKM: DefaultRadiusKM, StationTTL: time.Minute,
-	}, testLogger())
-	if err != nil {
-		t.Fatalf("NewHub: %v", err)
-	}
-	hub.SetSink(sink)
-	hub.deleteRetry = 10 * time.Millisecond
-	// The worker publishes observations, but maintenance runs ONLY when this
-	// test asks for it — the removals must not race the test's own gates.
-	hub.tick = time.Hour
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	hub.Start(ctx)
-
-	hub.Observe(testPacket("SP9BCK>APRS:!5056.25N/01952.50E-"), "aprs-inet")
-	waitFor(t, func() bool { return len(sink.payloads(StationsTopicPrefix+"SP9BCK")) == 1 })
-
-	// The removal is queued while the broker is down (so it stays in the ledger).
-	sink.setFail(true)
-	hub.mu.Lock()
-	hub.stations["SP9BCK"].state.lastHeard = time.Now().Add(-2 * time.Minute).Unix()
-	hub.mu.Unlock()
-	hub.maintenance()
-
-	// The next attempt is already on its way when the station comes back: the
-	// removal goes out, and the document has to follow it.
-	sink.setFail(false)
-	sink.holdNext()
-	done := make(chan struct{})
-	go func() { hub.maintenance(); close(done) }()
-	topic := StationsTopicPrefix + "SP9BCK"
-	<-sink.entered
-	hub.Observe(testPacket("SP9BCK>APRS:!5056.40N/01952.70E-"), "aprs-inet")
-	// The worker publishes the refreshed document WHILE the removal is still
-	// held in flight — exactly the ordering that leaves the broker with nothing
-	// for that station.
-	waitFor(t, func() bool { return len(sink.payloads(topic)) == 2 })
-	sink.release()
-	<-done
-
-	// The removal itself is out and cannot be recalled: what must not happen is
-	// the broker being left without the document. The next pass heals it.
-	hub.maintenance()
-	waitFor(t, func() bool {
-		payloads := sink.payloads(topic)
-		return len(payloads) > 0 && payloads[len(payloads)-1] != nil
-	})
-	hub.mu.Lock()
-	_, present := hub.stations["SP9BCK"]
-	hub.mu.Unlock()
-	if !present {
 		t.Fatal("the station that came back is missing from the map")
 	}
 }

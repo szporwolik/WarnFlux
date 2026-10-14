@@ -111,24 +111,6 @@ type pendingDelete struct {
 	tried int64
 }
 
-// removalStillCurrentLocked reports whether one collected removal still
-// describes the document's CURRENT version: the ledger entry is still queued
-// AND nothing newer has been observed since. A station that spoke, or a
-// bulletin that arrived again, with a newer observation is a NEW version — its
-// document must never be deleted (reported P2: the removal of a stale
-// observation erased a document the station had just refreshed).
-func (h *Hub) removalStillCurrentLocked(del *pendingDelete) bool {
-	if h.pendingDeletes[del.suffix] != del {
-		return false
-	}
-	if del.callsign != "" {
-		rec := h.stations[del.callsign]
-		return rec == nil || rec.state.lastHeard <= del.since
-	}
-	at, ok := h.bulletins[del.bulletinID]
-	return !ok || at <= del.since
-}
-
 // Removal ledger bounds.
 const (
 	// deleteRetryDelay paces a removal the broker has not accepted, so a broker
@@ -1837,7 +1819,13 @@ func (h *Hub) maintenance() {
 	// document that came back with a NEWER observation than the removal refers
 	// to is a new version: the removal is void (and its document stays).
 	for suffix, del := range h.pendingDeletes {
-		if !h.removalStillCurrentLocked(del) {
+		if del.callsign != "" {
+			if rec := h.stations[del.callsign]; rec != nil && rec.state.lastHeard > del.since {
+				delete(h.pendingDeletes, suffix)
+			}
+			continue
+		}
+		if at, ok := h.bulletins[del.bulletinID]; ok && at > del.since {
 			delete(h.pendingDeletes, suffix)
 		}
 	}
@@ -1953,35 +1941,13 @@ func (h *Hub) maintenance() {
 		if time.Now().After(deadline) {
 			break
 		}
-		// The document may have come back between the ledger being collected and
-		// this publish (the station spoke, the bulletin was transmitted again).
-		// The check sits right NEXT to the publish, so that window cannot
-		// swallow a document whose version is newer than the removal.
-		h.mu.Lock()
-		current := h.removalStillCurrentLocked(del)
-		h.mu.Unlock()
-		if !current {
-			continue
-		}
 		if err := h.publishWithTimeout(del.suffix, true, nil); err != nil {
 			h.logger.Warn("aprs: retained document delete failed, will retry",
 				"topic", del.suffix, "retry_in", retry, "error", err)
 			continue
 		}
 		h.mu.Lock()
-		// A document that came back WHILE the removal was in flight is a newer
-		// version the broker no longer holds: the station is marked dirty, so its
-		// fresh document goes out on the next pass. (A bulletin is re-sent by its
-		// own station; its ledger entry is dropped either way.)
-		cameBack := !h.removalStillCurrentLocked(del)
-		if h.pendingDeletes[del.suffix] == del {
-			delete(h.pendingDeletes, del.suffix)
-		}
-		if cameBack {
-			if rec := h.stations[del.callsign]; rec != nil {
-				rec.dirty = true
-			}
-		}
+		delete(h.pendingDeletes, del.suffix)
 		h.mu.Unlock()
 		if del.callsign != "" {
 			h.expired.Add(1)

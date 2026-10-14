@@ -87,6 +87,12 @@ type MeshtasticNode struct {
 	// removed: the row keeps the removal alive after the node itself left the
 	// directory (nodeDirRetention), and across a restart.
 	PendingRemoval bool
+	// RemovedSince is the observation whose retained document the broker
+	// CONFIRMED removing. It is what keeps a restart from re-queueing the
+	// removal of a document that is already gone (that repeated work was
+	// counting as a "drop" on every restart), while a node heard after this
+	// observation becomes eligible again.
+	RemovedSince time.Time
 	// PendingSince is the observation the pending removal refers to (the
 	// node's LastSeen when it was queued). It is stored SEPARATELY from
 	// LastSeen because the node may have been heard again since: a restored

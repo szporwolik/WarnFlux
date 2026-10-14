@@ -286,6 +286,60 @@ func TestProfileUpdateKeepsTheAdminsDecision(t *testing.T) {
 	}
 }
 
+// TestRefusedResetKeepsTheCurrentLink pins the reported P2: the opportunistic
+// prune of the account's older links ran BEFORE the address check, so a late
+// request holding the PREVIOUS mailbox was refused only after it had already
+// deleted the link the account had just been sent for its current one. A
+// refused request must change nothing.
+func TestRefusedResetKeepsTheCurrentLink(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "refused.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := store.CreateUser("alice", "", "alice@example.com", "", "member", "start-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The link for the address the account carries now.
+	token := issueResetToken(t, store, u.ID)
+	if err := store.PeekPasswordReset(token); err != nil {
+		t.Fatalf("PeekPasswordReset: %v", err)
+	}
+
+	// A late request that still holds the account's PREVIOUS address is
+	// refused, and the refusal leaves the account untouched.
+	if _, err := store.CreatePasswordReset(u.ID, "previous@example.com"); !errors.Is(err, storage.ErrRecoveryEmailChanged) {
+		t.Fatalf("request for the previous address = %v, want ErrRecoveryEmailChanged", err)
+	}
+	if err := store.PeekPasswordReset(token); err != nil {
+		t.Fatalf("the refused request deleted the current link: %v", err)
+	}
+	if _, err := store.ResetPasswordWithToken(token, "after-refusal-2"); err != nil {
+		t.Fatalf("the current link is no longer usable: %v", err)
+	}
+	if _, err := store.Authenticate("alice", "after-refusal-2"); err != nil {
+		t.Errorf("the password set by the current link does not authenticate: %v", err)
+	}
+
+	// A request for the CURRENT address still replaces the account's link.
+	fresh := issueResetToken(t, store, u.ID)
+	var live int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM password_resets WHERE user_id = ?`, u.ID).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 1 {
+		t.Errorf("live reset links = %d, want the one just issued", live)
+	}
+	if _, err := store.ResetPasswordWithToken(fresh, "after-second-link-3"); err != nil {
+		t.Fatalf("the freshly issued link = %v", err)
+	}
+}
+
 // TestResetTokenIsSingleUseUnderConcurrency pins the reported P2: checking
 // the token and marking it used were separate statements, so one link
 // submitted from many places at once was accepted over and over (the

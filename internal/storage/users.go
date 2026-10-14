@@ -40,7 +40,8 @@ var (
 	// ErrRecoveryEmailChanged is returned when a reset token is requested
 	// for an account whose recovery address has meanwhile moved: the
 	// request describes a mailbox the account no longer uses, so no link
-	// may be issued for it.
+	// may be issued for it — and the refusal leaves the account (its
+	// current, valid link included) exactly as it was.
 	ErrRecoveryEmailChanged = errors.New("recovery address changed")
 )
 
@@ -292,7 +293,9 @@ type UserStore interface {
 	SetUserPassword(userID int64, password string) error
 	// CreatePasswordReset issues a one-time reset token for the user and
 	// returns its plaintext form (the store keeps only a hash). Expired
-	// tokens are pruned opportunistically.
+	// tokens are pruned opportunistically, and the account's other links
+	// are replaced by the new one; a REFUSED request (see
+	// ErrRecoveryEmailChanged) changes nothing at all.
 	//
 	// expectedEmail is the recovery address the caller is about to mail the
 	// link to; the token is created ONLY while the account still carries

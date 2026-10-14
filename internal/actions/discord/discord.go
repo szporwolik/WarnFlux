@@ -154,10 +154,21 @@ func New(node *yaml.Node) (action.Plugin, error) {
 		return nil, err
 	}
 	a := &discordAction{
-		url:        u,
-		username:   strings.TrimSpace(cfg.Username),
-		token:      token,
-		client:     &http.Client{Timeout: timeout},
+		url:      u,
+		username: strings.TrimSpace(cfg.Username),
+		token:    token,
+		client: &http.Client{
+			Timeout: timeout,
+			// A message is delivered by the response to THIS request. With
+			// the default policy a 3xx is followed as a bodyless GET: a
+			// webhook that answered 302 towards a login page answered 200 in
+			// the end and the alert was reported delivered although it never
+			// arrived (reported P2). The redirect is surfaced as the failure
+			// it is.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		invite:     invite,
 		logger:     slog.Default(),
 		dmChannels: map[string]string{},

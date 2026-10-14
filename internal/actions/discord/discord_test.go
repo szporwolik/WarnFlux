@@ -3,11 +3,13 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,6 +123,43 @@ func TestExecuteNon2xxFails(t *testing.T) {
 	}
 	if err := p.Execute(context.Background(), hazardRequest()); err == nil || !strings.Contains(err.Error(), "500") {
 		t.Errorf("Execute = %v, want a 500 error", err)
+	}
+}
+
+// TestExecuteDoesNotFollowRedirects pins the reported P2: a webhook that
+// answers 3xx used to be followed as a bodyless GET — the login page answered
+// 200 and the action reported success although the message never arrived. A
+// redirect is a delivery FAILURE, so the retry machinery sees it.
+func TestExecuteDoesNotFollowRedirects(t *testing.T) {
+	for _, code := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			var followed atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					followed.Add(1)
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				w.Header().Set("Location", "/login")
+				w.WriteHeader(code)
+			}))
+			defer srv.Close()
+
+			p, err := New(node(t, map[string]any{"url": srv.URL}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = p.Execute(context.Background(), hazardRequest())
+			if err == nil {
+				t.Fatalf("%d ended the action successfully", code)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", code)) {
+				t.Errorf("Execute = %v, want the %d answer", err, code)
+			}
+			if followed.Load() != 0 {
+				t.Errorf("the client followed the redirect: %d GET requests", followed.Load())
+			}
+		})
 	}
 }
 

@@ -222,6 +222,10 @@ func (s *Store) CreateUser(username, phone, email, discord, role, password strin
 // non-empty) the password of a regular user. The admin row's identity is
 // config-owned (username, role and password never change here), but its
 // contact fields (phone, email, discord) still update.
+//
+// A password change and a change of the recovery address both end the
+// outstanding password-reset links of the account, in the same
+// transaction as the edit itself.
 func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, password string) (storage.User, error) {
 	var isAdmin int
 	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, id).Scan(&isAdmin)
@@ -232,6 +236,9 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 		return storage.User{}, fmt.Errorf("inspect user %d: %w", id, err)
 	}
 	if isAdmin != 0 {
+		// The admin row is config-owned and can never own a reset link
+		// (CreatePasswordReset refuses it), so editing its contact fields
+		// cannot leave a live token behind.
 		res, err := s.db.Exec(`
 			UPDATE users SET phone = ?, email = ?, discord = ?, updated_at_ms = ?
 			WHERE id = ? AND is_admin = 1`,
@@ -285,7 +292,22 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 		return s.afterUpdate(res, id)
 	}
 
-	res, err := s.db.Exec(`
+	// An edit that leaves the password alone still closes the recovery
+	// path when it moves the account to another mailbox: a link mailed to
+	// the previous address must not set a password on an account that
+	// address no longer belongs to. The edit and the purge commit
+	// together, exactly like a password change.
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return storage.User{}, fmt.Errorf("begin update user %d: %w", id, err)
+	}
+	defer tx.Rollback()
+	addressChanged, err := emailChangeTx(ctx, tx, id, email)
+	if err != nil {
+		return storage.User{}, err
+	}
+	res, err := tx.ExecContext(ctx, `
 		UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?, updated_at_ms = ?
 		WHERE id = ? AND is_admin = 0`,
 		username, phone, email, discord, role, now, id)
@@ -295,7 +317,30 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 		}
 		return storage.User{}, fmt.Errorf("update user %d: %w", id, err)
 	}
+	if addressChanged {
+		if err := purgePasswordResetsTx(ctx, tx, id); err != nil {
+			return storage.User{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return storage.User{}, fmt.Errorf("commit update user %d: %w", id, err)
+	}
 	return s.afterUpdate(res, id)
+}
+
+// emailChangeTx reports whether an edit replaces the account's recovery
+// address. Addresses are compared the way the store matches them
+// elsewhere: case-insensitively and ignoring surrounding blanks.
+func emailChangeTx(ctx context.Context, q queryRower, id int64, email string) (bool, error) {
+	var current string
+	err := q.QueryRowContext(ctx, `SELECT email FROM users WHERE id = ?`, id).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect user %d recovery address: %w", id, err)
+	}
+	return !strings.EqualFold(strings.TrimSpace(current), strings.TrimSpace(email)), nil
 }
 
 // afterUpdate maps an UPDATE result to the refreshed user or the precise

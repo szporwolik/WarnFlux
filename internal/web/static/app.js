@@ -3538,13 +3538,15 @@
       var entries = data.entries || [];
       rows.textContent = "";
       entries.forEach(function (e) {
-        var tr = document.createElement("tr");
-        tr.appendChild(cell(e.topic, "mono"));
-        tr.appendChild(cell(String(e.qos)));
-        tr.appendChild(cell(e.retained ? tr("common.yes") : tr("common.no"), e.retained ? "browse-ret" : ""));
-        tr.appendChild(cell(e.size + " B"));
-        tr.appendChild(payloadCell(e.payload || ""));
-        rows.appendChild(tr);
+        // The row is named "row", never "tr": a local named tr would shadow
+        // the tr() translation helper and throw on the first cell.
+        var row = document.createElement("tr");
+        row.appendChild(cell(e.topic, "mono"));
+        row.appendChild(cell(String(e.qos)));
+        row.appendChild(cell(e.retained ? tr("common.yes") : tr("common.no"), e.retained ? "browse-ret" : ""));
+        row.appendChild(cell(e.size + " B"));
+        row.appendChild(payloadCell(e.payload || ""));
+        rows.appendChild(row);
       });
       results.hidden = false;
       statusEl.textContent = trf("traffic.messages_count", entries.length) + " · " +

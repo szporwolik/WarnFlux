@@ -185,3 +185,39 @@ func TestHubPeerKeyWaitWindowIsBounded(t *testing.T) {
 		t.Fatal("a stale wait was kept")
 	}
 }
+
+// peerKeySet reads the accessor the panel uses, as a set for easy assertions.
+func peerKeySet(h *Hub) map[string]bool {
+	out := map[string]bool{}
+	for _, id := range h.PeerKeyNodes() {
+		out[id] = true
+	}
+	return out
+}
+
+// TestHubPeerKeyNodesFollowsTheEvidence pins the key state the panel shows:
+// it comes from the device's own node table at the handshake and from every
+// NodeInfo heard afterwards — and an announcement WITHOUT a key takes the mark
+// back, because that is the state the radio will act on when a DM is sent.
+func TestHubPeerKeyNodesFollowsTheEvidence(t *testing.T) {
+	keyed := nodeInfo(0x6d2c8f6c, "SPM", "SPM")
+	keyed.User.PublicKey = bytes.Repeat([]byte{0x33}, 32)
+	keyless := nodeInfo(0xdeadbeef, "Bez klucza", "BK")
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour},
+		testRadioOpts{nodes: []*pb.NodeInfo{keyed, keyless}})
+	radio.waitConnected(t)
+	waitFor(t, "the handshake to record the peer key", func() bool { return peerKeySet(radio.hub)["6d2c8f6c"] })
+	if peerKeySet(radio.hub)["deadbeef"] {
+		t.Fatal("a node with no key in the device table was reported as keyed")
+	}
+
+	// An announcement adds a key the table did not have (the fresh-announce
+	// path: the radio learns it from the same packet).
+	dispatchPkt(t, radio, peerNodeInfo(0x11223344, "Nowy", "NEW", bytes.Repeat([]byte{0x44}, 32)))
+	waitFor(t, "the announced key", func() bool { return peerKeySet(radio.hub)["11223344"] })
+
+	// A later NodeInfo without a key withdraws the mark: the panel must not
+	// promise a direct message the radio will refuse.
+	dispatchPkt(t, radio, peerNodeInfo(0x6d2c8f6c, "SPM", "SPM", nil))
+	waitFor(t, "the withdrawn key", func() bool { return !peerKeySet(radio.hub)["6d2c8f6c"] })
+}

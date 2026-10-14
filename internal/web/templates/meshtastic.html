@@ -49,6 +49,11 @@
       <p class="home-none">{{tr .Lang "meshmap.disabled"}}</p>
       {{end}}
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast"></use></svg>{{tr .Lang "meshtastic.tab_nodes"}}</h2>
+      <div class="page-tabs" role="tablist" id="mesh-nodes-filter"
+           data-lbl-none="{{tr .Lang "meshtastic.nodes_none_pinned"}}">
+        <button type="button" class="page-tab active" role="tab" aria-selected="true" data-nodes="all">{{tr .Lang "meshtastic.nodes_all"}}</button>
+        <button type="button" class="page-tab" role="tab" aria-selected="false" data-nodes="pinned">{{tr .Lang "meshtastic.nodes_pinned"}}</button>
+      </div>
       <div id="mesh-nodes">
         {{template "mesh_nodes" .}}
       </div>

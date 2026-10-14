@@ -122,6 +122,35 @@ func newStationFeedHub(t *testing.T, sink *recordingStationSink) *Hub {
 	return h
 }
 
+// TestStationFeedWithoutAQueuePublishesInline pins the fallback for a hub that
+// was assembled without the constructor (a bare literal: an embedding, or a
+// test): there is no queue to hand the work to, so the operations have to go
+// out on the calling goroutine instead of being dropped.
+func TestStationFeedWithoutAQueuePublishesInline(t *testing.T) {
+	sink := newRecordingStationSink()
+	h := &Hub{cfg: Config{NodeTTL: time.Minute}, nodes: map[string]*Node{
+		"aaaa0009": {ID: "aaaa0009", Name: "visitor", Short: "VIS", LastSeen: time.Now().Add(-2 * time.Minute)},
+	}}
+	h.SetStationSink(sink.sink)
+	if h.feedQueue != nil {
+		t.Fatal("this hub was built without a queue on purpose")
+	}
+	h.mu.Lock()
+	n := h.nodes["aaaa0009"]
+	h.mu.Unlock()
+	h.publishStation(n)
+	// No waitFor here on purpose: with no worker both operations are already
+	// done by the time the calls return.
+	h.expireNodes()
+	ops := sink.operations()
+	if len(ops) != 2 {
+		t.Fatalf("operations = %v, want a document and then a removal", ops)
+	}
+	if ops[0] != "publish:meshtastic/stations/aaaa0009" || ops[1] != "remove:meshtastic/stations/aaaa0009" {
+		t.Fatalf("operations = %v, want publish then remove for the same node", ops)
+	}
+}
+
 // quietFor makes one node look unheard for d — and its last removal attempt
 // just as old, so the retry pace cannot hide the retry from the test.
 func quietFor(h *Hub, id string, d time.Duration) {

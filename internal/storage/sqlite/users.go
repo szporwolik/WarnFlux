@@ -17,7 +17,7 @@ import (
 )
 
 // userColumns is the canonical user column list for SELECTs.
-const userColumns = `id, username, phone, email, discord, is_admin, role, lang, created_at_ms, updated_at_ms`
+const userColumns = `id, username, phone, email, discord, is_admin, role, lang, created_at_ms, updated_at_ms, auth_version`
 
 // passwordIterations is the PBKDF2-HMAC-SHA256 iteration count used for
 // directory-user passwords (local, single-tenant scope).
@@ -225,7 +225,9 @@ func (s *Store) CreateUser(username, phone, email, discord, role, password strin
 //
 // A password change and a change of the recovery address both end the
 // outstanding password-reset links of the account, in the same
-// transaction as the edit itself.
+// transaction as the edit itself. An edit that re-passwords the account or
+// changes its role or username also raises its credential version, which
+// retires every session opened from an older one.
 func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, password string) (storage.User, error) {
 	var isAdmin int
 	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, id).Scan(&isAdmin)
@@ -274,7 +276,8 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 		defer tx.Rollback()
 		res, err := tx.ExecContext(ctx, `
 			UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?,
-				password_salt = ?, password_hash = ?, updated_at_ms = ?
+				password_salt = ?, password_hash = ?, updated_at_ms = ?,
+				auth_version = auth_version + 1
 			WHERE id = ? AND is_admin = 0`,
 			username, phone, email, discord, role, salt, hash, now, id)
 		if err != nil {
@@ -296,19 +299,22 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 	// path when it moves the account to another mailbox: a link mailed to
 	// the previous address must not set a password on an account that
 	// address no longer belongs to. The edit and the purge commit
-	// together, exactly like a password change.
+	// together, exactly like a password change. A new username or role
+	// retires the account's sessions through the credential version.
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return storage.User{}, fmt.Errorf("begin update user %d: %w", id, err)
 	}
 	defer tx.Rollback()
-	addressChanged, err := emailChangeTx(ctx, tx, id, email)
+	prev, err := previousIdentityTx(ctx, tx, id)
 	if err != nil {
 		return storage.User{}, err
 	}
+	addressChanged := !sameAddress(prev.email, email)
+	bumpVersion := prev.username != username || prev.role != role
 	res, err := tx.ExecContext(ctx, `
-		UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?, updated_at_ms = ?
+		UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?, updated_at_ms = ?`+versionBump(bumpVersion)+`
 		WHERE id = ? AND is_admin = 0`,
 		username, phone, email, discord, role, now, id)
 	if err != nil {
@@ -328,19 +334,43 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 	return s.afterUpdate(res, id)
 }
 
-// emailChangeTx reports whether an edit replaces the account's recovery
-// address. Addresses are compared the way the store matches them
-// elsewhere: case-insensitively and ignoring surrounding blanks.
-func emailChangeTx(ctx context.Context, q queryRower, id int64, email string) (bool, error) {
-	var current string
-	err := q.QueryRowContext(ctx, `SELECT email FROM users WHERE id = ?`, id).Scan(&current)
+// identityEdit is the account state an edit is about to replace: the recovery
+// address decides whether outstanding reset links die, the username and role
+// decide whether the account's sessions do.
+type identityEdit struct {
+	username string
+	email    string
+	role     string
+}
+
+// previousIdentityTx reads the state an edit replaces, inside the caller's
+// transaction.
+func previousIdentityTx(ctx context.Context, q queryRower, id int64) (identityEdit, error) {
+	var prev identityEdit
+	err := q.QueryRowContext(ctx, `SELECT username, email, role FROM users WHERE id = ?`, id).
+		Scan(&prev.username, &prev.email, &prev.role)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, storage.ErrUserNotFound
+		return identityEdit{}, storage.ErrUserNotFound
 	}
 	if err != nil {
-		return false, fmt.Errorf("inspect user %d recovery address: %w", id, err)
+		return identityEdit{}, fmt.Errorf("inspect user %d: %w", id, err)
 	}
-	return !strings.EqualFold(strings.TrimSpace(current), strings.TrimSpace(email)), nil
+	return prev, nil
+}
+
+// sameAddress compares two recovery addresses the way the store matches them
+// elsewhere: case-insensitively and ignoring surrounding blanks.
+func sameAddress(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// versionBump is the SQL fragment that retires the account's sessions, or an
+// empty string when the edit is not an identity change.
+func versionBump(bump bool) string {
+	if !bump {
+		return ""
+	}
+	return ", auth_version = auth_version + 1"
 }
 
 // afterUpdate maps an UPDATE result to the refreshed user or the precise
@@ -375,14 +405,18 @@ func (s *Store) AuthenticateByEmail(email, password string) (storage.User, error
 	return s.authenticate(`WHERE id = ?`, id, password)
 }
 
-// authenticate verifies the password of the row one selector names.
+// authenticate verifies the password of the row one selector names. The
+// returned user carries the credential version read in the SAME statement as
+// the hash it was verified against: the caller binds the session to that
+// version, so a password change landing after the verification (but before
+// the session exists) leaves the session unusable instead of valid.
 func (s *Store) authenticate(where string, arg any, password string) (storage.User, error) {
-	var id, isAdmin int64
+	var id, isAdmin, authVersion int64
 	var role, saltHex, hashHex string
 	err := s.db.QueryRow(`
-		SELECT id, is_admin, role, password_salt, password_hash
+		SELECT id, is_admin, role, password_salt, password_hash, auth_version
 		FROM users `+where, arg).
-		Scan(&id, &isAdmin, &role, &saltHex, &hashHex)
+		Scan(&id, &isAdmin, &role, &saltHex, &hashHex, &authVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.User{}, storage.ErrBadCredentials
 	}
@@ -392,7 +426,30 @@ func (s *Store) authenticate(where string, arg any, password string) (storage.Us
 	if isAdmin != 0 || role == "" || saltHex == "" || hashHex == "" || !verifyPassword(password, saltHex, hashHex) {
 		return storage.User{}, storage.ErrBadCredentials
 	}
-	return s.userByID(id)
+	u, err := s.userByID(id)
+	if err != nil {
+		return storage.User{}, err
+	}
+	// The row is read again for the profile fields; its version may already
+	// be newer than the verified one, and the OLDER of the two is the honest
+	// answer: this session proved the credentials of that version.
+	u.AuthVersion = authVersion
+	return u, nil
+}
+
+// AuthVersion reports the account's current credential version. Sessions
+// carry the version their password was verified against; a mismatch means
+// the credentials or the role changed after that verification.
+func (s *Store) AuthVersion(userID int64) (int64, error) {
+	var v int64
+	err := s.db.QueryRow(`SELECT auth_version FROM users WHERE id = ?`, userID).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("auth version of user %d: %w", userID, err)
+	}
+	return v, nil
 }
 
 // passwordFields derives a fresh salt and the password hash for it.
@@ -871,7 +928,8 @@ func (s *Store) SetUserPassword(userID int64, password string) error {
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx, `
-		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?
+		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?,
+			auth_version = auth_version + 1
 		WHERE id = ? AND is_admin = 0`,
 		salt, hash, s.now().UnixMilli(), userID)
 	if err != nil {
@@ -994,7 +1052,8 @@ func (s *Store) ResetPasswordWithToken(token, password string) (int64, error) {
 		return 0, storage.ErrUserProtected
 	}
 	res, err := tx.ExecContext(ctx, `
-		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?
+		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?,
+			auth_version = auth_version + 1
 		WHERE id = ? AND is_admin = 0`,
 		salt, hash, now, userID)
 	if err != nil {
@@ -1164,7 +1223,7 @@ func scanUser(sc userScanner) (storage.User, error) {
 		admin  int
 		ca, ua int64
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &u.Lang, &ca, &ua); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &u.Lang, &ca, &ua, &u.AuthVersion); err != nil {
 		return storage.User{}, err
 	}
 	u.IsAdmin = admin != 0

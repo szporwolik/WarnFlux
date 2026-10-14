@@ -37,7 +37,12 @@ type fakeUsers struct {
 	// failChannelOptOuts makes the channel write fail: the account handler
 	// must survive a preference write that blows up after a password change.
 	failChannelOptOuts error
-	resets             map[string]int64 // plaintext reset token -> userID
+	// authPause/authResume, when set, park every directory verification
+	// after the password was checked and before its result is returned —
+	// the window a password reset or a role change must cover.
+	authPause  chan struct{}
+	authResume chan struct{}
+	resets     map[string]int64 // plaintext reset token -> userID
 	// deliveries seeds the durable delivery-ledger rows served in the
 	// notifications details view (RecentDeliveries).
 	deliveries []storage.DeliveryRecord
@@ -158,6 +163,39 @@ func (f *fakeUsers) GetUserByUsername(username string) (storage.User, error) {
 	return storage.User{}, storage.ErrUserNotFound
 }
 
+// pauseAuthenticate parks the next directory verification after the password
+// check (nil clears the hook). It exists so a test can land a credential
+// change in the window between the verification and the session insert.
+func (f *fakeUsers) pauseAuthenticate(pause, resume chan struct{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authPause, f.authResume = pause, resume
+}
+
+// AuthVersion mirrors the store: the account's current credential version.
+func (f *fakeUsers) AuthVersion(userID int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.rows {
+		if u.ID == userID {
+			return u.AuthVersion, nil
+		}
+	}
+	return 0, storage.ErrUserNotFound
+}
+
+// bumpAuthVersionLocked mirrors the SQLite store: every edit that retires the
+// account's sessions (password, role, username) raises its version, so a
+// session opened from an older one fails its next credential check.
+func (f *fakeUsers) bumpAuthVersionLocked(userID int64) {
+	for i := range f.rows {
+		if f.rows[i].ID == userID {
+			f.rows[i].AuthVersion++
+			return
+		}
+	}
+}
+
 func (f *fakeUsers) CreateUser(username, phone, email, discord, role, password string) (storage.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -169,7 +207,7 @@ func (f *fakeUsers) CreateUser(username, phone, email, discord, role, password s
 	now := time.Now()
 	u := storage.User{
 		ID: f.nextID, Username: username, Phone: phone, Email: email, Discord: discord, Role: role,
-		CreatedAt: now, UpdatedAt: now,
+		AuthVersion: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	f.nextID++
 	f.rows = append(f.rows, u)
@@ -205,12 +243,16 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 			}
 		}
 		oldName := f.rows[i].Username
+		oldRole := f.rows[i].Role
 		f.rows[i].Username = username
 		f.rows[i].Phone = phone
 		f.rows[i].Email = email
 		f.rows[i].Discord = discord
 		f.rows[i].Role = role
 		f.rows[i].UpdatedAt = time.Now()
+		if password != "" || oldRole != role || oldName != username {
+			f.bumpAuthVersionLocked(id)
+		}
 		if password != "" {
 			f.passwords[username] = password
 		} else if username != oldName {
@@ -226,7 +268,20 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 
 func (f *fakeUsers) Authenticate(username, password string) (storage.User, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	pause, resume := f.authPause, f.authResume
+	u, err := f.verifyLocked(username, password)
+	f.mu.Unlock()
+	// The password is verified; the caller has not stored its session yet.
+	// A test parks here to let a reset or a role change land in between.
+	if pause != nil {
+		pause <- struct{}{}
+		<-resume
+	}
+	return u, err
+}
+
+// verifyLocked resolves one username/password pair against the fake's rows.
+func (f *fakeUsers) verifyLocked(username, password string) (storage.User, error) {
 	want, ok := f.passwords[username]
 	if !ok || want == "" {
 		return storage.User{}, storage.ErrBadCredentials
@@ -441,6 +496,7 @@ func (f *fakeUsers) SetUserPassword(userID int64, password string) error {
 			return storage.ErrUserProtected
 		}
 		f.passwords[u.Username] = password
+		f.bumpAuthVersionLocked(userID)
 		return nil
 	}
 	return storage.ErrUserNotFound
@@ -509,6 +565,7 @@ func (f *fakeUsers) ResetPasswordWithToken(token, password string) (int64, error
 		}
 		delete(f.resets, token)
 		f.passwords[u.Username] = password
+		f.bumpAuthVersionLocked(id)
 		return id, nil
 	}
 	return 0, storage.ErrUserNotFound

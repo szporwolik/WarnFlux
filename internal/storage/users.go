@@ -56,6 +56,11 @@ type User struct {
 	Discord  string
 	IsAdmin  bool
 	Role     string
+	// AuthVersion is the account's credential version: it is bumped by every
+	// change that invalidates sessions (password, role, username). A session
+	// remembers the version its password was verified against, so a login
+	// that began before such a change can never produce a usable session.
+	AuthVersion int64
 	// Lang is the user's preferred notification language (an i18n
 	// language code); "" means the system default language. Emails and
 	// direct Meshtastic messages are rendered in it.
@@ -208,6 +213,9 @@ type UserStore interface {
 	ListUsers(page, perPage int) ([]User, int, error)
 	// GetUser returns one user by ID.
 	GetUser(id int64) (User, error)
+	// AuthVersion reports the account's CURRENT credential version (see
+	// User.AuthVersion). Unknown accounts report ErrUserNotFound.
+	AuthVersion(userID int64) (int64, error)
 	// GetUserByUsername returns one user by username (case
 	// insensitive); unknown names report ErrUserNotFound.
 	GetUserByUsername(username string) (User, error)

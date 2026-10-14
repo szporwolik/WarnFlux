@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -1712,4 +1715,236 @@ func TestBulletinExpiry(t *testing.T) {
 		_, pubs := sink.byPrefix(BulletinsTopicPrefix)
 		return len(pubs) == 2 && pubs[1] == nil
 	})
+}
+
+// testLogger is a quiet logger for the paths that log (the hub logs through it
+// and a nil logger would panic).
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// flakySink is a broker that refuses publications until the test lets it work,
+// so a removal can be attempted during an outage and retried after it.
+type flakySink struct {
+	mu    sync.Mutex
+	pubs  map[string][][]byte
+	fail  bool
+	tries map[string]int
+}
+
+func newFlakySink() *flakySink {
+	return &flakySink{pubs: make(map[string][][]byte), tries: make(map[string]int), fail: true}
+}
+
+func (f *flakySink) PublishRaw(suffix string, retained bool, payload []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tries[suffix]++
+	if f.fail {
+		return errors.New("broker down")
+	}
+	f.pubs[suffix] = append(f.pubs[suffix], payload)
+	return nil
+}
+
+func (f *flakySink) setFail(fail bool) {
+	f.mu.Lock()
+	f.fail = fail
+	f.mu.Unlock()
+}
+
+func (f *flakySink) payloads(suffix string) [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.pubs[suffix]...)
+}
+
+func (f *flakySink) attempts(suffix string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tries[suffix]
+}
+
+// TestHubStationDeleteRetriesAfterBrokerRecovery pins the reported P2: the
+// station used to leave the map before its retained document was removed, so a
+// delete that failed during a broker outage was never retried — the obsolete
+// document stayed on the broker forever. The removal now waits in its own
+// ledger until the broker confirms it.
+func TestHubStationDeleteRetriesAfterBrokerRecovery(t *testing.T) {
+	sink := newFlakySink()
+	sink.setFail(false)
+	hub, err := NewHub(HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: time.Minute,
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	hub.SetSink(sink)
+	hub.tick = 20 * time.Millisecond
+	hub.deleteRetry = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub.Start(ctx)
+
+	hub.Observe(testPacket("SP9OLD>APRS:!5056.25N/01952.50E-"), "aprs-inet")
+	waitFor(t, func() bool { return len(sink.payloads(StationsTopicPrefix+"SP9OLD")) == 1 })
+
+	// The broker goes down and the station ages out: it leaves the map, the
+	// removal is attempted and the ledger keeps it.
+	sink.setFail(true)
+	hub.mu.Lock()
+	hub.stations["SP9OLD"].state.lastHeard = time.Now().Add(-2 * time.Minute).Unix()
+	hub.mu.Unlock()
+	waitFor(t, func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		_, pending := hub.pendingDeletes[StationsTopicPrefix+"SP9OLD"]
+		return pending && sink.attempts(StationsTopicPrefix+"SP9OLD") >= 2
+	})
+	hub.mu.Lock()
+	_, stillThere := hub.stations["SP9OLD"]
+	hub.mu.Unlock()
+	if stillThere {
+		t.Fatal("the expired station is still in the map")
+	}
+
+	// The broker comes back: the removal lands, and only then is it done.
+	sink.setFail(false)
+	waitFor(t, func() bool {
+		for _, payload := range sink.payloads(StationsTopicPrefix + "SP9OLD") {
+			if payload == nil {
+				return true
+			}
+		}
+		return false
+	})
+	if got := hub.Stats().Expired; got != 1 {
+		t.Fatalf("expired = %d, want 1 (counted only when the broker confirmed)", got)
+	}
+	hub.mu.Lock()
+	_, pending := hub.pendingDeletes[StationsTopicPrefix+"SP9OLD"]
+	hub.mu.Unlock()
+	if pending {
+		t.Fatal("the confirmed removal is still pending")
+	}
+}
+
+// TestHubBulletinDeleteRetriesAfterBrokerRecovery is the same rule for
+// bulletins: the retained document must not outlive the entry that was dropped
+// locally.
+func TestHubBulletinDeleteRetriesAfterBrokerRecovery(t *testing.T) {
+	sink := newFlakySink()
+	sink.setFail(false)
+	hub, err := NewHub(HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: 30 * time.Minute, BulletinTTL: time.Minute,
+		RouteMessages: true,
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	hub.SetSink(sink)
+	hub.tick = 20 * time.Millisecond
+	hub.deleteRetry = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub.Start(ctx)
+	hub.SetSenderGate(func(base string) bool { return base == "SP9XYZ" })
+
+	hub.Observe(ParseFeedLine("SP9XYZ-7>APRS,WIDE1-1*::BLN0     :ops bulletin", time.Now()), BackendRadio)
+
+	// Find the topic the bulletin was published under.
+	var id string
+	waitFor(t, func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		for bulletinID := range hub.bulletins {
+			id = bulletinID
+		}
+		return id != ""
+	})
+	topic := BulletinsTopicPrefix + id
+	waitFor(t, func() bool { return len(sink.payloads(topic)) == 1 })
+
+	// The broker goes down as the bulletin ages out: the removal stays pending.
+	sink.setFail(true)
+	hub.mu.Lock()
+	hub.bulletins[id] = time.Now().Add(-2 * time.Minute).Unix()
+	hub.mu.Unlock()
+	waitFor(t, func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		_, pending := hub.pendingDeletes[topic]
+		return pending && sink.attempts(topic) >= 2
+	})
+
+	sink.setFail(false)
+	waitFor(t, func() bool {
+		for _, payload := range sink.payloads(topic) {
+			if payload == nil {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestHubDeleteKeepsANewerDocument pins the protection the ledger needs: a
+// removal the broker has not confirmed yet must not delete the document of a
+// station that came back (a NEWER observation than the one the removal refers
+// to).
+func TestHubDeleteKeepsANewerDocument(t *testing.T) {
+	sink := newFlakySink()
+	sink.setFail(false)
+	hub, err := NewHub(HubConfig{
+		Enabled: true, Callsign: "SP9MOA-10", GridSquare: "JO90WW",
+		RadiusKM: DefaultRadiusKM, StationTTL: time.Minute,
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	hub.SetSink(sink)
+	hub.tick = 20 * time.Millisecond
+	hub.deleteRetry = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub.Start(ctx)
+
+	hub.Observe(testPacket("SP9BCK>APRS:!5056.25N/01952.50E-"), "aprs-inet")
+	waitFor(t, func() bool { return len(sink.payloads(StationsTopicPrefix+"SP9BCK")) == 1 })
+
+	// The removal is queued and fails (the broker is down) ...
+	sink.setFail(true)
+	hub.mu.Lock()
+	hub.stations["SP9BCK"].state.lastHeard = time.Now().Add(-2 * time.Minute).Unix()
+	hub.mu.Unlock()
+	waitFor(t, func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		_, pending := hub.pendingDeletes[StationsTopicPrefix+"SP9BCK"]
+		return pending
+	})
+
+	// ... and the station comes back before the broker does.
+	hub.Observe(testPacket("SP9BCK>APRS:!5056.30N/01952.60E-"), "aprs-inet")
+	sink.setFail(false)
+	waitFor(t, func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		_, pending := hub.pendingDeletes[StationsTopicPrefix+"SP9BCK"]
+		return !pending
+	})
+	time.Sleep(50 * time.Millisecond) // the maintenance tick keeps running
+	for _, payload := range sink.payloads(StationsTopicPrefix + "SP9BCK") {
+		if payload == nil {
+			t.Fatal("the document of a station that came back was removed")
+		}
+	}
+	hub.mu.Lock()
+	_, back := hub.stations["SP9BCK"]
+	hub.mu.Unlock()
+	if !back {
+		t.Fatal("the station that came back is missing from the map")
+	}
 }

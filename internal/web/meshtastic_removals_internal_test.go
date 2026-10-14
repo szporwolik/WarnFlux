@@ -11,9 +11,9 @@ import (
 )
 
 // TestMeshtasticRemovalBadges pins the station-feed metric on the page: the
-// status strip shows the removals the broker still owes, and — in red — the ones
-// the backlog bound had to abandon, so an operator sees a broker that stopped
-// taking removals instead of only finding it in the logs.
+// status strip shows the removals the broker still owes, the ones WAITING for
+// room in the ledger (the station's own backlog of quiet nodes — not a
+// failure), and — in red — the genuine overflow that had to be abandoned.
 func TestMeshtasticRemovalBadges(t *testing.T) {
 	srv := &Server{}
 	tmpl, err := template.New("root").Funcs(srv.templateFuncs()).ParseFS(templatesFS, "templates/*.html")
@@ -47,7 +47,24 @@ func TestMeshtasticRemovalBadges(t *testing.T) {
 		t.Errorf("the pending backlog carries no explanation: %.400s", html)
 	}
 
-	// ... and abandoned removals are shown as a failure.
+	// A backlog longer than the ledger shows what is waiting, in the MUTED
+	// style: the documents are not lost, they have no room yet.
+	waiting := i18n.T("en", "meshtastic.removals_waiting_label")
+	html = render(meshtasticView{
+		Lang: "en",
+		Snap: mesh.Snapshot{Connected: true, PendingRemovals: 512, RemovalsWaiting: 310},
+	})
+	if !strings.Contains(html, label+" 512") || !strings.Contains(html, waiting+" 310") {
+		t.Errorf("the in-flight backlog and what waits for room are not both shown: %.400s", html)
+	}
+	if !strings.Contains(html, i18n.T("en", "meshtastic.removals_waiting")) {
+		t.Errorf("what waits carries no explanation of its own: %.400s", html)
+	}
+	if strings.Contains(html, `class="badge bad"`) {
+		t.Errorf("a waiting backlog is flagged as a failure: %.400s", html)
+	}
+
+	// ... and a genuine overflow IS shown as a failure.
 	html = render(meshtasticView{
 		Lang: "en",
 		Snap: mesh.Snapshot{Connected: true, PendingRemovals: 512, RemovalsDropped: 88},

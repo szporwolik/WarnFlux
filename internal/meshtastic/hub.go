@@ -450,8 +450,21 @@ type pendingSend struct {
 // keyWaitWindow bounds the wait for a peer key once the radio refused a
 // message for missing it. The NodeInfo refresh sent at the refusal is
 // answered by the peer's firmware — normally within seconds — and a key that
-// never lands leaves the message failed, exactly as before.
+// never lands leaves the message failed, exactly as before. Every queued
+// message carries its OWN deadline (see keyRetry.when), so a later message
+// never extends the wait of an older one.
 const keyWaitWindow = 5 * time.Minute
+
+// keyRetryPerPeer and keyRetryTotal bound the wait queue: how many messages
+// may wait for one peer's key, and how many may wait in the whole hub. Both
+// are small on purpose — a normal refusal is one or two messages the operator
+// just typed — and an overflow is REFUSED out loud (see awaitPeerKey): the
+// message stays failed with its reason, and the log says the retry could not
+// be remembered instead of the hub growing without a bound.
+const (
+	keyRetryPerPeer = 4
+	keyRetryTotal   = 32
+)
 
 // keyRetry is one direct message the radio refused because the recipient's
 // public key was absent from its node database. The station has already asked
@@ -973,10 +986,16 @@ type Hub struct {
 	nodeInfoAsked map[uint32]time.Time
 
 	// keyRetries holds the direct messages refused for a missing peer key,
-	// keyed by the peer: the NodeInfo refresh is already on its way and the
-	// message goes out again once that key lands (see retryAfterKey). Nil
-	// until the first such refusal.
-	keyRetries map[uint32]*keyRetry
+	// per peer and oldest first: the NodeInfo refresh is already on its way
+	// and those messages go out again once that key lands (see retryAfterKey).
+	// One peer can owe several of them (the operator sent two texts), so this
+	// is a queue, not a single slot — and it is BOUNDED in both directions
+	// (see keyRetryPerPeer/keyRetryTotal): a peer whose key never arrives must
+	// not grow the hub's memory. Nil until the first such refusal.
+	keyRetries map[uint32][]*keyRetry
+	// keyRetryPerPeerMax / keyRetryTotalMax override those bounds (tests).
+	keyRetryPerPeerMax int
+	keyRetryTotalMax   int
 
 	// userNodes supplies the node numbers registered in the user directory
 	// (nil = nothing to pin); pinNext arms the next pin pass.
@@ -3044,33 +3063,93 @@ func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
 // its FIRST such refusal: the retry is refused with the same reason when the
 // key was not the real problem, and re-arming the wait then would keep the
 // station re-sending the same text at every NodeInfo.
+//
+// One peer can owe SEVERAL messages (the operator sent two texts before the
+// key landed) and every one of them is kept — the queue is per peer, oldest
+// first, and each entry carries its own deadline. What is bounded is the
+// queue itself: past keyRetryPerPeer for one peer or keyRetryTotal for the
+// hub, the message is NOT remembered, and that overflow is logged instead of
+// being silent — the message keeps its failed row and its reason, so the
+// operator sees exactly which text stayed behind.
 func (h *Hub) awaitPeerKey(ps *pendingSend) {
 	if ps.keyTried || !ps.wantAck || ps.text == "" {
 		return
 	}
 	h.mu.Lock()
 	if h.keyRetries == nil {
-		h.keyRetries = make(map[uint32]*keyRetry)
+		h.keyRetries = make(map[uint32][]*keyRetry)
 	}
-	h.keyRetries[ps.to] = &keyRetry{ps: ps, when: h.clock()}
+	queue := h.keyRetries[ps.to]
+	queued := false
+	for _, kr := range queue {
+		if kr.ps == ps {
+			queued = true
+			break
+		}
+	}
+	perPeer, total := h.keyRetryPerPeer(), h.keyRetryTotal()
+	overflow := len(queue) >= perPeer || h.keyWaitsLocked() >= total
+	if !queued && !overflow {
+		h.keyRetries[ps.to] = append(queue, &keyRetry{ps: ps, when: h.clock()})
+	}
+	waiting, peers := len(queue), len(h.keyRetries)
 	h.mu.Unlock()
+	if queued || !overflow {
+		return
+	}
+	if h.logger != nil {
+		h.logger.Warn("meshtastic: too many messages wait for a peer key, this one stays failed",
+			"to", fmt.Sprintf("%08x", ps.to), "peer_waiting", waiting, "peer_limit", perPeer,
+			"peers_waiting", peers, "total_limit", total)
+	}
 }
 
-// takeKeyRetry hands over the message waiting for one peer's key, if any is
-// still within the window. The entry is consumed either way: a key that
-// arrives too late no longer belongs to the refusal that asked for it.
-func (h *Hub) takeKeyRetry(to uint32) *keyRetry {
+// keyWaitsLocked counts every message waiting for a key, across peers.
+func (h *Hub) keyWaitsLocked() int {
+	n := 0
+	for _, queue := range h.keyRetries {
+		n += len(queue)
+	}
+	return n
+}
+
+// keyRetryPerPeer and keyRetryTotal are the queue bounds (fields so tests can
+// shrink them).
+func (h *Hub) keyRetryPerPeer() int {
+	if h.keyRetryPerPeerMax > 0 {
+		return h.keyRetryPerPeerMax
+	}
+	return keyRetryPerPeer
+}
+
+func (h *Hub) keyRetryTotal() int {
+	if h.keyRetryTotalMax > 0 {
+		return h.keyRetryTotalMax
+	}
+	return keyRetryTotal
+}
+
+// takeKeyRetry hands over the messages waiting for one peer's key, oldest
+// first: every one of them was refused for that same missing key, and the
+// NodeInfo that just arrived is the answer for all of them. Entries whose
+// window ran out are dropped — a key that arrives too late no longer belongs
+// to the refusal that asked for it.
+func (h *Hub) takeKeyRetry(to uint32) []*keyRetry {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	kr := h.keyRetries[to]
-	if kr == nil {
+	queue := h.keyRetries[to]
+	if len(queue) == 0 {
 		return nil
 	}
 	delete(h.keyRetries, to)
-	if h.clock().Sub(kr.when) > keyWaitWindow {
-		return nil
+	now := h.clock()
+	out := make([]*keyRetry, 0, len(queue))
+	for _, kr := range queue {
+		if now.Sub(kr.when) <= keyWaitWindow {
+			out = append(out, kr)
+		}
 	}
-	return kr
+	return out
 }
 
 // retryAfterKey re-sends one direct message the radio refused for a missing
@@ -3099,15 +3178,31 @@ func (h *Hub) retryAfterKey(kr *keyRetry) {
 }
 
 // expireKeyRetries drops the waits whose window ran out: the refusal stands
-// and the operator re-sends by hand (the panel shows why it failed).
+// and the operator re-sends by hand (the panel shows why it failed). Each
+// entry has its own deadline, so an old refusal expires even when a newer
+// message to the same peer is still inside its window.
 func (h *Hub) expireKeyRetries(now time.Time) {
 	h.mu.Lock()
 	var expired []uint32
-	for to, kr := range h.keyRetries {
-		if now.Sub(kr.when) > keyWaitWindow {
-			delete(h.keyRetries, to)
-			expired = append(expired, to)
+	for to, queue := range h.keyRetries {
+		kept := queue[:0]
+		dropped := 0
+		for _, kr := range queue {
+			if now.Sub(kr.when) > keyWaitWindow {
+				dropped++
+				continue
+			}
+			kept = append(kept, kr)
 		}
+		if dropped == 0 {
+			continue
+		}
+		if len(kept) == 0 {
+			delete(h.keyRetries, to)
+		} else {
+			h.keyRetries[to] = kept
+		}
+		expired = append(expired, to)
 	}
 	h.mu.Unlock()
 	if len(expired) > 0 && h.logger != nil {
@@ -4080,7 +4175,11 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// encrypt direct messages: when one was refused for a missing key, this
 	// is the answer that refusal was waiting for.
 	if len(user.GetPublicKey()) > 0 {
-		h.retryAfterKey(h.takeKeyRetry(pkt.GetFrom()))
+		// Every message this peer owes an answer to goes out again: the key
+		// just arrived, and each of them was refused for missing exactly it.
+		for _, kr := range h.takeKeyRetry(pkt.GetFrom()) {
+			h.retryAfterKey(kr)
+		}
 	} else if asked && h.logger != nil {
 		// The station asked THIS peer for its NodeInfo and the answer
 		// carried no key: a direct message to it stays impossible until

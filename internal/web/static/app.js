@@ -4121,6 +4121,17 @@
 (function () {
   "use strict";
 
+  // A prefill the operator cannot see is useless: the send form lives in the
+  // Messages panel, while the clicked row may sit on another tab (the
+  // Meshtastic nodes table and the APRS directory are on the map tab). The
+  // panel is revealed first, exactly like the row's Message button does.
+  function revealSend(form) {
+    var panel = form.closest(".page-panel[data-panel]");
+    if (!panel || !panel.hidden) { return; }
+    var tab = document.querySelector('.page-tab[data-tab="' + panel.getAttribute("data-panel") + '"]');
+    if (tab) { tab.click(); }
+  }
+
   document.addEventListener("click", function (e) {
     var row = e.target && e.target.closest
       ? e.target.closest("tr.click-send[data-key]")
@@ -4136,6 +4147,7 @@
       var to = aprs.querySelector("input[name='to']");
       var aprsText = aprs.querySelector("input[name='text']");
       if (to && aprsText) {
+        revealSend(aprs);
         to.value = row.getAttribute("data-key");
         aprsText.focus();
         aprsText.scrollIntoView({ block: "nearest" });
@@ -4153,6 +4165,7 @@
       }
     });
     if (!contact || !text) { return; }
+    revealSend(contact.closest("form.mesh-send"));
     contact.value = row.getAttribute("data-key");
     contact.scrollIntoView({ block: "nearest" });
     text.focus();

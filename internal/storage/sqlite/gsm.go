@@ -57,7 +57,7 @@ func (s *Store) ListGSMMessages(ctx context.Context, direction string, limit, of
 		if err := rows.Scan(&m.ID, &m.Direction, &m.From, &m.To, &m.Text, &atMs); err != nil {
 			return nil, fmt.Errorf("scan gsm message: %w", err)
 		}
-		m.At = time.UnixMilli(atMs)
+		m.At = time.UnixMilli(atMs).UTC()
 		out = append(out, m)
 	}
 	return out, rows.Err()

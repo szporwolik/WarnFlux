@@ -1,11 +1,16 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"log/slog"
+	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
 // brokerGate is the ONE path through which the station publishes (and
@@ -30,6 +35,14 @@ import (
 // publication is serialized but never dropped and never raises the bar.
 type brokerGate struct {
 	pub composePublisher
+	// ledger is the DURABLE version bar (nil = memory only). The gate
+	// consults it when it holds no bar for a document — the entry was
+	// evicted from a full table, or the process restarted — so the
+	// ordering rule survives memory pressure instead of living in RAM
+	// only (reported P2). Without it a versioned entry is never evicted:
+	// dropping a bar nothing else can restore would let a delayed
+	// publication resurrect a retired alarm.
+	ledger gateLedger
 
 	mu   sync.Mutex
 	keys map[string]*gateKey
@@ -52,23 +65,39 @@ type gateKey struct {
 	seq  uint64
 }
 
-// gateKeyCap bounds the IDLE, never-versioned keys the gate keeps: a
-// publication without a version identity (an installation without local
-// storage, a document another station published) has nothing to remember,
-// so its entry only serves the race in flight and stays bounded over
-// years of messages. The entries that REMEMBER a version are the ordering
-// guard itself and are never dropped — losing one would let a delayed
-// publication resurrect a retired alarm (reported P2) — so the table
-// mirrors the published documents, not the messages.
+// gateKeyCap bounds the IDLE keys the gate keeps. A publication without a
+// version identity (an installation without local storage, a document
+// another station published) has nothing to remember, so its entry only
+// serves the race in flight. An entry that REMEMBERS a version is the
+// ordering guard itself: it may only be dropped where the durable ledger
+// can answer for it (reported P2).
 const gateKeyCap = 4096
+
+// gateEvictBatch is how many least recently used entries one eviction pass
+// frees: the scan cost is amortized over the batch instead of being paid
+// on every insertion once the table is full (reported P2).
+const gateEvictBatch = gateKeyCap / 8
+
+// gateLedgerTimeout bounds one durable version lookup: a slow or stuck
+// store must never block a publication (fail-open, like an unknown
+// document).
+const gateLedgerTimeout = 2 * time.Second
+
+// gateLedger is the durable lifecycle ledger the gate falls back to. It is
+// satisfied by the SQLite store (LifecycleSuperseded: "a newer version of
+// this message is already recorded").
+type gateLedger interface {
+	LifecycleSuperseded(ctx context.Context, publisher, eventKey string, changeID int64) (bool, error)
+}
 
 // errNoBroker is returned when the station has no MQTT publisher.
 var errNoBroker = errors.New("no broker publisher configured")
 
 // newBrokerGate builds the publication gate around the raw publisher
-// (nil = no broker configured).
-func newBrokerGate(pub composePublisher) *brokerGate {
-	return &brokerGate{pub: pub, keys: map[string]*gateKey{}}
+// (nil = no broker configured) and the durable version ledger (nil = the
+// gate orders from memory only).
+func newBrokerGate(pub composePublisher, ledger gateLedger) *brokerGate {
+	return &brokerGate{pub: pub, ledger: ledger, keys: map[string]*gateKey{}}
 }
 
 // key returns the gate of one message, creating it on first use, and
@@ -98,27 +127,86 @@ func (g *brokerGate) release(k *gateKey) {
 	g.mu.Unlock()
 }
 
-// makeRoom drops ONE idle key that remembers no version when the table is
-// full. The caller holds g.mu. Replacing the table wholesale — as the cap
-// used to do — threw away the remembered versions and the locks of
-// publications still in flight, so a delayed publication could put a
-// retired alarm back on the broker (reported P2).
+// makeRoom frees a batch of the least recently used evictable keys when
+// the table is full. The caller holds g.mu. Replacing the table wholesale
+// — as the cap used to do — threw away the remembered versions and the
+// locks of publications still in flight, so a delayed publication could
+// put a retired alarm back on the broker (reported P2).
 func (g *brokerGate) makeRoom() {
 	if len(g.keys) < gateKeyCap {
 		return
 	}
-	victim, oldest, found := "", uint64(0), false
+	type entry struct {
+		name string
+		seq  uint64
+	}
+	cand := make([]entry, 0, len(g.keys))
 	for name, k := range g.keys {
-		if k.refs > 0 || k.version != 0 {
-			continue
-		}
-		if !found || k.seq < oldest {
-			victim, oldest, found = name, k.seq, true
+		if g.evictable(name, k) {
+			cand = append(cand, entry{name: name, seq: k.seq})
 		}
 	}
-	if found {
-		delete(g.keys, victim)
+	if len(cand) == 0 {
+		return
 	}
+	sort.Slice(cand, func(i, j int) bool { return cand[i].seq < cand[j].seq })
+	for _, e := range cand[:min(gateEvictBatch, len(cand))] {
+		delete(g.keys, e.name)
+	}
+}
+
+// evictable reports whether one entry may be dropped: never while it is in
+// use, always when it remembers nothing, and — for an entry that DOES
+// remember a version — only when the durable ledger can restore the bar,
+// which the gate can ask for the retained hazard documents (their event
+// key is the ledger key). Info documents have no ledger identity of their
+// own, so those few entries stay (bounded by the configured networks).
+func (g *brokerGate) evictable(name string, k *gateKey) bool {
+	if k.refs > 0 {
+		return false
+	}
+	if k.version == 0 {
+		return true
+	}
+	return g.ledger != nil && strings.HasPrefix(name, "active:")
+}
+
+// superseded asks the durable ledger whether a newer version of the
+// publication's message is already recorded. An unavailable ledger, an
+// unknown document or an error all answer "no" (fail-open: the gate only
+// drops what it can prove is stale).
+func (g *brokerGate) superseded(name string, version int64) bool {
+	if g.ledger == nil || version <= 0 {
+		return false
+	}
+	eventKey, ok := ledgerEventKey(name)
+	if !ok {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gateLedgerTimeout)
+	defer cancel()
+	// An empty publisher makes the ledger resolve this instance's own row
+	// (panel and EMCOM documents are written under the instance identity).
+	stale, err := g.ledger.LifecycleSuperseded(ctx, "", eventKey, version)
+	if err != nil {
+		slog.Warn("broker gate: durable version lookup failed", "document", name, "error", err)
+		return false
+	}
+	return stale
+}
+
+// ledgerEventKey extracts the lifecycle event key of one gate document
+// name: "active:<source>:<event key>".
+func ledgerEventKey(name string) (string, bool) {
+	rest, ok := strings.CutPrefix(name, "active:")
+	if !ok {
+		return "", false
+	}
+	i := strings.IndexByte(rest, ':')
+	if i < 0 || i == len(rest)-1 {
+		return "", false
+	}
+	return rest[i+1:], true
 }
 
 // publish runs fn under the message's gate unless the version was already
@@ -135,12 +223,21 @@ func (g *brokerGate) publish(name string, version int64, fn func() error) error 
 	defer g.release(k)
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if version > 0 && version < k.version {
-		slog.Debug("broker publication superseded by a newer version",
-			"document", name, "version", version, "published", k.version)
-		return nil
-	}
 	if version > 0 {
+		if version < k.version {
+			slog.Debug("broker publication superseded by a newer version",
+				"document", name, "version", version, "published", k.version)
+			return nil
+		}
+		if k.version == 0 && g.superseded(name, version) {
+			// The bar is not in memory (this entry was evicted from a full
+			// table, or the process restarted) but the durable ledger still
+			// knows a newer version: publishing would put a superseded — a
+			// possibly retired — document back on the broker.
+			slog.Debug("broker publication superseded by a newer recorded version",
+				"document", name, "version", version)
+			return nil
+		}
 		k.version = version
 	}
 	return fn()
@@ -166,4 +263,13 @@ func (g *brokerGate) retireActive(source, eventKey string, version int64) error 
 func (g *brokerGate) publishInfo(suffix string, payload []byte, version int64) error {
 	return g.publish("info:"+suffix, version,
 		func() error { return g.pub.PublishRaw(suffix, true, payload) })
+}
+
+// lifecycleLedger returns the durable version ledger of the user store
+// when it has one (nil = the gate orders from memory only).
+func lifecycleLedger(store storage.DirectoryStore) gateLedger {
+	if l, ok := store.(gateLedger); ok {
+		return l
+	}
+	return nil
 }

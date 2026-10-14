@@ -21,8 +21,12 @@ const Type = "adsb"
 
 // Defaults and bounds.
 const (
-	defaultPollInterval   = 30 * time.Second
-	defaultRequestTimeout = 15 * time.Second
+	defaultPollInterval = 30 * time.Second
+	// defaultRequestTimeout covers a COLD connection to a distant API
+	// (fresh DNS/TCP/TLS setup, plus HTTP/2), which measured up to 8 seconds
+	// on a slow link: 15 seconds left no margin and produced "degraded"
+	// reports that said more about the network than about the provider.
+	defaultRequestTimeout = 30 * time.Second
 	defaultBaseAdsbLol    = "https://api.adsb.lol"
 	defaultTrackWindow    = 5 * time.Minute
 

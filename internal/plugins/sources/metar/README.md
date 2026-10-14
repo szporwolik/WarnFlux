@@ -22,7 +22,7 @@ appear on the weather map automatically — no coordinates are configured.
 
   config:
     poll_interval: 15m
-    request_timeout: 10s
+    request_timeout: 30s
     # base_url: "https://aviationweather.gov/api/data"   # tests only
 
     stations:
@@ -32,7 +32,21 @@ appear on the weather map automatically — no coordinates are configured.
 ```
 
 `poll_interval` must be between `5m` and `24h`; `station.id` must be a
-4-letter ICAO code.
+4-letter ICAO code; `request_timeout` may be up to `1m`.
+
+### Why the timeout is 30 seconds, and why the transport stays default
+
+The provider sits behind a distant edge, and every 15-minute poll starts from
+a COLD connection: fresh DNS, TCP and TLS setup. Measured from this station
+that setup alone cost 5-6 seconds and crossed 10 seconds on a slow link, so
+the old 10-second budget reported a *network* hiccup as "source degraded".
+The timeout is a safety net, not a latency budget — do not lower it to shave
+seconds off a failed poll.
+
+The client must also keep Go's DEFAULT transport. The edge answers an
+HTTP/1.1 request with raw HTTP/2 frames (`malformed HTTP status code
+"\x00\x00\x00\x05…"`), so a hand-rolled transport without
+`ForceAttemptHTTP2` breaks this source outright even though `curl` works.
 
 ## Normalization
 

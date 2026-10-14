@@ -56,7 +56,7 @@ func (s *Store) ListAPRSMessages(ctx context.Context, direction string, limit, o
 		if err := rows.Scan(&m.ID, &m.Direction, &m.From, &m.To, &m.Text, &m.MsgID, &m.Via, &atMs, &m.Status); err != nil {
 			return nil, fmt.Errorf("scan aprs message: %w", err)
 		}
-		m.At = time.UnixMilli(atMs)
+		m.At = time.UnixMilli(atMs).UTC()
 		out = append(out, m)
 	}
 	return out, rows.Err()

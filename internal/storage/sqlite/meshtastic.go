@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -221,7 +222,7 @@ func (s *Store) ListMeshtasticMessages(ctx context.Context, f storage.Meshtastic
 		if err := rows.Scan(&m.ID, &m.Direction, &m.Sender, &m.Recipient, &m.Channel, &m.Hops, &m.Operator, &m.Text, &m.Status, &m.Reason, &atMs); err != nil {
 			return nil, fmt.Errorf("scan mesh message: %w", err)
 		}
-		m.At = time.UnixMilli(atMs)
+		m.At = time.UnixMilli(atMs).UTC()
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -329,7 +330,7 @@ func (s *Store) PruneMeshtasticMessages(ctx context.Context, keep int) (int64, e
 // LoadMeshtasticNodes returns the persisted heard-node directory.
 func (s *Store) LoadMeshtasticNodes(ctx context.Context) ([]storage.MeshtasticNode, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, short, lat, lon, last_seen_ms, sends, hops
+		SELECT id, name, short, lat, lon, last_seen_ms, sends, hops, pending_removal, pending_since_ms
 		FROM meshtastic_nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load meshtastic nodes: %w", err)
@@ -340,10 +341,14 @@ func (s *Store) LoadMeshtasticNodes(ctx context.Context) ([]storage.MeshtasticNo
 		var n storage.MeshtasticNode
 		var seenMs int64
 		var sends string
-		if err := rows.Scan(&n.ID, &n.Name, &n.Short, &n.Lat, &n.Lon, &seenMs, &sends, &n.Hops); err != nil {
+		var pendingSince sql.NullInt64
+		if err := rows.Scan(&n.ID, &n.Name, &n.Short, &n.Lat, &n.Lon, &seenMs, &sends, &n.Hops, &n.PendingRemoval, &pendingSince); err != nil {
 			return nil, fmt.Errorf("scan meshtastic node: %w", err)
 		}
-		n.LastSeen = time.UnixMilli(seenMs)
+		n.LastSeen = time.UnixMilli(seenMs).UTC()
+		if pendingSince.Valid {
+			n.PendingSince = time.UnixMilli(pendingSince.Int64).UTC()
+		}
 		if sends != "" {
 			n.Sends = strings.Split(sends, ",")
 		}
@@ -364,20 +369,72 @@ func (s *Store) SaveMeshtasticNodes(ctx context.Context, nodes []storage.Meshtas
 		return fmt.Errorf("save meshtastic nodes: %w", err)
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO meshtastic_nodes (id, name, short, lat, lon, last_seen_ms, sends, hops)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO meshtastic_nodes (id, name, short, lat, lon, last_seen_ms, sends, hops, pending_removal, pending_since_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("save meshtastic nodes: %w", err)
 	}
 	defer stmt.Close()
 	for _, n := range nodes {
+		var pendingSince any
+		if n.PendingRemoval {
+			pendingSince = n.PendingSince.UnixMilli()
+		}
 		if _, err := stmt.ExecContext(ctx, n.ID, n.Name, n.Short, n.Lat, n.Lon,
-			n.LastSeen.UnixMilli(), strings.Join(n.Sends, ","), n.Hops); err != nil {
+			n.LastSeen.UnixMilli(), strings.Join(n.Sends, ","), n.Hops, n.PendingRemoval, pendingSince); err != nil {
 			return fmt.Errorf("save meshtastic node %s: %w", n.ID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("save meshtastic nodes: %w", err)
+	}
+	return nil
+}
+
+// LoadMeshtasticFavorites returns the node numbers this station pinned as
+// favorites on the radio (see the v61 migration).
+func (s *Store) LoadMeshtasticFavorites(ctx context.Context) ([]uint32, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT node_id FROM meshtastic_favorites ORDER BY node_id`)
+	if err != nil {
+		return nil, fmt.Errorf("load meshtastic favorites: %w", err)
+	}
+	defer rows.Close()
+	var out []uint32
+	for rows.Next() {
+		var id uint32
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan meshtastic favorite: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SaveMeshtasticFavorites replaces the pinned set with the given snapshot
+// (one transaction; the set holds one row per registered user node).
+func (s *Store) SaveMeshtasticFavorites(ctx context.Context, ids []uint32) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save meshtastic favorites: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM meshtastic_favorites`); err != nil {
+		return fmt.Errorf("save meshtastic favorites: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT OR REPLACE INTO meshtastic_favorites (node_id, pinned_at_ms) VALUES (?, ?)`)
+	if err != nil {
+		return fmt.Errorf("save meshtastic favorites: %w", err)
+	}
+	defer stmt.Close()
+	now := time.Now().UnixMilli()
+	for _, id := range ids {
+		if _, err := stmt.ExecContext(ctx, id, now); err != nil {
+			return fmt.Errorf("save meshtastic favorite %08x: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("save meshtastic favorites: %w", err)
 	}
 	return nil
 }

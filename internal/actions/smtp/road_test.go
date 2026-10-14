@@ -85,20 +85,32 @@ func TestHazardInstructionSection(t *testing.T) {
 		}
 	}
 
-	// The hazard's own instruction wins.
+	// The hazard's own instruction is the ONLY thing the section carries.
 	req := newReq()
 	req.Event.Hazard.Hazard.Instruction = "Ignore messages."
 	msg := string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, req, "", now))
 	if !strings.Contains(msg, "instruction: Ignore messages.") {
 		t.Errorf("own instruction missing:\n%s", msg)
 	}
-	if strings.Contains(msg, defaultInstruction("")) {
-		t.Errorf("default instruction leaked into an own-instruction mail:\n%s", msg)
-	}
 
-	// No instruction: the default section is still present.
+	// No instruction from the source: no instruction section at all. The
+	// mail must never invent advice the provider did not issue (reported).
 	msg = string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, newReq(), "", now))
-	if !strings.Contains(msg, "instruction: "+defaultInstruction("")) {
-		t.Errorf("default instruction missing:\n%s", msg)
+	for _, leaked := range []string{"instruction:", "official communications", ">instruction<"} {
+		if strings.Contains(strings.ToLower(msg), leaked) {
+			t.Errorf("an invented instruction section reached the mail (%q):\n%s", leaked, msg)
+		}
+	}
+	// The Polish label is the same section: it must be absent as well.
+	plMsg := string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, newReq(), "pl", now))
+	if strings.Contains(strings.ToLower(plMsg), "zalecenia") {
+		t.Errorf("an invented Polish instruction section reached the mail:\n%s", plMsg)
+	}
+	// And a source instruction still renders.
+	reqPl := newReq()
+	reqPl.Event.Hazard.Hazard.Instruction = "Zamknij okna."
+	plMsg = string(buildMessage(context.Background(), Config{From: "a@b.c", To: []string{"c@d.e"}}, reqPl, "pl", now))
+	if !strings.Contains(plMsg, "Zamknij okna.") {
+		t.Errorf("the provider instruction is missing from the Polish mail:\n%s", plMsg)
 	}
 }

@@ -39,6 +39,22 @@ type HazardEvent struct {
 	// SourceID is the provider-specific identifier of the event. Together
 	// with Source it forms the stable event identity.
 	SourceID string
+	// Producer is the configured source INSTANCE that produced the event
+	// (the YAML source id, e.g. "burze-main"), never the plugin type —
+	// that is Source. The management layer stamps it; source plugins must
+	// not set it, and it never crosses the wire (an event received from
+	// another station or from an ingest endpoint has no producer).
+	//
+	// Two instances of one plugin type publish under the same Source slug,
+	// so this is the ONLY thing that tells their events apart. A
+	// full-snapshot source reconciles (cancels) the disappearances of the
+	// events it owns, so without an owner one instance would withdraw the
+	// alerts of its sibling (reported P1).
+	//
+	// It is deliberately NOT part of the event identity (Source+SourceID)
+	// nor of the fingerprint: the same provider hazard stays one event
+	// with one number, whoever of the instances reported it.
+	Producer string
 
 	Category string
 	Event    string
@@ -347,6 +363,7 @@ func ValidateSourceID(sourceID string) error {
 func (e *HazardEvent) Normalize() {
 	e.Source = strings.ToLower(strings.TrimSpace(e.Source))
 	e.SourceID = strings.TrimSpace(e.SourceID)
+	e.Producer = strings.ToLower(strings.TrimSpace(e.Producer))
 	e.Severity = strings.ToLower(strings.TrimSpace(e.Severity))
 	if e.Status == "" {
 		e.Status = StatusActive
@@ -433,6 +450,14 @@ func (e HazardEvent) Validate() error {
 	}
 	if err := ValidateSourceID(e.SourceID); err != nil {
 		return err
+	}
+	// The producer is an instance id, so it lives in the same namespace as
+	// a source name. Absent is legitimate: events that do not come from a
+	// configured source instance have no owner.
+	if e.Producer != "" {
+		if err := ValidateSource(e.Producer); err != nil {
+			return fmt.Errorf("event producer: %w", err)
+		}
 	}
 	if strings.TrimSpace(e.Event) == "" {
 		return errors.New("event type is required")

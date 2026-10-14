@@ -11,6 +11,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/adsb"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/aprsinet"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/aprsradio"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/burzedzis"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/gddkia"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/gios"
 	"github.com/szporwolik/WarnFlux/internal/plugins/sources/giosaq"
@@ -53,6 +54,9 @@ func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub, meshtasticHub *meshta
 	if err := adsb.Register(reg, hub); err != nil {
 		return err
 	}
+	if err := burzedzis.Register(reg); err != nil {
+		return err
+	}
 	if err := aprsinet.Register(reg, hub); err != nil {
 		return err
 	}
@@ -68,7 +72,7 @@ func RegisterBuiltins(reg *plugin.Registry, hub *aprs.Hub, meshtasticHub *meshta
 	// keep running off-grid.
 	for _, internet := range []string{
 		"openmeteo", "metar", "imgw", "rso", "gddkia",
-		"gios", "giosaq", "adsb", "aprs-inet",
+		"gios", "giosaq", "adsb", "aprs-inet", "burzedzis",
 	} {
 		reg.MarkSourceInternet(internet)
 	}

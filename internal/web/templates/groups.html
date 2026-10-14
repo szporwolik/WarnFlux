@@ -82,11 +82,15 @@
         <div class="matrix-grid" style="grid-template-columns:max-content repeat({{len .Actions}}, minmax(0, 1fr))">
 	        <span class="matrix-head matrix-corner">{{tr .Lang "groups.matrix_corner"}}</span>
           {{range .Actions}}<span class="matrix-head" title="{{.ID}}">{{.ID}}</span>{{end}}
-          {{range .RoutingMatrix}}
-          <span class="matrix-src">{{.Label}}</span>
+          {{range $i, $row := .RoutingMatrix}}
+          <span class="matrix-src-cell">
+            <span class="matrix-src">{{$row.Label}}</span>
+            {{if $row.Desc}}<span class="src-help" tabindex="0" role="button" aria-label="{{tr $.Lang "groups.routeinfo.more"}}" aria-describedby="src-help-{{$i}}">?<span class="src-help-pop" id="src-help-{{$i}}">{{$row.Desc}}{{if $row.Slug}}<code>{{$row.Slug}}</code>{{end}}{{if $row.Feed}}<a class="src-help-link{{if $row.FeedOut}} is-ext{{end}}" href="{{$row.Feed}}"{{if $row.FeedOut}} target="_blank" rel="noopener"{{end}}>{{$row.FeedText}}</a>{{end}}</span></span>{{end}}
+          </span>
           {{range .Cells}}{{$cell := .}}
           <select name="cell:{{$cell.Source}}|{{$cell.Action}}" class="matrix-sev" title="{{$cell.Action}} via {{if $cell.Source}}{{$cell.Source}}{{else}}{{tr $.Lang "groups.routing.any"}}{{end}}">
-            <option value="" {{if eq $cell.Sev ""}}selected{{end}}>—</option>
+            <option value="" {{if and (eq $cell.Sev "") (not $cell.Mixed)}}selected{{end}}>—</option>
+            {{if $cell.Mixed}}<option value="mixed" selected>{{tr $.Lang "groups.routing.mixed"}}</option>{{end}}
             {{range $.Severities}}<option value="{{.Value}}" {{if eq .Value $cell.Sev}}selected{{end}}>{{.Label}}</option>{{end}}
           </select>
           {{end}}

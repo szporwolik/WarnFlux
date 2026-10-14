@@ -3,11 +3,13 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,7 +104,7 @@ func TestExecuteDeliversDiscordPayload(t *testing.T) {
 		t.Errorf("username = %v", body["username"])
 	}
 	content, _ := body["content"].(string)
-	for _, want := range []string{"[SOSNA]", "SEVERE", "Storm", "Strong wind warning", "Areas: powiat wielicki", "Valid until: 2026-09-25T17:00:00Z", "For: ada#1234, @bob"} {
+	for _, want := range []string{"[SOSNA]", "SEVERE", "Storm", "Strong wind warning", "Areas: powiat wielicki", "Valid until: 2026-09-25 17:00 (UTC)", "For: ada#1234, @bob"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("content = %q, want mention of %q", content, want)
 		}
@@ -124,6 +126,43 @@ func TestExecuteNon2xxFails(t *testing.T) {
 	}
 }
 
+// TestExecuteDoesNotFollowRedirects pins the reported P2: a webhook that
+// answers 3xx used to be followed as a bodyless GET — the login page answered
+// 200 and the action reported success although the message never arrived. A
+// redirect is a delivery FAILURE, so the retry machinery sees it.
+func TestExecuteDoesNotFollowRedirects(t *testing.T) {
+	for _, code := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			var followed atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					followed.Add(1)
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				w.Header().Set("Location", "/login")
+				w.WriteHeader(code)
+			}))
+			defer srv.Close()
+
+			p, err := New(node(t, map[string]any{"url": srv.URL}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = p.Execute(context.Background(), hazardRequest())
+			if err == nil {
+				t.Fatalf("%d ended the action successfully", code)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("%d", code)) {
+				t.Errorf("Execute = %v, want the %d answer", err, code)
+			}
+			if followed.Load() != 0 {
+				t.Errorf("the client followed the redirect: %d GET requests", followed.Load())
+			}
+		})
+	}
+}
+
 func TestMessageTextSpeaksSystemLanguage(t *testing.T) {
 	p, err := New(node(t, map[string]any{"url": "http://x/y"}))
 	if err != nil {
@@ -135,7 +174,7 @@ func TestMessageTextSpeaksSystemLanguage(t *testing.T) {
 	req.DiscordHandles = []string{"ada#1234"}
 	text := p.(*discordAction).messageText(req)
 	for _, want := range []string{
-		"POWAŻNE", "Obszary: powiat wielicki", "Ważny do: 2026-09-25T17:00:00Z",
+		"POWAŻNE", "Obszary: powiat wielicki", "Ważny do: 2026-09-25 17:00 (UTC)",
 		"Dla: ada#1234", "Szczegóły: https://sosna.sp9moa.pl/message/imgw-meteo:1",
 	} {
 		if !strings.Contains(text, want) {
@@ -309,5 +348,25 @@ func TestDirectMessageRebuildsStaleChannel(t *testing.T) {
 	apiBase = server.URL + "/gone"
 	if err := dm.SendDM(context.Background(), "42", "x"); err == nil {
 		t.Fatal("a failing post must return an error")
+	}
+}
+
+// TestSharedDestination pins the capability the routing engine keys on: a
+// webhook posts into ONE channel, so two groups following the same sources
+// must produce one message instead of two (reported P2). Losing this method
+// silently brings the duplicate back.
+func TestSharedDestination(t *testing.T) {
+	var p action.Plugin
+	built, err := New(node(t, map[string]any{"url": "https://discord.com/api/webhooks/1/abc"}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p = built
+	shared, ok := p.(action.SharedDestination)
+	if !ok {
+		t.Fatal("the discord action does not report a shared destination")
+	}
+	if !shared.SharedDestination() {
+		t.Error("SharedDestination() = false, want true (a webhook posts into one channel)")
 	}
 }

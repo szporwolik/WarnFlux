@@ -99,12 +99,146 @@ type fakeComposePublisher struct {
 	holdActive        chan struct{}
 	activeHoldStarted chan struct{}
 	activeHoldOnce    sync.Once
+
+	// notify is closed and replaced on every recorded state change, so a
+	// test can WAIT for a specific publication instead of asserting right
+	// after the HTTP call. Publications are asynchronous by design
+	// (reported P2: six flaky tests).
+	notify chan struct{}
+}
+
+// signalLocked wakes every waiter; the caller holds f.mu.
+func (f *fakeComposePublisher) signalLocked() {
+	if f.notify == nil {
+		return
+	}
+	close(f.notify)
+	f.notify = make(chan struct{})
+}
+
+// notifyLocked returns the channel a waiter blocks on; the caller holds
+// f.mu.
+func (f *fakeComposePublisher) notifyLocked() chan struct{} {
+	if f.notify == nil {
+		f.notify = make(chan struct{})
+	}
+	return f.notify
+}
+
+// await waits until ready reports true, waking on every recorded state
+// change and never sleeping for a fixed time. ready runs with f.mu held.
+func (f *fakeComposePublisher) await(t *testing.T, what string, ready func() bool) {
+	t.Helper()
+	const limit = 5 * time.Second
+	deadline := time.Now().Add(limit)
+	for {
+		f.mu.Lock()
+		if ready() {
+			f.mu.Unlock()
+			return
+		}
+		ch := f.notifyLocked()
+		f.mu.Unlock()
+		timer := time.NewTimer(time.Until(deadline))
+		select {
+		case <-ch:
+			timer.Stop()
+		case <-timer.C:
+			t.Fatalf("timed out after %s waiting for %s", limit, what)
+		}
+	}
+}
+
+// awaitActiveDoc waits until the broker model holds the retained active
+// document of one source + event key, and returns it.
+func (f *fakeComposePublisher) awaitActiveDoc(t *testing.T, source, eventKey string) string {
+	t.Helper()
+	key := "active:" + source + ":" + eventKey
+	f.await(t, "the retained active document of "+key, func() bool { _, ok := f.docs[key]; return ok })
+	doc, _ := f.activeDoc(source, eventKey)
+	return doc
+}
+
+// awaitPublished waits until at least min hazards of one event key reached
+// the broker (failures do not count).
+func (f *fakeComposePublisher) awaitPublished(t *testing.T, eventKey string, min int) {
+	t.Helper()
+	f.await(t, fmt.Sprintf("%d publication(s) of %s", min, eventKey), func() bool {
+		n := 0
+		for _, h := range f.published {
+			if h.EventKey == eventKey {
+				n++
+			}
+		}
+		return n >= min
+	})
+}
+
+// awaitExpireAttempt waits until a removal of eventKey was attempted,
+// successfully or against a down broker.
+func (f *fakeComposePublisher) awaitExpireAttempt(t *testing.T, eventKey string) {
+	t.Helper()
+	f.await(t, "a removal attempt of "+eventKey, func() bool {
+		ok, failed := 0, 0
+		for _, k := range f.expired {
+			if k == eventKey {
+				ok++
+			}
+		}
+		for _, k := range f.failedExpired {
+			if k == eventKey {
+				failed++
+			}
+		}
+		return ok+failed > 0
+	})
+}
+
+// awaitExpired waits until a removal of eventKey reached the broker.
+func (f *fakeComposePublisher) awaitExpired(t *testing.T, eventKey string) {
+	t.Helper()
+	f.await(t, "a successful removal of "+eventKey, func() bool {
+		for _, k := range f.expired {
+			if k == eventKey {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// awaitInfoDoc waits until the retained raw document of one suffix exists
+// (and contains substr) and returns it.
+func (f *fakeComposePublisher) awaitInfoDoc(t *testing.T, suffix, substr string) string {
+	t.Helper()
+	key := "raw:" + suffix
+	f.await(t, "the retained document "+key, func() bool {
+		doc, ok := f.docs[key]
+		return ok && strings.Contains(doc, substr)
+	})
+	doc, _ := f.infoDoc(suffix)
+	return doc
+}
+
+// awaitRawFor waits until a retained state document of one network slug
+// was published.
+func (f *fakeComposePublisher) awaitRawFor(t *testing.T, slug string) {
+	t.Helper()
+	f.await(t, "a state document of "+slug, func() bool {
+		for _, r := range f.raw {
+			if strings.HasSuffix(r.Suffix, "/"+slug+"/emcom") {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // setFail turns the simulated broker outage on or off.
 func (f *fakeComposePublisher) setFail(fail bool) {
 	f.mu.Lock()
 	f.fail = fail
+	f.signalLocked()
 	f.mu.Unlock()
 }
 
@@ -112,6 +246,7 @@ func (f *fakeComposePublisher) setFail(fail bool) {
 func (f *fakeComposePublisher) setFailRaw(fail bool) {
 	f.mu.Lock()
 	f.failRaw = fail
+	f.signalLocked()
 	f.mu.Unlock()
 }
 
@@ -184,10 +319,12 @@ func (f *fakeComposePublisher) PublishActive(source string, h state.Hazard) erro
 	defer f.mu.Unlock()
 	if f.fail {
 		f.failedActive = append(f.failedActive, h.EventKey)
+		f.signalLocked()
 		return errors.New("broker down")
 	}
 	f.published = append(f.published, h)
 	f.keepDoc("active:"+source+":"+h.EventKey, h.Headline)
+	f.signalLocked()
 	return nil
 }
 
@@ -196,10 +333,12 @@ func (f *fakeComposePublisher) ExpireActive(source, eventKey string) error {
 	defer f.mu.Unlock()
 	if f.fail {
 		f.failedExpired = append(f.failedExpired, eventKey)
+		f.signalLocked()
 		return errors.New("broker down")
 	}
 	f.expired = append(f.expired, eventKey)
 	f.dropDoc("active:" + source + ":" + eventKey)
+	f.signalLocked()
 	return nil
 }
 
@@ -208,6 +347,7 @@ func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload 
 	defer f.mu.Unlock()
 	if f.fail || f.failRaw {
 		f.failedRawCount++
+		f.signalLocked()
 		return errors.New("broker down")
 	}
 	f.raw = append(f.raw, fakeRawPublish{Suffix: suffix, Retained: retained, Payload: append([]byte(nil), payload...)})
@@ -216,6 +356,7 @@ func (f *fakeComposePublisher) PublishRaw(suffix string, retained bool, payload 
 	} else {
 		f.keepDoc("raw:"+suffix, string(payload))
 	}
+	f.signalLocked()
 	return nil
 }
 
@@ -2056,7 +2197,8 @@ func TestIngestEndpointRouting(t *testing.T) {
 	_, html := env.get("/groups/1/routing")
 	for _, want := range []string{
 		`name="cell:news|logger-action"`,
-		"news (ingest)",
+		">REST API</span>",
+		"POST /api/v1/ingest/news",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("routing page missing ingest source %q: %s", want, html)
@@ -5716,5 +5858,222 @@ func TestAPRSSendKeepsTheDirectionFilter(t *testing.T) {
 		if !strings.HasPrefix(loc, tc.want) || !strings.Contains(loc, "err=") {
 			t.Errorf("POST %s with dir=%q = %q, want %q with an error", tc.path, tc.dir, loc, tc.want)
 		}
+	}
+}
+
+// TestIngestRoutingRowLabel pins the REST API row label: one configured
+// endpoint reads as "REST API" (the route and id live in the row popover),
+// while several endpoints keep their ids apart.
+func TestIngestRoutingRowLabel(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusAccepted) })
+
+	single := newTestEnvWithIngest(t, map[string]http.Handler{"news": handler})
+	single.login()
+	if _, err := single.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+	_, html := single.get("/groups/1/routing")
+	if !strings.Contains(html, ">REST API</span>") {
+		t.Errorf("single endpoint row is not labelled REST API: %s", html)
+	}
+	if strings.Contains(html, "news (ingest)") {
+		t.Error("single endpoint row still shows the raw id label")
+	}
+
+	// Two endpoints share the label, so the id stays in it.
+	multi := newTestEnvWithIngest(t, map[string]http.Handler{"news": handler, "alerts": handler})
+	multi.login()
+	if _, err := multi.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+	_, html = multi.get("/groups/1/routing")
+	for _, want := range []string{"REST API (alerts)", "REST API (news)"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("routing page missing %q: %s", want, html)
+		}
+	}
+}
+
+// TestLoginBodyLimit pins the anonymous-form body cap: an oversized sign-in
+// body is refused with 413 before it is parsed, throttled or not, and an
+// oversized field inside a legal body is refused with 400.
+func TestLoginBodyLimit(t *testing.T) {
+	env := newTestEnv(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+
+	postRaw := func(body string, csrf string) *http.Response {
+		t.Helper()
+		if csrf != "" {
+			body += "&csrf=" + csrf
+		}
+		req, err := http.NewRequest(http.MethodPost, env.srv.URL+"/login", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp
+	}
+
+	// A large body from an anonymous client is refused before any parsing.
+	big := "username=" + strings.Repeat("a", 8<<20) + "&password=x"
+	if resp := postRaw(big, ""); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized anonymous login = %d, want 413", resp.StatusCode)
+	}
+
+	// Five wrong credentials spend the account budget (the fifth locks the
+	// account), so the next attempt is throttled with 429.
+	resp, err := client.Get(env.srv.URL + "/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /login = %d", resp.StatusCode)
+	}
+	csrf := extractCSRF(t, string(body))
+	for i := 0; i < 5; i++ {
+		if resp := postRaw("username=admin&password=wrong", csrf); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("failed login %d = %d, want 401", i+1, resp.StatusCode)
+		}
+	}
+	if resp := postRaw("username=admin&password=wrong", csrf); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("throttled login = %d, want 429", resp.StatusCode)
+	}
+
+	// Oversized bodies are still refused with 413 while the account is
+	// blocked — they are never buffered to log a username.
+	if resp := postRaw(big, csrf); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized login while throttled = %d, want 413", resp.StatusCode)
+	}
+
+	// A field longer than any real account, inside a legal body.
+	oversizedField := "username=" + strings.Repeat("u", 1024) + "&password=wrong"
+	if resp := postRaw(oversizedField, csrf); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized username field = %d, want 400", resp.StatusCode)
+	}
+
+	// The rejected attempts left nothing large behind: the log ring stays
+	// inside its byte budget and no line carries a payload-sized field.
+	total := 0
+	for _, l := range env.logs.Snapshot(0) {
+		total += len(l.Text)
+		if len(l.Text) > web.MaxLogLineBytes+64 {
+			t.Errorf("log line of %d bytes exceeds the cap: %q", len(l.Text), l.Text[:120])
+		}
+	}
+	if total > web.MaxLogBytes {
+		t.Errorf("log buffer holds %d bytes, want <= %d", total, web.MaxLogBytes)
+	}
+}
+
+// TestForgotPasswordParallelRequestsSendOnce pins the flood fix: the public
+// recovery endpoint reserves the send ATOMICALLY (before the token and the
+// mailer) behind a concurrency gate, so a burst of parallel requests for one
+// account produces exactly one email. The mailer is held open while all
+// requests arrive, which is precisely the window the old code leaked through.
+func TestForgotPasswordParallelRequestsSendOnce(t *testing.T) {
+	env := newTestEnv(t)
+	if _, err := env.users.CreateUser("member1", "", "member1@example.com", "", "member", "password123"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	sends := 0
+	inMailer := make(chan struct{}, 8)
+	release := make(chan struct{})
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		mu.Lock()
+		sends++
+		mu.Unlock()
+		inMailer <- struct{}{}
+		<-release
+		return nil
+	})
+
+	// Every request needs its own CSRF cookie + token (the page rotates the
+	// cookie), so each goroutine acts like a separate client.
+	const parallel = 8
+	type attempt struct {
+		client *http.Client
+		csrf   string
+	}
+	attempts := make([]attempt, 0, parallel)
+	for i := 0; i < parallel; i++ {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &http.Client{Jar: jar}
+		resp, err := client.Get(env.srv.URL + "/forgot")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		attempts = append(attempts, attempt{client: client, csrf: extractCSRF(t, string(body))})
+	}
+
+	type result struct {
+		status int
+		body   string
+	}
+	results := make(chan result, parallel)
+	for _, a := range attempts {
+		go func(a attempt) {
+			form := url.Values{
+				"csrf":     {a.csrf},
+				"username": {"member1"},
+				"email":    {"member1@example.com"},
+			}
+			resp, err := a.client.PostForm(env.srv.URL+"/forgot", form)
+			if err != nil {
+				results <- result{status: -1, body: err.Error()}
+				return
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			results <- result{status: resp.StatusCode, body: string(body)}
+		}(a)
+	}
+
+	// Let the burst arrive. The winner parks inside the mailer; every request
+	// that is shed answers without it. (The grace only bounds how long the
+	// burst needs to land — nothing waits for the mailer to return.)
+	got := 0
+	grace := time.After(500 * time.Millisecond)
+collect:
+	for got < parallel {
+		select {
+		case <-results:
+			got++
+		case <-grace:
+			break collect
+		}
+	}
+	close(release)
+	for got < parallel {
+		select {
+		case <-results:
+			got++
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of %d requests finished", got, parallel)
+		}
+	}
+
+	mu.Lock()
+	sent := sends
+	mu.Unlock()
+	if sent != 1 {
+		t.Fatalf("mailer calls = %d, want exactly 1 (parallel requests for one account)", sent)
+	}
+	if len(inMailer) != 1 {
+		t.Fatalf("mailer entries = %d, want 1", len(inMailer))
 	}
 }

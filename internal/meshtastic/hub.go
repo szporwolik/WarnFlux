@@ -71,6 +71,17 @@ type Config struct {
 	RouteMessages bool
 	// NodeTTL bounds how long an unheard neighbour stays in the node list.
 	NodeTTL time.Duration
+	// PinUserNodes keeps the node IDs registered in the user directory as
+	// FAVORITES on the radio. The firmware protects favorites when it prunes
+	// its node database and keeps them across a node-db reset, so the public
+	// key a DIRECT message is encrypted with survives an unheard night — a
+	// node whose key was evicted can only be messaged after it announces
+	// itself again ("recipient has not announced its public key").
+	PinUserNodes bool
+	// PinInterval is how often the pin pass re-runs (default
+	// defaultPinInterval when unset): it catches a node registered since the
+	// last pass and re-pins one whose favorite was cleared on the device.
+	PinInterval time.Duration
 	// SilenceTimeout declares a session dead after this long without ANY
 	// FromRadio traffic (defaultSilenceTimeout when unset). Tests shorten
 	// it; production runs with the default.
@@ -174,6 +185,14 @@ type NodeStore interface {
 	SaveMeshtasticNodes(ctx context.Context, nodes []storage.MeshtasticNode) error
 }
 
+// FavoriteStore persists the node numbers THIS station set as favorites on
+// the radio (implemented by storage stores). Optional: without a store the
+// hub still tracks its own stars for the lifetime of the process.
+type FavoriteStore interface {
+	LoadMeshtasticFavorites(ctx context.Context) ([]uint32, error)
+	SaveMeshtasticFavorites(ctx context.Context, ids []uint32) error
+}
+
 // Tx delivery states.
 const (
 	TxSent      = "sent"      // the radio transmitted the frame
@@ -202,6 +221,48 @@ const defaultSilenceTimeout = 2 * time.Minute
 // surfaces within one interval instead of waiting out the silence
 // watchdog.
 const defaultHeartbeatInterval = 30 * time.Second
+
+// defaultPinInterval is how often the radio's favorites are reconciled with
+// the user directory when the configuration does not say.
+const defaultPinInterval = 6 * time.Hour
+
+// maxPendingStationRemovals bounds the station-document removals the hub keeps
+// waiting for the broker to confirm. A broker that is unreachable for long
+// enough (or an installation with no station feed at all) would otherwise let
+// every node that ever went quiet queue another id — in memory and, through the
+// persisted directory, on disk. Past the bound the most obsolete entry is
+// abandoned, counted and logged: the loss is never silent, and the bound also
+// limits what a restart has to load.
+const maxPendingStationRemovals = 512
+
+// stationPublishTimeout is the budget of ONE station-feed publication. A batch
+// is not bounded by it: the feed is published by its own worker, so a slow
+// broker costs the feed its pace and never the radio session.
+const stationPublishTimeout = 5 * time.Second
+
+// stationFeedQueueLen bounds the operations waiting for that worker. When it is
+// full the operation is dropped, never awaited: an unconfirmed removal stays
+// pending (the retry pace offers it again) and a position document is refreshed
+// by the next packet from that node.
+const stationFeedQueueLen = maxPendingStationRemovals
+
+// feedJob is one station-feed operation for the worker: a document to
+// publish, or (doc == nil) the removal of the node's document.
+type feedJob struct {
+	id  string
+	doc []byte
+}
+
+// defaultTombstoneRetry is how long a station-document removal the broker
+// refused waits before it is attempted again. The maintenance tick is seconds
+// apart, so without a pace a broker outage would retry (and log) the same
+// removals several times a minute.
+const defaultTombstoneRetry = time.Minute
+
+// pinRetryDelay is how soon a pin pass that did not get through is repeated.
+// A radio that was reconnecting (or a directory that was briefly unreadable)
+// must not wait out a whole interval with a half-applied favorite list.
+const pinRetryDelay = 5 * time.Minute
 
 // linkSendWait bounds how long a send waits for a live session before it
 // gives up. The session goroutine rebuilds the link on its own after a
@@ -368,7 +429,30 @@ type pendingSend struct {
 	// TRANSMISSION OUTCOME (recorded on sent/delivered, revoked on
 	// failed) instead of the accept handoff.
 	prog ProgressRef
+
+	// favorite carries the change to the radio's favorites this frame asks
+	// for when it IS one of those admin frames. It rides the send bookkeeping
+	// so the DEVICE's answer settles the change: a frame written to the
+	// transport is not a confirmation, and a refused one must never be
+	// remembered as applied.
+	favorite *favoriteChange
+	// favoriteSettled marks the change as already answered (a send can settle
+	// more than once: only the first verdict counts).
+	favoriteSettled atomic.Bool
 }
+
+// favoriteChange is one requested change to the radio's favorites: the star of
+// node is to be set (or taken back).
+type favoriteChange struct {
+	node uint32
+	set  bool
+}
+
+// finalOnModemAck reports whether the modem's own acknowledgment is the FINAL
+// result of the frame. A favorite change is a LOCAL admin frame: no recipient
+// exists to acknowledge it, unlike a direct message, so the delivery window
+// does not apply.
+func (ps *pendingSend) finalOnModemAck() bool { return ps.favorite != nil }
 
 // ProgressRef identifies one durable action-progress entry (the
 // versioned resume ledger of the meshtastic action). The zero value
@@ -490,9 +574,24 @@ type Node struct {
 	DistKM     float64
 	BearingDeg float64
 	LastSeen   time.Time
-	// tombstoned records that the node's retained station document was
-	// already removed (the node itself stays in the persistent directory).
-	tombstoned bool
+}
+
+// nodeTombstone is one removal the broker still owes for a node's retained
+// station document. It lives OUTSIDE the node directory: the directory drops a
+// node once it has been quiet for nodeDirRetention, and a removal queued just
+// before that (or one the broker refused) must stay alive until the broker
+// confirmed it — through a restart as well.
+type nodeTombstone struct {
+	// quietSince is the node's LastSeen when the removal was queued. A node
+	// heard AFTER it is active again: the removal is void (and its document
+	// has been published again by the very packet that woke it).
+	quietSince time.Time
+	// tried is the last publish attempt (zero = never), which paces the
+	// retries and lets a restored entry be attempted again.
+	tried time.Time
+	// confirmed reports that the broker took the removal; the entry then only
+	// remembers that this node's quiet period has already been handled.
+	confirmed bool
 }
 
 // cmdRecord is the remembered outcome of one radio command, keyed by
@@ -542,6 +641,11 @@ type Snapshot struct {
 	Nodes []Node
 	// NodeTTL is the freshness bound used to filter the live feed.
 	NodeTTL time.Duration
+	// PendingRemovals is how many station documents the broker still owes a
+	// removal, RemovalsDropped how many were abandoned because that backlog
+	// hit its bound (a broker that stayed down too long).
+	PendingRemovals int
+	RemovalsDropped int
 }
 
 // routeReply is one TRACEROUTE route-discovery answer buffered for a
@@ -837,6 +941,37 @@ type Hub struct {
 	// until the first refusal that needs a key refresh.
 	nodeInfoAsked map[uint32]time.Time
 
+	// userNodes supplies the node numbers registered in the user directory
+	// (nil = nothing to pin); pinNext arms the next pin pass.
+	userNodes func() ([]uint32, error)
+	pinNext   time.Time
+
+	// favoriteStore is the ledger of the favorites THIS station set on the
+	// radio; pinned mirrors it, pinnedLoaded marks whether the store was
+	// read (a failed read stays unloaded, and the pass then touches
+	// nothing — see pinUserNodes).
+	favoriteStore FavoriteStore
+	pinned        map[uint32]bool
+	pinnedLoaded  bool
+	// favoritesDirty marks ledger changes the store has not accepted yet
+	// (favoritesRev guards against clearing the flag for a snapshot a newer
+	// change has already made obsolete): a write that failed must not be
+	// forgotten, or a restart loses which stars are the station's own.
+	favoritesDirty bool
+	favoritesRev   uint64
+	// favoriteSaveMu serializes the WHOLE flush (snapshot + write): two flushes
+	// may overlap (the pass and a device answer), and without it the older
+	// snapshot could land last and overwrite the newer ledger — with the dirty
+	// flag already cleared, so nothing would notice or repair it.
+	favoriteSaveMu sync.Mutex
+
+	// radioFavorites is what the DEVICE said about its own node table when
+	// it last handed it over (node -> starred). Owning a star is no proof
+	// the radio still carries it: a node-db reset or a swapped device
+	// leaves our ledger intact and the favorites gone, so the pass
+	// re-asserts an owned node unless THIS map confirms it.
+	radioFavorites map[uint32]bool
+
 	// routeWaiters buffers TRACEROUTE route replies while probes wait,
 	// keyed by the replying node (the destination answers with the full
 	// route; intermediate nodes may answer when it is out of reach).
@@ -855,6 +990,31 @@ type Hub struct {
 	// heartbeatEvery is how often the session pings the device
 	// (defaultHeartbeatInterval when unset; the tests shorten it).
 	heartbeatEvery time.Duration
+
+	// stationMu orders the retained station feed: a position publish and the
+	// removal of a document for the same node must never interleave, or a node
+	// that just spoke would be left without its document.
+	stationMu sync.Mutex
+	// tombstones holds the removals the broker has not confirmed yet, keyed by
+	// node id (independent of the node directory, see nodeTombstone).
+	tombstones map[string]*nodeTombstone
+	// feedQueue hands the station-feed operations (a retained document, or its
+	// removal) to the feed worker. Bounded and never awaited: a broker that
+	// does not answer must not make the session loop — heartbeat, silence
+	// watchdog, message retry, shutdown — wait for it.
+	feedQueue chan feedJob
+	// removalsDropped counts the removals abandoned because that backlog hit
+	// maxPendingStationRemovals (the overflow metric).
+	removalsDropped int
+	// abandonedRemovals remembers the refused removals by node id, together
+	// with the activity version they referred to. Without it the next pass
+	// would queue the same node again, push another entry out, and count
+	// another abandonment — the same removals churning forever without any new
+	// data (and re-arming the retry pace on every pass).
+	abandonedRemovals map[string]time.Time
+	// tombstoneRetry paces a removal the broker refused
+	// (defaultTombstoneRetry when unset; the tests shorten it).
+	tombstoneRetry time.Duration
 
 	// nodeStore persists the heard-node directory across restarts
 	// (optional; nil = directory lives in RAM only).
@@ -953,7 +1113,9 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
 		return &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
-			pending: make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
+			tombstones: make(map[string]*nodeTombstone),
+			feedQueue:  make(chan feedJob, stationFeedQueueLen),
+			pending:    make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
 			routeWaiters: make(map[uint32][]chan routeReply),
 			traces:       make(map[uint32]*TraceProgress),
 			bannerLast:   make(map[string]time.Time), replyLast: make(map[string]replyWindow),
@@ -968,6 +1130,8 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		logger:       logger,
 		cadence:      cadenceOf(cfg),
 		nodes:        make(map[string]*Node),
+		tombstones:   make(map[string]*nodeTombstone),
+		feedQueue:    make(chan feedJob, stationFeedQueueLen),
 		pending:      make(map[uint32]*pendingSend),
 		cmds:         make(map[string]*cmdRecord),
 		routeWaiters: make(map[uint32][]chan routeReply),
@@ -1132,8 +1296,9 @@ func (h *Hub) SetRecorder(r Recorder) { h.mu.Lock(); h.recorder = r; h.mu.Unlock
 func (h *Hub) SetNodeStore(store NodeStore) { h.mu.Lock(); h.nodeStore = store; h.mu.Unlock() }
 
 // SetStationSink attaches the MQTT station publisher (optional): every
-// heard node becomes a retained document under meshtastic/stations/<id>
-// and is tombstoned when its NodeTTL expires.
+// heard node becomes a retained document under meshtastic/stations/<id>,
+// removed once its NodeTTL expires (a removal the broker refused is retried,
+// and a node heard again publishes its document again).
 func (h *Hub) SetStationSink(fn func(ctx context.Context, topic string, retained bool, payload []byte) error) {
 	h.mu.Lock()
 	h.stationSink = fn
@@ -1201,6 +1366,8 @@ func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
 // transient USB hiccups never kill the plugin permanently.
 func (h *Hub) Run(ctx context.Context) error {
 	h.restoreNodes(ctx)
+	// The station feed runs NEXT TO the session, not inside it.
+	go h.runStationFeed(ctx)
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -1305,6 +1472,12 @@ func (h *Hub) runSession(ctx context.Context) error {
 		h.mu.Unlock()
 	}
 	h.populateFromState(conn.State())
+	// The pin pass runs right after the handshake (now that our own node
+	// number is known and the device has stated which favorites it still
+	// carries) and then on its own cadence. It is FORCED here: a session is
+	// the only moment the radio's node table is read, and a node-db reset or
+	// a swapped device must be repaired without waiting out the interval.
+	h.pinUserNodes(true)
 
 	if h.logger != nil {
 		h.mu.Lock()
@@ -1363,6 +1536,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 				return errors.New("device radio silent")
 			}
 			h.expireNodes()
+			h.pinUserNodes(false)
 			h.retryPending(time.Now())
 			h.persistNodes()
 			h.beaconTick()
@@ -1640,7 +1814,35 @@ func (h *Hub) restoreNodes(ctx context.Context) {
 		return
 	}
 	h.mu.Lock()
+	if h.tombstones == nil {
+		h.tombstones = make(map[string]*nodeTombstone)
+	}
+	pending := 0
 	for _, n := range nodes {
+		if n.PendingRemoval {
+			// The removal never reached the broker before the station stopped:
+			// it is owed again. This entry is the only thing that remembers the
+			// node when the directory has dropped it long ago.
+			//
+			// The reference is the observation the removal was queued AGAINST,
+			// never the node's current LastSeen: the node may have been heard
+			// again (and its document published again) before the save, and a
+			// removal must never be applied to activity that came after it.
+			since := n.PendingSince
+			if since.IsZero() {
+				since = n.LastSeen
+			}
+			if h.tombstones[n.ID] == nil {
+				if h.pendingRemovalsLocked() >= maxPendingStationRemovals {
+					// A backlog written by an older station can be longer than
+					// what this one works off: it loads only its bound and
+					// COUNTS the rest instead of carrying it forever.
+					h.removalsDropped++
+				} else if h.queueRemovalLocked(n.ID, since) {
+					pending++
+				}
+			}
+		}
 		if cur := h.nodes[n.ID]; cur != nil {
 			continue // live knowledge wins
 		}
@@ -1657,7 +1859,14 @@ func (h *Hub) restoreNodes(ctx context.Context) {
 	}
 	h.mu.Unlock()
 	if len(nodes) > 0 {
-		h.logger.Info("meshtastic: restored node directory", "nodes", len(nodes))
+		h.logger.Info("meshtastic: restored node directory", "nodes", len(nodes), "pending_removals", pending)
+	}
+	h.mu.Lock()
+	dropped := h.removalsDropped
+	h.mu.Unlock()
+	if dropped > 0 && h.logger != nil {
+		h.logger.Warn("meshtastic: station removal backlog over its bound, the excess was dropped",
+			"dropped", dropped, "backlog", maxPendingStationRemovals)
 	}
 }
 
@@ -1671,15 +1880,26 @@ func (h *Hub) persistNodes() {
 		h.mu.Unlock()
 		return
 	}
-	nodes := make([]storage.MeshtasticNode, 0, len(h.nodes))
+	nodes := make([]storage.MeshtasticNode, 0, len(h.nodes)+len(h.tombstones))
 	cutoff := time.Now().Add(-nodeDirRetention)
 	for _, n := range h.nodes {
 		// Defense in depth: the directory prune in expireNodes already
-		// dropped these, but a persisted save must never resurrect them.
+		// dropped these, but a persisted save must never resurrect them —
+		// unless the broker still owes their removal (below).
 		if n.LastSeen.Before(cutoff) {
 			continue
 		}
-		nodes = append(nodes, storage.MeshtasticNode{
+		// A quiet node whose removal the broker has not confirmed keeps that
+		// work alive across a restart — but only while the node really is
+		// quiet: a removal the node has already invalidated (it spoke again
+		// since) is dropped here as well, so a save can never turn fresh
+		// activity into the basis of an old removal.
+		pending := h.openRemovalLocked(n.ID)
+		if pending != nil && n.LastSeen.After(pending.quietSince) {
+			delete(h.tombstones, n.ID)
+			pending = nil
+		}
+		row := storage.MeshtasticNode{
 			ID:       n.ID,
 			Name:     n.Name,
 			Short:    n.Short,
@@ -1688,6 +1908,24 @@ func (h *Hub) persistNodes() {
 			LastSeen: n.LastSeen,
 			Sends:    append([]string(nil), n.Sends...),
 			Hops:     n.Hops,
+		}
+		if pending != nil {
+			row.PendingRemoval = true
+			row.PendingSince = pending.quietSince
+		}
+		nodes = append(nodes, row)
+	}
+	// A removal outlives the directory: its node may be gone from memory
+	// entirely, so the pending work gets a row of its own.
+	for id, tb := range h.tombstones {
+		if tb.confirmed || h.nodes[id] != nil {
+			continue
+		}
+		nodes = append(nodes, storage.MeshtasticNode{
+			ID:             id,
+			LastSeen:       tb.quietSince,
+			PendingRemoval: true,
+			PendingSince:   tb.quietSince,
 		})
 	}
 	h.lastPersist = time.Now()
@@ -1730,6 +1968,15 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 		h.self.Firmware = md.GetFirmwareVersion()
 		h.self.HwModel = strings.TrimPrefix(md.GetHwModel().String(), "HW_MODEL_")
 	}
+	// The device states its own favorites here: the pass uses this (and not
+	// its ledger) as the proof that a star is actually set on the radio.
+	stars := make(map[uint32]bool)
+	for _, ni := range st.Nodes() {
+		if ni != nil && ni.GetIsFavorite() && ni.GetNum() != 0 {
+			stars[ni.GetNum()] = true
+		}
+	}
+	h.radioFavorites = stars
 	for _, ni := range st.Nodes() {
 		if ni == nil {
 			continue
@@ -1820,35 +2067,725 @@ func positionDeg(pos *pb.Position) (lat, lon float64) {
 	return float64(pos.GetLatitudeI()) / 1e7, float64(pos.GetLongitudeI()) / 1e7
 }
 
-// expireNodes cleans the MQTT station feed: nodes unheard for longer
-// than NodeTTL get their retained document tombstoned (once). Nodes
-// unheard for longer than nodeDirRetention are dropped from the
-// directory entirely, so memory and the persisted table stay bounded.
+// SetUserNodes supplies the node numbers registered in the user directory:
+// the nodes this station is expected to be able to send a DIRECT message to.
+// They are pinned as favorites on the radio (see pinUserNodes). A nil
+// provider — the default — leaves the radio's favorites alone, and so does a
+// provider that returns an error: a directory that cannot be read is not an
+// empty directory, and reconciling against it would unpin the very keys the
+// station must keep.
+func (h *Hub) SetUserNodes(nodes func() ([]uint32, error)) {
+	h.mu.Lock()
+	h.userNodes = nodes
+	h.mu.Unlock()
+}
+
+// SetFavoriteStore attaches the ledger of the favorites this station set on
+// the radio (optional). Without it the hub still remembers its own stars for
+// the lifetime of the process, but a restart forgets which ones were its own
+// and it then refuses to unpin anything.
+func (h *Hub) SetFavoriteStore(store FavoriteStore) {
+	h.mu.Lock()
+	h.favoriteStore = store
+	h.mu.Unlock()
+}
+
+// pinUserNodes keeps the radio's node database from evicting the public keys
+// of the people this station serves. The firmware refuses a direct message to
+// a node whose key it does not hold and only learns it from that node's
+// NodeInfo, so a key pruned out of a full node table costs the operator a
+// message until the node announces itself again. Favorites are NEVER evicted
+// and survive a node-db reset, which makes them the one durable place this
+// pin can live.
+//
+// The pass reconciles in BOTH directions: every node in the directory is set
+// as a favorite, and a favorite this station set for a node that has since
+// left the directory is removed again — the radio keeps favorites forever, so
+// without the second half the node table would slowly fill with stars for
+// people the station no longer serves. Only stars this station set itself are
+// ever removed; a node the operator starred on the device is left alone, which
+// is exactly what the ledger of its own pins is for.
+//
+// The ledger is ownership, NOT the radio's state. A star it lists is
+// re-asserted unless the DEVICE reports the node as favorite, so a node-db
+// reset (or a swapped radio) is repaired at the next session, while a healthy
+// radio — which confirms every star it kept — costs no admin traffic at all.
+//
+// The pass runs on the maintenance tick (and forced right after a handshake):
+// at most once per PinInterval, and a radio that refuses the admin message
+// only logs a warning — a failed pass must never disturb the mesh session. A
+// pass that did not get through is retried after pinRetryDelay instead of a
+// whole interval later.
+func (h *Hub) pinUserNodes(force bool) {
+	if !h.cfg.PinUserNodes {
+		return
+	}
+	h.mu.Lock()
+	provider := h.userNodes
+	now := h.clock()
+	if provider == nil || (!force && now.Before(h.pinNext)) {
+		h.mu.Unlock()
+		return
+	}
+	interval := h.cfg.PinInterval
+	if interval <= 0 {
+		interval = defaultPinInterval
+	}
+	// This pass CONSUMES the due time: leaving it in the past would make every
+	// later tick run the pass again (the maintenance tick is seconds apart).
+	// The end of the pass arms the next one, and a retry asked for while it
+	// runs still wins because arming never postpones (see schedulePinNext).
+	h.pinNext = time.Time{}
+	h.mu.Unlock()
+
+	next := now.Add(interval)
+	// Whatever this pass wrote down goes to the store even when the pass
+	// itself gives up early, and a store that refuses the write is retried
+	// soon — the pending change survives in the flag, not in this call.
+	defer func() {
+		if !h.flushFavorites() {
+			next = now.Add(pinRetryDelay)
+		}
+		// Never postpones a retry the device asked for while this pass ran.
+		h.schedulePinNext(next)
+	}()
+
+	// The ledger first: without knowing our own stars the station cannot
+	// tell them from the operator's, and must not touch the radio.
+	pinned, err := h.loadFavorites()
+	if err != nil {
+		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger load failed, favorites left unchanged", "error", err)
+		return
+	}
+	want, err := provider()
+	if err != nil {
+		h.pinLog(slog.LevelWarn, "meshtastic: user node list unavailable, favorites left unchanged", "error", err)
+		return
+	}
+	desired := make(map[uint32]bool, len(want))
+	for _, id := range want {
+		if id != 0 && id != core.BroadcastNodeID.Uint32() {
+			desired[id] = true
+		}
+	}
+	// The device's own report of its favorites is the only proof a star is
+	// actually set; the ledger says whose star it is, never that it is still
+	// there.
+	h.mu.Lock()
+	confirmed := make(map[uint32]bool, len(h.radioFavorites))
+	for id := range h.radioFavorites {
+		confirmed[id] = true
+	}
+	h.mu.Unlock()
+
+	// Every node the directory requires must be a favorite on the radio. The
+	// ledger does not excuse one: an owned star the device no longer reports
+	// was lost with a node-db reset (or never reached a swapped device) and
+	// is set again here. A star the radio confirms needs no traffic — which
+	// is the normal state of a healthy installation.
+	failed := false
+	for id := range desired {
+		if confirmed[id] {
+			continue
+		}
+		if err := h.setFavorite(id, true); err != nil {
+			h.pinLog(slog.LevelWarn, "meshtastic: pinning a user node as favorite failed",
+				"node", meshIDString(id), "error", err)
+			failed = true
+			continue
+		}
+		// Nothing is recorded here: the frame has only been written, and the
+		// device's answer settles what the star actually is (settleFavorite).
+	}
+	for _, id := range pinned {
+		if desired[id] {
+			continue
+		}
+		if err := h.setFavorite(id, false); err != nil {
+			h.pinLog(slog.LevelWarn, "meshtastic: unpinning a node that left the user directory failed",
+				"node", meshIDString(id), "error", err)
+			failed = true
+			continue
+		}
+		// As above: the star is taken out of the ledger and the confirmation
+		// only when the device confirms it has been removed.
+	}
+	if failed {
+		next = now.Add(pinRetryDelay)
+	}
+}
+
+// loadFavorites returns the favorites this station set on the radio, reading
+// the ledger from the store on first use. A failed read is NOT cached: the
+// next pass tries again, and until then the pass leaves the radio alone.
+func (h *Hub) loadFavorites() ([]uint32, error) {
+	h.mu.Lock()
+	loaded := h.pinnedLoaded
+	h.mu.Unlock()
+	if !loaded {
+		h.mu.Lock()
+		store := h.favoriteStore
+		h.mu.Unlock()
+		if store != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ids, err := store.LoadMeshtasticFavorites(ctx)
+			cancel()
+			if err != nil {
+				return nil, err
+			}
+			h.mu.Lock()
+			// A pass that loaded the ledger while this read was in flight
+			// already knows the pins AND what it did with them: merging a
+			// stale snapshot could resurrect a star it just took back.
+			if !h.pinnedLoaded {
+				if h.pinned == nil {
+					h.pinned = make(map[uint32]bool, len(ids))
+				}
+				for _, id := range ids {
+					h.pinned[id] = true
+				}
+				h.pinnedLoaded = true
+			}
+			h.mu.Unlock()
+		} else {
+			h.mu.Lock()
+			if h.pinned == nil {
+				h.pinned = map[uint32]bool{}
+			}
+			h.pinnedLoaded = true
+			h.mu.Unlock()
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]uint32, 0, len(h.pinned))
+	for id := range h.pinned {
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// rememberFavorite records (or drops) one star in the in-memory ledger and
+// marks it unsaved; the pass flushes it at the end (flushFavorites), so a
+// half-applied pass costs at most a repeated admin frame.
+func (h *Hub) rememberFavorite(id uint32, pinned bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pinned == nil {
+		h.pinned = map[uint32]bool{}
+	}
+	if pinned {
+		h.pinned[id] = true
+	} else {
+		delete(h.pinned, id)
+	}
+	h.favoritesRev++
+	h.favoritesDirty = true
+}
+
+// dirtyFavorites reports whether the ledger holds changes the store has not
+// accepted yet.
+func (h *Hub) dirtyFavorites() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.favoritesDirty
+}
+
+// saveFavorites writes the ledger back (a small snapshot, at most once per
+// pass). A failure only costs a stale ledger — the radio already carries the
+// star — so it is logged, never propagated.
+// flushFavorites writes the ledger when it holds changes the store has not
+// accepted yet, and reports whether nothing is left pending. A failed write
+// KEEPS the flag (that is the whole point: the radio carries the stars, but
+// only the ledger makes them OURS after a restart, and only the ledger lets a
+// later pass take a star back), so the next pass retries it without any new
+// change from the directory.
+//
+// Flushes are serialized end to end: the revision check protects against a
+// change made DURING a write, but it cannot protect the store from an older
+// snapshot arriving after a newer one.
+func (h *Hub) flushFavorites() bool {
+	// The snapshot and the write that carries it are ONE step: a flush that
+	// starts later must never land earlier (see favoriteSaveMu).
+	h.favoriteSaveMu.Lock()
+	defer h.favoriteSaveMu.Unlock()
+	h.mu.Lock()
+	if !h.favoritesDirty {
+		h.mu.Unlock()
+		return true
+	}
+	store := h.favoriteStore
+	rev := h.favoritesRev
+	ids := make([]uint32, 0, len(h.pinned))
+	for id := range h.pinned {
+		ids = append(ids, id)
+	}
+	h.mu.Unlock()
+	if store == nil {
+		// RAM-only mode (no store attached): nothing to write to, which is
+		// not a failure — the process cannot lose what it never persisted.
+		h.mu.Lock()
+		if h.favoritesRev == rev {
+			h.favoritesDirty = false
+		}
+		h.mu.Unlock()
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := store.SaveMeshtasticFavorites(ctx, ids); err != nil {
+		h.pinLog(slog.LevelWarn, "meshtastic: pinned favorite ledger save failed, will retry", "error", err)
+		// The change landed outside a pass (the device settles a favorite
+		// whenever it answers), so the retry is scheduled here.
+		h.favoriteRetry()
+		return false
+	}
+	h.mu.Lock()
+	// A change made while the write was in flight is not covered by this
+	// snapshot: the flag stays set for it.
+	if h.favoritesRev == rev {
+		h.favoritesDirty = false
+	}
+	h.mu.Unlock()
+	return true
+}
+
+// PinnedNodes returns the node numbers this station set as favorites on the
+// radio, normalized to lowercase 8-hex ids. Nodes the operator starred on the
+// device are not listed: the station only knows about its own pins. The
+// ledger is read on first use, so the admin page shows the pins of a previous
+// process too — before the first pass of this one.
+func (h *Hub) PinnedNodes() []string {
+	ids, err := h.loadFavorites()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, meshIDString(id))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// markRadioFavorite records what the device now carries for one node. It
+// mirrors BOTH directions: a star the device accepted is skipped for the rest
+// of the session, and a star it took back stops counting as confirmed —
+// otherwise a node that is removed and later registered again would be left
+// without a star, because the confirmation of the first pin outlives the
+// removal. (The next handshake reads the device's own report anyway.)
+func (h *Hub) markRadioFavorite(id uint32, favorite bool) {
+	h.mu.Lock()
+	if h.radioFavorites == nil {
+		h.radioFavorites = map[uint32]bool{}
+	}
+	if favorite {
+		h.radioFavorites[id] = true
+	} else {
+		delete(h.radioFavorites, id)
+	}
+	h.mu.Unlock()
+}
+
+// settleFavorite applies the DEVICE's verdict on one favorite frame. Only a
+// frame the device accepted changes anything: the star is then recorded as
+// OURS — the ledger is what takes it back when its owner leaves the directory
+// — and as CONFIRMED, so a later pass does not re-send it.
+//
+// A refusal, or an answer that never came, leaves both untouched, retracts a
+// confirmation that no longer matches the radio, and brings the next pass
+// forward: the station must never believe in a star the radio does not have.
+func (h *Hub) settleFavorite(ps *pendingSend, status string) {
+	op := ps.favorite
+	if op == nil || !ps.favoriteSettled.CompareAndSwap(false, true) {
+		return
+	}
+	if status == TxSent || status == TxDelivered {
+		h.rememberFavorite(op.node, op.set)
+		h.markRadioFavorite(op.node, op.set)
+		if op.set {
+			h.pinLog(slog.LevelInfo, "meshtastic: user node pinned as favorite on the radio", "node", meshIDString(op.node))
+		} else {
+			h.pinLog(slog.LevelInfo, "meshtastic: node left the user directory, favorite removed from the radio",
+				"node", meshIDString(op.node))
+		}
+		h.flushFavorites()
+		return
+	}
+	// The radio refused the frame (or never answered). The star keeps whatever
+	// state the radio really has: a refused SET is not confirmed, and a failed
+	// REMOVE means the star is still there.
+	h.markRadioFavorite(op.node, !op.set)
+	h.pinLog(slog.LevelWarn, "meshtastic: the radio did not apply a favorite change, will retry",
+		"node", meshIDString(op.node), "set", op.set, "reason", ps.failReason)
+	h.favoriteRetry()
+}
+
+// favoriteRetry brings the next pin pass forward: a change the radio refused
+// (or never answered) is attempted again in minutes, not a whole interval
+// later.
+func (h *Hub) favoriteRetry() {
+	h.schedulePinNext(time.Now().Add(pinRetryDelay))
+}
+
+// schedulePinNext arms the next pin pass WITHOUT ever postponing one that is
+// already due earlier. A retry is asked for the moment the radio answers, and
+// that answer can arrive while the pass that sent the frame is still running:
+// the pass's own interval must not overwrite it on the way out, or a refused
+// node would stay unprotected for a whole interval.
+func (h *Hub) schedulePinNext(next time.Time) {
+	h.mu.Lock()
+	if h.pinNext.IsZero() || next.Before(h.pinNext) {
+		h.pinNext = next
+	}
+	h.mu.Unlock()
+}
+
+// pinLog writes one pin-pass line; the tests build hubs without a logger.
+func (h *Hub) pinLog(level slog.Level, msg string, args ...any) {
+	if h.logger == nil {
+		return
+	}
+	h.logger.Log(context.Background(), level, msg, args...)
+}
+
+// meshIDString renders a node number the way the UI and the logs do.
+func meshIDString(id uint32) string { return fmt.Sprintf("%08x", id) }
+
+// setFavorite asks the DEVICE to add or remove one node in its favorites.
+// The admin frame is addressed to our own node: the firmware handles a packet
+// that came in over the local API itself (no channel, no admin session, no
+// encryption), which is exactly what the phone app does when a star is
+// tapped.
+//
+// Returning nil only means the frame was WRITTEN: the device answers with the
+// packet id and a routing result, and that answer is what settles the change
+// (see settleFavorite). Callers must not record the star before it.
+func (h *Hub) setFavorite(id uint32, favorite bool) error {
+	if id == 0 || id == core.BroadcastNodeID.Uint32() {
+		return fmt.Errorf("meshtastic: %08x is not a node that can be favorited", id)
+	}
+	h.mu.Lock()
+	conn := h.conn
+	self := h.self
+	h.mu.Unlock()
+	if conn == nil || !conn.IsConnected() {
+		return errDeviceNotConnected
+	}
+	if self == nil || self.ID == "" {
+		return errors.New("meshtastic: our own node number is not known yet")
+	}
+	selfNum, err := strconv.ParseUint(normalizeMeshID(self.ID), 16, 32)
+	if err != nil {
+		return fmt.Errorf("meshtastic: our own node number %q is unreadable", self.ID)
+	}
+	admin := &pb.AdminMessage{}
+	if favorite {
+		admin.PayloadVariant = &pb.AdminMessage_SetFavoriteNode{SetFavoriteNode: id}
+	} else {
+		admin.PayloadVariant = &pb.AdminMessage_RemoveFavoriteNode{RemoveFavoriteNode: id}
+	}
+	payload, err := proto.Marshal(admin)
+	if err != nil {
+		return fmt.Errorf("meshtastic: encode the favorite request: %w", err)
+	}
+	// The device answers the frame like any other local packet; the
+	// placeholder keeps its answer paired with THIS send, so an unrelated
+	// text message can never consume the id (same bookkeeping as the
+	// NodeInfo refresh).
+	at := time.Now()
+	ps := &pendingSend{
+		to: uint32(selfNum), at: at, lastTry: at, text: "\x00favorite",
+		wantAck: true, probe: true,
+		favorite: &favoriteChange{node: id, set: favorite},
+	}
+	h.sendMu.Lock()
+	h.echoQueue = append(h.echoQueue, ps)
+	h.sendMu.Unlock()
+	err = conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+		To:      uint32(selfNum),
+		WantAck: true,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_ADMIN_APP, Payload: payload},
+		},
+	}}})
+	if err != nil {
+		h.dropPending(ps)
+		return fmt.Errorf("meshtastic: favorite request write failed: %w", err)
+	}
+	return nil
+}
+
+// queueRemovalLocked records one removal the broker owes. The backlog is
+// BOUNDED (maxPendingStationRemovals): past it the most obsolete entry is
+// abandoned so a broker that stays away cannot grow the station without bound.
+// The abandonment is counted, never silent.
+func (h *Hub) queueRemovalLocked(id string, quietSince time.Time) bool {
+	if h.tombstones[id] != nil {
+		return false
+	}
+	if h.pendingRemovalsLocked() >= maxPendingStationRemovals {
+		// No room: REFUSE this removal and remember the refusal for this
+		// activity version. Evicting an older entry instead (or simply queueing
+		// again next pass) would drop and re-count the same removals on every
+		// pass — without a single new observation.
+		if h.abandonedRemovals == nil {
+			h.abandonedRemovals = make(map[string]time.Time)
+		}
+		if prev, seen := h.abandonedRemovals[id]; !seen || !prev.Equal(quietSince) {
+			h.abandonedRemovals[id] = quietSince
+			h.removalsDropped++
+		}
+		return false
+	}
+	h.tombstones[id] = &nodeTombstone{quietSince: quietSince}
+	return true
+}
+
+// pendingRemovalsLocked counts the removals waiting for the broker (a
+// confirmed entry is bookkeeping, not work).
+func (h *Hub) pendingRemovalsLocked() int {
+	n := 0
+	for _, tb := range h.tombstones {
+		if !tb.confirmed {
+			n++
+		}
+	}
+	return n
+}
+
+// StationRemovals reports the station-document removals still waiting for the
+// broker and how many were abandoned because that backlog hit its bound. It is
+// the overflow metric: a non-zero drop count means obsolete retained documents
+// were left behind on purpose, because the broker did not take them for long
+// enough to keep queueing them.
+func (h *Hub) StationRemovals() (pending, dropped int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pendingRemovalsLocked(), h.removalsDropped
+}
+
+// expireNodes cleans the MQTT station feed: nodes unheard for longer than
+// NodeTTL have their retained document removed, and nodes unheard for longer
+// than nodeDirRetention are dropped from the directory entirely, so memory and
+// the persisted table stay bounded.
+//
+// The removals live in their own ledger (h.tombstones), NOT in the directory:
+// the directory drops a node long before the broker necessarily took the
+// removal, and a dropped node would silently lose the pending work. A removal
+// is queued once, retried (paced by tombstoneRetry) until the broker CONFIRMED
+// it, and voided when the node is heard again — that very packet published its
+// document again.
 func (h *Hub) expireNodes() {
 	h.mu.Lock()
 	now := time.Now()
-	var stale []*Node
-	for _, n := range h.nodes {
-		if !n.tombstoned && now.Sub(n.LastSeen) > h.cfg.NodeTTL {
-			n.tombstoned = true
-			stale = append(stale, n)
+	if h.tombstones == nil {
+		h.tombstones = make(map[string]*nodeTombstone)
+	}
+	// A node heard after its removal was queued is active again: the removal
+	// is void, and the next quiet period queues a fresh one.
+	for id, tb := range h.tombstones {
+		if n := h.nodes[id]; n != nil && n.LastSeen.After(tb.quietSince) {
+			delete(h.tombstones, id)
+			h.nodesDirty = true
 		}
 	}
+	// Every quiet node owes the broker a removal — but only when this
+	// installation HAS a station feed: a document nobody ever published cannot
+	// be owed to the broker, and queueing it would be pure growth.
+	// A refusal is remembered only while its node stays quiet with the SAME
+	// observation: a node heard again (or one the directory dropped) is
+	// considered afresh — it may well find room the next time it goes quiet.
+	for id, since := range h.abandonedRemovals {
+		if n := h.nodes[id]; n == nil || !n.LastSeen.Equal(since) {
+			delete(h.abandonedRemovals, id)
+		}
+	}
+	queued, dropped := 0, 0
+	if h.stationSink != nil {
+		for id, n := range h.nodes {
+			if h.tombstones[id] != nil || now.Sub(n.LastSeen) <= h.cfg.NodeTTL {
+				continue
+			}
+			if _, refused := h.abandonedRemovals[id]; refused {
+				continue // no room for it a moment ago, and nothing changed
+			}
+			before := h.removalsDropped
+			if h.queueRemovalLocked(id, n.LastSeen) {
+				queued++
+			}
+			if h.removalsDropped > before {
+				dropped++
+			}
+		}
+		if queued > 0 || dropped > 0 {
+			h.nodesDirty = true
+		}
+	}
+	// The directory forgets a node long before the broker necessarily did.
 	for id, n := range h.nodes {
 		if now.Sub(n.LastSeen) > nodeDirRetention {
 			delete(h.nodes, id)
 			h.nodesDirty = true
 		}
 	}
-	sink := h.stationSink
+	// A CONFIRMED removal of a node the directory no longer holds has nothing
+	// left to protect: the next appearance of that node publishes a fresh
+	// document. An unconfirmed one keeps its entry (and its persisted row), so
+	// the work survives both the directory prune and a restart.
+	for id, tb := range h.tombstones {
+		if tb.confirmed && h.nodes[id] == nil {
+			delete(h.tombstones, id)
+			h.nodesDirty = true
+		}
+	}
+	var due []string
+	for id, tb := range h.tombstones {
+		if tb.confirmed {
+			continue // the node stays quiet, the broker already took it
+		}
+		if !tb.tried.IsZero() && now.Sub(tb.tried) < h.tombstoneRetryDelay() {
+			continue // the broker has not taken the last attempt yet
+		}
+		tb.tried = now
+		due = append(due, id)
+	}
 	h.mu.Unlock()
-	for _, n := range stale {
-		if sink != nil {
-			if err := sink(context.Background(), "meshtastic/stations/"+n.ID, true, nil); err != nil && h.logger != nil {
-				h.logger.Warn("meshtastic: station tombstone failed", "id", n.ID, "error", err)
+	if dropped > 0 && h.logger != nil {
+		h.logger.Warn("meshtastic: station removal backlog is full, obsolete documents left on the broker",
+			"dropped", dropped, "backlog", maxPendingStationRemovals)
+	}
+	// The removals go to the feed worker, NEVER out from here: a broker that
+	// keeps the connection open but does not confirm publications would
+	// otherwise park the session loop (heartbeat, watchdog, retries, the
+	// shutdown path) for a whole batch. A queue that is full is not an error —
+	// the entry stays pending and the retry pace offers it again.
+	for _, id := range due {
+		h.enqueueStationFeed(feedJob{id: id})
+	}
+}
+
+// enqueueStationFeed hands one operation to the worker. It NEVER waits: the
+// caller may be the packet path or the maintenance loop, and a broker that
+// stopped answering must not stall either of them.
+func (h *Hub) enqueueStationFeed(job feedJob) {
+	if h.feedQueue == nil {
+		// No queue at all: this hub was assembled without the constructor (an
+		// embedding, or a test literal). Publishing inline keeps the feed
+		// working instead of dropping every document on the floor.
+		h.mu.Lock()
+		sink := h.stationSink
+		h.mu.Unlock()
+		if sink == nil {
+			return
+		}
+		if job.doc == nil {
+			h.publishStationRemoval(context.Background(), sink, job.id)
+			return
+		}
+		h.publishStationDoc(context.Background(), sink, job)
+		return
+	}
+	select {
+	case h.feedQueue <- job:
+	default:
+		if h.logger != nil {
+			h.logger.Debug("meshtastic: station feed queue is full, dropping the operation", "id", job.id)
+		}
+	}
+}
+
+// runStationFeed drains the station feed on its own goroutine, one operation at
+// a time (which is also what orders a document publish against the removal of
+// the same node). The context is the hub's: cancelling it (station shutdown)
+// cancels the publication in flight, and the worker never delays the session
+// loop that enqueued the work.
+func (h *Hub) runStationFeed(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-h.feedQueue:
+			h.mu.Lock()
+			sink := h.stationSink
+			h.mu.Unlock()
+			if sink == nil {
+				continue
+			}
+			if job.doc == nil {
+				h.publishStationRemoval(ctx, sink, job.id)
+				continue
+			}
+			h.publishStationDoc(ctx, sink, job)
+		}
+	}
+}
+
+// tombstoneRetryDelay is the pause between removal attempts the broker has not
+// accepted yet.
+func (h *Hub) tombstoneRetryDelay() time.Duration {
+	if h.tombstoneRetry > 0 {
+		return h.tombstoneRetry
+	}
+	return defaultTombstoneRetry
+}
+
+// openRemovalLocked returns the removal the broker still owes for one node, or
+// nil when there is none (a confirmed removal is not owed any more).
+func (h *Hub) openRemovalLocked(id string) *nodeTombstone {
+	tb := h.tombstones[id]
+	if tb == nil || tb.confirmed {
+		return nil
+	}
+	return tb
+}
+
+// publishStationRemoval removes one retained station document and records the
+// removal only when the broker CONFIRMED it: a refused publish stays queued (a
+// later pass retries it), and a node that published again while this removal
+// was waiting keeps its document.
+//
+// The whole step runs under stationMu, which the position publish takes too:
+// the two operations for one node can never interleave, so the last one to run
+// decides what the broker holds — and a node that just spoke always leaves its
+// document behind.
+func (h *Hub) publishStationRemoval(parent context.Context, sink func(ctx context.Context, topic string, retained bool, payload []byte) error, id string) {
+	h.stationMu.Lock()
+	defer h.stationMu.Unlock()
+	h.mu.Lock()
+	tb := h.openRemovalLocked(id)
+	// The node may have spoken (or been restored) since this removal was
+	// queued — the removal is only ever about a node that is still quiet, and
+	// that is checked here and not only where the entry was queued.
+	if tb != nil {
+		if n := h.nodes[id]; n != nil {
+			if n.LastSeen.After(tb.quietSince) || time.Since(n.LastSeen) <= h.cfg.NodeTTL {
+				tb = nil
 			}
 		}
 	}
+	h.mu.Unlock()
+	if tb == nil {
+		return
+	}
+	// One budget per publication, and the hub's cancellation reaches it: a
+	// broker that ignores the deadline cannot hold this worker past the
+	// station's own lifetime.
+	ctx, cancel := context.WithTimeout(parent, stationPublishTimeout)
+	defer cancel()
+	if err := sink(ctx, "meshtastic/stations/"+id, true, nil); err != nil {
+		if h.logger != nil {
+			h.logger.Warn("meshtastic: station removal failed, will retry",
+				"id", id, "retry_in", h.tombstoneRetryDelay(), "error", err)
+		}
+		return
+	}
+	h.mu.Lock()
+	if cur := h.openRemovalLocked(id); cur != nil {
+		cur.confirmed = true
+		h.nodesDirty = true
+	}
+	h.mu.Unlock()
 }
 
 // handlePacket consumes one mesh packet delivered from the radio.
@@ -1953,7 +2890,11 @@ func (h *Hub) pairQueueStatus(id uint32, res pb.Routing_Error) {
 			h.rejectSend(q, res)
 			return
 		}
-		h.pending[id] = q
+		if !q.finalOnModemAck() {
+			// A favorite change is answered by the modem itself: it never
+			// enters the delivery window that waits for a recipient ack.
+			h.pending[id] = q
+		}
 		h.sendMu.Unlock()
 		h.markStatus(q, TxSent)
 		return
@@ -2178,7 +3119,7 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// live firmware: it is expected on some device builds and absent on
 	// others — the keep is correct either way.)
 	final := true
-	if fromSelf && routing.GetErrorReason() == pb.Routing_NONE && ps.wantAck {
+	if fromSelf && routing.GetErrorReason() == pb.Routing_NONE && ps.wantAck && !ps.finalOnModemAck() {
 		final = false
 		if h.logger != nil {
 			h.logger.Info("meshtastic: modem ack for direct message, recipient ack still expected",
@@ -2559,10 +3500,18 @@ func (h *Hub) retryPending(now time.Time) {
 	for i := 0; i < len(h.echoQueue); {
 		q := h.echoQueue[i]
 		if q.probe {
+			// A favorite change needs the answer that settles it: keep the
+			// placeholder for the pairing window, then read silence as a
+			// refusal (the star is not confirmed and the pass tries again).
+			if q.favorite != nil && now.Sub(q.lastTry) < dmAckTimeout {
+				i++
+				continue
+			}
 			// Traceroute placeholders are never retransmitted: the
 			// probe wait already timed out (the device may still
 			// answer; the reply is dropped as an orphan).
 			h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+			h.settleFavorite(q, TxFailed)
 			continue
 		}
 		if !q.echoed && !q.wantAck && now.Sub(q.lastTry) > 5*time.Minute {
@@ -2645,6 +3594,9 @@ func (h *Hub) dropPendingLocked(ps *pendingSend) {
 // worker) is revived for a retry within the attempt budget.
 func (h *Hub) markStatus(ps *pendingSend, status string) {
 	ps.status = status
+	// The verdict on a favorite frame is hub bookkeeping and must land even
+	// when no message history is attached (which is how the tests run).
+	h.settleFavorite(ps, status)
 	h.mu.Lock()
 	rec := h.recorder
 	h.mu.Unlock()
@@ -3635,9 +4587,9 @@ func (h *Hub) recordMessage(direction, sender, recipient, channel, text, operato
 	}
 }
 
-// publishStation publishes (or refreshes) one retained station document.
-// The sink is called without the hub lock held: sinks perform network
-// I/O and must never block the hub state.
+// publishStation publishes (or refreshes) one retained station document. The
+// document is handed to the feed worker: this call may come from the packet
+// path, which must never wait for a broker.
 func (h *Hub) publishStation(n *Node) {
 	h.mu.Lock()
 	sink := h.stationSink
@@ -3662,10 +4614,20 @@ func (h *Hub) publishStation(n *Node) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	h.enqueueStationFeed(feedJob{id: n.ID, doc: payload})
+}
+
+// publishStationDoc writes one document to the broker (the worker side of
+// publishStation). The station feed is ordered against the removal of a
+// document for the same node: the worker publishes one operation at a time and
+// the removal re-checks that the node is still quiet before it acts.
+func (h *Hub) publishStationDoc(parent context.Context, sink func(ctx context.Context, topic string, retained bool, payload []byte) error, job feedJob) {
+	h.stationMu.Lock()
+	defer h.stationMu.Unlock()
+	ctx, cancel := context.WithTimeout(parent, stationPublishTimeout)
 	defer cancel()
-	if err := sink(ctx, "meshtastic/stations/"+n.ID, true, payload); err != nil && h.logger != nil {
-		h.logger.Warn("meshtastic: station publish failed", "id", n.ID, "error", err)
+	if err := sink(ctx, "meshtastic/stations/"+job.id, true, job.doc); err != nil && h.logger != nil {
+		h.logger.Warn("meshtastic: station publish failed", "id", job.id, "error", err)
 	}
 }
 
@@ -3708,7 +4670,14 @@ func (h *Hub) SeedNode(id, name, short string, lat, lon float64, lastSeen time.T
 func (h *Hub) Snapshot() Snapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	snap := Snapshot{Connected: h.connected, NodeTTL: h.cfg.NodeTTL}
+	snap := Snapshot{
+		Connected: h.connected,
+		NodeTTL:   h.cfg.NodeTTL,
+		// The feed's backlog is part of the station's state: an operator has
+		// to see a broker that has not taken its removals for a while.
+		PendingRemovals: h.pendingRemovalsLocked(),
+		RemovalsDropped: h.removalsDropped,
+	}
 	if h.self != nil {
 		snap.Self = *h.self
 	}

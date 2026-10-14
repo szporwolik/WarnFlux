@@ -59,13 +59,14 @@ func nodeInfoPos(num uint32, long, short string, latI, lonI int32, lastHeard uin
 // testRadio wires a hub onto the library's in-memory client API server:
 // real protocol over net.Pipe, no serial hardware.
 type testRadio struct {
-	srv    *clientapi.Server
-	cancel context.CancelFunc
-	hub    *Hub
-	runErr chan error
-	mu     sync.Mutex
-	rx     []*pb.MeshPacket // outbound packets captured via OnOutboundPacket
-	dials  atomic.Int32     // transport dials through the seam
+	srv     *clientapi.Server
+	cancel  context.CancelFunc
+	stopRun context.CancelFunc
+	hub     *Hub
+	runErr  chan error
+	mu      sync.Mutex
+	rx      []*pb.MeshPacket // outbound packets captured via OnOutboundPacket
+	dials   atomic.Int32     // transport dials through the seam
 }
 
 // newTestTable is the handshake node directory used by the test radio.
@@ -87,6 +88,9 @@ func newTestTable() *testNodeTable {
 type testRadioOpts struct {
 	wrap  func(transportConn) transportConn
 	setup func(*Hub)
+	// nodes overrides the device node table served at the handshake (nil =
+	// the default table). The radio states its own favorites through it.
+	nodes []*pb.NodeInfo
 }
 
 func newTestRadio(t *testing.T, cfg Config, opts ...testRadioOpts) *testRadio {
@@ -96,6 +100,9 @@ func newTestRadio(t *testing.T, cfg Config, opts ...testRadioOpts) *testRadio {
 		opt = opts[0]
 	}
 	table := newTestTable()
+	if opt.nodes != nil {
+		table.all = opt.nodes
+	}
 	radio := &testRadio{}
 	ctx, cancel := context.WithCancel(context.Background())
 	radio.cancel = cancel
@@ -149,9 +156,24 @@ func newTestRadio(t *testing.T, cfg Config, opts ...testRadioOpts) *testRadio {
 	radio.hub = hub
 	radio.runErr = make(chan error, 1)
 	runCtx, stopRun := context.WithCancel(context.Background())
+	radio.stopRun = stopRun
 	t.Cleanup(stopRun)
 	go func() { radio.runErr <- hub.Run(runCtx) }()
 	return radio
+}
+
+// stopHub cancels the hub's Run context and waits for it to return, so a test
+// can assert that shutting the station down does not wait for the broker.
+func (r *testRadio) stopHub(t *testing.T) {
+	t.Helper()
+	if r.stopRun != nil {
+		r.stopRun()
+	}
+	select {
+	case <-r.runErr:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hub.Run did not return after its context was cancelled")
+	}
 }
 
 // waitConnected blocks until the hub reports a live session.

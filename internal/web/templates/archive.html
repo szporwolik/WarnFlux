@@ -12,7 +12,7 @@
       <div class="hazard-meta">
         <span class="msgid">{{.MsgID}}</span>
         <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
-        {{if .Event}}<span>{{.Event}}</span>{{end}}
+        {{if .Event}}<span>{{eventName $.Lang .Event}}</span>{{end}}
         {{if .Areas}}<span>{{tr $.Lang "warnings.areas"}} {{.Areas}}</span>{{end}}
         {{if .EffectiveAt}}<span>{{tr $.Lang "archive.from"}} {{timeShort (derefTime .EffectiveAt)}}</span>{{end}}
         {{if .ExpiresAt}}<span>{{tr $.Lang "archive.until"}} {{timeShort (derefTime .ExpiresAt)}}</span>{{end}}

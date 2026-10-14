@@ -19,8 +19,15 @@ import (
 const Type = "metar"
 
 const (
-	defaultPollInterval   = 15 * time.Minute
-	defaultRequestTimeout = 10 * time.Second
+	defaultPollInterval = 15 * time.Minute
+	// defaultRequestTimeout is generous on purpose: the provider sits behind
+	// a distant edge, and a COLD connection (fresh DNS, TCP and TLS/HTTP2
+	// setup — the state every 15-minute poll starts from) measured 5-6
+	// seconds here, occasionally crossing 10 seconds on a slow link. A tight
+	// value turns that into a "source degraded" report about the network
+	// rather than about the provider. The timeout is a safety net, not a
+	// latency budget.
+	defaultRequestTimeout = 30 * time.Second
 	defaultBaseURL        = "https://aviationweather.gov/api/data"
 
 	minPollInterval = 5 * time.Minute

@@ -428,3 +428,116 @@ func TestCheckWritable(t *testing.T) {
 		t.Fatal("a read-only directory must be reported: the writer stages its temporary file there")
 	}
 }
+
+// TestUpdateFileWritesLists pins the list-valued settings the Config page
+// edits (a source's localities): a new list is rendered as a block sequence
+// an operator reads by hand, an existing list is replaced WHOLESALE (a
+// leftover item would silently keep a town the operator removed), and the
+// rest of the file survives byte for byte.
+func TestUpdateFileWritesLists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `sources:
+  - id: burze-main
+    type: burzedzis
+    config:
+      api_key: secret
+      locations:
+        - Niepołomice
+        - Kraków
+      poll_interval: 5m
+  - id: imgw
+    type: imgw
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := UpdateFile(path, []ScalarEdit{
+		{Path: "sources[0].config.locations", Value: StringListScalar([]string{"Niepołomice", "Nowy Sącz"})},
+	}); err != nil {
+		t.Fatalf("UpdateFile: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "Kraków") {
+		t.Errorf("a removed locality survived the write:\n%s", text)
+	}
+	if n := strings.Count(text, "- Nowy Sącz"); n != 1 {
+		t.Errorf("the new locality appears %d times:\n%s", n, text)
+	}
+	// The list is a block sequence indented under its key, and everything
+	// else is untouched.
+	lines := strings.Split(text, "\n")
+	keyLine := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "locations:" {
+			keyLine = i
+			break
+		}
+	}
+	if keyLine < 0 || keyLine+2 >= len(lines) {
+		t.Fatalf("the localities key is missing:\n%s", text)
+	}
+	keyIndent := len(lines[keyLine]) - len(strings.TrimLeft(lines[keyLine], " "))
+	for i, want := range []string{"- Niepołomice", "- Nowy Sącz"} {
+		item := lines[keyLine+1+i]
+		if strings.TrimSpace(item) != want {
+			t.Errorf("list item %d = %q, want %q:\n%s", i, strings.TrimSpace(item), want, text)
+		}
+		indent := len(item) - len(strings.TrimLeft(item, " "))
+		if indent <= keyIndent {
+			t.Errorf("list item %d is not indented under its key (%d <= %d):\n%s", i, indent, keyIndent, text)
+		}
+	}
+	for _, keep := range []string{"- id: imgw\n    type: imgw", "api_key: secret", "poll_interval: 5m"} {
+		if !strings.Contains(text, keep) {
+			t.Errorf("unrelated content lost (%q):\n%s", keep, text)
+		}
+	}
+
+	locations, ok := StringListAt(path, "sources[0].config.locations")
+	if !ok || len(locations) != 2 || locations[0] != "Niepołomice" || locations[1] != "Nowy Sącz" {
+		t.Fatalf("read back = %v (ok=%v)", locations, ok)
+	}
+
+	// The written file must still load as a station configuration.
+	var doc map[string]any
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("the written file is not valid YAML: %v\n%s", err, text)
+	}
+
+	// A missing key is created as a block list, and an empty list stays
+	// explicit instead of leaving the key dangling.
+	if err := UpdateFile(path, []ScalarEdit{
+		{Path: "sources[1].config.locations", Value: StringListScalar([]string{"Kraków"})},
+	}); err != nil {
+		t.Fatalf("UpdateFile (new key): %v", err)
+	}
+	if err := UpdateFile(path, []ScalarEdit{
+		{Path: "sources[1].config.locations", Value: StringListScalar(nil)},
+	}); err != nil {
+		t.Fatalf("UpdateFile (empty list): %v", err)
+	}
+	final, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(final), "locations: []") {
+		t.Errorf("empty list not rendered as []:\n%s", final)
+	}
+	if err := yaml.Unmarshal(final, &doc); err != nil {
+		t.Fatalf("the file after list edits is not valid YAML: %v\n%s", err, final)
+	}
+	if lst, ok := StringListAt(path, "sources[0].config.locations"); !ok || len(lst) != 2 {
+		t.Errorf("the first list changed: %v (ok=%v)", lst, ok)
+	}
+}

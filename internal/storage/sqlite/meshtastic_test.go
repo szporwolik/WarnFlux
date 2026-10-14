@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,6 +20,10 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 		{ID: "a0a85934", Name: "Meshtastic 5934", Short: "SPM", Lat: 50.02, Lon: 20.0, LastSeen: seen, Sends: []string{"telemetry", "text"}, Hops: 3},
 		{ID: "b0b85934", Name: "Other", LastSeen: seen.Add(-time.Hour)},
 		{ID: "c0c85934", Name: "Unheard", LastSeen: seen.Add(-time.Minute), Hops: -1},
+		// A node that still owes the broker a removal of its retained
+		// document (migration v62): the flag has to survive the round trip,
+		// or the removal is lost with the restart.
+		{ID: "d0d85934", Name: "Gone", LastSeen: seen.Add(-40 * 24 * time.Hour), PendingRemoval: true},
 	}
 	if err := s.SaveMeshtasticNodes(ctx, nodes); err != nil {
 		t.Fatalf("save: %v", err)
@@ -27,8 +32,13 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(got) != 3 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" || got[2].ID != "c0c85934" {
-		t.Fatalf("nodes = %+v, want all three ids", got)
+	if len(got) != 4 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" ||
+		got[2].ID != "c0c85934" || got[3].ID != "d0d85934" {
+		t.Fatalf("nodes = %+v, want all four ids", got)
+	}
+	if got[3].PendingRemoval != true || got[0].PendingRemoval || got[1].PendingRemoval || got[2].PendingRemoval {
+		t.Fatalf("pending removal flags = %v %v %v %v, want only d0d85934",
+			got[0].PendingRemoval, got[1].PendingRemoval, got[2].PendingRemoval, got[3].PendingRemoval)
 	}
 	if got[0].Name != "Meshtastic 5934" || got[0].Short != "SPM" || got[0].Lat != 50.02 {
 		t.Fatalf("first node = %+v", got[0])
@@ -410,5 +420,50 @@ func TestMeshtasticMessagePeerFilter(t *testing.T) {
 	}
 	if n, err := s.CountMeshtasticMessages(ctx, storage.MeshtasticMessageFilter{Channel: "dm"}); err != nil || n != 5 {
 		t.Fatalf("dm count = %d, %v", n, err)
+	}
+}
+
+// TestMeshtasticFavoritesPersist pins the pinned-favorite ledger: the set
+// survives a restart (that is the whole point — after a restart the station
+// must still know which stars it owns) and a save is a full snapshot, so a
+// node that left the user directory disappears from it.
+func TestMeshtasticFavoritesPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	s := openTempAt(t, path)
+	ctx := context.Background()
+
+	if got, err := s.LoadMeshtasticFavorites(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("fresh store favorites = %v, %v", got, err)
+	}
+	if err := s.SaveMeshtasticFavorites(ctx, []uint32{0x6d2c8f6c, 0xdeadbeef}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := s.LoadMeshtasticFavorites(ctx)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got) != 2 || got[0] != 0x6d2c8f6c || got[1] != 0xdeadbeef {
+		t.Fatalf("favorites = %08x, want both nodes", got)
+	}
+
+	reopened := openTempAt(t, path)
+	if got, err = reopened.LoadMeshtasticFavorites(ctx); err != nil || len(got) != 2 {
+		t.Fatalf("after reopen = %08x, %v", got, err)
+	}
+
+	// Snapshot semantics: one node left the directory.
+	if err := s.SaveMeshtasticFavorites(ctx, []uint32{0xdeadbeef}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if got, err = s.LoadMeshtasticFavorites(ctx); err != nil || len(got) != 1 || got[0] != 0xdeadbeef {
+		t.Fatalf("after replace = %08x, %v", got, err)
+	}
+	// A repeated node id never yields a second row (the delta save is a
+	// snapshot, but a caller bug must not turn into a failed pass).
+	if err := s.SaveMeshtasticFavorites(ctx, []uint32{0xdeadbeef, 0xdeadbeef}); err != nil {
+		t.Fatalf("save duplicate: %v", err)
+	}
+	if got, err = s.LoadMeshtasticFavorites(ctx); err != nil || len(got) != 1 {
+		t.Fatalf("duplicate save = %08x, %v", got, err)
 	}
 }

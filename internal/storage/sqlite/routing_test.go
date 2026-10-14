@@ -433,7 +433,7 @@ func TestDeliveryJobs(t *testing.T) {
 // TestPruneKeepsPendingDeliveries pins the reported P1: retention removes
 // ONLY completed history. A job never executed (saved), a claimed job
 // (running) and a failed job with a scheduled retry all survive any
-// cutoff; terminal rows (accepted, retries spent) age out.
+// cutoff; terminal rows (accepted, unconfirmed, retries spent) age out.
 func TestPruneKeepsPendingDeliveries(t *testing.T) {
 	store := newRoutingStore(t)
 	ctx := context.Background()
@@ -447,13 +447,18 @@ func TestPruneKeepsPendingDeliveries(t *testing.T) {
 	mk := func(dedup string) storage.DeliveryJob {
 		return storage.DeliveryJob{GroupID: g.ID, ActionID: "log", EventKey: "imgw:1", DedupKey: dedup, Payload: payload, FiredAt: at}
 	}
-	for _, d := range []string{"accepted", "terminal-failed", "retry-failed", "running", "saved"} {
+	for _, d := range []string{"accepted", "unconfirmed", "terminal-failed", "retry-failed", "running", "saved"} {
 		if _, queued, err := store.EnqueueDelivery(ctx, mk(d)); err != nil || !queued {
 			t.Fatalf("enqueue %s = (%v, %v), want queued", d, queued, err)
 		}
 	}
 	// Terminal accepted.
 	if err := store.SettleDelivery(ctx, g.ID, "log", "accepted", storage.DeliveryAccepted, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	// Terminal unconfirmed: never resent automatically (reported P2 — the
+	// row and its payload must still age out with the other settled rows).
+	if err := store.SettleDelivery(ctx, g.ID, "log", "unconfirmed", storage.DeliveryUnconfirmed, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	// Terminal failed: retry budget spent (zero next attempt).
@@ -473,8 +478,8 @@ func TestPruneKeepsPendingDeliveries(t *testing.T) {
 	}
 
 	n, err := store.PruneActionFires(at.Add(24 * time.Hour))
-	if err != nil || n != 2 {
-		t.Fatalf("prune = (%d, %v), want (2, nil — accepted + terminal-failed only)", n, err)
+	if err != nil || n != 3 {
+		t.Fatalf("prune = (%d, %v), want (3, nil — accepted + unconfirmed + terminal-failed only)", n, err)
 	}
 	if n, err := store.PendingDeliveries(ctx, "log"); err != nil || n != 3 {
 		t.Fatalf("pending after prune = (%d, %v), want (3, nil — saved, running, retry-failed)", n, err)

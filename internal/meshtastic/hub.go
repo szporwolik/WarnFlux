@@ -996,6 +996,10 @@ type Hub struct {
 	// keyRetryPerPeerMax / keyRetryTotalMax override those bounds (tests).
 	keyRetryPerPeerMax int
 	keyRetryTotalMax   int
+	// peerKeysMax overrides the key-mark cap, peerKeysSkipped counts the marks
+	// the cap refused since the last sweep (reported there, not per event).
+	peerKeysMax     int
+	peerKeysSkipped int
 
 	// userNodes supplies the node numbers registered in the user directory
 	// (nil = nothing to pin); pinNext arms the next pin pass.
@@ -1604,6 +1608,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 			h.pinUserNodes(false)
 			h.retryPending(time.Now())
 			h.expireKeyRetries(time.Now())
+			h.sweepPeerState(time.Now())
 			h.persistNodes()
 			h.beaconTick()
 			h.hazardsTick()
@@ -2734,6 +2739,22 @@ func (h *Hub) expireNodes() {
 			h.nodesDirty = true
 		}
 	}
+	// The per-peer bookkeeping goes with the node the directory just dropped: a
+	// key mark is panel evidence for a row this station no longer holds, and a
+	// refresh entry this old rate-limits nothing (its gap has long passed).
+	// Without this the two maps keep one entry per node EVER heard while the
+	// directory itself stays bounded — memory growing on a long connection with
+	// nothing left to show for it.
+	for pid := range h.peerKeys {
+		if h.nodes[meshIDString(pid)] == nil {
+			delete(h.peerKeys, pid)
+		}
+	}
+	for pid := range h.nodeInfoAsked {
+		if h.nodes[meshIDString(pid)] == nil {
+			delete(h.nodeInfoAsked, pid)
+		}
+	}
 	// A CONFIRMED removal of a node the directory no longer holds has nothing
 	// left to protect: the next appearance of that node publishes a fresh
 	// document. An unconfirmed one keeps its entry (and its persisted row), so
@@ -3280,6 +3301,11 @@ func needsNodeInfoRefresh(res pb.Routing_Error) bool {
 // peer's firmware suppresses a reply to the same requester for hours, so
 // asking more often only spends airtime.
 const nodeInfoRefreshGap = 6 * time.Hour
+
+// maxPeerKeyMarks caps the key marks one session keeps (see rememberPeerKeyLocked):
+// a mark is a hint rebuilt at every handshake, so a cap costs an operator
+// nothing but a hint, while the map otherwise grows with every node ever heard.
+const maxPeerKeyMarks = 4096
 
 // requestNodeInfo asks one node's radio to re-announce its NodeInfo (and
 // with it its public key), which is what makes a later direct message to
@@ -4158,7 +4184,7 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 		h.peerKeys = make(map[uint32]bool)
 	}
 	if len(user.GetPublicKey()) > 0 {
-		h.peerKeys[pkt.GetFrom()] = true
+		h.rememberPeerKeyLocked(pkt.GetFrom())
 	} else {
 		delete(h.peerKeys, pkt.GetFrom())
 	}
@@ -4208,6 +4234,67 @@ func (h *Hub) askedForNodeInfoLocked(to uint32) bool {
 		return false
 	}
 	return h.clock().Sub(asked) <= nodeInfoRefreshGap
+}
+
+// rememberPeerKeyLocked records that one node announced a public key (h.mu is
+// held). The mark is UI evidence, not a decision: the radio keeps its own node
+// table, and the whole map is rebuilt from that table at every handshake — so
+// under pressure the hub prefers dropping what it cannot show (the marks of
+// nodes the directory no longer holds) and then stops remembering new ones,
+// counting them instead of growing without a bound.
+func (h *Hub) rememberPeerKeyLocked(id uint32) {
+	if h.peerKeys == nil {
+		h.peerKeys = make(map[uint32]bool)
+	}
+	if h.peerKeys[id] {
+		return
+	}
+	if cap := h.maxPeerKeys(); len(h.peerKeys) >= cap {
+		for other := range h.peerKeys {
+			if h.nodes[meshIDString(other)] == nil {
+				delete(h.peerKeys, other)
+			}
+		}
+		if len(h.peerKeys) >= cap {
+			h.peerKeysSkipped++
+			return
+		}
+	}
+	h.peerKeys[id] = true
+}
+
+// maxPeerKeys is the cap on the key marks (a field so tests can shrink it).
+func (h *Hub) maxPeerKeys() int {
+	if h.peerKeysMax > 0 {
+		return h.peerKeysMax
+	}
+	return maxPeerKeyMarks
+}
+
+// sweepPeerState drops the per-peer bookkeeping that has outlived what it
+// describes, and reports the pressure the key-mark cap caused:
+//
+//   - nodeInfoAsked: the refresh gap has passed, so the entry rate-limits
+//     nothing (the next refusal may ask again). That expiry is what bounds the
+//     map — it holds at most the peers asked within one gap window.
+//   - peerKeys is bounded by the node directory (a mark is dropped with its
+//     node, see expireNodes) and by the cap; what the cap refused to remember
+//     is counted and reported HERE, so the log carries it once per pass
+//     instead of one line per announcement.
+func (h *Hub) sweepPeerState(now time.Time) {
+	h.mu.Lock()
+	for id, at := range h.nodeInfoAsked {
+		if now.Sub(at) >= nodeInfoRefreshGap {
+			delete(h.nodeInfoAsked, id)
+		}
+	}
+	skipped, marks, asked := h.peerKeysSkipped, len(h.peerKeys), len(h.nodeInfoAsked)
+	h.peerKeysSkipped = 0
+	h.mu.Unlock()
+	if skipped > 0 && h.logger != nil {
+		h.logger.Warn("meshtastic: peer key marks are at the cap, new ones are not remembered",
+			"skipped", skipped, "cap", h.maxPeerKeys(), "marks", marks, "refreshes_waiting", asked)
+	}
 }
 
 // receivePosition updates a node's position (and our own).

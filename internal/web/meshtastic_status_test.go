@@ -31,8 +31,10 @@ func TestMeshtasticLinkCard(t *testing.T) {
 	if !strings.Contains(html, "Device not connected") {
 		t.Errorf("the page does not report the device link is down: %s", html)
 	}
-	if !strings.Contains(html, "Device: /dev/ttyUSB0") {
-		t.Errorf("the page does not name the device: %s", html)
+	// The device is a badge value like the node id and the firmware beside it
+	// (the label rides in the tooltip), so the row stays one kind of thing.
+	if !strings.Contains(html, `<span class="badge muted" title="Device">/dev/ttyUSB0</span>`) {
+		t.Errorf("the page does not carry the device as a badge: %s", html)
 	}
 	if strings.Contains(html, "Device connected and ready") {
 		t.Errorf("a hub without a session claimed the device is ready: %s", html)

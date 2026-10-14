@@ -626,3 +626,105 @@ func TestSlowStationFeedDoesNotBlockTheSession(t *testing.T) {
 	// And the station shuts down without waiting for the publication.
 	radio.stopHub(t)
 }
+
+// ageRemovalAttempts pretends the retry pace elapsed for every pending removal,
+// so a test can drive the retry without waiting a minute.
+func ageRemovalAttempts(h *Hub) {
+	h.mu.Lock()
+	for _, tb := range h.tombstones {
+		if !tb.tried.IsZero() {
+			tb.tried = time.Now().Add(-time.Hour)
+		}
+	}
+	h.mu.Unlock()
+}
+
+// TestStationRemovalBacklogDoesNotChurn pins the acceptance case of the ticket:
+// with more quiet nodes than the backlog holds, the passes that follow (no new
+// data at all) must not keep re-queueing the same nodes — the refusals are
+// remembered for the activity version they refer to, so the drop counter stops
+// growing, the backlog stays put and the retry pace is respected instead of
+// being re-armed by a re-created entry.
+func TestStationRemovalBacklogDoesNotChurn(t *testing.T) {
+	sink := newRecordingStationSink()
+	sink.setFail(errors.New("broker unreachable"))
+	h := newStationFeedHub(t, sink)
+
+	// Quiet nodes that STAY in the directory: they are past the node TTL but
+	// well inside the retention, which is exactly what keeps the next pass
+	// seeing them.
+	const extra = 100
+	for i := 1; i <= maxPendingStationRemovals+extra; i++ {
+		h.SeedNode(oldNodeID(i), "quiet", "", 0, 0, time.Now().Add(-2*time.Hour), nil)
+	}
+
+	h.expireNodes()
+	pending, dropped := h.StationRemovals()
+	if pending != maxPendingStationRemovals {
+		t.Fatalf("backlog = %d, want the bound %d", pending, maxPendingStationRemovals)
+	}
+	if dropped != extra {
+		t.Fatalf("dropped = %d, want %d refusals", dropped, extra)
+	}
+	// Wait until the WORKER worked off the batch: every pending removal was
+	// handed to it, so the attempt count stops there.
+	waitFor(t, "the batch to reach the broker", func() bool {
+		return sink.attemptCount() == maxPendingStationRemovals
+	})
+	attempts := sink.attemptCount()
+
+	// The next passes have no new data: nothing may be refused again, and the
+	// pace must hold (no attempt may run before it elapsed).
+	h.expireNodes()
+	h.expireNodes()
+	if pending, dropped = h.StationRemovals(); dropped != extra {
+		t.Fatalf("dropped = %d after two more passes, want the %d refusals once", dropped, extra)
+	}
+	if pending != maxPendingStationRemovals {
+		t.Fatalf("backlog = %d after two more passes, want the bound", pending)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := sink.attemptCount(); got != attempts {
+		t.Fatalf("attempts = %d, want %d (the retry pace must hold)", got, attempts)
+	}
+
+	// Once the pace elapsed the backlog is retried — the SAME work, counted
+	// once, and still no new refusals.
+	ageRemovalAttempts(h)
+	h.expireNodes()
+	waitFor(t, "the retry after the pace", func() bool { return sink.attemptCount() > attempts })
+	if _, dropped = h.StationRemovals(); dropped != extra {
+		t.Fatalf("dropped = %d after the retry, want %d", dropped, extra)
+	}
+}
+
+// TestStationRemovalRefusalIsForgottenWhenTheNodeReturns: the refusal is tied
+// to one activity version — a node heard again is queued afresh once it goes
+// quiet a second time.
+func TestStationRemovalRefusalIsForgottenWhenTheNodeReturns(t *testing.T) {
+	sink := newRecordingStationSink()
+	sink.setFail(errors.New("broker unreachable"))
+	h := newStationFeedHub(t, sink)
+
+	// Fill the backlog and refuse one more node.
+	for i := 1; i <= maxPendingStationRemovals; i++ {
+		h.SeedNode(oldNodeID(i), "quiet", "", 0, 0, time.Now().Add(-2*time.Hour), nil)
+	}
+	refused := oldNodeID(maxPendingStationRemovals + 1)
+	h.SeedNode(refused, "quiet", "", 0, 0, time.Now().Add(-2*time.Hour), nil)
+	h.expireNodes()
+	if _, dropped := h.StationRemovals(); dropped != 1 {
+		t.Fatalf("dropped = %d, want the single refusal", dropped)
+	}
+
+	// The node is heard again: the refusal no longer applies, and the next
+	// quiet period is queued as soon as there is room.
+	heardNow(h, refused, &Telemetry{Voltage: 4.0})
+	h.expireNodes()
+	h.mu.Lock()
+	_, remembered := h.abandonedRemovals[refused]
+	h.mu.Unlock()
+	if remembered {
+		t.Fatal("the refusal outlived the activity version it referred to")
+	}
+}

@@ -110,6 +110,15 @@ node's direct messages will be refused until its firmware announces one. The
 state comes from the radio's own node table at the handshake and from every
 NodeInfo heard afterwards, so it follows the mesh without a refresh step.
 
+That bookkeeping is bounded, because it describes nodes the station holds:
+a key mark is dropped together with its row when the node directory is pruned,
+and the NodeInfo refresh entries expire once the six-hour gap has passed (they
+rate-limit nothing after it). A hard cap of 4096 marks protects a long
+connection: past it the hub first drops marks for nodes it no longer holds and
+then stops remembering new ones, saying so in the log
+(`meshtastic: peer key marks are at the cap, new ones are not remembered`) —
+never growing in silence.
+
 Two more reasons come from the STATION, not the device, and name a failure the
 radio itself never reported: `no_response` — the device transmitted the frame
 and the recipient never acknowledged it (the acknowledgment window,

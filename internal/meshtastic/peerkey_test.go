@@ -77,6 +77,18 @@ func refusedTextSend(t *testing.T, res pb.Routing_Error, text string) (*testRadi
 	return radio, rec
 }
 
+// newBareHub builds a hub with its maps initialized and no session (nothing
+// runs until a test calls a pass itself); the log goes to the given capture so
+// a test can assert what the hub said.
+func newBareHubWithLogs(t *testing.T, logs *logCapture) *Hub {
+	t.Helper()
+	h, err := NewHub(Config{NodeTTL: time.Hour}, slog.New(slog.NewTextHandler(logs, nil)))
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	return h
+}
+
 // keyWaitCount counts the messages waiting for a peer key: the wait is a queue
 // PER PEER now, so the length of the map is the number of peers, not messages.
 func keyWaitCount(h *Hub) int {
@@ -535,5 +547,152 @@ func TestHubPeerKeyRefusalLeavesDurableAlertsToTheWorker(t *testing.T) {
 	}
 	if waiting := keyWaitCount(radio.hub); waiting != 0 {
 		t.Fatalf("key waits = %d, want none", waiting)
+	}
+}
+
+// TestHubExpiryForgetsPeerState pins the ticket case: the node directory is
+// pruned by retention, and the two helper maps must follow it. Batches of new
+// nodes that go quiet and expire must leave NOTHING behind — the reported
+// reproduction was an empty directory with 100 entries in each map, and every
+// further batch grew them again.
+func TestHubExpiryForgetsPeerState(t *testing.T) {
+	h := newBareHubWithLogs(t, &logCapture{})
+	h.cfg.NodeTTL = time.Hour
+	keys := func() int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return len(h.peerKeys)
+	}
+	asked := func() int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return len(h.nodeInfoAsked)
+	}
+	for batch := 0; batch < 3; batch++ {
+		base := uint32(0x20000000 + batch*0x100)
+		now := time.Now()
+		for i := 0; i < 100; i++ {
+			h.SeedNode(fmt.Sprintf("%08x", base+uint32(i)), "visitor", "VIS", 0, 0, now, nil)
+		}
+		// Every one of them announced a key and was asked for a refresh (the
+		// refusal path does both).
+		h.mu.Lock()
+		for i := 0; i < 100; i++ {
+			h.rememberPeerKeyLocked(base + uint32(i))
+		}
+		h.mu.Unlock()
+		// The refresh request is the real writer of the second map (there is no
+		// session here, so it only records the entry).
+		for i := 0; i < 100; i++ {
+			h.requestNodeInfo(base + uint32(i))
+		}
+		if got := keys(); got != 100 {
+			t.Fatalf("batch %d: key marks = %d, want 100", batch, got)
+		}
+		if got := asked(); got != 100 {
+			t.Fatalf("batch %d: refresh entries = %d, want 100", batch, got)
+		}
+
+		// They go quiet past the directory retention: everything about them
+		// goes away, so the next batch starts from zero again.
+		h.mu.Lock()
+		for _, n := range h.nodes {
+			n.LastSeen = time.Now().Add(-nodeDirRetention - time.Hour)
+		}
+		h.mu.Unlock()
+		h.expireNodes()
+		h.sweepPeerState(time.Now().Add(nodeInfoRefreshGap + time.Minute))
+		if got := directorySize(h); got != 0 {
+			t.Fatalf("batch %d: directory = %d, want the nodes dropped", batch, got)
+		}
+		if got := keys(); got != 0 {
+			t.Fatalf("batch %d: key marks = %d, want none for a pruned directory", batch, got)
+		}
+		if got := asked(); got != 0 {
+			t.Fatalf("batch %d: refresh entries = %d, want none for a pruned directory", batch, got)
+		}
+	}
+}
+
+// TestHubNodeInfoRefreshWaitExpires pins the deadline of the refresh rate
+// limit: an entry older than the gap suppresses nothing (the next refusal may
+// ask again), so keeping it would only be memory. The limit itself still works
+// inside the window.
+func TestHubNodeInfoRefreshWaitExpires(t *testing.T) {
+	h := &Hub{}
+	h.requestNodeInfo(peerKeyNode) // no session: the entry is what matters here
+	h.mu.Lock()
+	first, ok := h.nodeInfoAsked[peerKeyNode]
+	h.mu.Unlock()
+	if !ok {
+		t.Fatal("the refresh request was not remembered")
+	}
+	h.requestNodeInfo(peerKeyNode) // inside the gap: nothing happens
+	h.mu.Lock()
+	second := h.nodeInfoAsked[peerKeyNode]
+	h.mu.Unlock()
+	if !second.Equal(first) {
+		t.Fatal("a second request inside the gap moved the rate limit")
+	}
+	h.sweepPeerState(time.Now())
+	if got := func() int { h.mu.Lock(); defer h.mu.Unlock(); return len(h.nodeInfoAsked) }(); got != 1 {
+		t.Fatalf("refresh entries inside the gap = %d, want the entry kept", got)
+	}
+	h.sweepPeerState(time.Now().Add(nodeInfoRefreshGap + time.Minute))
+	if got := func() int { h.mu.Lock(); defer h.mu.Unlock(); return len(h.nodeInfoAsked) }(); got != 0 {
+		t.Fatalf("refresh entries after the gap = %d, want the entry expired", got)
+	}
+}
+
+// TestHubPeerKeyMarksAreCapped pins the cap on the key marks: it drops what the
+// panel cannot show first (marks of nodes the directory no longer holds), and
+// past that it stops remembering new ones and counts them — reported once per
+// sweep, never silently.
+func TestHubPeerKeyMarksAreCapped(t *testing.T) {
+	logs := &logCapture{}
+	h := newBareHubWithLogs(t, logs)
+	h.peerKeysMax = 2
+
+	// Marks for nodes the directory does not hold: pressure clears them first,
+	// so the panel never loses a mark it could display.
+	h.mu.Lock()
+	for i := 0; i < 4; i++ {
+		h.rememberPeerKeyLocked(uint32(0x11111111 + i))
+	}
+	h.mu.Unlock()
+	if got := len(h.peerKeys); got > 2 {
+		t.Fatalf("key marks = %d, want the cap of 2 respected", got)
+	}
+
+	// Now every mark belongs to a node the directory holds: the surplus is
+	// skipped and counted, and the sweep reports it.
+	h.peerKeys = map[uint32]bool{}
+	held := []string{}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("%08x", 0x30000000+i)
+		held = append(held, id)
+		h.SeedNode(id, "held", "HLD", 0, 0, time.Now(), nil)
+	}
+	h.mu.Lock()
+	for i := 0; i < 3; i++ {
+		h.rememberPeerKeyLocked(0x30000000 + uint32(i))
+	}
+	h.mu.Unlock()
+	if got := len(h.peerKeys); got != 2 {
+		t.Fatalf("key marks = %d, want the cap of 2", got)
+	}
+	h.mu.Lock()
+	skipped := h.peerKeysSkipped
+	h.mu.Unlock()
+	if skipped != 1 {
+		t.Fatalf("skipped marks = %d, want the one over the cap", skipped)
+	}
+	h.sweepPeerState(time.Now())
+	if log := logs.String(); !strings.Contains(log, "peer key marks are at the cap") {
+		t.Fatalf("the cap was silent; log lines: %s", log)
+	}
+	// The nodes stay in the directory: their own rows are untouched.
+	if got := directorySize(h); got != len(held) {
+		t.Fatalf("directory = %d, want the %d held nodes", got, len(held))
 	}
 }

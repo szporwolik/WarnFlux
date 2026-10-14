@@ -4107,12 +4107,71 @@
         // innerHTML keeps the #mesh-nodes wrapper (the fragment itself is
         // the inner content), so the poll and click handlers stay bound.
         if (next) { next.innerHTML = html; }
+        // The fragment brings every node back: re-apply the listener's filter.
+        if (window.WFApplyMeshNodeFilter) { window.WFApplyMeshNodeFilter(); }
       })
       .catch(function () { /* transient — next poll retries */ });
   }
 
   if (document.getElementById("mesh-nodes")) {
     window.setInterval(pollMeshNodes, 10000);
+  }
+})();
+
+// Admin Meshtastic page: the heard-nodes filter (all nodes / pinned only).
+// The table is REPLACED by the poll every 10 s, so the choice hides rows of
+// whatever fragment is on screen instead of being baked into it — and the
+// empty result says why, rather than looking like a broken table.
+(function () {
+  "use strict";
+
+  function applyMeshNodeFilter() {
+    var box = document.getElementById("mesh-nodes");
+    var strip = document.getElementById("mesh-nodes-filter");
+    if (!box || !strip) { return; }
+    var tbody = box.querySelector("table.msgs-table tbody");
+    if (!tbody) { return; }
+    var filter = strip.getAttribute("data-active") || "all";
+    var rows = tbody.querySelectorAll("tr");
+    var shown = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (row.classList.contains("mesh-nodes-none")) { continue; }
+      var hide = filter === "pinned" && !row.querySelector(".pin-star");
+      row.style.display = hide ? "none" : "";
+      if (!hide) { shown++; }
+    }
+    var note = tbody.querySelector("tr.mesh-nodes-none");
+    if (filter === "pinned" && shown === 0) {
+      if (!note) {
+        note = document.createElement("tr");
+        note.className = "mesh-nodes-none";
+        var cell = document.createElement("td");
+        cell.colSpan = 7;
+        note.appendChild(cell);
+        tbody.appendChild(note);
+      }
+      note.firstChild.className = "muted";
+      note.firstChild.textContent = strip.getAttribute("data-lbl-none") || "";
+    } else if (note) {
+      note.parentNode.removeChild(note);
+    }
+  }
+
+  var strip = document.getElementById("mesh-nodes-filter");
+  if (strip) {
+    strip.setAttribute("data-active", "all");
+    strip.querySelectorAll(".page-tab").forEach(function (b) {
+      b.addEventListener("click", function () {
+        strip.setAttribute("data-active", b.getAttribute("data-nodes") || "all");
+        strip.querySelectorAll(".page-tab").forEach(function (t) {
+          t.classList.toggle("active", t === b);
+          t.setAttribute("aria-selected", t === b ? "true" : "false");
+        });
+        applyMeshNodeFilter();
+      });
+    });
+    window.WFApplyMeshNodeFilter = applyMeshNodeFilter;
   }
 })();
 

@@ -380,9 +380,13 @@ var en = map[string]string{
 	"meshtastic.st_sent":      "sent",
 	"meshtastic.st_delivered": "delivered",
 	"meshtastic.st_failed":    "failed",
-	// meshtastic.reason.* explains WHY the device refused a send
-	// (queueStatus.res / ROUTING_APP error_reason): the frame never reached
-	// the air, so the failure needs a reason, not just a state.
+	// meshtastic.reason.* explains WHY a send failed. Most keys are the
+	// device's own refusal code (queueStatus.res / ROUTING_APP
+	// error_reason: the frame never reached the air, so the failure needs a
+	// reason, not just a state). Two are the STATION's verdict when the
+	// device itself stayed quiet: no_response (transmitted, the recipient
+	// never acknowledged) and not_confirmed (the radio never confirmed the
+	// transmission).
 	"meshtastic.reason.no_route":              "no route to the recipient",
 	"meshtastic.reason.got_nak":               "a relay refused the message",
 	"meshtastic.reason.timeout":               "the device timed out",
@@ -400,6 +404,7 @@ var en = map[string]string{
 	"meshtastic.reason.admin_unauthorized":    "admin key not authorized",
 	"meshtastic.reason.rate_limit":            "airtime limit exceeded for this sender",
 	"meshtastic.reason.pki_no_key":            "the recipient has not announced its public key (it must broadcast NodeInfo)",
+	"meshtastic.reason.not_confirmed":         "the radio never confirmed the transmission",
 	"meshtastic.hub_not_configured":           "meshtastic hub not configured",
 	"meshtastic.text_required":                "message text is required",
 	"meshtastic.bad_node_id":                  "node id must be 8 hex characters",
@@ -1603,6 +1608,7 @@ var pl = map[string]string{
 	"meshtastic.reason.admin_unauthorized":    "klucz admina bez uprawnień",
 	"meshtastic.reason.rate_limit":            "przekroczony limit czasu antenowego nadawcy",
 	"meshtastic.reason.pki_no_key":            "odbiorca nie ogłosił klucza publicznego (musi nadać NodeInfo)",
+	"meshtastic.reason.not_confirmed":         "radio nie potwierdziło transmisji",
 	"meshtastic.hub_not_configured":           "hub Meshtastic nie jest skonfigurowany",
 	"meshtastic.text_required":                "treść wiadomości jest wymagana",
 	"meshtastic.bad_node_id":                  "id węzła musi mieć 8 znaków hex",

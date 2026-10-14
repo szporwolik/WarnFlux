@@ -3601,6 +3601,15 @@ func (h *Hub) retryPending(now time.Time) {
 			continue
 		}
 		delete(h.pending, id)
+		// The device transmitted the frame and the firmware's own
+		// retransmissions are spent: the RECIPIENT never acknowledged it.
+		// Record that verdict — a failed row without a reason tells the
+		// operator nothing about where the message stopped.
+		ps.failReason = "no_response"
+		if h.logger != nil {
+			h.logger.Warn("meshtastic: no acknowledgment from the recipient, giving up the message",
+				"id", ps.id, "to", fmt.Sprintf("%08x", ps.to), "waited", now.Sub(ps.lastTry).Round(time.Second))
+		}
 		h.markStatus(ps, TxFailed)
 	}
 	// Unpaired direct messages whose id never arrived (the device may
@@ -3632,6 +3641,15 @@ func (h *Hub) retryPending(now time.Time) {
 		}
 		h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
 		if q.retries >= dmMaxRetries {
+			// The device never assigned the frame an id even after the
+			// retries: it may never have left the radio at all. That is a
+			// DIFFERENT verdict from an unacknowledged delivery, so it
+			// carries its own reason.
+			q.failReason = "not_confirmed"
+			if h.logger != nil {
+				h.logger.Warn("meshtastic: the device never confirmed the send, giving up the message",
+					"to", fmt.Sprintf("%08x", q.to), "retries", q.retries)
+			}
 			h.markStatus(q, TxFailed)
 			continue
 		}

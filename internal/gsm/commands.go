@@ -144,8 +144,10 @@ func (h *Hub) routeMessage(from, text string) {
 			h.logger.Debug("gsm: banner reply suppressed", "from", from, "reason", "burst")
 			return
 		}
+		// The banner is sent by the reply worker, which logs the OUTCOME
+		// ("reply sent" / "reply send failed"): logging "banner sent" here
+		// claimed success for a message the modem may still refuse.
 		h.sendReply(from, cli.Banner())
-		h.logger.Info("gsm: banner sent", "from", from)
 		return
 	}
 	cid := from + ":" + radiocli.ContentID(t)

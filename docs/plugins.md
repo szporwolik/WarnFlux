@@ -231,6 +231,15 @@ backend therefore only needs to (a) parse frames into `aprs.Packet` and
 call `hub.Observe`, and (b) optionally implement `aprs.Transmitter` — the
 hub, the MQTT topics and the action wiring stay untouched.
 
+Every outgoing SMS goes through `gsm.TransliterateGSM7` first, which renders
+Polish text as ASCII **and folds the GSM-7 extension characters** (`|`, `[`,
+`]`, `{`, `}`, `~`, `^`, `\\`, `€`) into basic-table equivalents. That fold is
+not cosmetic: in text mode (`AT+CMGF=1`, `AT+CSCS="IRA"`) this modem family
+answers `+CMS ERROR 305` ("invalid text mode parameter") for a body carrying
+one of those characters and the message never leaves the modem — the SMS
+banner (`identity | hint`) and every routed action message (ending in
+`[WF-...]`) failed that way, while plain notifications went through.
+
 The same pattern covers the GSM channel: the built-in `sms` action sends
 notifications through the shared GSM hub (the serial AT modem session)
 to the configured phones plus the routed group members' registered

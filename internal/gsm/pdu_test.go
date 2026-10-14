@@ -228,3 +228,33 @@ func TestPDURoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestTransliterateGSM7FoldsTheExtensionSet pins the fix for the production
+// failure: this modem refuses a text-mode body that carries a GSM-7 EXTENSION
+// character (+CMS ERROR 305, "invalid text mode parameter"), so the
+// transliteration every sender goes through must render them as basic-table
+// text. The SMS formatter builds "<prefix> <SEVERITY> <headline> | <loc>
+// [WF-...]" and the banner is "<identity> | <hint>" — both failed on the same
+// modem, to the same numbers, while the plain mass notice went out.
+func TestTransliterateGSM7FoldsTheExtensionSet(t *testing.T) {
+	cases := map[string]string{
+		"SOSNA | EMCOM [WF-1014122701]": "SOSNA / EMCOM (WF-1014122701)",
+		"{a} ~b~ ^c^ \\d\\":             "(a) -b- 'c' /d/",
+		"kawa 3€":                       "kawa 3EUR",
+		"poziom 3 — Pełna aktywacja":    "poziom 3 - Pelna aktywacja",
+		"gotowe":                        "gotowe",
+	}
+	for in, want := range cases {
+		if got := TransliterateGSM7(in); got != want {
+			t.Errorf("TransliterateGSM7(%q) = %q, want %q", in, got, want)
+		}
+		if got := TransliterateGSM7(in); strings.ContainsAny(got, "[]{}|\\~^€") {
+			t.Errorf("TransliterateGSM7(%q) left an extension character: %q", in, got)
+		}
+	}
+	// The fold is what the modem can encode, so every result is one septet per
+	// character: the budget must be measured on the folded text.
+	if got := Septets(TransliterateGSM7("SOSNA | EMCOM [WF-1]")); got != len("SOSNA / EMCOM (WF-1)") {
+		t.Errorf("septets = %d, want one per folded character", got)
+	}
+}

@@ -1006,6 +1006,12 @@ type Hub struct {
 	// removalsDropped counts the removals abandoned because that backlog hit
 	// maxPendingStationRemovals (the overflow metric).
 	removalsDropped int
+	// abandonedRemovals remembers the refused removals by node id, together
+	// with the activity version they referred to. Without it the next pass
+	// would queue the same node again, push another entry out, and count
+	// another abandonment — the same removals churning forever without any new
+	// data (and re-arming the retry pace on every pass).
+	abandonedRemovals map[string]time.Time
 	// tombstoneRetry paces a removal the broker refused
 	// (defaultTombstoneRetry when unset; the tests shorten it).
 	tombstoneRetry time.Duration
@@ -2519,20 +2525,18 @@ func (h *Hub) queueRemovalLocked(id string, quietSince time.Time) bool {
 		return false
 	}
 	if h.pendingRemovalsLocked() >= maxPendingStationRemovals {
-		victim, oldest := "", time.Time{}
-		for vid, vtb := range h.tombstones {
-			if vtb.confirmed {
-				continue
-			}
-			if victim == "" || vtb.quietSince.Before(oldest) {
-				victim, oldest = vid, vtb.quietSince
-			}
+		// No room: REFUSE this removal and remember the refusal for this
+		// activity version. Evicting an older entry instead (or simply queueing
+		// again next pass) would drop and re-count the same removals on every
+		// pass — without a single new observation.
+		if h.abandonedRemovals == nil {
+			h.abandonedRemovals = make(map[string]time.Time)
 		}
-		if victim == "" {
-			return false
+		if prev, seen := h.abandonedRemovals[id]; !seen || !prev.Equal(quietSince) {
+			h.abandonedRemovals[id] = quietSince
+			h.removalsDropped++
 		}
-		delete(h.tombstones, victim)
-		h.removalsDropped++
+		return false
 	}
 	h.tombstones[id] = &nodeTombstone{quietSince: quietSince}
 	return true
@@ -2589,11 +2593,22 @@ func (h *Hub) expireNodes() {
 	// Every quiet node owes the broker a removal — but only when this
 	// installation HAS a station feed: a document nobody ever published cannot
 	// be owed to the broker, and queueing it would be pure growth.
+	// A refusal is remembered only while its node stays quiet with the SAME
+	// observation: a node heard again (or one the directory dropped) is
+	// considered afresh — it may well find room the next time it goes quiet.
+	for id, since := range h.abandonedRemovals {
+		if n := h.nodes[id]; n == nil || !n.LastSeen.Equal(since) {
+			delete(h.abandonedRemovals, id)
+		}
+	}
 	queued, dropped := 0, 0
 	if h.stationSink != nil {
 		for id, n := range h.nodes {
 			if h.tombstones[id] != nil || now.Sub(n.LastSeen) <= h.cfg.NodeTTL {
 				continue
+			}
+			if _, refused := h.abandonedRemovals[id]; refused {
+				continue // no room for it a moment ago, and nothing changed
 			}
 			before := h.removalsDropped
 			if h.queueRemovalLocked(id, n.LastSeen) {

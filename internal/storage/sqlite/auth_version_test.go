@@ -101,10 +101,7 @@ func TestAuthVersionRetiresOlderSessions(t *testing.T) {
 	}
 
 	// And the self-service reset spends a token to do the same.
-	token, err := store.CreatePasswordReset(u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := issueResetToken(t, store, u.ID)
 	if _, err := store.ResetPasswordWithToken(token, "fourth-password-4"); err != nil {
 		t.Fatal(err)
 	}

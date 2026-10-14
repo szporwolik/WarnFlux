@@ -37,11 +37,12 @@ type fakeUsers struct {
 	// failChannelOptOuts makes the channel write fail: the account handler
 	// must survive a preference write that blows up after a password change.
 	failChannelOptOuts error
-	// authPause/authResume, when set, park every directory verification
-	// after the password was checked and before its result is returned —
-	// the window a password reset or a role change must cover.
-	authPause  chan struct{}
-	authResume chan struct{}
+	// readPause/readResume, when set, park the next directory read (a
+	// password verification or an account lookup) after it computed its
+	// answer and before the caller sees it — the window a concurrent
+	// credential or address change must cover.
+	readPause  chan struct{}
+	readResume chan struct{}
 	resets     map[string]int64 // plaintext reset token -> userID
 	// deliveries seeds the durable delivery-ledger rows served in the
 	// notifications details view (RecentDeliveries).
@@ -154,7 +155,16 @@ func (f *fakeUsers) GetUser(id int64) (storage.User, error) {
 
 func (f *fakeUsers) GetUserByUsername(username string) (storage.User, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	u, err := f.byUsernameLocked(username)
+	f.mu.Unlock()
+	// The account was read; the caller has not acted on it yet. A test parks
+	// here to let its recovery address change in between.
+	f.pausedRead()
+	return u, err
+}
+
+// byUsernameLocked is the lock-free lookup behind GetUserByUsername.
+func (f *fakeUsers) byUsernameLocked(username string) (storage.User, error) {
 	for _, u := range f.rows {
 		if strings.EqualFold(u.Username, username) {
 			return u, nil
@@ -163,13 +173,27 @@ func (f *fakeUsers) GetUserByUsername(username string) (storage.User, error) {
 	return storage.User{}, storage.ErrUserNotFound
 }
 
-// pauseAuthenticate parks the next directory verification after the password
-// check (nil clears the hook). It exists so a test can land a credential
-// change in the window between the verification and the session insert.
-func (f *fakeUsers) pauseAuthenticate(pause, resume chan struct{}) {
+// pauseNextRead parks the next directory read after it computed its answer
+// (nil clears the hook). It exists so a test can land a change in the window
+// between what the handler read and what it does next — the session insert of
+// a login, or the reset token of a /forgot request.
+func (f *fakeUsers) pauseNextRead(pause, resume chan struct{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.authPause, f.authResume = pause, resume
+	f.readPause, f.readResume = pause, resume
+}
+
+// pausedRead hands the hook to the caller of a read and blocks until the test
+// releases it. The lock is NOT held while parked.
+func (f *fakeUsers) pausedRead() {
+	f.mu.Lock()
+	pause, resume := f.readPause, f.readResume
+	f.mu.Unlock()
+	if pause == nil {
+		return
+	}
+	pause <- struct{}{}
+	<-resume
 }
 
 // AuthVersion mirrors the store: the account's current credential version.
@@ -268,15 +292,11 @@ func (f *fakeUsers) UpdateUser(id int64, username, phone, email, discord, role, 
 
 func (f *fakeUsers) Authenticate(username, password string) (storage.User, error) {
 	f.mu.Lock()
-	pause, resume := f.authPause, f.authResume
 	u, err := f.verifyLocked(username, password)
 	f.mu.Unlock()
 	// The password is verified; the caller has not stored its session yet.
 	// A test parks here to let a reset or a role change land in between.
-	if pause != nil {
-		pause <- struct{}{}
-		<-resume
-	}
+	f.pausedRead()
 	return u, err
 }
 
@@ -502,8 +522,11 @@ func (f *fakeUsers) SetUserPassword(userID int64, password string) error {
 	return storage.ErrUserNotFound
 }
 
-// CreatePasswordReset issues a one-time token (fake: stored in plaintext).
-func (f *fakeUsers) CreatePasswordReset(userID int64) (string, error) {
+// CreatePasswordReset issues a one-time token (fake: stored in plaintext) for
+// the account's CURRENT recovery address — the fake holds its state under one
+// mutex, so the address check and the insert are atomic here exactly as they
+// are in the single SQL statement of the SQLite store.
+func (f *fakeUsers) CreatePasswordReset(userID int64, expectedEmail string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.rows {
@@ -512,6 +535,9 @@ func (f *fakeUsers) CreatePasswordReset(userID int64) (string, error) {
 		}
 		if u.IsAdmin {
 			return "", storage.ErrUserProtected
+		}
+		if u.Email != expectedEmail {
+			return "", storage.ErrRecoveryEmailChanged
 		}
 		raw := make([]byte, 16)
 		if _, err := rand.Read(raw); err != nil {

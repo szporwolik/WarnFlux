@@ -6,6 +6,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,8 +45,8 @@ func loginPausedDuring(t *testing.T, env *testEnv, username, password string, ch
 	fake := env.users.(*fakeUsers)
 	pause := make(chan struct{})
 	resume := make(chan struct{})
-	fake.pauseAuthenticate(pause, resume)
-	defer fake.pauseAuthenticate(nil, nil)
+	fake.pauseNextRead(pause, resume)
+	defer fake.pauseNextRead(nil, nil)
 
 	type result struct {
 		status int
@@ -144,4 +145,79 @@ func TestLoginPausedByRoleChangeGetsNoSession(t *testing.T) {
 	})
 
 	mustBeLoggedOut(t, client, env.srv.URL+"/dashboard", "a role change")
+}
+
+// TestForgotPausedRequestIssuesNoTokenForTheOldAddress pins the ticket at the
+// panel: /forgot reads the account (address A), then issues the token and
+// mails it to that address. A request suspended in between must not mint a
+// link once the account has moved to B, because the link would land in a
+// mailbox the account has left — and the second token would also cancel a link
+// the operator may just have requested legitimately.
+func TestForgotPausedRequestIssuesNoTokenForTheOldAddress(t *testing.T) {
+	env := newTestEnv(t)
+	u, err := env.users.CreateUser("member1", "", "old@example.com", "", "member", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sends := 0
+	env.server.SetPasswordResetMailer(func(to, subject, text string) error {
+		sends++
+		return nil
+	})
+	env.login() // the admin session that reads the audit trail at the end
+
+	fake := env.users.(*fakeUsers)
+	pause := make(chan struct{})
+	resume := make(chan struct{})
+	fake.pauseNextRead(pause, resume)
+	defer fake.pauseNextRead(nil, nil)
+
+	client := newRaceClient(t)
+	page, err := client.Get(env.srv.URL + "/forgot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(page.Body)
+	page.Body.Close()
+
+	done := make(chan int, 1)
+	go func() {
+		resp, err := client.PostForm(env.srv.URL+"/forgot", url.Values{
+			"csrf":     {extractCSRF(t, string(body))},
+			"username": {"member1"},
+			"email":    {"old@example.com"},
+		})
+		if err != nil {
+			done <- -1
+			return
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		done <- resp.StatusCode
+	}()
+
+	// The account was read (with the old address) and nothing was sent yet.
+	select {
+	case <-pause:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reset request never reached the paused lookup")
+	}
+	// The mailbox moves while the request is in flight.
+	if _, err := env.users.UpdateUser(u.ID, "member1", "", "new@example.com", "", "member", ""); err != nil {
+		t.Fatal(err)
+	}
+	close(resume)
+
+	if status := <-done; status != http.StatusOK {
+		t.Fatalf("the paused /forgot request = %d, want the rendered page", status)
+	}
+	if sends != 0 {
+		t.Fatalf("%d reset mails went to the address the account left, want none", sends)
+	}
+	// The answer stays neutral (no enumeration), but the station records why
+	// the request went nowhere.
+	_, audit := env.get("/partials/audit?after=0")
+	if !strings.Contains(audit, "address-changed") {
+		t.Errorf("audit trail does not mention the address change: %s", audit)
+	}
 }

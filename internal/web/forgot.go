@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +19,12 @@ import (
 )
 
 // forgotSendCooldown is the minimum wait between two successful reset
-// emails for the same (username, client IP) pair: a successful send must
-// not reset the limiter, or a flood of correct requests would keep
-// hammering the mailbox.
+// emails for the same (account, client IP) pair. The key is the RESOLVED
+// account, never what was typed: the form accepts both the username and
+// the address of one account, and a request with the other identifier must
+// not buy a second mail — the newer reset would also cancel the link the
+// first request just mailed. A successful send must not reset the limiter,
+// or a flood of correct requests would keep hammering the mailbox.
 const forgotSendCooldown = 60 * time.Second
 
 // SetPasswordResetMailer installs the delivery function for reset emails
@@ -170,20 +174,24 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// The SEND is reserved before anything costly happens: one slot from the
 	// concurrency gate (a slow mailer must not stack up work) and the atomic
-	// cooldown reservation on the (username, IP) key. Parallel requests for
-	// the same account therefore serialise here — exactly one of them creates
-	// a token and calls the mailer — instead of all passing a check that is
-	// only recorded once the slower ones are already sending.
+	// cooldown reservation on the (account, IP) key — the account the request
+	// was resolved to, not the identifier that was typed, so asking once by
+	// username and once by e-mail is one and the same pair. Parallel requests
+	// for the same account therefore serialise here — exactly one of them
+	// creates a token and calls the mailer — instead of all passing a check
+	// that is only recorded once the slower ones are already sending.
 	if !s.loginLimiter.acquireReset() {
-		s.logger.Warn("web: forgot sheds a concurrent reset", "remote", r.RemoteAddr, "username", username)
+		s.logger.Warn("web: forgot sheds a concurrent reset", "remote", r.RemoteAddr, "username", u.Username)
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
 		return
 	}
 	defer s.loginLimiter.releaseReset()
-	if !s.loginLimiter.reserveCooldown(limiterKey, forgotSendCooldown) {
-		s.logger.Warn("web: forgot throttled (cooldown already taken)", "remote", r.RemoteAddr, "username", username)
-		wait := s.loginLimiter.retryIn(limiterKey)
+	sendKey := "forgot-account\x00" + strconv.FormatInt(u.ID, 10) + "\x00" + s.clientIP(r)
+	if !s.loginLimiter.reserveCooldown(sendKey, forgotSendCooldown) {
+		s.logger.Warn("web: forgot throttled (cooldown already taken)",
+			"remote", r.RemoteAddr, "username", u.Username, "typed", logValue(username))
+		wait := s.loginLimiter.retryIn(sendKey)
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(wait.Seconds())+1))
 		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
 		return

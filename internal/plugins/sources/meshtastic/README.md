@@ -80,6 +80,10 @@ announced (fresh node, a factory reset or a reflash that changed its key)
 stays undeliverable by DM until it does, and the message stays failed with the
 refusal reason attached.
 
+The heard-nodes table has a two-way filter next to its heading — every node,
+or `★ Pinned only` for the nodes the station keeps on the radio. It is a view
+switch: nothing is hidden from the radio or the station feed by it.
+
 **The panel shows the key state.** In the heard-nodes table every row carries
 a mark next to the name: 🔑 when the station has seen that node announce a
 public key (the radio can encrypt a DM to it) and ⚠ when it has not — that

@@ -330,7 +330,7 @@ func (s *Store) PruneMeshtasticMessages(ctx context.Context, keep int) (int64, e
 // LoadMeshtasticNodes returns the persisted heard-node directory.
 func (s *Store) LoadMeshtasticNodes(ctx context.Context) ([]storage.MeshtasticNode, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, short, lat, lon, last_seen_ms, sends, hops, pending_removal, pending_since_ms
+		SELECT id, name, short, lat, lon, last_seen_ms, sends, hops, pending_removal, pending_since_ms, removed_since_ms
 		FROM meshtastic_nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load meshtastic nodes: %w", err)
@@ -341,13 +341,16 @@ func (s *Store) LoadMeshtasticNodes(ctx context.Context) ([]storage.MeshtasticNo
 		var n storage.MeshtasticNode
 		var seenMs int64
 		var sends string
-		var pendingSince sql.NullInt64
-		if err := rows.Scan(&n.ID, &n.Name, &n.Short, &n.Lat, &n.Lon, &seenMs, &sends, &n.Hops, &n.PendingRemoval, &pendingSince); err != nil {
+		var pendingSince, removedSince sql.NullInt64
+		if err := rows.Scan(&n.ID, &n.Name, &n.Short, &n.Lat, &n.Lon, &seenMs, &sends, &n.Hops, &n.PendingRemoval, &pendingSince, &removedSince); err != nil {
 			return nil, fmt.Errorf("scan meshtastic node: %w", err)
 		}
 		n.LastSeen = time.UnixMilli(seenMs).UTC()
 		if pendingSince.Valid {
 			n.PendingSince = time.UnixMilli(pendingSince.Int64).UTC()
+		}
+		if removedSince.Valid {
+			n.RemovedSince = time.UnixMilli(removedSince.Int64).UTC()
 		}
 		if sends != "" {
 			n.Sends = strings.Split(sends, ",")
@@ -369,8 +372,8 @@ func (s *Store) SaveMeshtasticNodes(ctx context.Context, nodes []storage.Meshtas
 		return fmt.Errorf("save meshtastic nodes: %w", err)
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO meshtastic_nodes (id, name, short, lat, lon, last_seen_ms, sends, hops, pending_removal, pending_since_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO meshtastic_nodes (id, name, short, lat, lon, last_seen_ms, sends, hops, pending_removal, pending_since_ms, removed_since_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("save meshtastic nodes: %w", err)
 	}
@@ -380,8 +383,12 @@ func (s *Store) SaveMeshtasticNodes(ctx context.Context, nodes []storage.Meshtas
 		if n.PendingRemoval {
 			pendingSince = n.PendingSince.UnixMilli()
 		}
+		var removedSince any
+		if !n.RemovedSince.IsZero() {
+			removedSince = n.RemovedSince.UnixMilli()
+		}
 		if _, err := stmt.ExecContext(ctx, n.ID, n.Name, n.Short, n.Lat, n.Lon,
-			n.LastSeen.UnixMilli(), strings.Join(n.Sends, ","), n.Hops, n.PendingRemoval, pendingSince); err != nil {
+			n.LastSeen.UnixMilli(), strings.Join(n.Sends, ","), n.Hops, n.PendingRemoval, pendingSince, removedSince); err != nil {
 			return fmt.Errorf("save meshtastic node %s: %w", n.ID, err)
 		}
 	}

@@ -593,6 +593,9 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	// that role.
 	role := ""
 	var userID int64
+	// authVersion is the credential version the password was verified
+	// against; the session carries it and dies if the account moves on.
+	var authVersion int64
 	// sessionName is the CANONICAL account name that goes into the session:
 	// every authorization step and the account page look the user up by it
 	// (GetUserByUsername), so a session opened with the typed e-mail address
@@ -603,6 +606,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	} else if u, err := s.users.Authenticate(username, password); err == nil && u.Role != "" {
 		role = u.Role
 		userID = u.ID
+		authVersion = u.AuthVersion
 		sessionName = u.Username
 	} else if looksLikeEmail(acct) {
 		// The operator typed the account's e-mail address as the login (the
@@ -611,6 +615,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		if u, err := s.users.AuthenticateByEmail(username, password); err == nil && u.Role != "" {
 			role = u.Role
 			userID = u.ID
+			authVersion = u.AuthVersion
 			sessionName = u.Username
 		}
 	}
@@ -627,7 +632,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.loginLimiter.record("acct\x00"+acct, true)
-	token, _, err := s.sessions.newSession(userID, sessionName, role)
+	token, _, err := s.sessions.newSession(userID, sessionName, role, authVersion)
 	if err != nil {
 		if errors.Is(err, errSessionCapacity) {
 			http.Error(w, "session capacity exhausted, try again later", http.StatusServiceUnavailable)

@@ -2977,10 +2977,13 @@ func (h *Hub) pairQueueStatus(id uint32, res pb.Routing_Error) {
 // refuses to fall back to channel encryption, so the refresh is the only
 // thing that can unblock a later attempt.
 func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
-	ps.failReason = sendFailureReason(res)
+	reason := sendFailureReason(res)
+	h.sendMu.Lock()
+	ps.failReason = reason
+	h.sendMu.Unlock()
 	if h.logger != nil {
 		h.logger.Warn("meshtastic: device rejected a send",
-			"res", int32(res), "reason", ps.failReason, "id", ps.id, "to", fmt.Sprintf("%08x", ps.to))
+			"res", int32(res), "reason", reason, "id", ps.id, "to", fmt.Sprintf("%08x", ps.to))
 	}
 	h.markStatus(ps, TxFailed)
 	if !ps.probe && needsNodeInfoRefresh(res) {
@@ -3034,12 +3037,14 @@ func (h *Hub) retryAfterKey(kr *keyRetry) {
 		return
 	}
 	ps := kr.ps
+	h.sendMu.Lock()
 	ps.keyTried = true
 	ps.failReason = ""
 	ps.status = ""
 	ps.id = 0
 	ps.echoed = false
 	ps.retries = 0
+	h.sendMu.Unlock()
 	if h.logger != nil {
 		h.logger.Info("meshtastic: peer key received, retrying the direct message",
 			"to", fmt.Sprintf("%08x", ps.to))
@@ -3648,7 +3653,7 @@ func (h *Hub) retryPending(now time.Time) {
 			h.logger.Warn("meshtastic: no acknowledgment from the recipient, giving up the message",
 				"id", ps.id, "to", fmt.Sprintf("%08x", ps.to), "waited", now.Sub(ps.lastTry).Round(time.Second))
 		}
-		h.markStatus(ps, TxFailed)
+		h.markStatusLocked(ps, TxFailed)
 	}
 	// Unpaired direct messages whose id never arrived (the device may
 	// have been busy) are retransmitted.
@@ -3688,7 +3693,7 @@ func (h *Hub) retryPending(now time.Time) {
 				h.logger.Warn("meshtastic: the device never confirmed the send, giving up the message",
 					"to", fmt.Sprintf("%08x", q.to), "retries", q.retries)
 			}
-			h.markStatus(q, TxFailed)
+			h.markStatusLocked(q, TxFailed)
 			continue
 		}
 		q.retries++
@@ -3719,8 +3724,8 @@ func (h *Hub) resend(ps *pendingSend) {
 			},
 		},
 	}
-	ps.lastTry = time.Now()
 	h.sendMu.Lock()
+	ps.lastTry = time.Now()
 	h.echoQueue = append(h.echoQueue, ps)
 	h.sendMu.Unlock()
 	if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: pkt}}); err != nil {
@@ -3757,6 +3762,16 @@ func (h *Hub) dropPendingLocked(ps *pendingSend) {
 // re-arm sink: the delivery job (already settled as accepted by the
 // worker) is revived for a retry within the attempt budget.
 func (h *Hub) markStatus(ps *pendingSend, status string) {
+	h.sendMu.Lock()
+	defer h.sendMu.Unlock()
+	h.markStatusLocked(ps, status)
+}
+
+// markStatusLocked assumes sendMu is already held. It exists because the
+// send bookkeeping fields (status, failReason) are touched from two
+// goroutines: the packet path settles an acknowledgment while the
+// maintenance loop settles a timeout, and both read the OTHER's field.
+func (h *Hub) markStatusLocked(ps *pendingSend, status string) {
 	ps.status = status
 	// The verdict on a favorite frame is hub bookkeeping and must land even
 	// when no message history is attached (which is how the tests run).
@@ -4739,7 +4754,7 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		// the device, so the retry cannot duplicate it on the air.
 		if retryErr := h.retrySendOnAFreshLink(ctx, ps, msg, conn, err); retryErr != nil {
 			h.dropPendingLocked(ps)
-			h.markStatus(ps, TxFailed)
+			h.markStatusLocked(ps, TxFailed)
 			return fmt.Errorf("meshtastic: send failed: %w", retryErr)
 		}
 		return nil

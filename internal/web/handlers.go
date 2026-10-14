@@ -511,6 +511,14 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, r *http.Request, errMsg,
 	})
 }
 
+// looksLikeEmail reports whether a login string is an e-mail address rather
+// than a username: the panel accepts both, and the address lookup only makes
+// sense for the former.
+func looksLikeEmail(login string) bool {
+	at := strings.IndexByte(login, '@')
+	return at > 0 && at < len(login)-1
+}
+
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	// The body is capped BEFORE it is parsed, so an anonymous request —
 	// including one that is already throttled — can never make the server
@@ -590,6 +598,14 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	} else if u, err := s.users.Authenticate(username, password); err == nil && u.Role != "" {
 		role = u.Role
 		userID = u.ID
+	} else if looksLikeEmail(acct) {
+		// The operator typed the account's e-mail address as the login (the
+		// panel answers the same credentials either way). Only when that
+		// address identifies exactly ONE account — see AuthenticateByEmail.
+		if u, err := s.users.AuthenticateByEmail(username, password); err == nil && u.Role != "" {
+			role = u.Role
+			userID = u.ID
+		}
 	}
 
 	if role == "" {

@@ -285,4 +285,15 @@ type UserStore interface {
 	// the user. Unknown usernames, users without a password and wrong
 	// passwords all report storage.ErrBadCredentials.
 	Authenticate(username, password string) (User, error)
+	// AuthenticateByEmail does the same for an operator who typed the
+	// account's E-MAIL ADDRESS as the login instead of the username — the
+	// report that made the panel accept it ("I log in with my e-mail") — and
+	// reports storage.ErrBadCredentials for everything else, INCLUDING an
+	// address shared by more than one account (an ambiguous identifier must
+	// never sign anybody in).
+	AuthenticateByEmail(email, password string) (User, error)
+	// GetUserByEmail returns the one user carrying that e-mail address
+	// (case insensitive); unknown addresses and addresses shared by more
+	// than one account report storage.ErrUserNotFound.
+	GetUserByEmail(email string) (User, error)
 }

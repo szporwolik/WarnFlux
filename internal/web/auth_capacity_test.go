@@ -26,7 +26,7 @@ func TestSessionCapacityRejected(t *testing.T) {
 	}
 
 	// All valid: explicit rejection at capacity.
-	if _, _, err := s.newSession(9999, "newuser", "member"); err == nil {
+	if _, _, err := s.newSession(9999, "newuser", "member", 0); err == nil {
 		t.Fatal("newSession succeeded at capacity, want rejection")
 	}
 	s.mu.Lock()
@@ -43,7 +43,7 @@ func TestSessionCapacityRejected(t *testing.T) {
 		break
 	}
 	s.mu.Unlock()
-	if _, _, err := s.newSession(9999, "newuser", "member"); err != nil {
+	if _, _, err := s.newSession(9999, "newuser", "member", 0); err != nil {
 		t.Fatalf("newSession after sweep: %v", err)
 	}
 }
@@ -59,7 +59,7 @@ func TestSessionPerUserEviction(t *testing.T) {
 		fillSession(s, "u-"+strconv.Itoa(i), 42, "ops", base.Add(time.Duration(i)*time.Second))
 	}
 
-	if _, _, err := s.newSession(42, "ops", "emcom"); err != nil {
+	if _, _, err := s.newSession(42, "ops", "emcom", 0); err != nil {
 		t.Fatalf("newSession: %v", err)
 	}
 	s.mu.Lock()
@@ -75,7 +75,7 @@ func TestSessionPerUserEviction(t *testing.T) {
 
 	// Another user is unaffected: their sessions are never evicted here.
 	fillSession(s, "other", 7, "someone", time.Now())
-	if _, _, err := s.newSession(7, "someone", "member"); err != nil {
+	if _, _, err := s.newSession(7, "someone", "member", 0); err != nil {
 		t.Fatalf("other user session: %v", err)
 	}
 	s.mu.Lock()

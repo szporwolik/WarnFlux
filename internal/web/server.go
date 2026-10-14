@@ -332,6 +332,16 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 		ingest:         ingest,
 		massJobs:       newMassJobStore(),
 	}
+	// Sessions are checked against the account's credential version on every
+	// use, so a login that was suspended between the password check and the
+	// session insert cannot outlive a password reset or a role change.
+	s.sessions.version = func(userID int64) (int64, bool) {
+		v, err := users.AuthVersion(userID)
+		if err != nil {
+			return 0, false
+		}
+		return v, true
+	}
 	ctx, cancelBase := context.WithCancel(context.Background())
 	s.baseCtx, s.cancelBase = ctx, cancelBase
 	// Parsed after construction: the template funcs close over the

@@ -1086,6 +1086,18 @@ ALTER TABLE meshtastic_nodes ADD COLUMN pending_since_ms INTEGER;
 ALTER TABLE meshtastic_nodes ADD COLUMN removed_since_ms INTEGER;
 `,
 	},
+	{
+		// v64: the credential version of a directory account. Checking the
+		// password and storing the session are two separate steps, so a
+		// login suspended between them could store a session AFTER a
+		// password reset had already revoked every earlier one (reported
+		// P2). The version is read together with the password hash, travels
+		// into the session and is compared against the account on every
+		// use: a session opened from an older version is dead.
+		SQL: `
+ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1;
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

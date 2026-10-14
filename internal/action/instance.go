@@ -66,7 +66,9 @@ type Status struct {
 //   - Execute runs under a per-call timeout context and a panic guard;
 //   - if a plugin ignores cancellation, its instance is marked disabled
 //     for the rest of the process lifetime and the abandoned goroutine is
-//     never re-invoked (at most one abandoned goroutine per instance);
+//     never re-invoked (at most one abandoned goroutine per instance); a
+//     disabled instance claims nothing from the durable queue either, so
+//     the work waiting there is untouched until the next start;
 //   - a full queue returns a clear Submit error instead of blocking;
 //   - shutdown drains each queue within a bounded shutdown_timeout.
 type Instance struct {
@@ -271,7 +273,17 @@ func (i *Instance) holdOffline(ctx context.Context) bool {
 // a job ran. Claim errors are logged, never fatal: the next poll retries.
 // While the offline switch is on for an internet-backed instance, no job
 // is claimed — nothing executes, the attempt budget stays untouched.
+//
+// A DISABLED instance claims nothing either. The plugin ignored its
+// cancellation and is hung; handing it the next job would start a second
+// abandoned goroutine and a second user of the same transport, and every
+// further job would add one more (reported P1). The jobs are left in the
+// queue untouched — nothing about them is lost, they execute after the
+// next start.
 func (i *Instance) runNextJob(ctx context.Context) bool {
+	if i.disabled.Load() {
+		return false
+	}
 	if i.blocked() {
 		return false
 	}
@@ -292,6 +304,14 @@ func (i *Instance) runNextJob(ctx context.Context) bool {
 // what the channel can prove), "failed" with the next-attempt deadline on
 // a transient failure, terminal "failed" when the budget is spent.
 func (i *Instance) deliverJob(job storage.DeliveryJob) {
+	// Second gate, right before the plugin call: the instance may have been
+	// disabled while the job was being claimed. The job keeps its claim and
+	// comes back to a later start rather than reaching the hung plugin.
+	if i.disabled.Load() {
+		i.logger.Warn("action: claimed job left unexecuted, instance is disabled",
+			"action", i.id, "event_key", job.EventKey)
+		return
+	}
 	i.handled.Add(1)
 	key := job.EventKey
 	max := i.retries + 1

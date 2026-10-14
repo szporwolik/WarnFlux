@@ -433,6 +433,9 @@ var en = map[string]string{
 	"meshtastic.node_pos":                     "Position",
 	"meshtastic.node_seen":                    "Last seen",
 	"meshtastic.click_to_send":                "Click to send a message",
+	"meshtastic.node_key_known":               "This node announced a public key (NodeInfo): the radio can encrypt a direct message to it",
+	"meshtastic.node_key_missing":             "No public key seen from this node: the radio refuses a direct message to it (the station asks it to announce again)",
+	"meshtastic.dm_key_hint":                  "A direct message (DM) needs the recipient's public key, which a node announces in its NodeInfo. Without it the radio refuses the send — the station asks that node to announce again and re-sends the message once the key arrives. The 🔑/⚠ mark next to a node shows its key state.",
 	"meshtastic.copy_id":                      "Copy node id",
 	"meshtastic.no_nodes":                     "No nodes heard yet.",
 
@@ -1637,6 +1640,9 @@ var pl = map[string]string{
 	"meshtastic.node_pos":                     "Pozycja",
 	"meshtastic.node_seen":                    "Ostatnio",
 	"meshtastic.click_to_send":                "Kliknij, aby wysłać wiadomość",
+	"meshtastic.node_key_known":               "Węzeł ogłosił klucz publiczny (NodeInfo): radio może zaszyfrować do niego wiadomość bezpośrednią",
+	"meshtastic.node_key_missing":             "Nie widziano klucza publicznego tego węzła: radio odmówi wiadomości bezpośredniej (stacja poprosi go o rozgłoszenie)",
+	"meshtastic.dm_key_hint":                  "Wiadomość bezpośrednia (DM) wymaga klucza publicznego odbiorcy, który węzeł ogłasza w NodeInfo. Bez niego radio odmawia wysyłki — stacja prosi ten węzeł o rozgłoszenie i ponawia wiadomość, gdy klucz dotrze. Stan klucza pokazuje znacznik 🔑/⚠ przy nazwie węzła.",
 	"meshtastic.copy_id":                      "Kopiuj id węzła",
 	"meshtastic.no_nodes":                     "Nie słychać jeszcze żadnych węzłów.",
 

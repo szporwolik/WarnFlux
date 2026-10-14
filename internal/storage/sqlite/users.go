@@ -373,6 +373,74 @@ func versionBump(bump bool) string {
 	return ", auth_version = auth_version + 1"
 }
 
+// UpdateUserProfile replaces the contact fields and (when password is
+// non-empty) the password of an account WITHOUT writing its identity: the
+// username and the role are left exactly as they are. The self-service
+// account form used to hand back the values it had read when the page was
+// rendered, so an administrator's promotion or demotion landing meanwhile
+// was overwritten by the operator's own profile save (reported P2).
+func (s *Store) UpdateUserProfile(id int64, phone, email, discord, password string) (storage.User, error) {
+	var isAdmin int
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, id).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.User{}, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return storage.User{}, fmt.Errorf("inspect user %d: %w", id, err)
+	}
+	if isAdmin != 0 {
+		res, err := s.db.Exec(`
+			UPDATE users SET phone = ?, email = ?, discord = ?, updated_at_ms = ?
+			WHERE id = ? AND is_admin = 1`,
+			phone, email, discord, s.now().UnixMilli(), id)
+		if err != nil {
+			return storage.User{}, fmt.Errorf("update admin contact fields: %w", err)
+		}
+		return s.afterUpdate(res, id)
+	}
+
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return storage.User{}, fmt.Errorf("begin profile update for user %d: %w", id, err)
+	}
+	defer tx.Rollback()
+	// The address the account carries NOW decides whether the outstanding
+	// reset links die with this edit (see UpdateUser).
+	prev, err := previousIdentityTx(ctx, tx, id)
+	if err != nil {
+		return storage.User{}, err
+	}
+	now := s.now().UnixMilli()
+	cols := "phone = ?, email = ?, discord = ?, updated_at_ms = ?"
+	args := []any{phone, email, discord, now}
+	purgeResets := !sameAddress(prev.email, email)
+	if password != "" {
+		salt, hash, err := s.passwordFields(password)
+		if err != nil {
+			return storage.User{}, err
+		}
+		cols += ", password_salt = ?, password_hash = ?, auth_version = auth_version + 1"
+		args = append(args, salt, hash)
+		purgeResets = true
+	}
+	args = append(args, id)
+	res, err := tx.ExecContext(ctx, `UPDATE users SET `+cols+`
+		WHERE id = ? AND is_admin = 0`, args...)
+	if err != nil {
+		return storage.User{}, fmt.Errorf("update profile of user %d: %w", id, err)
+	}
+	if purgeResets {
+		if err := purgePasswordResetsTx(ctx, tx, id); err != nil {
+			return storage.User{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return storage.User{}, fmt.Errorf("commit profile update for user %d: %w", id, err)
+	}
+	return s.afterUpdate(res, id)
+}
+
 // afterUpdate maps an UPDATE result to the refreshed user or the precise
 // not-found / protected error.
 func (s *Store) afterUpdate(res sql.Result, id int64) (storage.User, error) {

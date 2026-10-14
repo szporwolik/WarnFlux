@@ -173,7 +173,8 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 
 // handleAccountSave applies the self-service edit: contact fields and an
 // optional new password. The username, role and GROUP MEMBERSHIP stay
-// untouched — groups are admin-assigned on the Access page.
+// untouched — the store call writes only the profile, so no value read when
+// the page was rendered can travel back into the account's identity.
 func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
 	if sess == nil {
@@ -279,7 +280,11 @@ func (s *Server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.users.UpdateUser(u.ID, u.Username, phone, email, discord, u.Role, password); err != nil {
+	// A PROFILE update, never a directory edit: the username and the role
+	// are not written back. Handing the values read above to UpdateUser let
+	// a profile save undo a role change an administrator had made while
+	// this form was open (reported P2).
+	if _, err := s.users.UpdateUserProfile(u.ID, phone, email, discord, password); err != nil {
 		s.logger.Warn("web: account update failed", "username", sess.username, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

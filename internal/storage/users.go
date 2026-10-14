@@ -233,6 +233,17 @@ type UserStore interface {
 	// password OR the recovery address invalidates the outstanding
 	// password-reset links of the account.
 	UpdateUser(id int64, username, phone, email, discord, role, password string) (User, error)
+	// UpdateUserProfile replaces the contact fields and (when password is
+	// non-empty) the password of one account WITHOUT writing its identity:
+	// neither the username nor the role are touched, so a self-service
+	// profile save cannot undo an administrator's decision made while the
+	// operator had the form open. The admin row's identity is config-owned
+	// and only its contact fields update.
+	//
+	// A password change and a change of the recovery address end the
+	// outstanding password-reset links of the account in the same
+	// transaction; a password change also raises the credential version.
+	UpdateUserProfile(id int64, phone, email, discord, password string) (User, error)
 	// DeleteUser removes a regular user.
 	DeleteUser(id int64) error
 	// SetUserAPRS replaces the user's registered APRS callsigns (with

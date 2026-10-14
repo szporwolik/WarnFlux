@@ -235,6 +235,24 @@ const defaultPinInterval = 6 * time.Hour
 // limits what a restart has to load.
 const maxPendingStationRemovals = 512
 
+// stationPublishTimeout is the budget of ONE station-feed publication. A batch
+// is not bounded by it: the feed is published by its own worker, so a slow
+// broker costs the feed its pace and never the radio session.
+const stationPublishTimeout = 5 * time.Second
+
+// stationFeedQueueLen bounds the operations waiting for that worker. When it is
+// full the operation is dropped, never awaited: an unconfirmed removal stays
+// pending (the retry pace offers it again) and a position document is refreshed
+// by the next packet from that node.
+const stationFeedQueueLen = maxPendingStationRemovals
+
+// feedJob is one station-feed operation for the worker: a document to
+// publish, or (doc == nil) the removal of the node's document.
+type feedJob struct {
+	id  string
+	doc []byte
+}
+
 // defaultTombstoneRetry is how long a station-document removal the broker
 // refused waits before it is attempted again. The maintenance tick is seconds
 // apart, so without a pace a broker outage would retry (and log) the same
@@ -980,6 +998,11 @@ type Hub struct {
 	// tombstones holds the removals the broker has not confirmed yet, keyed by
 	// node id (independent of the node directory, see nodeTombstone).
 	tombstones map[string]*nodeTombstone
+	// feedQueue hands the station-feed operations (a retained document, or its
+	// removal) to the feed worker. Bounded and never awaited: a broker that
+	// does not answer must not make the session loop — heartbeat, silence
+	// watchdog, message retry, shutdown — wait for it.
+	feedQueue chan feedJob
 	// removalsDropped counts the removals abandoned because that backlog hit
 	// maxPendingStationRemovals (the overflow metric).
 	removalsDropped int
@@ -1085,6 +1108,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		// Run and the admin page shows the device as disconnected.
 		return &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
 			tombstones: make(map[string]*nodeTombstone),
+			feedQueue:  make(chan feedJob, stationFeedQueueLen),
 			pending:    make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
 			routeWaiters: make(map[uint32][]chan routeReply),
 			traces:       make(map[uint32]*TraceProgress),
@@ -1101,6 +1125,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		cadence:      cadenceOf(cfg),
 		nodes:        make(map[string]*Node),
 		tombstones:   make(map[string]*nodeTombstone),
+		feedQueue:    make(chan feedJob, stationFeedQueueLen),
 		pending:      make(map[uint32]*pendingSend),
 		cmds:         make(map[string]*cmdRecord),
 		routeWaiters: make(map[uint32][]chan routeReply),
@@ -1335,6 +1360,8 @@ func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
 // transient USB hiccups never kill the plugin permanently.
 func (h *Hub) Run(ctx context.Context) error {
 	h.restoreNodes(ctx)
+	// The station feed runs NEXT TO the session, not inside it.
+	go h.runStationFeed(ctx)
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -2608,17 +2635,57 @@ func (h *Hub) expireNodes() {
 		tb.tried = now
 		due = append(due, id)
 	}
-	sink := h.stationSink
 	h.mu.Unlock()
 	if dropped > 0 && h.logger != nil {
 		h.logger.Warn("meshtastic: station removal backlog is full, obsolete documents left on the broker",
 			"dropped", dropped, "backlog", maxPendingStationRemovals)
 	}
-	if sink == nil {
-		return
-	}
+	// The removals go to the feed worker, NEVER out from here: a broker that
+	// keeps the connection open but does not confirm publications would
+	// otherwise park the session loop (heartbeat, watchdog, retries, the
+	// shutdown path) for a whole batch. A queue that is full is not an error —
+	// the entry stays pending and the retry pace offers it again.
 	for _, id := range due {
-		h.publishStationRemoval(sink, id)
+		h.enqueueStationFeed(feedJob{id: id})
+	}
+}
+
+// enqueueStationFeed hands one operation to the worker. It NEVER waits: the
+// caller may be the packet path or the maintenance loop, and a broker that
+// stopped answering must not stall either of them.
+func (h *Hub) enqueueStationFeed(job feedJob) {
+	select {
+	case h.feedQueue <- job:
+	default:
+		if h.logger != nil {
+			h.logger.Debug("meshtastic: station feed queue is full, dropping the operation", "id", job.id)
+		}
+	}
+}
+
+// runStationFeed drains the station feed on its own goroutine, one operation at
+// a time (which is also what orders a document publish against the removal of
+// the same node). The context is the hub's: cancelling it (station shutdown)
+// cancels the publication in flight, and the worker never delays the session
+// loop that enqueued the work.
+func (h *Hub) runStationFeed(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-h.feedQueue:
+			h.mu.Lock()
+			sink := h.stationSink
+			h.mu.Unlock()
+			if sink == nil {
+				continue
+			}
+			if job.doc == nil {
+				h.publishStationRemoval(ctx, sink, job.id)
+				continue
+			}
+			h.publishStationDoc(ctx, sink, job)
+		}
 	}
 }
 
@@ -2650,7 +2717,7 @@ func (h *Hub) openRemovalLocked(id string) *nodeTombstone {
 // the two operations for one node can never interleave, so the last one to run
 // decides what the broker holds — and a node that just spoke always leaves its
 // document behind.
-func (h *Hub) publishStationRemoval(sink func(ctx context.Context, topic string, retained bool, payload []byte) error, id string) {
+func (h *Hub) publishStationRemoval(parent context.Context, sink func(ctx context.Context, topic string, retained bool, payload []byte) error, id string) {
 	h.stationMu.Lock()
 	defer h.stationMu.Unlock()
 	h.mu.Lock()
@@ -2669,7 +2736,10 @@ func (h *Hub) publishStationRemoval(sink func(ctx context.Context, topic string,
 	if tb == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// One budget per publication, and the hub's cancellation reaches it: a
+	// broker that ignores the deadline cannot hold this worker past the
+	// station's own lifetime.
+	ctx, cancel := context.WithTimeout(parent, stationPublishTimeout)
 	defer cancel()
 	if err := sink(ctx, "meshtastic/stations/"+id, true, nil); err != nil {
 		if h.logger != nil {
@@ -4485,14 +4555,10 @@ func (h *Hub) recordMessage(direction, sender, recipient, channel, text, operato
 	}
 }
 
-// publishStation publishes (or refreshes) one retained station document.
-// The sink is called without the hub lock held: sinks perform network
-// I/O and must never block the hub state.
+// publishStation publishes (or refreshes) one retained station document. The
+// document is handed to the feed worker: this call may come from the packet
+// path, which must never wait for a broker.
 func (h *Hub) publishStation(n *Node) {
-	// The station feed is ordered against the removal of a document for the
-	// same node (see publishStationRemoval).
-	h.stationMu.Lock()
-	defer h.stationMu.Unlock()
 	h.mu.Lock()
 	sink := h.stationSink
 	h.mu.Unlock()
@@ -4516,10 +4582,20 @@ func (h *Hub) publishStation(n *Node) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	h.enqueueStationFeed(feedJob{id: n.ID, doc: payload})
+}
+
+// publishStationDoc writes one document to the broker (the worker side of
+// publishStation). The station feed is ordered against the removal of a
+// document for the same node: the worker publishes one operation at a time and
+// the removal re-checks that the node is still quiet before it acts.
+func (h *Hub) publishStationDoc(parent context.Context, sink func(ctx context.Context, topic string, retained bool, payload []byte) error, job feedJob) {
+	h.stationMu.Lock()
+	defer h.stationMu.Unlock()
+	ctx, cancel := context.WithTimeout(parent, stationPublishTimeout)
 	defer cancel()
-	if err := sink(ctx, "meshtastic/stations/"+n.ID, true, payload); err != nil && h.logger != nil {
-		h.logger.Warn("meshtastic: station publish failed", "id", n.ID, "error", err)
+	if err := sink(ctx, "meshtastic/stations/"+job.id, true, job.doc); err != nil && h.logger != nil {
+		h.logger.Warn("meshtastic: station publish failed", "id", job.id, "error", err)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/kabili207/meshtastic-go/core/proto"
+
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -102,7 +104,9 @@ func (s *recordingStationSink) removals() []string {
 	return out
 }
 
-// newStationFeedHub builds a hub with the station feed attached (no session).
+// newStationFeedHub builds a hub with the station feed attached and its worker
+// running (no radio session): the feed publishes on its own goroutine, exactly
+// as it does next to a live session.
 func newStationFeedHub(t *testing.T, sink *recordingStationSink) *Hub {
 	t.Helper()
 	h, err := NewHub(Config{NodeTTL: time.Hour}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -112,6 +116,9 @@ func newStationFeedHub(t *testing.T, sink *recordingStationSink) *Hub {
 	if sink != nil {
 		h.SetStationSink(sink.sink)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go h.runStationFeed(ctx)
 	return h
 }
 
@@ -167,9 +174,7 @@ func TestStationRemovalIsRetriedAfterABrokerOutage(t *testing.T) {
 	h.SeedNode("aaaa0001", "visitor", "VIS", 0, 0, time.Now().Add(-2*time.Hour), nil)
 
 	h.expireNodes()
-	if got := sink.attemptCount(); got != 1 {
-		t.Fatalf("attempts = %d, want the removal to be tried", got)
-	}
+	waitFor(t, "the removal attempt", func() bool { return sink.attemptCount() == 1 })
 	if removalConfirmed(h, "aaaa0001") {
 		t.Fatal("a removal the broker refused was recorded as done")
 	}
@@ -178,11 +183,9 @@ func TestStationRemovalIsRetriedAfterABrokerOutage(t *testing.T) {
 	sink.setFail(nil)
 	quietFor(h, "aaaa0001", 2*time.Hour)
 	h.expireNodes()
-	if got := sink.attemptCount(); got != 2 {
+	waitFor(t, "the retried removal", func() bool { return len(sink.removals()) == 1 })
+	if got := sink.attemptCount(); got < 2 {
 		t.Fatalf("attempts = %d, want the retry", got)
-	}
-	if got := sink.removals(); len(got) != 1 {
-		t.Fatalf("removals = %v, want the removal to have landed", got)
 	}
 	if !removalConfirmed(h, "aaaa0001") {
 		t.Fatal("the confirmed removal was not recorded")
@@ -191,6 +194,7 @@ func TestStationRemovalIsRetriedAfterABrokerOutage(t *testing.T) {
 	// A confirmed removal is never repeated while the node stays quiet.
 	quietFor(h, "aaaa0001", 2*time.Hour)
 	h.expireNodes()
+	time.Sleep(50 * time.Millisecond) // the worker has nothing left to do
 	if got := sink.attemptCount(); got != 2 {
 		t.Fatalf("attempts = %d, want no further attempts", got)
 	}
@@ -213,9 +217,7 @@ func TestStationRemovalFollowsANodeThatComesBack(t *testing.T) {
 	// Quiet: the document goes away.
 	quietFor(h, "bbbb0002", 2*time.Hour)
 	h.expireNodes()
-	if got := sink.removals(); len(got) != 1 {
-		t.Fatalf("removals = %v, want the removal", got)
-	}
+	waitFor(t, "the removal", func() bool { return len(sink.removals()) == 1 })
 	if !removalConfirmed(h, "bbbb0002") {
 		t.Fatal("the removal was not recorded")
 	}
@@ -234,9 +236,7 @@ func TestStationRemovalFollowsANodeThatComesBack(t *testing.T) {
 	// when the node came back).
 	quietFor(h, "bbbb0002", 2*time.Hour)
 	h.expireNodes()
-	if got := sink.removals(); len(got) != 2 {
-		t.Fatalf("removals = %v, want the second removal", got)
-	}
+	waitFor(t, "the second removal", func() bool { return len(sink.removals()) == 2 })
 }
 
 // TestStationFeedOrdersRemovalAndPositionPublish pins the ordering rule: a
@@ -279,6 +279,9 @@ func TestStationFeedOrdersRemovalAndPositionPublish(t *testing.T) {
 	sink.release()
 	<-removed
 	<-published
+	// Both operations are handed to the feed worker; wait until it published
+	// them (it was parked in the removal).
+	waitFor(t, "both operations at the broker", func() bool { return len(sink.operations()) == 2 })
 
 	ops := sink.operations()
 	if len(ops) != 2 || ops[0] != "remove:meshtastic/stations/cccc0003" || ops[1] != "publish:meshtastic/stations/cccc0003" {
@@ -317,9 +320,7 @@ func TestStationRemovalOutlivesTheDirectory(t *testing.T) {
 	if inDirectory(h, "dddd0004") {
 		t.Fatal("a node unheard for over the retention stayed in the directory")
 	}
-	if got := sink.removals(); len(got) != 1 {
-		t.Fatalf("removals = %v, want the removal of the dropped node's document", got)
-	}
+	waitFor(t, "the removal of the dropped node's document", func() bool { return len(sink.removals()) == 1 })
 	if !removalConfirmed(h, "dddd0004") {
 		t.Fatal("the removal was not recorded as confirmed")
 	}
@@ -336,9 +337,7 @@ func TestStationRemovalSurvivesTheRetentionBoundary(t *testing.T) {
 	h.SeedNode("eeee0005", "leaver", "LEA", 0, 0, time.Now().Add(-2*time.Hour), nil)
 
 	h.expireNodes()
-	if got := sink.attemptCount(); got != 1 {
-		t.Fatalf("attempts = %d, want the failed removal", got)
-	}
+	waitFor(t, "the failed removal", func() bool { return sink.attemptCount() == 1 })
 
 	// Time passes with the broker still down: the node is now past the
 	// retention as well, so the directory drops it.
@@ -355,9 +354,7 @@ func TestStationRemovalSurvivesTheRetentionBoundary(t *testing.T) {
 	sink.setFail(nil)
 	quietFor(h, "eeee0005", nodeDirRetention+time.Hour)
 	h.expireNodes()
-	if got := sink.removals(); len(got) != 1 {
-		t.Fatalf("removals = %v, want the removal after the recovery", got)
-	}
+	waitFor(t, "the removal after the recovery", func() bool { return len(sink.removals()) == 1 })
 	if !removalConfirmed(h, "eeee0005") {
 		t.Fatal("the removal was not confirmed")
 	}
@@ -407,9 +404,7 @@ func TestStationRemovalSurvivesARestart(t *testing.T) {
 		t.Fatal("the pending removal did not survive the restart")
 	}
 	restarted.expireNodes()
-	if got := back.removals(); len(got) != 1 {
-		t.Fatalf("removals = %v, want the removal after the restart", got)
-	}
+	waitFor(t, "the removal after the restart", func() bool { return len(back.removals()) == 1 })
 	if !removalConfirmed(restarted, "ffff0006") {
 		t.Fatal("the removal was not confirmed after the restart")
 	}
@@ -458,6 +453,9 @@ func TestStationRemovalDoesNotOutliveTheNodesReturn(t *testing.T) {
 
 	if got := back.operations(); len(got) != 0 {
 		t.Fatalf("broker operations = %v, want none (the node is active, its document stays)", got)
+	}
+	if queued := len(restarted.feedQueue); queued != 0 {
+		t.Fatalf("queued removals = %d, want none (nothing was owed)", queued)
 	}
 	if !inDirectory(restarted, "aaaa0007") {
 		t.Error("the active node is missing from the directory")
@@ -550,4 +548,81 @@ func TestStationRemovalBacklogIsBoundedOnLoad(t *testing.T) {
 		t.Fatalf("restored backlog = %d/%d, want %d pending and 25 dropped",
 			pending, dropped, maxPendingStationRemovals)
 	}
+}
+
+// TestSlowStationFeedDoesNotBlockTheSession pins the acceptance case: a broker
+// that keeps the connection open but never confirms publications must not stop
+// the radio session. A whole batch of removals is queued while the publisher is
+// parked, and the heartbeat/watchdog loop keeps running — it even keeps
+// processing packets — and shutting the station down does not wait for the
+// publisher either.
+func TestSlowStationFeedDoesNotBlockTheSession(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	// A publisher that ignores the context entirely (exactly what the reported
+	// broker does): it holds the call until the test lets it go.
+	sink := func(_ context.Context, _ string, _ bool, _ []byte) error {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return nil
+	}
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour},
+		testRadioOpts{
+			setup: func(h *Hub) {
+				h.SetStationSink(sink)
+				// A batch worth queueing: every node is past the directory
+				// retention, so one pass hands all of them to the feed.
+				for i := 1; i <= 20; i++ {
+					h.SeedNode(oldNodeID(i), "old", "", 0, 0,
+						time.Now().Add(-(nodeDirRetention + time.Hour)), nil)
+				}
+			},
+		})
+	radio.waitConnected(t)
+	t.Cleanup(func() { close(release) })
+
+	// The pass returns while the broker is still parked.
+	done := make(chan struct{})
+	go func() {
+		radio.hub.expireNodes()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expireNodes waited for the broker")
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the feed worker never started publishing")
+	}
+	if queued := len(radio.hub.feedQueue); queued == 0 {
+		t.Fatal("the batch was not handed to the feed worker")
+	}
+
+	// The session loop is alive: it still consumes packets from the radio.
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xef010203,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TELEMETRY_APP},
+		},
+	})
+	waitFor(t, "the session to process a packet while the broker is parked", func() bool {
+		for _, n := range radio.hub.Snapshot().Nodes {
+			if n.ID == "ef010203" && len(n.Sends) > 0 {
+				return true
+			}
+		}
+		return false
+	})
+	if !radio.hub.Connected() {
+		t.Fatal("the radio session died behind the slow broker")
+	}
+
+	// And the station shuts down without waiting for the publication.
+	radio.stopHub(t)
 }

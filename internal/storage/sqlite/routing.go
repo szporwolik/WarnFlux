@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -189,10 +190,19 @@ func statusFromDB(s string) storage.DeliveryStatus {
 // EnqueueDelivery persists one durable delivery job with its full
 // payload. A fresh row reports (DeliverySaved, true). An existing row
 // reports (status, false) — the transition was deduplicated — EXCEPT a
-// terminally failed job, which is re-armed with the fresh payload and a
-// clean budget and reports (DeliverySaved, true), so an alert that
-// burned all its execution attempts is retried on replay instead of
-// being suppressed as already delivered.
+// terminally failed job, which is re-armed with a clean budget and
+// reports (DeliverySaved, true), so an alert that burned all its
+// execution attempts is retried on replay instead of being suppressed
+// as already delivered.
+//
+// A job WAITING for its scheduled retry (a failed row with a deadline in
+// the future) is deduplicated like any other: re-arming it would replace
+// the narrowed payload that records what earlier attempts already
+// delivered, zero the attempt count and drop the deadline — the retry
+// would start over and deliver to recipients that already got the alert
+// (reported P2). Only a failure with NO pending deadline is terminal
+// enough to re-arm, and even then the progress of the stored payload is
+// carried over.
 func (s *Store) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -227,26 +237,110 @@ func (s *Store) enqueueDeliveryTx(ctx context.Context, tx *sql.Tx, job storage.D
 		return storage.DeliverySaved, true, nil
 	}
 
-	var dbStatus string
+	var dbStatus, storedPayload string
+	var nextAttempt int64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT status FROM action_fires
+		SELECT status, next_attempt_at_ms, payload FROM action_fires
 		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-		job.GroupID, job.ActionID, job.DedupKey).Scan(&dbStatus); err != nil {
+		job.GroupID, job.ActionID, job.DedupKey).Scan(&dbStatus, &nextAttempt, &storedPayload); err != nil {
 		return 0, false, fmt.Errorf("read delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
-	if dbStatus != "failed" {
+	// A job with a scheduled retry is still owned by that retry: the
+	// duplicate is deduplicated, and the payload (the work left), the
+	// attempt count and the deadline all stay as they are.
+	if dbStatus != "failed" || nextAttempt > 0 {
 		return statusFromDB(dbStatus), false, nil
 	}
 
-	// Terminal failure: re-arm the job with the fresh payload and budget.
+	// Terminal failure: re-arm the job with a clean budget. The progress of
+	// the stored payload — the recipients an earlier attempt already served
+	// — rides along, so the replayed job never sends to them twice.
+	payload := job.Payload
+	if merged, ok := carryDeliveryProgress([]byte(storedPayload), job.Payload); ok {
+		payload = merged
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE action_fires
 		SET payload = ?, status = 'saved', attempts = 0, next_attempt_at_ms = 0
 		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-		string(job.Payload), job.GroupID, job.ActionID, job.DedupKey); err != nil {
+		string(payload), job.GroupID, job.ActionID, job.DedupKey); err != nil {
 		return 0, false, fmt.Errorf("re-arm delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
 	return storage.DeliverySaved, true, nil
+}
+
+// deliveryProgressFields are the payload keys that record what earlier
+// attempts of one job already delivered (see action.ActionRequest): an action
+// that fans out per recipient skips them, so they must outlive a re-arm.
+var deliveryProgressFields = []string{"done_recipients", "unconfirmed_recipients"}
+
+// carryDeliveryProgress merges the progress lists of the STORED payload into
+// the fresh one and reports the payload to store. It reports false when there
+// is nothing to carry (or when either payload is not a JSON object), in which
+// case the fresh payload is stored unchanged.
+func carryDeliveryProgress(stored, fresh []byte) ([]byte, bool) {
+	if len(stored) == 0 || len(fresh) == 0 {
+		return nil, false
+	}
+	var from, into map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &from); err != nil {
+		return nil, false
+	}
+	if err := json.Unmarshal(fresh, &into); err != nil {
+		return nil, false
+	}
+	carried := false
+	for _, field := range deliveryProgressFields {
+		var served, pending []string
+		if raw, ok := from[field]; ok {
+			if err := json.Unmarshal(raw, &served); err != nil {
+				continue
+			}
+		}
+		if raw, ok := into[field]; ok {
+			if err := json.Unmarshal(raw, &pending); err != nil {
+				continue
+			}
+		}
+		merged := mergeDeliveryRecipients(pending, served)
+		if len(merged) == len(pending) {
+			continue
+		}
+		raw, err := json.Marshal(merged)
+		if err != nil {
+			continue
+		}
+		into[field] = raw
+		carried = true
+	}
+	if !carried {
+		return nil, false
+	}
+	out, err := json.Marshal(into)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// mergeDeliveryRecipients appends the addresses that are not listed yet,
+// comparing them case-insensitively — the same rule the action layer applies
+// to a narrowed retry (an address must never be served twice).
+func mergeDeliveryRecipients(pending, served []string) []string {
+	out := append([]string(nil), pending...)
+	seen := make(map[string]bool, len(pending)+len(served))
+	for _, addr := range pending {
+		seen[strings.ToLower(strings.TrimSpace(addr))] = true
+	}
+	for _, addr := range served {
+		key := strings.ToLower(strings.TrimSpace(addr))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, addr)
+	}
+	return out
 }
 
 // CommitInboxDelivery persists every delivery job of one evaluation and,

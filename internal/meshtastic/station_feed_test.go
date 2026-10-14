@@ -837,3 +837,131 @@ func TestStationRemovalWaitingEndsWhenTheNodeReturns(t *testing.T) {
 		t.Fatalf("waiting/dropped = %d/%d after the second quiet period, want 1/0", waiting, dropped)
 	}
 }
+
+// TestStationRemovalRecordsTheVersionItRemoved pins the ticket case: a removal
+// held at the broker while the node speaks again must be recorded for the
+// document it actually took. The node republished while that removal was in
+// flight, so the broker holds a NEWER document — recording the removal against
+// that newer observation would make the next TTL crossing skip the node and
+// leave the fresh document on the broker forever.
+func TestStationRemovalRecordsTheVersionItRemoved(t *testing.T) {
+	const id = "dddd0004"
+	sink := newRecordingStationSink()
+	h := newStationFeedHub(t, sink)
+	quiet := time.Now().Add(-2 * time.Hour)
+	h.SeedNode(id, "returner", "RET", 0, 0, quiet, nil)
+
+	// The removal of the quiet document is on its way and the broker is not
+	// answering yet.
+	sink.holdNext()
+	removed := make(chan struct{})
+	go func() {
+		h.expireNodes()
+		close(removed)
+	}()
+	select {
+	case <-sink.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the removal never reached the broker")
+	}
+
+	// The node speaks while that removal is still in flight: the removal was
+	// about the previous document, and this packet publishes a new one (the
+	// feed orders the removal before the publish).
+	heardNow(h, id, &Telemetry{Voltage: 4.2})
+	h.mu.Lock()
+	n := *h.nodes[id]
+	h.mu.Unlock()
+	h.publishStation(&n)
+	sink.release()
+	<-removed
+	waitFor(t, "the removal and the new document", func() bool { return len(sink.operations()) == 2 })
+
+	if !removalConfirmed(h, id) {
+		t.Fatal("the removal the broker took was not recorded")
+	}
+	h.mu.Lock()
+	recorded := h.nodes[id].RemovedSince
+	h.mu.Unlock()
+	if !recorded.Equal(quiet) {
+		t.Fatalf("RemovedSince = %v, want the observation that was removed (%v): the broker still holds the document published while the removal was in flight",
+			recorded, quiet)
+	}
+
+	// The node comes back once more and then goes quiet beyond the TTL: the
+	// document published during the flight must be removed as well, so the
+	// broker has to see a SECOND removal.
+	heardNow(h, id, &Telemetry{Voltage: 4.3})
+	h.expireNodes() // the node is active: the recorded removal is void
+	quietFor(h, id, 2*time.Hour)
+	h.expireNodes()
+	waitFor(t, "the removal of the document published during the flight", func() bool {
+		return len(sink.removals()) == 2
+	})
+}
+
+// TestStationRemovalLeavesANewerRemovalPending pins the second half of the same
+// ticket: when a removal held at the broker is voided (the node spoke) and a
+// fresh quiet period queues NEW work, the in-flight publish must confirm only
+// the entry it published. Confirming the replacement would tell the hub that
+// the newer document is gone, and the broker would keep it forever.
+func TestStationRemovalLeavesANewerRemovalPending(t *testing.T) {
+	const id = "eeee0005"
+	sink := newRecordingStationSink()
+	h := newStationFeedHub(t, sink)
+	quiet := time.Now().Add(-2 * time.Hour)
+	h.SeedNode(id, "shuttle", "SHU", 0, 0, quiet, nil)
+
+	sink.holdNext()
+	removed := make(chan struct{})
+	go func() {
+		h.expireNodes()
+		close(removed)
+	}()
+	select {
+	case <-sink.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the removal never reached the broker")
+	}
+
+	// The node speaks (the in-flight removal is about to be void) and the TTL
+	// passes again for its new observation: fresh work is queued while the old
+	// publish is still held by the broker.
+	heardNow(h, id, &Telemetry{Voltage: 4.4})
+	h.mu.Lock()
+	h.nodes[id].LastSeen = time.Now().Add(-2 * time.Hour)
+	h.mu.Unlock()
+	h.expireNodes()
+	if !removalPending(h, id) {
+		t.Fatal("the fresh removal was not queued")
+	}
+	sink.release()
+	<-removed
+	waitFor(t, "the removal of the newer document", func() bool { return len(sink.removals()) == 2 })
+
+	if !removalConfirmed(h, id) {
+		t.Fatal("the fresh removal was never confirmed")
+	}
+	// The recorded observation is the newer one because its OWN removal was
+	// confirmed later — not because the in-flight publish claimed it.
+	h.mu.Lock()
+	recorded := h.nodes[id].RemovedSince
+	newest := h.nodes[id].LastSeen
+	h.mu.Unlock()
+	if !recorded.Equal(newest) {
+		t.Fatalf("RemovedSince = %v, want the observation whose removal the broker confirmed last (%v)", recorded, newest)
+	}
+	// The newer document is gone from the broker and nothing is left owed: a
+	// repeated pass without fresh activity queues no further work.
+	h.mu.Lock()
+	owed := h.pendingRemovalsLocked()
+	h.mu.Unlock()
+	h.expireNodes()
+	time.Sleep(50 * time.Millisecond)
+	if owed != 0 {
+		t.Fatalf("pending removals = %d, want none once both documents were removed", owed)
+	}
+	if got := sink.removals(); len(got) != 2 {
+		t.Fatalf("removals = %v, want no third attempt for a document already removed", got)
+	}
+}

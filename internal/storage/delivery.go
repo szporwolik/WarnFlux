@@ -187,6 +187,13 @@ type DeliveryStore interface {
 	// saved, so they execute again.
 	RecoverStaleClaims(ctx context.Context, now time.Time) (int64, error)
 
+	// SettleSpentRetries ends the retry of every job of one action whose
+	// attempt budget is spent: the worker can never claim such a row again,
+	// so a retry deadline on it looks like pending work to the ordinary
+	// retention and the job waits forever. Ending it (no deadline) lets the
+	// completed-job retention take it. Returns how many rows were ended.
+	SettleSpentRetries(ctx context.Context, actionID string, maxAttempts int) (int64, error)
+
 	// PendingDeliveries counts non-terminal jobs of one action (status
 	// display).
 	PendingDeliveries(ctx context.Context, actionID string) (int, error)

@@ -412,9 +412,10 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE action_fires
-			SET status = 'running', attempts = attempts + 1, next_attempt_at_ms = ?
+			SET status = 'running', attempts = attempts + 1, next_attempt_at_ms = ?,
+				max_attempts = ?
 			WHERE group_id = ? AND action_id = ? AND dedup_key = ? AND status IN ('saved','failed')`,
-			deadline, gid, aid, dkey)
+			deadline, maxAttempts, gid, aid, dkey)
 		if err != nil {
 			tx.Rollback()
 			return storage.DeliveryJob{}, false, fmt.Errorf("claim delivery job for action %q: %w", actionID, err)
@@ -663,6 +664,34 @@ func (s *Store) PruneActionFires(cutoff time.Time) (int64, error) {
 		cutoff.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("prune action fires: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// SettleSpentRetries ends the retry of every job of one action whose attempt
+// budget is spent: the worker can never claim such a row again (see the claim
+// filter), so a row still carrying a retry deadline is an alert waiting for a
+// retry that will never happen — retention must leave pending work alone, and
+// this row looks like pending work. The late async outcome of a spent job used
+// to write exactly that shape (reported P2) and rows written by earlier
+// releases still carry it; ending them here makes the ordinary retention take
+// them like any other completed job. Returns how many rows were ended.
+//
+// The budget is the one the ROW was claimed with (a configuration change
+// between the claim and this sweep must not resurrect or end the wrong job);
+// maxAttempts is the action's current budget, used for rows claimed before
+// the row recorded its own.
+func (s *Store) SettleSpentRetries(ctx context.Context, actionID string, maxAttempts int) (int64, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE action_fires SET next_attempt_at_ms = 0
+		WHERE action_id = ? AND status = 'failed' AND next_attempt_at_ms > 0
+		  AND attempts >= CASE WHEN max_attempts > 0 THEN max_attempts ELSE ? END`,
+		actionID, maxAttempts)
+	if err != nil {
+		return 0, fmt.Errorf("settle spent retries of action %q: %w", actionID, err)
 	}
 	return res.RowsAffected()
 }

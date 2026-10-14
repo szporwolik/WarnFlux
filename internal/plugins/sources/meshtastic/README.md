@@ -64,17 +64,39 @@ RECIPIENT's public key, which the radio can only have learned from that node's
 **NodeInfo**. When the key is missing the radio refuses the frame outright —
 it never falls back to channel encryption, because a direct message must not
 be readable by the whole channel — and the message history records the reason
-`pki_no_key` ("the recipient has not announced its public key (it must
-broadcast NodeInfo)"). The frame never reaches the air: the alert was on the
-group channel, only the DM is missing.
+`pki_unknown_key` ("the recipient's key is unknown"; `pki_no_key` means the
+peer announced a key the radio cannot use). The frame never reaches the air:
+the alert was on the group channel, only the DM is missing.
 
 The station does what it can about it: on such a refusal the hub asks that
 peer to re-announce its NodeInfo (`NODEINFO_APP` with `want_response`, so the
 answer comes straight back to us), at most once per peer per 6 hours — the
 peer's firmware throttles replies to the same requester for hours, so asking
-more often only spends airtime. A node that has never announced (fresh node, a
-factory reset or a reflash that changed its key) stays undeliverable by DM
-until it does.
+more often only spends airtime. **The refused message is then re-sent by
+itself**: when that key lands (within five minutes of the refusal) the hub
+transmits the same text again and the SAME history row flips to sent or
+delivered — the operator does not have to retype it. A node that has never
+announced (fresh node, a factory reset or a reflash that changed its key)
+stays undeliverable by DM until it does, and the message stays failed with the
+refusal reason attached.
+
+The heard-nodes table has a two-way filter next to its heading — every node,
+or `★ Pinned only` for the nodes the station keeps on the radio. It is a view
+switch: nothing is hidden from the radio or the station feed by it.
+
+**The panel shows the key state.** In the heard-nodes table every row carries
+a mark next to the name: 🔑 when the station has seen that node announce a
+public key (the radio can encrypt a DM to it) and ⚠ when it has not — that
+node's direct messages will be refused until its firmware announces one. The
+state comes from the radio's own node table at the handshake and from every
+NodeInfo heard afterwards, so it follows the mesh without a refresh step.
+
+Two more reasons come from the STATION, not the device, and name a failure the
+radio itself never reported: `no_response` — the device transmitted the frame
+and the recipient never acknowledged it (the acknowledgment window,
+`meshtastic.ack_settle_timeout`, ran out) — and `not_confirmed` — the radio
+never confirmed the transmission at all, so the frame may never have left it.
+Neither leaves a failed row without an explanation.
 
 What an operator can do: bring the node on the air and let it announce —
 every device broadcasts its NodeInfo at boot and then every

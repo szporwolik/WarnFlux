@@ -380,9 +380,13 @@ var en = map[string]string{
 	"meshtastic.st_sent":      "sent",
 	"meshtastic.st_delivered": "delivered",
 	"meshtastic.st_failed":    "failed",
-	// meshtastic.reason.* explains WHY the device refused a send
-	// (queueStatus.res / ROUTING_APP error_reason): the frame never reached
-	// the air, so the failure needs a reason, not just a state.
+	// meshtastic.reason.* explains WHY a send failed. Most keys are the
+	// device's own refusal code (queueStatus.res / ROUTING_APP
+	// error_reason: the frame never reached the air, so the failure needs a
+	// reason, not just a state). Two are the STATION's verdict when the
+	// device itself stayed quiet: no_response (transmitted, the recipient
+	// never acknowledged) and not_confirmed (the radio never confirmed the
+	// transmission).
 	"meshtastic.reason.no_route":              "no route to the recipient",
 	"meshtastic.reason.got_nak":               "a relay refused the message",
 	"meshtastic.reason.timeout":               "the device timed out",
@@ -400,6 +404,7 @@ var en = map[string]string{
 	"meshtastic.reason.admin_unauthorized":    "admin key not authorized",
 	"meshtastic.reason.rate_limit":            "airtime limit exceeded for this sender",
 	"meshtastic.reason.pki_no_key":            "the recipient has not announced its public key (it must broadcast NodeInfo)",
+	"meshtastic.reason.not_confirmed":         "the radio never confirmed the transmission",
 	"meshtastic.hub_not_configured":           "meshtastic hub not configured",
 	"meshtastic.text_required":                "message text is required",
 	"meshtastic.bad_node_id":                  "node id must be 8 hex characters",
@@ -428,6 +433,9 @@ var en = map[string]string{
 	"meshtastic.node_pos":                     "Position",
 	"meshtastic.node_seen":                    "Last seen",
 	"meshtastic.click_to_send":                "Click to send a message",
+	"meshtastic.node_key_known":               "This node announced a public key (NodeInfo): the radio can encrypt a direct message to it",
+	"meshtastic.node_key_missing":             "No public key seen from this node: the radio refuses a direct message to it (the station asks it to announce again)",
+	"meshtastic.dm_key_hint":                  "A direct message (DM) needs the recipient's public key, which a node announces in its NodeInfo. Without it the radio refuses the send — the station asks that node to announce again and re-sends the message once the key arrives. The 🔑/⚠ mark next to a node shows its key state.",
 	"meshtastic.copy_id":                      "Copy node id",
 	"meshtastic.no_nodes":                     "No nodes heard yet.",
 
@@ -498,11 +506,14 @@ var en = map[string]string{
 	"meshmap.nopos":    "Heard without a position",
 	"meshmap.disabled": "The Meshtastic hub is disabled.",
 
-	"meshmap.filter_all":   "All",
-	"meshmap.filter_15m":   "15 min",
-	"meshmap.filter_1h":    "1 h",
-	"meshmap.filter_4h":    "4 h",
-	"meshmap.filter_today": "Today",
+	"meshmap.filter_all":           "All",
+	"meshtastic.nodes_all":         "All nodes",
+	"meshtastic.nodes_pinned":      "★ Pinned only",
+	"meshtastic.nodes_none_pinned": "No pinned nodes in the directory.",
+	"meshmap.filter_15m":           "15 min",
+	"meshmap.filter_1h":            "1 h",
+	"meshmap.filter_4h":            "4 h",
+	"meshmap.filter_today":         "Today",
 
 	// Public home page.
 	"home.tab.alerts":    "Active messages",
@@ -1603,6 +1614,7 @@ var pl = map[string]string{
 	"meshtastic.reason.admin_unauthorized":    "klucz admina bez uprawnień",
 	"meshtastic.reason.rate_limit":            "przekroczony limit czasu antenowego nadawcy",
 	"meshtastic.reason.pki_no_key":            "odbiorca nie ogłosił klucza publicznego (musi nadać NodeInfo)",
+	"meshtastic.reason.not_confirmed":         "radio nie potwierdziło transmisji",
 	"meshtastic.hub_not_configured":           "hub Meshtastic nie jest skonfigurowany",
 	"meshtastic.text_required":                "treść wiadomości jest wymagana",
 	"meshtastic.bad_node_id":                  "id węzła musi mieć 8 znaków hex",
@@ -1631,6 +1643,9 @@ var pl = map[string]string{
 	"meshtastic.node_pos":                     "Pozycja",
 	"meshtastic.node_seen":                    "Ostatnio",
 	"meshtastic.click_to_send":                "Kliknij, aby wysłać wiadomość",
+	"meshtastic.node_key_known":               "Węzeł ogłosił klucz publiczny (NodeInfo): radio może zaszyfrować do niego wiadomość bezpośrednią",
+	"meshtastic.node_key_missing":             "Nie widziano klucza publicznego tego węzła: radio odmówi wiadomości bezpośredniej (stacja poprosi go o rozgłoszenie)",
+	"meshtastic.dm_key_hint":                  "Wiadomość bezpośrednia (DM) wymaga klucza publicznego odbiorcy, który węzeł ogłasza w NodeInfo. Bez niego radio odmawia wysyłki — stacja prosi ten węzeł o rozgłoszenie i ponawia wiadomość, gdy klucz dotrze. Stan klucza pokazuje znacznik 🔑/⚠ przy nazwie węzła.",
 	"meshtastic.copy_id":                      "Kopiuj id węzła",
 	"meshtastic.no_nodes":                     "Nie słychać jeszcze żadnych węzłów.",
 
@@ -1701,11 +1716,14 @@ var pl = map[string]string{
 	"meshmap.nopos":    "Słyszane bez pozycji",
 	"meshmap.disabled": "Hub Meshtastic jest wyłączony.",
 
-	"meshmap.filter_all":   "Wszystkie",
-	"meshmap.filter_15m":   "15 min",
-	"meshmap.filter_1h":    "1 godz.",
-	"meshmap.filter_4h":    "4 godz.",
-	"meshmap.filter_today": "Dzisiaj",
+	"meshmap.filter_all":           "Wszystkie",
+	"meshtastic.nodes_all":         "Wszystkie węzły",
+	"meshtastic.nodes_pinned":      "★ Tylko przypięte",
+	"meshtastic.nodes_none_pinned": "Brak przypiętych węzłów w katalogu.",
+	"meshmap.filter_15m":           "15 min",
+	"meshmap.filter_1h":            "1 godz.",
+	"meshmap.filter_4h":            "4 godz.",
+	"meshmap.filter_today":         "Dzisiaj",
 
 	"home.tab.alerts":    "Aktywne komunikaty",
 	"home.tab.map":       "Mapa sytuacyjna",

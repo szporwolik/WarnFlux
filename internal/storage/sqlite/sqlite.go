@@ -1098,6 +1098,21 @@ ALTER TABLE meshtastic_nodes ADD COLUMN removed_since_ms INTEGER;
 ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1;
 `,
 	},
+	{
+		// v65: the attempt budget a delivery job was CLAIMED with, stored on
+		// the row itself. The budget lives in the action configuration, so a
+		// late write about an already-claimed job (the meshtastic modem
+		// reporting a transmission failure long after the worker settled the
+		// job) could not tell an ordinary retry from a job whose attempts are
+		// spent: it scheduled a retry deadline, the worker never claimed the
+		// job again (the budget was exhausted) and retention never removed it
+		// (it looked like pending work). The row now carries its own budget
+		// (0 = claimed by a release that did not record one), so any late
+		// outcome can be made terminal where it belongs (reported P2).
+		SQL: `
+ALTER TABLE action_fires ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

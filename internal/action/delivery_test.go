@@ -151,6 +151,28 @@ func (m *memDeliveryStore) SettleDeliveryGuarded(ctx context.Context, d storage.
 	return stage, nil
 }
 
+// SettleSpentRetries mirrors the store: a failed job whose attempts reached
+// the budget can never be claimed again, so its retry deadline goes away and
+// the completed-job retention may take it.
+func (m *memDeliveryStore) SettleSpentRetries(ctx context.Context, actionID string, maxAttempts int) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	var n int64
+	for _, j := range m.jobs {
+		if j.job.ActionID != actionID || j.status != storage.DeliveryFailed || j.next.IsZero() {
+			continue
+		}
+		if j.job.Attempts >= maxAttempts {
+			j.next = time.Time{}
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *memDeliveryStore) RecoverStaleClaims(ctx context.Context, now time.Time) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -191,6 +213,30 @@ func (m *memDeliveryStore) statusOf(groupID int64, actionID, dedupKey string) st
 		return j.status
 	}
 	return -1
+}
+
+// plantSpentRetry leaves a job failed with a retry deadline after its single
+// attempt: the budget is spent, so nothing can claim it again — the shape a
+// late async failure of a spent job (and an earlier release) leaves behind.
+func (m *memDeliveryStore) plantSpentRetry(actionID string, payload []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobs["1|"+actionID+"|c:spent"] = &memJob{
+		job: storage.DeliveryJob{GroupID: 1, ActionID: actionID, EventKey: "imgw:1", DedupKey: "c:spent",
+			Payload: payload, Attempts: 1, FiredAt: time.Now()},
+		status: storage.DeliveryFailed,
+		next:   time.Now().Add(time.Hour),
+	}
+}
+
+// deadlineOf reports the retry deadline of one job (zero = terminal).
+func (m *memDeliveryStore) deadlineOf(actionID, dedupKey string) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j, ok := m.jobs["1|"+actionID+"|"+dedupKey]; ok {
+		return j.next
+	}
+	return time.Time{}
 }
 
 // attemptsOf reports how often one job was CLAIMED (0 = still waiting).
@@ -744,6 +790,46 @@ func TestDisabledInstanceStopsClaimingDurableJobs(t *testing.T) {
 	}
 	if got := ms.statusOf(1, "log", "c:2"); got != storage.DeliverySaved {
 		t.Fatalf("queued job c:2 = %v, want it left untouched for recovery", got)
+	}
+}
+
+// TestManagerEndsSpentRetries pins the repair on the live path: the manager's
+// sweep ends the jobs of every action whose attempt budget is spent while their
+// row still carries a retry deadline (see SettleSpentRetries). Without it such
+// a job is invisible to the worker (the budget is spent) and protected from
+// retention (it looks like pending work) — it would wait forever.
+func TestManagerEndsSpentRetries(t *testing.T) {
+	oldRecovery := DeliveryRecoveryInterval
+	DeliveryRecoveryInterval = 5 * time.Millisecond
+	t.Cleanup(func() { DeliveryRecoveryInterval = oldRecovery })
+
+	p := &deliveryPlugin{}
+	reg := NewRegistry()
+	if err := reg.Register("logger", func(*yaml.Node) (Plugin, error) { return p, nil }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager([]config.Action{{
+		ID: "log", Type: "logger", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 1, CallTimeout: time.Second, ShutdownTimeout: time.Second},
+	}}, reg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ms := newMemDeliveryStore()
+	ms.plantSpentRetry("log", []byte(`{}`))
+	m.SetDeliveryStore(ms)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		_ = m.Shutdown(context.Background())
+	})
+
+	waitForDelivery(t, func() bool { return ms.deadlineOf("log", "c:spent").IsZero() },
+		"the spent retry to be ended by the manager sweep")
+	// Ended, not executed: the spent job never reaches the plugin again.
+	if got := p.handled.Load(); got != 0 {
+		t.Fatalf("the spent job was executed %d times, want 0", got)
 	}
 }
 

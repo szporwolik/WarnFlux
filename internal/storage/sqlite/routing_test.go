@@ -1172,6 +1172,67 @@ func TestSettleSpentRetriesEndsOrphanedJobs(t *testing.T) {
 	}
 }
 
+// TestTerminalSettleStoresThePayload pins the store half of the reported P2:
+// the progress of the LAST attempt has to land even though no retry follows —
+// a replay of the job re-arms from the payload it finds, so a terminal
+// settlement that dropped it made the replayed batch start from the beginning
+// and serve the recipients that had already been reached.
+func TestTerminalSettleStoresThePayload(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	first := []byte(`{"message":"first"}`)
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "smtp", EventKey: "imgw:1", DedupKey: "c:last", Payload: first, FiredAt: at}
+	if _, _, err := store.EnqueueDelivery(ctx, job); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 1, at); err != nil || !ok {
+		t.Fatalf("claim: (%v, %v)", ok, err)
+	}
+	// The last attempt (budget of one) served A and failed: the progress is
+	// stored with the TERMINAL settlement, without any retry deadline.
+	progress := []byte(`{"message":"first","done_recipients":["a@example.com"]}`)
+	if _, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
+		GroupID: g.ID, ActionID: "smtp", DedupKey: "c:last", Stage: storage.DeliveryFailed,
+		Payload: progress, Attempts: 1,
+	}); err != nil {
+		t.Fatalf("terminal settle: %v", err)
+	}
+
+	// A replay of the transition re-arms the job: the fresh content and the
+	// progress of the failed attempt travel together, so the next attempt
+	// covers only the recipients still pending.
+	replay := job
+	replay.Payload = []byte(`{"message":"fresh"}`)
+	st, queued, err := store.EnqueueDelivery(ctx, replay)
+	if err != nil || !queued || st != storage.DeliverySaved {
+		t.Fatalf("replay = (%v, %v, %v), want (saved, true, nil)", st, queued, err)
+	}
+	claimed, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(time.Hour))
+	if err != nil || !ok {
+		t.Fatalf("claim of the re-armed job = (%v, %v)", ok, err)
+	}
+	var payload struct {
+		Message string   `json:"message"`
+		Done    []string `json:"done_recipients"`
+	}
+	if err := json.Unmarshal(claimed.Payload, &payload); err != nil {
+		t.Fatalf("re-armed payload: %v (%s)", err, claimed.Payload)
+	}
+	if payload.Message != "fresh" {
+		t.Errorf("re-armed payload message = %q, want the fresh one", payload.Message)
+	}
+	if got := strings.Join(payload.Done, ","); got != "a@example.com" {
+		t.Errorf("re-armed payload progress = %q, want the recipient the last attempt served", got)
+	}
+}
+
 // TestDeliveryStaleClaimRecovery pins the crash window: a job claimed by
 // a process that died before settling is re-queued after its claim lease
 // expires, so the alert still executes.

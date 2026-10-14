@@ -538,10 +538,12 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 	if stage == storage.DeliveryFailed && !d.NextAttempt.IsZero() {
 		next = d.NextAttempt.UnixMilli()
 	}
-	// A retryable failure may carry the narrowed payload: the work that is
-	// still pending replaces the whole batch, in the same statement as the
-	// retry deadline (see storage.DeliverySettle.Payload).
-	if len(d.Payload) > 0 && next != 0 {
+	// A failure may carry the narrowed payload: the work that is still
+	// pending replaces the whole batch. A TERMINAL failure stores it too —
+	// the progress of the last attempt is what a replay re-arms from, and
+	// losing it made the replayed job serve the already-served recipients
+	// again (reported P2).
+	if len(d.Payload) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE action_fires SET status = ?, next_attempt_at_ms = ?, payload = ?
 			WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,

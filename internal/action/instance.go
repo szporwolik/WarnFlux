@@ -452,9 +452,13 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		i.settleGuarded(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff), req, retryPayload)
 		return
 	}
-	// Budget spent: terminal failure. A replayed transition re-arms the
-	// job instead of suppressing the alert.
-	i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, nil)
+	// Budget spent: terminal failure — and the progress of THIS attempt is
+	// stored with it. A replayed transition re-arms the job instead of
+	// suppressing the alert, and the payload it carries is the only place
+	// the recipients this attempt already served can come from: dropping it
+	// here made the replay deliver to them a second time (reported P2).
+	req, finalPayload := i.narrowRetry(req, err)
+	i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, finalPayload)
 	i.trail.SetOutcome(key, trail.OutcomeFailed)
 }
 

@@ -1038,6 +1038,10 @@ func purgePasswordResetsTx(ctx context.Context, tx *sql.Tx, userID int64) error 
 // the account has already left. An address change committing first leaves no
 // token at all; one committing later purges the token in its own transaction
 // (reported P2).
+//
+// The check, the removal of the account's previous links and the insert are
+// one transaction, the insert coming first: a REFUSED request changes nothing,
+// so it can never take away the link the account was just sent (reported P2).
 func (s *Store) CreatePasswordReset(userID int64, expectedEmail string) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -1048,24 +1052,45 @@ func (s *Store) CreatePasswordReset(userID int64, expectedEmail string) (string,
 	now := s.now().UnixMilli()
 	expires := now + int64((time.Hour).Milliseconds())
 
-	// Opportunistic prune: old rows for the user + globally expired ones.
-	if _, err := s.db.Exec(`DELETE FROM password_resets WHERE user_id = ? OR expires_at_ms < ?`, userID, now); err != nil {
-		return "", fmt.Errorf("prune reset tokens: %w", err)
+	// Issue the token and replace the account's previous links in ONE
+	// transaction, with the conditional insert FIRST: a request that is
+	// refused (the address moved) must change nothing at all. Pruning before
+	// the check let a late request for the PREVIOUS mailbox delete the link
+	// the account had just been sent for its current one (reported P2).
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin reset token issue for user %d: %w", userID, err)
 	}
+	defer tx.Rollback()
+
 	// One statement decides and inserts: it only matches the account while
 	// the address is still the expected one.
+	hash := hex.EncodeToString(sum[:])
 	var issued int64
-	err := s.db.QueryRow(`
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO password_resets (user_id, token_hash, expires_at_ms, created_at_ms)
 		SELECT id, ?, ?, ? FROM users
 		WHERE id = ? AND is_admin = 0 AND email = ?
 		RETURNING user_id`,
-		hex.EncodeToString(sum[:]), expires, now, userID, expectedEmail).Scan(&issued)
+		hash, expires, now, userID, expectedEmail).Scan(&issued)
 	if errors.Is(err, sql.ErrNoRows) {
+		tx.Rollback()
 		return "", s.resetRefusal(userID)
 	}
 	if err != nil {
 		return "", fmt.Errorf("store reset token: %w", err)
+	}
+	// Only the issued link survives: the account keeps one live recovery
+	// path, and expired rows go with it.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM password_resets
+		WHERE (user_id = ? AND token_hash <> ?) OR expires_at_ms < ?`,
+		userID, hash, now); err != nil {
+		return "", fmt.Errorf("prune reset tokens: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit reset token issue for user %d: %w", userID, err)
 	}
 	return token, nil
 }

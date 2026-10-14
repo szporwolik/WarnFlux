@@ -963,6 +963,94 @@ func TestDeliveryRetryScheduleAndReArm(t *testing.T) {
 	}
 }
 
+// TestDeliveryDuplicateKeepsAPendingRetryIntact pins the reported P2: a
+// duplicate of the same transition arriving while the job WAITED for its
+// scheduled retry used to re-arm it — the narrowed payload recording what
+// earlier attempts already delivered was replaced, the attempt count zeroed
+// and the deadline dropped — so the retry started over and could serve a
+// recipient that already got the alert. Only a failure with NO pending
+// deadline is terminal enough to re-arm, and even then the progress stored in
+// the payload rides along.
+func TestDeliveryDuplicateKeepsAPendingRetryIntact(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	first := []byte(`{"message":"first"}`)
+	fresh := []byte(`{"message":"fresh"}`)
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "smtp", EventKey: "imgw:1", DedupKey: "c:1", Payload: first, FiredAt: at}
+	if _, queued, err := store.EnqueueDelivery(ctx, job); err != nil || !queued {
+		t.Fatalf("enqueue: (%v, %v)", queued, err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at); err != nil || !ok {
+		t.Fatalf("claim 1: (%v, %v)", ok, err)
+	}
+	// The attempt served two recipients and failed: the narrowed payload
+	// (the work left plus the progress) replaces the row's payload, with the
+	// retry an hour away.
+	narrowed := []byte(`{"message":"first","done_recipients":["a@example.com","b@example.com"]}`)
+	if _, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
+		GroupID: g.ID, ActionID: "smtp", DedupKey: "c:1", Stage: storage.DeliveryFailed,
+		NextAttempt: at.Add(time.Hour), Payload: narrowed, Attempts: 1,
+	}); err != nil {
+		t.Fatalf("settle retryable: %v", err)
+	}
+
+	// The duplicate of the same transition arrives while the retry waits.
+	dup := job
+	dup.Payload = fresh
+	st, queued, err := store.EnqueueDelivery(ctx, dup)
+	if err != nil || queued || st != storage.DeliveryFailed {
+		t.Fatalf("duplicate during the retry wait = (%v, %v, %v), want (failed, false, nil)", st, queued, err)
+	}
+	// Nothing about the waiting job moved: the deadline, the budget and the
+	// payload are exactly as the failed attempt left them.
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(30*time.Minute)); err != nil || ok {
+		t.Fatalf("claim before the deadline = (%v, %v), want (false, nil)", ok, err)
+	}
+	claimed, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(time.Hour))
+	if err != nil || !ok || claimed.Attempts != 2 {
+		t.Fatalf("claim at the deadline = (%+v, %v, %v), want attempts 2", claimed, ok, err)
+	}
+	if string(claimed.Payload) != string(narrowed) {
+		t.Fatalf("payload after the duplicate = %s, want the narrowed one %s", claimed.Payload, narrowed)
+	}
+
+	// A TERMINAL failure (no deadline at all) is still re-armed by a replay,
+	// and the progress of the stored payload survives it.
+	if err := store.SettleDelivery(ctx, g.ID, "smtp", "c:1", storage.DeliveryFailed, time.Time{}); err != nil {
+		t.Fatalf("settle terminal: %v", err)
+	}
+	replay := job
+	replay.Payload = fresh
+	st, queued, err = store.EnqueueDelivery(ctx, replay)
+	if err != nil || !queued || st != storage.DeliverySaved {
+		t.Fatalf("replay of a terminal failure = (%v, %v, %v), want (saved, true, nil)", st, queued, err)
+	}
+	claimed, ok, err = store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(2*time.Hour))
+	if err != nil || !ok || claimed.Attempts != 1 {
+		t.Fatalf("claim of the re-armed job = (%+v, %v, %v), want a fresh budget (attempts 1)", claimed, ok, err)
+	}
+	var payload struct {
+		Message string   `json:"message"`
+		Done    []string `json:"done_recipients"`
+	}
+	if err := json.Unmarshal(claimed.Payload, &payload); err != nil {
+		t.Fatalf("re-armed payload: %v (%s)", err, claimed.Payload)
+	}
+	if payload.Message != "fresh" {
+		t.Errorf("re-armed payload message = %q, want the fresh one", payload.Message)
+	}
+	if got := strings.Join(payload.Done, ","); got != "a@example.com,b@example.com" {
+		t.Errorf("re-armed payload progress = %q, want the recipients already served", got)
+	}
+}
+
 // TestDeliveryStaleClaimRecovery pins the crash window: a job claimed by
 // a process that died before settling is re-queued after its claim lease
 // expires, so the alert still executes.

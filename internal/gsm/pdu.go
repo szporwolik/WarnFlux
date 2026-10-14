@@ -32,9 +32,24 @@ var gsm7Translit = map[rune]string{
 	'…': "...", '–': "-", '—': "-", '„': "\"", '”': "\"", '’': "'", '\u00a0': " ",
 }
 
-// TransliterateGSM7 renders text sendable through text mode: GSM-7
-// characters pass through, known characters get an ASCII equivalent and
-// anything else becomes '?'.
+// gsm7ExtFold renders the GSM-7 EXTENSION characters as basic-table text.
+// The extension set is legal SMS (each character rides an escape sequence),
+// but this modem family cannot encode it in TEXT mode with CSCS="IRA": the
+// submission is refused with +CMS ERROR 305 ("invalid text mode parameter")
+// and the message never leaves the modem. Found on production — the SMS
+// banner ("identity | /help") and every routed action message (ending in
+// "[WF-...]") failed with 305, while the mass notice (the operator's plain
+// text) went out on the SAME modem to the SAME numbers minutes apart.
+var gsm7ExtFold = map[rune]string{
+	'[': "(", ']': ")", '{': "(", '}': ")",
+	'|': "/", '\\': "/", '~': "-", '^': "'", '€': "EUR",
+}
+
+// TransliterateGSM7 renders text the modem can actually send in text mode:
+// basic GSM-7 characters pass through, the extension set is folded into basic
+// equivalents (see gsm7ExtFold — keeping it would make the modem refuse the
+// whole message), known characters get an ASCII equivalent and anything else
+// becomes '?'.
 func TransliterateGSM7(text string) string {
 	var sb strings.Builder
 	for _, r := range text {
@@ -43,7 +58,11 @@ func TransliterateGSM7(text string) string {
 			continue
 		}
 		if _, ok := gsm7ToExt[r]; ok {
-			sb.WriteRune(r)
+			if rep, ok := gsm7ExtFold[r]; ok {
+				sb.WriteString(rep)
+			} else {
+				sb.WriteRune(r) // unknown extension character: leave it be
+			}
 			continue
 		}
 		if rep, ok := gsm7Translit[r]; ok {

@@ -37,6 +37,11 @@ var (
 	// ErrPasswordResetInvalid is returned when a reset token is unknown,
 	// expired or already used.
 	ErrPasswordResetInvalid = errors.New("invalid or expired password reset token")
+	// ErrRecoveryEmailChanged is returned when a reset token is requested
+	// for an account whose recovery address has meanwhile moved: the
+	// request describes a mailbox the account no longer uses, so no link
+	// may be issued for it.
+	ErrRecoveryEmailChanged = errors.New("recovery address changed")
 )
 
 // User is one alert-recipient record. The admin user (the web auth
@@ -277,7 +282,17 @@ type UserStore interface {
 	// CreatePasswordReset issues a one-time reset token for the user and
 	// returns its plaintext form (the store keeps only a hash). Expired
 	// tokens are pruned opportunistically.
-	CreatePasswordReset(userID int64) (string, error)
+	//
+	// expectedEmail is the recovery address the caller is about to mail the
+	// link to; the token is created ONLY while the account still carries
+	// exactly that address, and the check travels in the same statement as
+	// the insert. An address change committing before the insert therefore
+	// produces no token, and one committing after it deletes the token
+	// again (the change purges outstanding links), so a link can never
+	// reach a mailbox the account has left. ErrRecoveryEmailChanged is
+	// reported when the address moved; ErrUserNotFound and
+	// ErrUserProtected keep their usual meaning.
+	CreatePasswordReset(userID int64, expectedEmail string) (string, error)
 	// ConsumePasswordReset marks a plaintext token used and returns the
 	// user ID. Expired, unknown or already-used tokens report
 	// ErrPasswordResetInvalid.

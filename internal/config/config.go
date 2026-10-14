@@ -23,11 +23,14 @@ const (
 	// DefaultConfigPath is used when no --config flag is provided.
 	DefaultConfigPath = "config.yaml"
 
-	defaultLogLevel           = "info"
-	defaultTimezone           = "Europe/Warsaw"
-	defaultExpirationInterval = time.Minute
-	defaultChangeRetention    = 24 * time.Hour
-	defaultEventRetention     = 30 * 24 * time.Hour
+	defaultLogLevel = "info"
+	defaultTimezone = "Europe/Warsaw"
+	// defaultPinUserNodesInterval is how often the radio's favorites are
+	// reconciled with the user directory.
+	defaultPinUserNodesInterval = 6 * time.Hour
+	defaultExpirationInterval   = time.Minute
+	defaultChangeRetention      = 24 * time.Hour
+	defaultEventRetention       = 30 * 24 * time.Hour
 	// Bounds the action-fire dedup ledger; negative disables pruning.
 	defaultNotificationRetention = 30 * 24 * time.Hour
 	defaultStorageDriver         = "sqlite"
@@ -130,10 +133,12 @@ type Geo struct {
 // App holds general application settings.
 type App struct {
 	LogLevel string
-	// Timezone is the IANA zone name used for every human-facing
-	// timestamp (admin panels, message history). Empty = the
-	// process-local zone. Containers typically run UTC, so the default
-	// is Europe/Warsaw regardless of the host zone.
+	// Timezone is the IANA zone name ("Europe/Warsaw") used for every
+	// human-facing timestamp: the panels, the public pages and the
+	// notification bodies, which always NAME it. Storage (epoch
+	// milliseconds) and the log stream stay UTC. Empty = the host zone
+	// (TZ, then /etc/timezone, then /etc/localtime), which the first
+	// start pins into this file so the choice survives a host move.
 	Timezone           string
 	ExpirationInterval time.Duration
 	// ChangeRetention is how long acknowledged journal records are kept
@@ -153,7 +158,10 @@ type App struct {
 	LogFile string
 	// LogMaxSizeMB is the rotation threshold in megabytes.
 	LogMaxSizeMB int
-	// LogMaxBackups is how many rotated files are retained.
+	// LogMaxBackups is how many rotated files are retained. It must be at
+	// least 1: the rotation library deletes nothing when the count is 0
+	// and no age limit is set, so zero would keep the log history forever
+	// (the configuration validation rejects it).
 	LogMaxBackups int
 }
 
@@ -214,6 +222,19 @@ type MeshtasticConfig struct {
 	// StationAlerts gates APRS station range announcements on the group
 	// channel. Useful but noisy — default OFF.
 	StationAlerts bool
+	// PinUserNodes marks the node IDs registered in the user directory as
+	// FAVORITES on the radio. The firmware never evicts a favorite from its
+	// node database, so the public key a direct message needs survives an
+	// unheard night, a full node table and even a node-db reset — without it
+	// the DM fails with "recipient has not announced its public key".
+	// Default ON.
+	PinUserNodes bool
+	// PinUserNodesInterval is how often the pin pass re-runs: it catches a
+	// node registered since the last pass. The station keeps the list of its
+	// own stars and re-sets those the device no longer reports (a node-db
+	// reset, a replacement radio) at every session, so this interval only
+	// paces the tidy-up of the directory. Default 6h; 1m..24h.
+	PinUserNodesInterval time.Duration
 }
 
 // APRSConfig holds the shared APRS hub settings (top-level "aprs:"). The
@@ -637,6 +658,14 @@ type fileMeshtastic struct {
 	// EmcomHazardsInterval is the periodic hazard status line spacing
 	// (default 1h); 0 disables the line.
 	EmcomHazardsInterval *time.Duration `yaml:"emcom_hazards_interval"`
+	// PinUserNodes marks the node IDs registered in the user directory as
+	// favorites on the radio (the firmware keeps favorites when its node
+	// database is pruned or reset) and takes the star back once its owner
+	// leaves the directory. Default ON; pin_user_nodes_interval (1m..24h,
+	// default 6h) is how often the pass re-runs.
+	PinUserNodes         *bool          `yaml:"pin_user_nodes"`
+	PinUserNodesInterval *time.Duration `yaml:"pin_user_nodes_interval"`
+
 	// ChannelAlerts / DMAlerts / StationAlerts are the runtime switches
 	// on the admin Config page; pointer fields keep omitted values
 	// distinguishable from explicit false (channel/dm default ON,
@@ -1246,6 +1275,7 @@ func (f fileConfig) toConfig() Config {
 	cfg.Meshtastic = MeshtasticConfig{
 		Baud: 115200, NodeTTL: 30 * time.Minute, EmcomHazardsInterval: 1 * time.Hour,
 		ChannelAlerts: true, DMAlerts: true, StationAlerts: false,
+		PinUserNodes: true, PinUserNodesInterval: defaultPinUserNodesInterval,
 	}
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
@@ -1282,6 +1312,12 @@ func (f fileConfig) toConfig() Config {
 		if v := f.Meshtastic.StationAlerts; v != nil {
 			cfg.Meshtastic.StationAlerts = *v
 		}
+		if v := f.Meshtastic.PinUserNodes; v != nil {
+			cfg.Meshtastic.PinUserNodes = *v
+		}
+		if v := f.Meshtastic.PinUserNodesInterval; v != nil {
+			cfg.Meshtastic.PinUserNodesInterval = *v
+		}
 	}
 	if f.Geo != nil {
 		cfg.Geo.Areas = append(cfg.Geo.Areas, f.Geo.Areas...)
@@ -1317,8 +1353,11 @@ func (c Config) Validate() error {
 	if c.App.LogMaxSizeMB <= 0 {
 		return fmt.Errorf("app.log_max_size_mb must be greater than 0, got %d", c.App.LogMaxSizeMB)
 	}
-	if c.App.LogMaxBackups < 0 {
-		return fmt.Errorf("app.log_max_backups must not be negative, got %d", c.App.LogMaxBackups)
+	// Zero would mean "keep every rotated file forever": the rotation
+	// library deletes nothing when the backup count is 0 and no age limit
+	// is configured, so the log history would grow without bound.
+	if c.App.LogMaxBackups <= 0 {
+		return fmt.Errorf("app.log_max_backups must be greater than 0, got %d (zero would keep every rotated log forever)", c.App.LogMaxBackups)
 	}
 	if c.Storage.Driver != "sqlite" {
 		return fmt.Errorf("storage.driver must be %q, got %q", "sqlite", c.Storage.Driver)
@@ -1583,6 +1622,10 @@ func (c Config) Validate() error {
 	if v := c.Meshtastic.EmcomHazardsInterval; v != 0 &&
 		(v < time.Minute || v > 30*24*time.Hour) {
 		return fmt.Errorf("meshtastic.emcom_hazards_interval must be between 1m and 720h (0 disables), got %s", v)
+	}
+	if v := c.Meshtastic.PinUserNodesInterval; v != 0 &&
+		(v < time.Minute || v > 24*time.Hour) {
+		return fmt.Errorf("meshtastic.pin_user_nodes_interval must be between 1m and 24h, got %s", v)
 	}
 	if c.GSM.Enabled && c.GSM.Device == "" {
 		return fmt.Errorf("gsm.device is required when gsm.enabled is true")

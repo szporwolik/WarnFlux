@@ -250,7 +250,7 @@ func scanGroup(sc groupScanner) (storage.Group, error) {
 	if err := sc.Scan(&g.ID, &g.Name, &created, &updated, &g.Members); err != nil {
 		return storage.Group{}, err
 	}
-	g.CreatedAt = time.UnixMilli(created)
-	g.UpdatedAt = time.UnixMilli(updated)
+	g.CreatedAt = time.UnixMilli(created).UTC()
+	g.UpdatedAt = time.UnixMilli(updated).UTC()
 	return g, nil
 }

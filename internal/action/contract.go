@@ -37,6 +37,26 @@ type AppInfo struct {
 	Domain string `json:"domain"`
 	// RepoURL is the public repository link.
 	RepoURL string `json:"repo_url"`
+	// Timezone is the station's display zone (IANA name, "UTC" when the
+	// host cannot be detected): notification bodies render their
+	// timestamps in it and NAME it, so a reader never has to guess which
+	// clock a mail shows. Storage and logs stay UTC.
+	Timezone string `json:"timezone,omitempty"`
+}
+
+// DisplayZone resolves the station's display zone from the application
+// metadata carried by a request: the IANA name when set, UTC otherwise.
+// Notification bodies render their timestamps with it and NAME it, so a
+// reader never mistakes a UTC time for a local one; storage and the log
+// stream stay UTC either way.
+func DisplayZone(app AppInfo) (*time.Location, string) {
+	name := strings.TrimSpace(app.Timezone)
+	if name != "" {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc, loc.String()
+		}
+	}
+	return time.UTC, "UTC"
 }
 
 // ActionRequest is the minimal execution request handed to one action.
@@ -181,6 +201,34 @@ type Plugin interface {
 	// Close releases plugin-owned resources (files, connections). It MUST
 	// respect ctx. It is called exactly once, even if Execute never ran.
 	Close(ctx context.Context) error
+}
+
+// SharedDestination is an OPTIONAL plugin capability: the action delivers to
+// ONE place shared by every recipient (a Discord channel post, a webhook)
+// instead of to a per-recipient list (mail, SMS, APRS, Meshtastic).
+//
+// The routing engine collapses several matching groups into ONE delivery for
+// such an action, with the union of their recipients. Without it the same
+// alert is posted once per group — two groups following the same sources post
+// the same message twice on the same channel, which is the reported failure
+// (and it cannot be told apart in a channel, because a webhook posts under one
+// identity).
+type SharedDestination interface {
+	// SharedDestination reports whether the action posts to one shared
+	// place instead of a per-group recipient list.
+	SharedDestination() bool
+}
+
+// SharedDestinationReporter is the read side the routing engine uses on an
+// ActionSubmitter (the action manager): it reports the capability above per
+// configured action. A submitter that does not implement it simply never
+// merges deliveries.
+type SharedDestinationReporter interface {
+	// SharedDestination reports whether the configured action with this
+	// ID is a shared destination. Unknown and disabled instances report
+	// false: the routing engine must keep today's behaviour when it cannot
+	// tell.
+	SharedDestination(actionID string) bool
 }
 
 // ConfirmingPlugin is an optional extension for actions whose transport

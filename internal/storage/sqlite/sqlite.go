@@ -1025,6 +1025,52 @@ ALTER TABLE meshtastic_messages ADD COLUMN reason TEXT NOT NULL DEFAULT '';
 		SQL: `SELECT 1`,
 		run: adoptLegacyComposeLifecycle,
 	},
+	{
+		// v60: the producer (the configured source INSTANCE) of an event.
+		// Two instances of one plugin type publish under the same source
+		// slug, so without an owner a full-snapshot source reconciles the
+		// disappearances of its sibling's events away (reported P1).
+		//
+		// Rows written before this migration keep '' — the next ingest of
+		// the same key backfills it (a snapshot source re-emits its in-force
+		// set every poll, and the duplicate path adopts the producer), and
+		// until then such a row is simply not owned by any instance.
+		SQL: `
+ALTER TABLE events ADD COLUMN producer TEXT NOT NULL DEFAULT '';
+`,
+	},
+	{
+		// v61: the favorites THIS station set on the radio for the nodes
+		// registered in the user directory. The radio keeps favorites
+		// forever, so pinning a node whose owner later leaves the
+		// directory would leave a star nobody owns — and the station has
+		// no way to tell its own stars from the ones an operator tapped
+		// on the device. This table is that missing memory: a node listed
+		// here may be unpinned when it leaves the directory, everything
+		// else is left untouched.
+		SQL: `
+CREATE TABLE meshtastic_favorites (
+	node_id      INTEGER PRIMARY KEY,
+	pinned_at_ms INTEGER NOT NULL
+);
+`,
+	},
+	{
+		// v62: the node rows that still owe the broker a removal of their
+		// retained station document. The row keeps the node's last known
+		// observation, so a removal queued just before the directory dropped
+		// the node (nodeDirRetention) is attempted again after a restart
+		// instead of leaving an obsolete retained document on the broker.
+		//
+		// pending_since_ms is the observation that removal refers to, kept
+		// apart from last_seen_ms: the node may have been heard again between
+		// the removal being queued and the save, and a restored removal must
+		// never be applied to an activity that came after it.
+		SQL: `
+ALTER TABLE meshtastic_nodes ADD COLUMN pending_removal INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE meshtastic_nodes ADD COLUMN pending_since_ms INTEGER;
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel
@@ -1058,7 +1104,8 @@ const eventColumns = `event_key, source, source_id, fingerprint, status,
 category, event, severity, provider_severity, urgency, certainty,
 headline, description, instruction,
 effective_at, expires_at_ms, latitude, longitude,
-areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at`
+areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at,
+producer`
 
 // Store is a SQLite-backed storage.EventStore.
 type Store struct {
@@ -1070,6 +1117,13 @@ type Store struct {
 
 	// now is the clock used for timestamps; injectable in tests.
 	now func() time.Time
+
+	// migrationCeiling stops the schema upgrade at this version when the
+	// database is opened (0 = the head schema). It exists for upgrade
+	// FIXTURES: a test builds a database exactly as an older release left
+	// it — the REAL v1..vN schema, not a hand-rolled subset of the current
+	// one — and then reopens it so the remaining steps run for real.
+	migrationCeiling int
 
 	// msgLogf reports background message-id write failures (see msgid.go).
 	msgLogf func(msg string, args ...any)
@@ -1110,6 +1164,20 @@ func WithMessageIDLog(fn func(msg string, args ...any)) Option {
 // instead of waiting it out.
 func WithMessageIDRetry(delays []time.Duration) Option {
 	return func(s *Store) { s.msgRetry = append([]time.Duration(nil), delays...) }
+}
+
+// WithMigrationCeiling stops the schema upgrade at the given version, so the
+// database is left at exactly the schema that release had. It is a FIXTURE
+// seam for upgrade tests — production opens the head schema — because a test
+// that rewinds user_version over the current schema (or drops the columns a
+// newer migration added) silently stops testing the real upgrade path as soon
+// as another migration lands.
+//
+// A ceiling below the head returns a plain SCHEMA HANDLE: the in-memory
+// mirrors a live store loads are not started, because the tables they read
+// may not exist yet at that version.
+func WithMigrationCeiling(version int) Option {
+	return func(s *Store) { s.migrationCeiling = version }
 }
 
 // WithClock sets the clock used for persistence timestamps. It is the
@@ -1176,19 +1244,29 @@ func Open(path string, opts ...Option) (*Store, MigrationInfo, error) {
 		}
 	}
 
-	info, err := migrate(db, migrations)
-	if err != nil {
-		db.Close()
-		return nil, MigrationInfo{}, err
-	}
-
 	store := &Store{db: db, now: time.Now, path: path}
 	for _, opt := range opts {
 		opt(store)
 	}
-	if err := store.initMessageIDs(context.Background()); err != nil {
+	steps := migrations
+	fixture := false
+	if store.migrationCeiling > 0 && store.migrationCeiling < len(steps) {
+		steps = steps[:store.migrationCeiling]
+		fixture = true
+	}
+	info, err := migrate(db, steps)
+	if err != nil {
 		db.Close()
 		return nil, MigrationInfo{}, err
+	}
+	// A store on an old fixture schema is a schema handle, not a live store:
+	// the mirrors the head schema loads at startup read tables an older
+	// release did not have yet.
+	if !fixture {
+		if err := store.initMessageIDs(context.Background()); err != nil {
+			db.Close()
+			return nil, MigrationInfo{}, err
+		}
 	}
 	return store, info, nil
 }
@@ -1269,10 +1347,10 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	}
 	defer tx.Rollback()
 
-	var storedFp, storedStatus, storedReceived, storedFirstSeen string
+	var storedFp, storedStatus, storedReceived, storedFirstSeen, storedProducer string
 	err = tx.QueryRowContext(ctx,
-		"SELECT fingerprint, status, received_at, first_seen_at FROM events WHERE event_key = ?", key,
-	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen)
+		"SELECT fingerprint, status, received_at, first_seen_at, producer FROM events WHERE event_key = ?", key,
+	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen, &storedProducer)
 
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -1313,6 +1391,14 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 		return 0, nil, fmt.Errorf("get event %q: %w", key, err)
 	}
 
+	// The producer is CORE-owned: a path that carries none (the broker
+	// loopback, an ingest endpoint, another station's event) must never
+	// wipe the owner the instance reconciliation depends on — the stored
+	// one is kept instead.
+	if event.Producer == "" {
+		event.Producer = storedProducer
+	}
+
 	// Existing event: compare content fingerprint and lifecycle status.
 	contentSame := storedFp == fingerprint
 	incomingCancelled := event.Status == core.StatusCancelled
@@ -1340,8 +1426,15 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	}
 
 	if duplicate {
+		// The producer is written along with the touch: a row stored before
+		// the producer existed (or by a path that carried none) is thus
+		// ADOPTED by the instance that keeps reporting the event, and its
+		// disappearances reconcile again. The value is the stored one
+		// whenever the incoming event carries no owner, so nothing changes
+		// in the common path.
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE events SET last_seen_at = ?, last_seen_at_ms = ? WHERE event_key = ?", formatTime(now), nowMs, key); err != nil {
+			"UPDATE events SET last_seen_at = ?, last_seen_at_ms = ?, producer = ? WHERE event_key = ?",
+			formatTime(now), nowMs, event.Producer, key); err != nil {
 			return 0, nil, fmt.Errorf("touch event %q: %w", key, err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -2140,7 +2233,7 @@ func (s *Store) EmcomNetworks(ctx context.Context) ([]storage.EmcomNetwork, erro
 		if err := rows.Scan(&n.ID, &n.Slug, &n.Name, &n.Level, &n.UpdatedBy, &ms, &n.Version); err != nil {
 			return nil, fmt.Errorf("scan emcom network: %w", err)
 		}
-		n.UpdatedAt = time.UnixMilli(ms)
+		n.UpdatedAt = time.UnixMilli(ms).UTC()
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -2465,7 +2558,7 @@ func (s *Store) ComposeHazards(ctx context.Context) ([]storage.ComposeHazard, er
 			return nil, fmt.Errorf("scan compose hazard: %w", err)
 		}
 		h.State = []byte(raw)
-		h.UpdatedAt = time.UnixMilli(ms)
+		h.UpdatedAt = time.UnixMilli(ms).UTC()
 		out = append(out, h)
 	}
 	return out, rows.Err()
@@ -2897,8 +2990,9 @@ INSERT INTO events (
 	category, event, severity, provider_severity, urgency, certainty,
 	headline, description, instruction,
 	effective_at, expires_at, expires_at_ms, latitude, longitude,
-	areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at,
+	producer
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(event_key) DO NOTHING`
 
 func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen, updated time.Time, expiresMs int64) []any {
@@ -2912,6 +3006,7 @@ func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen,
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
 		formatTime(received), formatTime(firstSeen), formatTime(lastSeen), lastSeen.UTC().UnixMilli(), formatTime(updated),
+		event.Producer,
 	}
 }
 
@@ -2941,7 +3036,8 @@ UPDATE events SET
 	category = ?, event = ?, severity = ?, provider_severity = ?, urgency = ?, certainty = ?,
 	headline = ?, description = ?, instruction = ?,
 	effective_at = ?, expires_at = ?, expires_at_ms = ?, latitude = ?, longitude = ?,
-	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, last_seen_at_ms = ?, updated_at = ?
+	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, last_seen_at_ms = ?, updated_at = ?,
+	producer = ?
 	WHERE event_key = ?`
 
 func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expiresMs int64) []any {
@@ -2955,6 +3051,7 @@ func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expir
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
 		formatTime(received), formatTime(now), now.UTC().UnixMilli(), formatTime(orNow(event.UpdatedAt, now)),
+		event.Producer,
 	}, event.Key())
 }
 
@@ -3665,6 +3762,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (co
 		&effectiveAt, &expiresMs, &lat, &lon,
 		&areasJSON, &event.SourceURL,
 		&received, &first, &last, &lastSeenMs, &updated,
+		&event.Producer,
 	}
 	if err := scan(dests...); err != nil {
 		return event, err

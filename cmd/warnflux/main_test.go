@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/aprs"
+	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/weatherreport"
@@ -298,6 +300,112 @@ func TestPublicSite(t *testing.T) {
 	} {
 		if got := publicSite(tc.in); got != tc.want {
 			t.Errorf("publicSite(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestLoggerRotatedFilesStayBounded pins the reported P2 for the log
+// rotation: a long-running station must never accumulate an unbounded
+// history of archived log files, not even when the configured backup count
+// is zero (the zero value falls back to the shipped default instead of
+// letting lumberjack keep everything).
+func TestLoggerRotatedFilesStayBounded(t *testing.T) {
+	for _, maxBackups := range []int{1, 2, 5, 0} {
+		t.Run(fmt.Sprintf("backups-%d", maxBackups), func(t *testing.T) {
+			dir := t.TempDir()
+			app := config.Default().App
+			app.LogFile = filepath.Join(dir, "warnflux.log")
+			app.LogMaxSizeMB = 1
+			app.LogMaxBackups = maxBackups
+
+			// newLogger always tees to stdout; keep the megabytes of
+			// synthetic lines out of the test output.
+			devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer devNull.Close()
+			saved := os.Stdout
+			os.Stdout = devNull
+			logger, closer, err := newLogger(app, io.Discard)
+			os.Stdout = saved
+			if err != nil {
+				t.Fatalf("newLogger: %v", err)
+			}
+			// ~6 MB of log lines through a 1 MB rotation threshold: several
+			// rotations, well past any allowed backup count.
+			line := strings.Repeat("x", 900)
+			for i := 0; i < 7000; i++ {
+				logger.Info(line)
+			}
+			if err := closer.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
+
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("read dir: %v", err)
+			}
+			want := maxBackups
+			if want <= 0 {
+				want = config.Default().App.LogMaxBackups
+			}
+			// The live file plus at most `want` archives.
+			if len(entries) > want+1 {
+				t.Fatalf("rotated log files = %d, want at most %d (%d archives + the live file)",
+					len(entries), want+1, want)
+			}
+			var total int64
+			for _, e := range entries {
+				info, err := e.Info()
+				if err != nil {
+					t.Fatal(err)
+				}
+				total += info.Size()
+			}
+			// The whole history must fit in roughly the allowed copies.
+			if limit := int64(want+1) * 2 << 20; total > limit {
+				t.Fatalf("log history = %d bytes, want at most %d for %d copies", total, limit, want)
+			}
+		})
+	}
+}
+
+// TestLoggerStampsUTC pins the log time policy: the log stream is read by
+// machines and collectors, so every line carries a UTC RFC3339 stamp with
+// "Z" — never the station's display zone — and that holds for both logger
+// variants (with and without a log file).
+func TestLoggerStampsUTC(t *testing.T) {
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = devnull
+	defer func() { os.Stdout = old; devnull.Close() }()
+
+	for _, name := range []string{"stdout only", "rotating file"} {
+		app := config.App{}
+		if name == "rotating file" {
+			app.LogFile = filepath.Join(t.TempDir(), "warnflux.log")
+		}
+		var buf strings.Builder
+		logger, closer, err := newLogger(app, &buf)
+		if err != nil {
+			t.Fatalf("%s: newLogger: %v", name, err)
+		}
+		if closer == nil {
+			t.Fatalf("%s: newLogger returned a nil closer", name)
+		}
+		logger.Info("tick")
+		_ = closer.Close()
+
+		line := strings.TrimSpace(buf.String())
+		if line == "" {
+			t.Fatalf("%s: the captured ring buffer stayed empty", name)
+		}
+		if !strings.HasPrefix(line, "time=") || !strings.Contains(line, "Z level=INFO msg=tick") {
+			t.Errorf("%s: log line = %q, want a UTC (Z) stamp", name, line)
 		}
 	}
 }

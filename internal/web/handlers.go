@@ -512,8 +512,10 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, r *http.Request, errMsg,
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	// The body is capped BEFORE it is parsed, so an anonymous request —
+	// including one that is already throttled — can never make the server
+	// buffer a multi-megabyte form.
+	if !parseAuthForm(w, r) {
 		return
 	}
 	// Double-submit CSRF check for the login form. A stale page (the
@@ -534,14 +536,24 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	username := r.PostFormValue("username")
 	password := r.PostFormValue("password")
+	acct := strings.ToLower(strings.TrimSpace(username))
+	ip := s.clientIP(r)
+
+	// Field cap: the 16 KiB body limit still allows a kilobyte-long
+	// username to reach the directory lookup, the password hash and the
+	// audit trail.
+	if len(username) > maxAuthUsernameBytes || len(password) > maxAuthPasswordBytes {
+		s.logger.Warn("web: oversized login submission", "remote", r.RemoteAddr, "ip", ip, "username", logValue(username))
+		s.loginLimiter.record("ip\x00"+ip, false)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
 
 	// Brute-force gates: independent budgets per account, per client IP
 	// and a fleet-wide budget over the costly password hashes. The IP is
 	// normalized WITHOUT the port (a new TCP connection must never buy a
 	// fresh counter) and proxy headers count only from configured
 	// trusted proxies.
-	acct := strings.ToLower(strings.TrimSpace(username))
-	ip := s.clientIP(r)
 	for _, gate := range []struct {
 		key, scope string
 	}{
@@ -551,7 +563,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	} {
 		if wait := s.loginLimiter.retryIn(gate.key); wait > 0 {
 			s.logger.Warn("web: login throttled",
-				"scope", gate.scope, "remote", r.RemoteAddr, "ip", ip, "username", username, "retry_in", wait)
+				"scope", gate.scope, "remote", r.RemoteAddr, "ip", ip, "username", logValue(username), "retry_in", wait)
 			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 			http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
 			return
@@ -585,7 +597,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.loginLimiter.record("ip\x00"+ip, false)
 		s.loginLimiter.recordGlobalFailure()
 		s.audit(username, "login-failed", r.RemoteAddr)
-		s.logger.Warn("web: failed login attempt", "remote", r.RemoteAddr)
+		s.logger.Warn("web: failed login attempt", "remote", r.RemoteAddr, "username", logValue(username))
 		w.WriteHeader(http.StatusUnauthorized)
 		s.renderLoginForm(w, r, i18n.T(s.langFor(r), "login.error"), cookie.Value, false)
 		return

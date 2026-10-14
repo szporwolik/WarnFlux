@@ -107,6 +107,11 @@ type Receiver struct {
 	// browseMu serializes the temporary browse subscriptions the web UI
 	// opens (one at a time per receiver).
 	browseMu sync.Mutex
+	// newBrowseClient builds the throwaway client of one browse session.
+	// A browse must NEVER use this receiver's own client: unsubscribing
+	// when it ends would tear a production subscription down (reported
+	// P1). nil = paho (tests substitute a fake).
+	newBrowseClient func(*mqtt.ClientOptions) mqttClient
 }
 
 // NewReceiver builds the receiver and its paho client without connecting.

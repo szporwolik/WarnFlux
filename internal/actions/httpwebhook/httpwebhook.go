@@ -183,6 +183,12 @@ func New(node *yaml.Node) (action.Plugin, error) {
 // Name returns the action type name.
 func (p *webhookAction) Name() string { return Type }
 
+// SharedDestination implements the optional capability: the payload goes to
+// ONE configured endpoint and is built from the event alone (no per-group
+// recipients), so two matching groups would POST the same body twice to the
+// same URL and trigger whatever the webhook drives twice (reported P2).
+func (p *webhookAction) SharedDestination() bool { return true }
+
 // Execute delivers one webhook POST. Non-2xx responses (redirects
 // included — see the redirect policy) and transport errors are returned
 // as errors; the action instance machinery owns retries.

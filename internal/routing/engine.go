@@ -615,6 +615,13 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		}
 	}
 
+	// Actions that post to ONE place shared by everyone (a Discord channel,
+	// a webhook) are delivered once per alert, with the recipients of every
+	// matching group: wiring the same channel action in two groups means one
+	// message per group on the SAME channel, which the channel cannot tell
+	// apart (reported P2).
+	jobs, metas = e.collapseSharedDestinations(key, jobs, metas)
+
 	// Single transaction: every delivery job (full payload, recipients,
 	// attempts, deadline) is persisted together with the inbox
 	// consumption. Durable delivery then proceeds in the action workers,
@@ -651,6 +658,11 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 		}
 		e.actionsFired.Add(1)
 		groupFired[m.groupID] = struct{}{}
+		for _, merged := range m.sharedWith {
+			// Their delivery rode along in this one, so they were matched
+			// (and covered) just the same.
+			groupFired[merged.groupID] = struct{}{}
+		}
 		e.trail.Add(key, trail.StepSubmitted,
 			fmt.Sprintf("%s job queued durably (group %s)", m.actionID, m.ruleName), time.Now())
 		e.trail.SetOutcome(key, trail.OutcomeSubmitted)
@@ -678,6 +690,136 @@ type jobMeta struct {
 	ruleName string
 	actionID string
 	req      action.ActionRequest
+	// sharedWith names the further groups whose delivery was merged into
+	// this one (shared-destination actions only): they were matched and
+	// their recipients ride along in this single message.
+	sharedWith []mergedGroup
+}
+
+// mergedGroup is one group whose delivery was folded into another group's
+// single message to a shared destination.
+type mergedGroup struct {
+	groupID  int64
+	ruleName string
+}
+
+// sharedDestination reports whether an action is delivered to one shared
+// place (see action.SharedDestination). Submitters that cannot tell report
+// false, which keeps the per-group behaviour.
+func (e *Engine) sharedDestination(actionID string) bool {
+	reporter, ok := e.actions.(action.SharedDestinationReporter)
+	return ok && reporter.SharedDestination(actionID)
+}
+
+// collapseSharedDestinations folds the deliveries of every shared-destination
+// action into ONE job per action: the first matching group owns the delivery
+// and every other matching group contributes its recipients to it, so one
+// alert produces one message on that channel instead of one per group. The
+// jobs of all other actions (and the ones whose submitter cannot report the
+// capability) are left exactly as collected.
+func (e *Engine) collapseSharedDestinations(key string, jobs []storage.DeliveryJob, metas []jobMeta) ([]storage.DeliveryJob, []jobMeta) {
+	if len(jobs) < 2 {
+		return jobs, metas
+	}
+	owner := make(map[string]int, len(jobs)) // actionID -> index in the kept lists
+	keptJobs := make([]storage.DeliveryJob, 0, len(jobs))
+	keptMetas := make([]jobMeta, 0, len(metas))
+	for i, job := range jobs {
+		if !e.sharedDestination(job.ActionID) {
+			keptJobs = append(keptJobs, job)
+			keptMetas = append(keptMetas, metas[i])
+			continue
+		}
+		at, ok := owner[job.ActionID]
+		if !ok {
+			owner[job.ActionID] = len(keptJobs)
+			keptJobs = append(keptJobs, job)
+			keptMetas = append(keptMetas, metas[i])
+			continue
+		}
+		// The second and every further group: its recipients are folded in
+		// and no extra message is sent.
+		mergeSharedRequest(&keptMetas[at].req, metas[i].req)
+		payload, err := json.Marshal(keptMetas[at].req)
+		if err != nil {
+			// Defensive (see the encode above): keep the unmerged payload
+			// rather than dropping a delivery the operator configured.
+			e.trail.Add(key, trail.StepFailed,
+				fmt.Sprintf("%s merge encode failed: %v", job.ActionID, err), time.Now())
+			e.logger.Warn("routing: merged action request encode failed",
+				"action", job.ActionID, "error", err)
+		} else {
+			keptJobs[at].Payload = payload
+		}
+		keptMetas[at].sharedWith = append(keptMetas[at].sharedWith,
+			mergedGroup{groupID: metas[i].groupID, ruleName: metas[i].ruleName})
+		e.notifCount(job.ActionID, "merged", 1)
+		e.trail.Add(key, trail.StepRoute,
+			fmt.Sprintf("merged into the single %s message (group %s shares the destination)",
+				job.ActionID, keptMetas[at].ruleName), time.Now())
+		e.logger.Info("routing: shared destination merged",
+			"group", metas[i].ruleName, "into_group", keptMetas[at].ruleName, "action", job.ActionID)
+	}
+	return keptJobs, keptMetas
+}
+
+// mergeSharedRequest folds the recipients of a merged group into the request
+// that owns the single delivery. Every recipient list is a UNION (order
+// preserved, first occurrence wins, compared case-insensitively), and the
+// parallel per-recipient language lists follow their recipients — the members
+// of the other group must stay as addressed as they would have been on their
+// own.
+func mergeSharedRequest(into *action.ActionRequest, extra action.ActionRequest) {
+	into.Bcc, into.BccLangs = unionRecipients(into.Bcc, into.BccLangs, extra.Bcc, extra.BccLangs)
+	into.APRSCallsigns = unionPlain(into.APRSCallsigns, extra.APRSCallsigns)
+	into.DiscordHandles = unionPlain(into.DiscordHandles, extra.DiscordHandles)
+	into.MeshNodeIDs, into.MeshNodeLangs = unionRecipients(into.MeshNodeIDs, into.MeshNodeLangs, extra.MeshNodeIDs, extra.MeshNodeLangs)
+	into.Phones, into.PhoneLangs = unionRecipients(into.Phones, into.PhoneLangs, extra.Phones, extra.PhoneLangs)
+}
+
+// unionPlain folds one recipient list into another, dropping empty entries
+// and duplicates (case-insensitive) while preserving the order.
+func unionPlain(list, extra []string) []string {
+	out, _ := unionRecipients(list, nil, extra, nil)
+	return out
+}
+
+// unionRecipients folds a recipient list (with its parallel language list)
+// into another. The language of the first occurrence wins; a recipient of the
+// extra list that has no language recorded there keeps an empty one, which
+// means "the system default".
+func unionRecipients(list, langs, extraList, extraLangs []string) ([]string, []string) {
+	out := make([]string, 0, len(list)+len(extraList))
+	outLangs := make([]string, 0, len(list)+len(extraList))
+	seen := make(map[string]bool, len(list)+len(extraList))
+	add := func(value string, at int, from []string) {
+		if value == "" {
+			return
+		}
+		key := strings.ToLower(value)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, value)
+		lang := ""
+		if at < len(from) {
+			lang = from[at]
+		}
+		outLangs = append(outLangs, lang)
+	}
+	for i, v := range list {
+		add(v, i, langs)
+	}
+	for i, v := range extraList {
+		add(v, i, extraLangs)
+	}
+	if len(out) == 0 {
+		// nil keeps the marshalled payload identical to a request that
+		// never had recipients.
+		return nil, nil
+	}
+	return out, outLangs
 }
 
 // deliverInMemory submits every collected request through the
@@ -698,6 +840,10 @@ func (e *Engine) deliverInMemory(key string, metas []jobMeta) {
 		}
 		e.actionsFired.Add(1)
 		groupFired[m.groupID] = struct{}{}
+		for _, merged := range m.sharedWith {
+			// Merged into this single delivery: matched and covered.
+			groupFired[merged.groupID] = struct{}{}
+		}
 		e.trail.Add(key, trail.StepSubmitted,
 			fmt.Sprintf("%s action started (group %s, ledger unavailable)", m.actionID, m.ruleName), time.Now())
 		e.trail.SetOutcome(key, trail.OutcomeSubmitted)

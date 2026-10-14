@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -157,9 +158,9 @@ func TestGSMMessageRetentionOnInsert(t *testing.T) {
 
 // seedGSMRow inserts one history row directly, the way the text-mode
 // ingest stores a message: one row per delivered message.
-func seedGSMRow(t *testing.T, store *Store, direction, from, to, text string, at time.Time) int64 {
+func seedGSMRow(t *testing.T, db *sql.DB, direction, from, to, text string, at time.Time) int64 {
 	t.Helper()
-	res, err := store.db.Exec(`
+	res, err := db.Exec(`
 		INSERT INTO gsm_messages (direction, from_number, to_number, text, created_at_ms)
 		VALUES (?, ?, ?, ?, ?)`, direction, from, to, text, at.UnixMilli())
 	if err != nil {
@@ -173,9 +174,9 @@ func seedGSMRow(t *testing.T, store *Store, direction, from, to, text string, at
 }
 
 // gsmRowTexts returns the history as id -> text, oldest first.
-func gsmRowTexts(t *testing.T, store *Store) map[int64]string {
+func gsmRowTexts(t *testing.T, db *sql.DB) map[int64]string {
 	t.Helper()
-	rows, err := store.db.Query(`SELECT id, text FROM gsm_messages ORDER BY id`)
+	rows, err := db.Query(`SELECT id, text FROM gsm_messages ORDER BY id`)
 	if err != nil {
 		t.Fatalf("read gsm rows: %v", err)
 	}
@@ -201,37 +202,42 @@ func gsmRowTexts(t *testing.T, store *Store) map[int64]string {
 // like that. Nothing about the history is touched on upgrade now.
 func TestGSMHistorySurvivesSchemaUpgrade(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	store, _, err := Open(path)
+	// Build a GENUINE v57 database (the schema as it was), not a current
+	// one with a rewound version counter: a step that changes the schema
+	// (v60 adds a column) cannot re-run against a schema that has it.
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("open raw: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := migrate(db, migrations[:57]); err != nil {
+		db.Close()
+		t.Fatalf("migrate to v57: %v", err)
 	}
 	base := time.Date(2026, 10, 8, 19, 7, 0, 0, time.UTC)
 	full := strings.Repeat("a", 67)
 
 	// Two independent short messages and two exactly-full-segment
 	// messages, all from one sender inside the same minute.
-	seedGSMRow(t, store, "rx", "80766589", "self", "Test", base)
-	seedGSMRow(t, store, "rx", "80766589", "self", "Yyy?", base.Add(time.Second))
-	seedGSMRow(t, store, "rx", "80766589", "self", full, base.Add(2*time.Second))
-	seedGSMRow(t, store, "rx", "80766589", "self", "tail", base.Add(3*time.Second))
-	seedGSMRow(t, store, "rx", "step", "self", full, base.Add(time.Second))
+	seedGSMRow(t, db, "rx", "80766589", "self", "Test", base)
+	seedGSMRow(t, db, "rx", "80766589", "self", "Yyy?", base.Add(time.Second))
+	seedGSMRow(t, db, "rx", "80766589", "self", full, base.Add(2*time.Second))
+	seedGSMRow(t, db, "rx", "80766589", "self", "tail", base.Add(3*time.Second))
+	seedGSMRow(t, db, "rx", "step", "self", full, base.Add(time.Second))
 	// A sent copy, which no rule ever merged.
-	seedGSMRow(t, store, "tx", "self", "+48509558155", full, base)
+	seedGSMRow(t, db, "tx", "self", "+48509558155", full, base)
 	// A split message as the modem actually delivers it: the parts carry
 	// no header at all, so they stay separate rows.
-	seedGSMRow(t, store, "rx", "8010897121", "self", full, base.Add(time.Minute))
-	seedGSMRow(t, store, "rx", "8010897121", "self", "end", base.Add(time.Minute+time.Second))
+	seedGSMRow(t, db, "rx", "8010897121", "self", full, base.Add(time.Minute))
+	seedGSMRow(t, db, "rx", "8010897121", "self", "end", base.Add(time.Minute+time.Second))
 
-	before := gsmRowTexts(t, store)
+	before := gsmRowTexts(t, db)
 	if len(before) != 8 {
 		t.Fatalf("seeded %d rows, want 8", len(before))
 	}
-	// Rewind the schema version and reopen: this is the upgrade path an
-	// existing database takes.
-	if _, err := store.db.Exec(`PRAGMA user_version = 57`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
+	// Reopen without the version counter being touched: this is the
+	// upgrade path an existing database takes.
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,7 +249,7 @@ func TestGSMHistorySurvivesSchemaUpgrade(t *testing.T) {
 	if info.From != 57 || info.To < 58 {
 		t.Fatalf("migration %d -> %d, want the upgrade to run from 57", info.From, info.To)
 	}
-	after := gsmRowTexts(t, upgraded)
+	after := gsmRowTexts(t, upgraded.db)
 	if len(after) != len(before) {
 		t.Fatalf("history has %d rows after the upgrade, want %d (rows were joined)", len(after), len(before))
 	}

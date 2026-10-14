@@ -102,6 +102,62 @@ func scalarNodeOf(m *yaml.Node, key string) (string, bool) {
 	return v.Value, true
 }
 
+// StringListAt reads a list of scalars by dotted path
+// ("sources[2].config.locations"). It is the read-only probe behind the
+// list-valued settings the Config page edits; a missing key, a scalar
+// where a list is expected and an unreadable file all report false.
+func StringListAt(path, dotted string) ([]string, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil || len(doc.Content) == 0 {
+		return nil, false
+	}
+	node := doc.Content[0]
+	segs := strings.Split(dotted, ".")
+	for i, seg := range segs {
+		if node.Kind != yaml.MappingNode {
+			return nil, false
+		}
+		name, item, indexed := splitIndex(seg)
+		if i == len(segs)-1 {
+			if indexed {
+				return nil, false
+			}
+			idx := mappingKeyIndex(node, name)
+			if idx < 0 {
+				return nil, false
+			}
+			seq := node.Content[idx+1]
+			if seq.Kind != yaml.SequenceNode {
+				return nil, false
+			}
+			out := make([]string, 0, len(seq.Content))
+			for _, item := range seq.Content {
+				if item.Kind != yaml.ScalarNode {
+					return nil, false
+				}
+				out = append(out, item.Value)
+			}
+			return out, true
+		}
+		idx := mappingKeyIndex(node, name)
+		if idx < 0 {
+			return nil, false
+		}
+		node = node.Content[idx+1]
+		if indexed {
+			if node.Kind != yaml.SequenceNode || item < 0 || item >= len(node.Content) {
+				return nil, false
+			}
+			node = node.Content[item]
+		}
+	}
+	return nil, false
+}
+
 // ScalarAt reads one scalar value by dotted path, list entries included
 // ("aprs.radius_km", "actions[1].config.hazards_interval"). It is the
 // read-only probe the Config page uses to show what the file holds.

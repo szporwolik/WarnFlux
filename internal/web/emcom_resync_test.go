@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
 )
+
+// emcomKey is the event key of the network the resync tests add.
+const emcomKey = "emcom:sp9moa-emcom"
 
 // emcomResyncEnv builds a test station with the REAL store, a network at
 // the given level and the alarm document already published.
@@ -35,26 +37,23 @@ func emcomResyncEnv(t *testing.T, level int) (*testEnv, string) {
 		if resp.StatusCode != 303 {
 			t.Fatalf("POST level %d = %d, want 303", level, resp.StatusCode)
 		}
-		if len(env.pub.publishedSnapshot()) == 0 {
-			t.Fatalf("level %d published no alarm document", level)
-		}
+		// The level change publishes asynchronously (the alarm document
+		// and the retained state document): wait for BOTH before handing
+		// the station to the test, so nothing from the setup is still in
+		// flight while the test drives the resync (reported P2: six flaky
+		// tests that asserted the outcome right after the redirect).
+		env.pub.awaitActiveDoc(t, "emcom", emcomKey)
+		env.pub.awaitRawFor(t, "sp9moa-emcom")
 	}
 	return env, csrf
 }
 
 // waitForEmcomRetireAttempt waits until one removal of eventKey was
-// attempted (and, with a failed broker, refused).
+// attempted (and, with a failed broker, refused). The removal runs in a
+// goroutine, so the wait is on the publisher's own state change.
 func waitForEmcomRetireAttempt(t *testing.T, env *testEnv, eventKey string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		ok, failed := env.pub.expireAttempts(eventKey)
-		if ok+failed > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("no removal of %s was attempted", eventKey)
+	env.pub.awaitExpireAttempt(t, eventKey)
 }
 
 // TestEmcomStandDownWhileBrokerIsDownIsRepairedOnResync pins the reported
@@ -64,7 +63,7 @@ func waitForEmcomRetireAttempt(t *testing.T, env *testEnv, eventKey string) {
 // reconnect) must remove the document it can no longer justify.
 func TestEmcomStandDownWhileBrokerIsDownIsRepairedOnResync(t *testing.T) {
 	env, csrf := emcomResyncEnv(t, 2)
-	const eventKey = "emcom:sp9moa-emcom"
+	const eventKey = emcomKey
 
 	// The broker goes down and the operator stands the network down: the
 	// local record says monitoring, the broker still holds the alarm.
@@ -86,10 +85,12 @@ func TestEmcomStandDownWhileBrokerIsDownIsRepairedOnResync(t *testing.T) {
 		t.Fatal("the resync left the alarm document published after the stand-down")
 	}
 	// The state document carries the monitoring level: the broker's copy
-	// agrees with the station again.
-	if doc, ok := env.pub.infoDoc("info/emcom/emcom/sp9moa-emcom/emcom"); !ok || !strings.Contains(doc, `"level":0`) {
-		t.Fatalf("state document on the broker = %q, %v; want level 0", doc, ok)
+	// agrees with the station again. The publish is asynchronous, so wait
+	// for the document that carries the level.
+	if doc := env.pub.awaitInfoDoc(t, "info/emcom/emcom/sp9moa-emcom/emcom", `"level":0`); doc == "" {
+		t.Fatal("the resync published no state document with level 0")
 	}
+	env.pub.awaitRawFor(t, "sp9moa-emcom")
 	raw := env.pub.rawSnapshotFor("sp9moa-emcom")
 	if len(raw) == 0 {
 		t.Fatal("the resync published no state document")
@@ -107,7 +108,7 @@ func TestEmcomStandDownWhileBrokerIsDownIsRepairedOnResync(t *testing.T) {
 // tombstone removed the state document but left the alarm behind.
 func TestEmcomDeletedNetworkAlarmIsRemovedOnResync(t *testing.T) {
 	env, csrf := emcomResyncEnv(t, 2)
-	const eventKey = "emcom:sp9moa-emcom"
+	const eventKey = emcomKey
 
 	env.pub.setFail(true)
 	resp, _ := env.postForm("/config/emcom/sp9moa-emcom/delete", url.Values{"csrf": {csrf}})
@@ -136,7 +137,7 @@ func TestEmcomDeletedNetworkAlarmIsRemovedOnResync(t *testing.T) {
 // following resync, and is dropped only once it lands.
 func TestEmcomFailedRetireIsRetriedOnTheNextResync(t *testing.T) {
 	env, csrf := emcomResyncEnv(t, 1)
-	const eventKey = "emcom:sp9moa-emcom"
+	const eventKey = emcomKey
 
 	env.pub.setFail(true)
 	resp, _ := env.postForm("/emcom/sp9moa-emcom/level", url.Values{"csrf": {csrf}, "level": {"0"}})
@@ -185,7 +186,7 @@ func TestEmcomFailedRetireIsRetriedOnTheNextResync(t *testing.T) {
 // take down a live alarm.
 func TestEmcomResyncKeepsRaisedNetworksActive(t *testing.T) {
 	env, _ := emcomResyncEnv(t, 2)
-	const eventKey = "emcom:sp9moa-emcom"
+	const eventKey = emcomKey
 
 	env.pub.setFail(true)
 	env.server.SyncBrokerState() // outage: nothing lands
@@ -215,7 +216,7 @@ func TestEmcomResyncKeepsRaisedNetworksActive(t *testing.T) {
 // forgotten instead of replayed.
 func TestEmcomResyncKeepsARaisedAlarmWhenItsStatePublishFails(t *testing.T) {
 	env, csrf := emcomResyncEnv(t, 2)
-	const eventKey = "emcom:sp9moa-emcom"
+	const eventKey = emcomKey
 
 	// The broker is down: the stand-down cannot remove the alarm, so the
 	// removal stays pending.

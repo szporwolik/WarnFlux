@@ -251,3 +251,22 @@ func TestRedirectIsADeliveryFailure(t *testing.T) {
 		t.Fatalf("the redirect target was asked to carry the alert: %v", targetHits)
 	}
 }
+
+// TestSharedDestination pins the capability the routing engine keys on: the
+// payload goes to ONE endpoint, so two groups following the same sources must
+// trigger it once instead of twice (reported P2).
+func TestSharedDestination(t *testing.T) {
+	var p action.Plugin
+	built, err := New(node(t, map[string]any{"url": "https://example.org/hook"}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p = built
+	shared, ok := p.(action.SharedDestination)
+	if !ok {
+		t.Fatal("the webhook action does not report a shared destination")
+	}
+	if !shared.SharedDestination() {
+		t.Error("SharedDestination() = false, want true (one endpoint, one body)")
+	}
+}

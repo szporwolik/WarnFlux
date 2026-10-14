@@ -112,6 +112,7 @@
       <form class="wf-csrf-only" hidden><input type="hidden" name="csrf" value="{{.CSRF}}"></form>
       {{end}}      </div>
       <p class="muted log-hint">{{tr .Lang "meshtastic.hint"}}</p>
+      <p class="muted log-hint">{{tr .Lang "meshtastic.dm_key_hint"}}</p>
       <div class="page-tabs">
         <a class="page-tab{{if not (or (eq .Dir "ch0") (and .EmcomDir (eq .Dir .EmcomDir)))}} active{{end}}" href="/meshtastic?tab=msgs">DM</a>
         <a class="page-tab{{if eq .Dir "ch0"}} active{{end}}" href="/meshtastic?tab=msgs&dir=ch0">ch0</a>
@@ -785,7 +786,7 @@
     <tbody>
       {{range .Nodes}}
       <tr class="click-send" data-key="{{.ID}}" title="{{tr $.Lang "meshtastic.click_to_send"}}">
-        <td>{{if .Pinned}}<span class="pin-star" title="{{tr $.Lang "meshtastic.node_pinned"}}">★</span> {{end}}<strong>{{if .Name}}{{.Name}}{{else}}—{{end}}{{if .Short}} <span class="muted short-name">({{.Short}})</span>{{end}}{{if and .Name .Owner}} <span class="muted op-name">({{.Owner}})</span>{{end}}</strong></td>
+        <td>{{if .Pinned}}<span class="pin-star" title="{{tr $.Lang "meshtastic.node_pinned"}}">★</span> {{end}}{{if .KeyKnown}}<span class="key-known" title="{{tr $.Lang "meshtastic.node_key_known"}}">🔑</span> {{else}}<span class="key-missing" title="{{tr $.Lang "meshtastic.node_key_missing"}}">⚠</span> {{end}}<strong>{{if .Name}}{{.Name}}{{else}}—{{end}}{{if .Short}} <span class="muted short-name">({{.Short}})</span>{{end}}{{if and .Name .Owner}} <span class="muted op-name">({{.Owner}})</span>{{end}}</strong></td>
         <td class="muted nowrap">
           <button type="button" class="key-copy" data-key="{{.ID}}" title="{{tr $.Lang "meshtastic.copy_id"}}">
             <span class="key-short">!{{.ID}}</span>

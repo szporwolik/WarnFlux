@@ -80,6 +80,13 @@ announced (fresh node, a factory reset or a reflash that changed its key)
 stays undeliverable by DM until it does, and the message stays failed with the
 refusal reason attached.
 
+**The panel shows the key state.** In the heard-nodes table every row carries
+a mark next to the name: 🔑 when the station has seen that node announce a
+public key (the radio can encrypt a DM to it) and ⚠ when it has not — that
+node's direct messages will be refused until its firmware announces one. The
+state comes from the radio's own node table at the handshake and from every
+NodeInfo heard afterwards, so it follows the mesh without a refresh step.
+
 Two more reasons come from the STATION, not the device, and name a failure the
 radio itself never reported: `no_response` — the device transmitted the frame
 and the recipient never acknowledged it (the acknowledgment window,

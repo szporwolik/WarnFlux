@@ -65,7 +65,11 @@ type meshtasticNodeView struct {
 	Owner string
 	// Pinned marks a node the station keeps as a FAVORITE on the radio, so
 	// the firmware never evicts its public key (see the plugin README).
-	Pinned     bool
+	Pinned bool
+	// KeyKnown marks a node whose NodeInfo announced a PUBLIC KEY: without
+	// one the radio refuses a direct message to it (reason
+	// pki_unknown_key), so the table warns before an operator tries.
+	KeyKnown   bool
 	Lat        float64
 	Lon        float64
 	DistKM     float64
@@ -490,6 +494,12 @@ func (s *Server) fillMeshtasticNodes(r *http.Request, v *meshtasticView) {
 	for _, id := range s.meshtastic.PinnedNodes() {
 		pinned[id] = true
 	}
+	// The nodes whose public key the station has seen: the state a direct
+	// message depends on, marked in the table.
+	keyed := make(map[string]bool)
+	for _, id := range s.meshtastic.PeerKeyNodes() {
+		keyed[id] = true
+	}
 	v.Nodes = make([]meshtasticNodeView, 0, len(v.Snap.Nodes))
 	// Newest first: the directory reads like a live feed.
 	ordered := append([]mesh.Node(nil), v.Snap.Nodes...)
@@ -514,6 +524,7 @@ func (s *Server) fillMeshtasticNodes(r *http.Request, v *meshtasticView) {
 			Short: n.Short,
 			Sends: n.Sends, Hops: n.Hops, Owner: owner,
 			Pinned:       pinned[meshtasticNormalizeID(n.ID)],
+			KeyKnown:     keyed[meshtasticNormalizeID(n.ID)],
 			Lat:          n.Lat,
 			Lon:          n.Lon,
 			DistKM:       n.DistKM,

@@ -1000,6 +1000,14 @@ type Hub struct {
 	// re-asserts an owned node unless THIS map confirms it.
 	radioFavorites map[uint32]bool
 
+	// peerKeys records which nodes announced a PUBLIC KEY — the one thing a
+	// radio needs to encrypt a direct message to them (it refuses the frame
+	// without it, see needsNodeInfoRefresh). It is the LATEST evidence: the
+	// device's own node table at the handshake, then every NodeInfo heard.
+	// It never claims more than that — a node whose key changed has to
+	// announce again — and it is memory-only (radio state, not directory).
+	peerKeys map[uint32]bool
+
 	// routeWaiters buffers TRACEROUTE route replies while probes wait,
 	// keyed by the replying node (the destination answers with the full
 	// route; intermediate nodes may answer when it is out of reach).
@@ -2000,12 +2008,23 @@ func (h *Hub) populateFromState(st *client.DeviceState) {
 	// The device states its own favorites here: the pass uses this (and not
 	// its ledger) as the proof that a star is actually set on the radio.
 	stars := make(map[uint32]bool)
+	// The peer key is what a direct message needs (the device refuses the
+	// frame without it), so the same handshake says which nodes the radio
+	// can encrypt to at all — the panel tells an operator BEFORE they type.
+	keys := make(map[uint32]bool, len(st.Nodes()))
 	for _, ni := range st.Nodes() {
-		if ni != nil && ni.GetIsFavorite() && ni.GetNum() != 0 {
+		if ni == nil || ni.GetNum() == 0 {
+			continue
+		}
+		if ni.GetIsFavorite() {
 			stars[ni.GetNum()] = true
+		}
+		if len(ni.GetUser().GetPublicKey()) > 0 {
+			keys[ni.GetNum()] = true
 		}
 	}
 	h.radioFavorites = stars
+	h.peerKeys = keys
 	for _, ni := range st.Nodes() {
 		if ni == nil {
 			continue
@@ -2393,6 +2412,25 @@ func (h *Hub) PinnedNodes() []string {
 	for _, id := range ids {
 		out = append(out, meshIDString(id))
 	}
+	sort.Strings(out)
+	return out
+}
+
+// PeerKeyNodes returns the node ids whose NodeInfo announced a PUBLIC KEY —
+// exactly the key a radio needs to encrypt a direct message to that node.
+// The list is the latest evidence the station has (the device's node table at
+// the handshake, then every announcement heard); a node missing from it has
+// either never announced or announced without a key, and a direct message to
+// it will be refused until its firmware changes that.
+func (h *Hub) PeerKeyNodes() []string {
+	h.mu.Lock()
+	out := make([]string, 0, len(h.peerKeys))
+	for id, ok := range h.peerKeys {
+		if ok {
+			out = append(out, meshIDString(id))
+		}
+	}
+	h.mu.Unlock()
 	sort.Strings(out)
 	return out
 }
@@ -3933,6 +3971,18 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 		h.mu.Unlock()
 		return
 	}
+	// Remember whether this announcement carried a public key: it is what
+	// decides whether the radio can encrypt a direct message to that node,
+	// and the panel shows it next to the name.
+	asked := h.askedForNodeInfoLocked(pkt.GetFrom())
+	if h.peerKeys == nil {
+		h.peerKeys = make(map[uint32]bool)
+	}
+	if len(user.GetPublicKey()) > 0 {
+		h.peerKeys[pkt.GetFrom()] = true
+	} else {
+		delete(h.peerKeys, pkt.GetFrom())
+	}
 	n := h.nodes[id]
 	if n == nil {
 		n = &Node{ID: id}
@@ -3955,8 +4005,26 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// is the answer that refusal was waiting for.
 	if len(user.GetPublicKey()) > 0 {
 		h.retryAfterKey(h.takeKeyRetry(pkt.GetFrom()))
+	} else if asked && h.logger != nil {
+		// The station asked THIS peer for its NodeInfo and the answer
+		// carried no key: a direct message to it stays impossible until
+		// its firmware starts announcing one, so do not send the operator
+		// hunting for a route problem.
+		h.logger.Warn("meshtastic: the peer answered its NodeInfo without a public key, direct messages stay impossible",
+			"node", id)
 	}
 	h.publishStation(&copyN)
+}
+
+// askedForNodeInfoLocked reports whether the station asked this peer for its
+// NodeInfo recently (a refresh only lands once per nodeInfoRefreshGap, so a
+// timestamp inside that gap marks the answer to OUR request).
+func (h *Hub) askedForNodeInfoLocked(to uint32) bool {
+	asked, ok := h.nodeInfoAsked[to]
+	if !ok {
+		return false
+	}
+	return h.clock().Sub(asked) <= nodeInfoRefreshGap
 }
 
 // receivePosition updates a node's position (and our own).

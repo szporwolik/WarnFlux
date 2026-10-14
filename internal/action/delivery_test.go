@@ -189,6 +189,16 @@ func (m *memDeliveryStore) statusOf(groupID int64, actionID, dedupKey string) st
 	return -1
 }
 
+// attemptsOf reports how often one job was CLAIMED (0 = still waiting).
+func (m *memDeliveryStore) attemptsOf(groupID int64, actionID, dedupKey string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j, ok := m.jobs[m.key(groupID, actionID, dedupKey)]; ok {
+		return j.job.Attempts
+	}
+	return -1
+}
+
 // plantRunningExpired leaves a job claimed by a "dead process": its
 // claim lease has expired.
 func (m *memDeliveryStore) plantRunningExpired(actionID string, payload []byte) {
@@ -235,6 +245,25 @@ func (p *deliveryPlugin) ExecuteStage(ctx context.Context, req ActionRequest) (D
 }
 
 func (p *deliveryPlugin) Close(ctx context.Context) error { return nil }
+
+// hangingPlugin ignores context cancellation — the hung callback the worker
+// abandons — and counts how often it was entered, so a test can prove the
+// disabled instance never re-invokes it. release ends the abandoned call (the
+// test closes it) so the goroutine does not outlive the test.
+type hangingPlugin struct {
+	handled atomic.Int64
+	release chan struct{}
+}
+
+func (p *hangingPlugin) Name() string { return "hang" }
+
+func (p *hangingPlugin) Execute(ctx context.Context, req ActionRequest) error {
+	p.handled.Add(1)
+	<-p.release
+	return ctx.Err()
+}
+
+func (p *hangingPlugin) Close(ctx context.Context) error { return nil }
 
 // narrowError is what a plugin that delivers to part of its recipients
 // and then fails returns (action.PartialDelivery).
@@ -637,6 +666,81 @@ func TestManagerStaleClaimRecovery(t *testing.T) {
 	waitForDelivery(t, func() bool {
 		return p.handled.Load() == 1 && ms.statusOf(1, "log", "c:1") == storage.DeliveryAccepted
 	}, "stale claim recovered and executed")
+}
+
+// TestDisabledInstanceStopsClaimingDurableJobs pins the reported P1: after a
+// hung plugin disabled its instance, the worker kept claiming jobs from the
+// durable queue and invoking the plugin again — a second abandoned goroutine
+// and a second user of the same transport, one more with every job. Claiming
+// stops with the instance, and the untouched jobs wait for the next start.
+func TestDisabledInstanceStopsClaimingDurableJobs(t *testing.T) {
+	oldPoll := DeliveryPollInterval
+	DeliveryPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { DeliveryPollInterval = oldPoll })
+
+	hung := &hangingPlugin{release: make(chan struct{})}
+	reg := NewRegistry()
+	if err := reg.Register("hang", func(*yaml.Node) (Plugin, error) { return hung, nil }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager([]config.Action{{
+		ID: "log", Type: "hang", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: 20 * time.Millisecond, ShutdownTimeout: time.Second},
+	}}, reg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ms := newMemDeliveryStore()
+	m.SetDeliveryStore(ms)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	t.Cleanup(func() {
+		close(hung.release)
+		cancel()
+		_ = m.Shutdown(context.Background())
+	})
+
+	// Three jobs for one action: the first hangs in the plugin, the other
+	// two must stay untouched once the instance is disabled.
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	for i := 1; i <= 3; i++ {
+		payload, err := json.Marshal(ActionRequest{ID: fmt.Sprintf("imgw:1/log-%d", i), Event: ev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ms.EnqueueDelivery(ctx, storage.DeliveryJob{
+			GroupID: 1, ActionID: "log", DedupKey: fmt.Sprintf("c:%d", i),
+			EventKey: "imgw:1", Payload: payload, FiredAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("EnqueueDelivery: %v", err)
+		}
+	}
+
+	// The first call times out and the ignored cancellation disables the
+	// instance.
+	waitForDelivery(t, func() bool { return m.Statuses()[0].State == StateDisabled },
+		"the hung plugin to disable its instance")
+
+	// Every further poll must leave the queue alone: the plugin may not be
+	// invoked a second time (that is the extra hanging goroutine and the
+	// second user of the same transport).
+	time.Sleep(200 * time.Millisecond)
+	if got := hung.handled.Load(); got != 1 {
+		t.Fatalf("the disabled instance invoked the plugin %d times, want exactly 1", got)
+	}
+	// Nothing is lost — and nothing was even claimed: the jobs stay in the
+	// queue, waiting for the next start, instead of being dragged through a
+	// disabled instance job by job.
+	if got := ms.attemptsOf(1, "log", "c:2"); got != 0 {
+		t.Fatalf("queued job c:2 was claimed %d times, want it left untouched for recovery", got)
+	}
+	if got := ms.attemptsOf(1, "log", "c:3"); got != 0 {
+		t.Fatalf("queued job c:3 was claimed %d times, want it left untouched for recovery", got)
+	}
+	if got := ms.statusOf(1, "log", "c:2"); got != storage.DeliverySaved {
+		t.Fatalf("queued job c:2 = %v, want it left untouched for recovery", got)
+	}
 }
 
 // TestHoldOfflineKeepsDequeuedRequest pins the hold path of the worker:

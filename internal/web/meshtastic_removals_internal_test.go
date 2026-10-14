@@ -78,7 +78,7 @@ func TestMeshtasticRemovalBadges(t *testing.T) {
 
 	// The metric is not tied to the radio link: it shows while disconnected too.
 	html = render(meshtasticView{Lang: "en", Snap: mesh.Snapshot{PendingRemovals: 1}})
-	if !strings.Contains(html, i18n.T("en", "meshtastic.disconnected")) || !strings.Contains(html, label+" 1") {
+	if !strings.Contains(html, i18n.T("en", "meshtastic.device_down")) || !strings.Contains(html, label+" 1") {
 		t.Errorf("the metric is missing on a disconnected station: %.400s", html)
 	}
 }

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -189,10 +190,19 @@ func statusFromDB(s string) storage.DeliveryStatus {
 // EnqueueDelivery persists one durable delivery job with its full
 // payload. A fresh row reports (DeliverySaved, true). An existing row
 // reports (status, false) — the transition was deduplicated — EXCEPT a
-// terminally failed job, which is re-armed with the fresh payload and a
-// clean budget and reports (DeliverySaved, true), so an alert that
-// burned all its execution attempts is retried on replay instead of
-// being suppressed as already delivered.
+// terminally failed job, which is re-armed with a clean budget and
+// reports (DeliverySaved, true), so an alert that burned all its
+// execution attempts is retried on replay instead of being suppressed
+// as already delivered.
+//
+// A job WAITING for its scheduled retry (a failed row with a deadline in
+// the future) is deduplicated like any other: re-arming it would replace
+// the narrowed payload that records what earlier attempts already
+// delivered, zero the attempt count and drop the deadline — the retry
+// would start over and deliver to recipients that already got the alert
+// (reported P2). Only a failure with NO pending deadline is terminal
+// enough to re-arm, and even then the progress of the stored payload is
+// carried over.
 func (s *Store) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -227,26 +237,110 @@ func (s *Store) enqueueDeliveryTx(ctx context.Context, tx *sql.Tx, job storage.D
 		return storage.DeliverySaved, true, nil
 	}
 
-	var dbStatus string
+	var dbStatus, storedPayload string
+	var nextAttempt int64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT status FROM action_fires
+		SELECT status, next_attempt_at_ms, payload FROM action_fires
 		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-		job.GroupID, job.ActionID, job.DedupKey).Scan(&dbStatus); err != nil {
+		job.GroupID, job.ActionID, job.DedupKey).Scan(&dbStatus, &nextAttempt, &storedPayload); err != nil {
 		return 0, false, fmt.Errorf("read delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
-	if dbStatus != "failed" {
+	// A job with a scheduled retry is still owned by that retry: the
+	// duplicate is deduplicated, and the payload (the work left), the
+	// attempt count and the deadline all stay as they are.
+	if dbStatus != "failed" || nextAttempt > 0 {
 		return statusFromDB(dbStatus), false, nil
 	}
 
-	// Terminal failure: re-arm the job with the fresh payload and budget.
+	// Terminal failure: re-arm the job with a clean budget. The progress of
+	// the stored payload — the recipients an earlier attempt already served
+	// — rides along, so the replayed job never sends to them twice.
+	payload := job.Payload
+	if merged, ok := carryDeliveryProgress([]byte(storedPayload), job.Payload); ok {
+		payload = merged
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE action_fires
 		SET payload = ?, status = 'saved', attempts = 0, next_attempt_at_ms = 0
 		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-		string(job.Payload), job.GroupID, job.ActionID, job.DedupKey); err != nil {
+		string(payload), job.GroupID, job.ActionID, job.DedupKey); err != nil {
 		return 0, false, fmt.Errorf("re-arm delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
 	return storage.DeliverySaved, true, nil
+}
+
+// deliveryProgressFields are the payload keys that record what earlier
+// attempts of one job already delivered (see action.ActionRequest): an action
+// that fans out per recipient skips them, so they must outlive a re-arm.
+var deliveryProgressFields = []string{"done_recipients", "unconfirmed_recipients"}
+
+// carryDeliveryProgress merges the progress lists of the STORED payload into
+// the fresh one and reports the payload to store. It reports false when there
+// is nothing to carry (or when either payload is not a JSON object), in which
+// case the fresh payload is stored unchanged.
+func carryDeliveryProgress(stored, fresh []byte) ([]byte, bool) {
+	if len(stored) == 0 || len(fresh) == 0 {
+		return nil, false
+	}
+	var from, into map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &from); err != nil {
+		return nil, false
+	}
+	if err := json.Unmarshal(fresh, &into); err != nil {
+		return nil, false
+	}
+	carried := false
+	for _, field := range deliveryProgressFields {
+		var served, pending []string
+		if raw, ok := from[field]; ok {
+			if err := json.Unmarshal(raw, &served); err != nil {
+				continue
+			}
+		}
+		if raw, ok := into[field]; ok {
+			if err := json.Unmarshal(raw, &pending); err != nil {
+				continue
+			}
+		}
+		merged := mergeDeliveryRecipients(pending, served)
+		if len(merged) == len(pending) {
+			continue
+		}
+		raw, err := json.Marshal(merged)
+		if err != nil {
+			continue
+		}
+		into[field] = raw
+		carried = true
+	}
+	if !carried {
+		return nil, false
+	}
+	out, err := json.Marshal(into)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// mergeDeliveryRecipients appends the addresses that are not listed yet,
+// comparing them case-insensitively — the same rule the action layer applies
+// to a narrowed retry (an address must never be served twice).
+func mergeDeliveryRecipients(pending, served []string) []string {
+	out := append([]string(nil), pending...)
+	seen := make(map[string]bool, len(pending)+len(served))
+	for _, addr := range pending {
+		seen[strings.ToLower(strings.TrimSpace(addr))] = true
+	}
+	for _, addr := range served {
+		key := strings.ToLower(strings.TrimSpace(addr))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, addr)
+	}
+	return out
 }
 
 // CommitInboxDelivery persists every delivery job of one evaluation and,
@@ -302,10 +396,21 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 		}
 		var gid int64
 		var aid, dkey string
+		// ONE budget policy, everywhere: the budget the job was claimed
+		// with is the one that governs it (max_attempts on the row; a row
+		// claimed before the column existed falls back to the action's
+		// current budget). Comparing the attempt counter against the
+		// CONFIGURATION here while SettleSpentRetries used the row let a
+		// lowered limit hide a job from the worker without ever ending it:
+		// neither executed nor pruned, forever (reported P2). maxAttempts
+		// still REFRESHES the row on every claim, so a configuration change
+		// applies from that claim on.
 		err = tx.QueryRowContext(ctx, `
 			SELECT group_id, action_id, dedup_key FROM action_fires
 			WHERE action_id = ? AND status IN ('saved','failed')
-			  AND next_attempt_at_ms <= ? AND (attempts < ? OR status = 'saved')
+			  AND next_attempt_at_ms <= ?
+			  AND (attempts < CASE WHEN max_attempts > 0 THEN max_attempts ELSE ? END
+			       OR status = 'saved')
 			ORDER BY next_attempt_at_ms ASC, fired_at_ms ASC
 			LIMIT 1`, actionID, now.UnixMilli(), maxAttempts).Scan(&gid, &aid, &dkey)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -318,9 +423,10 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 		}
 		res, err := tx.ExecContext(ctx, `
 			UPDATE action_fires
-			SET status = 'running', attempts = attempts + 1, next_attempt_at_ms = ?
+			SET status = 'running', attempts = attempts + 1, next_attempt_at_ms = ?,
+				max_attempts = ?
 			WHERE group_id = ? AND action_id = ? AND dedup_key = ? AND status IN ('saved','failed')`,
-			deadline, gid, aid, dkey)
+			deadline, maxAttempts, gid, aid, dkey)
 		if err != nil {
 			tx.Rollback()
 			return storage.DeliveryJob{}, false, fmt.Errorf("claim delivery job for action %q: %w", actionID, err)
@@ -336,9 +442,9 @@ func (s *Store) ClaimNextDelivery(ctx context.Context, actionID string, maxAttem
 		var payload string
 		var firedAt int64
 		err = tx.QueryRowContext(ctx, `
-			SELECT group_id, action_id, event_key, dedup_key, payload, attempts, fired_at_ms
+			SELECT group_id, action_id, event_key, dedup_key, payload, attempts, fired_at_ms, max_attempts
 			FROM action_fires WHERE group_id = ? AND action_id = ? AND dedup_key = ?`, gid, aid, dkey).
-			Scan(&job.GroupID, &job.ActionID, &job.EventKey, &job.DedupKey, &payload, &job.Attempts, &firedAt)
+			Scan(&job.GroupID, &job.ActionID, &job.EventKey, &job.DedupKey, &payload, &job.Attempts, &firedAt, &job.MaxAttempts)
 		if err != nil {
 			tx.Rollback()
 			return storage.DeliveryJob{}, false, fmt.Errorf("read claimed delivery job for action %q: %w", actionID, err)
@@ -443,10 +549,12 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 	if stage == storage.DeliveryFailed && !d.NextAttempt.IsZero() {
 		next = d.NextAttempt.UnixMilli()
 	}
-	// A retryable failure may carry the narrowed payload: the work that is
-	// still pending replaces the whole batch, in the same statement as the
-	// retry deadline (see storage.DeliverySettle.Payload).
-	if len(d.Payload) > 0 && next != 0 {
+	// A failure may carry the narrowed payload: the work that is still
+	// pending replaces the whole batch. A TERMINAL failure stores it too —
+	// the progress of the last attempt is what a replay re-arms from, and
+	// losing it made the replayed job serve the already-served recipients
+	// again (reported P2).
+	if len(d.Payload) > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE action_fires SET status = ?, next_attempt_at_ms = ?, payload = ?
 			WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
@@ -569,6 +677,36 @@ func (s *Store) PruneActionFires(cutoff time.Time) (int64, error) {
 		cutoff.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("prune action fires: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// SettleSpentRetries ends the retry of every job of one action whose attempt
+// budget is spent: the worker can never claim such a row again (see the claim
+// filter), so a row still carrying a retry deadline is an alert waiting for a
+// retry that will never happen — retention must leave pending work alone, and
+// this row looks like pending work. The late async outcome of a spent job used
+// to write exactly that shape (reported P2) and rows written by earlier
+// releases still carry it; ending them here makes the ordinary retention take
+// them like any other completed job. Returns how many rows were ended.
+//
+// The budget is the one the ROW was claimed with — the same policy the claim
+// filter follows, so a job the worker refuses to claim is exactly the one this
+// ends (a lowered configuration used to hide a job from the worker while this
+// kept believing in the budget the job was claimed with, leaving it neither
+// executed nor pruned). maxAttempts is the action's current budget, used only
+// for rows claimed before the row recorded its own.
+func (s *Store) SettleSpentRetries(ctx context.Context, actionID string, maxAttempts int) (int64, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE action_fires SET next_attempt_at_ms = 0
+		WHERE action_id = ? AND status = 'failed' AND next_attempt_at_ms > 0
+		  AND attempts >= CASE WHEN max_attempts > 0 THEN max_attempts ELSE ? END`,
+		actionID, maxAttempts)
+	if err != nil {
+		return 0, fmt.Errorf("settle spent retries of action %q: %w", actionID, err)
 	}
 	return res.RowsAffected()
 }

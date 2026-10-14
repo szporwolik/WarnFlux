@@ -534,12 +534,24 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 		}
 		event := i18n.EventName(lang, h.Hazard.Event)
 		headline := strings.TrimSpace(h.Hazard.Headline)
-		if headline == "" {
-			headline = event
+		// The event type leads the line only while it adds something: a
+		// hazard whose headline repeats it (or carries none at all) must not
+		// read "Brak — Brak" — the mail builder has always drawn the line
+		// this way, and Discord is the channel an operator quotes from.
+		subject := event
+		if headline != "" && !strings.EqualFold(headline, event) {
+			if subject == "" {
+				subject = headline
+			} else {
+				subject += " — " + headline
+			}
 		}
-		text = fmt.Sprintf("[%s] %s: %s — %s", prefix,
-			strings.ToUpper(i18n.T(lang, "sev."+strings.ToLower(h.Hazard.Severity))),
-			event, headline)
+		sevLabel := strings.ToUpper(i18n.T(lang, "sev."+strings.ToLower(h.Hazard.Severity)))
+		if subject == "" {
+			text = fmt.Sprintf("[%s] %s", prefix, sevLabel)
+		} else {
+			text = fmt.Sprintf("[%s] %s: %s", prefix, sevLabel, subject)
+		}
 		if id := h.Hazard.MessageID(); id != "" {
 			text += "\n" + i18n.T(lang, "discord.message_id") + ": " + id
 		}

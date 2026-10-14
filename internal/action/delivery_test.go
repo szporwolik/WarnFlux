@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -52,7 +53,11 @@ func (m *memDeliveryStore) EnqueueDelivery(ctx context.Context, job storage.Deli
 	defer m.mu.Unlock()
 	k := m.key(job.GroupID, job.ActionID, job.DedupKey)
 	if j, ok := m.jobs[k]; ok {
-		if j.status == storage.DeliveryFailed {
+		// Only a TERMINAL failure (no deadline left) is re-armed by a
+		// duplicate; a job waiting for its scheduled retry keeps its
+		// payload, its attempt count and its deadline (mirrors the SQLite
+		// store — the payload merge of a re-arm is the store's business).
+		if j.status == storage.DeliveryFailed && j.next.IsZero() {
 			j.job = job
 			j.status = storage.DeliverySaved
 			j.next = time.Time{}
@@ -98,6 +103,7 @@ func (m *memDeliveryStore) ClaimNextDelivery(ctx context.Context, actionID strin
 	}
 	best.status = runningStatus
 	best.job.Attempts++
+	best.job.MaxAttempts = maxAttempts
 	best.next = now.Add(5 * time.Minute) // claim lease
 	return best.job, true, nil
 }
@@ -135,16 +141,38 @@ func (m *memDeliveryStore) SettleDeliveryGuarded(ctx context.Context, d storage.
 	j.status = stage
 	if stage == storage.DeliveryFailed {
 		j.next = d.NextAttempt
-		// A retryable failure may carry the narrowed payload: only the
-		// work that is still pending goes into the next attempt (see
-		// storage.DeliverySettle.Payload).
-		if len(d.Payload) > 0 && !d.NextAttempt.IsZero() {
+		// A failure may carry the narrowed payload — a terminal one too:
+		// the progress of the last attempt is what a replay re-arms from
+		// (see storage.DeliverySettle.Payload).
+		if len(d.Payload) > 0 {
 			j.job.Payload = append([]byte(nil), d.Payload...)
 		}
 	} else {
 		j.next = time.Time{}
 	}
 	return stage, nil
+}
+
+// SettleSpentRetries mirrors the store: a failed job whose attempts reached
+// the budget can never be claimed again, so its retry deadline goes away and
+// the completed-job retention may take it.
+func (m *memDeliveryStore) SettleSpentRetries(ctx context.Context, actionID string, maxAttempts int) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	var n int64
+	for _, j := range m.jobs {
+		if j.job.ActionID != actionID || j.status != storage.DeliveryFailed || j.next.IsZero() {
+			continue
+		}
+		if j.job.Attempts >= maxAttempts {
+			j.next = time.Time{}
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *memDeliveryStore) RecoverStaleClaims(ctx context.Context, now time.Time) (int64, error) {
@@ -185,6 +213,50 @@ func (m *memDeliveryStore) statusOf(groupID int64, actionID, dedupKey string) st
 			return storage.DeliverySaved
 		}
 		return j.status
+	}
+	return -1
+}
+
+// plantSpentRetry leaves a job failed with a retry deadline after its single
+// attempt: the budget is spent, so nothing can claim it again — the shape a
+// late async failure of a spent job (and an earlier release) leaves behind.
+func (m *memDeliveryStore) plantSpentRetry(actionID string, payload []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobs["1|"+actionID+"|c:spent"] = &memJob{
+		job: storage.DeliveryJob{GroupID: 1, ActionID: actionID, EventKey: "imgw:1", DedupKey: "c:spent",
+			Payload: payload, Attempts: 1, FiredAt: time.Now()},
+		status: storage.DeliveryFailed,
+		next:   time.Now().Add(time.Hour),
+	}
+}
+
+// payloadOf reports the payload the store holds for one job.
+func (m *memDeliveryStore) payloadOf(actionID, dedupKey string) []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j, ok := m.jobs["1|"+actionID+"|"+dedupKey]; ok {
+		return append([]byte(nil), j.job.Payload...)
+	}
+	return nil
+}
+
+// deadlineOf reports the retry deadline of one job (zero = terminal).
+func (m *memDeliveryStore) deadlineOf(actionID, dedupKey string) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j, ok := m.jobs["1|"+actionID+"|"+dedupKey]; ok {
+		return j.next
+	}
+	return time.Time{}
+}
+
+// attemptsOf reports how often one job was CLAIMED (0 = still waiting).
+func (m *memDeliveryStore) attemptsOf(groupID int64, actionID, dedupKey string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j, ok := m.jobs[m.key(groupID, actionID, dedupKey)]; ok {
+		return j.job.Attempts
 	}
 	return -1
 }
@@ -235,6 +307,25 @@ func (p *deliveryPlugin) ExecuteStage(ctx context.Context, req ActionRequest) (D
 }
 
 func (p *deliveryPlugin) Close(ctx context.Context) error { return nil }
+
+// hangingPlugin ignores context cancellation — the hung callback the worker
+// abandons — and counts how often it was entered, so a test can prove the
+// disabled instance never re-invokes it. release ends the abandoned call (the
+// test closes it) so the goroutine does not outlive the test.
+type hangingPlugin struct {
+	handled atomic.Int64
+	release chan struct{}
+}
+
+func (p *hangingPlugin) Name() string { return "hang" }
+
+func (p *hangingPlugin) Execute(ctx context.Context, req ActionRequest) error {
+	p.handled.Add(1)
+	<-p.release
+	return ctx.Err()
+}
+
+func (p *hangingPlugin) Close(ctx context.Context) error { return nil }
 
 // narrowError is what a plugin that delivers to part of its recipients
 // and then fails returns (action.PartialDelivery).
@@ -639,7 +730,184 @@ func TestManagerStaleClaimRecovery(t *testing.T) {
 	}, "stale claim recovered and executed")
 }
 
-// TestHoldOfflineKeepsDequeuedRequest pins the hold path of the worker:
+// TestDisabledInstanceStopsClaimingDurableJobs pins the reported P1: after a
+// hung plugin disabled its instance, the worker kept claiming jobs from the
+// durable queue and invoking the plugin again — a second abandoned goroutine
+// and a second user of the same transport, one more with every job. Claiming
+// stops with the instance, and the untouched jobs wait for the next start.
+func TestDisabledInstanceStopsClaimingDurableJobs(t *testing.T) {
+	oldPoll := DeliveryPollInterval
+	DeliveryPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { DeliveryPollInterval = oldPoll })
+
+	hung := &hangingPlugin{release: make(chan struct{})}
+	reg := NewRegistry()
+	if err := reg.Register("hang", func(*yaml.Node) (Plugin, error) { return hung, nil }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager([]config.Action{{
+		ID: "log", Type: "hang", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 4, CallTimeout: 20 * time.Millisecond, ShutdownTimeout: time.Second},
+	}}, reg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ms := newMemDeliveryStore()
+	m.SetDeliveryStore(ms)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	t.Cleanup(func() {
+		close(hung.release)
+		cancel()
+		_ = m.Shutdown(context.Background())
+	})
+
+	// Three jobs for one action: the first hangs in the plugin, the other
+	// two must stay untouched once the instance is disabled.
+	ev := dispatch.Event{Kind: dispatch.EventHazardTransition,
+		Hazard: &dispatch.HazardTransition{Key: "imgw:1", Source: "imgw"}}
+	for i := 1; i <= 3; i++ {
+		payload, err := json.Marshal(ActionRequest{ID: fmt.Sprintf("imgw:1/log-%d", i), Event: ev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ms.EnqueueDelivery(ctx, storage.DeliveryJob{
+			GroupID: 1, ActionID: "log", DedupKey: fmt.Sprintf("c:%d", i),
+			EventKey: "imgw:1", Payload: payload, FiredAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("EnqueueDelivery: %v", err)
+		}
+	}
+
+	// The first call times out and the ignored cancellation disables the
+	// instance.
+	waitForDelivery(t, func() bool { return m.Statuses()[0].State == StateDisabled },
+		"the hung plugin to disable its instance")
+
+	// Every further poll must leave the queue alone: the plugin may not be
+	// invoked a second time (that is the extra hanging goroutine and the
+	// second user of the same transport).
+	time.Sleep(200 * time.Millisecond)
+	if got := hung.handled.Load(); got != 1 {
+		t.Fatalf("the disabled instance invoked the plugin %d times, want exactly 1", got)
+	}
+	// Nothing is lost — and nothing was even claimed: the jobs stay in the
+	// queue, waiting for the next start, instead of being dragged through a
+	// disabled instance job by job.
+	if got := ms.attemptsOf(1, "log", "c:2"); got != 0 {
+		t.Fatalf("queued job c:2 was claimed %d times, want it left untouched for recovery", got)
+	}
+	if got := ms.attemptsOf(1, "log", "c:3"); got != 0 {
+		t.Fatalf("queued job c:3 was claimed %d times, want it left untouched for recovery", got)
+	}
+	if got := ms.statusOf(1, "log", "c:2"); got != storage.DeliverySaved {
+		t.Fatalf("queued job c:2 = %v, want it left untouched for recovery", got)
+	}
+}
+
+// TestManagerEndsSpentRetries pins the repair on the live path: the manager's
+// sweep ends the jobs of every action whose attempt budget is spent while their
+// row still carries a retry deadline (see SettleSpentRetries). Without it such
+// a job is invisible to the worker (the budget is spent) and protected from
+// retention (it looks like pending work) — it would wait forever.
+func TestManagerEndsSpentRetries(t *testing.T) {
+	oldRecovery := DeliveryRecoveryInterval
+	DeliveryRecoveryInterval = 5 * time.Millisecond
+	t.Cleanup(func() { DeliveryRecoveryInterval = oldRecovery })
+
+	p := &deliveryPlugin{}
+	reg := NewRegistry()
+	if err := reg.Register("logger", func(*yaml.Node) (Plugin, error) { return p, nil }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager([]config.Action{{
+		ID: "log", Type: "logger", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 1, CallTimeout: time.Second, ShutdownTimeout: time.Second},
+	}}, reg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ms := newMemDeliveryStore()
+	ms.plantSpentRetry("log", []byte(`{}`))
+	m.SetDeliveryStore(ms)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		_ = m.Shutdown(context.Background())
+	})
+
+	waitForDelivery(t, func() bool { return ms.deadlineOf("log", "c:spent").IsZero() },
+		"the spent retry to be ended by the manager sweep")
+	// Ended, not executed: the spent job never reaches the plugin again.
+	if got := p.handled.Load(); got != 0 {
+		t.Fatalf("the spent job was executed %d times, want 0", got)
+	}
+}
+
+// TestTerminalFailureStoresThePartialProgress pins the reported P2: the
+// narrowed payload was only written when a retry followed, so the LAST attempt
+// of a partially delivered batch stored a terminal failure without any record
+// of the recipients it had already served — a replay of the job (a re-armed
+// transition) then served them again, because there was nothing to carry over.
+func TestTerminalFailureStoresThePartialProgress(t *testing.T) {
+	oldPoll := DeliveryPollInterval
+	DeliveryPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { DeliveryPollInterval = oldPoll })
+
+	// One attempt in the budget: this attempt is the last one.
+	p := &narrowingPlugin{deliver: []string{"a@example.com"}}
+	reg := NewRegistry()
+	if err := reg.Register("logger", func(*yaml.Node) (Plugin, error) { return p, nil }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager([]config.Action{{
+		ID: "smtp", Type: "logger", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 1, CallTimeout: time.Second, ShutdownTimeout: time.Second},
+	}}, reg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ms := newMemDeliveryStore()
+	m.SetDeliveryStore(ms)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		_ = m.Shutdown(context.Background())
+	})
+
+	payload := []byte(`{"bcc":["a@example.com","b@example.com"]}`)
+	if _, _, err := ms.EnqueueDelivery(ctx, storage.DeliveryJob{
+		GroupID: 1, ActionID: "smtp", EventKey: "imgw:1", DedupKey: "c:partial",
+		Payload: payload, FiredAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("EnqueueDelivery: %v", err)
+	}
+
+	// The attempt delivers to A, fails on B and has no retry left.
+	waitForDelivery(t, func() bool {
+		return ms.deadlineOf("smtp", "c:partial").IsZero() && ms.statusOf(1, "smtp", "c:partial") == storage.DeliveryFailed
+	},
+		"the terminal failure to be recorded")
+	waitForDelivery(t, func() bool { return len(ms.payloadOf("smtp", "c:partial")) > len(payload) },
+		"the progress of the last attempt to be stored")
+	var stored struct {
+		Done []string `json:"done_recipients"`
+	}
+	if err := json.Unmarshal(ms.payloadOf("smtp", "c:partial"), &stored); err != nil {
+		t.Fatalf("stored payload: %v (%s)", err, ms.payloadOf("smtp", "c:partial"))
+	}
+	if got := strings.Join(stored.Done, ","); got != "a@example.com" {
+		t.Fatalf("stored progress = %q, want the recipient the last attempt served", got)
+	}
+	// The failed attempt was the only one: nothing was retried internally.
+	if got := len(p.executed); got != 1 {
+		t.Fatalf("the plugin ran %d times, want 1", got)
+	}
+}
+
+// TestHoldOfflineKeepsDequeuedRequest pins the hold path of the worker:// TestHoldOfflineKeepsDequeuedRequest pins the hold path of the worker:
 // when the offline switch flips between the loop's check and the receive
 // from the queue, the request must wait for the switch instead of being
 // skipped — a hazard accepted a moment before the operator went offline

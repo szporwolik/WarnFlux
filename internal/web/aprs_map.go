@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/szporwolik/WarnFlux/internal/plugin"
 )
 
 // aprsContactView is one recipient suggestion for the message form: the
@@ -38,6 +40,10 @@ type aprsMapView struct {
 	AprsOwnLon    float64
 	AprsRadiusKM  float64
 	AprsCallsign  string
+
+	// Links is the APRS-IS / RF status card (the GSM modem pill of this
+	// page): one row per backend, refreshed by the poll below the h2.
+	Links []aprsLinkView
 
 	OfflineMode bool
 	ForceTiles  bool
@@ -125,6 +131,7 @@ func (s *Server) handleAPRSPage(w http.ResponseWriter, r *http.Request) {
 	if s.aprsMsgs != nil {
 		s.fillAPRSMessages(r, &v.aprsMessagesData)
 	}
+	s.fillAPRSLinks(&v)
 	if s.aprs != nil && s.aprs.Enabled() {
 		v.AprsEnabled = true
 		v.AprsCenterLat = s.aprs.AreaLat()
@@ -136,4 +143,101 @@ func (s *Server) handleAPRSPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.renderL(w, r, "aprs", v)
+}
+
+// aprsLinkView is one APRS backend in the status card: which link it is, how
+// its plugin reports itself and the raw detail that goes with the badge. The
+// card mirrors the GSM modem pill, so an operator reads the same shape on
+// every radio page.
+type aprsLinkView struct {
+	// LabelKey names the link ("aprs.is" / "aprs.rf").
+	LabelKey string
+	// TextKey is the state line ("aprs.link_ok" / "_down" / "_off").
+	TextKey string
+	// Badge is the badge class: ok (running), warn (configured, not running)
+	// or muted (not configured at all).
+	Badge string
+	// Detail carries the plugin's own report: its one-line stats summary
+	// while it runs, or the error that took it down.
+	Detail string
+	// StateKey is the i18n key of the plugin state, shown as its own badge
+	// while the link is neither running nor deliberately off (starting,
+	// degraded, stopped…). Empty when the state needs no explanation.
+	StateKey string
+}
+
+// backendPluginTypes maps the two APRS links onto the plugin types that
+// provide them: the internet link and the KISS radio (Direwolf) one.
+const (
+	aprsInetPluginType  = "aprs-inet"
+	aprsRadioPluginType = "aprs-radio"
+)
+
+// fillAPRSLinks reports the state of both APRS backends. Each link is a plugin
+// of its own (aprs-inet talks to APRS-IS, aprs-radio to a KISS TNC such as
+// Direwolf), so the card answers the two questions an operator asks separately:
+// is the internet feed up, and is the radio reachable.
+func (s *Server) fillAPRSLinks(v *aprsMapView) {
+	v.Links = []aprsLinkView{
+		s.aprsLink("aprs.is", aprsInetPluginType),
+		s.aprsLink("aprs.rf", aprsRadioPluginType),
+	}
+}
+
+// aprsLink summarizes every plugin instance of one backend type. The link is
+// UP only when one of them is running; a backend the station deliberately
+// switched OFF is muted ("disabled", not a failure), and one that is meant to
+// run but is not gets a warning badge plus the state it is stuck in.
+func (s *Server) aprsLink(labelKey, pluginType string) aprsLinkView {
+	link := aprsLinkView{LabelKey: labelKey, TextKey: "aprs.link_off", Badge: "muted"}
+	if s.router == nil {
+		return link
+	}
+	configured, running, allDisabled := false, false, true
+	var broken plugin.PluginState
+	for _, st := range s.router.Statuses() {
+		if st.Type != pluginType {
+			continue
+		}
+		configured = true
+		if st.State == plugin.StateRunning {
+			running = true
+			if link.Detail == "" {
+				link.Detail = st.LastSummary
+			}
+			continue
+		}
+		if st.State != plugin.StateDisabled {
+			allDisabled = false
+		}
+		if broken == "" {
+			broken = st.State
+			link.Detail = st.LastError
+		}
+	}
+	switch {
+	case running:
+		link.TextKey, link.Badge = "aprs.link_ok", "ok"
+		link.StateKey = ""
+	case !configured:
+		link.Detail = ""
+	case allDisabled:
+		// Nothing is broken: the station simply does not run this backend.
+		link.TextKey, link.Badge = "aprs.link_disabled", "muted"
+		link.StateKey, link.Detail = "", ""
+	default:
+		link.TextKey, link.Badge = "aprs.link_down", "warn"
+		link.StateKey = "dash." + string(broken)
+	}
+	return link
+}
+
+// handlePartialAPRSLinks serves the polled APRS status card: a link that comes
+// up, a TNC that drops and a Direwolf that is not there yet all show up in
+// place, without a reload.
+func (s *Server) handlePartialAPRSLinks(w http.ResponseWriter, r *http.Request) {
+	v := aprsMapView{}
+	s.fillAPRSLinks(&v)
+	w.Header().Set("Cache-Control", "no-store")
+	s.renderL(w, r, "aprs_links", v)
 }

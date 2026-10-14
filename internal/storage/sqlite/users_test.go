@@ -321,6 +321,69 @@ func TestUserAuthenticate(t *testing.T) {
 	}
 }
 
+// TestUserAuthenticateByEmail pins the login the panel now accepts: an
+// operator who types the account's E-MAIL ADDRESS instead of the username
+// signs in with the same password. An address carried by more than one account
+// identifies nobody (the schema does not forbid sharing one), and the address
+// of a role-less account stays refused exactly like its username.
+func TestUserAuthenticateByEmail(t *testing.T) {
+	store := newUsersStore(t)
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("sq9mup", "", "SQ9MUP@example.org", "", "member", "hunter2secret"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("no-role", "", "norole@example.org", "", "", "hunter2secret"); err != nil {
+		t.Fatal(err)
+	}
+	// Two accounts sharing one address: nothing may decide between them.
+	for _, name := range []string{"twin-a", "twin-b"} {
+		if _, err := store.CreateUser(name, "", "shared@example.org", "", "member", "hunter2secret"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	u, err := store.AuthenticateByEmail("sq9mup@example.org", "hunter2secret")
+	if err != nil {
+		t.Fatalf("AuthenticateByEmail: %v", err)
+	}
+	if u.Username != "sq9mup" || u.Role != "member" {
+		t.Fatalf("authenticated user = %+v, want sq9mup with role member", u)
+	}
+	// The address is case insensitive, like the username.
+	if _, err := store.AuthenticateByEmail("SQ9MUP@EXAMPLE.ORG", "hunter2secret"); err != nil {
+		t.Fatalf("case-insensitive address: %v", err)
+	}
+	if _, err := store.AuthenticateByEmail("sq9mup@example.org", "wrong"); !errors.Is(err, storage.ErrBadCredentials) {
+		t.Fatalf("wrong password = %v, want ErrBadCredentials", err)
+	}
+	if _, err := store.AuthenticateByEmail("nobody@example.org", "hunter2secret"); !errors.Is(err, storage.ErrBadCredentials) {
+		t.Fatalf("unknown address = %v, want ErrBadCredentials", err)
+	}
+	if _, err := store.AuthenticateByEmail("shared@example.org", "hunter2secret"); !errors.Is(err, storage.ErrBadCredentials) {
+		t.Fatalf("ambiguous address = %v, want ErrBadCredentials", err)
+	}
+	if _, err := store.AuthenticateByEmail("", "hunter2secret"); !errors.Is(err, storage.ErrBadCredentials) {
+		t.Fatalf("empty address = %v, want ErrBadCredentials", err)
+	}
+	if _, err := store.AuthenticateByEmail("norole@example.org", "hunter2secret"); !errors.Is(err, storage.ErrBadCredentials) {
+		t.Fatalf("role-less account = %v, want ErrBadCredentials", err)
+	}
+
+	// GetUserByEmail: the lookup the reset form uses, same ambiguity rule.
+	got, err := store.GetUserByEmail("sq9mup@example.org")
+	if err != nil || got.ID != u.ID {
+		t.Fatalf("GetUserByEmail = (%+v, %v), want the sq9mup account", got, err)
+	}
+	if _, err := store.GetUserByEmail("shared@example.org"); !errors.Is(err, storage.ErrUserNotFound) {
+		t.Fatalf("ambiguous GetUserByEmail = %v, want ErrUserNotFound", err)
+	}
+	if _, err := store.GetUserByEmail(""); !errors.Is(err, storage.ErrUserNotFound) {
+		t.Fatalf("empty GetUserByEmail = %v, want ErrUserNotFound", err)
+	}
+}
+
 // TestUserAPRSCallsigns pins the per-user APRS callsign registry: store,
 // normalize/dedupe, replace, protect and group-recipient collection.
 func TestUserAPRSCallsigns(t *testing.T) {

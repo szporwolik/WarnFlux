@@ -963,6 +963,336 @@ func TestDeliveryRetryScheduleAndReArm(t *testing.T) {
 	}
 }
 
+// TestDeliveryDuplicateKeepsAPendingRetryIntact pins the reported P2: a
+// duplicate of the same transition arriving while the job WAITED for its
+// scheduled retry used to re-arm it — the narrowed payload recording what
+// earlier attempts already delivered was replaced, the attempt count zeroed
+// and the deadline dropped — so the retry started over and could serve a
+// recipient that already got the alert. Only a failure with NO pending
+// deadline is terminal enough to re-arm, and even then the progress stored in
+// the payload rides along.
+func TestDeliveryDuplicateKeepsAPendingRetryIntact(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	first := []byte(`{"message":"first"}`)
+	fresh := []byte(`{"message":"fresh"}`)
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "smtp", EventKey: "imgw:1", DedupKey: "c:1", Payload: first, FiredAt: at}
+	if _, queued, err := store.EnqueueDelivery(ctx, job); err != nil || !queued {
+		t.Fatalf("enqueue: (%v, %v)", queued, err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at); err != nil || !ok {
+		t.Fatalf("claim 1: (%v, %v)", ok, err)
+	}
+	// The attempt served two recipients and failed: the narrowed payload
+	// (the work left plus the progress) replaces the row's payload, with the
+	// retry an hour away.
+	narrowed := []byte(`{"message":"first","done_recipients":["a@example.com","b@example.com"]}`)
+	if _, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
+		GroupID: g.ID, ActionID: "smtp", DedupKey: "c:1", Stage: storage.DeliveryFailed,
+		NextAttempt: at.Add(time.Hour), Payload: narrowed, Attempts: 1,
+	}); err != nil {
+		t.Fatalf("settle retryable: %v", err)
+	}
+
+	// The duplicate of the same transition arrives while the retry waits.
+	dup := job
+	dup.Payload = fresh
+	st, queued, err := store.EnqueueDelivery(ctx, dup)
+	if err != nil || queued || st != storage.DeliveryFailed {
+		t.Fatalf("duplicate during the retry wait = (%v, %v, %v), want (failed, false, nil)", st, queued, err)
+	}
+	// Nothing about the waiting job moved: the deadline, the budget and the
+	// payload are exactly as the failed attempt left them.
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(30*time.Minute)); err != nil || ok {
+		t.Fatalf("claim before the deadline = (%v, %v), want (false, nil)", ok, err)
+	}
+	claimed, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(time.Hour))
+	if err != nil || !ok || claimed.Attempts != 2 {
+		t.Fatalf("claim at the deadline = (%+v, %v, %v), want attempts 2", claimed, ok, err)
+	}
+	if string(claimed.Payload) != string(narrowed) {
+		t.Fatalf("payload after the duplicate = %s, want the narrowed one %s", claimed.Payload, narrowed)
+	}
+
+	// A TERMINAL failure (no deadline at all) is still re-armed by a replay,
+	// and the progress of the stored payload survives it.
+	if err := store.SettleDelivery(ctx, g.ID, "smtp", "c:1", storage.DeliveryFailed, time.Time{}); err != nil {
+		t.Fatalf("settle terminal: %v", err)
+	}
+	replay := job
+	replay.Payload = fresh
+	st, queued, err = store.EnqueueDelivery(ctx, replay)
+	if err != nil || !queued || st != storage.DeliverySaved {
+		t.Fatalf("replay of a terminal failure = (%v, %v, %v), want (saved, true, nil)", st, queued, err)
+	}
+	claimed, ok, err = store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(2*time.Hour))
+	if err != nil || !ok || claimed.Attempts != 1 {
+		t.Fatalf("claim of the re-armed job = (%+v, %v, %v), want a fresh budget (attempts 1)", claimed, ok, err)
+	}
+	var payload struct {
+		Message string   `json:"message"`
+		Done    []string `json:"done_recipients"`
+	}
+	if err := json.Unmarshal(claimed.Payload, &payload); err != nil {
+		t.Fatalf("re-armed payload: %v (%s)", err, claimed.Payload)
+	}
+	if payload.Message != "fresh" {
+		t.Errorf("re-armed payload message = %q, want the fresh one", payload.Message)
+	}
+	if got := strings.Join(payload.Done, ","); got != "a@example.com,b@example.com" {
+		t.Errorf("re-armed payload progress = %q, want the recipients already served", got)
+	}
+}
+
+// TestLateMeshFailureEndsASpentJob pins the reported P2: the modem's async
+// failure can land AFTER the worker settled the job, and when that job's
+// attempt budget was already spent the re-arm used to write "failed" WITH a
+// retry deadline. The worker never claimed it again (the budget was spent) and
+// the retention sweep never removed it (it looked like pending work), so the
+// alert waited for a retry that could not happen, forever. A spent budget now
+// settles the late failure terminally, and the ordinary retention takes it.
+func TestLateMeshFailureEndsASpentJob(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	// Budget of one attempt: the only attempt is accepted by the radio, and
+	// the failure arrives later.
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "mesh", EventKey: "imgw:1", DedupKey: "c:late", Payload: []byte("{}"), FiredAt: at}
+	if _, queued, err := store.EnqueueDelivery(ctx, job); err != nil || !queued {
+		t.Fatalf("enqueue: (%v, %v)", queued, err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at); err != nil || !ok {
+		t.Fatalf("claim: (%v, %v)", ok, err)
+	}
+	if err := store.SettleDelivery(ctx, g.ID, "mesh", "c:late", storage.DeliveryAccepted, time.Time{}); err != nil {
+		t.Fatalf("settle accepted: %v", err)
+	}
+	// The async TxFailed lands a minute later, with the budget spent.
+	n, err := store.RecordMeshFailureAndRequeue(ctx, "mesh", g.ID, "c:late", "pub-1", "imgw:1", 7, "a0a85934", 0, at.Add(time.Minute))
+	if err != nil || n != 1 {
+		t.Fatalf("late failure re-armed %d jobs (%v), want 1", n, err)
+	}
+	// Nothing claims it again...
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at.Add(2*time.Hour)); err != nil || ok {
+		t.Fatalf("claim of a spent job = (%v, %v), want (false, nil)", ok, err)
+	}
+	// ...and the ordinary completed-job retention removes it.
+	pruned, err := store.PruneActionFires(at.Add(3 * time.Hour))
+	if err != nil || pruned != 1 {
+		t.Fatalf("retention pruned %d rows (%v), want the ended job", pruned, err)
+	}
+
+	// A job that still has budget is re-armed with a deadline, exactly as
+	// before: the late failure is a normal retry for it.
+	job2 := job
+	job2.DedupKey = "c:open"
+	if _, _, err := store.EnqueueDelivery(ctx, job2); err != nil {
+		t.Fatalf("enqueue second: %v", err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 3, at); err != nil || !ok {
+		t.Fatalf("claim second: (%v, %v)", ok, err)
+	}
+	if err := store.SettleDelivery(ctx, g.ID, "mesh", "c:open", storage.DeliveryAccepted, time.Time{}); err != nil {
+		t.Fatalf("settle second accepted: %v", err)
+	}
+	if n, err := store.RecordMeshFailureAndRequeue(ctx, "mesh", g.ID, "c:open", "pub-1", "imgw:1", 7, "a0a85934", 0, at.Add(time.Minute)); err != nil || n != 1 {
+		t.Fatalf("late failure of a job with budget = (%d, %v), want (1, nil)", n, err)
+	}
+	claimed, ok, err := store.ClaimNextDelivery(ctx, "mesh", 3, at.Add(2*time.Minute))
+	if err != nil || !ok || claimed.Attempts != 2 {
+		t.Fatalf("retry after the late failure = (%+v, %v, %v), want a second attempt", claimed, ok, err)
+	}
+}
+
+// TestSettleSpentRetriesEndsOrphanedJobs pins the repair for the rows earlier
+// releases already left behind (and the belt for any other late writer): a
+// failed job whose attempts reached its budget is ended, so retention can take
+// it, while a job with budget left keeps its deadline and runs. Each action
+// carries its own budget, as in production.
+func TestSettleSpentRetriesEndsOrphanedJobs(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	// plant claims one job of an action whose budget is `budget`, then leaves
+	// it failed with a retry deadline an hour away.
+	plant := func(actionID, dedup string, budget int) {
+		t.Helper()
+		job := storage.DeliveryJob{GroupID: g.ID, ActionID: actionID, EventKey: "imgw:1", DedupKey: dedup, Payload: []byte("{}"), FiredAt: at}
+		if _, _, err := store.EnqueueDelivery(ctx, job); err != nil {
+			t.Fatalf("enqueue %s: %v", dedup, err)
+		}
+		if _, ok, err := store.ClaimNextDelivery(ctx, actionID, budget, at); err != nil || !ok {
+			t.Fatalf("claim %s: (%v, %v)", dedup, ok, err)
+		}
+		if err := store.SettleDelivery(ctx, g.ID, actionID, dedup, storage.DeliveryFailed, at.Add(time.Hour)); err != nil {
+			t.Fatalf("settle failed %s: %v", dedup, err)
+		}
+	}
+
+	// A budget of one: the single attempt is spent, the deadline can never be
+	// honoured, and the row looks like pending work to retention.
+	plant("mesh", "c:spent", 1)
+	// A budget of three: one attempt out of three, a real retry.
+	plant("smtp", "c:open", 3)
+	// A row claimed before the release that recorded its budget: only the
+	// action's current budget can decide it.
+	plant("mesh", "c:legacy", 1)
+	if _, err := store.db.Exec(`UPDATE action_fires SET max_attempts = 0 WHERE dedup_key = 'c:legacy'`); err != nil {
+		t.Fatalf("clear the recorded budget: %v", err)
+	}
+
+	if n, err := store.SettleSpentRetries(ctx, "mesh", 1); err != nil || n != 2 {
+		t.Fatalf("SettleSpentRetries(mesh) = (%d, %v), want the spent job and the legacy one", n, err)
+	}
+	if n, err := store.SettleSpentRetries(ctx, "smtp", 3); err != nil || n != 0 {
+		t.Fatalf("SettleSpentRetries(smtp) = (%d, %v), want nothing", n, err)
+	}
+	// The job with budget left runs after its deadline...
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(2*time.Hour)); err != nil || !ok {
+		t.Fatalf("claim of the open job = (%v, %v), want (true, nil)", ok, err)
+	}
+	// ...while the ended ones wait for nothing and the completed-job
+	// retention takes them.
+	pruned, err := store.PruneActionFires(at.Add(3 * time.Hour))
+	if err != nil || pruned != 2 {
+		t.Fatalf("retention pruned %d rows (%v), want the ended jobs", pruned, err)
+	}
+}
+
+// TestTerminalSettleStoresThePayload pins the store half of the reported P2:
+// the progress of the LAST attempt has to land even though no retry follows —
+// a replay of the job re-arms from the payload it finds, so a terminal
+// settlement that dropped it made the replayed batch start from the beginning
+// and serve the recipients that had already been reached.
+func TestTerminalSettleStoresThePayload(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	first := []byte(`{"message":"first"}`)
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "smtp", EventKey: "imgw:1", DedupKey: "c:last", Payload: first, FiredAt: at}
+	if _, _, err := store.EnqueueDelivery(ctx, job); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 1, at); err != nil || !ok {
+		t.Fatalf("claim: (%v, %v)", ok, err)
+	}
+	// The last attempt (budget of one) served A and failed: the progress is
+	// stored with the TERMINAL settlement, without any retry deadline.
+	progress := []byte(`{"message":"first","done_recipients":["a@example.com"]}`)
+	if _, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
+		GroupID: g.ID, ActionID: "smtp", DedupKey: "c:last", Stage: storage.DeliveryFailed,
+		Payload: progress, Attempts: 1,
+	}); err != nil {
+		t.Fatalf("terminal settle: %v", err)
+	}
+
+	// A replay of the transition re-arms the job: the fresh content and the
+	// progress of the failed attempt travel together, so the next attempt
+	// covers only the recipients still pending.
+	replay := job
+	replay.Payload = []byte(`{"message":"fresh"}`)
+	st, queued, err := store.EnqueueDelivery(ctx, replay)
+	if err != nil || !queued || st != storage.DeliverySaved {
+		t.Fatalf("replay = (%v, %v, %v), want (saved, true, nil)", st, queued, err)
+	}
+	claimed, ok, err := store.ClaimNextDelivery(ctx, "smtp", 3, at.Add(time.Hour))
+	if err != nil || !ok {
+		t.Fatalf("claim of the re-armed job = (%v, %v)", ok, err)
+	}
+	var payload struct {
+		Message string   `json:"message"`
+		Done    []string `json:"done_recipients"`
+	}
+	if err := json.Unmarshal(claimed.Payload, &payload); err != nil {
+		t.Fatalf("re-armed payload: %v (%s)", err, claimed.Payload)
+	}
+	if payload.Message != "fresh" {
+		t.Errorf("re-armed payload message = %q, want the fresh one", payload.Message)
+	}
+	if got := strings.Join(payload.Done, ","); got != "a@example.com" {
+		t.Errorf("re-armed payload progress = %q, want the recipient the last attempt served", got)
+	}
+}
+
+// TestLoweredBudgetFollowsTheRecordedOne pins the single budget policy (the
+// reported P2): the claim compared the attempt counter against the CURRENT
+// configuration while SettleSpentRetries used the budget recorded on the row,
+// so lowering the limit hid a job from the worker without ever ending it —
+// neither executed nor pruned, forever. The recorded budget governs the job
+// now; a configuration change applies from the next claim on.
+func TestLoweredBudgetFollowsTheRecordedOne(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	// Claimed while the action allowed three attempts: one attempt is spent
+	// and the retry waits an hour away.
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "mesh", EventKey: "imgw:1", DedupKey: "c:lowered", Payload: []byte("{}"), FiredAt: at}
+	if _, _, err := store.EnqueueDelivery(ctx, job); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 3, at); err != nil || !ok {
+		t.Fatalf("claim with budget 3: (%v, %v)", ok, err)
+	}
+	if err := store.SettleDelivery(ctx, g.ID, "mesh", "c:lowered", storage.DeliveryFailed, at.Add(time.Hour)); err != nil {
+		t.Fatalf("settle retryable: %v", err)
+	}
+
+	// The operator lowers the limit to one attempt. The job keeps the budget
+	// it was claimed with, so it CONTINUES instead of vanishing from both the
+	// worker's view and the sweep's...
+	claimed, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at.Add(2*time.Hour))
+	if err != nil || !ok || claimed.Attempts != 2 {
+		t.Fatalf("claim under the lowered limit = (%+v, %v, %v), want the job to continue (attempts 2)", claimed, ok, err)
+	}
+	// ...and that claim recorded the configured budget on the row.
+	if err := store.SettleDelivery(ctx, g.ID, "mesh", "c:lowered", storage.DeliveryFailed, at.Add(3*time.Hour)); err != nil {
+		t.Fatalf("settle retryable: %v", err)
+	}
+	// Now the budget really is spent: the sweep ends the job and retention
+	// takes it, so nothing waits for a retry that can never happen.
+	if n, err := store.SettleSpentRetries(ctx, "mesh", 1); err != nil || n != 1 {
+		t.Fatalf("SettleSpentRetries = (%d, %v), want the spent job", n, err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at.Add(4*time.Hour)); err != nil || ok {
+		t.Fatalf("claim after the sweep = (%v, %v), want (false, nil)", ok, err)
+	}
+	pruned, err := store.PruneActionFires(at.Add(5 * time.Hour))
+	if err != nil || pruned != 1 {
+		t.Fatalf("retention pruned %d rows (%v), want the ended job", pruned, err)
+	}
+}
+
 // TestDeliveryStaleClaimRecovery pins the crash window: a job claimed by
 // a process that died before settling is re-queued after its claim lease
 // expires, so the alert still executes.

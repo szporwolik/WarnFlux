@@ -66,9 +66,9 @@ func TestPasswordResetTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	token, err := store.CreatePasswordReset(u.ID)
-	if err != nil || len(token) != 64 {
-		t.Fatalf("CreatePasswordReset = %q, %v", token, err)
+	token := issueResetToken(t, store, u.ID)
+	if len(token) != 64 {
+		t.Fatalf("CreatePasswordReset = %q, want 64 hex chars", token)
 	}
 	if err := store.PeekPasswordReset(token); err != nil {
 		t.Fatalf("PeekPasswordReset = %v", err)
@@ -85,16 +85,13 @@ func TestPasswordResetTokens(t *testing.T) {
 	}
 
 	// A fresh token replaces the old one and works.
-	token2, err := store.CreatePasswordReset(u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token2 := issueResetToken(t, store, u.ID)
 	if _, err := store.ConsumePasswordReset(token2); err != nil {
 		t.Fatalf("second token consume = %v", err)
 	}
 
 	// The admin row never gets tokens.
-	if _, err := store.CreatePasswordReset(1); !errors.Is(err, storage.ErrUserProtected) {
+	if _, err := store.CreatePasswordReset(1, ""); !errors.Is(err, storage.ErrUserProtected) {
 		t.Fatalf("admin token = %v, want ErrUserProtected", err)
 	}
 	if err := store.SetUserPassword(1, "x"); !errors.Is(err, storage.ErrUserProtected) {

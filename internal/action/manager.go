@@ -161,11 +161,15 @@ func (m *Manager) Offline() bool { return m.offline.Load() }
 // settled (crash between claim and execution). One immediate pass runs
 // before the workers are active, then a periodic sweep.
 func (m *Manager) recoverStaleClaims(ctx context.Context, interval time.Duration) {
-	if n, err := m.store.RecoverStaleClaims(ctx, time.Now()); err != nil {
-		m.logger.Warn("action: stale claim recovery failed", "error", err)
-	} else if n > 0 {
-		m.logger.Info("action: stale delivery claims recovered", "jobs", n)
+	sweep := func() {
+		if n, err := m.store.RecoverStaleClaims(ctx, time.Now()); err != nil {
+			m.logger.Warn("action: stale claim recovery failed", "error", err)
+		} else if n > 0 {
+			m.logger.Info("action: stale delivery claims recovered", "jobs", n)
+		}
+		m.endSpentRetries(ctx)
 	}
+	sweep()
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -173,11 +177,26 @@ func (m *Manager) recoverStaleClaims(ctx context.Context, interval time.Duration
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := m.store.RecoverStaleClaims(ctx, time.Now()); err != nil {
-				m.logger.Warn("action: stale claim recovery failed", "error", err)
-			} else if n > 0 {
-				m.logger.Info("action: stale delivery claims recovered", "jobs", n)
-			}
+			sweep()
+		}
+	}
+}
+
+// endSpentRetries ends the jobs of every action whose attempt budget is spent
+// while their row still carries a retry deadline (see
+// DeliveryStore.SettleSpentRetries). The worker can never claim them again and
+// retention must not delete pending-looking work, so without this they wait
+// forever — the shape a late async failure of a spent job used to leave behind
+// (reported P2). The budget is the one THIS process runs the action with.
+func (m *Manager) endSpentRetries(ctx context.Context) {
+	for _, inst := range m.instances {
+		n, err := m.store.SettleSpentRetries(ctx, inst.id, inst.retries+1)
+		if err != nil {
+			m.logger.Warn("action: spent retry settlement failed", "action", inst.id, "error", err)
+			continue
+		}
+		if n > 0 {
+			m.logger.Info("action: spent delivery retries ended", "action", inst.id, "jobs", n)
 		}
 	}
 }

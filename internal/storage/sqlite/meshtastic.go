@@ -91,6 +91,12 @@ func (s *Store) DeleteMeshActionProgress(ctx context.Context, publisher, eventKe
 // re-arm OTHER groups' jobs of the same action (reported P2) — now
 // either all of it lands for exactly this job, or none. Returns the
 // number of re-armed jobs.
+//
+// The job's own budget decides the shape of the outcome: a job whose
+// attempts are already spent is settled as a TERMINAL failure (no retry
+// deadline). The worker would never claim it again, while a deadline
+// kept the ordinary retention away — the alert waited for a retry that
+// could not happen, forever (reported P2).
 func (s *Store) RecordMeshFailureAndRequeue(ctx context.Context, actionID string, groupID int64, dedupKey, publisher, eventKey string, changeID int64, recipient string, channel int, now time.Time) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -115,9 +121,14 @@ func (s *Store) RecordMeshFailureAndRequeue(ctx context.Context, actionID string
 		now.Add(-meshProgressRetention).UnixMilli()); err != nil {
 		return 0, fmt.Errorf("prune mesh action failures: %w", err)
 	}
+	// A spent budget turns the re-arm into a terminal failure; a row whose
+	// budget was never recorded (max_attempts = 0, claimed by an earlier
+	// release) keeps the retry deadline and is ended by SettleSpentRetries.
 	res, err := tx.ExecContext(ctx, `
 		UPDATE action_fires
-		SET status = 'failed', next_attempt_at_ms = ?
+		SET status = 'failed',
+			next_attempt_at_ms = CASE WHEN max_attempts > 0 AND attempts >= max_attempts
+				THEN 0 ELSE ? END
 		WHERE action_id = ? AND group_id = ? AND dedup_key = ?
 		  AND status IN ('accepted', 'confirmed')`,
 		now.UnixMilli(), actionID, groupID, dedupKey)

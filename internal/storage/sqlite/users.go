@@ -17,7 +17,7 @@ import (
 )
 
 // userColumns is the canonical user column list for SELECTs.
-const userColumns = `id, username, phone, email, discord, is_admin, role, lang, created_at_ms, updated_at_ms`
+const userColumns = `id, username, phone, email, discord, is_admin, role, lang, created_at_ms, updated_at_ms, auth_version`
 
 // passwordIterations is the PBKDF2-HMAC-SHA256 iteration count used for
 // directory-user passwords (local, single-tenant scope).
@@ -140,6 +140,50 @@ func (s *Store) GetUserByUsername(username string) (storage.User, error) {
 	return s.userByID(id)
 }
 
+// GetUserByEmail returns the one user carrying that e-mail address (case
+// insensitive). An address shared by more than one account is ambiguous and
+// reports storage.ErrUserNotFound, exactly like an unknown one: nothing may
+// decide which of them a password reset, or a login, refers to.
+func (s *Store) GetUserByEmail(email string) (storage.User, error) {
+	id, err := s.uniqueUserBy(`WHERE email = ? COLLATE NOCASE AND email <> ''`, email)
+	if err != nil {
+		if errors.Is(err, storage.ErrBadCredentials) {
+			return storage.User{}, storage.ErrUserNotFound
+		}
+		return storage.User{}, err
+	}
+	return s.userByID(id)
+}
+
+// uniqueUserBy resolves a selector that must name exactly one row: no row and
+// several rows both report storage.ErrBadCredentials (an ambiguous identifier
+// is no identifier).
+func (s *Store) uniqueUserBy(where string, arg any) (int64, error) {
+	rows, err := s.db.Query(`SELECT id FROM users `+where, arg)
+	if err != nil {
+		return 0, fmt.Errorf("lookup user: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, fmt.Errorf("lookup user: %w", err)
+		}
+		ids = append(ids, id)
+		if len(ids) > 1 {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("lookup user: %w", err)
+	}
+	if len(ids) != 1 {
+		return 0, storage.ErrBadCredentials
+	}
+	return ids[0], nil
+}
+
 // CreateUser inserts a new regular user. A duplicate username (case
 // insensitive) reports storage.ErrUsernameTaken.
 func (s *Store) CreateUser(username, phone, email, discord, role, password string) (storage.User, error) {
@@ -178,6 +222,12 @@ func (s *Store) CreateUser(username, phone, email, discord, role, password strin
 // non-empty) the password of a regular user. The admin row's identity is
 // config-owned (username, role and password never change here), but its
 // contact fields (phone, email, discord) still update.
+//
+// A password change and a change of the recovery address both end the
+// outstanding password-reset links of the account, in the same
+// transaction as the edit itself. An edit that re-passwords the account or
+// changes its role or username also raises its credential version, which
+// retires every session opened from an older one.
 func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, password string) (storage.User, error) {
 	var isAdmin int
 	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, id).Scan(&isAdmin)
@@ -188,6 +238,9 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 		return storage.User{}, fmt.Errorf("inspect user %d: %w", id, err)
 	}
 	if isAdmin != 0 {
+		// The admin row is config-owned and can never own a reset link
+		// (CreatePasswordReset refuses it), so editing its contact fields
+		// cannot leave a live token behind.
 		res, err := s.db.Exec(`
 			UPDATE users SET phone = ?, email = ?, discord = ?, updated_at_ms = ?
 			WHERE id = ? AND is_admin = 1`,
@@ -223,7 +276,8 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 		defer tx.Rollback()
 		res, err := tx.ExecContext(ctx, `
 			UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?,
-				password_salt = ?, password_hash = ?, updated_at_ms = ?
+				password_salt = ?, password_hash = ?, updated_at_ms = ?,
+				auth_version = auth_version + 1
 			WHERE id = ? AND is_admin = 0`,
 			username, phone, email, discord, role, salt, hash, now, id)
 		if err != nil {
@@ -241,8 +295,26 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 		return s.afterUpdate(res, id)
 	}
 
-	res, err := s.db.Exec(`
-		UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?, updated_at_ms = ?
+	// An edit that leaves the password alone still closes the recovery
+	// path when it moves the account to another mailbox: a link mailed to
+	// the previous address must not set a password on an account that
+	// address no longer belongs to. The edit and the purge commit
+	// together, exactly like a password change. A new username or role
+	// retires the account's sessions through the credential version.
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return storage.User{}, fmt.Errorf("begin update user %d: %w", id, err)
+	}
+	defer tx.Rollback()
+	prev, err := previousIdentityTx(ctx, tx, id)
+	if err != nil {
+		return storage.User{}, err
+	}
+	addressChanged := !sameAddress(prev.email, email)
+	bumpVersion := prev.username != username || prev.role != role
+	res, err := tx.ExecContext(ctx, `
+		UPDATE users SET username = ?, phone = ?, email = ?, discord = ?, role = ?, updated_at_ms = ?`+versionBump(bumpVersion)+`
 		WHERE id = ? AND is_admin = 0`,
 		username, phone, email, discord, role, now, id)
 	if err != nil {
@@ -250,6 +322,121 @@ func (s *Store) UpdateUser(id int64, username, phone, email, discord, role, pass
 			return storage.User{}, storage.ErrUsernameTaken
 		}
 		return storage.User{}, fmt.Errorf("update user %d: %w", id, err)
+	}
+	if addressChanged {
+		if err := purgePasswordResetsTx(ctx, tx, id); err != nil {
+			return storage.User{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return storage.User{}, fmt.Errorf("commit update user %d: %w", id, err)
+	}
+	return s.afterUpdate(res, id)
+}
+
+// identityEdit is the account state an edit is about to replace: the recovery
+// address decides whether outstanding reset links die, the username and role
+// decide whether the account's sessions do.
+type identityEdit struct {
+	username string
+	email    string
+	role     string
+}
+
+// previousIdentityTx reads the state an edit replaces, inside the caller's
+// transaction.
+func previousIdentityTx(ctx context.Context, q queryRower, id int64) (identityEdit, error) {
+	var prev identityEdit
+	err := q.QueryRowContext(ctx, `SELECT username, email, role FROM users WHERE id = ?`, id).
+		Scan(&prev.username, &prev.email, &prev.role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return identityEdit{}, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return identityEdit{}, fmt.Errorf("inspect user %d: %w", id, err)
+	}
+	return prev, nil
+}
+
+// sameAddress compares two recovery addresses the way the store matches them
+// elsewhere: case-insensitively and ignoring surrounding blanks.
+func sameAddress(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// versionBump is the SQL fragment that retires the account's sessions, or an
+// empty string when the edit is not an identity change.
+func versionBump(bump bool) string {
+	if !bump {
+		return ""
+	}
+	return ", auth_version = auth_version + 1"
+}
+
+// UpdateUserProfile replaces the contact fields and (when password is
+// non-empty) the password of an account WITHOUT writing its identity: the
+// username and the role are left exactly as they are. The self-service
+// account form used to hand back the values it had read when the page was
+// rendered, so an administrator's promotion or demotion landing meanwhile
+// was overwritten by the operator's own profile save (reported P2).
+func (s *Store) UpdateUserProfile(id int64, phone, email, discord, password string) (storage.User, error) {
+	var isAdmin int
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, id).Scan(&isAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.User{}, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return storage.User{}, fmt.Errorf("inspect user %d: %w", id, err)
+	}
+	if isAdmin != 0 {
+		res, err := s.db.Exec(`
+			UPDATE users SET phone = ?, email = ?, discord = ?, updated_at_ms = ?
+			WHERE id = ? AND is_admin = 1`,
+			phone, email, discord, s.now().UnixMilli(), id)
+		if err != nil {
+			return storage.User{}, fmt.Errorf("update admin contact fields: %w", err)
+		}
+		return s.afterUpdate(res, id)
+	}
+
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return storage.User{}, fmt.Errorf("begin profile update for user %d: %w", id, err)
+	}
+	defer tx.Rollback()
+	// The address the account carries NOW decides whether the outstanding
+	// reset links die with this edit (see UpdateUser).
+	prev, err := previousIdentityTx(ctx, tx, id)
+	if err != nil {
+		return storage.User{}, err
+	}
+	now := s.now().UnixMilli()
+	cols := "phone = ?, email = ?, discord = ?, updated_at_ms = ?"
+	args := []any{phone, email, discord, now}
+	purgeResets := !sameAddress(prev.email, email)
+	if password != "" {
+		salt, hash, err := s.passwordFields(password)
+		if err != nil {
+			return storage.User{}, err
+		}
+		cols += ", password_salt = ?, password_hash = ?, auth_version = auth_version + 1"
+		args = append(args, salt, hash)
+		purgeResets = true
+	}
+	args = append(args, id)
+	res, err := tx.ExecContext(ctx, `UPDATE users SET `+cols+`
+		WHERE id = ? AND is_admin = 0`, args...)
+	if err != nil {
+		return storage.User{}, fmt.Errorf("update profile of user %d: %w", id, err)
+	}
+	if purgeResets {
+		if err := purgePasswordResetsTx(ctx, tx, id); err != nil {
+			return storage.User{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return storage.User{}, fmt.Errorf("commit profile update for user %d: %w", id, err)
 	}
 	return s.afterUpdate(res, id)
 }
@@ -271,22 +458,66 @@ func (s *Store) afterUpdate(res sql.Result, id int64) (storage.User, error) {
 // role or without a stored password can never sign in; the admin row
 // signs in through the configured auth account only.
 func (s *Store) Authenticate(username, password string) (storage.User, error) {
-	var id, isAdmin int64
+	return s.authenticate(`WHERE username = ? COLLATE NOCASE`, username, password)
+}
+
+// AuthenticateByEmail signs in the account an operator addressed by its e-mail
+// address. The address must identify exactly ONE account: two accounts sharing
+// an address (nothing in the schema forbids it) make the identifier ambiguous,
+// and an ambiguous identifier must never sign anybody in.
+func (s *Store) AuthenticateByEmail(email, password string) (storage.User, error) {
+	id, err := s.uniqueUserBy(`WHERE email = ? COLLATE NOCASE AND email <> ''`, email)
+	if err != nil {
+		return storage.User{}, err
+	}
+	return s.authenticate(`WHERE id = ?`, id, password)
+}
+
+// authenticate verifies the password of the row one selector names. The
+// returned user carries the credential version read in the SAME statement as
+// the hash it was verified against: the caller binds the session to that
+// version, so a password change landing after the verification (but before
+// the session exists) leaves the session unusable instead of valid.
+func (s *Store) authenticate(where string, arg any, password string) (storage.User, error) {
+	var id, isAdmin, authVersion int64
 	var role, saltHex, hashHex string
 	err := s.db.QueryRow(`
-		SELECT id, is_admin, role, password_salt, password_hash
-		FROM users WHERE username = ? COLLATE NOCASE`, username).
-		Scan(&id, &isAdmin, &role, &saltHex, &hashHex)
+		SELECT id, is_admin, role, password_salt, password_hash, auth_version
+		FROM users `+where, arg).
+		Scan(&id, &isAdmin, &role, &saltHex, &hashHex, &authVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.User{}, storage.ErrBadCredentials
 	}
 	if err != nil {
-		return storage.User{}, fmt.Errorf("authenticate %q: %w", username, err)
+		return storage.User{}, fmt.Errorf("authenticate: %w", err)
 	}
 	if isAdmin != 0 || role == "" || saltHex == "" || hashHex == "" || !verifyPassword(password, saltHex, hashHex) {
 		return storage.User{}, storage.ErrBadCredentials
 	}
-	return s.userByID(id)
+	u, err := s.userByID(id)
+	if err != nil {
+		return storage.User{}, err
+	}
+	// The row is read again for the profile fields; its version may already
+	// be newer than the verified one, and the OLDER of the two is the honest
+	// answer: this session proved the credentials of that version.
+	u.AuthVersion = authVersion
+	return u, nil
+}
+
+// AuthVersion reports the account's current credential version. Sessions
+// carry the version their password was verified against; a mismatch means
+// the credentials or the role changed after that verification.
+func (s *Store) AuthVersion(userID int64) (int64, error) {
+	var v int64
+	err := s.db.QueryRow(`SELECT auth_version FROM users WHERE id = ?`, userID).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, storage.ErrUserNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("auth version of user %d: %w", userID, err)
+	}
+	return v, nil
 }
 
 // passwordFields derives a fresh salt and the password hash for it.
@@ -765,7 +996,8 @@ func (s *Store) SetUserPassword(userID int64, password string) error {
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx, `
-		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?
+		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?,
+			auth_version = auth_version + 1
 		WHERE id = ? AND is_admin = 0`,
 		salt, hash, s.now().UnixMilli(), userID)
 	if err != nil {
@@ -799,18 +1031,18 @@ func purgePasswordResetsTx(ctx context.Context, tx *sql.Tx, userID int64) error 
 // CreatePasswordReset issues a one-time reset token (64 hex chars) for a
 // regular user, stores only its SHA-256 hash and returns the plaintext
 // once. Expired tokens are pruned opportunistically.
-func (s *Store) CreatePasswordReset(userID int64) (string, error) {
-	var isAdmin int
-	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", storage.ErrUserNotFound
-	}
-	if err != nil {
-		return "", fmt.Errorf("inspect user %d: %w", userID, err)
-	}
-	if isAdmin != 0 {
-		return "", storage.ErrUserProtected
-	}
+//
+// The token is bound to the recovery address the caller verified: the INSERT
+// carries the address in its own WHERE clause, so a request suspended between
+// reading the account and issuing the link cannot mint a token for a mailbox
+// the account has already left. An address change committing first leaves no
+// token at all; one committing later purges the token in its own transaction
+// (reported P2).
+//
+// The check, the removal of the account's previous links and the insert are
+// one transaction, the insert coming first: a REFUSED request changes nothing,
+// so it can never take away the link the account was just sent (reported P2).
+func (s *Store) CreatePasswordReset(userID int64, expectedEmail string) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("generate reset token: %w", err)
@@ -820,17 +1052,66 @@ func (s *Store) CreatePasswordReset(userID int64) (string, error) {
 	now := s.now().UnixMilli()
 	expires := now + int64((time.Hour).Milliseconds())
 
-	// Opportunistic prune: old rows for the user + globally expired ones.
-	if _, err := s.db.Exec(`DELETE FROM password_resets WHERE user_id = ? OR expires_at_ms < ?`, userID, now); err != nil {
-		return "", fmt.Errorf("prune reset tokens: %w", err)
+	// Issue the token and replace the account's previous links in ONE
+	// transaction, with the conditional insert FIRST: a request that is
+	// refused (the address moved) must change nothing at all. Pruning before
+	// the check let a late request for the PREVIOUS mailbox delete the link
+	// the account had just been sent for its current one (reported P2).
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin reset token issue for user %d: %w", userID, err)
 	}
-	if _, err := s.db.Exec(`
+	defer tx.Rollback()
+
+	// One statement decides and inserts: it only matches the account while
+	// the address is still the expected one.
+	hash := hex.EncodeToString(sum[:])
+	var issued int64
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO password_resets (user_id, token_hash, expires_at_ms, created_at_ms)
-		VALUES (?, ?, ?, ?)`,
-		userID, hex.EncodeToString(sum[:]), expires, now); err != nil {
+		SELECT id, ?, ?, ? FROM users
+		WHERE id = ? AND is_admin = 0 AND email = ?
+		RETURNING user_id`,
+		hash, expires, now, userID, expectedEmail).Scan(&issued)
+	if errors.Is(err, sql.ErrNoRows) {
+		tx.Rollback()
+		return "", s.resetRefusal(userID)
+	}
+	if err != nil {
 		return "", fmt.Errorf("store reset token: %w", err)
 	}
+	// Only the issued link survives: the account keeps one live recovery
+	// path, and expired rows go with it.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM password_resets
+		WHERE (user_id = ? AND token_hash <> ?) OR expires_at_ms < ?`,
+		userID, hash, now); err != nil {
+		return "", fmt.Errorf("prune reset tokens: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit reset token issue for user %d: %w", userID, err)
+	}
 	return token, nil
+}
+
+// resetRefusal explains why the conditional insert matched nothing: the
+// account is gone, it is the read-only admin row, or its recovery address is
+// no longer the one the caller verified.
+func (s *Store) resetRefusal(userID int64) error {
+	var isAdmin int
+	var email string
+	err := s.db.QueryRow(`SELECT is_admin, email FROM users WHERE id = ?`, userID).Scan(&isAdmin, &email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("inspect user %d: %w", userID, err)
+	}
+	if isAdmin != 0 {
+		return storage.ErrUserProtected
+	}
+	return storage.ErrRecoveryEmailChanged
 }
 
 // ConsumePasswordReset marks a plaintext reset token used and returns the
@@ -888,7 +1169,8 @@ func (s *Store) ResetPasswordWithToken(token, password string) (int64, error) {
 		return 0, storage.ErrUserProtected
 	}
 	res, err := tx.ExecContext(ctx, `
-		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?
+		UPDATE users SET password_salt = ?, password_hash = ?, updated_at_ms = ?,
+			auth_version = auth_version + 1
 		WHERE id = ? AND is_admin = 0`,
 		salt, hash, now, userID)
 	if err != nil {
@@ -1058,7 +1340,7 @@ func scanUser(sc userScanner) (storage.User, error) {
 		admin  int
 		ca, ua int64
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &u.Lang, &ca, &ua); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &u.Lang, &ca, &ua, &u.AuthVersion); err != nil {
 		return storage.User{}, err
 	}
 	u.IsAdmin = admin != 0

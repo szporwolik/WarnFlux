@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +19,12 @@ import (
 )
 
 // forgotSendCooldown is the minimum wait between two successful reset
-// emails for the same (username, client IP) pair: a successful send must
-// not reset the limiter, or a flood of correct requests would keep
-// hammering the mailbox.
+// emails for the same (account, client IP) pair. The key is the RESOLVED
+// account, never what was typed: the form accepts both the username and
+// the address of one account, and a request with the other identifier must
+// not buy a second mail — the newer reset would also cancel the link the
+// first request just mailed. A successful send must not reset the limiter,
+// or a flood of correct requests would keep hammering the mailbox.
 const forgotSendCooldown = 60 * time.Second
 
 // SetPasswordResetMailer installs the delivery function for reset emails
@@ -147,37 +151,64 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u, err := s.users.GetUserByUsername(username)
+	if err != nil && looksLikeEmail(username) {
+		// The operator typed the address as the login (the same habit that
+		// makes the login form accept it): resolve the account by address,
+		// then the standing rule still applies — the typed address must be
+		// the account's own.
+		u, err = s.users.GetUserByEmail(username)
+	}
 	if err != nil || u.IsAdmin || strings.TrimSpace(u.Email) == "" ||
 		!strings.EqualFold(strings.TrimSpace(u.Email), email) {
 		s.loginLimiter.record(limiterKey, false)
-		// Generic answer — no account enumeration.
+		// The answer stays generic (no account enumeration), but the station
+		// RECORDS what it refused: without this line a request that never
+		// matched an account is invisible both in the log and in the audit
+		// trail, and "my reset mail never came" has no answer anywhere.
+		s.logger.Warn("web: password reset refused (no account with that username and e-mail)",
+			"remote", r.RemoteAddr, "ip", s.clientIP(r), "username", logValue(username))
+		s.audit(username, "password-reset-requested", "no-match "+logValue(email))
 		view("", "", i18n.T(lang, "forgot.sent"))
 		return
 	}
 
 	// The SEND is reserved before anything costly happens: one slot from the
 	// concurrency gate (a slow mailer must not stack up work) and the atomic
-	// cooldown reservation on the (username, IP) key. Parallel requests for
-	// the same account therefore serialise here — exactly one of them creates
-	// a token and calls the mailer — instead of all passing a check that is
-	// only recorded once the slower ones are already sending.
+	// cooldown reservation on the (account, IP) key — the account the request
+	// was resolved to, not the identifier that was typed, so asking once by
+	// username and once by e-mail is one and the same pair. Parallel requests
+	// for the same account therefore serialise here — exactly one of them
+	// creates a token and calls the mailer — instead of all passing a check
+	// that is only recorded once the slower ones are already sending.
 	if !s.loginLimiter.acquireReset() {
-		s.logger.Warn("web: forgot sheds a concurrent reset", "remote", r.RemoteAddr, "username", username)
+		s.logger.Warn("web: forgot sheds a concurrent reset", "remote", r.RemoteAddr, "username", u.Username)
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
 		return
 	}
 	defer s.loginLimiter.releaseReset()
-	if !s.loginLimiter.reserveCooldown(limiterKey, forgotSendCooldown) {
-		s.logger.Warn("web: forgot throttled (cooldown already taken)", "remote", r.RemoteAddr, "username", username)
-		wait := s.loginLimiter.retryIn(limiterKey)
+	sendKey := "forgot-account\x00" + strconv.FormatInt(u.ID, 10) + "\x00" + s.clientIP(r)
+	if !s.loginLimiter.reserveCooldown(sendKey, forgotSendCooldown) {
+		s.logger.Warn("web: forgot throttled (cooldown already taken)",
+			"remote", r.RemoteAddr, "username", u.Username, "typed", logValue(username))
+		wait := s.loginLimiter.retryIn(sendKey)
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(wait.Seconds())+1))
 		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
 		return
 	}
 
-	token, err := s.users.CreatePasswordReset(u.ID)
+	// The token is bound to the address that was verified above: should the
+	// account move to another mailbox while this request is in flight, no
+	// link is issued at all — the request described the previous one.
+	token, err := s.users.CreatePasswordReset(u.ID, u.Email)
 	if err != nil {
+		if errors.Is(err, storage.ErrRecoveryEmailChanged) {
+			s.logger.Warn("web: password reset refused (recovery address changed during the request)",
+				"remote", r.RemoteAddr, "ip", s.clientIP(r), "username", logValue(username))
+			s.audit(username, "password-reset-requested", "address-changed "+logValue(u.Email))
+			view("", "", i18n.T(lang, "forgot.sent"))
+			return
+		}
 		s.logger.Error("web: password reset token failed", "username", username, "error", err)
 		s.loginLimiter.record(limiterKey, false)
 		view("", "", i18n.T(lang, "forgot.sent"))
@@ -194,6 +225,7 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	origin := s.resetOrigin()
 	if origin == "" || s.resetMailer == nil || s.OfflineMode() {
 		s.logger.Warn("web: password reset offline (web.domain not configured, no mailer, or offline mode)", "username", username)
+		s.audit(username, "password-reset-requested", "offline")
 		view("", i18n.T(lang, "forgot.offline"), "")
 		return
 	}
@@ -206,11 +238,14 @@ func (s *Server) handleForgotSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := s.resetMailer(strings.TrimSpace(u.Email), subject, body); err != nil {
 		s.logger.Warn("web: password reset email failed", "username", username, "error", err)
 		s.loginLimiter.record(limiterKey, false)
+		s.audit(username, "password-reset-requested", "send-failed "+logValue(err.Error()))
 		view(i18n.T(lang, "forgot.mail_failed"), "", "")
 		return
 	}
 	// The cooldown was reserved before the send and does not clear the key:
 	// repeat sends for the same user+IP wait for it.
+	s.logger.Info("web: password reset email sent", "username", u.Username)
+	s.audit(u.Username, "password-reset-requested", "sent")
 	view("", "", i18n.T(lang, "forgot.sent"))
 }
 
@@ -351,6 +386,21 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		renderErr("password must be 8-72 characters", false)
 		return
 	}
+
+	// The SAME concurrency gate the login form uses guards this public
+	// endpoint: hashing a password is expensive and the store's token check
+	// is a cheap filter that many parallel submissions of one valid link all
+	// pass (a single claim decides afterwards), so without the gate a token
+	// holder bought as many simultaneous PBKDF2 computations as the client
+	// cared to send. The excess is shed here, before the hash is computed
+	// (reported P2).
+	if !s.loginLimiter.acquireHash() {
+		s.logger.Warn("web: reset hash gate full", "remote", r.RemoteAddr)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many attempts, retry later", http.StatusTooManyRequests)
+		return
+	}
+	defer s.loginLimiter.releaseHash()
 
 	// One atomic store call spends the token and stores the new password:
 	// parallel submissions of the same link cannot all pass the check and

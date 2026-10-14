@@ -22,6 +22,13 @@
       </button>
     </div>
 
+    <section class="card">
+      <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-diagram-3"></use></svg>{{tr .Lang "aprs.links_title"}}</h2>
+      {{/* The APRS-IS and RF state refreshes on its own poll, exactly like the
+           modem pill on the GSM page: a TNC that drops shows up in place. */}}
+      <div id="aprs-links">{{template "aprs_links" .}}</div>
+    </section>
+
     <section class="card page-panel" id="panel-map" data-panel="panel-map"{{if eq .Tab "msgs"}} hidden{{end}}>
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-pin"></use></svg>{{tr .Lang "aprsmap.title"}}</h2>
       <p class="muted log-hint">{{tr .Lang "aprsmap.hint"}}</p>
@@ -145,6 +152,30 @@
   {{template "footer" .}}
   <script>window.WF_OFFLINE={{if or .OfflineMode .ForceTiles}}true{{else}}false{{end}};</script>
   <script src="/static/app.js?v={{.Commit}}" defer></script>
+<script>
+// The APRS link card refreshes on its own: the page holds the map and the
+// message history, and neither of them reports a TNC that just dropped.
+(function () {
+  "use strict";
+  var POLL_MS = 5000;
+  var box = document.getElementById("aprs-links");
+  if (!box) { return; }
+  function tick() {
+    if (document.hidden) { return; }
+    fetch("/partials/aprs-links", { headers: { "Accept": "text/html" }, credentials: "same-origin", cache: "no-store" })
+      .then(function (res) {
+        if (res.status === 401) { window.location.href = "/login"; return null; }
+        if (!res.ok) { return null; }
+        return res.text();
+      })
+      .then(function (html) {
+        if (html) { box.innerHTML = html; }
+      })
+      .catch(function () { /* a dropped poll is not worth a banner */ });
+  }
+  setInterval(tick, POLL_MS);
+})();
+</script>
   <script src="/static/leaflet/leaflet.js"></script>
   <script>
   (function () {
@@ -540,3 +571,12 @@
 </body>
 </html>
 {{end}}
+{{/* One badge per APRS backend: the internet link (APRS-IS) and the radio
+     link (KISS TNC, e.g. Direwolf). A backend with no plugin is muted — not a
+     warning — because nothing was configured to be down. */}}
+{{define "aprs_links"}}<p class="link-status">
+  {{range .Links}}<span class="badge {{.Badge}}">{{tr $.Lang .LabelKey}}: {{tr $.Lang .TextKey}}</span>
+  {{if .StateKey}}<span class="badge muted">{{tr $.Lang .StateKey}}</span>
+  {{end}}{{if .Detail}}<span class="link-detail">{{.Detail}}</span>
+  {{end}}{{end}}
+</p>{{end}}

@@ -82,6 +82,12 @@ type DeliveryJob struct {
 	Attempts int
 	// FiredAt is when the transition triggered the job.
 	FiredAt time.Time
+	// MaxAttempts is the attempt budget this job was CLAIMED with (see
+	// ClaimNextDelivery): the worker settles the attempt against the same
+	// budget the claim admitted it under, so one policy decides a job's
+	// retries from its claim on. Zero means the row predates the recorded
+	// budget, and the action's current configuration applies.
+	MaxAttempts int
 }
 
 // DeliveryResult is the per-job outcome of one CommitInboxDelivery call.
@@ -126,12 +132,15 @@ type DeliverySettle struct {
 	// TxFailed landing between the worker's pre-check and the write
 	// can never be lost (reported P1).
 	Version *DeliveryVersion
-	// Payload, when set, REPLACES the stored job payload as part of a
-	// retryable failure (NextAttempt set): an action that delivered to
-	// part of its recipients before it failed leaves the rest in the
-	// payload, so the next attempt covers only what is still pending
-	// (reported P2: a retried SMTP batch started from the beginning of
-	// the list and re-sent the mails that had already gone out).
+	// Payload, when set, REPLACES the stored job payload: an action that
+	// delivered to part of its recipients before it failed leaves the rest
+	// in the payload, so the next attempt covers only what is still
+	// pending (reported P2: a retried SMTP batch started from the
+	// beginning of the list and re-sent the mails that had already gone
+	// out). A TERMINAL failure stores it as well — a replay re-arms the
+	// job from the payload it finds, and a last attempt that lost its
+	// progress made that replay serve the same recipients twice
+	// (reported P2).
 	Payload []byte
 }
 
@@ -156,16 +165,24 @@ type InboxDeliveryStore interface {
 type DeliveryStore interface {
 	// EnqueueDelivery persists one job. It returns the stored job state
 	// and whether THIS call made the job pending: queued=true for a
-	// fresh insert or a re-armed terminal failure, queued=false when the
-	// transition was deduplicated (already pending or delivered).
+	// fresh insert or a re-armed TERMINAL failure, queued=false when the
+	// transition was deduplicated (already pending or delivered). A job
+	// waiting for its scheduled retry is deduplicated like any other: it
+	// keeps the payload that records what earlier attempts already
+	// delivered, its attempt count and its deadline. Re-arming it would
+	// start the work over and could serve one recipient twice.
 	EnqueueDelivery(ctx context.Context, job DeliveryJob) (DeliveryStatus, bool, error)
 
 	// ClaimNextDelivery atomically claims the next due job of one
-	// action: it becomes running, the attempt counter is incremented and
-	// the claim deadline moves past now. maxAttempts bounds the retry
-	// budget (terminal failures are never claimed again); a saved job
-	// recovered from a crashed claim executes even when its spent
-	// attempts equal the budget.
+	// action: it becomes running, the attempt counter is incremented, the
+	// claim deadline moves past now and the row records the budget it was
+	// claimed with. That RECORDED budget bounds the job from then on
+	// (terminal failures are never claimed again) — the same policy
+	// SettleSpentRetries and the late async outcomes follow — while
+	// maxAttempts is the action's current configuration, applied to rows
+	// claimed before the row recorded its own and refreshed with every
+	// claim. A saved job recovered from a crashed claim executes even when
+	// its spent attempts equal the budget.
 	ClaimNextDelivery(ctx context.Context, actionID string, maxAttempts int, now time.Time) (DeliveryJob, bool, error)
 
 	// SettleDelivery records the post-execution stage. A non-terminal
@@ -182,6 +199,13 @@ type DeliveryStore interface {
 	// passed (the process crashed between claim and settlement) back to
 	// saved, so they execute again.
 	RecoverStaleClaims(ctx context.Context, now time.Time) (int64, error)
+
+	// SettleSpentRetries ends the retry of every job of one action whose
+	// attempt budget is spent: the worker can never claim such a row again,
+	// so a retry deadline on it looks like pending work to the ordinary
+	// retention and the job waits forever. Ending it (no deadline) lets the
+	// completed-job retention take it. Returns how many rows were ended.
+	SettleSpentRetries(ctx context.Context, actionID string, maxAttempts int) (int64, error)
 
 	// PendingDeliveries counts non-terminal jobs of one action (status
 	// display).

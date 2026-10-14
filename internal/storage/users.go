@@ -37,6 +37,12 @@ var (
 	// ErrPasswordResetInvalid is returned when a reset token is unknown,
 	// expired or already used.
 	ErrPasswordResetInvalid = errors.New("invalid or expired password reset token")
+	// ErrRecoveryEmailChanged is returned when a reset token is requested
+	// for an account whose recovery address has meanwhile moved: the
+	// request describes a mailbox the account no longer uses, so no link
+	// may be issued for it — and the refusal leaves the account (its
+	// current, valid link included) exactly as it was.
+	ErrRecoveryEmailChanged = errors.New("recovery address changed")
 )
 
 // User is one alert-recipient record. The admin user (the web auth
@@ -56,6 +62,11 @@ type User struct {
 	Discord  string
 	IsAdmin  bool
 	Role     string
+	// AuthVersion is the account's credential version: it is bumped by every
+	// change that invalidates sessions (password, role, username). A session
+	// remembers the version its password was verified against, so a login
+	// that began before such a change can never produce a usable session.
+	AuthVersion int64
 	// Lang is the user's preferred notification language (an i18n
 	// language code); "" means the system default language. Emails and
 	// direct Meshtastic messages are rendered in it.
@@ -208,6 +219,9 @@ type UserStore interface {
 	ListUsers(page, perPage int) ([]User, int, error)
 	// GetUser returns one user by ID.
 	GetUser(id int64) (User, error)
+	// AuthVersion reports the account's CURRENT credential version (see
+	// User.AuthVersion). Unknown accounts report ErrUserNotFound.
+	AuthVersion(userID int64) (int64, error)
 	// GetUserByUsername returns one user by username (case
 	// insensitive); unknown names report ErrUserNotFound.
 	GetUserByUsername(username string) (User, error)
@@ -216,8 +230,21 @@ type UserStore interface {
 	// UpdateUser replaces the contact fields, role and (optionally) the
 	// password of a regular user. The admin row's identity (username,
 	// role, password) is config-owned and never changes here; only its
-	// contact fields (phone, email, discord) update.
+	// contact fields (phone, email, discord) update. Changing the
+	// password OR the recovery address invalidates the outstanding
+	// password-reset links of the account.
 	UpdateUser(id int64, username, phone, email, discord, role, password string) (User, error)
+	// UpdateUserProfile replaces the contact fields and (when password is
+	// non-empty) the password of one account WITHOUT writing its identity:
+	// neither the username nor the role are touched, so a self-service
+	// profile save cannot undo an administrator's decision made while the
+	// operator had the form open. The admin row's identity is config-owned
+	// and only its contact fields update.
+	//
+	// A password change and a change of the recovery address end the
+	// outstanding password-reset links of the account in the same
+	// transaction; a password change also raises the credential version.
+	UpdateUserProfile(id int64, phone, email, discord, password string) (User, error)
 	// DeleteUser removes a regular user.
 	DeleteUser(id int64) error
 	// SetUserAPRS replaces the user's registered APRS callsigns (with
@@ -266,8 +293,20 @@ type UserStore interface {
 	SetUserPassword(userID int64, password string) error
 	// CreatePasswordReset issues a one-time reset token for the user and
 	// returns its plaintext form (the store keeps only a hash). Expired
-	// tokens are pruned opportunistically.
-	CreatePasswordReset(userID int64) (string, error)
+	// tokens are pruned opportunistically, and the account's other links
+	// are replaced by the new one; a REFUSED request (see
+	// ErrRecoveryEmailChanged) changes nothing at all.
+	//
+	// expectedEmail is the recovery address the caller is about to mail the
+	// link to; the token is created ONLY while the account still carries
+	// exactly that address, and the check travels in the same statement as
+	// the insert. An address change committing before the insert therefore
+	// produces no token, and one committing after it deletes the token
+	// again (the change purges outstanding links), so a link can never
+	// reach a mailbox the account has left. ErrRecoveryEmailChanged is
+	// reported when the address moved; ErrUserNotFound and
+	// ErrUserProtected keep their usual meaning.
+	CreatePasswordReset(userID int64, expectedEmail string) (string, error)
 	// ConsumePasswordReset marks a plaintext token used and returns the
 	// user ID. Expired, unknown or already-used tokens report
 	// ErrPasswordResetInvalid.
@@ -285,4 +324,15 @@ type UserStore interface {
 	// the user. Unknown usernames, users without a password and wrong
 	// passwords all report storage.ErrBadCredentials.
 	Authenticate(username, password string) (User, error)
+	// AuthenticateByEmail does the same for an operator who typed the
+	// account's E-MAIL ADDRESS as the login instead of the username — the
+	// report that made the panel accept it ("I log in with my e-mail") — and
+	// reports storage.ErrBadCredentials for everything else, INCLUDING an
+	// address shared by more than one account (an ambiguous identifier must
+	// never sign anybody in).
+	AuthenticateByEmail(email, password string) (User, error)
+	// GetUserByEmail returns the one user carrying that e-mail address
+	// (case insensitive); unknown addresses and addresses shared by more
+	// than one account report storage.ErrUserNotFound.
+	GetUserByEmail(email string) (User, error)
 }

@@ -107,6 +107,51 @@ func TestEventName(t *testing.T) {
 	}
 }
 
+// TestEventSuggestionsAreTranslated pins the compose form's suggestions: the
+// names offered there are the ones every channel already translates, so a
+// suggestion an operator picks never reaches a Polish reader in English (an
+// event type typed by hand does — that is how "Brak" once went out).
+func TestEventSuggestionsAreTranslated(t *testing.T) {
+	pl := EventSuggestions("pl")
+	if len(pl) < 10 {
+		t.Fatalf("suggestions = %d, want a usable vocabulary", len(pl))
+	}
+	seen := map[string]bool{}
+	for _, s := range pl {
+		if s.Value == "" || s.Label == "" {
+			t.Errorf("suggestion %+v is empty", s)
+		}
+		if seen[s.Value] {
+			t.Errorf("suggestion %q is offered twice", s.Value)
+		}
+		seen[s.Value] = true
+		if !Supported("pl") {
+			continue
+		}
+		// The label is the translation, so it differs from the canonical
+		// name — except for the names that are deliberately identical.
+		if s.Value != "EMCOM" && s.Value != "Test" && s.Label == s.Value {
+			t.Errorf("suggestion %q has no Polish rendering", s.Value)
+		}
+		if got := EventName("pl", s.Value); got != s.Label {
+			t.Errorf("suggestion %q label = %q, want EventName %q", s.Value, s.Label, got)
+		}
+	}
+	// Sorted by the label the operator reads.
+	for i := 1; i < len(pl); i++ {
+		if pl[i-1].Label > pl[i].Label {
+			t.Errorf("suggestions are not sorted: %q before %q", pl[i-1].Label, pl[i].Label)
+		}
+	}
+	// The compose vocabulary is part of it: a message composed from a
+	// template must read in Polish everywhere.
+	for _, name := range []string{"Information", "Hazard", "Weather alert", "Test"} {
+		if !seen[name] {
+			t.Errorf("compose vocabulary %q is missing from the suggestions", name)
+		}
+	}
+}
+
 // TestCanonicalEventTypesHaveTranslations pins the producer contract: every
 // event type a built-in producer stamps on a hazard — listed with the file
 // that stamps it — must have a translation entry, so no canonical English
@@ -124,6 +169,10 @@ func TestCanonicalEventTypesHaveTranslations(t *testing.T) {
 		"SMS alert":              "internal/gsm/commands.go",
 		"Alert RCB":              "internal/gsm/commands.go",
 		"APRS alert":             "internal/aprs/hub.go",
+		"Information":            "internal/web/compose.go (template prefill)",
+		"Hazard":                 "internal/web/compose.go (template prefill)",
+		"Weather alert":          "internal/web/compose.go (template prefill)",
+		"Test":                   "internal/web/compose.go (template prefill)",
 	}
 	for name, producer := range producers {
 		if _, ok := eventNameKeys[strings.ToLower(name)]; !ok {
@@ -134,7 +183,7 @@ func TestCanonicalEventTypesHaveTranslations(t *testing.T) {
 			t.Errorf("event type %q (%s) has no Polish rendering", name, producer)
 		}
 		// Names that are identical in both languages on purpose.
-		if name != "EMCOM" && name != "Alert RCB" {
+		if name != "EMCOM" && name != "Alert RCB" && name != "Test" {
 			if pl, en := EventName("pl", name), EventName("en", name); pl == en {
 				t.Errorf("event type %q (%s) is not translated", name, producer)
 			}

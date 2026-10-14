@@ -186,6 +186,47 @@ func TestMessageTextSpeaksSystemLanguage(t *testing.T) {
 	}
 }
 
+// TestMessageTextDoesNotRepeatTheSubject pins the line an operator quoted from
+// production: "[SOSNA] SEVERE: Brak — Mup" reads as two subjects, and when the
+// headline is empty the old fallback produced the event type TWICE ("Brak —
+// Brak"). The line carries each fact once — the mail builder always drew it
+// that way.
+func TestMessageTextDoesNotRepeatTheSubject(t *testing.T) {
+	p, err := New(node(t, map[string]any{"url": "http://x/y"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name     string
+		event    string
+		headline string
+		want     string
+	}{
+		{"distinct", "Storm", "Nawałnica nad Niepołomicami", "[SOSNA] SEVERE: Storm — Nawałnica nad Niepołomicami"},
+		{"headline repeats the event", "Storm", "Storm", "[SOSNA] SEVERE: Storm"},
+		{"no headline at all", "Storm", "", "[SOSNA] SEVERE: Storm"},
+		{"no headline, unknown event", "Brak", "", "[SOSNA] SEVERE: Brak"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := hazardRequest()
+			req.Lang = "en"
+			req.Event.Hazard.Hazard.Event = tc.event
+			req.Event.Hazard.Hazard.Headline = tc.headline
+			req.Event.Hazard.Hazard.Areas = nil
+			req.Event.Hazard.Hazard.ExpiresAt = nil
+			text := p.(*discordAction).messageText(req)
+			line := strings.SplitN(text, "\n", 2)[0]
+			if line != tc.want {
+				t.Errorf("line = %q, want %q", line, tc.want)
+			}
+			if tc.headline != "" && tc.headline != tc.event && strings.Count(line, tc.event) != 1 {
+				t.Errorf("the event type appears more than once: %q", line)
+			}
+		})
+	}
+}
+
 func TestMessageTextTruncation(t *testing.T) {
 	p, err := New(node(t, map[string]any{"url": "http://x/y"}))
 	if err != nil {

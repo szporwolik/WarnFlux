@@ -37,7 +37,9 @@
         <input type="hidden" name="received_at" value="{{.Form.ReceivedAt}}">
         <label class="field field-wide">
           <span>{{tr .Lang "compose.event"}}</span>
-          <input type="text" name="event" value="{{.Form.Event}}" required maxlength="120" placeholder="{{tr .Lang "compose.ph.event"}}">
+          <input type="text" name="event" value="{{.Form.Event}}" required maxlength="120" placeholder="{{tr .Lang "compose.ph.event"}}" list="compose-event-choices">
+          <datalist id="compose-event-choices">{{range .EventChoices}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</datalist>
+          <small class="muted field-hint">{{tr .Lang "compose.event_hint"}}</small>
         </label>
         <label class="field field-wide">
           <span>{{tr .Lang "compose.headline"}}</span>
@@ -49,6 +51,10 @@
             {{range .Severities}}<option value="{{.Value}}" {{if eq .Value $.Form.Severity}}selected{{end}}>{{.Label}}</option>{{end}}
           </select>
         </label>
+        <div class="compose-preview" data-prefix="{{.Header1}}">
+          <span class="muted">{{tr .Lang "compose.preview"}}</span>
+          <code id="compose-preview-line"></code>
+        </div>
         <label class="field">
           <span>{{tr .Lang "compose.urgency"}}</span>
           <select name="urgency">
@@ -276,6 +282,49 @@
       });
     });
   })();
+  // The notification preview: the operator sees the line a channel will
+  // send BEFORE sending it, which is how a message reading
+  // "[SOSNA] POWAŻNE: Brak — Mup" stops being a surprise. The severity comes
+  // from its own select (already translated), the event name from the
+  // suggestions above (a canonical name is translated; a typed one is shown
+  // as typed, exactly like the channels do), the headline closes the line.
+  (function () {
+    "use strict";
+    var form = document.querySelector("form.test-form");
+    var box = document.querySelector(".compose-preview");
+    if (!form || !box) { return; }
+    var line = document.getElementById("compose-preview-line");
+    var prefix = (box.getAttribute("data-prefix") || "").trim();
+    var sev = form.querySelector("[name=severity]");
+    var event = form.querySelector("[name=event]");
+    var headline = form.querySelector("[name=headline]");
+    var choices = document.getElementById("compose-event-choices");
+
+    function selectedLabel(sel) {
+      if (!sel || sel.selectedIndex < 0) { return ""; }
+      return (sel.options[sel.selectedIndex].textContent || "").trim();
+    }
+    function eventLabel(value) {
+      if (!value || !choices) { return value; }
+      var hit = Array.prototype.find.call(choices.options, function (o) { return o.value === value; });
+      return hit ? (hit.textContent || "").trim() : value;
+    }
+    function render() {
+      var name = eventLabel((event && event.value || "").trim());
+      var title = (headline && headline.value || "").trim();
+      var body = name;
+      if (title && title !== name) { body = name ? name + " — " + title : title; }
+      var head = "[" + (prefix || "WarnFlux") + "] " + selectedLabel(sev).toLocaleUpperCase();
+      line.textContent = head + (body ? ": " + body : "");
+    }
+    [sev, event, headline].forEach(function (el) {
+      if (!el) { return; }
+      el.addEventListener("input", render);
+      el.addEventListener("change", render);
+    });
+    render();
+  })();
+
   // Time prefills: "Now" stamps the effective time, the +Nh buttons stamp
   // the expiry. Both read the OPERATOR'S browser clock — always fresh,
   // unlike a value rendered into the page — which is the same zone the

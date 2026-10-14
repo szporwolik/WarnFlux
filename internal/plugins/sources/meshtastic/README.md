@@ -55,6 +55,16 @@ it, so a second instance would drive the same session twice.
   on the Config page.
 - **Probes**: on-demand traceroute and range probes from the admin panel.
 
+## The panel shows the device link
+
+The `/meshtastic` page opens with a link pill shaped like the GSM modem one:
+`Device connected and ready` (green) while the session runs, `Device not
+connected` (warning) when it dropped — and next to it the device the hub was
+configured with (`meshtastic.device`, e.g. `/dev/ttyUSB0`) plus the error that
+ended the last session, so an operator sees WHICH link is down and WHY without
+reading the log. The pill rides along with the polled node and message
+fragments, so it follows a link that drops or comes back without a reload.
+
 ## Direct messages need the peer's key (PKI)
 
 Group announcements are channel BROADCASTS: they are encrypted with the
@@ -80,6 +90,25 @@ announced (fresh node, a factory reset or a reflash that changed its key)
 stays undeliverable by DM until it does, and the message stays failed with the
 refusal reason attached.
 
+The wait is kept per PEER and holds every message that peer owes an answer to
+(the operator may have typed two texts before the key landed): they go out one
+after another when the key arrives, each re-sent exactly once, each with its
+own five-minute deadline. Two bounds keep that memory finite — four messages
+per peer and thirty-two in the whole hub. Past them the message is not
+remembered, and the hub says so out loud (`meshtastic: too many messages wait
+for a peer key, this one stays failed`): that text keeps its failed row and
+its reason, so it is visible instead of silently lost. The same recovery runs
+whichever way the refusal arrives — the device's `queueStatus` answer or a
+`ROUTING_APP` frame carrying the error.
+
+**Alert messages are the exception**: a group alert is a durable action job
+(`ProgressRef`), and recording its failure already re-arms that job — the
+action worker re-sends it by itself. Such a message is therefore NOT put on
+the key queue: the station still refreshes the peer's key (that is what
+unblocks every later send), but the retry stays with the worker, so the alert
+goes out twice at most (the refused copy and the worker's retry) instead of
+three times.
+
 The heard-nodes table has a two-way filter next to its heading — every node,
 or `★ Pinned only` for the nodes the station keeps on the radio. It is a view
 switch: nothing is hidden from the radio or the station feed by it.
@@ -90,6 +119,22 @@ public key (the radio can encrypt a DM to it) and ⚠ when it has not — that
 node's direct messages will be refused until its firmware announces one. The
 state comes from the radio's own node table at the handshake and from every
 NodeInfo heard afterwards, so it follows the mesh without a refresh step.
+
+That bookkeeping is bounded, because it describes nodes the station holds:
+a key mark is dropped together with its row when the node directory is pruned,
+and the NodeInfo refresh entries expire once the six-hour gap has passed (they
+rate-limit nothing after it). A hard cap of 4096 marks protects a long
+connection: past it the hub first drops marks for nodes it no longer holds and
+then stops remembering new ones, saying so in the log
+(`meshtastic: peer key marks are at the cap, new ones are not remembered`) —
+never growing in silence.
+
+The refresh cooldown is deliberately NOT tied to the directory: the peer that
+never answered is exactly the one missing from it, so dropping the entry with
+the node would let every later refusal ask again on the next maintenance pass.
+It expires by its own clock, and its own cap (4096 entries) drops the OLDEST
+questions first — the ones closest to expiry — reporting it as
+`too many peers wait for their node info, the oldest questions are forgotten`.
 
 Two more reasons come from the STATION, not the device, and name a failure the
 radio itself never reported: `no_response` — the device transmitted the frame

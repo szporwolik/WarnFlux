@@ -450,8 +450,21 @@ type pendingSend struct {
 // keyWaitWindow bounds the wait for a peer key once the radio refused a
 // message for missing it. The NodeInfo refresh sent at the refusal is
 // answered by the peer's firmware — normally within seconds — and a key that
-// never lands leaves the message failed, exactly as before.
+// never lands leaves the message failed, exactly as before. Every queued
+// message carries its OWN deadline (see keyRetry.when), so a later message
+// never extends the wait of an older one.
 const keyWaitWindow = 5 * time.Minute
+
+// keyRetryPerPeer and keyRetryTotal bound the wait queue: how many messages
+// may wait for one peer's key, and how many may wait in the whole hub. Both
+// are small on purpose — a normal refusal is one or two messages the operator
+// just typed — and an overflow is REFUSED out loud (see awaitPeerKey): the
+// message stays failed with its reason, and the log says the retry could not
+// be remembered instead of the hub growing without a bound.
+const (
+	keyRetryPerPeer = 4
+	keyRetryTotal   = 32
+)
 
 // keyRetry is one direct message the radio refused because the recipient's
 // public key was absent from its node database. The station has already asked
@@ -660,6 +673,12 @@ type SelfInfo struct {
 type Snapshot struct {
 	Connected bool
 	Self      SelfInfo
+	// Device is the configured link (serial path or host:port) and
+	// LastError the reason the session is not running — the two facts the
+	// panel puts next to the connection pill so an operator sees WHICH link
+	// is down and WHY without reading the log.
+	Device    string
+	LastError string
 	// Channels are the device channel names by index.
 	Channels []string
 	// Nodes is the full node directory (recent and long-gone alike);
@@ -973,10 +992,22 @@ type Hub struct {
 	nodeInfoAsked map[uint32]time.Time
 
 	// keyRetries holds the direct messages refused for a missing peer key,
-	// keyed by the peer: the NodeInfo refresh is already on its way and the
-	// message goes out again once that key lands (see retryAfterKey). Nil
-	// until the first such refusal.
-	keyRetries map[uint32]*keyRetry
+	// per peer and oldest first: the NodeInfo refresh is already on its way
+	// and those messages go out again once that key lands (see retryAfterKey).
+	// One peer can owe several of them (the operator sent two texts), so this
+	// is a queue, not a single slot — and it is BOUNDED in both directions
+	// (see keyRetryPerPeer/keyRetryTotal): a peer whose key never arrives must
+	// not grow the hub's memory. Nil until the first such refusal.
+	keyRetries map[uint32][]*keyRetry
+	// keyRetryPerPeerMax / keyRetryTotalMax override those bounds (tests).
+	keyRetryPerPeerMax int
+	keyRetryTotalMax   int
+	// peerKeysMax overrides the key-mark cap, peerKeysSkipped counts the marks
+	// the cap refused since the last sweep (reported there, not per event).
+	peerKeysMax     int
+	peerKeysSkipped int
+	// nodeInfoAskedMax overrides the refresh cooldown cap.
+	nodeInfoAskedMax int
 
 	// userNodes supplies the node numbers registered in the user directory
 	// (nil = nothing to pin); pinNext arms the next pin pass.
@@ -1585,6 +1616,7 @@ func (h *Hub) runSession(ctx context.Context) error {
 			h.pinUserNodes(false)
 			h.retryPending(time.Now())
 			h.expireKeyRetries(time.Now())
+			h.sweepPeerState(time.Now())
 			h.persistNodes()
 			h.beaconTick()
 			h.hazardsTick()
@@ -2715,6 +2747,20 @@ func (h *Hub) expireNodes() {
 			h.nodesDirty = true
 		}
 	}
+	// A key mark is panel evidence for a row this station holds, so it goes
+	// with the node the directory just dropped: without this the map keeps one
+	// entry per node EVER heard while the directory itself stays bounded.
+	//
+	// The refresh cooldown is NOT touched here. It rate-limits a question the
+	// station already asked — and the peer that never answered is exactly the
+	// one missing from the directory: dropping its entry would let every later
+	// PKI refusal ask again on the next maintenance pass. It expires by its own
+	// clock instead (see sweepPeerState).
+	for pid := range h.peerKeys {
+		if h.nodes[meshIDString(pid)] == nil {
+			delete(h.peerKeys, pid)
+		}
+	}
 	// A CONFIRMED removal of a node the directory no longer holds has nothing
 	// left to protect: the next appearance of that node publishes a fresh
 	// document. An unconfirmed one keeps its entry (and its persisted row), so
@@ -2839,6 +2885,12 @@ func (h *Hub) openRemovalLocked(id string) *nodeTombstone {
 // later pass retries it), and a node that published again while this removal
 // was waiting keeps its document.
 //
+// The confirmation is written for the ACTIVITY VERSION this step removed (the
+// entry's quietSince) — never for whatever the node's LastSeen happens to be by
+// then, and never for a replacement entry a later quiet period queued. Anything
+// else would mark a document the broker still holds as gone, and that document
+// would then never be removed.
+//
 // The whole step runs under stationMu, which the position publish takes too:
 // the two operations for one node can never interleave, so the last one to run
 // decides what the broker holds — and a node that just spoke always leaves its
@@ -2875,14 +2927,22 @@ func (h *Hub) publishStationRemoval(parent context.Context, sink func(ctx contex
 		return
 	}
 	h.mu.Lock()
-	if cur := h.openRemovalLocked(id); cur != nil {
+	// The broker took the removal of the document that was on the topic when
+	// this step started: that is the ACTIVITY VERSION the entry names
+	// (tb.quietSince) — never the node's current LastSeen. A node that spoke
+	// while the publish was in flight has just published a NEW document;
+	// marking that newer version as removed would leave it on the broker
+	// forever, because the next TTL crossing would skip the node.
+	//
+	// A replacement entry (the node spoke, this removal was voided, a later
+	// quiet period queued fresh work) is not confirmed by this publish either:
+	// it names a different activity version, whose document the broker still
+	// holds. Only the entry this step actually published gets confirmed.
+	if cur := h.openRemovalLocked(id); cur != nil && cur == tb {
 		cur.confirmed = true
-		// The removal is a fact about an ACTIVITY VERSION: record it on the
-		// node (its row survives a restart) so nothing queues it again while
-		// the node stays quiet.
-		if n := h.nodes[id]; n != nil && n.LastSeen.After(n.RemovedSince) {
-			n.RemovedSince = n.LastSeen
-		}
+	}
+	if n := h.nodes[id]; n != nil && tb.quietSince.After(n.RemovedSince) {
+		n.RemovedSince = tb.quietSince
 		h.nodesDirty = true
 	}
 	h.mu.Unlock()
@@ -3020,8 +3080,7 @@ func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
 	}
 	h.markStatus(ps, TxFailed)
 	if !ps.probe && needsNodeInfoRefresh(res) {
-		h.awaitPeerKey(ps)
-		h.requestNodeInfo(ps.to)
+		h.recoverFromKeyRefusal(ps)
 	}
 }
 
@@ -3031,33 +3090,101 @@ func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
 // its FIRST such refusal: the retry is refused with the same reason when the
 // key was not the real problem, and re-arming the wait then would keep the
 // station re-sending the same text at every NodeInfo.
+//
+// A message the DURABLE action queue owns is left out of it: recording the
+// failure already re-arms that job (markStatus → RecordMeshFailureAndRequeue),
+// so the worker re-sends the alert on its own. Remembering it here as well puts
+// the same text on the air twice — the worker's retry AND the earlier copy the
+// key releases — which is exactly the reported 3 transmissions instead of 2.
+// The key refresh itself is shared by both kinds of message; only the RETRY
+// belongs to the durable queue alone.
+//
+// One peer can owe SEVERAL messages (the operator sent two texts before the
+// key landed) and every one of them is kept — the queue is per peer, oldest
+// first, and each entry carries its own deadline. What is bounded is the
+// queue itself: past keyRetryPerPeer for one peer or keyRetryTotal for the
+// hub, the message is NOT remembered, and that overflow is logged instead of
+// being silent — the message keeps its failed row and its reason, so the
+// operator sees exactly which text stayed behind.
 func (h *Hub) awaitPeerKey(ps *pendingSend) {
-	if ps.keyTried || !ps.wantAck || ps.text == "" {
+	if ps.keyTried || !ps.wantAck || ps.text == "" || ps.prog.active() {
 		return
 	}
 	h.mu.Lock()
 	if h.keyRetries == nil {
-		h.keyRetries = make(map[uint32]*keyRetry)
+		h.keyRetries = make(map[uint32][]*keyRetry)
 	}
-	h.keyRetries[ps.to] = &keyRetry{ps: ps, when: h.clock()}
+	queue := h.keyRetries[ps.to]
+	queued := false
+	for _, kr := range queue {
+		if kr.ps == ps {
+			queued = true
+			break
+		}
+	}
+	perPeer, total := h.keyRetryPerPeer(), h.keyRetryTotal()
+	overflow := len(queue) >= perPeer || h.keyWaitsLocked() >= total
+	if !queued && !overflow {
+		h.keyRetries[ps.to] = append(queue, &keyRetry{ps: ps, when: h.clock()})
+	}
+	waiting, peers := len(queue), len(h.keyRetries)
 	h.mu.Unlock()
+	if queued || !overflow {
+		return
+	}
+	if h.logger != nil {
+		h.logger.Warn("meshtastic: too many messages wait for a peer key, this one stays failed",
+			"to", fmt.Sprintf("%08x", ps.to), "peer_waiting", waiting, "peer_limit", perPeer,
+			"peers_waiting", peers, "total_limit", total)
+	}
 }
 
-// takeKeyRetry hands over the message waiting for one peer's key, if any is
-// still within the window. The entry is consumed either way: a key that
-// arrives too late no longer belongs to the refusal that asked for it.
-func (h *Hub) takeKeyRetry(to uint32) *keyRetry {
+// keyWaitsLocked counts every message waiting for a key, across peers.
+func (h *Hub) keyWaitsLocked() int {
+	n := 0
+	for _, queue := range h.keyRetries {
+		n += len(queue)
+	}
+	return n
+}
+
+// keyRetryPerPeer and keyRetryTotal are the queue bounds (fields so tests can
+// shrink them).
+func (h *Hub) keyRetryPerPeer() int {
+	if h.keyRetryPerPeerMax > 0 {
+		return h.keyRetryPerPeerMax
+	}
+	return keyRetryPerPeer
+}
+
+func (h *Hub) keyRetryTotal() int {
+	if h.keyRetryTotalMax > 0 {
+		return h.keyRetryTotalMax
+	}
+	return keyRetryTotal
+}
+
+// takeKeyRetry hands over the messages waiting for one peer's key, oldest
+// first: every one of them was refused for that same missing key, and the
+// NodeInfo that just arrived is the answer for all of them. Entries whose
+// window ran out are dropped — a key that arrives too late no longer belongs
+// to the refusal that asked for it.
+func (h *Hub) takeKeyRetry(to uint32) []*keyRetry {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	kr := h.keyRetries[to]
-	if kr == nil {
+	queue := h.keyRetries[to]
+	if len(queue) == 0 {
 		return nil
 	}
 	delete(h.keyRetries, to)
-	if h.clock().Sub(kr.when) > keyWaitWindow {
-		return nil
+	now := h.clock()
+	out := make([]*keyRetry, 0, len(queue))
+	for _, kr := range queue {
+		if now.Sub(kr.when) <= keyWaitWindow {
+			out = append(out, kr)
+		}
 	}
-	return kr
+	return out
 }
 
 // retryAfterKey re-sends one direct message the radio refused for a missing
@@ -3086,15 +3213,31 @@ func (h *Hub) retryAfterKey(kr *keyRetry) {
 }
 
 // expireKeyRetries drops the waits whose window ran out: the refusal stands
-// and the operator re-sends by hand (the panel shows why it failed).
+// and the operator re-sends by hand (the panel shows why it failed). Each
+// entry has its own deadline, so an old refusal expires even when a newer
+// message to the same peer is still inside its window.
 func (h *Hub) expireKeyRetries(now time.Time) {
 	h.mu.Lock()
 	var expired []uint32
-	for to, kr := range h.keyRetries {
-		if now.Sub(kr.when) > keyWaitWindow {
-			delete(h.keyRetries, to)
-			expired = append(expired, to)
+	for to, queue := range h.keyRetries {
+		kept := queue[:0]
+		dropped := 0
+		for _, kr := range queue {
+			if now.Sub(kr.when) > keyWaitWindow {
+				dropped++
+				continue
+			}
+			kept = append(kept, kr)
 		}
+		if dropped == 0 {
+			continue
+		}
+		if len(kept) == 0 {
+			delete(h.keyRetries, to)
+		} else {
+			h.keyRetries[to] = kept
+		}
+		expired = append(expired, to)
 	}
 	h.mu.Unlock()
 	if len(expired) > 0 && h.logger != nil {
@@ -3164,6 +3307,16 @@ func needsNodeInfoRefresh(res pb.Routing_Error) bool {
 // peer's firmware suppresses a reply to the same requester for hours, so
 // asking more often only spends airtime.
 const nodeInfoRefreshGap = 6 * time.Hour
+
+// maxPeerKeyMarks caps the key marks one session keeps (see rememberPeerKeyLocked):
+// a mark is a hint rebuilt at every handshake, so a cap costs an operator
+// nothing but a hint, while the map otherwise grows with every node ever heard.
+const maxPeerKeyMarks = 4096
+
+// maxNodeInfoRefreshEntries caps the refresh cooldown map: one small entry per
+// peer asked within the gap, so this bound only matters on a mesh that answers
+// none of them.
+const maxNodeInfoRefreshEntries = 4096
 
 // requestNodeInfo asks one node's radio to re-announce its NodeInfo (and
 // with it its public key), which is what makes a later direct message to
@@ -3316,8 +3469,23 @@ func (h *Hub) handleRoutingAck(pkt *pb.MeshPacket, decoded *pb.Data) {
 	h.sendMu.Unlock()
 	h.markStatus(ps, status)
 	if status == TxFailed && !ps.probe && needsNodeInfoRefresh(routing.GetErrorReason()) {
-		h.requestNodeInfo(ps.to)
+		h.recoverFromKeyRefusal(ps)
 	}
+}
+
+// recoverFromKeyRefusal handles the one refusal a NodeInfo refresh can cure —
+// the peer's public key is missing or unusable, so the frame never entered the
+// air. BOTH paths that report a refusal (the device's queueStatus answer and a
+// ROUTING_APP frame carrying the error) come through here, so neither can end
+// up asking for the key without also remembering the message that needs it:
+// without the wait the key would arrive and the operator's text would stay
+// failed for good.
+//
+// The retry limit lives in awaitPeerKey (a message already re-sent once never
+// arms another wait), so the recovery stays "one NodeInfo ask, one re-send".
+func (h *Hub) recoverFromKeyRefusal(ps *pendingSend) {
+	h.awaitPeerKey(ps)
+	h.requestNodeInfo(ps.to)
 }
 
 // tracerouteHopLimit is the hop budget of one route probe: far above
@@ -4027,7 +4195,7 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 		h.peerKeys = make(map[uint32]bool)
 	}
 	if len(user.GetPublicKey()) > 0 {
-		h.peerKeys[pkt.GetFrom()] = true
+		h.rememberPeerKeyLocked(pkt.GetFrom())
 	} else {
 		delete(h.peerKeys, pkt.GetFrom())
 	}
@@ -4052,7 +4220,11 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// encrypt direct messages: when one was refused for a missing key, this
 	// is the answer that refusal was waiting for.
 	if len(user.GetPublicKey()) > 0 {
-		h.retryAfterKey(h.takeKeyRetry(pkt.GetFrom()))
+		// Every message this peer owes an answer to goes out again: the key
+		// just arrived, and each of them was refused for missing exactly it.
+		for _, kr := range h.takeKeyRetry(pkt.GetFrom()) {
+			h.retryAfterKey(kr)
+		}
 	} else if asked && h.logger != nil {
 		// The station asked THIS peer for its NodeInfo and the answer
 		// carried no key: a direct message to it stays impossible until
@@ -4073,6 +4245,97 @@ func (h *Hub) askedForNodeInfoLocked(to uint32) bool {
 		return false
 	}
 	return h.clock().Sub(asked) <= nodeInfoRefreshGap
+}
+
+// rememberPeerKeyLocked records that one node announced a public key (h.mu is
+// held). The mark is UI evidence, not a decision: the radio keeps its own node
+// table, and the whole map is rebuilt from that table at every handshake — so
+// under pressure the hub prefers dropping what it cannot show (the marks of
+// nodes the directory no longer holds) and then stops remembering new ones,
+// counting them instead of growing without a bound.
+func (h *Hub) rememberPeerKeyLocked(id uint32) {
+	if h.peerKeys == nil {
+		h.peerKeys = make(map[uint32]bool)
+	}
+	if h.peerKeys[id] {
+		return
+	}
+	if cap := h.maxPeerKeys(); len(h.peerKeys) >= cap {
+		for other := range h.peerKeys {
+			if h.nodes[meshIDString(other)] == nil {
+				delete(h.peerKeys, other)
+			}
+		}
+		if len(h.peerKeys) >= cap {
+			h.peerKeysSkipped++
+			return
+		}
+	}
+	h.peerKeys[id] = true
+}
+
+// maxPeerKeys is the cap on the key marks (a field so tests can shrink it).
+func (h *Hub) maxPeerKeys() int {
+	if h.peerKeysMax > 0 {
+		return h.peerKeysMax
+	}
+	return maxPeerKeyMarks
+}
+
+// sweepPeerState drops the per-peer bookkeeping that has outlived what it
+// describes, and reports the pressure the key-mark cap caused:
+//
+//   - nodeInfoAsked: the refresh gap has passed, so the entry rate-limits
+//     nothing (the next refusal may ask again). That expiry is what bounds the
+//     map — it holds at most the peers asked within one gap window.
+//   - peerKeys is bounded by the node directory (a mark is dropped with its
+//     node, see expireNodes) and by the cap; what the cap refused to remember
+//     is counted and reported HERE, so the log carries it once per pass
+//     instead of one line per announcement.
+func (h *Hub) sweepPeerState(now time.Time) {
+	h.mu.Lock()
+	for id, at := range h.nodeInfoAsked {
+		if now.Sub(at) >= nodeInfoRefreshGap {
+			delete(h.nodeInfoAsked, id)
+		}
+	}
+	// The cap is a safety net, not the usual bound: entries live six hours, so
+	// the map is already bounded by the peers asked within one gap. Under real
+	// pressure the OLDEST questions go first — they are the closest to their
+	// own expiry — because the alternative (refusing to remember a question)
+	// would let that peer be asked again on every refusal.
+	expired := 0
+	for len(h.nodeInfoAsked) > h.maxNodeInfoAsked() {
+		var oldest uint32
+		var oldestAt time.Time
+		for id, at := range h.nodeInfoAsked {
+			if oldestAt.IsZero() || at.Before(oldestAt) {
+				oldest, oldestAt = id, at
+			}
+		}
+		delete(h.nodeInfoAsked, oldest)
+		expired++
+	}
+	skipped, marks, asked := h.peerKeysSkipped, len(h.peerKeys), len(h.nodeInfoAsked)
+	h.peerKeysSkipped = 0
+	h.mu.Unlock()
+	if skipped > 0 && h.logger != nil {
+		h.logger.Warn("meshtastic: peer key marks are at the cap, new ones are not remembered",
+			"skipped", skipped, "cap", h.maxPeerKeys(), "marks", marks, "refreshes_waiting", asked)
+	}
+	if expired > 0 && h.logger != nil {
+		h.logger.Warn("meshtastic: too many peers wait for their node info, the oldest questions are forgotten",
+			"forgotten", expired, "cap", h.maxNodeInfoAsked(), "waiting", asked)
+	}
+}
+
+// maxNodeInfoAsked caps the refresh cooldown map (a field so tests can shrink
+// it).
+func (h *Hub) maxNodeInfoAsked() int {
+	if h.nodeInfoAskedMax > 0 {
+		return h.nodeInfoAskedMax
+	}
+	return maxNodeInfoRefreshEntries
 }
 
 // receivePosition updates a node's position (and our own).
@@ -4948,6 +5211,12 @@ func (h *Hub) Snapshot() Snapshot {
 		snap.Nodes = append(snap.Nodes, c)
 	}
 	sort.Slice(snap.Nodes, func(i, j int) bool { return snap.Nodes[i].ID < snap.Nodes[j].ID })
+	// The link facts ride along with the state: the panel shows the device
+	// path and the last error next to the connection pill.
+	snap.Device = h.cfg.Device
+	if h.lastErr != nil {
+		snap.LastError = h.lastErr.Error()
+	}
 	return snap
 }
 

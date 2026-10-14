@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -139,10 +140,10 @@ func (m *memDeliveryStore) SettleDeliveryGuarded(ctx context.Context, d storage.
 	j.status = stage
 	if stage == storage.DeliveryFailed {
 		j.next = d.NextAttempt
-		// A retryable failure may carry the narrowed payload: only the
-		// work that is still pending goes into the next attempt (see
-		// storage.DeliverySettle.Payload).
-		if len(d.Payload) > 0 && !d.NextAttempt.IsZero() {
+		// A failure may carry the narrowed payload — a terminal one too:
+		// the progress of the last attempt is what a replay re-arms from
+		// (see storage.DeliverySettle.Payload).
+		if len(d.Payload) > 0 {
 			j.job.Payload = append([]byte(nil), d.Payload...)
 		}
 	} else {
@@ -227,6 +228,16 @@ func (m *memDeliveryStore) plantSpentRetry(actionID string, payload []byte) {
 		status: storage.DeliveryFailed,
 		next:   time.Now().Add(time.Hour),
 	}
+}
+
+// payloadOf reports the payload the store holds for one job.
+func (m *memDeliveryStore) payloadOf(actionID, dedupKey string) []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j, ok := m.jobs["1|"+actionID+"|"+dedupKey]; ok {
+		return append([]byte(nil), j.job.Payload...)
+	}
+	return nil
 }
 
 // deadlineOf reports the retry deadline of one job (zero = terminal).
@@ -833,7 +844,69 @@ func TestManagerEndsSpentRetries(t *testing.T) {
 	}
 }
 
-// TestHoldOfflineKeepsDequeuedRequest pins the hold path of the worker:
+// TestTerminalFailureStoresThePartialProgress pins the reported P2: the
+// narrowed payload was only written when a retry followed, so the LAST attempt
+// of a partially delivered batch stored a terminal failure without any record
+// of the recipients it had already served — a replay of the job (a re-armed
+// transition) then served them again, because there was nothing to carry over.
+func TestTerminalFailureStoresThePartialProgress(t *testing.T) {
+	oldPoll := DeliveryPollInterval
+	DeliveryPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { DeliveryPollInterval = oldPoll })
+
+	// One attempt in the budget: this attempt is the last one.
+	p := &narrowingPlugin{deliver: []string{"a@example.com"}}
+	reg := NewRegistry()
+	if err := reg.Register("logger", func(*yaml.Node) (Plugin, error) { return p, nil }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager([]config.Action{{
+		ID: "smtp", Type: "logger", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 1, CallTimeout: time.Second, ShutdownTimeout: time.Second},
+	}}, reg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ms := newMemDeliveryStore()
+	m.SetDeliveryStore(ms)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		_ = m.Shutdown(context.Background())
+	})
+
+	payload := []byte(`{"bcc":["a@example.com","b@example.com"]}`)
+	if _, _, err := ms.EnqueueDelivery(ctx, storage.DeliveryJob{
+		GroupID: 1, ActionID: "smtp", EventKey: "imgw:1", DedupKey: "c:partial",
+		Payload: payload, FiredAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("EnqueueDelivery: %v", err)
+	}
+
+	// The attempt delivers to A, fails on B and has no retry left.
+	waitForDelivery(t, func() bool {
+		return ms.deadlineOf("smtp", "c:partial").IsZero() && ms.statusOf(1, "smtp", "c:partial") == storage.DeliveryFailed
+	},
+		"the terminal failure to be recorded")
+	waitForDelivery(t, func() bool { return len(ms.payloadOf("smtp", "c:partial")) > len(payload) },
+		"the progress of the last attempt to be stored")
+	var stored struct {
+		Done []string `json:"done_recipients"`
+	}
+	if err := json.Unmarshal(ms.payloadOf("smtp", "c:partial"), &stored); err != nil {
+		t.Fatalf("stored payload: %v (%s)", err, ms.payloadOf("smtp", "c:partial"))
+	}
+	if got := strings.Join(stored.Done, ","); got != "a@example.com" {
+		t.Fatalf("stored progress = %q, want the recipient the last attempt served", got)
+	}
+	// The failed attempt was the only one: nothing was retried internally.
+	if got := len(p.executed); got != 1 {
+		t.Fatalf("the plugin ran %d times, want 1", got)
+	}
+}
+
+// TestHoldOfflineKeepsDequeuedRequest pins the hold path of the worker:// TestHoldOfflineKeepsDequeuedRequest pins the hold path of the worker:
 // when the offline switch flips between the loop's check and the receive
 // from the queue, the request must wait for the switch instead of being
 // skipped — a hazard accepted a moment before the operator went offline

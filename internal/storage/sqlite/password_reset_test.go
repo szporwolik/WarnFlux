@@ -204,6 +204,88 @@ func TestCreatePasswordResetNeedsTheCurrentAddress(t *testing.T) {
 	}
 }
 
+// TestProfileUpdateKeepsTheAdminsDecision pins the reported P2: the
+// self-service account form used to write back the username and the role it
+// had read when the page was rendered, so an administrator's promotion or
+// demotion landing meanwhile was undone by the operator saving their phone
+// number. The profile update writes no identity at all.
+func TestProfileUpdateKeepsTheAdminsDecision(t *testing.T) {
+	store, _, err := Open(filepath.Join(t.TempDir(), "profile.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := store.CreateUser("alice", "+48600111111", "alice@example.com", "", "member", "start-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What the open profile form holds.
+	stale, err := store.GetUser(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The administrator promotes the account (and renames it) while the
+	// form is open.
+	if _, err := store.UpdateUser(u.ID, "alice2", stale.Phone, stale.Email, "", "emcom", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator saves the profile: the contact fields land, the identity
+	// stays whatever the administrator decided.
+	got, err := store.UpdateUserProfile(stale.ID, "+48600222222", "alice@example.com", "alice#1", "")
+	if err != nil {
+		t.Fatalf("UpdateUserProfile: %v", err)
+	}
+	if got.Role != "emcom" {
+		t.Errorf("role after the profile save = %q, want the administrator's %q", got.Role, "emcom")
+	}
+	if got.Username != "alice2" {
+		t.Errorf("username after the profile save = %q, want the administrator's %q", got.Username, "alice2")
+	}
+	if got.Phone != "+48600222222" || got.Discord != "alice#1" {
+		t.Errorf("profile fields not saved: phone=%q discord=%q", got.Phone, got.Discord)
+	}
+
+	// The password travels through the same call: it changes, the identity
+	// still does not, and the outstanding links die with it.
+	token := issueResetToken(t, store, u.ID)
+	before, err := store.AuthVersion(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.UpdateUserProfile(u.ID, got.Phone, got.Email, got.Discord, "profile-password-2")
+	if err != nil {
+		t.Fatalf("UpdateUserProfile with a password: %v", err)
+	}
+	if got.Role != "emcom" || got.Username != "alice2" {
+		t.Errorf("identity changed by a profile password update: role=%q username=%q", got.Role, got.Username)
+	}
+	if _, err := store.Authenticate("alice2", "profile-password-2"); err != nil {
+		t.Errorf("the profile password does not authenticate: %v", err)
+	}
+	if after, err := store.AuthVersion(u.ID); err != nil || after != before+1 {
+		t.Errorf("credential version after the profile password = %d (%v), want %d", after, err, before+1)
+	}
+	if err := store.PeekPasswordReset(token); !errors.Is(err, storage.ErrPasswordResetInvalid) {
+		t.Errorf("a reset link survived the profile password change: %v", err)
+	}
+
+	// The admin row keeps its behaviour: contact fields only.
+	if err := store.EnsureAdminUser("admin", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateUserProfile(1, "+48600999999", "admin@example.com", "", "ignored-password-9"); err != nil {
+		t.Fatalf("UpdateUserProfile on the admin row: %v", err)
+	}
+	if _, err := store.Authenticate("admin", "ignored-password-9"); err == nil {
+		t.Error("a profile save changed the config-owned admin password")
+	}
+}
+
 // TestResetTokenIsSingleUseUnderConcurrency pins the reported P2: checking
 // the token and marking it used were separate statements, so one link
 // submitted from many places at once was accepted over and over (the

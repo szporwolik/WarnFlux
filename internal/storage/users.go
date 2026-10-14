@@ -216,7 +216,9 @@ type UserStore interface {
 	// UpdateUser replaces the contact fields, role and (optionally) the
 	// password of a regular user. The admin row's identity (username,
 	// role, password) is config-owned and never changes here; only its
-	// contact fields (phone, email, discord) update.
+	// contact fields (phone, email, discord) update. Changing the
+	// password OR the recovery address invalidates the outstanding
+	// password-reset links of the account.
 	UpdateUser(id int64, username, phone, email, discord, role, password string) (User, error)
 	// DeleteUser removes a regular user.
 	DeleteUser(id int64) error

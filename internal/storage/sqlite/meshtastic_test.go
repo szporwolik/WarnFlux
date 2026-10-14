@@ -24,6 +24,11 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 		// document (migration v62): the flag has to survive the round trip,
 		// or the removal is lost with the restart.
 		{ID: "d0d85934", Name: "Gone", LastSeen: seen.Add(-40 * 24 * time.Hour), PendingRemoval: true},
+		// A node whose document the broker already CONFIRMED removing
+		// (migration v63): the version has to survive the round trip, or a
+		// restart queues the same removal again and the panel counts it as a
+		// drop.
+		{ID: "e0e85934", Name: "Done", LastSeen: seen.Add(-2 * time.Hour), RemovedSince: seen.Add(-2 * time.Hour)},
 	}
 	if err := s.SaveMeshtasticNodes(ctx, nodes); err != nil {
 		t.Fatalf("save: %v", err)
@@ -32,9 +37,16 @@ func TestMeshtasticNodesPersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(got) != 4 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" ||
-		got[2].ID != "c0c85934" || got[3].ID != "d0d85934" {
-		t.Fatalf("nodes = %+v, want all four ids", got)
+	if len(got) != 5 || got[0].ID != "a0a85934" || got[1].ID != "b0b85934" ||
+		got[2].ID != "c0c85934" || got[3].ID != "d0d85934" || got[4].ID != "e0e85934" {
+		t.Fatalf("nodes = %+v, want all five ids", got)
+	}
+	if !got[4].RemovedSince.Equal(seen.Add(-2 * time.Hour)) {
+		t.Fatalf("removed_since = %v, want %v (a confirmed removal must survive the restart)",
+			got[4].RemovedSince, seen.Add(-2*time.Hour))
+	}
+	if got[0].RemovedSince.IsZero() != true {
+		t.Fatalf("a node without a confirmed removal carries one: %v", got[0].RemovedSince)
 	}
 	if got[3].PendingRemoval != true || got[0].PendingRemoval || got[1].PendingRemoval || got[2].PendingRemoval {
 		t.Fatalf("pending removal flags = %v %v %v %v, want only d0d85934",

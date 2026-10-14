@@ -494,46 +494,119 @@ func TestStationRemovalDoesNotOutliveTheNodesReturn(t *testing.T) {
 	}
 }
 
-// TestStationRemovalBacklogIsBounded pins the bound: a broker that never takes
-// the removals must not let the station grow without limit. Batches of old
-// nodes keep arriving; the backlog stops at its bound, the directory still
-// empties, and every abandoned removal is COUNTED (the overflow metric) instead
-// of disappearing silently.
+// TestStationRemovalBacklogIsBounded pins the bound: a broker that never
+// takes the removals must not let the station grow without limit. Batches of
+// quiet nodes keep arriving; the ledger stops at its bound and the rest WAIT
+// (deferred, not lost) — and once the broker answers again, every waiting
+// removal still goes out, because what waits is the node directory itself.
 func TestStationRemovalBacklogIsBounded(t *testing.T) {
 	sink := newRecordingStationSink()
 	sink.setFail(errors.New("broker unreachable"))
 	h := newStationFeedHub(t, sink)
+	h.pendingRemovalsMax = 32
 
-	const batches, perBatch = 6, 100
+	const batches, perBatch = 6, 20
 	seeded := 0
 	for batch := 0; batch < batches; batch++ {
 		for i := 0; i < perBatch; i++ {
 			seeded++
-			h.SeedNode(oldNodeID(seeded), "old", "", 0, 0,
-				time.Now().Add(-(nodeDirRetention + time.Hour)), nil)
+			// Quiet, but inside retention: the node stays in the directory, so
+			// its removal waits there instead of being lost.
+			h.SeedNode(oldNodeID(seeded), "old", "", 0, 0, time.Now().Add(-2*time.Hour), nil)
 		}
 		h.expireNodes()
-		if got := directorySize(h); got != 0 {
-			t.Fatalf("directory = %d nodes after batch %d, want none (all past retention)", got, batch+1)
+		pending, waiting, _ := h.StationRemovals()
+		if pending > 32 {
+			t.Fatalf("backlog = %d after batch %d, want at most the bound 32", pending, batch+1)
 		}
-		pending, _ := h.StationRemovals()
-		if pending > maxPendingStationRemovals {
-			t.Fatalf("backlog = %d after batch %d, want at most %d", pending, batch+1, maxPendingStationRemovals)
+		if pending+waiting != seeded {
+			t.Fatalf("pending+waiting = %d+%d after batch %d, want all %d accounted for",
+				pending, waiting, batch+1, seeded)
 		}
 	}
 
-	pending, dropped := h.StationRemovals()
-	if pending != maxPendingStationRemovals {
-		t.Fatalf("backlog = %d, want the bound %d", pending, maxPendingStationRemovals)
-	}
-	if want := seeded - maxPendingStationRemovals; dropped != want {
-		t.Fatalf("dropped = %d, want %d (every abandoned removal is counted)", dropped, want)
+	pending, waiting, dropped := h.StationRemovals()
+	if pending != 32 || waiting != seeded-32 || dropped != 0 {
+		t.Fatalf("pending/waiting/dropped = %d/%d/%d, want 32/%d/0 (nothing abandoned)",
+			pending, waiting, dropped, seeded-32)
 	}
 	snap := h.Snapshot()
-	if snap.PendingRemovals != maxPendingStationRemovals || snap.RemovalsDropped != dropped {
-		t.Fatalf("snapshot backlog = %d/%d, want the same numbers as the metric (%d/%d)",
-			snap.PendingRemovals, snap.RemovalsDropped, maxPendingStationRemovals, dropped)
+	if snap.PendingRemovals != pending || snap.RemovalsWaiting != waiting || snap.RemovalsDropped != 0 {
+		t.Fatalf("snapshot = %d/%d/%d, want the same numbers as the metric (%d/%d/0)",
+			snap.PendingRemovals, snap.RemovalsWaiting, snap.RemovalsDropped, pending, waiting)
 	}
+
+	// The broker comes back: the ledger drains, and every deferred removal is
+	// offered again — the waiting nodes are not forgotten.
+	sink.setFail(nil)
+	for pass := 0; pass < 40; pass++ {
+		ageRemovalAttempts(h)
+		h.expireNodes()
+		if p, w, _ := h.StationRemovals(); p == 0 && w == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if p, w, d := h.StationRemovals(); p != 0 || w != 0 || d != 0 {
+		t.Fatalf("after the broker returned: pending/waiting/dropped = %d/%d/%d, want 0/0/0", p, w, d)
+	}
+}
+
+// TestStationRemovalAConfirmedOneIsNotQueuedAgain pins the fix for the counter
+// the panel showed ("MQTT removals: 310"): a removal the broker CONFIRMED is a
+// fact about the node's activity version, so it survives a restart and is never
+// queued again while the node stays quiet — no repeated publishes, no repeated
+// overflow counting.
+func TestStationRemovalAConfirmedOneIsNotQueuedAgain(t *testing.T) {
+	sink := newRecordingStationSink()
+	h := newStationFeedHub(t, sink)
+	store := &memNodeStore{}
+	h.SetNodeStore(store)
+
+	const nodes = 40
+	for i := 1; i <= nodes; i++ {
+		h.SeedNode(oldNodeID(i), "quiet", "", 0, 0, time.Now().Add(-2*time.Hour), nil)
+	}
+	h.expireNodes()
+	waitFor(t, "every removal to reach the broker", func() bool { return len(sink.removals()) == nodes })
+
+	// The next pass owes nothing: the documents are already gone.
+	h.expireNodes()
+	if got := len(sink.removals()); got != nodes {
+		t.Fatalf("removals = %d after a second pass, want no new ones", got)
+	}
+	if p, w, d := h.StationRemovals(); p != 0 || w != 0 || d != 0 {
+		t.Fatalf("pending/waiting/dropped = %d/%d/%d, want 0/0/0", p, w, d)
+	}
+
+	// A restart on the same store: the confirmed removals are remembered (the
+	// row carries the version), so the station does NOT re-queue them.
+	h.persistNodes()
+	waitFor(t, "the directory save", func() bool {
+		rows, err := store.LoadMeshtasticNodes(context.Background())
+		return err == nil && len(rows) == nodes
+	})
+	restarted := newStationFeedHub(t, sink)
+	restarted.SetNodeStore(store)
+	restarted.restoreNodes(context.Background())
+	restarted.expireNodes()
+	time.Sleep(50 * time.Millisecond)
+	if got := len(sink.removals()); got != nodes {
+		t.Fatalf("removals = %d after a restart, want the confirmed ones NOT queued again", got)
+	}
+	if p, w, d := restarted.StationRemovals(); p != 0 || w != 0 || d != 0 {
+		t.Fatalf("restarted pending/waiting/dropped = %d/%d/%d, want 0/0/0", p, w, d)
+	}
+
+	// A node heard again is a NEW version: its document is published again and
+	// the next quiet period owes a fresh removal.
+	heardNow(restarted, oldNodeID(1), nil)
+	restarted.expireNodes()
+	quietFor(restarted, oldNodeID(1), 2*time.Hour)
+	restarted.expireNodes()
+	waitFor(t, "the fresh removal of the node that came back", func() bool {
+		return len(sink.removals()) == nodes+1
+	})
 }
 
 // TestStationRemovalNeedsAStationFeed: an installation without a station feed
@@ -546,8 +619,8 @@ func TestStationRemovalNeedsAStationFeed(t *testing.T) {
 	}
 	h.expireNodes()
 
-	if pending, dropped := h.StationRemovals(); pending != 0 || dropped != 0 {
-		t.Fatalf("backlog = %d/%d without a station feed, want none", pending, dropped)
+	if pending, waiting, dropped := h.StationRemovals(); pending != 0 || waiting != 0 || dropped != 0 {
+		t.Fatalf("backlog = %d/%d/%d without a station feed, want none", pending, waiting, dropped)
 	}
 	if got := directorySize(h); got != 0 {
 		t.Fatalf("directory = %d nodes, want none past retention", got)
@@ -573,7 +646,7 @@ func TestStationRemovalBacklogIsBoundedOnLoad(t *testing.T) {
 	h.SetNodeStore(store)
 	h.restoreNodes(context.Background())
 
-	if pending, dropped := h.StationRemovals(); pending != maxPendingStationRemovals || dropped != 25 {
+	if pending, _, dropped := h.StationRemovals(); pending != maxPendingStationRemovals || dropped != 25 {
 		t.Fatalf("restored backlog = %d/%d, want %d pending and 25 dropped",
 			pending, dropped, maxPendingStationRemovals)
 	}
@@ -688,12 +761,12 @@ func TestStationRemovalBacklogDoesNotChurn(t *testing.T) {
 	}
 
 	h.expireNodes()
-	pending, dropped := h.StationRemovals()
+	pending, waiting, dropped := h.StationRemovals()
 	if pending != maxPendingStationRemovals {
 		t.Fatalf("backlog = %d, want the bound %d", pending, maxPendingStationRemovals)
 	}
-	if dropped != extra {
-		t.Fatalf("dropped = %d, want %d refusals", dropped, extra)
+	if waiting != extra || dropped != 0 {
+		t.Fatalf("waiting/dropped = %d/%d, want %d waiting and nothing dropped", waiting, dropped, extra)
 	}
 	// Wait until the WORKER worked off the batch: every pending removal was
 	// handed to it, so the attempt count stops there.
@@ -706,8 +779,9 @@ func TestStationRemovalBacklogDoesNotChurn(t *testing.T) {
 	// pace must hold (no attempt may run before it elapsed).
 	h.expireNodes()
 	h.expireNodes()
-	if pending, dropped = h.StationRemovals(); dropped != extra {
-		t.Fatalf("dropped = %d after two more passes, want the %d refusals once", dropped, extra)
+	if pending, waiting, dropped = h.StationRemovals(); waiting != extra || dropped != 0 {
+		t.Fatalf("waiting/dropped = %d/%d after two more passes, want %d waiting and nothing dropped",
+			waiting, dropped, extra)
 	}
 	if pending != maxPendingStationRemovals {
 		t.Fatalf("backlog = %d after two more passes, want the bound", pending)
@@ -722,38 +796,44 @@ func TestStationRemovalBacklogDoesNotChurn(t *testing.T) {
 	ageRemovalAttempts(h)
 	h.expireNodes()
 	waitFor(t, "the retry after the pace", func() bool { return sink.attemptCount() > attempts })
-	if _, dropped = h.StationRemovals(); dropped != extra {
-		t.Fatalf("dropped = %d after the retry, want %d", dropped, extra)
+	if _, waiting, dropped = h.StationRemovals(); waiting != extra || dropped != 0 {
+		t.Fatalf("waiting/dropped = %d/%d after the retry, want %d waiting and nothing dropped",
+			waiting, dropped, extra)
 	}
 }
 
-// TestStationRemovalRefusalIsForgottenWhenTheNodeReturns: the refusal is tied
-// to one activity version — a node heard again is queued afresh once it goes
-// quiet a second time.
-func TestStationRemovalRefusalIsForgottenWhenTheNodeReturns(t *testing.T) {
+// TestStationRemovalWaitingEndsWhenTheNodeReturns: a node due a removal that
+// had no room WAITS in the directory; the moment it is heard again the
+// document is fresh and nothing is owed — and once it goes quiet a second time
+// the removal is offered again.
+func TestStationRemovalWaitingEndsWhenTheNodeReturns(t *testing.T) {
 	sink := newRecordingStationSink()
 	sink.setFail(errors.New("broker unreachable"))
 	h := newStationFeedHub(t, sink)
+	h.pendingRemovalsMax = 4
 
-	// Fill the backlog and refuse one more node.
-	for i := 1; i <= maxPendingStationRemovals; i++ {
+	for i := 1; i <= 4; i++ {
 		h.SeedNode(oldNodeID(i), "quiet", "", 0, 0, time.Now().Add(-2*time.Hour), nil)
 	}
-	refused := oldNodeID(maxPendingStationRemovals + 1)
-	h.SeedNode(refused, "quiet", "", 0, 0, time.Now().Add(-2*time.Hour), nil)
+	waited := oldNodeID(5)
+	h.SeedNode(waited, "quiet", "", 0, 0, time.Now().Add(-2*time.Hour), nil)
 	h.expireNodes()
-	if _, dropped := h.StationRemovals(); dropped != 1 {
-		t.Fatalf("dropped = %d, want the single refusal", dropped)
+	if _, waiting, dropped := h.StationRemovals(); waiting != 1 || dropped != 0 {
+		t.Fatalf("waiting/dropped = %d/%d, want the single waited removal and nothing dropped", waiting, dropped)
 	}
 
-	// The node is heard again: the refusal no longer applies, and the next
-	// quiet period is queued as soon as there is room.
-	heardNow(h, refused, &Telemetry{Voltage: 4.0})
+	// The node is heard again: its document is fresh, so nothing is owed.
+	heardNow(h, waited, &Telemetry{Voltage: 4.0})
 	h.expireNodes()
-	h.mu.Lock()
-	_, remembered := h.abandonedRemovals[refused]
-	h.mu.Unlock()
-	if remembered {
-		t.Fatal("the refusal outlived the activity version it referred to")
+	if _, waiting, _ := h.StationRemovals(); waiting != 0 {
+		t.Fatalf("waiting = %d after the node returned, want none", waiting)
+	}
+
+	// It goes quiet a second time: the fresh version is owed (and still waits
+	// for room, because the broker never confirmed the batch before it).
+	quietFor(h, waited, 2*time.Hour)
+	h.expireNodes()
+	if _, waiting, dropped := h.StationRemovals(); waiting != 1 || dropped != 0 {
+		t.Fatalf("waiting/dropped = %d/%d after the second quiet period, want 1/0", waiting, dropped)
 	}
 }

@@ -133,7 +133,33 @@ and `meshtastic: requested node info to refresh the peer key`) tells the two
 apart: a missing KEY is fixed on the peer, a missing ROUTE is a radio
 coverage problem.
 
+## Retained documents of quiet nodes
+
+Every node heard over the radio gets one retained MQTT document under
+`<topic_prefix>/meshtastic/stations/<id>`. A node that stops transmitting
+keeps its last document forever unless something removes it, so the hub queues
+a removal once a node has been quiet for `meshtastic.node_ttl` and publishes an
+empty retained payload — only then does the broker forget it.
+
+Two properties of that work are worth knowing, because the panel shows them:
+
+- **A confirmed removal is a fact about an ACTIVITY VERSION.** The version (the
+  node's last-heard observation at the time) is stored with the node, so a
+  restart never queues that removal again, and a node heard afterwards is a new
+  version that owes a fresh removal. Without this the station re-published the
+  removals of documents that were long gone on every restart, and the overflow
+  counter grew each time for no reason.
+- **The ledger is bounded, and what does not fit WAITS.** The station keeps at
+  most `maxPendingStationRemovals` (512) removals in flight; further quiet nodes
+  stay due and are offered again as the broker confirms what is ahead of them.
+  Nothing is lost while the node stays in the directory (30 days), and the
+  panel's muted badge (`MQTT removals waiting: N`) is that backlog — not a
+  failure. The red badge (`MQTT removals: N`) is the genuine overflow: removals
+  restored from a database whose backlog is longer than the bound, or nodes that
+  left the directory while their removal was still waiting for room.
+
 `internal/meshtastic/hub.go` is the authoritative implementation; the
+
 `meshtastic:` section of `config.example.yaml` documents every key. The mesh
 session is local-only (serial or a LAN TCP node), so the offline-mode switch
 never suspends it — see `docs/offline-mode.md`.

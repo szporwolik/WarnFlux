@@ -477,3 +477,63 @@ func TestHubPeerKeyRefusalTotalQueueIsBounded(t *testing.T) {
 		t.Fatalf("the overflow was silent; log lines: %s", log)
 	}
 }
+
+// TestHubPeerKeyRefusalLeavesDurableAlertsToTheWorker pins the double-retry
+// ticket: an alert (a message with a durable action-progress identity) refused
+// for a missing key is ALREADY re-armed by recording the failure, so the worker
+// re-sends it. Remembering it for the key as well put the same text on the air
+// three times: the refused copy, the worker's retry, and the earlier copy the
+// key released. The key still has to be refreshed — that part is shared.
+func TestHubPeerKeyRefusalLeavesDurableAlertsToTheWorker(t *testing.T) {
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		AckSettleTimeout: time.Hour})
+	radio.waitConnected(t)
+	rec := &captureRecorder{}
+	radio.hub.SetRecorder(rec)
+
+	prog := ProgressRef{ActionID: "mesh-main", GroupID: 7, DedupKey: "c:1",
+		Publisher: "p1", EventKey: "k", ChangeID: 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	send := func() {
+		t.Helper()
+		if err := radio.hub.SendContactMessageVersioned(ctx, fmt.Sprintf("%08x", peerKeyNode),
+			"alarm", "admin", prog); err != nil {
+			t.Fatalf("SendContactMessageVersioned: %v", err)
+		}
+	}
+	send()
+	// The device refuses the alert for the missing peer key.
+	dispatchQueueStatus(t, radio, pb.Routing_PKI_UNKNOWN_PUBKEY, 4242)
+	waitFor(t, "the refusal to settle the alert", func() bool {
+		msgs := rec.messages()
+		return len(msgs) == 1 && msgs[0].Status == TxFailed
+	})
+	if got := rec.rearmedCount(); got != 1 {
+		t.Fatalf("re-armed jobs = %d, want 1: the durable queue owns this retry", got)
+	}
+	// The peer is still asked for its key (that is what unblocks later sends).
+	waitFor(t, "the node info request", func() bool {
+		for _, p := range radio.outbound() {
+			if p.GetTo() == peerKeyNode && p.GetDecoded().GetPortnum() == pb.PortNum_NODEINFO_APP &&
+				p.GetDecoded().GetWantResponse() {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The worker retries the alert (the durable queue's own re-send)...
+	send()
+	waitFor(t, "the worker's retry", func() bool { return textFramesTo(radio, peerKeyNode, "alarm") == 2 })
+
+	// ...and the key lands: nothing else may go out, the earlier copy is dead.
+	dispatchPkt(t, radio, peerNodeInfo(peerKeyNode, "ZAY0", "ZAY0", bytes.Repeat([]byte{0x55}, 32)))
+	time.Sleep(200 * time.Millisecond)
+	if got := textFramesTo(radio, peerKeyNode, "alarm"); got != 2 {
+		t.Fatalf("transmissions = %d, want 2 (the refused copy and the worker's retry): the key must not re-send the old copy", got)
+	}
+	if waiting := keyWaitCount(radio.hub); waiting != 0 {
+		t.Fatalf("key waits = %d, want none", waiting)
+	}
+}

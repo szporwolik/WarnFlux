@@ -91,6 +91,14 @@ its reason, so it is visible instead of silently lost. The same recovery runs
 whichever way the refusal arrives — the device's `queueStatus` answer or a
 `ROUTING_APP` frame carrying the error.
 
+**Alert messages are the exception**: a group alert is a durable action job
+(`ProgressRef`), and recording its failure already re-arms that job — the
+action worker re-sends it by itself. Such a message is therefore NOT put on
+the key queue: the station still refreshes the peer's key (that is what
+unblocks every later send), but the retry stays with the worker, so the alert
+goes out twice at most (the refused copy and the worker's retry) instead of
+three times.
+
 The heard-nodes table has a two-way filter next to its heading — every node,
 or `★ Pinned only` for the nodes the station keeps on the radio. It is a view
 switch: nothing is hidden from the radio or the station feed by it.

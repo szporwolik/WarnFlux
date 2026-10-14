@@ -1979,6 +1979,14 @@ func (c *captureRecorder) RecordMeshFailureAndRequeue(_ context.Context, actionI
 	return 1, nil
 }
 
+// rearmedCount reads the durable re-arm counter under the lock (the hub
+// records from its own goroutines).
+func (c *captureRecorder) rearmedCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rearmed
+}
+
 func (c *captureRecorder) messages() []Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()

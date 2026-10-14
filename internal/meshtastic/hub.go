@@ -3064,6 +3064,14 @@ func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
 // key was not the real problem, and re-arming the wait then would keep the
 // station re-sending the same text at every NodeInfo.
 //
+// A message the DURABLE action queue owns is left out of it: recording the
+// failure already re-arms that job (markStatus → RecordMeshFailureAndRequeue),
+// so the worker re-sends the alert on its own. Remembering it here as well puts
+// the same text on the air twice — the worker's retry AND the earlier copy the
+// key releases — which is exactly the reported 3 transmissions instead of 2.
+// The key refresh itself is shared by both kinds of message; only the RETRY
+// belongs to the durable queue alone.
+//
 // One peer can owe SEVERAL messages (the operator sent two texts before the
 // key landed) and every one of them is kept — the queue is per peer, oldest
 // first, and each entry carries its own deadline. What is bounded is the
@@ -3072,7 +3080,7 @@ func (h *Hub) rejectSend(ps *pendingSend, res pb.Routing_Error) {
 // being silent — the message keeps its failed row and its reason, so the
 // operator sees exactly which text stayed behind.
 func (h *Hub) awaitPeerKey(ps *pendingSend) {
-	if ps.keyTried || !ps.wantAck || ps.text == "" {
+	if ps.keyTried || !ps.wantAck || ps.text == "" || ps.prog.active() {
 		return
 	}
 	h.mu.Lock()

@@ -1425,7 +1425,6 @@ tr.click-send:hover td { background: var(--surface-hi); }
    Meshtastic pages share one look: same row, same badges, same detail line. */
 .gsm-status, .link-status { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; margin: 0.6rem 0; }
 .gsm-op, .link-detail { color: var(--text); font-size: 0.9rem; }
-.link-state { color: var(--muted); font-size: 0.85rem; }
 .gsm-op strong { font-weight: 600; }
 .gsm-bars { display: inline-flex; align-items: flex-end; gap: 2px; }
 .gsm-bar {

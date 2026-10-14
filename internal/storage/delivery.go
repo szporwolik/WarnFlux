@@ -82,6 +82,12 @@ type DeliveryJob struct {
 	Attempts int
 	// FiredAt is when the transition triggered the job.
 	FiredAt time.Time
+	// MaxAttempts is the attempt budget this job was CLAIMED with (see
+	// ClaimNextDelivery): the worker settles the attempt against the same
+	// budget the claim admitted it under, so one policy decides a job's
+	// retries from its claim on. Zero means the row predates the recorded
+	// budget, and the action's current configuration applies.
+	MaxAttempts int
 }
 
 // DeliveryResult is the per-job outcome of one CommitInboxDelivery call.
@@ -168,11 +174,15 @@ type DeliveryStore interface {
 	EnqueueDelivery(ctx context.Context, job DeliveryJob) (DeliveryStatus, bool, error)
 
 	// ClaimNextDelivery atomically claims the next due job of one
-	// action: it becomes running, the attempt counter is incremented and
-	// the claim deadline moves past now. maxAttempts bounds the retry
-	// budget (terminal failures are never claimed again); a saved job
-	// recovered from a crashed claim executes even when its spent
-	// attempts equal the budget.
+	// action: it becomes running, the attempt counter is incremented, the
+	// claim deadline moves past now and the row records the budget it was
+	// claimed with. That RECORDED budget bounds the job from then on
+	// (terminal failures are never claimed again) — the same policy
+	// SettleSpentRetries and the late async outcomes follow — while
+	// maxAttempts is the action's current configuration, applied to rows
+	// claimed before the row recorded its own and refreshed with every
+	// claim. A saved job recovered from a crashed claim executes even when
+	// its spent attempts equal the budget.
 	ClaimNextDelivery(ctx context.Context, actionID string, maxAttempts int, now time.Time) (DeliveryJob, bool, error)
 
 	// SettleDelivery records the post-execution stage. A non-terminal

@@ -2782,18 +2782,24 @@ func (h *Hub) expireNodes() {
 		tb.tried = now
 		due = append(due, id)
 	}
+	// The numbers the log lines below report are taken HERE, under the lock:
+	// they describe the ledger this pass just pruned, and reading it from the
+	// caller (as the log used to) raced with the confirmations the feed worker
+	// writes when the broker takes a removal — the race detector caught a
+	// pendingRemovalsLocked pass against a concurrent `confirmed = true`.
+	inFlight, ledger := h.pendingRemovalsLocked(), h.maxRemovals()
 	h.mu.Unlock()
 	if len(waiting) > 0 && h.logger != nil {
 		// Not a failure and not a loss: the documents wait their turn while the
 		// broker works off the removals already in flight.
 		h.logger.Debug("meshtastic: station removals waiting for room in the ledger",
-			"waiting", len(waiting), "in_flight", h.pendingRemovalsLocked(), "ledger", h.maxRemovals())
+			"waiting", len(waiting), "in_flight", inFlight, "ledger", ledger)
 	}
 	if dropped := h.removalsDropped; dropped > 0 && h.logger != nil {
 		// Only a node that left the directory while its removal was still
 		// waiting lands here: the directory WAS its queue.
 		h.logger.Warn("meshtastic: station removals left the directory before the broker took them",
-			"dropped", dropped, "ledger", h.maxRemovals())
+			"dropped", dropped, "ledger", ledger)
 	}
 	// The removals go to the feed worker, NEVER out from here: a broker that
 	// keeps the connection open but does not confirm publications would

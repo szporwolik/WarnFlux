@@ -28,7 +28,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 RUN mkdir -p /out/data/tiles /out/logs /out/config && chown 65532:65532 /out/data /out/logs /out/config /out/data/tiles
 
 # ---- Runtime stage ---------------------------------------------------------
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 
 # Re-declared so the runtime stage can use them in labels.
 ARG VERSION=dev

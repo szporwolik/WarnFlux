@@ -2,6 +2,7 @@ package openmeteo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -330,6 +331,118 @@ func TestRateLimitedBurstIsDeferredAndBackedOff(t *testing.T) {
 	}
 	if s.rateLimitStreak != 0 {
 		t.Fatalf("rate-limit streak = %d after a clean poll, want 0", s.rateLimitStreak)
+	}
+}
+
+// TestRateLimitedBurstStopsWhenAirQualityAlsoFails pins the second reported
+// production path: with air_quality on, a refused forecast whose companion
+// ALSO failed used to `continue` straight past the burst stop, so three
+// locations produced three forecast requests against a quota the provider had
+// just refused.
+func TestRateLimitedBurstStopsWhenAirQualityAlsoFails(t *testing.T) {
+	var mu sync.Mutex
+	var forecast, airQuality int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if strings.HasSuffix(r.URL.Path, "/air-quality") {
+			airQuality++
+		} else {
+			forecast++
+		}
+		mu.Unlock()
+		// The public 503 path: no Retry-After at all.
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	locations := []Location{
+		{ID: "dobczyce", Latitude: 49.9, Longitude: 20.1},
+		{ID: "wieliczka", Latitude: 49.9, Longitude: 20.05},
+		{ID: "zabierzow", Latitude: 50.1, Longitude: 19.8},
+	}
+	s := testSource(srv.URL, locations, time.Minute)
+	s.cfg.AirQuality = true
+	emit := &recordingEmitter{}
+
+	next := s.pollOnce(context.Background(), emit, nil)
+
+	mu.Lock()
+	gotForecast, gotAQ := forecast, airQuality
+	mu.Unlock()
+	// The FIRST refusal ends the burst: the companions of the other two
+	// locations were not fired either.
+	if gotForecast != 1 {
+		t.Fatalf("forecast requests after the first refusal = %d, want 1 (burst deferred)", gotForecast)
+	}
+	// The companion of the refused location still ran — its own endpoint and
+	// quota — and nothing beyond it.
+	if gotAQ != 1 {
+		t.Fatalf("air-quality requests = %d, want 1 (only the refused location)", gotAQ)
+	}
+	if next < rateLimitBaseDelay {
+		t.Fatalf("next poll = %v, want at least the %v backoff", next, rateLimitBaseDelay)
+	}
+	if n := emit.count(); n != 0 {
+		t.Fatalf("messages = %d, want none (both endpoints refused)", n)
+	}
+}
+
+// failingAQEmitter fails every air-quality publish and records the rest.
+type failingAQEmitter struct {
+	recordingEmitter
+}
+
+func (e *failingAQEmitter) EmitInformation(ctx context.Context, m core.InformationMessage) error {
+	if m.Kind == "air_quality" {
+		return errors.New("publish exploded")
+	}
+	return e.recordingEmitter.EmitInformation(ctx, m)
+}
+
+// TestRateLimitedBurstStopsWhenAirQualityPublishFails pins the sibling path:
+// the companion fetched fine but its publish failed, which also used to skip
+// the burst stop.
+func TestRateLimitedBurstStopsWhenAirQualityPublishFails(t *testing.T) {
+	var mu sync.Mutex
+	var forecast, airQuality int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/air-quality") {
+			mu.Lock()
+			airQuality++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"latitude":50.2,"longitude":19.9,"elevation":300,"timezone":"Europe/Warsaw","current":{"time":"2026-09-26T12:00","european_aqi":35}}`)
+			return
+		}
+		mu.Lock()
+		forecast++
+		mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	locations := []Location{
+		{ID: "dobczyce", Latitude: 49.9, Longitude: 20.1},
+		{ID: "wieliczka", Latitude: 49.9, Longitude: 20.05},
+		{ID: "zabierzow", Latitude: 50.1, Longitude: 19.8},
+	}
+	s := testSource(srv.URL, locations, time.Minute)
+	s.cfg.AirQuality = true
+	emit := &failingAQEmitter{}
+
+	next := s.pollOnce(context.Background(), emit, nil)
+
+	mu.Lock()
+	gotForecast, gotAQ := forecast, airQuality
+	mu.Unlock()
+	if gotForecast != 1 {
+		t.Fatalf("forecast requests after the first refusal = %d, want 1 (burst deferred)", gotForecast)
+	}
+	if gotAQ != 1 {
+		t.Fatalf("air-quality requests = %d, want 1 (only the refused location)", gotAQ)
+	}
+	if next < rateLimitBaseDelay {
+		t.Fatalf("next poll = %v, want at least the %v backoff", next, rateLimitBaseDelay)
 	}
 }
 

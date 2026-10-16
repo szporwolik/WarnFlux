@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,7 +47,10 @@ type kissServer struct {
 	conn     net.Conn
 	connMu   sync.Mutex
 	txFrames chan []byte
-	done     chan struct{}
+	// accepts counts the connections the plugin opened: the number of
+	// accepted sessions is how a test proves the plugin did (or did not)
+	// reconnect.
+	accepts atomic.Int64
 }
 
 func newKissServer(t *testing.T) *kissServer {
@@ -55,21 +59,27 @@ func newKissServer(t *testing.T) *kissServer {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &kissServer{ln: ln, txFrames: make(chan []byte, 16), done: make(chan struct{})}
+	s := &kissServer{ln: ln, txFrames: make(chan []byte, 16)}
 	go s.accept(t)
 	return s
 }
 
 func (s *kissServer) accept(t *testing.T) {
-	conn, err := s.ln.Accept()
-	if err != nil {
-		return
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		s.accepts.Add(1)
+		s.connMu.Lock()
+		s.conn = conn
+		s.connMu.Unlock()
+		go s.serve(conn)
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
-	defer close(s.done)
+}
 
+// serve reads one client connection until it ends.
+func (s *kissServer) serve(conn net.Conn) {
 	dec := &aprs.KISSDecoder{}
 	reader := bufio.NewReader(conn)
 	for {
@@ -97,6 +107,16 @@ func (s *kissServer) push(t *testing.T, frame []byte) {
 	}
 	if _, err := s.conn.Write(aprs.EncodeKISS(frame)); err != nil {
 		t.Fatalf("push: %v", err)
+	}
+}
+
+// dropConn closes the CURRENT connection from the server side: what a dead
+// TNC (or a vanished network path) looks like to the plugin.
+func (s *kissServer) dropConn() {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn != nil {
+		s.conn.Close()
 	}
 }
 
@@ -384,19 +404,31 @@ func TestIdleTNCStaysUp(t *testing.T) {
 	}
 }
 
-// TestSilentTNCEventuallyReconnects covers the other half of the idle
-// contract: once the TNC sends NOTHING for the whole idle window, the
-// session must end (degraded + reconnect), so a truly dead TNC does not
-// hold the connection forever.
-func TestSilentTNCEventuallyReconnects(t *testing.T) {
-	hub, _ := newHub(t)
+// TestSilentTNCKeepsTheSessionAndReportsOnce pins the silence policy: a
+// TNC that sends NOTHING is a quiet RF channel, not a failed session. The
+// old contract ended the session after every idle window, which bought
+// nothing (a live TCP peer says nothing about what the radio hears) and
+// cost the production station a reconnect every 30 minutes — 78 of them in
+// 40 hours, with the same churn in the TNC's own client log.
+//
+// The silence is REPORTED once per episode (a frame clears the flag) so the
+// operator still learns that the receiver hears nothing; the panel shows
+// the age of the last frame.
+func TestSilentTNCKeepsTheSessionAndReportsOnce(t *testing.T) {
+	hub, sink := newHub(t)
 	srv := newKissServer(t)
 	defer srv.close()
 
-	// Shrink the idle window so the test runs fast: 1x read_timeout.
+	// Shrink the reporting window: 1x read_timeout (the minimum the config
+	// accepts is 5s).
 	old := idleTimeoutFactor
 	idleTimeoutFactor = 1
 	defer func() { idleTimeoutFactor = old }()
+
+	logs := &captureLogs{}
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	defer slog.SetDefault(oldDefault)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -407,31 +439,36 @@ func TestSilentTNCEventuallyReconnects(t *testing.T) {
 	go func() { done <- p.Run(ctx, rec) }()
 
 	waitConnected(t, srv)
-	// The idle break fires after one read timeout (5s) — wait longer
-	// than waitFor's fixed 3s window.
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) && rec.degradedCount() == 0 {
-		time.Sleep(10 * time.Millisecond)
+
+	// First episode: after the reporting window (5s) the silence is
+	// announced exactly once — and the session stays up.
+	waitUntil(t, 10*time.Second, func() bool { return logs.count("TNC silent") == 1 })
+	if n := srv.accepts.Load(); n != 1 {
+		t.Fatalf("connections opened = %d, want 1 (silence must not reconnect)", n)
 	}
-	if rec.degradedCount() == 0 {
-		t.Fatal("source never degraded after the idle window elapsed")
+	time.Sleep(2 * time.Second) // a second window with no frames
+	if n := logs.count("TNC silent"); n != 1 {
+		t.Fatalf("silence reported %d times in one episode, want 1", n)
+	}
+	if n := rec.degradedCount(); n != 0 {
+		t.Fatalf("source degraded %d times on a silent TNC, want 0", n)
+	}
+	if !p.(*Source).Ready() {
+		t.Fatal("plugin not ready after the silence window")
 	}
 
-	// The reconnect must report healthy again — the /health row recovers
-	// instead of staying degraded until a restart.
-	deadline = time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) && rec.healthyCount() < 2 {
-		time.Sleep(10 * time.Millisecond)
+	// The very same session is still reading: a frame still reaches the hub.
+	frame, err := aprs.BuildUIFrame("SP9XYZ-7", "APRS", []string{"WIDE1-1"}, []byte("!5056.25N/01952.50E-"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := rec.healthyCount(); n < 2 {
-		t.Fatalf("reconnect reported healthy %d times, want >= 2 (connect + reconnect)", n)
-	}
+	srv.push(t, frame)
+	waitFor(t, func() bool { return len(sink.payloads("aprs/stations/SP9XYZ-7")) >= 1 })
 
-	// Run must keep going (reconnect loop), not exit.
-	select {
-	case <-done:
-		t.Fatal("Run exited after the idle reconnect")
-	case <-time.After(100 * time.Millisecond):
+	// A new episode (silence after a frame) is reported again.
+	waitUntil(t, 10*time.Second, func() bool { return logs.count("TNC silent") == 2 })
+	if n := srv.accepts.Load(); n != 1 {
+		t.Fatalf("connections opened = %d, want 1 (still the same session)", n)
 	}
 
 	cancel()
@@ -440,6 +477,62 @@ func TestSilentTNCEventuallyReconnects(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not stop after cancel")
 	}
+}
+
+// TestDeadTNCSocketReconnects pins the other half of the policy: what DOES
+// end the session is the socket dying — a connection the peer closed (the
+// TNC restarted, the box vanished) reports EOF, the source is flagged
+// degraded and the next session is dialled.
+func TestDeadTNCSocketReconnects(t *testing.T) {
+	hub, _ := newHub(t)
+	srv := newKissServer(t)
+	defer srv.close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub.Start(ctx)
+	p := newPluginReadTimeout(t, srv.ln.Addr().String(), hub, "5s")
+	rec := &healthRecorder{}
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx, rec) }()
+
+	waitConnected(t, srv)
+	if n := srv.accepts.Load(); n != 1 {
+		t.Fatalf("connections opened = %d, want 1", n)
+	}
+
+	// The TNC goes away: the session must end (degraded) and a new one must
+	// be dialled — the reconnect loop is what keeps the RF feed alive.
+	srv.dropConn()
+	waitFor(t, func() bool { return rec.degradedCount() >= 1 })
+	waitFor(t, func() bool { return srv.accepts.Load() >= 2 })
+	waitFor(t, func() bool { return rec.healthyCount() >= 2 })
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not stop after cancel")
+	}
+}
+
+// captureLogs collects the plugin's log lines (the plugin logs to
+// slog.Default()).
+type captureLogs struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (c *captureLogs) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *captureLogs) count(substr string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Count(c.buf.String(), substr)
 }
 
 func waitConnected(t *testing.T, srv *kissServer) {
@@ -455,6 +548,20 @@ func waitConnected(t *testing.T, srv *kissServer) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("plugin never connected to the KISS server")
+}
+
+// waitUntil is waitFor with an explicit deadline: the silence windows these
+// tests exercise are longer than waitFor's fixed 3s budget.
+func waitUntil(t *testing.T, d time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met within the deadline")
 }
 
 func waitFor(t *testing.T, cond func() bool) {

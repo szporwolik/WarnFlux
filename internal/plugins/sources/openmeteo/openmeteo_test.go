@@ -267,6 +267,90 @@ func TestPollEmitsAirQualityDespiteForecastRateLimit(t *testing.T) {
 	}
 }
 
+// TestRateLimitedBurstIsDeferredAndBackedOff pins the reported behaviour on
+// the production station: the public endpoint answered 503 WITHOUT a
+// Retry-After header for several locations, and the station kept firing the
+// rest of the burst (and the whole burst again on the next 15-minute poll) at
+// full cadence, collecting one refusal and one warning per location. A
+// refusal now stops the burst and lengthens the next poll, header or not.
+func TestRateLimitedBurstIsDeferredAndBackedOff(t *testing.T) {
+	var requests int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		// The public 503 path: no Retry-After at all.
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	locations := []Location{
+		{ID: "dobczyce", Latitude: 49.9, Longitude: 20.1},
+		{ID: "wieliczka", Latitude: 49.9, Longitude: 20.05},
+		{ID: "zabierzow", Latitude: 50.1, Longitude: 19.8},
+		{ID: "mogilany", Latitude: 49.9, Longitude: 19.9},
+	}
+	s := testSource(srv.URL, locations, time.Minute)
+	emit := &recordingEmitter{}
+
+	next := s.pollOnce(context.Background(), emit, nil)
+	mu.Lock()
+	got := requests
+	mu.Unlock()
+	// The FIRST refusal ends the burst: the other three locations were not
+	// fired into a quota the provider just refused.
+	if got != 1 {
+		t.Fatalf("requests after the first refusal = %d, want 1 (burst deferred)", got)
+	}
+	// The poll backs off even without a header: at least the base delay,
+	// and never less than the configured interval.
+	if next < rateLimitBaseDelay {
+		t.Fatalf("next poll = %v, want at least the %v backoff", next, rateLimitBaseDelay)
+	}
+
+	// A second refused poll doubles the step back.
+	second := s.pollOnce(context.Background(), emit, nil)
+	if second < 2*rateLimitBaseDelay {
+		t.Fatalf("second refused poll = %v, want at least %v", second, 2*rateLimitBaseDelay)
+	}
+	// ...and the growth is capped however long the refusal lasts.
+	for i := 0; i < 8; i++ {
+		s.pollOnce(context.Background(), emit, nil)
+	}
+	if capped := s.rateLimitDelay(0); capped != maxRetryAfter {
+		t.Fatalf("backoff = %v, want it capped at %v", capped, maxRetryAfter)
+	}
+
+	// A poll the provider serves resets the growth.
+	srv.Config.Handler = http.HandlerFunc(weatherHandler())
+	next = s.pollOnce(context.Background(), emit, nil)
+	if next != time.Minute {
+		t.Fatalf("poll after the provider recovered = %v, want the configured interval", next)
+	}
+	if s.rateLimitStreak != 0 {
+		t.Fatalf("rate-limit streak = %d after a clean poll, want 0", s.rateLimitStreak)
+	}
+}
+
+// TestRateLimitRetryAfterWinsOverTheDefault pins the precedence: when the
+// provider DOES send a Retry-After, that value is used (clamped), not the
+// growing default.
+func TestRateLimitRetryAfterWinsOverTheDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	s := testSource(srv.URL, []Location{{ID: "home", Latitude: 50, Longitude: 20}}, time.Minute)
+	emit := &recordingEmitter{}
+	next := s.pollOnce(context.Background(), emit, nil)
+	if next != 120*time.Second {
+		t.Fatalf("next poll = %v, want the provider's 120s", next)
+	}
+}
+
 func TestRunTransientFailureThenSuccess(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

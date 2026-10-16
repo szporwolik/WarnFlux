@@ -44,6 +44,10 @@ type deliveryRow struct {
 	// email count, APRS callsigns, Discord handles) — the delivery
 	// history must answer "to whom" without opening the raw payload.
 	Recipients string `json:"recipients,omitempty"`
+	// Error is why the last attempt failed ("" when it did not) — the
+	// history answers "why" from the ledger, long after the attempt's log
+	// line is gone.
+	Error string `json:"error,omitempty"`
 }
 
 // handleNotificationsPage keeps the old /notifications URL working (the
@@ -98,6 +102,7 @@ func (s *Server) recentDeliveries(limit int) map[string][]deliveryRow {
 			Attempts:   r.Attempts,
 			FiredAt:    r.FiredAt,
 			Recipients: recipientSummary(r.Payload),
+			Error:      r.LastError,
 		})
 	}
 	return out

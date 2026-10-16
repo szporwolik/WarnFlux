@@ -572,8 +572,10 @@ sources:
   #     connect_timeout: 15s
   #     # One read from the TNC may take this long. A timeout is NOT an
   #     # error: a quiet channel sends nothing for long stretches, so the
-  #     # session stays connected. It reconnects only when no frame
-  #     # arrives for 3x read_timeout (dead TNC detection).
+  #     # session stays connected. Silence never reconnects either — only a
+  #     # dead socket does (TCP keepalive, EOF) — but a silence of 3x
+  #     # read_timeout is REPORTED once per episode, because a receiver
+  #     # that hears nothing is worth knowing about.
   #     read_timeout: 10m
   #     max_frame_bytes: 2048
 

@@ -221,7 +221,9 @@ sources:
     config:
       provider: adsblol
       # base_url: "https://api.adsb.lol"      # or http://10.0.0.20:8080 for tar1090
-      # Polite anonymous rate limit (plugin also honors 429 Retry-After).
+      # Polite anonymous rate limit. A 429/503 refusal stops the rest of
+      # the burst and lengthens the next poll (Retry-After when sent,
+      # otherwise a doubling delay capped at 5 minutes).
       poll_interval: 60s
       # A cold connection to a distant API (DNS + TCP + TLS + HTTP/2) can
       # take seconds on a slow link: the timeout is a safety net, not a

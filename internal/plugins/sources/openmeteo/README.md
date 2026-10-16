@@ -165,7 +165,8 @@ requests either":
   location whose own air-quality companion failed to fetch or to publish;
 - the next poll is lengthened: the provider's `Retry-After` (delta seconds
   or HTTP-date) when it sent one, otherwise a delay that doubles with every
-  consecutive refused poll (30 s, 60 s, … capped at 5 minutes). The header
+  consecutive refused poll (30 s, 60 s, … capped at 5 minutes — the cap
+  holds however long the outage lasts). The header
   is optional on the public endpoint and its absence is NOT read as "no
   limit in force" — that is what made the station repeat the whole burst at
   full cadence on the production site;

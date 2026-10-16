@@ -127,7 +127,15 @@ func (s *Source) rateLimitDelay(after time.Duration) time.Duration {
 	}
 	d := after
 	if d <= 0 {
-		d = rateLimitBaseDelay << (s.rateLimitStreak - 1)
+		// Double with the limit checked WHILE growing. Shifting the base by
+		// the streak and clamping afterwards overflowed time.Duration on the
+		// 30th consecutive refusal: the shift wrapped to a negative duration,
+		// the cap below no longer matched it, and the poll fell back to the
+		// configured interval in the middle of an outage.
+		d = rateLimitBaseDelay
+		for i := 1; i < s.rateLimitStreak && d < maxRetryAfter; i++ {
+			d *= 2
+		}
 	}
 	if d > maxRetryAfter {
 		d = maxRetryAfter

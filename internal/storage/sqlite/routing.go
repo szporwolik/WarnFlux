@@ -486,6 +486,11 @@ func (s *Store) SettleDelivery(ctx context.Context, groupID int64, actionID, ded
 	return nil
 }
 
+// asyncFailureReason is stored on a row the device itself failed AFTER the
+// worker had settled it as accepted (the durable marker path): without it the
+// ledger would show a failure with no reason at all.
+const asyncFailureReason = "transmission failed asynchronously (device reported an error)"
+
 // SettleDeliveryGuarded applies one settlement atomically. The attempt
 // generation is checked first (a row whose counter already moved on
 // belongs to a newer attempt — this settlement is a stale no-op), and an
@@ -531,6 +536,12 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 		}
 		if failed > 0 {
 			stage = storage.DeliveryFailed
+			// The row must say WHY it is a failure: the device refused the
+			// transmission asynchronously, and the caller (which asked for
+			// accepted) has no error text of its own for it.
+			if d.Error == "" {
+				d.Error = asyncFailureReason
+			}
 		}
 	}
 
@@ -549,6 +560,12 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 	if stage == storage.DeliveryFailed && !d.NextAttempt.IsZero() {
 		next = d.NextAttempt.UnixMilli()
 	}
+	// The reason travels with the settlement: kept for a failure (the next
+	// attempt overwrites it), cleared by a success, which owns the row.
+	lastError := d.Error
+	if stage != storage.DeliveryFailed {
+		lastError = ""
+	}
 	// A failure may carry the narrowed payload: the work that is still
 	// pending replaces the whole batch. A TERMINAL failure stores it too —
 	// the progress of the last attempt is what a replay re-arms from, and
@@ -556,15 +573,15 @@ func (s *Store) SettleDeliveryGuarded(ctx context.Context, d storage.DeliverySet
 	// again (reported P2).
 	if len(d.Payload) > 0 {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE action_fires SET status = ?, next_attempt_at_ms = ?, payload = ?
+			UPDATE action_fires SET status = ?, next_attempt_at_ms = ?, payload = ?, last_error = ?
 			WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-			status, next, string(d.Payload), d.GroupID, d.ActionID, d.DedupKey); err != nil {
+			status, next, string(d.Payload), lastError, d.GroupID, d.ActionID, d.DedupKey); err != nil {
 			return 0, fmt.Errorf("guarded settle for action %q group %d: %w", d.ActionID, d.GroupID, err)
 		}
 	} else if _, err := tx.ExecContext(ctx, `
-		UPDATE action_fires SET status = ?, next_attempt_at_ms = ?
+		UPDATE action_fires SET status = ?, next_attempt_at_ms = ?, last_error = ?
 		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-		status, next, d.GroupID, d.ActionID, d.DedupKey); err != nil {
+		status, next, lastError, d.GroupID, d.ActionID, d.DedupKey); err != nil {
 		return 0, fmt.Errorf("guarded settle for action %q group %d: %w", d.ActionID, d.GroupID, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -631,7 +648,7 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]storage.Deli
 		return nil, fmt.Errorf("limit must be positive, got %d", limit)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_key, action_id, status, attempts, fired_at_ms, next_attempt_at_ms, payload
+		SELECT event_key, action_id, status, attempts, fired_at_ms, next_attempt_at_ms, payload, last_error
 		FROM action_fires ORDER BY fired_at_ms DESC, event_key ASC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("recent deliveries: %w", err)
@@ -642,7 +659,7 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]storage.Deli
 	for rows.Next() {
 		var r storage.DeliveryRecord
 		var firedMs, nextMs int64
-		if err := rows.Scan(&r.EventKey, &r.ActionID, &r.Status, &r.Attempts, &firedMs, &nextMs, &r.Payload); err != nil {
+		if err := rows.Scan(&r.EventKey, &r.ActionID, &r.Status, &r.Attempts, &firedMs, &nextMs, &r.Payload, &r.LastError); err != nil {
 			return nil, fmt.Errorf("scan delivery record: %w", err)
 		}
 		r.FiredAt = time.UnixMilli(firedMs).UTC()

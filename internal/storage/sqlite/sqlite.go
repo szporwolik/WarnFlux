@@ -1113,6 +1113,20 @@ ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE action_fires ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		// v66: WHY a delivery failed, on the row itself. The ledger kept the
+		// status, the attempt count and the recipients, so the panel could
+		// answer "what" and "to whom" but never "why": a terminal failure
+		// looked exactly like any other, and the reason lived only in the log
+		// line of the attempt — which the container's rotation removes long
+		// before the alert is forgotten (a production alert that never went
+		// out could not be explained a day later). The column carries the
+		// plugin's error, truncated by the worker; a successful settlement
+		// clears it, because the success owns the row.
+		SQL: `
+ALTER TABLE action_fires ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

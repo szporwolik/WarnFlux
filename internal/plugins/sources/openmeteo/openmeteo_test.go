@@ -464,6 +464,46 @@ func TestRateLimitRetryAfterWinsOverTheDefault(t *testing.T) {
 	}
 }
 
+// TestRateLimitBackoffNeverOverflowsDuringALongOutage pins the arithmetic of
+// the growing delay: it used to shift the 30 s base by the streak BEFORE
+// clamping to the cap, so the 30th consecutive refusal without a Retry-After
+// wrapped time.Duration negative. A negative duration is not "too long", the
+// cap did not match it, and with poll_interval: 1m the effective wait fell
+// from five minutes back to one in the middle of an ongoing outage.
+func TestRateLimitBackoffNeverOverflowsDuringALongOutage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The public 503 path: no Retry-After at all.
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	// The reported case, straight at the failure site: the 30th refusal.
+	s := testSource(srv.URL, []Location{{ID: "home", Latitude: 50, Longitude: 20}}, time.Minute)
+	s.rateLimitStreak = 30
+	if d := s.rateLimitDelay(0); d != maxRetryAfter {
+		t.Fatalf("delay at the 30th refusal = %v, want %v", d, maxRetryAfter)
+	}
+
+	// And through the poll loop: a long outage holds the cap instead of
+	// shrinking the wait or wrapping it negative.
+	s = testSource(srv.URL, []Location{{ID: "home", Latitude: 50, Longitude: 20}}, time.Minute)
+	emit := &recordingEmitter{}
+	var prev time.Duration
+	for i := 1; i <= 80; i++ {
+		next := s.pollOnce(context.Background(), emit, nil)
+		if next <= 0 {
+			t.Fatalf("refusal %d: next poll = %v, want a positive delay", i, next)
+		}
+		if next < prev {
+			t.Fatalf("refusal %d: next poll = %v, shrank from %v during an ongoing outage", i, next, prev)
+		}
+		prev = next
+	}
+	if prev != maxRetryAfter {
+		t.Fatalf("after 80 refusals next poll = %v, want the %v cap", prev, maxRetryAfter)
+	}
+}
+
 func TestRunTransientFailureThenSuccess(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

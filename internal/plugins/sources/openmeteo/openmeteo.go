@@ -341,7 +341,10 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		// European-AQI snapshot on the air_quality information kind. It
 		// runs on its own endpoint and quota, so a rate-limited forecast
 		// call must never suppress it. A location may opt out (air_quality
-		// false) when an official station already covers the town.
+		// false) when an official station already covers the town. A
+		// companion that fails costs the same wall clock as a stagger
+		// breath, so that location skips the breath below.
+		skipStagger := false
 		if s.cfg.AirQuality && locAirQuality(loc) {
 			if ctx.Err() != nil {
 				break
@@ -358,13 +361,13 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 					}
 					next = after
 				}
-				continue
-			}
-			if err := emit.EmitInformation(ctx, aq); err != nil {
+				skipStagger = true
+			} else if err := emit.EmitInformation(ctx, aq); err != nil {
 				slog.Warn("air-quality publish failed", "location", loc.ID, "error", err)
-				continue
+				skipStagger = true
+			} else {
+				slog.Info("air-quality snapshot published", "location", loc.ID)
 			}
-			slog.Info("air-quality snapshot published", "location", loc.ID)
 		}
 
 		// The provider refused this location: the quota is spent, so firing
@@ -373,13 +376,19 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		// location. The remaining locations (and their air-quality
 		// companions) wait for the next poll — the refusal already lengthened
 		// it. The companion of THIS location still ran above: it uses its own
-		// endpoint and quota.
+		// endpoint and quota. This stop is checked on EVERY path, including a
+		// companion that failed to fetch or to publish — that is exactly how
+		// the burst kept going against a refused quota.
 		if rateLimited {
 			if deferred := len(s.cfg.Locations) - i - 1; deferred > 0 {
 				slog.Warn("weather polling deferred after a provider rate limit",
 					"deferred_locations", deferred, "next_poll", next)
 			}
 			break
+		}
+
+		if skipStagger {
+			continue
 		}
 
 		// One short breath between locations keeps the provider burst

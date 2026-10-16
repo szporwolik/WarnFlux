@@ -161,7 +161,8 @@ requests either":
 - the burst STOPS — the remaining locations (and their air-quality
   companions) are deferred to the next poll instead of being fired into a
   quota the provider just refused, which only collected one refusal and one
-  warning per location;
+  warning per location; the stop holds on every path, including a refused
+  location whose own air-quality companion failed to fetch or to publish;
 - the next poll is lengthened: the provider's `Retry-After` (delta seconds
   or HTTP-date) when it sent one, otherwise a delay that doubles with every
   consecutive refused poll (30 s, 60 s, … capped at 5 minutes). The header

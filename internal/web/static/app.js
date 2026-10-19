@@ -67,6 +67,12 @@
       : '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
   }
 
+  // The renderer line under the map: Leaflet always hosts it, but vector
+  // styles are drawn by MapLibre GL — and the combined home map uses those
+  // by default, so naming only Leaflet would credit the wrong engine.
+  var ENGINE_LEAFLET = '<a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
+  var ENGINE_MAPLIBRE = ENGINE_LEAFLET + ' + <a href="https://maplibre.org/" target="_blank" rel="noopener noreferrer">MapLibre GL</a>';
+
   // wfLoadLeaflet pulls the bundled Leaflet in on demand: admin pages
   // that only show a map after an interaction never ship it up front.
   // The callback runs once, also when Leaflet was loaded already.
@@ -1088,6 +1094,10 @@
     var attrib = document.getElementById("aprs-tiles-attrib");
     if (attrib) {
       attrib.innerHTML = built.mode === "gl" ? t.glLabel : t.rasterLabel;
+    }
+    var engine = document.getElementById("aprs-engine-attrib");
+    if (engine) {
+      engine.innerHTML = built.mode === "gl" ? ENGINE_MAPLIBRE : ENGINE_LEAFLET;
     }
     if (stationLayer) {
       stationLayer.eachLayer(function (m) {

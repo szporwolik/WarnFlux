@@ -154,13 +154,22 @@ func (s *Source) Name() string { return Type }
 
 // Run polls the provider on the configured interval. Transient failures
 // degrade the source and never terminate the run; provider rate limits
-// (429) back the next poll off by the advertised Retry-After window.
+// (429) back the next poll off by the advertised Retry-After window. An
+// outage is logged as one episode: the first failed poll is the warning, the
+// retries are counted, and the recovery reports the tally — one warning per
+// poll turned a dead provider host into 48 warnings an hour that buried every
+// other line of the log.
 func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	reporter, _ := emit.(plugin.SourceHealthReporter)
 	slog.Info("adsb plugin started",
 		"provider", s.cfg.Provider, "poll_interval", s.cfg.PollInterval,
 		"center", fmt.Sprintf("%.4f,%.4f", s.centerLat, s.centerLon),
 		"radius_km", s.cfg.RadiusKM, "track_window", s.cfg.TrackWindow)
+
+	// failures counts the failed polls of the current outage episode
+	// (0 = healthy); outageSince anchors its start for the recovery report.
+	failures := 0
+	var outageSince time.Time
 
 	for {
 		if ctx.Err() != nil {
@@ -172,11 +181,23 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 			if rl, ok := err.(*rateLimitError); ok && rl.retryAfter > delay {
 				delay = rl.retryAfter
 			}
-			slog.Warn("adsb poll failed", "provider", s.cfg.Provider, "error", err, "retry_in", delay)
+			failures++
+			if failures == 1 {
+				outageSince = time.Now()
+				slog.Warn("adsb poll failed", "provider", s.cfg.Provider, "error", err, "retry_in", delay)
+			} else {
+				slog.Debug("adsb poll still failing", "provider", s.cfg.Provider, "error", err,
+					"failed_attempts", failures, "retry_in", delay)
+			}
 			if reporter != nil {
 				reporter.ReportSourceDegraded(err)
 			}
 		} else if err == nil {
+			if failures > 0 {
+				slog.Info("adsb poll recovered", "provider", s.cfg.Provider,
+					"failed_attempts", failures, "outage", time.Since(outageSince).Round(time.Second))
+				failures = 0
+			}
 			if reporter != nil {
 				reporter.ReportSourceHealthy()
 			}

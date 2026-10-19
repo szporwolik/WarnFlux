@@ -56,6 +56,23 @@ sources:
 The area centre comes from the APRS hub, so the aircraft layer always covers
 exactly the area the station claims to watch — one knob to move, not two.
 
+## An outage is one log entry, not one per poll
+
+A provider host that simply stops answering (a total `adsb.lol` outage
+recorded on the production station) failed every poll, and each failure was
+a WARN — 48 an hour, which buried every other line of the log and made one
+outage look like a dozen separate faults. The episode is now reported once:
+
+- the first failed poll logs `adsb poll failed` (WARN) with the error and
+  the retry delay;
+- the following failed polls are counted and logged at DEBUG
+  (`adsb poll still failing`, with `failed_attempts`);
+- the first successful poll afterwards logs `adsb poll recovered` with
+  `failed_attempts` and the outage duration.
+
+The source health report is unaffected: it is marked degraded on every failed
+poll and healthy again on the first success.
+
 ## Why the default request timeout is 30 seconds
 
 `adsblol` answers from a distant edge, and a cold connection (DNS + TCP +

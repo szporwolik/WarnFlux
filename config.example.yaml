@@ -221,7 +221,9 @@ sources:
     config:
       provider: adsblol
       # base_url: "https://api.adsb.lol"      # or http://10.0.0.20:8080 for tar1090
-      # Polite anonymous rate limit (plugin also honors 429 Retry-After).
+      # Polite anonymous rate limit. A 429/503 refusal stops the rest of
+      # the burst and lengthens the next poll (Retry-After when sent,
+      # otherwise a doubling delay capped at 5 minutes).
       poll_interval: 60s
       # A cold connection to a distant API (DNS + TCP + TLS + HTTP/2) can
       # take seconds on a slow link: the timeout is a safety net, not a
@@ -572,8 +574,10 @@ sources:
   #     connect_timeout: 15s
   #     # One read from the TNC may take this long. A timeout is NOT an
   #     # error: a quiet channel sends nothing for long stretches, so the
-  #     # session stays connected. It reconnects only when no frame
-  #     # arrives for 3x read_timeout (dead TNC detection).
+  #     # session stays connected. Silence never reconnects either — only a
+  #     # dead socket does (TCP keepalive, EOF) — but a silence of 3x
+  #     # read_timeout is REPORTED once per episode, because a receiver
+  #     # that hears nothing is worth knowing about.
   #     read_timeout: 10m
   #     max_frame_bytes: 2048
 

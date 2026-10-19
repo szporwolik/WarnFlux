@@ -1,11 +1,14 @@
 package adsb
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -358,5 +361,115 @@ func TestParseRetryAfter(t *testing.T) {
 	}
 	if d := parseRetryAfter("0"); d != 30*time.Second {
 		t.Errorf("zero = %v", d)
+	}
+}
+
+// logBuffer is a slog sink safe for a goroutine under test and its reader.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not met within timeout")
+}
+
+// TestUpstreamOutageIsLoggedOncePerEpisode pins the log policy for a dead
+// provider. The production station answered a total adsb.lol outage (host
+// unreachable, every poll timing out) with one WARN per poll — 48 an hour,
+// which buried every other line of the log and made the outage look like a
+// dozen separate faults. The first failed poll is now the warning, the later
+// ones are counted, and the recovery reports how many polls and how long.
+func TestUpstreamOutageIsLoggedOncePerEpisode(t *testing.T) {
+	var mu sync.Mutex
+	polls, failing := 0, true
+	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		down := failing
+		polls++
+		mu.Unlock()
+		if down {
+			// The provider host that stops answering: a plain 503 here.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ac":[],"msg":"No error","now":1790295311003,"total":0}`))
+	})
+
+	hub := testHub(t)
+	src, err := New(decodeConfig(t, "latitude: 50.02\nlongitude: 20.21\nradius_km: 45\nbase_url: "+strconvQuote(srv.URL)+"\n"), hub)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s := src.(*Source)
+	// The loop under test, not the scheduler: validation's 5s floor would
+	// make this test take half a minute.
+	s.cfg.PollInterval = 5 * time.Millisecond
+
+	logs := &logBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx, &fakeEmitter{}) }()
+
+	// Let the provider refuse several polls in a row...
+	waitForCondition(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return polls >= 6
+	})
+	// ...then answer again, which closes the episode. Wait for the polls that
+	// follow the recovery instead of the log line: the log assertions below
+	// must report their own failure, not hang on a missing message.
+	mu.Lock()
+	failing = false
+	recovered := polls
+	mu.Unlock()
+	waitForCondition(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return polls >= recovered+3
+	})
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after its context was cancelled")
+	}
+
+	out := logs.String()
+	if n := strings.Count(out, `msg="adsb poll failed"`); n != 1 {
+		t.Fatalf("failed-poll warnings = %d, want exactly 1 per outage episode\n%s", n, out)
+	}
+	// The retries are still recorded for diagnosis, just below WARN.
+	if n := strings.Count(out, "adsb poll still failing"); n < 3 {
+		t.Fatalf("counted retries = %d, want the episode's failed polls logged at debug\n%s", n, out)
+	}
+	if !strings.Contains(out, "adsb poll recovered") || !strings.Contains(out, "failed_attempts=") ||
+		!strings.Contains(out, `outage=`) {
+		t.Fatalf("recovery was not reported with the tally:\n%s", out)
 	}
 }

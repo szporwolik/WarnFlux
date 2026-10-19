@@ -304,6 +304,26 @@ func TestPublicSite(t *testing.T) {
 	}
 }
 
+// settleRotatedFiles returns the directory listing once the archived history
+// has stopped shrinking, or the last listing when it did not settle within the
+// grace period. The rotation library prunes in its own goroutine, so the count
+// is only meaningful after that goroutine had a chance to run; a history that
+// stays above the bound is returned as it is (the caller fails on it).
+func settleRotatedFiles(t *testing.T, dir string, want int) []os.DirEntry {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read dir: %v", err)
+		}
+		if len(entries) <= want || time.Now().After(deadline) {
+			return entries
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestLoggerRotatedFilesStayBounded pins the reported P2 for the log
 // rotation: a long-running station must never accumulate an unbounded
 // history of archived log files, not even when the configured backup count
@@ -342,14 +362,19 @@ func TestLoggerRotatedFilesStayBounded(t *testing.T) {
 				t.Fatalf("close: %v", err)
 			}
 
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				t.Fatalf("read dir: %v", err)
-			}
 			want := maxBackups
 			if want <= 0 {
 				want = config.Default().App.LogMaxBackups
 			}
+			// Lumberjack prunes the archived files in ITS OWN goroutine, so
+			// right after the last rotation the directory can still hold the
+			// files that are about to be removed. Wait (bounded) for the
+			// history to settle instead of racing that goroutine: on a
+			// machine with few usable cores the pruning had not been
+			// scheduled yet and the count was read mid-flight (reported:
+			// 4, 6 files with maxBackups=1). A bound that never holds is
+			// still a failure, which is what this test is about.
+			entries := settleRotatedFiles(t, dir, want+1)
 			// The live file plus at most `want` archives.
 			if len(entries) > want+1 {
 				t.Fatalf("rotated log files = %d, want at most %d (%d archives + the live file)",

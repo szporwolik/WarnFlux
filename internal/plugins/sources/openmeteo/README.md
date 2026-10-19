@@ -151,11 +151,26 @@ before indexing, and non-finite numeric values are rejected.
 Transient failures (network errors, DNS failures, HTTP 429/500/503,
 malformed responses) are logged and skipped: the plugin keeps running and
 retries on the next scheduled poll. The source supervisor is NOT restarted
-for ordinary provider errors. `Retry-After` on 429/503 is honored (delta
-seconds or HTTP-date), clamped to at most 5 minutes, and lengthens only the
-next whole poll — remaining locations in the current poll still run. A
-plain 500 does not change the schedule (no hot loop). Configuration errors
-(invalid locations, bad slugs, invalid ranges) fail at startup.
+for ordinary provider errors. A plain 500 does not change the schedule (no
+hot loop). Configuration errors (invalid locations, bad slugs, invalid
+ranges) fail at startup.
+
+A **refusal** (429/503) is treated as "not now, and not for the next N
+requests either":
+
+- the burst STOPS — the remaining locations (and their air-quality
+  companions) are deferred to the next poll instead of being fired into a
+  quota the provider just refused, which only collected one refusal and one
+  warning per location; the stop holds on every path, including a refused
+  location whose own air-quality companion failed to fetch or to publish;
+- the next poll is lengthened: the provider's `Retry-After` (delta seconds
+  or HTTP-date) when it sent one, otherwise a delay that doubles with every
+  consecutive refused poll (30 s, 60 s, … capped at 5 minutes — the cap
+  holds however long the outage lasts). The header
+  is optional on the public endpoint and its absence is NOT read as "no
+  limit in force" — that is what made the station repeat the whole burst at
+  full cadence on the production site;
+- a poll the provider serves resets the growth.
 
 ## Source health
 

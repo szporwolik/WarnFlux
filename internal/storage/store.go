@@ -277,6 +277,9 @@ type DeliveryRecord struct {
 	NextAttemptAt time.Time
 	// Payload is the raw delivery-job JSON (recipients ride along).
 	Payload string
+	// LastError is why the last attempt failed ("" when it did not): the
+	// ledger's answer to "why did this alert not go out?".
+	LastError string
 }
 
 // ActiveEventLister is an OPTIONAL EventStore capability: enumerating the

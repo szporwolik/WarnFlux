@@ -50,9 +50,10 @@ const (
 var healthySessionReset = time.Minute
 
 // idleTimeoutFactor scales ReadTimeout into the "no frames at all"
-// threshold that ends the session. A single read timeout is expected on a
-// quiet channel — it only resets the deadline. Package-level so tests can
-// shrink it.
+// threshold at which the station REPORTS the silence. A single read
+// timeout is expected on a quiet channel — it only resets the deadline —
+// and even a long silence never ends the session (only a dead socket
+// does). Package-level so tests can shrink it.
 var idleTimeoutFactor = 3
 
 // Config is the plugin-specific configuration.
@@ -66,9 +67,11 @@ type Config struct {
 	ConnectTimeout time.Duration `yaml:"connect_timeout"`
 	// ReadTimeout bounds one read from the TNC. A timeout is NOT an
 	// error: a quiet radio channel sends nothing for long stretches, so
-	// the session resets the deadline and keeps reading. Only when no
-	// frame at all arrives for idleTimeoutFactor × ReadTimeout does the
-	// session reconnect (TCP keepalive still catches dead peers).
+	// the session resets the deadline and keeps reading. When no frame at
+	// all arrives for idleTimeoutFactor × ReadTimeout the silence is
+	// REPORTED once per episode (a frame clears the flag). It never ends
+	// the session: TCP keepalive and read errors are what prove the peer
+	// is gone.
 	ReadTimeout time.Duration `yaml:"read_timeout"`
 	// MaxFrameBytes caps one decoded KISS frame.
 	MaxFrameBytes int `yaml:"max_frame_bytes"`
@@ -87,6 +90,10 @@ type Source struct {
 
 	rxPackets atomic.Int64
 	lastRx    atomic.Int64
+	// silenceReported marks the current silence episode as already
+	// reported, so a quiet channel costs one log line, not one per read
+	// timeout.
+	silenceReported atomic.Bool
 }
 
 // errNotReady is returned when Send is called while disconnected.
@@ -257,6 +264,7 @@ func (s *Source) session(ctx context.Context, health plugin.SourceHealthReporter
 		n, err := reader.Read(buf)
 		if n > 0 {
 			s.lastRx.Store(time.Now().UnixNano())
+			s.silenceReported.Store(false)
 			for _, frame := range dec.Feed(buf[:n]) {
 				if len(frame) == 0 || len(frame) > s.cfg.MaxFrameBytes {
 					continue
@@ -270,24 +278,45 @@ func (s *Source) session(ctx context.Context, health plugin.SourceHealthReporter
 			}
 			var ne net.Error
 			if errors.As(err, &ne) && ne.Timeout() {
-				// A quiet channel has nothing to say: stay connected.
-				// Only a completely silent TNC for the whole idle
-				// window ends the session.
-				idle := s.idleLimit()
-				if time.Since(time.Unix(0, s.lastRx.Load())) < idle {
-					s.logger.Debug("aprs-radio: no frames from the TNC, keeping the connection",
-						"server", s.cfg.Server, "idle_limit", idle)
+				// A timeout is the normal state of a quiet RF channel, so
+				// the read deadline is simply renewed. Silence does NOT
+				// end the session: the old contract reconnected after
+				// every idle window, which bought nothing (the audio path
+				// of the TNC stays exactly as deaf as it is — a live TCP
+				// peer says nothing about what the radio hears) and cost a
+				// client churn every 30 minutes on the production station
+				// (78 reconnects in 40 hours, and the same churn in the
+				// TNC's own client log).
+				//
+				// The session ends when the SOCKET dies, which is what
+				// actually proves the peer is gone: TCP keepalive (set on
+				// the dialer) turns a dead peer into a read error, and a
+				// closed connection reports EOF.
+				//
+				// A long silence is still worth telling the operator
+				// about — it is the one clue that the receiver hears
+				// nothing — so it is reported once per silence episode
+				// (a frame clears the flag). The panel shows the age of
+				// the last frame on the APRS links card.
+				if idle := s.idleLimit(); time.Since(time.Unix(0, s.lastRx.Load())) >= idle {
+					if s.silenceReported.CompareAndSwap(false, true) {
+						s.logger.Warn("aprs-radio: TNC silent, connection kept",
+							"server", s.cfg.Server, "silent_for", idle, "idle_limit", idle)
+					}
 					continue
 				}
-				return fmt.Errorf("aprs-radio: no frames from %s for %s", s.cfg.Server, idle)
+				s.logger.Debug("aprs-radio: no frames from the TNC, keeping the connection",
+					"server", s.cfg.Server, "idle_limit", s.idleLimit())
+				continue
 			}
 			return fmt.Errorf("read from %s: %w", s.cfg.Server, err)
 		}
 	}
 }
 
-// idleLimit is how long the session tolerates a completely silent TNC
-// before reconnecting.
+// idleLimit is how long a completely silent TNC is tolerated before the
+// station REPORTS it (once per silence episode). It never ends the session:
+// only a dead socket does that (see the read loop).
 func (s *Source) idleLimit() time.Duration {
 	return time.Duration(idleTimeoutFactor) * s.cfg.ReadTimeout
 }

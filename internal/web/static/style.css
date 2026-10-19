@@ -1968,6 +1968,9 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 .nt-deliveries { margin: 0.6rem 0; width: 100%; }
 .nt-deliveries .mono { font-size: 0.74rem; }
 .nt-status-failed, .nt-status-expired { background: rgba(240, 90, 105, .15); color: var(--bad); }
+/* Why the attempt failed, under the status badge: the ledger keeps the
+   reason so the history answers "why" without the attempt's log line. */
+.nt-deliveries .nt-error { display: block; margin-top: 0.2rem; font-size: 0.72rem; color: var(--bad); max-width: 34ch; overflow-wrap: anywhere; }
 .nt-status-succeeded, .nt-status-accepted, .nt-status-confirmed { background: rgba(93, 187, 136, .15); color: var(--ok); }
 .nt-status-running { background: rgba(110, 173, 208, .15); color: var(--info); }
 .nt-status-saved { background: rgba(224, 166, 60, .15); color: var(--warn); }

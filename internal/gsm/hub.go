@@ -966,6 +966,39 @@ func DecodeSMSBody(raw string) string {
 	return string(utf16.Decode(units))
 }
 
+// decodeUCS2Sender turns an originator the modem reported as UCS2 hex back
+// into text: some firmware answers +CMGR/+CMGL with the ADDRESS in UTF-16BE
+// hex for numbers whose address type is not "international", so an ordinary
+// short code arrives as "00380030003700360036003500380039" and the message
+// history shows a hex blob instead of "80766589" (reported from the
+// production station, where six carrier messages landed that way).
+//
+// The conversion is deliberately conservative, because a legitimately
+// alphanumeric sender is made of characters that can LOOK like hex: only a
+// pure-hex string of whole 4-digit units, at least two of them, whose every
+// unit is an ASCII printable character, is accepted. "CAFE" (one unit,
+// U+CAFE is not ASCII) and a plain number such as "80766589" (units 0x8076
+// and 0x6589) therefore stay exactly as the modem sent them.
+func decodeUCS2Sender(s string) string {
+	if len(s) < 8 || len(s)%4 != 0 {
+		return s
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return s
+		}
+	}
+	text := make([]rune, 0, len(s)/4)
+	for i := 0; i+4 <= len(s); i += 4 {
+		v, err := strconv.ParseUint(s[i:i+4], 16, 32)
+		if err != nil || v < 0x20 || v > 0x7e {
+			return s
+		}
+		text = append(text, rune(v))
+	}
+	return strings.TrimSpace(string(text))
+}
+
 // parseCOPS extracts the operator field of a +COPS response
 // ("+COPS: 0,0,\"PLAY\",0" → PLAY; numeric codes map to names).
 func parseCOPS(line string) string {
@@ -1280,7 +1313,7 @@ func (h *Hub) readIndexLocked(idx int) (m received, status string, err error) {
 	if strings.HasPrefix(first, "STO") || first == "2" || first == "3" {
 		return received{}, "STO", nil // sent copy: delete, never import
 	}
-	m.from = strings.Trim(fields[1], `"`)
+	m.from = decodeUCS2Sender(strings.Trim(fields[1], `"`))
 	m.text = DecodeSMSBody(strings.Join(body, "\n"))
 	return m, "REC", nil
 }

@@ -231,6 +231,66 @@ func TestInitFailsOnModemError(t *testing.T) {
 // lists nothing via CMGL AND leaves holes instead of compacting): every
 // slot 1..max is read, received messages import, sent copies are deleted
 // silently and an out-of-range index ends the scan.
+// TestDecodeUCS2Sender pins the address decoding and its conservatism: the
+// modem's UCS2-hex originator becomes readable text, while a real
+// alphanumeric sender or a plain number is left alone (both can look like
+// hex, and mangling them would break the sender lookup).
+func TestDecodeUCS2Sender(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		// The production case: a carrier short code the E173 reported as
+		// UTF-16BE hex.
+		{"00380030003700360036003500380039", "80766589"},
+		// Trailing blanks inside the units are trimmed.
+		{"0050006C006100790020", "Play"},
+		// A plain number: units 0x8076/0x6589 are not ASCII.
+		{"80766589", "80766589"},
+		// One unit only: U+CAFE is a real character, not a sender.
+		{"CAFE", "CAFE"},
+		// Ordinary alphanumeric senders are not hex at all.
+		{"PLAY24", "PLAY24"},
+		{"ALERT RCB", "ALERT RCB"},
+		// Odd length, empty and non-ASCII units pass through.
+		{"0038003", "0038003"},
+		{"", ""},
+		{"+48123456789", "+48123456789"},
+		// A long hex string whose units are not printable ASCII.
+		{"00E400E500E600E7", "00E400E500E600E7"},
+	} {
+		if got := decodeUCS2Sender(tc.in); got != tc.want {
+			t.Errorf("decodeUCS2Sender(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestPollUnreadDecodesTheUCS2Originator pins the wiring: an inbound message
+// whose address the modem rendered as UCS2 hex reaches the history (and every
+// log line) as the readable number, exactly like a plain one.
+func TestPollUnreadDecodesTheUCS2Originator(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	const hexSender = "00380030003700360036003500380039"
+	// Storage with ONE used slot out of two: slot 1 holds the message (the
+	// one with the hex originator), slot 2 is the empty remainder of the
+	// scan.
+	f.feed("+CPMS: \"SM\",1,2,\"SM\",1,2,\"SM\",1,2\r\nOK\r\n")
+	f.feed(cmgrText("REC UNREAD", hexSender, "krotka wiadomosc"))
+	f.feed("OK\r\n") // AT+CMGD=1
+	f.feed("OK\r\n") // CMGR=2: empty slot (hole)
+
+	h.mu.Lock()
+	got, ok := h.pollUnreadLocked()
+	h.mu.Unlock()
+	if !ok || len(got) != 1 {
+		t.Fatalf("poll = (%d messages, ok=%v)", len(got), ok)
+	}
+	if got[0].from != "80766589" {
+		t.Fatalf("sender = %q, want the decoded number", got[0].from)
+	}
+	rows := rec.list()
+	if len(rows) != 1 || rows[0].From != "80766589" {
+		t.Fatalf("history = %+v, want the decoded sender", rows)
+	}
+}
+
 func TestPollUnreadParses(t *testing.T) {
 	h, f, rec := newTestHub(t)
 	f.feed("+CPMS: \"SM\",4,5,\"SM\",4,5,\"SM\",4,5\r\nOK\r\n")

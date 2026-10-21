@@ -30,6 +30,24 @@ func newFakePort() *fakePort {
 	return &fakePort{ch: make(chan byte, 8192), done: make(chan struct{})}
 }
 
+// logBuffer is a slog sink safe for a goroutine under test and its reader.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // feed enqueues a full response chunk.
 func (f *fakePort) feed(s string) {
 	for i := 0; i < len(s); i++ {
@@ -1068,5 +1086,71 @@ func TestSendAbandonsAPendingBodyWhenTheCallerGivesUp(t *testing.T) {
 	}
 	if strings.Contains(w, "Czesc") {
 		t.Fatalf("the body was written for a caller that is gone: %q", w)
+	}
+}
+
+// TestStartKeepsRetryingAMissingModem pins the "start anyway" rule: a modem
+// that is not plugged in must not end the GSM session for good. Start logs the
+// failure (with the retry delay) and keeps trying in the background, so a
+// device that appears later is picked up without an operator restart — the
+// panel shows the missing device meanwhile (internal/preflight).
+func TestStartKeepsRetryingAMissingModem(t *testing.T) {
+	previous := modemOpenRetry
+	modemOpenRetry = 20 * time.Millisecond
+	defer func() { modemOpenRetry = previous }()
+
+	var buf logBuffer
+	h := NewHub(Config{Enabled: true, Device: "/nonexistent/ttyUSB0"}, &recStub{},
+		slog.New(slog.NewTextHandler(&buf, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h.Start(ctx)
+
+	if h.Ready() || h.Connected() {
+		t.Fatal("hub reported a live session without a device")
+	}
+	// One attempt is announced with its retry delay, and the background loop
+	// keeps attempting (several more warnings over time).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && strings.Count(buf.String(), "cannot open modem") < 3 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	out := buf.String()
+	if n := strings.Count(out, "cannot open modem"); n < 3 {
+		t.Fatalf("open attempts = %d, want the background retry to keep trying:\n%s", n, out)
+	}
+	if !strings.Contains(out, "retry_in=") {
+		t.Fatalf("the retry delay was not announced:\n%s", out)
+	}
+
+	// The loop stops with the station, leaving nothing behind.
+	cancel()
+	time.Sleep(60 * time.Millisecond)
+	settled := strings.Count(buf.String(), "cannot open modem")
+	time.Sleep(120 * time.Millisecond)
+	if after := strings.Count(buf.String(), "cannot open modem"); after != settled {
+		t.Fatalf("retries continued after cancellation (%d → %d)", settled, after)
+	}
+}
+
+// TestOpenSessionWithInjectedTransportGoesStraightToReady pins that the retry
+// path does not change the normal one: an available modem (injected transport)
+// is initialised immediately, so Start never waits for a device.
+func TestOpenSessionWithInjectedTransportGoesStraightToReady(t *testing.T) {
+	h, f, _ := newTestHub(t)
+	f.feed("ATE0\r\r\nOK\r\n")
+	f.feed("AT+CMGF=1\r\r\nOK\r\n")
+	go func() {
+		for i := 0; i < 20; i++ {
+			f.feed("OK\r\n")
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	if !h.openSession() {
+		t.Fatal("openSession = false for an injected transport")
+	}
+	if !h.Ready() {
+		t.Fatal("session not ready after a successful init")
 	}
 }

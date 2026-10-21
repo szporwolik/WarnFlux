@@ -4,6 +4,26 @@
   </h2>
   <p class="muted log-hint">{{tr .Lang "health.hint"}}</p>
 
+  {{if or .Hardware .HardwareOK}}
+  <div class="health-group" id="health-hardware">
+    <h3>{{tr .Lang "health.hardware"}}</h3>
+    {{if .HardwareOK}}
+    <div class="health-row">
+      <span class="health-name"><strong>{{tr .Lang "health.hardware.all"}}</strong></span>
+      <span class="badge ok">OK</span>
+      <span class="health-detail">{{tr .Lang "health.hardware.all_detail"}}</span>
+    </div>
+    {{end}}
+    {{range .Hardware}}
+    <div class="health-row">
+      <span class="health-name"><strong>{{.Name}}</strong></span>
+      <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
+      <span class="health-detail">{{.Detail}}</span>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+
   <div class="health-group">
     <h3>{{tr .Lang "health.infra"}}</h3>
     <div class="health-row">

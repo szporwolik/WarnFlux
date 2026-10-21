@@ -1,0 +1,18 @@
+[Unit]
+Description=WarnFlux stack (waits for the GSM modem, then docker compose up)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/warnflux-stack-up.sh /srv/docker/warnflux /dev/ttyUSB0 120
+ExecStop=/usr/bin/docker compose --project-directory /srv/docker/warnflux -f /srv/docker/warnflux/compose.yml stop
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=0
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

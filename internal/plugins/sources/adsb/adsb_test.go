@@ -473,3 +473,121 @@ func TestUpstreamOutageIsLoggedOncePerEpisode(t *testing.T) {
 		t.Fatalf("recovery was not reported with the tally:\n%s", out)
 	}
 }
+
+// TestRateLimitRefusalBackoff pins the step-back for a refused quota: the
+// poll interval doubles once per consecutive 429, the provider's Retry-After
+// wins when it is longer, and the advertised quota-window reset
+// (x-ratelimit-reset) wins over both — bounded so a day-long window still
+// gets an hourly probe. The production station used to poll a blocked
+// provider at its normal cadence: 77 pointless requests in one 6-hour episode.
+func TestRateLimitRefusalBackoff(t *testing.T) {
+	interval := time.Minute
+	cases := []struct {
+		name     string
+		refusals int
+		rl       *rateLimitError
+		want     time.Duration
+	}{
+		{"first refusal keeps the interval", 1, &rateLimitError{retryAfter: 30 * time.Second}, interval},
+		{"second refusal doubles", 2, &rateLimitError{retryAfter: 30 * time.Second}, 2 * interval},
+		{"third refusal doubles again", 3, &rateLimitError{retryAfter: 30 * time.Second}, 4 * interval},
+		{"long Retry-After wins", 1, &rateLimitError{retryAfter: 4 * time.Minute}, 4 * time.Minute},
+		{"quota window wins over backoff", 1, &rateLimitError{retryAfter: 30 * time.Second, resetAfter: 3*time.Hour + 30*time.Minute}, maxRateLimitWait},
+		{"short quota window is used as-is", 1, &rateLimitError{retryAfter: 30 * time.Second, resetAfter: 90 * time.Second}, 90 * time.Second},
+		{"backoff never exceeds its ceiling", 40, &rateLimitError{retryAfter: 30 * time.Second}, maxRefusalBackoff},
+		{"missing interval falls back to the default", 1, &rateLimitError{retryAfter: time.Second}, defaultPollInterval},
+	}
+	for _, c := range cases {
+		got := refusalDelay(interval, c.refusals, c.rl)
+		if c.name == "missing interval falls back to the default" {
+			got = refusalDelay(0, c.refusals, c.rl)
+		}
+		if got != c.want {
+			t.Errorf("%s: delay = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestRateLimitResetHeaderIsParsed pins the client side: a 429 carrying only
+// x-ratelimit-reset (the public endpoint sends no Retry-After) must surface
+// the window, and the error text must say so instead of the bare 30s default.
+func TestRateLimitResetHeaderIsParsed(t *testing.T) {
+	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-reset", "12675")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	c := NewClient(ProviderAdsbLol, srv.URL, time.Second)
+	_, _, err := c.Fetch(context.Background(), 50, 20, 45)
+	rl, ok := err.(*rateLimitError)
+	if !ok {
+		t.Fatalf("error = %T %v, want rateLimitError", err, err)
+	}
+	if rl.resetAfter != 12675*time.Second {
+		t.Errorf("resetAfter = %v, want 12675s", rl.resetAfter)
+	}
+	if !strings.Contains(err.Error(), "quota window resets in") {
+		t.Errorf("error text = %q, want the quota window mentioned", err)
+	}
+	// Absent header → no hint, and the message stays as before.
+	if d := parseRateLimitReset(""); d != 0 {
+		t.Errorf("parseRateLimitReset(\"\") = %v, want 0", d)
+	}
+	if d := parseRateLimitReset("nonsense"); d != 0 {
+		t.Errorf("parseRateLimitReset(nonsense) = %v, want 0", d)
+	}
+}
+
+// TestBlockedQuotaIsNotPokedAtPollCadence runs the loop against a refusing
+// provider that advertises a day-long window: the very first refusal pushes
+// the next poll an hour out, so the station collects one 429 instead of one
+// per cadence tick.
+func TestBlockedQuotaIsNotPokedAtPollCadence(t *testing.T) {
+	var mu sync.Mutex
+	polls := 0
+	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		polls++
+		mu.Unlock()
+		w.Header().Set("x-ratelimit-reset", "43200")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+
+	hub := testHub(t)
+	src, err := New(decodeConfig(t, "latitude: 50.02\nlongitude: 20.21\nradius_km: 45\nbase_url: "+strconvQuote(srv.URL)+"\n"), hub)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s := src.(*Source)
+	// The loop under test, not the scheduler: a real cadence would make this
+	// test take hours.
+	s.cfg.PollInterval = 20 * time.Millisecond
+
+	logs := &logBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx, &fakeEmitter{}) }()
+
+	waitForCondition(t, 5*time.Second, func() bool { return strings.Count(logs.String(), "adsb poll failed") == 1 })
+	// Give the loop many cadence ticks of wall clock it must NOT use.
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after its context was cancelled")
+	}
+
+	mu.Lock()
+	got := polls
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("requests against a blocked quota = %d, want 1 (window reset must hold the loop)", got)
+	}
+	if !strings.Contains(logs.String(), "retry_in=1h0m0s") {
+		t.Fatalf("refusal did not wait for the quota window:\n%s", logs.String())
+	}
+}

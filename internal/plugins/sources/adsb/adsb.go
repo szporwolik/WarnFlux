@@ -21,7 +21,11 @@ const Type = "adsb"
 
 // Defaults and bounds.
 const (
-	defaultPollInterval = 30 * time.Second
+	// defaultPollInterval keeps the station inside the provider's daily
+	// budget: adsb.lol allows 500 requests per 86400 s for anonymous
+	// clients, so a 30-second poll (2880/day) exhausted the quota within
+	// hours and the station then collected 429s until the window reset.
+	defaultPollInterval = 5 * time.Minute
 	// defaultRequestTimeout covers a COLD connection to a distant API
 	// (fresh DNS/TCP/TLS setup, plus HTTP/2), which measured up to 8 seconds
 	// on a slow link: 15 seconds left no margin and produced "degraded"
@@ -36,6 +40,16 @@ const (
 	maxTrackWindow  = 15 * time.Minute
 	maxTimeout      = time.Minute
 	maxRadiusKm     = 500
+
+	// maxRefusalBackoff bounds the doubling applied to one refusal episode:
+	// each consecutive 429 doubles the wait, up to this ceiling.
+	maxRefusalBackoff = 30 * time.Minute
+	// maxRateLimitWait bounds how long the plugin honours the provider's
+	// quota-window reset. The window is the whole day (up to 86400 s), and
+	// sleeping through it would hide a recovered quota for a day — an
+	// hourly probe is enough to notice the reset without draining the
+	// budget.
+	maxRateLimitWait = time.Hour
 )
 
 // Config is the plugin-specific configuration.
@@ -152,6 +166,32 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 // Name returns the plugin type name.
 func (s *Source) Name() string { return Type }
 
+// refusalDelay is how long to wait before the next poll after a refusal: the
+// poll interval doubled once per consecutive 429 (bounded by
+// maxRefusalBackoff), never shorter than the provider's Retry-After, and never
+// shorter than the quota-window reset it advertises (bounded by
+// maxRateLimitWait). A blocked provider used to be poked at the poll cadence
+// for the whole outage — 77 pointless requests in one 6-hour episode.
+func refusalDelay(interval time.Duration, refusals int, rl *rateLimitError) time.Duration {
+	if interval <= 0 {
+		interval = defaultPollInterval
+	}
+	wait := interval
+	for i := 1; i < refusals && wait < maxRefusalBackoff; i++ {
+		wait *= 2
+	}
+	wait = min(wait, maxRefusalBackoff)
+	if rl != nil {
+		if rl.retryAfter > wait {
+			wait = rl.retryAfter
+		}
+		if rl.resetAfter > wait {
+			wait = min(rl.resetAfter, maxRateLimitWait)
+		}
+	}
+	return wait
+}
+
 // Run polls the provider on the configured interval. Transient failures
 // degrade the source and never terminate the run; provider rate limits
 // (429) back the next poll off by the advertised Retry-After window. An
@@ -168,7 +208,10 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 
 	// failures counts the failed polls of the current outage episode
 	// (0 = healthy); outageSince anchors its start for the recovery report.
+	// refusals counts consecutive rate-limit (429) answers: they grow the
+	// step back, so a blocked quota is not poked at the poll cadence.
 	failures := 0
+	refusals := 0
 	var outageSince time.Time
 
 	for {
@@ -178,8 +221,9 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 		n, err := s.pollOnce(ctx, emit)
 		delay := s.cfg.PollInterval
 		if err != nil && ctx.Err() == nil {
-			if rl, ok := err.(*rateLimitError); ok && rl.retryAfter > delay {
-				delay = rl.retryAfter
+			if rl, ok := err.(*rateLimitError); ok {
+				refusals++
+				delay = max(delay, refusalDelay(s.cfg.PollInterval, refusals, rl))
 			}
 			failures++
 			if failures == 1 {
@@ -197,6 +241,7 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 				slog.Info("adsb poll recovered", "provider", s.cfg.Provider,
 					"failed_attempts", failures, "outage", time.Since(outageSince).Round(time.Second))
 				failures = 0
+				refusals = 0
 			}
 			if reporter != nil {
 				reporter.ReportSourceHealthy()

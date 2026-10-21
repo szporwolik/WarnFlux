@@ -474,6 +474,53 @@ func TestSendFlow(t *testing.T) {
 	}
 }
 
+// TestSendRepinsCharsetAfterUcs2Reset covers the prod failure where the modem
+// reset its TE character set to UCS2 and rejected the ASCII address with a
+// bare ERROR: the send re-pins IRA and retries the prompt once, and the body is
+// committed exactly once.
+func TestSendRepinsCharsetAfterUcs2Reset(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	f.feed("ERROR\r\n") // first AT+CMGS rejected (UCS2 charset)
+	f.feed("OK\r\n")    // AT+CSCS="IRA"
+	f.feed("> \r\n")    // retried AT+CMGS prompt
+	f.feed("OK\r\n")    // network accept
+	if err := h.Send(context.Background(), "+48600111222", "Czesc"); err != nil {
+		t.Fatalf("send after charset reset: %v", err)
+	}
+	w := f.written()
+	if n := strings.Count(w, "AT+CMGS="); n != 2 {
+		t.Fatalf("AT+CMGS count = %d, want 2 (original + retry): %q", n, w)
+	}
+	if !strings.Contains(w, `AT+CSCS="IRA"`+"\r") {
+		t.Fatalf("charset was not re-pinned: %q", w)
+	}
+	if n := strings.Count(w, "\x1A"); n != 1 {
+		t.Fatalf("bodies committed = %d, want exactly 1: %q", n, w)
+	}
+	if rows := rec.list(); len(rows) != 1 {
+		t.Fatalf("recorded %d rows, want 1", len(rows))
+	}
+}
+
+// TestSendCharsetRetryStopsWhenPinFails: if the modem also refuses the pin, the
+// original rejection is reported and no body is written.
+func TestSendCharsetRetryStopsWhenPinFails(t *testing.T) {
+	h, f, _ := newTestHub(t)
+	f.feed("ERROR\r\n") // AT+CMGS rejected
+	f.feed("ERROR\r\n") // AT+CSCS="IRA" rejected too
+	err := h.Send(context.Background(), "+48600111222", "Czesc")
+	if !errors.Is(err, ErrModemRejected) {
+		t.Fatalf("err = %v, want ErrModemRejected", err)
+	}
+	w := f.written()
+	if n := strings.Count(w, "AT+CMGS="); n != 1 {
+		t.Fatalf("AT+CMGS count = %d, want 1 (no retry without a pin): %q", n, w)
+	}
+	if strings.Contains(w, "\x1A") {
+		t.Fatalf("a body was committed despite the failure: %q", w)
+	}
+}
+
 // feedCapture records the last message-feed publication.
 type feedCapture struct {
 	mu       sync.Mutex
@@ -668,7 +715,8 @@ func TestSendValidates(t *testing.T) {
 
 func TestSendModemError(t *testing.T) {
 	h, f, rec := newTestHub(t)
-	f.feed("ERROR\r\n")
+	f.feed("ERROR\r\n") // AT+CMGS rejected
+	f.feed("ERROR\r\n") // AT+CSCS="IRA" refused too — the retry gives up
 	if err := h.Send(context.Background(), "+48600111222", "x"); err == nil {
 		t.Fatalf("send succeeded on modem ERROR")
 	}

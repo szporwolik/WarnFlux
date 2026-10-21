@@ -520,7 +520,12 @@ func (h *Hub) initLocked() bool {
 		}
 	}
 	// Tolerated if rejected — the pin is a convenience, not a feature.
-	_, _ = h.exchangeLocked(`AT+CSCS="IRA"`, "OK")
+	if err := h.pinCharsetLocked(); err != nil {
+		// Not fatal, but worth knowing: with UCS2 the modem rejects every
+		// ASCII AT+CMGS command, and sends recover only through the pin
+		// retry in Send.
+		h.logger.Warn("gsm: TE charset pin failed", "error", err)
+	}
 
 	// Storage selection: prefer modem memory (ME — 23 slots) over the
 	// SIM (SM). Drain whatever the SIM still holds first so pending
@@ -537,6 +542,17 @@ func (h *Hub) initLocked() bool {
 		}
 	}
 	return true
+}
+
+// pinCharsetLocked forces the TE character set to IRA. The modem keeps this
+// setting across sessions and resets it to UCS2 on some power/USB resets; in
+// UCS2 the ASCII AT+CMGS address is rejected with a bare ERROR. The caller
+// holds h.mu.
+func (h *Hub) pinCharsetLocked() error {
+	if _, err := h.exchangeLocked(`AT+CSCS="IRA"`, "OK"); err != nil {
+		return fmt.Errorf("pin TE charset: %w", err)
+	}
+	return nil
 }
 
 // cpmsSupports reports whether a +CPMS=? reply lists the given storage
@@ -797,7 +813,17 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 	// Wait for the prompt: nothing is committed yet, so a caller that
 	// gives up here is honoured — the pending message is abandoned with
 	// ESC and no body is written.
-	if _, err := h.exchangePromptCtxLocked(ctx, `AT+CMGS="`+number+`"`); err != nil {
+	_, err := h.exchangePromptCtxLocked(ctx, `AT+CMGS="`+number+`"`)
+	if err != nil && errors.Is(err, ErrModemRejected) && ctx.Err() == nil {
+		// A modem that reset its TE character set to UCS2 rejects the ASCII
+		// address with a bare ERROR (seen on the prod E173 after a USB reset).
+		// Re-pin the charset — exactly what init does — and retry once; the
+		// failed attempt committed nothing, so no duplicate can be sent.
+		if pinErr := h.pinCharsetLocked(); pinErr == nil {
+			_, err = h.exchangePromptCtxLocked(ctx, `AT+CMGS="`+number+`"`)
+		}
+	}
+	if err != nil {
 		if errors.Is(err, ErrTimeout) || ctx.Err() != nil {
 			h.deferRepairLocked()
 		}

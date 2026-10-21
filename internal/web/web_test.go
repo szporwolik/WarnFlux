@@ -411,6 +411,24 @@ func (f *fakeComposePublisher) rawSnapshotFor(slug string) []fakeRawPublish {
 	return out
 }
 
+// waitForRawPublish blocks until at least n raw documents were published. The
+// publication is a best-effort background write (broker gate), so a test that
+// reads the recording right after a 303 races it — that is exactly how
+// TestEmcomStandDownIsNotConfirmedWhenTheIntakeRefuses failed on a loaded CI
+// runner ("no state document published").
+func (e *testEnv) waitForRawPublish(t *testing.T, n int) []fakeRawPublish {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var raw []fakeRawPublish
+	for time.Now().Before(deadline) {
+		if raw = e.pub.rawSnapshot(); len(raw) >= n {
+			return raw
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return raw
+}
+
 // rawSnapshot returns a copy of the recorded raw publications.
 func (f *fakeComposePublisher) rawSnapshot() []fakeRawPublish {
 	f.mu.Lock()
@@ -5699,8 +5717,9 @@ func emcomEnvWithNetwork(t *testing.T, users storage.DirectoryStore, store *sqli
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST /config/emcom/add = %d, want 303", resp.StatusCode)
 	}
-	// Mirror the retained state document the add published.
-	raw := env.pub.rawSnapshot()
+	// Mirror the retained state document the add published. The publish runs
+	// in the background, so wait for it instead of racing it.
+	raw := env.waitForRawPublish(t, 1)
 	if len(raw) == 0 {
 		t.Fatal("no state document published")
 	}

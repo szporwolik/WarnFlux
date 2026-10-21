@@ -41,6 +41,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/preflight"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -78,6 +79,9 @@ type Server struct {
 	// radioCLI is the shared radio-command interpreter: the Help manual
 	// lists exactly the commands it accepts (nil = no command section).
 	radioCLI *radiocli.Bot
+	// hardware reports the configured devices the station cannot use
+	// (nil = no probe wired).
+	hardware hardwareProbe
 	ingress  *dispatch.Ingress
 	users    storage.DirectoryStore
 	// emcomRetireMu guards emcomRetirePending: the EMCOM alarm documents
@@ -221,6 +225,21 @@ func (s *Server) SetConfigFile(path string) { s.configPath = path }
 
 // SetRadioCLI hands the shared radio-command interpreter to the panel so
 // the Help manual can list the commands it really accepts.
+// hardwareProbe is the optional source of unmet hardware dependencies
+// (satisfied by *preflight.Monitor). Nil means nothing was probed and the
+// health card leaves its hardware section out.
+type hardwareProbe interface {
+	// Active lists the dependencies that are missing right now.
+	Active() []preflight.Condition
+	// Len reports how many dependencies are registered in total.
+	Len() int
+}
+
+// SetHardwareProbe installs the preflight monitor whose findings the health
+// card shows. It is a setter because the monitor is built from the loaded
+// configuration, after the server exists.
+func (s *Server) SetHardwareProbe(p hardwareProbe) { s.hardware = p }
+
 func (s *Server) SetRadioCLI(bot *radiocli.Bot) { s.radioCLI = bot }
 
 // SetTimezone overrides the display timezone for every formatted

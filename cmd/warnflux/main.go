@@ -46,6 +46,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/plugins"
 	mqttout "github.com/szporwolik/WarnFlux/internal/plugins/outputs/mqtt"
+	"github.com/szporwolik/WarnFlux/internal/preflight"
 	"github.com/szporwolik/WarnFlux/internal/radiocli"
 	"github.com/szporwolik/WarnFlux/internal/routing"
 	"github.com/szporwolik/WarnFlux/internal/severity"
@@ -785,6 +786,17 @@ func run(configPath string, checkConfig bool) error {
 		Enabled: cfg.GSM.Enabled,
 		Device:  cfg.GSM.Device,
 	}, store, logger)
+	// Hardware preflight: a device the configuration promises but the host
+	// does not have must never stop the station — it is logged once and
+	// listed on the panel's health card, and the probe keeps running so a
+	// device plugged in later clears its own finding.
+	preflightMon := preflight.New(logger)
+	if cfg.GSM.Enabled {
+		preflightMon.Add("gsm.modem", preflight.SeverityBad, preflight.DevicePath(cfg.GSM.Device))
+	}
+	if cfg.Meshtastic.Enabled && !strings.EqualFold(cfg.Meshtastic.Transport, "tcp") {
+		preflightMon.Add("meshtastic.device", preflight.SeverityBad, preflight.DevicePaths(cfg.Meshtastic.Device))
+	}
 	// The heard-node directory persists in SQLite so restarts and quiet
 	// periods do not empty the node list.
 	meshtasticHub.SetNodeStore(store)
@@ -1242,6 +1254,8 @@ func run(configPath string, checkConfig bool) error {
 		// The Help manual lists exactly the commands the interpreter
 		// answers (one source of truth, nothing to keep in sync).
 		webSrv.SetRadioCLI(radioCLI)
+		// The health card answers "why is SMS dead?" without the log.
+		webSrv.SetHardwareProbe(preflightMon)
 		// Human-facing timestamps ride the RESOLVED display zone (the
 		// configured name, else the detected host zone, else UTC): a
 		// container without app.timezone would otherwise render UTC
@@ -1353,6 +1367,7 @@ func run(configPath string, checkConfig bool) error {
 	if gsmHub.Enabled() {
 		gsmHub.Start(ctx)
 	}
+	go preflightMon.Run(ctx)
 
 	// Discord direct-message commands: an operator writes the same slash
 	// commands the radio channels take in a PRIVATE message to the bot

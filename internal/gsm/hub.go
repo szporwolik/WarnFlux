@@ -276,6 +276,12 @@ func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (ef
 }
 
 // Connected reports whether the serial session is up.
+// modemOpenRetry is how long Start waits before another attempt at opening a
+// modem that is not there yet. Plugging the stick in is a human action, so a
+// minute is fast enough and keeps the log quiet. A variable only so tests can
+// shorten it.
+var modemOpenRetry = time.Minute
+
 func (h *Hub) Connected() bool { return h.connected.Load() }
 
 // Ready reports whether the modem answered the init exchange.
@@ -346,20 +352,35 @@ func (h *Hub) SetTransport(rw io.ReadWriteCloser) {
 	h.conn = rw
 }
 
-// Start opens the device (unless a transport was injected), runs the AT
-// init and launches the unread-message poll loop until ctx is done.
+// Start opens the device (unless a transport was injected), runs the AT init
+// and launches the unread-message poll loop until ctx is done. A modem that is
+// not plugged in yet must NOT stop the station: the open is retried in the
+// background, so a device that appears after start is picked up without an
+// operator restarting anything (the panel reports the missing device through
+// internal/preflight meanwhile).
 func (h *Hub) Start(ctx context.Context) {
 	if !h.cfg.Enabled {
 		return
 	}
+	if !h.openSession() {
+		go h.awaitDevice(ctx)
+		return
+	}
+	go h.pollLoop(ctx)
+}
+
+// openSession opens the configured device (unless one was injected) and runs
+// the AT init. It reports whether the session is ready for the poll loop.
+func (h *Hub) openSession() bool {
 	h.mu.Lock()
 	conn := h.conn
 	if conn == nil {
 		dev, err := openSerial(h.cfg.Device)
 		if err != nil {
 			h.mu.Unlock()
-			h.logger.Warn("gsm: cannot open modem", "device", h.cfg.Device, "error", err)
-			return
+			h.logger.Warn("gsm: cannot open modem", "device", h.cfg.Device,
+				"error", err, "retry_in", modemOpenRetry)
+			return false
 		}
 		conn = dev
 		h.conn = dev
@@ -371,9 +392,10 @@ func (h *Hub) Start(ctx context.Context) {
 	ok := h.initLocked()
 	h.mu.Unlock()
 	if !ok {
-		h.logger.Warn("gsm: modem init failed — session closed", "device", h.cfg.Device)
+		h.logger.Warn("gsm: modem init failed — session closed", "device", h.cfg.Device,
+			"retry_in", modemOpenRetry)
 		h.closeTransport()
-		return
+		return false
 	}
 	h.ready.Store(true)
 	h.logger.Info("gsm: modem ready", "device", h.cfg.Device)
@@ -383,8 +405,23 @@ func (h *Hub) Start(ctx context.Context) {
 	h.mu.Lock()
 	h.refreshStatusLocked()
 	h.mu.Unlock()
+	return true
+}
 
-	go h.pollLoop(ctx)
+// awaitDevice retries openSession until the modem shows up (or ctx ends) and
+// then hands the session to the poll loop.
+func (h *Hub) awaitDevice(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(modemOpenRetry):
+		}
+		if h.openSession() {
+			go h.pollLoop(ctx)
+			return
+		}
+	}
 }
 
 // Close releases the transport (Start may be called again afterwards).

@@ -155,6 +155,10 @@ type Hub struct {
 	rec    MessageRecorder
 	now    func() time.Time
 
+	// openRetry paces the background retry of a modem that is not there
+	// yet (set at construction, read-only afterwards).
+	openRetry time.Duration
+
 	mu        sessionLock
 	conn      io.ReadWriteCloser
 	connected atomic.Bool
@@ -220,6 +224,7 @@ func NewHub(cfg Config, rec MessageRecorder, logger *slog.Logger) *Hub {
 		logger:     logger,
 		rec:        rec,
 		now:        time.Now,
+		openRetry:  modemOpenRetry,
 		mu:         newSessionLock(),
 		cmds:       map[string]*cmdRecord{},
 		replyLast:  map[string]replyWindow{},
@@ -278,9 +283,8 @@ func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (ef
 // Connected reports whether the serial session is up.
 // modemOpenRetry is how long Start waits before another attempt at opening a
 // modem that is not there yet. Plugging the stick in is a human action, so a
-// minute is fast enough and keeps the log quiet. A variable only so tests can
-// shorten it.
-var modemOpenRetry = time.Minute
+// minute is fast enough and keeps the log quiet.
+const modemOpenRetry = time.Minute
 
 func (h *Hub) Connected() bool { return h.connected.Load() }
 
@@ -369,6 +373,15 @@ func (h *Hub) Start(ctx context.Context) {
 	go h.pollLoop(ctx)
 }
 
+// retryInterval is the modem open retry pace (never zero, so a Hub built by
+// hand still retries sanely).
+func (h *Hub) retryInterval() time.Duration {
+	if h.openRetry > 0 {
+		return h.openRetry
+	}
+	return modemOpenRetry
+}
+
 // openSession opens the configured device (unless one was injected) and runs
 // the AT init. It reports whether the session is ready for the poll loop.
 func (h *Hub) openSession() bool {
@@ -379,7 +392,7 @@ func (h *Hub) openSession() bool {
 		if err != nil {
 			h.mu.Unlock()
 			h.logger.Warn("gsm: cannot open modem", "device", h.cfg.Device,
-				"error", err, "retry_in", modemOpenRetry)
+				"error", err, "retry_in", h.retryInterval())
 			return false
 		}
 		conn = dev
@@ -393,7 +406,7 @@ func (h *Hub) openSession() bool {
 	h.mu.Unlock()
 	if !ok {
 		h.logger.Warn("gsm: modem init failed — session closed", "device", h.cfg.Device,
-			"retry_in", modemOpenRetry)
+			"retry_in", h.retryInterval())
 		h.closeTransport()
 		return false
 	}
@@ -415,7 +428,7 @@ func (h *Hub) awaitDevice(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(modemOpenRetry):
+		case <-time.After(h.retryInterval()):
 		}
 		if h.openSession() {
 			go h.pollLoop(ctx)

@@ -80,6 +80,11 @@ var gatewayURL = "wss://gateway.discord.gg/?v=10&encoding=json"
 // errGatewayFatal marks a condition no reconnect can fix.
 var errGatewayFatal = errors.New("gateway session refused")
 
+// errGatewayReconnect is Discord asking the client to rebuild the session.
+// It is routine — the gateway rotates sessions — so the listener reports it
+// at INFO instead of warning about an outage that is not happening.
+var errGatewayReconnect = errors.New("gateway asked for a reconnect")
+
 // gatewayFrame is one WebSocket frame of the gateway protocol.
 type gatewayFrame struct {
 	Op   int             `json:"op"`
@@ -266,7 +271,7 @@ func (l *dmListener) run(ctx context.Context) {
 			// a broken configuration, so start the backoff from scratch.
 			backoff = gatewayReconnectMin
 		}
-		l.logger.Warn("discord: direct-message listener disconnected", "error", err, "retry_in", backoff.String())
+		l.logSessionEnd(err, backoff)
 		select {
 		case <-ctx.Done():
 			return
@@ -274,6 +279,18 @@ func (l *dmListener) run(ctx context.Context) {
 		}
 		backoff = min(backoff*2, gatewayReconnectMax)
 	}
+}
+
+// logSessionEnd reports why the session ended. Discord rotates gateway
+// sessions routinely and says so with op 7 — that is an expected reconnect,
+// logged at INFO, not an outage. Warning about it put ~7 false alarms a day
+// next to the real ones.
+func (l *dmListener) logSessionEnd(err error, backoff time.Duration) {
+	if errors.Is(err, errGatewayReconnect) {
+		l.logger.Info("discord: gateway asked for a reconnect", "retry_in", backoff.String())
+		return
+	}
+	l.logger.Warn("discord: direct-message listener disconnected", "error", err, "retry_in", backoff.String())
 }
 
 // waitForIntent blocks until the privileged Message Content intent is
@@ -391,7 +408,7 @@ func (l *dmListener) connect(ctx context.Context, session *gatewaySession) error
 		case opHeartbeatAck:
 			acked.Store(true)
 		case opReconnect:
-			return errors.New("gateway asked for a reconnect")
+			return errGatewayReconnect
 		case opInvalidSession:
 			var resumable bool
 			_ = json.Unmarshal(frame.Data, &resumable)

@@ -1095,13 +1095,12 @@ func TestSendAbandonsAPendingBodyWhenTheCallerGivesUp(t *testing.T) {
 // device that appears later is picked up without an operator restart — the
 // panel shows the missing device meanwhile (internal/preflight).
 func TestStartKeepsRetryingAMissingModem(t *testing.T) {
-	previous := modemOpenRetry
-	modemOpenRetry = 20 * time.Millisecond
-	defer func() { modemOpenRetry = previous }()
-
 	var buf logBuffer
 	h := NewHub(Config{Enabled: true, Device: "/nonexistent/ttyUSB0"}, &recStub{},
 		slog.New(slog.NewTextHandler(&buf, nil)))
+	// Shorten only THIS hub's retry pace (a construction-time field, so the
+	// background goroutine never races the test).
+	h.openRetry = 20 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

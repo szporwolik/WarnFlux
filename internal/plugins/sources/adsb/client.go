@@ -27,13 +27,20 @@ import (
 // maxBodyBytes bounds one provider response.
 const maxBodyBytes = 4 << 20 // 4 MiB (a busy tar1090 receiver can be large)
 
-// rateLimitError reports a provider-side 429 with the advertised
-// Retry-After window; the run loop backs the next poll off by it.
+// rateLimitError reports a provider-side 429: retryAfter is the advertised
+// Retry-After window (30s when the response carries none), resetAfter the
+// quota-window reset hint from x-ratelimit-reset (0 when absent). The run
+// loop backs the next poll off by both.
 type rateLimitError struct {
 	retryAfter time.Duration
+	resetAfter time.Duration
 }
 
 func (e *rateLimitError) Error() string {
+	if e.resetAfter > 0 {
+		return fmt.Sprintf("rate limited, retry after %s (quota window resets in %s)",
+			e.retryAfter, e.resetAfter.Round(time.Second))
+	}
 	return fmt.Sprintf("rate limited, retry after %s", e.retryAfter)
 }
 
@@ -47,6 +54,18 @@ func parseRetryAfter(v string) time.Duration {
 		return clampRetry(time.Until(t))
 	}
 	return 30 * time.Second
+}
+
+// parseRateLimitReset reads x-ratelimit-reset: the seconds until the quota
+// window resets. The public endpoint answers a 429 with the daily window
+// (up to 86400 s) and no Retry-After at all, so this header is the only hint
+// that "not now" really means "not for hours". Absent or unparseable → 0.
+func parseRateLimitReset(v string) time.Duration {
+	secs, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	return min(time.Duration(secs)*time.Second, 24*time.Hour)
 }
 
 func clampRetry(d time.Duration) time.Duration {
@@ -125,7 +144,10 @@ func (c *Client) getJSON(ctx context.Context, u string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, &rateLimitError{retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
+		return nil, &rateLimitError{
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+			resetAfter: parseRateLimitReset(resp.Header.Get("x-ratelimit-reset")),
+		}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)

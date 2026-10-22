@@ -127,25 +127,47 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 func (s *Source) Name() string { return Type }
 
 // Run polls the feed on the configured interval. Transient provider
-// errors are logged and never terminate the run.
+// errors are logged and never terminate the run; an outage is logged as one
+// episode (the first failure is the warning, the retries are counted in debug
+// lines, the recovery reports the tally). A warning per poll turned a retired
+// upstream into 96 warnings a day, one every 15 minutes.
 func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	reporter, _ := emit.(plugin.SourceHealthReporter)
 	slog.Info("gddkia plugin started",
 		"poll_interval", s.cfg.PollInterval, "radius_km", s.radiusKM,
 		"center_lat", s.centerLat, "center_lon", s.centerLon)
 
+	failures := 0
+	var outageSince time.Time
+
 	for {
 		if ctx.Err() != nil {
 			break
 		}
 		err := s.pollOnce(ctx, emit)
-		if err != nil && ctx.Err() == nil {
-			slog.Warn("gddkia poll failed", "error", err)
+		switch {
+		case err != nil && ctx.Err() != nil:
+		case err != nil:
+			failures++
+			if failures == 1 {
+				outageSince = time.Now()
+				slog.Warn("gddkia poll failed", "error", err, "retry_in", s.cfg.PollInterval)
+			} else {
+				slog.Debug("gddkia poll still failing", "error", err,
+					"failed_attempts", failures, "retry_in", s.cfg.PollInterval)
+			}
 			if reporter != nil {
 				reporter.ReportSourceDegraded(err)
 			}
-		} else if err == nil && reporter != nil {
-			reporter.ReportSourceHealthy()
+		default:
+			if failures > 0 {
+				slog.Info("gddkia poll recovered",
+					"failed_attempts", failures, "outage", time.Since(outageSince).Round(time.Second))
+				failures = 0
+			}
+			if reporter != nil {
+				reporter.ReportSourceHealthy()
+			}
 		}
 		timer := time.NewTimer(s.cfg.PollInterval)
 		select {

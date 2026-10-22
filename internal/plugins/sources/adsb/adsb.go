@@ -35,7 +35,12 @@ const (
 	defaultTrackWindow    = 5 * time.Minute
 
 	minPollInterval = 5 * time.Second
-	maxPollInterval = 5 * time.Minute
+	// maxPollInterval allows a cadence that leaves quota for other clients:
+	// adsb.lol counts requests per PUBLIC IP, so every WarnFlux instance
+	// (and every feeder) behind one NAT draws from the same 500/day. A
+	// second instance on the default 5m cadence doubles the draw and
+	// exhausts the window for both.
+	maxPollInterval = time.Hour
 	minTrackWindow  = time.Minute
 	maxTrackWindow  = 15 * time.Minute
 	maxTimeout      = time.Minute
@@ -45,11 +50,12 @@ const (
 	// each consecutive 429 doubles the wait, up to this ceiling.
 	maxRefusalBackoff = 30 * time.Minute
 	// maxRateLimitWait bounds how long the plugin honours the provider's
-	// quota-window reset. The window is the whole day (up to 86400 s), and
-	// sleeping through it would hide a recovered quota for a day — an
-	// hourly probe is enough to notice the reset without draining the
-	// budget.
-	maxRateLimitWait = time.Hour
+	// quota-window reset. It matches the clamp applied when the header is
+	// parsed, because probing before the reset can only produce another
+	// 429: the quota is empty until the advertised moment, and the poll
+	// right after the reset succeeds. Hourly probes during a blocked window
+	// were requests spent from an already empty budget.
+	maxRateLimitWait = 24 * time.Hour
 )
 
 // Config is the plugin-specific configuration.

@@ -222,9 +222,12 @@ sources:
     config:
       provider: adsblol
       # base_url: "https://api.adsb.lol"      # or http://10.0.0.20:8080 for tar1090
-      # The provider's quota is 500 requests per day for anonymous clients:
-      # 5 minutes is ~288/day, while 60s (the old default) burned the budget
-      # in hours and then collected 429s until the window reset.
+      # The provider's quota is 500 requests per day for anonymous clients,
+      # counted per PUBLIC IP: 5 minutes is ~288/day, while 60s (the old
+      # default) burned the budget in hours and then collected 429s until the
+      # window reset. A second instance behind the same NAT (a development
+      # copy, another station) spends from the same budget — give it a longer
+      # cadence (up to 1h) instead of the default.
       poll_interval: 5m
       # A cold connection to a distant API (DNS + TCP + TLS + HTTP/2) can
       # take seconds on a slow link: the timeout is a safety net, not a

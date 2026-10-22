@@ -1,8 +1,15 @@
 package gddkia
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -113,5 +120,94 @@ func TestPollOnceFiltersToArea(t *testing.T) {
 	}
 	if len(keys) != 3 {
 		t.Errorf("duplicate identities: %d events, %d keys", len(em.events), len(keys))
+	}
+}
+
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not met within timeout")
+}
+
+// TestOutageIsLoggedAsOneEpisode proves a dead upstream cannot bury the log:
+// the first failed poll warns, the following ones are debug lines, and the
+// recovery reports the tally. The retired GDDKiA feed produced one warning
+// every 15 minutes (96 a day) before this.
+func TestOutageIsLoggedAsOneEpisode(t *testing.T) {
+	var mu sync.Mutex
+	polls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		polls++
+		n := polls
+		mu.Unlock()
+		if n <= 2 {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(fixtureXML))
+	}))
+	t.Cleanup(srv.Close)
+
+	hub := testHub(t)
+	src, err := New(decodeConfig(t, "base_url: \""+srv.URL+"/dane/zima_html/utrdane.xml\"\n"), hub)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s := src.(*Source)
+	s.cfg.PollInterval = 20 * time.Millisecond
+
+	logs := &logBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx, &fakeEmitter{}) }()
+
+	waitForCondition(t, 5*time.Second, func() bool {
+		return strings.Contains(logs.String(), "gddkia poll recovered")
+	})
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after its context was cancelled")
+	}
+
+	out := logs.String()
+	if got := strings.Count(out, "gddkia poll failed"); got != 1 {
+		t.Errorf("warning lines = %d, want 1 (one warning per outage episode):\n%s", got, out)
+	}
+	if !strings.Contains(out, "gddkia poll still failing") {
+		t.Errorf("retries were not reported as debug lines:\n%s", out)
+	}
+	if !strings.Contains(out, "failed_attempts=2") {
+		t.Errorf("recovery did not report the failure tally:\n%s", out)
 	}
 }

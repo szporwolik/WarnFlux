@@ -155,6 +155,10 @@ type Hub struct {
 	rec    MessageRecorder
 	now    func() time.Time
 
+	// openRetry paces the background retry of a modem that is not there
+	// yet (set at construction, read-only afterwards).
+	openRetry time.Duration
+
 	mu        sessionLock
 	conn      io.ReadWriteCloser
 	connected atomic.Bool
@@ -220,6 +224,7 @@ func NewHub(cfg Config, rec MessageRecorder, logger *slog.Logger) *Hub {
 		logger:     logger,
 		rec:        rec,
 		now:        time.Now,
+		openRetry:  modemOpenRetry,
 		mu:         newSessionLock(),
 		cmds:       map[string]*cmdRecord{},
 		replyLast:  map[string]replyWindow{},
@@ -276,6 +281,11 @@ func (h *Hub) SetEventTimesResolver(fn func(ctx context.Context, key string) (ef
 }
 
 // Connected reports whether the serial session is up.
+// modemOpenRetry is how long Start waits before another attempt at opening a
+// modem that is not there yet. Plugging the stick in is a human action, so a
+// minute is fast enough and keeps the log quiet.
+const modemOpenRetry = time.Minute
+
 func (h *Hub) Connected() bool { return h.connected.Load() }
 
 // Ready reports whether the modem answered the init exchange.
@@ -346,20 +356,44 @@ func (h *Hub) SetTransport(rw io.ReadWriteCloser) {
 	h.conn = rw
 }
 
-// Start opens the device (unless a transport was injected), runs the AT
-// init and launches the unread-message poll loop until ctx is done.
+// Start opens the device (unless a transport was injected), runs the AT init
+// and launches the unread-message poll loop until ctx is done. A modem that is
+// not plugged in yet must NOT stop the station: the open is retried in the
+// background, so a device that appears after start is picked up without an
+// operator restarting anything (the panel reports the missing device through
+// internal/preflight meanwhile).
 func (h *Hub) Start(ctx context.Context) {
 	if !h.cfg.Enabled {
 		return
 	}
+	if !h.openSession() {
+		go h.awaitDevice(ctx)
+		return
+	}
+	go h.pollLoop(ctx)
+}
+
+// retryInterval is the modem open retry pace (never zero, so a Hub built by
+// hand still retries sanely).
+func (h *Hub) retryInterval() time.Duration {
+	if h.openRetry > 0 {
+		return h.openRetry
+	}
+	return modemOpenRetry
+}
+
+// openSession opens the configured device (unless one was injected) and runs
+// the AT init. It reports whether the session is ready for the poll loop.
+func (h *Hub) openSession() bool {
 	h.mu.Lock()
 	conn := h.conn
 	if conn == nil {
 		dev, err := openSerial(h.cfg.Device)
 		if err != nil {
 			h.mu.Unlock()
-			h.logger.Warn("gsm: cannot open modem", "device", h.cfg.Device, "error", err)
-			return
+			h.logger.Warn("gsm: cannot open modem", "device", h.cfg.Device,
+				"error", err, "retry_in", h.retryInterval())
+			return false
 		}
 		conn = dev
 		h.conn = dev
@@ -371,9 +405,10 @@ func (h *Hub) Start(ctx context.Context) {
 	ok := h.initLocked()
 	h.mu.Unlock()
 	if !ok {
-		h.logger.Warn("gsm: modem init failed — session closed", "device", h.cfg.Device)
+		h.logger.Warn("gsm: modem init failed — session closed", "device", h.cfg.Device,
+			"retry_in", h.retryInterval())
 		h.closeTransport()
-		return
+		return false
 	}
 	h.ready.Store(true)
 	h.logger.Info("gsm: modem ready", "device", h.cfg.Device)
@@ -383,8 +418,23 @@ func (h *Hub) Start(ctx context.Context) {
 	h.mu.Lock()
 	h.refreshStatusLocked()
 	h.mu.Unlock()
+	return true
+}
 
-	go h.pollLoop(ctx)
+// awaitDevice retries openSession until the modem shows up (or ctx ends) and
+// then hands the session to the poll loop.
+func (h *Hub) awaitDevice(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(h.retryInterval()):
+		}
+		if h.openSession() {
+			go h.pollLoop(ctx)
+			return
+		}
+	}
 }
 
 // Close releases the transport (Start may be called again afterwards).
@@ -470,7 +520,12 @@ func (h *Hub) initLocked() bool {
 		}
 	}
 	// Tolerated if rejected — the pin is a convenience, not a feature.
-	_, _ = h.exchangeLocked(`AT+CSCS="IRA"`, "OK")
+	if err := h.pinCharsetLocked(); err != nil {
+		// Not fatal, but worth knowing: with UCS2 the modem rejects every
+		// ASCII AT+CMGS command, and sends recover only through the pin
+		// retry in Send.
+		h.logger.Warn("gsm: TE charset pin failed", "error", err)
+	}
 
 	// Storage selection: prefer modem memory (ME — 23 slots) over the
 	// SIM (SM). Drain whatever the SIM still holds first so pending
@@ -487,6 +542,17 @@ func (h *Hub) initLocked() bool {
 		}
 	}
 	return true
+}
+
+// pinCharsetLocked forces the TE character set to IRA. The modem keeps this
+// setting across sessions and resets it to UCS2 on some power/USB resets; in
+// UCS2 the ASCII AT+CMGS address is rejected with a bare ERROR. The caller
+// holds h.mu.
+func (h *Hub) pinCharsetLocked() error {
+	if _, err := h.exchangeLocked(`AT+CSCS="IRA"`, "OK"); err != nil {
+		return fmt.Errorf("pin TE charset: %w", err)
+	}
+	return nil
 }
 
 // cpmsSupports reports whether a +CPMS=? reply lists the given storage
@@ -747,7 +813,17 @@ func (h *Hub) Send(ctx context.Context, number, text string) error {
 	// Wait for the prompt: nothing is committed yet, so a caller that
 	// gives up here is honoured — the pending message is abandoned with
 	// ESC and no body is written.
-	if _, err := h.exchangePromptCtxLocked(ctx, `AT+CMGS="`+number+`"`); err != nil {
+	_, err := h.exchangePromptCtxLocked(ctx, `AT+CMGS="`+number+`"`)
+	if err != nil && errors.Is(err, ErrModemRejected) && ctx.Err() == nil {
+		// A modem that reset its TE character set to UCS2 rejects the ASCII
+		// address with a bare ERROR (seen on the prod E173 after a USB reset).
+		// Re-pin the charset — exactly what init does — and retry once; the
+		// failed attempt committed nothing, so no duplicate can be sent.
+		if pinErr := h.pinCharsetLocked(); pinErr == nil {
+			_, err = h.exchangePromptCtxLocked(ctx, `AT+CMGS="`+number+`"`)
+		}
+	}
+	if err != nil {
 		if errors.Is(err, ErrTimeout) || ctx.Err() != nil {
 			h.deferRepairLocked()
 		}
@@ -964,6 +1040,39 @@ func DecodeSMSBody(raw string) string {
 		units = append(units, uint16(v))
 	}
 	return string(utf16.Decode(units))
+}
+
+// decodeUCS2Sender turns an originator the modem reported as UCS2 hex back
+// into text: some firmware answers +CMGR/+CMGL with the ADDRESS in UTF-16BE
+// hex for numbers whose address type is not "international", so an ordinary
+// short code arrives as "00380030003700360036003500380039" and the message
+// history shows a hex blob instead of "80766589" (reported from the
+// production station, where six carrier messages landed that way).
+//
+// The conversion is deliberately conservative, because a legitimately
+// alphanumeric sender is made of characters that can LOOK like hex: only a
+// pure-hex string of whole 4-digit units, at least two of them, whose every
+// unit is an ASCII printable character, is accepted. "CAFE" (one unit,
+// U+CAFE is not ASCII) and a plain number such as "80766589" (units 0x8076
+// and 0x6589) therefore stay exactly as the modem sent them.
+func decodeUCS2Sender(s string) string {
+	if len(s) < 8 || len(s)%4 != 0 {
+		return s
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return s
+		}
+	}
+	text := make([]rune, 0, len(s)/4)
+	for i := 0; i+4 <= len(s); i += 4 {
+		v, err := strconv.ParseUint(s[i:i+4], 16, 32)
+		if err != nil || v < 0x20 || v > 0x7e {
+			return s
+		}
+		text = append(text, rune(v))
+	}
+	return strings.TrimSpace(string(text))
 }
 
 // parseCOPS extracts the operator field of a +COPS response
@@ -1280,7 +1389,7 @@ func (h *Hub) readIndexLocked(idx int) (m received, status string, err error) {
 	if strings.HasPrefix(first, "STO") || first == "2" || first == "3" {
 		return received{}, "STO", nil // sent copy: delete, never import
 	}
-	m.from = strings.Trim(fields[1], `"`)
+	m.from = decodeUCS2Sender(strings.Trim(fields[1], `"`))
 	m.text = DecodeSMSBody(strings.Join(body, "\n"))
 	return m, "REC", nil
 }

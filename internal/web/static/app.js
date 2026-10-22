@@ -67,6 +67,12 @@
       : '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> © <a href="https://www.esri.com/en-us/legal/terms/data-attributions" target="_blank" rel="noopener noreferrer">Esri</a> · <a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
   }
 
+  // The renderer line under the map: Leaflet always hosts it, but vector
+  // styles are drawn by MapLibre GL — and the combined home map uses those
+  // by default, so naming only Leaflet would credit the wrong engine.
+  var ENGINE_LEAFLET = '<a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a>';
+  var ENGINE_MAPLIBRE = ENGINE_LEAFLET + ' + <a href="https://maplibre.org/" target="_blank" rel="noopener noreferrer">MapLibre GL</a>';
+
   // wfLoadLeaflet pulls the bundled Leaflet in on demand: admin pages
   // that only show a map after an interaction never ship it up front.
   // The callback runs once, also when Leaflet was loaded already.
@@ -154,6 +160,33 @@
       "map.tel.soil_moist": "soil moisture",
       "map.tel.soil_temp": "soil temp",
       "map.tel.co2": "CO₂",
+      "map.tel.white_lux": "white lux",
+      "map.tel.ir_lux": "IR lux",
+      "map.tel.uv_lux": "UV lux",
+      "map.tel.co2_temp": "CO₂ temp",
+      "map.tel.co2_hum": "CO₂ hum",
+      "map.tel.formaldehyde": "formaldehyde",
+      "map.tel.form_temp": "form temp",
+      "map.tel.form_hum": "form hum",
+      "map.tel.pm_temp": "PM temp",
+      "map.tel.pm_hum": "PM hum",
+      "map.tel.voc_index": "VOC index",
+      "map.tel.nox_index": "NOx index",
+      "map.tel.particles_tps": "particles TPS",
+      "map.tel.pm25": "PM2.5",
+      "map.tel.pm10": "PM10",
+      "map.tel.pm100": "PM100",
+      "map.tel.pm40": "PM4.0",
+      "map.tel.pm25_env": "PM2.5 env",
+      "map.tel.pm10_env": "PM10 env",
+      "map.tel.pm100_env": "PM100 env",
+      "map.tel.particles_03": "particles 0.3µm",
+      "map.tel.particles_05": "particles 0.5µm",
+      "map.tel.particles_10": "particles 1µm",
+      "map.tel.particles_25": "particles 2.5µm",
+      "map.tel.particles_40": "particles 4µm",
+      "map.tel.particles_50": "particles 5µm",
+      "map.tel.particles_100": "particles 10µm",
       "map.updated": "updated",
       "home.weather.none": "No weather reports yet — APRS weather stations and forecast providers publish them over MQTT.",
       "home.weather.forecast": "Forecast — next days",
@@ -281,6 +314,33 @@
       "map.tel.soil_moist": "wilgotność gleby",
       "map.tel.soil_temp": "temperatura gleby",
       "map.tel.co2": "CO₂",
+      "map.tel.white_lux": "światło białe",
+      "map.tel.ir_lux": "światło IR",
+      "map.tel.uv_lux": "światło UV",
+      "map.tel.co2_temp": "temperatura CO₂",
+      "map.tel.co2_hum": "wilgotność CO₂",
+      "map.tel.formaldehyde": "formaldehyd",
+      "map.tel.form_temp": "temperatura formaldehydu",
+      "map.tel.form_hum": "wilgotność formaldehydu",
+      "map.tel.pm_temp": "temperatura czujnika PM",
+      "map.tel.pm_hum": "wilgotność czujnika PM",
+      "map.tel.voc_index": "indeks VOC",
+      "map.tel.nox_index": "indeks NOx",
+      "map.tel.particles_tps": "cząstki TPS",
+      "map.tel.pm25": "PM2.5",
+      "map.tel.pm10": "PM10",
+      "map.tel.pm100": "PM100",
+      "map.tel.pm40": "PM4.0",
+      "map.tel.pm25_env": "PM2.5 (otoczenie)",
+      "map.tel.pm10_env": "PM10 (otoczenie)",
+      "map.tel.pm100_env": "PM100 (otoczenie)",
+      "map.tel.particles_03": "cząstki 0,3 µm",
+      "map.tel.particles_05": "cząstki 0,5 µm",
+      "map.tel.particles_10": "cząstki 1 µm",
+      "map.tel.particles_25": "cząstki 2,5 µm",
+      "map.tel.particles_40": "cząstki 4 µm",
+      "map.tel.particles_50": "cząstki 5 µm",
+      "map.tel.particles_100": "cząstki 10 µm",
       "map.updated": "aktualizacja",
       "home.weather.none": "Brak jeszcze raportów pogodowych — publikują je stacje pogodowe APRS i dostawcy prognoz przez MQTT.",
       "home.weather.forecast": "Prognoza — kolejne dni",
@@ -1089,6 +1149,10 @@
     if (attrib) {
       attrib.innerHTML = built.mode === "gl" ? t.glLabel : t.rasterLabel;
     }
+    var engine = document.getElementById("aprs-engine-attrib");
+    if (engine) {
+      engine.innerHTML = built.mode === "gl" ? ENGINE_MAPLIBRE : ENGINE_LEAFLET;
+    }
     if (stationLayer) {
       stationLayer.eachLayer(function (m) {
         if (m._aprsMarker && m.setStyle) {
@@ -1705,9 +1769,9 @@
     { k: "env_current", l: "map.tel.env_current", u: " mA", d: 1 },
     { k: "iaq", l: "map.tel.iaq", u: "", d: 0 },
     { k: "lux", l: "map.tel.lux", u: " lx", d: 0 },
-    { k: "white_lux", l: "White lux", u: " lx", d: 0 },
-    { k: "ir_lux", l: "IR lux", u: " lx", d: 0 },
-    { k: "uv_lux", l: "UV lux", u: " lx", d: 0 },
+    { k: "white_lux", l: "map.tel.white_lux", u: " lx", d: 0 },
+    { k: "ir_lux", l: "map.tel.ir_lux", u: " lx", d: 0 },
+    { k: "uv_lux", l: "map.tel.uv_lux", u: " lx", d: 0 },
     { k: "wind_direction", l: "map.tel.wind_dir", u: "°", d: 0 },
     { k: "wind_speed", l: "map.tel.wind_speed", u: " m/s", d: 1 },
     { k: "wind_gust", l: "map.tel.wind_gust", u: " m/s", d: 1 },
@@ -1719,30 +1783,30 @@
     { k: "soil_moisture", l: "map.tel.soil_moist", u: "%", d: 0 },
     { k: "soil_temperature", l: "map.tel.soil_temp", u: " °C", d: 1 },
     { k: "co2", l: "map.tel.co2", u: " ppm", d: 0 },
-    { k: "co2_temperature", l: "CO₂ temp", u: " °C", d: 1 },
-    { k: "co2_humidity", l: "CO₂ hum", u: "%", d: 0 },
-    { k: "form_formaldehyde", l: "Formaldehyde", u: " mg/m³", d: 2 },
-    { k: "form_temperature", l: "Form temp", u: " °C", d: 1 },
-    { k: "form_humidity", l: "Form hum", u: "%", d: 0 },
-    { k: "pm_temperature", l: "PM temp", u: " °C", d: 1 },
-    { k: "pm_humidity", l: "PM hum", u: "%", d: 0 },
-    { k: "pm_voc_idx", l: "VOC index", u: "", d: 0 },
-    { k: "pm_nox_idx", l: "NOx index", u: "", d: 0 },
-    { k: "particles_tps", l: "Particles TPS", u: "", d: 0 },
-    { k: "pm25_standard", l: "PM2.5", u: " µg/m³", d: 0 },
-    { k: "pm10_standard", l: "PM10", u: " µg/m³", d: 0 },
-    { k: "pm100_standard", l: "PM100", u: " µg/m³", d: 0 },
-    { k: "pm40_standard", l: "PM4.0", u: " µg/m³", d: 0 },
-    { k: "pm25_environmental", l: "PM2.5 env", u: " µg/m³", d: 0 },
-    { k: "pm10_environmental", l: "PM10 env", u: " µg/m³", d: 0 },
-    { k: "pm100_environmental", l: "PM100 env", u: " µg/m³", d: 0 },
-    { k: "particles_03um", l: "Particles 0.3µm", u: "", d: 0 },
-    { k: "particles_05um", l: "Particles 0.5µm", u: "", d: 0 },
-    { k: "particles_10um", l: "Particles 1µm", u: "", d: 0 },
-    { k: "particles_25um", l: "Particles 2.5µm", u: "", d: 0 },
-    { k: "particles_40um", l: "Particles 4µm", u: "", d: 0 },
-    { k: "particles_50um", l: "Particles 5µm", u: "", d: 0 },
-    { k: "particles_100um", l: "Particles 10µm", u: "", d: 0 }
+    { k: "co2_temperature", l: "map.tel.co2_temp", u: " °C", d: 1 },
+    { k: "co2_humidity", l: "map.tel.co2_hum", u: "%", d: 0 },
+    { k: "form_formaldehyde", l: "map.tel.formaldehyde", u: " mg/m³", d: 2 },
+    { k: "form_temperature", l: "map.tel.form_temp", u: " °C", d: 1 },
+    { k: "form_humidity", l: "map.tel.form_hum", u: "%", d: 0 },
+    { k: "pm_temperature", l: "map.tel.pm_temp", u: " °C", d: 1 },
+    { k: "pm_humidity", l: "map.tel.pm_hum", u: "%", d: 0 },
+    { k: "pm_voc_idx", l: "map.tel.voc_index", u: "", d: 0 },
+    { k: "pm_nox_idx", l: "map.tel.nox_index", u: "", d: 0 },
+    { k: "particles_tps", l: "map.tel.particles_tps", u: "", d: 0 },
+    { k: "pm25_standard", l: "map.tel.pm25", u: " µg/m³", d: 0 },
+    { k: "pm10_standard", l: "map.tel.pm10", u: " µg/m³", d: 0 },
+    { k: "pm100_standard", l: "map.tel.pm100", u: " µg/m³", d: 0 },
+    { k: "pm40_standard", l: "map.tel.pm40", u: " µg/m³", d: 0 },
+    { k: "pm25_environmental", l: "map.tel.pm25_env", u: " µg/m³", d: 0 },
+    { k: "pm10_environmental", l: "map.tel.pm10_env", u: " µg/m³", d: 0 },
+    { k: "pm100_environmental", l: "map.tel.pm100_env", u: " µg/m³", d: 0 },
+    { k: "particles_03um", l: "map.tel.particles_03", u: "", d: 0 },
+    { k: "particles_05um", l: "map.tel.particles_05", u: "", d: 0 },
+    { k: "particles_10um", l: "map.tel.particles_10", u: "", d: 0 },
+    { k: "particles_25um", l: "map.tel.particles_25", u: "", d: 0 },
+    { k: "particles_40um", l: "map.tel.particles_40", u: "", d: 0 },
+    { k: "particles_50um", l: "map.tel.particles_50", u: "", d: 0 },
+    { k: "particles_100um", l: "map.tel.particles_100", u: "", d: 0 }
   ];
 
   // meshTelemetryLines renders every telemetry value we hold for a node

@@ -30,6 +30,24 @@ func newFakePort() *fakePort {
 	return &fakePort{ch: make(chan byte, 8192), done: make(chan struct{})}
 }
 
+// logBuffer is a slog sink safe for a goroutine under test and its reader.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // feed enqueues a full response chunk.
 func (f *fakePort) feed(s string) {
 	for i := 0; i < len(s); i++ {
@@ -231,6 +249,66 @@ func TestInitFailsOnModemError(t *testing.T) {
 // lists nothing via CMGL AND leaves holes instead of compacting): every
 // slot 1..max is read, received messages import, sent copies are deleted
 // silently and an out-of-range index ends the scan.
+// TestDecodeUCS2Sender pins the address decoding and its conservatism: the
+// modem's UCS2-hex originator becomes readable text, while a real
+// alphanumeric sender or a plain number is left alone (both can look like
+// hex, and mangling them would break the sender lookup).
+func TestDecodeUCS2Sender(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		// The production case: a carrier short code the E173 reported as
+		// UTF-16BE hex.
+		{"00380030003700360036003500380039", "80766589"},
+		// Trailing blanks inside the units are trimmed.
+		{"0050006C006100790020", "Play"},
+		// A plain number: units 0x8076/0x6589 are not ASCII.
+		{"80766589", "80766589"},
+		// One unit only: U+CAFE is a real character, not a sender.
+		{"CAFE", "CAFE"},
+		// Ordinary alphanumeric senders are not hex at all.
+		{"PLAY24", "PLAY24"},
+		{"ALERT RCB", "ALERT RCB"},
+		// Odd length, empty and non-ASCII units pass through.
+		{"0038003", "0038003"},
+		{"", ""},
+		{"+48123456789", "+48123456789"},
+		// A long hex string whose units are not printable ASCII.
+		{"00E400E500E600E7", "00E400E500E600E7"},
+	} {
+		if got := decodeUCS2Sender(tc.in); got != tc.want {
+			t.Errorf("decodeUCS2Sender(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestPollUnreadDecodesTheUCS2Originator pins the wiring: an inbound message
+// whose address the modem rendered as UCS2 hex reaches the history (and every
+// log line) as the readable number, exactly like a plain one.
+func TestPollUnreadDecodesTheUCS2Originator(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	const hexSender = "00380030003700360036003500380039"
+	// Storage with ONE used slot out of two: slot 1 holds the message (the
+	// one with the hex originator), slot 2 is the empty remainder of the
+	// scan.
+	f.feed("+CPMS: \"SM\",1,2,\"SM\",1,2,\"SM\",1,2\r\nOK\r\n")
+	f.feed(cmgrText("REC UNREAD", hexSender, "krotka wiadomosc"))
+	f.feed("OK\r\n") // AT+CMGD=1
+	f.feed("OK\r\n") // CMGR=2: empty slot (hole)
+
+	h.mu.Lock()
+	got, ok := h.pollUnreadLocked()
+	h.mu.Unlock()
+	if !ok || len(got) != 1 {
+		t.Fatalf("poll = (%d messages, ok=%v)", len(got), ok)
+	}
+	if got[0].from != "80766589" {
+		t.Fatalf("sender = %q, want the decoded number", got[0].from)
+	}
+	rows := rec.list()
+	if len(rows) != 1 || rows[0].From != "80766589" {
+		t.Fatalf("history = %+v, want the decoded sender", rows)
+	}
+}
+
 func TestPollUnreadParses(t *testing.T) {
 	h, f, rec := newTestHub(t)
 	f.feed("+CPMS: \"SM\",4,5,\"SM\",4,5,\"SM\",4,5\r\nOK\r\n")
@@ -393,6 +471,53 @@ func TestSendFlow(t *testing.T) {
 	r := rows[0]
 	if r.Direction != "tx" || r.From != "self" || r.To != "+48600111222" || r.Text != "Czesc" {
 		t.Fatalf("tx row = %+v", r)
+	}
+}
+
+// TestSendRepinsCharsetAfterUcs2Reset covers the prod failure where the modem
+// reset its TE character set to UCS2 and rejected the ASCII address with a
+// bare ERROR: the send re-pins IRA and retries the prompt once, and the body is
+// committed exactly once.
+func TestSendRepinsCharsetAfterUcs2Reset(t *testing.T) {
+	h, f, rec := newTestHub(t)
+	f.feed("ERROR\r\n") // first AT+CMGS rejected (UCS2 charset)
+	f.feed("OK\r\n")    // AT+CSCS="IRA"
+	f.feed("> \r\n")    // retried AT+CMGS prompt
+	f.feed("OK\r\n")    // network accept
+	if err := h.Send(context.Background(), "+48600111222", "Czesc"); err != nil {
+		t.Fatalf("send after charset reset: %v", err)
+	}
+	w := f.written()
+	if n := strings.Count(w, "AT+CMGS="); n != 2 {
+		t.Fatalf("AT+CMGS count = %d, want 2 (original + retry): %q", n, w)
+	}
+	if !strings.Contains(w, `AT+CSCS="IRA"`+"\r") {
+		t.Fatalf("charset was not re-pinned: %q", w)
+	}
+	if n := strings.Count(w, "\x1A"); n != 1 {
+		t.Fatalf("bodies committed = %d, want exactly 1: %q", n, w)
+	}
+	if rows := rec.list(); len(rows) != 1 {
+		t.Fatalf("recorded %d rows, want 1", len(rows))
+	}
+}
+
+// TestSendCharsetRetryStopsWhenPinFails: if the modem also refuses the pin, the
+// original rejection is reported and no body is written.
+func TestSendCharsetRetryStopsWhenPinFails(t *testing.T) {
+	h, f, _ := newTestHub(t)
+	f.feed("ERROR\r\n") // AT+CMGS rejected
+	f.feed("ERROR\r\n") // AT+CSCS="IRA" rejected too
+	err := h.Send(context.Background(), "+48600111222", "Czesc")
+	if !errors.Is(err, ErrModemRejected) {
+		t.Fatalf("err = %v, want ErrModemRejected", err)
+	}
+	w := f.written()
+	if n := strings.Count(w, "AT+CMGS="); n != 1 {
+		t.Fatalf("AT+CMGS count = %d, want 1 (no retry without a pin): %q", n, w)
+	}
+	if strings.Contains(w, "\x1A") {
+		t.Fatalf("a body was committed despite the failure: %q", w)
 	}
 }
 
@@ -590,7 +715,8 @@ func TestSendValidates(t *testing.T) {
 
 func TestSendModemError(t *testing.T) {
 	h, f, rec := newTestHub(t)
-	f.feed("ERROR\r\n")
+	f.feed("ERROR\r\n") // AT+CMGS rejected
+	f.feed("ERROR\r\n") // AT+CSCS="IRA" refused too — the retry gives up
 	if err := h.Send(context.Background(), "+48600111222", "x"); err == nil {
 		t.Fatalf("send succeeded on modem ERROR")
 	}
@@ -1008,5 +1134,70 @@ func TestSendAbandonsAPendingBodyWhenTheCallerGivesUp(t *testing.T) {
 	}
 	if strings.Contains(w, "Czesc") {
 		t.Fatalf("the body was written for a caller that is gone: %q", w)
+	}
+}
+
+// TestStartKeepsRetryingAMissingModem pins the "start anyway" rule: a modem
+// that is not plugged in must not end the GSM session for good. Start logs the
+// failure (with the retry delay) and keeps trying in the background, so a
+// device that appears later is picked up without an operator restart — the
+// panel shows the missing device meanwhile (internal/preflight).
+func TestStartKeepsRetryingAMissingModem(t *testing.T) {
+	var buf logBuffer
+	h := NewHub(Config{Enabled: true, Device: "/nonexistent/ttyUSB0"}, &recStub{},
+		slog.New(slog.NewTextHandler(&buf, nil)))
+	// Shorten only THIS hub's retry pace (a construction-time field, so the
+	// background goroutine never races the test).
+	h.openRetry = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h.Start(ctx)
+
+	if h.Ready() || h.Connected() {
+		t.Fatal("hub reported a live session without a device")
+	}
+	// One attempt is announced with its retry delay, and the background loop
+	// keeps attempting (several more warnings over time).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && strings.Count(buf.String(), "cannot open modem") < 3 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	out := buf.String()
+	if n := strings.Count(out, "cannot open modem"); n < 3 {
+		t.Fatalf("open attempts = %d, want the background retry to keep trying:\n%s", n, out)
+	}
+	if !strings.Contains(out, "retry_in=") {
+		t.Fatalf("the retry delay was not announced:\n%s", out)
+	}
+
+	// The loop stops with the station, leaving nothing behind.
+	cancel()
+	time.Sleep(60 * time.Millisecond)
+	settled := strings.Count(buf.String(), "cannot open modem")
+	time.Sleep(120 * time.Millisecond)
+	if after := strings.Count(buf.String(), "cannot open modem"); after != settled {
+		t.Fatalf("retries continued after cancellation (%d → %d)", settled, after)
+	}
+}
+
+// TestOpenSessionWithInjectedTransportGoesStraightToReady pins that the retry
+// path does not change the normal one: an available modem (injected transport)
+// is initialised immediately, so Start never waits for a device.
+func TestOpenSessionWithInjectedTransportGoesStraightToReady(t *testing.T) {
+	h, f, _ := newTestHub(t)
+	f.feed("ATE0\r\r\nOK\r\n")
+	f.feed("AT+CMGF=1\r\r\nOK\r\n")
+	go func() {
+		for i := 0; i < 20; i++ {
+			f.feed("OK\r\n")
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	if !h.openSession() {
+		t.Fatal("openSession = false for an injected transport")
+	}
+	if !h.Ready() {
+		t.Fatal("session not ready after a successful init")
 	}
 }

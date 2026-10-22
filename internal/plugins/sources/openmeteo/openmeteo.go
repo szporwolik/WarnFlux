@@ -47,7 +47,22 @@ const (
 	// poll, keeping the provider burst pattern gentle on the shared
 	// public quota.
 	locationStagger = 120 * time.Millisecond
+
+	// rateLimitBaseDelay is how long the station waits before polling again
+	// after the provider refused a request without telling us a Retry-After
+	// (a public 503 often carries none). Each further consecutive refusal
+	// doubles it, up to maxRetryAfter: the shared public quota deserves a
+	// step back, not a retry loop.
+	rateLimitBaseDelay = 30 * time.Second
 )
+
+// maxDuration returns the longer of two durations.
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 // locationSlugRE is the accepted shape of location IDs. They become MQTT
 // topic segments, so the rules match WarnFlux's plugin ID slug style.
@@ -94,6 +109,38 @@ type Source struct {
 	key    string // resolved API key; never logged
 	client *Client
 	now    func() time.Time
+
+	// rateLimitStreak counts the consecutive polls the provider refused a
+	// request for: it drives the growing delay (see rateLimitDelay) and is
+	// cleared by a poll that went through.
+	rateLimitStreak int
+}
+
+// rateLimitDelay is how long the next poll waits after a refusal: the
+// provider's own Retry-After when it sent one, otherwise a delay that doubles
+// with every consecutive refusal (rateLimitBaseDelay, capped by
+// maxRetryAfter). Callers combine it with the configured interval — a longer
+// interval already waits long enough.
+func (s *Source) rateLimitDelay(after time.Duration) time.Duration {
+	if s.rateLimitStreak < 1 {
+		s.rateLimitStreak = 1
+	}
+	d := after
+	if d <= 0 {
+		// Double with the limit checked WHILE growing. Shifting the base by
+		// the streak and clamping afterwards overflowed time.Duration on the
+		// 30th consecutive refusal: the shift wrapped to a negative duration,
+		// the cap below no longer matched it, and the poll fell back to the
+		// configured interval in the middle of an outage.
+		d = rateLimitBaseDelay
+		for i := 1; i < s.rateLimitStreak && d < maxRetryAfter; i++ {
+			d *= 2
+		}
+	}
+	if d > maxRetryAfter {
+		d = maxRetryAfter
+	}
+	return d
 }
 
 // New decodes and validates the plugin-specific configuration.
@@ -257,8 +304,9 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 	next := s.cfg.PollInterval
 	succeeded := 0
 	var firstErr error
+	rateLimited := false
 
-	for _, loc := range s.cfg.Locations {
+	for i, loc := range s.cfg.Locations {
 		if ctx.Err() != nil {
 			break
 		}
@@ -273,13 +321,20 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 			if firstErr == nil {
 				firstErr = err
 			}
-			// A rate-limited location lengthens the NEXT whole poll; the
-			// remaining locations still run in this poll.
-			if after, ok := retryAfter(err); ok && after > next {
-				if after > maxRetryAfter {
-					after = maxRetryAfter
-				}
-				next = after
+			// A refusal (429/503) is the provider saying "not now, and not
+			// for the next N requests either": the delay grows with every
+			// consecutive refused poll, even when the response carries no
+			// Retry-After header — which is exactly how the public endpoint
+			// answered in production, and treating that as "no delay" made
+			// the station repeat the whole burst at full cadence.
+			if after, ok := retryAfter(err); ok {
+				rateLimited = true
+				s.rateLimitStreak++
+				next = maxDuration(next, s.rateLimitDelay(after))
+			} else if isRateLimited(err) {
+				rateLimited = true
+				s.rateLimitStreak++
+				next = maxDuration(next, s.rateLimitDelay(0))
 			}
 		} else {
 			succeeded++
@@ -294,7 +349,10 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		// European-AQI snapshot on the air_quality information kind. It
 		// runs on its own endpoint and quota, so a rate-limited forecast
 		// call must never suppress it. A location may opt out (air_quality
-		// false) when an official station already covers the town.
+		// false) when an official station already covers the town. A
+		// companion that fails costs the same wall clock as a stagger
+		// breath, so that location skips the breath below.
+		skipStagger := false
 		if s.cfg.AirQuality && locAirQuality(loc) {
 			if ctx.Err() != nil {
 				break
@@ -311,13 +369,34 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 					}
 					next = after
 				}
-				continue
-			}
-			if err := emit.EmitInformation(ctx, aq); err != nil {
+				skipStagger = true
+			} else if err := emit.EmitInformation(ctx, aq); err != nil {
 				slog.Warn("air-quality publish failed", "location", loc.ID, "error", err)
-				continue
+				skipStagger = true
+			} else {
+				slog.Info("air-quality snapshot published", "location", loc.ID)
 			}
-			slog.Info("air-quality snapshot published", "location", loc.ID)
+		}
+
+		// The provider refused this location: the quota is spent, so firing
+		// the REST of the burst would only collect the same refusal, burn
+		// the shared quota further and fill the log with one warning per
+		// location. The remaining locations (and their air-quality
+		// companions) wait for the next poll — the refusal already lengthened
+		// it. The companion of THIS location still ran above: it uses its own
+		// endpoint and quota. This stop is checked on EVERY path, including a
+		// companion that failed to fetch or to publish — that is exactly how
+		// the burst kept going against a refused quota.
+		if rateLimited {
+			if deferred := len(s.cfg.Locations) - i - 1; deferred > 0 {
+				slog.Warn("weather polling deferred after a provider rate limit",
+					"deferred_locations", deferred, "next_poll", next)
+			}
+			break
+		}
+
+		if skipStagger {
+			continue
 		}
 
 		// One short breath between locations keeps the provider burst
@@ -325,6 +404,11 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		if !sleepCtx(ctx, locationStagger) {
 			break
 		}
+	}
+	if !rateLimited {
+		// A poll the provider did not refuse is the proof the step back
+		// worked: the next refusal starts the growth from the base again.
+		s.rateLimitStreak = 0
 	}
 
 	// Operational summary for the health page.

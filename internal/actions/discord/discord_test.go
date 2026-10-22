@@ -1,14 +1,18 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -409,5 +413,50 @@ func TestSharedDestination(t *testing.T) {
 	}
 	if !shared.SharedDestination() {
 		t.Error("SharedDestination() = false, want true (a webhook posts into one channel)")
+	}
+}
+
+// logSink captures slog output for one goroutine under test.
+type logSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *logSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *logSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// TestRequestedReconnectIsNotAWarning pins the level of the two ways a
+// gateway session ends: Discord asking for a rotation (op 7 — routine, the
+// session resumes) must be INFO, while a real disconnect stays a WARN. On the
+// production station the routine rotations were 7 of 17 warnings a day.
+func TestRequestedReconnectIsNotAWarning(t *testing.T) {
+	sink := &logSink{}
+	l := &dmListener{logger: slog.New(slog.NewTextHandler(sink, nil))}
+
+	l.logSessionEnd(errGatewayReconnect, time.Second)
+	out := sink.String()
+	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "asked for a reconnect") {
+		t.Fatalf("requested reconnect logged as %q, want INFO", out)
+	}
+	if strings.Contains(out, "level=WARN") {
+		t.Fatalf("requested reconnect warned: %q", out)
+	}
+
+	sink.mu.Lock()
+	sink.buf.Reset()
+	sink.mu.Unlock()
+	l.logSessionEnd(errors.New("gateway closed the connection (1006 unexpected EOF)"), 2*time.Second)
+	out = sink.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "listener disconnected") {
+		t.Fatalf("real disconnect logged as %q, want WARN", out)
 	}
 }

@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -69,5 +69,5 @@ jobs:
         with:
           # Must mirror the `toolchain` directive in go.mod so the scan
           # runs on the same toolchain the build uses.
-          go-version-input: '1.26.9'
+          go-version-input: '1.27.3'
           go-package: ./...

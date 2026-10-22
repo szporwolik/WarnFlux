@@ -1,0 +1,18 @@
+[Unit]
+Description=Direwolf APRS iGate (waits for the AIOC cable, then docker compose up)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/warnflux-stack-up.sh /srv/docker/aprs /dev/serial/by-id/usb-AIOC_All-In-One-Cable_c7863d4d-if04 120
+ExecStop=/usr/bin/docker compose --project-directory /srv/docker/aprs -f /srv/docker/aprs/compose.yml stop
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=0
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

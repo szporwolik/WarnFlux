@@ -546,6 +546,96 @@ func TestRecentDeliveries(t *testing.T) {
 	}
 }
 
+// TestDeliveryLedgerKeepsTheFailureReason pins the reported gap: the ledger
+// answered "what failed" and "to whom" but never "why" — a terminal failure
+// looked like any other row and the reason lived only in the attempt's log
+// line, which the container's rotation removes long before the alert is
+// forgotten. The reason is now stored on the row (and cleared by a success,
+// which owns the row).
+func TestDeliveryLedgerKeepsTheFailureReason(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	job := storage.DeliveryJob{GroupID: g.ID, ActionID: "smtp", EventKey: "imgw:1", DedupKey: "c:1", Payload: []byte("{}"), FiredAt: at}
+	if _, _, err := store.EnqueueDelivery(ctx, job); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 2, at); err != nil || !ok {
+		t.Fatalf("claim: (%v, %v)", ok, err)
+	}
+
+	// A retryable failure stores its reason...
+	if _, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
+		GroupID: g.ID, ActionID: "smtp", DedupKey: "c:1", Stage: storage.DeliveryFailed,
+		NextAttempt: at.Add(time.Hour), Attempts: 1,
+		Error: "smtp: 421 service not available",
+	}); err != nil {
+		t.Fatalf("settle retryable: %v", err)
+	}
+	rows, err := store.RecentDeliveries(ctx, 5)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("RecentDeliveries = (%d rows, %v)", len(rows), err)
+	}
+	if rows[0].LastError != "smtp: 421 service not available" {
+		t.Fatalf("reason after a failed attempt = %q", rows[0].LastError)
+	}
+	if rows[0].NextAttemptAt.IsZero() {
+		t.Fatalf("retry deadline lost: %+v", rows[0])
+	}
+
+	// ...a later success clears it (the row is no longer a failure)...
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 2, at.Add(time.Hour)); err != nil || !ok {
+		t.Fatalf("re-claim: (%v, %v)", ok, err)
+	}
+	if _, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
+		GroupID: g.ID, ActionID: "smtp", DedupKey: "c:1", Stage: storage.DeliveryAccepted, Attempts: 2,
+	}); err != nil {
+		t.Fatalf("settle accepted: %v", err)
+	}
+	rows, err = store.RecentDeliveries(ctx, 5)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("RecentDeliveries after the success = (%d rows, %v)", len(rows), err)
+	}
+	if rows[0].LastError != "" {
+		t.Fatalf("reason after a success = %q, want it cleared", rows[0].LastError)
+	}
+
+	// ...and a row the DEVICE failed after the worker accepted it (the
+	// durable marker path) carries a reason instead of an empty cell.
+	job2 := job
+	job2.DedupKey = "c:2"
+	if _, _, err := store.EnqueueDelivery(ctx, job2); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 2, at); err != nil || !ok {
+		t.Fatalf("claim 2: (%v, %v)", ok, err)
+	}
+	if err := store.SetMeshActionFailed(ctx, "smtp", g.ID, "c:2", "pub-1", "imgw:1", 7, "a0a85934", 0, true); err != nil {
+		t.Fatalf("mark failure: %v", err)
+	}
+	applied, err := store.SettleDeliveryGuarded(ctx, storage.DeliverySettle{
+		GroupID: g.ID, ActionID: "smtp", DedupKey: "c:2", Stage: storage.DeliveryAccepted, Attempts: 1,
+		Version: &storage.DeliveryVersion{ActionID: "smtp", Publisher: "pub-1", EventKey: "imgw:1", ChangeID: 7},
+	})
+	if err != nil || applied != storage.DeliveryFailed {
+		t.Fatalf("downgraded settle = (%v, %v), want failed", applied, err)
+	}
+	rows, err = store.RecentDeliveries(ctx, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.ActionID == "smtp" && r.Status == "failed" && r.LastError == "" {
+			t.Fatalf("asynchronously failed row has no reason: %+v", r)
+		}
+	}
+}
+
 // TestLifecycleBlocksVersionSemantics pins the shared lifecycle ledger:
 // unknown messages never block (fail-open), a newer version supersedes
 // earlier jobs, a terminal state of the exact version blocks, an older

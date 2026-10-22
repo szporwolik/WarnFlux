@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/szporwolik/WarnFlux/internal/metrics"
 	"github.com/szporwolik/WarnFlux/internal/storage"
@@ -330,14 +331,15 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	if len(job.Payload) == 0 {
 		i.logger.Warn("action: delivery job without payload settled as accepted",
 			"action", i.id, "event_key", key)
-		i.settleGuarded(job, storage.DeliveryAccepted, time.Time{}, ActionRequest{}, nil)
+		i.settleGuarded(job, storage.DeliveryAccepted, time.Time{}, ActionRequest{}, nil, nil)
 		return
 	}
 	var req ActionRequest
 	if err := json.Unmarshal(job.Payload, &req); err != nil {
 		i.logger.Error("action: delivery payload corrupt",
 			"action", i.id, "event_key", key, "error", err)
-		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, nil)
+		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, nil,
+			errors.New("delivery payload corrupt: the job cannot be executed"))
 		i.trail.Add(key, trail.StepFailed, "job payload corrupt", time.Now())
 		i.trail.SetOutcome(key, trail.OutcomeFailed)
 		return
@@ -352,7 +354,8 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		if exp := req.Event.Hazard.Hazard.ExpiresAt; exp != nil && !exp.After(time.Now()) {
 			i.logger.Info("action: queued alert expired before transmission",
 				"action", i.id, "event_key", key)
-			i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req, nil)
+			i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req, nil,
+				errors.New("hazard expired before transmission"))
 			i.trail.Add(key, trail.StepSkipped,
 				"skipped: hazard expired before transmission", time.Now())
 			return
@@ -373,7 +376,8 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	if i.gate != nil && !i.gate(context.Background(), req) {
 		i.logger.Info("action: queued alert superseded before transmission",
 			"action", i.id, "event_key", key)
-		i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req, nil)
+		i.settleGuarded(job, storage.DeliveryExpired, time.Time{}, req, nil,
+			errors.New("hazard no longer active before transmission"))
 		i.trail.Add(key, trail.StepSkipped,
 			"skipped: hazard no longer active before transmission", time.Now())
 		return
@@ -408,7 +412,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		if job.Attempts < max {
 			next = time.Now().Add(RetryBackoff)
 		}
-		applied := i.settleGuarded(job, terminal, next, req, nil)
+		applied := i.settleGuarded(job, terminal, next, req, nil, nil)
 		if applied == storage.DeliveryFailed {
 			i.metricFailed(1)
 			i.trail.Add(key, trail.StepFailed,
@@ -445,7 +449,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		fmt.Sprintf("attempt %d/%d failed: %v", job.Attempts, max, err), time.Now())
 	if i.disabled.Load() {
 		// A hung plugin was disabled mid-attempt: never re-invoke it.
-		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, nil)
+		i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, nil, err)
 		i.trail.SetOutcome(key, trail.OutcomeFailed)
 		return
 	}
@@ -457,7 +461,7 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 		// work that is left: the retry payload carries only that, so the
 		// next attempt never repeats a delivery (reported P2).
 		req, retryPayload := i.narrowRetry(req, err)
-		i.settleGuarded(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff), req, retryPayload)
+		i.settleGuarded(job, storage.DeliveryFailed, time.Now().Add(RetryBackoff), req, retryPayload, err)
 		return
 	}
 	// Budget spent: terminal failure — and the progress of THIS attempt is
@@ -466,8 +470,32 @@ func (i *Instance) deliverJob(job storage.DeliveryJob) {
 	// the recipients this attempt already served can come from: dropping it
 	// here made the replay deliver to them a second time (reported P2).
 	req, finalPayload := i.narrowRetry(req, err)
-	i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, finalPayload)
+	i.settleGuarded(job, storage.DeliveryFailed, time.Time{}, req, finalPayload, err)
 	i.trail.SetOutcome(key, trail.OutcomeFailed)
+}
+
+// maxDeliveryErrorBytes bounds the stored failure reason. The ledger keeps it
+// for the panel's delivery history, so it must stay a reason — a plugin error
+// is short, but a proxy or a mail server can hand back a page of HTML.
+const maxDeliveryErrorBytes = 400
+
+// deliveryErrorText renders one attempt's error for the ledger, or "" for a
+// success. It is what answers "why did this alert not go out?" after the log
+// line of the attempt is long gone.
+func deliveryErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if len(msg) <= maxDeliveryErrorBytes {
+		return msg
+	}
+	// Cut on a rune boundary: the reason may carry non-ASCII text.
+	cut := maxDeliveryErrorBytes
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "…"
 }
 
 // narrowRetry records the progress the FAILED attempt reported: an action
@@ -537,7 +565,7 @@ func mergeRecipients(done, more []string) []string {
 // actually applied (a downgraded failure included). Settlement errors
 // only log: the job stays running and the stale-claim recovery
 // re-queues it (at-least-once).
-func (i *Instance) settleGuarded(job storage.DeliveryJob, stage storage.DeliveryStatus, next time.Time, req ActionRequest, retryPayload []byte) storage.DeliveryStatus {
+func (i *Instance) settleGuarded(job storage.DeliveryJob, stage storage.DeliveryStatus, next time.Time, req ActionRequest, retryPayload []byte, reason error) storage.DeliveryStatus {
 	d := storage.DeliverySettle{
 		GroupID:     job.GroupID,
 		ActionID:    job.ActionID,
@@ -546,6 +574,7 @@ func (i *Instance) settleGuarded(job storage.DeliveryJob, stage storage.Delivery
 		NextAttempt: next,
 		Attempts:    job.Attempts,
 		Payload:     retryPayload,
+		Error:       deliveryErrorText(reason),
 	}
 	if h := req.Event.Hazard; h != nil && h.Publisher != "" && h.ChangeID > 0 {
 		d.Version = &storage.DeliveryVersion{

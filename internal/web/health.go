@@ -11,6 +11,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/preflight"
 )
 
 // ingestProbe is the optional surface a public ingest endpoint exposes to
@@ -58,6 +59,14 @@ type healthView struct {
 	DB          healthRow
 	Queue       healthRow
 	Pending     healthRow
+	// Hardware lists the configured devices the station cannot use right
+	// now (unplugged modem, missing AIOC cable). Empty means every probed
+	// dependency is present — the card then says so instead of hiding the
+	// section, so "is the hardware fine?" has a visible answer.
+	Hardware []healthRow
+	// HardwareOK is true when at least one dependency was probed and all of
+	// them are present.
+	HardwareOK bool
 	// Zone names the zone every human-facing timestamp of THIS panel uses
 	// (and, when it is UTC, says so instead of leaving the operator to
 	// guess). Storage and the log stream are always UTC.
@@ -200,6 +209,29 @@ func (s *Server) buildHealthView(lang string) healthView {
 		}
 	}
 
+	// Hardware: every configured device the station currently cannot use.
+	// A missing device never stops the station (it starts, logs and says so
+	// here), so this section is the operator's answer to "why is SMS dead?"
+	// without reading the log.
+	problems := []preflight.Condition(nil)
+	if s.hardware != nil {
+		problems = s.hardware.Active()
+	}
+	for _, cond := range problems {
+		row := healthRow{
+			Name:       hardwareName(lang, cond.Key),
+			BadgeClass: cond.Severity,
+			BadgeText:  i18n.T(lang, "health.hardware.missing"),
+			Detail:     cond.Detail + " · " + i18n.T(lang, "health.hardware.since") + " " + cond.Since.In(s.displayLoc()).Format("2006-01-02 15:04"),
+		}
+		if row.BadgeClass != badgeBad && row.BadgeClass != badgeWarn {
+			row.BadgeClass = badgeWarn
+		}
+		v.Hardware = append(v.Hardware, row)
+		verdict = worse(verdict, row.BadgeClass)
+	}
+	v.HardwareOK = len(v.Hardware) == 0 && s.hardware != nil && s.hardware.Len() > 0
+
 	// Dispatch queue.
 	received, droppedFull, _, depth, cap := s.ingress.Stats()
 	v.Queue = healthRow{
@@ -275,4 +307,14 @@ func (s *Server) ingestHealthRows() []healthRow {
 		out = append(out, row)
 	}
 	return out
+}
+
+// hardwareName maps a preflight finding key onto the operator-facing device
+// name. An unknown key is shown as it is: a new probe must be readable before
+// anyone translates it.
+func hardwareName(lang, key string) string {
+	if name := i18n.T(lang, "preflight."+key); name != "preflight."+key {
+		return name
+	}
+	return key
 }

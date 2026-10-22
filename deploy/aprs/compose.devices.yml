@@ -1,0 +1,9 @@
+# Device overlay for the Direwolf APRS stack: the AIOC cable (audio + PTT/PTT
+# hidraw) must exist when the container is CREATED, so it lives here and not in
+# compose.yml — see deploy/warnflux-stack-up.sh.
+services:
+  direwolf:
+    devices:
+      - /dev/snd:/dev/snd
+      - /dev/serial/by-id/usb-AIOC_All-In-One-Cable_c7863d4d-if04:/dev/ttyACM0
+      - /dev/hidraw0:/dev/hidraw0

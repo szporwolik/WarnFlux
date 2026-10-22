@@ -189,6 +189,26 @@ func (r *testRadio) waitConnected(t *testing.T) {
 	t.Fatal("hub did not connect in time")
 }
 
+// waitBeaconArmed blocks until the session has scheduled the presence beacon
+// and returns the instant it picked. The hub reports the session as connected
+// a few statements BEFORE it arms the beacon, so reading emcomNext right after
+// waitConnected races the session goroutine on a loaded (or -race) machine.
+func (r *testRadio) waitBeaconArmed(t *testing.T) time.Time {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		r.hub.mu.Lock()
+		armed := r.hub.emcomNext
+		r.hub.mu.Unlock()
+		if !armed.IsZero() {
+			return armed
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("presence beacon was not armed in time")
+	return time.Time{}
+}
+
 // outbound returns the captured outbound packets.
 func (r *testRadio) outbound() []*pb.MeshPacket {
 	r.mu.Lock()
@@ -1514,19 +1534,21 @@ func TestHubEmcomDefaults(t *testing.T) {
 // the next clock time (never at startup, so a restart cannot beacon ahead
 // of schedule), fires once when that time comes, and re-arms for tomorrow.
 func TestHubBeaconDailyAnchor(t *testing.T) {
-	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
-		EmcomChannel: 1, EmcomIdentity: "WarnFlux v0.7.6 - SOSNA", EmcomAt: "06:00"})
 	// The station's clock sits at noon, so the first beacon is due at 06:00
-	// the next morning.
+	// the next morning. The clock is installed before the session starts:
+	// the hub arms the beacon on connect, and a clock swapped in afterwards
+	// would race that arming.
 	noon := time.Date(2026, 10, 12, 12, 0, 0, 0, time.Local)
 	now := noon
-	radio.hub.now = func() time.Time { return now }
-	radio.hub.startedAt = noon
+	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour,
+		EmcomChannel: 1, EmcomIdentity: "WarnFlux v0.7.6 - SOSNA", EmcomAt: "06:00"},
+		testRadioOpts{setup: func(h *Hub) {
+			h.now = func() time.Time { return now }
+			h.startedAt = noon
+		}})
 	radio.waitConnected(t)
 
-	radio.hub.mu.Lock()
-	armed := radio.hub.emcomNext
-	radio.hub.mu.Unlock()
+	armed := radio.waitBeaconArmed(t)
 	if want := time.Date(2026, 10, 13, 6, 0, 0, 0, time.Local); !armed.Equal(want) {
 		t.Fatalf("armed for %s, want %s", armed, want)
 	}

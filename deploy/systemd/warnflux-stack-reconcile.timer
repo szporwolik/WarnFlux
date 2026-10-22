@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch the WarnFlux device mappings (USB hotplug without a manual restart)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+Unit=warnflux-stack-reconcile.service
+
+[Install]
+WantedBy=timers.target

@@ -38,6 +38,8 @@ type memJob struct {
 	job    storage.DeliveryJob
 	status storage.DeliveryStatus
 	next   time.Time
+	// lastError mirrors the reason column of the SQLite ledger.
+	lastError string
 }
 
 func newMemDeliveryStore() *memDeliveryStore {
@@ -141,6 +143,7 @@ func (m *memDeliveryStore) SettleDeliveryGuarded(ctx context.Context, d storage.
 	j.status = stage
 	if stage == storage.DeliveryFailed {
 		j.next = d.NextAttempt
+		j.lastError = d.Error
 		// A failure may carry the narrowed payload — a terminal one too:
 		// the progress of the last attempt is what a replay re-arms from
 		// (see storage.DeliverySettle.Payload).
@@ -149,6 +152,9 @@ func (m *memDeliveryStore) SettleDeliveryGuarded(ctx context.Context, d storage.
 		}
 	} else {
 		j.next = time.Time{}
+		// A success owns the row: the stored reason goes with it (mirrors
+		// the SQLite settlement).
+		j.lastError = ""
 	}
 	return stage, nil
 }
@@ -229,6 +235,16 @@ func (m *memDeliveryStore) plantSpentRetry(actionID string, payload []byte) {
 		status: storage.DeliveryFailed,
 		next:   time.Now().Add(time.Hour),
 	}
+}
+
+// lastErrorOf reports the reason the store holds for one job ("" = none).
+func (m *memDeliveryStore) lastErrorOf(actionID, dedupKey string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j, ok := m.jobs["1|"+actionID+"|"+dedupKey]; ok {
+		return j.lastError
+	}
+	return ""
 }
 
 // payloadOf reports the payload the store holds for one job.
@@ -904,6 +920,67 @@ func TestTerminalFailureStoresThePartialProgress(t *testing.T) {
 	// The failed attempt was the only one: nothing was retried internally.
 	if got := len(p.executed); got != 1 {
 		t.Fatalf("the plugin ran %d times, want 1", got)
+	}
+}
+
+// TestFailedDeliveryStoresTheReason pins the worker half of the reported gap:
+// the ledger has to answer "why did this alert not go out?" — the attempt's
+// error travels into the row, and a later success clears it because the row
+// then belongs to a delivery that worked.
+func TestFailedDeliveryStoresTheReason(t *testing.T) {
+	oldPoll := DeliveryPollInterval
+	DeliveryPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { DeliveryPollInterval = oldPoll })
+
+	p := &deliveryPlugin{fail: true}
+	reg := NewRegistry()
+	if err := reg.Register("logger", func(*yaml.Node) (Plugin, error) { return p, nil }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager([]config.Action{{
+		ID: "log", Type: "logger", Enabled: true,
+		Runtime: config.ActionRuntime{QueueSize: 1, CallTimeout: time.Second, ShutdownTimeout: time.Second},
+	}}, reg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ms := newMemDeliveryStore()
+	m.SetDeliveryStore(ms)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.Start(ctx)
+	t.Cleanup(func() {
+		cancel()
+		_ = m.Shutdown(context.Background())
+	})
+
+	if _, _, err := ms.EnqueueDelivery(ctx, storage.DeliveryJob{
+		GroupID: 1, ActionID: "log", EventKey: "imgw:1", DedupKey: "c:1",
+		Payload: []byte(`{}`), FiredAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("EnqueueDelivery: %v", err)
+	}
+
+	// The attempt fails (budget of one): the row must explain itself.
+	waitForDelivery(t, func() bool { return ms.lastErrorOf("log", "c:1") != "" },
+		"the failure reason to be stored")
+	if got := ms.lastErrorOf("log", "c:1"); got != "synthetic failure" {
+		t.Fatalf("stored reason = %q, want the plugin's error", got)
+	}
+
+	// The same job delivered on a replay: the reason goes away with it.
+	p.mu.Lock()
+	p.fail = false
+	p.mu.Unlock()
+	if _, queued, err := ms.EnqueueDelivery(ctx, storage.DeliveryJob{
+		GroupID: 1, ActionID: "log", EventKey: "imgw:1", DedupKey: "c:1",
+		Payload: []byte(`{}`), FiredAt: time.Now(),
+	}); err != nil || !queued {
+		t.Fatalf("replay = (%v, %v), want the terminal failure re-armed", queued, err)
+	}
+	waitForDelivery(t, func() bool { return ms.statusOf(1, "log", "c:1") == storage.DeliveryAccepted },
+		"the replayed job to be accepted")
+	if got := ms.lastErrorOf("log", "c:1"); got != "" {
+		t.Fatalf("reason after a successful delivery = %q, want it cleared", got)
 	}
 }
 

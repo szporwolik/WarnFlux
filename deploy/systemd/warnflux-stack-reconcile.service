@@ -1,0 +1,8 @@
+[Unit]
+Description=Recreate WarnFlux/Direwolf containers when their device appears or vanishes
+After=docker.service warnflux-stack.service aprs-direwolf.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/warnflux-stack-reconcile.sh /srv/docker/warnflux /dev/ttyUSB0 warnflux
+ExecStart=/usr/local/bin/warnflux-stack-reconcile.sh /srv/docker/aprs /dev/serial/by-id/usb-AIOC_All-In-One-Cable_c7863d4d-if04 direwolf

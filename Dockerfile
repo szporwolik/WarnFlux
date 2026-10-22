@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- Build stage -----------------------------------------------------------
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 
 # Version metadata, injected by CI (or defaults for local builds). The
 # canonical version source of truth is the VERSION file at the repository
@@ -28,7 +28,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 RUN mkdir -p /out/data/tiles /out/logs /out/config && chown 65532:65532 /out/data /out/logs /out/config /out/data/tiles
 
 # ---- Runtime stage ---------------------------------------------------------
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 
 # Re-declared so the runtime stage can use them in labels.
 ARG VERSION=dev

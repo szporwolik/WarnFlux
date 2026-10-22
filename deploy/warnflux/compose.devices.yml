@@ -1,0 +1,13 @@
+# Device overlay for the WarnFlux stack.
+#
+# Kept OUT of compose.yml on purpose: `devices:` is resolved when the container
+# is created, so listing a path that does not exist yet makes Docker refuse to
+# create the container at all (exit 255, no retry). The base compose.yml starts
+# without any device; this overlay is added only when the GSM modem is present
+# (see deploy/warnflux-stack-up.sh and the reconcile timer).
+services:
+  warnflux:
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    group_add:
+      - "20"   # dialout: rw on the modem device

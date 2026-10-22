@@ -132,6 +132,11 @@ type DeliverySettle struct {
 	// TxFailed landing between the worker's pre-check and the write
 	// can never be lost (reported P1).
 	Version *DeliveryVersion
+	// Error is the reason this settlement reports (the action's error,
+	// truncated by the worker). It is stored on the row so the panel can
+	// answer "why did this alert not go out?" long after the log line is
+	// gone; a successful settlement clears it.
+	Error string
 	// Payload, when set, REPLACES the stored job payload: an action that
 	// delivered to part of its recipients before it failed leaves the rest
 	// in the payload, so the next attempt covers only what is still

@@ -1,0 +1,15 @@
+[Unit]
+Description=Ensure USB serial/audio kernel modules for the WarnFlux containers
+DefaultDependencies=no
+After=local-fs.target
+Before=docker.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/warnflux-usb-modules.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=sysinit.target

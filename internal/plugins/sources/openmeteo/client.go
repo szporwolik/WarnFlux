@@ -2,6 +2,7 @@ package openmeteo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -146,11 +147,20 @@ func (e *retryAfterError) Error() string { return e.msg }
 
 // retryAfter returns the parsed Retry-After delay of an error, if any.
 func retryAfter(err error) (time.Duration, bool) {
-	re, ok := err.(*retryAfterError)
-	if !ok || re.after <= 0 {
+	var re *retryAfterError
+	if !errors.As(err, &re) || re.after <= 0 {
 		return 0, false
 	}
 	return re.after, true
+}
+
+// isRateLimited reports whether the error IS the provider refusing the
+// request (HTTP 429/503), with or without a Retry-After header. The header is
+// optional on the public endpoint, and its absence must not be read as "no
+// limit in force".
+func isRateLimited(err error) bool {
+	var re *retryAfterError
+	return errors.As(err, &re)
 }
 
 // Fetch performs one bounded forecast request and decodes the response.

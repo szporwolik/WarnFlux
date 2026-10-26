@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -627,4 +628,60 @@ func TestRunCancellationDuringInFlightRequest(t *testing.T) {
 		t.Fatal("Run did not terminate while the request was in flight")
 	}
 	close(release)
+}
+
+// logSink captures the plugin's slog output for one test.
+type logSink struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *logSink) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *logSink) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+// TestPollLogsOneSummaryLine pins the log shape of a poll: one INFO summary
+// with the tally, and the per-location lines at debug. A production station
+// with thirteen locations logged 1375 "weather snapshot published" lines in
+// two days, which buried every other message.
+func TestPollLogsOneSummaryLine(t *testing.T) {
+	srv := httptest.NewServer(weatherHandler())
+	defer srv.Close()
+
+	s := testSource(srv.URL, []Location{
+		{ID: "home", Latitude: 50, Longitude: 20},
+		{ID: "work", Latitude: 50.1, Longitude: 20.1},
+		{ID: "third", Latitude: 50.2, Longitude: 20.2},
+	}, time.Hour)
+	emit := &recordingEmitter{}
+
+	sink := &logSink{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	if next := s.pollOnce(context.Background(), emit, nil); next != time.Hour {
+		t.Fatalf("next interval = %v, want %v", next, time.Hour)
+	}
+
+	out := sink.String()
+	if got := strings.Count(out, "weather poll published"); got != 1 {
+		t.Errorf("summary lines = %d, want 1 per poll:\n%s", got, out)
+	}
+	if !strings.Contains(out, "locations=3") {
+		t.Errorf("summary does not carry the tally:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "weather snapshot published") && strings.Contains(line, "level=INFO") {
+			t.Errorf("per-location publish logged at INFO:\n%s", line)
+		}
+	}
 }

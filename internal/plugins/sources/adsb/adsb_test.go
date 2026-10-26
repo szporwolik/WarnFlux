@@ -477,8 +477,9 @@ func TestUpstreamOutageIsLoggedOncePerEpisode(t *testing.T) {
 // TestRateLimitRefusalBackoff pins the step-back for a refused quota: the
 // poll interval doubles once per consecutive 429, the provider's Retry-After
 // wins when it is longer, and the advertised quota-window reset
-// (x-ratelimit-reset) wins over both — bounded so a day-long window still
-// gets an hourly probe. The production station used to poll a blocked
+// (x-ratelimit-reset) wins over both, up to the value the header parser
+// already clamps: probing a window that has not reset only spends another
+// request from an empty budget. The production station used to poll a blocked
 // provider at its normal cadence: 77 pointless requests in one 6-hour episode.
 func TestRateLimitRefusalBackoff(t *testing.T) {
 	interval := time.Minute
@@ -492,7 +493,8 @@ func TestRateLimitRefusalBackoff(t *testing.T) {
 		{"second refusal doubles", 2, &rateLimitError{retryAfter: 30 * time.Second}, 2 * interval},
 		{"third refusal doubles again", 3, &rateLimitError{retryAfter: 30 * time.Second}, 4 * interval},
 		{"long Retry-After wins", 1, &rateLimitError{retryAfter: 4 * time.Minute}, 4 * time.Minute},
-		{"quota window wins over backoff", 1, &rateLimitError{retryAfter: 30 * time.Second, resetAfter: 3*time.Hour + 30*time.Minute}, maxRateLimitWait},
+		{"quota window wins over backoff", 1, &rateLimitError{retryAfter: 30 * time.Second, resetAfter: 3*time.Hour + 30*time.Minute}, 3*time.Hour + 30*time.Minute},
+		{"quota window is honoured up to its clamp", 1, &rateLimitError{retryAfter: 30 * time.Second, resetAfter: maxRateLimitWait + time.Hour}, maxRateLimitWait},
 		{"short quota window is used as-is", 1, &rateLimitError{retryAfter: 30 * time.Second, resetAfter: 90 * time.Second}, 90 * time.Second},
 		{"backoff never exceeds its ceiling", 40, &rateLimitError{retryAfter: 30 * time.Second}, maxRefusalBackoff},
 		{"missing interval falls back to the default", 1, &rateLimitError{retryAfter: time.Second}, defaultPollInterval},
@@ -587,7 +589,10 @@ func TestBlockedQuotaIsNotPokedAtPollCadence(t *testing.T) {
 	if got != 1 {
 		t.Fatalf("requests against a blocked quota = %d, want 1 (window reset must hold the loop)", got)
 	}
-	if !strings.Contains(logs.String(), "retry_in=1h0m0s") {
+	// The header advertises a 12-hour window: the loop must sit it out
+	// instead of probing again (each probe would spend a request from an
+	// empty budget and prove nothing).
+	if !strings.Contains(logs.String(), "retry_in=12h0m0s") {
 		t.Fatalf("refusal did not wait for the quota window:\n%s", logs.String())
 	}
 }

@@ -180,7 +180,9 @@ if the subsequent information publish to an output fails (e.g. MQTT is
 unavailable) — that failure belongs to the output/information pipeline and
 is logged there. At least one succeeded location → source healthy; all
 locations failed the provider fetch → source degraded. Individual location
-failures are always logged.
+failures are always logged (a warning each), while successful publishes are
+summarised in one INFO line per poll — a station with thirteen locations
+otherwise wrote 1375 "snapshot published" lines in two days.
 
 ## Information vs HazardEvent semantics
 

@@ -303,6 +303,7 @@ func locAirQuality(l Location) bool {
 func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plugin.SourceHealthReporter) time.Duration {
 	next := s.cfg.PollInterval
 	succeeded := 0
+	airQuality := 0
 	var firstErr error
 	rateLimited := false
 
@@ -341,7 +342,9 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 			if err := emit.EmitInformation(ctx, message); err != nil {
 				slog.Warn("weather publish failed", "location", loc.ID, "error", err)
 			} else {
-				slog.Info("weather snapshot published", "location", loc.ID)
+				// One line per location would drown the log: the poll
+				// summary below carries the tally instead.
+				slog.Debug("weather snapshot published", "location", loc.ID)
 			}
 		}
 
@@ -374,7 +377,8 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 				slog.Warn("air-quality publish failed", "location", loc.ID, "error", err)
 				skipStagger = true
 			} else {
-				slog.Info("air-quality snapshot published", "location", loc.ID)
+				airQuality++
+				slog.Debug("air-quality snapshot published", "location", loc.ID)
 			}
 		}
 
@@ -410,6 +414,11 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		// worked: the next refusal starts the growth from the base again.
 		s.rateLimitStreak = 0
 	}
+
+	// One line per poll: the station logs 96 polls a day with a dozen
+	// locations each, and a line per location buried every other message.
+	slog.Info("weather poll published",
+		"locations", succeeded, "configured", len(s.cfg.Locations), "air_quality", airQuality)
 
 	// Operational summary for the health page.
 	if stats, ok := emit.(plugin.SourceStatsReporter); ok {

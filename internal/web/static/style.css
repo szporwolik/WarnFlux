@@ -448,8 +448,25 @@ code, kbd, samp { font-family: var(--font-mono); }
   background: var(--header);
   border-bottom: 1px solid var(--border);
 }
-.topbar-title { font-weight: 600; font-size: 0.95rem; color: var(--text); }
+.topbar-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .topbar-spacer { flex: 1; }
+
+/* On a 320px phone the six top-bar controls do not fit: tighten the spacing and
+   drop the decorative chevron so the row stays inside the viewport instead of
+   pushing the whole page sideways. */
+@media (max-width: 420px) {
+  .topbar { gap: 0.4rem; padding: 0 0.5rem; }
+  .topbar .user-menu-chevron { display: none; }
+  .topbar .lang-opt { padding: 0 4px; }
+}
 
 .menu-btn {
   display: inline-flex;
@@ -678,6 +695,11 @@ button:disabled { cursor: not-allowed; }
 /* display:flex overrides the UA [hidden] rule, so the consent bar would
    stay visible forever after a click; hide it explicitly. */
 #cookie-bar[hidden] { display: none; }
+/* The text gets a full line of its own on a narrow phone instead of being
+   squeezed into a tall one-word column next to the buttons. */
+#cookie-bar { flex-wrap: wrap; }
+#cookie-bar > span:first-child { flex: 1 1 18rem; min-width: 0; }
+@media (max-width: 900px) { #cookie-bar { width: calc(100vw - 2rem); } }
 .cookie-bar-actions { display: flex; gap: 0.45rem; flex: none; }
 
 /* Visitor stats: numeric cards + a dependency-free SVG bar chart. */
@@ -1134,7 +1156,15 @@ table.plugins tr:hover td { background: var(--surface-muted); }
 .page-info { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ---- APRS message history (admin /messages) ---- */
-.msgs-filter { display: flex; gap: 0.5rem; margin: 0.6rem 0 0.9rem; }
+.msgs-filter {
+  display: flex;
+  /* The badge rows (device state, node id, firmware, position…) are long on a
+     phone: wrapping keeps them inside the card instead of stretching the page
+     to their combined width. */
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.9rem;
+}
 .msgs-filter .chip {
   color: var(--muted);
   border: 1px solid var(--border);
@@ -2093,6 +2123,10 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 /* Tab strip on admin pages (e.g. the MQTT page). */
 .page-tabs {
   display: flex;
+  /* A tab strip must never widen the page: on a phone the tabs wrap onto a
+     second row instead of pushing the document past the viewport (the last
+     tab used to hang 46px outside a 390px screen). */
+  flex-wrap: wrap;
   gap: 0.25rem;
   margin: 0 0 1rem;
   border-bottom: 1px solid var(--border);
@@ -2263,6 +2297,7 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 .home-alerts-head .emcom-info .icon { width: 0.85rem; height: 0.85rem; }
 /* Archive: one column on phones, two on tablets, three on desktop. */
 .home-archive .home-alerts { display: grid; gap: 0.6rem; grid-template-columns: 1fr; align-items: start; }
+.home-archive .home-alerts > * { min-width: 0; }
 @media (min-width: 768px) { .home-archive .home-alerts { grid-template-columns: repeat(2, 1fr); } }
 @media (min-width: 1200px) { .home-archive .home-alerts { grid-template-columns: repeat(3, 1fr); } }
 .home-archive .pager { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem; }
@@ -2325,6 +2360,10 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
   background: var(--surface-raised);
   box-shadow: var(--card-shadow);
   padding: 0.7rem 0.85rem;
+  /* Grid and flex items keep min-width:auto by default, so one long word in a
+     headline widened the whole card past a 320px screen. */
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 /* Severity: left border + subtle background tint only — the card never
    fills with the severity color. */
@@ -2333,7 +2372,7 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 .sev-bd-moderate { border-left-color: var(--sev-moderate); background: var(--sev-moderate-bg); }
 .sev-bd-severe   { border-left-color: var(--sev-severe);   background: var(--sev-severe-bg); }
 .sev-bd-extreme  { border-left-color: var(--sev-extreme);  background: var(--sev-extreme-bg); }
-.hazard-head { display: flex; align-items: baseline; gap: 0.6rem; }
+.hazard-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; }
 .hazard-head h3 { margin: 0; font-size: 1.02rem; }
 .hazard-meta {
   display: flex;
@@ -3416,6 +3455,9 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 }
 .config-row-title { font-weight: 600; font-size: 0.9rem; flex: 1 1 auto; min-width: 9rem; }
 .config-row .badge { flex: none; }
+/* Some status badges are whole sentences (tiles, modem, storms). They may wrap
+   and shrink so a narrow screen never gets a page-wide scrollbar. */
+.config-row > .badge:only-child { flex: 0 1 auto; min-width: 0; white-space: normal; }
 .config-hint { margin: 0; color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
 .config-hint code { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-secondary); }
 .config-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
@@ -3447,7 +3489,10 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
   cursor: pointer;
   justify-content: space-between;
   user-select: none;
-  flex-wrap: nowrap;
+  /* Wrapping keeps the switch inside the card on a narrow phone; it then drops
+     to its own right-aligned line instead of overflowing the page. */
+  flex-wrap: wrap;
+  row-gap: 0.4rem;
 }
 .config-offline-form .config-row .switch { margin-left: auto; flex: none; }
 
@@ -3604,8 +3649,8 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 .emcom-card-btns { display: inline-flex; gap: 0.5rem; }
 .emcom-add { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: 0.6rem; }
 .emcom-add-label { display: block; font-weight: 600; margin-bottom: 0.4rem; }
-.emcom-add-row { display: flex; gap: 0.6rem; }
-.emcom-add-row input[type="text"] { flex: 0 1 22rem; }
+.emcom-add-row { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.emcom-add-row input[type="text"] { flex: 0 1 22rem; min-width: 0; }
 .emcom-add-row .btn-primary { width: auto; }
 .emcom-levels { display: grid; gap: 0.7rem; margin: 0.8rem 0; }
 .emcom-level { border-left: 4px solid var(--border); padding: 0.35rem 0.6rem; }

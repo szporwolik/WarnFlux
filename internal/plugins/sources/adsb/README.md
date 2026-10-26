@@ -20,7 +20,7 @@ current traffic, including a short trail per aircraft.
 
 | `provider` | Endpoint | Notes |
 |---|---|---|
-| `adsblol` (default) | `https://api.adsb.lol` | Keyless community API. **Quota: 500 requests per 86400 s** for anonymous clients, so the default 5-minute poll (~288/day) is the ceiling worth using — a 30 s poll (2880/day) burns the daily budget in hours and then collects 429s until the window resets. |
+| `adsblol` (default) | `https://api.adsb.lol` | Keyless community API. **Quota: 500 requests per 86400 s** for anonymous clients, so the default 5-minute poll (~288/day) is the ceiling worth using — a 30 s poll (2880/day) burns the daily budget in hours and then collects 429s until the window resets. The counter is per **public IP**, not per instance: two WarnFlux installations behind one NAT (production plus a development copy, or a readsb feeder) add up, so give the second one its own cadence with `poll_interval`. |
 | `tar1090` | `base_url` (e.g. `http://10.0.0.20:8080`) | A local readsb/tar1090 receiver on the LAN. No internet needed, so this is the off-grid option. |
 
 A 429 is honored, and there are three sources of the wait, longest wins:
@@ -30,8 +30,10 @@ A 429 is honored, and there are three sources of the wait, longest wins:
   refusal (up to 30 minutes) and resets on the first success;
 - `x-ratelimit-reset` — the seconds until the provider's quota window resets.
   The public endpoint answers a 429 with the *daily* window (up to 86400 s) and
-  no `Retry-After` at all; the plugin waits for that reset, capped at one hour
-  so a recovered quota is noticed the same hour instead of the next day.
+  no `Retry-After` at all; the plugin waits for that reset (at most 24 h, the
+  clamp applied when the header is parsed). Probing before the reset cannot
+  succeed — the budget is empty until then — so an earlier probe would only
+  spend a request from an empty window.
 
 Without the last two the station poked a blocked provider at its normal
 cadence: one production outage collected 77 pointless requests over 6 hours.
@@ -53,7 +55,7 @@ sources:
     enabled: true
     config:
       provider: adsblol        # or: tar1090 (+ base_url)
-      poll_interval: 5m        # 5s..5m (default 5m — the provider allows 500 req/day)
+      poll_interval: 5m        # 5s..1h (default 5m — the provider allows 500 req/day per public IP)
       request_timeout: 15s     # <=1m
       track_window: 5m         # 1m..15m — how long a trail is kept
       # base_url: "http://10.0.0.20:8080"

@@ -13,7 +13,10 @@ package httpwebhook
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,9 +41,9 @@ const (
 	// action instance's call_timeout still caps the whole call.
 	defaultTimeout = 10 * time.Second
 
-	// maxLocationInError caps the Location a redirect reports before it
-	// lands in an error (and a log line).
-	maxLocationInError = 200
+	// maxLocationPath caps the path shown when a redirect is reported: a
+	// path is useful diagnostics, an 80-character one is enough.
+	maxLocationPath = 80
 
 	// maxHeaders bounds the configured header map.
 	maxHeaders = 32
@@ -221,7 +224,7 @@ func (p *webhookAction) Execute(ctx context.Context, req action.ActionRequest) e
 		if ctx.Err() != nil {
 			return fmt.Errorf("http_webhook: request cancelled: %w", ctx.Err())
 		}
-		return fmt.Errorf("http_webhook: request failed: %w", err)
+		return p.transportError(err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4*1024))
@@ -238,16 +241,61 @@ func (p *webhookAction) Execute(ctx context.Context, req action.ActionRequest) e
 
 // redirectLocation reports where a 3xx response wanted to send the request
 // (empty for other responses). The value comes from the endpoint, so it is
-// capped before it reaches a log line.
+// treated as untrusted TEXT: only the scheme and host survive, because a
+// redirect target routinely carries its own credential in the path or the
+// query, and both ended up in error lines and logs.
 func redirectLocation(resp *http.Response) string {
 	if resp.StatusCode < 300 || resp.StatusCode > 399 {
 		return ""
 	}
 	loc := strings.TrimSpace(resp.Header.Get("Location"))
-	if len(loc) > maxLocationInError {
-		loc = loc[:maxLocationInError] + "…"
+	if loc == "" {
+		return ""
 	}
-	return loc
+	u, err := url.Parse(loc)
+	if err != nil || (u.Host == "" && u.Path == "") {
+		return "a location that is not a URL"
+	}
+	// Keep the HOST and the PATH (they tell the operator where the POST was
+	// sent — a login page, another hook) and drop everything that routinely
+	// carries a credential: query, fragment and userinfo.
+	path := u.Path
+	if len(path) > maxLocationPath {
+		path = path[:maxLocationPath] + "…"
+	}
+	shown := path
+	if u.Host != "" {
+		shown = u.Scheme + "://" + u.Host + path
+	}
+	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		shown += " (query, fragment and credentials omitted)"
+	}
+	return shown
+}
+
+// endpointID is the safe identifier an error names instead of the URL: the
+// scheme and host plus a short hash of the full URL. The hash keeps two
+// webhooks on the same host distinguishable without printing either path —
+// webhook URLs are frequently their own credential ("…/hook/T0KEN?key=…").
+func (p *webhookAction) endpointID() string {
+	if p.url == nil {
+		return "the configured endpoint"
+	}
+	sum := sha256.Sum256([]byte(p.url.String()))
+	return fmt.Sprintf("%s://%s#%s", p.url.Scheme, p.url.Host, hex.EncodeToString(sum[:4]))
+}
+
+// transportError renders a failed request without leaking the URL. A
+// *url.Error prints the full URL twice (in Op output and in the wrapped
+// error), so the cause is rebuilt from its parts: the operation, the safe
+// endpoint identifier and the underlying error, which carries no URL.
+func (p *webhookAction) transportError(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return fmt.Errorf("http_webhook: request to %s failed during %s: %w",
+			p.endpointID(), uerr.Op, uerr.Err)
+	}
+	return fmt.Errorf("http_webhook: request to %s failed: %w", p.endpointID(), err)
 }
 
 // Close releases nothing (stateless per-call client).

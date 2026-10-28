@@ -270,3 +270,66 @@ func TestSharedDestination(t *testing.T) {
 		t.Error("SharedDestination() = false, want true (one endpoint, one body)")
 	}
 }
+
+// TestTransportErrorHidesTheURL is the regression test for a leaked webhook
+// credential: a connection reset used to surface as a *url.Error, which prints
+// the whole URL — path token and query parameter included — in the error line
+// and therefore in the log. A webhook URL is frequently its own credential.
+func TestTransportErrorHidesTheURL(t *testing.T) {
+	const token = "s3cr3t-hook-token"
+	p, err := New(node(t, map[string]any{
+		"url":     "http://127.0.0.1:1/hook/" + token + "?key=" + token,
+		"timeout": "500ms",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.Execute(context.Background(), hazardRequest())
+	if err == nil {
+		t.Fatal("delivery to a dead endpoint must fail")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, token) {
+		t.Fatalf("error leaks the webhook credential: %q", msg)
+	}
+	if strings.Contains(msg, "/hook/") || strings.Contains(msg, "?key=") {
+		t.Fatalf("error leaks the webhook path or query: %q", msg)
+	}
+	// The operator still needs to know which endpoint failed and why.
+	if !strings.Contains(msg, "127.0.0.1:1") {
+		t.Errorf("error lost the endpoint host: %q", msg)
+	}
+	if !strings.Contains(msg, "http_webhook: request to http://127.0.0.1:1#") {
+		t.Errorf("error lost the safe endpoint identifier: %q", msg)
+	}
+	if !strings.Contains(msg, "connect") && !strings.Contains(msg, "refused") {
+		t.Errorf("error lost the cause: %q", msg)
+	}
+}
+
+// TestRedirectErrorHidesTheRedirectQuery keeps the other leak closed: the
+// Location an endpoint answers with routinely carries its own token.
+func TestRedirectErrorHidesTheRedirectQuery(t *testing.T) {
+	const secret = "other-service-token"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https://login.example.com/sso?token="+secret)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	p, err := New(node(t, map[string]any{"url": srv.URL + "/hook?key=own-secret"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.Execute(context.Background(), hazardRequest())
+	if err == nil {
+		t.Fatal("a redirect must fail the delivery")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, secret) || strings.Contains(msg, "own-secret") {
+		t.Fatalf("error leaks a credential: %q", msg)
+	}
+	if !strings.Contains(msg, "https://login.example.com") {
+		t.Errorf("error lost the redirect host: %q", msg)
+	}
+}

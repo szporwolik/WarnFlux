@@ -32,13 +32,18 @@ type aqPollutantView struct {
 // home map: the latest air_quality informational snapshot per station
 // from the retained MQTT state (newest received wins).
 func (s *Server) handleAirQuality(w http.ResponseWriter, r *http.Request) {
+	s.servePublicLayer(w, s.airQualityLayer, s.st.Version(), s.buildAirQualityLayer)
+}
+
+// buildAirQualityLayer renders the layer; the shared cache decides when it runs.
+func (s *Server) buildAirQualityLayer() ([]byte, error) {
 	type rec struct {
 		view aqStationView
 		at   time.Time
 	}
 	best := make(map[string]rec, 16)
-	for _, e := range s.st.Snapshot().Info {
-		if e.Kind != "air_quality" || len(e.Payload) == 0 {
+	for _, e := range s.st.InfoKind("air_quality") {
+		if len(e.Payload) == 0 {
 			continue
 		}
 		var v aqStationView
@@ -56,7 +61,5 @@ func (s *Server) handleAirQuality(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(stations, func(i, j int) bool {
 		return stations[i].StationName < stations[j].StationName
 	})
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(map[string]any{"stations": stations})
+	return json.Marshal(map[string]any{"stations": stations})
 }

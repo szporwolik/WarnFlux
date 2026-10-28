@@ -187,17 +187,17 @@ func formatUptime(d time.Duration) string {
 }
 
 // hazardsFromMirror projects the dispatch mirror's active hazards,
-// most severe first (Snapshot sorts them). minSeverity keeps only that
+// most severe first (Hazards sorts them). minSeverity keeps only that
 // level and above ("" = the full list).
 func hazardsFromMirror(mirror *state.State, minSeverity string) []meshtastic.ActiveHazard {
-	snap := mirror.Snapshot()
+	hazards := mirror.Hazards()
 	filter := minSeverity != ""
 	minRank := 0
 	if filter {
 		minRank, _ = severity.Rank(minSeverity)
 	}
-	out := make([]meshtastic.ActiveHazard, 0, len(snap.Hazards))
-	for _, h := range snap.Hazards {
+	out := make([]meshtastic.ActiveHazard, 0, len(hazards))
+	for _, h := range hazards {
 		if filter {
 			if r, _ := severity.Rank(h.Severity); r < minRank {
 				continue
@@ -219,7 +219,7 @@ func hazardsFromMirror(mirror *state.State, minSeverity string) []meshtastic.Act
 func hazardSummaryFromMirror(mirror *state.State) meshtastic.HazardSummary {
 	min, _ := severity.Rank(severity.Severe)
 	var sum meshtastic.HazardSummary
-	for _, h := range mirror.Snapshot().Hazards {
+	for _, h := range mirror.Hazards() {
 		if r, _ := severity.Rank(h.Severity); r >= min {
 			sum.Severe++
 		} else {
@@ -297,7 +297,7 @@ func weatherForRadio(hub *aprs.Hub, mirror *state.State, now time.Time) weatherr
 		}
 	}
 	if mirror != nil {
-		for _, e := range mirror.Snapshot().Weather {
+		for _, e := range mirror.Weather() {
 			ww := e.Weather
 			if ww == nil {
 				continue

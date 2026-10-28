@@ -220,6 +220,11 @@ type State struct {
 	infoBytes   int
 
 	counters Counters
+
+	// version counts accepted mutations. Readers that cache their rendered
+	// output key it on this number, so a cache can never serve a stale copy
+	// after the mirror changed.
+	version uint64
 }
 
 // New returns an empty mirror store.
@@ -260,6 +265,10 @@ func (s *State) AddOrUpdateActive(receiverID, topic string, h Hazard) error {
 	}
 	h.ReceiverID = receiverID
 	h.Topic = topic
+	// The stored value must not alias the producer's slices: readers share
+	// what the mirror holds (see Hazards), so the copy happens once here
+	// instead of once per request.
+	h.Areas = append([]string(nil), h.Areas...)
 	size := hazardSize(h)
 	// The replaced entry's size is released before the new one is charged:
 	// a growing update must fit the budget like a new entry does.
@@ -274,6 +283,7 @@ func (s *State) AddOrUpdateActive(receiverID, topic string, h Hazard) error {
 	}
 	s.activeBytes += size - prev
 	s.activeByKey[key] = h
+	s.version++
 	return nil
 }
 
@@ -285,6 +295,7 @@ func (s *State) DeleteActive(receiverID, topic string) {
 	if old, ok := s.activeByKey[key]; ok {
 		s.activeBytes -= hazardSize(old)
 		delete(s.activeByKey, key)
+		s.version++
 	}
 	s.mu.Unlock()
 }
@@ -301,6 +312,9 @@ func (s *State) AddOrUpdateInfo(receiverID, topic string, e InfoEntry) error {
 	}
 	e.ReceiverID = receiverID
 	e.Topic = topic
+	// Same as AddOrUpdateActive: snapshot readers share the stored payload,
+	// so it is detached from the receiver's buffer once, on the way in.
+	e.Payload = append(json.RawMessage(nil), e.Payload...)
 	size := infoSize(e)
 	prev := 0
 	if exists {
@@ -313,6 +327,7 @@ func (s *State) AddOrUpdateInfo(receiverID, topic string, e InfoEntry) error {
 	}
 	s.infoBytes += size - prev
 	s.infoByKey[key] = e
+	s.version++
 	return nil
 }
 
@@ -383,6 +398,7 @@ func infoSize(e InfoEntry) int {
 func (s *State) SetRouterStatus(receiverID string, rs RouterStatus) {
 	s.mu.Lock()
 	s.router[receiverID] = rs
+	s.version++
 	s.mu.Unlock()
 }
 
@@ -401,37 +417,106 @@ func (s *State) MirrorCounters() Counters {
 	return withBytes(s.counters, s.activeBytes, s.infoBytes)
 }
 
-// Snapshot returns an immutable, sorted copy of the mirrored state.
-// Active hazards whose ExpiresAt has already passed are pruned from the
-// mirror first: a stale retained document on the broker (e.g. left behind
-// by an instance that went down before publishing the expiry) must never
-// leak into rendered views.
-func (s *State) Snapshot() Snapshot {
-	s.mu.Lock()
-	now := time.Now()
-	for key, h := range s.activeByKey {
-		if h.Status == "active" && h.ExpiresAt != nil && !h.ExpiresAt.After(now) {
-			delete(s.activeByKey, key)
+// Hazards returns the active hazards, most severe first. Expired entries are
+// pruned first. The copy is SHALLOW on purpose: hazard strings and area slices
+// are never mutated after they are stored, so a reader can share them — copying
+// them per request is what made a public page allocate megabytes for data it
+// never looked at.
+func (s *State) Hazards() []Hazard {
+	s.pruneExpired()
+	s.mu.RLock()
+	out := make([]Hazard, 0, len(s.activeByKey))
+	for _, h := range s.activeByKey {
+		out = append(out, h)
+	}
+	s.mu.RUnlock()
+	sortHazards(out)
+	return out
+}
+
+// Weather returns the informational entries carrying a decoded weather
+// snapshot, newest generated first.
+func (s *State) Weather() []InfoEntry {
+	s.mu.RLock()
+	out := make([]InfoEntry, 0, len(s.infoByKey))
+	for _, e := range s.infoByKey {
+		if e.Weather != nil {
+			out = append(out, e)
 		}
 	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i].Weather.GeneratedAt, out[j].Weather.GeneratedAt
+		if a.Equal(b) {
+			return out[i].ReceiverID+"\x00"+out[i].Topic < out[j].ReceiverID+"\x00"+out[j].Topic
+		}
+		return a.After(b)
+	})
+	return out
+}
 
-	snap := Snapshot{
-		ActiveCount: len(s.activeByKey),
-		InfoCount:   len(s.infoByKey),
-		Counters:    withBytes(s.counters, s.activeBytes, s.infoBytes),
-		Router:      make(map[string]RouterStatus, len(s.router)),
-	}
-	for id, rs := range s.router {
-		snap.Router[id] = rs
-	}
+// Info returns every informational entry, newest received first. The payloads
+// are SHARED with the mirror, never copied: they are immutable once stored.
+func (s *State) Info() []InfoEntry {
+	return s.InfoKind("")
+}
 
-	snap.Hazards = make([]Hazard, 0, len(s.activeByKey))
+// InfoKind returns the informational entries of one kind ("aircraft",
+// "air_quality", "weather", ...; "" means every kind), newest received first.
+// A public endpoint that needs one kind must not pay for the others.
+func (s *State) InfoKind(kind string) []InfoEntry {
+	s.mu.RLock()
+	out := make([]InfoEntry, 0, len(s.infoByKey))
+	for _, e := range s.infoByKey {
+		if kind != "" && e.Kind != kind {
+			continue
+		}
+		out = append(out, e)
+	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ReceivedAt.Equal(out[j].ReceivedAt) {
+			return out[i].ReceiverID+"\x00"+out[i].Topic < out[j].ReceiverID+"\x00"+out[j].Topic
+		}
+		return out[i].ReceivedAt.After(out[j].ReceivedAt)
+	})
+	return out
+}
+
+// pruneExpired drops active hazards whose ExpiresAt has passed: a stale
+// retained document on the broker (e.g. left behind by an instance that went
+// down before publishing the expiry) must never leak into rendered views. It
+// takes the write lock only when it has something to remove.
+func (s *State) pruneExpired() {
+	now := time.Now()
+	s.mu.RLock()
+	stale := false
 	for _, h := range s.activeByKey {
-		h.Areas = append([]string(nil), h.Areas...)
-		snap.Hazards = append(snap.Hazards, h)
+		if h.Status == "active" && h.ExpiresAt != nil && !h.ExpiresAt.After(now) {
+			stale = true
+			break
+		}
 	}
-	sort.Slice(snap.Hazards, func(i, j int) bool {
-		a, b := snap.Hazards[i], snap.Hazards[j]
+	s.mu.RUnlock()
+	if !stale {
+		return
+	}
+	s.mu.Lock()
+	for key, h := range s.activeByKey {
+		if h.Status == "active" && h.ExpiresAt != nil && !h.ExpiresAt.After(now) {
+			s.activeBytes -= hazardSize(h)
+			delete(s.activeByKey, key)
+			s.version++
+		}
+	}
+	s.mu.Unlock()
+}
+
+// sortHazards orders hazards by severity, then by the most meaningful
+// timestamp, then by identity.
+func sortHazards(out []Hazard) {
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
 		if ra, rb := SeverityRank(a.Severity), SeverityRank(b.Severity); ra != rb {
 			return ra < rb
 		}
@@ -440,36 +525,45 @@ func (s *State) Snapshot() Snapshot {
 		}
 		return a.ReceiverID+"\x00"+a.Topic < b.ReceiverID+"\x00"+b.Topic
 	})
+}
 
-	snap.Weather = make([]InfoEntry, 0, len(s.infoByKey))
-	for _, e := range s.infoByKey {
-		if e.Weather != nil {
-			snap.Weather = append(snap.Weather, e)
-		}
-	}
-	sort.Slice(snap.Weather, func(i, j int) bool {
-		a := snap.Weather[i].Weather.GeneratedAt
-		b := snap.Weather[j].Weather.GeneratedAt
-		if a.Equal(b) {
-			ka := snap.Weather[i].ReceiverID + "\x00" + snap.Weather[i].Topic
-			kb := snap.Weather[j].ReceiverID + "\x00" + snap.Weather[j].Topic
-			return ka < kb
-		}
-		return a.After(b)
-	})
+// Version reports the number of accepted mutations. It is the freshness token
+// for caches built from the mirror.
+func (s *State) Version() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.version
+}
 
-	// All informational entries (including weather) for the generic info
-	// consumers such as the aircraft layer; newest first.
-	snap.Info = make([]InfoEntry, 0, len(s.infoByKey))
-	for _, e := range s.infoByKey {
-		e.Payload = append(json.RawMessage(nil), e.Payload...)
-		snap.Info = append(snap.Info, e)
+// Snapshot returns an immutable, sorted copy of the mirrored state.
+// Active hazards whose ExpiresAt has already passed are pruned from the
+// mirror first: a stale retained document on the broker (e.g. left behind
+// by an instance that went down before publishing the expiry) must never
+// leak into rendered views.
+func (s *State) Snapshot() Snapshot {
+	snap := Snapshot{
+		Hazards: s.Hazards(),
+		Weather: s.Weather(),
+		Info:    s.Info(),
+		Router:  s.RouterStatuses(),
 	}
-	sort.Slice(snap.Info, func(i, j int) bool {
-		return snap.Info[i].ReceivedAt.After(snap.Info[j].ReceivedAt)
-	})
-	s.mu.Unlock()
+	s.mu.RLock()
+	snap.ActiveCount = len(s.activeByKey)
+	snap.InfoCount = len(s.infoByKey)
+	snap.Counters = withBytes(s.counters, s.activeBytes, s.infoBytes)
+	s.mu.RUnlock()
 	return snap
+}
+
+// RouterStatuses returns the last valid status of every receiver.
+func (s *State) RouterStatuses() map[string]RouterStatus {
+	s.mu.RLock()
+	out := make(map[string]RouterStatus, len(s.router))
+	for id, rs := range s.router {
+		out[id] = rs
+	}
+	s.mu.RUnlock()
+	return out
 }
 
 // hazardSortKey picks the most meaningful timestamp for ordering within a

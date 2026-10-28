@@ -65,6 +65,22 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _, _, depth, _ := s.ingress.Stats()
 	fmt.Fprintf(&b, "warnflux_dispatch_queue_depth %d\n", depth)
 
+	// Mirrored retained state: what the two in-memory maps hold and what
+	// the byte budget refused. The entry count alone never bounded memory
+	// (an info payload may be 1 MiB), so an operator watching a station
+	// with a small RAM needs these two lines.
+	mc := s.st.MirrorCounters()
+	fmt.Fprintf(&b, "# HELP warnflux_state_mirror_bytes Bytes held by the in-memory retained-state mirror.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_state_mirror_bytes gauge\n")
+	fmt.Fprintf(&b, "warnflux_state_mirror_bytes{kind=%q} %d\n", "active", mc.ActiveBytes)
+	fmt.Fprintf(&b, "warnflux_state_mirror_bytes{kind=%q} %d\n", "info", mc.InfoBytes)
+	fmt.Fprintf(&b, "# HELP warnflux_state_mirror_dropped_total Entries refused by the retained-state mirror, by kind and reason.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_state_mirror_dropped_total counter\n")
+	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "active", "entries", mc.DroppedActive)
+	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "info", "entries", mc.DroppedInfo)
+	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "active", "bytes", mc.DroppedActiveBytes)
+	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "info", "bytes", mc.DroppedInfoBytes)
+
 	// Dispatch acceptance accounting: durable vs emergency vs rejected.
 	// Emergency acceptance is the visible degradation when the durable
 	// inbox write fails or no inbox is attached.

@@ -1003,6 +1003,12 @@ actions:
   #     password: ""
   #     password_file: ""
   #     implicit_tls: true
+  #     # STARTTLS is REQUIRED when it is enabled (the default): a relay
+  #     # that does not advertise the extension fails the send instead of
+  #     # taking the message in cleartext — password-reset tokens and every
+  #     # notification body travel through this path. A cleartext relay has
+  #     # to be asked for explicitly with starttls: false (and the log then
+  #     # warns once per host).
   #     starttls: false
   #     ca_file: ""
   #     # The subject bracket comes from web.header1 (e.g. "[SPOK]");

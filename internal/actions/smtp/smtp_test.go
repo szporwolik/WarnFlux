@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -140,7 +141,24 @@ func (s *smtpServer) serve(conn net.Conn) {
 		verb = strings.ToUpper(verb)
 		switch verb {
 		case "EHLO", "HELO":
-			if err := write("250-smtp.test\r\n250 AUTH PLAIN STARTTLS"); err != nil {
+			// Capabilities are one per line, "250-" for all but the last.
+			// The old single line "250 AUTH PLAIN STARTTLS" made net/smtp
+			// read the extension AUTH with params "PLAIN STARTTLS" and NO
+			// STARTTLS extension at all — which is why the STARTTLS test
+			// passed while the client silently stayed in plaintext.
+			caps := []string{"smtp.test", "AUTH PLAIN"}
+			if s.tlsCfg != nil {
+				caps = append(caps, "STARTTLS")
+			}
+			var b strings.Builder
+			for i, c := range caps {
+				if i == len(caps)-1 {
+					fmt.Fprintf(&b, "250 %s\r\n", c)
+					continue
+				}
+				fmt.Fprintf(&b, "250-%s\r\n", c)
+			}
+			if err := write(strings.TrimSuffix(b.String(), "\r\n")); err != nil {
 				return
 			}
 		case "STARTTLS":
@@ -1181,5 +1199,78 @@ rate_limit_per_minute: 6
 	}
 	if got := srv.snapshot(); len(got) != 1 {
 		t.Fatalf("deliveries = %d, want only the routed mail (the cancelled wait must not send)", len(got))
+	}
+}
+
+// TestSTARTTLSIsRequiredNotOptional is the regression test for a cleartext
+// leak: a relay that does not advertise STARTTLS used to be accepted anyway,
+// so the whole message — a password-reset body with its token in it — went out
+// unencrypted while the send reported success.
+func TestSTARTTLSIsRequiredNotOptional(t *testing.T) {
+	srv := newSMTPServer(t, nil) // no TLS material: the relay offers no STARTTLS
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [ops@example.com]
+starttls: true
+`, port)))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+
+	err = p.Execute(context.Background(), hazardReq())
+	if err == nil {
+		t.Fatal("send over a relay without STARTTLS succeeded, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "does not offer STARTTLS") {
+		t.Errorf("error = %v, want it to name the missing STARTTLS extension", err)
+	}
+	if got := srv.snapshot(); len(got) != 0 {
+		t.Fatalf("relay received %d messages, want none (the body must never leave in cleartext)", len(got))
+	}
+
+	// The password-reset path shares the transport and must refuse too.
+	portNum, convErr := strconv.Atoi(port)
+	if convErr != nil {
+		t.Fatalf("port: %v", convErr)
+	}
+	required := true
+	cfg := smtp.Config{
+		Host: "127.0.0.1", Port: portNum,
+		From: "warnflux@example.com", To: []string{"ops@example.com"},
+		StartTLS: &required,
+	}
+	if err := smtp.Direct(context.Background(), cfg, []string{"ops@example.com"}, "reset", "token: secret"); err == nil {
+		t.Fatal("Direct over a relay without STARTTLS succeeded, want a refusal")
+	}
+	if got := srv.snapshot(); len(got) != 0 {
+		t.Fatalf("relay received a direct message, want none")
+	}
+}
+
+// TestCleartextRelayNeedsExplicitOptOut pins the other half: a cleartext relay
+// is still usable, but only when the operator says so.
+func TestCleartextRelayNeedsExplicitOptOut(t *testing.T) {
+	srv := newSMTPServer(t, nil)
+	_, port, _ := net.SplitHostPort(srv.addr())
+
+	p, err := smtp.New(cfgNode(t, fmt.Sprintf(`
+host: 127.0.0.1
+port: %s
+from: warnflux@example.com
+to: [ops@example.com]
+starttls: false
+`, port)))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if err := p.Execute(context.Background(), hazardReq()); err != nil {
+		t.Fatalf("Execute with starttls: false = %v, want success", err)
+	}
+	if got := srv.snapshot(); len(got) != 1 {
+		t.Fatalf("relay received %d messages, want 1", len(got))
 	}
 }

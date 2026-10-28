@@ -78,8 +78,10 @@ type Config struct {
 	From string `yaml:"from"`
 	// To lists the static recipients. Required (at least one).
 	To []string `yaml:"to"`
-	// StartTLS enables the SMTP STARTTLS upgrade when the server offers
-	// it. Defaults to true when omitted; ignored when ImplicitTLS is set.
+	// StartTLS REQUIRES the SMTP STARTTLS upgrade: a server that does not
+	// advertise the extension fails the send instead of continuing in
+	// cleartext. Defaults to true when omitted; ignored when ImplicitTLS is
+	// set. Cleartext delivery has to be asked for with an explicit false.
 	StartTLS *bool `yaml:"starttls"`
 	// ImplicitTLS encrypts the connection from the first byte (SMTPS,
 	// typically port 465) instead of upgrading via STARTTLS. Defaults to
@@ -498,16 +500,24 @@ func (p *emailAction) Execute(ctx context.Context, req action.ActionRequest) err
 	defer client.Close()
 
 	if *p.cfg.StartTLS && !*p.cfg.ImplicitTLS {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			tlsCfg := &tls.Config{
-				ServerName: p.cfg.Host,
-				MinVersion: tls.VersionTLS12,
-				RootCAs:    p.roots,
-			}
-			if err := client.StartTLS(tlsCfg); err != nil {
-				return fmt.Errorf("smtp: starttls: %w", err)
-			}
+		// STARTTLS is required, not optional: continuing when the relay does
+		// not advertise it sent the whole message in cleartext while the
+		// send reported success (a test relay without AUTH received a
+		// password-reset body verbatim). A cleartext relay has to be asked
+		// for with starttls: false.
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("smtp: %s does not offer STARTTLS; refusing to send over an unencrypted connection (set starttls: false to allow it)", p.cfg.Host)
 		}
+		tlsCfg := &tls.Config{
+			ServerName: p.cfg.Host,
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    p.roots,
+		}
+		if err := client.StartTLS(tlsCfg); err != nil {
+			return fmt.Errorf("smtp: starttls: %w", err)
+		}
+	} else if !*p.cfg.ImplicitTLS {
+		warnCleartextOnce(p.cfg.Host)
 	}
 
 	if p.cfg.Username != "" {

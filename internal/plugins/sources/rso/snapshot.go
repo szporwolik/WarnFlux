@@ -96,9 +96,14 @@ func (s *Source) fetchFeed(ctx context.Context, voivodeship string) feedResult {
 		if ctx.Err() != nil {
 			return feedResult{voivodeship: voivodeship}
 		}
-		slog.Warn("RSO feed fetch failed", "voivodeship", voivodeship, "error", err)
+		// A feed that is down for a day would otherwise write one warning
+		// per poll (288 at the five-minute cadence): the first failure of an
+		// outage warns, the rest are debug lines.
+		s.episode(voivodeship).Fail(err, slog.String("voivodeship", voivodeship), s.cfg.PollInterval)
 		return feedResult{voivodeship: voivodeship}
 	}
+
+	s.episode(voivodeship).Recovered()
 
 	var list newsList
 	if err := xml.Unmarshal(body, &list); err != nil {

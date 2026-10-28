@@ -33,6 +33,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/aprspresence"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/digest"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/geo"
@@ -452,6 +453,71 @@ const (
 // -check-config: every strict YAML decoder and cross-validation runs
 // (plugins, actions, MQTT receivers, ingest endpoints, web server), but
 // nothing is started, no database is opened and no connection is made.
+// adminDigestMailTimeout bounds one status-mail send: a slow SMTP server must
+// not hold the digest goroutine forever.
+const adminDigestMailTimeout = 2 * time.Minute
+
+// startAdminDigest arms the daily system-status mail when the configuration
+// enables it. The mail rides the first enabled smtp action's configuration,
+// exactly like the password-reset flow; without one the feature stays off and
+// says why.
+func startAdminDigest(ctx context.Context, cfg *config.Config, store *sqlite.Store,
+	manager *plugin.Manager, version, commit, zoneName string, webSrv *web.Server, logger *slog.Logger) {
+	if !cfg.AdminDigest.Enabled {
+		return
+	}
+	var sc smtp.Config
+	ready := false
+	for _, a := range cfg.Actions {
+		if !a.Enabled || a.Type != smtp.Type || a.Config == nil {
+			continue
+		}
+		if err := a.Config.Decode(&sc); err != nil {
+			logger.Warn("admin digest: smtp action is undecodable, daily status mail disabled",
+				"action", a.ID, "error", err)
+			return
+		}
+		ready = true
+		break
+	}
+	if !ready {
+		logger.Warn("admin digest: no enabled smtp action, daily status mail disabled")
+		return
+	}
+
+	app := action.AppInfo{
+		Version:  version,
+		Header1:  cfg.Web.Header1,
+		Domain:   cfg.Web.Domain,
+		RepoURL:  appinfo.RepoURL,
+		Timezone: zoneName,
+	}
+	src := digest.Sources{
+		Store:     store,
+		Statuses:  manager.Statuses,
+		Station:   cfg.Web.Header1,
+		Version:   version,
+		Commit:    commit,
+		StartedAt: processStart,
+		Mailer: func(ctx context.Context, to []string, subject, body string) error {
+			sendCtx, cancel := context.WithTimeout(ctx, adminDigestMailTimeout)
+			defer cancel()
+			lang := ""
+			if webSrv != nil {
+				lang = webSrv.SystemLanguage()
+			}
+			return smtp.DirectNoticeMarkdown(sendCtx, sc, to, subject, body, app, lang)
+		},
+	}
+	if len(cfg.AdminDigest.To) > 0 {
+		to := append([]string(nil), cfg.AdminDigest.To...)
+		src.Recipients = func(context.Context) ([]string, error) { return to, nil }
+	}
+	go digest.Run(ctx, src, cfg.AdminDigest.At)
+	logger.Info("admin digest scheduled",
+		"at", cfg.AdminDigest.At, "explicit_recipients", len(cfg.AdminDigest.To))
+}
+
 func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVersion string, met *metrics.Registry) error {
 	registry := plugin.NewRegistry()
 	hub, err := aprs.NewHub(aprs.HubConfig{
@@ -1331,6 +1397,12 @@ func run(configPath string, checkConfig bool) error {
 		})
 		go presence.Run(ctx)
 	}
+
+	// Daily admin status mail: one branded message a day describing what the
+	// station did in the last 24 hours and which services are healthy. It
+	// rides the first enabled smtp action's configuration, exactly like the
+	// password-reset mail, and is armed for its anchor time on every run.
+	startAdminDigest(ctx, cfg, store, manager, resolvedVersion, commit, zoneName, webSrv, logger)
 
 	// Durable HTTP-ingest broker sync: each endpoint's outbox worker
 	// publishes the accepted payloads whenever its broker connection is

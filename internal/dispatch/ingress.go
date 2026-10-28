@@ -10,6 +10,15 @@ import (
 // DefaultQueueSize is the default bounded ingress capacity.
 const DefaultQueueSize = 1024
 
+// DefaultMaxInFlight bounds how many Enqueue calls may be doing durable work
+// at the same time. The live queue bounds what WAITS, never what RUNS: with a
+// producer that calls Enqueue from its own goroutines (paho's per-frame
+// handlers, HTTP ingest, the radio hubs) a stalled SQLite or disk let hundreds
+// of durable writes pile up while the queue capacity stayed at one. The work is
+// claimed before it starts, and an event that cannot claim a slot is rejected
+// for redelivery instead of being queued in memory.
+const DefaultMaxInFlight = 8
+
 // DefaultInboxWriteTimeout bounds the durable inbox write inside Enqueue:
 // the intake is non-blocking for the caller, and a database that stalls
 // longer than this deadline degrades the event to emergency acceptance
@@ -64,6 +73,11 @@ const (
 type Ingress struct {
 	queue chan Event
 
+	// slots bounds the durable intake work in flight (see
+	// DefaultMaxInFlight): the queue limits what waits, this limits what
+	// runs at once.
+	slots chan struct{}
+
 	// inbox is the optional durable acceptance backend (see Inbox).
 	inbox Inbox
 
@@ -79,6 +93,10 @@ type Ingress struct {
 	received    atomic.Int64
 	droppedFull atomic.Int64
 	droppedLate atomic.Int64
+	// saturated counts offers refused because every in-flight slot was
+	// taken (see DefaultMaxInFlight): the station is refusing work instead
+	// of piling it up in memory.
+	saturated atomic.Int64
 	// inboxFailures counts append errors on an attached inbox (the event
 	// falls back to emergency, live-only acceptance).
 	inboxFailures atomic.Int64
@@ -96,7 +114,23 @@ func NewIngress(size int) *Ingress {
 	if size < 1 {
 		size = DefaultQueueSize
 	}
-	return &Ingress{queue: make(chan Event, size), writeTimeout: DefaultInboxWriteTimeout}
+	return &Ingress{
+		queue:        make(chan Event, size),
+		slots:        make(chan struct{}, DefaultMaxInFlight),
+		writeTimeout: DefaultInboxWriteTimeout,
+	}
+}
+
+// SetMaxInFlight bounds the durable intake work in flight. Values < 1 restore
+// the default. Like SetInbox it must run before the ingress starts accepting
+// events (the slot channel is sized once).
+func (g *Ingress) SetMaxInFlight(n int) {
+	if n < 1 {
+		n = DefaultMaxInFlight
+	}
+	g.mu.Lock()
+	g.slots = make(chan struct{}, n)
+	g.mu.Unlock()
 }
 
 // SetInbox attaches the durable acceptance backend. It must be called
@@ -134,10 +168,31 @@ func (g *Ingress) Enqueue(e Event) Acceptance {
 	closed := g.closed
 	inbox := g.inbox
 	writeTimeout := g.writeTimeout
+	slots := g.slots
 	g.mu.Unlock()
 	if closed {
 		g.droppedLate.Add(1)
 		return Rejected
+	}
+
+	// Claim the work BEFORE doing it: without this bound the live queue
+	// limits only what waits, while every producer goroutine holds a
+	// connection and a write context of its own (200 concurrent durable
+	// writes were observed against a queue of one).
+	if slots != nil {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		default:
+			// Intake saturated: the caller keeps the event (an unacked
+			// MQTT frame, a retry, the inbox of the producer) and the
+			// broker redelivers. Counted as a full-queue drop for the
+			// operator (the station refused work) and separately for the
+			// intake-specific metric.
+			g.droppedFull.Add(1)
+			g.saturated.Add(1)
+			return Rejected
+		}
 	}
 
 	// Durable acceptance first, bounded by the write deadline: a stuck
@@ -233,6 +288,10 @@ func (g *Ingress) Drain(ctx context.Context) int {
 func (g *Ingress) Stats() (received, droppedFull, droppedLate int64, queueDepth, queueCap int) {
 	return g.received.Load(), g.droppedFull.Load(), g.droppedLate.Load(), len(g.queue), cap(g.queue)
 }
+
+// Saturated counts offers refused because the in-flight bound was reached (a
+// slow database or disk, not a full live queue).
+func (g *Ingress) Saturated() int64 { return g.saturated.Load() }
 
 // InboxFailures counts inbox append errors (the event fell back to
 // emergency, live-only acceptance).

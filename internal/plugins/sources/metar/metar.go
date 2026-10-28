@@ -137,24 +137,46 @@ func New(node *yaml.Node) (plugin.SourcePlugin, error) {
 func (s *Source) Name() string { return Type }
 
 // Run polls the configured airports on the configured interval. Transient
-// provider errors are logged and never terminate the run.
+// provider errors are logged and never terminate the run; an outage is one
+// episode (first failure warns, retries are debug lines with a counter, the
+// recovery reports the tally) so a dead aviation-weather service cannot write
+// 96 warnings a day at a 15-minute cadence.
 func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 	reporter, _ := emit.(plugin.SourceHealthReporter)
 	slog.Info("metar plugin started",
 		"poll_interval", s.cfg.PollInterval, "stations", stationIDs(s.cfg.Stations))
+
+	failures := 0
+	var outageSince time.Time
 
 	for {
 		if ctx.Err() != nil {
 			break
 		}
 		err := s.pollOnce(ctx, emit)
-		if err != nil && ctx.Err() == nil {
-			slog.Warn("metar poll failed", "error", err)
+		switch {
+		case err != nil && ctx.Err() != nil:
+		case err != nil:
+			failures++
+			if failures == 1 {
+				outageSince = time.Now()
+				slog.Warn("metar poll failed", "error", err, "retry_in", s.cfg.PollInterval)
+			} else {
+				slog.Debug("metar poll still failing", "error", err,
+					"failed_attempts", failures, "retry_in", s.cfg.PollInterval)
+			}
 			if reporter != nil {
 				reporter.ReportSourceDegraded(err)
 			}
-		} else if err == nil && reporter != nil {
-			reporter.ReportSourceHealthy()
+		default:
+			if failures > 0 {
+				slog.Info("metar poll recovered",
+					"failed_attempts", failures, "outage", time.Since(outageSince).Round(time.Second))
+				failures = 0
+			}
+			if reporter != nil {
+				reporter.ReportSourceHealthy()
+			}
 		}
 		timer := time.NewTimer(s.cfg.PollInterval)
 		select {

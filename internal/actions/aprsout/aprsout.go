@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/alerttext"
 	"github.com/szporwolik/WarnFlux/internal/aprs"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 )
@@ -260,15 +261,18 @@ func (a *aprsOutAction) messageText(req action.ActionRequest) string {
 		prefix = strings.TrimSpace(req.App.Header1)
 	}
 	if h := req.Event.Hazard; h != nil {
-		headline := h.Hazard.For(lang).Headline
+		text := h.Hazard.For(lang)
+		// The body must say what happened: a headline that only repeats the
+		// event label gives way to the description's first sentence.
+		body := alerttext.Body(h.Hazard.Event, text.Headline, text.Description)
 		// The short message ID always rides along, next to the {id} ack
 		// suffix the hub appends.
 		if id := h.Hazard.MessageID(); id != "" {
 			suffix := "ID:" + id
-			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, headline, aprs.AckSuffixLen+1+len(suffix))
+			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, body, aprs.AckSuffixLen+1+len(suffix))
 			return strings.TrimSpace(base + " " + suffix)
 		}
-		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, headline, aprs.AckSuffixLen)
+		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, body, aprs.AckSuffixLen)
 	}
 	return aprs.LimitMessageText(strings.Join([]string{prefix, "WarnFlux notification"}, " "), aprs.AckSuffixLen)
 }

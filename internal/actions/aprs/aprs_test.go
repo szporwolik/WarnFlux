@@ -184,3 +184,61 @@ func TestExecuteNoTransmitter(t *testing.T) {
 		t.Errorf("error = %v", err)
 	}
 }
+
+// TestMessageCarriesTheDescriptionWhenTheTitleRepeatsTheEvent pins the frame
+// production actually sent on 2026-10-23:
+//
+//	SOSNA SEV: Utrudnienia na A4 ID:WF-1023233601
+//
+// The event and the headline were the same string, so the frame said the title
+// twice for a hazard whose description read "Jerzmanowice ul. Jurajska, pow.
+// krakowski wypadek autobusu MPK i samochodu osobowego, DK 94 zablokowana
+// (314km)". The description must carry the frame instead.
+func TestMessageCarriesTheDescriptionWhenTheTitleRepeatsTheEvent(t *testing.T) {
+	hub := testHub(t)
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+
+	p, err := New(configNode(t, map[string]any{
+		"callsigns": []string{"SP9XYZ"},
+		"prefix":    "SOSNA",
+	}), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := action.ActionRequest{
+		App: action.AppInfo{Header1: "SOSNA"},
+		Event: dispatch.Event{
+			Kind: dispatch.EventHazardTransition,
+			Hazard: &dispatch.HazardTransition{
+				Hazard: dispatch.Hazard{
+					EventKey:    "rso:23443599",
+					Severity:    "severe",
+					Event:       "Utrudnienia na A4",
+					Headline:    "Utrudnienia na A4",
+					Description: "Jerzmanowice ul. Jurajska, pow. krakowski wypadek autobusu MPK i samochodu osobowego, DK 94 zablokowana (314km)",
+				},
+			},
+		},
+	}
+	if err := p.Execute(context.Background(), req); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(tx.sent) != 1 {
+		t.Fatalf("sent = %d messages, want 1", len(tx.sent))
+	}
+	text := tx.sent[0][1]
+
+	if strings.Count(text, "Utrudnienia na A4") > 1 {
+		t.Errorf("frame repeats the event label: %q", text)
+	}
+	if !strings.Contains(text, "Jerzmanowice") {
+		t.Errorf("frame carries no description: %q", text)
+	}
+	if !strings.Contains(text, " ID:WF-") {
+		t.Errorf("frame lost the message ID: %q", text)
+	}
+	if len(text) > aprs.MaxMessageText {
+		t.Errorf("frame is %d bytes, over the %d limit", len(text), aprs.MaxMessageText)
+	}
+}

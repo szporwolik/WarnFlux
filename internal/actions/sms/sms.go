@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/alerttext"
 	"github.com/szporwolik/WarnFlux/internal/gsm"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/sanity"
@@ -30,6 +31,10 @@ const maxRecipients = 32
 // symbols cost two, and the formatter must fit the result rather than let
 // the hub refuse it.
 const maxSMSChars = gsm.MaxSeptets
+
+// smsAreaCap bounds how many area slugs ride along when no coordinates exist:
+// the first two fit next to the description, a full list does not.
+const smsAreaCap = 2
 
 // Config is the action-specific configuration.
 type Config struct {
@@ -276,25 +281,54 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang str
 		}
 		head += sev
 	}
-	base := headline
-	if head != "" {
-		base = head + " " + headline
-	}
+	// What happened comes before where: the description sentence is the part
+	// an operator acts on, while the area list is a machine-oriented slug list
+	// ("corridor:a4-balice-tarnow", "teryt:0401") that used to fill the whole
+	// segment.
+	desc := alerttext.Summary(norm(t.Description))
+
 	var loc string
 	switch {
 	case h.Latitude != nil && h.Longitude != nil:
 		loc = fmt.Sprintf("%.3f,%.3f", *h.Latitude, *h.Longitude)
 	case len(h.Areas) > 0:
-		loc = norm(strings.Join(h.Areas, ", "))
+		areas := h.Areas
+		if len(areas) > smsAreaCap {
+			areas = areas[:smsAreaCap]
+		}
+		loc = norm(strings.Join(areas, ", "))
 	}
-	if loc != "" {
-		base += " | " + loc
-	}
+
+	tag := ""
 	if id := h.MessageID(); id != "" {
-		base += " [" + id + "]"
+		tag = " [" + id + "]"
 	}
-	// Transliteration first, then the septet budget: the built text
-	// carries brackets and separators of its own (" | ", "[WF-…]"), so
-	// counting characters would overshoot the segment (reported P2).
-	return gsm.FitGSM7(gsm.TransliterateGSM7(base), maxSMSChars)
+
+	// Priority: what happened, then where, then the ID. The description is
+	// fitted to the room the ID leaves behind — cutting the description is
+	// always better than dropping it, which is how the station used to send
+	// "SOSNA SEVERE Utrudnienia na A4 | corridor:a4-balice-tarnow, ...".
+	//
+	// Transliteration first, then the septet budget: the built text carries
+	// brackets and separators of its own (" | ", "[WF-…]"), so counting
+	// characters would overshoot the segment (reported P2).
+	tagText := gsm.TransliterateGSM7(tag)
+	budget := maxSMSChars - gsm.Septets(tagText)
+
+	body := desc
+	if body == "" {
+		body = loc
+	}
+	core := headline
+	if body != "" {
+		core = strings.TrimSpace(headline + " " + body)
+	}
+	if head != "" {
+		core = strings.TrimSpace(head + " " + core)
+	}
+	text := gsm.FitGSM7(gsm.TransliterateGSM7(core), budget)
+	if text == "" {
+		text = gsm.FitGSM7(gsm.TransliterateGSM7(headline), budget)
+	}
+	return text + tagText
 }

@@ -547,3 +547,44 @@ func TestUnconfirmedSurvivesTheRetryAndTheRestart(t *testing.T) {
 		}
 	}
 }
+
+// TestTextCarriesTheDescriptionNotTheAreaSlugs pins the production message
+// that read "SOSNA SEVERE Utrudnienia na A4 | corridor:a4-balice-tarnow,
+// droga:a4, ..." — a title repeated as the event and a machine slug list, with
+// nothing about what happened. The description sentence must come first and
+// the area list may only fill what is left.
+func TestTextCarriesTheDescriptionNotTheAreaSlugs(t *testing.T) {
+	hub := &fakeSender{enabled: true}
+	p, err := New(configNode(t, map[string]any{
+		"phones": []string{"+48600111222"},
+		"prefix": "SOSNA",
+	}), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := p.(*Action)
+	req := hazardReq()
+	h := &req.Event.Hazard.Hazard
+	h.Event = "Utrudnienia na A4"
+	h.Headline = "Utrudnienia na A4"
+	h.Description = "Jerzmanowice ul. Jurajska, pow. krakowski wypadek autobusu MPK i samochodu osobowego, DK 94 zablokowana (314km)"
+	h.Areas = []string{"corridor:a4-balice-tarnow", "droga:a4", "droga:dk94", "miasto:krakow", "wojewodztwo:malopolskie"}
+	h.Latitude = nil
+	h.Longitude = nil
+
+	text := a.textFor(context.Background(), req, "pl")
+	if n := gsm.Septets(text); n < 0 || n > gsm.MaxSeptets {
+		t.Fatalf("text = %d septets, want <= %d (%q)", n, gsm.MaxSeptets, text)
+	}
+	if !strings.Contains(text, "Jerzmanowice") && !strings.Contains(text, "wypadek") {
+		t.Fatalf("text carries no description: %q", text)
+	}
+	if strings.Count(text, "Utrudnienia") > 1 {
+		t.Fatalf("the headline repeats the event label: %q", text)
+	}
+	// The modem refuses the GSM-7 extension symbols, so the formatter folds
+	// "[" and "]" into parentheses — the ID itself must survive.
+	if !strings.Contains(text, "WF-") {
+		t.Fatalf("text lost the message ID: %q", text)
+	}
+}

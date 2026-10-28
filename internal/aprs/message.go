@@ -105,6 +105,12 @@ func BuildAlertMessage(prefix, severity, event, headline string, reserve int) st
 	prefix = strings.TrimSpace(prefix)
 	event = strings.TrimSpace(event)
 	headline = strings.TrimSpace(headline)
+	if headline != "" && strings.EqualFold(headline, event) {
+		// The body adds nothing over the event label: repeating it is how
+		// a radio alert read "SEV: Utrudnienia na A4" twice and dropped the
+		// part that says what happened.
+		headline = ""
+	}
 	if headline == "" {
 		if event != "" {
 			headline, event = event, ""

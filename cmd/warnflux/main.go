@@ -492,6 +492,15 @@ func startAdminDigest(ctx context.Context, cfg *config.Config, store *sqlite.Sto
 		RepoURL:  appinfo.RepoURL,
 		Timezone: zoneName,
 	}
+	// The digest names the zone next to its timestamps the way the routed
+	// mails do, so it resolves the same display zone.
+	displayLoc, _ := action.DisplayZone(app)
+	lang := func() string {
+		if webSrv != nil {
+			return webSrv.SystemLanguage()
+		}
+		return ""
+	}
 	src := digest.Sources{
 		Store:     store,
 		Statuses:  manager.Statuses,
@@ -499,14 +508,13 @@ func startAdminDigest(ctx context.Context, cfg *config.Config, store *sqlite.Sto
 		Version:   version,
 		Commit:    commit,
 		StartedAt: processStart,
+		Lang:      lang,
+		Zone:      app.Timezone,
+		Loc:       displayLoc,
 		Mailer: func(ctx context.Context, to []string, subject, body string) error {
 			sendCtx, cancel := context.WithTimeout(ctx, adminDigestMailTimeout)
 			defer cancel()
-			lang := ""
-			if webSrv != nil {
-				lang = webSrv.SystemLanguage()
-			}
-			return smtp.DirectNoticeMarkdown(sendCtx, sc, to, subject, body, app, lang)
+			return smtp.DirectNoticeTitled(sendCtx, sc, to, subject, "digest.mail_label", body, app, lang())
 		},
 	}
 	if len(cfg.AdminDigest.To) > 0 {

@@ -39,6 +39,9 @@ func fixedSources(now time.Time, store Store, plugins []plugin.PluginStatus) (So
 		Station:   "SOSNA",
 		Version:   "0.8.13",
 		Commit:    "abcdef1234567890",
+		Lang:      func() string { return "en" },
+		Zone:      "UTC",
+		Loc:       time.UTC,
 		StartedAt: now.Add(-50*time.Hour - 32*time.Minute),
 		Now:       func() time.Time { return now },
 		Mailer: func(_ context.Context, to []string, subject, body string) error {
@@ -80,8 +83,10 @@ func TestSendMailsTheLastTwentyFourHours(t *testing.T) {
 	if len(mail.to) != 1 || mail.to[0] != "admin@example.org" {
 		t.Errorf("recipients = %v, want the admin address", mail.to)
 	}
-	if !strings.Contains(mail.subject, "daily status") || !strings.Contains(mail.subject, "degraded") {
-		t.Errorf("subject = %q, want the verdict in it", mail.subject)
+	// Same shape as a routed mail: bracketed station, then what it is, then
+	// the verdict.
+	if !strings.HasPrefix(mail.subject, "[SOSNA] Daily status ") || !strings.Contains(mail.subject, "DEGRADED") {
+		t.Errorf("subject = %q, want \"[SOSNA] Daily status … — DEGRADED\"", mail.subject)
 	}
 	for _, want := range []string{
 		"SMS: 3 received · 1 sent",
@@ -90,7 +95,7 @@ func TestSendMailsTheLastTwentyFourHours(t *testing.T) {
 		"Hazards: 5 new · 11 active now · 2 ended",
 		"Notifications: 7 dispatched · 1 failed",
 		"**adsb-main** (adsb) — degraded",
-		"TLS handshake timeout",
+		"last error: TLS handshake timeout",
 		"**gddkia-roads** (gddkia) — disabled",
 		"Uptime:** 2d 2h 32m",
 	} {

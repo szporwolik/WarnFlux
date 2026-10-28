@@ -107,6 +107,9 @@ type Receiver struct {
 	// browseMu serializes the temporary browse subscriptions the web UI
 	// opens (one at a time per receiver).
 	browseMu sync.Mutex
+	// newClient builds the receiver's own paho client; nil = paho (tests
+	// substitute a fake so they can inspect the options).
+	newClient func(*mqtt.ClientOptions) mqttClient
 	// newBrowseClient builds the throwaway client of one browse session.
 	// A browse must NEVER use this receiver's own client: unsubscribing
 	// when it ends would tear a production subscription down (reported
@@ -197,7 +200,15 @@ func (r *Receiver) Connect(ctx context.Context) error {
 		SetKeepAlive(r.cfg.KeepAlive).
 		SetConnectTimeout(r.cfg.ConnectTimeout).
 		SetCleanSession(r.cfg.CleanSession || cleanOnce).
-		SetOrderMatters(false).
+		// Order matters: paho would otherwise run a goroutine per frame, and
+		// a slow older frame could finish after a newer one. That resurrected
+		// a deleted alarm (a retained update still in flight landed after the
+		// empty retained payload that removed it) and could equally undo a
+		// cancellation or apply an expired document. The handler is bounded —
+		// the durable inbox write has a deadline and the live queue offer is
+		// non-blocking — so keeping the frame loop sequential costs
+		// throughput we do not need and buys state that matches the broker.
+		SetOrderMatters(true).
 		SetAutoReconnect(true).
 		SetConnectRetry(true).
 		SetMaxReconnectInterval(maxReconnectInterval).
@@ -239,7 +250,11 @@ func (r *Receiver) Connect(ctx context.Context) error {
 		r.logger.Warn("receiver: connection lost, reconnecting", "receiver", r.cfg.ID, "error", err)
 	})
 
-	r.client = mqtt.NewClient(opts)
+	if r.newClient != nil {
+		r.client = r.newClient(opts)
+	} else {
+		r.client = mqtt.NewClient(opts)
+	}
 
 	token := r.client.Connect()
 	if !token.WaitTimeout(r.cfg.ConnectTimeout) {

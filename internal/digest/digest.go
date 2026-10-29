@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/health"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/schedule"
@@ -38,7 +39,12 @@ type Mailer func(ctx context.Context, to []string, subject, body string) error
 // Sources is everything the digest needs, injected so the package stays
 // testable without a database, a mail server or a plugin manager.
 type Sources struct {
-	Store      Store
+	Store Store
+	// Health returns the inputs of the SHARED system-health assessment (see
+	// internal/health): the digest must judge the station the way the
+	// dashboard card does, not by source plugins alone. nil = the assessment
+	// is unavailable and the report then says so instead of claiming OK.
+	Health     func() health.Inputs
 	Statuses   func() []plugin.PluginStatus
 	Recipients func(ctx context.Context) ([]string, error)
 	Mailer     Mailer
@@ -59,7 +65,13 @@ type Sources struct {
 type Report struct {
 	Window   Window
 	Counters Counters
-	Plugins  []plugin.PluginStatus
+	// CountersReady is false when the counter query failed: the traffic
+	// section then says "unavailable" instead of printing zeros that look
+	// like a quiet day.
+	CountersReady bool
+	// Health is the shared assessment of every subsystem.
+	Health  health.Report
+	Plugins []plugin.PluginStatus
 	// Station is the installation name (web.header1), Version and Commit
 	// identify the running build.
 	Station   string
@@ -78,13 +90,17 @@ type Report struct {
 // Verdict is the one word the subject line carries: it answers "do I need to
 // read this mail carefully?" before the mail is opened.
 func (r Report) Verdict() string {
-	for _, p := range r.Plugins {
-		switch p.State {
-		case plugin.StateDegraded, plugin.StateStopped, plugin.StateSuspended:
-			return i18n.T(i18n.Effective(r.Lang), "digest.degraded")
-		}
+	lang := i18n.Effective(r.Lang)
+	switch r.Health.FindingsLevel() {
+	case health.LevelBad, health.LevelWarn:
+		return i18n.T(lang, "digest.degraded")
 	}
-	return i18n.T(i18n.Effective(r.Lang), "digest.ok")
+	// Nothing is wrong — but a report that could not read part of the station
+	// must not claim OK either: "I could not look" is not "all good".
+	if r.Health.Incomplete() {
+		return i18n.T(lang, "digest.incomplete")
+	}
+	return i18n.T(lang, "digest.ok")
 }
 
 // Subject follows the routed notification mails: the bracketed installation
@@ -121,19 +137,51 @@ func (r Report) Render() string {
 	write("**%s:** %s\n\n", t("digest.generated"), r.stamp(r.Generated))
 
 	write("### %s\n\n", t("digest.traffic"))
-	write("- %s: %d %s · %d %s\n", t("digest.sms"),
-		r.Counters.SMSReceived, t("digest.received"), r.Counters.SMSSent, t("digest.sent"))
-	write("- %s: %d %s · %d %s\n", t("digest.meshtastic"),
-		r.Counters.MeshReceived, t("digest.received"), r.Counters.MeshSent, t("digest.sent"))
-	write("- %s: %d %s · %d %s\n", t("digest.aprs"),
-		r.Counters.APRSReceived, t("digest.received"), r.Counters.APRSSent, t("digest.sent"))
-	write("- %s: %d %s · %d %s · %d %s\n", t("digest.hazards"),
-		r.Counters.HazardsNew, t("digest.new"),
-		r.Counters.HazardsActive, t("digest.active"),
-		r.Counters.HazardsClosed, t("digest.ended"))
-	write("- %s: %d %s · %d %s\n\n", t("digest.notifications"),
-		r.Counters.Deliveries, t("digest.dispatched"),
-		r.Counters.DeliveriesFailed, t("digest.failed"))
+	if r.CountersReady {
+		write("- %s: %d %s · %d %s\n", t("digest.sms"),
+			r.Counters.SMSReceived, t("digest.received"), r.Counters.SMSSent, t("digest.sent"))
+		write("- %s: %d %s · %d %s\n", t("digest.meshtastic"),
+			r.Counters.MeshReceived, t("digest.received"), r.Counters.MeshSent, t("digest.sent"))
+		write("- %s: %d %s · %d %s\n", t("digest.aprs"),
+			r.Counters.APRSReceived, t("digest.received"), r.Counters.APRSSent, t("digest.sent"))
+		write("- %s: %d %s · %d %s · %d %s\n", t("digest.hazards"),
+			r.Counters.HazardsNew, t("digest.new"),
+			r.Counters.HazardsActive, t("digest.active"),
+			r.Counters.HazardsClosed, t("digest.ended"))
+		write("- %s: %d %s · %d %s\n\n", t("digest.notifications"),
+			r.Counters.Deliveries, t("digest.dispatched"),
+			r.Counters.DeliveriesFailed, t("digest.failed"))
+	} else {
+		// Zeros would read as "a quiet day"; the truth is that the numbers
+		// could not be read at all (reported P2). The section keeps one line
+		// that says so instead of a table of made-up values.
+		write("- %s: %s\n\n", t("digest.counter_source"), t("digest.unavailable"))
+	}
+
+	write("### %s\n\n", t("digest.health"))
+	write("*%s*\n\n", t("digest.health_scope"))
+	if findings := r.Health.Findings; len(findings) > 0 {
+		for _, f := range findings {
+			subject := f.Subject
+			if subject == "" {
+				subject = f.Subsystem
+			}
+			line := fmt.Sprintf("- **%s** — %s", f.Subsystem, subject)
+			if f.Detail != "" {
+				line += " · " + oneLine(f.Detail)
+			}
+			write("%s\n", line)
+		}
+	} else {
+		write("- %s\n", t("digest.health_ok"))
+	}
+	if missing := r.Health.Missing; len(missing) > 0 {
+		write("- %s\n", fmt.Sprintf(t("digest.unavailable_hint"), strings.Join(missing, ", ")))
+	}
+	if r.Health.Pending > 0 {
+		write("- %s: %d\n", t("digest.pending"), r.Health.Pending)
+	}
+	b.WriteString("\n")
 
 	write("### %s\n\n", t("digest.services"))
 	if len(r.Plugins) == 0 {
@@ -254,16 +302,33 @@ func Send(ctx context.Context, src Sources) error {
 	if src.Statuses != nil {
 		report.Plugins = src.Statuses()
 	}
+	// The verdict covers the WHOLE station: plugins, receivers, actions,
+	// hardware, the database and the dispatch queue (see internal/health).
+	inputs := health.Inputs{}
+	if src.Health != nil {
+		inputs = src.Health()
+	} else {
+		// Without the shared source the digest can still judge the plugins it
+		// was given, but the rest of the station is unknown — and an unknown
+		// station is never "OK".
+		inputs.Missing = append(inputs.Missing, "system health")
+		inputs.Plugins = report.Plugins
+	}
 	if src.Store != nil {
 		counters, err := src.Store.DigestCounters(ctx, report.Window.From, report.Window.To)
 		if err != nil {
 			// A broken counter query must not cost the operator the rest of
-			// the report: the mail still goes out.
+			// the report: the mail still goes out, marked as incomplete.
 			slog.Warn("admin digest: counters unavailable", "error", err)
+			inputs.Missing = append(inputs.Missing, "counters")
 		} else {
 			report.Counters = counters
+			report.CountersReady = true
 		}
+	} else {
+		inputs.Missing = append(inputs.Missing, "counters")
 	}
+	report.Health = health.Assess(inputs)
 	to, err := recipients(ctx, src)
 	if err != nil {
 		return fmt.Errorf("recipients: %w", err)

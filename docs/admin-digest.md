@@ -6,13 +6,21 @@ the panel or the log.
 
 ## What the mail contains
 
-- **Verdict** — `OK` or `DEGRADED`, derived from the plugin states (a degraded,
-  stopped or suspended plugin makes it `DEGRADED`). The verdict also rides the
-  subject line, so the inbox list already answers the question.
+- **Verdict** — `OK`, `DEGRADED` or `INCOMPLETE`, taken from the **shared
+  system-health assessment** (`internal/health`) — the very same one the
+  dashboard health card shows: source/output plugins, MQTT receivers, actions,
+  hardware probes, the database and the dispatch queue. A disconnected receiver,
+  a degraded action, a missing modem or a broken database makes it `DEGRADED`,
+  exactly as it does in the panel. The verdict also rides the subject line, so
+  the inbox list already answers the question.
 - **Station facts** — version and commit, uptime, the reporting window and the
   moment the mail was built.
 - **Traffic in the window** — SMS, Meshtastic and APRS messages received and
   sent, hazards new / active now / ended, notifications dispatched and failed.
+- **System health** — every finding behind the verdict (subsystem, component,
+  detail), the pending-notification count and — when part of the station could
+  not be read — the inputs that were unavailable. It is never a bare "OK": a
+  report that could not look says so.
 - **Services** — every plugin with its live state, its last poll summary, the
   last error for a degraded row and the consecutive-failure count. Problem rows
   are listed first, switched-off rows last.
@@ -34,6 +42,15 @@ the inline logo) and the system notification language.
 The anchor is re-armed after every send with the next occurrence of `at`, so a
 restart never skips the report and a DST change moves the wall clock rather than
 the anchor.
+
+## Missing data is never zero
+
+A broken counter query (a locked or corrupt database) no longer produces a mail
+whose traffic section shows zeros — the numbers would read as "a quiet day".
+The traffic section then carries a single `Counter read: unavailable` line, the
+verdict becomes `INCOMPLETE` and the mail names the inputs it could not read.
+The mail still goes out: losing the report because one query failed would hide
+the very problem it was meant to report.
 
 ## What it deliberately does not do
 

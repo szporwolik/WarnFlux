@@ -38,6 +38,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/gsm"
+	"github.com/szporwolik/WarnFlux/internal/health"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
@@ -502,8 +503,18 @@ func startAdminDigest(ctx context.Context, cfg *config.Config, store *sqlite.Sto
 		return ""
 	}
 	src := digest.Sources{
-		Store:     store,
-		Statuses:  manager.Statuses,
+		Store:    store,
+		Statuses: manager.Statuses,
+		// The daily verdict is the SAME assessment the dashboard card shows
+		// (plugins, receivers, actions, hardware, database, dispatch queue) —
+		// a station whose receiver is down but whose source plugins run must
+		// never be mailed as "OK".
+		Health: func() health.Inputs {
+			if webSrv == nil {
+				return health.Inputs{Missing: []string{"health"}}
+			}
+			return webSrv.HealthInputs()
+		},
 		Station:   cfg.Web.Header1,
 		Version:   version,
 		Commit:    commit,

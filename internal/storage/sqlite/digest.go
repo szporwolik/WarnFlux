@@ -9,21 +9,28 @@ import (
 )
 
 // DigestCounters counts one reporting window for the daily admin status mail.
-// Every message table stores its time as epoch milliseconds, so the window is
-// half-open ([from, to)) and a message is never counted twice.
+// The message counts come from the durable traffic aggregates
+// (traffic_counters), NOT from the message history: the history tables keep
+// only a few thousand newest rows, so a busy window was silently truncated at
+// that bound (reported P3: 2001 APRS messages in one window were reported as
+// 2000).
+//
+// The aggregates live in one-minute buckets and both window bounds are snapped
+// down to that boundary — the digest builds its window the same way, so the
+// numbers a report shows are exactly what it counted.
 func (s *Store) DigestCounters(ctx context.Context, from, to time.Time) (storage.DigestCounters, error) {
 	var c storage.DigestCounters
-	fromMS, toMS := from.UnixMilli(), to.UnixMilli()
+	fromMS, toMS := trafficMinuteBucket(from), trafficMinuteBucket(to)
 
 	count := func(query string, dst *int, args ...any) error {
 		return s.db.QueryRowContext(ctx, query, args...).Scan(dst)
 	}
 
-	direction := func(table string) (rx, tx int, err error) {
+	directions := func(channel string) (rx, tx int, err error) {
 		rows, err := s.db.QueryContext(ctx,
-			fmt.Sprintf(`SELECT direction, COUNT(*) FROM %s
-				WHERE created_at_ms >= ? AND created_at_ms < ? GROUP BY direction`, table),
-			fromMS, toMS)
+			`SELECT direction, SUM(messages) FROM traffic_counters
+				WHERE channel = ? AND minute_ms >= ? AND minute_ms < ? GROUP BY direction`,
+			channel, fromMS, toMS)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -45,13 +52,13 @@ func (s *Store) DigestCounters(ctx context.Context, from, to time.Time) (storage
 	}
 
 	var err error
-	if c.APRSReceived, c.APRSSent, err = direction("aprs_messages"); err != nil {
+	if c.APRSReceived, c.APRSSent, err = directions(trafficChannelAPRS); err != nil {
 		return c, fmt.Errorf("aprs counters: %w", err)
 	}
-	if c.SMSReceived, c.SMSSent, err = direction("gsm_messages"); err != nil {
+	if c.SMSReceived, c.SMSSent, err = directions(trafficChannelGSM); err != nil {
 		return c, fmt.Errorf("gsm counters: %w", err)
 	}
-	if c.MeshReceived, c.MeshSent, err = direction("meshtastic_messages"); err != nil {
+	if c.MeshReceived, c.MeshSent, err = directions(trafficChannelMesh); err != nil {
 		return c, fmt.Errorf("meshtastic counters: %w", err)
 	}
 

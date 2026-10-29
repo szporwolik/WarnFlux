@@ -1155,6 +1155,41 @@ WHERE expires_at_ms = 0
 			return nil
 		},
 	},
+	{
+		// v68: durable traffic aggregates. The daily status mail counted the
+		// message history tables, which are capped at a few thousand newest
+		// rows: after 2001 APRS messages in one window the report said 2000,
+		// and the gap grows with the traffic (reported P3). The aggregates are
+		// per-minute buckets bumped in the SAME transaction as the message
+		// insert, so they outlive the history's retention. The existing
+		// history is summarised here, which gives the first report after the
+		// upgrade something to count.
+		SQL: `
+CREATE TABLE traffic_counters (
+	minute_ms INTEGER NOT NULL,
+	channel   TEXT NOT NULL,
+	direction TEXT NOT NULL,
+	messages  INTEGER NOT NULL,
+	PRIMARY KEY (minute_ms, channel, direction)
+);
+`,
+		run: func(tx *sql.Tx) error {
+			for _, src := range []struct{ table, channel string }{
+				{"aprs_messages", trafficChannelAPRS},
+				{"gsm_messages", trafficChannelGSM},
+				{"meshtastic_messages", trafficChannelMesh},
+			} {
+				if _, err := tx.Exec(`
+INSERT INTO traffic_counters (minute_ms, channel, direction, messages)
+SELECT (created_at_ms / 60000) * 60000, ?, direction, COUNT(*)
+FROM `+src.table+`
+GROUP BY 1, direction`, src.channel); err != nil {
+					return fmt.Errorf("backfill traffic counters from %s: %w", src.table, err)
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

@@ -783,3 +783,54 @@ func TestDeliveryExpiryBackfill(t *testing.T) {
 		t.Fatalf("ExpireStaleDeliveries = (%d, %v), want the backfilled job", n, err)
 	}
 }
+
+// TestTrafficCounterBackfill pins the v68 upgrade path: the message history a
+// station already has is summarised into the aggregate ledger, so the first
+// report after the upgrade does not claim a silent day.
+func TestTrafficCounterBackfill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traffic.db")
+	old, _, err := Open(path, WithMigrationCeiling(67))
+	if err != nil {
+		t.Fatalf("Open at v67: %v", err)
+	}
+	ctx := context.Background()
+	at := time.Date(2026, 10, 28, 9, 15, 30, 0, time.UTC)
+	// History written before the aggregates existed.
+	for i := 0; i < 3; i++ {
+		if _, err := old.db.Exec(`INSERT INTO aprs_messages (direction, from_call, to_call, text, created_at_ms)
+			VALUES ('rx', 'SP9MOA', 'APRS', 'x', ?)`, at.UnixMilli()); err != nil {
+			t.Fatalf("seed aprs: %v", err)
+		}
+	}
+	if _, err := old.db.Exec(`INSERT INTO gsm_messages (direction, from_number, to_number, text, created_at_ms)
+		VALUES ('tx', 'self', '+48600111222', 'y', ?)`, at.UnixMilli()); err != nil {
+		t.Fatalf("seed gsm: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	upgraded, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	defer upgraded.Close()
+
+	var minute int64
+	var n int
+	if err := upgraded.db.QueryRow(`SELECT minute_ms, messages FROM traffic_counters
+		WHERE channel = 'aprs' AND direction = 'rx'`).Scan(&minute, &n); err != nil {
+		t.Fatalf("read backfilled bucket: %v", err)
+	}
+	if n != 3 || minute != at.Truncate(time.Minute).UnixMilli() {
+		t.Fatalf("bucket = (%d, %d), want (%d, 3)", minute, n, at.Truncate(time.Minute).UnixMilli())
+	}
+
+	c, err := upgraded.DigestCounters(ctx, at.Add(-time.Hour), at.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("DigestCounters: %v", err)
+	}
+	if c.APRSReceived != 3 || c.SMSSent != 1 {
+		t.Fatalf("counters after upgrade = aprs rx %d, sms tx %d; want 3 and 1", c.APRSReceived, c.SMSSent)
+	}
+}

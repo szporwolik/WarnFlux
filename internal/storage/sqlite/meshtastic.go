@@ -17,11 +17,24 @@ func (s *Store) RecordMeshtasticMessage(ctx context.Context, direction, sender, 
 	if direction != "rx" && direction != "tx" {
 		return fmt.Errorf("mesh message: invalid direction %q", direction)
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	// The row and its traffic aggregate land in ONE transaction (see
+	// RecordAPRSMessage).
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin mesh message: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO meshtastic_messages (direction, sender, recipient, channel, hops, operator, text, created_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		direction, sender, recipient, channel, hops, operator, text, at.UnixMilli()); err != nil {
 		return fmt.Errorf("insert mesh message: %w", err)
+	}
+	if err := bumpTrafficCounter(ctx, tx, trafficChannelMesh, direction, at); err != nil {
+		return fmt.Errorf("count mesh message: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit mesh message: %w", err)
 	}
 	if _, err := s.PruneMeshtasticMessages(ctx, storage.MeshMessageRetentionEntries); err != nil {
 		return fmt.Errorf("prune mesh messages: %w", err)

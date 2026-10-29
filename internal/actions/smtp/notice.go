@@ -31,7 +31,7 @@ type noticeBody struct {
 // broadcast reads like every other WarnFlux communication. Callers must
 // bound the context.
 func DirectNotice(ctx context.Context, cfg Config, to []string, subject, text string, app action.AppInfo, lang string) error {
-	return notice(ctx, cfg, to, subject, text, app, lang, false)
+	return notice(ctx, cfg, to, subject, text, app, lang, false, "")
 }
 
 // DirectNoticeMarkdown sends the same branded notice, but renders the
@@ -39,28 +39,36 @@ func DirectNotice(ctx context.Context, cfg Config, to []string, subject, text st
 // emphasis, lists, code, links) instead of showing the markers literally.
 // The plain-text alternative carries the flattened message.
 func DirectNoticeMarkdown(ctx context.Context, cfg Config, to []string, subject, text string, app action.AppInfo, lang string) error {
-	return notice(ctx, cfg, to, subject, text, app, lang, true)
+	return notice(ctx, cfg, to, subject, text, app, lang, true, "")
+}
+
+// DirectNoticeTitled sends the same branded notice under a caller-chosen
+// envelope label instead of the broadcast one ("Mass info"): the daily system
+// status mail is not a broadcast, and an operator reading it must not see the
+// Mass info heading.
+func DirectNoticeTitled(ctx context.Context, cfg Config, to []string, subject, labelKey, text string, app action.AppInfo, lang string) error {
+	return notice(ctx, cfg, to, subject, text, app, lang, true, labelKey)
 }
 
 // notice prepares the body and builds the message.
-func notice(ctx context.Context, cfg Config, to []string, subject, text string, app action.AppInfo, lang string, md bool) error {
+func notice(ctx context.Context, cfg Config, to []string, subject, text string, app action.AppInfo, lang string, md bool, labelKey string) error {
 	src := strings.TrimSpace(sanity.NormalizeText(ctx, sanity.ChannelEmailBody, text))
 	body := noticeBody{plain: src, html: htmlEscaper(src)}
 	if md {
 		body = noticeBody{plain: markdown.Plain(src), html: markdown.HTML(src), markup: true}
 	}
-	msg := noticeMessage(ctx, cfg, to, subject, body, app, lang, time.Now())
+	msg := noticeMessage(ctx, cfg, to, subject, body, app, lang, time.Now(), labelKey)
 	return DirectMessage(ctx, cfg, to, msg)
 }
 
 // noticeMessage builds the multipart/related notice: a plain-text fallback
 // and the branded HTML body, plus the inline logo. Subject and plain body
 // pass through the shared normalizer like the routed mail.
-func noticeMessage(ctx context.Context, cfg Config, to []string, subject string, body noticeBody, app action.AppInfo, lang string, now time.Time) []byte {
+func noticeMessage(ctx context.Context, cfg Config, to []string, subject string, body noticeBody, app action.AppInfo, lang string, now time.Time, labelKey string) []byte {
 	lang = i18n.Effective(lang)
 	subject = sanity.NormalizeText(ctx, sanity.ChannelEmailSubject, subject)
-	plain := sanity.NormalizeText(ctx, sanity.ChannelEmailBody, noticePlain(app, body.plain, lang, now))
-	htmlBody := noticeHTML(app, body.html, lang, now, body.markup)
+	plain := sanity.NormalizeText(ctx, sanity.ChannelEmailBody, noticePlain(app, body.plain, lang, now, labelKey))
+	htmlBody := noticeHTML(app, body.html, lang, now, body.markup, labelKey)
 
 	relatedBoundary := fmt.Sprintf("warnflux-rel-%d", now.UnixNano())
 	altBoundary := fmt.Sprintf("warnflux-alt-%d", now.UnixNano())
@@ -102,10 +110,13 @@ func noticeMessage(ctx context.Context, cfg Config, to []string, subject string,
 
 // noticePlain renders the plain-text fallback: the notice first, then the
 // shared branded footer.
-func noticePlain(app action.AppInfo, text, lang string, now time.Time) string {
+func noticePlain(app action.AppInfo, text, lang string, now time.Time, labelKey string) string {
 	req := action.ActionRequest{App: app}
+	if labelKey == "" {
+		labelKey = "mass.mail_subject"
+	}
 	var b strings.Builder
-	b.WriteString(i18n.T(lang, "mass.mail_subject") + "\n")
+	b.WriteString(i18n.T(lang, labelKey) + "\n")
 	zoneLoc, zoneName := action.DisplayZone(req.App)
 	fmt.Fprintf(&b, "%s: %s\n\n", i18n.T(lang, "mail.time"), mailTime(now, zoneLoc, zoneName))
 	b.WriteString(strings.TrimSpace(text))
@@ -120,8 +131,11 @@ func noticePlain(app action.AppInfo, text, lang string, now time.Time) string {
 // safe HTML (escaped for a plain notice, rendered for a markdown one);
 // markup says whether it carries formatting, which decides the callout
 // typography.
-func noticeHTML(app action.AppInfo, text, lang string, now time.Time, markup bool) string {
+func noticeHTML(app action.AppInfo, text, lang string, now time.Time, markup bool, labelKey string) string {
 	req := action.ActionRequest{App: app}
+	if labelKey == "" {
+		labelKey = "mass.mail_subject"
+	}
 	zoneLoc, zoneName := action.DisplayZone(req.App)
 	const accent = "#303c46"
 	brand := strings.TrimSpace(app.Header1)
@@ -142,7 +156,7 @@ func noticeHTML(app action.AppInfo, text, lang string, now time.Time, markup boo
 		logoCID, htmlEscaper(brand), htmlEscaper(brand))
 
 	fmt.Fprintf(&b, `<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#87939e;">%s</div>`,
-		htmlEscaper(i18n.T(lang, "mass.mail_subject")))
+		htmlEscaper(i18n.T(lang, labelKey)))
 
 	if markup {
 		fmt.Fprintf(&b, `<div style="margin-top:16px;background-color:#1b232b;border-left:4px solid %s;border-radius:8px;padding:14px 18px;font-size:14px;color:#eef2f5;line-height:1.55;word-break:break-word;">%s</div>`,

@@ -1,11 +1,15 @@
 package metar
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -321,5 +325,95 @@ func TestNormalizeRejects(t *testing.T) {
 	rec.Lat, rec.Lon = 0, 0
 	if _, err := normalize(rec, "", "UTC", time.Now(), time.Now()); err == nil {
 		t.Error("missing position accepted")
+	}
+}
+
+type logSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *logSink) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *logSink) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition not met within timeout")
+}
+
+// TestOutageIsLoggedAsOneEpisode proves a failing provider cannot bury the
+// log: the first failed poll warns, the next ones are debug lines, and the
+// recovery reports the tally. At a 15-minute cadence the old policy wrote 96
+// warnings a day while NOAA was down.
+func TestOutageIsLoggedAsOneEpisode(t *testing.T) {
+	var mu sync.Mutex
+	polls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		polls++
+		n := polls
+		mu.Unlock()
+		if n <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]metarRecord{epkkRecord()})
+	}))
+	t.Cleanup(srv.Close)
+
+	src, err := New(decodeConfig(t,
+		"base_url: "+strconvQuote(srv.URL)+"\n"+
+			"stations:\n  - id: EPKK\n    name: Balice (EPKK)\n"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s := src.(*Source)
+	// The loop under test, not the scheduler: a real cadence would make this
+	// test take hours.
+	s.cfg.PollInterval = 20 * time.Millisecond
+
+	sink := &logSink{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(previous)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx, &fakeEmitter{}) }()
+
+	waitFor(t, 5*time.Second, func() bool { return strings.Contains(sink.String(), "metar poll recovered") })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after its context was cancelled")
+	}
+
+	out := sink.String()
+	if got := strings.Count(out, "metar poll failed"); got != 1 {
+		t.Errorf("warning lines = %d, want 1 per outage:\n%s", got, out)
+	}
+	if !strings.Contains(out, "metar poll still failing") {
+		t.Errorf("retries were not logged at debug:\n%s", out)
+	}
+	if !strings.Contains(out, "failed_attempts=2") {
+		t.Errorf("recovery did not report the tally:\n%s", out)
 	}
 }

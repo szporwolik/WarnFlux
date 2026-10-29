@@ -17,11 +17,24 @@ func (s *Store) RecordAPRSMessage(ctx context.Context, direction, from, to, text
 	if direction != "rx" && direction != "tx" {
 		return fmt.Errorf("aprs message: invalid direction %q", direction)
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	// The row and its traffic aggregate land in ONE transaction: a counter
+	// that disagrees with the messages it summarises is worse than none.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin aprs message: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO aprs_messages (direction, from_call, to_call, text, msg_id, via, created_at_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		direction, from, to, text, msgID, via, at.UnixMilli()); err != nil {
 		return fmt.Errorf("insert aprs message: %w", err)
+	}
+	if err := bumpTrafficCounter(ctx, tx, trafficChannelAPRS, direction, at); err != nil {
+		return fmt.Errorf("count aprs message: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit aprs message: %w", err)
 	}
 	if _, err := s.PruneAPRSMessages(ctx, storage.APRSMessageRetentionEntries); err != nil {
 		return fmt.Errorf("prune aprs messages: %w", err)

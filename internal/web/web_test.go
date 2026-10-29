@@ -6202,3 +6202,47 @@ func TestForgotRecordsARefusedRequest(t *testing.T) {
 	// The same outcome also goes to the log line the /logs viewer shows; this
 	// harness discards log output, so the audit trail above is the assertion.
 }
+
+// TestAirQualityLayerCacheIsFresh pins the contract of the shared public-layer
+// cache: a repeated poll inside the freshness window is served from the cache,
+// while a change in the mirrored state must invalidate it at once — a station
+// that just reported cannot wait out a TTL.
+func TestAirQualityLayerCacheIsFresh(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now()
+	mk := func(code, name string, at time.Time) state.InfoEntry {
+		payload, err := json.Marshal(map[string]any{
+			"station_code":   code,
+			"station_name":   name,
+			"latitude":       50.05,
+			"longitude":      19.95,
+			"generated_at":   at.Add(-5 * time.Minute).Format(time.RFC3339),
+			"index_level_id": 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state.InfoEntry{
+			Source: "giosaq", ProducerID: "giosaq-main", Key: code,
+			Kind: "air_quality", ReceivedAt: at, Payload: payload,
+		}
+	}
+	env.state.AddOrUpdateInfo("local", "warnflux/info/giosaq/giosaq-main/mpkrakbulwar/air_quality",
+		mk("mpkrakbulwar", "Kraków, Bulwarowa", now))
+
+	_, first := env.get("/api/airquality")
+	_, second := env.get("/api/airquality")
+	if first != second {
+		t.Fatalf("second poll rebuilt the layer differently:\n%s\n%s", first, second)
+	}
+	if !strings.Contains(first, "mpkrakbulwar") {
+		t.Fatalf("airquality payload misses the station: %s", first)
+	}
+
+	env.state.AddOrUpdateInfo("local", "warnflux/info/giosaq/giosaq-main/mpniepo3maja/air_quality",
+		mk("mpniepo3maja", "Niepołomice, 3 Maja", now.Add(time.Second)))
+	_, third := env.get("/api/airquality")
+	if !strings.Contains(third, "mpniepo3maja") {
+		t.Fatalf("cached layer survived a state change, payload: %s", third)
+	}
+}

@@ -434,15 +434,24 @@ func (s *logSink) String() string {
 	return s.buf.String()
 }
 
-// TestRequestedReconnectIsNotAWarning pins the level of the two ways a
-// gateway session ends: Discord asking for a rotation (op 7 — routine, the
-// session resumes) must be INFO, while a real disconnect stays a WARN. On the
-// production station the routine rotations were 7 of 17 warnings a day.
+// TestRequestedReconnectIsNotAWarning pins the level of the ways a gateway
+// session ends: Discord asking for a rotation (op 7 — routine, the session
+// resumes) must be INFO, a session that ran for hours and then lost its
+// connection is one INFO line with the uptime, and only a flapping link warns
+// (once, then debug). On the production station the routine rotations were 7
+// of 17 warnings a day, and 13 more came from single drops of long-lived
+// sessions that healed within a second.
 func TestRequestedReconnectIsNotAWarning(t *testing.T) {
 	sink := &logSink{}
-	l := &dmListener{logger: slog.New(slog.NewTextHandler(sink, nil))}
+	l := &dmListener{logger: slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	drops := 0
+	reset := func() {
+		sink.mu.Lock()
+		sink.buf.Reset()
+		sink.mu.Unlock()
+	}
 
-	l.logSessionEnd(errGatewayReconnect, time.Second)
+	l.logSessionEnd(errGatewayReconnect, time.Second, time.Second, &drops)
 	out := sink.String()
 	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "asked for a reconnect") {
 		t.Fatalf("requested reconnect logged as %q, want INFO", out)
@@ -451,12 +460,32 @@ func TestRequestedReconnectIsNotAWarning(t *testing.T) {
 		t.Fatalf("requested reconnect warned: %q", out)
 	}
 
-	sink.mu.Lock()
-	sink.buf.Reset()
-	sink.mu.Unlock()
-	l.logSessionEnd(errors.New("gateway closed the connection (1006 unexpected EOF)"), 2*time.Second)
+	// A long-lived session that drops: an event, not an alarm.
+	reset()
+	l.logSessionEnd(errors.New("gateway closed the connection (1006 unexpected EOF)"), 2*time.Second, 4*time.Hour, &drops)
+	out = sink.String()
+	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "session dropped") {
+		t.Fatalf("drop after a long session logged as %q, want INFO", out)
+	}
+	if drops != 0 {
+		t.Errorf("drops = %d, want 0 after a stable session", drops)
+	}
+
+	// A link that keeps closing within dmStableSession: one WARN, then debug.
+	reset()
+	l.logSessionEnd(errors.New("gateway closed the connection (1006 unexpected EOF)"), 2*time.Second, 30*time.Second, &drops)
 	out = sink.String()
 	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "listener disconnected") {
-		t.Fatalf("real disconnect logged as %q, want WARN", out)
+		t.Fatalf("flapping link logged as %q, want WARN", out)
+	}
+
+	reset()
+	l.logSessionEnd(errors.New("gateway closed the connection (1006 unexpected EOF)"), 4*time.Second, 30*time.Second, &drops)
+	out = sink.String()
+	if strings.Contains(out, "level=WARN") {
+		t.Fatalf("second drop of the same episode warned again: %q", out)
+	}
+	if !strings.Contains(out, "still dropping") {
+		t.Fatalf("second drop not reported at debug: %q", out)
 	}
 }

@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"mime"
 	"net"
 	"net/smtp"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -135,15 +137,24 @@ func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) err
 	if !implicit {
 		startTLS := cfg.StartTLS == nil || *cfg.StartTLS
 		if startTLS {
-			if ok, _ := client.Extension("STARTTLS"); ok {
-				tc, tErr := tlsConfig()
-				if tErr != nil {
-					return tErr
-				}
-				if err := client.StartTLS(tc); err != nil {
-					return fmt.Errorf("smtp: starttls: %w", err)
-				}
+			// STARTTLS is a requirement, not an offer to consider: a relay
+			// that does not advertise the extension left this connection
+			// in plaintext and the message — password-reset tokens
+			// included — went out cleartext while the send reported
+			// success. Refusing here is the only safe default; an operator
+			// who really wants a cleartext relay says starttls: false.
+			if ok, _ := client.Extension("STARTTLS"); !ok {
+				return fmt.Errorf("smtp: %s does not offer STARTTLS; refusing to send over an unencrypted connection (set starttls: false to allow it)", host)
 			}
+			tc, tErr := tlsConfig()
+			if tErr != nil {
+				return tErr
+			}
+			if err := client.StartTLS(tc); err != nil {
+				return fmt.Errorf("smtp: starttls: %w", err)
+			}
+		} else {
+			warnCleartextOnce(host)
 		}
 	}
 	if strings.TrimSpace(cfg.Username) != "" {
@@ -177,6 +188,29 @@ func DirectMessage(ctx context.Context, cfg Config, to []string, msg []byte) err
 		}
 	}
 	return client.Quit()
+}
+
+// cleartextWarned remembers which relays have already been reported as
+// unencrypted, so one warn per host reaches the log instead of one per mail.
+var cleartextWarned struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// warnCleartextOnce reports an intentionally unencrypted transport (starttls
+// explicitly disabled): the operator asked for it, but the log has to say so.
+func warnCleartextOnce(host string) {
+	cleartextWarned.mu.Lock()
+	if cleartextWarned.seen == nil {
+		cleartextWarned.seen = make(map[string]bool)
+	}
+	first := !cleartextWarned.seen[host]
+	cleartextWarned.seen[host] = true
+	cleartextWarned.mu.Unlock()
+	if first {
+		slog.Warn("smtp: sending over an unencrypted connection (starttls disabled)",
+			"host", host)
+	}
 }
 
 // senderAddress resolves the envelope/header From address from the config,

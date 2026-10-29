@@ -15,11 +15,24 @@ func (s *Store) RecordGSMMessage(ctx context.Context, direction, from, to, text 
 	if direction != "rx" && direction != "tx" {
 		return fmt.Errorf("gsm message: invalid direction %q", direction)
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	// The row and its traffic aggregate land in ONE transaction (see
+	// RecordAPRSMessage).
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin gsm message: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO gsm_messages (direction, from_number, to_number, text, created_at_ms)
 		VALUES (?, ?, ?, ?, ?)`,
 		direction, from, to, text, at.UnixMilli()); err != nil {
 		return fmt.Errorf("insert gsm message: %w", err)
+	}
+	if err := bumpTrafficCounter(ctx, tx, trafficChannelGSM, direction, at); err != nil {
+		return fmt.Errorf("count gsm message: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit gsm message: %w", err)
 	}
 	if _, err := s.PruneGSMMessages(ctx, storage.GSMMessageRetentionEntries); err != nil {
 		return fmt.Errorf("prune gsm messages: %w", err)

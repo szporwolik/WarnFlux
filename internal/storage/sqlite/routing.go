@@ -225,9 +225,9 @@ func (s *Store) EnqueueDelivery(ctx context.Context, job storage.DeliveryJob) (s
 func (s *Store) enqueueDeliveryTx(ctx context.Context, tx *sql.Tx, job storage.DeliveryJob) (storage.DeliveryStatus, bool, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT OR IGNORE INTO action_fires
-			(group_id, action_id, event_key, dedup_key, payload, status, attempts, next_attempt_at_ms, fired_at_ms)
-		VALUES (?, ?, ?, ?, ?, 'saved', 0, 0, ?)`,
-		job.GroupID, job.ActionID, job.EventKey, job.DedupKey, string(job.Payload), job.FiredAt.UnixMilli())
+			(group_id, action_id, event_key, dedup_key, payload, status, attempts, next_attempt_at_ms, fired_at_ms, expires_at_ms)
+		VALUES (?, ?, ?, ?, ?, 'saved', 0, 0, ?, ?)`,
+		job.GroupID, job.ActionID, job.EventKey, job.DedupKey, string(job.Payload), job.FiredAt.UnixMilli(), expiryMillis(job.ExpiresAt))
 	if err != nil {
 		return 0, false, fmt.Errorf("insert delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
@@ -261,9 +261,11 @@ func (s *Store) enqueueDeliveryTx(ctx context.Context, tx *sql.Tx, job storage.D
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE action_fires
-		SET payload = ?, status = 'saved', attempts = 0, next_attempt_at_ms = 0
+		SET payload = ?, status = 'saved', attempts = 0, next_attempt_at_ms = 0,
+		    expires_at_ms = CASE WHEN ? > 0 THEN ? ELSE expires_at_ms END
 		WHERE group_id = ? AND action_id = ? AND dedup_key = ?`,
-		string(payload), job.GroupID, job.ActionID, job.DedupKey); err != nil {
+		string(payload), expiryMillis(job.ExpiresAt), expiryMillis(job.ExpiresAt),
+		job.GroupID, job.ActionID, job.DedupKey); err != nil {
 		return 0, false, fmt.Errorf("re-arm delivery job for action %q group %d: %w", job.ActionID, job.GroupID, err)
 	}
 	return storage.DeliverySaved, true, nil
@@ -674,6 +676,73 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]storage.Deli
 	return out, nil
 }
 
+// expiryMillis renders an optional expiry as the ledger's millisecond column
+// value (0 = no authoritative expiry).
+func expiryMillis(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+// ExpireStaleDeliveries ends every queued job whose event carries an
+// authoritative expiry that has already passed. Such a job can never be sent
+// — the worker refuses it at the staleness gate — so leaving it pending only
+// keeps a dead alert (and its payload) alive; the problem was that the
+// decision lived ONLY in the worker, which does not run in offline mode or for
+// an action removed from the configuration (reported P2: a job of an alert
+// expired 400 days earlier was still pending). This runs inside the ledger
+// maintenance loop, independently of the workers, and writes 'expired' — a
+// terminal status the ordinary retention then removes. Returns how many jobs
+// were ended.
+func (s *Store) ExpireStaleDeliveries(ctx context.Context, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE action_fires
+		SET status = 'expired', next_attempt_at_ms = 0, last_error = ?
+		WHERE status IN ('saved','failed')
+		  AND expires_at_ms > 0 AND expires_at_ms < ?`,
+		deliveryExpiredReason, now.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("expire queued deliveries: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// deliveryExpiredReason is the last_error of a job ended by the validity
+// policy: the panel shows it instead of a transport failure.
+const deliveryExpiredReason = "event expired while the job waited (validity policy)"
+
+// TerminateSupersededDeliveries ends queued jobs that a NEWER row of the same
+// event superseded: the same group and action hold a newer version of the same
+// event_key, so sending the older one would deliver stale content (or an alert
+// that was already cancelled) after the newer outcome. Any newer row counts —
+// still queued (the newest version will be sent instead), already delivered
+// (the recipients have the newest content) or ended by the validity policy
+// (the event is dead). Returns how many jobs were ended.
+func (s *Store) TerminateSupersededDeliveries(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE action_fires
+		SET status = 'expired', next_attempt_at_ms = 0, last_error = ?
+		WHERE status IN ('saved','failed')
+		  AND EXISTS (
+			SELECT 1 FROM action_fires newer
+			WHERE newer.group_id = action_fires.group_id
+			  AND newer.action_id = action_fires.action_id
+			  AND newer.event_key = action_fires.event_key
+			  AND (newer.fired_at_ms > action_fires.fired_at_ms
+			       OR (newer.fired_at_ms = action_fires.fired_at_ms
+			           AND newer.dedup_key > action_fires.dedup_key))
+		  )`, deliverySupersededReason)
+	if err != nil {
+		return 0, fmt.Errorf("end superseded deliveries: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// deliverySupersededReason is the last_error of a job a newer version of the
+// same event made pointless.
+const deliverySupersededReason = "superseded by a newer version of the same event"
+
 // PruneActionFires deletes COMPLETED ledger rows older than the cutoff
 // and returns how many rows were removed. Pending work never ages out:
 // 'saved' (never executed), 'running' (claimed) and 'failed' rows that
@@ -685,6 +754,12 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]storage.Deli
 // 'unconfirmed' is TERMINAL (the message may already be on its way, so it
 // is never resent automatically) and therefore ages out with the other
 // settled rows: keeping it forever would retain its payload indefinitely.
+//
+// Pending work does age out once it provably cannot be sent: the ledger
+// maintenance marks unmistakably expired jobs (ExpireStaleDeliveries) and jobs
+// a newer version of the same event superseded
+// (TerminateSupersededDeliveries) as 'expired', and those rows are pruned here
+// like any other completed job.
 func (s *Store) PruneActionFires(cutoff time.Time) (int64, error) {
 	res, err := s.db.Exec(`
 		DELETE FROM action_fires

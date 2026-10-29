@@ -88,6 +88,11 @@ type DeliveryJob struct {
 	// retries from its claim on. Zero means the row predates the recorded
 	// budget, and the action's current configuration applies.
 	MaxAttempts int
+	// ExpiresAt is the authoritative expiry of the event this job carries
+	// (zero = the event has none). A job whose expiry has passed can never
+	// be sent, so the maintenance loop ends it as terminal even when no
+	// worker runs (offline mode, action removed from the configuration).
+	ExpiresAt time.Time
 }
 
 // DeliveryResult is the per-job outcome of one CommitInboxDelivery call.

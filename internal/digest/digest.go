@@ -286,8 +286,12 @@ func Run(ctx context.Context, src Sources, at string) {
 // the admin panel can trigger the same report on demand.
 func Send(ctx context.Context, src Sources) error {
 	now := nowOrDefault(src)
+	// The traffic aggregates are stored per minute, so the window is
+	// minute-aligned: the mail prints exactly the span it counted instead of a
+	// round number that silently includes or excludes the last partial minute.
+	end := now.UTC().Truncate(time.Minute)
 	report := Report{
-		Window:    Window{From: now.Add(-24 * time.Hour), To: now},
+		Window:    Window{From: end.Add(-24 * time.Hour), To: end},
 		Station:   src.Station,
 		Version:   src.Version,
 		Commit:    src.Commit,

@@ -1598,6 +1598,14 @@ func run(configPath string, checkConfig bool) error {
 						logger.Warn("routing: superseded delivery audit failed", "error", err)
 					}
 				}
+				// Traffic aggregates outlive the message history they
+				// summarise (the daily report counts them, not the capped
+				// history rows): keep them for the reporting horizon only.
+				if n, err := store.PruneTrafficCounters(ctx, now.Add(-sqlite.TrafficCounterRetention)); err != nil {
+					logger.Warn("storage: traffic counter prune failed", "error", err)
+				} else if n > 0 {
+					logger.Debug("storage: traffic counter buckets pruned", "removed", n)
+				}
 				// Retention removes the completed history, including the
 				// jobs the validity policy just ended.
 				if d := time.Duration(notificationRetention.Load()); d <= 0 {

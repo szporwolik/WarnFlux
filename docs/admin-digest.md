@@ -17,6 +17,11 @@ the panel or the log.
   moment the mail was built.
 - **Traffic in the window** — SMS, Meshtastic and APRS messages received and
   sent, hazards new / active now / ended, notifications dispatched and failed.
+  The message counts come from **durable per-minute aggregates**
+  (`traffic_counters`, written in the same transaction as the message) rather
+  than from the history tables, whose retention keeps only the newest few
+  thousand rows: a busy day is now counted exactly, and the window is snapped
+  to the minute so the printed span is exactly the span that was counted.
 - **System health** — every finding behind the verdict (subsystem, component,
   detail), the pending-notification count and — when part of the station could
   not be read — the inputs that were unavailable. It is never a bare "OK": a

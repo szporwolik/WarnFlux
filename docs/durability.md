@@ -155,6 +155,24 @@ jobs exist durably and the row is gone, or neither happened.
   topic; a key that is active again cleans its restored delete (the
   active document wins).
 
+**Retained-state mirror never keeps a topic the broker dropped:**
+
+- A **zero-length retained payload deletes** the mirrored entry at once: the
+  bytes and the entry slot are released in the same step
+  (`warnflux_state_mirror_removed_total{kind="info",reason="topic-deleted"}`),
+  so a deleted weather document or aircraft snapshot cannot hold the byte
+  budget or reappear in a view.
+- **Measurements age out**: entries of the kinds a producer republishes every
+  poll cycle (`aircraft`, `air_quality`, `weather`) are dropped after 6 hours
+  without a refresh (`reason="stale"`) — an old reading means the producer is
+  gone. The sweep is triggered by the read paths but runs at most once a
+  minute.
+- **Configuration-like documents never expire on age** (EMCOM networks the
+  panel republishes on change, the Meshtastic node list): they are removed only
+  when the broker deletes their topic.
+- Expired active hazards pruned from the mirror are visible as
+  `warnflux_state_mirror_removed_total{kind="active",reason="stale"}`.
+
 **Receiver recovery (the /events stream survives outages):**
 
 - Receivers use a **persistent MQTT session** by default

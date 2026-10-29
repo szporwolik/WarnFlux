@@ -80,6 +80,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "info", "entries", mc.DroppedInfo)
 	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "active", "bytes", mc.DroppedActiveBytes)
 	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "info", "bytes", mc.DroppedInfoBytes)
+	fmt.Fprintf(&b, "# HELP warnflux_state_mirror_removed_total Entries removed from the retained-state mirror, by kind and reason.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_state_mirror_removed_total counter\n")
+	fmt.Fprintf(&b, "warnflux_state_mirror_removed_total{kind=%q,reason=%q} %d\n", "info", "topic-deleted", mc.RemovedInfoDeleted)
+	fmt.Fprintf(&b, "warnflux_state_mirror_removed_total{kind=%q,reason=%q} %d\n", "info", "stale", mc.RemovedInfoStale)
+	fmt.Fprintf(&b, "warnflux_state_mirror_removed_total{kind=%q,reason=%q} %d\n", "active", "stale", mc.RemovedActiveStale)
 
 	// Dispatch acceptance accounting: durable vs emergency vs rejected.
 	// Emergency acceptance is the visible degradation when the durable

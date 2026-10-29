@@ -248,3 +248,109 @@ func TestVersionTracksAcceptedMutations(t *testing.T) {
 		t.Fatalf("Version changed after a rejected entry: %d -> %d", afterDelete, got)
 	}
 }
+
+// TestDeleteInfoReleasesBudget is the regression test for retained-topic
+// deletion that only freed the map slot in theory: a deleted topic must drop
+// the entry, release its bytes and count as a removal.
+func TestDeleteInfoReleasesBudget(t *testing.T) {
+	s := New()
+	e, _ := readablePayload("emcom", "net-1", 4096)
+	if err := s.AddOrUpdateInfo("local", "warnflux/info/warnflux/panel-1/net-1/emcom", e); err != nil {
+		t.Fatal(err)
+	}
+	before := s.MirrorCounters()
+	if before.InfoBytes == 0 {
+		t.Fatal("InfoBytes = 0 after an accepted entry")
+	}
+	version := s.Version()
+
+	if !s.DeleteInfo("local", "warnflux/info/warnflux/panel-1/net-1/emcom") {
+		t.Fatal("DeleteInfo reported nothing removed")
+	}
+	after := s.MirrorCounters()
+	if len(s.InfoKind("emcom")) != 0 {
+		t.Fatal("deleted entry still readable")
+	}
+	if after.InfoBytes != 0 {
+		t.Fatalf("InfoBytes = %d after the delete, want 0", after.InfoBytes)
+	}
+	if after.RemovedInfoDeleted != 1 {
+		t.Fatalf("RemovedInfoDeleted = %d, want 1", after.RemovedInfoDeleted)
+	}
+	if s.Version() == version {
+		t.Fatal("delete did not bump Version")
+	}
+	// Deleting again is a no-op.
+	if s.DeleteInfo("local", "warnflux/info/warnflux/panel-1/net-1/emcom") {
+		t.Fatal("second DeleteInfo reported a removal")
+	}
+	// The freed slot is reusable: the entry limit must not stay consumed.
+	if err := s.AddOrUpdateInfo("local", "warnflux/info/warnflux/panel-1/net-1/emcom", e); err != nil {
+		t.Fatalf("re-adding after delete: %v", err)
+	}
+}
+
+// TestInfoRetentionExpiresMeasurementsOnly pins the ageing policy: measurements
+// that stopped being refreshed leave the mirror (they would otherwise hold the
+// budget forever), while configuration-like documents survive — they are
+// republished only on change, so their age says nothing about freshness.
+func TestInfoRetentionExpiresMeasurementsOnly(t *testing.T) {
+	s := New()
+	old := time.Now().Add(-InfoRetention - time.Hour)
+	add := func(topic, kind, key string, at time.Time) {
+		t.Helper()
+		if err := s.AddOrUpdateInfo("local", topic, InfoEntry{
+			Source: "test", ProducerID: "p", Key: key, Kind: kind,
+			ReceivedAt: at, Payload: json.RawMessage(`{}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("warnflux/info/adsb/p/area/aircraft", "aircraft", "area", old)
+	add("warnflux/info/giosaq/p/st/air_quality", "air_quality", "st", old)
+	add("warnflux/info/openmeteo/p/home/weather", "weather", "home", old)
+	add("warnflux/info/warnflux/p/net/emcom", "emcom", "net", old)
+	add("warnflux/info/warnflux/p/nodes/mesh-nodes", "mesh-nodes", "nodes", old)
+
+	// The sweep is triggered by the read paths, at most once a minute.
+	s.lastSweep.Store(0)
+	if got := len(s.InfoKind("aircraft")); got != 0 {
+		t.Fatalf("stale aircraft entry survived: %d", got)
+	}
+	if got := len(s.InfoKind("air_quality")); got != 0 {
+		t.Fatalf("stale air-quality entry survived: %d", got)
+	}
+	if got := len(s.Weather()); got != 0 {
+		t.Fatalf("stale weather entry survived: %d", got)
+	}
+	if got := len(s.InfoKind("emcom")); got != 1 {
+		t.Fatalf("emcom configuration entry expired on age: %d", got)
+	}
+	if got := len(s.InfoKind("mesh-nodes")); got != 1 {
+		t.Fatalf("meshtastic node list expired on age: %d", got)
+	}
+	c := s.MirrorCounters()
+	if c.RemovedInfoStale != 3 {
+		t.Fatalf("RemovedInfoStale = %d, want 3", c.RemovedInfoStale)
+	}
+	if c.InfoBytes <= 0 {
+		t.Fatalf("InfoBytes = %d, want the surviving entries accounted", c.InfoBytes)
+	}
+}
+
+// TestFreshMeasurementsSurviveSweep makes sure the retention window does not
+// eat live data: an entry refreshed just now stays.
+func TestFreshMeasurementsSurviveSweep(t *testing.T) {
+	s := New()
+	if err := s.AddOrUpdateInfo("local", "warnflux/info/adsb/p/area/aircraft", InfoEntry{
+		Source: "adsb", ProducerID: "p", Key: "area", Kind: "aircraft",
+		ReceivedAt: time.Now(), Payload: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Force the next read to sweep.
+	s.lastSweep.Store(0)
+	if got := len(s.InfoKind("aircraft")); got != 1 {
+		t.Fatalf("fresh aircraft entry swept away: %d", got)
+	}
+}

@@ -2,11 +2,16 @@ package digest
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/health"
+	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/preflight"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
@@ -24,6 +29,14 @@ func (f *fakeStore) DigestCounters(_ context.Context, from, to time.Time) (stora
 }
 
 func (f *fakeStore) AdminEmails(context.Context) ([]string, error) { return f.admins, nil }
+
+// failingStore is a store whose counter query is broken (a locked or corrupt
+// database): the digest must still go out, marked as incomplete.
+type failingStore struct{ fakeStore }
+
+func (f *failingStore) DigestCounters(context.Context, time.Time, time.Time) (storage.DigestCounters, error) {
+	return storage.DigestCounters{}, errors.New("database is locked")
+}
 
 type sentMail struct {
 	to      []string
@@ -142,5 +155,113 @@ func TestSendFallsBackToConfiguredRecipients(t *testing.T) {
 	}
 	if len(*sent) != 0 {
 		t.Errorf("mails = %d, want none", len(*sent))
+	}
+}
+
+// healthSrc installs the shared assessment inputs on the fixture sources.
+func healthSrc(src Sources, in health.Inputs) Sources {
+	src.Health = func() health.Inputs { return in }
+	return src
+}
+
+// TestDigestCounterFailureNeverClaimsOK pins the reported P2: a broken counter
+// query used to produce a mail whose subject said OK and whose traffic section
+// showed ZEROS — the operator read "quiet day" instead of "the report could not
+// look". The verdict must say INCOMPLETE and the section must say unavailable.
+func TestDigestCounterFailureNeverClaimsOK(t *testing.T) {
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+	store := &failingStore{fakeStore{admins: []string{"admin@example.org"}}}
+	src, sent := fixedSources(now, store, []plugin.PluginStatus{
+		{ID: "imgw-warnings", Type: "imgw", State: plugin.StateRunning},
+	})
+	if err := Send(context.Background(), src); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(*sent) != 1 {
+		t.Fatalf("mails = %d, want 1 (a broken counter query must not stop the mail)", len(*sent))
+	}
+	mail := (*sent)[0]
+	if strings.Contains(mail.subject, "— OK") {
+		t.Fatalf("subject = %q, want a verdict that is not OK", mail.subject)
+	}
+	if !strings.Contains(mail.subject, "INCOMPLETE") {
+		t.Errorf("subject = %q, want INCOMPLETE", mail.subject)
+	}
+	if !strings.Contains(mail.body, "Counter read: unavailable") {
+		t.Errorf("body must say the counters are unavailable:\n%s", mail.body)
+	}
+	// No fabricated numbers: the traffic rows are gone, not zeroed.
+	if strings.Contains(mail.body, "SMS: 0 received") {
+		t.Errorf("body printed zero counters for a failed read:\n%s", mail.body)
+	}
+	if !strings.Contains(mail.body, "counters") {
+		t.Errorf("body must name the input it could not read:\n%s", mail.body)
+	}
+}
+
+// TestDigestVerdictCoversTheWholeStation pins the other half: the verdict is
+// the SHARED assessment, so a disconnected receiver, a degraded action or a
+// missing modem turns it red even when every source plugin is happily running
+// — and the health section names the finding.
+func TestDigestVerdictCoversTheWholeStation(t *testing.T) {
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+	plugins := []plugin.PluginStatus{{ID: "imgw-warnings", Type: "imgw", State: plugin.StateRunning}}
+
+	in := health.Inputs{
+		Plugins:   plugins,
+		Receivers: []mqttreceiver.Status{{ID: "local", Enabled: true, Connected: false, LastError: "connection refused"}},
+		Actions:   []action.Status{{ID: "smtp", Enabled: true, State: action.StateDegraded, Reason: "auth failed"}},
+		Hardware:  []preflight.Condition{{Key: "gsm.modem", Severity: preflight.SeverityBad, Detail: "/dev/ttyUSB0 missing"}},
+		Database:  &health.Database{},
+		Queue:     &health.QueueState{Depth: 1, Capacity: 64},
+	}
+	src, sent := fixedSources(now, &fakeStore{admins: []string{"admin@example.org"}}, plugins)
+	src = healthSrc(src, in)
+	if err := Send(context.Background(), src); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	mail := (*sent)[0]
+	if !strings.Contains(mail.subject, "DEGRADED") {
+		t.Fatalf("subject = %q, want DEGRADED for a disconnected receiver", mail.subject)
+	}
+	for _, want := range []string{
+		"System health",
+		"receivers** — local",
+		"connection refused",
+		"actions** — smtp",
+		"hardware** — gsm.modem",
+		"/dev/ttyUSB0 missing",
+	} {
+		if !strings.Contains(mail.body, want) {
+			t.Errorf("body missing %q:\n%s", want, mail.body)
+		}
+	}
+	if strings.Contains(mail.body, "unavailable") {
+		t.Errorf("a complete report must not claim a missing input:\n%s", mail.body)
+	}
+}
+
+// TestDigestReportsHealthyStationAsOK keeps the other side honest: with every
+// subsystem reporting and nothing wrong, the verdict stays OK and the health
+// section says so instead of showing an empty list.
+func TestDigestReportsHealthyStationAsOK(t *testing.T) {
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+	plugins := []plugin.PluginStatus{{ID: "imgw-warnings", Type: "imgw", State: plugin.StateRunning}}
+	src, sent := fixedSources(now, &fakeStore{admins: []string{"admin@example.org"}}, plugins)
+	src = healthSrc(src, health.Inputs{
+		Plugins:   plugins,
+		Receivers: []mqttreceiver.Status{{ID: "local", Enabled: true, Connected: true}},
+		Database:  &health.Database{},
+		Queue:     &health.QueueState{Depth: 0, Capacity: 64},
+	})
+	if err := Send(context.Background(), src); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	mail := (*sent)[0]
+	if !strings.Contains(mail.subject, "— OK") {
+		t.Fatalf("subject = %q, want OK", mail.subject)
+	}
+	if !strings.Contains(mail.body, "every subsystem reports healthy") {
+		t.Errorf("body must state the healthy verdict:\n%s", mail.body)
 	}
 }

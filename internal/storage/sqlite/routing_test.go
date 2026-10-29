@@ -2114,3 +2114,144 @@ func TestUnconfirmedDeliveryIsTerminalAndDurable(t *testing.T) {
 		t.Fatalf("an unconfirmed delivery became claimable after the restart: (%v, %v)", ok, err)
 	}
 }
+
+// TestExpireStaleDeliveriesEndsQueuedExpiredJob pins the reported P2: the
+// validity of a queued notification was checked ONLY by the worker, so with no
+// worker running (offline mode, an action removed from the configuration) the
+// job of an alert that expired long ago stayed pending forever and retention
+// had to leave it alone. The ledger maintenance now ends it — independently of
+// the workers — and the ordinary retention removes it.
+func TestExpireStaleDeliveriesEndsQueuedExpiredJob(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	fired := at.Add(-401 * 24 * time.Hour)
+	expired := at.Add(-400 * 24 * time.Hour)
+
+	enqueue := func(action, dedup, eventKey string, expires time.Time) {
+		t.Helper()
+		job := storage.DeliveryJob{
+			GroupID: g.ID, ActionID: action, EventKey: eventKey, DedupKey: dedup,
+			Payload: []byte(`{"id":"x"}`), FiredAt: fired, ExpiresAt: expires,
+		}
+		if _, queued, err := store.EnqueueDelivery(ctx, job); err != nil || !queued {
+			t.Fatalf("enqueue %s: (%v, %v)", dedup, queued, err)
+		}
+	}
+	enqueue("smtp", "c:expired", "imgw:1", expired)
+	enqueue("mesh", "c:live", "imgw:1", at.Add(time.Hour))
+	enqueue("discord", "c:noexpiry", "imgw:1", time.Time{})
+
+	// Ordinary retention must NOT touch pending work, however old it is.
+	if n, err := store.PruneActionFires(at); err != nil || n != 0 {
+		t.Fatalf("retention pruned %d pending rows (%v), want 0", n, err)
+	}
+
+	n, err := store.ExpireStaleDeliveries(ctx, at)
+	if err != nil || n != 1 {
+		t.Fatalf("ExpireStaleDeliveries = (%d, %v), want the 400-day-expired job", n, err)
+	}
+	var status, reason string
+	if err := store.db.QueryRow(`SELECT status, last_error FROM action_fires WHERE dedup_key = 'c:expired'`).
+		Scan(&status, &reason); err != nil {
+		t.Fatalf("read expired row: %v", err)
+	}
+	if status != "expired" || reason != deliveryExpiredReason {
+		t.Fatalf("row = (%q, %q), want (%q, %q)", status, reason, "expired", deliveryExpiredReason)
+	}
+	// Jobs that may still be sent are untouched and remain claimable.
+	if n, err := store.ExpireStaleDeliveries(ctx, at); err != nil || n != 0 {
+		t.Fatalf("second expiry pass = (%d, %v), want nothing", n, err)
+	}
+
+	// Retention now removes the ended job like any other completed row — but
+	// still leaves the live ones alone.
+	pruned, err := store.PruneActionFires(at)
+	if err != nil || pruned != 1 {
+		t.Fatalf("retention pruned %d rows (%v), want the ended job only", pruned, err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at); err != nil || !ok {
+		t.Fatalf("claim of the live job = (%v, %v), want (true, nil)", ok, err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "discord", 1, at); err != nil || !ok {
+		t.Fatalf("claim of the job without expiry = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestTerminateSupersededDeliveriesEndsTheOlderVersion pins the other half of
+// the validity policy: when the same action in the same group holds a NEWER
+// queued job for the same event, the older one can only deliver stale content
+// (or an alert that was already cancelled), so it is ended and pruned. The
+// newest version stays queued, so no alarm is lost.
+func TestTerminateSupersededDeliveriesEndsTheOlderVersion(t *testing.T) {
+	store := newRoutingStore(t)
+	ctx := context.Background()
+
+	g, err := store.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+
+	enqueue := func(action, dedup, eventKey string, fired time.Time) {
+		t.Helper()
+		if _, queued, err := store.EnqueueDelivery(ctx, storage.DeliveryJob{
+			GroupID: g.ID, ActionID: action, EventKey: eventKey, DedupKey: dedup,
+			Payload: []byte(`{"id":"x"}`), FiredAt: fired,
+		}); err != nil || !queued {
+			t.Fatalf("enqueue %s: (%v, %v)", dedup, queued, err)
+		}
+	}
+	enqueue("mesh", "c:v1", "imgw:1", at)
+	enqueue("mesh", "c:v2", "imgw:1", at.Add(time.Minute))
+	enqueue("mesh", "c:other", "imgw:2", at)
+
+	n, err := store.TerminateSupersededDeliveries(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("TerminateSupersededDeliveries = (%d, %v), want the older version", n, err)
+	}
+	if n, err := store.TerminateSupersededDeliveries(ctx); err != nil || n != 0 {
+		t.Fatalf("second pass = (%d, %v), want nothing", n, err)
+	}
+
+	// The newest version of the event and the unrelated event are still there
+	// (the claim order is by deadline then fire time, so only the set matters).
+	claimed := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		job, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at.Add(time.Duration(i+2)*time.Minute))
+		if err != nil || !ok {
+			t.Fatalf("claim %d = (%v, %v), want a queued job", i, ok, err)
+		}
+		claimed[job.DedupKey] = true
+	}
+	if !claimed["c:v2"] || !claimed["c:other"] || claimed["c:v1"] {
+		t.Fatalf("claimable jobs = %v, want the newer version and the unrelated event", claimed)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "mesh", 1, at.Add(10*time.Minute)); err != nil || ok {
+		t.Fatalf("third claim = (%v, %v), want nothing left", ok, err)
+	}
+	// Retention takes the ended row.
+	if pruned, err := store.PruneActionFires(at.Add(4 * time.Minute)); err != nil || pruned < 1 {
+		t.Fatalf("retention pruned %d rows (%v), want the superseded job", pruned, err)
+	}
+
+	// A newer version that was ALREADY delivered supersedes the older queued
+	// job just as well: the recipients hold the newest content, so the stale
+	// one must never go out.
+	enqueue("smtp", "c:stale", "imgw:3", at)
+	enqueue("smtp", "c:delivered", "imgw:3", at.Add(time.Minute))
+	if _, err := store.db.Exec(`UPDATE action_fires SET status = 'accepted' WHERE dedup_key = 'c:delivered'`); err != nil {
+		t.Fatalf("settle the newer version: %v", err)
+	}
+	if n, err := store.TerminateSupersededDeliveries(ctx); err != nil || n != 1 {
+		t.Fatalf("TerminateSupersededDeliveries after delivery = (%d, %v), want the stale queued job", n, err)
+	}
+	if _, ok, err := store.ClaimNextDelivery(ctx, "smtp", 1, at.Add(3*time.Minute)); err != nil || ok {
+		t.Fatalf("claim after supersession = (%v, %v), want nothing queued", ok, err)
+	}
+}

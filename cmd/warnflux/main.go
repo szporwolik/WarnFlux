@@ -1537,10 +1537,13 @@ func run(configPath string, checkConfig bool) error {
 		manager.Run(ctx)
 	}()
 
-	// Durable action-fire ledger maintenance: COMPLETED delivery history
-	// older than the configured retention is pruned at startup and then
-	// hourly. Pending jobs (saved, running or a scheduled retry) never
-	// age out. A negative retention disables pruning entirely.
+	// Durable action-fire ledger maintenance: the validity policy ends
+	// queued jobs that provably cannot be sent any more (event expired, or
+	// superseded by a newer version of the same event) so they stop being
+	// pending even when no worker runs, and COMPLETED delivery history older
+	// than the configured retention is pruned — at startup and then hourly.
+	// Pending jobs that may still be sent (saved, running, a live retry)
+	// never age out. A negative retention disables only the pruning.
 	//
 	// The window and the low-disk threshold are live: the Config page
 	// tunes them and the loops read the current setting on every pass, so
@@ -1557,10 +1560,39 @@ func run(configPath string, checkConfig bool) error {
 		go func() {
 			defer wg.Done()
 			prune := func() {
+				now := time.Now()
+				// Validity policy, independent of the workers: a queued job
+				// whose event provably cannot be delivered any more (its
+				// authoritative expiry passed, or a newer version of the same
+				// event superseded it) is ended here and audited. Without
+				// this the decision lived only in the worker, which does not
+				// run in offline mode or for an action removed from the
+				// configuration — such a job stayed pending forever and the
+				// ordinary retention had to leave it alone.
+				if n, err := store.ExpireStaleDeliveries(ctx, now); err != nil {
+					logger.Warn("routing: queued delivery expiry failed", "error", err)
+				} else if n > 0 {
+					logger.Info("routing: queued deliveries ended (event expired)", "jobs", n)
+					if err := store.RecordAudit("system", "delivery-expiry",
+						fmt.Sprintf("%d queued notification jobs ended (event expired, validity policy)", n), now); err != nil {
+						logger.Warn("routing: delivery expiry audit failed", "error", err)
+					}
+				}
+				if n, err := store.TerminateSupersededDeliveries(ctx); err != nil {
+					logger.Warn("routing: superseded delivery cleanup failed", "error", err)
+				} else if n > 0 {
+					logger.Info("routing: queued deliveries ended (superseded)", "jobs", n)
+					if err := store.RecordAudit("system", "delivery-superseded",
+						fmt.Sprintf("%d queued notification jobs ended (a newer version of the same event superseded them)", n), now); err != nil {
+						logger.Warn("routing: superseded delivery audit failed", "error", err)
+					}
+				}
+				// Retention removes the completed history, including the
+				// jobs the validity policy just ended.
 				if d := time.Duration(notificationRetention.Load()); d <= 0 {
 					return
 				}
-				cutoff := time.Now().Add(-time.Duration(notificationRetention.Load()))
+				cutoff := now.Add(-time.Duration(notificationRetention.Load()))
 				n, err := store.PruneActionFires(cutoff)
 				if err != nil {
 					logger.Warn("routing: fire ledger prune failed", "error", err)

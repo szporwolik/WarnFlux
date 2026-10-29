@@ -280,7 +280,24 @@ of truth:
 
 A power loss between "job queued" and "transmitted" therefore retries on
 restart, and an execution that burns all attempts is retried by the next
-replay of the transition. Channel floods without delivery
+replay of the transition.
+
+**Validity policy (a queued job that provably cannot be sent is ended):**
+retention never ages out pending work, so the decision "this job is
+pointless" must not live only in the worker — it does not run in offline
+mode or for an action removed from the configuration. The ledger
+maintenance (hourly, independent of the workers) therefore ends two kinds
+of job as terminal `expired` with a reason on the row
+(`last_error`) and an audit entry, and the ordinary retention then
+removes them:
+
+- **event expired** — the row carries the event's authoritative expiry
+  (`expires_at_ms`, backfilled from the stored request payload on
+  upgrade); once it has passed the job can never pass the staleness gate.
+- **superseded** — the same group and action hold a newer queued job for
+  the same event key, so the older one would deliver stale content (or an
+  alert that was already cancelled). The newest version stays queued, so
+  no alarm is lost. Channel floods without delivery
 acknowledgements (e.g. Meshtastic group messages) stop at `accepted` — the
 device took the message, the protocol has no stronger signal.
 

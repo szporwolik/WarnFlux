@@ -720,3 +720,66 @@ func TestWithMigrationCeiling(t *testing.T) {
 		t.Fatalf("head migration = %+v, want %d", info, len(migrations))
 	}
 }
+
+// TestDeliveryExpiryBackfill pins the v67 upgrade path: rows written before the
+// column existed still carry the event expiry inside their request payload, so
+// the validity policy must be able to end them too — otherwise a station that
+// upgrades keeps exactly the jobs the policy was written for.
+func TestDeliveryExpiryBackfill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "expiry.db")
+	old, _, err := Open(path, WithMigrationCeiling(66))
+	if err != nil {
+		t.Fatalf("Open at v66: %v", err)
+	}
+	g, err := old.CreateGroup("spok")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	expires := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	// The payload an older release stored: action.ActionRequest JSON, whose
+	// embedded dispatch.Event carries no JSON tags (Go field names).
+	payload := `{"id":"imgw:1/smtp","event":{"Kind":1,"Hazard":{"Type":1,"Key":"imgw:1",` +
+		`"Hazard":{"EventKey":"imgw:1","ExpiresAt":"` + expires.Format(time.RFC3339) + `"}}}}`
+	if _, err := old.db.Exec(`
+		INSERT INTO action_fires (group_id, action_id, event_key, dedup_key, fired_at_ms, payload, status)
+		VALUES (?, 'smtp', 'imgw:1', 'c:1', ?, ?, 'saved')`,
+		g.ID, expires.Add(-48*time.Hour).UnixMilli(), payload); err != nil {
+		t.Fatalf("insert legacy job: %v", err)
+	}
+	// A job without any expiry must stay at 0 (never expires on its own).
+	if _, err := old.db.Exec(`
+		INSERT INTO action_fires (group_id, action_id, event_key, dedup_key, fired_at_ms, payload, status)
+		VALUES (?, 'smtp', 'imgw:2', 'c:2', ?, '{"event":{}}', 'saved')`,
+		g.ID, expires.Add(-48*time.Hour).UnixMilli()); err != nil {
+		t.Fatalf("insert legacy job without expiry: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	upgraded, _, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	defer upgraded.Close()
+
+	var got int64
+	if err := upgraded.db.QueryRow(`SELECT expires_at_ms FROM action_fires WHERE dedup_key = 'c:1'`).Scan(&got); err != nil {
+		t.Fatalf("read backfilled expiry: %v", err)
+	}
+	if got != expires.UnixMilli() {
+		t.Fatalf("expires_at_ms = %d, want %d (backfilled from the payload)", got, expires.UnixMilli())
+	}
+	if err := upgraded.db.QueryRow(`SELECT expires_at_ms FROM action_fires WHERE dedup_key = 'c:2'`).Scan(&got); err != nil {
+		t.Fatalf("read job without expiry: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("expires_at_ms of a job without expiry = %d, want 0", got)
+	}
+
+	// With the backfill in place the validity policy ends the stale job.
+	ctx := context.Background()
+	if n, err := upgraded.ExpireStaleDeliveries(ctx, expires.Add(time.Hour)); err != nil || n != 1 {
+		t.Fatalf("ExpireStaleDeliveries = (%d, %v), want the backfilled job", n, err)
+	}
+}

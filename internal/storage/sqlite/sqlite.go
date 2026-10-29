@@ -1127,6 +1127,34 @@ ALTER TABLE action_fires ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE action_fires ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v67: WHEN the event behind a delivery job expires, on the row
+		// itself. Retention deliberately never prunes pending jobs (they are
+		// unsent notifications), but a job whose hazard expired while it
+		// waited can never be sent any more: the worker refuses it at the
+		// staleness gate and, when no worker runs at all (offline mode, an
+		// action removed from the configuration), nothing ended such a job —
+		// reported P2 kept the job of an alert that had expired 400 days
+		// earlier. The maintenance loop now ends those jobs without the
+		// worker; the rows written by earlier releases are backfilled from
+		// the stored request payload.
+		SQL: `
+ALTER TABLE action_fires ADD COLUMN expires_at_ms INTEGER NOT NULL DEFAULT 0;
+`,
+		run: func(tx *sql.Tx) error {
+			// The payload is the action.ActionRequest JSON: dispatch.Event
+			// carries no JSON tags, so the expiry sits under the Go field
+			// names (Event → Hazard transition → Hazard).
+			if _, err := tx.Exec(`
+UPDATE action_fires
+SET expires_at_ms = CAST(ROUND((julianday(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.event.Hazard.Hazard.ExpiresAt') END) - 2440587.5) * 86400000) AS INTEGER)
+WHERE expires_at_ms = 0
+  AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.event.Hazard.Hazard.ExpiresAt') END IS NOT NULL`); err != nil {
+				return fmt.Errorf("backfill delivery expiries: %w", err)
+			}
+			return nil
+		},
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,6 +33,17 @@ const (
 	// MaxInfoBytes bounds the informational mirror (weather snapshots,
 	// aircraft feeds, ...), the kind that carries raw payloads.
 	MaxInfoBytes = 32 << 20
+	// InfoRetention is how long a MEASUREMENT entry may sit in the mirror
+	// without being refreshed. Producers of these kinds republish every poll
+	// cycle (minutes), so an old entry means the producer is gone: keeping it
+	// would hold budget and keep a dead station on the map. Configuration-like
+	// documents (emcom networks, meshtastic node lists) are republished only
+	// on change and therefore never expire on age — they go away when the
+	// broker deletes their topic (see DeleteInfo).
+	InfoRetention = 6 * time.Hour
+	// infoSweepInterval bounds how often the stale-entry sweep may run: the
+	// sweep is triggered by reads, so it must stay far cheaper than they are.
+	infoSweepInterval = time.Minute
 	// MaxMirrorBytes bounds both maps together, so a station cannot spend
 	// the whole budget on hazards and then also pile up info entries.
 	MaxMirrorBytes = 40 << 20
@@ -194,6 +206,14 @@ type Counters struct {
 	// old size is subtracted before the new one is charged, so a
 	// replacement that grows cannot slip past the budget.
 	BytesReplaced int64
+	// RemovedInfoDeleted counts informational entries dropped because the
+	// broker deleted the retained topic (zero-length payload),
+	// RemovedInfoStale those dropped for not being refreshed within
+	// InfoRetention and RemovedActiveStale the expired hazards pruned from
+	// the mirror.
+	RemovedInfoDeleted int64
+	RemovedInfoStale   int64
+	RemovedActiveStale int64
 }
 
 // Snapshot is an immutable copy of the mirrored state for rendering.
@@ -225,6 +245,10 @@ type State struct {
 	// output key it on this number, so a cache can never serve a stale copy
 	// after the mirror changed.
 	version uint64
+
+	// lastSweep holds the unix nanoseconds of the last stale-entry sweep; it
+	// is read without the lock on the hot read paths.
+	lastSweep atomic.Int64
 }
 
 // New returns an empty mirror store.
@@ -300,8 +324,67 @@ func (s *State) DeleteActive(receiverID, topic string) {
 	s.mu.Unlock()
 }
 
+// DeleteInfo drops an informational entry after a zero-length retained
+// payload (per receiver namespace) and releases its bytes, so the topic stops
+// occupying the entry and byte limits the moment the broker deletes it.
+// Reports whether an entry was actually removed.
+func (s *State) DeleteInfo(receiverID, topic string) bool {
+	s.mu.Lock()
+	key := entryKey(receiverID, topic)
+	old, ok := s.infoByKey[key]
+	if ok {
+		s.infoBytes -= infoSize(old)
+		delete(s.infoByKey, key)
+		s.counters.RemovedInfoDeleted++
+		s.version++
+	}
+	s.mu.Unlock()
+	return ok
+}
+
+// infoKindIsMeasurement reports whether kind carries a measurement that its
+// producer refreshes continuously (see InfoRetention).
+func infoKindIsMeasurement(kind string) bool {
+	switch kind {
+	case "aircraft", "air_quality", "weather":
+		return true
+	}
+	return false
+}
+
+// sweepStale drops measurement entries nobody refreshed within InfoRetention.
+// It is called from the read paths (cheap: one atomic load) and from the
+// ingest path; the interval keeps a sweep from running more than once a
+// minute, so a reconnecting broker with a full retained tree cannot turn reads
+// into repeated full-map walks.
+func (s *State) sweepStale() {
+	now := time.Now()
+	if now.UnixNano()-s.lastSweep.Load() < int64(infoSweepInterval) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.UnixNano()-s.lastSweep.Load() < int64(infoSweepInterval) {
+		return
+	}
+	s.lastSweep.Store(now.UnixNano())
+	for key, e := range s.infoByKey {
+		if !infoKindIsMeasurement(e.Kind) {
+			continue
+		}
+		if e.ReceivedAt.IsZero() || now.Sub(e.ReceivedAt) <= InfoRetention {
+			continue
+		}
+		s.infoBytes -= infoSize(e)
+		delete(s.infoByKey, key)
+		s.counters.RemovedInfoStale++
+		s.version++
+	}
+}
+
 // AddOrUpdateInfo stores an informational entry keyed by receiver + topic.
 func (s *State) AddOrUpdateInfo(receiverID, topic string, e InfoEntry) error {
+	s.sweepStale()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := entryKey(receiverID, topic)
@@ -437,6 +520,7 @@ func (s *State) Hazards() []Hazard {
 // Weather returns the informational entries carrying a decoded weather
 // snapshot, newest generated first.
 func (s *State) Weather() []InfoEntry {
+	s.sweepStale()
 	s.mu.RLock()
 	out := make([]InfoEntry, 0, len(s.infoByKey))
 	for _, e := range s.infoByKey {
@@ -465,6 +549,7 @@ func (s *State) Info() []InfoEntry {
 // "air_quality", "weather", ...; "" means every kind), newest received first.
 // A public endpoint that needs one kind must not pay for the others.
 func (s *State) InfoKind(kind string) []InfoEntry {
+	s.sweepStale()
 	s.mu.RLock()
 	out := make([]InfoEntry, 0, len(s.infoByKey))
 	for _, e := range s.infoByKey {
@@ -506,6 +591,7 @@ func (s *State) pruneExpired() {
 		if h.Status == "active" && h.ExpiresAt != nil && !h.ExpiresAt.After(now) {
 			s.activeBytes -= hazardSize(h)
 			delete(s.activeByKey, key)
+			s.counters.RemovedActiveStale++
 			s.version++
 		}
 	}

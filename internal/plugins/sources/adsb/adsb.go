@@ -172,6 +172,23 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 // Name returns the plugin type name.
 func (s *Source) Name() string { return Type }
 
+// transientRetryPause separates the single inline retry from the failed
+// attempt, so a stalled handshake is not repeated into the same stall.
+const transientRetryPause = 2 * time.Second
+
+// sleepFor waits for d unless ctx is cancelled first; false means the context
+// ended and the caller must stop.
+func sleepFor(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // refusalDelay is how long to wait before the next poll after a refusal: the
 // poll interval doubled once per consecutive 429 (bounded by
 // maxRefusalBackoff), never shorter than the provider's Retry-After, and never
@@ -269,6 +286,17 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 // interest and publishes the canonical snapshot.
 func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) (int, error) {
 	targets, _, err := s.client.Fetch(ctx, s.centerLat, s.centerLon, s.cfg.RadiusKM)
+	if transientTransportError(err) {
+		// One retry inside the same poll: a stalled TLS handshake or a reset
+		// connection is a network blip, and waiting a whole poll interval
+		// reported the source as degraded for five minutes over a request
+		// the next attempt answered in under 200 ms.
+		slog.Debug("adsb transport error, retrying once", "provider", s.cfg.Provider, "error", err)
+		if !sleepFor(ctx, transientRetryPause) {
+			return 0, err
+		}
+		targets, _, err = s.client.Fetch(ctx, s.centerLat, s.centerLon, s.cfg.RadiusKM)
+	}
 	if err != nil {
 		return 0, err
 	}

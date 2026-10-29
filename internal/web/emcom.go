@@ -428,7 +428,7 @@ func (s *Server) emcomNetworks() []emcomNetwork {
 	}
 	best := make(map[string]emcomNetwork, 4)
 	times := make(map[string]time.Time, 4)
-	for _, e := range s.st.Snapshot().Info {
+	for _, e := range s.st.InfoKind(emcomKind) {
 		if e.Kind != emcomKind || len(e.Payload) == 0 {
 			continue
 		}
@@ -489,7 +489,7 @@ func (s *Server) emcomNetworkByID(id int64) (emcomNetwork, bool) {
 // emcomHazardInMirror reports whether the network currently has an active
 // hazard document in the mirror.
 func (s *Server) emcomHazardInMirror(slug string) bool {
-	for _, h := range s.st.Snapshot().Hazards {
+	for _, h := range s.st.Hazards() {
 		if h.Source == emcomSource && h.EventKey == emcomEventKey(slug) {
 			return true
 		}
@@ -651,7 +651,7 @@ func (s *Server) SyncBrokerState() {
 			}
 		}
 	} else {
-		for _, h := range s.st.Snapshot().Hazards {
+		for _, h := range s.st.Hazards() {
 			if h.Source != composeSource {
 				continue
 			}

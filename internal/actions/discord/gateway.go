@@ -256,6 +256,12 @@ func (l *dmListener) run(ctx context.Context) {
 	}
 	var session gatewaySession
 	backoff := gatewayReconnectMin
+	// drops counts the abnormal endings of one outage episode: a link that
+	// keeps dying within dmStableSession of the previous reconnect is
+	// flapping and gets a warning, while a session that ran for hours and
+	// then lost its TCP connection is reported once at INFO — it heals in
+	// about a second and needs no operator action.
+	drops := 0
 	for ctx.Err() == nil {
 		start := l.now()
 		err := l.connect(ctx, &session)
@@ -266,12 +272,13 @@ func (l *dmListener) run(ctx context.Context) {
 			l.logger.Error("discord: direct-message commands stopped", "error", err)
 			return
 		}
-		if l.now().Sub(start) > time.Minute {
+		uptime := l.now().Sub(start)
+		if uptime > time.Minute {
 			// The session worked for a while: this is a fresh outage, not
 			// a broken configuration, so start the backoff from scratch.
 			backoff = gatewayReconnectMin
 		}
-		l.logSessionEnd(err, backoff)
+		l.logSessionEnd(err, backoff, uptime, &drops)
 		select {
 		case <-ctx.Done():
 			return
@@ -281,16 +288,39 @@ func (l *dmListener) run(ctx context.Context) {
 	}
 }
 
+// dmStableSession is how long a direct-message session must last for its end
+// to count as one network blip rather than a flapping link. Production saw 13
+// abnormal closures (1006) in two and a half days, every one of them after
+// hours of a working session and followed by a reconnect within a second.
+const dmStableSession = 10 * time.Minute
+
 // logSessionEnd reports why the session ended. Discord rotates gateway
 // sessions routinely and says so with op 7 — that is an expected reconnect,
 // logged at INFO, not an outage. Warning about it put ~7 false alarms a day
 // next to the real ones.
-func (l *dmListener) logSessionEnd(err error, backoff time.Duration) {
+func (l *dmListener) logSessionEnd(err error, backoff, uptime time.Duration, drops *int) {
 	if errors.Is(err, errGatewayReconnect) {
+		*drops = 0
 		l.logger.Info("discord: gateway asked for a reconnect", "retry_in", backoff.String())
 		return
 	}
-	l.logger.Warn("discord: direct-message listener disconnected", "error", err, "retry_in", backoff.String())
+	if uptime >= dmStableSession {
+		// A long-lived session that lost its connection: the station keeps
+		// answering after one reconnect attempt, so this is an event to
+		// note, not an alarm.
+		*drops = 0
+		l.logger.Info("discord: direct-message session dropped, reconnecting",
+			"error", err, "session_uptime", uptime.Round(time.Second).String(), "retry_in", backoff.String())
+		return
+	}
+	*drops++
+	if *drops == 1 {
+		l.logger.Warn("discord: direct-message listener disconnected",
+			"error", err, "session_uptime", uptime.Round(time.Second).String(), "retry_in", backoff.String())
+		return
+	}
+	l.logger.Debug("discord: direct-message listener still dropping",
+		"error", err, "drops", *drops, "retry_in", backoff.String())
 }
 
 // waitForIntent blocks until the privileged Message Content intent is

@@ -38,6 +38,14 @@ A 429 is honored, and there are three sources of the wait, longest wins:
 Without the last two the station poked a blocked provider at its normal
 cadence: one production outage collected 77 pointless requests over 6 hours.
 
+A transport failure (stalled TLS handshake, reset connection, DNS hiccup) is
+retried **once, two seconds later, inside the same poll**: those are network
+blips, and waiting a full poll interval reported the source as degraded for
+five minutes over a request the retry answered in under 200 ms. A refusal is
+never retried — the quota is spent, so a second request only spends another.
+A non-200 answer quotes up to 200 bytes of the response body in the error, so
+`400` is diagnosable from the log alone.
+
 ## Area scope
 
 The aircraft list covers the same "position + radius" as the rest of the

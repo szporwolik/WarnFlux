@@ -599,7 +599,7 @@ func (s *Server) collectHazards(nets []emcomNetwork) []state.Hazard {
 		add(emcomHazard(net, now, s.SystemLanguage()))
 	}
 
-	for _, h := range s.st.Snapshot().Hazards {
+	for _, h := range s.st.Hazards() {
 		add(h)
 	}
 	return out
@@ -732,6 +732,11 @@ type weatherAPIView struct {
 // station in range, plus the multi-day forecasts held in the retained
 // MQTT info topics.
 func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
+	s.servePublicLayer(w, s.weatherLayer, s.weatherRevision(), s.buildWeatherLayer)
+}
+
+// buildWeatherLayer renders the layer; the shared cache decides when it runs.
+func (s *Server) buildWeatherLayer() ([]byte, error) {
 	view := weatherAPIView{
 		Reports:   []weatherReportView{},
 		Forecasts: []weatherForecastView{},
@@ -806,7 +811,7 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 	// Internet providers: the dashboard state mirrors the retained
 	// <prefix>/info/<source>/<producer>/<key>/weather topics.
 	seenForecasts := make(map[string]bool)
-	for _, e := range s.st.Snapshot().Weather {
+	for _, e := range s.st.Weather() {
 		ww := e.Weather
 		if ww == nil {
 			continue
@@ -866,11 +871,7 @@ func (s *Server) handleWeather(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(view.Reports, func(i, j int) bool { return view.Reports[i].Name < view.Reports[j].Name })
 	sort.Slice(view.Forecasts, func(i, j int) bool { return view.Forecasts[i].Name < view.Forecasts[j].Name })
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(w).Encode(view); err != nil {
-		s.logger.Warn("web: encode weather failed", "error", err)
-	}
+	return json.Marshal(view)
 }
 
 // aprsWeatherCondition maps an APRS weather observation to the canonical
@@ -915,6 +916,11 @@ type aircraftView struct {
 // <prefix>/info/adsb/<producer>/area/aircraft snapshots, merged across
 // producers with the newest observation per aircraft winning.
 func (s *Server) handleAircraft(w http.ResponseWriter, r *http.Request) {
+	s.servePublicLayer(w, s.aircraftLayer, s.st.Version(), s.buildAircraftLayer)
+}
+
+// buildAircraftLayer renders the layer; the shared cache decides when it runs.
+func (s *Server) buildAircraftLayer() ([]byte, error) {
 	type wireSnap struct {
 		Type          string         `json:"type"`
 		SchemaVersion int            `json:"schema_version"`
@@ -924,8 +930,8 @@ func (s *Server) handleAircraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snaps := make([]wireSnap, 0, 2)
-	for _, e := range s.st.Snapshot().Info {
-		if e.Kind != "aircraft" || len(e.Payload) == 0 {
+	for _, e := range s.st.InfoKind("aircraft") {
+		if len(e.Payload) == 0 {
 			continue
 		}
 		var ws wireSnap
@@ -968,9 +974,5 @@ func (s *Server) handleAircraft(w http.ResponseWriter, r *http.Request) {
 		return a.Icao24 < b.Icao24
 	})
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(w).Encode(view); err != nil {
-		s.logger.Warn("web: encode aircraft failed", "error", err)
-	}
+	return json.Marshal(view)
 }

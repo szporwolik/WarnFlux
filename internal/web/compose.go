@@ -1022,7 +1022,7 @@ func (s *Server) composeHazard(eventKey string) (state.Hazard, bool) {
 		// mirror, which also covers communications issued by other
 		// instances.
 	}
-	for _, h := range s.st.Snapshot().Hazards {
+	for _, h := range s.st.Hazards() {
 		if h.Source == composeSource && h.EventKey == eventKey {
 			return h, true
 		}
@@ -1055,7 +1055,7 @@ func (s *Server) composeItems() []composeItem {
 				}
 				items = append(items, composeItemFrom(h, row.Status))
 			}
-			for _, h := range s.st.Snapshot().Hazards {
+			for _, h := range s.st.Hazards() {
 				if h.Source != composeSource || seen[h.EventKey] {
 					continue
 				}
@@ -1066,7 +1066,7 @@ func (s *Server) composeItems() []composeItem {
 		}
 	}
 	// Mirror-only installations: the retained state is the list.
-	hazards := s.st.Snapshot().Hazards
+	hazards := s.st.Hazards()
 	items := make([]composeItem, 0, len(hazards))
 	for _, h := range hazards {
 		if h.Source != composeSource {

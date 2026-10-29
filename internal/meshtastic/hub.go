@@ -800,6 +800,7 @@ func (a *clientAdapter) SendToRadio(msg *pb.ToRadio) error { return a.t.SendToRa
 
 // serialDial opens one serial device transport (the seam for tests).
 var serialDial = func(ctx context.Context, cfg serial.Config) (transportConn, error) {
+	cfg.TransportConfig = transportConfig(slog.Default())
 	t, err := serial.Connect(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -810,7 +811,7 @@ var serialDial = func(ctx context.Context, cfg serial.Config) (transportConn, er
 // tcpDial opens one TCP transport to the node's WiFi API (the seam for
 // tests).
 var tcpDial = func(ctx context.Context, address string) (transportConn, error) {
-	t, err := tcp.Connect(ctx, tcp.Config{Address: address})
+	t, err := tcp.Connect(ctx, tcp.Config{Address: address, TransportConfig: transportConfig(slog.Default())})
 	if err != nil {
 		return nil, err
 	}

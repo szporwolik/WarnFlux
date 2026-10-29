@@ -14,14 +14,39 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Bounds protect the maps against pathological broker input. They are
-// generous: normal operation never reaches them.
+// Bounds protect the maps against pathological broker input. The entry COUNT
+// alone is not a memory bound: an info payload may be 1 MiB (the receiver's
+// frame limit), so ten thousand of them is ~9.8 GiB of raw payload — more than
+// a small station has in total. The mirror therefore carries a byte budget as
+// well, split per data kind and capped as a whole.
 const (
 	MaxActiveHazards = 10_000
 	MaxInfoEntries   = 10_000
+
+	// MaxActiveBytes bounds the memory the active-hazard mirror may hold:
+	// descriptions, areas and coordinates of the current hazards.
+	MaxActiveBytes = 16 << 20
+	// MaxInfoBytes bounds the informational mirror (weather snapshots,
+	// aircraft feeds, ...), the kind that carries raw payloads.
+	MaxInfoBytes = 32 << 20
+	// InfoRetention is how long a MEASUREMENT entry may sit in the mirror
+	// without being refreshed. Producers of these kinds republish every poll
+	// cycle (minutes), so an old entry means the producer is gone: keeping it
+	// would hold budget and keep a dead station on the map. Configuration-like
+	// documents (emcom networks, meshtastic node lists) are republished only
+	// on change and therefore never expire on age — they go away when the
+	// broker deletes their topic (see DeleteInfo).
+	InfoRetention = 6 * time.Hour
+	// infoSweepInterval bounds how often the stale-entry sweep may run: the
+	// sweep is triggered by reads, so it must stay far cheaper than they are.
+	infoSweepInterval = time.Minute
+	// MaxMirrorBytes bounds both maps together, so a station cannot spend
+	// the whole budget on hazards and then also pile up info entries.
+	MaxMirrorBytes = 40 << 20
 )
 
 // SeverityRank orders severities for dashboard sorting. Lower is more severe.
@@ -168,6 +193,27 @@ func (rs RouterStatus) RouterHealth() string {
 type Counters struct {
 	DroppedActive int64
 	DroppedInfo   int64
+	// DroppedActiveBytes / DroppedInfoBytes count the entries refused
+	// because the byte budget for that kind (or the shared one) was
+	// exhausted: the operator's signal that the broker publishes more
+	// state than this station can mirror.
+	DroppedActiveBytes int64
+	DroppedInfoBytes   int64
+	// ActiveBytes / InfoBytes are the bytes currently held by each mirror.
+	ActiveBytes int64
+	InfoBytes   int64
+	// BytesReplaced counts updates that replaced an existing entry: the
+	// old size is subtracted before the new one is charged, so a
+	// replacement that grows cannot slip past the budget.
+	BytesReplaced int64
+	// RemovedInfoDeleted counts informational entries dropped because the
+	// broker deleted the retained topic (zero-length payload),
+	// RemovedInfoStale those dropped for not being refreshed within
+	// InfoRetention and RemovedActiveStale the expired hazards pruned from
+	// the mirror.
+	RemovedInfoDeleted int64
+	RemovedInfoStale   int64
+	RemovedActiveStale int64
 }
 
 // Snapshot is an immutable copy of the mirrored state for rendering.
@@ -189,7 +235,20 @@ type State struct {
 	infoByKey   map[string]InfoEntry
 	router      map[string]RouterStatus
 
+	// activeBytes / infoBytes track the accounted size of the two maps.
+	activeBytes int
+	infoBytes   int
+
 	counters Counters
+
+	// version counts accepted mutations. Readers that cache their rendered
+	// output key it on this number, so a cache can never serve a stale copy
+	// after the mirror changed.
+	version uint64
+
+	// lastSweep holds the unix nanoseconds of the last stale-entry sweep; it
+	// is read without the lock on the hot read paths.
+	lastSweep atomic.Int64
 }
 
 // New returns an empty mirror store.
@@ -200,6 +259,15 @@ func New() *State {
 		router:      make(map[string]RouterStatus),
 	}
 }
+
+// Accounted overheads per entry: the struct itself plus the map slot, so a
+// flood of empty entries still costs what it really costs.
+const (
+	activeEntryOverhead  = 256
+	infoEntryOverhead    = 192
+	areaOverhead         = 24
+	weatherEntryOverhead = 2048
+)
 
 // entryKey namespaces a topic by receiver so two brokers publishing the
 // same topic cannot collide.
@@ -214,13 +282,32 @@ func (s *State) AddOrUpdateActive(receiverID, topic string, h Hazard) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := entryKey(receiverID, topic)
-	if _, exists := s.activeByKey[key]; !exists && len(s.activeByKey) >= MaxActiveHazards {
+	old, exists := s.activeByKey[key]
+	if !exists && len(s.activeByKey) >= MaxActiveHazards {
 		s.counters.DroppedActive++
 		return fmt.Errorf("state: active hazard limit %d reached, rejecting %s", MaxActiveHazards, topic)
 	}
 	h.ReceiverID = receiverID
 	h.Topic = topic
+	// The stored value must not alias the producer's slices: readers share
+	// what the mirror holds (see Hazards), so the copy happens once here
+	// instead of once per request.
+	h.Areas = append([]string(nil), h.Areas...)
+	size := hazardSize(h)
+	// The replaced entry's size is released before the new one is charged:
+	// a growing update must fit the budget like a new entry does.
+	prev := 0
+	if exists {
+		prev = hazardSize(old)
+		s.counters.BytesReplaced++
+	}
+	if err := s.checkBytes(activeKind, size-prev); err != nil {
+		s.counters.DroppedActiveBytes++
+		return fmt.Errorf("state: active hazard rejected for %s: %w", topic, err)
+	}
+	s.activeBytes += size - prev
 	s.activeByKey[key] = h
+	s.version++
 	return nil
 }
 
@@ -228,63 +315,294 @@ func (s *State) AddOrUpdateActive(receiverID, topic string, h Hazard) error {
 // payload (per receiver namespace).
 func (s *State) DeleteActive(receiverID, topic string) {
 	s.mu.Lock()
-	delete(s.activeByKey, entryKey(receiverID, topic))
+	key := entryKey(receiverID, topic)
+	if old, ok := s.activeByKey[key]; ok {
+		s.activeBytes -= hazardSize(old)
+		delete(s.activeByKey, key)
+		s.version++
+	}
 	s.mu.Unlock()
+}
+
+// DeleteInfo drops an informational entry after a zero-length retained
+// payload (per receiver namespace) and releases its bytes, so the topic stops
+// occupying the entry and byte limits the moment the broker deletes it.
+// Reports whether an entry was actually removed.
+func (s *State) DeleteInfo(receiverID, topic string) bool {
+	s.mu.Lock()
+	key := entryKey(receiverID, topic)
+	old, ok := s.infoByKey[key]
+	if ok {
+		s.infoBytes -= infoSize(old)
+		delete(s.infoByKey, key)
+		s.counters.RemovedInfoDeleted++
+		s.version++
+	}
+	s.mu.Unlock()
+	return ok
+}
+
+// infoKindIsMeasurement reports whether kind carries a measurement that its
+// producer refreshes continuously (see InfoRetention).
+func infoKindIsMeasurement(kind string) bool {
+	switch kind {
+	case "aircraft", "air_quality", "weather":
+		return true
+	}
+	return false
+}
+
+// sweepStale drops measurement entries nobody refreshed within InfoRetention.
+// It is called from the read paths (cheap: one atomic load) and from the
+// ingest path; the interval keeps a sweep from running more than once a
+// minute, so a reconnecting broker with a full retained tree cannot turn reads
+// into repeated full-map walks.
+func (s *State) sweepStale() {
+	now := time.Now()
+	if now.UnixNano()-s.lastSweep.Load() < int64(infoSweepInterval) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.UnixNano()-s.lastSweep.Load() < int64(infoSweepInterval) {
+		return
+	}
+	s.lastSweep.Store(now.UnixNano())
+	for key, e := range s.infoByKey {
+		if !infoKindIsMeasurement(e.Kind) {
+			continue
+		}
+		if e.ReceivedAt.IsZero() || now.Sub(e.ReceivedAt) <= InfoRetention {
+			continue
+		}
+		s.infoBytes -= infoSize(e)
+		delete(s.infoByKey, key)
+		s.counters.RemovedInfoStale++
+		s.version++
+	}
 }
 
 // AddOrUpdateInfo stores an informational entry keyed by receiver + topic.
 func (s *State) AddOrUpdateInfo(receiverID, topic string, e InfoEntry) error {
+	s.sweepStale()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := entryKey(receiverID, topic)
-	if _, exists := s.infoByKey[key]; !exists && len(s.infoByKey) >= MaxInfoEntries {
+	old, exists := s.infoByKey[key]
+	if !exists && len(s.infoByKey) >= MaxInfoEntries {
 		s.counters.DroppedInfo++
 		return fmt.Errorf("state: info entry limit %d reached, rejecting %s", MaxInfoEntries, topic)
 	}
 	e.ReceiverID = receiverID
 	e.Topic = topic
+	// Same as AddOrUpdateActive: snapshot readers share the stored payload,
+	// so it is detached from the receiver's buffer once, on the way in.
+	e.Payload = append(json.RawMessage(nil), e.Payload...)
+	size := infoSize(e)
+	prev := 0
+	if exists {
+		prev = infoSize(old)
+		s.counters.BytesReplaced++
+	}
+	if err := s.checkBytes(infoKind, size-prev); err != nil {
+		s.counters.DroppedInfoBytes++
+		return fmt.Errorf("state: info entry rejected for %s: %w", topic, err)
+	}
+	s.infoBytes += size - prev
 	s.infoByKey[key] = e
+	s.version++
 	return nil
+}
+
+// mirrorKind names one of the two mirrored families for the byte budget.
+type mirrorKind int
+
+const (
+	activeKind mirrorKind = iota
+	infoKind
+)
+
+// checkBytes reports whether delta more bytes fit the kind's budget and the
+// shared one. delta may be negative (a shrinking replacement), which always
+// fits.
+func (s *State) checkBytes(kind mirrorKind, delta int) error {
+	if delta <= 0 {
+		return nil
+	}
+	kindBytes, kindLimit := s.activeBytes, MaxActiveBytes
+	kindName := "active"
+	if kind == infoKind {
+		kindBytes, kindLimit = s.infoBytes, MaxInfoBytes
+		kindName = "info"
+	}
+	if kindBytes+delta > kindLimit {
+		return fmt.Errorf("%s mirror budget %d bytes exhausted (%d used, %d more needed)",
+			kindName, kindLimit, kindBytes, delta)
+	}
+	if s.activeBytes+s.infoBytes+delta > MaxMirrorBytes {
+		return fmt.Errorf("mirror budget %d bytes exhausted (%d active + %d info, %d more needed)",
+			MaxMirrorBytes, s.activeBytes, s.infoBytes, delta)
+	}
+	return nil
+}
+
+// hazardSize accounts the memory one active hazard occupies: its strings,
+// area list and the fixed struct overhead. Deliberately an estimate — the
+// budget only has to be the right order of magnitude.
+func hazardSize(h Hazard) int {
+	size := activeEntryOverhead
+	for _, f := range []string{
+		h.ReceiverID, h.Topic, h.EventKey, h.Source, h.SourceID, h.Category, h.Event,
+		h.Severity, h.Urgency, h.Certainty, h.Headline, h.Description, h.Instruction,
+		h.Status,
+	} {
+		size += len(f)
+	}
+	for _, a := range h.Areas {
+		size += len(a) + areaOverhead
+	}
+	return size
+}
+
+// infoSize accounts the memory one informational entry occupies. The raw
+// payload dominates: it is the 1 MiB-scale field the receiver accepts.
+func infoSize(e InfoEntry) int {
+	size := infoEntryOverhead + len(e.Payload)
+	for _, f := range []string{e.ReceiverID, e.Topic, e.Source, e.ProducerID, e.Key, e.Kind} {
+		size += len(f)
+	}
+	if e.Weather != nil {
+		size += weatherEntryOverhead
+	}
+	return size
 }
 
 // SetRouterStatus stores the latest valid router status of one receiver.
 func (s *State) SetRouterStatus(receiverID string, rs RouterStatus) {
 	s.mu.Lock()
 	s.router[receiverID] = rs
+	s.version++
 	s.mu.Unlock()
 }
 
-// Snapshot returns an immutable, sorted copy of the mirrored state.
-// Active hazards whose ExpiresAt has already passed are pruned from the
-// mirror first: a stale retained document on the broker (e.g. left behind
-// by an instance that went down before publishing the expiry) must never
-// leak into rendered views.
-func (s *State) Snapshot() Snapshot {
-	s.mu.Lock()
-	now := time.Now()
-	for key, h := range s.activeByKey {
-		if h.Status == "active" && h.ExpiresAt != nil && !h.ExpiresAt.After(now) {
-			delete(s.activeByKey, key)
+// withBytes copies the counters and fills the live byte totals.
+func withBytes(c Counters, active, info int) Counters {
+	c.ActiveBytes = int64(active)
+	c.InfoBytes = int64(info)
+	return c
+}
+
+// MirrorCounters reports the memory accounting of the mirror: what each kind
+// holds now and how much was refused for exceeding the budget.
+func (s *State) MirrorCounters() Counters {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return withBytes(s.counters, s.activeBytes, s.infoBytes)
+}
+
+// Hazards returns the active hazards, most severe first. Expired entries are
+// pruned first. The copy is SHALLOW on purpose: hazard strings and area slices
+// are never mutated after they are stored, so a reader can share them — copying
+// them per request is what made a public page allocate megabytes for data it
+// never looked at.
+func (s *State) Hazards() []Hazard {
+	s.pruneExpired()
+	s.mu.RLock()
+	out := make([]Hazard, 0, len(s.activeByKey))
+	for _, h := range s.activeByKey {
+		out = append(out, h)
+	}
+	s.mu.RUnlock()
+	sortHazards(out)
+	return out
+}
+
+// Weather returns the informational entries carrying a decoded weather
+// snapshot, newest generated first.
+func (s *State) Weather() []InfoEntry {
+	s.sweepStale()
+	s.mu.RLock()
+	out := make([]InfoEntry, 0, len(s.infoByKey))
+	for _, e := range s.infoByKey {
+		if e.Weather != nil {
+			out = append(out, e)
 		}
 	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i].Weather.GeneratedAt, out[j].Weather.GeneratedAt
+		if a.Equal(b) {
+			return out[i].ReceiverID+"\x00"+out[i].Topic < out[j].ReceiverID+"\x00"+out[j].Topic
+		}
+		return a.After(b)
+	})
+	return out
+}
 
-	snap := Snapshot{
-		ActiveCount: len(s.activeByKey),
-		InfoCount:   len(s.infoByKey),
-		Counters:    s.counters,
-		Router:      make(map[string]RouterStatus, len(s.router)),
-	}
-	for id, rs := range s.router {
-		snap.Router[id] = rs
-	}
+// Info returns every informational entry, newest received first. The payloads
+// are SHARED with the mirror, never copied: they are immutable once stored.
+func (s *State) Info() []InfoEntry {
+	return s.InfoKind("")
+}
 
-	snap.Hazards = make([]Hazard, 0, len(s.activeByKey))
+// InfoKind returns the informational entries of one kind ("aircraft",
+// "air_quality", "weather", ...; "" means every kind), newest received first.
+// A public endpoint that needs one kind must not pay for the others.
+func (s *State) InfoKind(kind string) []InfoEntry {
+	s.sweepStale()
+	s.mu.RLock()
+	out := make([]InfoEntry, 0, len(s.infoByKey))
+	for _, e := range s.infoByKey {
+		if kind != "" && e.Kind != kind {
+			continue
+		}
+		out = append(out, e)
+	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ReceivedAt.Equal(out[j].ReceivedAt) {
+			return out[i].ReceiverID+"\x00"+out[i].Topic < out[j].ReceiverID+"\x00"+out[j].Topic
+		}
+		return out[i].ReceivedAt.After(out[j].ReceivedAt)
+	})
+	return out
+}
+
+// pruneExpired drops active hazards whose ExpiresAt has passed: a stale
+// retained document on the broker (e.g. left behind by an instance that went
+// down before publishing the expiry) must never leak into rendered views. It
+// takes the write lock only when it has something to remove.
+func (s *State) pruneExpired() {
+	now := time.Now()
+	s.mu.RLock()
+	stale := false
 	for _, h := range s.activeByKey {
-		h.Areas = append([]string(nil), h.Areas...)
-		snap.Hazards = append(snap.Hazards, h)
+		if h.Status == "active" && h.ExpiresAt != nil && !h.ExpiresAt.After(now) {
+			stale = true
+			break
+		}
 	}
-	sort.Slice(snap.Hazards, func(i, j int) bool {
-		a, b := snap.Hazards[i], snap.Hazards[j]
+	s.mu.RUnlock()
+	if !stale {
+		return
+	}
+	s.mu.Lock()
+	for key, h := range s.activeByKey {
+		if h.Status == "active" && h.ExpiresAt != nil && !h.ExpiresAt.After(now) {
+			s.activeBytes -= hazardSize(h)
+			delete(s.activeByKey, key)
+			s.counters.RemovedActiveStale++
+			s.version++
+		}
+	}
+	s.mu.Unlock()
+}
+
+// sortHazards orders hazards by severity, then by the most meaningful
+// timestamp, then by identity.
+func sortHazards(out []Hazard) {
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
 		if ra, rb := SeverityRank(a.Severity), SeverityRank(b.Severity); ra != rb {
 			return ra < rb
 		}
@@ -293,36 +611,45 @@ func (s *State) Snapshot() Snapshot {
 		}
 		return a.ReceiverID+"\x00"+a.Topic < b.ReceiverID+"\x00"+b.Topic
 	})
+}
 
-	snap.Weather = make([]InfoEntry, 0, len(s.infoByKey))
-	for _, e := range s.infoByKey {
-		if e.Weather != nil {
-			snap.Weather = append(snap.Weather, e)
-		}
-	}
-	sort.Slice(snap.Weather, func(i, j int) bool {
-		a := snap.Weather[i].Weather.GeneratedAt
-		b := snap.Weather[j].Weather.GeneratedAt
-		if a.Equal(b) {
-			ka := snap.Weather[i].ReceiverID + "\x00" + snap.Weather[i].Topic
-			kb := snap.Weather[j].ReceiverID + "\x00" + snap.Weather[j].Topic
-			return ka < kb
-		}
-		return a.After(b)
-	})
+// Version reports the number of accepted mutations. It is the freshness token
+// for caches built from the mirror.
+func (s *State) Version() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.version
+}
 
-	// All informational entries (including weather) for the generic info
-	// consumers such as the aircraft layer; newest first.
-	snap.Info = make([]InfoEntry, 0, len(s.infoByKey))
-	for _, e := range s.infoByKey {
-		e.Payload = append(json.RawMessage(nil), e.Payload...)
-		snap.Info = append(snap.Info, e)
+// Snapshot returns an immutable, sorted copy of the mirrored state.
+// Active hazards whose ExpiresAt has already passed are pruned from the
+// mirror first: a stale retained document on the broker (e.g. left behind
+// by an instance that went down before publishing the expiry) must never
+// leak into rendered views.
+func (s *State) Snapshot() Snapshot {
+	snap := Snapshot{
+		Hazards: s.Hazards(),
+		Weather: s.Weather(),
+		Info:    s.Info(),
+		Router:  s.RouterStatuses(),
 	}
-	sort.Slice(snap.Info, func(i, j int) bool {
-		return snap.Info[i].ReceivedAt.After(snap.Info[j].ReceivedAt)
-	})
-	s.mu.Unlock()
+	s.mu.RLock()
+	snap.ActiveCount = len(s.activeByKey)
+	snap.InfoCount = len(s.infoByKey)
+	snap.Counters = withBytes(s.counters, s.activeBytes, s.infoBytes)
+	s.mu.RUnlock()
 	return snap
+}
+
+// RouterStatuses returns the last valid status of every receiver.
+func (s *State) RouterStatuses() map[string]RouterStatus {
+	s.mu.RLock()
+	out := make(map[string]RouterStatus, len(s.router))
+	for id, rs := range s.router {
+		out[id] = rs
+	}
+	s.mu.RUnlock()
+	return out
 }
 
 // hazardSortKey picks the most meaningful timestamp for ordering within a

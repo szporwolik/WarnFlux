@@ -278,6 +278,33 @@ union-merged, case-insensitively, keeping the first occurrence and the order)
 and are counted as matched. A group below its own threshold never contributes,
 and an action whose capability cannot be read keeps the per-group behaviour.
 
+## Message wording on narrow channels
+
+APRS gives an alert 67 characters, SMS one GSM-7 segment, Meshtastic a couple
+of hundred: none of them fits a provider description. The rule every channel
+follows is *what happened beats where beats the ID*:
+
+- the **headline** carries the message when it adds information;
+- when the headline merely repeats the event label — GDDKiA, RSO and some IMGW
+  records publish the same string in both fields — the **first paragraph of the
+  description** takes its place (`internal/alerttext`). Without this rule a
+  production frame read `SOSNA SEV: Utrudnienia na A4 ID:WF-1023233601` for a
+  hazard whose description said "Jerzmanowice ul. Jurajska … wypadek autobusu
+  MPK … DK 94 zablokowana (314km)": the title twice and nothing else;
+- the **area list and coordinates** are used only when no description exists
+  (SMS keeps at most two areas: they are machine slugs such as
+  `corridor:a4-balice-tarnow`, not something a person reads);
+- the **message ID** always rides along and its room is reserved before the
+  text is assembled, so the tail of a description is cut before the ID is lost;
+- APRS drops the prefix and then the severity before it shortens the body — the
+  body is the part that says what happened.
+
+A provider description is condensed by `alerttext.Summary`: the note block after
+a blank line is dropped ("IMGW probability: 70%.") and the rest is cut at a word
+boundary. Punctuation is never used to end it — Polish descriptions are full of
+abbreviations ("ul.", "pow."), and cutting at the first period left
+"Jerzmanowice ul" as the whole message.
+
 ## Mandatory rules
 
 - Respect context cancellation; do not block past it.

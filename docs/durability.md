@@ -155,6 +155,24 @@ jobs exist durably and the row is gone, or neither happened.
   topic; a key that is active again cleans its restored delete (the
   active document wins).
 
+**Retained-state mirror never keeps a topic the broker dropped:**
+
+- A **zero-length retained payload deletes** the mirrored entry at once: the
+  bytes and the entry slot are released in the same step
+  (`warnflux_state_mirror_removed_total{kind="info",reason="topic-deleted"}`),
+  so a deleted weather document or aircraft snapshot cannot hold the byte
+  budget or reappear in a view.
+- **Measurements age out**: entries of the kinds a producer republishes every
+  poll cycle (`aircraft`, `air_quality`, `weather`) are dropped after 6 hours
+  without a refresh (`reason="stale"`) — an old reading means the producer is
+  gone. The sweep is triggered by the read paths but runs at most once a
+  minute.
+- **Configuration-like documents never expire on age** (EMCOM networks the
+  panel republishes on change, the Meshtastic node list): they are removed only
+  when the broker deletes their topic.
+- Expired active hazards pruned from the mirror are visible as
+  `warnflux_state_mirror_removed_total{kind="active",reason="stale"}`.
+
 **Receiver recovery (the /events stream survives outages):**
 
 - Receivers use a **persistent MQTT session** by default
@@ -262,7 +280,24 @@ of truth:
 
 A power loss between "job queued" and "transmitted" therefore retries on
 restart, and an execution that burns all attempts is retried by the next
-replay of the transition. Channel floods without delivery
+replay of the transition.
+
+**Validity policy (a queued job that provably cannot be sent is ended):**
+retention never ages out pending work, so the decision "this job is
+pointless" must not live only in the worker — it does not run in offline
+mode or for an action removed from the configuration. The ledger
+maintenance (hourly, independent of the workers) therefore ends two kinds
+of job as terminal `expired` with a reason on the row
+(`last_error`) and an audit entry, and the ordinary retention then
+removes them:
+
+- **event expired** — the row carries the event's authoritative expiry
+  (`expires_at_ms`, backfilled from the stored request payload on
+  upgrade); once it has passed the job can never pass the staleness gate.
+- **superseded** — the same group and action hold a newer queued job for
+  the same event key, so the older one would deliver stale content (or an
+  alert that was already cancelled). The newest version stays queued, so
+  no alarm is lost. Channel floods without delivery
 acknowledgements (e.g. Meshtastic group messages) stop at `accepted` — the
 device took the message, the protocol has no stronger signal.
 

@@ -33,10 +33,12 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/aprspresence"
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/digest"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/gsm"
+	"github.com/szporwolik/WarnFlux/internal/health"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
@@ -186,17 +188,17 @@ func formatUptime(d time.Duration) string {
 }
 
 // hazardsFromMirror projects the dispatch mirror's active hazards,
-// most severe first (Snapshot sorts them). minSeverity keeps only that
+// most severe first (Hazards sorts them). minSeverity keeps only that
 // level and above ("" = the full list).
 func hazardsFromMirror(mirror *state.State, minSeverity string) []meshtastic.ActiveHazard {
-	snap := mirror.Snapshot()
+	hazards := mirror.Hazards()
 	filter := minSeverity != ""
 	minRank := 0
 	if filter {
 		minRank, _ = severity.Rank(minSeverity)
 	}
-	out := make([]meshtastic.ActiveHazard, 0, len(snap.Hazards))
-	for _, h := range snap.Hazards {
+	out := make([]meshtastic.ActiveHazard, 0, len(hazards))
+	for _, h := range hazards {
 		if filter {
 			if r, _ := severity.Rank(h.Severity); r < minRank {
 				continue
@@ -218,7 +220,7 @@ func hazardsFromMirror(mirror *state.State, minSeverity string) []meshtastic.Act
 func hazardSummaryFromMirror(mirror *state.State) meshtastic.HazardSummary {
 	min, _ := severity.Rank(severity.Severe)
 	var sum meshtastic.HazardSummary
-	for _, h := range mirror.Snapshot().Hazards {
+	for _, h := range mirror.Hazards() {
 		if r, _ := severity.Rank(h.Severity); r >= min {
 			sum.Severe++
 		} else {
@@ -296,7 +298,7 @@ func weatherForRadio(hub *aprs.Hub, mirror *state.State, now time.Time) weatherr
 		}
 	}
 	if mirror != nil {
-		for _, e := range mirror.Snapshot().Weather {
+		for _, e := range mirror.Weather() {
 			ww := e.Weather
 			if ww == nil {
 				continue
@@ -452,6 +454,89 @@ const (
 // -check-config: every strict YAML decoder and cross-validation runs
 // (plugins, actions, MQTT receivers, ingest endpoints, web server), but
 // nothing is started, no database is opened and no connection is made.
+// adminDigestMailTimeout bounds one status-mail send: a slow SMTP server must
+// not hold the digest goroutine forever.
+const adminDigestMailTimeout = 2 * time.Minute
+
+// startAdminDigest arms the daily system-status mail when the configuration
+// enables it. The mail rides the first enabled smtp action's configuration,
+// exactly like the password-reset flow; without one the feature stays off and
+// says why.
+func startAdminDigest(ctx context.Context, cfg *config.Config, store *sqlite.Store,
+	manager *plugin.Manager, version, commit, zoneName string, webSrv *web.Server, logger *slog.Logger) {
+	if !cfg.AdminDigest.Enabled {
+		return
+	}
+	var sc smtp.Config
+	ready := false
+	for _, a := range cfg.Actions {
+		if !a.Enabled || a.Type != smtp.Type || a.Config == nil {
+			continue
+		}
+		if err := a.Config.Decode(&sc); err != nil {
+			logger.Warn("admin digest: smtp action is undecodable, daily status mail disabled",
+				"action", a.ID, "error", err)
+			return
+		}
+		ready = true
+		break
+	}
+	if !ready {
+		logger.Warn("admin digest: no enabled smtp action, daily status mail disabled")
+		return
+	}
+
+	app := action.AppInfo{
+		Version:  version,
+		Header1:  cfg.Web.Header1,
+		Domain:   cfg.Web.Domain,
+		RepoURL:  appinfo.RepoURL,
+		Timezone: zoneName,
+	}
+	// The digest names the zone next to its timestamps the way the routed
+	// mails do, so it resolves the same display zone.
+	displayLoc, _ := action.DisplayZone(app)
+	lang := func() string {
+		if webSrv != nil {
+			return webSrv.SystemLanguage()
+		}
+		return ""
+	}
+	src := digest.Sources{
+		Store:    store,
+		Statuses: manager.Statuses,
+		// The daily verdict is the SAME assessment the dashboard card shows
+		// (plugins, receivers, actions, hardware, database, dispatch queue) —
+		// a station whose receiver is down but whose source plugins run must
+		// never be mailed as "OK".
+		Health: func() health.Inputs {
+			if webSrv == nil {
+				return health.Inputs{Missing: []string{"health"}}
+			}
+			return webSrv.HealthInputs()
+		},
+		Station:   cfg.Web.Header1,
+		Version:   version,
+		Commit:    commit,
+		StartedAt: processStart,
+		Lang:      lang,
+		Zone:      app.Timezone,
+		Loc:       displayLoc,
+		Mailer: func(ctx context.Context, to []string, subject, body string) error {
+			sendCtx, cancel := context.WithTimeout(ctx, adminDigestMailTimeout)
+			defer cancel()
+			return smtp.DirectNoticeTitled(sendCtx, sc, to, subject, "digest.mail_label", body, app, lang())
+		},
+	}
+	if len(cfg.AdminDigest.To) > 0 {
+		to := append([]string(nil), cfg.AdminDigest.To...)
+		src.Recipients = func(context.Context) ([]string, error) { return to, nil }
+	}
+	go digest.Run(ctx, src, cfg.AdminDigest.At)
+	logger.Info("admin digest scheduled",
+		"at", cfg.AdminDigest.At, "explicit_recipients", len(cfg.AdminDigest.To))
+}
+
 func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVersion string, met *metrics.Registry) error {
 	registry := plugin.NewRegistry()
 	hub, err := aprs.NewHub(aprs.HubConfig{
@@ -1332,6 +1417,12 @@ func run(configPath string, checkConfig bool) error {
 		go presence.Run(ctx)
 	}
 
+	// Daily admin status mail: one branded message a day describing what the
+	// station did in the last 24 hours and which services are healthy. It
+	// rides the first enabled smtp action's configuration, exactly like the
+	// password-reset mail, and is armed for its anchor time on every run.
+	startAdminDigest(ctx, cfg, store, manager, resolvedVersion, commit, zoneName, webSrv, logger)
+
 	// Durable HTTP-ingest broker sync: each endpoint's outbox worker
 	// publishes the accepted payloads whenever its broker connection is
 	// up (mask applied at publish time), so the endpoints accept locally
@@ -1457,10 +1548,13 @@ func run(configPath string, checkConfig bool) error {
 		manager.Run(ctx)
 	}()
 
-	// Durable action-fire ledger maintenance: COMPLETED delivery history
-	// older than the configured retention is pruned at startup and then
-	// hourly. Pending jobs (saved, running or a scheduled retry) never
-	// age out. A negative retention disables pruning entirely.
+	// Durable action-fire ledger maintenance: the validity policy ends
+	// queued jobs that provably cannot be sent any more (event expired, or
+	// superseded by a newer version of the same event) so they stop being
+	// pending even when no worker runs, and COMPLETED delivery history older
+	// than the configured retention is pruned — at startup and then hourly.
+	// Pending jobs that may still be sent (saved, running, a live retry)
+	// never age out. A negative retention disables only the pruning.
 	//
 	// The window and the low-disk threshold are live: the Config page
 	// tunes them and the loops read the current setting on every pass, so
@@ -1477,10 +1571,47 @@ func run(configPath string, checkConfig bool) error {
 		go func() {
 			defer wg.Done()
 			prune := func() {
+				now := time.Now()
+				// Validity policy, independent of the workers: a queued job
+				// whose event provably cannot be delivered any more (its
+				// authoritative expiry passed, or a newer version of the same
+				// event superseded it) is ended here and audited. Without
+				// this the decision lived only in the worker, which does not
+				// run in offline mode or for an action removed from the
+				// configuration — such a job stayed pending forever and the
+				// ordinary retention had to leave it alone.
+				if n, err := store.ExpireStaleDeliveries(ctx, now); err != nil {
+					logger.Warn("routing: queued delivery expiry failed", "error", err)
+				} else if n > 0 {
+					logger.Info("routing: queued deliveries ended (event expired)", "jobs", n)
+					if err := store.RecordAudit("system", "delivery-expiry",
+						fmt.Sprintf("%d queued notification jobs ended (event expired, validity policy)", n), now); err != nil {
+						logger.Warn("routing: delivery expiry audit failed", "error", err)
+					}
+				}
+				if n, err := store.TerminateSupersededDeliveries(ctx); err != nil {
+					logger.Warn("routing: superseded delivery cleanup failed", "error", err)
+				} else if n > 0 {
+					logger.Info("routing: queued deliveries ended (superseded)", "jobs", n)
+					if err := store.RecordAudit("system", "delivery-superseded",
+						fmt.Sprintf("%d queued notification jobs ended (a newer version of the same event superseded them)", n), now); err != nil {
+						logger.Warn("routing: superseded delivery audit failed", "error", err)
+					}
+				}
+				// Traffic aggregates outlive the message history they
+				// summarise (the daily report counts them, not the capped
+				// history rows): keep them for the reporting horizon only.
+				if n, err := store.PruneTrafficCounters(ctx, now.Add(-sqlite.TrafficCounterRetention)); err != nil {
+					logger.Warn("storage: traffic counter prune failed", "error", err)
+				} else if n > 0 {
+					logger.Debug("storage: traffic counter buckets pruned", "removed", n)
+				}
+				// Retention removes the completed history, including the
+				// jobs the validity policy just ended.
 				if d := time.Duration(notificationRetention.Load()); d <= 0 {
 					return
 				}
-				cutoff := time.Now().Add(-time.Duration(notificationRetention.Load()))
+				cutoff := now.Add(-time.Duration(notificationRetention.Load()))
 				n, err := store.PruneActionFires(cutoff)
 				if err != nil {
 					logger.Warn("routing: fire ledger prune failed", "error", err)

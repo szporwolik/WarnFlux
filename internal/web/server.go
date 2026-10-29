@@ -92,6 +92,11 @@ type Server struct {
 	// record that was raised again since (see emcom.go).
 	emcomRetireMu      sync.Mutex
 	emcomRetirePending map[string]int64
+	// airQualityLayer / aircraftLayer / weatherLayer share the rendered public
+	// map layers between pollers (see publiccache.go).
+	airQualityLayer *publicTTLBody
+	aircraftLayer   *publicTTLBody
+	weatherLayer    *publicTTLBody
 	// events backs the public archive (180-day history of communications).
 	// nil in minimal constructions (the archive tab then shows an empty
 	// state).
@@ -318,38 +323,41 @@ func New(cfg config.Web, st *state.State, receivers *mqttreceiver.Manager,
 	}
 
 	s := &Server{
-		cfg:            cfg,
-		st:             st,
-		receivers:      receivers,
-		pub:            pub,
-		broker:         newBrokerGate(pub, lifecycleLedger(users)),
-		router:         router,
-		actions:        actions,
-		aprs:           aprsHub,
-		meshtastic:     meshtasticHub,
-		gsm:            gsmHub,
-		ingress:        ingress,
-		users:          users,
-		events:         events,
-		aprsMsgs:       aprsMsgs,
-		meshtasticMsgs: meshtasticMsgs,
-		gsmMsgs:        gsmMsgs,
-		logger:         logger,
-		sessions:       newSessionStore(cfg.Auth.SecureCookie),
-		loginLimiter:   newLoginLimiter(),
-		trustedProxies: trusted,
-		logs:           logs,
-		traffic:        traffic,
-		auditLog:       NewAuditBuffer(DefaultAuditEntries),
-		trails:         trails,
-		metrics:        metricsReg,
-		sys:            sysinfo.New(),
-		version:        version,
-		commit:         commit,
-		startedAt:      time.Now(),
-		mux:            http.NewServeMux(),
-		ingest:         ingest,
-		massJobs:       newMassJobStore(),
+		cfg:             cfg,
+		st:              st,
+		receivers:       receivers,
+		pub:             pub,
+		broker:          newBrokerGate(pub, lifecycleLedger(users)),
+		router:          router,
+		actions:         actions,
+		aprs:            aprsHub,
+		meshtastic:      meshtasticHub,
+		gsm:             gsmHub,
+		ingress:         ingress,
+		users:           users,
+		events:          events,
+		aprsMsgs:        aprsMsgs,
+		meshtasticMsgs:  meshtasticMsgs,
+		gsmMsgs:         gsmMsgs,
+		logger:          logger,
+		sessions:        newSessionStore(cfg.Auth.SecureCookie),
+		loginLimiter:    newLoginLimiter(),
+		trustedProxies:  trusted,
+		logs:            logs,
+		traffic:         traffic,
+		auditLog:        NewAuditBuffer(DefaultAuditEntries),
+		trails:          trails,
+		airQualityLayer: newPublicTTLBody(),
+		aircraftLayer:   newPublicTTLBody(),
+		weatherLayer:    newPublicTTLBody(),
+		metrics:         metricsReg,
+		sys:             sysinfo.New(),
+		version:         version,
+		commit:          commit,
+		startedAt:       time.Now(),
+		mux:             http.NewServeMux(),
+		ingest:          ingest,
+		massJobs:        newMassJobStore(),
 	}
 	// Sessions are checked against the account's credential version on every
 	// use, so a login that was suspended between the password check and the

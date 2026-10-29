@@ -596,3 +596,97 @@ func TestBlockedQuotaIsNotPokedAtPollCadence(t *testing.T) {
 		t.Fatalf("refusal did not wait for the quota window:\n%s", logs.String())
 	}
 }
+
+// TestTransportErrorIsRetriedOnce proves a network blip does not cost a whole
+// poll interval: the first request has its connection killed (a reset, the
+// shape production sees as "TLS handshake timeout" or "connection reset"),
+// the retry two seconds later answers normally.
+func TestTransportErrorIsRetriedOnce(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		n := requests
+		mu.Unlock()
+		if n == 1 {
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ac":[{"hex":"49d418","lat":50.1,"lon":20.1,"seen":0.5}],"now":1790295311003,"total":1}`))
+	})
+
+	hub := testHub(t)
+	src, err := New(decodeConfig(t, "latitude: 50.02\nlongitude: 20.21\nradius_km: 45\nbase_url: "+strconvQuote(srv.URL)+"\n"), hub)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	n, err := src.(*Source).pollOnce(context.Background(), &fakeEmitter{})
+	if err != nil {
+		t.Fatalf("pollOnce: %v (a reset connection must be retried, not reported as an outage)", err)
+	}
+	if n != 1 {
+		t.Errorf("aircraft = %d, want 1", n)
+	}
+	mu.Lock()
+	got := requests
+	mu.Unlock()
+	if got != 2 {
+		t.Errorf("requests = %d, want 2 (one retry)", got)
+	}
+}
+
+// TestRefusalIsNotRetried pins the other half of the rule: a 429 means the
+// quota is spent, so retrying it inside the same poll only spends another
+// request from an empty window.
+func TestRefusalIsNotRetried(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.Header().Set("x-ratelimit-reset", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+
+	hub := testHub(t)
+	src, err := New(decodeConfig(t, "latitude: 50.02\nlongitude: 20.21\nradius_km: 45\nbase_url: "+strconvQuote(srv.URL)+"\n"), hub)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := src.(*Source).pollOnce(context.Background(), &fakeEmitter{}); err == nil {
+		t.Fatal("a 429 must surface as an error")
+	}
+	mu.Lock()
+	got := requests
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("requests = %d, want 1 (a refusal is never retried inline)", got)
+	}
+}
+
+// TestNonOKStatusQuotesTheBody keeps a 400 diagnosable: the provider explains
+// the refusal in the body, and the operator otherwise only sees a number.
+func TestNonOKStatusQuotesTheBody(t *testing.T) {
+	srv := apiServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"msg":"latitude out of range"}`))
+	})
+	c := NewClient(ProviderAdsbLol, srv.URL, time.Second)
+	_, _, err := c.Fetch(context.Background(), 50.02, 20.21, 45)
+	if err == nil {
+		t.Fatal("a 400 must surface as an error")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 400") || !strings.Contains(err.Error(), "latitude out of range") {
+		t.Errorf("error = %q, want the status and the body", err)
+	}
+}

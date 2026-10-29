@@ -602,12 +602,13 @@ func (e *Engine) handle(ctx context.Context, ev dispatch.Event) {
 				return
 			}
 			jobs = append(jobs, storage.DeliveryJob{
-				GroupID:  rule.GroupID,
-				ActionID: a.ID,
-				EventKey: ev.Hazard.Key,
-				DedupKey: fireDedupKey(ev),
-				Payload:  payload,
-				FiredAt:  time.Now(),
+				GroupID:   rule.GroupID,
+				ActionID:  a.ID,
+				EventKey:  ev.Hazard.Key,
+				DedupKey:  fireDedupKey(ev),
+				Payload:   payload,
+				FiredAt:   time.Now(),
+				ExpiresAt: eventExpiry(ev),
 			})
 			metas = append(metas, jobMeta{
 				groupID: rule.GroupID, ruleName: rule.Name, actionID: a.ID, req: req,
@@ -957,4 +958,14 @@ func fireDedupKey(ev dispatch.Event) string {
 		h.Hazard.EventKey, h.Hazard.Severity, h.Hazard.Urgency, h.Hazard.Certainty, h.Hazard.Headline)
 	sum := sha256.Sum256([]byte(b.String()))
 	return "h:" + hex.EncodeToString(sum[:16])
+}
+
+// eventExpiry returns the authoritative expiry of the event a job carries
+// (zero = none), recorded on the ledger row so the maintenance loop can end
+// the job without a worker (see storage.DeliveryJob.ExpiresAt).
+func eventExpiry(ev dispatch.Event) time.Time {
+	if ev.Hazard == nil || ev.Hazard.Hazard.ExpiresAt == nil {
+		return time.Time{}
+	}
+	return *ev.Hazard.Hazard.ExpiresAt
 }

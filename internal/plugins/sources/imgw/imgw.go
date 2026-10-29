@@ -14,6 +14,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/core"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/snapshotutil"
 )
 
 // Type is the plugin type name used in the YAML configuration.
@@ -65,6 +66,10 @@ type Source struct {
 	client *Client
 	// geo is the runtime-ready geographic policy (nil-safe when disabled).
 	geo *geography
+	// episodes collapses the failure streak of each feed into one warning.
+	// The feeds are polled sequentially in one goroutine, so the map needs
+	// no lock.
+	episodes map[string]*snapshotutil.Episode
 }
 
 // New decodes and validates the plugin-specific configuration.
@@ -184,6 +189,19 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 	}
 }
 
+// episode returns the failure tracker of one feed.
+func (s *Source) episode(feed string) *snapshotutil.Episode {
+	if s.episodes == nil {
+		s.episodes = make(map[string]*snapshotutil.Episode, 2)
+	}
+	e, ok := s.episodes[feed]
+	if !ok {
+		e = snapshotutil.NewEpisode("IMGW feed")
+		s.episodes[feed] = e
+	}
+	return e
+}
+
 // pollFeed processes one feed end-to-end and reports the accepted/filtered
 // counts plus whether the provider snapshot was COMPLETE (fetch succeeded,
 // JSON decoded, every item identified, no duplicates, count bounded).
@@ -194,9 +212,12 @@ func (s *Source) pollFeed(ctx context.Context, emit plugin.Emitter, feed string,
 		if ctx.Err() != nil {
 			return 0, 0, false
 		}
-		slog.Warn("IMGW feed fetch failed", "feed", feed, "error", err)
+		// A feed that is down for a day would otherwise write one warning
+		// per poll: the first failure of an outage warns, the rest are debug.
+		s.episode(feed).Fail(err, slog.String("feed", feed), s.cfg.PollInterval)
 		return 0, 0, false
 	}
+	s.episode(feed).Recovered()
 
 	var keys map[string]bool
 	var filtered int

@@ -202,21 +202,41 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 		"server", s.cfg.Server, "login", s.login, "filter", s.filter)
 
 	delay := minReconnectDelay
+	// drops counts the ends of one flapping episode: APRS-IS rotates and
+	// drops idle sessions routinely, and a session that ran for hours is a
+	// network event to note, not an alarm. Only a link that keeps dying
+	// inside healthySessionReset of the previous connect warns (once, then
+	// debug with a counter).
+	drops := 0
 	for {
 		sessionStart := time.Now()
 		err := s.session(ctx, health)
 		if ctx.Err() != nil {
 			return nil
 		}
+		uptime := time.Since(sessionStart)
 		// A session that ran healthily proves the uplink works: after a
 		// drop, recover at the minimum delay instead of inheriting a
 		// historical failure backoff.
-		delay = resetBackoff(delay, time.Since(sessionStart))
+		delay = resetBackoff(delay, uptime)
 		if health != nil {
 			health.ReportSourceDegraded(err)
 		}
-		s.logger.Warn("aprs-inet: session ended, reconnecting",
-			"server", s.cfg.Server, "error", err, "retry_in", delay)
+		if uptime >= healthySessionReset {
+			drops = 0
+			s.logger.Info("aprs-inet: session ended, reconnecting",
+				"server", s.cfg.Server, "error", err,
+				"session_uptime", uptime.Round(time.Second), "retry_in", delay)
+		} else {
+			drops++
+			if drops == 1 {
+				s.logger.Warn("aprs-inet: session ended, reconnecting",
+					"server", s.cfg.Server, "error", err, "retry_in", delay)
+			} else {
+				s.logger.Debug("aprs-inet: session still dropping",
+					"server", s.cfg.Server, "error", err, "drops", drops, "retry_in", delay)
+			}
+		}
 
 		select {
 		case <-ctx.Done():

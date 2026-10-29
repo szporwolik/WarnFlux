@@ -952,6 +952,21 @@ gsm:
   # Serial device of the modem's AT port.
   device: "/dev/ttyUSB0"
 
+# Daily admin status mail: once a day the operator receives one branded
+# message built from the last 24 hours — how many SMS, Meshtastic and APRS
+# messages arrived and went out, how many hazards were new/active/ended, how
+# many notifications were dispatched or failed, and the live state of every
+# plugin (problem rows first). It rides the first enabled smtp action's
+# configuration, like the password-reset mail.
+admin_digest:
+  enabled: false
+  # Station-local clock time ("06:00"). The mail is armed for the next
+  # occurrence after every run, so a restart does not skip it.
+  at: "06:00"
+  # Explicit recipients. Empty = every admin account that has an e-mail
+  # address (Admin > Users). An invalid address stops the start.
+  # to: ["admin@example.org"]
+
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI), never by an automatic MQTT subscription.
 # Built-in types: smtp (email), http_webhook, discord, meshtastic, aprs,
@@ -988,6 +1003,12 @@ actions:
   #     password: ""
   #     password_file: ""
   #     implicit_tls: true
+  #     # STARTTLS is REQUIRED when it is enabled (the default): a relay
+  #     # that does not advertise the extension fails the send instead of
+  #     # taking the message in cleartext — password-reset tokens and every
+  #     # notification body travel through this path. A cleartext relay has
+  #     # to be asked for explicitly with starttls: false (and the log then
+  #     # warns once per host).
   #     starttls: false
   #     ca_file: ""
   #     # The subject bracket comes from web.header1 (e.g. "[SPOK]");

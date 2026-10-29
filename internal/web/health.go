@@ -7,10 +7,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/health"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
-	"github.com/szporwolik/WarnFlux/internal/plugin"
 	"github.com/szporwolik/WarnFlux/internal/preflight"
 )
 
@@ -122,6 +121,59 @@ func (s *Server) handlePartialHealth(w http.ResponseWriter, r *http.Request) {
 	s.renderL(w, r, "health", s.buildHealthView(s.langFor(r)))
 }
 
+// HealthInputs collects the inputs of the SHARED health assessment
+// (internal/health): the same ones the dashboard card classifies, so the panel
+// and the daily digest always agree about the station.
+func (s *Server) HealthInputs() health.Inputs {
+	in := health.Inputs{}
+	if s.router != nil {
+		in.Plugins = s.router.Statuses()
+	}
+	if s.receivers != nil {
+		in.Receivers = s.receivers.Statuses()
+	}
+	if s.actions != nil {
+		in.Actions = s.actions.Statuses()
+	}
+	if s.hardware != nil {
+		in.Hardware = s.hardware.Active()
+	}
+	// A probe this station does not have is simply absent: the panel keeps
+	// reporting the subsystems it can see (a construction without a storage
+	// handle is a test fixture, not a station that cannot check its database).
+	in.Database = &health.Database{}
+	if pinger, ok := s.users.(dbPinger); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := pinger.Ping(ctx)
+		cancel()
+		if err != nil {
+			in.Database.Err = err.Error()
+		}
+	}
+	if s.ingress != nil {
+		_, droppedFull, _, depth, capacity := s.ingress.Stats()
+		in.Queue = &health.QueueState{
+			Depth:     depth,
+			Capacity:  capacity,
+			Dropped:   droppedFull,
+			Emergency: s.ingress.EmergencyAccepted(),
+		}
+	}
+	return in
+}
+
+// badgeForLevel renders a shared verdict level as the panel's badge class.
+func badgeForLevel(level health.Level) string {
+	switch level {
+	case health.LevelBad:
+		return badgeBad
+	case health.LevelWarn:
+		return badgeWarn
+	default:
+		return badgeOK
+	}
+}
+
 // buildHealthView assembles the rows and the overall verdict. The verdict
 // is the worst finding, in the vocabulary every other card uses: red when
 // something that should run does not (a stopped plugin, a disconnected
@@ -133,32 +185,13 @@ func (s *Server) handlePartialHealth(w http.ResponseWriter, r *http.Request) {
 // this one.
 func (s *Server) buildHealthView(lang string) healthView {
 	v := healthView{}
-	verdict := badgeOK
-
-	for _, st := range s.router.Statuses() {
-		// Sources and outputs both carry the station's traffic: a plugin
-		// that is not running is as visible here as one that is limping.
-		switch st.State {
-		case plugin.StateDegraded, plugin.StateSuspended:
-			verdict = worse(verdict, badgeWarn)
-		case plugin.StateStopped:
-			verdict = worse(verdict, badgeBad)
-		}
-	}
-	for _, rs := range s.receivers.Statuses() {
-		if rs.Enabled && !rs.Connected {
-			verdict = worse(verdict, badgeBad)
-		}
-	}
-
-	// Actions (SMTP, …) and pending-notification pressure.
-	pending := 0
-	for _, as := range s.actions.Statuses() {
-		pending += as.QueueDepth
-		if as.State == action.StateDegraded {
-			verdict = worse(verdict, badgeWarn)
-		}
-	}
+	// One assessment, shared with the daily digest: plugins, receivers,
+	// actions, hardware, the database and the dispatch queue. It also carries
+	// the database probe, so the card does not ping twice.
+	inputs := s.HealthInputs()
+	assessment := health.Assess(inputs)
+	verdict := badgeForLevel(assessment.Level())
+	pending := assessment.Pending
 
 	// Display time zone: the panel never shows a nameless clock. A named
 	// IANA zone is quoted as it is; an unnamed process zone reports its
@@ -181,15 +214,9 @@ func (s *Server) buildHealthView(lang string) healthView {
 
 	// Database.
 	v.DB = healthRow{Name: i18n.T(lang, "dash.database"), BadgeClass: badgeOK, BadgeText: "OK", Detail: i18n.T(lang, "dash.ready")}
-	if pinger, ok := s.users.(dbPinger); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err := pinger.Ping(ctx)
-		cancel()
-		if err != nil {
-			v.DB.BadgeClass, v.DB.BadgeText = "bad", i18n.T(lang, "health.badge.error")
-			v.DB.Detail = err.Error()
-			verdict = worse(verdict, badgeBad)
-		}
+	if inputs.Database != nil && inputs.Database.Err != "" {
+		v.DB.BadgeClass, v.DB.BadgeText = "bad", i18n.T(lang, "health.badge.error")
+		v.DB.Detail = inputs.Database.Err
 	}
 	// Low-disk alarm: below the configured threshold the DB row turns red
 	// and the operator sees exactly how much room is left on the card.
@@ -228,7 +255,6 @@ func (s *Server) buildHealthView(lang string) healthView {
 			row.BadgeClass = badgeWarn
 		}
 		v.Hardware = append(v.Hardware, row)
-		verdict = worse(verdict, row.BadgeClass)
 	}
 	v.HardwareOK = len(v.Hardware) == 0 && s.hardware != nil && s.hardware.Len() > 0
 

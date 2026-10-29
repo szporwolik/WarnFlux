@@ -444,3 +444,33 @@ func TestIngestorAckDecision(t *testing.T) {
 		t.Fatal("rejected generic event must NOT be acknowledged")
 	}
 }
+
+// TestInfoStoredAndDeleted is the regression test for a retained info topic
+// whose broker-side deletion was ignored: the entry used to stay in the mirror
+// forever, holding budget and resurfacing in views.
+func TestInfoStoredAndDeleted(t *testing.T) {
+	env := newIngestorEnv(t, "local", true, nil)
+	topic := "warnflux/info/adsb/area-1/alpha/aircraft"
+	payload := []byte(`{"schema_version":1,"type":"aircraft","generated_at":"2026-09-22T12:00:00Z","aircraft":[]}`)
+
+	env.ingestor.HandleMessage(nil, &testMessage{topic: topic, payload: payload, retained: true})
+	if got := len(env.state.InfoKind("aircraft")); got != 1 {
+		t.Fatalf("info entries = %d, want 1", got)
+	}
+	if env.state.MirrorCounters().InfoBytes == 0 {
+		t.Fatal("info bytes = 0 after an accepted entry")
+	}
+
+	// Zero-length retained payload: the broker deleted the topic.
+	env.ingestor.HandleMessage(nil, &testMessage{topic: topic, payload: []byte{}, retained: true})
+	if got := len(env.state.InfoKind("aircraft")); got != 0 {
+		t.Fatalf("info entries = %d after the retained delete, want 0", got)
+	}
+	c := env.state.MirrorCounters()
+	if c.InfoBytes != 0 {
+		t.Fatalf("info bytes = %d after the retained delete, want 0", c.InfoBytes)
+	}
+	if c.RemovedInfoDeleted != 1 {
+		t.Fatalf("RemovedInfoDeleted = %d, want 1", c.RemovedInfoDeleted)
+	}
+}

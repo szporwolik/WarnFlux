@@ -65,6 +65,27 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _, _, depth, _ := s.ingress.Stats()
 	fmt.Fprintf(&b, "warnflux_dispatch_queue_depth %d\n", depth)
 
+	// Mirrored retained state: what the two in-memory maps hold and what
+	// the byte budget refused. The entry count alone never bounded memory
+	// (an info payload may be 1 MiB), so an operator watching a station
+	// with a small RAM needs these two lines.
+	mc := s.st.MirrorCounters()
+	fmt.Fprintf(&b, "# HELP warnflux_state_mirror_bytes Bytes held by the in-memory retained-state mirror.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_state_mirror_bytes gauge\n")
+	fmt.Fprintf(&b, "warnflux_state_mirror_bytes{kind=%q} %d\n", "active", mc.ActiveBytes)
+	fmt.Fprintf(&b, "warnflux_state_mirror_bytes{kind=%q} %d\n", "info", mc.InfoBytes)
+	fmt.Fprintf(&b, "# HELP warnflux_state_mirror_dropped_total Entries refused by the retained-state mirror, by kind and reason.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_state_mirror_dropped_total counter\n")
+	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "active", "entries", mc.DroppedActive)
+	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "info", "entries", mc.DroppedInfo)
+	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "active", "bytes", mc.DroppedActiveBytes)
+	fmt.Fprintf(&b, "warnflux_state_mirror_dropped_total{kind=%q,reason=%q} %d\n", "info", "bytes", mc.DroppedInfoBytes)
+	fmt.Fprintf(&b, "# HELP warnflux_state_mirror_removed_total Entries removed from the retained-state mirror, by kind and reason.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_state_mirror_removed_total counter\n")
+	fmt.Fprintf(&b, "warnflux_state_mirror_removed_total{kind=%q,reason=%q} %d\n", "info", "topic-deleted", mc.RemovedInfoDeleted)
+	fmt.Fprintf(&b, "warnflux_state_mirror_removed_total{kind=%q,reason=%q} %d\n", "info", "stale", mc.RemovedInfoStale)
+	fmt.Fprintf(&b, "warnflux_state_mirror_removed_total{kind=%q,reason=%q} %d\n", "active", "stale", mc.RemovedActiveStale)
+
 	// Dispatch acceptance accounting: durable vs emergency vs rejected.
 	// Emergency acceptance is the visible degradation when the durable
 	// inbox write fails or no inbox is attached.
@@ -76,6 +97,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "# TYPE warnflux_dispatch_rejects_total counter\n")
 	_, droppedFull, droppedLate, _, _ := s.ingress.Stats()
 	fmt.Fprintf(&b, "warnflux_dispatch_rejects_total %d\n", droppedFull+droppedLate)
+	fmt.Fprintf(&b, "# HELP warnflux_dispatch_intake_saturated_total Offers refused because every in-flight durable write slot was taken.\n")
+	fmt.Fprintf(&b, "# TYPE warnflux_dispatch_intake_saturated_total counter\n")
+	fmt.Fprintf(&b, "warnflux_dispatch_intake_saturated_total %d\n", s.ingress.Saturated())
 	fmt.Fprintf(&b, "# HELP warnflux_dispatch_inbox_failures_total Durable inbox write failures (events fell back to emergency acceptance).\n")
 	fmt.Fprintf(&b, "# TYPE warnflux_dispatch_inbox_failures_total counter\n")
 	fmt.Fprintf(&b, "warnflux_dispatch_inbox_failures_total %d\n", s.ingress.InboxFailures())

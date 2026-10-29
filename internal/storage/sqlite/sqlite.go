@@ -1127,6 +1127,69 @@ ALTER TABLE action_fires ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE action_fires ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v67: WHEN the event behind a delivery job expires, on the row
+		// itself. Retention deliberately never prunes pending jobs (they are
+		// unsent notifications), but a job whose hazard expired while it
+		// waited can never be sent any more: the worker refuses it at the
+		// staleness gate and, when no worker runs at all (offline mode, an
+		// action removed from the configuration), nothing ended such a job —
+		// reported P2 kept the job of an alert that had expired 400 days
+		// earlier. The maintenance loop now ends those jobs without the
+		// worker; the rows written by earlier releases are backfilled from
+		// the stored request payload.
+		SQL: `
+ALTER TABLE action_fires ADD COLUMN expires_at_ms INTEGER NOT NULL DEFAULT 0;
+`,
+		run: func(tx *sql.Tx) error {
+			// The payload is the action.ActionRequest JSON: dispatch.Event
+			// carries no JSON tags, so the expiry sits under the Go field
+			// names (Event → Hazard transition → Hazard).
+			if _, err := tx.Exec(`
+UPDATE action_fires
+SET expires_at_ms = CAST(ROUND((julianday(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.event.Hazard.Hazard.ExpiresAt') END) - 2440587.5) * 86400000) AS INTEGER)
+WHERE expires_at_ms = 0
+  AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.event.Hazard.Hazard.ExpiresAt') END IS NOT NULL`); err != nil {
+				return fmt.Errorf("backfill delivery expiries: %w", err)
+			}
+			return nil
+		},
+	},
+	{
+		// v68: durable traffic aggregates. The daily status mail counted the
+		// message history tables, which are capped at a few thousand newest
+		// rows: after 2001 APRS messages in one window the report said 2000,
+		// and the gap grows with the traffic (reported P3). The aggregates are
+		// per-minute buckets bumped in the SAME transaction as the message
+		// insert, so they outlive the history's retention. The existing
+		// history is summarised here, which gives the first report after the
+		// upgrade something to count.
+		SQL: `
+CREATE TABLE traffic_counters (
+	minute_ms INTEGER NOT NULL,
+	channel   TEXT NOT NULL,
+	direction TEXT NOT NULL,
+	messages  INTEGER NOT NULL,
+	PRIMARY KEY (minute_ms, channel, direction)
+);
+`,
+		run: func(tx *sql.Tx) error {
+			for _, src := range []struct{ table, channel string }{
+				{"aprs_messages", trafficChannelAPRS},
+				{"gsm_messages", trafficChannelGSM},
+				{"meshtastic_messages", trafficChannelMesh},
+			} {
+				if _, err := tx.Exec(`
+INSERT INTO traffic_counters (minute_ms, channel, direction, messages)
+SELECT (created_at_ms / 60000) * 60000, ?, direction, COUNT(*)
+FROM `+src.table+`
+GROUP BY 1, direction`, src.channel); err != nil {
+					return fmt.Errorf("backfill traffic counters from %s: %w", src.table, err)
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

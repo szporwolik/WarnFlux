@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/plugins/sources/snapshotutil"
 	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
@@ -147,6 +148,23 @@ type Source struct {
 	client *Client
 	// policy is the runtime-ready filter (nil = pass-through).
 	policy *filterConfig
+	// episodes collapses the failure streak of each regional feed into one
+	// warning. pollOnce walks the voivodeships sequentially in one
+	// goroutine, so the map needs no lock.
+	episodes map[string]*snapshotutil.Episode
+}
+
+// episode returns the failure tracker of one regional feed.
+func (s *Source) episode(voivodeship string) *snapshotutil.Episode {
+	if s.episodes == nil {
+		s.episodes = make(map[string]*snapshotutil.Episode, len(s.cfg.Voivodeships))
+	}
+	e, ok := s.episodes[voivodeship]
+	if !ok {
+		e = snapshotutil.NewEpisode("RSO feed")
+		s.episodes[voivodeship] = e
+	}
+	return e
 }
 
 // New decodes and validates the plugin-specific configuration.

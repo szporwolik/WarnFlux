@@ -17,6 +17,7 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
+	"github.com/szporwolik/WarnFlux/internal/schedule"
 )
 
 const (
@@ -114,6 +115,19 @@ type Config struct {
 	// Geo extends the bundled TERYT table with installation-specific
 	// territorial units (any region of the country).
 	Geo Geo
+	// AdminDigest is the daily system-status mail: what the station did in
+	// the last 24 hours and which services are healthy.
+	AdminDigest AdminDigest
+}
+
+// AdminDigest configures the once-a-day status mail to the operator.
+type AdminDigest struct {
+	Enabled bool
+	// At is the station-local clock time the mail goes out ("06:00").
+	At string
+	// To lists explicit recipients. Empty means every administrator account
+	// that carries an e-mail address.
+	To []string
 }
 
 // GeoArea is one territorial unit added through the configuration.
@@ -606,6 +620,15 @@ type fileConfig struct {
 	Meshtastic  *fileMeshtastic  `yaml:"meshtastic"`
 	GSM         *fileGSM         `yaml:"gsm"`
 	Geo         *fileGeo         `yaml:"geo"`
+	AdminDigest *fileAdminDigest `yaml:"admin_digest"`
+}
+
+// fileAdminDigest mirrors the admin_digest block. Enabled is a pointer so a
+// present section means "on" unless it says otherwise.
+type fileAdminDigest struct {
+	Enabled *bool    `yaml:"enabled"`
+	At      string   `yaml:"at"`
+	To      []string `yaml:"to"`
 }
 
 // fileMQTTPublish mirrors the mqtt_publish block. Pointer fields keep
@@ -1327,6 +1350,18 @@ func (f fileConfig) toConfig() Config {
 		cfg.GSM.Enabled = f.GSM.Enabled
 		cfg.GSM.Device = strings.TrimSpace(f.GSM.Device)
 	}
+	cfg.AdminDigest = AdminDigest{At: schedule.AtDefault}
+	if f.AdminDigest != nil {
+		cfg.AdminDigest.Enabled = f.AdminDigest.Enabled == nil || *f.AdminDigest.Enabled
+		if at := strings.TrimSpace(f.AdminDigest.At); at != "" {
+			cfg.AdminDigest.At = at
+		}
+		for _, to := range f.AdminDigest.To {
+			if t := strings.TrimSpace(to); t != "" {
+				cfg.AdminDigest.To = append(cfg.AdminDigest.To, t)
+			}
+		}
+	}
 	return cfg
 }
 
@@ -1339,6 +1374,16 @@ func (c Config) Validate() error {
 	if c.App.Timezone != "" {
 		if _, err := time.LoadLocation(c.App.Timezone); err != nil {
 			return fmt.Errorf("app.timezone: %w", err)
+		}
+	}
+	if c.AdminDigest.Enabled {
+		if !schedule.Valid(c.AdminDigest.At) {
+			return fmt.Errorf("admin_digest.at must be a clock time like %q, got %q", schedule.AtDefault, c.AdminDigest.At)
+		}
+		for _, to := range c.AdminDigest.To {
+			if !strings.Contains(to, "@") {
+				return fmt.Errorf("admin_digest.to: %q is not an e-mail address", to)
+			}
 		}
 	}
 	if c.App.ExpirationInterval <= 0 {

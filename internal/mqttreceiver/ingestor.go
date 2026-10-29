@@ -261,7 +261,13 @@ func (in *Ingestor) handleActive(pt ParsedTopic, topic string, payload []byte) {
 // documents are decoded into a typed snapshot.
 func (in *Ingestor) handleInfo(pt ParsedTopic, topic string, payload []byte, now time.Time) {
 	if len(payload) == 0 {
-		// The contract never publishes empty info payloads; ignore defensively.
+		// A zero-length retained payload is how MQTT deletes a topic. Drop the
+		// mirrored copy so the entry immediately releases its bytes and its
+		// slot in the limits instead of lingering until something evicts it.
+		if in.state.DeleteInfo(in.receiverID, topic) {
+			in.logger.Debug("receiver: info entry removed (empty retained payload)",
+				"receiver", in.receiverID, "topic", topic)
+		}
 		return
 	}
 

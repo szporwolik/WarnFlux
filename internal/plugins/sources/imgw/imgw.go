@@ -157,9 +157,11 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 // provider health: healthy only when every enabled feed produced a
 // complete snapshot.
 func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plugin.SourceHealthReporter) {
-	healthy := true
 	now := time.Now()
 	warnings, filtered := 0, 0
+	// Which feeds could not produce a complete snapshot: the operator reads
+	// this on the health card, so it names the feed instead of "one of them".
+	var failed []string
 	for _, feed := range s.cfg.Feeds {
 		if ctx.Err() != nil {
 			return // shutting down: no health report for a cancelled poll
@@ -168,7 +170,7 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 		warnings += w
 		filtered += f
 		if !complete {
-			healthy = false
+			failed = append(failed, feed)
 		}
 	}
 
@@ -181,10 +183,11 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter, reporter plu
 	}
 
 	if reporter != nil {
-		if healthy {
+		if len(failed) == 0 {
 			reporter.ReportSourceHealthy()
 		} else {
-			reporter.ReportSourceDegraded(errors.New("one or more IMGW feeds failed or produced an incomplete snapshot"))
+			reporter.ReportSourceDegraded(fmt.Errorf(
+				"IMGW %s feed failed or produced an incomplete snapshot", strings.Join(failed, ", ")))
 		}
 	}
 }

@@ -23,6 +23,8 @@ device up by itself once it is plugged in.
 | `warnflux/compose.devices.yml`, `aprs/compose.devices.yml` | Device overlays. The base `compose.yml` on the host carries **no** `devices:` block, so the containers can always be created. |
 | `warnflux/compose.time-sync.yml` | The clock-discipline container (NTP/GPS + SNTP server for the LAN). Same image, own process, `CAP_SYS_TIME`, UDP 123 — see `docs/time-sync.md`. |
 | `warnflux/compose.time-sync.devices.yml` | GPS receiver overlay for that container (`/dev/ttyACM0`), added only once the device is present. |
+| `warnflux-clock-guard.sh`, `systemd/warnflux-clock-guard.{service,timer}` | Host-side guard: the station owns the clock, the host's `systemd-timesyncd` is started only while the station cannot keep it. |
+| `systemd/timesyncd-warnflux-fallback.conf` | `systemd-timesyncd` drop-in used by that fallback (ordinary NTP pool, never the station itself). |
 | `warnflux-stack-up.sh` | Waits up to 120 s for the device, then `docker compose up -d` **with** the overlay when it exists, **without** it when it does not. |
 | `warnflux-stack-reconcile.sh` | Compares "device present on the host" with "device mapped into the container" and recreates only that service when they differ — a running container never gains a device node. |
 | `systemd/*.service`, `systemd/*.timer` | Autostart on boot plus the 2-minute reconcile timer (USB hotplug without a manual restart). |
@@ -42,6 +44,24 @@ systemctl enable --now warnflux-stack-reconcile.timer
 The host's `compose.yml` files must be the *base* variant: same services, no
 `devices:`/`group_add`. Move those lines into the matching `compose.devices.yml`
 (they are already there in this repository).
+
+## Host information on the panel (optional mount)
+
+The dashboard's System card shows the kernel, the architecture, the processor
+model, the host uptime and its load average — all read from `/proc`, which is
+the **host's** even inside a container. The distribution name is the exception:
+inside a container `/etc/os-release` describes the *image*, so the row is left
+out unless the host's file is mounted for the panel:
+
+```yaml
+services:
+  warnflux:
+    volumes:
+      - /etc/os-release:/host/os-release:ro
+```
+
+That is the only line involved; without it the card simply omits the "Operating
+system" row instead of showing the image's distribution as if it were the host's.
 
 ## kernel modules for the running kernel
 

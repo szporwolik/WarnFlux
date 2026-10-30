@@ -130,18 +130,29 @@ func TestFetchRespectsContext(t *testing.T) {
 	}
 }
 
-// TestFetch404StrictRecognition: ONLY the exact documented payload
-// {"status":false,"message":"No products were found"} is a successful
-// empty snapshot; every other 404 is a provider failure.
+// TestFetch404StrictRecognition: a 404 whose body says "no warnings" is a
+// successful empty snapshot; every other 404 is a provider failure, because a
+// failure read as "no warnings" would cancel active alarms.
 func TestFetch404StrictRecognition(t *testing.T) {
-	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprint(w, `{"status":false,"message":"No products were found"}`)
-	}))
-	body, err := NewClient(ok.URL, time.Second).Fetch(context.Background(), feedMeteo)
-	ok.Close()
-	if err != nil || string(body) != "[]" {
-		t.Fatalf("exact no-products payload: body=%s err=%v", body, err)
+	// The provider has used both wordings for the same condition: the
+	// documented English one and the Polish one it returns today (production
+	// reported the station as degraded for hours because only the English
+	// string was accepted).
+	for _, payload := range []string{
+		`{"status":false,"message":"No products were found"}`,
+		`{"status":false,"message":"Brak ostrzeżeń hydrologicznych"}`,
+		`{"status":false,"message":"Brak ostrzeżeń meteorologicznych"}`,
+		`{"status":false,"message":"brak ostrzezen"}`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, payload)
+		}))
+		body, err := NewClient(srv.URL, time.Second).Fetch(context.Background(), feedHydro)
+		srv.Close()
+		if err != nil || string(body) != "[]" {
+			t.Fatalf("no-warnings payload %s: body=%s err=%v", payload, body, err)
+		}
 	}
 
 	reject := []string{
@@ -150,6 +161,8 @@ func TestFetch404StrictRecognition(t *testing.T) {
 		`{"message":"No products were found"}`,
 		`{"status":false,"message":"Database unavailable"}`,
 		`{"status":true,"message":"No products were found"}`,
+		`{"status":false,"message":"Not Found"}`,
+		`{"status":false,"message":"Brak danych"}`,
 		`{"status":false,"message":"  "}`,
 		`not json`,
 	}
@@ -164,6 +177,28 @@ func TestFetch404StrictRecognition(t *testing.T) {
 		if err == nil {
 			t.Errorf("404 payload %s must be a provider failure", payload)
 		}
+	}
+}
+
+// TestFetch200NoWarningsObject: the meteo endpoint says "no warnings" with a
+// plain object instead of an array — the same wording rule applies there.
+func TestFetch200NoWarningsObject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"message":"Brak ostrzeżeń meteorologicznych"}`)
+	}))
+	defer srv.Close()
+
+	body, err := NewClient(srv.URL, time.Second).Fetch(context.Background(), feedMeteo)
+	if err != nil || string(body) != "[]" {
+		t.Fatalf("no-warnings object: body=%s err=%v", body, err)
+	}
+
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"message":"Service temporarily unavailable"}`)
+	}))
+	defer other.Close()
+	if _, err := NewClient(other.URL, time.Second).Fetch(context.Background(), feedMeteo); err != nil {
+		t.Fatalf("an unrecognised object must be passed on to the parser, not failed here: %v", err)
 	}
 }
 

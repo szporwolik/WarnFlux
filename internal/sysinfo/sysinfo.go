@@ -22,6 +22,8 @@ type Sampler struct {
 	// prevCPU is the baseline for the CPU delta; read at construction so
 	// the very first poll already has a meaningful window.
 	prevCPU cpuSnapshot
+	// host is the static machine description, detected once (see host.go).
+	host Host
 }
 
 type cpuSnapshot struct {
@@ -33,7 +35,7 @@ type cpuSnapshot struct {
 // New builds a sampler with an initial CPU baseline. It never fails:
 // unsupported platforms simply keep reporting ok=false.
 func New() *Sampler {
-	s := &Sampler{}
+	s := &Sampler{host: detectHost()}
 	s.prevCPU, _ = readCPU()
 	return s
 }

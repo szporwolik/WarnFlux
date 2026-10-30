@@ -1,0 +1,48 @@
+# Clock discipline overlay for the WarnFlux stack (docs/time-sync.md).
+#
+# The station keeps its own time: NTP while the network answers, the GPS
+# receiver when it does not, and an SNTP server so the rest of the LAN can take
+# the time from here while the station runs off-grid.
+#
+# This is the SAME image as the panel, in its own process, because stepping the
+# host clock needs CAP_SYS_TIME — and the panel, which parses radio traffic,
+# SMS and HTTP requests, must never carry that capability. The capability is
+# only effective for root (non-root processes have no ambient caps), hence
+# user: "0:0" here; this container does nothing but serve and set the time.
+#
+# With the current Docker default seccomp profile clock_settime is allowed when
+# CAP_SYS_TIME is present, so no custom profile is needed (verified: an invalid
+# clock id returns EINVAL with the capability, EPERM without it).
+#
+# Keep the image tag identical to the warnflux service above.
+services:
+  warnflux-time:
+    image: ${WARNFLUX_IMAGE:-ghcr.io/szporwolik/warnflux:latest}
+    container_name: warnflux-time
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    command: ["--config", "/config/config.yaml", "-time-sync"]
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [SYS_TIME]
+    security_opt:
+      - no-new-privileges
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./config:/config:ro
+      # The panel reads the published status file from the shared data volume
+      # (time_sync.status_file), so the health card can say where the time came
+      # from.
+      - ./data:/data
+    # NOTE: no `devices:` here on purpose — a missing /dev/ttyACM0 would make
+    # Docker refuse to create the container at all. The receiver is added by
+    # compose.time-sync.devices.yml once the GPS is actually plugged in (the
+    # same rule the modem overlay follows, see deploy/README.md).
+    ports:
+      - "123:123/udp"

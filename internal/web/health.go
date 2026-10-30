@@ -150,6 +150,9 @@ func (s *Server) HealthInputs() health.Inputs {
 			in.Database.Err = err.Error()
 		}
 	}
+	if s.clockHealth != nil {
+		in.Clock = s.clockHealth()
+	}
 	if s.ingress != nil {
 		_, droppedFull, _, depth, capacity := s.ingress.Stats()
 		in.Queue = &health.QueueState{
@@ -160,6 +163,23 @@ func (s *Server) HealthInputs() health.Inputs {
 		}
 	}
 	return in
+}
+
+// clockDetail renders the last time-sync pass for the time-zone row and
+// reports the level its own classification earned.
+func clockDetail(lang string, clk *health.Clock) (string, health.Level) {
+	level := health.LevelOK
+	if clk.MaxAge > 0 && !clk.At.IsZero() && time.Since(clk.At) > clk.MaxAge {
+		level = health.LevelWarn
+	}
+	switch {
+	case clk.LastError != "":
+		return fmt.Sprintf(i18n.T(lang, "health.clock.free"), clk.LastError), health.LevelWarn
+	case clk.At.IsZero():
+		return i18n.T(lang, "health.clock.pending"), health.LevelWarn
+	}
+	age := time.Since(clk.At).Round(time.Minute).String()
+	return fmt.Sprintf(i18n.T(lang, "health.clock.ok"), clk.Source, age), level
 }
 
 // badgeForLevel renders a shared verdict level as the panel's badge class.
@@ -210,6 +230,17 @@ func (s *Server) buildHealthView(lang string) healthView {
 		BadgeClass: badgeOK,
 		BadgeText:  zoneName,
 		Detail:     i18n.T(lang, "dash.timezone.detail") + " " + zoneName,
+	}
+	// The same row carries where that time comes from: a station whose clock
+	// has no reference stamps every warning, SMS and archive entry with the
+	// wrong time, and the operator must see that here, not guess it.
+	if clk := inputs.Clock; clk != nil && clk.Enabled {
+		detail, level := clockDetail(lang, clk)
+		v.Zone.Detail += " · " + detail
+		if level != health.LevelOK {
+			v.Zone.BadgeClass, v.Zone.BadgeText = badgeForLevel(level), i18n.T(lang, "health.badge.unsynced")
+			verdict = worse(verdict, v.Zone.BadgeClass)
+		}
 	}
 
 	// Database.

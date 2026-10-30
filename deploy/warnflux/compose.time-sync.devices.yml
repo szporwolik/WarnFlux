@@ -1,0 +1,15 @@
+# Device overlay for the time-sync container.
+#
+# `devices:` is resolved when the container is CREATED, so listing a receiver
+# that is not plugged in yet makes Docker refuse to create it (exit 255, no
+# retry) — the same trap the GSM modem overlay documents. Compose the time-sync
+# service without this file and add it when the GPS is present:
+#
+#   docker compose -f compose.yml -f compose.time-sync.yml \
+#                  -f compose.time-sync.devices.yml up -d warnflux-time
+services:
+  warnflux-time:
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+    group_add:
+      - "20"   # dialout: rw on the receiver

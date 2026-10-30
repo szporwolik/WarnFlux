@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"go.bug.st/serial"
@@ -104,7 +105,10 @@ type Daemon struct {
 
 	// stratum what the local server reports to clients
 	stratum uint8
-	status  Status
+	// statusMu guards status, which the discipline loop writes while the panel
+	// (or a caller in another goroutine) may read it.
+	statusMu sync.Mutex
+	status   Status
 	// probeNTP and nowNTP are seams for tests.
 	probeNTP func(ctx context.Context, server string) (time.Duration, time.Duration, error)
 }
@@ -324,7 +328,9 @@ func (d *Daemon) measureGPS(ctx context.Context, st *Status) (time.Duration, str
 // writeStatus mirrors the last pass into the status file (best effort: a
 // read-only data volume must not stop the discipline).
 func (d *Daemon) writeStatus(st Status) {
+	d.statusMu.Lock()
 	d.status = st
+	d.statusMu.Unlock()
 	if d.cfg.StatusFile == "" {
 		return
 	}
@@ -340,7 +346,11 @@ func (d *Daemon) writeStatus(st Status) {
 }
 
 // Status returns the last pass result.
-func (d *Daemon) Status() Status { return d.status }
+func (d *Daemon) Status() Status {
+	d.statusMu.Lock()
+	defer d.statusMu.Unlock()
+	return d.status
+}
 
 // LoadStatus reads the status file the discipline process publishes, so the
 // panel and the daily digest can show where the station's time comes from

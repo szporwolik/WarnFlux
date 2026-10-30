@@ -9,26 +9,42 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// fakeClock is the station clock the tests step.
+// fakeClock is the station clock the tests step. Guarded by a mutex: the
+// daemon runs in its own goroutine while the test polls for the step.
 type fakeClock struct {
+	mu    sync.Mutex
 	t     time.Time
 	steps []time.Time
 	err   error
 }
 
-func (c *fakeClock) Now() time.Time { return c.t }
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
 
 func (c *fakeClock) Set(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.err != nil {
 		return c.err
 	}
 	c.t = t
 	c.steps = append(c.steps, t)
 	return nil
+}
+
+// Steps returns the applied steps.
+func (c *fakeClock) Steps() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Time(nil), c.steps...)
 }
 
 // fakeGPS replays NMEA lines; an empty list means the receiver stayed silent.
@@ -90,10 +106,10 @@ func TestPassPrefersNTP(t *testing.T) {
 
 	d.pass(context.Background())
 
-	if len(clock.steps) != 1 {
-		t.Fatalf("steps = %d, want 1", len(clock.steps))
+	if len(clock.Steps()) != 1 {
+		t.Fatalf("steps = %d, want 1", len(clock.Steps()))
 	}
-	if got := clock.steps[0].Sub(base); got != 500*time.Millisecond {
+	if got := clock.Steps()[0].Sub(base); got != 500*time.Millisecond {
 		t.Fatalf("stepped by %s, want 500ms", got)
 	}
 	st := d.Status()
@@ -123,10 +139,10 @@ func TestPassFallsBackToGPS(t *testing.T) {
 
 	d.pass(context.Background())
 
-	if len(clock.steps) != 1 {
-		t.Fatalf("steps = %d, want 1", len(clock.steps))
+	if len(clock.Steps()) != 1 {
+		t.Fatalf("steps = %d, want 1", len(clock.Steps()))
 	}
-	if got := clock.steps[0].Sub(base); got != 2*time.Second {
+	if got := clock.Steps()[0].Sub(base); got != 2*time.Second {
 		t.Fatalf("stepped by %s, want 2s", got)
 	}
 	st := d.Status()
@@ -155,10 +171,10 @@ func TestPassMedianFiltersOneBadSentence(t *testing.T) {
 
 	d.pass(context.Background())
 
-	if len(clock.steps) != 1 {
-		t.Fatalf("steps = %d, want 1", len(clock.steps))
+	if len(clock.Steps()) != 1 {
+		t.Fatalf("steps = %d, want 1", len(clock.Steps()))
 	}
-	if got := clock.steps[0].Sub(base); got != 2*time.Second {
+	if got := clock.Steps()[0].Sub(base); got != 2*time.Second {
 		t.Fatalf("stepped by %s, want the 2s median", got)
 	}
 }
@@ -179,8 +195,8 @@ func TestPassLeavesGoodClockAlone(t *testing.T) {
 
 	d.pass(context.Background())
 
-	if len(clock.steps) != 0 {
-		t.Fatalf("steps = %d, want none below the threshold", len(clock.steps))
+	if len(clock.Steps()) != 0 {
+		t.Fatalf("steps = %d, want none below the threshold", len(clock.Steps()))
 	}
 	st := d.Status()
 	if st.Stepped || st.Source != "ntp" {
@@ -202,8 +218,8 @@ func TestPassRejectsImplausibleGPSDate(t *testing.T) {
 
 	d.pass(context.Background())
 
-	if len(clock.steps) != 0 {
-		t.Fatalf("steps = %d, want none for an implausible date", len(clock.steps))
+	if len(clock.Steps()) != 0 {
+		t.Fatalf("steps = %d, want none for an implausible date", len(clock.Steps()))
 	}
 	st := d.Status()
 	if st.Source != "none" {
@@ -227,8 +243,8 @@ func TestPassRejectsHugeGPSOffset(t *testing.T) {
 
 	d.pass(context.Background())
 
-	if len(clock.steps) != 0 {
-		t.Fatalf("steps = %d, want none", len(clock.steps))
+	if len(clock.Steps()) != 0 {
+		t.Fatalf("steps = %d, want none", len(clock.Steps()))
 	}
 	if st := d.Status(); st.LastError == "" {
 		t.Fatalf("status = %+v, want the safety limit reported", st)
@@ -281,7 +297,7 @@ func TestRunWritesStatusAndServes(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, err := os.Stat(statusFile); err == nil && len(clock.steps) == 1 {
+		if _, err := os.Stat(statusFile); err == nil && len(clock.Steps()) == 1 {
 			break
 		}
 		if time.Now().After(deadline) {

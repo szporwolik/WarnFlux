@@ -337,6 +337,15 @@ abbreviations ("ul.", "pow."), and cutting at the first period left
   size limit, a connect/request timeout and context-aware I/O. The core's
   size caps are a last-resort safety net, not a substitute for provider
   bounds.
+- **A switched-off source withdraws its events.** Events live until their own
+  `expires_at`, and road works carry expiries months ahead, so a source the
+  operator disabled would keep its warnings "live" on the panel and the public
+  page for as long as they were valid. At startup the station therefore
+  cancels the active events of every source that is disabled (or no longer in
+  the configuration) and deletes their retained documents. A source that has
+  to be off for a while but keep its history should therefore not rely on
+  being skipped silently — the withdrawal is logged per source
+  (`source is switched off: its active events were withdrawn`).
 
 ## HTTP client guidance
 

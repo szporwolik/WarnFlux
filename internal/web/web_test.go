@@ -3487,6 +3487,14 @@ func TestDashboardSystemCard(t *testing.T) {
 			t.Errorf("system card missing %q: %s", want, html)
 		}
 	}
+	// The card answers "what is this station running on?" without a shell:
+	// the kernel, the architecture and the processor come from the host
+	// (/proc is the host's even inside a container).
+	for _, want := range []string{"Kernel", "Processor", "System uptime", "Load average"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("system card missing the host row %q: %s", want, html)
+		}
+	}
 	// The DB and dispatch rows moved to the health card (same page).
 	if strings.Contains(html, "Dispatch queue") {
 		t.Errorf("system card still renders the dispatch queue row: %s", html)

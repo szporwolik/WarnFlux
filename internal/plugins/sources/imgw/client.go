@@ -74,31 +74,52 @@ func (c *Client) Fetch(ctx context.Context, feed string) ([]byte, error) {
 	case http.StatusOK:
 		// The meteo endpoint reports "no warnings" with HTTP 200 and an
 		// OBJECT {"message":"Brak ostrzeżeń meteorologicznych"} instead of
-		// an array — the same condition the 404 path handles below. Only
-		// that exact payload is an empty successful snapshot.
+		// an array — the same condition the 404 path handles below.
 		var msg providerMessage
-		if err := json.Unmarshal(body, &msg); err == nil &&
-			strings.TrimSpace(msg.Message) == "Brak ostrzeżeń meteorologicznych" {
+		if err := json.Unmarshal(body, &msg); err == nil && noWarnings(msg.Message) {
 			return []byte("[]"), nil
 		}
 		return body, nil
 	case http.StatusNotFound:
-		// IMGW reports "no warnings currently" as HTTP 404 with the EXACT
-		// payload {"status":false,"message":"No products were found"}.
-		// ONLY that exact condition is an empty successful snapshot; any
-		// other 404 (missing status, wrong message, status true, malformed
-		// JSON) is a provider failure — a provider error must never look
-		// like an empty warning set.
+		// IMGW reports "no warnings currently" as HTTP 404 with
+		// {"status":false,"message":...}. That is an empty successful
+		// snapshot, but ONLY when the payload is well-formed and its message
+		// says there are no warnings: any other 404 (missing status, status
+		// true, malformed JSON, an unrelated message like "Not Found") is a
+		// provider failure, because a provider error read as "no warnings"
+		// would cancel every active alarm.
 		var st providerStatus
 		if err := json.Unmarshal(body, &st); err == nil &&
-			st.Status != nil && !*st.Status &&
-			strings.TrimSpace(st.Message) == "No products were found" {
+			st.Status != nil && !*st.Status && noWarnings(st.Message) {
 			return []byte("[]"), nil
 		}
-		return nil, fmt.Errorf("provider returned HTTP 404 without the documented no-products payload")
+		return nil, fmt.Errorf("provider returned HTTP 404 without a no-warnings payload")
 	default:
 		return nil, fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
 	}
+}
+
+// noWarnings reports whether the provider's own message says there are no
+// warnings right now. IMGW has used several wordings for the same condition —
+// the documented English "No products were found" and the Polish
+// "Brak ostrzeżeń hydrologicznych" it started returning in 10/2026 — so the
+// message is matched by meaning, not by one exact string. Everything else stays
+// a provider FAILURE (see the 404 path above).
+func noWarnings(message string) bool {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return false
+	}
+	for _, prefix := range []string{
+		"no products were found",
+		"brak ostrzeże", // ostrzeżeń (hydrologicznych, meteorologicznych, ...)
+		"brak ostrzeze", // the same wording without diacritics
+	} {
+		if strings.HasPrefix(msg, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // requireJSONArray ensures the response body's top-level JSON value is an

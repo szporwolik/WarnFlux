@@ -1567,6 +1567,12 @@ func run(configPath string, checkConfig bool) error {
 		ruleEngine.Run(routingCtx, ingress.Events())
 	}()
 
+	// A source switched off (or removed from the configuration) never
+	// publishes again, so its active events are withdrawn once here —
+	// otherwise they stay "live" on the panel and the public page until their
+	// own expiry, which for road works is months away.
+	withdrawDisabledSources(ctx, store, store, receivers, cfg.Sources, logger)
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {

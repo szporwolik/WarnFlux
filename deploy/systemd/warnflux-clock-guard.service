@@ -1,0 +1,9 @@
+[Unit]
+Description=WarnFlux clock fallback guard (host NTP client only when the station cannot keep the clock)
+Documentation=https://github.com/szporwolik/WarnFlux/blob/main/docs/time-sync.md
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/warnflux-clock-guard.sh

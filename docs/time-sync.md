@@ -122,17 +122,54 @@ docker compose -f compose.yml -f compose.time-sync.yml \
                -f compose.time-sync.devices.yml up -d warnflux-time
 ```
 
-## On the host (when the station container is not the time keeper)
+## The host side: one owner, and a fallback
 
-A host that already runs `systemd-timesyncd` or `chrony` will fight the
-container: two disciplinators stepping one clock. Pick one owner:
+A host that keeps its own NTP client running will fight the container — two
+disciplinarians stepping one clock. So the station owns the clock while it runs,
+and the host takes over **only while the station cannot keep it**:
 
-```sh
-sudo systemctl disable --now systemd-timesyncd     # let WarnFlux own the clock
+```
+station alive  ──►  warnflux-time steps the host clock, host timesyncd stopped
+station gone   ──►  warnflux-clock-guard starts the host timesyncd
 ```
 
-Leave NTP enabled on the host and point it at the station instead if you prefer
-the host to own the clock (`server <station-ip> iburst` in `/etc/chrony/conf.d/`).
+`warnflux-clock-guard.sh` (run by `warnflux-clock-guard.timer` every 2 minutes)
+treats the station as the owner while **both** hold:
+
+* the `warnflux-time` container is running, and
+* the last discipline pass is not overdue (`time_sync.status_file` → `next_at`,
+  plus a grace, default 15 min).
+
+Otherwise it starts the host's `systemd-timesyncd`, which takes the time from
+the ordinary pool (`timesyncd-warnflux-fallback.conf`) — never from the
+station's own server, because the server and the station die together. Once the
+station is back, the next check hands the clock back and stops the host client
+again.
+
+```sh
+install -m 0755 deploy/warnflux-clock-guard.sh /usr/local/sbin/
+install -m 0644 deploy/systemd/warnflux-clock-guard.service deploy/systemd/warnflux-clock-guard.timer \
+               /etc/systemd/system/
+install -m 0644 deploy/systemd/timesyncd-warnflux-fallback.conf \
+               /etc/systemd/timesyncd.conf.d/10-warnflux-fallback.conf
+systemctl daemon-reload
+systemctl enable --now systemd-timesyncd        # the guard stops it on the next check
+systemctl enable --now warnflux-clock-guard.timer
+```
+
+Hosts that use `chrony` instead of `systemd-timesyncd` should disable it the
+same way (`sudo systemctl disable --now chrony`) and skip the guard — a
+`chrony` configuration pointed at the station (`server <station-ip> iburst`) is
+the other way to keep one owner, at the price of following the station's clock
+even when it is wrong.
+
+Check it by hand:
+
+```sh
+/usr/local/sbin/warnflux-clock-guard.sh          # prints what it decided
+systemctl list-timers warnflux-clock-guard.timer
+systemctl is-active systemd-timesyncd            # inactive while the station runs
+```
 
 ## Verifying
 

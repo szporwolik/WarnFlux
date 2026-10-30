@@ -1,7 +1,9 @@
 package health
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
@@ -49,6 +51,15 @@ func TestAssessCoversEverySubsystem(t *testing.T) {
 		{"full intake", Inputs{Queue: &QueueState{Depth: 64, Capacity: 64}}, LevelBad},
 		{"emergency acceptance", Inputs{Queue: &QueueState{Depth: 1, Capacity: 64, Emergency: 3}}, LevelWarn},
 		{"dispatch drops", Inputs{Queue: &QueueState{Depth: 1, Capacity: 64, Dropped: 2}}, LevelWarn},
+		// A free-running clock stamps every published warning with the wrong
+		// time, so "the container is up" is not the same as "the time is right".
+		{"clock without a reference", Inputs{Clock: &Clock{Enabled: true, LastError: "no ntp server answered"}}, LevelWarn},
+		{"clock never disciplined", Inputs{Clock: &Clock{Enabled: true}}, LevelWarn},
+		{"clock pass too old", Inputs{Clock: &Clock{Enabled: true, Source: "ntp",
+			At: time.Now().Add(-24 * time.Hour), MaxAge: 12 * time.Hour}}, LevelWarn},
+		{"clock switched off", Inputs{Clock: &Clock{Enabled: false, LastError: "no ntp server answered"}}, LevelOK},
+		{"clock just disciplined", Inputs{Clock: &Clock{Enabled: true, Source: "gps",
+			At: time.Now().Add(-time.Hour), Stepped: true, MaxAge: 12 * time.Hour}}, LevelOK},
 		// "I could not look" is never "all good".
 		{"missing input", Inputs{Missing: []string{"counters"}}, LevelWarn},
 	}
@@ -88,5 +99,24 @@ func TestReportFindingsKeepSubjectAndDetail(t *testing.T) {
 	}
 	if len(r.Of(SubsystemQueue)) != 0 {
 		t.Fatalf("healthy queue produced a finding: %+v", r.Of(SubsystemQueue))
+	}
+}
+
+// TestClockFindingNamesTheReason pins what the digest and the card show: the
+// operator needs to know whether the station has no reference at all or simply
+// has not run a pass yet.
+func TestClockFindingNamesTheReason(t *testing.T) {
+	r := Assess(Inputs{Clock: &Clock{Enabled: true, LastError: "open gps /dev/ttyACM0: no such file"}})
+	got := r.Of(SubsystemClock)
+	if len(got) != 1 {
+		t.Fatalf("clock findings = %+v, want exactly one", got)
+	}
+	if !strings.Contains(got[0].Detail, "no reference source") || !strings.Contains(got[0].Detail, "/dev/ttyACM0") {
+		t.Fatalf("detail = %q, want the reason and the device", got[0].Detail)
+	}
+
+	r = Assess(Inputs{Clock: &Clock{Enabled: true}})
+	if got := r.Of(SubsystemClock); len(got) != 1 || !strings.Contains(got[0].Detail, "no discipline pass") {
+		t.Fatalf("findings = %+v, want the pending-pass wording", got)
 	}
 }

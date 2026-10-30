@@ -590,3 +590,23 @@ func TestResetBackoff(t *testing.T) {
 		t.Errorf("short session backoff = %v, want unchanged %v", got, maxReconnectDelay)
 	}
 }
+
+// TestReconnectDelayStaysShortForALocalTNC pins the cap: the KISS server is
+// direwolf on this very host, so waiting minutes for it to come back only
+// silences the radio (the direwolf restart during the 2026-10-29 host
+// migration cost a two-minute gap in the RF link).
+func TestReconnectDelayStaysShortForALocalTNC(t *testing.T) {
+	if maxReconnectDelay > time.Minute {
+		t.Fatalf("maxReconnectDelay = %v; a local TNC must come back within a minute", maxReconnectDelay)
+	}
+	delay := minReconnectDelay
+	for i := 0; i < 12; i++ {
+		delay *= 2
+		if delay > maxReconnectDelay {
+			delay = maxReconnectDelay
+		}
+	}
+	if delay != maxReconnectDelay {
+		t.Fatalf("delay after 12 failed sessions = %v, want the cap %v", delay, maxReconnectDelay)
+	}
+}

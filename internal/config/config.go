@@ -18,6 +18,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/mqttpolicy"
 	"github.com/szporwolik/WarnFlux/internal/schedule"
+	"net"
 )
 
 const (
@@ -118,6 +119,43 @@ type Config struct {
 	// AdminDigest is the daily system-status mail: what the station did in
 	// the last 24 hours and which services are healthy.
 	AdminDigest AdminDigest
+	// TimeSync keeps the station clock good without the internet: NTP while
+	// the network answers, the GPS receiver when it does not, and the station
+	// itself as the LAN's SNTP server while off-grid. It runs in a separate
+	// process (`warnflux -time-sync`) because stepping the clock needs
+	// CAP_SYS_TIME, which the panel and the radio links must not have.
+	TimeSync TimeSync
+}
+
+// Defaults of the time_sync section (the discipline process may also be run
+// with these values when the operator leaves the section out).
+const (
+	TimeSyncDefaultInterval      = 6 * time.Hour
+	TimeSyncDefaultGPSBaud       = 9600
+	TimeSyncDefaultStepThreshold = 250 * time.Millisecond
+	TimeSyncDefaultListen        = ":123"
+	TimeSyncDefaultStatusFile    = "/data/time-sync.json"
+)
+
+// TimeSync configures the clock discipline process.
+type TimeSync struct {
+	Enabled bool `yaml:"enabled"`
+	// NTPServers are asked while the network answers.
+	NTPServers []string `yaml:"ntp_servers"`
+	// Interval between two discipline passes (hours: the clock drifts
+	// slowly, so touching it more often buys nothing).
+	Interval time.Duration `yaml:"interval"`
+	// GPSDevice is the serial port of the receiver; empty = no GPS.
+	GPSDevice string `yaml:"gps_device"`
+	GPSBaud   int    `yaml:"gps_baud"`
+	// StepThreshold is the smallest offset worth a step.
+	StepThreshold time.Duration `yaml:"step_threshold"`
+	// Serve runs the SNTP server for the LAN (the station is the only time
+	// source while off-grid).
+	Serve       bool   `yaml:"serve"`
+	ServeListen string `yaml:"serve_listen"`
+	// StatusFile is rewritten after every pass for the panel and the log.
+	StatusFile string `yaml:"status_file"`
 }
 
 // AdminDigest configures the once-a-day status mail to the operator.
@@ -621,6 +659,7 @@ type fileConfig struct {
 	GSM         *fileGSM         `yaml:"gsm"`
 	Geo         *fileGeo         `yaml:"geo"`
 	AdminDigest *fileAdminDigest `yaml:"admin_digest"`
+	TimeSync    *fileTimeSync    `yaml:"time_sync"`
 }
 
 // fileAdminDigest mirrors the admin_digest block. Enabled is a pointer so a
@@ -629,6 +668,20 @@ type fileAdminDigest struct {
 	Enabled *bool    `yaml:"enabled"`
 	At      string   `yaml:"at"`
 	To      []string `yaml:"to"`
+}
+
+// fileTimeSync mirrors the time_sync block. Enabled is a pointer so a present
+// section means "on" unless it says otherwise.
+type fileTimeSync struct {
+	Enabled       *bool          `yaml:"enabled"`
+	NTPServers    []string       `yaml:"ntp_servers"`
+	Interval      *time.Duration `yaml:"interval"`
+	GPSDevice     string         `yaml:"gps_device"`
+	GPSBaud       int            `yaml:"gps_baud"`
+	StepThreshold *time.Duration `yaml:"step_threshold"`
+	Serve         *bool          `yaml:"serve"`
+	ServeListen   string         `yaml:"serve_listen"`
+	StatusFile    string         `yaml:"status_file"`
 }
 
 // fileMQTTPublish mirrors the mqtt_publish block. Pointer fields keep
@@ -1350,6 +1403,44 @@ func (f fileConfig) toConfig() Config {
 		cfg.GSM.Enabled = f.GSM.Enabled
 		cfg.GSM.Device = strings.TrimSpace(f.GSM.Device)
 	}
+	cfg.TimeSync = TimeSync{
+		Interval:      TimeSyncDefaultInterval,
+		GPSBaud:       TimeSyncDefaultGPSBaud,
+		StepThreshold: TimeSyncDefaultStepThreshold,
+		Serve:         true,
+		ServeListen:   TimeSyncDefaultListen,
+		StatusFile:    TimeSyncDefaultStatusFile,
+	}
+	if f.TimeSync != nil {
+		cfg.TimeSync.Enabled = f.TimeSync.Enabled == nil || *f.TimeSync.Enabled
+		for _, srv := range f.TimeSync.NTPServers {
+			if v := strings.TrimSpace(srv); v != "" {
+				cfg.TimeSync.NTPServers = append(cfg.TimeSync.NTPServers, v)
+			}
+		}
+		if f.TimeSync.Interval != nil && *f.TimeSync.Interval > 0 {
+			cfg.TimeSync.Interval = *f.TimeSync.Interval
+		}
+		if v := strings.TrimSpace(f.TimeSync.GPSDevice); v != "" {
+			cfg.TimeSync.GPSDevice = v
+		}
+		if f.TimeSync.GPSBaud > 0 {
+			cfg.TimeSync.GPSBaud = f.TimeSync.GPSBaud
+		}
+		if f.TimeSync.StepThreshold != nil && *f.TimeSync.StepThreshold > 0 {
+			cfg.TimeSync.StepThreshold = *f.TimeSync.StepThreshold
+		}
+		if f.TimeSync.Serve != nil {
+			cfg.TimeSync.Serve = *f.TimeSync.Serve
+		}
+		if v := strings.TrimSpace(f.TimeSync.ServeListen); v != "" {
+			cfg.TimeSync.ServeListen = v
+		}
+		if v := strings.TrimSpace(f.TimeSync.StatusFile); v != "" {
+			cfg.TimeSync.StatusFile = v
+		}
+	}
+
 	cfg.AdminDigest = AdminDigest{At: schedule.AtDefault}
 	if f.AdminDigest != nil {
 		cfg.AdminDigest.Enabled = f.AdminDigest.Enabled == nil || *f.AdminDigest.Enabled
@@ -1374,6 +1465,27 @@ func (c Config) Validate() error {
 	if c.App.Timezone != "" {
 		if _, err := time.LoadLocation(c.App.Timezone); err != nil {
 			return fmt.Errorf("app.timezone: %w", err)
+		}
+	}
+	if c.TimeSync.Enabled {
+		if c.TimeSync.Interval < time.Minute {
+			return fmt.Errorf("time_sync.interval must be at least 1m, got %s", c.TimeSync.Interval)
+		}
+		if c.TimeSync.GPSDevice == "" && len(c.TimeSync.NTPServers) == 0 {
+			return fmt.Errorf("time_sync: configure ntp_servers, gps_device or both")
+		}
+		for _, srv := range c.TimeSync.NTPServers {
+			if _, _, err := net.SplitHostPort(normalizeNTPServer(srv)); err != nil {
+				return fmt.Errorf("time_sync.ntp_servers: %q: %w", srv, err)
+			}
+		}
+		if c.TimeSync.Serve {
+			if _, err := net.ResolveUDPAddr("udp", c.TimeSync.ServeListen); err != nil {
+				return fmt.Errorf("time_sync.serve_listen: %w", err)
+			}
+		}
+		if c.TimeSync.GPSBaud < 1200 || c.TimeSync.GPSBaud > 921600 {
+			return fmt.Errorf("time_sync.gps_baud must be between 1200 and 921600, got %d", c.TimeSync.GPSBaud)
 		}
 	}
 	if c.AdminDigest.Enabled {
@@ -1724,4 +1836,13 @@ func (a App) SlogLevel() slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// normalizeNTPServer gives a bare host the default NTP port, so validation and
+// the client agree on what "pool.ntp.org" means.
+func normalizeNTPServer(server string) string {
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server
+	}
+	return net.JoinHostPort(server, "123")
 }

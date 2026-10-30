@@ -54,6 +54,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/severity"
 	"github.com/szporwolik/WarnFlux/internal/storage"
 	"github.com/szporwolik/WarnFlux/internal/storage/sqlite"
+	"github.com/szporwolik/WarnFlux/internal/timesync"
 	"github.com/szporwolik/WarnFlux/internal/trail"
 	"github.com/szporwolik/WarnFlux/internal/weatherreport"
 	"github.com/szporwolik/WarnFlux/internal/web"
@@ -657,10 +658,19 @@ func main() {
 	configPath := fs.String("config", config.DefaultConfigPath, "path to YAML configuration file")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	checkConfig := fs.Bool("check-config", false, "validate the configuration (strict decode of every plugin/action/receiver) and exit without opening the database or connecting anywhere")
+	timeSync := fs.Bool("time-sync", false, "run only the clock discipline process (NTP/GPS + SNTP server) and exit on shutdown — the station itself needs no privileges")
 	fs.Parse(os.Args[1:])
 
 	if *showVersion {
 		fmt.Printf("warnflux %s (%s)\n", resolveVersion(version), commit)
+		return
+	}
+
+	if *timeSync {
+		if err := runTimeSync(*configPath); err != nil {
+			slog.Error("WarnFlux time sync failed", "error", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -1341,6 +1351,22 @@ func run(configPath string, checkConfig bool) error {
 		webSrv.SetRadioCLI(radioCLI)
 		// The health card answers "why is SMS dead?" without the log.
 		webSrv.SetHardwareProbe(preflightMon)
+		// The same card says where the station's time comes from: the
+		// discipline process publishes every pass, the panel only reads it.
+		if cfg.TimeSync.Enabled {
+			statusPath, maxAge := cfg.TimeSync.StatusFile, 2*cfg.TimeSync.Interval
+			webSrv.SetClockHealth(func() *health.Clock {
+				clk := &health.Clock{Enabled: true, MaxAge: maxAge}
+				st, err := timesync.LoadStatus(statusPath)
+				if err != nil {
+					clk.LastError = "status file: " + err.Error()
+					return clk
+				}
+				clk.Source, clk.OffsetMS = st.Source, st.OffsetMS
+				clk.Stepped, clk.At, clk.LastError = st.Stepped, st.At, st.LastError
+				return clk
+			})
+		}
 		// Human-facing timestamps ride the RESOLVED display zone (the
 		// configured name, else the detected host zone, else UTC): a
 		// container without app.timezone would otherwise render UTC
@@ -2024,3 +2050,111 @@ func logHandlerOptions(level slog.Level) *slog.HandlerOptions {
 type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
+
+// runTimeSync runs the clock discipline process: the same image, the same
+// configuration file, but no database, no web server and no radio links. It is
+// a separate process on purpose — stepping the clock needs CAP_SYS_TIME, and
+// the panel must never carry that capability.
+func runTimeSync(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+	if !cfg.TimeSync.Enabled {
+		return fmt.Errorf("time_sync is disabled in %s", configPath)
+	}
+	keep := setupTimeSyncLogger(cfg)
+	defer keep()
+
+	logger := slog.Default()
+	daemon := timesync.NewDaemon(timesync.Config{
+		NTPServers:    cfg.TimeSync.NTPServers,
+		Interval:      cfg.TimeSync.Interval,
+		GPSDevice:     cfg.TimeSync.GPSDevice,
+		GPSBaud:       cfg.TimeSync.GPSBaud,
+		StepThreshold: cfg.TimeSync.StepThreshold,
+		Serve:         cfg.TimeSync.Serve,
+		ServeListen:   cfg.TimeSync.ServeListen,
+		StatusFile:    cfg.TimeSync.StatusFile,
+	}, nil, logger)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	logger.Info("time sync starting",
+		"servers", len(cfg.TimeSync.NTPServers),
+		"gps", cfg.TimeSync.GPSDevice,
+		"interval", cfg.TimeSync.Interval.String(),
+		"serve", cfg.TimeSync.Serve,
+		"listen", cfg.TimeSync.ServeListen)
+	return daemon.Run(ctx)
+}
+
+// setupTimeSyncLogger installs the configured log level and optional rotating
+// log file for the discipline process (it has no web UI to configure it).
+func setupTimeSyncLogger(cfg *config.Config) func() {
+	level := slog.LevelInfo
+	switch cfg.App.LogLevel {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+	var closers []func() error
+	handlers := []slog.Handler{slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})}
+	if cfg.App.LogFile != "" {
+		rotator := &lumberjack.Logger{
+			Filename:   cfg.App.LogFile,
+			MaxSize:    cfg.App.LogMaxSizeMB,
+			MaxBackups: cfg.App.LogMaxBackups,
+		}
+		closers = append(closers, rotator.Close)
+		handlers = append(handlers, slog.NewTextHandler(rotator, &slog.HandlerOptions{Level: level}))
+	}
+	slog.SetDefault(slog.New(teeHandler(handlers)))
+	return func() {
+		for _, close := range closers {
+			_ = close()
+		}
+	}
+}
+
+// teeHandler fans one record out to every handler (stdout + log file).
+type teeHandler []slog.Handler
+
+func (t teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range t {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t teeHandler) Handle(ctx context.Context, r slog.Record) error {
+	var firstErr error
+	for _, h := range t {
+		if err := h.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (t teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	out := make(teeHandler, len(t))
+	for i, h := range t {
+		out[i] = h.WithAttrs(attrs)
+	}
+	return out
+}
+
+func (t teeHandler) WithGroup(name string) slog.Handler {
+	out := make(teeHandler, len(t))
+	for i, h := range t {
+		out[i] = h.WithGroup(name)
+	}
+	return out
+}

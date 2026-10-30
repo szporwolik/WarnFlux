@@ -61,6 +61,7 @@ development entry point, **not an installation guide**.
 - [docs/weather-schema.md](docs/weather-schema.md) — weather wire format
 - [docs/durability.md](docs/durability.md) — delivery & durability guarantees
 - [docs/offline-mode.md](docs/offline-mode.md) — off-grid operation
+- [docs/time-sync.md](docs/time-sync.md) — keeping the station clock right (NTP, GPS, LAN time server)
 - [docs/resilience.md](docs/resilience.md) — hardening notes
 
 ```bash

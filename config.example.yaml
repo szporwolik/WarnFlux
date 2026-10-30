@@ -967,6 +967,51 @@ admin_digest:
   # address (Admin > Users). An invalid address stops the start.
   # to: ["admin@example.org"]
 
+# Clock discipline. WarnFlux must know the right time even when the station
+# runs off-grid for weeks, so the image itself keeps the clock:
+#
+#   * NTP while the network answers (a few milliseconds of precision),
+#   * the GPS receiver (NMEA over a serial port) when it does not, and
+#   * the station becomes the LAN's own time source: an SNTP server answers on
+#     UDP 123, so every other device can take the time from here.
+#
+# It runs as the SAME image in its own process - `warnflux -time-sync` - and in
+# its own container, because stepping the host clock needs CAP_SYS_TIME and a
+# seccomp profile that lets clock_settime through. The panel, the radio links
+# and the broker must never carry that capability: docs/time-sync.md has the
+# ready-to-paste compose block and the seccomp profile.
+time_sync:
+  # A present section means "on"; enabled: false switches the whole feature
+  # off (the station then keeps whatever time the host has).
+  enabled: true
+
+  # NTP servers, asked in order while the network answers. One is enough; two
+  # or three make a broken server visible (the closest round-trip wins).
+  ntp_servers: ["pool.ntp.org"]
+
+  # How often the clock is checked: hours, not minutes - a station clock drifts
+  # by seconds per week, and a step while the radio transmits only makes
+  # timestamps jump.
+  interval: 6h
+
+  # GPS receiver. Empty = no GPS: the station then relies on NTP alone and logs
+  # that the off-grid fallback is missing.
+  gps_device: "/dev/ttyACM0"
+  gps_baud: 9600
+
+  # The smallest offset worth a step: below it the clock is left alone (a step
+  # for a few milliseconds of serial latency would be noise, not a fix).
+  step_threshold: 250ms
+
+  # Serve the time to the LAN (SNTP, UDP 123). While off-grid the station is
+  # the only correct clock in the network, so this stays on by default.
+  serve: true
+  serve_listen: ":123"
+
+  # Where the last discipline pass is mirrored: the panel and the operator can
+  # read which source set the clock, when, and with what offset.
+  status_file: "/data/time-sync.json"
+
 # ActionPlugins: explicitly invoked by the group routing rule engine
 # (Groups page in the web UI), never by an automatic MQTT subscription.
 # Built-in types: smtp (email), http_webhook, discord, meshtastic, aprs,

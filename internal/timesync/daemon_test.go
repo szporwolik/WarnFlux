@@ -381,3 +381,34 @@ func TestDaemonNormalizesNTPAddress(t *testing.T) {
 		}
 	}
 }
+
+// TestStepStampsThePassAfterTheCorrection pins the production case: a station
+// booted without an RTC came up 11h42m behind, the GPS corrected it, and the
+// published status said the pass ran at the OLD time — the panel then reported
+// "last pass 12h ago" minutes after a successful correction.
+func TestStepStampsThePassAfterTheCorrection(t *testing.T) {
+	base := time.Date(2026, 10, 30, 1, 43, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	const correction = 11*time.Hour + 42*time.Minute
+	gps := &fakeGPS{lines: []string{
+		rmc(base.Add(correction)), rmc(base.Add(correction)), rmc(base.Add(correction)),
+	}}
+	d := newTestDaemon(t, Config{
+		GPSDevice:     "/dev/ttyACM0",
+		Interval:      6 * time.Hour,
+		StepThreshold: 250 * time.Millisecond,
+	}, clock, gps)
+
+	d.pass(context.Background())
+
+	st := d.Status()
+	if !st.Stepped {
+		t.Fatalf("status = %+v, want a step", st)
+	}
+	if !st.At.Equal(base.Add(correction)) {
+		t.Fatalf("at = %s, want the post-correction time %s", st.At, base.Add(correction))
+	}
+	if want := st.At.Add(6 * time.Hour); !st.NextAt.Equal(want) {
+		t.Fatalf("next_at = %s, want %s", st.NextAt, want)
+	}
+}

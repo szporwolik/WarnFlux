@@ -19,13 +19,13 @@ func TestHealthCardShowsFreeRunningClock(t *testing.T) {
 	})
 
 	v := srv.buildHealthView(i18n.LangEN)
-	if !strings.Contains(v.Zone.Detail, "without a reference") || !strings.Contains(v.Zone.Detail, "/dev/ttyACM0") {
+	if !strings.Contains(v.Zone.Detail, "no time source") || !strings.Contains(v.Zone.Detail, "/dev/ttyACM0") {
 		t.Fatalf("zone detail = %q, want the reason the clock has no reference", v.Zone.Detail)
 	}
 	if v.Zone.BadgeClass != badgeWarn {
 		t.Fatalf("zone badge = %q, want %q", v.Zone.BadgeClass, badgeWarn)
 	}
-	if v.Zone.BadgeText != "FREE-RUNNING" {
+	if v.Zone.BadgeText != "NO TIME SYNC" {
 		t.Fatalf("zone badge text = %q", v.Zone.BadgeText)
 	}
 	if v.Overall == badgeOK {
@@ -45,8 +45,8 @@ func TestHealthCardShowsClockSource(t *testing.T) {
 	})
 
 	v := srv.buildHealthView(i18n.LangEN)
-	if !strings.Contains(v.Zone.Detail, "clock from gps") || !strings.Contains(v.Zone.Detail, "2h0m0s") {
-		t.Fatalf("zone detail = %q, want the source and the age", v.Zone.Detail)
+	if !strings.Contains(v.Zone.Detail, "time from gps") || !strings.Contains(v.Zone.Detail, "2h00m") {
+		t.Fatalf("zone detail = %q, want the source and a human age", v.Zone.Detail)
 	}
 	if v.Zone.BadgeClass != badgeOK {
 		t.Fatalf("zone badge = %q, want %q", v.Zone.BadgeClass, badgeOK)
@@ -62,10 +62,30 @@ func TestHealthCardSkipsDisabledClock(t *testing.T) {
 	})
 
 	v := srv.buildHealthView(i18n.LangEN)
-	if strings.Contains(v.Zone.Detail, "without a reference") {
+	if strings.Contains(v.Zone.Detail, "no time source") {
 		t.Fatalf("zone detail = %q, want the switched-off clock left out", v.Zone.Detail)
 	}
 	if v.Overall != badgeOK {
 		t.Fatalf("verdict = %q, want unaffected by a switched-off clock", v.Overall)
+	}
+}
+
+// TestHumanAge pins the wording an operator reads: no machine-shaped
+// "14h11m0s", no seconds at all.
+func TestHumanAge(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{14*time.Hour + 11*time.Minute, "14h11m"},
+		{2 * time.Hour, "2h00m"},
+		{8 * time.Minute, "8m"},
+		{30 * time.Second, "<1m"},
+		{-time.Hour, "<1m"},
+	}
+	for _, c := range cases {
+		if got := humanAge(c.in); got != c.want {
+			t.Errorf("humanAge(%s) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

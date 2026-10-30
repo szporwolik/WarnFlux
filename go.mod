@@ -9,6 +9,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/kabili207/meshtastic-go v0.0.0-20260624025602-9c9c0dd8bd84
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	go.bug.st/serial v1.8.0
 	golang.org/x/sys v0.49.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
@@ -23,7 +24,6 @@ require (
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/pion/dtls/v3 v3.1.12 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	go.bug.st/serial v1.8.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect

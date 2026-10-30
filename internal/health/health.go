@@ -7,7 +7,9 @@
 package health
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
 	"github.com/szporwolik/WarnFlux/internal/mqttreceiver"
@@ -57,6 +59,7 @@ const (
 	SubsystemHardware  = "hardware"
 	SubsystemDatabase  = "database"
 	SubsystemQueue     = "queue"
+	SubsystemClock     = "clock"
 )
 
 // Finding is one subsystem problem: the stable subsystem identifier, the
@@ -83,6 +86,30 @@ type Database struct {
 	Err string
 }
 
+// Clock is the last discipline pass of the station's time-sync process
+// (time_sync in the config). A station whose clock has no reference still
+// works, but every timestamp it publishes — warnings, SMS, the digest, the
+// archive — is wrong, so a free-running clock is never "all good".
+type Clock struct {
+	// Enabled mirrors time_sync.enabled: a switch the operator turned off on
+	// purpose never colours the verdict.
+	Enabled bool
+	// Source is where the last pass took its time from: "ntp", "gps" or
+	// "none".
+	Source string
+	// OffsetMS is the correction the pass measured (milliseconds).
+	OffsetMS float64
+	// Stepped is true when the clock was actually moved.
+	Stepped bool
+	// At is when the last pass ran.
+	At time.Time
+	// LastError is why the last pass could not discipline the clock.
+	LastError string
+	// MaxAge is how old the last pass may be before the clock counts as
+	// unattended (the configured interval plus a margin; 0 = unchecked).
+	MaxAge time.Duration
+}
+
 // Inputs is everything the assessment looks at. Every field is optional: a
 // caller that cannot read one names it in Missing, and the report then says so
 // instead of pretending the subsystem is fine.
@@ -94,6 +121,8 @@ type Inputs struct {
 	// Database is nil when the storage was not probed.
 	Database *Database
 	Queue    *QueueState
+	// Clock is nil when the station does not run the time-sync process.
+	Clock *Clock
 	// Missing names the inputs the caller could not read ("counters",
 	// "settings", ...).
 	Missing []string
@@ -200,6 +229,18 @@ func Assess(in Inputs) Report {
 			r.Findings = append(r.Findings, Finding{SubsystemQueue, "", LevelWarn, "emergency acceptance"})
 		case q.Dropped > 0:
 			r.Findings = append(r.Findings, Finding{SubsystemQueue, "", LevelWarn, "drops"})
+		}
+	}
+
+	if c := in.Clock; c != nil && c.Enabled {
+		switch {
+		case c.LastError != "":
+			r.Findings = append(r.Findings, Finding{SubsystemClock, "", LevelWarn, "no reference source: " + c.LastError})
+		case c.At.IsZero():
+			r.Findings = append(r.Findings, Finding{SubsystemClock, "", LevelWarn, "no discipline pass yet"})
+		case c.MaxAge > 0 && time.Since(c.At) > c.MaxAge:
+			r.Findings = append(r.Findings, Finding{SubsystemClock, "", LevelWarn,
+				fmt.Sprintf("last pass %s ago", time.Since(c.At).Round(time.Minute))})
 		}
 	}
 

@@ -295,6 +295,20 @@ func (s *Source) session(ctx context.Context, health plugin.SourceHealthReporter
 		conn.Close()
 	}()
 
+	// Closing the connection on cancellation unblocks the in-flight read:
+	// without it a silent server keeps the scan waiting until the read
+	// deadline, the plugin misses the 10 s stop budget and the station logs
+	// "source plugin failed to stop cleanly" on every restart.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-stop:
+		}
+	}()
+
 	s.logger.Info("aprs-inet: connected", "server", s.cfg.Server)
 
 	// A live APRS-IS connection clears any earlier degradation: without

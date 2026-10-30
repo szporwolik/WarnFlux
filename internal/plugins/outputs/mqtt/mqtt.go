@@ -1063,6 +1063,18 @@ func wireHazardEventOf(event core.HazardEvent) wireHazardEvent {
 	}
 }
 
+// currentError reports the error of a component that is STILL failing. The
+// tracker keeps the text of the last failure after a recovery (useful in the
+// log and the panel detail), but publishing it in the status document made a
+// healthy station look broken: a consumer read `state=running` with a
+// `last_error` from a timeout hours ago (reported after the daily review).
+func currentError(p plugin.PluginStatus) string {
+	if p.ConsecutiveFailures == 0 && p.State == plugin.StateRunning {
+		return ""
+	}
+	return p.LastError
+}
+
 func toWireStatus(status plugin.Status, now time.Time) wireStatus {
 	out := wireStatus{
 		SchemaVersion:           wireSchemaVersion,
@@ -1082,7 +1094,7 @@ func toWireStatus(status plugin.Status, now time.Time) wireStatus {
 			State:               string(p.State),
 			ConsecutiveFailures: p.ConsecutiveFailures,
 			RestartCount:        p.RestartCount,
-			LastError:           p.LastError,
+			LastError:           currentError(p),
 		})
 	}
 	for _, p := range status.Outputs {
@@ -1092,7 +1104,7 @@ func toWireStatus(status plugin.Status, now time.Time) wireStatus {
 			State:               string(p.State),
 			ConsecutiveFailures: p.ConsecutiveFailures,
 			RestartCount:        p.RestartCount,
-			LastError:           p.LastError,
+			LastError:           currentError(p),
 		})
 	}
 	return out

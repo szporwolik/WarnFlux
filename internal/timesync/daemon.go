@@ -238,7 +238,12 @@ func (d *Daemon) pass(ctx context.Context) {
 
 	d.stratum = 1
 	st.Stratum = d.stratum
-	st.NextAt = d.clock.Now().Add(d.cfg.Interval)
+	// Stamp the pass when it FINISHED, not when it started: after a step the
+	// wall clock jumps by the whole correction — hours, when a station boots
+	// without an RTC — so a start stamp would tell the panel and the digest
+	// that the pass ran hours ago while the clock had just been corrected.
+	st.At = d.clock.Now()
+	st.NextAt = st.At.Add(d.cfg.Interval)
 	d.writeStatus(st)
 }
 

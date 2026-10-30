@@ -289,6 +289,17 @@ func TestMalformedItemSafety(t *testing.T) {
 	if h, d := em.health(); h != 0 || d != 1 {
 		t.Errorf("health = (%d, %d), want degraded (incomplete snapshot)", h, d)
 	}
+	// The operator reads the reason on the health card, so it has to name the
+	// feed that failed instead of "one of them".
+	em.mu.Lock()
+	reason := ""
+	if len(em.degraded) > 0 && em.degraded[0] != nil {
+		reason = em.degraded[0].Error()
+	}
+	em.mu.Unlock()
+	if !strings.Contains(reason, feedMeteo) {
+		t.Errorf("degraded reason %q does not name the %s feed", reason, feedMeteo)
+	}
 }
 
 // TestDuplicateIdentitySafety: duplicate logical IDs make the snapshot

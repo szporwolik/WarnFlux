@@ -36,6 +36,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/dispatch/state"
 	"github.com/szporwolik/WarnFlux/internal/gsm"
+	"github.com/szporwolik/WarnFlux/internal/health"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
 	"github.com/szporwolik/WarnFlux/internal/metrics"
@@ -82,8 +83,11 @@ type Server struct {
 	// hardware reports the configured devices the station cannot use
 	// (nil = no probe wired).
 	hardware hardwareProbe
-	ingress  *dispatch.Ingress
-	users    storage.DirectoryStore
+	// clockHealth reports the last pass of the time-sync process (nil = this
+	// station does not run the clock discipline, so it is not assessed).
+	clockHealth func() *health.Clock
+	ingress     *dispatch.Ingress
+	users       storage.DirectoryStore
 	// emcomRetireMu guards emcomRetirePending: the EMCOM alarm documents
 	// the broker refused to remove, each with the version of the record
 	// that ordered the removal. A stand-down that happened while the
@@ -244,6 +248,10 @@ type hardwareProbe interface {
 // card shows. It is a setter because the monitor is built from the loaded
 // configuration, after the server exists.
 func (s *Server) SetHardwareProbe(p hardwareProbe) { s.hardware = p }
+
+// SetClockHealth wires the time-sync status probe: the health card and the
+// digest then say where the station's time comes from (nil = not configured).
+func (s *Server) SetClockHealth(fn func() *health.Clock) { s.clockHealth = fn }
 
 func (s *Server) SetRadioCLI(bot *radiocli.Bot) { s.radioCLI = bot }
 

@@ -1,0 +1,14 @@
+[Unit]
+Description=WarnFlux clock fallback guard timer
+
+[Timer]
+# First check shortly after boot (the container may still be starting: the
+# guard only hands the clock back when the station really is gone), then often
+# enough that a dead discipline process is caught within a couple of minutes.
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=warnflux-clock-guard.service
+
+[Install]
+WantedBy=timers.target

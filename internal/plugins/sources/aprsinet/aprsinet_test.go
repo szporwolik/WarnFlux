@@ -281,3 +281,64 @@ func TestResetBackoff(t *testing.T) {
 		t.Errorf("short session backoff = %v, want unchanged %v", got, maxReconnectDelay)
 	}
 }
+
+// TestRunStopsPromptlyWhenTheServerIsSilent pins the shutdown path: a silent
+// APRS-IS session used to keep the read blocked until the read deadline, so the
+// plugin missed the 10 s stop budget and every restart logged "source plugin
+// failed to stop cleanly". Closing the link ourselves must end Run at once.
+func TestRunStopsPromptlyWhenTheServerIsSilent(t *testing.T) {
+	hub, _ := testHub(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	connected := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		sc := bufio.NewScanner(conn)
+		if sc.Scan() { // the login line; then stay silent forever
+			close(connected)
+		}
+		<-make(chan struct{}) // hold the connection open until the test ends
+	}()
+
+	src, err := New(configNode(t, map[string]any{
+		"passcode":        "12345",
+		"server":          ln.Addr().String(),
+		"connect_timeout": 5 * time.Second,
+		"read_timeout":    60 * time.Second, // far longer than the stop budget
+	}), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub.Start(ctx)
+
+	done := make(chan error, 1)
+	go func() { done <- src.Run(ctx, &recordingEmitter{}) }()
+
+	select {
+	case <-connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the plugin never sent its login line")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v after cancel, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop within 1s of cancel (blocked read)")
+	}
+}

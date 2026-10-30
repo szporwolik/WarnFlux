@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -132,11 +134,26 @@ func NewDaemon(cfg Config, clock Clock, logger *slog.Logger) *Daemon {
 	if cfg.ServeListen == "" {
 		cfg.ServeListen = ":123"
 	}
+	for i, srv := range cfg.NTPServers {
+		cfg.NTPServers[i] = ntpAddress(srv)
+	}
 	d := &Daemon{cfg: cfg, clock: clock, log: logger, stratum: 3, openGPS: openSerialGPS}
 	d.probeNTP = func(ctx context.Context, server string) (time.Duration, time.Duration, error) {
 		return QueryNTP(ctx, server, 2*time.Second, nil)
 	}
 	return d
+}
+
+// ntpAddress gives a bare host the default NTP port, so "pool.ntp.org" in the
+// configuration means the same thing to the client as to the validator (a
+// missing port made every NTP probe fail with "missing port in address", and
+// the station silently fell back to the GPS).
+func ntpAddress(server string) string {
+	server = strings.TrimSpace(server)
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server
+	}
+	return net.JoinHostPort(server, "123")
 }
 
 // Run serves time and disciplines the clock until ctx is cancelled: one pass

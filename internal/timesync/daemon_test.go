@@ -113,7 +113,7 @@ func TestPassPrefersNTP(t *testing.T) {
 		t.Fatalf("stepped by %s, want 500ms", got)
 	}
 	st := d.Status()
-	if st.Source != "ntp" || st.Detail != "pool.ntp.org" || !st.Stepped {
+	if st.Source != "ntp" || st.Detail != "pool.ntp.org:123" || !st.Stepped {
 		t.Fatalf("status = %+v, want an ntp step", st)
 	}
 	if st.Stratum != 1 {
@@ -354,5 +354,30 @@ func TestLoadStatusRoundTrip(t *testing.T) {
 func TestLoadStatusMissingFile(t *testing.T) {
 	if _, err := LoadStatus(filepath.Join(t.TempDir(), "absent.json")); err == nil {
 		t.Fatal("a missing status file must be an error")
+	}
+}
+
+// TestDaemonNormalizesNTPAddress pins the address the probe is dialled with: a
+// bare host from the configuration must become host:123, otherwise every probe
+// fails with "missing port in address" and the station quietly relies on the
+// GPS alone (found during the production deployment).
+func TestDaemonNormalizesNTPAddress(t *testing.T) {
+	var seen []string
+	d := NewDaemon(Config{NTPServers: []string{"pool.ntp.org", " 10.0.0.1:1123 "}}, &fakeClock{t: time.Now()}, nil)
+	d.probeNTP = func(_ context.Context, server string) (time.Duration, time.Duration, error) {
+		seen = append(seen, server)
+		return 0, time.Millisecond, nil
+	}
+
+	d.pass(context.Background())
+
+	want := []string{"pool.ntp.org:123", "10.0.0.1:1123"}
+	if len(seen) != len(want) {
+		t.Fatalf("probed %v, want %v", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("probed %v, want %v", seen, want)
+		}
 	}
 }

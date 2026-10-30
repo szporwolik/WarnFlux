@@ -45,6 +45,24 @@ The host's `compose.yml` files must be the *base* variant: same services, no
 `devices:`/`group_add`. Move those lines into the matching `compose.devices.yml`
 (they are already there in this repository).
 
+## Host information on the panel (optional mount)
+
+The dashboard's System card shows the kernel, the architecture, the processor
+model, the host uptime and its load average — all read from `/proc`, which is
+the **host's** even inside a container. The distribution name is the exception:
+inside a container `/etc/os-release` describes the *image*, so the row is left
+out unless the host's file is mounted for the panel:
+
+```yaml
+services:
+  warnflux:
+    volumes:
+      - /etc/os-release:/host/os-release:ro
+```
+
+That is the only line involved; without it the card simply omits the "Operating
+system" row instead of showing the image's distribution as if it were the host's.
+
 ## kernel modules for the running kernel
 
 `warnflux-usb-modules.service` (install it the same way) installs

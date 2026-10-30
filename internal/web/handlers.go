@@ -14,6 +14,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/sysinfo"
 )
 
 // routerHeartbeatStaleAfter marks a router heartbeat stale when no status
@@ -44,6 +45,12 @@ type statusView struct {
 	MemClass string
 	MemUsed  float64 // GiB
 	MemTotal float64 // GiB
+
+	// Host is the machine the station runs on: the kernel, the architecture,
+	// the processor model and the host's own uptime and load. The rows whose
+	// value is empty are left out (a container without the host's os-release
+	// does not pretend to know the distribution).
+	Host sysinfo.Host
 }
 
 // ---- MQTT connections view ----------------------------------------------
@@ -238,6 +245,7 @@ func (s *Server) buildStatusView() statusView {
 			view.CPUAvail = true
 			view.CPUClass = gaugeClass(cpu)
 		}
+		view.Host = s.sys.Host()
 		if mem, used, total, ok := s.sys.Memory(); ok {
 			view.Mem = mem
 			view.MemAvail = true

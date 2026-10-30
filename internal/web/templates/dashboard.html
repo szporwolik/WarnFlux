@@ -39,6 +39,11 @@
   <div class="kv-grid">
     <div class="kv"><span class="k">{{tr .Lang "dash.version"}}</span><span class="v">{{.Version}} ({{shortCommit .Commit}})</span></div>
     <div class="kv"><span class="k">{{tr .Lang "dash.uptime"}}</span><span class="v">{{dur .Uptime}}</span></div>
+    {{if .Host.OS}}<div class="kv"><span class="k">{{tr .Lang "dash.host_os"}}</span><span class="v">{{.Host.OS}}</span></div>{{end}}
+    {{if .Host.Kernel}}<div class="kv"><span class="k">{{tr .Lang "dash.host_kernel"}}</span><span class="v">{{.Host.Kernel}}{{if .Host.Arch}} <span class="muted">({{.Host.Arch}})</span>{{end}}</span></div>{{end}}
+    {{if .Host.CPU}}<div class="kv"><span class="k">{{tr .Lang "dash.host_cpu"}}</span><span class="v">{{.Host.CPU}}{{if .Host.Cores}} <span class="muted">· {{.Host.Cores}} {{tr .Lang "dash.host_cores"}}</span>{{end}}</span></div>{{end}}
+    {{if .Host.Uptime}}<div class="kv"><span class="k">{{tr .Lang "dash.host_uptime"}}</span><span class="v">{{dur .Host.Uptime}}</span></div>{{end}}
+    {{if .Host.Load}}<div class="kv"><span class="k">{{tr .Lang "dash.host_load"}}</span><span class="v">{{.Host.Load}} <span class="muted">{{tr .Lang "dash.host_load_hint"}}</span></span></div>{{end}}
     <div class="kv"><span class="k">{{tr .Lang "dash.cpu"}}</span><span class="v">{{if .CPUAvail}}<span class="kv-gauge" title="{{tr .Lang "dash.host_cpu_hint"}}"><span class="kv-gauge-fill {{.CPUClass}}" style="width: {{printf "%.1f" .CPU}}%"></span></span>{{printf "%.1f" .CPU}}%{{else}}<span class="muted">n/a</span>{{end}}</span></div>
     <div class="kv"><span class="k">{{tr .Lang "dash.memory"}}</span><span class="v">{{if .MemAvail}}<span class="kv-gauge" title="{{tr .Lang "dash.host_mem_hint"}}"><span class="kv-gauge-fill {{.MemClass}}" style="width: {{printf "%.1f" .Mem}}%"></span></span>{{printf "%.1f" .Mem}}% <span class="muted">({{printf "%.1f" .MemUsed}} / {{printf "%.1f" .MemTotal}} GiB)</span>{{else}}<span class="muted">n/a</span>{{end}}</span></div>
     <div class="kv"><span class="k">{{tr .Lang "dash.messages"}}</span><span class="v">{{.Messages}} {{trf .Lang "dash.malformed_of" .Malformed .Oversized}}</span></div>

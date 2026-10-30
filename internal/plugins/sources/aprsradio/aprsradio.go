@@ -40,7 +40,10 @@ const (
 	defaultMaxFrame = 2048
 
 	minReconnectDelay = 2 * time.Second
-	maxReconnectDelay = 2 * time.Minute
+	// The KISS server is normally direwolf on this very host: waiting minutes
+	// for a local TNC to come back only delays the radio link (the restart of
+	// direwolf during the 2026-10-29 migration cost a two-minute silence).
+	maxReconnectDelay = 30 * time.Second
 )
 
 // healthySessionReset is how long a session must run before a drop resets

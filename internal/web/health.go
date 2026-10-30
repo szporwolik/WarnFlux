@@ -178,8 +178,27 @@ func clockDetail(lang string, clk *health.Clock) (string, health.Level) {
 	case clk.At.IsZero():
 		return i18n.T(lang, "health.clock.pending"), health.LevelWarn
 	}
-	age := time.Since(clk.At).Round(time.Minute).String()
-	return fmt.Sprintf(i18n.T(lang, "health.clock.ok"), clk.Source, age), level
+	return fmt.Sprintf(i18n.T(lang, "health.clock.ok"), clk.Source, humanAge(time.Since(clk.At))), level
+}
+
+// humanAge renders the age of the last discipline pass the way a person reads
+// it ("2h05m", "8m", "<1m") — the raw Go duration said "14h11m0s".
+func humanAge(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	// Truncate, not round: 59 s is not one minute yet.
+	d = d.Truncate(time.Minute)
+	hours := int(d / time.Hour)
+	minutes := int(d/time.Minute) % 60
+	switch {
+	case hours > 0:
+		return fmt.Sprintf("%dh%02dm", hours, minutes)
+	case minutes > 0:
+		return fmt.Sprintf("%dm", minutes)
+	default:
+		return "<1m"
+	}
 }
 
 // badgeForLevel renders a shared verdict level as the panel's badge class.

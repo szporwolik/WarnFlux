@@ -229,6 +229,11 @@ func TestWireStatusGoldenJSON(t *testing.T) {
 		OldestPendingAge: 25 * time.Second,
 		Sources: []plugin.PluginStatus{
 			{ID: "demo", Type: "demo", State: plugin.StateRunning, ConsecutiveFailures: 0, RestartCount: 1},
+			// Recovered after a timeout: the tracker still remembers the text,
+			// but the published document must not present it as current state.
+			{ID: "adsb", Type: "adsb", State: plugin.StateRunning, ConsecutiveFailures: 0, LastError: "x509: certificate has expired"},
+			// Still failing: its error IS the current state.
+			{ID: "metar", Type: "metar", State: plugin.StateDegraded, ConsecutiveFailures: 2, LastError: "context deadline exceeded"},
 		},
 		Outputs: []plugin.PluginStatus{
 			{ID: "mqtt-main", Type: "mqtt", State: plugin.StateSuspended, ConsecutiveFailures: 5, RestartCount: 0, LastError: "connect: timeout"},
@@ -244,7 +249,9 @@ func TestWireStatusGoldenJSON(t *testing.T) {
 		`"generated_at":"2026-09-22T12:00:00Z","version":"0.1.0",` +
 		`"uptime_seconds":90,"database_healthy":true,"pending_changes":3,` +
 		`"oldest_pending_age_seconds":25,` +
-		`"sources":[{"id":"demo","type":"demo","state":"running","consecutive_failures":0,"restart_count":1}],` +
+		`"sources":[{"id":"demo","type":"demo","state":"running","consecutive_failures":0,"restart_count":1},` +
+		`{"id":"adsb","type":"adsb","state":"running","consecutive_failures":0,"restart_count":0},` +
+		`{"id":"metar","type":"metar","state":"degraded","consecutive_failures":2,"restart_count":0,"last_error":"context deadline exceeded"}],` +
 		`"outputs":[{"id":"mqtt-main","type":"mqtt","state":"suspended","consecutive_failures":5,"restart_count":0,"last_error":"connect: timeout"}]}`
 	if string(payload) != want {
 		t.Errorf("wire status mismatch:\n got %s\nwant %s", payload, want)

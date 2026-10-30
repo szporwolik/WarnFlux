@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,12 +34,25 @@ func (f *fakeWithdrawer) WithdrawSourceEvents(_ context.Context, source string, 
 	return out, nil
 }
 
-// fakeRetirer records the retained deletes.
-type fakeRetirer struct{ keys []string }
+// fakeRetirer records the retained deletes. Guarded: the withdrawals happen in
+// a goroutine while the test waits for them.
+type fakeRetirer struct {
+	mu   sync.Mutex
+	keys []string
+}
 
 func (f *fakeRetirer) ExpireActive(source, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.keys = append(f.keys, source+"/"+key)
 	return nil
+}
+
+// retired returns the recorded deletes.
+func (f *fakeRetirer) retired() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.keys...)
 }
 
 // TestWithdrawDisabledSources pins the production case: nine road works from a
@@ -64,11 +78,11 @@ func TestWithdrawDisabledSources(t *testing.T) {
 	}
 	// The broker half runs in a goroutine.
 	deadline := time.Now().Add(2 * time.Second)
-	for len(retirer.keys) == 0 && time.Now().Before(deadline) {
+	for len(retirer.retired()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(retirer.keys) != 1 || retirer.keys[0] != "gddkia/gddkia:abc" {
-		t.Fatalf("retired = %v, want the withdrawn event only", retirer.keys)
+	if got := retirer.retired(); len(got) != 1 || got[0] != "gddkia/gddkia:abc" {
+		t.Fatalf("retired = %v, want the withdrawn event only", got)
 	}
 }
 
@@ -79,8 +93,8 @@ func TestWithdrawDisabledSourcesIgnoresConfiguredSources(t *testing.T) {
 	retirer := &fakeRetirer{}
 	withdrawDisabledSources(context.Background(), store, store, retirer,
 		[]config.Source{{Type: "imgw-meteo", Enabled: true}}, nil)
-	if len(store.withdrawn) != 0 || len(retirer.keys) != 0 {
-		t.Fatalf("withdrew %v / retired %v, want nothing", store.withdrawn, retirer.keys)
+	if len(store.withdrawn) != 0 || len(retirer.retired()) != 0 {
+		t.Fatalf("withdrew %v / retired %v, want nothing", store.withdrawn, retirer.retired())
 	}
 }
 
@@ -94,10 +108,10 @@ func TestWithdrawDisabledSourcesCatchesRemovedSource(t *testing.T) {
 		t.Fatalf("removed source was not withdrawn: %v", store.withdrawn)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for len(retirer.keys) == 0 && time.Now().Before(deadline) {
+	for len(retirer.retired()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(retirer.keys) != 1 {
-		t.Fatalf("retired = %v, want one", retirer.keys)
+	if got := retirer.retired(); len(got) != 1 {
+		t.Fatalf("retired = %v, want one", got)
 	}
 }

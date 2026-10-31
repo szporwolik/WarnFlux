@@ -63,6 +63,7 @@ development entry point, **not an installation guide**.
 - [docs/offline-mode.md](docs/offline-mode.md) — off-grid operation
 - [docs/time-sync.md](docs/time-sync.md) — keeping the station clock right (NTP, GPS, LAN time server)
 - [docs/resilience.md](docs/resilience.md) — hardening notes
+- [docs/operations.md](docs/operations.md) — runbook: what runs where, boot sequence, health checks, upgrades, troubleshooting
 
 ```bash
 go build ./...   # development build only

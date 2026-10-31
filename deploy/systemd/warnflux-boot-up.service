@@ -7,7 +7,9 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
+# No RemainAfterExit: the unit must go inactive after each run, otherwise the
+# retry timer (OnUnitActiveSec) has no next activation to schedule and the
+# self-healing pass would run exactly once, at boot.
 ExecStart=/usr/local/sbin/warnflux-boot-up.sh
 # A missing device must not leave the unit "failed" forever: the reconcile
 # timer retries the whole set every couple of minutes anyway.

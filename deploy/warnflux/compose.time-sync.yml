@@ -26,6 +26,11 @@ services:
         max-file: "3"
     restart: unless-stopped
     command: ["--config", "/config/config.yaml", "-time-sync"]
+    # This process serves SNTP, not HTTP: the image's liveness check would ask a
+    # port that does not exist here and mark a perfectly healthy clock container
+    # unhealthy (the boot-up pass would then restart it on every pass).
+    healthcheck:
+      disable: true
     user: "0:0"
     cap_drop: [ALL]
     cap_add: [SYS_TIME]

@@ -217,7 +217,9 @@ record_boot() {
 	[ -f "$STATE_DIR/boot_id" ] && seen=$(cat "$STATE_DIR/boot_id" 2>/dev/null || true)
 	[ "$boot_id" = "$seen" ] && return 0
 	throttled=$(vcgencmd get_throttled 2>/dev/null || echo "throttled=n/a")
-	alerts=$(dmesg 2>/dev/null | grep -icE "under-voltage|thermal|watchdog|panic" || true)
+	# Only real trouble: the panel's own dmesg mentions the watchdog and the
+	# thermal governor at every boot without anything being wrong.
+	alerts=$(dmesg 2>/dev/null | grep -icE "under-voltage|oops|kernel panic|BUG: |thermal.*(critical|throttl)|emergency" || true)
 	history="$STATE_DIR/boots.log"
 	printf '%s boot=%s uptime=%ss %s dmesg_alerts=%s\n' \
 		"$(date -Is)" "$boot_id" "$(cut -d. -f1 /proc/uptime)" "$throttled" "$alerts" >>"$history"

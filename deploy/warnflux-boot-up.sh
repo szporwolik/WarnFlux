@@ -202,15 +202,41 @@ restart_unhealthy() {
 	done
 }
 
+# record_boot appends one line per boot to the station's own history. The host
+# journal on Raspberry Pi OS is volatile (Storage=volatile, to spare the SD
+# card), so an unattended reboot leaves nothing behind to look at — and "did it
+# come back by itself, and did the hardware complain?" is exactly what matters
+# on a station nobody watches. The line records the boot id, how long the
+# machine had been up when this pass ran, the firmware's throttle flags
+# (undervoltage survives in them until the power is really cut) and how many
+# dmesg lines look like a hardware event.
+record_boot() {
+	[ -n "$STATE_DIR" ] || return 0
+	boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)
+	seen=""
+	[ -f "$STATE_DIR/boot_id" ] && seen=$(cat "$STATE_DIR/boot_id" 2>/dev/null || true)
+	[ "$boot_id" = "$seen" ] && return 0
+	throttled=$(vcgencmd get_throttled 2>/dev/null || echo "throttled=n/a")
+	alerts=$(dmesg 2>/dev/null | grep -icE "under-voltage|thermal|watchdog|panic" || true)
+	history="$STATE_DIR/boots.log"
+	printf '%s boot=%s uptime=%ss %s dmesg_alerts=%s\n' \
+		"$(date -Is)" "$boot_id" "$(cut -d. -f1 /proc/uptime)" "$throttled" "$alerts" >>"$history"
+	echo "$boot_id" >"$STATE_DIR/boot_id"
+	# Keep the file readable: one line per boot, a few months is plenty.
+	tail -n 200 "$history" >"$history.tmp" 2>/dev/null && mv "$history.tmp" "$history" 2>/dev/null || true
+	log "boot recorded in $history ($throttled, dmesg alerts: $alerts)"
+}
+
 log "starting: waiting for a plausible clock"
 wait_for_clock || true
 
-# State for the device fingerprints; without it the pass still starts stacks,
-# it just cannot tell that a mapped node moved.
+# State for the device fingerprints and the boot history; without it the pass
+# still starts stacks, it just cannot tell that a mapped node moved.
 if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
 	log "cannot use $STATE_DIR for device fingerprints - recreations disabled"
 	STATE_DIR=""
 fi
+record_boot || true
 
 # Broker first: the station's receiver, the radio's pub/sub and other hosts
 # all connect to it at start-up.

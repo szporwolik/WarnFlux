@@ -27,7 +27,7 @@ device up by itself once it is plugged in.
 | `systemd/timesyncd-warnflux-fallback.conf` | `systemd-timesyncd` drop-in used by that fallback (ordinary NTP pool, never the station itself). |
 | `warnflux-boot-up.sh` + `systemd/warnflux-boot-up.{service,timer}` | **The boot path.** Waits for a synchronised clock and for every mapped device, then starts the stacks in dependency order; the same script also runs from a timer (5 minutes after the previous pass finished) as the self-healing loop, and restarts any station container Docker reports as `unhealthy` (the image's `HEALTHCHECK` is `/warnflux -healthcheck`). |
 | `warnflux-stack-up.sh` (deprecated) | Waits up to 120 s for the device, then `docker compose up -d` **with** the overlay when it exists, **without** it when it does not. Superseded by `warnflux-boot-up.sh`. |
-| Device mapping rule | Always map **by-id** paths (`/dev/serial/by-id/...`), never a bare `/dev/ttyUSB0` or `/dev/ttyACM0`: the numbering swaps between devices after a re-enumeration, and a number hands the container the wrong device without any error. |
+| Device mapping rule | Always map a stable name — a **by-id** path (`/dev/serial/by-id/...`) or a udev link (`/dev/warnflux-ptt`, see `deploy/udev/`), never a bare `/dev/ttyUSB0`, `/dev/ttyACM0` or `/dev/hidraw0`: the numbering swaps between devices after a re-enumeration, and a number hands the container the wrong device without any error. `warnflux-boot-up.sh` recreates the stack when a mapped name starts resolving to a different node. |
 | `warnflux-stack-reconcile.sh` | Compares "device present on the host" with "device mapped into the container" and recreates only that service when they differ — a running container never gains a device node. |
 | `systemd/*.service`, `systemd/*.timer` | Autostart on boot plus the 2-minute reconcile timer (USB hotplug without a manual restart). |
 
@@ -72,7 +72,16 @@ install -m 0644 deploy/systemd/warnflux-boot-up.service \
 systemctl daemon-reload
 systemctl enable --now warnflux-boot-up.service warnflux-boot-up.timer
 systemctl enable systemd-timesyncd        # early clock; the guard STOPS it later
+
+# Stable name for the AIOC HID interface (there is no by-id link for HID):
+install -m 0644 deploy/udev/70-warnflux-ptt.rules /etc/udev/rules.d/
+udevadm control --reload-rules && udevadm trigger --subsystem-match=hidraw
 ```
+
+A container keeps the device node it was created with, so waiting for the
+device is not enough after a re-enumeration. The pass therefore stores a
+fingerprint of every mapped host path (`/var/lib/warnflux/<stack>.devices`) and
+recreates that stack when the node behind a stable name has moved.
 
 Which supersedes the older `warnflux-stack.service`, `aprs-direwolf.service` and
 `warnflux-stack-reconcile.timer` — disable them so two units do not race for the
@@ -82,6 +91,7 @@ stops it (see `docs/time-sync.md`): it must run again at every boot.
 Verifying a reboot:
 
 ```sh
+ls -l /dev/warnflux-ptt                   # stable HID name, if the AIOC is in
 sudo reboot
 # after it comes back:
 systemctl is-active warnflux-boot-up.timer       # the loop is armed

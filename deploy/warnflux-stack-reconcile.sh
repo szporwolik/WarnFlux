@@ -6,6 +6,10 @@
 # compares "device present on the host" with "device mapped into the container"
 # and recreates the service only when they disagree — no needless restarts.
 #
+# DEPRECATED: superseded by warnflux-boot-up.sh, which also notices a device
+# that is still present but now resolves to a different node (a re-enumerated
+# /dev/hidrawN or ttyACM*), not just one that appeared or vanished.
+#
 # usage: stack-reconcile.sh <compose-dir> <device-path> <service>
 set -eu
 

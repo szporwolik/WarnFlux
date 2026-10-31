@@ -1,9 +1,22 @@
-# Device overlay for the Direwolf APRS stack: the AIOC cable (audio + PTT/PTT
-# hidraw) must exist when the container is CREATED, so it lives here and not in
-# compose.yml — see deploy/warnflux-stack-up.sh.
+# Device overlay for the Direwolf APRS stack: the AIOC cable (audio + serial
+# PTT + HID) must exist when the container is CREATED, so it lives here and not
+# in compose.yml — see deploy/README.md.
+#
+# Every mapped HOST path is a stable name on purpose. /dev/ttyACM* and
+# /dev/hidraw* are handed out in enumeration order and swap between the GPS, the
+# sound card and the modem on a re-plug; mapping the raw number pins the
+# container to whichever device happened to be first at creation time.
+#
+#   /dev/snd                 a directory: new nodes inside it are visible at once
+#   .../by-id/...-if04       udev's stable serial link, mapped to a fixed name
+#   /dev/warnflux-ptt        udev rule deploy/udev/70-warnflux-ptt.rules
+#
+# The symlink targets can still change behind our back, and a container keeps
+# the node it was created with: warnflux-boot-up.sh fingerprints the mappings
+# and recreates this stack when the node behind one of them is different.
 services:
   direwolf:
     devices:
       - /dev/snd:/dev/snd
       - /dev/serial/by-id/usb-AIOC_All-In-One-Cable_c7863d4d-if04:/dev/ttyACM0
-      - /dev/hidraw0:/dev/hidraw0
+      - /dev/warnflux-ptt:/dev/hidraw0

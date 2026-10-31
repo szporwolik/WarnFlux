@@ -17,6 +17,14 @@
 #      container is CREATED, and direwolf exits ("Audio input device 0 error
 #      code -19", "Terminating after audio input failure") when the sound card
 #      is not there yet. We wait for the device paths before touching the stack.
+#   3. RENUMBERED DEVICES. Waiting is not enough: the container keeps the node it
+#      was created with, so after a re-enumeration it talks to a device that no
+#      longer exists (ttyACM0 became ttyACM1, hidraw0 became hidraw1). Stable
+#      names (by-id, the warnflux-ptt udev rule) keep the mapping valid, and the
+#      fingerprint stored per stack recreates the container when the node behind
+#      a mapped name has moved.
+#   4. WEDGED CONTAINERS. A restart policy covers exits, not hangs; the pass ends
+#      by restarting its own containers that Docker reports as unhealthy.
 #
 # Order matters: broker -> radio -> clock discipline -> station, because each
 # service connects to the previous one at start-up.
@@ -25,6 +33,12 @@ set -eu
 DOCKER_ROOT="${WARNFLUX_DOCKER_ROOT:-/srv/docker}"
 CLOCK_WAIT_SECONDS="${WARNFLUX_CLOCK_WAIT_SECONDS:-120}"
 DEVICE_WAIT_SECONDS="${WARNFLUX_DEVICE_WAIT_SECONDS:-60}"
+# Where the device-mapping fingerprints live (see devices_fingerprint).
+STATE_DIR="${WARNFLUX_STATE_DIR:-/var/lib/warnflux}"
+# The AIOC cable's HID interface, addressed by a stable name instead of
+# /dev/hidrawN (see deploy/udev/70-warnflux-ptt.rules).
+PTT_LINK=/dev/warnflux-ptt
+PTT_HID_ID="${WARNFLUX_PTT_HID_ID:-00001209:00007388}"
 LOG_TAG="warnflux-boot-up"
 
 log() { echo "$LOG_TAG: $*"; }
@@ -72,6 +86,46 @@ wait_for_path() {
 	return 1
 }
 
+# ensure_ptt_link gives the AIOC HID interface a name that survives a
+# re-enumeration. The udev rule (deploy/udev/70-warnflux-ptt.rules) is the
+# canonical way to create it; this is the safety net for a host where the rule
+# was never installed, so the device overlay does not depend on it.
+#
+# A dangling link counts as absent: udev repoints the link when the cable comes
+# back, and if udev is not there, the old target is gone and we rebuild it.
+ensure_ptt_link() {
+	[ -e "$PTT_LINK" ] && return 0
+	for hid in /sys/class/hidraw/hidraw*; do
+		[ -e "$hid" ] || continue
+		if grep -qF "$PTT_HID_ID" "$hid/device/uevent" 2>/dev/null; then
+			node="/dev/$(basename "$hid")"
+			if ln -sf "$node" "$PTT_LINK"; then
+				log "created $PTT_LINK -> $node"
+				return 0
+			fi
+		fi
+	done
+	log "$PTT_LINK: AIOC HID interface not found"
+	return 1
+}
+
+# devices_fingerprint describes what the host paths in a device overlay resolve
+# to RIGHT NOW: the node behind each (possibly stable) name plus its major:minor.
+#
+# A container keeps the device node it was CREATED with, so a re-enumeration
+# silently leaves it talking to a node that no longer exists. Comparing the
+# stored fingerprint with a fresh one is how the pass notices.
+devices_fingerprint() {
+	sed -n 's#^ *- \(/dev/[^:]*\):.*#\1#p' "$1" | while read -r path; do
+		target=$(readlink -f "$path" 2>/dev/null || true)
+		if [ -n "$target" ] && [ -e "$target" ]; then
+			printf '%s=%s:%s\n' "$path" "$target" "$(stat -Lc '%t:%T' "$target" 2>/dev/null)"
+		else
+			printf '%s=missing\n' "$path"
+		fi
+	done | sort
+}
+
 # compose_up starts one stack, using its device overlay only when the overlay
 # exists AND every path it maps is present (a missing device makes `up` fail
 # with exit 255 and Docker never retries).
@@ -100,7 +154,23 @@ compose_up() {
 			done)
 		fi
 		if [ -z "$missing" ]; then
-			(cd "$DOCKER_ROOT/$stack" && docker compose -f "$file" -f "$overlay" up -d) || log "$stack: up with overlay failed"
+			# Recreate only when a mapped device now resolves somewhere else,
+			# never on a plain pass.
+			extra=""
+			state_file="$STATE_DIR/$stack.devices"
+			if [ -n "$STATE_DIR" ] && [ -f "$state_file" ]; then
+				if ! devices_fingerprint "$overlay" | cmp -s - "$state_file"; then
+					log "$stack: a mapped device changed since the container was created - recreating"
+					extra="--force-recreate"
+				fi
+			fi
+			if (cd "$DOCKER_ROOT/$stack" && docker compose -f "$file" -f "$overlay" up -d $extra); then
+				if [ -n "$STATE_DIR" ]; then
+					devices_fingerprint "$overlay" >"$state_file" 2>/dev/null || true
+				fi
+			else
+				log "$stack: up with overlay failed"
+			fi
 			return 0
 		fi
 		log "$stack: starting WITHOUT the device overlay (missing: $missing)"
@@ -135,10 +205,18 @@ restart_unhealthy() {
 log "starting: waiting for a plausible clock"
 wait_for_clock || true
 
+# State for the device fingerprints; without it the pass still starts stacks,
+# it just cannot tell that a mapped node moved.
+if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+	log "cannot use $STATE_DIR for device fingerprints - recreations disabled"
+	STATE_DIR=""
+fi
+
 # Broker first: the station's receiver, the radio's pub/sub and other hosts
 # all connect to it at start-up.
 compose_up mqtt
 # Radio: needs the AIOC sound card (and its tty for PTT).
+ensure_ptt_link || true
 compose_up aprs
 # Clock discipline: needs the GPS receiver; serves UDP 123 to the LAN.
 compose_up warnflux-time

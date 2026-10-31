@@ -108,6 +108,25 @@ compose_up() {
 	(cd "$DOCKER_ROOT/$stack" && docker compose -f "$file" up -d) || log "$stack: up failed"
 }
 
+# restart_unhealthy restarts a station container that Docker reports as
+# unhealthy. A restart policy covers exits, not hangs: a process that is alive
+# but no longer answering keeps its container "running" forever, and nothing
+# else in the system would notice. Names match the container_name values in the
+# station's compose files.
+restart_unhealthy() {
+	for name in $(docker ps --filter health=unhealthy --format '{{.Names}}'); do
+		case "$name" in
+		mosquitto | direwolf | warnflux | warnflux-time)
+			log "$name: unhealthy - restarting"
+			docker restart "$name" >/dev/null || log "$name: restart failed"
+			;;
+		*)
+			log "$name: unhealthy but not managed here - left alone"
+			;;
+		esac
+	done
+}
+
 log "starting: waiting for a plausible clock"
 wait_for_clock || true
 
@@ -120,5 +139,8 @@ compose_up aprs
 compose_up warnflux-time
 # The station itself.
 compose_up warnflux
+
+# Last: anything that came back but stopped answering (see restart_unhealthy).
+restart_unhealthy
 
 log "done"

@@ -43,6 +43,13 @@ whether the station comes up. Three pieces handle that:
 | `warnflux-clock-guard.timer` → `warnflux-clock-guard.service` | Decides who owns the clock: the station container while it is alive and its last sync is recent, otherwise `systemd-timesyncd`. |
 | `systemd-timesyncd` (enabled) | The fallback clock. The guard only stops it, never disables it, so it is back after every boot. |
 
+The station container also carries a Docker `HEALTHCHECK` whose command is the
+binary itself (`/warnflux -healthcheck`, the image has no shell to run `curl`
+in). It asks the panel's own `/healthz` every 30 s. Docker only *reports* that
+state — a restart policy covers exits, not hangs — so the boot-up pass ends by
+restarting any of its own containers that are `unhealthy`. Together they cover
+the case where the process is alive but has stopped answering.
+
 Docker's `restart: unless-stopped` policy also starts the containers directly at
 boot, before the clock is right — that is why a broker with TLS can come up
 `Exited 255` and then be fixed by the boot-up pass a moment later. The correct
@@ -78,6 +85,7 @@ systemctl list-timers warnflux-boot-up.timer        # NEXT must be scheduled
 
 # containers
 docker ps --format '{{.Names}}\t{{.Status}}'        # four stacks Up, restarts=0
+docker inspect warnflux --format '{{.State.Health.Status}}'   # expect: healthy
 
 # the station
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/healthz
@@ -116,6 +124,7 @@ new version in its health card.
 | Symptom | First thing to check |
 |---|---|
 | A container is `Exited 255` right after boot | Its device is missing or was renamed → `ls -l /dev/serial/by-id/`, then wait for the next boot-up pass. |
+| The panel does not answer but the container is "Up" | `docker inspect warnflux --format '{{.State.Health.Status}}'`: once it reads `unhealthy`, the next boot-up pass (≤5 min) restarts it. |
 | The panel is up but the clock card shows amber | `docker logs warnflux-time`; a `clock stepped` line right after boot is normal (Docker starts the stack before the clock is synchronised). |
 | Nothing on APRS, everything else fine | `docker logs direwolf`, and the RF side: squelch, antenna, feedline — a station with a deaf receiver still hears the internet feed. |
 | Broker shows no `warnflux/active/#` while the panel lists warnings | Outbound publishing is behind a durable cursor; a broker restart is caught up automatically (see [durability.md](durability.md)). |
@@ -130,6 +139,9 @@ new version in its health card.
   `/dev/ttyACM*` will eventually break on a reboot; use by-id paths.
 - **HID devices have no by-id path.** The AIOC PTT interface is still addressed
   as `/dev/hidrawN`, so a udev rule is the only way to make it stable.
+- **The watchdog sees whole-process hangs only.** If a single plugin wedges
+  while the HTTP server keeps answering, `/healthz` stays green and nothing
+  restarts the container; look at the health card and the logs instead.
 - **RF reception is physical.** Software can tell you the frame counter; it
   cannot tell you the antenna is disconnected.
 - **One broker, one database, no replication.** Backups are copies, not a

@@ -39,6 +39,7 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/geo"
 	"github.com/szporwolik/WarnFlux/internal/gsm"
 	"github.com/szporwolik/WarnFlux/internal/health"
+	"github.com/szporwolik/WarnFlux/internal/healthprobe"
 	"github.com/szporwolik/WarnFlux/internal/ingest"
 	"github.com/szporwolik/WarnFlux/internal/ingesthttp"
 	"github.com/szporwolik/WarnFlux/internal/meshtastic"
@@ -653,16 +654,36 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 // depend on the browser still being there.
 const resetMailTimeout = 30 * time.Second
 
+// defaultProbeURL is where -healthcheck looks unless the operator points it
+// elsewhere. The environment variable exists so a Compose file can move the
+// probe without changing the command line.
+func defaultProbeURL() string {
+	if url := os.Getenv("WARNFLUX_HEALTHCHECK_URL"); url != "" {
+		return url
+	}
+	return healthprobe.DefaultURL
+}
+
 func main() {
 	fs := flag.NewFlagSet("warnflux", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultConfigPath, "path to YAML configuration file")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	checkConfig := fs.Bool("check-config", false, "validate the configuration (strict decode of every plugin/action/receiver) and exit without opening the database or connecting anywhere")
 	timeSync := fs.Bool("time-sync", false, "run only the clock discipline process (NTP/GPS + SNTP server) and exit on shutdown — the station itself needs no privileges")
+	runProbe := fs.Bool("healthcheck", false, "probe the running station's liveness endpoint and exit: 0 when it answers, 1 otherwise (the container healthcheck)")
+	probeURL := fs.String("healthcheck-url", defaultProbeURL(), "URL asked by -healthcheck")
 	fs.Parse(os.Args[1:])
 
 	if *showVersion {
 		fmt.Printf("warnflux %s (%s)\n", resolveVersion(version), commit)
+		return
+	}
+
+	if *runProbe {
+		if err := healthprobe.Probe(context.Background(), *probeURL); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 

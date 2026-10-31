@@ -7,7 +7,11 @@
 # (see deploy/warnflux-stack-up.sh and the reconcile timer).
 services:
   warnflux:
+    # by-id, never a bare ttyUSB number: the numbering moves when USB
+    # re-enumerates (it already swapped for the GPS and the AIOC on the same
+    # host), and a number would silently hand the station the wrong device.
+    # gsm.device in the configuration must point at /dev/modem accordingly.
     devices:
-      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if00-port0:/dev/modem
     group_add:
       - "20"   # dialout: rw on the modem device

@@ -35,8 +35,18 @@ log() { echo "$LOG_TAG: $*"; }
 wait_for_clock() {
 	waited=0
 	while [ "$waited" -lt "$CLOCK_WAIT_SECONDS" ]; do
+		# The host client (kept ENABLED by the guard) is the earliest source;
+		# once it has stepped the clock, certificate-validating services are
+		# safe to start.
+		if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
+			log "clock synchronised after ${waited}s"
+			return 0
+		fi
 		year=$(date +%Y)
-		if [ "$year" -ge 2024 ]; then
+		if [ "$year" -ge 2024 ] && [ "$waited" -ge 15 ]; then
+			# Plausible enough: a station booting without an RTC is hours off,
+			# never years. The timer retries anyway if a service still fails.
+			log "clock plausible after ${waited}s (year $year, not yet NTP-synchronised)"
 			return 0
 		fi
 		sleep 1

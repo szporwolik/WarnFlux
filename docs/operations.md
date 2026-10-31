@@ -55,6 +55,12 @@ boot, before the clock is right — that is why a broker with TLS can come up
 `Exited 255` and then be fixed by the boot-up pass a moment later. The correct
 sequence is therefore: **let the timer do its job, then look**.
 
+Every boot leaves one line behind in `/var/lib/warnflux/boots.log` (boot id,
+uptime when the pass ran, the firmware's `get_throttled` flags, a count of
+hardware-looking `dmesg` lines). The host journal is volatile on Raspberry Pi OS
+— `Storage=volatile`, to spare the SD card — so without that file an unattended
+reboot leaves nothing to look at afterwards.
+
 `warnflux-boot-up.service` is a one-shot pass, not a state: it finishes
 `inactive` after every run. It must, otherwise the timer has no next activation
 to schedule. The timer re-runs it five minutes after the previous pass finished
@@ -119,6 +125,9 @@ docker exec mosquitto mosquitto_sub -h localhost -t 'warnflux/active/#' -W 2 -v 
 
 # clock
 docker logs warnflux-time --tail 20 | grep -E 'clock is good|clock stepped'
+
+# boots, and whether the hardware complained
+tail -5 /var/lib/warnflux/boots.log
 ```
 
 A pass that reports `NEXT = -` in `list-timers` means the self-healing loop is
@@ -152,6 +161,7 @@ new version in its health card.
 | The panel is up but the clock card shows amber | `docker logs warnflux-time`; a `clock stepped` line right after boot is normal (Docker starts the stack before the clock is synchronised). |
 | Nothing on APRS, everything else fine | `docker logs direwolf`, and the RF side: squelch, antenna, feedline — a station with a deaf receiver still hears the internet feed. |
 | Broker shows no `warnflux/active/#` while the panel lists warnings | Outbound publishing is behind a durable cursor; a broker restart is caught up automatically (see [durability.md](durability.md)). |
+| The host rebooted on its own | `tail /var/lib/warnflux/boots.log`: one line per boot with `get_throttled` (undervoltage survives there until the power is cut) and a count of hardware-looking `dmesg` lines. The journal itself is volatile, so it will not hold the previous boot. |
 | Warnings disappeared after a restart | A disabled source withdraws its own events. Check the plugin's `enabled` flag before assuming data loss. |
 | Panel slow or the database grows | `sqlite3 warnflux.db 'PRAGMA quick_check;'`, then look at the WAL size — a multi-megabyte WAL just means a checkpoint is pending. |
 

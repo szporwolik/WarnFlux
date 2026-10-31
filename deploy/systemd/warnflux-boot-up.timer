@@ -1,0 +1,11 @@
+[Unit]
+Description=WarnFlux boot-up retry timer (self-healing every 2 minutes)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=warnflux-boot-up.service
+
+[Install]
+WantedBy=timers.target

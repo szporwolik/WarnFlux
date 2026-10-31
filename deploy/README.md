@@ -45,6 +45,49 @@ The host's `compose.yml` files must be the *base* variant: same services, no
 `devices:`/`group_add`. Move those lines into the matching `compose.devices.yml`
 (they are already there in this repository).
 
+## Boot: every service comes back by itself
+
+A station that is expected to run unattended must survive "the machine came
+back but the broker did not". Two traps caused exactly that on the Pi:
+
+1. **No RTC.** The Pi wakes up with the time of its last shutdown (observed:
+   39 hours behind). Anything that validates a certificate at start-up dies
+   immediately and — with `restart: unless-stopped` — is not retried: mosquitto
+   with TLS exited 255 and stayed down.
+2. **Slow USB enumeration.** A mapped device must exist when the container is
+   CREATED, so direwolf exited with `Audio input device 0 error code -19` and
+   never came back.
+
+`warnflux-boot-up.sh` fixes both. It waits for a plausible clock and for every
+device named by a stack's `compose.devices.yml`, then brings the stacks up in
+dependency order (broker → radio → clock discipline → station). It is
+**idempotent**, so the same script runs from a timer as the self-healing pass:
+
+```sh
+install -m 0755 deploy/warnflux-boot-up.sh /usr/local/sbin/
+install -m 0644 deploy/systemd/warnflux-boot-up.service \
+               deploy/systemd/warnflux-boot-up.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now warnflux-boot-up.service warnflux-boot-up.timer
+systemctl enable systemd-timesyncd        # early clock; the guard STOPS it later
+```
+
+Which supersedes the older `warnflux-stack.service`, `aprs-direwolf.service` and
+`warnflux-stack-reconcile.timer` — disable them so two units do not race for the
+same stacks. The clock guard no longer *disables* the host NTP client, it only
+stops it (see `docs/time-sync.md`): it must run again at every boot.
+
+Verifying a reboot:
+
+```sh
+sudo reboot
+# after it comes back:
+systemctl is-active warnflux-boot-up.service warnflux-boot-up.timer
+docker ps --format '{{.Names}} {{.Status}}'      # all four stacks up
+curl -sk -o /dev/null -w '%{http_code}\n' https://<domain>/healthz
+journalctl -u warnflux-boot-up.service -b --no-pager
+```
+
 ## Host information on the panel (optional mount)
 
 The dashboard's System card shows the kernel, the architecture, the processor

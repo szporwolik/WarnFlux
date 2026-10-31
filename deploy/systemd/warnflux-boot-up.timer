@@ -1,9 +1,12 @@
 [Unit]
-Description=WarnFlux boot-up retry timer (self-healing every 2 minutes)
+Description=WarnFlux boot-up retry timer (self-healing every 5 minutes)
 
 [Timer]
+# OnBootSec catches the normal boot path; OnUnitInactiveSec re-runs the pass a
+# fixed time after the previous one finished, so the loop keeps rescheduling
+# itself (OnUnitActiveSec would stall once the oneshot unit went inactive).
 OnBootSec=3min
-OnUnitActiveSec=2min
+OnUnitInactiveSec=5min
 AccuracySec=30s
 Unit=warnflux-boot-up.service
 

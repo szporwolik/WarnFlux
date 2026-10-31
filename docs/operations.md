@@ -55,9 +55,14 @@ boot, before the clock is right — that is why a broker with TLS can come up
 `Exited 255` and then be fixed by the boot-up pass a moment later. The correct
 sequence is therefore: **let the timer do its job, then look**.
 
+systemd drives the board's hardware watchdog with a one-minute timeout
+(`systemctl show -p RuntimeWatchdogUSec systemd`): a fully wedged system reboots
+itself instead of staying dead, and the boot path above then brings the stacks
+back.
+
 Every boot leaves one line behind in `/var/lib/warnflux/boots.log` (boot id,
 uptime when the pass ran, the firmware's `get_throttled` flags, a count of
-hardware-looking `dmesg` lines). The host journal is volatile on Raspberry Pi OS
+under-voltage / panic / thermal lines in `dmesg`). The host journal is volatile on Raspberry Pi OS
 — `Storage=volatile`, to spare the SD card — so without that file an unattended
 reboot leaves nothing to look at afterwards.
 

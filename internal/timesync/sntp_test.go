@@ -15,7 +15,7 @@ func TestQueryNTPRoundTrip(t *testing.T) {
 	const skew = 3 * time.Second
 	addr := freeUDPAddr(t)
 	srv := &Server{
-		Stratum: func() uint8 { return 1 },
+		Quality: func() Quality { return Quality{Synced: true, Stratum: 1} },
 		Now:     func() time.Time { return time.Now().Add(skew) },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -25,7 +25,7 @@ func TestQueryNTPRoundTrip(t *testing.T) {
 	go func() { errCh <- srv.Serve(ctx, addr, ready) }()
 	<-ready
 
-	offset, rtt, err := QueryNTP(ctx, addr, 2*time.Second, nil)
+	offset, rtt, _, err := QueryNTP(ctx, addr, 2*time.Second, nil)
 	if err != nil {
 		t.Fatalf("QueryNTP: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestQueryNTPRoundTrip(t *testing.T) {
 // transmit timestamp echoed as "originate", and the server's own clock.
 func TestServerAnswer(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 500000000, time.UTC)
-	srv := &Server{Stratum: func() uint8 { return 2 }, Now: func() time.Time { return now }}
+	srv := &Server{Quality: func() Quality { return Quality{Synced: true, Stratum: 2} }, Now: func() time.Time { return now }}
 	req := make([]byte, sntpPacketSize)
 	req[0] = 0b00_011_011 // LI 0, version 3, mode 3 (client)
 	putTimestamp(req[40:], time.Date(2026, 10, 29, 11, 0, 0, 0, time.UTC))
@@ -83,7 +83,7 @@ func TestQueryNTPRejectsKissOfDeath(t *testing.T) {
 		putTimestamp(resp[32:], time.Now())
 		putTimestamp(resp[40:], time.Now())
 	})
-	if _, _, err := QueryNTP(context.Background(), addr, 2*time.Second, nil); err == nil {
+	if _, _, _, err := QueryNTP(context.Background(), addr, 2*time.Second, nil); err == nil {
 		t.Fatal("kiss-o'-death must be an error")
 	}
 }
@@ -92,7 +92,7 @@ func TestQueryNTPRejectsKissOfDeath(t *testing.T) {
 func TestQueryNTPTimeout(t *testing.T) {
 	addr := freeUDPAddr(t) // nobody listens here
 	start := time.Now()
-	_, _, err := QueryNTP(context.Background(), addr, 200*time.Millisecond, nil)
+	_, _, _, err := QueryNTP(context.Background(), addr, 200*time.Millisecond, nil)
 	if err == nil {
 		t.Fatal("a silent server must time out")
 	}
@@ -138,4 +138,65 @@ func fakeNTPServer(t *testing.T, fill func(resp []byte)) string {
 		}
 	}()
 	return conn.LocalAddr().String()
+}
+
+// TestQueryNTPRejectsUnsynchronised pins the answers this station must never
+// trust: a server that says its own clock is not synchronised (LI=3) or reports
+// an unsynchronised stratum (16+) is not a reference, and stepping to its time
+// would move every timestamp the station publishes.
+func TestQueryNTPRejectsUnsynchronised(t *testing.T) {
+	cases := []struct {
+		name string
+		fill func(resp []byte)
+	}{
+		{"leap indicator 3", func(resp []byte) {
+			resp[0] = 3<<6 | 3<<3 | 0b100
+			resp[1] = 2
+			putTimestamp(resp[32:], time.Now())
+			putTimestamp(resp[40:], time.Now())
+		}},
+		{"stratum 16", func(resp []byte) {
+			resp[0] = 0b00_100_100
+			resp[1] = 16
+			putTimestamp(resp[32:], time.Now())
+			putTimestamp(resp[40:], time.Now())
+		}},
+	}
+	for _, c := range cases {
+		addr := fakeNTPServer(t, c.fill)
+		if _, _, _, err := QueryNTP(context.Background(), addr, 2*time.Second, nil); err == nil {
+			t.Errorf("%s: answer accepted, want a rejection", c.name)
+		}
+	}
+}
+
+// TestQueryNTPRejectsMismatchedOriginate: an answer that does not echo OUR
+// transmit timestamp is stale, crossed or injected — its offset is meaningless.
+func TestQueryNTPRejectsMismatchedOriginate(t *testing.T) {
+	addr := fakeNTPServer(t, func(resp []byte) {
+		resp[0] = 0b00_100_100
+		resp[1] = 2
+		putTimestamp(resp[24:], time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)) // not ours
+		putTimestamp(resp[32:], time.Now())
+		putTimestamp(resp[40:], time.Now())
+	})
+	if _, _, _, err := QueryNTP(context.Background(), addr, 2*time.Second, nil); err == nil {
+		t.Fatal("a mismatched originate timestamp must be rejected")
+	}
+}
+
+// TestQueryNTPReportsUpstreamStratum: the station needs the upstream distance to
+// advertise its own (upstream+1) instead of a hard-coded 1.
+func TestQueryNTPReportsUpstreamStratum(t *testing.T) {
+	addr := fakeNTPServer(t, func(resp []byte) {
+		resp[0] = 0b00_100_100
+		resp[1] = 2
+		putTimestamp(resp[32:], time.Now())
+		putTimestamp(resp[40:], time.Now())
+	})
+	if _, _, stratum, err := QueryNTP(context.Background(), addr, 2*time.Second, nil); err != nil {
+		t.Fatalf("QueryNTP: %v", err)
+	} else if stratum != 2 {
+		t.Fatalf("stratum = %d, want 2", stratum)
+	}
 }

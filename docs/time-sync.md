@@ -75,6 +75,36 @@ Details that matter:
   and the daily digest read it and report where the time came from: `clock from
   gps, 2h ago`, or amber `FREE-RUNNING` when there is no reference.
 
+## What the daemon refuses to trust
+
+Every answer is checked before it may move the clock, because a wrong step
+rewrites everything the station publishes (alert timestamps, SMS, the archive,
+TLS validity) and can re-order alarm expiry:
+
+| Check | Why |
+|---|---|
+| `LI = 3` (server not synchronised) | the server says its own clock is a guess |
+| `stratum 0` (kiss-o'-death) / `stratum ≥ 16` | the server has no working reference |
+| `originate` ≠ our transmit timestamp | a stale, crossed or injected reply |
+| offset > **30 days** | absurd for a station clock: a station booting without an RTC is hours off, never weeks; the correction is refused and logged, so the operator fixes the host clock instead |
+
+A server that fails any check is skipped and the next configured server is
+tried; only a healthy answer counts. The 30-day limit applies to **both** NTP
+and GPS — the GPS-only version let a spoofed NTP answer move the test clock by a
+year.
+
+## What the station tells the LAN
+
+The SNTP server answers with the clock's real quality, not a fixed claim:
+
+* after a successful pass — `LI = 0`, `stratum = upstream + 1` for NTP (`1` for
+  GPS), reference id `WFLX`;
+* before the first success, or once the last success is older than
+  **2 × `interval`** — `LI = 3`, `stratum = 16`, no reference id.
+
+So a station that lost its source stops advertising itself as a reference
+instead of handing out a free-running clock with a trustworthy-looking header.
+
 ## Compose
 
 The panel and the discipline share the configuration and the data volume; only

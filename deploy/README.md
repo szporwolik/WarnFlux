@@ -25,7 +25,7 @@ device up by itself once it is plugged in.
 | `warnflux/compose.time-sync.devices.yml` | GPS receiver overlay for that container (`/dev/ttyACM0`), added only once the device is present. |
 | `warnflux-clock-guard.sh`, `systemd/warnflux-clock-guard.{service,timer}` | Host-side guard: the station owns the clock, the host's `systemd-timesyncd` is started only while the station cannot keep it. |
 | `systemd/timesyncd-warnflux-fallback.conf` | `systemd-timesyncd` drop-in used by that fallback (ordinary NTP pool, never the station itself). |
-| `warnflux-boot-up.sh` + `systemd/warnflux-boot-up.{service,timer}` | **The boot path.** Waits for a synchronised clock and for every mapped device, then starts the stacks in dependency order; the same script runs from a 2-minute timer as the self-healing pass. |
+| `warnflux-boot-up.sh` + `systemd/warnflux-boot-up.{service,timer}` | **The boot path.** Waits for a synchronised clock and for every mapped device, then starts the stacks in dependency order; the same script also runs from a timer (5 minutes after the previous pass finished) as the self-healing loop. |
 | `warnflux-stack-up.sh` (deprecated) | Waits up to 120 s for the device, then `docker compose up -d` **with** the overlay when it exists, **without** it when it does not. Superseded by `warnflux-boot-up.sh`. |
 | Device mapping rule | Always map **by-id** paths (`/dev/serial/by-id/...`), never a bare `/dev/ttyUSB0` or `/dev/ttyACM0`: the numbering swaps between devices after a re-enumeration, and a number hands the container the wrong device without any error. |
 | `warnflux-stack-reconcile.sh` | Compares "device present on the host" with "device mapped into the container" and recreates only that service when they differ — a running container never gains a device node. |
@@ -84,11 +84,18 @@ Verifying a reboot:
 ```sh
 sudo reboot
 # after it comes back:
-systemctl is-active warnflux-boot-up.service warnflux-boot-up.timer
+systemctl is-active warnflux-boot-up.timer       # the loop is armed
+systemctl show warnflux-boot-up.service -p Result # last pass: Result=success
+systemctl list-timers warnflux-boot-up.timer      # NEXT is scheduled
 docker ps --format '{{.Names}} {{.Status}}'      # all four stacks up
 curl -sk -o /dev/null -w '%{http_code}\n' https://<domain>/healthz
 journalctl -u warnflux-boot-up.service -b --no-pager
 ```
+
+`warnflux-boot-up.service` deliberately finishes as `inactive`: it is a one-shot
+pass, not a state. It must go inactive after every run, otherwise the timer has
+no next activation to schedule and the self-healing loop stops after the first
+pass. Check the timer, not the service.
 
 ## Host information on the panel (optional mount)
 
@@ -127,4 +134,4 @@ curl -sk -o /dev/null -w '%{http_code}\n' https://<domain>/healthz
 
 And the real proof: unplug the AIOC/modem (or simply reboot with it absent), let
 the station start, and read the `Hardware` section of the dashboard — with the
-device back, the reconcile timer recreates the container within ~2 minutes.
+device back, the reconcile timer recreates the container within ~5 minutes.

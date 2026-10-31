@@ -1,3 +1,6 @@
+# DEPRECATED: superseded by warnflux-boot-up.service/.timer, which starts every
+# stack in dependency order, waits for a synchronised clock and for the
+# devices the containers were created with (deploy/README.md).
 [Unit]
 Description=Recreate WarnFlux/Direwolf containers when their device appears or vanishes
 After=docker.service warnflux-stack.service aprs-direwolf.service

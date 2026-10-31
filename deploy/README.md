@@ -25,7 +25,9 @@ device up by itself once it is plugged in.
 | `warnflux/compose.time-sync.devices.yml` | GPS receiver overlay for that container (`/dev/ttyACM0`), added only once the device is present. |
 | `warnflux-clock-guard.sh`, `systemd/warnflux-clock-guard.{service,timer}` | Host-side guard: the station owns the clock, the host's `systemd-timesyncd` is started only while the station cannot keep it. |
 | `systemd/timesyncd-warnflux-fallback.conf` | `systemd-timesyncd` drop-in used by that fallback (ordinary NTP pool, never the station itself). |
-| `warnflux-stack-up.sh` | Waits up to 120 s for the device, then `docker compose up -d` **with** the overlay when it exists, **without** it when it does not. |
+| `warnflux-boot-up.sh` + `systemd/warnflux-boot-up.{service,timer}` | **The boot path.** Waits for a synchronised clock and for every mapped device, then starts the stacks in dependency order; the same script runs from a 2-minute timer as the self-healing pass. |
+| `warnflux-stack-up.sh` (deprecated) | Waits up to 120 s for the device, then `docker compose up -d` **with** the overlay when it exists, **without** it when it does not. Superseded by `warnflux-boot-up.sh`. |
+| Device mapping rule | Always map **by-id** paths (`/dev/serial/by-id/...`), never a bare `/dev/ttyUSB0` or `/dev/ttyACM0`: the numbering swaps between devices after a re-enumeration, and a number hands the container the wrong device without any error. |
 | `warnflux-stack-reconcile.sh` | Compares "device present on the host" with "device mapped into the container" and recreates only that service when they differ — a running container never gains a device node. |
 | `systemd/*.service`, `systemd/*.timer` | Autostart on boot plus the 2-minute reconcile timer (USB hotplug without a manual restart). |
 

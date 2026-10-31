@@ -100,8 +100,8 @@ func TestPassPrefersNTP(t *testing.T) {
 		StepThreshold: 250 * time.Millisecond,
 		GPSDevice:     "/dev/ttyACM0",
 	}, clock, nil)
-	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, error) {
-		return 500 * time.Millisecond, 10 * time.Millisecond, nil
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 500 * time.Millisecond, 10 * time.Millisecond, 2, nil
 	}
 
 	d.pass(context.Background())
@@ -116,8 +116,9 @@ func TestPassPrefersNTP(t *testing.T) {
 	if st.Source != "ntp" || st.Detail != "pool.ntp.org:123" || !st.Stepped {
 		t.Fatalf("status = %+v, want an ntp step", st)
 	}
-	if st.Stratum != 1 {
-		t.Fatalf("stratum = %d, want 1 after a reference source", st.Stratum)
+	// Upstream reported stratum 2, so the station is one hop further away.
+	if st.Stratum != 3 {
+		t.Fatalf("stratum = %d, want upstream+1 = 3", st.Stratum)
 	}
 }
 
@@ -133,8 +134,8 @@ func TestPassFallsBackToGPS(t *testing.T) {
 		StepThreshold: 250 * time.Millisecond,
 		GPSDevice:     "/dev/ttyACM0",
 	}, clock, gps)
-	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, error) {
-		return 0, 0, errors.New("network unreachable")
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 0, 0, 0, errors.New("network unreachable")
 	}
 
 	d.pass(context.Background())
@@ -189,8 +190,8 @@ func TestPassLeavesGoodClockAlone(t *testing.T) {
 		NTPServers:    []string{"pool.ntp.org"},
 		StepThreshold: 250 * time.Millisecond,
 	}, clock, nil)
-	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, error) {
-		return 5 * time.Millisecond, time.Millisecond, nil
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 5 * time.Millisecond, time.Millisecond, 1, nil
 	}
 
 	d.pass(context.Background())
@@ -257,8 +258,8 @@ func TestPassReportsMissingCapability(t *testing.T) {
 	base := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 	clock := &fakeClock{t: base, err: os.ErrPermission}
 	d := newTestDaemon(t, Config{NTPServers: []string{"pool.ntp.org"}}, clock, nil)
-	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, error) {
-		return time.Second, time.Millisecond, nil
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return time.Second, time.Millisecond, 1, nil
 	}
 
 	d.pass(context.Background())
@@ -267,8 +268,10 @@ func TestPassReportsMissingCapability(t *testing.T) {
 	if st.LastError == "" {
 		t.Fatal("a failed step must be reported")
 	}
-	if st.Stratum != 3 || st.Stepped {
-		t.Fatalf("status = %+v, want a failed step at the default stratum", st)
+	// Nothing has ever synchronised, so the status reports the RFC 5905
+	// "unsynchronised" stratum instead of inventing a distance from a reference.
+	if st.Stratum != 16 || st.Stepped {
+		t.Fatalf("status = %+v, want a failed step at the unsynchronised stratum", st)
 	}
 }
 
@@ -287,8 +290,8 @@ func TestRunWritesStatusAndServes(t *testing.T) {
 		ServeListen:   "127.0.0.1:0",
 		StatusFile:    statusFile,
 	}, clock, nil)
-	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, error) {
-		return 300 * time.Millisecond, time.Millisecond, nil
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 300 * time.Millisecond, time.Millisecond, 1, nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -364,9 +367,9 @@ func TestLoadStatusMissingFile(t *testing.T) {
 func TestDaemonNormalizesNTPAddress(t *testing.T) {
 	var seen []string
 	d := NewDaemon(Config{NTPServers: []string{"pool.ntp.org", " 10.0.0.1:1123 "}}, &fakeClock{t: time.Now()}, nil)
-	d.probeNTP = func(_ context.Context, server string) (time.Duration, time.Duration, error) {
+	d.probeNTP = func(_ context.Context, server string) (time.Duration, time.Duration, uint8, error) {
 		seen = append(seen, server)
-		return 0, time.Millisecond, nil
+		return 0, time.Millisecond, 1, nil
 	}
 
 	d.pass(context.Background())
@@ -410,5 +413,129 @@ func TestStepStampsThePassAfterTheCorrection(t *testing.T) {
 	}
 	if want := st.At.Add(6 * time.Hour); !st.NextAt.Equal(want) {
 		t.Fatalf("next_at = %s, want %s", st.NextAt, want)
+	}
+}
+
+// TestPassRefusesHugeNTPStep is the review's P1: a broken or spoofed NTP server
+// reporting a year-off time used to move the clock by 365 days. The safety limit
+// must apply to EVERY source, not just the GPS.
+func TestPassRefusesHugeNTPStep(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	d := newTestDaemon(t, Config{NTPServers: []string{"pool.ntp.org"}}, clock, nil)
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 365 * 24 * time.Hour, time.Millisecond, 1, nil
+	}
+
+	d.pass(context.Background())
+
+	if got := len(clock.Steps()); got != 0 {
+		t.Fatalf("clock stepped %d times, want none for an implausible offset", got)
+	}
+	st := d.Status()
+	if !strings.Contains(st.LastError, "safety limit") {
+		t.Fatalf("last_error = %q, want the safety limit reported", st.LastError)
+	}
+}
+
+// TestDaemonSelfCorrectsAfterFailure: an NTP pass that steps a large but legal
+// offset is fine — the limit is about absurdity, not about big numbers.
+func TestPassAcceptsLegalNTPStep(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	d := newTestDaemon(t, Config{NTPServers: []string{"pool.ntp.org"}}, clock, nil)
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 11*time.Hour + 42*time.Minute, time.Millisecond, 2, nil // RTC-less boot
+	}
+
+	d.pass(context.Background())
+
+	if got := len(clock.Steps()); got != 1 {
+		t.Fatalf("steps = %d, want 1 for an RTC-less boot", got)
+	}
+	if st := d.Status(); st.Stratum != 3 {
+		t.Fatalf("stratum = %d, want upstream+1 = 3", st.Stratum)
+	}
+}
+
+// TestQualityDropsAfterTheWindow pins the honest-server rule (T4): the LAN is
+// told "unsynchronised" once the last successful pass is older than the window,
+// instead of a stratum that stopped being true when the source disappeared.
+func TestQualityDropsAfterTheWindow(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	d := newTestDaemon(t, Config{NTPServers: []string{"pool.ntp.org"}, Interval: time.Hour}, clock, nil)
+
+	if q := d.quality(); q.Synced {
+		t.Fatal("a daemon that never synchronised must report unsynchronised")
+	}
+
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 5 * time.Millisecond, time.Millisecond, 2, nil
+	}
+	d.pass(context.Background())
+	if q := d.quality(); !q.Synced || q.Stratum != 3 {
+		t.Fatalf("quality right after a pass = %+v, want synced at upstream+1", q)
+	}
+
+	// The source disappears and time passes beyond the freshness window.
+	clock.t = base.Add(3 * time.Hour)
+	if q := d.quality(); q.Synced {
+		t.Fatalf("quality after the window = %+v, want unsynchronised", q)
+	}
+}
+
+// TestServerAnswersUnsynchronisedBeforeFirstPass pins the wire contract: LI=3,
+// stratum 16 and no reference id while the station cannot vouch for its clock.
+func TestServerAnswersUnsynchronisedBeforeFirstPass(t *testing.T) {
+	srv := &Server{Quality: func() Quality { return Quality{} }}
+	req := make([]byte, sntpPacketSize)
+	req[0] = 0b00_011_011
+	putTimestamp(req[40:], time.Now())
+
+	resp := srv.answer(req)
+	if li := resp[0] >> 6; li != 3 {
+		t.Fatalf("leap indicator = %d, want 3 (not synchronised)", li)
+	}
+	if resp[1] != 16 {
+		t.Fatalf("stratum = %d, want 16", resp[1])
+	}
+	if string(resp[12:16]) == "WFLX" {
+		t.Fatal("an unsynchronised answer must not claim this station as the reference")
+	}
+}
+
+// TestRaceServingAndDisciplining keeps the serving goroutine and the discipline
+// loop running together: the review found a DATA RACE on the stratum field that
+// the functional tests never exercised.
+func TestRaceServingAndDisciplining(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	addr := freeUDPAddr(t)
+	d := newTestDaemon(t, Config{
+		NTPServers: []string{"pool.ntp.org"},
+		Serve:      true, ServeListen: addr,
+	}, clock, nil)
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 5 * time.Millisecond, time.Millisecond, 2, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, _, err := QueryNTP(ctx, addr, time.Second, nil); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for i := 0; i < 5; i++ {
+		d.pass(ctx) // writes the sync state while the server reads it
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
 	}
 }

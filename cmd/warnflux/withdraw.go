@@ -8,28 +8,25 @@ import (
 
 	"github.com/szporwolik/WarnFlux/internal/config"
 	"github.com/szporwolik/WarnFlux/internal/core"
+	"github.com/szporwolik/WarnFlux/internal/plugin"
+	"github.com/szporwolik/WarnFlux/internal/storage"
 )
 
-// sourceWithdrawer is the storage half of the withdrawal (implemented by the
-// SQLite store): it cancels every active event of one source and returns what
-// it withdrew.
-type sourceWithdrawer interface {
-	WithdrawSourceEvents(ctx context.Context, source string, now time.Time) ([]core.HazardEvent, error)
+// eventWithdrawer is the storage half of the withdrawal (implemented by the
+// SQLite store): it cancels one active event AND records the cancellation in
+// the durable journal, so the retained document disappears even when the broker
+// was unreachable at that moment.
+type eventWithdrawer interface {
+	WithdrawEvent(ctx context.Context, event core.HazardEvent, now time.Time) (*storage.Change, error)
 }
 
-// activeEventLister lists the active events, used only to learn which sources
-// still have something published.
+// activeEventLister lists the active events.
 type activeEventLister interface {
 	ListActiveEvents(ctx context.Context, afterKey string, limit int) ([]core.HazardEvent, error)
 }
 
-// retainedRetirer removes one retained active document from the broker.
-type retainedRetirer interface {
-	ExpireActive(source, eventKey string) error
-}
-
-// withdrawDisabledSources cancels the active events of every source that is
-// switched off (or no longer configured) and removes their retained documents.
+// withdrawDisabledSources cancels the active events of every source instance
+// that is switched off (or no longer configured).
 //
 // A disabled source never publishes again, so its events would stay "live" on
 // the panel and the public page until their own expiry — road works carry
@@ -37,23 +34,33 @@ type retainedRetirer interface {
 // visible for a month (reported P2). This runs once at startup, before the
 // plugins publish anything, and is cheap: no active event, no work.
 //
-// The broker half is best effort with a few retries, because the receivers may
-// still be connecting; a retained delete is idempotent, so re-running it is
-// harmless.
-func withdrawDisabledSources(ctx context.Context, store sourceWithdrawer, lister activeEventLister,
-	retirer retainedRetirer, sources []config.Source, logger *slog.Logger) {
-	enabled := make(map[string]bool, len(sources))
+// Ownership is decided by the event's PRODUCER (the configured source instance,
+// e.g. "imgw-warnings"), never by comparing the event's source slug with a
+// plugin type: an IMGW instance publishes "imgw-meteo"/"imgw-hydro" under the
+// type "imgw", so the naive comparison withdrew the warnings of a RUNNING
+// plugin at every restart (reported P1).
+//
+// Events that carry no producer (rows written before the stamp existed) are
+// never withdrawn here: without an owner the station cannot tell a switched-off
+// source from a running one, and leaving a stale warning is far cheaper than
+// hiding a valid alarm. They are reported once, so the operator can act.
+func withdrawDisabledSources(ctx context.Context, store eventWithdrawer, lister activeEventLister,
+	sources []config.Source, logger *slog.Logger) {
+	enabledInstances := make(map[string]bool, len(sources))
+	enabledSlugs := make(map[string]bool, len(sources))
 	for _, s := range sources {
-		if s.Enabled {
-			enabled[s.Type] = true
+		if !s.Enabled {
+			continue
+		}
+		enabledInstances[s.ID] = true
+		for _, slug := range plugin.EventSourcesOf(s.Type) {
+			enabledSlugs[slug] = true
 		}
 	}
 
-	// Which sources still own active events? Read from the authoritative
-	// table instead of the configuration: a source removed from the file is
-	// exactly the case this must catch, so it has no configuration entry.
-	stale := map[string][]core.HazardEvent{}
 	after := ""
+	total := map[string]int{}
+	unattributable := map[string]int{}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -66,8 +73,24 @@ func withdrawDisabledSources(ctx context.Context, store sourceWithdrawer, lister
 			return
 		}
 		for _, ev := range batch {
-			if !enabled[ev.Source] {
-				stale[ev.Source] = append(stale[ev.Source], ev)
+			if !orphaned(ev, enabledInstances, enabledSlugs) {
+				continue
+			}
+			owner := ev.Producer
+			if owner == "" {
+				unattributable[ev.Source]++
+				continue
+			}
+			change, err := store.WithdrawEvent(ctx, ev, time.Now())
+			if err != nil {
+				if logger != nil {
+					logger.Warn("withdraw disabled sources: cancellation failed",
+						"source", ev.Source, "producer", owner, "event_key", ev.Key(), "error", err)
+				}
+				continue
+			}
+			if change != nil {
+				total[owner]++
 			}
 		}
 		if len(batch) < 256 {
@@ -75,61 +98,51 @@ func withdrawDisabledSources(ctx context.Context, store sourceWithdrawer, lister
 		}
 		after = batch[len(batch)-1].Key()
 	}
-	if len(stale) == 0 {
+
+	logWithdrawn(total, logger)
+	logUnattributable(unattributable, logger)
+}
+
+// orphaned reports whether an active event belongs to a source that is no
+// longer enabled. A missing producer means "cannot tell" — never orphaned.
+func orphaned(ev core.HazardEvent, enabledInstances, enabledSlugs map[string]bool) bool {
+	if ev.Producer != "" {
+		return !enabledInstances[ev.Producer]
+	}
+	// Rows without a producer: fall back to the declared slug ownership, which
+	// the source plugins register, so a running plugin is never mistaken for a
+	// switched-off one.
+	return !enabledSlugs[ev.Source]
+}
+
+// logWithdrawn reports the reconciliation per instance, sorted for a stable log.
+func logWithdrawn(counts map[string]int, logger *slog.Logger) {
+	if logger == nil || len(counts) == 0 {
 		return
 	}
-
-	names := make([]string, 0, len(stale))
-	for source := range stale {
-		names = append(names, source)
+	owners := make([]string, 0, len(counts))
+	for owner := range counts {
+		owners = append(owners, owner)
 	}
-	sort.Strings(names)
-
-	for _, source := range names {
-		withdrawn, err := store.WithdrawSourceEvents(ctx, source, time.Now())
-		if err != nil {
-			if logger != nil {
-				logger.Warn("withdraw disabled sources: cancellation failed", "source", source, "error", err)
-			}
-			continue
-		}
-		if len(withdrawn) == 0 {
-			continue
-		}
-		if logger != nil {
-			logger.Info("source is switched off: its active events were withdrawn",
-				"source", source, "events", len(withdrawn))
-		}
-		if retirer != nil {
-			go retireRetained(ctx, retirer, withdrawn, logger)
-		}
+	sort.Strings(owners)
+	for _, owner := range owners {
+		logger.Info("source is switched off: its active events were withdrawn",
+			"source_instance", owner, "events", counts[owner])
 	}
 }
 
-// retireRetained deletes the retained documents of withdrawn events, retrying
-// while the receivers are still connecting.
-func retireRetained(ctx context.Context, retirer retainedRetirer, events []core.HazardEvent, logger *slog.Logger) {
-	const attempts = 12
-	pending := append([]core.HazardEvent(nil), events...)
-	for round := 0; round < attempts && len(pending) > 0; round++ {
-		var failed []core.HazardEvent
-		for _, ev := range pending {
-			if err := retirer.ExpireActive(ev.Source, ev.Key()); err != nil {
-				failed = append(failed, ev)
-			}
-		}
-		pending = failed
-		if len(pending) == 0 {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-		}
+// logUnattributable reports events the station refused to touch.
+func logUnattributable(counts map[string]int, logger *slog.Logger) {
+	if logger == nil || len(counts) == 0 {
+		return
 	}
-	if logger != nil && len(pending) > 0 {
-		logger.Warn("withdraw disabled sources: retained documents not removed",
-			"pending", len(pending), "first_key", pending[0].Key())
+	slugs := make([]string, 0, len(counts))
+	for slug := range counts {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	for _, slug := range slugs {
+		logger.Warn("active events without a producer were left alone (cannot tell whether their source still runs)",
+			"source", slug, "events", counts[slug])
 	}
 }

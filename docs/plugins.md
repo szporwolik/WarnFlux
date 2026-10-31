@@ -341,11 +341,23 @@ abbreviations ("ul.", "pow."), and cutting at the first period left
   `expires_at`, and road works carry expiries months ahead, so a source the
   operator disabled would keep its warnings "live" on the panel and the public
   page for as long as they were valid. At startup the station therefore
-  cancels the active events of every source that is disabled (or no longer in
-  the configuration) and deletes their retained documents. A source that has
-  to be off for a while but keep its history should therefore not rely on
-  being skipped silently — the withdrawal is logged per source
-  (`source is switched off: its active events were withdrawn`).
+  cancels the active events of every source INSTANCE that is disabled (or no
+  longer in the configuration) and removes their retained documents.
+  Ownership is decided by the event's `Producer` (the configured instance id,
+  e.g. `imgw-warnings`), never by comparing the event's source slug with a
+  plugin type: IMGW publishes `imgw-meteo`/`imgw-hydro` under the type `imgw`,
+  and the slug comparison withdrew the warnings of a RUNNING plugin at every
+  restart. A plugin whose event source differs from its type declares the
+  mapping once (`plugin.RegisterEventSources`). Rows without a producer are
+  left alone and reported — a stale warning is cheaper than hiding a valid
+  alarm.
+- **The withdrawal is journalled.** The status change and the journal record
+  commit in one transaction (`Store.WithdrawEvent`), and the MQTT output removes
+  the retained document from its cursor, which is only acknowledged after a
+  successful publish. A broker that is unreachable at withdrawal time is
+  therefore fixed on the next start instead of leaving the document behind
+  forever; and no inbox row is written, so withdrawing an operator's source
+  never notifies subscribers.
 
 ## HTTP client guidance
 

@@ -54,6 +54,16 @@ USER nonroot:nonroot
 # listens on 8080 inside the container.
 EXPOSE 8080
 
+# Liveness for the container runtime. The image is distroless, so the probe is
+# the binary itself: -healthcheck asks /healthz and exits non-zero when the
+# station stops answering. Docker only *reports* that state — the station's
+# boot-up timer is what restarts the container (deploy/warnflux-boot-up.sh),
+# because a restart policy covers exits, not hangs. The clock-discipline
+# container runs the same image with -time-sync and serves no HTTP, so its
+# Compose file disables this check.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["/warnflux", "-healthcheck"]
+
 # Optional offline-map tiles (Leaflet {z}/{x}/{y}.jpg tree, served under
 # /tiles/ in offline mode): mount your own bundle here, e.g.
 #   -v ./WF_Map:/data/tiles:ro

@@ -42,6 +42,15 @@ const (
 	sourceHydro = "imgw-hydro"
 )
 
+// The station reconciles events against the configuration by PLUGIN TYPE, while
+// these events carry a per-feed source, so the mapping is declared once here:
+// guessing it (type "imgw" against sources "imgw-meteo"/"imgw-hydro") made the
+// startup reconciliation treat a running IMGW as switched off and withdraw its
+// valid warnings (reported P1).
+func init() {
+	plugin.RegisterEventSources(Type, sourceMeteo, sourceHydro)
+}
+
 var validFeeds = map[string]bool{feedMeteo: true, feedHydro: true}
 
 // Config is the plugin-specific configuration. The public IMGW data API

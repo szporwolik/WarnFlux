@@ -539,3 +539,30 @@ func TestRaceServingAndDisciplining(t *testing.T) {
 		t.Fatalf("Run returned %v", err)
 	}
 }
+
+// TestStratumOfEachSource pins the distance reported to the LAN: the GPS
+// receiver IS a reference (stratum 1), while an NTP server leaves the station
+// one hop further away than the server itself is.
+func TestStratumOfEachSource(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+
+	gpsClock := &fakeClock{t: base}
+	gps := &fakeGPS{lines: []string{
+		rmc(base.Add(time.Second)), rmc(base.Add(time.Second)), rmc(base.Add(time.Second)),
+	}}
+	gpsD := newTestDaemon(t, Config{GPSDevice: "/dev/ttyACM0"}, gpsClock, gps)
+	gpsD.pass(context.Background())
+	if st := gpsD.Status(); st.Stratum != 1 {
+		t.Fatalf("GPS stratum = %d, want 1 (the receiver is the reference)", st.Stratum)
+	}
+
+	ntpClock := &fakeClock{t: base}
+	ntpD := newTestDaemon(t, Config{NTPServers: []string{"pool.ntp.org"}}, ntpClock, nil)
+	ntpD.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 5 * time.Millisecond, time.Millisecond, 2, nil // upstream is stratum 2
+	}
+	ntpD.pass(context.Background())
+	if st := ntpD.Status(); st.Stratum != 3 {
+		t.Fatalf("NTP stratum = %d, want upstream+1 = 3", st.Stratum)
+	}
+}

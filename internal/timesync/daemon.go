@@ -292,10 +292,13 @@ func (d *Daemon) pass(ctx context.Context) {
 	// that the pass ran hours ago while the clock had just been corrected.
 	st.At = d.clock.Now()
 	st.NextAt = st.At.Add(d.cfg.Interval)
+	// The reported distance from a reference: the GPS receiver IS a reference
+	// (measureGPS returns 1), an NTP server leaves us one hop further away than
+	// it is (measureNTP returns upstream+1).
 	if upstream == 0 {
-		upstream = 1
+		upstream = 16 // unknown quality: never advertise a good stratum
 	}
-	st.Stratum = upstream + 1
+	st.Stratum = upstream
 	d.markSynced(source, st.Stratum, st.At)
 	d.writeStatus(st)
 }
@@ -350,7 +353,8 @@ func (d *Daemon) measureNTP(ctx context.Context) (time.Duration, string, string,
 			continue
 		}
 		if bestSrv == "" || rtt < bestRTT {
-			best, bestRTT, bestSrv, bestStrt = offset, rtt, server, stratum
+			// One hop further from a reference than the server we asked.
+			best, bestRTT, bestSrv, bestStrt = offset, rtt, server, stratum+1
 		}
 	}
 	if bestSrv == "" {

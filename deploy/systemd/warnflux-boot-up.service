@@ -1,0 +1,18 @@
+[Unit]
+Description=WarnFlux: bring every station service up after boot (broker, radio, clock, panel)
+Documentation=https://github.com/szporwolik/WarnFlux/blob/main/deploy/README.md
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/warnflux-boot-up.sh
+# A missing device must not leave the unit "failed" forever: the reconcile
+# timer retries the whole set every couple of minutes anyway.
+SuccessExitStatus=0 1
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

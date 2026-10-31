@@ -53,8 +53,13 @@ station_owns_clock() {
 
 if station_owns_clock; then
 	if timesyncd_active; then
-		systemctl disable --now systemd-timesyncd
-		log "the station disciplines the clock - host systemd-timesyncd disabled"
+		# STOP, never disable: the host client must run again at every boot,
+		# because a station without an RTC wakes up with a stale clock and
+		# every service that needs correct time (TLS certificates, message
+		# timestamps) starts before the discipline process can step it. It is
+		# stopped here only while the station keeps the clock itself.
+		systemctl stop systemd-timesyncd
+		log "the station disciplines the clock - host systemd-timesyncd stopped (still enabled for the next boot)"
 	fi
 	exit 0
 fi
@@ -66,5 +71,6 @@ fi
 if timesyncd_active; then
 	exit 0
 fi
-systemctl enable --now systemd-timesyncd
+systemctl enable systemd-timesyncd >/dev/null 2>&1 || true
+systemctl start systemd-timesyncd
 log "the station cannot keep the clock - host systemd-timesyncd enabled as fallback"

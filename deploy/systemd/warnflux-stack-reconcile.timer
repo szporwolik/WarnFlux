@@ -1,9 +1,10 @@
 [Unit]
-Description=Watch the WarnFlux device mappings (USB hotplug without a manual restart)
+Description=WarnFlux stack reconcile timer (self-healing every 2 minutes)
 
 [Timer]
-OnBootSec=3min
+OnBootSec=5min
 OnUnitActiveSec=2min
+AccuracySec=30s
 Unit=warnflux-stack-reconcile.service
 
 [Install]

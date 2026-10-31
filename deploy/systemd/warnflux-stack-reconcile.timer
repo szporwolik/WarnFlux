@@ -1,3 +1,6 @@
+# DEPRECATED: superseded by warnflux-boot-up.service/.timer, which starts every
+# stack in dependency order, waits for a synchronised clock and for the
+# devices the containers were created with (deploy/README.md).
 [Unit]
 Description=WarnFlux stack reconcile timer (self-healing every 2 minutes)
 

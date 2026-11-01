@@ -303,8 +303,9 @@ type TrafficMirrorConfig struct {
 	// Channel is the device channel index to mirror; 0 (the default) means
 	// the announcement channel (emcom_channel).
 	Channel int
-	// IncludeSystem also mirrors what the station sends on a schedule (the
-	// presence beacon, the hazard status line). Default false.
+	// IncludeSystem also mirrors what the station itself sends on the
+	// channel: alarms, the EMCOM handling, the presence beacon and the hazard
+	// status line. Default true.
 	IncludeSystem bool
 }
 
@@ -1384,8 +1385,9 @@ func (f fileConfig) toConfig() Config {
 		Baud: 115200, NodeTTL: 30 * time.Minute, EmcomHazardsInterval: 1 * time.Hour,
 		ChannelAlerts: true, DMAlerts: true, StationAlerts: false,
 		PinUserNodes: true, PinUserNodesInterval: defaultPinUserNodesInterval,
-		// 0 = mirror whichever channel the announcement beacon uses.
-		TrafficMirror: TrafficMirrorConfig{Channel: 0},
+		// 0 = mirror whichever channel the announcement beacon uses; the
+		// station's own sends (alarms, EMCOM, beacon) are mirrored too.
+		TrafficMirror: TrafficMirrorConfig{Channel: 0, IncludeSystem: true},
 	}
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled

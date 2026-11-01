@@ -70,7 +70,7 @@ func TestMirrorContentShapesBothDirections(t *testing.T) {
 	rx := mirrorContent(mirrorMsg{
 		direction: "rx", sender: "a1b2c3d4", channel: "SOSNA", text: "  test łączności ", hops: 3,
 	})
-	if !strings.HasPrefix(rx, "📥 **SOSNA** · a1b2c3d4 · 3 hop") {
+	if !strings.HasPrefix(rx, "📥 **SOSNA** · a1b2c3d4\n3 hop\n") {
 		t.Fatalf("rx content = %q", rx)
 	}
 	if !strings.HasSuffix(rx, "\ntest łączności") {
@@ -84,6 +84,14 @@ func TestMirrorContentShapesBothDirections(t *testing.T) {
 		t.Fatalf("tx broadcast content = %q", tx)
 	}
 
+	// A known node shows the name the station knows, with the id in brackets.
+	named := mirrorContent(mirrorMsg{
+		direction: "rx", sender: "6d2c8f6c", senderName: "szymon", channel: "SP9MOA", text: "Test", hops: 6,
+	})
+	if !strings.HasPrefix(named, "📥 **SP9MOA** · szymon (6d2c8f6c)\n6 hop\n") {
+		t.Fatalf("named content = %q", named)
+	}
+
 	dm := mirrorContent(mirrorMsg{
 		direction: "tx", recipient: "deadbeef", channel: "SOSNA", text: "priv",
 	})
@@ -91,11 +99,11 @@ func TestMirrorContentShapesBothDirections(t *testing.T) {
 		t.Fatalf("tx direct content = %q", dm)
 	}
 
-	// A scheduled send carries the "system" operator; it must not be shown as
-	// if a person wrote it.
+	// The station's own sends are labelled: the reader must know the text came
+	// from the machine and not from a person.
 	scheduled := mirrorContent(mirrorMsg{direction: "tx", operator: "system", channel: "SOSNA", text: "beacon"})
-	if strings.Contains(scheduled, "system") {
-		t.Fatalf("scheduled content = %q, want no operator label", scheduled)
+	if !strings.HasPrefix(scheduled, "📤 **SOSNA** · all · system") {
+		t.Fatalf("scheduled content = %q, want the system label", scheduled)
 	}
 }
 
@@ -194,54 +202,103 @@ func TestMirrorTrafficOnlyForClubChannel(t *testing.T) {
 	defer srv.Close()
 	h := hubMirror(t, srv.URL, 0, false) // 0 = the announcement channel (1)
 
-	h.mirrorTraffic("rx", "a1b2c3d4", "", 2, "INNE", "nie ten kanał", 0, time.Now(), "")
-	h.mirrorTraffic("rx", "a1b2c3d4", "", 0, "PRIMARY", "kanał 0", 0, time.Now(), "")
+	h.mirrorTraffic("rx", "a1b2c3d4", "", 2, "INNE", "nie ten kanał", 0, time.Now(), "", 0, 0)
+	h.mirrorTraffic("rx", "a1b2c3d4", "", 0, "PRIMARY", "kanał 0", 0, time.Now(), "", 0, 0)
 	// A direct message carries channel index 0 and the "dm" label.
-	h.mirrorTraffic("tx", "", "deadbeef", 0, "dm", "pw", 0, time.Now(), "")
+	h.mirrorTraffic("tx", "", "deadbeef", 0, "dm", "pw", 0, time.Now(), "", 0, 0)
 
 	time.Sleep(150 * time.Millisecond)
 	if got := sink.posted(); len(got) != 0 {
 		t.Fatalf("posted %v, want nothing outside the club channel", got)
 	}
 
-	h.mirrorTraffic("rx", "a1b2c3d4", "", 1, "SOSNA", "na kanale klubowym", 2, time.Now(), "")
+	h.mirrorTraffic("rx", "a1b2c3d4", "", 1, "SOSNA", "na kanale klubowym", 2, time.Now(), "", 0, 0)
 	got := sink.waitPosted(t, 1)
 	if len(got) != 1 || !strings.Contains(got[0], "na kanale klubowym") {
 		t.Fatalf("posted %v, want the club-channel message", got)
 	}
 }
 
-// The station's own scheduled beacons would otherwise land in the chat every
-// hour; they are skipped unless the operator asks for them.
-func TestMirrorTrafficSkipsScheduledSends(t *testing.T) {
+// The station's own sends are mirrored by default (that is how alarms and the
+// EMCOM handling reach the chat) and can be turned off.
+func TestMirrorTrafficIncludesStationSends(t *testing.T) {
 	sink := &webhookSink{}
 	srv := httptest.NewServer(sink.handler())
 	defer srv.Close()
-	h := hubMirror(t, srv.URL, 1, false)
 
-	h.mirrorTraffic("tx", "", "", 1, "SOSNA", "beacon", 0, time.Now(), "system")
-	time.Sleep(150 * time.Millisecond)
-	if got := sink.posted(); len(got) != 0 {
-		t.Fatalf("posted %v, want the scheduled send skipped", got)
-	}
-
-	h.mirrorTraffic("tx", "", "", 1, "SOSNA", "wiadomość od człowieka", 0, time.Now(), "szymon")
+	withSystem := hubMirror(t, srv.URL, 1, true)
+	withSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "alarm IMGW", 0, time.Now(), "system", 0, 0)
 	if got := sink.waitPosted(t, 1); len(got) != 1 {
-		t.Fatalf("posted %v, want the human message", got)
+		t.Fatalf("posted %v, want the station send mirrored", got)
 	}
 
-	// include_system flips that.
-	all := hubMirror(t, srv.URL, 1, true)
-	all.mirrorTraffic("tx", "", "", 1, "SOSNA", "beacon", 0, time.Now(), "system")
+	withoutSystem := hubMirror(t, srv.URL, 1, false)
+	withoutSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "beacon", 0, time.Now(), "system", 0, 0)
+	time.Sleep(150 * time.Millisecond)
+	if got := sink.posted(); len(got) != 1 {
+		t.Fatalf("posted %v, want the opt-out to skip the station send", got)
+	}
+	withoutSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "od człowieka", 0, time.Now(), "szymon", 0, 0)
 	if got := sink.waitPosted(t, 2); len(got) != 2 {
-		t.Fatalf("posted %v, want include_system to mirror the beacon too", got)
+		t.Fatalf("posted %v, want the human message either way", got)
 	}
 }
 
-// TestMirrorSeesTrafficOnTheRadioPath is the wiring proof: a broadcast text
-// arriving on the club channel reaches the webhook without anyone calling the
-// mirror directly.
-func TestMirrorSeesTrafficOnTheRadioPath(t *testing.T) {
+// Everything the radio reported travels with the message: hops, SNR and RSSI
+// are what tells the chat how well the frame actually arrived.
+func TestMirrorContentCarriesSignal(t *testing.T) {
+	got := mirrorContent(mirrorMsg{
+		direction: "rx", sender: "6d2c8f6c", senderName: "szymon", channel: "SP9MOA",
+		text: "sygnał", hops: 2, snr: 9.25, rssi: -78,
+	})
+	if !strings.HasPrefix(got, "📥 **SP9MOA** · szymon (6d2c8f6c)\n2 hop · SNR 9.2 dB · RSSI -78 dBm\n") {
+		t.Fatalf("content = %q, want the signal metadata line", got)
+	}
+
+	// No signal reported (our own transmission, or a device that omitted it):
+	// the metadata line disappears instead of showing zeroes.
+	plain := mirrorContent(mirrorMsg{direction: "rx", sender: "6d2c8f6c", channel: "SP9MOA", text: "x"})
+	if strings.Contains(plain, "SNR") || strings.Contains(plain, "RSSI") {
+		t.Fatalf("content = %q, want no empty signal fields", plain)
+	}
+}
+
+// senderDisplayName prefers the directory user, then the node's long name, then
+// its short name: the chat should show the friendliest label the station has.
+func TestSenderDisplayNamePreference(t *testing.T) {
+	h, err := NewHub(Config{Enabled: true, Device: "/dev/fake", EmcomChannel: 1}, nil)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	h.mu.Lock()
+	h.nodes["6d2c8f6c"] = &Node{ID: "6d2c8f6c", Name: "MOA SOSNA", Short: "SOS"}
+	h.nodes["deadbeef"] = &Node{ID: "deadbeef", Short: "MK"}
+	h.mu.Unlock()
+
+	if got := h.senderDisplayName("6d2c8f6c"); got != "MOA SOSNA" {
+		t.Fatalf("name = %q, want the node long name", got)
+	}
+	if got := h.senderDisplayName("deadbeef"); got != "MK" {
+		t.Fatalf("name = %q, want the short name as the fallback", got)
+	}
+	if got := h.senderDisplayName("00000000"); got != "" {
+		t.Fatalf("name = %q, want empty for an unknown node", got)
+	}
+
+	// A registered directory user wins over the radio's own long name.
+	h.SetSenderGate(func(id string) string {
+		if id == "6d2c8f6c" {
+			return "szymon"
+		}
+		return ""
+	})
+	if got := h.senderDisplayName("6d2c8f6c"); got != "szymon" {
+		t.Fatalf("name = %q, want the directory user", got)
+	}
+}
+
+// The radio path test above also has to show the name once the node is known.
+func TestMirrorRadioPathShowsKnownName(t *testing.T) {
 	sink := &webhookSink{}
 	srv := httptest.NewServer(sink.handler())
 	defer srv.Close()
@@ -251,23 +308,30 @@ func TestMirrorSeesTrafficOnTheRadioPath(t *testing.T) {
 		Device:        "/dev/fake",
 		EmcomChannel:  1,
 		TrafficMirror: MirrorConfig{WebhookURL: srv.URL},
-	})
+	}, testRadioOpts{setup: func(h *Hub) {
+		h.SetSenderGate(func(id string) string {
+			if id == "ef010203" {
+				return "szymon"
+			}
+			return ""
+		})
+	}})
 	radio.waitConnected(t)
 
 	dispatchPkt(t, radio, &pb.MeshPacket{
 		From: 0xef010203,
 		To:   0xffffffff,
 		PayloadVariant: &pb.MeshPacket_Decoded{
-			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("hej klub")},
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("z nazwa")},
 		},
 		Channel: 1,
 	})
 
 	got := sink.waitPosted(t, 1)
 	if len(got) != 1 {
-		t.Fatalf("posted %v, want one club-channel message", got)
+		t.Fatalf("posted %v, want one message", got)
 	}
-	if !strings.Contains(got[0], "hej klub") || !strings.Contains(got[0], "ef010203") {
-		t.Fatalf("content = %q, want the text and the sender", got[0])
+	if !strings.Contains(got[0], "szymon (ef010203)") {
+		t.Fatalf("content = %q, want the directory user with the node id", got[0])
 	}
 }

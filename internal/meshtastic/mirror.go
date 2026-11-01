@@ -30,10 +30,10 @@ type MirrorConfig struct {
 	// on. 1-7 select a specific channel; the public PRIMARY channel (0) is
 	// never mirrored, this station does not transmit there.
 	Channel int
-	// IncludeSystem also mirrors what the station sends on a schedule — the
-	// presence beacon, the hazard status line. Off by default: those are
-	// automated, and an hourly status line in a chat channel is noise, not
-	// club traffic.
+	// IncludeSystem also mirrors what the station itself sends on the channel —
+	// alarms, the EMCOM handling, the presence beacon, the hazard status line.
+	// ON by default: the chat is the club's view of the channel, and the
+	// station's own traffic is part of what the channel carries.
 	IncludeSystem bool
 }
 
@@ -50,14 +50,19 @@ const (
 
 // mirrorMsg is one line of club traffic, in either direction.
 type mirrorMsg struct {
-	direction string // "rx" (heard on the air) or "tx" (we transmitted)
-	sender    string // node id of the sender, rx only
-	recipient string // node id for a direct message, tx only
-	operator  string // who sent it from our side, tx only ("system" = schedule)
-	channel   string // channel display name
-	text      string
-	hops      int
-	at        time.Time
+	direction  string // "rx" (heard on the air) or "tx" (we transmitted)
+	sender     string // node id of the sender, rx only
+	senderName string // the name this station knows that node by, rx only
+	recipient  string // node id for a direct message, tx only
+	operator   string // who sent it from our side, tx only ("system" = schedule)
+	channel    string // channel display name
+	text       string
+	hops       int
+	// snr and rssi are what the radio reported for a received frame; zero
+	// when the device did not report them (and always for our own sends).
+	snr  float32
+	rssi int32
+	at   time.Time
 }
 
 // trafficMirror posts club traffic to Discord. A nil *trafficMirror is the
@@ -141,22 +146,41 @@ func (m *trafficMirror) post(msg mirrorMsg) {
 func mirrorContent(msg mirrorMsg) string {
 	arrow := "📥"
 	who := msg.sender
+	// A node id alone tells the chat nothing: show the name the station
+	// already knows it by (a registered user, else the node's long name) with
+	// the id in brackets, so both the human and the technical reader are served.
+	if msg.senderName != "" {
+		who = fmt.Sprintf("%s (%s)", msg.senderName, msg.sender)
+	}
 	if msg.direction == "tx" {
 		arrow = "📤"
 		who = "all"
 		if msg.recipient != "" {
 			who = msg.recipient
 		}
-		if msg.operator != "" && msg.operator != "system" {
+		if msg.operator != "" {
 			who += " · " + msg.operator
 		}
 	}
 	header := fmt.Sprintf("%s **%s** · %s", arrow, msg.channel, who)
+	// Everything the radio told us, on one line, only when it said anything:
+	// the hop count says how far the frame travelled, SNR/RSSI how well it
+	// arrived.
+	var meta []string
 	if msg.hops > 0 {
-		header += fmt.Sprintf(" · %d hop", msg.hops)
+		meta = append(meta, fmt.Sprintf("%d hop", msg.hops))
 	}
-	content := header + "\n" + strings.TrimSpace(msg.text)
-	return truncateRunes(content, mirrorMaxContent)
+	if msg.snr != 0 {
+		meta = append(meta, fmt.Sprintf("SNR %.1f dB", msg.snr))
+	}
+	if msg.rssi != 0 {
+		meta = append(meta, fmt.Sprintf("RSSI %d dBm", msg.rssi))
+	}
+	body := strings.TrimSpace(msg.text)
+	if len(meta) > 0 {
+		return truncateRunes(header+"\n"+strings.Join(meta, " · ")+"\n"+body, mirrorMaxContent)
+	}
+	return truncateRunes(header+"\n"+body, mirrorMaxContent)
 }
 
 // truncateRunes shortens s to at most n runes, marking the cut so nobody thinks

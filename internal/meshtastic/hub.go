@@ -1204,7 +1204,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if !cfg.Enabled {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
-		return &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
+		h := &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
 			mirror:     newTrafficMirror(cfg.TrafficMirror, logger),
 			tombstones: make(map[string]*nodeTombstone),
 			feedQueue:  make(chan feedJob, stationFeedQueueLen),
@@ -1213,12 +1213,14 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 			traces:       make(map[uint32]*TraceProgress),
 			bannerLast:   make(map[string]time.Time), replyLast: make(map[string]replyWindow),
 			reconnect: make(chan struct{}, 1),
-			startedAt: time.Now()}, nil
+			startedAt: time.Now()}
+		h.logMirror()
+		return h, nil
 	}
 	if cfg.Device == "" {
 		return nil, errors.New("meshtastic: device path is required")
 	}
-	return &Hub{
+	h := &Hub{
 		cfg:          cfg,
 		logger:       logger,
 		mirror:       newTrafficMirror(cfg.TrafficMirror, logger),
@@ -1234,7 +1236,22 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		replyLast:    make(map[string]replyWindow),
 		reconnect:    make(chan struct{}, 1),
 		startedAt:    time.Now(),
-	}, nil
+	}
+	h.logMirror()
+	return h, nil
+}
+
+// logMirror announces the traffic mirror at startup: an operator who wonders why
+// nothing reaches the chat should see which channel is mirrored, without the
+// webhook URL (a secret) ever entering the log.
+func (h *Hub) logMirror() {
+	if h.mirror == nil || h.logger == nil {
+		return
+	}
+	h.logger.Info("meshtastic: club-channel traffic mirrored to discord",
+		"channel", h.ChannelLabel(h.cfg.TrafficMirror.Channel),
+		"channel_index", h.cfg.TrafficMirror.Channel,
+		"include_system", h.cfg.TrafficMirror.IncludeSystem)
 }
 
 // Enabled reports whether the meshtastic integration is configured.
@@ -4418,7 +4435,8 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	hops := packetHops(pkt)
 	heardAt := time.Now()
 	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", hops, heardAt)
-	h.mirrorTraffic("rx", id, "", int(pkt.GetChannel()), channel, string(decoded.GetPayload()), hops, heardAt, "")
+	h.mirrorTraffic("rx", id, "", int(pkt.GetChannel()), channel, string(decoded.GetPayload()), hops, heardAt, "",
+		pkt.GetRxSnr(), pkt.GetRxRssi())
 
 	// Only messages addressed EXACTLY to our node route (broadcasts,
 	// To=0 packets and third-party traffic stay on the feed): the gate
@@ -5066,7 +5084,7 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		recipient = fmt.Sprintf("%08x", to)
 	}
 	h.recordMessage("tx", "", recipient, channelLabel, text, operator, 0, at)
-	h.mirrorTraffic("tx", "", recipient, channelIdx, channelLabel, text, 0, at, operator)
+	h.mirrorTraffic("tx", "", recipient, channelIdx, channelLabel, text, 0, at, operator, 0, 0)
 
 	if err := conn.SendToRadio(msg); err != nil {
 		// The link died under the frame: a socket the peer closed fails
@@ -5088,23 +5106,52 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 // mirrorTraffic forwards one club-channel message to the configured Discord
 // webhook. Everything is best effort and off the radio path: a nil mirror, a
 // different channel or a scheduled message is simply not forwarded.
-func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int, channelLabel, text string, hops int, at time.Time, operator string) {
+func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int, channelLabel, text string, hops int, at time.Time, operator string, snr float32, rssi int32) {
 	if h.mirror == nil || channelIdx != h.cfg.TrafficMirror.Channel {
 		return
 	}
 	if operator == "system" && !h.cfg.TrafficMirror.IncludeSystem {
 		return
 	}
+	senderName := ""
+	if direction == "rx" && sender != "" {
+		senderName = h.senderDisplayName(sender)
+	}
 	h.mirror.offer(mirrorMsg{
-		direction: direction,
-		sender:    sender,
-		recipient: recipient,
-		operator:  operator,
-		channel:   channelLabel,
-		text:      text,
-		hops:      hops,
-		at:        at,
+		direction:  direction,
+		sender:     sender,
+		senderName: senderName,
+		recipient:  recipient,
+		operator:   operator,
+		channel:    channelLabel,
+		text:       text,
+		hops:       hops,
+		at:         at,
 	})
+}
+
+// senderDisplayName resolves a node id onto the friendliest name this station
+// already has for it: the directory user that registered the node (the one the
+// alarm pipeline knows), else the node's own long name, else its short name.
+// Empty = the station has never heard of it, and the caller shows the id alone.
+func (h *Hub) senderDisplayName(id string) string {
+	h.mu.Lock()
+	gate := h.senderGate
+	node := h.nodes[id]
+	name, short := "", ""
+	if node != nil {
+		name, short = node.Name, node.Short
+	}
+	h.mu.Unlock()
+	if gate != nil {
+		if user := gate(id); user != "" {
+			return user
+		}
+	}
+	if name != "" {
+		return name
+	}
+	return short
 }
 
 // recordMessage appends one message to the recent list, the durable

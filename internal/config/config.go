@@ -1440,6 +1440,12 @@ func (f fileConfig) toConfig() Config {
 				cfg.Meshtastic.TrafficMirror.IncludeSystem = *tm.IncludeSystem
 			}
 		}
+		// "channel: 0" means the announcement channel. Resolve it HERE, where
+		// both halves of the configuration are known, so no consumer can build
+		// a mirror on the public primary channel by accident.
+		if cfg.Meshtastic.TrafficMirror.Channel == 0 {
+			cfg.Meshtastic.TrafficMirror.Channel = cfg.Meshtastic.EmcomChannel
+		}
 	}
 	if f.Geo != nil {
 		cfg.Geo.Areas = append(cfg.Geo.Areas, f.Geo.Areas...)

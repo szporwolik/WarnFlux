@@ -570,6 +570,9 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 		Baud:          cfg.Meshtastic.Baud,
 		RouteMessages: cfg.Meshtastic.RouteMessages,
 		NodeTTL:       cfg.Meshtastic.NodeTTL,
+		// The announcement channel resolves the mirror's default channel, so
+		// this construction has to carry it as well.
+		EmcomChannel: cfg.Meshtastic.EmcomChannel,
 		TrafficMirror: meshtastic.MirrorConfig{
 			WebhookURL:    cfg.Meshtastic.TrafficMirror.WebhookURL,
 			Username:      cfg.Meshtastic.TrafficMirror.Username,

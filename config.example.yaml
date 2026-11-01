@@ -902,10 +902,13 @@ meshtastic:
   # pin_user_nodes_interval: 6h    # 1m..24h
 
   # Mirror the club channel's traffic to a Discord webhook: every message
-  # SENT or RECEIVED on that channel is posted there, so members who are not
-  # in front of a radio still follow the mesh. The post keeps the direction
-  # (incoming/outgoing), the sender, the hop count and the text; Discord's
-  # 2000-character limit is handled by truncating.
+  # SENT or RECEIVED there is posted, so members who are not in front of a
+  # radio still follow the mesh — including what the station itself sends
+  # (alarms, the EMCOM handling, the beacon and the hazard status line). The
+  # post keeps the direction, the sender (the directory user or the node name,
+  # with the node id in brackets), the hop count, SNR/RSSI when the radio
+  # reported them, and the text; Discord's 2000-character limit is handled by
+  # truncating.
   #
   # The webhook (Server Settings -> Integrations -> Webhooks) is a secret:
   # keep it in the config file, never in the repository. The radio path never
@@ -916,9 +919,8 @@ meshtastic:
   #   username: "SOSNA Mesh"   # optional display name override
   #   channel: 0               # 0 = the announcement channel above;
   #                            # 1-7 = a specific device channel
-  #   include_system: false    # true also mirrors the automated beacon and
-  #                            # hazard-status lines (default false: they are
-  #                            # not club traffic)
+  #   include_system: true     # default: the station's own sends are part of
+  #                            # the channel; false leaves them off the chat
 
   # Periodic presence beacon (identity + uptime + node count) on a
   # community channel. The default PRIMARY channel is receive-only:

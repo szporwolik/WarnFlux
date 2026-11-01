@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -287,6 +288,24 @@ type MeshtasticConfig struct {
 	// reset, a replacement radio) at every session, so this interval only
 	// paces the tidy-up of the directory. Default 6h; 1m..24h.
 	PinUserNodesInterval time.Duration
+	// TrafficMirror forwards the club channel's traffic to a Discord
+	// webhook: every message sent or received there is posted, in both
+	// directions, so members without a radio still follow the mesh.
+	TrafficMirror TrafficMirrorConfig
+}
+
+// TrafficMirrorConfig is the meshtastic "traffic_mirror" block.
+type TrafficMirrorConfig struct {
+	// WebhookURL is the Discord webhook endpoint. Empty disables the mirror.
+	WebhookURL string
+	// Username overrides the webhook's display name.
+	Username string
+	// Channel is the device channel index to mirror; 0 (the default) means
+	// the announcement channel (emcom_channel).
+	Channel int
+	// IncludeSystem also mirrors what the station sends on a schedule (the
+	// presence beacon, the hazard status line). Default false.
+	IncludeSystem bool
 }
 
 // APRSConfig holds the shared APRS hub settings (top-level "aprs:"). The
@@ -749,6 +768,19 @@ type fileMeshtastic struct {
 	ChannelAlerts *bool `yaml:"channel_alerts"`
 	DMAlerts      *bool `yaml:"dm_alerts"`
 	StationAlerts *bool `yaml:"station_alerts"`
+
+	// TrafficMirror mirrors the club channel's traffic to a Discord
+	// webhook (both directions).
+	TrafficMirror *fileTrafficMirror `yaml:"traffic_mirror"`
+}
+
+// fileTrafficMirror mirrors the meshtastic traffic_mirror block.
+type fileTrafficMirror struct {
+	WebhookURL string `yaml:"webhook_url"`
+	Username   string `yaml:"username"`
+	// Channel is the device channel index; omitted = emcom_channel.
+	Channel       *int  `yaml:"channel"`
+	IncludeSystem *bool `yaml:"include_system"`
 }
 
 type fileGeo struct {
@@ -1352,6 +1384,8 @@ func (f fileConfig) toConfig() Config {
 		Baud: 115200, NodeTTL: 30 * time.Minute, EmcomHazardsInterval: 1 * time.Hour,
 		ChannelAlerts: true, DMAlerts: true, StationAlerts: false,
 		PinUserNodes: true, PinUserNodesInterval: defaultPinUserNodesInterval,
+		// 0 = mirror whichever channel the announcement beacon uses.
+		TrafficMirror: TrafficMirrorConfig{Channel: 0},
 	}
 	if f.Meshtastic != nil {
 		cfg.Meshtastic.Enabled = f.Meshtastic.Enabled
@@ -1393,6 +1427,16 @@ func (f fileConfig) toConfig() Config {
 		}
 		if v := f.Meshtastic.PinUserNodesInterval; v != nil {
 			cfg.Meshtastic.PinUserNodesInterval = *v
+		}
+		if tm := f.Meshtastic.TrafficMirror; tm != nil {
+			cfg.Meshtastic.TrafficMirror.WebhookURL = strings.TrimSpace(tm.WebhookURL)
+			cfg.Meshtastic.TrafficMirror.Username = strings.TrimSpace(tm.Username)
+			if tm.Channel != nil {
+				cfg.Meshtastic.TrafficMirror.Channel = *tm.Channel
+			}
+			if tm.IncludeSystem != nil {
+				cfg.Meshtastic.TrafficMirror.IncludeSystem = *tm.IncludeSystem
+			}
 		}
 	}
 	if f.Geo != nil {
@@ -1783,6 +1827,15 @@ func (c Config) Validate() error {
 	if v := c.Meshtastic.PinUserNodesInterval; v != 0 &&
 		(v < time.Minute || v > 24*time.Hour) {
 		return fmt.Errorf("meshtastic.pin_user_nodes_interval must be between 1m and 24h, got %s", v)
+	}
+	if tm := c.Meshtastic.TrafficMirror; tm.WebhookURL != "" {
+		u, err := url.Parse(tm.WebhookURL)
+		if err != nil || u.Scheme != "https" && u.Scheme != "http" || u.Host == "" {
+			return fmt.Errorf("meshtastic.traffic_mirror.webhook_url must be an http(s) URL, got %q", tm.WebhookURL)
+		}
+		if tm.Channel < 0 || tm.Channel > 7 {
+			return fmt.Errorf("meshtastic.traffic_mirror.channel must be 0-7 (0 = the announcement channel), got %d", tm.Channel)
+		}
 	}
 	if c.GSM.Enabled && c.GSM.Device == "" {
 		return fmt.Errorf("gsm.device is required when gsm.enabled is true")

@@ -86,6 +86,9 @@ type Config struct {
 	// FromRadio traffic (defaultSilenceTimeout when unset). Tests shorten
 	// it; production runs with the default.
 	SilenceTimeout time.Duration
+	// TrafficMirror forwards the club channel's traffic to a Discord
+	// webhook (see MirrorConfig). Zero value = disabled.
+	TrafficMirror MirrorConfig
 	// AckSettleTimeout is how long a device-confirmed direct message
 	// waits for the recipient's acknowledgment before settling failed
 	// (defaultAckSettleTimeout when unset). The firmware retransmits
@@ -976,6 +979,8 @@ type Hub struct {
 	recorder    Recorder
 	stationSink func(ctx context.Context, topic string, retained bool, payload []byte) error
 	messageSink func(ctx context.Context, topic string, retained bool, payload []byte) error
+	// mirror forwards club-channel traffic to Discord (nil = disabled).
+	mirror *trafficMirror
 	// senderGate resolves the direct-message sender's node id onto the
 	// directory username that registered it; empty = not registered (the
 	// message stays off the alarm pipeline).
@@ -1169,6 +1174,15 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	if cfg.WatchChannel < 0 || cfg.WatchChannel > 7 {
 		return nil, errors.New("meshtastic: watch channel must be 0-7")
 	}
+	if cfg.TrafficMirror.Channel < 0 || cfg.TrafficMirror.Channel > 7 {
+		return nil, errors.New("meshtastic: traffic_mirror channel must be 0-7 (0 = the announcement channel)")
+	}
+	if cfg.TrafficMirror.Channel == 0 {
+		// The club/announcement channel this station beacons on. Channel 0 is
+		// the public PRIMARY channel, which this station never transmits on,
+		// so it is never the channel a club install means.
+		cfg.TrafficMirror.Channel = cfg.EmcomChannel
+	}
 	if cfg.EmcomHazardsInterval < 0 {
 		return nil, errors.New("meshtastic: emcom hazards interval must not be negative (0 disables)")
 	}
@@ -1191,6 +1205,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
 		return &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
+			mirror:     newTrafficMirror(cfg.TrafficMirror, logger),
 			tombstones: make(map[string]*nodeTombstone),
 			feedQueue:  make(chan feedJob, stationFeedQueueLen),
 			pending:    make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
@@ -1206,6 +1221,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	return &Hub{
 		cfg:          cfg,
 		logger:       logger,
+		mirror:       newTrafficMirror(cfg.TrafficMirror, logger),
 		cadence:      cadenceOf(cfg),
 		nodes:        make(map[string]*Node),
 		tombstones:   make(map[string]*nodeTombstone),
@@ -4399,7 +4415,10 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// Hops travelled (hop_start - hop_limit), matching the node
 	// directory and the map pins; hop_start alone overstated direct
 	// packets (the device echoes them with the full budget left).
-	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", packetHops(pkt), time.Now())
+	hops := packetHops(pkt)
+	heardAt := time.Now()
+	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", hops, heardAt)
+	h.mirrorTraffic("rx", id, "", int(pkt.GetChannel()), channel, string(decoded.GetPayload()), hops, heardAt, "")
 
 	// Only messages addressed EXACTLY to our node route (broadcasts,
 	// To=0 packets and third-party traffic stay on the feed): the gate
@@ -5047,6 +5066,7 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		recipient = fmt.Sprintf("%08x", to)
 	}
 	h.recordMessage("tx", "", recipient, channelLabel, text, operator, 0, at)
+	h.mirrorTraffic("tx", "", recipient, channelIdx, channelLabel, text, 0, at, operator)
 
 	if err := conn.SendToRadio(msg); err != nil {
 		// The link died under the frame: a socket the peer closed fails
@@ -5063,6 +5083,28 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		return nil
 	}
 	return nil
+}
+
+// mirrorTraffic forwards one club-channel message to the configured Discord
+// webhook. Everything is best effort and off the radio path: a nil mirror, a
+// different channel or a scheduled message is simply not forwarded.
+func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int, channelLabel, text string, hops int, at time.Time, operator string) {
+	if h.mirror == nil || channelIdx != h.cfg.TrafficMirror.Channel {
+		return
+	}
+	if operator == "system" && !h.cfg.TrafficMirror.IncludeSystem {
+		return
+	}
+	h.mirror.offer(mirrorMsg{
+		direction: direction,
+		sender:    sender,
+		recipient: recipient,
+		operator:  operator,
+		channel:   channelLabel,
+		text:      text,
+		hops:      hops,
+		at:        at,
+	})
 }
 
 // recordMessage appends one message to the recent list, the durable

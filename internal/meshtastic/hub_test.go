@@ -73,10 +73,15 @@ type testRadio struct {
 func newTestTable() *testNodeTable {
 	lat := int32(500200000) // 50.02
 	lon := int32(200000000) // 20.00
+	// last_heard must stay inside nodeDirRetention. A fixed date turns this
+	// fixture into a time bomb: a hard-coded 2026-10-02 rotted past the 30-day
+	// window exactly 30 days later, and every test that persists the directory
+	// started dropping the node.
+	lastHeard := uint32(time.Now().Add(-2 * time.Hour).Unix())
 	return &testNodeTable{
 		self: nodeInfo(0xabcd1234, "RKSR-OWN", "OWN"),
 		all: []*pb.NodeInfo{
-			nodeInfoPos(0xef010203, "RKSR-TN-R3", "R3", lat, lon, 1790900000),
+			nodeInfoPos(0xef010203, "RKSR-TN-R3", "R3", lat, lon, lastHeard),
 			nodeInfo(0xdeadbeef, "PL-KR-MAKI", "MK"),
 		},
 	}

@@ -566,3 +566,148 @@ func TestStratumOfEachSource(t *testing.T) {
 		t.Fatalf("NTP stratum = %d, want upstream+1 = 3", st.Stratum)
 	}
 }
+
+// TestPassWithGPSTakesTheReceiverFirst: the catch-up pass must consult the
+// receiver even when the network answers, otherwise the station would keep a
+// borrowed reference for a whole interval after a reboot.
+func TestPassWithGPSTakesTheReceiverFirst(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	gps := &fakeGPS{lines: []string{
+		rmc(base.Add(time.Second)), rmc(base.Add(time.Second)), rmc(base.Add(time.Second)),
+	}}
+	d := newTestDaemon(t, Config{
+		NTPServers:    []string{"pool.ntp.org"},
+		StepThreshold: 250 * time.Millisecond,
+		GPSDevice:     "/dev/ttyACM0",
+	}, clock, gps)
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		t.Fatal("ntp must not be asked when the receiver already answered")
+		return 0, 0, 0, nil
+	}
+
+	d.passWith(context.Background(), true)
+
+	if st := d.Status(); st.Source != "gps" || st.Stratum != 1 {
+		t.Fatalf("status = %+v, want the gps source at stratum 1", st)
+	}
+}
+
+// TestRunAsksTheGPSAgainUntilItFixes: after a reboot the receiver needs a while
+// before it reports a fix, and the regular interval is hours. The daemon must
+// ask it again shortly after start-up instead of spending the interval on NTP.
+func TestRunAsksTheGPSAgainUntilItFixes(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	d := newTestDaemon(t, Config{
+		NTPServers:    []string{"pool.ntp.org"},
+		Interval:      time.Hour,
+		StepThreshold: 250 * time.Millisecond,
+		GPSDevice:     "/dev/ttyACM0",
+	}, clock, &fakeGPS{})
+	d.gpsRetry = 20 * time.Millisecond
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 5 * time.Millisecond, time.Millisecond, 2, nil
+	}
+
+	// The receiver stays silent on the first open and answers on the second.
+	var mu sync.Mutex
+	opens := 0
+	d.openGPS = func(string, int) (SampleSource, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		opens++
+		if opens == 1 {
+			return &fakeGPS{}, nil
+		}
+		fix := rmc(base.Add(time.Second))
+		return &fakeGPS{lines: []string{fix, fix, fix}}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if st := d.Status(); st.Source == "gps" {
+			mu.Lock()
+			n := opens
+			mu.Unlock()
+			if n < 2 {
+				t.Fatalf("gps opened %d times, want the daemon to retry", n)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("status source = %q, want gps after a retry", d.Status().Source)
+}
+
+// TestRunStopsRetryingWhenTheGPSNeverAnswers: no antenna must not turn into an
+// endless poll of the serial port — a bounded number of attempts, then the
+// normal interval.
+func TestRunStopsRetryingWhenTheGPSNeverAnswers(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	d := newTestDaemon(t, Config{
+		NTPServers:    []string{"pool.ntp.org"},
+		Interval:      time.Hour,
+		StepThreshold: 250 * time.Millisecond,
+		GPSDevice:     "/dev/ttyACM0",
+	}, clock, &fakeGPS{})
+	d.gpsRetry = 10 * time.Millisecond
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 5 * time.Millisecond, time.Millisecond, 2, nil
+	}
+
+	var mu sync.Mutex
+	opens := 0
+	d.openGPS = func(string, int) (SampleSource, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		opens++
+		return &fakeGPS{}, nil // silent: no fix, ever
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+
+	// One initial pass plus the bounded retries; the next pass is an hour away.
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	n := opens
+	mu.Unlock()
+	if want := gpsRetryTries + 1; n != want {
+		t.Fatalf("gps opened %d times, want exactly %d (initial attempt plus %d retries)",
+			n, want, gpsRetryTries)
+	}
+	if st := d.Status(); st.Source != "ntp" {
+		t.Fatalf("status source = %q, want ntp as the fallback", st.Source)
+	}
+}
+
+// TestPassWithGPSFallsBackToNTP: when the catch-up pass finds no fix, the clock
+// is still disciplined — the receiver being asleep must not cost a pass.
+func TestPassWithGPSFallsBackToNTP(t *testing.T) {
+	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	clock := &fakeClock{t: base}
+	d := newTestDaemon(t, Config{
+		NTPServers:    []string{"pool.ntp.org"},
+		StepThreshold: 250 * time.Millisecond,
+		GPSDevice:     "/dev/ttyACM0",
+	}, clock, &fakeGPS{})
+	d.probeNTP = func(context.Context, string) (time.Duration, time.Duration, uint8, error) {
+		return 500 * time.Millisecond, time.Millisecond, 2, nil
+	}
+
+	source := d.passWith(context.Background(), true)
+
+	if source != "ntp" {
+		t.Fatalf("source = %q, want ntp after the receiver stayed silent", source)
+	}
+	if got := len(clock.Steps()); got != 1 {
+		t.Fatalf("steps = %d, want the clock disciplined anyway", got)
+	}
+}

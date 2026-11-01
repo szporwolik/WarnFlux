@@ -62,7 +62,11 @@ type mirrorMsg struct {
 	// when the device did not report them (and always for our own sends).
 	snr  float32
 	rssi int32
-	at   time.Time
+	// viaMQTT marks a frame the node took from the internet instead of the
+	// air: nobody measured it, so there is no signal to show — saying so is
+	// more useful than showing zeroes.
+	viaMQTT bool
+	at      time.Time
 }
 
 // trafficMirror posts club traffic to Discord. A nil *trafficMirror is the
@@ -167,18 +171,29 @@ func mirrorContent(msg mirrorMsg) string {
 	// the hop count says how far the frame travelled, SNR/RSSI how well it
 	// arrived.
 	var meta []string
-	if msg.hops > 0 {
+	switch {
+	case msg.direction != "rx":
+	case msg.viaMQTT:
+		// The node pulled this frame from the channel's MQTT uplink: it never
+		// crossed the air, so hops and signal mean nothing here.
+		meta = append(meta, "via MQTT")
+	default:
+		// Always: 0 hops means the frame reached us directly, which is worth
+		// knowing on its own.
 		meta = append(meta, fmt.Sprintf("%d hop", msg.hops))
-	}
-	if msg.snr != 0 {
-		meta = append(meta, fmt.Sprintf("SNR %.1f dB", msg.snr))
-	}
-	if msg.rssi != 0 {
-		meta = append(meta, fmt.Sprintf("RSSI %d dBm", msg.rssi))
+		if msg.snr != 0 {
+			meta = append(meta, fmt.Sprintf("SNR %.1f dB", msg.snr))
+		}
+		if msg.rssi != 0 {
+			meta = append(meta, fmt.Sprintf("RSSI %d dBm", msg.rssi))
+		}
 	}
 	body := strings.TrimSpace(msg.text)
 	if len(meta) > 0 {
-		return truncateRunes(header+"\n"+strings.Join(meta, " · ")+"\n"+body, mirrorMaxContent)
+		// The signal line gets its own marker so it reads as metadata and not
+		// as the beginning of the message.
+		line := "📶 " + strings.Join(meta, " · ")
+		return truncateRunes(header+"\n"+line+"\n"+body, mirrorMaxContent)
 	}
 	return truncateRunes(header+"\n"+body, mirrorMaxContent)
 }

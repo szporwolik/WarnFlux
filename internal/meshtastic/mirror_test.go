@@ -70,7 +70,7 @@ func TestMirrorContentShapesBothDirections(t *testing.T) {
 	rx := mirrorContent(mirrorMsg{
 		direction: "rx", sender: "a1b2c3d4", channel: "SOSNA", text: "  test łączności ", hops: 3,
 	})
-	if !strings.HasPrefix(rx, "📥 **SOSNA** · a1b2c3d4\n3 hop\n") {
+	if !strings.HasPrefix(rx, "📥 **SOSNA** · a1b2c3d4\n📶 3 hop\n") {
 		t.Fatalf("rx content = %q", rx)
 	}
 	if !strings.HasSuffix(rx, "\ntest łączności") {
@@ -88,7 +88,7 @@ func TestMirrorContentShapesBothDirections(t *testing.T) {
 	named := mirrorContent(mirrorMsg{
 		direction: "rx", sender: "6d2c8f6c", senderName: "szymon", channel: "SP9MOA", text: "Test", hops: 6,
 	})
-	if !strings.HasPrefix(named, "📥 **SP9MOA** · szymon (6d2c8f6c)\n6 hop\n") {
+	if !strings.HasPrefix(named, "📥 **SP9MOA** · szymon (6d2c8f6c)\n📶 6 hop\n") {
 		t.Fatalf("named content = %q", named)
 	}
 
@@ -202,17 +202,17 @@ func TestMirrorTrafficOnlyForClubChannel(t *testing.T) {
 	defer srv.Close()
 	h := hubMirror(t, srv.URL, 0, false) // 0 = the announcement channel (1)
 
-	h.mirrorTraffic("rx", "a1b2c3d4", "", 2, "INNE", "nie ten kanał", 0, time.Now(), "", 0, 0)
-	h.mirrorTraffic("rx", "a1b2c3d4", "", 0, "PRIMARY", "kanał 0", 0, time.Now(), "", 0, 0)
+	h.mirrorTraffic("rx", "a1b2c3d4", "", 2, "INNE", "nie ten kanał", 0, time.Now(), "", 0, 0, false)
+	h.mirrorTraffic("rx", "a1b2c3d4", "", 0, "PRIMARY", "kanał 0", 0, time.Now(), "", 0, 0, false)
 	// A direct message carries channel index 0 and the "dm" label.
-	h.mirrorTraffic("tx", "", "deadbeef", 0, "dm", "pw", 0, time.Now(), "", 0, 0)
+	h.mirrorTraffic("tx", "", "deadbeef", 0, "dm", "pw", 0, time.Now(), "", 0, 0, false)
 
 	time.Sleep(150 * time.Millisecond)
 	if got := sink.posted(); len(got) != 0 {
 		t.Fatalf("posted %v, want nothing outside the club channel", got)
 	}
 
-	h.mirrorTraffic("rx", "a1b2c3d4", "", 1, "SOSNA", "na kanale klubowym", 2, time.Now(), "", 0, 0)
+	h.mirrorTraffic("rx", "a1b2c3d4", "", 1, "SOSNA", "na kanale klubowym", 2, time.Now(), "", 0, 0, false)
 	got := sink.waitPosted(t, 1)
 	if len(got) != 1 || !strings.Contains(got[0], "na kanale klubowym") {
 		t.Fatalf("posted %v, want the club-channel message", got)
@@ -227,18 +227,18 @@ func TestMirrorTrafficIncludesStationSends(t *testing.T) {
 	defer srv.Close()
 
 	withSystem := hubMirror(t, srv.URL, 1, true)
-	withSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "alarm IMGW", 0, time.Now(), "system", 0, 0)
+	withSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "alarm IMGW", 0, time.Now(), "system", 0, 0, false)
 	if got := sink.waitPosted(t, 1); len(got) != 1 {
 		t.Fatalf("posted %v, want the station send mirrored", got)
 	}
 
 	withoutSystem := hubMirror(t, srv.URL, 1, false)
-	withoutSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "beacon", 0, time.Now(), "system", 0, 0)
+	withoutSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "beacon", 0, time.Now(), "system", 0, 0, false)
 	time.Sleep(150 * time.Millisecond)
 	if got := sink.posted(); len(got) != 1 {
 		t.Fatalf("posted %v, want the opt-out to skip the station send", got)
 	}
-	withoutSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "od człowieka", 0, time.Now(), "szymon", 0, 0)
+	withoutSystem.mirrorTraffic("tx", "", "", 1, "SOSNA", "od człowieka", 0, time.Now(), "szymon", 0, 0, false)
 	if got := sink.waitPosted(t, 2); len(got) != 2 {
 		t.Fatalf("posted %v, want the human message either way", got)
 	}
@@ -251,7 +251,7 @@ func TestMirrorContentCarriesSignal(t *testing.T) {
 		direction: "rx", sender: "6d2c8f6c", senderName: "szymon", channel: "SP9MOA",
 		text: "sygnał", hops: 2, snr: 9.25, rssi: -78,
 	})
-	if !strings.HasPrefix(got, "📥 **SP9MOA** · szymon (6d2c8f6c)\n2 hop · SNR 9.2 dB · RSSI -78 dBm\n") {
+	if !strings.HasPrefix(got, "📥 **SP9MOA** · szymon (6d2c8f6c)\n📶 2 hop · SNR 9.2 dB · RSSI -78 dBm\n") {
 		t.Fatalf("content = %q, want the signal metadata line", got)
 	}
 
@@ -260,6 +260,25 @@ func TestMirrorContentCarriesSignal(t *testing.T) {
 	plain := mirrorContent(mirrorMsg{direction: "rx", sender: "6d2c8f6c", channel: "SP9MOA", text: "x"})
 	if strings.Contains(plain, "SNR") || strings.Contains(plain, "RSSI") {
 		t.Fatalf("content = %q, want no empty signal fields", plain)
+	}
+	// A direct frame still says so: 0 hops is information, not noise.
+	if !strings.HasPrefix(plain, "📥 **SP9MOA** · 6d2c8f6c\n📶 0 hop\n") {
+		t.Fatalf("content = %q, want the direct-reception marker", plain)
+	}
+
+	// A frame the node pulled from the channel's MQTT uplink was never on the
+	// air: say so instead of printing hop 0 and no signal.
+	viaMQTT := mirrorContent(mirrorMsg{
+		direction: "rx", sender: "6d2c8f6c", channel: "SP9MOA", text: "z internetu", hops: 1, viaMQTT: true,
+	})
+	if !strings.HasPrefix(viaMQTT, "📥 **SP9MOA** · 6d2c8f6c\n📶 via MQTT\n") {
+		t.Fatalf("content = %q, want the MQTT marker", viaMQTT)
+	}
+
+	// Our own transmissions were not measured by anything: no signal line.
+	txPlain := mirrorContent(mirrorMsg{direction: "tx", channel: "SP9MOA", text: "x", operator: "admin"})
+	if strings.Contains(txPlain, "📶") {
+		t.Fatalf("content = %q, want no signal line for a transmission", txPlain)
 	}
 }
 

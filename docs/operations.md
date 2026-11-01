@@ -39,7 +39,7 @@ whether the station comes up. Three pieces handle that:
 
 | Unit | What it does |
 |---|---|
-| `warnflux-boot-up.timer` → `warnflux-boot-up.service` | The boot path **and** the self-healing loop. Waits for `NTPSynchronized=yes`, waits for every mapped device, then brings the stacks up in dependency order: broker → radio → clock → station. |
+| `warnflux-boot-up.timer` → `warnflux-boot-up.service` | The boot path **and** the self-healing loop. Waits for `NTPSynchronized=yes`, waits for every mapped device and for the broker's own healthcheck, then brings the stacks up in dependency order: broker → radio → clock → station. |
 | `warnflux-clock-guard.timer` → `warnflux-clock-guard.service` | Decides who owns the clock: the station container while it is alive and its last sync is recent, otherwise `systemd-timesyncd`. |
 | `systemd-timesyncd` (enabled) | The fallback clock. The guard only stops it, never disables it, so it is back after every boot. |
 

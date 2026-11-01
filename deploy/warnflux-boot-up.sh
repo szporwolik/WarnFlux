@@ -70,6 +70,27 @@ wait_for_clock() {
 	return 1
 }
 
+# wait_for_healthy blocks until a container is ready to serve: healthy when it
+# has a HEALTHCHECK, running when it has none. `compose up -d` returns as soon as
+# the container exists, so without this the station spends its first seconds
+# logging "connection refused" against a broker that is still starting — 74
+# warning lines on every boot that nobody should have to read past.
+wait_for_healthy() {
+	name="$1"
+	limit="${2:-90}"
+	waited=0
+	while [ "$waited" -lt "$limit" ]; do
+		state=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$name" 2>/dev/null || true)
+		case "$state" in
+		healthy | running) return 0 ;;
+		esac
+		sleep 1
+		waited=$((waited + 1))
+	done
+	log "$name: not ready after ${limit}s - continuing"
+	return 1
+}
+
 # wait_for_path blocks until a device path exists (it is resolved when a
 # container is created, so starting too early fails permanently).
 wait_for_path() {
@@ -243,6 +264,7 @@ record_boot || true
 # Broker first: the station's receiver, the radio's pub/sub and other hosts
 # all connect to it at start-up.
 compose_up mqtt
+wait_for_healthy mosquitto 90 || true
 # Radio: needs the AIOC sound card (and its tty for PTT).
 ensure_ptt_link || true
 compose_up aprs

@@ -45,6 +45,30 @@ Without the capability the daemon still **serves** the time and still logs every
 pass — it just cannot move the clock, and it says so (`time: cannot step the
 clock … the container needs CAP_SYS_TIME`).
 
+### The catch-up phase after start-up
+
+A receiver that was just powered up needs tens of seconds before it reports a
+fix, while the pass runs immediately at start-up and the regular interval is
+hours. The first pass therefore usually ends on NTP — and without more, the
+station would advertise a borrowed reference for a whole interval even though
+its own hardware was answering, so a network outage in that window would leave
+it free-running.
+
+So the daemon starts in a **catch-up phase**: while a GPS device is configured
+it asks the receiver *first* (falling back to NTP in the same pass, so the clock
+is never left undisciplined), then tries again after 3 minutes, at most three
+times. The log shows it:
+
+```
+time: gps has no fix yet, falling back to ntp   error="gps delivered no time within the wait"   (debug)
+time: gps has no fix yet, asking again          in=3m0s attempt=1
+time: clock is good                             source=gps detail=$GNRMC offset=-69ms
+```
+
+Once the receiver has answered, the normal order (NTP first) resumes; if it
+never answers, the attempts stop after the third retry and the station settles
+into the interval instead of polling the serial port.
+
 ## Configuration
 
 ```yaml

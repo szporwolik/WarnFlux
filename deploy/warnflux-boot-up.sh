@@ -111,13 +111,18 @@ compose_up() {
 # restart_unhealthy restarts a station container that Docker reports as
 # unhealthy. A restart policy covers exits, not hangs: a process that is alive
 # but no longer answering keeps its container "running" forever, and nothing
-# else in the system would notice. Names match the container_name values in the
-# station's compose files.
+# else in the system would notice.
+#
+# Ownership is decided by the compose PROJECT label, not by the container name:
+# when a name is momentarily taken during a recreate, compose falls back to a
+# generated name (f36e42987682_warnflux) and a name-based rule would silently
+# stop managing it.
 restart_unhealthy() {
 	for name in $(docker ps --filter health=unhealthy --format '{{.Names}}'); do
-		case "$name" in
-		mosquitto | direwolf | warnflux | warnflux-time)
-			log "$name: unhealthy - restarting"
+		project=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null || true)
+		case "$project" in
+		mqtt | aprs | warnflux | warnflux-time)
+			log "$name: unhealthy (project $project) - restarting"
 			docker restart "$name" >/dev/null || log "$name: restart failed"
 			;;
 		*)

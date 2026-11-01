@@ -50,14 +50,15 @@ const (
 
 // mirrorMsg is one line of club traffic, in either direction.
 type mirrorMsg struct {
-	direction string // "rx" (heard on the air) or "tx" (we transmitted)
-	sender    string // node id of the sender, rx only
-	recipient string // node id for a direct message, tx only
-	operator  string // who sent it from our side, tx only ("system" = schedule)
-	channel   string // channel display name
-	text      string
-	hops      int
-	at        time.Time
+	direction  string // "rx" (heard on the air) or "tx" (we transmitted)
+	sender     string // node id of the sender, rx only
+	senderName string // the name this station knows that node by, rx only
+	recipient  string // node id for a direct message, tx only
+	operator   string // who sent it from our side, tx only ("system" = schedule)
+	channel    string // channel display name
+	text       string
+	hops       int
+	at         time.Time
 }
 
 // trafficMirror posts club traffic to Discord. A nil *trafficMirror is the
@@ -141,6 +142,12 @@ func (m *trafficMirror) post(msg mirrorMsg) {
 func mirrorContent(msg mirrorMsg) string {
 	arrow := "📥"
 	who := msg.sender
+	// A node id alone tells the chat nothing: show the name the station
+	// already knows it by (a registered user, else the node's long name) with
+	// the id in brackets, so both the human and the technical reader are served.
+	if msg.senderName != "" {
+		who = fmt.Sprintf("%s (%s)", msg.senderName, msg.sender)
+	}
 	if msg.direction == "tx" {
 		arrow = "📤"
 		who = "all"

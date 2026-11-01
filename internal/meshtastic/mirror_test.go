@@ -84,6 +84,14 @@ func TestMirrorContentShapesBothDirections(t *testing.T) {
 		t.Fatalf("tx broadcast content = %q", tx)
 	}
 
+	// A known node shows the name the station knows, with the id in brackets.
+	named := mirrorContent(mirrorMsg{
+		direction: "rx", sender: "6d2c8f6c", senderName: "szymon", channel: "SP9MOA", text: "Test", hops: 6,
+	})
+	if !strings.HasPrefix(named, "📥 **SP9MOA** · szymon (6d2c8f6c) · 6 hop") {
+		t.Fatalf("named content = %q", named)
+	}
+
 	dm := mirrorContent(mirrorMsg{
 		direction: "tx", recipient: "deadbeef", channel: "SOSNA", text: "priv",
 	})
@@ -269,5 +277,78 @@ func TestMirrorSeesTrafficOnTheRadioPath(t *testing.T) {
 	}
 	if !strings.Contains(got[0], "hej klub") || !strings.Contains(got[0], "ef010203") {
 		t.Fatalf("content = %q, want the text and the sender", got[0])
+	}
+}
+
+// senderDisplayName prefers the directory user, then the node's long name, then
+// its short name: the chat should show the friendliest label the station has.
+func TestSenderDisplayNamePreference(t *testing.T) {
+	h, err := NewHub(Config{Enabled: true, Device: "/dev/fake", EmcomChannel: 1}, nil)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	h.mu.Lock()
+	h.nodes["6d2c8f6c"] = &Node{ID: "6d2c8f6c", Name: "MOA SOSNA", Short: "SOS"}
+	h.nodes["deadbeef"] = &Node{ID: "deadbeef", Short: "MK"}
+	h.mu.Unlock()
+
+	if got := h.senderDisplayName("6d2c8f6c"); got != "MOA SOSNA" {
+		t.Fatalf("name = %q, want the node long name", got)
+	}
+	if got := h.senderDisplayName("deadbeef"); got != "MK" {
+		t.Fatalf("name = %q, want the short name as the fallback", got)
+	}
+	if got := h.senderDisplayName("00000000"); got != "" {
+		t.Fatalf("name = %q, want empty for an unknown node", got)
+	}
+
+	// A registered directory user wins over the radio's own long name.
+	h.SetSenderGate(func(id string) string {
+		if id == "6d2c8f6c" {
+			return "szymon"
+		}
+		return ""
+	})
+	if got := h.senderDisplayName("6d2c8f6c"); got != "szymon" {
+		t.Fatalf("name = %q, want the directory user", got)
+	}
+}
+
+// The radio path test above also has to show the name once the node is known.
+func TestMirrorRadioPathShowsKnownName(t *testing.T) {
+	sink := &webhookSink{}
+	srv := httptest.NewServer(sink.handler())
+	defer srv.Close()
+
+	radio := newTestRadio(t, Config{
+		Enabled:       true,
+		Device:        "/dev/fake",
+		EmcomChannel:  1,
+		TrafficMirror: MirrorConfig{WebhookURL: srv.URL},
+	}, testRadioOpts{setup: func(h *Hub) {
+		h.SetSenderGate(func(id string) string {
+			if id == "ef010203" {
+				return "szymon"
+			}
+			return ""
+		})
+	}})
+	radio.waitConnected(t)
+
+	dispatchPkt(t, radio, &pb.MeshPacket{
+		From: 0xef010203,
+		To:   0xffffffff,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("z nazwa")},
+		},
+		Channel: 1,
+	})
+
+	got := sink.waitPosted(t, 1)
+	if len(got) != 1 {
+		t.Fatalf("posted %v, want one message", got)
+	}
+	if !strings.Contains(got[0], "szymon (ef010203)") {
+		t.Fatalf("content = %q, want the directory user with the node id", got[0])
 	}
 }

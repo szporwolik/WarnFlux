@@ -32,6 +32,17 @@ const (
 	// gpsSamples GPS samples are median-filtered: one bad sentence must not
 	// move the clock.
 	gpsSamples = 3
+	// gpsRetryDelay is how long the daemon waits before asking the receiver
+	// again during the catch-up phase right after start-up. A receiver that was
+	// just powered up needs tens of seconds for a fix, while the regular
+	// interval is hours: without the retry the station would spend a whole
+	// interval without a reference of its own even though the hardware was
+	// there and answering, and a network outage in that window would leave it
+	// free-running.
+	gpsRetryDelay = 3 * time.Minute
+	// gpsRetryTries bounds the catch-up attempts, so a station with no antenna
+	// settles into the normal interval instead of polling the port.
+	gpsRetryTries = 3
 )
 
 // Config is the time_sync section of the configuration.
@@ -131,6 +142,8 @@ type Daemon struct {
 	fresh time.Duration
 	// probeNTP is a seam for tests.
 	probeNTP func(ctx context.Context, server string) (time.Duration, time.Duration, uint8, error)
+	// gpsRetry is how long the catch-up phase waits between attempts.
+	gpsRetry time.Duration
 }
 
 // NewDaemon builds the daemon over the given clock (nil = the system clock).
@@ -171,6 +184,7 @@ func NewDaemon(cfg Config, clock Clock, logger *slog.Logger) *Daemon {
 	d.probeNTP = func(ctx context.Context, server string) (time.Duration, time.Duration, uint8, error) {
 		return QueryNTP(ctx, server, 2*time.Second, nil)
 	}
+	d.gpsRetry = gpsRetryDelay
 	return d
 }
 
@@ -207,30 +221,84 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}
 
+	// Catch-up phase: a receiver that was just powered up needs tens of seconds
+	// before it reports a fix, and the pass runs immediately, so the first
+	// attempt legitimately fails and NTP answers instead. Ask the receiver first
+	// a few times, shortly after start-up, before settling into the interval —
+	// otherwise the station advertises a borrowed reference for hours.
+	gpsFirst := d.cfg.GPSDevice != ""
+	retries := 0
 	for {
-		d.pass(ctx)
+		source := d.passWith(ctx, gpsFirst)
+		wait := d.cfg.Interval
+		switch {
+		case source == "gps":
+			gpsFirst = false
+			retries = 0
+		case gpsFirst && retries < gpsRetryTries:
+			retries++
+			wait = d.gpsRetry
+			if d.log != nil {
+				d.log.Info("time: gps has no fix yet, asking again",
+					"in", wait.String(), "attempt", retries)
+			}
+		default:
+			gpsFirst = false
+		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(d.cfg.Interval):
+		case <-time.After(wait):
 		}
 	}
 }
 
-// pass runs one discipline attempt: NTP first (cheap and precise), GPS when
+// pass runs one discipline attempt in the normal order and reports which
+// source answered.
+func (d *Daemon) pass(ctx context.Context) string { return d.passWith(ctx, false) }
+
+// passWith runs one discipline attempt: NTP first (cheap and precise), GPS when
 // the network does not answer — the station is expected to work off-grid.
-func (d *Daemon) pass(ctx context.Context) {
+//
+// gpsFirst reverses that order, which is what the catch-up phase needs: a
+// receiver that has not acquired a fix yet would otherwise never be consulted
+// while NTP answers, and the station would keep a borrowed reference instead of
+// establishing its own. If the receiver still has nothing, the pass falls back
+// to NTP so the clock is never left undisciplined.
+func (d *Daemon) passWith(ctx context.Context, gpsFirst bool) string {
 	start := d.clock.Now()
 	st := Status{At: start, Source: "none", Stratum: d.currentStratum()}
 
 	// The offset and its upstream stratum: NTP reports the stratum of its own
 	// reference, GPS is a stratum 1 source by definition.
-	offset, source, detail, upstream, err := d.measureNTP(ctx)
-	if err != nil {
-		if d.log != nil && len(d.cfg.NTPServers) > 0 {
-			d.log.Debug("time: ntp unavailable, trying the GPS receiver", "error", err)
-		}
+	var (
+		offset   time.Duration
+		source   string
+		detail   string
+		upstream uint8
+		err      error
+		gpsErr   error
+	)
+	if gpsFirst {
 		offset, source, detail, upstream, err = d.measureGPS(ctx, &st)
+		gpsErr = err
+		if err != nil && d.log != nil {
+			d.log.Debug("time: gps has no fix yet, falling back to ntp", "error", err)
+		}
+	}
+	if !gpsFirst || err != nil {
+		offset, source, detail, upstream, err = d.measureNTP(ctx)
+		switch {
+		case err == nil:
+		case !gpsFirst:
+			if d.log != nil && len(d.cfg.NTPServers) > 0 {
+				d.log.Debug("time: ntp unavailable, trying the GPS receiver", "error", err)
+			}
+			offset, source, detail, upstream, err = d.measureGPS(ctx, &st)
+		case gpsErr != nil:
+			// Both were asked and both failed: report both, the panel shows it.
+			err = fmt.Errorf("ntp: %v; gps: %v", err, gpsErr)
+		}
 	}
 	if err != nil {
 		st.LastError = err.Error()
@@ -239,7 +307,7 @@ func (d *Daemon) pass(ctx context.Context) {
 		if d.log != nil {
 			d.log.Warn("time: no usable source, clock left alone", "error", err)
 		}
-		return
+		return ""
 	}
 
 	st.Source, st.Detail = source, detail
@@ -259,7 +327,7 @@ func (d *Daemon) pass(ctx context.Context) {
 				"source", source, "detail", detail, "offset", offset.Round(time.Second).String(),
 				"limit", maxStep.String())
 		}
-		return
+		return source
 	}
 
 	if absDuration(offset) >= d.cfg.StepThreshold {
@@ -273,7 +341,7 @@ func (d *Daemon) pass(ctx context.Context) {
 					"offset", offset.Round(time.Millisecond).String(),
 					"hint", "the container needs CAP_SYS_TIME and a seccomp profile allowing clock_settime")
 			}
-			return
+			return source
 		}
 		st.Stepped = true
 		if d.log != nil {
@@ -301,6 +369,7 @@ func (d *Daemon) pass(ctx context.Context) {
 	st.Stratum = upstream
 	d.markSynced(source, st.Stratum, st.At)
 	d.writeStatus(st)
+	return source
 }
 
 // markSynced records one successful pass as the current clock quality.

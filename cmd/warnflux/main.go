@@ -570,6 +570,12 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 		Baud:          cfg.Meshtastic.Baud,
 		RouteMessages: cfg.Meshtastic.RouteMessages,
 		NodeTTL:       cfg.Meshtastic.NodeTTL,
+		TrafficMirror: meshtastic.MirrorConfig{
+			WebhookURL:    cfg.Meshtastic.TrafficMirror.WebhookURL,
+			Username:      cfg.Meshtastic.TrafficMirror.Username,
+			Channel:       cfg.Meshtastic.TrafficMirror.Channel,
+			IncludeSystem: cfg.Meshtastic.TrafficMirror.IncludeSystem,
+		},
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
@@ -889,6 +895,12 @@ func run(configPath string, checkConfig bool) error {
 		EmcomSite:            publicSite(cfg.Web.Domain),
 		PinUserNodes:         cfg.Meshtastic.PinUserNodes,
 		PinInterval:          cfg.Meshtastic.PinUserNodesInterval,
+		TrafficMirror: meshtastic.MirrorConfig{
+			WebhookURL:    cfg.Meshtastic.TrafficMirror.WebhookURL,
+			Username:      cfg.Meshtastic.TrafficMirror.Username,
+			Channel:       cfg.Meshtastic.TrafficMirror.Channel,
+			IncludeSystem: cfg.Meshtastic.TrafficMirror.IncludeSystem,
+		},
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)

@@ -602,8 +602,12 @@ type Node struct {
 	// travelled before reaching us (0 = direct; also 0 for legacy
 	// directory entries restored without a packet).
 	Hops int
-	Lat  float64
-	Lon  float64
+	// SNR is the signal-to-noise ratio the radio measured for the last packet
+	// it heard from this node, straight from the packet when it carried one and
+	// from the node announcement otherwise. Zero = never measured.
+	SNR float32
+	Lat float64
+	Lon float64
 	// Telemetry is the latest telemetry the node broadcast (nil when
 	// the node never sent any).
 	Telemetry *Telemetry
@@ -4083,6 +4087,9 @@ func (h *Hub) recordSignal(pkt *pb.MeshPacket, signal string) {
 		h.nodesDirty = true
 	}
 	n.Hops = packetHops(pkt)
+	if snr := pkt.GetRxSnr(); snr != 0 {
+		n.SNR = snr
+	}
 	n.LastSeen = time.Now()
 	h.mu.Unlock()
 }
@@ -4201,6 +4208,12 @@ func (h *Hub) receiveTelemetry(pkt *pb.MeshPacket, decoded *pb.Data) {
 	t.At = time.Now()
 	n.LastSeen = time.Now()
 	n.Hops = packetHops(pkt)
+	// A node announcement reports the SNR our radio measured when it heard it,
+	// which is the only signal figure available for a frame that arrives without
+	// one (the client API omits rx_snr on some firmware/transports).
+	if snr := pkt.GetRxSnr(); snr != 0 {
+		n.SNR = snr
+	}
 	copyN := *n
 	copyN.Telemetry = cloneTelemetry(n.Telemetry)
 	h.mu.Unlock()
@@ -4253,6 +4266,12 @@ func (h *Hub) receiveNodeInfo(pkt *pb.MeshPacket, decoded *pb.Data) {
 	}
 	n.LastSeen = time.Now()
 	n.Hops = packetHops(pkt)
+	// A node announcement reports the SNR our radio measured when it heard it,
+	// which is the only signal figure available for a frame that arrives without
+	// one (the client API omits rx_snr on some firmware/transports).
+	if snr := pkt.GetRxSnr(); snr != 0 {
+		n.SNR = snr
+	}
 	copyN := *n
 	copyN.Telemetry = cloneTelemetry(n.Telemetry)
 	h.mu.Unlock()
@@ -4434,6 +4453,15 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	// packets (the device echoes them with the full budget left).
 	hops := packetHops(pkt)
 	heardAt := time.Now()
+	if h.logger != nil {
+		// The client API does not always fill the signal fields, and "why are
+		// there no numbers in the chat" should be answerable from the log
+		// rather than guessed.
+		h.logger.Debug("meshtastic: text frame heard",
+			"from", id, "channel", channel, "hops", hops,
+			"hop_start", pkt.GetHopStart(), "hop_limit", pkt.GetHopLimit(),
+			"snr", pkt.GetRxSnr(), "rssi", pkt.GetRxRssi(), "via_mqtt", pkt.GetViaMqtt())
+	}
 	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", hops, heardAt)
 	h.mirrorTraffic("rx", id, "", int(pkt.GetChannel()), channel, string(decoded.GetPayload()), hops, heardAt, "",
 		pkt.GetRxSnr(), pkt.GetRxRssi(), pkt.GetViaMqtt())
@@ -5116,6 +5144,11 @@ func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int,
 	senderName := ""
 	if direction == "rx" && sender != "" {
 		senderName = h.senderDisplayName(sender)
+		if snr == 0 {
+			// The frame did not carry a measurement: show what the radio last
+			// measured for this peer instead of nothing at all.
+			snr = h.nodeSNR(sender)
+		}
 	}
 	h.mirror.offer(mirrorMsg{
 		direction:  direction,
@@ -5126,6 +5159,9 @@ func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int,
 		channel:    channelLabel,
 		text:       text,
 		hops:       hops,
+		snr:        snr,
+		rssi:       rssi,
+		viaMQTT:    viaMQTT,
 		at:         at,
 	})
 }
@@ -5152,6 +5188,16 @@ func (h *Hub) senderDisplayName(id string) string {
 		return name
 	}
 	return short
+}
+
+// nodeSNR is the last signal-to-noise ratio the radio measured for a peer.
+func (h *Hub) nodeSNR(id string) float32 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if n := h.nodes[id]; n != nil {
+		return n.SNR
+	}
+	return 0
 }
 
 // recordMessage appends one message to the recent list, the durable

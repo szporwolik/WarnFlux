@@ -354,3 +354,27 @@ func TestMirrorRadioPathShowsKnownName(t *testing.T) {
 		t.Fatalf("content = %q, want the directory user with the node id", got[0])
 	}
 }
+
+// A frame that arrives without its own measurement still shows the SNR the
+// radio last measured for that peer: the chat should not lose the number just
+// because one packet omitted it.
+func TestMirrorFallsBackToThePeersKnownSNR(t *testing.T) {
+	sink := &webhookSink{}
+	srv := httptest.NewServer(sink.handler())
+	defer srv.Close()
+
+	h := hubMirror(t, srv.URL, 1, true)
+	h.mu.Lock()
+	h.nodes["ef010203"] = &Node{ID: "ef010203", SNR: 7.25}
+	h.mu.Unlock()
+
+	h.mirrorTraffic("rx", "ef010203", "", 1, "SP9MOA", "bez pomiaru w ramce", 0, time.Now(), "", 0, 0, false)
+
+	got := sink.waitPosted(t, 1)
+	if len(got) != 1 {
+		t.Fatalf("posted %v, want one message", got)
+	}
+	if !strings.Contains(got[0], "SNR 7.2 dB") {
+		t.Fatalf("content = %q, want the peer's last SNR", got[0])
+	}
+}

@@ -901,6 +901,25 @@ meshtastic:
   pin_user_nodes: true
   # pin_user_nodes_interval: 6h    # 1m..24h
 
+  # Mirror the club channel's traffic to a Discord webhook: every message
+  # SENT or RECEIVED on that channel is posted there, so members who are not
+  # in front of a radio still follow the mesh. The post keeps the direction
+  # (incoming/outgoing), the sender, the hop count and the text; Discord's
+  # 2000-character limit is handled by truncating.
+  #
+  # The webhook (Server Settings -> Integrations -> Webhooks) is a secret:
+  # keep it in the config file, never in the repository. The radio path never
+  # waits for Discord — posts are asynchronous and bounded, a dead webhook
+  # costs a log line, not a message.
+  # traffic_mirror:
+  #   webhook_url: "https://discord.com/api/webhooks/.../..."
+  #   username: "SOSNA Mesh"   # optional display name override
+  #   channel: 0               # 0 = the announcement channel above;
+  #                            # 1-7 = a specific device channel
+  #   include_system: false    # true also mirrors the automated beacon and
+  #                            # hazard-status lines (default false: they are
+  #                            # not club traffic)
+
   # Periodic presence beacon (identity + uptime + node count) on a
   # community channel. The default PRIMARY channel is receive-only:
   # broadcasts there are blocked by policy. Give every installation that

@@ -4435,7 +4435,8 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 	hops := packetHops(pkt)
 	heardAt := time.Now()
 	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", hops, heardAt)
-	h.mirrorTraffic("rx", id, "", int(pkt.GetChannel()), channel, string(decoded.GetPayload()), hops, heardAt, "")
+	h.mirrorTraffic("rx", id, "", int(pkt.GetChannel()), channel, string(decoded.GetPayload()), hops, heardAt, "",
+		pkt.GetRxSnr(), pkt.GetRxRssi())
 
 	// Only messages addressed EXACTLY to our node route (broadcasts,
 	// To=0 packets and third-party traffic stay on the feed): the gate
@@ -5083,7 +5084,7 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		recipient = fmt.Sprintf("%08x", to)
 	}
 	h.recordMessage("tx", "", recipient, channelLabel, text, operator, 0, at)
-	h.mirrorTraffic("tx", "", recipient, channelIdx, channelLabel, text, 0, at, operator)
+	h.mirrorTraffic("tx", "", recipient, channelIdx, channelLabel, text, 0, at, operator, 0, 0)
 
 	if err := conn.SendToRadio(msg); err != nil {
 		// The link died under the frame: a socket the peer closed fails
@@ -5105,7 +5106,7 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 // mirrorTraffic forwards one club-channel message to the configured Discord
 // webhook. Everything is best effort and off the radio path: a nil mirror, a
 // different channel or a scheduled message is simply not forwarded.
-func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int, channelLabel, text string, hops int, at time.Time, operator string) {
+func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int, channelLabel, text string, hops int, at time.Time, operator string, snr float32, rssi int32) {
 	if h.mirror == nil || channelIdx != h.cfg.TrafficMirror.Channel {
 		return
 	}

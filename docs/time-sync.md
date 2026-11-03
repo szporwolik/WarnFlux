@@ -89,10 +89,12 @@ Details that matter:
 * **`interval`** is the delay between discipline passes, and the right value is
   the host's drift. A board with a real-time clock needs hours. A Raspberry Pi
   does not have one, and the production station measured **~10.4 s per 6 h**
-  (≈40 ppm, the cheap crystal free-running), so at the old six-hour default the
-  clock could be ten seconds off between passes — enough to skew message
-  timestamps and expiry margins. One hour keeps it within ~2 s for the cost of a
-  single NTP packet per hour, which is why the reference deployment runs `1h`.
+  (≈480 ppm, ~40 s per day — the cheap crystal free-running), so at the old
+  six-hour default the clock could be ten seconds off between passes: enough to
+  skew message timestamps and expiry margins. One hour keeps it within ~2 s for
+  the cost of a single NTP packet per hour, which is why the reference
+  deployment runs `1h`. The hourly passes then measure ~1.7 s each, which is the
+  same rate in a smaller window.
   Keep it short enough for the drift and long enough that a step is rare: a step
   during a transmission makes timestamps jump.
 * **`step_threshold`** keeps the daemon from chasing noise. A correction below

@@ -1012,8 +1012,9 @@ time_sync:
 
   # How often the clock is checked. The drift depends on the host: a board with
   # a real-time clock needs hours, while a Raspberry Pi (no RTC, cheap crystal)
-  # was measured at ~10 s per 6 h — 1h keeps it within ~2 s, for one NTP packet
-  # per hour. Longer is fine too; a step only makes timestamps jump.
+  # was measured at ~10 s per 6 h (~40 s per day) — 1h keeps the error within
+  # ~2 s, for one NTP packet per hour. Longer is fine too; a step only makes
+  # timestamps jump.
   interval: 1h
 
   # GPS receiver. Empty = no GPS: the station then relies on NTP alone and logs

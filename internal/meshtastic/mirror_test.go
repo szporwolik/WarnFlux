@@ -1,6 +1,7 @@
 package meshtastic
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -376,5 +377,38 @@ func TestMirrorFallsBackToThePeersKnownSNR(t *testing.T) {
 	}
 	if !strings.Contains(got[0], "SNR 7.2 dB") {
 		t.Fatalf("content = %q, want the peer's last SNR", got[0])
+	}
+}
+
+// A station configured without the mesh must stay quiet: no session retries, no
+// "no serial device path configured" warnings on every backoff.
+func TestDisabledHubRunIsIdle(t *testing.T) {
+	h, err := NewHub(Config{Enabled: false}, nil)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v while the context was still live, want it to idle", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v after cancel, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not stop after cancel")
+	}
+	h.mu.Lock()
+	lastErr := h.lastErr
+	h.mu.Unlock()
+	if lastErr != nil {
+		t.Fatalf("last error = %v, want none for a disabled hub", lastErr)
 	}
 }

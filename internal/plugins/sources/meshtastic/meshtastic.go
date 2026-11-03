@@ -42,6 +42,12 @@ func (s *Source) Name() string { return Type }
 // Run pumps the hub until ctx is cancelled and publishes the node snapshot
 // every 30 seconds for map-layer consumers.
 func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
+	if !s.hub.Enabled() {
+		// Nothing to pump, and an empty snapshot would only clear the map of a
+		// station that does not use the mesh at all.
+		<-ctx.Done()
+		return nil
+	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.hub.Run(ctx) }()
 

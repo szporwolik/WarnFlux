@@ -75,7 +75,7 @@ into the interval instead of polling the serial port.
 time_sync:
   enabled: true
   ntp_servers: ["pool.ntp.org"]
-  interval: 6h                  # hours, not minutes: a clock drifts by seconds/week
+  interval: 1h                  # see the drift note below
   gps_device: "/dev/ttyACM0"    # empty = no GPS
   gps_baud: 9600
   step_threshold: 250ms         # below this the clock is left alone
@@ -86,9 +86,17 @@ time_sync:
 
 Details that matter:
 
-* **`interval`** is the delay between discipline passes. Six hours is plenty: the
-  clock drifts by seconds per week, and a step while the radio transmits only
-  makes timestamps jump.
+* **`interval`** is the delay between discipline passes, and the right value is
+  the host's drift. A board with a real-time clock needs hours. A Raspberry Pi
+  does not have one, and the production station measured **~10.4 s per 6 h**
+  (≈480 ppm, ~40 s per day — the cheap crystal free-running), so at the old
+  six-hour default the clock could be ten seconds off between passes: enough to
+  skew message timestamps and expiry margins. One hour keeps it within ~2 s for
+  the cost of a single NTP packet per hour, which is why the reference
+  deployment runs `1h`. The hourly passes then measure ~1.7 s each, which is the
+  same rate in a smaller window.
+  Keep it short enough for the drift and long enough that a step is rare: a step
+  during a transmission makes timestamps jump.
 * **`step_threshold`** keeps the daemon from chasing noise. A correction below
   it is measured and logged, not applied.
 * **GPS without a fix** is rejected on purpose: a receiver with no satellite fix

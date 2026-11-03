@@ -39,7 +39,7 @@ whether the station comes up. Three pieces handle that:
 
 | Unit | What it does |
 |---|---|
-| `warnflux-boot-up.timer` → `warnflux-boot-up.service` | The boot path **and** the self-healing loop. Waits for `NTPSynchronized=yes`, waits for every mapped device, then brings the stacks up in dependency order: broker → radio → clock → station. |
+| `warnflux-boot-up.timer` → `warnflux-boot-up.service` | The boot path **and** the self-healing loop. Waits for `NTPSynchronized=yes`, waits for every mapped device and for the broker's own healthcheck, then brings the stacks up in dependency order: broker → radio → clock → station. |
 | `warnflux-clock-guard.timer` → `warnflux-clock-guard.service` | Decides who owns the clock: the station container while it is alive and its last sync is recent, otherwise `systemd-timesyncd`. |
 | `systemd-timesyncd` (enabled) | The fallback clock. The guard only stops it, never disables it, so it is back after every boot. |
 
@@ -54,6 +54,17 @@ Docker's `restart: unless-stopped` policy also starts the containers directly at
 boot, before the clock is right — that is why a broker with TLS can come up
 `Exited 255` and then be fixed by the boot-up pass a moment later. The correct
 sequence is therefore: **let the timer do its job, then look**.
+
+systemd drives the board's hardware watchdog with a one-minute timeout
+(`systemctl show -p RuntimeWatchdogUSec systemd`): a fully wedged system reboots
+itself instead of staying dead, and the boot path above then brings the stacks
+back.
+
+Every boot leaves one line behind in `/var/lib/warnflux/boots.log` (boot id,
+uptime when the pass ran, the firmware's `get_throttled` flags, a count of
+under-voltage / panic / thermal lines in `dmesg`). The host journal is volatile on Raspberry Pi OS
+— `Storage=volatile`, to spare the SD card — so without that file an unattended
+reboot leaves nothing to look at afterwards.
 
 `warnflux-boot-up.service` is a one-shot pass, not a state: it finishes
 `inactive` after every run. It must, otherwise the timer has no next activation
@@ -72,7 +83,30 @@ is a bug waiting for a power cut. Map by udev ID instead:
 devices:
   - /dev/serial/by-id/usb-FTDI_...-if00-port0:/dev/modem
   - /dev/serial/by-id/usb-u-blox_AG_-_GPS_GNSS_Receiver_...-if00:/dev/gps
+  - /dev/warnflux-ptt:/dev/hidraw0      # AIOC HID interface, see below
 ```
+
+HID devices have no `by-id` link at all, so the AIOC cable's interface needs a
+udev rule from this repository:
+
+```sh
+install -m 0644 deploy/udev/70-warnflux-ptt.rules /etc/udev/rules.d/
+udevadm control --reload-rules && udevadm trigger --subsystem-match=hidraw
+ls -l /dev/warnflux-ptt                  # -> hidrawN
+```
+
+`warnflux-boot-up.sh` recreates that link itself when the rule is missing, so
+the stack still has a device to map; the rule is what makes the name survive
+without the timer having to repair it.
+
+A directory bind (`/dev/snd`) is live — nodes that appear inside it are visible
+to the container at once. A single-device bind is not: the container keeps the
+node it was created with, no matter what the stable name points at afterwards.
+That is why the boot-up pass stores a fingerprint of every mapped host path
+(the node it resolves to plus its major:minor) in `/var/lib/warnflux/` and
+recreates the stack with `--force-recreate` when the fingerprint changed — a
+cable re-enumerated from `hidraw0` to `hidraw1` is picked up without a reboot
+and without a human.
 
 ## 3. Verifying a healthy station
 
@@ -96,6 +130,9 @@ docker exec mosquitto mosquitto_sub -h localhost -t 'warnflux/active/#' -W 2 -v 
 
 # clock
 docker logs warnflux-time --tail 20 | grep -E 'clock is good|clock stepped'
+
+# boots, and whether the hardware complained
+tail -5 /var/lib/warnflux/boots.log
 ```
 
 A pass that reports `NEXT = -` in `list-timers` means the self-healing loop is
@@ -124,10 +161,12 @@ new version in its health card.
 | Symptom | First thing to check |
 |---|---|
 | A container is `Exited 255` right after boot | Its device is missing or was renamed → `ls -l /dev/serial/by-id/`, then wait for the next boot-up pass. |
+| PTT stopped working, audio still fine | The AIOC node moved: `ls -l /dev/warnflux-ptt`, then either wait for the next boot-up pass (it recreates the stack when the mapping changed) or run `systemctl start warnflux-boot-up.service`. |
 | The panel does not answer but the container is "Up" | `docker inspect warnflux --format '{{.State.Health.Status}}'`: once it reads `unhealthy`, the next boot-up pass (≤5 min) restarts it. |
 | The panel is up but the clock card shows amber | `docker logs warnflux-time`; a `clock stepped` line right after boot is normal (Docker starts the stack before the clock is synchronised). |
 | Nothing on APRS, everything else fine | `docker logs direwolf`, and the RF side: squelch, antenna, feedline — a station with a deaf receiver still hears the internet feed. |
 | Broker shows no `warnflux/active/#` while the panel lists warnings | Outbound publishing is behind a durable cursor; a broker restart is caught up automatically (see [durability.md](durability.md)). |
+| The host rebooted on its own | `tail /var/lib/warnflux/boots.log`: one line per boot with `get_throttled` (undervoltage survives there until the power is cut) and a count of hardware-looking `dmesg` lines. The journal itself is volatile, so it will not hold the previous boot. |
 | Warnings disappeared after a restart | A disabled source withdraws its own events. Check the plugin's `enabled` flag before assuming data loss. |
 | Panel slow or the database grows | `sqlite3 warnflux.db 'PRAGMA quick_check;'`, then look at the WAL size — a multi-megabyte WAL just means a checkpoint is pending. |
 
@@ -137,8 +176,9 @@ new version in its health card.
   TLS-dependent services may fail once before the boot-up pass fixes them.
 - **USB order is not stable.** Anything pinned to `/dev/ttyUSB*` or
   `/dev/ttyACM*` will eventually break on a reboot; use by-id paths.
-- **HID devices have no by-id path.** The AIOC PTT interface is still addressed
-  as `/dev/hidrawN`, so a udev rule is the only way to make it stable.
+- **HID devices have no by-id path.** The AIOC PTT interface needs the udev rule
+  from `deploy/udev/` for a stable name; without it the boot-up pass repairs the
+  link on every pass instead.
 - **The watchdog sees whole-process hangs only.** If a single plugin wedges
   while the HTTP server keeps answering, `/healthz` stays green and nothing
   restarts the container; look at the health card and the logs instead.

@@ -1,0 +1,19 @@
+# Stable name for the AIOC cable's HID interface (PTT via CM108-style HID).
+#
+# /dev/hidrawN is handed out in enumeration order, so a re-plug or a reboot can
+# turn hidraw0 into hidraw1. A container's device mapping is resolved when the
+# container is CREATED and keeps pointing at the old node afterwards, which
+# makes PTT silently stop working until the container is recreated.
+#
+# The rule gives the interface a name that does not change:
+#   /dev/warnflux-ptt -> hidrawN
+# The APRS device overlay maps that name, and warnflux-boot-up.sh recreates the
+# stack when the node behind it changes.
+#
+# Install: install -m 0644 70-warnflux-ptt.rules /etc/udev/rules.d/
+#          udevadm control --reload-rules && udevadm trigger --subsystem-match=hidraw
+#
+# Matched on the USB ids rather than the serial number, so a replacement cable
+# of the same model works without editing anything (vendor 1209 = pid.codes,
+# product 7388 = AIOC "All-In-One-Cable").
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7388", SYMLINK+="warnflux-ptt", MODE="0660"

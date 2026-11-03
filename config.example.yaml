@@ -1010,10 +1010,12 @@ time_sync:
   # or three make a broken server visible (the closest round-trip wins).
   ntp_servers: ["pool.ntp.org"]
 
-  # How often the clock is checked: hours, not minutes - a station clock drifts
-  # by seconds per week, and a step while the radio transmits only makes
+  # How often the clock is checked. The drift depends on the host: a board with
+  # a real-time clock needs hours, while a Raspberry Pi (no RTC, cheap crystal)
+  # was measured at ~10 s per 6 h (~40 s per day) — 1h keeps the error within
+  # ~2 s, for one NTP packet per hour. Longer is fine too; a step only makes
   # timestamps jump.
-  interval: 6h
+  interval: 1h
 
   # GPS receiver. Empty = no GPS: the station then relies on NTP alone and logs
   # that the off-grid fallback is missing.

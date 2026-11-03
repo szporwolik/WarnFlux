@@ -1480,6 +1480,13 @@ func (h *Hub) SetCLI(b *radiocli.Bot) { h.mu.Lock(); h.cli = b; h.mu.Unlock() }
 // messages until ctx is cancelled. It reconnects with bounded backoff so
 // transient USB hiccups never kill the plugin permanently.
 func (h *Hub) Run(ctx context.Context) error {
+	if !h.cfg.Enabled {
+		// A disabled integration has no device to open: without this it retried
+		// the session for ever, warning on every backoff ("no serial device path
+		// configured") on a station that deliberately runs without a radio.
+		<-ctx.Done()
+		return nil
+	}
 	h.restoreNodes(ctx)
 	// The station feed runs NEXT TO the session, not inside it.
 	go h.runStationFeed(ctx)

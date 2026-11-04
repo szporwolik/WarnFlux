@@ -13,13 +13,21 @@ This is a different provider from the retired `gddkia` XML feed
 ## Registration and credentials
 
 Access requires registration with GDDKiA. They issue a **client certificate**
-(a `.p12`) per integrator; it is a secret:
+(a `.p12`) per integrator, and it is a **secret** — whoever holds it can pull the
+data in the station's name:
 
-* store it outside the repository, in the configuration volume
-  (`cert_file`), mode `0600`;
-* never commit the certificate or its password. A `.gitignore` entry covers the
-  `build/` directory only, so a copy placed in the repository root *would* be
-  committed.
+* it lives in the configuration volume (`/config` in the container,
+  `/srv/docker/warnflux/config` on the host), mode `0600`, owned by the panel's
+  user;
+* `.gitignore` rejects `*.p12`, `*.pfx`, `*.pem`, `*.key`, `*.pass` and
+  `/secrets/`, so a stray copy anywhere in the tree cannot be committed. This is
+  a safety net, not a licence to keep it in the working copy;
+* the password goes to its own file (`cert_password_file`) rather than inline, so
+  copying `config.yaml` for support does not copy the secret;
+* an expired certificate is reported at start-up (one line), not as a failed
+  pull every interval;
+* rotating it means: drop the new `.p12` in, update the password file, restart
+  the station.
 
 Configuration:
 

@@ -107,6 +107,15 @@ it, but the comment says so ("całkowite zamknięcie", "droga zamknięta"). Such
 record is raised from minor to moderate. The phrase list is explicit, in
 `closurePhrases`, so the behaviour is predictable and testable.
 
+The raise only happens when the closure is **of the carriageway the record sits
+on**. KPD attaches works to the object they belong to, so a bridge renovation
+over the motorway arrives as an "A4" record whose closing text talks about the
+street running underneath ("całkowite zamknięcie odcinka ul. Nad Serafą pod
+obiektami autostrady A4") — that is local traffic news, not a closed motorway,
+and it stays minor. The check reads the comment around the phrase and looks for
+`offCarriagewayMarkers` (`ul.`, `ulicy`, `chodnik`, `ścieżk`, `drogi gminnej`,
+`pod obiektami`, `pod autostradą`, `pod drogą`).
+
 Records without point geometry cannot be placed in the area and are counted as
 filtered, not as a provider failure.
 

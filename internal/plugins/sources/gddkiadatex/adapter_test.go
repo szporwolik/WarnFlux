@@ -162,6 +162,49 @@ func TestSeverityFromRecordType(t *testing.T) {
 	}
 }
 
+// TestSeverityIgnoresClosuresUnderTheCarriageway pins the 2026-11-04
+// false positive from production: KPD attached the renovation of the bridges
+// over the Serafa river to the A4 record, but the thing that closes is the
+// street running UNDER the motorway. The motorway record must stay minor —
+// otherwise the panel shows moderate exactly like a real tunnel closure.
+func TestSeverityIgnoresClosuresUnderTheCarriageway(t *testing.T) {
+	withComment := func(text string) record {
+		r := record{ID: "x", Type: "MaintenanceWorks"}
+		r.Location.Point.Coordinates.Lat = 50
+		r.Location.Point.Coordinates.Lon = 20
+		r.Comments = append(r.Comments, struct {
+			Text struct {
+				Values []localised `xml:"values>value"`
+			} `xml:"comment"`
+			Type string `xml:"commentType"`
+		}{})
+		r.Comments[0].Text.Values = []localised{{Lang: "PL", Value: text}}
+		return r
+	}
+	// The real comment, line wraps included.
+	street := "Remont dwóch mostów nad rzeką Serafą w Krakowie w km 425+798 autostrady A4”, od dnia \n" +
+		"29 października 2026 r.\n zostanie wprowadzona czasowa organizacja ruchu obejmująca \n" +
+		"całkowite zamknięcie odcinka ul. Nad Serafą pod obiektami autostrady A4\n" +
+		". Planowany termin obowiązywania utrudnień to \n10 grudnia 2026 r.\n"
+	ev, err := normalize(withComment(street), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Severity != severity.Minor {
+		t.Errorf("severity = %q, want minor: the closed street is not the motorway", ev.Severity)
+	}
+
+	// The tunnel closures stay moderate: the carriageway itself is closed.
+	tunnel := "Utrudnienia związane z pracami serwisowymi w tunelu. Całkowite zamknięcie drogi od węzła Zielonki do węzła Węgrzce i od węzła Węgrzce do węzła Zielonki. Ruch przekierowany na objazdy."
+	ev, err = normalize(withComment(tunnel), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Severity != severity.Moderate {
+		t.Errorf("severity = %q, want moderate for a closed carriageway", ev.Severity)
+	}
+}
+
 // Planned works are minor, but a total closure described in the comment is not
 // a minor inconvenience: the provider has no field for it, so the wording
 // raises the severity — narrowly and predictably.

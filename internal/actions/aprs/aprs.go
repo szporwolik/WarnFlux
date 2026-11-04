@@ -141,13 +141,18 @@ func (a *aprsAction) messageText(req action.ActionRequest) string {
 		// event label gives way to the description's first sentence.
 		body := alerttext.Body(h.Hazard.Event, text.Headline, text.Description)
 		// The short message ID always rides along so operators can cite
-		// one specific communication on the air.
-		if id := h.Hazard.MessageID(); id != "" {
-			suffix := "ID:" + id
-			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, body, 1+len(suffix))
-			return strings.TrimSpace(base + " " + suffix)
+		// one specific communication on the air, followed by the provider
+		// credit when the report is someone else's data.
+		suffix := alerttext.IDSuffix(h.Hazard.MessageID(), h.Hazard.Source)
+		reserve := 0
+		if suffix != "" {
+			reserve = 1 + len(suffix)
 		}
-		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, body, 0)
+		base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, body, reserve)
+		if suffix == "" {
+			return base
+		}
+		return strings.TrimSpace(base + " " + suffix)
 	}
 	return aprs.TrimMessageText(strings.Join([]string{prefix, "WarnFlux notification"}, " "))
 }

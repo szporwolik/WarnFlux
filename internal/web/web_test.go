@@ -1210,6 +1210,41 @@ func TestEventsMapCarriesStretchPath(t *testing.T) {
 	}
 }
 
+// TestArchiveCreditsTheProvider pins the attribution of borrowed data: an
+// archived road communication shows the provider's name and links to its
+// page, not the internal source slug.
+func TestArchiveCreditsTheProvider(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "archive-attrib.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	now := time.Now()
+	pastHour := now.Add(-time.Hour)
+	ev := core.HazardEvent{
+		Source: "gddkia-datex", SourceID: "KPD-7", Event: "MaintenanceWorks",
+		Severity: "minor", Headline: "Road works — road A4, km 425.798",
+		Status: core.StatusActive, ExpiresAt: &pastHour,
+		ReceivedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
+	}
+	if _, _, err := store.Ingest(context.Background(), ev, core.Fingerprint(ev)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Expire(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+
+	env := newTestEnvFull(t, nil, nil, store, nil)
+	resp, body := env.get("/archive")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /archive = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, `href="https://kpd.gddkia.gov.pl/"`) || !strings.Contains(body, "GDDKiA KPD") {
+		t.Errorf("archive does not credit the road data provider: %s", body)
+	}
+}
+
 // TestHazardByKeyServesEnded pins the mail-deep-link contract: a hazard
 // that already expired still renders (with its ended status) through
 // /api/hazard/<key>, so the notification link never dead-ends.

@@ -11,7 +11,7 @@
       </div>
       <div class="hazard-meta">
         <span class="msgid">{{.MsgID}}</span>
-        <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
+        <span>{{tr $.Lang "warnings.source"}} {{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener noreferrer"><strong>{{if .SourceLabel}}{{.SourceLabel}}{{else}}{{.Source}}{{end}}</strong></a>{{else}}<strong>{{if .SourceLabel}}{{.SourceLabel}}{{else}}{{.Source}}{{end}}</strong>{{end}}</span>
         {{if .Event}}<span>{{eventName $.Lang .Event}}</span>{{end}}
         {{if .Areas}}<span>{{tr $.Lang "warnings.areas"}} {{.Areas}}</span>{{end}}
         {{if .EffectiveAt}}<span>{{tr $.Lang "archive.from"}} {{timeShort (derefTime .EffectiveAt)}}</span>{{end}}

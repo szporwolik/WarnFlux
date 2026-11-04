@@ -89,18 +89,19 @@ func publicChannels(statuses []action.Status, lang string) []publicChannelView {
 // aircraft) are listed too — they enrich the map, but the descriptions
 // say so.
 var sourceKinds = map[string]channelKind{
-	"rso":        {Icon: "i-exclamation-triangle", Key: "sources.rso", URL: "https://komunikaty.tvp.pl/"},
-	"imgw":       {Icon: "i-cloud-sun", Key: "sources.imgw", URL: "https://danepubliczne.imgw.pl/"},
-	"gddkia":     {Icon: "i-speedometer2", Key: "sources.gddkia", URL: "https://www.gov.pl/web/gddkia"},
-	"gios":       {Icon: "i-shield-lock", Key: "sources.gios", URL: "https://www.gios.gov.pl/"},
-	"giosaq":     {Icon: "i-heart-pulse", Key: "sources.giosaq", URL: "https://powietrze.gios.gov.pl/"},
-	"burzedzis":  {Icon: "i-lightning-charge", Key: "sources.burzedzis", URL: "https://burze.dzis.net/"},
-	"aprs-inet":  {Icon: "i-broadcast-pin", Key: "sources.aprs", URL: "https://www.aprs-is.net/"},
-	"aprs-radio": {Icon: "i-broadcast-pin", Key: "sources.aprs", URL: "https://www.aprs-is.net/"},
-	"meshtastic": {Icon: "i-broadcast", Key: "sources.meshtastic", URL: "https://meshtastic.org/"},
-	"openmeteo":  {Icon: "i-sun", Key: "sources.openmeteo", URL: "https://open-meteo.com/"},
-	"metar":      {Icon: "i-cloud-sun", Key: "sources.metar", URL: "https://aviationweather.gov/"},
-	"adsb":       {Icon: "i-lightning-charge", Key: "sources.adsb", URL: "https://adsb.lol/"},
+	"rso":          {Icon: "i-exclamation-triangle", Key: "sources.rso", URL: "https://komunikaty.tvp.pl/"},
+	"imgw":         {Icon: "i-cloud-sun", Key: "sources.imgw", URL: "https://danepubliczne.imgw.pl/"},
+	"gddkia":       {Icon: "i-speedometer2", Key: "sources.gddkia", URL: "https://www.gov.pl/web/gddkia"},
+	"gddkia-datex": {Icon: "i-speedometer2", Key: "sources.gddkia_datex", URL: "https://kpd.gddkia.gov.pl/"},
+	"gios":         {Icon: "i-shield-lock", Key: "sources.gios", URL: "https://www.gios.gov.pl/"},
+	"giosaq":       {Icon: "i-heart-pulse", Key: "sources.giosaq", URL: "https://powietrze.gios.gov.pl/"},
+	"burzedzis":    {Icon: "i-lightning-charge", Key: "sources.burzedzis", URL: "https://burze.dzis.net/"},
+	"aprs-inet":    {Icon: "i-broadcast-pin", Key: "sources.aprs", URL: "https://www.aprs-is.net/"},
+	"aprs-radio":   {Icon: "i-broadcast-pin", Key: "sources.aprs", URL: "https://www.aprs-is.net/"},
+	"meshtastic":   {Icon: "i-broadcast", Key: "sources.meshtastic", URL: "https://meshtastic.org/"},
+	"openmeteo":    {Icon: "i-sun", Key: "sources.openmeteo", URL: "https://open-meteo.com/"},
+	"metar":        {Icon: "i-cloud-sun", Key: "sources.metar", URL: "https://aviationweather.gov/"},
+	"adsb":         {Icon: "i-lightning-charge", Key: "sources.adsb", URL: "https://adsb.lol/"},
 	// Feeds that are NOT plugins: the station's own messages, the operator's
 	// public HTTP endpoints and the EMCOM readiness levels. They are rows of
 	// the routing matrix too, so the public list must not pretend the
@@ -113,7 +114,7 @@ var sourceKinds = map[string]channelKind{
 // sourceRank orders the public source list: official alert feeds first,
 // informational feeds last.
 var sourceRank = map[string]int{
-	"rso": 1, "imgw": 2, "gddkia": 3, "burzedzis": 4, "gios": 5, "giosaq": 6,
+	"rso": 1, "imgw": 2, "gddkia": 3, "gddkia-datex": 3, "burzedzis": 4, "gios": 5, "giosaq": 6,
 	"aprs-inet": 7, "aprs-radio": 7, "meshtastic": 8, "openmeteo": 9,
 	"adsb": 10, "metar": 11,
 	// The station's own feeds close the list: they are not providers.

@@ -38,6 +38,35 @@ var eventNames = map[string]string{
 	"Queue":                             "Queue",
 }
 
+// typeSeverity gives a record type the severity the operator expects, used when
+// the provider does not send one (the national obstruction profile has no
+// <severity> element at all — verified against the live response: 519 records,
+// zero severity elements). An explicit provider value always wins.
+//
+// The scale reflects what the closure means for the driver:
+//   - an accident is an incident in progress on the carriageway → severe;
+//   - an obstruction blocks part of the road → moderate;
+//   - planned works are an inconvenience with warning signs → minor.
+//
+// A station that disagrees edits this table; guessing anything finer from the
+// free-text comment would be inventing data.
+var typeSeverity = map[string]string{
+	"Accident":                          severity.Severe,
+	"VehicleFire":                       severity.Severe,
+	"WrongWayDriving":                   severity.Severe,
+	"InfrastructureDamageObstruction":   severity.Severe,
+	"GeneralObstruction":                severity.Moderate,
+	"Obstruction":                       severity.Moderate,
+	"VehicleObstruction":                severity.Moderate,
+	"AbnormalTraffic":                   severity.Moderate,
+	"WeatherRelatedRoadConditions":      severity.Moderate,
+	"NonWeatherRelatedRoadConditions":   severity.Moderate,
+	"MaintenanceWorks":                  severity.Minor,
+	"RoadOrCarriagewayOrLaneManagement": severity.Minor,
+	"SpeedManagement":                   severity.Minor,
+	"ReroutingManagement":               severity.Minor,
+}
+
 // severities maps the DATEX severity vocabulary onto the canonical scale.
 var severities = map[string]string{
 	"lowest":  severity.Minor,
@@ -72,6 +101,9 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 	}
 	sev := severities[strings.ToLower(strings.TrimSpace(rec.Severity))]
 	if sev == "" {
+		sev = typeSeverity[kind]
+	}
+	if sev == "" {
 		sev = severity.Moderate
 	}
 
@@ -88,6 +120,12 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 	desc := rec.text()
 	if desc == "" {
 		desc = headline
+	}
+	// A planned closure is not a minor inconvenience: the provider has no
+	// field for it, but the comment says so in words. Narrow and documented on
+	// purpose — only a total closure raises planned works to moderate.
+	if sev == severity.Minor && mentionsClosure(desc) {
+		sev = severity.Moderate
 	}
 
 	providerSeverity := kind
@@ -124,6 +162,30 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 		return core.HazardEvent{}, fmt.Errorf("record %s is invalid: %w", id, err)
 	}
 	return ev, nil
+}
+
+// closurePhrases are the ways the provider writes "the road is closed" in the
+// free-text comment. Matched on the folded text (lowercase, diacritics kept:
+// the source is Polish).
+var closurePhrases = []string{
+	"całkowite zamknięcie",
+	"całkowitym zamknięciem",
+	"całkowitego zamknięcia",
+	"pełne zamknięcie",
+	"droga zamknięta",
+	"jezdnia zamknięta",
+	"closed in both directions",
+}
+
+// mentionsClosure reports whether the comment announces a total closure.
+func mentionsClosure(text string) bool {
+	t := strings.ToLower(text)
+	for _, p := range closurePhrases {
+		if strings.Contains(t, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // certainty maps the DATEX probability vocabulary onto the CAP-style wording

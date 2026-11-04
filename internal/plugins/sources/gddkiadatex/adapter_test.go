@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
 // normalize turns a real record into a routable event: identity, severity,
@@ -120,5 +122,75 @@ func TestNormalizeCarriesKilometreSubtypeAndCertainty(t *testing.T) {
 	}
 	if ev.Certainty != "observed" {
 		t.Fatalf("certainty = %q, want observed for probabilityOfOccurrence=certain", ev.Certainty)
+	}
+}
+
+// The national obstruction profile sends no <severity>, so the type decides:
+// an accident is severe, an obstruction moderate, planned works minor. An
+// explicit provider severity still wins.
+func TestSeverityFromRecordType(t *testing.T) {
+	mk := func(kind, provSeverity string) record {
+		r := record{ID: "x", Type: kind, Severity: provSeverity}
+		r.Location.Point.Coordinates.Lat = 50
+		r.Location.Point.Coordinates.Lon = 20
+		return r
+	}
+	cases := []struct{ kind, want string }{
+		{"Accident", severity.Severe},
+		{"VehicleFire", severity.Severe},
+		{"GeneralObstruction", severity.Moderate},
+		{"MaintenanceWorks", severity.Minor},
+		{"SomethingNew", severity.Moderate},
+	}
+	for _, c := range cases {
+		ev, err := normalize(mk(c.kind, ""), "")
+		if err != nil {
+			t.Fatalf("%s: %v", c.kind, err)
+		}
+		if ev.Severity != c.want {
+			t.Fatalf("%s severity = %q, want %q", c.kind, ev.Severity, c.want)
+		}
+	}
+
+	// The provider's own scale overrides the table when present.
+	ev, err := normalize(mk("MaintenanceWorks", "high"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Severity != severity.Severe {
+		t.Fatalf("severity = %q, want the provider's high -> severe", ev.Severity)
+	}
+}
+
+// Planned works are minor, but a total closure described in the comment is not
+// a minor inconvenience: the provider has no field for it, so the wording
+// raises the severity — narrowly and predictably.
+func TestSeverityRaisesPlannedClosure(t *testing.T) {
+	mk := func(text string) record {
+		r := record{ID: "x", Type: "MaintenanceWorks"}
+		r.Location.Point.Coordinates.Lat = 50
+		r.Location.Point.Coordinates.Lon = 20
+		r.Comments = append(r.Comments, struct {
+			Text struct {
+				Values []localised `xml:"values>value"`
+			} `xml:"comment"`
+			Type string `xml:"commentType"`
+		}{})
+		r.Comments[0].Text.Values = []localised{{Lang: "PL", Value: text}}
+		return r
+	}
+	ev, err := normalize(mk("Zawężenie jezdni, ruch wahadłowy."), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Severity != severity.Minor {
+		t.Fatalf("severity = %q, want minor for lane narrowing", ev.Severity)
+	}
+	ev, err = normalize(mk("Prace serwisowe w tunelu. Całkowite zamknięcie drogi od węzła Węgrzce."), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Severity != severity.Moderate {
+		t.Fatalf("severity = %q, want moderate for a total closure", ev.Severity)
 	}
 }

@@ -369,6 +369,11 @@ sources:
   # (so one obstruction keeps one number), validity windows and point
   # geometry for every record.
   #
+  # The provider sends no severity, so the record TYPE decides: accidents are
+  # severe, obstructions moderate, planned works minor (see the plugin
+  # README). Attribution: the data belong to GDDKiA — the panel credits them
+  # on every event card and in the map footer.
+  #
   # Registration with GDDKiA is required — the certificate is issued per
   # integrator and identifies the club. It is a SECRET: keep the .p12 and its
   # password in the configuration volume, never in the repository.

@@ -86,9 +86,25 @@ Both are pinned by `signer_test.go`.
 | `locationReference/pointByCoordinates` | `Latitude` / `Longitude` |
 | `pointAlongLinearElement/linearElement/roadNumber` | `Headline` suffix and the `droga:<nr>` area token |
 
-Severity comes from DATEX `severity` when present (`high` → severe, `highest` →
-extreme); otherwise the event is `moderate`, which is what the national dataset
-carries today.
+Severity: DATEX `severity` wins when the provider sends one (`high` → severe,
+`highest` → extreme). The national obstruction profile sends **none** — verified
+against the live response, 519 records with zero `<severity>` elements — so the
+record type decides:
+
+| Record type | Severity | Why |
+|---|---|---|
+| `Accident`, `VehicleFire`, `WrongWayDriving`, `InfrastructureDamageObstruction` | **severe** | an incident in progress on the carriageway |
+| `GeneralObstruction`, `Obstruction`, `VehicleObstruction`, `AbnormalTraffic`, weather/road conditions | **moderate** | part of the road is blocked |
+| `MaintenanceWorks`, lane/speed/rerouting management | **minor** | planned works with warning signs |
+
+Anything unrecognised is `moderate`. The table is one map in `adapter.go`
+(`typeSeverity`) — a station that disagrees edits it rather than having the
+plugin guess from the free-text comment.
+
+The one exception is a **planned total closure**: the provider has no field for
+it, but the comment says so ("całkowite zamknięcie", "droga zamknięta"). Such a
+record is raised from minor to moderate. The phrase list is explicit, in
+`closurePhrases`, so the behaviour is predictable and testable.
 
 Records without point geometry cannot be placed in the area and are counted as
 filtered, not as a provider failure.

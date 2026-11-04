@@ -103,7 +103,7 @@
           {{if .AprsEnabled}}
           <div class="aprs-map-wrap">
             <div id="aprs-map" data-lat="{{.AprsCenterLat}}" data-lon="{{.AprsCenterLon}}" data-own-lat="{{.AprsOwnLat}}" data-own-lon="{{.AprsOwnLon}}" data-radius="{{.AprsRadiusKM}}" data-callsign="{{.AprsCallsign}}"></div>
-            <p class="aprs-map-attrib">{{tr .Lang "home.attrib.map"}} <span id="aprs-engine-attrib"><a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></span> · {{tr .Lang "home.attrib.tiles"}} <span id="aprs-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · {{tr .Lang "home.attrib.radar"}} <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> · {{tr .Lang "home.attrib.symbols"}} <a href="https://github.com/hessu/aprs-symbols" target="_blank" rel="noopener noreferrer">aprs.fi (OH7LZB)</a> · {{tr .Lang "home.attrib.stations"}} WarnFlux (MQTT)</p>
+            <p class="aprs-map-attrib">{{tr .Lang "home.attrib.map"}} <span id="aprs-engine-attrib"><a href="https://leafletjs.com/" target="_blank" rel="noopener noreferrer">Leaflet</a></span> · {{tr .Lang "home.attrib.tiles"}} <span id="aprs-tiles-attrib"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a></span> · {{tr .Lang "home.attrib.radar"}} <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a> · {{tr .Lang "home.attrib.symbols"}} <a href="https://github.com/hessu/aprs-symbols" target="_blank" rel="noopener noreferrer">aprs.fi (OH7LZB)</a> · {{tr .Lang "home.attrib.stations"}} WarnFlux (MQTT){{if .RoadDataAttribution}} · {{tr .Lang "home.attrib.roads"}} <a href="https://kpd.gddkia.gov.pl/" target="_blank" rel="noopener noreferrer">GDDKiA KPD</a>{{end}}</p>
           </div>
           {{else}}
           <div class="home-empty">
@@ -181,7 +181,9 @@
         </div>
         <div class="hazard-meta">
           <span class="msgid">{{.MsgID}}</span>
-          <span>{{tr $.Lang "warnings.source"}} <strong>{{.Source}}</strong></span>
+          <span>{{tr $.Lang "warnings.source"}}
+            {{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener noreferrer"><strong>{{if .SourceLabel}}{{.SourceLabel}}{{else}}{{.Source}}{{end}}</strong></a>
+            {{else}}<strong>{{if .SourceLabel}}{{.SourceLabel}}{{else}}{{.Source}}{{end}}</strong>{{end}}</span>
           {{if .Event}}<span>{{eventName $.Lang .Event}}</span>{{end}}
           {{if .Areas}}<span>{{tr $.Lang "warnings.areas"}} {{.Areas}}</span>{{end}}
           <span>{{tr $.Lang "warnings.updated"}} {{timeShort .UpdatedAt}}</span>

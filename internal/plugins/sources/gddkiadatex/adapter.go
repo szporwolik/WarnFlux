@@ -146,6 +146,7 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 		Longitude:        &lon,
 		Status:           core.StatusActive,
 		SourceURL:        sourceURL,
+		Path:             rec.segment(),
 	}
 	if road != "" {
 		ev.Areas = []string{roadArea(road)}

@@ -1383,6 +1383,11 @@
             return;
           }
           map.invalidateSize();
+          // The map is built while its tab is still hidden (size 0), so the
+          // vector renderer starts with an empty clip box and every polyline
+          // (hazard stretches, station trails) is clipped away. A viewreset
+          // makes the renderer recompute that box now that it has a size.
+          map.fire("viewreset");
           if (!fittedOnce) {
             fitToStations();
           }
@@ -2068,7 +2073,21 @@
         pinRegistry.hazards = [];
         lastHazards = (data && data.events) || [];
         lastHazards.forEach(function (e) {
-          if (!e.latitude || !e.longitude) {
+          // A DATEX-style stretch arrives as a polyline; a point hazard as a
+          // single marker. Either way the popup is built once.
+          var pts = [];
+          if (Object.prototype.toString.call(e.path) === "[object Array]") {
+            e.path.forEach(function (pt) {
+              if (!pt) { return; }
+              var la = pt.lat != null ? pt.lat : pt.latitude;
+              var lo = pt.lon != null ? pt.lon : pt.longitude;
+              if (typeof la === "number" && typeof lo === "number" && isFinite(la) && isFinite(lo)) {
+                pts.push([la, lo]);
+              }
+            });
+          }
+          var hasPoint = !!(e.latitude && e.longitude);
+          if (!hasPoint && pts.length < 2) {
             return;
           }
           var body = "";
@@ -2095,19 +2114,38 @@
             body: body
           });
           var icon = hazardIcon(e.severity);
-          var m = L.marker([e.latitude, e.longitude], { icon: icon, riseOnHover: true });
-          m.bindTooltip(esc(e.headline || e.event), { sticky: true, direction: "top" });
-          m.bindPopup(popup);
-          m._hzEventKey = e.event_key;
-          hazardLayer.addLayer(m);
-          registerPin("hazards", {
-            group: hazardLayer,
-            marker: m,
-            latlng: [e.latitude, e.longitude],
-            markerKey: "H:" + (e.event || e.headline || e.latitude + "/" + e.longitude),
-            title: e.headline || e.event,
-            kindLabel: tr("map.layer.hazards")
-          });
+          var m = null;
+          if (pts.length > 1) {
+            m = L.polyline(pts, {
+              color: HAZARD_COLORS[e.severity] || HAZARD_COLORS.unknown,
+              weight: 5,
+              opacity: 0.75
+            });
+            m.bindTooltip(esc(e.headline || e.event), { sticky: true, direction: "top" });
+            m.bindPopup(popup);
+            m._hzEventKey = e.event_key;
+            hazardLayer.addLayer(m);
+          }
+          var pin = hasPoint
+            ? L.marker([e.latitude, e.longitude], { icon: icon, riseOnHover: true })
+            : null;
+          if (pin) {
+            pin.bindTooltip(esc(e.headline || e.event), { sticky: true, direction: "top" });
+            pin.bindPopup(popup);
+            pin._hzEventKey = e.event_key;
+            hazardLayer.addLayer(pin);
+          }
+          var anchor = pin ? [e.latitude, e.longitude] : (pts.length ? pts[0] : null);
+          if (anchor && (pin || m)) {
+            registerPin("hazards", {
+              group: hazardLayer,
+              marker: pin || m,
+              latlng: anchor,
+              markerKey: "H:" + (e.event || e.headline || anchor[0] + "/" + anchor[1]),
+              title: e.headline || e.event,
+              kindLabel: tr("map.layer.hazards")
+            });
+          }
         });
         computeBounds();
         reconcilePins();

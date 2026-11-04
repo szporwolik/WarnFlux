@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/core"
 )
 
 // messageContainer is the DATEX II envelope every KPD response carries: one
@@ -62,6 +64,22 @@ type record struct {
 				Lon float64 `xml:"longitude"`
 			} `xml:"pointCoordinates"`
 		} `xml:"pointByCoordinates"`
+		// OpenLR localises the stretch: the first and last reference point
+		// bound the segment, which is what the map can draw as a line.
+		OpenLR struct {
+			First struct {
+				Coordinates struct {
+					Lat float64 `xml:"latitude"`
+					Lon float64 `xml:"longitude"`
+				} `xml:"openlrCoordinates"`
+			} `xml:"openlrLocationReferencePoint"`
+			Last struct {
+				Coordinates struct {
+					Lat float64 `xml:"latitude"`
+					Lon float64 `xml:"longitude"`
+				} `xml:"openlrCoordinates"`
+			} `xml:"openlrLastLocationReferencePoint"`
+		} `xml:"openlrPointLocationReference"`
 		AlongLinear struct {
 			Linear struct {
 				RoadNumber string `xml:"roadNumber"`
@@ -110,6 +128,27 @@ func (r record) text() string {
 		}
 	}
 	return ""
+}
+
+// segment returns the stretch the record describes, when the provider
+// localised it with OpenLR. Two points at most: OpenLR gives the first and last
+// reference point, and the map draws the straight line between them — enough to
+// see WHICH stretch is affected, without inventing intermediate geometry.
+func (r record) segment() []core.GeoPoint {
+	first := r.Location.OpenLR.First.Coordinates
+	last := r.Location.OpenLR.Last.Coordinates
+	if !validCoord(first.Lat, first.Lon) || !validCoord(last.Lat, last.Lon) {
+		return nil
+	}
+	if first.Lat == last.Lat && first.Lon == last.Lon {
+		return nil
+	}
+	return []core.GeoPoint{{Lat: first.Lat, Lon: first.Lon}, {Lat: last.Lat, Lon: last.Lon}}
+}
+
+// validCoord reports whether a coordinate pair is inside the valid ranges.
+func validCoord(lat, lon float64) bool {
+	return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 && !(lat == 0 && lon == 0)
 }
 
 // road returns the road designation the record sits on ("9", "S19", "A4").

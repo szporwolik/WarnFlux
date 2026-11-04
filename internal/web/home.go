@@ -163,18 +163,21 @@ type publicChannelView struct {
 // mapEventView is the public JSON shape of one geo-located active hazard
 // served to the home map (/api/events).
 type mapEventView struct {
-	EventKey    string     `json:"event_key"`
-	MsgID       string     `json:"msg_id,omitempty"`
-	Source      string     `json:"source"`
-	Severity    string     `json:"severity"`
-	Headline    string     `json:"headline"`
-	Event       string     `json:"event"`
-	Description string     `json:"description,omitempty"`
-	Latitude    float64    `json:"latitude"`
-	Longitude   float64    `json:"longitude"`
-	EffectiveAt *time.Time `json:"effective_at,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	EventKey    string  `json:"event_key"`
+	MsgID       string  `json:"msg_id,omitempty"`
+	Source      string  `json:"source"`
+	Severity    string  `json:"severity"`
+	Headline    string  `json:"headline"`
+	Event       string  `json:"event"`
+	Description string  `json:"description,omitempty"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+	// Path is the optional stretch (two or more points); a client draws a line
+	// through it instead of a single pin.
+	Path        []core.GeoPoint `json:"path,omitempty"`
+	EffectiveAt *time.Time      `json:"effective_at,omitempty"`
+	ExpiresAt   *time.Time      `json:"expires_at,omitempty"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // homeHazardJSON is the client-side payload of one home hazard card,
@@ -205,10 +208,11 @@ type homeHazardJSON struct {
 func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 	events := make([]mapEventView, 0, 16)
 	for _, h := range s.activeHazards() {
-		if h.Latitude == nil || h.Longitude == nil {
+		// A hazard is mappable with a point or with a stretch (road segment).
+		if (h.Latitude == nil || h.Longitude == nil) && len(h.Path) < 2 {
 			continue
 		}
-		events = append(events, mapEventView{
+		ev := mapEventView{
 			EventKey:    h.EventKey,
 			MsgID:       core.MessageID(h.EventKey),
 			Source:      h.Source,
@@ -217,9 +221,16 @@ func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 			Event:       h.Event,
 			Description: h.Description,
 			Latitude:    *h.Latitude,
-			Longitude:   *h.Longitude, EffectiveAt: h.EffectiveAt, ExpiresAt: h.ExpiresAt,
-			UpdatedAt: h.UpdatedAt,
-		})
+			Longitude:   *h.Longitude,
+			Path:        h.Path,
+			EffectiveAt: h.EffectiveAt,
+			ExpiresAt:   h.ExpiresAt,
+			UpdatedAt:   h.UpdatedAt,
+		}
+		if ev.Latitude == 0 && ev.Longitude == 0 && len(ev.Path) > 0 {
+			ev.Latitude, ev.Longitude = ev.Path[0].Lat, ev.Path[0].Lon
+		}
+		events = append(events, ev)
 	}
 	sort.Slice(events, func(i, j int) bool {
 		ri, _ := severity.Rank(events[i].Severity)
@@ -647,6 +658,7 @@ func hazardFromCore(ev core.HazardEvent) state.Hazard {
 		Status:      string(ev.Status),
 		Latitude:    ev.Latitude,
 		Longitude:   ev.Longitude,
+		Path:        ev.Path,
 		EffectiveAt: ev.EffectiveAt,
 		ExpiresAt:   ev.ExpiresAt,
 		ReceivedAt:  ev.ReceivedAt,

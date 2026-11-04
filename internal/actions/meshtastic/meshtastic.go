@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/szporwolik/WarnFlux/internal/action"
+	"github.com/szporwolik/WarnFlux/internal/alerttext"
 	"github.com/szporwolik/WarnFlux/internal/dispatch"
 	"github.com/szporwolik/WarnFlux/internal/i18n"
 	mesh "github.com/szporwolik/WarnFlux/internal/meshtastic"
@@ -275,6 +276,13 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang str
 	tag := ""
 	if id := h.MessageID(); id != "" {
 		tag = " [" + id + "]"
+	}
+	// Borrowed data names its provider; a mesh frame has room for the short
+	// form, never for a link.
+	if c := alerttext.Credit(h.Source); c != "" {
+		tag += " " + c
+	}
+	if tag != "" {
 		limit -= len([]rune(tag))
 	}
 

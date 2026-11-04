@@ -185,6 +185,52 @@ func TestExecuteNoTransmitter(t *testing.T) {
 	}
 }
 
+// TestFrameCreditsTheProvider pins short-channel attribution on the air: a
+// road report borrowed from GDDKiA ends with the provider's short name, and
+// the frame still fits the APRS limit.
+func TestFrameCreditsTheProvider(t *testing.T) {
+	hub := testHub(t)
+	tx := &fakeTransmitter{name: "aprs-inet", ready: true}
+	hub.AddTransmitter("aprs-inet", tx)
+
+	p, err := New(configNode(t, map[string]any{
+		"callsigns": []string{"SP9XYZ"},
+		"prefix":    "SOSNA",
+	}), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := action.ActionRequest{
+		App: action.AppInfo{Header1: "SOSNA"},
+		Event: dispatch.Event{
+			Kind: dispatch.EventHazardTransition,
+			Hazard: &dispatch.HazardTransition{
+				Hazard: dispatch.Hazard{
+					EventKey:    "gddkia-datex:440BB91E",
+					Source:      "gddkia-datex",
+					Severity:    "moderate",
+					Event:       "MaintenanceWorks",
+					Headline:    "Roboty drogowe — droga A4, km 425.798",
+					Description: "Zwężenie prawego pasa na odcinku 800 m.",
+				},
+			},
+		},
+	}
+	if err := p.Execute(context.Background(), req); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(tx.sent) != 1 {
+		t.Fatalf("sent = %d messages, want 1", len(tx.sent))
+	}
+	text := tx.sent[0][1]
+	if !strings.Contains(text, "ID:WF-") || !strings.HasSuffix(text, "GDDKiA") {
+		t.Errorf("frame = %q, want the message ID and the GDDKiA credit", text)
+	}
+	if len(text) > aprs.MaxMessageText {
+		t.Errorf("frame is %d bytes, over the %d limit", len(text), aprs.MaxMessageText)
+	}
+}
+
 // TestMessageCarriesTheDescriptionWhenTheTitleRepeatsTheEvent pins the frame
 // production actually sent on 2026-10-23:
 //

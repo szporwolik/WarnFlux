@@ -267,12 +267,16 @@ func (a *aprsOutAction) messageText(req action.ActionRequest) string {
 		body := alerttext.Body(h.Hazard.Event, text.Headline, text.Description)
 		// The short message ID always rides along, next to the {id} ack
 		// suffix the hub appends.
-		if id := h.Hazard.MessageID(); id != "" {
-			suffix := "ID:" + id
-			base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, body, aprs.AckSuffixLen+1+len(suffix))
-			return strings.TrimSpace(base + " " + suffix)
+		suffix := alerttext.IDSuffix(h.Hazard.MessageID(), h.Hazard.Source)
+		reserve := aprs.AckSuffixLen
+		if suffix != "" {
+			reserve += 1 + len(suffix)
 		}
-		return aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, body, aprs.AckSuffixLen)
+		base := aprs.BuildAlertMessage(prefix, h.Hazard.Severity, h.Hazard.Event, body, reserve)
+		if suffix == "" {
+			return base
+		}
+		return strings.TrimSpace(base + " " + suffix)
 	}
 	return aprs.LimitMessageText(strings.Join([]string{prefix, "WarnFlux notification"}, " "), aprs.AckSuffixLen)
 }

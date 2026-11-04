@@ -43,6 +43,7 @@ it came from and links back to it.
 | [IMGW-PIB](https://danepubliczne.imgw.pl/) | Meteorological and hydrological warnings |
 | [GIOŚ](https://www.gios.gov.pl/) | Air-quality exceedances (PJP API) and serious industrial accidents |
 | [GDDKiA](https://www.gov.pl/web/gddkia) | Winter road conditions and closures |
+| [GDDKiA KPD](https://kpd.gddkia.gov.pl/) | National road obstructions (DATEX II): works, accidents, closures with the affected stretch drawn on the map |
 | [RSO](https://komunikaty.tvp.pl/) | Government security-centre alerts |
 | [burze.dzis.net](https://burze.dzis.net/) | Point storm/wind warnings and lightning detection |
 | [Open-Meteo](https://open-meteo.com/) | Forecasts and air quality *(informational)* |

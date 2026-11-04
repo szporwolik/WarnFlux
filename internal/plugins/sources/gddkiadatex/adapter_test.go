@@ -2,6 +2,7 @@ package gddkiadatex
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -88,5 +89,36 @@ func TestHumaniseKind(t *testing.T) {
 	}
 	if got := roadArea(" S19 "); got != "droga:s19" {
 		t.Fatalf("roadArea = %q", got)
+	}
+}
+
+// The kilometre, the subtype and the provider's certainty are all in the
+// response; they belong in the event so an operator does not have to open the
+// raw record.
+func TestNormalizeCarriesKilometreSubtypeAndCertainty(t *testing.T) {
+	raw, err := os.ReadFile("testdata/snapshot.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := parseResponse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := doc.Payload.Situations[0].Records[0]
+	if rec.kilometre() == "" {
+		t.Fatal("fixture has no kilometre")
+	}
+	ev, err := normalize(rec, "")
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if !strings.Contains(ev.Headline, "km "+rec.kilometre()) {
+		t.Fatalf("headline = %q, want the kilometre %q", ev.Headline, rec.kilometre())
+	}
+	if !strings.Contains(ev.ProviderSeverity, "/maintenanceWork") {
+		t.Fatalf("provider severity = %q, want the subtype appended", ev.ProviderSeverity)
+	}
+	if ev.Certainty != "observed" {
+		t.Fatalf("certainty = %q, want observed for probabilityOfOccurrence=certain", ev.Certainty)
 	}
 }

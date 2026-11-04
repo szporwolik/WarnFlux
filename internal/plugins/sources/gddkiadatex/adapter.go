@@ -77,7 +77,12 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 
 	road := rec.road()
 	headline := name
-	if road != "" {
+	switch {
+	case road != "" && rec.kilometre() != "":
+		// The kilometre is what an operator reads on the road, so it belongs in
+		// the headline next to the number ("km 425.798").
+		headline = fmt.Sprintf("%s — road %s, km %s", name, road, rec.kilometre())
+	case road != "":
 		headline = fmt.Sprintf("%s — road %s", name, road)
 	}
 	desc := rec.text()
@@ -85,13 +90,18 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 		desc = headline
 	}
 
+	providerSeverity := kind
+	if sub := rec.subtype(); sub != "" {
+		providerSeverity = kind + "/" + sub
+	}
 	ev := core.HazardEvent{
 		Source:           sourceName,
 		SourceID:         id,
 		Category:         "road",
 		Event:            name,
 		Severity:         sev,
-		ProviderSeverity: kind,
+		Certainty:        certainty(rec.Probability),
+		ProviderSeverity: providerSeverity,
 		Headline:         headline,
 		Description:      desc,
 		Latitude:         &lat,
@@ -114,6 +124,21 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 		return core.HazardEvent{}, fmt.Errorf("record %s is invalid: %w", id, err)
 	}
 	return ev, nil
+}
+
+// certainty maps the DATEX probability vocabulary onto the CAP-style wording
+// the rest of the station uses.
+func certainty(p string) string {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "certain":
+		return "observed"
+	case "probable", "riskOf":
+		return "likely"
+	case "improbable":
+		return "unlikely"
+	default:
+		return ""
+	}
 }
 
 // localType drops a namespace prefix from an xsi:type value.

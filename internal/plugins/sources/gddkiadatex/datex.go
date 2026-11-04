@@ -31,6 +31,13 @@ type record struct {
 	CreationTime string `xml:"situationRecordCreationTime"`
 	VersionTime  string `xml:"situationRecordVersionTime"`
 	Severity     string `xml:"severity"`
+	// Probability is the provider's certainty ("certain", "probable", …).
+	Probability string `xml:"probabilityOfOccurrence"`
+	// The subtype of the record type: roadMaintenanceType on maintenance works,
+	// accidentType on accidents, obstructionType on obstructions.
+	MaintenanceType string `xml:"roadMaintenanceType"`
+	AccidentType    string `xml:"accidentType"`
+	ObstructionType string `xml:"obstructionType"`
 
 	Validity struct {
 		Status string `xml:"validityStatus"`
@@ -61,7 +68,17 @@ type record struct {
 				RoadName   struct {
 					Values []localised `xml:"values>value"`
 				} `xml:"roadName"`
+				// StartPoint carries the kilometre on the reference model
+				// ("Pikietaż"): the number operators recognise from the road.
+				StartPoint struct {
+					Description struct {
+						Values []localised `xml:"values>value"`
+					} `xml:"referentDescription"`
+				} `xml:"startPointOfLinearElement"`
 			} `xml:"linearElement"`
+			Distance struct {
+				Along float64 `xml:"distanceAlong"`
+			} `xml:"distanceAlongLinearElement"`
 		} `xml:"pointAlongLinearElement"`
 	} `xml:"locationReference"`
 }
@@ -102,6 +119,27 @@ func (r record) road() string {
 	}
 	for _, v := range r.Location.AlongLinear.Linear.RoadName.Values {
 		if s := strings.TrimSpace(v.Value); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// kilometre returns the reference kilometre ("425.798") the record sits at, as
+// the provider writes it (kilometre.metres).
+func (r record) kilometre() string {
+	for _, v := range r.Location.AlongLinear.Linear.StartPoint.Description.Values {
+		if s := strings.TrimSpace(v.Value); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// subtype names the record's specific kind ("maintenanceWork", "accident", …).
+func (r record) subtype() string {
+	for _, v := range []string{r.MaintenanceType, r.AccidentType, r.ObstructionType} {
+		if s := strings.TrimSpace(v); s != "" {
 			return s
 		}
 	}

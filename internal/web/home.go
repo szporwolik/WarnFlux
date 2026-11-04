@@ -23,12 +23,17 @@ import (
 // Description/Instruction/Status/Urgency/Certainty ride along for the
 // client-side detail popup opened by clicking a card.
 type publicHazardView struct {
-	EventKey    string
-	MsgID       string
-	Severity    string
-	Headline    string
-	Event       string
-	Source      string
+	EventKey string
+	MsgID    string
+	Severity string
+	Headline string
+	Event    string
+	Source   string
+	// SourceLabel is the human name of the provider ("GDDKiA KPD"), and
+	// SourceURL the provider's page: the data belong to them, so the card
+	// credits them instead of showing a slug.
+	SourceLabel string
+	SourceURL   string
 	Areas       string
 	Description string
 	Instruction string
@@ -92,6 +97,11 @@ type homeView struct {
 	AprsRadiusKM  float64
 	AprsCallsign  string
 
+	// RoadDataAttribution renders the GDDKiA KPD credit in the map footer.
+	// The data belong to the provider, so the credit appears whenever the
+	// station shows them.
+	RoadDataAttribution bool
+
 	// Channels carries the friendly public view of the configured
 	// delivery channels (one row per medium, no technical detail).
 	Channels []publicChannelView
@@ -153,18 +163,21 @@ type publicChannelView struct {
 // mapEventView is the public JSON shape of one geo-located active hazard
 // served to the home map (/api/events).
 type mapEventView struct {
-	EventKey    string     `json:"event_key"`
-	MsgID       string     `json:"msg_id,omitempty"`
-	Source      string     `json:"source"`
-	Severity    string     `json:"severity"`
-	Headline    string     `json:"headline"`
-	Event       string     `json:"event"`
-	Description string     `json:"description,omitempty"`
-	Latitude    float64    `json:"latitude"`
-	Longitude   float64    `json:"longitude"`
-	EffectiveAt *time.Time `json:"effective_at,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	EventKey    string  `json:"event_key"`
+	MsgID       string  `json:"msg_id,omitempty"`
+	Source      string  `json:"source"`
+	Severity    string  `json:"severity"`
+	Headline    string  `json:"headline"`
+	Event       string  `json:"event"`
+	Description string  `json:"description,omitempty"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+	// Path is the optional stretch (two or more points); a client draws a line
+	// through it instead of a single pin.
+	Path        []core.GeoPoint `json:"path,omitempty"`
+	EffectiveAt *time.Time      `json:"effective_at,omitempty"`
+	ExpiresAt   *time.Time      `json:"expires_at,omitempty"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // homeHazardJSON is the client-side payload of one home hazard card,
@@ -195,10 +208,11 @@ type homeHazardJSON struct {
 func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 	events := make([]mapEventView, 0, 16)
 	for _, h := range s.activeHazards() {
-		if h.Latitude == nil || h.Longitude == nil {
+		// A hazard is mappable with a point or with a stretch (road segment).
+		if (h.Latitude == nil || h.Longitude == nil) && len(h.Path) < 2 {
 			continue
 		}
-		events = append(events, mapEventView{
+		ev := mapEventView{
 			EventKey:    h.EventKey,
 			MsgID:       core.MessageID(h.EventKey),
 			Source:      h.Source,
@@ -207,9 +221,16 @@ func (s *Server) handleEventsMap(w http.ResponseWriter, r *http.Request) {
 			Event:       h.Event,
 			Description: h.Description,
 			Latitude:    *h.Latitude,
-			Longitude:   *h.Longitude, EffectiveAt: h.EffectiveAt, ExpiresAt: h.ExpiresAt,
-			UpdatedAt: h.UpdatedAt,
-		})
+			Longitude:   *h.Longitude,
+			Path:        h.Path,
+			EffectiveAt: h.EffectiveAt,
+			ExpiresAt:   h.ExpiresAt,
+			UpdatedAt:   h.UpdatedAt,
+		}
+		if ev.Latitude == 0 && ev.Longitude == 0 && len(ev.Path) > 0 {
+			ev.Latitude, ev.Longitude = ev.Path[0].Lat, ev.Path[0].Lon
+		}
+		events = append(events, ev)
 	}
 	sort.Slice(events, func(i, j int) bool {
 		ri, _ := severity.Rank(events[i].Severity)
@@ -354,6 +375,17 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork, lang string) 
 	hazards := s.collectHazards(nets)
 	v.ActiveCount = len(hazards)
 
+	// Attribution rides with the data: if any active hazard comes from the
+	// GDDKiA KPD feed, the map footer credits it. Deriving it from the hazards
+	// themselves (rather than from the configuration) means the credit appears
+	// exactly while the data are shown and disappears with them.
+	for _, h := range hazards {
+		if h.Source == "gddkia-datex" {
+			v.RoadDataAttribution = true
+			break
+		}
+	}
+
 	// Groups follow the canonical scale 1:1, most severe first; the
 	// minor group also absorbs unknown severities.
 	rankExtreme, _ := severity.Rank(severity.Extreme)
@@ -374,6 +406,8 @@ func (s *Server) fillHomeHazards(v *homeView, nets []emcomNetwork, lang string) 
 			Headline:    h.Headline,
 			Event:       h.Event,
 			Source:      h.Source,
+			SourceLabel: providerLabel(lang, h.Source),
+			SourceURL:   providerURL(h.Source),
 			Areas:       strings.Join(displayAreas(h.Areas), ", "),
 			Description: h.Description,
 			Instruction: h.Instruction,
@@ -624,6 +658,7 @@ func hazardFromCore(ev core.HazardEvent) state.Hazard {
 		Status:      string(ev.Status),
 		Latitude:    ev.Latitude,
 		Longitude:   ev.Longitude,
+		Path:        ev.Path,
 		EffectiveAt: ev.EffectiveAt,
 		ExpiresAt:   ev.ExpiresAt,
 		ReceivedAt:  ev.ReceivedAt,
@@ -975,4 +1010,24 @@ func (s *Server) buildAircraftLayer() ([]byte, error) {
 	})
 
 	return json.Marshal(view)
+}
+
+// providerLabel names a provider for humans: the translated name when the
+// catalog knows it ("GDDKiA KPD"), the slug otherwise. Attribution is a
+// requirement for several providers, so the label comes from one place.
+func providerLabel(lang, source string) string {
+	if kind, ok := sourceKinds[source]; ok {
+		if name := i18n.T(lang, kind.Key+".name"); name != "" && name != kind.Key+".name" {
+			return name
+		}
+	}
+	return source
+}
+
+// providerURL is the provider's own page, when the station knows it.
+func providerURL(source string) string {
+	if kind, ok := sourceKinds[source]; ok {
+		return kind.URL
+	}
+	return ""
 }

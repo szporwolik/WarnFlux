@@ -44,3 +44,15 @@ go.work.sum
 
 # Compiled binary in the repository root (historical accident; build into build/ instead).
 /warnflux
+
+# Secrets: client certificates and their passwords must never be committed.
+# A .p12 identifies the station to a provider (GDDKiA KPD today); leaking it
+# would let anyone pull the data in our name. Keep them in the configuration
+# volume (config/, build/, /srv/docker/.../config), all of which are ignored.
+*.p12
+*.pfx
+*.pem
+*.key
+*.pass
+*.crt
+/secrets/

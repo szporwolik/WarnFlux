@@ -471,6 +471,28 @@ func fullReq(headline, event, desc string, lat, lon float64, areas []string) act
 	}
 }
 
+// TestTextForCreditsTheProvider pins short-channel attribution on the mesh:
+// a road report borrowed from GDDKiA names the provider after the message ID
+// and stays inside the channel limit.
+func TestTextForCreditsTheProvider(t *testing.T) {
+	a := &Action{cfg: Config{Prefix: "SOSNA"}}
+	req := fullReq("Roboty drogowe — droga A4, km 425.798", "MaintenanceWorks", "Zwężenie pasa.", 50.005, 20.025, nil)
+	req.Event.Hazard.Hazard.Source = "gddkia-datex"
+	got := a.textFor(context.Background(), req, "", maxMeshMessageChars)
+	if !strings.Contains(got, "GDDKiA") {
+		t.Errorf("text = %q, want the GDDKiA credit", got)
+	}
+	if len([]rune(got)) > maxMeshMessageChars {
+		t.Fatalf("text = %q, %d runes — over the channel limit", got, len([]rune(got)))
+	}
+
+	own := fullReq("Powódź na Rabie", "Flood", "Unikaj brzegów rzeki.", 49.985, 20.065, nil)
+	own.Event.Hazard.Hazard.Source = "imgw-meteo"
+	if got := a.textFor(context.Background(), own, "", maxMeshMessageChars); strings.Contains(got, "GDDKiA") {
+		t.Errorf("own text = %q, must not credit another provider", got)
+	}
+}
+
 // TestTextForLocationRidesAlong pins the enriched message: coordinates,
 // event type and description squeeze into the channel limit behind the
 // title (APRS normalization transliterates diacritics).

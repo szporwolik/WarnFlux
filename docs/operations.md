@@ -31,6 +31,14 @@ Configuration and secrets live in `/srv/docker/warnflux/config/` (owned by the
 container user, `0750`). Tokens — Discord webhook, SMTP password, GSM PIN —
 belong there and never in this repository.
 
+The GDDKiA KPD source (road obstructions) is the one entry that also needs a
+**file** there: the client certificate the provider issued (`kpd-client.p12`,
+mode `0600`) and its password (`kpd-client.pass`). Rotating it means replacing
+both files and restarting the station; without them the source refuses to start
+and the log says why. Each pull is the whole-country snapshot (~1.9 MB), so the
+15-minute interval costs ~180 MB a day — that is the trade for data that is
+always current; a shorter interval multiplies it.
+
 ## 2. What happens at boot
 
 There is no RTC on the usual single-board host, so at power-on the clock can be

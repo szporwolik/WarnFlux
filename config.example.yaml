@@ -362,6 +362,43 @@ sources:
   #     # Area = aprs.latitude/longitude + aprs.radius_km; override with
   #     # radius_km, center_latitude, center_longitude.
 
+  # GDDKiA KPD platform (DATEX II, snapshot pull). The national obstruction
+  # dataset over the KPD SOAP service, authenticated with a client
+  # certificate: the caller signs the request (WS-Security) with the .p12 the
+  # provider supplies. Richer than the retired XML feed: stable record ids
+  # (so one obstruction keeps one number), validity windows and point
+  # geometry for every record.
+  #
+  # The provider sends no severity, so the record TYPE decides: accidents are
+  # severe, obstructions moderate, planned works minor (see the plugin
+  # README). Attribution: the data belong to GDDKiA — the panel credits them
+  # on every event card and in the map footer.
+  #
+  # Registration with GDDKiA is required — the certificate is issued per
+  # integrator and identifies the club. It is a SECRET: keep the .p12 and its
+  # password in the configuration volume, never in the repository.
+  # POLAND-ONLY: leave disabled outside Poland.
+  # - id: gddkia-datex
+  #   type: gddkia-datex
+  #   enabled: true
+  #
+  #   runtime:
+  #     restart: true
+  #     shutdown_timeout: 10s
+  #
+  #   config:
+  #     poll_interval: 15m          # the provider asks for restraint
+  #     request_timeout: 90s        # the national snapshot is ~2 MB
+  #     endpoint: https://kpd.gddkia.gov.pl/addiod/ws_v34/snapshotPull
+  #     cert_file: /config/kpd-client.p12
+  #     cert_password_file: /config/kpd-client.pass   # preferred
+  #     # cert_password: "..."      # or inline (copied with the YAML)
+  #     # cert_key_file: /config/kpd-client.key       # for a PEM pair instead
+  #     # Area = aprs.latitude/longitude + aprs.radius_km; override below.
+  #     # radius_km: 50
+  #     # center_latitude: 50.02
+  #     # center_longitude: 20.03
+
   # GIOŚ serious-industrial-accident register (poważne awarie):
   # current-year accidents, filtered by voivodeship first (auto-derived
   # from the home position when not set), then geocoded to the locality

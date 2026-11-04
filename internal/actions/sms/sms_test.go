@@ -179,6 +179,38 @@ func TestExecuteDedupsByNumberKey(t *testing.T) {
 	}
 }
 
+// TestTextCreditsTheProvider pins short-channel attribution: a road report
+// borrowed from GDDKiA ends with the provider's short name (there is room for
+// a name, never for a link), and its own warnings carry no credit at all.
+func TestTextCreditsTheProvider(t *testing.T) {
+	hub := &fakeSender{enabled: true}
+	p, err := New(configNode(t, map[string]any{
+		"phones": []string{"+48600111222"},
+		"prefix": "SOSNA",
+	}), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := p.(*Action)
+
+	road := hazardReq()
+	road.Event.Hazard.Hazard.Source = "gddkia-datex"
+	road.Event.Hazard.Hazard.Headline = "Roboty drogowe — droga A4, km 425.798"
+	text := a.textFor(context.Background(), road, "pl")
+	if !strings.HasSuffix(text, "GDDKiA") {
+		t.Errorf("road text = %q, want the GDDKiA credit at the end", text)
+	}
+	if n := gsm.Septets(text); n < 0 || n > gsm.MaxSeptets {
+		t.Fatalf("road text = %d septets, want <= %d (%q)", n, gsm.MaxSeptets, text)
+	}
+
+	own := hazardReq()
+	own.Event.Hazard.Hazard.Source = "imgw-meteo"
+	if got := a.textFor(context.Background(), own, "pl"); strings.Contains(got, "GDDKiA") {
+		t.Errorf("own text = %q, must not credit another provider", got)
+	}
+}
+
 func TestTextBoundedAndTransliterated(t *testing.T) {
 	hub := &fakeSender{enabled: true}
 	p, err := New(configNode(t, map[string]any{

@@ -1190,6 +1190,16 @@ GROUP BY 1, direction`, src.channel); err != nil {
 			return nil
 		},
 	},
+	{
+		// v69: optional line geometry for an event. A provider that describes a
+		// stretch of road (DATEX OpenLR gives the first and last reference
+		// point) should draw a segment on the map, not a pin in the middle. The
+		// field is a JSON array of {lat,lon}; empty means "point only", which is
+		// what every existing row stays.
+		SQL: `
+ALTER TABLE events ADD COLUMN path TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel
@@ -1224,7 +1234,7 @@ category, event, severity, provider_severity, urgency, certainty,
 headline, description, instruction,
 effective_at, expires_at_ms, latitude, longitude,
 areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at,
-producer`
+producer, path`
 
 // Store is a SQLite-backed storage.EventStore.
 type Store struct {
@@ -1467,9 +1477,10 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 	defer tx.Rollback()
 
 	var storedFp, storedStatus, storedReceived, storedFirstSeen, storedProducer string
+	var storedPath string
 	err = tx.QueryRowContext(ctx,
-		"SELECT fingerprint, status, received_at, first_seen_at, producer FROM events WHERE event_key = ?", key,
-	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen, &storedProducer)
+		"SELECT fingerprint, status, received_at, first_seen_at, producer, COALESCE(path, '') FROM events WHERE event_key = ?", key,
+	).Scan(&storedFp, &storedStatus, &storedReceived, &storedFirstSeen, &storedProducer, &storedPath)
 
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -1551,7 +1562,19 @@ func (s *Store) Ingest(ctx context.Context, event core.HazardEvent, fingerprint 
 		// disappearances reconcile again. The value is the stored one
 		// whenever the incoming event carries no owner, so nothing changes
 		// in the common path.
-		if _, err := tx.ExecContext(ctx,
+		// Geometry is NOT part of the content fingerprint: a provider that
+		// shifts the stretch (or a row stored before geometry existed) is
+		// refreshed silently here, without a journal change and therefore
+		// without re-notifying anyone. An empty incoming path never wipes a
+		// stored one.
+		path := encodePath(event.Path)
+		if path != "" && path != storedPath {
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE events SET last_seen_at = ?, last_seen_at_ms = ?, producer = ?, path = ? WHERE event_key = ?",
+				formatTime(now), nowMs, event.Producer, path, key); err != nil {
+				return 0, nil, fmt.Errorf("touch event %q: %w", key, err)
+			}
+		} else if _, err := tx.ExecContext(ctx,
 			"UPDATE events SET last_seen_at = ?, last_seen_at_ms = ?, producer = ? WHERE event_key = ?",
 			formatTime(now), nowMs, event.Producer, key); err != nil {
 			return 0, nil, fmt.Errorf("touch event %q: %w", key, err)
@@ -3110,9 +3133,36 @@ INSERT INTO events (
 	headline, description, instruction,
 	effective_at, expires_at, expires_at_ms, latitude, longitude,
 	areas, source_url, received_at, first_seen_at, last_seen_at, last_seen_at_ms, updated_at,
-	producer
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	producer, path
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(event_key) DO NOTHING`
+
+// encodePath stores the optional geometry as a compact JSON array. An empty
+// path is stored as an empty string, so a point-only event costs nothing and the
+// column stays readable in sqlite3.
+func encodePath(path []core.GeoPoint) string {
+	if len(path) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodePath reads the geometry back. A malformed value is dropped rather than
+// failing the read: one bad row must not hide the whole event.
+func decodePath(raw string) []core.GeoPoint {
+	if raw == "" {
+		return nil
+	}
+	var path []core.GeoPoint
+	if err := json.Unmarshal([]byte(raw), &path); err != nil {
+		return nil
+	}
+	return path
+}
 
 func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen, updated time.Time, expiresMs int64) []any {
 	received := orNow(event.ReceivedAt, updated)
@@ -3125,7 +3175,7 @@ func insertArgs(event core.HazardEvent, fingerprint string, firstSeen, lastSeen,
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
 		formatTime(received), formatTime(firstSeen), formatTime(lastSeen), lastSeen.UTC().UnixMilli(), formatTime(updated),
-		event.Producer,
+		event.Producer, encodePath(event.Path),
 	}
 }
 
@@ -3156,7 +3206,7 @@ UPDATE events SET
 	headline = ?, description = ?, instruction = ?,
 	effective_at = ?, expires_at = ?, expires_at_ms = ?, latitude = ?, longitude = ?,
 	areas = ?, source_url = ?, received_at = ?, last_seen_at = ?, last_seen_at_ms = ?, updated_at = ?,
-	producer = ?
+	producer = ?, path = ?
 	WHERE event_key = ?`
 
 func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expiresMs int64) []any {
@@ -3170,7 +3220,7 @@ func updateArgs(event core.HazardEvent, fingerprint string, now time.Time, expir
 		nullableFloat(event.Latitude), nullableFloat(event.Longitude),
 		string(areas), event.SourceURL,
 		formatTime(received), formatTime(now), now.UTC().UnixMilli(), formatTime(orNow(event.UpdatedAt, now)),
-		event.Producer,
+		event.Producer, encodePath(event.Path),
 	}, event.Key())
 }
 
@@ -3872,6 +3922,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (co
 		received, first, last    string
 		lastSeenMs               sql.NullInt64
 		updated                  string
+		pathJSON                 string
 	)
 	var event core.HazardEvent
 	dests := []any{
@@ -3881,7 +3932,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (co
 		&effectiveAt, &expiresMs, &lat, &lon,
 		&areasJSON, &event.SourceURL,
 		&received, &first, &last, &lastSeenMs, &updated,
-		&event.Producer,
+		&event.Producer, &pathJSON,
 	}
 	if err := scan(dests...); err != nil {
 		return event, err
@@ -3908,6 +3959,7 @@ func scanEventRow(scan func(dest ...any) error, stored *storage.StoredEvent) (co
 	if err := json.Unmarshal([]byte(areasJSON), &event.Areas); err != nil {
 		return event, fmt.Errorf("decode areas: %w", err)
 	}
+	event.Path = decodePath(pathJSON)
 	storedTimes := []struct {
 		dest *time.Time
 		src  string

@@ -299,6 +299,14 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang str
 		loc = norm(strings.Join(areas, ", "))
 	}
 
+	// The provider credit rides at the very end, after the message ID: a
+	// borrowed road report has to say whose it is, and this channel has no
+	// room for a link.
+	credit := ""
+	if c := alerttext.Credit(h.Source); c != "" {
+		credit = " " + c
+	}
+
 	tag := ""
 	if id := h.MessageID(); id != "" {
 		tag = " [" + id + "]"
@@ -312,7 +320,7 @@ func (a *Action) textFor(ctx context.Context, req action.ActionRequest, lang str
 	// Transliteration first, then the septet budget: the built text carries
 	// brackets and separators of its own (" | ", "[WF-…]"), so counting
 	// characters would overshoot the segment (reported P2).
-	tagText := gsm.TransliterateGSM7(tag)
+	tagText := gsm.TransliterateGSM7(tag + credit)
 	budget := maxSMSChars - gsm.Septets(tagText)
 
 	body := desc

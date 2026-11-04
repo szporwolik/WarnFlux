@@ -22,6 +22,8 @@ type archiveEventView struct {
 	Headline    string
 	Event       string
 	Source      string
+	SourceLabel string
+	SourceURL   string
 	Areas       string
 	Status      string // active | expired | cancelled
 	EffectiveAt *time.Time
@@ -102,6 +104,8 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 			Headline:    ev.Headline,
 			Event:       ev.Event,
 			Source:      ev.Source,
+			SourceLabel: providerLabel(lang, ev.Source),
+			SourceURL:   providerURL(ev.Source),
 			Areas:       strings.Join(ev.Areas, ", "),
 			Status:      string(ev.Status),
 			EffectiveAt: ev.EffectiveAt,

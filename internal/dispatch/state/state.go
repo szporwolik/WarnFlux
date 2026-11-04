@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/core"
 )
 
 // Bounds protect the maps against pathological broker input. The entry COUNT
@@ -96,6 +98,10 @@ type Hazard struct {
 	// renders hazards that carry them.
 	Latitude  *float64
 	Longitude *float64
+
+	// Path is the optional stretch the event covers (two or more points): the
+	// map draws a line through it instead of a single pin.
+	Path []core.GeoPoint
 
 	ReceivedAt time.Time
 	UpdatedAt  time.Time

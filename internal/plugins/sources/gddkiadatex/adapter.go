@@ -178,11 +178,79 @@ var closurePhrases = []string{
 	"closed in both directions",
 }
 
-// mentionsClosure reports whether the comment announces a total closure.
+// offCarriagewayMarkers are the ways the comment says the closed thing is NOT
+// the carriageway the record sits on: a street running under the motorway, a
+// pavement, a cycle path, a municipal road. KPD attaches such works to the
+// bridge or the motorway they belong to, so the record is about the A4 while
+// the traffic that actually stops is on the street below — local news, not a
+// closed carriageway.
+var offCarriagewayMarkers = []string{
+	"ul.", "ulicy", "ulica ", "chodnik", "ścieżk", "drogi gminnej", "drodze gminnej",
+	"pod obiektami", "pod autostradą", "pod drogą",
+}
+
+// closureWindow is how far around the closure phrase the comment is read when
+// looking for markers of a closure that is not of the carriageway. KPD writes
+// the object and the closing in one breath ("całkowite zamknięcie odcinka
+// ul. Nad Serafą pod obiektami autostrady A4"), so a sentence-split would cut
+// exactly at the "ul." that identifies it.
+const closureWindow = 120
+
+// mentionsClosure reports whether the comment announces a total closure OF THE
+// CARRIAGEWAY. A closure of a street under the motorway, of a pavement or of a
+// municipal road is local news: KPD attaches such works to the bridge or the
+// motorway they belong to, so the record says "A4" while the traffic that stops
+// is on the street below.
 func mentionsClosure(text string) bool {
-	t := strings.ToLower(text)
+	t := []rune(strings.ToLower(text))
 	for _, p := range closurePhrases {
-		if strings.Contains(t, p) {
+		phrase := []rune(p)
+		for at := indexRunes(t, phrase); at >= 0; {
+			from := at - closureWindow
+			if from < 0 {
+				from = 0
+			}
+			to := at + len(phrase) + closureWindow
+			if to > len(t) {
+				to = len(t)
+			}
+			if !containsAny(string(t[from:to]), offCarriagewayMarkers) {
+				return true
+			}
+			next := indexRunes(t[at+len(phrase):], phrase)
+			if next < 0 {
+				break
+			}
+			at += len(phrase) + next
+		}
+	}
+	return false
+}
+
+// indexRunes is strings.Index for two rune slices.
+func indexRunes(haystack, needle []rune) int {
+	if len(needle) == 0 || len(haystack) < len(needle) {
+		return -1
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+// containsAny reports whether the folded text carries any of the needles.
+func containsAny(text string, needles []string) bool {
+	for _, n := range needles {
+		if strings.Contains(text, n) {
 			return true
 		}
 	}

@@ -15,6 +15,12 @@ import (
 	"github.com/szporwolik/WarnFlux/internal/severity"
 )
 
+// GeoPoint is one coordinate of an event's path.
+type GeoPoint struct {
+	Lat float64 `json:"lat"`
+	Lon float64 `json:"lon"`
+}
+
 // EventStatus is the lifecycle state of an event as persisted by WarnFlux.
 //
 // "updated" is deliberately not a status: it is a change type reported when
@@ -78,6 +84,13 @@ type HazardEvent struct {
 
 	Latitude  *float64
 	Longitude *float64
+
+	// Path optionally describes a STRETCH rather than a point: a road segment
+	// a provider localises with two or more coordinates (DATEX OpenLR gives the
+	// first and last reference point). The map draws a line through them; an
+	// empty slice keeps the event a single pin, which is what every point-based
+	// source produces.
+	Path []GeoPoint
 
 	Areas []string
 
@@ -440,8 +453,9 @@ const (
 	maxDescriptionLen = 32768 // description
 	maxInstructionLen = 8192  // instruction
 	maxSourceURLLen   = 2048  // source_url
-	maxAreas          = 512   // affected areas per event
-	maxAreaLen        = 2048  // bytes per area label
+	maxPathPoints     = 64
+	maxAreas          = 512  // affected areas per event
+	maxAreaLen        = 2048 // bytes per area label
 )
 
 func (e HazardEvent) Validate() error {
@@ -504,6 +518,19 @@ func (e HazardEvent) Validate() error {
 	}
 	if (e.Latitude == nil) != (e.Longitude == nil) {
 		return errors.New("event latitude and longitude must both be set or both be absent")
+	}
+	// A path describes a stretch; it is optional, bounded and must be sane: an
+	// unbounded or NaN-laden geometry would break every map that draws it.
+	if len(e.Path) > maxPathPoints {
+		return fmt.Errorf("event path has %d points, maximum %d", len(e.Path), maxPathPoints)
+	}
+	for i, pt := range e.Path {
+		if math.IsNaN(pt.Lat) || math.IsInf(pt.Lat, 0) || pt.Lat < -90 || pt.Lat > 90 {
+			return fmt.Errorf("event path point %d has an invalid latitude %v", i, pt.Lat)
+		}
+		if math.IsNaN(pt.Lon) || math.IsInf(pt.Lon, 0) || pt.Lon < -180 || pt.Lon > 180 {
+			return fmt.Errorf("event path point %d has an invalid longitude %v", i, pt.Lon)
+		}
 	}
 	if e.Latitude != nil {
 		if math.IsNaN(*e.Latitude) || math.IsInf(*e.Latitude, 0) {

@@ -84,6 +84,7 @@ Both are pinned by `signer_test.go`.
 | `validityTimeSpecification` | `EffectiveAt` / `ExpiresAt` |
 | `generalPublicComment` (Polish value) | `Description` |
 | `locationReference/pointByCoordinates` | `Latitude` / `Longitude` |
+| `openlrPointLocationReference` (first + last reference point) | `Path` — the stretch the map draws as a line |
 | `pointAlongLinearElement/linearElement/roadNumber` | `Headline` suffix and the `droga:<nr>` area token |
 
 Severity: DATEX `severity` wins when the provider sends one (`high` → severe,
@@ -108,6 +109,21 @@ record is raised from minor to moderate. The phrase list is explicit, in
 
 Records without point geometry cannot be placed in the area and are counted as
 filtered, not as a provider failure.
+
+## Stretches (OpenLR)
+
+Most records describe a **stretch**, not a pin: KPD localises them with OpenLR,
+which carries the first and the last reference point of the segment. The plugin
+keeps both (`Path`, at most two points) and the map draws the straight line
+between them — enough to see which part of the road is affected, without
+inventing intermediate geometry. In the live national publication 436 of 525
+records carry such a pair.
+
+Geometry is deliberately **not** part of the content fingerprint: when the
+provider shifts a stretch (or a row was stored before geometry existed), the
+store updates the line silently on the next pull, with no journal entry and
+therefore no re-notification. An incoming record without OpenLR never wipes
+stored geometry.
 
 ## Behaviour
 

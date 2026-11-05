@@ -1,0 +1,6 @@
+# Hang the packet link up cleanly when pppd leaves.
+TIMEOUT 10
+ABORT 'ERROR'
+'' '\K'
+'' '+++\c'
+'' 'ATH0'

@@ -1,0 +1,15 @@
+#!/bin/sh
+# WarnFlux: runs when the cellular backup link goes down (pppd ip-down.d).
+# Removes ONLY the block the ip-up script added; the wired resolvers stay.
+set -u
+MARK="# warnflux-gsm-backup"
+[ -f /etc/resolv.conf ] || exit 0
+grep -qF "$MARK" /etc/resolv.conf 2>/dev/null || exit 0
+# Drop the marker line plus the nameserver lines that follow it.
+awk -v mark="$MARK" '
+	$0 == mark { skipping = 1; next }
+	skipping && $1 == "nameserver" { next }
+	{ skipping = 0; print }
+' /etc/resolv.conf >/etc/resolv.conf.warnflux-gsm.tmp &&
+	mv /etc/resolv.conf.warnflux-gsm.tmp /etc/resolv.conf
+exit 0

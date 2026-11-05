@@ -72,11 +72,15 @@ type mirrorMsg struct {
 // trafficMirror posts club traffic to Discord. A nil *trafficMirror is the
 // disabled state and every method tolerates it.
 type trafficMirror struct {
-	url      string
-	username string
-	log      *slog.Logger
-	client   *http.Client
-	sem      chan struct{}
+	url string
+	// channel is the device channel index this mirror watches, resolved by
+	// the configuration (0 in a list entry = the public primary channel).
+	channel       int
+	includeSystem bool
+	username      string
+	log           *slog.Logger
+	client        *http.Client
+	sem           chan struct{}
 }
 
 // newTrafficMirror builds the mirror, or nil when no webhook is configured.
@@ -89,12 +93,31 @@ func newTrafficMirror(cfg MirrorConfig, log *slog.Logger) *trafficMirror {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &trafficMirror{
-		url:      url,
-		username: strings.TrimSpace(cfg.Username),
-		log:      log,
-		client:   &http.Client{Timeout: mirrorTimeout},
-		sem:      make(chan struct{}, mirrorInFlight),
+		url:           url,
+		username:      strings.TrimSpace(cfg.Username),
+		channel:       cfg.Channel,
+		includeSystem: cfg.IncludeSystem,
+		log:           log,
+		client:        &http.Client{Timeout: mirrorTimeout},
+		sem:           make(chan struct{}, mirrorInFlight),
 	}
+}
+
+// newTrafficMirrors builds the mirror for the single "traffic_mirror" block
+// plus one per entry of the "traffic_mirrors" list. The single block resolves
+// its channel in Config (0 = the announcement channel); a list entry keeps the
+// channel it names, so the public primary channel can be mirrored too.
+func newTrafficMirrors(cfg Config, log *slog.Logger) []*trafficMirror {
+	var out []*trafficMirror
+	if m := newTrafficMirror(cfg.TrafficMirror, log); m != nil {
+		out = append(out, m)
+	}
+	for _, extra := range cfg.TrafficMirrors {
+		if m := newTrafficMirror(extra, log); m != nil {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // offer hands one message to the poster without blocking the caller.

@@ -89,6 +89,10 @@ type Config struct {
 	// TrafficMirror forwards the club channel's traffic to a Discord
 	// webhook (see MirrorConfig). Zero value = disabled.
 	TrafficMirror MirrorConfig
+	// TrafficMirrors adds one more webhook per channel (the primary
+	// channel included). A list entry's channel 0 is the PRIMARY channel:
+	// the entry names what it watches.
+	TrafficMirrors []MirrorConfig
 	// AckSettleTimeout is how long a device-confirmed direct message
 	// waits for the recipient's acknowledgment before settling failed
 	// (defaultAckSettleTimeout when unset). The firmware retransmits
@@ -983,8 +987,9 @@ type Hub struct {
 	recorder    Recorder
 	stationSink func(ctx context.Context, topic string, retained bool, payload []byte) error
 	messageSink func(ctx context.Context, topic string, retained bool, payload []byte) error
-	// mirror forwards club-channel traffic to Discord (nil = disabled).
-	mirror *trafficMirror
+	// mirrors forward channel traffic to Discord, one per configured
+	// webhook; nil/empty = disabled.
+	mirrors []*trafficMirror
 	// senderGate resolves the direct-message sender's node id onto the
 	// directory username that registered it; empty = not registered (the
 	// message stays off the alarm pipeline).
@@ -1187,6 +1192,11 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		// so it is never the channel a club install means.
 		cfg.TrafficMirror.Channel = cfg.EmcomChannel
 	}
+	for i, m := range cfg.TrafficMirrors {
+		if m.Channel < 0 || m.Channel > 7 {
+			return nil, fmt.Errorf("meshtastic: traffic_mirrors[%d] channel must be 0-7", i)
+		}
+	}
 	if cfg.EmcomHazardsInterval < 0 {
 		return nil, errors.New("meshtastic: emcom hazards interval must not be negative (0 disables)")
 	}
@@ -1209,7 +1219,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		// Disabled hub: no serial device needed; the source plugin skips
 		// Run and the admin page shows the device as disconnected.
 		h := &Hub{cfg: cfg, logger: logger, cadence: cadenceOf(cfg), nodes: make(map[string]*Node),
-			mirror:     newTrafficMirror(cfg.TrafficMirror, logger),
+			mirrors:    newTrafficMirrors(cfg, logger),
 			tombstones: make(map[string]*nodeTombstone),
 			feedQueue:  make(chan feedJob, stationFeedQueueLen),
 			pending:    make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
@@ -1227,7 +1237,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 	h := &Hub{
 		cfg:          cfg,
 		logger:       logger,
-		mirror:       newTrafficMirror(cfg.TrafficMirror, logger),
+		mirrors:      newTrafficMirrors(cfg, logger),
 		cadence:      cadenceOf(cfg),
 		nodes:        make(map[string]*Node),
 		tombstones:   make(map[string]*nodeTombstone),
@@ -1249,13 +1259,16 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 // nothing reaches the chat should see which channel is mirrored, without the
 // webhook URL (a secret) ever entering the log.
 func (h *Hub) logMirror() {
-	if h.mirror == nil || h.logger == nil {
+	if h.logger == nil {
 		return
 	}
-	h.logger.Info("meshtastic: club-channel traffic mirrored to discord",
-		"channel", h.ChannelLabel(h.cfg.TrafficMirror.Channel),
-		"channel_index", h.cfg.TrafficMirror.Channel,
-		"include_system", h.cfg.TrafficMirror.IncludeSystem)
+	for i, m := range h.mirrors {
+		h.logger.Info("meshtastic: channel traffic mirrored to discord",
+			"channel", h.ChannelLabel(m.channel),
+			"channel_index", m.channel,
+			"include_system", m.includeSystem,
+			"mirror", i+1)
+	}
 }
 
 // Enabled reports whether the meshtastic integration is configured.
@@ -5138,14 +5151,19 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 	return nil
 }
 
-// mirrorTraffic forwards one club-channel message to the configured Discord
-// webhook. Everything is best effort and off the radio path: a nil mirror, a
-// different channel or a scheduled message is simply not forwarded.
+// mirrorTraffic forwards one channel message to every Discord webhook
+// configured for that channel (the club channel and, when asked for, the
+// public primary channel). Everything is best effort and off the radio path: a
+// channel without a mirror, or a scheduled message on a mirror that leaves the
+// station's own traffic out, is simply not forwarded.
 func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int, channelLabel, text string, hops int, at time.Time, operator string, snr float32, rssi int32, viaMQTT bool) {
-	if h.mirror == nil || channelIdx != h.cfg.TrafficMirror.Channel {
-		return
+	var targets []*trafficMirror
+	for _, m := range h.mirrors {
+		if m != nil && channelIdx == m.channel && (operator != "system" || m.includeSystem) {
+			targets = append(targets, m)
+		}
 	}
-	if operator == "system" && !h.cfg.TrafficMirror.IncludeSystem {
+	if len(targets) == 0 {
 		return
 	}
 	senderName := ""
@@ -5157,7 +5175,7 @@ func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int,
 			snr = h.nodeSNR(sender)
 		}
 	}
-	h.mirror.offer(mirrorMsg{
+	msg := mirrorMsg{
 		direction:  direction,
 		sender:     sender,
 		senderName: senderName,
@@ -5170,7 +5188,10 @@ func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int,
 		rssi:       rssi,
 		viaMQTT:    viaMQTT,
 		at:         at,
-	})
+	}
+	for _, m := range targets {
+		m.offer(msg)
+	}
 }
 
 // senderDisplayName resolves a node id onto the friendliest name this station

@@ -520,6 +520,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/gsm", s.requirePagePartial(s.handlePartialGSM))
 	s.mux.Handle("GET /partials/aprs-links", s.requirePagePartial(s.handlePartialAPRSLinks))
 	s.mux.Handle("POST /gsm/send", s.requireAdmin(s.handleGSMSend))
+	s.mux.Handle("POST /gsm/ussd", s.requireAdmin(s.handleGSMSendUSSD))
 	s.mux.Handle("GET /meshtastic", s.requirePage(s.handleMeshtasticPage))
 	s.mux.Handle("GET /meshmap", s.requireAdmin(s.handleMeshMapPage))
 	s.mux.Handle("GET /partials/meshtastic", s.requirePagePartial(s.handlePartialMeshtastic))

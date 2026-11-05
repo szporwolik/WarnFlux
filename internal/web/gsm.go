@@ -101,6 +101,11 @@ type gsmView struct {
 	// Send-form feedback (query flashes).
 	Error string
 	Sent  bool
+	// USSDReply is the text the network sent back for the last short code;
+	// USSDCode remembers which code produced it (the box is shown above the
+	// form so the operator sees both at once).
+	USSDReply string
+	USSDCode  string
 }
 
 // fillGSMPhones collects the directory phones: the sendable ones (with
@@ -248,6 +253,8 @@ func (s *Server) handleGSMPage(w http.ResponseWriter, r *http.Request) {
 	}
 	v.Sent = r.URL.Query().Get("sent") == "1"
 	v.Error = r.URL.Query().Get("err")
+	v.USSDReply = strings.TrimSpace(r.URL.Query().Get("ussd"))
+	v.USSDCode = strings.TrimSpace(r.URL.Query().Get("code"))
 	s.fillGSMHub(&v)
 	s.fillGSMPhones(r.Context(), &v)
 	s.fillGSMMessages(r, &v)
@@ -296,6 +303,60 @@ func (s *Server) handleGSMSend(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(sess.username, "gsm-send", number)
 	http.Redirect(w, r, "/gsm?sent=1", http.StatusSeeOther)
+}
+
+// handleGSMSendUSSD runs one USSD short code ("*100#") from the admin panel.
+// The code carries its own destination, so this path needs no addressee — the
+// SMS form's phone field is not involved at all.
+func (s *Server) handleGSMSendUSSD(w http.ResponseWriter, r *http.Request) {
+	sess := s.sessions.currentSession(r)
+	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	lang := s.langFor(r)
+	code := strings.TrimSpace(r.PostFormValue("code"))
+	if !gsm.ValidUSSD(code) {
+		http.Redirect(w, r, "/gsm?err="+url.QueryEscape(i18n.T(lang, "gsm.ussd_bad_code")), http.StatusSeeOther)
+		return
+	}
+	if s.gsm == nil {
+		// The typed code survives the redirect: retyping "*100#" because the
+		// station has no modem is pure friction.
+		http.Redirect(w, r, "/gsm?err="+url.QueryEscape(i18n.T(lang, "gsm.no_modem"))+"&code="+url.QueryEscape(code), http.StatusSeeOther)
+		return
+	}
+	// A USSD round trip can outlast the server's write timeout (the network
+	// answers when it wants to).
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(90 * time.Second))
+	}
+	reply, err := s.gsm.SendUSSD(r.Context(), code)
+	if err != nil {
+		var flash string
+		switch {
+		case errors.Is(err, gsm.ErrUSSDRejected):
+			flash = i18n.T(lang, "gsm.ussd_rejected")
+		case errors.Is(err, gsm.ErrUSSDTimeout):
+			flash = i18n.T(lang, "gsm.ussd_timeout")
+		default:
+			flash = fmt.Sprintf(i18n.T(lang, "gsm.send_failed"), err)
+		}
+		http.Redirect(w, r, "/gsm?err="+url.QueryEscape(flash)+"&code="+url.QueryEscape(code), http.StatusSeeOther)
+		return
+	}
+	s.audit(sess.username, "gsm-ussd", code)
+	http.Redirect(w, r, "/gsm?ussd="+url.QueryEscape(ussdFlash(reply))+"&code="+url.QueryEscape(code), http.StatusSeeOther)
+}
+
+// ussdFlash bounds what the flash box carries: a menu can be long, and the
+// reply travels in a URL — it is shown, not stored.
+func ussdFlash(text string) string {
+	text = strings.TrimSpace(text)
+	if r := []rune(text); len(r) > 300 {
+		return string(r[:300]) + "…"
+	}
+	return text
 }
 
 // handlePartialGSM serves the polled SMS history fragment so the admin

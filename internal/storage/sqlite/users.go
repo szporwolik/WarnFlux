@@ -17,7 +17,7 @@ import (
 )
 
 // userColumns is the canonical user column list for SELECTs.
-const userColumns = `id, username, phone, email, discord, is_admin, role, lang, created_at_ms, updated_at_ms, auth_version`
+const userColumns = `id, username, phone, email, discord, is_admin, role, lang, created_at_ms, updated_at_ms, auth_version, last_login_at_ms`
 
 // passwordIterations is the PBKDF2-HMAC-SHA256 iteration count used for
 // directory-user passwords (local, single-tenant scope).
@@ -59,6 +59,23 @@ func (s *Store) EnsureAdminUser(username, password string) error {
 			salt, hash, s.now().UnixMilli(), username); err != nil {
 			return fmt.Errorf("ensure admin user %q: %w", username, err)
 		}
+	}
+	return nil
+}
+
+// RecordLogin stamps the account's last successful sign-in. The credential
+// version and the profile timestamp are deliberately untouched: signing in is
+// not a change of identity, and it must not invalidate the session it just
+// created.
+func (s *Store) RecordLogin(username string) error {
+	name := strings.TrimSpace(username)
+	if name == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE users SET last_login_at_ms = ? WHERE username = ? COLLATE NOCASE`,
+		s.now().UnixMilli(), name)
+	if err != nil {
+		return fmt.Errorf("record login of %q: %w", name, err)
 	}
 	return nil
 }
@@ -1340,11 +1357,15 @@ func scanUser(sc userScanner) (storage.User, error) {
 		admin  int
 		ca, ua int64
 	)
-	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &u.Lang, &ca, &ua, &u.AuthVersion); err != nil {
+	var lastLogin int64
+	if err := sc.Scan(&u.ID, &u.Username, &u.Phone, &u.Email, &u.Discord, &admin, &u.Role, &u.Lang, &ca, &ua, &u.AuthVersion, &lastLogin); err != nil {
 		return storage.User{}, err
 	}
 	u.IsAdmin = admin != 0
 	u.CreatedAt = time.UnixMilli(ca).UTC()
 	u.UpdatedAt = time.UnixMilli(ua).UTC()
+	if lastLogin > 0 {
+		u.LastLogin = time.UnixMilli(lastLogin).UTC()
+	}
 	return u, nil
 }

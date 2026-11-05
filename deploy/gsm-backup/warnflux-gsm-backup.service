@@ -1,0 +1,21 @@
+[Unit]
+Description=WarnFlux: cellular data link (backup uplink for the wired network)
+Documentation=file:/etc/warnflux/gsm-backup.md
+# The device node has to exist, or pppd exits before the modem is enumerated.
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if04-port0
+
+[Service]
+Type=simple
+# nodetach: systemd supervises pppd itself; "persist" inside the peer file
+# survives a dropped link, Restart= covers pppd leaving entirely.
+ExecStart=/usr/sbin/pppd call warnflux-gsm nodetach
+Restart=always
+RestartSec=30s
+# The modem is shared with the station's SMS session. A slow dial must not
+# cascade into a restart loop of the whole unit.
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target

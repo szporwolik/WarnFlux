@@ -1,0 +1,44 @@
+# WarnFlux: the cellular backup uplink (pppd peer file -> /etc/ppp/peers/).
+#
+# WHY THE DATA INTERFACE AND NOT THE AT PORT
+# The Huawei E173 exposes three serial interfaces, and only ONE of them is the
+# packet pipe (`AT^GETPORTMODE` reports MDM:0,NDIS:1,DIAG:2,PCUI:3,…):
+#   if00 = PCUI  -> the station's AT/SMS session (mapped as /dev/modem)
+#   if03 = DIAG  -> silently swallows AT, answers nothing (measured)
+#   if04 = MDM   -> the data port: ATD*99 answers CONNECT
+# Dialling on if04 therefore leaves the SMS session on if00 untouched — that is
+# the whole trick behind "internet as a backup WITHOUT losing SMS".
+#
+# WHY THE METRIC
+# The wired default route is metric 100. This link adds its own default with
+# metric 700, so Ethernet keeps winning while it works and the kernel falls
+# over to the modem the moment the wired route disappears (cable pulled,
+# DHCP lease lost, ISP gateway unreachable). No script has to decide anything.
+
+/dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if04-port0
+115200
+
+# The network does not authenticate us: the SIM identifies the subscriber.
+noauth
+# No address is negotiated for our side before IPCP.
+noipdefault
+# A default route of its own, with a metric that keeps Ethernet first.
+defaultroute
+defaultroute-metric 700
+# Take the operator's resolvers (the fallback DNS entry is added by the ip-up
+# script, because NetworkManager owns /etc/resolv.conf).
+usepeerdns
+mtu 1400
+mru 1400
+
+# Always up: an outage must not have to be noticed before the backup exists.
+persist
+maxfail 0
+holdoff 30
+lcp-echo-interval 30
+lcp-echo-failure 3
+# Never idle-disconnect: this link exists to be ready.
+idle 0
+
+connect "/usr/sbin/chat -s -T WarnFlux-gsm -f /etc/ppp/warnflux-gsm.chat"
+disconnect "/usr/sbin/chat -s -T WarnFlux-gsm-off -f /etc/ppp/warnflux-gsm-off.chat"

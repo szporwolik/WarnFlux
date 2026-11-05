@@ -958,6 +958,17 @@ meshtastic:
   #                            # 1-7 = a specific device channel
   #   include_system: true     # default: the station's own sends are part of
   #                            # the channel; false leaves them off the chat
+  #
+  # A SECOND (third, …) webhook per channel: one list entry per channel, so
+  # the public PRIMARY channel can be mirrored too (there the station never
+  # transmits, so only what it HEARS is posted). In a list entry channel 0
+  # means the PRIMARY channel, NOT the announcement channel the single block
+  # above defaults to.
+  # traffic_mirrors:
+  #   - channel: 0
+  #     webhook_url: "https://discord.com/api/webhooks/.../..."
+  #     username: "SOSNA Mesh ch0"   # optional display name override
+  #     include_system: false        # default true; irrelevant on channel 0
 
   # Periodic presence beacon (identity + uptime + node count) on a
   # community channel. The default PRIMARY channel is receive-only:

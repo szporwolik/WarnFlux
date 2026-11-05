@@ -412,3 +412,40 @@ func TestDisabledHubRunIsIdle(t *testing.T) {
 		t.Fatalf("last error = %v, want none for a disabled hub", lastErr)
 	}
 }
+
+// Two mirrors, two channels: the club channel keeps its webhook and the public
+// primary channel gets its own, so the neighbourhood chatter can be followed
+// in Discord without mixing it into the club feed.
+func TestMirrorTrafficFansOutToEveryChannelMirror(t *testing.T) {
+	clubSink := &webhookSink{}
+	clubSrv := httptest.NewServer(clubSink.handler())
+	defer clubSrv.Close()
+	primarySink := &webhookSink{}
+	primarySrv := httptest.NewServer(primarySink.handler())
+	defer primarySrv.Close()
+
+	h, err := NewHub(Config{
+		Enabled:       true,
+		Device:        "/dev/fake",
+		EmcomChannel:  1,
+		TrafficMirror: MirrorConfig{WebhookURL: clubSrv.URL, Channel: 1, IncludeSystem: true},
+		TrafficMirrors: []MirrorConfig{
+			{WebhookURL: primarySrv.URL, Channel: 0},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+
+	h.mirrorTraffic("rx", "a1b2c3d4", "", 0, "ch0", "z publicznego", 3, time.Now(), "", 0, 0, false)
+	h.mirrorTraffic("rx", "a1b2c3d4", "", 1, "SP9MOA", "z klubowego", 1, time.Now(), "", 0, 0, false)
+
+	primary := primarySink.waitPosted(t, 1)
+	if len(primary) != 1 || !strings.Contains(primary[0], "z publicznego") {
+		t.Fatalf("primary webhook got %v, want only the primary-channel message", primary)
+	}
+	club := clubSink.waitPosted(t, 1)
+	if len(club) != 1 || !strings.Contains(club[0], "z klubowego") {
+		t.Fatalf("club webhook got %v, want only the club-channel message", club)
+	}
+}

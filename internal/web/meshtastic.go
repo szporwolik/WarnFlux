@@ -259,12 +259,22 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 	if emcomIdx > 0 {
 		emcomDir = "ch" + strconv.Itoa(emcomIdx)
 	}
+	// The station's own channel is what the page opens on: the club talks
+	// there and the operator came to see that traffic. The direct messages
+	// are a deliberate choice (?dir=dm); ch0 and the legacy rx/tx dirs stay
+	// explicit filters.
+	defaultDir := "dm"
+	if emcomDir != "" {
+		defaultDir = emcomDir
+	}
 	switch d := r.URL.Query().Get("dir"); d {
-	case "rx", "tx", "ch0":
+	case "rx", "tx", "ch0", "dm":
 		v.Dir = d
 	default:
-		if d == emcomDir && emcomDir != "" {
+		if d != "" && d == emcomDir {
 			v.Dir = d
+		} else {
+			v.Dir = defaultDir
 		}
 	}
 	// Channel labels come from the hub's channel table ("ch<N>" until
@@ -292,9 +302,9 @@ func (s *Server) fillMeshtasticMessages(r *http.Request, v *meshtasticView) {
 	}
 	s.fillMeshtasticPeers(r.Context(), v)
 
-	// The DM tab (default) shows direct messages only; the legacy rx/tx
-	// dirs keep their direction filter on top. ch0 and the configured
-	// emcom channel have their own tabs.
+	// The DM tab shows direct messages only; the legacy rx/tx dirs keep
+	// their direction filter on top. ch0 and the configured emcom channel
+	// have their own tabs, and the emcom channel is the default view.
 	filter := storage.MeshtasticMessageFilter{Channel: "dm"}
 	switch v.Dir {
 	case "ch0":

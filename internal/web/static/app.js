@@ -4264,7 +4264,9 @@
 
   var strip = document.getElementById("mesh-nodes-filter");
   if (strip) {
-    strip.setAttribute("data-active", "all");
+    // Pinned is the default view: the operators we serve, not the whole
+    // neighbourhood. "All nodes" stays one click away.
+    strip.setAttribute("data-active", "pinned");
     strip.querySelectorAll(".page-tab").forEach(function (b) {
       b.addEventListener("click", function () {
         strip.setAttribute("data-active", b.getAttribute("data-nodes") || "all");
@@ -4276,6 +4278,8 @@
       });
     });
     window.WFApplyMeshNodeFilter = applyMeshNodeFilter;
+    // Apply the default before the first poll replaces the table.
+    applyMeshNodeFilter();
   }
 })();
 

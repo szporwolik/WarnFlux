@@ -493,3 +493,46 @@ func TestUsersPagination(t *testing.T) {
 		t.Fatalf("page3 = %d rows, want 3 (clamped last page)", len(users))
 	}
 }
+
+// TestRecordLogin pins the /access column: a fresh account reports no sign-in
+// at all, and a successful one is stamped without touching the profile
+// timestamp or the credential version (a login must not end its own session).
+func TestRecordLogin(t *testing.T) {
+	s := newUsersStore(t)
+	u, err := s.CreateUser("sp9abc", "", "", "", "", "pass1234")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if !u.LastLogin.IsZero() {
+		t.Errorf("fresh account reports last login %v, want zero", u.LastLogin)
+	}
+	before, err := s.GetUser(u.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := s.RecordLogin("SP9ABC"); err != nil { // case-insensitive, like the login form
+		t.Fatalf("RecordLogin: %v", err)
+	}
+	after, err := s.GetUser(u.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if after.LastLogin.IsZero() {
+		t.Fatal("last login not stamped")
+	}
+	if !after.LastLogin.After(before.UpdatedAt.Add(-time.Second)) {
+		t.Errorf("last login %v not after the profile update %v", after.LastLogin, before.UpdatedAt)
+	}
+	if after.AuthVersion != before.AuthVersion {
+		t.Errorf("auth version moved on login: %d -> %d", before.AuthVersion, after.AuthVersion)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("profile timestamp moved on login: %v -> %v", before.UpdatedAt, after.UpdatedAt)
+	}
+	// An unknown account is a no-op, not an error: the audit trail already
+	// records that the login happened.
+	if err := s.RecordLogin("nie-ma-takiego"); err != nil {
+		t.Errorf("RecordLogin(unknown) = %v, want nil", err)
+	}
+}

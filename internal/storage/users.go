@@ -67,6 +67,9 @@ type User struct {
 	// remembers the version its password was verified against, so a login
 	// that began before such a change can never produce a usable session.
 	AuthVersion int64
+	// LastLogin is when the account last signed in successfully; the zero
+	// time means it never did (an account that only receives alerts).
+	LastLogin time.Time
 	// Lang is the user's preferred notification language (an i18n
 	// language code); "" means the system default language. Emails and
 	// direct Meshtastic messages are rendered in it.
@@ -245,6 +248,9 @@ type UserStore interface {
 	// outstanding password-reset links of the account in the same
 	// transaction; a password change also raises the credential version.
 	UpdateUserProfile(id int64, phone, email, discord, password string) (User, error)
+	// RecordLogin stamps the account's last successful sign-in. Best
+	// effort by design: a login must never fail because the stamp did.
+	RecordLogin(username string) error
 	// DeleteUser removes a regular user.
 	DeleteUser(id int64) error
 	// SetUserAPRS replaces the user's registered APRS callsigns (with

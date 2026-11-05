@@ -292,6 +292,13 @@ type MeshtasticConfig struct {
 	// webhook: every message sent or received there is posted, in both
 	// directions, so members without a radio still follow the mesh.
 	TrafficMirror TrafficMirrorConfig
+	// TrafficMirrors carries the ADDITIONAL mirrors from the
+	// "traffic_mirrors" list, one per channel (the primary channel
+	// included). Resolved and validated like TrafficMirror, except that a
+	// list entry's channel 0 means the PRIMARY channel — a list entry
+	// names the channel it watches, it does not inherit the announcement
+	// channel the single block defaults to.
+	TrafficMirrors []TrafficMirrorConfig
 }
 
 // TrafficMirrorConfig is the meshtastic "traffic_mirror" block.
@@ -773,6 +780,9 @@ type fileMeshtastic struct {
 	// TrafficMirror mirrors the club channel's traffic to a Discord
 	// webhook (both directions).
 	TrafficMirror *fileTrafficMirror `yaml:"traffic_mirror"`
+	// TrafficMirrors adds more channels to the mirror: one webhook per
+	// channel, the primary channel (0) included.
+	TrafficMirrors []fileTrafficMirror `yaml:"traffic_mirrors"`
 }
 
 // fileTrafficMirror mirrors the meshtastic traffic_mirror block.
@@ -1446,6 +1456,25 @@ func (f fileConfig) toConfig() Config {
 		if cfg.Meshtastic.TrafficMirror.Channel == 0 {
 			cfg.Meshtastic.TrafficMirror.Channel = cfg.Meshtastic.EmcomChannel
 		}
+		// Additional mirrors: each entry names its own channel, so 0 here
+		// is the primary channel (and NOT the announcement channel).
+		for _, tm := range f.Meshtastic.TrafficMirrors {
+			extra := TrafficMirrorConfig{
+				WebhookURL:    strings.TrimSpace(tm.WebhookURL),
+				Username:      strings.TrimSpace(tm.Username),
+				IncludeSystem: true,
+			}
+			if tm.Channel != nil {
+				extra.Channel = *tm.Channel
+			}
+			if tm.IncludeSystem != nil {
+				extra.IncludeSystem = *tm.IncludeSystem
+			}
+			if extra.WebhookURL == "" {
+				continue
+			}
+			cfg.Meshtastic.TrafficMirrors = append(cfg.Meshtastic.TrafficMirrors, extra)
+		}
 	}
 	if f.Geo != nil {
 		cfg.Geo.Areas = append(cfg.Geo.Areas, f.Geo.Areas...)
@@ -1843,6 +1872,15 @@ func (c Config) Validate() error {
 		}
 		if tm.Channel < 0 || tm.Channel > 7 {
 			return fmt.Errorf("meshtastic.traffic_mirror.channel must be 0-7 (0 = the announcement channel), got %d", tm.Channel)
+		}
+	}
+	for i, tm := range c.Meshtastic.TrafficMirrors {
+		u, err := url.Parse(tm.WebhookURL)
+		if err != nil || u.Scheme != "https" && u.Scheme != "http" || u.Host == "" {
+			return fmt.Errorf("meshtastic.traffic_mirrors[%d].webhook_url must be an http(s) URL, got %q", i, tm.WebhookURL)
+		}
+		if tm.Channel < 0 || tm.Channel > 7 {
+			return fmt.Errorf("meshtastic.traffic_mirrors[%d].channel must be 0-7 (0 = the primary channel), got %d", i, tm.Channel)
 		}
 	}
 	if c.GSM.Enabled && c.GSM.Device == "" {

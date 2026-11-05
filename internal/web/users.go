@@ -37,6 +37,9 @@ type userRow struct {
 	APRSJoin      string
 	MeshtasticIDs []string
 	UpdatedAt     time.Time
+	// LastLogin is the last successful sign-in; the zero time renders as
+	// "never" (an account that only receives alerts).
+	LastLogin time.Time
 }
 
 // userForm carries the add/edit form values (also used to re-render the
@@ -533,6 +536,7 @@ func (s *Server) buildUsersView(r *http.Request, form userForm, editID int64, er
 			GroupNames:    names,
 			APRSCallsigns: u.APRSCallsigns,
 			APRSJoin:      strings.Join(u.APRSCallsigns, " "), MeshtasticIDs: u.MeshtasticIDs, UpdatedAt: u.UpdatedAt,
+			LastLogin: u.LastLogin,
 		})
 	}
 	return usersView{

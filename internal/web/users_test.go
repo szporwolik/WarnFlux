@@ -34,6 +34,7 @@ type fakeUsers struct {
 	routing     map[int64]storage.GroupRouting // groupID -> routing
 	passwords   map[string]string              // username -> plaintext (fake)
 	channelOpts map[int64]map[string]bool      // userID -> disabled delivery-channel kinds
+	logins      []string                       // usernames stamped by RecordLogin
 	// failChannelOptOuts makes the channel write fail: the account handler
 	// must survive a preference write that blows up after a password change.
 	failChannelOptOuts error
@@ -465,6 +466,16 @@ func (f *fakeUsers) DeleteUser(id int64) error {
 		return nil
 	}
 	return storage.ErrUserNotFound
+}
+
+// RecordLogin stamps the last successful sign-in, like the real store.
+func (f *fakeUsers) RecordLogin(username string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if name := strings.TrimSpace(username); name != "" {
+		f.logins = append(f.logins, strings.ToLower(name))
+	}
+	return nil
 }
 
 // SetUserAPRS replaces the user's registered APRS callsigns (uppercase,

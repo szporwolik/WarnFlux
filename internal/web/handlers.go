@@ -657,6 +657,13 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		detail += " login=" + logValue(username)
 	}
 	s.audit(sessionName, "login", detail)
+	// /access shows who still uses the station: the stamp is best effort, a
+	// bookkeeping failure must never block a valid sign-in.
+	if s.users != nil {
+		if err := s.users.RecordLogin(sessionName); err != nil {
+			s.logger.Warn("web: record login failed", "username", logValue(sessionName), "error", err)
+		}
+	}
 	s.sessions.setSessionCookie(w, token)
 	http.Redirect(w, r, landingForRole(role), http.StatusSeeOther)
 }

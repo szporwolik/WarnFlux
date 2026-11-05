@@ -4998,12 +4998,13 @@ func TestMeshtasticCh0Tab(t *testing.T) {
 	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
 	env.login()
 
-	// The tab strip: DM first, then ch0 (the rx/tx tabs are gone).
+	// The tab strip: ch0 first, then DM (the rx/tx tabs are gone). With no
+	// emcom channel configured the DM view is the page's default.
 	_, html := env.get("/meshtastic")
-	dmIdx := strings.Index(html, `href="/meshtastic?tab=msgs"`)
 	ch0Idx := strings.Index(html, "/meshtastic?tab=msgs&dir=ch0")
-	if dmIdx < 0 || ch0Idx < 0 || !(dmIdx < ch0Idx) {
-		t.Fatalf("tab order wrong (dm=%d ch0=%d): %.200s", dmIdx, ch0Idx, html)
+	dmIdx := strings.Index(html, `href="/meshtastic?tab=msgs&dir=dm"`)
+	if dmIdx < 0 || ch0Idx < 0 || !(ch0Idx < dmIdx) {
+		t.Fatalf("tab order wrong (ch0=%d dm=%d): %.200s", ch0Idx, dmIdx, html)
 	}
 	if strings.Contains(html, "/meshtastic?dir=rx") || strings.Contains(html, "/meshtastic?dir=tx") {
 		t.Errorf("rx/tx tabs must be gone: %.300s", html)
@@ -5011,7 +5012,7 @@ func TestMeshtasticCh0Tab(t *testing.T) {
 
 	// The DM view shows direct messages only (ch0 and channel rows live
 	// on their own tabs).
-	_, html = env.get("/meshtastic")
+	_, html = env.get("/meshtastic?tab=msgs&dir=dm")
 	if strings.Contains(html, "ch0-fill") || strings.Contains(html, "tx-ch0") || strings.Contains(html, "sp9-row") {
 		t.Errorf("DM view leaked channel rows: %.300s", html)
 	}
@@ -5095,7 +5096,7 @@ func TestMeshtasticDMTab(t *testing.T) {
 	if !strings.Contains(html, "to-spm") {
 		t.Errorf("DM default view missing rows: %.300s", html)
 	}
-	if !strings.Contains(html, "/meshtastic?tab=msgs&dir=all&amp;page=2") {
+	if !strings.Contains(html, "/meshtastic?tab=msgs&dir=dm&amp;page=2") {
 		t.Errorf("DM default view missing page-2 link: %.300s", html)
 	}
 	_, html = env.get("/meshtastic?tab=msgs&page=2")
@@ -5112,7 +5113,7 @@ func TestMeshtasticDMTab(t *testing.T) {
 	if !strings.Contains(html, "to-spm") {
 		t.Errorf("peer view missing tx row: %.300s", html)
 	}
-	if !strings.Contains(html, "/meshtastic?tab=msgs&dir=all&amp;peer=a0a85934&amp;page=2") {
+	if !strings.Contains(html, "/meshtastic?tab=msgs&dir=dm&amp;peer=a0a85934&amp;page=2") {
 		t.Errorf("peer view missing page-2 link with peer: %.300s", html)
 	}
 	if !strings.Contains(html, `<option value="a0a85934" selected>sp9spm</option>`) {
@@ -5123,6 +5124,133 @@ func TestMeshtasticDMTab(t *testing.T) {
 	_, body := env.get("/partials/meshtastic?tab=messages&peer=deadbeef")
 	if !strings.Contains(body, "from-bunkier") || strings.Contains(body, "from-spm") || strings.Contains(body, "from-unknown") {
 		t.Errorf("peer partial wrong rows: %.300s", body)
+	}
+}
+
+// TestGSMUSSDShortCode pins the short-code form: it needs no addressee, a
+// malformed code is refused before the modem is touched, and a valid one on a
+// station without a modem says so instead of pretending to have sent it.
+func TestGSMUSSDShortCode(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "ussd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	env := newTestEnvFull(t, nil, nil, store, nil)
+	env.login()
+
+	_, html := env.get("/gsm")
+	if !strings.Contains(html, `action="/gsm/ussd"`) {
+		t.Fatalf("GSM page has no short-code form: %.300s", html)
+	}
+	// The form must not demand a phone number.
+	form := html[strings.Index(html, `action="/gsm/ussd"`):]
+	form = form[:strings.Index(form, "</form>")]
+	if strings.Contains(form, `name="number"`) {
+		t.Errorf("the short-code form asks for a recipient: %s", form)
+	}
+	if !strings.Contains(form, `name="code"`) || !strings.Contains(form, `required`) {
+		t.Errorf("the short-code form has no code field: %s", form)
+	}
+
+	csrf := extractCSRF(t, html)
+	resp, _ := env.postForm("/gsm/ussd", url.Values{"csrf": {csrf}, "code": {"*100"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("invalid code = %d, want a redirect with the error", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "err=") {
+		t.Errorf("invalid code redirect = %q, want an error flash", loc)
+	}
+	resp, _ = env.postForm("/gsm/ussd", url.Values{"csrf": {csrf}, "code": {"*100#"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("valid code without a modem = %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "err=") || !strings.Contains(loc, "code=%2A100%23") {
+		t.Errorf("valid code redirect = %q, want the no-modem flash and the code kept", loc)
+	}
+}
+
+// TestAccessShowsLastLogin pins the /access directory: the list says when an
+// account last signed in (or that it never did), and a successful login
+// stamps it.
+func TestAccessShowsLastLogin(t *testing.T) {
+	env := newTestEnvFull(t, nil, nil, nil, nil)
+	env.login()
+	users := env.users.(*fakeUsers)
+
+	_, body := env.get("/access")
+	if !strings.Contains(body, `>Last login<`) {
+		t.Errorf("/access has no last-login column: %.300s", body)
+	}
+	if !strings.Contains(body, `title="This account has never signed in"`) {
+		t.Errorf("/access does not mark an account that never signed in: %.300s", body)
+	}
+	if len(users.logins) == 0 {
+		t.Fatal("a successful login was not recorded")
+	}
+}
+
+// TestWebsiteStatsWindows pins the visitor cards: the page asks for a year
+// of data and renders the five totals an operator compares — today, a week,
+// a month, a quarter and a year.
+func TestWebsiteStatsWindows(t *testing.T) {
+	env := newTestEnvFull(t, nil, nil, nil, nil)
+	env.login()
+	resp, body := env.get("/website")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /website = %d", resp.StatusCode)
+	}
+	for _, want := range []string{
+		`data-lbl-7d="`, `data-lbl-30d="`, `data-lbl-90d="`, `data-lbl-365d="`,
+		`?days=366`, "LBL_90D", "LBL_365D", "sum(90)", "sum(365)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("website page missing %q", want)
+		}
+	}
+}
+
+// TestMeshtasticFilterBars pins the two strips of the map tab: the heard
+// nodes open on the 15-minute window with "all" at the far end, and the node
+// table opens on the pinned operators instead of the whole neighbourhood.
+func TestMeshtasticFilterBars(t *testing.T) {
+	hub, err := meshtastic.NewHub(meshtastic.Config{
+		Enabled: true,
+		Device:  "/dev/fake",
+		NodeTTL: time.Hour,
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTestEnvAll(t, nil, nil, nil, hub, nil, &fakeMeshMsgs{})
+	env.login()
+
+	_, html := env.get("/meshtastic")
+	bar := html[strings.Index(html, `id="mesh-map-filter"`):]
+	if bar == "" {
+		t.Fatalf("map filter strip missing: %.200s", html)
+	}
+	bar = bar[:strings.Index(bar, "</div>")]
+
+	m15 := strings.Index(bar, `data-filter="m15"`)
+	h1 := strings.Index(bar, `data-filter="h1"`)
+	all := strings.Index(bar, `data-filter="all"`)
+	if m15 < 0 || h1 < 0 || all < 0 || !(m15 < h1 && h1 < all) {
+		t.Errorf("time windows out of order (m15=%d h1=%d all=%d): %s", m15, h1, all, bar)
+	}
+	if !strings.Contains(bar[:h1], `class="page-tab active"`) {
+		t.Errorf("the 15-minute window is not the default: %s", bar)
+	}
+
+	nodes := html[strings.Index(html, `id="mesh-nodes-filter"`):]
+	nodes = nodes[:strings.Index(nodes, "</div>")]
+	pinned := strings.Index(nodes, `data-nodes="pinned"`)
+	allNodes := strings.Index(nodes, `data-nodes="all"`)
+	if pinned < 0 || allNodes < 0 || !(pinned < allNodes) {
+		t.Errorf("node filters out of order (pinned=%d all=%d): %s", pinned, allNodes, nodes)
+	}
+	if !strings.Contains(nodes[:allNodes], `class="page-tab active"`) {
+		t.Errorf("pinned is not the default node filter: %s", nodes)
 	}
 }
 
@@ -5156,19 +5284,28 @@ func TestMeshtasticEmcomTab(t *testing.T) {
 	env := newTestEnvAll(t, nil, nil, nil, hub, nil, store)
 	env.login()
 
-	// The emcom tab sits right after ch0 (the device has not named the
-	// channel yet, so the label is plain "ch1").
+	// The station's own channel is the FIRST tab and the page opens on it
+	// (the device has not named the channel yet, so the label is "ch1");
+	// ch0 and the direct messages follow.
 	_, html := env.get("/meshtastic")
-	ch0Idx := strings.Index(html, "/meshtastic?tab=msgs&dir=ch0")
 	emcomIdx := strings.Index(html, "/meshtastic?tab=msgs&dir=ch1")
-	if ch0Idx < 0 || emcomIdx < 0 || !(ch0Idx < emcomIdx) {
-		t.Fatalf("emcom tab missing or misplaced (ch0=%d ch1=%d): %.250s", ch0Idx, emcomIdx, html)
+	ch0Idx := strings.Index(html, "/meshtastic?tab=msgs&dir=ch0")
+	dmIdx := strings.Index(html, "/meshtastic?tab=msgs&dir=dm")
+	if emcomIdx < 0 || ch0Idx < 0 || dmIdx < 0 || !(emcomIdx < ch0Idx && ch0Idx < dmIdx) {
+		t.Fatalf("message tabs missing or misplaced (ch1=%d ch0=%d dm=%d): %.250s", emcomIdx, ch0Idx, dmIdx, html)
+	}
+	if !strings.Contains(html, `class="page-tab active" href="/meshtastic?tab=msgs&dir=ch1"`) {
+		t.Errorf("the page does not open on the station channel: %.300s", html)
 	}
 
-	// The DM view shows direct messages only; the emcom channel rows
-	// live on their own tab.
-	if !strings.Contains(html, "dm-row") || strings.Contains(html, "emcom-tx") || strings.Contains(html, "c0-row") {
-		t.Errorf("DM view wrong rows: %.300s", html)
+	// The DM view (?dir=dm) shows direct messages only; the emcom channel
+	// rows live on their own tab.
+	_, dm := env.get("/meshtastic?tab=msgs&dir=dm")
+	if !strings.Contains(dm, `class="page-tab active" href="/meshtastic?tab=msgs&dir=dm"`) {
+		t.Errorf("DM tab not active for ?dir=dm: %.300s", dm)
+	}
+	if !strings.Contains(dm, "dm-row") || strings.Contains(dm, "emcom-tx") || strings.Contains(dm, "c0-row") {
+		t.Errorf("DM view wrong rows: %.300s", dm)
 	}
 
 	// The emcom tab lists only the emcom channel, rx+tx, with pagination.

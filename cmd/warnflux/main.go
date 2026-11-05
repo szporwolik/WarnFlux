@@ -242,6 +242,20 @@ func discordSummaryFromMirror(mirror *state.State) discordaction.HazardSummary {
 // publicSite turns the configured public domain into the link the mesh
 // status line points at: a bare host (the usual configuration) gets the
 // scheme, an explicit URL is kept as it is.
+// mirrorConfigs projects the additional traffic mirrors onto the hub's shape.
+func mirrorConfigs(cfg *config.Config) []meshtastic.MirrorConfig {
+	out := make([]meshtastic.MirrorConfig, 0, len(cfg.Meshtastic.TrafficMirrors))
+	for _, m := range cfg.Meshtastic.TrafficMirrors {
+		out = append(out, meshtastic.MirrorConfig{
+			WebhookURL:    m.WebhookURL,
+			Username:      m.Username,
+			Channel:       m.Channel,
+			IncludeSystem: m.IncludeSystem,
+		})
+	}
+	return out
+}
+
 func publicSite(domain string) string {
 	d := strings.TrimSuffix(strings.TrimSpace(domain), "/")
 	if d == "" {
@@ -579,6 +593,7 @@ func validateConfiguration(cfg *config.Config, logger *slog.Logger, resolvedVers
 			Channel:       cfg.Meshtastic.TrafficMirror.Channel,
 			IncludeSystem: cfg.Meshtastic.TrafficMirror.IncludeSystem,
 		},
+		TrafficMirrors: mirrorConfigs(cfg),
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)
@@ -904,6 +919,7 @@ func run(configPath string, checkConfig bool) error {
 			Channel:       cfg.Meshtastic.TrafficMirror.Channel,
 			IncludeSystem: cfg.Meshtastic.TrafficMirror.IncludeSystem,
 		},
+		TrafficMirrors: mirrorConfigs(cfg),
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("configure meshtastic hub: %w", err)

@@ -61,3 +61,66 @@ meshtastic:
 		t.Fatal("include_system = true, want the explicit opt-out honoured")
 	}
 }
+
+// A list entry names the channel it watches: channel 0 there is the public
+// PRIMARY channel, not the announcement channel the single block defaults to.
+func TestTrafficMirrorsWatchTheChannelTheyName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := `
+meshtastic:
+  enabled: true
+  device: /dev/ttyACM0
+  emcom_channel: 1
+  traffic_mirror:
+    webhook_url: "https://discord.com/api/webhooks/1/club"
+  traffic_mirrors:
+    - channel: 0
+      webhook_url: "https://discord.com/api/webhooks/2/primary"
+      username: "SOSNA Mesh ch0"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Meshtastic.TrafficMirror.Channel; got != 1 {
+		t.Fatalf("club mirror channel = %d, want the announcement channel 1", got)
+	}
+	if len(cfg.Meshtastic.TrafficMirrors) != 1 {
+		t.Fatalf("additional mirrors = %d, want 1", len(cfg.Meshtastic.TrafficMirrors))
+	}
+	extra := cfg.Meshtastic.TrafficMirrors[0]
+	if extra.Channel != 0 {
+		t.Errorf("list entry channel = %d, want the PRIMARY channel 0", extra.Channel)
+	}
+	if extra.WebhookURL != "https://discord.com/api/webhooks/2/primary" {
+		t.Errorf("list entry webhook = %q", extra.WebhookURL)
+	}
+	if extra.Username != "SOSNA Mesh ch0" {
+		t.Errorf("list entry username = %q", extra.Username)
+	}
+	if !extra.IncludeSystem {
+		t.Error("list entry include_system = false, want the default true")
+	}
+}
+
+// A broken extra mirror is refused at load, not silently dropped.
+func TestTrafficMirrorsValidateWebhook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := `
+meshtastic:
+  enabled: true
+  device: /dev/ttyACM0
+  traffic_mirrors:
+    - channel: 0
+      webhook_url: "nie-url"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("a malformed traffic_mirrors webhook was accepted")
+	}
+}

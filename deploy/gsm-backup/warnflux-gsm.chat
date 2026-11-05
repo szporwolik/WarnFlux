@@ -1,0 +1,26 @@
+# WarnFlux: bring up the packet link on the modem's DATA interface.
+#
+# This script runs on /dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if04-port0
+# (the E173's modem/data interface). The station's SMS session keeps the AT/PCUI
+# interface (if00, mapped into the container as /dev/modem), so dialling here
+# never locks the panel out of the SIM.
+ABORT BUSY
+ABORT 'NO CARRIER'
+ABORT 'NO DIALTONE'
+ABORT ERROR
+ABORT 'NO ANSWER'
+TIMEOUT 30
+
+# The data interface DOES answer AT (the silent port is if03, see README).
+# A failed dial for now: on 2026-11-06 the operator refused every data call
+# (NO CARRIER) although the PDP context activates — the SIM has no data
+# service. -s keeps that visible in the journal instead of being swallowed.
+#
+# Once the operator enables data, this script is the sequence that worked on
+# the bench: attach the packet domain by hand (the modem does not do it alone),
+# then dial. The station's SMS session is on if00 and is not affected.
+'' AT
+OK ATE0
+OK AT+CGATT=1
+OK ATD*99***1#
+CONNECT ''

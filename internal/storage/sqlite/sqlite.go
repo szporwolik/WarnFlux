@@ -1200,6 +1200,14 @@ GROUP BY 1, direction`, src.channel); err != nil {
 ALTER TABLE events ADD COLUMN path TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		// v70: when the account last signed in successfully. The /access page
+		// showed who exists but not who still uses the station; an account that
+		// never signed in keeps 0 ("never") instead of pretending to be fresh.
+		SQL: `
+ALTER TABLE users ADD COLUMN last_login_at_ms INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

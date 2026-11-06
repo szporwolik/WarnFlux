@@ -69,9 +69,11 @@ func (h *Hub) SendUSSD(ctx context.Context, code string) (string, error) {
 		return "", ErrNoModem
 	}
 
-	// 15 = the network's own language, which is what an operator expects on a
-	// Polish SIM. The reply arrives asynchronously (+CUSD URC), so the exchange
-	// is written by hand instead of reusing the "wait for OK" helper.
+	// A previous code (or a menu nobody answered) leaves a session open, and
+	// every new request is then refused with a bare ERROR — exactly what the
+	// E173 did on the bench after a couple of probes. Cancelling first is free
+	// and makes the feature work on the second try instead of never.
+	_, _ = h.exchangeLocked("AT+CUSD=2", "OK")
 	h.repairDirtyLocked()
 	if _, err := fmt.Fprintf(h.conn, "AT+CUSD=1,\"%s\",15\r", code); err != nil {
 		h.reconnectLocked()

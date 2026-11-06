@@ -163,6 +163,11 @@ type Hub struct {
 	conn      io.ReadWriteCloser
 	connected atomic.Bool
 	ready     atomic.Bool
+	// device is the candidate path the session actually runs on. The
+	// multi-port modems rotate their interfaces after a reset (measured: the
+	// AT interface moved from if00 to if04), so the path that answered last
+	// time is remembered and tried first. Guarded by mu.
+	device string
 
 	// messageSink is the optional MQTT message-feed publisher: every
 	// received and sent SMS is published as a non-retained document
@@ -382,36 +387,85 @@ func (h *Hub) retryInterval() time.Duration {
 	return modemOpenRetry
 }
 
+// deviceCandidates splits gsm.device into the paths to try. A Huawei stick
+// exposes three serial interfaces and their roles rotate across a USB reset
+// (the AT port was seen on if00, later on if04), so the list is the only way to
+// survive it without a config edit. The remembered path goes first.
+func (h *Hub) deviceCandidates() []string {
+	raw := strings.Split(h.cfg.Device, ",")
+	out := make([]string, 0, len(raw)+1)
+	if h.device != "" {
+		out = append(out, h.device)
+	}
+	for _, p := range raw {
+		if p = strings.TrimSpace(p); p != "" && p != h.device {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// openModem walks the candidate paths until one of them OPENS and ANSWERS the
+// init: an interface that is present but silent (a diagnostic port) must not
+// win the race just because it exists. The caller holds h.mu.
+func (h *Hub) openModemLocked() (ok, opened bool) {
+	for _, path := range h.deviceCandidates() {
+		dev, err := openSerial(path)
+		if err != nil {
+			h.logger.Debug("gsm: modem path unavailable", "device", path, "error", err)
+			continue
+		}
+		opened = true
+		h.conn = dev
+		h.connected.Store(true)
+		if h.initLocked() {
+			h.device = path
+			return true, opened
+		}
+		h.logger.Warn("gsm: modem path silent, trying the next one", "device", path)
+		h.closeTransport()
+	}
+	return false, opened
+}
+
 // openSession opens the configured device (unless one was injected) and runs
 // the AT init. It reports whether the session is ready for the poll loop.
 func (h *Hub) openSession() bool {
 	h.mu.Lock()
-	conn := h.conn
-	if conn == nil {
-		dev, err := openSerial(h.cfg.Device)
-		if err != nil {
+	injected := h.conn != nil
+	if injected {
+		h.connected.Store(true)
+		if !h.initLocked() {
 			h.mu.Unlock()
-			h.logger.Warn("gsm: cannot open modem", "device", h.cfg.Device,
-				"error", err, "retry_in", h.retryInterval())
+			h.logger.Warn("gsm: modem init failed — session closed", "device", h.cfg.Device,
+				"retry_in", h.retryInterval())
+			h.closeTransport()
 			return false
 		}
-		conn = dev
-		h.conn = dev
+	} else {
+		ok, opened := h.openModemLocked()
+		if !ok {
+			h.mu.Unlock()
+			// A device that is simply not there keeps the message operators
+			// know ("cannot open modem"); a port that exists but never answers
+			// is a different failure and says so.
+			if opened {
+				h.logger.Warn("gsm: no modem answered on any configured path", "devices", h.cfg.Device,
+					"retry_in", h.retryInterval())
+			} else {
+				h.logger.Warn("gsm: cannot open modem", "device", h.cfg.Device,
+					"retry_in", h.retryInterval())
+			}
+			return false
+		}
+	}
+	device := h.device
+	if device == "" {
+		device = h.cfg.Device
 	}
 	h.mu.Unlock()
-	h.connected.Store(true)
-
-	h.mu.Lock()
-	ok := h.initLocked()
-	h.mu.Unlock()
-	if !ok {
-		h.logger.Warn("gsm: modem init failed — session closed", "device", h.cfg.Device,
-			"retry_in", h.retryInterval())
-		h.closeTransport()
-		return false
-	}
 	h.ready.Store(true)
-	h.logger.Info("gsm: modem ready", "device", h.cfg.Device)
+	h.logger.Info("gsm: modem ready", "device", device)
 
 	// First operator/signal snapshot right away (errors are tolerated;
 	// the poll loop refreshes every few minutes).
@@ -1421,19 +1475,13 @@ func splitCMGRFields(s string) []string {
 // open is the only way back). The caller holds h.mu.
 func (h *Hub) reconnectLocked() {
 	h.closeTransport()
-	dev, err := openSerial(h.cfg.Device)
-	if err != nil {
-		h.logger.Debug("gsm: reconnect open failed", "device", h.cfg.Device, "error", err)
-		return
-	}
-	h.conn = dev
-	h.connected.Store(true)
-	if !h.initLocked() {
-		h.logger.Warn("gsm: reconnect init failed", "device", h.cfg.Device)
-		h.closeTransport()
+	// The interface roles may have moved while the link was down: walk the
+	// candidates again instead of insisting on the path that just died.
+	if ok, _ := h.openModemLocked(); !ok {
+		h.logger.Debug("gsm: reconnect found no answering modem", "devices", h.cfg.Device)
 		return
 	}
 	h.ready.Store(true)
 	h.refreshStatusLocked()
-	h.logger.Info("gsm: modem reconnected", "device", h.cfg.Device)
+	h.logger.Info("gsm: modem reconnected", "device", h.device)
 }

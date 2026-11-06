@@ -494,14 +494,14 @@ func hazardJSONFromState(h state.Hazard, areas, lang string) homeHazardJSON {
 // hazardJSONFromEvent builds the same payload from one persisted
 // HazardEvent (the current-state table keeps ended events for the
 // retention window, so mail deep links can still render them).
-func hazardJSONFromEvent(ev core.HazardEvent) homeHazardJSON {
+func hazardJSONFromEvent(ev core.HazardEvent, lang string) homeHazardJSON {
 	headline, description := roadText(ev.Source, ev.Headline, ev.Description)
 	return homeHazardJSON{
 		EventKey:    ev.Key(),
 		MsgID:       core.MessageID(ev.Key()),
 		Severity:    ev.Severity,
 		Headline:    headline,
-		Event:       ev.Event,
+		Event:       i18n.EventName(lang, ev.Event),
 		Source:      ev.Source,
 		Areas:       strings.Join(displayAreas(ev.Areas), ", "),
 		Description: description,
@@ -543,7 +543,7 @@ func (s *Server) handleHazardByKey(w http.ResponseWriter, r *http.Request) {
 		ev, err := s.events.Get(ctx, key)
 		cancel()
 		if err == nil && ev != nil {
-			writeHazardJSON(w, hazardJSONFromEvent(ev.Event))
+			writeHazardJSON(w, hazardJSONFromEvent(ev.Event, s.langFor(r)))
 			return
 		}
 	}

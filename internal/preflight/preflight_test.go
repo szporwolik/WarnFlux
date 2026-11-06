@@ -198,3 +198,23 @@ func TestProbeErrorIsCarriedIntoTheFinding(t *testing.T) {
 		t.Fatal("since not stamped")
 	}
 }
+
+// TestDevicePathsAcceptsAnyPresentPath pins the modem list: the stick's
+// interfaces rotate, so the probe passes when ANY configured path exists and
+// reports every missing one otherwise.
+func TestDevicePathsAcceptsAnyPresentPath(t *testing.T) {
+	dir := t.TempDir()
+	present := filepath.Join(dir, "present")
+	if err := os.WriteFile(present, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing")
+	if err := DevicePaths(present + "," + missing)(); err != nil {
+		t.Errorf("probe with one present path = %v, want nil", err)
+	}
+	if err := DevicePaths(missing + "," + dir + "/other")(); err == nil {
+		t.Error("probe with every path missing passed")
+	} else if !strings.Contains(err.Error(), "missing") {
+		t.Errorf("error does not name the missing path: %v", err)
+	}
+}

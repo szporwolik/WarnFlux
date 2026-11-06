@@ -939,7 +939,9 @@ func run(configPath string, checkConfig bool) error {
 	// device plugged in later clears its own finding.
 	preflightMon := preflight.New(logger)
 	if cfg.GSM.Enabled {
-		preflightMon.Add("gsm.modem", preflight.SeverityBad, preflight.DevicePath(cfg.GSM.Device))
+		// gsm.device may be a list (the modem's interfaces rotate), so the probe
+		// is satisfied by ANY of the paths existing — the same rule the hub uses.
+		preflightMon.Add("gsm.modem", preflight.SeverityBad, preflight.DevicePaths(cfg.GSM.Device))
 	}
 	if cfg.Meshtastic.Enabled && !strings.EqualFold(cfg.Meshtastic.Transport, "tcp") {
 		preflightMon.Add("meshtastic.device", preflight.SeverityBad, preflight.DevicePaths(cfg.Meshtastic.Device))

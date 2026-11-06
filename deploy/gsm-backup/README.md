@@ -34,8 +34,10 @@ gsm:
 ```
 
 The backup link then dials whichever interface is **not** the one the station
-holds: pick it from the "modem ready" log line and point the peer file at the
-matching by-id path.
+holds: read the "modem ready" log line (`device=/dev/modem-4`), and when the SIM
+finally carries data, take that same interface OUT of the station's list and out
+of the compose `devices:` block before enabling the backup — two processes on
+one tty is exactly how a session gets mangled (it was tried on the bench).
 
 The two sessions are on different interfaces, which is exactly why dialling for
 data does not lock the station out of the SIM. (`AT^GETPORTMODE` on the modem

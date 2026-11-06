@@ -322,3 +322,31 @@ func humaniseKind(kind string) string {
 func roadArea(road string) string {
 	return "droga:" + strings.ToLower(strings.TrimSpace(road))
 }
+
+// LegacyHeadline rewrites the headline of a record stored BEFORE the
+// language-free format: the type used to be glued to the location
+// ("Road works — road A4, km 8.7"). Rendering that text today would put the
+// provider's English label in front of a Polish reader and print the type
+// twice, because every channel already renders it from the event code — so
+// an old record is shown in the current shape ("A4 · km 8.7").
+//
+// Anything that is not in the old shape is returned unchanged: the rewrite
+// may only ever touch the text this adapter itself wrote.
+func LegacyHeadline(headline string) string {
+	_, location, ok := strings.Cut(headline, " — road ")
+	if !ok {
+		return headline
+	}
+	location = strings.TrimSpace(location)
+	if location == "" || strings.HasSuffix(location, ", km") {
+		return headline
+	}
+	if road, km, ok := strings.Cut(location, ", km "); ok {
+		road, km = strings.TrimSpace(road), strings.TrimSpace(km)
+		if road == "" || km == "" {
+			return headline
+		}
+		return road + " · km " + km
+	}
+	return location
+}

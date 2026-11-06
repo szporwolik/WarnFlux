@@ -6512,3 +6512,76 @@ func TestAirQualityLayerCacheIsFresh(t *testing.T) {
 		t.Fatalf("cached layer survived a state change, payload: %s", third)
 	}
 }
+
+// TestStoredRoadHeadlinesReadInTheCurrentShape pins what a reader sees for a
+// road record written before the language-free headline (v0.8.34): the
+// archive and the detail popup must render "A4 · km 8.7", never the provider's
+// English label glued in front of the location — and must never show the type
+// twice. Records of other sources keep their text byte for byte.
+func TestStoredRoadHeadlinesReadInTheCurrentShape(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "legacy-headline.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	now := time.Now()
+	past := now.Add(-2 * time.Hour)
+	legacy := core.HazardEvent{
+		Source: "gddkia-datex", SourceID: "KPD-LEGACY", Event: "MaintenanceWorks",
+		Severity: "minor", Headline: "Road works — road A4, km 8.7",
+		// The adapter repeated the headline when the record carried no text:
+		// that copy has to follow the rewrite, or the popup still shows English.
+		Description: "Road works — road A4, km 8.7",
+		Status:      core.StatusActive, ExpiresAt: &past,
+		ReceivedAt: now.Add(-6 * time.Hour), UpdatedAt: now.Add(-6 * time.Hour),
+	}
+	if _, _, err := store.Ingest(context.Background(), legacy, core.Fingerprint(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	other := core.HazardEvent{
+		Source: "rso", SourceID: "RSO-1", Event: "Information",
+		Severity: "moderate", Headline: "Utrudnienia — road A4, km 1.0",
+		Status: core.StatusActive, ExpiresAt: &past,
+		ReceivedAt: now.Add(-6 * time.Hour), UpdatedAt: now.Add(-6 * time.Hour),
+	}
+	if _, _, err := store.Ingest(context.Background(), other, core.Fingerprint(other)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Expire(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+
+	env := newTestEnvFull(t, nil, nil, store, nil)
+	resp, body := env.get("/archive")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /archive = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, "A4 · km 8.7") {
+		t.Errorf("archive does not read the stored road headline in the current shape: %.600s", body)
+	}
+	if strings.Contains(body, "Road works — road") {
+		t.Errorf("archive still shows the legacy English headline: %.400s", body)
+	}
+	if !strings.Contains(body, "Utrudnienia — road A4, km 1.0") {
+		t.Errorf("archive rewrote a headline another producer wrote: %.400s", body)
+	}
+
+	resp, payload := env.get("/api/hazard/gddkia-datex:KPD-LEGACY")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/hazard = %d", resp.StatusCode)
+	}
+	var detail struct {
+		Headline    string `json:"headline"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal([]byte(payload), &detail); err != nil {
+		t.Fatalf("detail payload is not JSON: %v %.300s", err, payload)
+	}
+	if detail.Headline != "A4 · km 8.7" {
+		t.Errorf("popup headline = %q, want %q", detail.Headline, "A4 · km 8.7")
+	}
+	if detail.Description != "A4 · km 8.7" {
+		t.Errorf("popup description still repeats the legacy headline: %q", detail.Description)
+	}
+}

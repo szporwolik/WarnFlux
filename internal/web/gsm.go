@@ -310,8 +310,13 @@ func (s *Server) handleGSMSend(w http.ResponseWriter, r *http.Request) {
 // SMS form's phone field is not involved at all.
 func (s *Server) handleGSMSendUSSD(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.currentSession(r)
-	if err := r.ParseForm(); err != nil || !s.requireStateChange(w, r, sess) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	// requireStateChange answers the request itself (403), so it must not be
+	// followed by a second write.
+	if !s.requireStateChange(w, r, sess) {
 		return
 	}
 	lang := s.langFor(r)

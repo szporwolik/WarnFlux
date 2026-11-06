@@ -1018,8 +1018,16 @@ meshtastic:
 # the history and sends messages to phone numbers.
 gsm:
   enabled: false
-  # Serial device of the modem's AT port.
+  # Serial device of the modem's AT port. A comma-separated list is accepted
+  # and is what a Huawei stick needs: its three interfaces (AT/PCUI, DIAG, data)
+  # change roles across a USB reset — the AT port was measured on if00 first and
+  # on if04 after a later reset — and the hub opens each candidate in turn,
+  # keeping the first one that ANSWERS the AT init (an interface that exists but
+  # stays silent is skipped). The path that worked is remembered and tried
+  # first on the next reconnect.
   device: "/dev/ttyUSB0"
+  # device: "/dev/modem-0,/dev/modem-3,/dev/modem-4"   # all three, picked by
+  #                                                    # who answers AT
 
 # Daily admin status mail: once a day the operator receives one branded
 # message built from the last 24 hours — how many SMS, Meshtastic and APRS

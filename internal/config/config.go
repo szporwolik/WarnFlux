@@ -804,7 +804,10 @@ type GSMConfig struct {
 	// Enabled switches the modem session on.
 	Enabled bool
 	// Device is the serial device path of the modem's AT port
-	// (e.g. /dev/ttyUSB0).
+	// (e.g. /dev/ttyUSB0). A comma-separated list is accepted: a Huawei
+	// stick's interfaces rotate their roles across a USB reset, so every
+	// candidate is opened in turn and the first one that ANSWERS the AT
+	// init wins (see gsm.Hub.openModemLocked).
 	Device string
 }
 

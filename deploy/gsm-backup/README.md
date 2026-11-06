@@ -14,7 +14,28 @@ The E173 exposes three serial interfaces:
 |---|---|---|
 | `if00` | `…-if00-port0` → `/dev/ttyUSB0` | **WarnFlux** — AT/PCUI session: SMS receive and send (`/dev/modem` inside the container) |
 | `if03` | `…-if03-port0` → `/dev/ttyUSB1` | nobody — the diagnostic port: it silently swallows `AT` (measured) |
-| `if04` | `…-if04-port0` → `/dev/ttyUSB2` | **pppd** — the packet data interface: `ATD*99***1#` answers `CONNECT` |
+| `if04` | `…-if04-port0` → `/dev/ttyUSB2` | **pppd** — the packet data interface (`ATD*99***1#` reached `CONNECT` once) |
+
+**The roles rotate.** After a USB reset the firmware moved the AT/PCUI role from
+`if00` to `if04` (measured on the production stick on 2026-11-06: `if00` then
+answered nothing and `/dev/modem` died with "modem init failed"). That is why the
+station's `gsm.device` takes a **list** and keeps the interface that answers the
+AT init, and why the compose file should map all three:
+
+```yaml
+    devices:
+      - /dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if00-port0:/dev/modem-0
+      - /dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if03-port0:/dev/modem-3
+      - /dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if04-port0:/dev/modem-4
+```
+```yaml
+gsm:
+  device: /dev/modem-0,/dev/modem-3,/dev/modem-4
+```
+
+The backup link then dials whichever interface is **not** the one the station
+holds: pick it from the "modem ready" log line and point the peer file at the
+matching by-id path.
 
 The two sessions are on different interfaces, which is exactly why dialling for
 data does not lock the station out of the SIM. (`AT^GETPORTMODE` on the modem

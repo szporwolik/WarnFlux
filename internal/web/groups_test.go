@@ -176,16 +176,18 @@ func TestGroupRoutingMatrix(t *testing.T) {
 
 	// Valid matrix: any-source fallback at severe, rso-specific at
 	// moderate, compose at minor, emcom at severe, the road/incident
-	// sources (gddkia, gios) specific too, an off cell ("") skipped.
+	// sources (gddkia-datex, gios) specific too, an off cell ("") skipped.
+	// The retired GDDKiA XML slug is not a row any more, so it is refused
+	// below instead of silently kept.
 	resp, _ = env.postForm("/groups/1/routing", url.Values{
-		"csrf":                       {csrf},
-		"cell:|logger-action":        {"severe"},
-		"cell:rso|logger-action":     {"moderate"},
-		"cell:compose|logger-action": {"minor"},
-		"cell:emcom|logger-action":   {"severe"},
-		"cell:gddkia|logger-action":  {"moderate"},
-		"cell:gios|logger-action":    {"severe"},
-		"cell:imgw|logger-action":    {""},
+		"csrf":                            {csrf},
+		"cell:|logger-action":             {"severe"},
+		"cell:rso|logger-action":          {"moderate"},
+		"cell:compose|logger-action":      {"minor"},
+		"cell:emcom|logger-action":        {"severe"},
+		"cell:gddkia-datex|logger-action": {"moderate"},
+		"cell:gios|logger-action":         {"severe"},
+		"cell:imgw|logger-action":         {""},
 	})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/groups" {
 		t.Fatalf("routing save = %d %q, want redirect to /groups", resp.StatusCode, resp.Header.Get("Location"))
@@ -204,7 +206,7 @@ func TestGroupRoutingMatrix(t *testing.T) {
 		{Source: "rso", ID: "logger-action", MinSeverity: "moderate"},
 		{Source: "compose", ID: "logger-action", MinSeverity: "minor"},
 		{Source: "emcom", ID: "logger-action", MinSeverity: "severe"},
-		{Source: "gddkia", ID: "logger-action", MinSeverity: "moderate"},
+		{Source: "gddkia-datex", ID: "logger-action", MinSeverity: "moderate"},
 		{Source: "gios", ID: "logger-action", MinSeverity: "severe"},
 	}
 	if len(r.Actions) != len(want) {
@@ -402,5 +404,35 @@ func TestGroupRoutingSourcePopovers(t *testing.T) {
 	icons := strings.Count(html, `class="src-help"`)
 	if rows == 0 || rows != icons {
 		t.Errorf("rows with a cell = %d, popovers = %d, want equal and non-zero", rows, icons)
+	}
+}
+
+// TestRetiredRoadFeedIsNotOffered pins the cleanup of the routing matrix: the
+// GDDKiA XML feed (utrdane.xml) was replaced by the KPD dataset, and the two
+// providers stamp different identities — so a threshold set on the old slug
+// can never match again. A row would promise an operator that it does
+// something, and a stale form must not be able to store one either.
+func TestRetiredRoadFeedIsNotOffered(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	if _, err := env.users.CreateGroup("ops"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, page := env.get("/groups/1/routing")
+	if strings.Contains(page, `cell:gddkia|`) {
+		t.Errorf("the routing matrix still offers the retired road feed: %.400s", page)
+	}
+	if !strings.Contains(page, `cell:gddkia-datex|`) {
+		t.Errorf("the routing matrix lost the current road feed: %.400s", page)
+	}
+
+	csrf := env.csrfFromPage("/groups/1/routing")
+	resp, _ := env.postForm("/groups/1/routing", url.Values{
+		"csrf":                      {csrf},
+		"cell:gddkia|logger-action": {"moderate"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("retired source cell = %d, want 422", resp.StatusCode)
 	}
 }

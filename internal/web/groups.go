@@ -91,7 +91,11 @@ var baseRoutingSources = []sourceOption{
 	{Value: "", Label: "groups.routing.any", Desc: "groups.routing.any_desc"},
 	{Value: srcIMGW, Members: []string{"imgw-meteo", "imgw-hydro"}, Label: "groups.routing.imgw", Desc: "sources.imgw.desc", Feed: "https://danepubliczne.imgw.pl/api/data"},
 	{Value: "rso", Label: "RSO", Desc: "sources.rso.desc", Feed: "https://komunikaty.tvp.pl"},
-	{Value: "gddkia", Label: "groups.src.gddkia", Desc: "sources.gddkia.desc", Feed: "https://www.archiwum.gddkia.gov.pl/dane/zima_html/utrdane.xml"},
+	// The retired GDDKiA XML feed (utrdane.xml) has no row: the KPD dataset
+	// below replaced it, and the two providers stamp different identities, so
+	// a threshold set on the old slug could never match anything again. Rows
+	// of campaigns stored for it are refused by parseMatrixCells, which keeps
+	// a retired slug from coming back through a hand-made form.
 	{Value: "gddkia-datex", Label: "groups.src.gddkia_datex", Desc: "sources.gddkia_datex.desc", Feed: "https://kpd.gddkia.gov.pl/"},
 	{Value: "rcb", Label: "groups.src.rcb", Desc: "sources.rcb.desc", Feed: "/gsm"},
 	{Value: "aprs", Label: "groups.src.aprs", Desc: "sources.aprs.desc", Feed: "/aprs"},

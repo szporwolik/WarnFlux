@@ -96,6 +96,26 @@ var eventNameKeys = map[string]string{
 	"wrongwaydriving":                   "event.datex_wrong_way",
 	"vehiclefire":                       "event.datex_vehicle_fire",
 	"queue":                             "event.datex_queue",
+	// The English labels this station wrote into the DATEX event type BEFORE
+	// v0.8.34. A stored row keeps its label for as long as the alert lives in
+	// the retention window, and the archive and the detail popup render the
+	// type from that field — so the old spellings must translate too, or a
+	// Polish reader still meets "Vehicle obstruction" in an old entry.
+	"infrastructure damage": "event.datex_infrastructure_damage",
+	"vehicle obstruction":   "event.datex_vehicle_obstruction",
+	"disabled vehicle":      "event.datex_disabled_vehicle",
+	"lane management":       "event.datex_lane_management",
+	"abnormal traffic":      "event.datex_abnormal_traffic",
+	"traffic":               "event.datex_traffic",
+	"weather conditions":    "event.datex_weather_conditions",
+	"road conditions":       "event.datex_road_conditions",
+	"environment":           "event.datex_environment",
+	"signal fault":          "event.datex_signal_fault",
+	"public event":          "event.datex_public_event",
+	"diversion":             "event.datex_diversion",
+	"speed management":      "event.datex_speed_management",
+	"wrong-way driving":     "event.datex_wrong_way",
+	"vehicle fire":          "event.datex_vehicle_fire",
 }
 
 // eventSuggestionNames are the event types the compose form offers as

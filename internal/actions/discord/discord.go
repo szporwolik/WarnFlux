@@ -539,12 +539,20 @@ func (a *discordAction) messageText(req action.ActionRequest) string {
 		// read "Brak — Brak" — the mail builder has always drawn the line
 		// this way, and Discord is the channel an operator quotes from.
 		subject := event
-		if headline != "" && !strings.EqualFold(headline, event) {
+		// A headline that OPENS with the event label already names the type:
+		// GDDKiA's road records read "Road works — road A4, km 435.88", and
+		// prefixing it again produced "Vehicle obstruction — Vehicle
+		// obstruction — road A4" in the channel operators quote from.
+		repeatsEvent := headline != "" && event != "" &&
+			strings.HasPrefix(strings.ToLower(headline), strings.ToLower(event))
+		if headline != "" && !strings.EqualFold(headline, event) && !repeatsEvent {
 			if subject == "" {
 				subject = headline
 			} else {
 				subject += " — " + headline
 			}
+		} else if repeatsEvent {
+			subject = headline
 		}
 		sevLabel := strings.ToUpper(i18n.T(lang, "sev."+strings.ToLower(h.Hazard.Severity)))
 		if subject == "" {

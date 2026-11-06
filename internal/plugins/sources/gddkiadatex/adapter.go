@@ -13,29 +13,32 @@ import (
 // has different identities, so the two must never reconcile against each other.
 const sourceName = "gddkia-datex"
 
-// eventNames translates the DATEX record types the national dataset actually
-// carries into the short names the station shows (and routes on).
-var eventNames = map[string]string{
-	"MaintenanceWorks":                  "Road works",
-	"GeneralObstruction":                "Obstruction",
-	"Accident":                          "Accident",
-	"InfrastructureDamageObstruction":   "Infrastructure damage",
-	"VehicleObstruction":                "Vehicle obstruction",
-	"Obstruction":                       "Obstruction",
-	"RoadOrCarriagewayOrLaneManagement": "Lane management",
-	"AbnormalTraffic":                   "Abnormal traffic",
-	"TrafficElement":                    "Traffic",
-	"WeatherRelatedRoadConditions":      "Weather conditions",
-	"NonWeatherRelatedRoadConditions":   "Road conditions",
-	"PoorEnvironmentConditions":         "Environment",
-	"SignalFault":                       "Signal fault",
-	"PublicEvent":                       "Public event",
-	"ReroutingManagement":               "Diversion",
-	"SpeedManagement":                   "Speed management",
-	"WrongWayDriving":                   "Wrong-way driving",
-	"VehicleFire":                       "Vehicle fire",
-	"DisabledVehicle":                   "Disabled vehicle",
-	"Queue":                             "Queue",
+// knownKinds are the DATEX record types the i18n layer renders by code
+// ("VehicleObstruction" -> "Przeszkoda — pojazd" / "Vehicle obstruction").
+// A kind outside this set has no translation, so it falls back to words built
+// from the camel case ("Winter driving management") rather than showing a code
+// nobody reads.
+var knownKinds = map[string]bool{
+	"MaintenanceWorks":                  true,
+	"GeneralObstruction":                true,
+	"Accident":                          true,
+	"InfrastructureDamageObstruction":   true,
+	"VehicleObstruction":                true,
+	"Obstruction":                       true,
+	"RoadOrCarriagewayOrLaneManagement": true,
+	"AbnormalTraffic":                   true,
+	"TrafficElement":                    true,
+	"WeatherRelatedRoadConditions":      true,
+	"NonWeatherRelatedRoadConditions":   true,
+	"PoorEnvironmentConditions":         true,
+	"SignalFault":                       true,
+	"PublicEvent":                       true,
+	"ReroutingManagement":               true,
+	"SpeedManagement":                   true,
+	"WrongWayDriving":                   true,
+	"VehicleFire":                       true,
+	"DisabledVehicle":                   true,
+	"Queue":                             true,
 }
 
 // typeSeverity gives a record type the severity the operator expects, used when
@@ -95,9 +98,12 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 
 	// xsi:type arrives with the document's namespace prefix ("ns5:MaintenanceWorks").
 	kind := localType(rec.Type)
-	name := eventNames[kind]
-	if name == "" {
-		name = humaniseKind(kind)
+	// The event carries the KIND (a stable code) so every channel can render it
+	// in its own language; only an unknown kind falls back to words, which is
+	// the one case where the provider vocabulary is all we have.
+	event := kind
+	if !knownKinds[kind] {
+		event = humaniseKind(kind)
 	}
 	sev := severities[strings.ToLower(strings.TrimSpace(rec.Severity))]
 	if sev == "" {
@@ -108,14 +114,20 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 	}
 
 	road := rec.road()
-	headline := name
+	// The headline is the LOCATION only, and it is language-free: the type is
+	// rendered from the event code by every channel ("Przeszkoda — pojazd —
+	// A4 · km 435.88"), so no channel ends up saying the type twice, and the
+	// station never mixes an English label into Polish text.
+	headline := ""
 	switch {
 	case road != "" && rec.kilometre() != "":
 		// The kilometre is what an operator reads on the road, so it belongs in
 		// the headline next to the number ("km 425.798").
-		headline = fmt.Sprintf("%s — road %s, km %s", name, road, rec.kilometre())
+		headline = fmt.Sprintf("%s · km %s", road, rec.kilometre())
 	case road != "":
-		headline = fmt.Sprintf("%s — road %s", name, road)
+		headline = road
+	default:
+		headline = ""
 	}
 	desc := rec.text()
 	if desc == "" {
@@ -136,7 +148,7 @@ func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 		Source:           sourceName,
 		SourceID:         id,
 		Category:         "road",
-		Event:            name,
+		Event:            event,
 		Severity:         sev,
 		Certainty:        certainty(rec.Probability),
 		ProviderSeverity: providerSeverity,

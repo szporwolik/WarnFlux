@@ -5170,6 +5170,54 @@ func TestGSMUSSDShortCode(t *testing.T) {
 	}
 }
 
+// TestArchiveEntriesOpenTheDetailPopup pins the archive fix reported from
+// production: an archived message must open the same detail dialog as an active
+// one, so a reader can learn what an old message was about.
+func TestArchiveEntriesOpenTheDetailPopup(t *testing.T) {
+	store, _, err := sqlite.Open(filepath.Join(t.TempDir(), "archive-click.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	now := time.Now()
+	past := now.Add(-2 * time.Hour)
+	ev := core.HazardEvent{
+		Source: "gddkia-datex", SourceID: "KPD-CLICK", Event: "VehicleObstruction",
+		Severity: "moderate", Headline: "A4 · km 435.88",
+		Description: "Unieruchomiony ciągnik z naczepą na prawym pasie.",
+		Status:      core.StatusActive, ExpiresAt: &past,
+		ReceivedAt: now.Add(-6 * time.Hour), UpdatedAt: now.Add(-6 * time.Hour),
+	}
+	if _, _, err := store.Ingest(context.Background(), ev, core.Fingerprint(ev)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Expire(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+
+	env := newTestEnvFull(t, nil, nil, store, nil)
+	resp, body := env.get("/archive")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /archive = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, `class="hazard hazard-click`) || !strings.Contains(body, `data-key="gddkia-datex:KPD-CLICK"`) {
+		t.Errorf("archive entry is not clickable: %.400s", body)
+	}
+	if !strings.Contains(body, `id="hz-dialog"`) || !strings.Contains(body, "/static/app.js") {
+		t.Errorf("archive page carries no detail dialog: %.300s", body)
+	}
+	// The dialog reads its payload from the API — ended events must be served.
+	resp, payload := env.get("/api/hazard/gddkia-datex:KPD-CLICK")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(payload, "Unieruchomiony ciągnik") {
+		t.Errorf("ended hazard payload = %d %s", resp.StatusCode, payload)
+	}
+	// The type is rendered from the DATEX kind, in the page language.
+	if !strings.Contains(body, "Przeszkoda — pojazd") && !strings.Contains(body, "Vehicle obstruction") {
+		t.Errorf("archive entry does not name the event type: %.400s", body)
+	}
+}
+
 // TestAccessShowsLastLogin pins the /access directory: the list says when an
 // account last signed in (or that it never did), and a successful login
 // stamps it.

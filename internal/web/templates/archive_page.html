@@ -13,6 +13,16 @@
     </section>
   </main>
   {{template "public-foot" .}}
+  {{/* The archive entries open the same detail dialog as the active list: a
+       reader who wants to know what an old message was about taps it and reads
+       the full text, instead of seeing a truncated headline only. */}}
+  <dialog class="modal hz-modal" id="hz-dialog" aria-labelledby="hz-title">
+    <div id="hz-content"></div>
+    <div class="modal-actions hz-actions">
+      <button type="button" class="btn-ghost btn-small" id="hz-close">{{tr .Lang "popup.close"}}</button>
+    </div>
+  </dialog>
+  <script src="/static/app.js?v={{.Commit}}" defer></script>
 </body>
 </html>
 {{end}}

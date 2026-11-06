@@ -17,6 +17,9 @@ const archivePageSize = 25
 
 // archiveEventView is one historical communication shown in the archive.
 type archiveEventView struct {
+	// EventKey is the hazard identity: the archive entry opens the same detail
+	// popup the active list uses (/api/hazard/<key> serves ended events too).
+	EventKey    string
 	MsgID       string
 	Severity    string
 	Headline    string
@@ -99,6 +102,7 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	for _, se := range stored {
 		ev := se.Event
 		view.Events = append(view.Events, archiveEventView{
+			EventKey:    ev.Key(),
 			MsgID:       core.MessageID(ev.Key()),
 			Severity:    ev.Severity,
 			Headline:    ev.Headline,

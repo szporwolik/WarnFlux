@@ -101,11 +101,14 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	view.Events = make([]archiveEventView, 0, len(stored))
 	for _, se := range stored {
 		ev := se.Event
+		// The archive lists the headline only, so the description stays in
+		// the detail popup — which rewrites its own copy.
+		headline, _ := roadText(ev.Source, ev.Headline, ev.Description)
 		view.Events = append(view.Events, archiveEventView{
 			EventKey:    ev.Key(),
 			MsgID:       core.MessageID(ev.Key()),
 			Severity:    ev.Severity,
-			Headline:    ev.Headline,
+			Headline:    headline,
 			Event:       ev.Event,
 			Source:      ev.Source,
 			SourceLabel: providerLabel(lang, ev.Source),

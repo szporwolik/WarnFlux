@@ -495,15 +495,16 @@ func hazardJSONFromState(h state.Hazard, areas, lang string) homeHazardJSON {
 // HazardEvent (the current-state table keeps ended events for the
 // retention window, so mail deep links can still render them).
 func hazardJSONFromEvent(ev core.HazardEvent) homeHazardJSON {
+	headline, description := roadText(ev.Source, ev.Headline, ev.Description)
 	return homeHazardJSON{
 		EventKey:    ev.Key(),
 		MsgID:       core.MessageID(ev.Key()),
 		Severity:    ev.Severity,
-		Headline:    ev.Headline,
+		Headline:    headline,
 		Event:       ev.Event,
 		Source:      ev.Source,
 		Areas:       strings.Join(displayAreas(ev.Areas), ", "),
-		Description: ev.Description,
+		Description: description,
 		Instruction: ev.Instruction,
 		Status:      string(ev.Status),
 		Urgency:     ev.Urgency,
@@ -642,6 +643,7 @@ func (s *Server) collectHazards(nets []emcomNetwork) []state.Hazard {
 // hazardFromCore projects one current-state event onto the public hazard
 // shape (the same shape the MQTT mirror carries).
 func hazardFromCore(ev core.HazardEvent) state.Hazard {
+	headline, description := roadText(ev.Source, ev.Headline, ev.Description)
 	return state.Hazard{
 		EventKey:    ev.Key(),
 		Source:      ev.Source,
@@ -651,8 +653,8 @@ func hazardFromCore(ev core.HazardEvent) state.Hazard {
 		Severity:    ev.Severity,
 		Urgency:     ev.Urgency,
 		Certainty:   ev.Certainty,
-		Headline:    ev.Headline,
-		Description: ev.Description,
+		Headline:    headline,
+		Description: description,
 		Instruction: ev.Instruction,
 		Areas:       ev.Areas,
 		Status:      string(ev.Status),

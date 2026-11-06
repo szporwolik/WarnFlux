@@ -246,3 +246,23 @@ func TestSeverityRaisesPlannedClosure(t *testing.T) {
 		t.Fatalf("severity = %q, want moderate for a total closure", ev.Severity)
 	}
 }
+
+// LegacyHeadline rewrites only the text this adapter used to write: the type
+// glued to the location. Everything else must survive untouched, because the
+// rewrite runs over stored rows the station did not author.
+func TestLegacyHeadlineRewritesOnlyTheOldRoadShape(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Road works — road A4, km 8.7", "A4 · km 8.7"},
+		{"Vehicle obstruction — road A4, km 435.88", "A4 · km 435.88"},
+		{"Road works — road S52c", "S52c"},
+		{"A4 · km 435.88", "A4 · km 435.88"},
+		{"Gęsta mgła", "Gęsta mgła"},
+		{"", ""},
+		{"Road works — road A4, km ", "Road works — road A4, km "},
+	}
+	for _, c := range cases {
+		if got := LegacyHeadline(c.in); got != c.want {
+			t.Errorf("LegacyHeadline(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

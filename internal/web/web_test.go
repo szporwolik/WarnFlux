@@ -6528,7 +6528,8 @@ func TestStoredRoadHeadlinesReadInTheCurrentShape(t *testing.T) {
 	now := time.Now()
 	past := now.Add(-2 * time.Hour)
 	legacy := core.HazardEvent{
-		Source: "gddkia-datex", SourceID: "KPD-LEGACY", Event: "MaintenanceWorks",
+		// The shape v0.8.33 stored: an English label in the event field.
+		Source: "gddkia-datex", SourceID: "KPD-LEGACY", Event: "Vehicle obstruction",
 		Severity: "minor", Headline: "Road works — road A4, km 8.7",
 		// The adapter repeated the headline when the record carried no text:
 		// that copy has to follow the rewrite, or the popup still shows English.
@@ -6574,6 +6575,7 @@ func TestStoredRoadHeadlinesReadInTheCurrentShape(t *testing.T) {
 	var detail struct {
 		Headline    string `json:"headline"`
 		Description string `json:"description"`
+		Event       string `json:"event"`
 	}
 	if err := json.Unmarshal([]byte(payload), &detail); err != nil {
 		t.Fatalf("detail payload is not JSON: %v %.300s", err, payload)
@@ -6583,5 +6585,44 @@ func TestStoredRoadHeadlinesReadInTheCurrentShape(t *testing.T) {
 	}
 	if detail.Description != "A4 · km 8.7" {
 		t.Errorf("popup description still repeats the legacy headline: %q", detail.Description)
+	}
+
+	// The type is read from the event code, so a Polish reader must never meet
+	// the provider's English label — neither on the archive entry nor in the
+	// popup that now carries the only copy of it.
+	plReq, err := http.NewRequest(http.MethodGet, env.srv.URL+"/archive", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plReq.Header.Set("Accept-Language", "pl")
+	plResp, err := env.client.Do(plReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plBody, _ := io.ReadAll(plResp.Body)
+	plResp.Body.Close()
+	if !strings.Contains(string(plBody), "Przeszkoda — pojazd") {
+		t.Errorf("Polish archive does not translate the stored event type: %.400s", plBody)
+	}
+	if strings.Contains(string(plBody), "Vehicle obstruction") {
+		t.Errorf("Polish archive still shows the stored English label: %.400s", plBody)
+	}
+
+	plReq, err = http.NewRequest(http.MethodGet, env.srv.URL+"/api/hazard/gddkia-datex:KPD-LEGACY", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plReq.Header.Set("Accept-Language", "pl")
+	plResp, err = env.client.Do(plReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plPayload, _ := io.ReadAll(plResp.Body)
+	plResp.Body.Close()
+	if err := json.Unmarshal(plPayload, &detail); err != nil {
+		t.Fatalf("detail payload is not JSON: %v %.300s", err, plPayload)
+	}
+	if detail.Event != "Przeszkoda — pojazd" {
+		t.Errorf("popup event = %q, want %q", detail.Event, "Przeszkoda — pojazd")
 	}
 }

@@ -210,6 +210,9 @@ func TestMessageTextDoesNotRepeatTheSubject(t *testing.T) {
 		{"headline repeats the event", "Storm", "Storm", "[SOSNA] SEVERE: Storm"},
 		{"no headline at all", "Storm", "", "[SOSNA] SEVERE: Storm"},
 		{"no headline, unknown event", "Brak", "", "[SOSNA] SEVERE: Brak"},
+		// The road records open their headline with the type: prefixing it
+		// again produced "Vehicle obstruction — Vehicle obstruction — road A4".
+		{"headline opens with the event", "Road works", "Road works — road A4, km 435.88", "[SOSNA] SEVERE: Road works — road A4, km 435.88"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

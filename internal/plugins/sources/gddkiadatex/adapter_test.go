@@ -114,6 +114,15 @@ func TestNormalizeCarriesKilometreSubtypeAndCertainty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
+	// The event is a stable KIND the i18n layer renders per language, and the
+	// headline is the language-free location — that is what keeps a Polish
+	// Discord post from reading "Vehicle obstruction — Vehicle obstruction".
+	if ev.Event != "MaintenanceWorks" {
+		t.Errorf("event = %q, want the DATEX kind", ev.Event)
+	}
+	if strings.Contains(ev.Headline, "works") || strings.Contains(ev.Headline, "Road") {
+		t.Errorf("headline carries an English label: %q", ev.Headline)
+	}
 	if !strings.Contains(ev.Headline, "km "+rec.kilometre()) {
 		t.Fatalf("headline = %q, want the kilometre %q", ev.Headline, rec.kilometre())
 	}

@@ -1028,6 +1028,10 @@ gsm:
   device: "/dev/ttyUSB0"
   # device: "/dev/modem-0,/dev/modem-3,/dev/modem-4"   # all three, picked by
   #                                                    # who answers AT
+  # Leave OUT the interface the cellular backup dials (deploy/gsm-backup/): two
+  # processes on one tty destroy the SMS session. On the production stick PPP
+  # negotiates on if00 and the station keeps if04, hence
+  # device: "/dev/modem-4,/dev/modem-3".
 
 # Daily admin status mail: once a day the operator receives one branded
 # message built from the last 24 hours — how many SMS, Meshtastic and APRS

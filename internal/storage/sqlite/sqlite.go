@@ -1208,6 +1208,20 @@ ALTER TABLE events ADD COLUMN path TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN last_login_at_ms INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		// v71: one row a minute saying whether the station was working. The
+		// health card answers "is it fine now"; a minute with no row is a
+		// minute the process was down, which is what the dashboard's
+		// seven-day strip reads. problems carries the subsystems that were not
+		// OK, comma separated, so the strip can say more than "amber".
+		SQL: `
+CREATE TABLE station_heartbeat (
+	minute_ms INTEGER PRIMARY KEY,
+	level TEXT NOT NULL,
+	problems TEXT NOT NULL DEFAULT ''
+);
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

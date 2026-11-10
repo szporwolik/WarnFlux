@@ -1471,6 +1471,10 @@ func run(configPath string, checkConfig bool) error {
 	// Phase 2 — runtime. From here on, provider failures are isolated by
 	// the plugin framework instead of terminating the process.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// One heartbeat row a minute: the dashboard's seven-day strip is built from
+	// these, so "was the station working last Tuesday?" has an answer without a
+	// journal dive. Started before the servers so the first minute is recorded.
+	go webSrv.RunHeartbeat(context.Background())
 	defer stop()
 
 	// Mobile APRS stations crossing the operational range announce on

@@ -152,6 +152,28 @@ Two things follow from the measurements:
   unit runs pppd with `nodetach` and a real `disconnect` script: a clean
   `ATH0` releases the session immediately.
 
+## Known fragility (measured 2026-11-10, same evening)
+
+Data **is** provisioned on the SIM — the PDP context is granted an address
+(`AT+CGACT=1,1` → `+CGPADDR: 1,"10.8.9.63"`) and PPP carried real traffic
+(`https://example.com` → 200, ~3.5 kB/s). What is not reliable is repeated
+dialling:
+
+* **One clean dial per modem boot.** A `pppd` killed without its disconnect
+  chat leaves the session hanging and every following `ATD*99***1#` answers
+  `NO CARRIER` for minutes. A USB power cycle (or `AT+CFUN=1,1`) clears it, and
+  the next dial succeeds. Never dial twice on the same boot while testing.
+* **NDIS is a dead end on this stick.** `AT^NDISDUP=1,1,"internet"` returns OK
+  and the `wwan0` interface even completes a DHCP lease, but nothing is
+  forwarded: the gateway does not answer, ICMP and TCP both time out. Do not
+  build a second path on it.
+* **Roles rotate on every USB reset**, so a supervisor that dials for data has
+  to rediscover the AT port each time and must not take the one the station
+  holds.
+* Consequence: unattended operation needs a supervisor that power-cycles the
+  modem before each dial attempt. `warnflux-gsm-backup.service` alone survives
+  a dropped link, but not a modem that has latched into the `NO CARRIER` state.
+
 ## Risks worth knowing
 
 * **Data plan.** An always-on PDP context costs almost nothing while idle (LCP

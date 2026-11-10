@@ -1,0 +1,13 @@
+[Unit]
+Description=WarnFlux: probe the wired uplink and fail over to the cellular one
+
+[Timer]
+# Every 30 s: an outage is noticed within ~1.5 min (three failed checks) and
+# recovery within the same window. Cheap: three ICMP echoes.
+OnBootSec=2min
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=warnflux-net-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -524,3 +524,29 @@ func TestParticulateExceedancesAreMinorInEveryWording(t *testing.T) {
 		}
 	}
 }
+
+// TestParticulateNoticeIsExcludedDespiteItsLegalCitation pins the duplication
+// rule: an RSO copy of a particulate exceedance belongs to the dedicated GIOŚ
+// source, so it must not be emitted twice. Every such notice cites "poziomów
+// niektórych substancji w powietrzu", and the old civil-protection guard read
+// that bare "substancj" as a chemical release — which pushed a routine PM10
+// notice straight through the air-quality exclusion.
+func TestParticulateNoticeIsExcludedDespiteItsLegalCitation(t *testing.T) {
+	p := defaultPolicy()
+	legal := "WOJEWÓDZTWO MAŁOPOLSKIE POZIOM 2 Powiadomienie o przekroczeniu poziomu informowania i o ryzyku " +
+		"wystąpienia przekroczenia poziomu informowania dla pyłu zawieszonego PM10 w powietrzu " +
+		"Zgodnie z rozporządzeniem z dnia 24 sierpnia 2012 r. w sprawie poziomów niektórych " +
+		"substancji w powietrzu (Dz. U. z 2021 r., poz. 845) stężenia dobowe przekroczyły normę."
+	for _, text := range []string{
+		legal,
+		"Przekroczenie poziomu pyłu zawieszonego PM10",
+		"Jakości powietrza nie odpowiada normom",
+		"Powiadomienie o ryzyku przekroczenia poziomu informowania dla pyłu PM2.5",
+	} {
+		// The decision must be the air-quality exclusion itself, not a
+		// geographic threshold that would hide any low-severity item.
+		if d := p.decide(item("Komunikat", "", text)); d.emit || !strings.Contains(d.reason, "air-quality") {
+			t.Errorf("air-quality copy not excluded: emit=%v severity=%q reason=%q", d.emit, d.severity, d.reason)
+		}
+	}
+}

@@ -8,19 +8,20 @@ same modem at the same time.
 
 ## Why both work at once
 
-The E173 exposes three serial interfaces:
+The E173 exposes three serial interfaces, and **their roles rotate across a USB
+reset** — that is the single most expensive thing to learn about this stick.
+Measured on the production stick (2026-11-10, Orange SIM):
 
-| Interface | Stable path | Who uses it |
+| Interface | Stable path | What it answered |
 |---|---|---|
-| `if00` | `…-if00-port0` → `/dev/ttyUSB0` | **WarnFlux** — AT/PCUI session: SMS receive and send (`/dev/modem` inside the container) |
-| `if03` | `…-if03-port0` → `/dev/ttyUSB1` | nobody — the diagnostic port: it silently swallows `AT` (measured) |
-| `if04` | `…-if04-port0` → `/dev/ttyUSB2` | **pppd** — the packet data interface (`ATD*99***1#` reached `CONNECT` once) |
+| `if00` | `…-if00-port0` → `/dev/ttyUSB0` | PPP negotiated an address (`local IP 10.155.53.209`); after a later power cycle it went silent |
+| `if03` | `…-if03-port0` → `/dev/ttyUSB1` | silent — never answers `AT` |
+| `if04` | `…-if04-port0` → `/dev/ttyUSB2` | `AT`, `ATE0`, `AT+CMGF=1`, `AT+CPIN?` → the station's SMS session |
 
-**The roles rotate.** After a USB reset the firmware moved the AT/PCUI role from
-`if00` to `if04` (measured on the production stick on 2026-11-06: `if00` then
-answered nothing and `/dev/modem` died with "modem init failed"). That is why the
-station's `gsm.device` takes a **list** and keeps the interface that answers the
-AT init, and why the compose file should map all three:
+So the split is real but **not fixed**: one interface carries the station's
+AT/SMS session and another carries the packet call. Two processes on the SAME
+tty destroy the session (measured), which is why the mapping and the two
+configurations have to be kept in step:
 
 ```yaml
     devices:
@@ -30,24 +31,38 @@ AT init, and why the compose file should map all three:
 ```
 ```yaml
 gsm:
-  device: /dev/modem-0,/dev/modem-3,/dev/modem-4
+  # Everything except the interface the backup dials.
+  device: /dev/modem-4,/dev/modem-3
 ```
 
-The backup link then dials whichever interface is **not** the one the station
-holds: read the "modem ready" log line (`device=/dev/modem-4`), and when the SIM
-finally carries data, take that same interface OUT of the station's list and out
-of the compose `devices:` block before enabling the backup — two processes on
-one tty is exactly how a session gets mangled (it was tried on the bench).
+After any replug or USB reset: read the station's `gsm: modem ready
+device=…` line, run the two probes below, and repoint `gsm.device` and
+`warnflux-gsm.peers` at the interfaces that actually answered. A pppd run on a
+port the station holds logs `Receive serial link is not 8-bit clean`; a silent
+port logs `Connect script failed` — both mean "wrong interface", never "bad
+modem".
 
-The two sessions are on different interfaces, which is exactly why dialling for
-data does not lock the station out of the SIM. (`AT^GETPORTMODE` on the modem
-reports the split `MDM:0,NDIS:1,DIAG:2,PCUI:3,…`; measuring which node answers
-what put the data pipe on **if04**, not on the `if03` the interface numbering
-suggests — `if03` never answered a single byte.)
+## Failover is more than a route
 
-The data port also does not answer a bare `AT`: the chat script dials straight
-away, because a leading `AT` only burns the 30-second timeout and ends in
-`Connect script failed`.
+`warnflux-gsm-backup.service` keeps the packet link up permanently, so the
+kernel can switch the moment the wired route disappears (cable, switch, DHCP).
+That is not enough for the case that actually happens here — **the ISP is down
+while the cable stays up**: the wired default route never goes away, keeps its
+lower metric, and the station silently loses the internet with ppp0 sitting
+idle.
+
+`warnflux-net-watchdog.timer` covers it. Every 30 s it probes the WIRED path
+(`ping -I eth0` at three public addresses) and
+
+* after three failed probes, raises the cellular default to **metric 50**, so
+  it outranks the wired metric 100 and every new connection leaves through the
+  modem;
+* after three good probes, deletes exactly that route — pppd's own metric-700
+  route stays, Ethernet wins again and the station stops paying for data.
+
+Two verdicts in a row are required on both edges, so one lost ICMP packet never
+moves the station. All transitions land in the journal tagged `warnflux-net`,
+and the current state is readable in `/run/warnflux-net-watchdog/mode`.
 
 ## How the routing behaves
 
@@ -57,6 +72,9 @@ away, because a leading `AT` only burns the 30-second timeout and ends in
 * The kernel always prefers the lower metric, so nothing changes while the wire
   works. When the wired route disappears — cable pulled, DHCP lease lost, ISP
   gateway dead — the modem route takes over immediately and silently.
+* While the wire is dead, the watchdog raises a second cellular default with
+  **metric 50** (see "Failover is more than a route"); it is deleted as soon as
+  the wire answers again, so the station never stays on the expensive link.
 * DNS: NetworkManager owns `/etc/resolv.conf` and names only the wired gateway.
   The `ip-up` script appends the operator's resolver as a **marked fallback
   block**, and `ip-down` removes exactly that block again. Without it a domain
@@ -69,6 +87,9 @@ sudo apt-get install -y ppp          # pppd + chat, if not present
 sudo sh deploy/gsm-backup/install.sh # copies files, enables and starts the unit
 sudo warnflux-gsm-status             # read-only report: unit, ppp0, routes, DNS
 ```
+
+`install.sh` also installs `warnflux-net-watchdog.timer` (every 30 s) and copies
+this file to `/etc/warnflux/gsm-backup.md`, which is what the units reference.
 
 The PDP context (`APN internet`, what the SIM reports in `AT+CGDCONT`) is
 already defined, so the script dials `*99***1#` directly. A contract that needs
@@ -84,55 +105,52 @@ another APN: put `AT+CGDCONT=1,"IP","<apn>"` line before the dial in
 3. The SMS path is still alive: the panel's **GSM** page shows the modem
    connected and `warnflux` keeps logging its hourly
    `gsm: storage maintenance done`.
-4. The fallback really works: `ip route get 1.1.1.1` follows Ethernet today.
-   Simulating an outage is done by pulling the cable (or
-   `sudo ip route del default via <gw>` — restore it afterwards with
-   `sudo systemctl restart NetworkManager`).
+4. The watchdog: `systemctl list-timers warnflux-net-watchdog.timer` shows the
+   next run, and `journalctl -t warnflux-net` stays quiet while the wire works.
+   Pull the cable (or `sudo ip route del default via <gw>`) and within ~1.5 min
+   the journal says "cellular default raised to metric 50" and
+   `ip route get 1.1.1.1` answers `dev ppp0`; restore the route and it demotes
+   itself again.
+5. Restore the wired default when you simulated the outage by hand; with a real
+   cable pull NetworkManager/DHCP does it, and the watchdog demotes the
+   cellular route within ~1.5 min.
 
 ## Turning it off
 
 ```sh
 sudo systemctl disable --now warnflux-gsm-backup.service
+sudo systemctl disable --now warnflux-net-watchdog.timer
 ```
 
 That is the whole rollback: the routes and the DNS block disappear with the
-link. The installed files can stay (they do nothing while the unit is disabled),
+link, and the watchdog stops touching the routing. The installed files can stay (they do nothing while the unit is disabled),
 or be removed by hand.
 
-## Measured on the production modem (2026-11-06) — data is NOT provisioned yet
+## Measured: what the data link needs (2026-11-10, Orange SIM)
 
-Everything above is wired and testable, but the operator side currently refuses
-the packet call. The measurements, so nobody repeats them:
+`AT+CGATT?` answers **0** on a fresh boot — this modem never attaches to the
+packet domain by itself, so the chat script attaches it by hand before dialling.
+With that done the call goes through and IPCP grants a `10.x.x.x` address:
 
 | Probe | Result |
 |---|---|
-| `AT+CPIN?` / `AT+CREG?` | `READY`, registered on `POL` (Play), `AT+CSQ` 27 |
-| `AT+CGDCONT?` | CID 1, `IP`, APN `internet` — already defined by the SIM |
-| `AT+CGATT?` | **0** → the modem does not attach to the packet domain by itself |
 | `AT+CGATT=1` | `OK`, then `+CGATT: 1` |
-| `AT+CGACT=1,1` | `OK`, `+CGPADDR: 1,"10.x.x.x"` — a PDP context **is** granted |
-| `ATD*99***1#`, `ATD*99#`, `AT+CGDATA="PPP",1` | **`NO CARRIER`** every time, on APN `internet` and `play`, IPv4 |
-| `wwan0` (NDIS, `cdc_ether`) | comes up, DHCP `DISCOVER` gets no `OFFER`; a static address from `+CGPADDR` pings nothing |
+| `AT+CGACT=1,1` / `AT+CGPADDR=1` | `OK` / `+CGPADDR: 1,"10.8.9.63"` — a PDP context is granted |
+| `ATD*99***1#` on a clean session | `CONNECT`, IPCP `local IP 10.155.53.209` |
+| Traffic over ppp0 | `ping 1.1.1.1` 0% loss, `https://example.com` → 200 |
+| Throughput | **~3.5 kB/s (≈28 kbit/s)** — EDGE (`AT^SYSINFO` sys_mode 3) |
 
-Conclusion: the SIM registers and a PDP context can be activated, but the data
-call itself is refused — the classic signature of a **voice/SMS-only provision**
-(or data blocked on the M2M tariff). Nothing in the station can change that:
+Two things follow from the measurements:
 
-1. ask the operator to enable data on the SIM (and confirm the APN), then
-2. re-run the two dial probes above — `CONNECT` is the green light — and
-3. `sudo sh deploy/gsm-backup/install.sh`.
-
-The chat script is already the sequence those probes point to — the packet
-domain is attached by hand (`AT+CGATT=1`) and then dialled, because this modem
-never attaches by itself. Install it with `--no-start` until the operator
-confirms data; a running unit on a data-less SIM only repeats `NO CARRIER` in
-the journal every 30 seconds:
-
-```sh
-sudo sh deploy/gsm-backup/install.sh --no-start
-# … ask the operator, confirm CONNECT by hand …
-sudo systemctl start warnflux-gsm-backup.service
-```
+* **Throughput is EDGE, not 3G.** The E173 is a 3G stick and Orange is shutting
+  3G down, so the station falls back to 2G. Enough for SSH, MQTT, alert text
+  and light HTTP; not enough to browse the panel or pull updates.
+* **A killed session blocks the next dial.** After a `pppd` that was killed
+  without its disconnect chat, every following `ATD*99***1#` answers
+  `NO CARRIER` for several minutes — the network still holds the old PDP for
+  this SIM. Dial again later; do not keep hammering it. This is also why the
+  unit runs pppd with `nodetach` and a real `disconnect` script: a clean
+  `ATH0` releases the session immediately.
 
 ## Risks worth knowing
 
@@ -142,6 +160,6 @@ sudo systemctl start warnflux-gsm-backup.service
   is real traffic. Cap it in the operator's panel if the plan is small.
 * **IPv4 only.** The peer file negotiates `IP`; IPv6 over the modem is not
   configured.
-* **One modem, two callers.** `install.sh` never touches the AT interface, but
-  do not run `pppd call …` against `if00` by hand: that port belongs to the
-  station.
+* **One modem, two callers.** The two sessions must stay on different
+  interfaces: whichever port `gsm: modem ready device=…` names belongs to the
+  station and must never be dialled by hand or by `pppd`.

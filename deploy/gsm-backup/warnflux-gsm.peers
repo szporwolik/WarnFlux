@@ -1,13 +1,16 @@
 # WarnFlux: the cellular backup uplink (pppd peer file -> /etc/ppp/peers/).
 #
-# WHY THE DATA INTERFACE AND NOT THE AT PORT
-# The Huawei E173 exposes three serial interfaces, and only ONE of them is the
-# packet pipe (`AT^GETPORTMODE` reports MDM:0,NDIS:1,DIAG:2,PCUI:3,…):
-#   if00 = PCUI  -> the station's AT/SMS session (mapped as /dev/modem)
-#   if03 = DIAG  -> silently swallows AT, answers nothing (measured)
-#   if04 = MDM   -> the data port: ATD*99 answers CONNECT
-# Dialling on if04 therefore leaves the SMS session on if00 untouched — that is
-# the whole trick behind "internet as a backup WITHOUT losing SMS".
+# WHY THIS INTERFACE, AND WHICH ONE THAT IS
+# The Huawei E173 exposes three serial interfaces and the roles ROTATE across a
+# USB reset. Measured on this stick (2026-11-10, Orange SIM):
+#   if00 -> pppd negotiates an address (local IP 10.x.x.x) — the packet pipe
+#   if03 -> silently swallows AT, answers nothing (measured)
+#   if04 -> answers AT/ATE0/AT+CMGF=1 and hosts the station's SMS session,
+#           but pppd on it dies with "receive serial link is not 8-bit clean"
+# So the data link owns if00 and the station keeps if04 — the reverse of what
+# the interface numbering suggests, and the reason both are mapped into the
+# container. A replug can swap the two: run the probes in README.md, then point
+# this file at the port pppd accepts and gsm.device at the other one.
 #
 # WHY THE METRIC
 # The wired default route is metric 100. This link adds its own default with
@@ -15,7 +18,7 @@
 # over to the modem the moment the wired route disappears (cable pulled,
 # DHCP lease lost, ISP gateway unreachable). No script has to decide anything.
 
-/dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if04-port0
+/dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if00-port0
 115200
 
 # The network does not authenticate us: the SIM identifies the subscriber.

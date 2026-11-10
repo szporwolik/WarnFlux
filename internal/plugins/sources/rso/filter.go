@@ -75,20 +75,22 @@ var (
 	// RCB appears with flexible separators ("ALERT RCB", "ALERT-RCB",
 	// "ALERT -RCB", plain "RCB").
 	rcbPattern = regexp.MustCompile(`\balert[\s._-]*rcb\b|\brcb\b`)
-	// Clear air-quality notices: smog, particulate matter, air quality.
-	airQualityExplicit = regexp.MustCompile(`jakosc powietrza|zanieczyszczenie powietrza|smog|pm\s*10|pm\s*2[.,]?5|pyl zawieszony|pylem zawieszonym|zapylenie`)
 	// "poziom informowania/alarmowy" only counts when the context is
 	// particulate pollution (hydrology uses the same wording for rivers).
-	airQualityLevel = regexp.MustCompile(`(poziom informowania|poziom alarmowy)[^.]{0,80}(pm\s*10|pm\s*2[.,]?5|pyl|smog)`)
-	// A civil-protection event mentioning smoke/chemistry is NOT an
-	// air-quality notice.
-	civilFireChemical = regexp.MustCompile(`pozar|ewakuacj|substancj|chemiczn|amoniak|chlor|toksyczn`)
+	airQualityLevel = regexp.MustCompile(`poziom[a-z]*\s+(informowania|alarmow[a-z]*)[^.]{0,80}(pm\s*10|pm\s*2[.,]?5|pyl|smog)`)
+	// civilFireChemical is what keeps toxic smoke and chemical releases in
+	// the ordinary stream instead of the air-quality bucket — so it demands a
+	// civil-protection context. A bare "substancj" is NOT one: every Polish
+	// smog notice cites "poziomów niektórych substancji w powietrzu", and that
+	// legal reference used to defeat the air-quality exclusion, pushing a
+	// routine PM10 notice through as an alert.
+	civilFireChemical = regexp.MustCompile(`pozar|ewakuacj|uwolnieni[a-z]*\s+substancj|substancj[a-z]*\s+(toksyczn|chemiczn|niebezpieczn|promieniotworcz)|wyciek|rozszczelnien|amoniak|\bchlor|toksyczn[a-z]*\s+(dym|opar|chmur)|chemiczn[a-z]*\s+(awari|zagrozeni|skazeni)`)
 	// particulateNotice recognizes a particulate/smog communication in any
 	// Polish inflection: "pył zawieszony", "pyłu zawieszonego", "pyłem
-	// zawieszonym", "jakości powietrza", "PM-10". It decides the SEVERITY
-	// only — the air-quality exclusion above still uses its own, narrower
-	// patterns, so a notice the operator chose to receive is never silently
-	// dropped by a wording this rule merely classifies better.
+	// zawieszonym", "jakości powietrza", "PM-10", "smog". One pattern serves
+	// both jobs: the RSO copy of an exceedance is excluded in favour of the
+	// dedicated GIOŚ source, and — where an operator keeps such copies — it
+	// can never be more than minor.
 	particulateNotice = regexp.MustCompile(`pyl[a-z]*\s+zawieszon[a-z]*|zawieszon[a-z]*\s+pyl[a-z]*|jakos[cn][a-z]*\s+powietrza|zanieczyszczeni[a-z]*\s+powietrza|smog[a-z]*|pm[\s-]?10|pm[\s-]?2[.,]?5|zapyleni[a-z]*`)
 	// IMGW replication: "IMGW-PIB wydał ostrzeżenie..." with no added
 	// civil-protection consequence.
@@ -111,7 +113,7 @@ func isAirQuality(text string) bool {
 	if airQualityLevel.MatchString(text) {
 		return true
 	}
-	if !airQualityExplicit.MatchString(text) {
+	if !particulateNotice.MatchString(text) {
 		return false
 	}
 	return !civilFireChemical.MatchString(text)

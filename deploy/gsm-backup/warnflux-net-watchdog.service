@@ -1,0 +1,13 @@
+[Unit]
+Description=WarnFlux: fall over to the cellular uplink when the wired one is dead
+Documentation=file:/etc/warnflux/gsm-backup.md
+# Read-only probe + route change: it must never keep the station from booting.
+After=network-online.target warnflux-gsm-backup.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/warnflux-net-watchdog
+# The probe answers "is the wired path alive"; a failure here is a normal
+# verdict, not a unit failure — the exit code only feeds the journal.
+SuccessExitStatus=0 1

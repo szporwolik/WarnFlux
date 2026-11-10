@@ -83,6 +83,13 @@ var (
 	// A civil-protection event mentioning smoke/chemistry is NOT an
 	// air-quality notice.
 	civilFireChemical = regexp.MustCompile(`pozar|ewakuacj|substancj|chemiczn|amoniak|chlor|toksyczn`)
+	// particulateNotice recognizes a particulate/smog communication in any
+	// Polish inflection: "pył zawieszony", "pyłu zawieszonego", "pyłem
+	// zawieszonym", "jakości powietrza", "PM-10". It decides the SEVERITY
+	// only — the air-quality exclusion above still uses its own, narrower
+	// patterns, so a notice the operator chose to receive is never silently
+	// dropped by a wording this rule merely classifies better.
+	particulateNotice = regexp.MustCompile(`pyl[a-z]*\s+zawieszon[a-z]*|zawieszon[a-z]*\s+pyl[a-z]*|jakos[cn][a-z]*\s+powietrza|zanieczyszczeni[a-z]*\s+powietrza|smog[a-z]*|pm[\s-]?10|pm[\s-]?2[.,]?5|zapyleni[a-z]*`)
 	// IMGW replication: "IMGW-PIB wydał ostrzeżenie..." with no added
 	// civil-protection consequence.
 	imgwMention = regexp.MustCompile(`\bimgw`)
@@ -179,6 +186,25 @@ func degreeValue(s string) int {
 	return 0
 }
 
+// severityLead is how much of the body may carry the warning degree. The
+// provider states the degree in the title ("Ostrzeżenie 2 stopnia") and the
+// opening sentence repeats it; a recommendation buried thousands of
+// characters later ("ograniczenie aktywności ... w czasie trwania 2 stopnia
+// zagrożenia") describes the reader's duty, it does not set the degree of
+// THIS message — reading the whole body made a routine PM10 notice severe.
+const severityLead = 200
+
+// severityText is the part of a communication the severity is read from:
+// the headline the reader sees first, plus the lead of the body. The whole
+// text still drives geography and category, which may legitimately be
+// mentioned anywhere.
+func severityText(title, shortcut, content string) string {
+	if len(content) > severityLead {
+		content = content[:severityLead]
+	}
+	return strings.Join([]string{title, shortcut, content}, " ")
+}
+
 // classifySeverity infers the WarnFlux severity from explicit semantics in
 // the title/shortcut/content. rso_alarm is deliberately never consulted:
 // the provider does not document it as a severity scale. severeRoad is the
@@ -206,6 +232,16 @@ func classifySeverity(text string, severeRoad *regexp.Regexp) string {
 		return "severe"
 	case severeFlood.MatchString(text):
 		return "severe"
+	}
+
+	// Particulate air-quality notices (PM10/PM2.5, "pył zawieszony", smog) in
+	// every inflection are background information: the dedicated GIOŚ source
+	// carries the station readings and this is the same exceedance told in
+	// prose, so an exceedance is never more than minor however it is phrased.
+	// Civil-protection and water emergencies won above, so a fire or a
+	// chemical release that merely mentions dust keeps its own severity.
+	if particulateNotice.MatchString(text) {
+		return "minor"
 	}
 
 	// Routine works: minor — unless the message announces a COMPLETE
@@ -429,7 +465,7 @@ func (p filterConfig) decide(item newsItem) decision {
 		return decision{reason: "plain IMGW duplicate suppressed"}
 	}
 
-	sev := classifySeverity(text, p.severeRoadRe)
+	sev := classifySeverity(severityText(title, shortcut, content), p.severeRoadRe)
 	geo := p.classifyGeography(text)
 
 	d := decision{

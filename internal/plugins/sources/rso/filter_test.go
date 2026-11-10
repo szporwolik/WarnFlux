@@ -1,6 +1,7 @@
 package rso
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -455,6 +456,71 @@ func TestKilometreExtraction(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("extractKilometres = %v, want %v", got, want)
 			break
+		}
+	}
+}
+
+// TestParticulateNoticeStaysMinor pins what a province-wide PM10
+// notification is worth: background information, not an emergency. The
+// provider's boilerplate recommends limiting outdoor activity "w czasie
+// trwania 2 stopnia zagrożenia" thousands of characters into the body, and
+// reading the degree out of the whole text turned a routine smog notice into
+// a SEVERE alert (reported from production).
+func TestParticulateNoticeStaysMinor(t *testing.T) {
+	title := normalizeMatchText("Przekroczenie poziomu PM 10")
+	shortcut := normalizeMatchText("WOJEWÓDZTWO MAŁOPOLSKIE POZIOM 2 Powiadomienie o przekroczeniu poziomu informowania " +
+		"i o ryzyku wystąpienia przekroczenia poziomu informowania dla pyłu zawieszonego PM10 w powietrzu")
+	body := normalizeMatchText(strings.Repeat("Stężenia dobowe pyłu PM10 na stacjach pomiarowych przekroczyły poziom informowania. ", 40) +
+		"Zaleca się ograniczenie aktywności dzieci i młodzieży na zewnątrz w czasie trwania 2 stopnia zagrożenia do niezbędnego minimum.")
+
+	if got := classifySeverity(severityText(title, shortcut, body), nil); got != "minor" {
+		t.Errorf("PM10 notice severity = %q, want minor", got)
+	}
+
+	// The degree still belongs to the severity when the provider states it up
+	// front — the fix must not deafen the classifier to real warnings.
+	warned := normalizeMatchText("Ostrzeżenie drugiego stopnia")
+	if got := classifySeverity(severityText(warned, shortcut, body), nil); got != "severe" {
+		t.Errorf("headline degree ignored: severity = %q, want severe", got)
+	}
+}
+
+// TestDegreeInTheBodyDoesNotSetSeverity pins the boundary itself: only the
+// headline and the lead of the body may decide the degree.
+func TestDegreeInTheBodyDoesNotSetSeverity(t *testing.T) {
+	lead := normalizeMatchText("Przekroczenie poziomu PM10")
+	body := normalizeMatchText(strings.Repeat("Opis sytuacji. ", 30) +
+		"Zalecenie: w czasie trwania 2 stopnia zagrożenia ogranicz ruch.")
+	if got := classifySeverity(severityText(lead, "", body), nil); got != "minor" {
+		t.Errorf("degreeless headline with a body degree = %q, want minor", got)
+	}
+	// The same text IS a 2nd-degree warning when the headline says so.
+	if got := classifySeverity(severityText(normalizeMatchText("Ostrzeżenie 2 stopnia"), "", body), nil); got != "severe" {
+		t.Errorf("headline degree = %q, want severe", got)
+	}
+}
+
+// TestParticulateExceedancesAreMinorInEveryWording: an exceedance notice about
+// dust is minor no matter how the provider inflects it — a Polish feed writes
+// "pył zawieszony", "pyłu zawieszonego", "pyłem zawieszonym" and "jakości
+// powietrza" in the same document, and the severity must not depend on which
+// form lands in the headline.
+func TestParticulateExceedancesAreMinorInEveryWording(t *testing.T) {
+	for _, text := range []string{
+		"Przekroczenie poziomu PM 10",
+		"Przekroczenie poziomu PM2.5",
+		"Przekroczenie poziomu PM 2,5 w powietrzu",
+		"Pył zawieszony PM10 — przekroczenie poziomu informowania",
+		"Stężenie pyłu zawieszonego powyżej normy",
+		"Zanieczyszczenie pyłem zawieszonym",
+		"Powiadomienie o ryzyku przekroczenia dla pyłu PM10",
+		"Zła jakość powietrza",
+		"Jakości powietrza nie odpowiada normom",
+		"Alert smogowy",
+		"Zapylenie na terenie województwa",
+	} {
+		if got := classifySeverity(normalizeMatchText(text), nil); got != "minor" {
+			t.Errorf("classifySeverity(%q) = %q, want minor", text, got)
 		}
 	}
 }

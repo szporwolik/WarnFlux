@@ -30,12 +30,19 @@ install -m 0755 "$here/90-warnflux-gsm" /etc/ppp/ip-up.d/90-warnflux-gsm
 install -m 0755 "$here/90-warnflux-gsm-down" /etc/ppp/ip-down.d/90-warnflux-gsm
 install -m 0644 "$here/warnflux-gsm-backup.service" /etc/systemd/system/warnflux-gsm-backup.service
 install -m 0755 "$here/warnflux-gsm-status.sh" /usr/local/sbin/warnflux-gsm-status
+install -m 0755 "$here/warnflux-net-watchdog.sh" /usr/local/sbin/warnflux-net-watchdog
+install -m 0644 "$here/warnflux-net-watchdog.service" /etc/systemd/system/warnflux-net-watchdog.service
+install -m 0644 "$here/warnflux-net-watchdog.timer" /etc/systemd/system/warnflux-net-watchdog.timer
+install -d -m 0755 /etc/warnflux
+install -m 0644 "$here/README.md" /etc/warnflux/gsm-backup.md
 
 systemctl daemon-reload
 systemctl enable warnflux-gsm-backup.service >/dev/null
+systemctl enable warnflux-net-watchdog.timer >/dev/null
 
 if [ "$start" -eq 1 ]; then
 	systemctl restart warnflux-gsm-backup.service
+	systemctl start warnflux-net-watchdog.timer
 	sleep 3
 	systemctl --no-pager --lines=0 status warnflux-gsm-backup.service || true
 fi
@@ -43,3 +50,4 @@ fi
 echo
 echo "Installed. Verify with: sudo warnflux-gsm-status"
 echo "The station's SMS session is untouched: it owns the AT interface (if00)."
+echo "The watchdog probes the wired uplink every 30 s and only then raises the cellular route."

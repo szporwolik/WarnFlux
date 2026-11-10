@@ -4,7 +4,7 @@ Documentation=file:/etc/warnflux/gsm-backup.md
 # The device node has to exist, or pppd exits before the modem is enumerated.
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if04-port0
+ConditionPathExists=/dev/serial/by-id/usb-HUAWEI_Technology_HUAWEI_Mobile-if00-port0
 
 [Service]
 Type=simple

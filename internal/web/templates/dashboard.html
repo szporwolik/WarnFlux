@@ -15,6 +15,7 @@
     {{template "status" .Status}}
     {{template "stats" .Stats}}
     {{template "health" .Health}}
+    {{template "activity" .Activity}}
     {{template "mqtt" .MQTT}}
     {{template "plugins" .Plugins}}
     {{template "actions" .Actions}}
@@ -32,6 +33,21 @@
     <div class="stat-tile"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-people"></use></svg><span class="stat-value">{{.Groups}}</span><span class="stat-label">{{tr .Lang "dash.stat_groups"}}</span></div>
     <div class="stat-tile"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-megaphone"></use></svg><span class="stat-value">{{.EmcomNetworks}}</span><span class="stat-label">{{tr .Lang "dash.stat_emcom"}}</span></div>
   </div>
+</section>
+{{end}}
+
+{{define "activity"}}<section class="card activity-card" id="activity-section">
+  <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-activity"></use></svg>{{tr .Lang "activity.title"}}
+    <span class="meta">{{trf .Lang "activity.summary" .Days .Percent}}</span></h2>
+  <div class="act-grid">
+    <span class="act-corner"></span>
+    {{range .Hours}}<span class="act-hour">{{.}}</span>{{end}}
+    {{range .Rows}}
+    <span class="act-day">{{.Label}}</span>
+    {{range .Cells}}<span class="act-cell {{.Tone}}"{{if .Title}} title="{{.Title}}"{{end}}></span>{{end}}
+    {{end}}
+  </div>
+  <p class="muted log-hint">{{tr .Lang "activity.hint"}}</p>
 </section>
 {{end}}
 

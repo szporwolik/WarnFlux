@@ -3683,3 +3683,34 @@ a.group-chip:hover { border-color: var(--focus); color: var(--accent); }
 }
 .char-count.warn { color: #c62828; font-weight: 600; }
 label.field .char-count { align-self: flex-end; margin-top: -0.35rem; }
+
+/* ---- seven-day activity strip (dashboard) ------------------------------ */
+/* One row per day (oldest on top), one cell per hour. A cell without a
+   heartbeat row is the answer to "was the station running then?", so the grid
+   has to be readable at a glance and never rely on colour alone: the tone is
+   repeated in the tooltip. */
+.activity-card .meta { margin-left: auto; font-size: .85rem; font-weight: 400; color: var(--muted); }
+.act-grid {
+  display: grid;
+  grid-template-columns: max-content repeat(24, minmax(0, 1fr));
+  gap: 2px;
+  align-items: center;
+  margin: .5rem 0 .25rem;
+}
+.act-day { font-variant-numeric: tabular-nums; font-size: .78rem; color: var(--muted); padding-right: .5rem; white-space: nowrap; }
+.act-hour { font-size: .62rem; color: var(--muted); text-align: left; font-variant-numeric: tabular-nums; }
+.act-corner { }
+.act-cell {
+  display: block;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--panel-2, #2a2f3a);
+}
+.act-cell.on { background: #2ea043; }
+.act-cell.part { background: #d29922; }
+.act-cell.off { background: #3d4450; opacity: .45; }
+@media (max-width: 720px) {
+  .act-cell { height: 12px; }
+  .act-hour { display: none; }
+  .act-grid { grid-template-columns: max-content repeat(24, minmax(0, 1fr)); }
+}

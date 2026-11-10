@@ -6626,3 +6626,31 @@ func TestStoredRoadHeadlinesReadInTheCurrentShape(t *testing.T) {
 		t.Errorf("popup event = %q, want %q", detail.Event, "Przeszkoda — pojazd")
 	}
 }
+
+// TestDashboardActivityStrip pins the card that answers "was the station
+// working last Tuesday?" like VoxFlux's strip does: seven day rows, twenty-four
+// hour cells each, and the summary in the page language. An empty history (a
+// fresh station) still renders the grid — all dark — instead of an empty box.
+func TestDashboardActivityStrip(t *testing.T) {
+	env := newTestEnv(t)
+	env.login()
+	resp, body := env.get("/dashboard")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /dashboard = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body, `id="activity-section"`) {
+		t.Fatalf("dashboard has no activity card: %.300s", body)
+	}
+	if got := strings.Count(body, `class="act-day"`); got != 7 {
+		t.Errorf("activity rows = %d, want 7", got)
+	}
+	if got := strings.Count(body, `class="act-cell `); got != 7*24 {
+		t.Errorf("activity cells = %d, want %d", got, 7*24)
+	}
+	if !strings.Contains(body, `class="act-cell off"`) {
+		t.Errorf("an empty history does not render dark cells: %.400s", body)
+	}
+	if !strings.Contains(body, "Aktywność stacji") && !strings.Contains(body, "Station activity") {
+		t.Errorf("activity card is not titled: %.300s", body)
+	}
+}

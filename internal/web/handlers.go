@@ -196,6 +196,7 @@ type pageView struct {
 	Role     string
 	Status   statusView
 	Health   healthView
+	Activity activityView
 	Stats    dashStatsView
 	MQTT     mqttView
 	Plugins  pluginsView
@@ -707,6 +708,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Role:         sess.role,
 		Status:       s.buildStatusView(),
 		Health:       s.buildHealthView(s.langFor(r)),
+		Activity:     s.buildActivityStrip(r.Context(), s.langFor(r)),
 		Stats:        s.buildDashboardStats(s.langFor(r)),
 		MQTT:         s.buildMQTTView(snap),
 		Plugins:      s.buildPluginsView(),

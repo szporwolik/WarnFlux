@@ -785,6 +785,67 @@ func (h *Hub) readByteCtx(ctx context.Context, deadline time.Time) (byte, error)
 	}
 }
 
+// readLineCtx is readLine for a caller that may give up while the modem stays
+// silent: the context is checked on every byte, so cancelling a request frees
+// the modem immediately instead of at the deadline. The caller holds h.mu.
+func (h *Hub) readLineCtx(ctx context.Context, deadline time.Time) (string, error) {
+	var sb []byte
+	for {
+		b, err := h.readByteCtx(ctx, deadline)
+		if err != nil {
+			if len(sb) > 0 {
+				return string(sb), nil
+			}
+			return "", err
+		}
+		sb = append(sb, b)
+		if b == '\n' || len(sb) >= 4096 {
+			return string(sb), nil
+		}
+	}
+}
+
+// exchangeCtxLocked is exchangeLockedTimeout for a request that must be
+// abandonable: the context ends the wait, not only the caller's loop.
+func (h *Hub) exchangeCtxLocked(ctx context.Context, cmd, expect string, timeout time.Duration) ([]string, error) {
+	// The repair runs first: it may drop a session that stayed silent, and
+	// the command must not be written into that one.
+	h.repairDirtyLocked()
+	if h.conn == nil {
+		return nil, ErrNoModem
+	}
+	if cmd != "" {
+		if _, err := io.WriteString(h.conn, cmd+"\r"); err != nil {
+			return nil, fmt.Errorf("gsm: write %q: %w", cmd, err)
+		}
+	}
+	deadline := h.now().Add(timeout)
+	var lines []string
+	for {
+		if err := ctx.Err(); err != nil {
+			return lines, err
+		}
+		if h.now().After(deadline) {
+			return lines, ErrTimeout
+		}
+		line, err := h.readLineCtx(ctx, deadline)
+		if err != nil {
+			return lines, err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		switch {
+		case line == expect:
+			return lines, nil
+		case line == "ERROR":
+			return lines, fmt.Errorf("%w %q", ErrModemRejected, cmd)
+		}
+	}
+}
+
 // readLine reads one line (through '\n') with an absolute deadline; a
 // partial line accumulated when the deadline hits is returned as-is.
 func (h *Hub) readLine(deadline time.Time) (string, error) {

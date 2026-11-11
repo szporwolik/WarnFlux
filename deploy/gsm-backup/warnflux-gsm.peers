@@ -43,5 +43,7 @@ lcp-echo-failure 3
 # Never idle-disconnect: this link exists to be ready.
 idle 0
 
+ipparam warnflux-gsm
+
 connect "/usr/sbin/chat -s -T WarnFlux-gsm -f /etc/ppp/warnflux-gsm.chat"
 disconnect "/usr/sbin/chat -s -T WarnFlux-gsm-off -f /etc/ppp/warnflux-gsm-off.chat"

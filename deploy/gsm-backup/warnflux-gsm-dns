@@ -1,0 +1,97 @@
+#!/bin/sh
+# WarnFlux: the backup link's resolver entry — in, and out again.
+#
+#   warnflux-gsm-dns add <iface> <dns> [<dns2>]
+#   warnflux-gsm-dns remove <iface>
+#
+# /etc/resolv.conf is not ours alone: NetworkManager or systemd-resolved writes
+# it, and on most hosts it is a SYMLINK into a file the manager regenerates.
+# Replacing the path with "mv" turned that symlink into a plain file, after which
+# every later update from the manager landed in a file nobody read (WF-REV-05).
+# So: ask the resolver daemon when there is one; when there is not, write THROUGH
+# the path — ">" keeps the inode, so a symlink stays a symlink and the file the
+# manager maintains keeps receiving its updates.
+#
+# WARNFLUX_RESOLVCONF overrides the path. Tests only; the hooks never set it.
+set -u
+
+MARK="# warnflux-gsm-backup"
+CONF="${WARNFLUX_RESOLVCONF:-/etc/resolv.conf}"
+
+action="${1:-}"
+iface="${2:-}"
+if [ -z "$action" ] || [ -z "$iface" ]; then
+	echo "usage: warnflux-gsm-dns add|remove <iface> [dns...]" >&2
+	exit 2
+fi
+
+# resolved_active is true only when the daemon answers: "resolvectl" on a host
+# without systemd-resolved is an installed-but-unusable binary.
+resolved_active() {
+	command -v resolvectl >/dev/null 2>&1 || return 1
+	resolvectl status >/dev/null 2>&1
+}
+
+# conf_is_ours is false for the stub file resolved regenerates itself: editing it
+# by hand is overwritten within the minute and hides the real configuration.
+conf_is_ours() {
+	case "$(readlink -f "$CONF" 2>/dev/null || echo "$CONF")" in
+	/run/systemd/resolve/*) return 1 ;;
+	esac
+	return 0
+}
+
+# strip_block prints the file without the block this link added.
+strip_block() {
+	awk -v mark="$MARK" '
+		$0 == mark { skip = 1; next }
+		skip && $1 == "nameserver" { next }
+		{ skip = 0; print }
+	' "$CONF"
+}
+
+case "$action" in
+add)
+	shift 2
+	if resolved_active; then
+		resolvectl dns "$iface" "$@" >/dev/null 2>&1 || true
+		exit 0
+	fi
+	[ -f "$CONF" ] || exit 0
+	conf_is_ours || exit 0
+	tmp=$(mktemp) || exit 0
+	if ! strip_block >"$tmp"; then
+		rm -f "$tmp"
+		exit 0
+	fi
+	{
+		cat "$tmp"
+		printf '%s\n' "$MARK"
+		for ns in "$@"; do
+			printf 'nameserver %s\n' "$ns"
+		done
+	} >"$CONF"
+	rm -f "$tmp"
+	;;
+remove)
+	if resolved_active; then
+		resolvectl revert "$iface" >/dev/null 2>&1 || true
+		exit 0
+	fi
+	[ -f "$CONF" ] || exit 0
+	grep -qF "$MARK" "$CONF" 2>/dev/null || exit 0
+	conf_is_ours || exit 0
+	tmp=$(mktemp) || exit 0
+	if ! strip_block >"$tmp"; then
+		rm -f "$tmp"
+		exit 0
+	fi
+	cat "$tmp" >"$CONF"
+	rm -f "$tmp"
+	;;
+*)
+	echo "warnflux-gsm-dns: unknown action $action" >&2
+	exit 2
+	;;
+esac
+exit 0

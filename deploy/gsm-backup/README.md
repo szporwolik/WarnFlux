@@ -79,6 +79,17 @@ and the current state is readable in `/run/warnflux-net-watchdog/mode`.
   The `ip-up` script appends the operator's resolver as a **marked fallback
   block**, and `ip-down` removes exactly that block again. Without it a domain
   lookup during an outage would hang until the wired resolver timed out.
+  Both hooks call `/usr/local/sbin/warnflux-gsm-dns`, which never replaces
+  `/etc/resolv.conf`: when systemd-resolved is running it asks `resolvectl` for a
+  per-link server instead, and otherwise it rewrites the file **through** the
+  path, so a `resolv.conf` that is a symlink stays a symlink and keeps receiving
+  the manager's own updates. (`mv` over the path turned the symlink into a plain
+  file, and every later resolver update then landed in a file nobody read.)
+* **Only our own PPP profile is touched.** `ip-up.d`/`ip-down.d` are global, so
+  both hooks first require `ipparam warnflux-gsm` (sixth argument, set in the
+  peer file). A VPN or a second modem on `ppp1` therefore neither gets a route
+  pushed nor loses the backup link's resolver block, and the backup link keeps
+  working when it is assigned `ppp1` itself.
 
 ## Install
 
@@ -173,6 +184,14 @@ dialling:
 * Consequence: unattended operation needs a supervisor that power-cycles the
   modem before each dial attempt. `warnflux-gsm-backup.service` alone survives
   a dropped link, but not a modem that has latched into the `NO CARRIER` state.
+
+## Testing the hooks without touching the host
+
+`go test ./deploy/gsm-backup/` runs both hooks against a throwaway
+`resolv.conf`, a fake `ip` and a fake `resolvectl`. The hooks take two
+environment overrides used only there: `WARNFLUX_RESOLVCONF` (the file to edit)
+and `WARNFLUX_GSM_DNS` (the helper to call). Neither is set in production — the
+installed hooks use `/etc/resolv.conf` and `/usr/local/sbin/warnflux-gsm-dns`.
 
 ## Risks worth knowing
 

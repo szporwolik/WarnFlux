@@ -1,27 +1,39 @@
 #!/bin/sh
-# WarnFlux: the backup link's resolver entry — in, and out again.
+# WarnFlux: the backup link's resolver entries — in, out again, and in the right
+# order.
 #
-#   warnflux-gsm-dns add <iface> <dns> [<dns2>]
-#   warnflux-gsm-dns remove <iface>
+#   warnflux-gsm-dns add <iface> <dns> [<dns2>]     ip-up: wired resolvers first,
+#                                                  the operator's as a marked block
+#   warnflux-gsm-dns remove <iface>                 ip-down: take the block back out
+#   warnflux-gsm-dns prefer <iface> cellular|wired  failover: which one goes first
 #
-# /etc/resolv.conf is not ours alone: NetworkManager or systemd-resolved writes
-# it, and on most hosts it is a SYMLINK into a file the manager regenerates.
-# Replacing the path with "mv" turned that symlink into a plain file, after which
-# every later update from the manager landed in a file nobody read (WF-REV-05).
-# So: ask the resolver daemon when there is one; when there is not, write THROUGH
-# the path — ">" keeps the inode, so a symlink stays a symlink and the file the
-# manager maintains keeps receiving its updates.
+# Two facts shape this file.
+#
+# 1. /etc/resolv.conf is not ours alone: NetworkManager or systemd-resolved
+#    writes it, and on most hosts it is a SYMLINK into a file the manager
+#    regenerates. Replacing the path with "mv" turned that symlink into a plain
+#    file, after which every later update from the manager landed in a file
+#    nobody read (WF-REV-05). So: ask the resolver daemon when there is one;
+#    when there is not, write THROUGH the path — ">" keeps the inode, so a
+#    symlink stays a symlink and the manager's own updates stay visible.
+#
+# 2. The operator's resolvers answer on the mobile network only (measured:
+#    194.204.159.1 replies over ppp0, silent over eth0). They are therefore a
+#    FALLBACK entry, never the primary one — and the order matters: a resolver
+#    that cannot be reached costs a timeout on every single lookup, so during a
+#    failover the reachable one has to be first.
 #
 # WARNFLUX_RESOLVCONF overrides the path. Tests only; the hooks never set it.
 set -u
 
 MARK="# warnflux-gsm-backup"
+END_MARK="# warnflux-gsm-backup-end"
 CONF="${WARNFLUX_RESOLVCONF:-/etc/resolv.conf}"
 
 action="${1:-}"
 iface="${2:-}"
 if [ -z "$action" ] || [ -z "$iface" ]; then
-	echo "usage: warnflux-gsm-dns add|remove <iface> [dns...]" >&2
+	echo "usage: warnflux-gsm-dns add|remove|prefer <iface> [dns...]" >&2
 	exit 2
 fi
 
@@ -41,13 +53,69 @@ conf_is_ours() {
 	return 0
 }
 
-# strip_block prints the file without the block this link added.
-strip_block() {
-	awk -v mark="$MARK" '
-		$0 == mark { skip = 1; next }
-		skip && $1 == "nameserver" { next }
-		{ skip = 0; print }
+# The block is delimited on BOTH sides. A start-only marker swallowed whatever
+# resolver line followed it, so moving the block to the top for a failover made
+# the wired resolver part of it and the next reorder could not tell them apart.
+# A file written by the older single-marker version still parses: any line that
+# is not a resolver ends the block.
+
+# without_block prints the file minus the block this link added.
+without_block() {
+	awk -v start="$MARK" -v end="$END_MARK" '
+		$0 == start { inside = 1; next }
+		inside && $0 == end { inside = 0; next }
+		inside && $1 == "nameserver" { next }
+		inside { inside = 0 }
+		{ print }
 	' "$CONF"
+}
+
+# block_nameservers prints the resolvers inside the marked block.
+block_nameservers() {
+	awk -v start="$MARK" -v end="$END_MARK" '
+		$0 == start { inside = 1; next }
+		inside && $0 == end { inside = 0; next }
+		inside && $1 == "nameserver" { print $2; next }
+		inside { inside = 0 }
+	' "$CONF"
+}
+
+# plain_nameservers prints the resolvers outside the marked block.
+plain_nameservers() {
+	without_block | awk '$1 == "nameserver" { print $2 }'
+}
+
+# emit_group prints one resolver group, preceded by the marker when that group is
+# the operator block.
+emit_group() { # <file> [marked]
+	if [ "${2:-}" = "marked" ]; then
+		[ -s "$1" ] || return 0
+		printf '%s\n' "$MARK"
+	fi
+	while read -r ns; do
+		[ -n "$ns" ] && printf 'nameserver %s\n' "$ns"
+	done <"$1"
+	if [ "${2:-}" = "marked" ] && [ -s "$1" ]; then
+		printf '%s\n' "$END_MARK"
+	fi
+}
+
+# write_conf rebuilds the file: everything that is not a resolver, then the two
+# groups in the requested order.
+write_conf() { # <wired-file> <operator-file> <order>
+	work=$(mktemp) || return 1
+	{
+		without_block | grep -vE '^[[:space:]]*nameserver[[:space:]]'
+		if [ "$3" = "cellular" ]; then
+			emit_group "$2" marked
+			emit_group "$1"
+		else
+			emit_group "$1"
+			emit_group "$2" marked
+		fi
+	} >"$work"
+	cat "$work" >"$CONF"
+	rm -f "$work"
 }
 
 case "$action" in
@@ -59,19 +127,23 @@ add)
 	fi
 	[ -f "$CONF" ] || exit 0
 	conf_is_ours || exit 0
-	tmp=$(mktemp) || exit 0
-	if ! strip_block >"$tmp"; then
-		rm -f "$tmp"
-		exit 0
+
+	operator=$(mktemp) || exit 0
+	wired=$(mktemp) || exit 0
+	for ns in "$@"; do
+		printf '%s\n' "$ns" >>"$operator"
+	done
+	# pppd's own ip-up.d/0000usepeerdns rewrites the file with the PPP resolvers
+	# alone; its pre-connect copy is the only remaining record of the wired side.
+	if [ -f "$CONF.pppd-backup.$iface" ]; then
+		awk '$1 == "nameserver" { print $2 }' "$CONF.pppd-backup.$iface" >"$wired"
+	else
+		plain_nameservers | while read -r ns; do
+			grep -qxF "$ns" "$operator" || printf '%s\n' "$ns"
+		done >"$wired"
 	fi
-	{
-		cat "$tmp"
-		printf '%s\n' "$MARK"
-		for ns in "$@"; do
-			printf 'nameserver %s\n' "$ns"
-		done
-	} >"$CONF"
-	rm -f "$tmp"
+	write_conf "$wired" "$operator" wired
+	rm -f "$wired" "$operator"
 	;;
 remove)
 	if resolved_active; then
@@ -81,13 +153,34 @@ remove)
 	[ -f "$CONF" ] || exit 0
 	grep -qF "$MARK" "$CONF" 2>/dev/null || exit 0
 	conf_is_ours || exit 0
-	tmp=$(mktemp) || exit 0
-	if ! strip_block >"$tmp"; then
-		rm -f "$tmp"
+	empty=$(mktemp) || exit 0
+	wired=$(mktemp) || exit 0
+	plain_nameservers >"$wired"
+	write_conf "$wired" "$empty" wired
+	rm -f "$empty" "$wired"
+	;;
+prefer)
+	order="${3:-}"
+	case "$order" in
+	cellular | wired) ;;
+	*)
+		echo "warnflux-gsm-dns prefer <iface> cellular|wired" >&2
+		exit 2
+		;;
+	esac
+	if resolved_active; then
+		# The daemon orders the servers per link by itself.
 		exit 0
 	fi
-	cat "$tmp" >"$CONF"
-	rm -f "$tmp"
+	[ -f "$CONF" ] || exit 0
+	grep -qF "$MARK" "$CONF" 2>/dev/null || exit 0
+	conf_is_ours || exit 0
+	operator=$(mktemp) || exit 0
+	wired=$(mktemp) || exit 0
+	block_nameservers >"$operator"
+	plain_nameservers >"$wired"
+	write_conf "$wired" "$operator" "$order"
+	rm -f "$wired" "$operator"
 	;;
 *)
 	echo "warnflux-gsm-dns: unknown action $action" >&2

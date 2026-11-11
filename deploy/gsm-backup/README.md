@@ -85,6 +85,15 @@ and the current state is readable in `/run/warnflux-net-watchdog/mode`.
   path, so a `resolv.conf` that is a symlink stays a symlink and keeps receiving
   the manager's own updates. (`mv` over the path turned the symlink into a plain
   file, and every later resolver update then landed in a file nobody read.)
+  The operator's resolvers answer on the mobile network only (measured:
+  `194.204.159.1` replies over `ppp0` and stays silent over `eth0`), so they are
+  a fallback entry and the wired resolver has to survive pppd's own
+  `ip-up.d/0000usepeerdns`, which rewrites the file with the PPP resolvers
+  alone — the helper restores the wired entries from pppd's pre-connect copy.
+  Order follows the working link: while the wire is dead the watchdog calls
+  `warnflux-gsm-dns prefer ppp0 cellular`, because a first entry that cannot be
+  reached costs a timeout on every lookup; the recovery puts the wired one back
+  on top.
 * **Only our own PPP profile is touched.** `ip-up.d`/`ip-down.d` are global, so
   both hooks first require `ipparam warnflux-gsm` (sixth argument, set in the
   peer file). A VPN or a second modem on `ppp1` therefore neither gets a route

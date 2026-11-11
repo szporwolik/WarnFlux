@@ -20,6 +20,7 @@ set -u
 PRIMARY_IFACE="${PRIMARY_IFACE:-eth0}"
 PROBE_HOSTS="${PROBE_HOSTS:-1.1.1.1 8.8.8.8 9.9.9.9}"
 CELLULAR_IFACE="${CELLULAR_IFACE:-ppp0}"
+DNS_HELPER="${WARNFLUX_GSM_DNS:-/usr/local/sbin/warnflux-gsm-dns}"
 # Outranks the wired metric (100) and nothing else: it exists only while the
 # wire is dead, so it can never compete with a healthy Ethernet.
 FORCED_METRIC="${FORCED_METRIC:-50}"
@@ -61,14 +62,21 @@ cellular_has_default() {
 }
 
 # Give the cellular link a route above the wired metric (idempotent).
+#
+# The resolver order follows the route. The operator's resolvers answer on the
+# mobile network only, so while the wire is dead the wired one at the top of
+# /etc/resolv.conf is a black hole: every lookup would wait out its timeout
+# before falling through to a server that answers.
 raise_cellular() {
 	ip route replace default dev "$CELLULAR_IFACE" metric "$FORCED_METRIC" 2>/dev/null || true
+	"$DNS_HELPER" prefer "$CELLULAR_IFACE" cellular 2>/dev/null || true
 }
 
 # Take back exactly the route this script added; pppd's own metric-700 route
 # stays, so the backup is still one probe away from being used.
 lower_cellular() {
 	ip route del default dev "$CELLULAR_IFACE" metric "$FORCED_METRIC" 2>/dev/null || true
+	"$DNS_HELPER" prefer "$CELLULAR_IFACE" wired 2>/dev/null || true
 }
 
 mode=$(cat "$MODE_FILE" 2>/dev/null || echo primary)

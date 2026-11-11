@@ -1,36 +1,60 @@
 # WarnFlux
 
 > **Alerts in. Action out.**
+>
+> Running live as **[SOSNA](https://sosna.sp9moa.pl)** — the community alert
+> station of the [Niepołomice Amateur Radio Club SP9MOA](https://sp9moa.pl).
 
 ![WarnFlux logo](assets/logo.png)
 
-## ⚠️ Work in progress — do not install
+## Status: deep testing on one live station
 
-**This repository contains a very early, pre-release version of the
-product.** WarnFlux is under active development and is **not ready to be
-installed, deployed or used for real-world operation**. Please do not
-build your own installation from this code yet.
+WarnFlux is not finished, and it is not pretending to be. The code is being
+tested in depth on a **single live installation**: **SOSNA** — *Społeczny
+Otwarty System Notyfikacji i Alertów* ("Community Open Notification and Alert
+System") — run by the **[Niepołomice Amateur Radio Club SP9MOA](https://sp9moa.pl)**
+for Kraków and the neighbouring municipalities in southern Poland.
 
-- Everything here is experimental and unfinished.
-- There is no stable release, no upgrade path and no compatibility
-  promise: configuration, storage, APIs and wire formats may change at
-  any time, without notice and without migration paths.
-- There are no availability, security or data-integrity guarantees.
-- An installation made from this code today can break, lose data or
-  change behavior with the next commit.
+SOSNA is where every change lands first: real feeds from public providers, real
+APRS and LoRa radios, a real GSM modem, real operators on duty and real people
+waiting for a warning to arrive in time. What you see in this repository is the
+engine behind that station, hardened against the failures a 24/7 station
+actually meets — dropped radio sessions, a flapping uplink, a modem that
+re-enumerates, a provider that changes its schema.
 
-If you are looking for a working alert/EMCOM system to run, **this is not
-the place yet** — come back once a stable release is announced.
+**See it working: <https://sosna.sp9moa.pl>** — live hazard map, message archive
+and the station's own health. That is the best picture of what WarnFlux is meant
+to be.
 
-## What WarnFlux is (planned)
+### Not ready for other installations yet
 
-A local-first EMCOM hub: it aggregates hazard information from pluggable
-sources (official warnings and incident feeds, weather and air quality,
-radio and mesh traffic — see *Data sources* below), tracks a durable event
-lifecycle in SQLite and delivers every meaningful change to outputs, with
-APRS/Meshtastic radio gateways and a web panel. Most of these pieces exist
-in early form and are being hardened; none of them is considered
-production-ready.
+Running WarnFlux yourself is **not supported at this stage**, and the code is
+not published with that expectation:
+
+- configuration, storage schema, APIs and wire formats still change without a
+  migration path;
+- there is no stable release, no upgrade promise and no compatibility policy;
+- there are no availability, security or data-integrity guarantees for a
+  deployment you build from these sources;
+- an installation made from today's code can break, lose data or change
+  behaviour with the next commit.
+
+The club runs one instance, deliberately, so that every defect is found where it
+hurts least and fixed before anyone else depends on it. When the project is
+ready to be installed elsewhere, this page will say so — until then, watch
+SOSNA, read the sources, open an issue, and come back for the release.
+
+## What WarnFlux is
+
+A local-first EMCOM hub: it aggregates hazard information from pluggable sources
+(official warnings and incident feeds, weather and air quality, radio and mesh
+traffic — see *Data sources* below), tracks a durable event lifecycle in SQLite
+and delivers every meaningful change to the outputs — e-mail, SMS, Discord,
+APRS, Meshtastic — with a web panel for the operators on duty.
+
+Everything described here runs on the SOSNA station today. It is still being
+hardened: see the status section above before pointing it at anything you care
+about.
 
 ## Data sources
 
@@ -54,8 +78,10 @@ it came from and links back to it.
 
 ## For developers
 
-Contributions and testing are welcome. The commands below are the
-development entry point, **not an installation guide**.
+Contributions, bug reports and testing are welcome — the review rounds that
+shaped this code all came from running it on a real station and writing down
+what broke. The commands below are the development entry point, **not an
+installation guide**.
 
 - [config.example.yaml](config.example.yaml) — every option, commented
 - [docs/plugins.md](docs/plugins.md) — plugin contracts and rules

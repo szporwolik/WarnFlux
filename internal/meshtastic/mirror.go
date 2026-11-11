@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/szporwolik/WarnFlux/internal/websafe"
 )
 
 // MirrorConfig forwards the club channel's traffic to a Discord webhook: every
@@ -140,26 +142,35 @@ func (m *trafficMirror) offer(msg mirrorMsg) {
 // post sends one webhook request. Failures are logged and otherwise ignored:
 // the mirror is an observer, never a delivery guarantee.
 func (m *trafficMirror) post(msg mirrorMsg) {
-	body := map[string]any{"content": mirrorContent(msg)}
+	// Radio text is written by whoever is on the channel: it must never be
+	// able to ping a user, a role or @everyone on Discord. An empty parse list
+	// means "resolve no mentions at all", which leaves the text readable and
+	// the notification bell silent.
+	body := map[string]any{
+		"content":          mirrorContent(msg),
+		"allowed_mentions": map[string]any{"parse": []string{}},
+	}
 	if m.username != "" {
 		body["username"] = m.username
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		m.log.Warn("meshtastic: discord mirror payload failed", "error", err)
+		m.log.Warn("meshtastic: discord mirror payload failed", "error", websafe.Error(err, m.url))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.url, bytes.NewReader(payload))
 	if err != nil {
-		m.log.Warn("meshtastic: discord mirror request failed", "error", err)
+		m.log.Warn("meshtastic: discord mirror request failed", "error", websafe.Error(err, m.url))
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := m.client.Do(req)
 	if err != nil {
-		m.log.Warn("meshtastic: discord mirror post failed", "error", err)
+		// The transport error quotes the whole request URL, and a Discord
+		// webhook URL is a credential.
+		m.log.Warn("meshtastic: discord mirror post failed", "error", websafe.Error(err, m.url), "endpoint", websafe.RedactedURL(m.url))
 		return
 	}
 	defer resp.Body.Close()

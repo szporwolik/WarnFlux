@@ -1,9 +1,11 @@
 package meshtastic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -448,4 +450,101 @@ func TestMirrorTrafficFansOutToEveryChannelMirror(t *testing.T) {
 	if len(club) != 1 || !strings.Contains(club[0], "z klubowego") {
 		t.Fatalf("club webhook got %v, want only the club-channel message", club)
 	}
+}
+
+// TestTrafficMirrorRedactsTheWebhookToken is WF-REV-02: a transport failure
+// arrives as a *url.Error that quotes the request URL, and a Discord webhook
+// URL is a credential. The log must keep the kind of failure, never the token.
+func TestTrafficMirrorRedactsTheWebhookToken(t *testing.T) {
+	const token = "REVIEW_SECRET_TOKEN_VALUE"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// A closed listener: the connection is refused, so http.Client.Do returns a
+	// *url.Error carrying the full webhook URL.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL + "/api/webhooks/123456789012345678/" + token
+	srv.Close()
+
+	m := newTrafficMirror(MirrorConfig{WebhookURL: url}, nil)
+	if m == nil {
+		t.Fatal("mirror = nil")
+	}
+	m.log = logger
+	m.post(mirrorMsg{direction: "rx", sender: "a1b2c3d4", channel: "SOSNA", text: "hej"})
+
+	if strings.Contains(logs.String(), token) {
+		t.Fatalf("webhook token leaked into the log: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "discord mirror post failed") {
+		t.Errorf("the failure was not reported at all: %s", logs.String())
+	}
+}
+
+// TestTrafficMirrorBlocksMentions is WF-REV-08: radio text is written by
+// whoever is on the channel, so a mirrored message must never be able to ping a
+// Discord user, role or @everyone — not through the text and not through a
+// sender name.
+func TestTrafficMirrorBlocksMentions(t *testing.T) {
+	sink := &mentionSink{}
+	srv := httptest.NewServer(sink.handler())
+	defer srv.Close()
+
+	m := newTrafficMirror(MirrorConfig{WebhookURL: srv.URL}, nil)
+	m.post(mirrorMsg{
+		direction: "rx", sender: "<@123456789012345678>",
+		senderName: "@everyone", channel: "SOSNA",
+		text: "hej <@123456789012345678> <@&987654321098765432> @here",
+	})
+	payload := sink.wait(t)
+	mentions, ok := payload["allowed_mentions"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload has no allowed_mentions: %v", payload)
+	}
+	parse, _ := mentions["parse"].([]any)
+	if len(parse) != 0 {
+		t.Fatalf("allowed_mentions.parse = %v, want an empty list", parse)
+	}
+	// The text itself stays readable: blocking the ping must not censor the
+	// message a human wants to read.
+	if content, _ := payload["content"].(string); !strings.Contains(content, "<@123456789012345678>") {
+		t.Errorf("content was mangled: %q", content)
+	}
+}
+
+// mentionSink captures the decoded JSON body of one webhook call.
+type mentionSink struct {
+	mu      sync.Mutex
+	payload map[string]any
+	got     chan struct{}
+}
+
+func (s *mentionSink) handler() http.Handler {
+	if s.got == nil {
+		s.got = make(chan struct{}, 1)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		s.mu.Lock()
+		s.payload = body
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		select {
+		case s.got <- struct{}{}:
+		default:
+		}
+	})
+}
+
+func (s *mentionSink) wait(t *testing.T) map[string]any {
+	t.Helper()
+	select {
+	case <-s.got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the webhook was never called")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.payload
 }

@@ -195,6 +195,11 @@ func foldActivity(samples []storage.HeartbeatSample, now time.Time, lang string)
 		}
 	}
 
+	// The minute in progress is not counted anywhere: the numerator and the
+	// denominator then describe the same closed interval, and a clock that
+	// stepped back cannot contribute samples from the future.
+	cutoff := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), 0, 0, loc)
+
 	for d := 0; d < activityDays; d++ {
 		day := start.AddDate(0, 0, d)
 		row := activityRow{Day: day.Format("2006-01-02"), Label: day.Format("02.01")}
@@ -204,6 +209,9 @@ func foldActivity(samples []storage.HeartbeatSample, now time.Time, lang string)
 			problems := make(map[string]int, 2)
 			for m := 0; m < 60; m++ {
 				minute := time.Date(day.Year(), day.Month(), day.Day(), h, m, 0, 0, loc)
+				if !minute.Before(cutoff) {
+					break
+				}
 				sample, ok := byMinute[minute.UnixMilli()]
 				if !ok {
 					continue
@@ -228,8 +236,10 @@ func foldActivity(samples []storage.HeartbeatSample, now time.Time, lang string)
 	return v
 }
 
-// expectedMinutes is how many minutes of that hour existed at the time the page
-// was rendered — 0 for an hour that has not started.
+// expectedMinutes is how many whole minutes of that hour had passed by the time
+// the page was rendered — 0 for an hour that has not started. Whole minutes
+// only: the heartbeat also records the minute in progress, and counting that one
+// on the numerator side alone pushed the percentage past 100 (WF-REV-10).
 func expectedMinutes(day time.Time, hour int, now time.Time) int {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	switch {

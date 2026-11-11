@@ -1403,6 +1403,9 @@ func run(configPath string, checkConfig bool) error {
 		// The Help manual lists exactly the commands the interpreter
 		// answers (one source of truth, nothing to keep in sync).
 		webSrv.SetRadioCLI(radioCLI)
+		// Messages the radio could not take wait in the panel's queue and leave
+		// as soon as the device is back (the flusher runs until shutdown).
+		webSrv.SetMeshOutbox(store)
 		// The health card answers "why is SMS dead?" without the log.
 		webSrv.SetHardwareProbe(preflightMon)
 		// The same card says where the station's time comes from: the
@@ -1475,6 +1478,7 @@ func run(configPath string, checkConfig bool) error {
 	// these, so "was the station working last Tuesday?" has an answer without a
 	// journal dive. Started before the servers so the first minute is recorded.
 	go webSrv.RunHeartbeat(context.Background())
+	go webSrv.RunMeshOutbox(context.Background())
 	defer stop()
 
 	// Mobile APRS stations crossing the operational range announce on

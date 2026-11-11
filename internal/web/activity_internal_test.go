@@ -107,3 +107,50 @@ func itoa(n int) string {
 	}
 	return string(rune('0'+n/10)) + string(rune('0'+n%10))
 }
+
+// TestActivityNeverExceeds100 is WF-REV-10: the heartbeat records the minute in
+// progress, so counting it while the denominator stopped at now.Minute() reported
+// e.g. 9391 of 9390 minutes — 100.01 %. Both sides must describe the same closed
+// interval, and a clock that stepped back must not add samples from the future.
+func TestActivityNeverExceeds100(t *testing.T) {
+	cases := []struct {
+		name string
+		now  time.Time
+	}{
+		{"half a minute into the hour", time.Date(2026, 11, 11, 12, 30, 30, 0, time.UTC)},
+		{"the first minute", time.Date(2026, 11, 11, 0, 0, 10, 0, time.UTC)},
+		{"the last minute", time.Date(2026, 11, 11, 23, 59, 40, 0, time.UTC)},
+	}
+	for _, tc := range cases {
+		// Every minute from the start of the window up to and including the one
+		// the heartbeat just wrote: a perfect week of uptime.
+		var samples []storage.HeartbeatSample
+		start := stripStart(tc.now)
+		for i := 0; ; i++ {
+			ts := start.Add(time.Duration(i) * time.Minute)
+			if ts.After(tc.now) {
+				break
+			}
+			samples = append(samples, storage.HeartbeatSample{
+				MinuteMS: ts.UnixMilli(),
+				Level:    "ok",
+			})
+		}
+		v := foldActivity(samples, tc.now, "pl")
+		if v.Covered > v.Expected {
+			t.Errorf("%s: covered=%d exceeds expected=%d", tc.name, v.Covered, v.Expected)
+		}
+		if v.Percent > 100 || v.Percent < 0 {
+			t.Errorf("%s: percent=%.4f outside 0–100", tc.name, v.Percent)
+		}
+	}
+
+	// A clock that stepped back two hours leaves samples in the future; they must
+	// be ignored rather than counted against minutes that have not happened.
+	now := time.Date(2026, 11, 11, 10, 30, 0, 0, time.UTC)
+	samples := fillMinutes(now, 12, 0, 15, "ok")
+	v := foldActivity(samples, now, "pl")
+	if v.Covered != 0 || v.Expected <= 0 {
+		t.Errorf("future samples: covered=%d expected=%d, want 0 covered", v.Covered, v.Expected)
+	}
+}

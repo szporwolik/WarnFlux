@@ -20,6 +20,7 @@ set -u
 PRIMARY_IFACE="${PRIMARY_IFACE:-eth0}"
 PROBE_HOSTS="${PROBE_HOSTS:-1.1.1.1 8.8.8.8 9.9.9.9}"
 CELLULAR_IFACE="${CELLULAR_IFACE:-ppp0}"
+DNS_HELPER="${WARNFLUX_GSM_DNS:-/usr/local/sbin/warnflux-gsm-dns}"
 # Outranks the wired metric (100) and nothing else: it exists only while the
 # wire is dead, so it can never compete with a healthy Ethernet.
 FORCED_METRIC="${FORCED_METRIC:-50}"
@@ -31,7 +32,7 @@ PING_WAIT="${PING_WAIT:-2}"
 FAIL_THRESHOLD="${FAIL_THRESHOLD:-3}"
 OK_THRESHOLD="${OK_THRESHOLD:-3}"
 
-STATE_DIR="/run/warnflux-net-watchdog"
+STATE_DIR="${WARNFLUX_NET_STATE_DIR:-/run/warnflux-net-watchdog}"
 FAIL_FILE="$STATE_DIR/fail_streak"
 OK_FILE="$STATE_DIR/ok_streak"
 MODE_FILE="$STATE_DIR/mode"
@@ -60,26 +61,66 @@ cellular_has_default() {
 	ip route show default | grep -q "dev $CELLULAR_IFACE"
 }
 
+# forced_route_present reports whether OUR metric-50 default is really in the
+# table. The routing table, not the stored mode, is the source of truth: a
+# failed `ip route del` used to be swallowed, the mode was still written as
+# "primary" and the removal was never retried, so the station could keep paying
+# for cellular traffic while the panel said Ethernet had won (WF-R2-03).
+forced_route_present() {
+	ip route show default 2>/dev/null | grep -q "dev $CELLULAR_IFACE" &&
+		ip route show default 2>/dev/null | grep -q "metric $FORCED_METRIC"
+}
+
 # Give the cellular link a route above the wired metric (idempotent).
+#
+# The resolver order follows the route. The operator's resolvers answer on the
+# mobile network only, so while the wire is dead the wired one at the top of
+# /etc/resolv.conf is a black hole: every lookup would wait out its timeout
+# before falling through to a server that answers.
 raise_cellular() {
 	ip route replace default dev "$CELLULAR_IFACE" metric "$FORCED_METRIC" 2>/dev/null || true
+	if ! forced_route_present; then
+		log "could not raise the cellular default route (metric $FORCED_METRIC) — will retry"
+		return 1
+	fi
+	"$DNS_HELPER" ensure "$CELLULAR_IFACE" cellular 2>/dev/null || true
+	return 0
 }
 
 # Take back exactly the route this script added; pppd's own metric-700 route
 # stays, so the backup is still one probe away from being used.
 lower_cellular() {
 	ip route del default dev "$CELLULAR_IFACE" metric "$FORCED_METRIC" 2>/dev/null || true
+	if forced_route_present; then
+		# Still there: the mode must keep saying "cellular" so the next pass
+		# tries again instead of announcing a recovery that did not happen.
+		log "could not take the cellular default route back out — will retry"
+		return 1
+	fi
+	"$DNS_HELPER" ensure "$CELLULAR_IFACE" wired 2>/dev/null || true
+	return 0
 }
 
 mode=$(cat "$MODE_FILE" 2>/dev/null || echo primary)
+
+# Re-assert the fallback resolvers on every pass, not only on a transition:
+# NetworkManager rewrites /etc/resolv.conf whenever the wired network changes and
+# silently takes the operator's entry with it. ensure is a no-op when the block
+# is present and already in the right order.
+if cellular_has_default; then
+	dns_order=wired
+	[ "$mode" = "cellular" ] && dns_order=cellular
+	"$DNS_HELPER" ensure "$CELLULAR_IFACE" "$dns_order" 2>/dev/null || true
+fi
 
 if wired_answers; then
 	write_int 0 "$FAIL_FILE"
 	write_int $(($(read_int "$OK_FILE") + 1)) "$OK_FILE"
 	if [ "$mode" != "primary" ] && [ "$(read_int "$OK_FILE")" -ge "$OK_THRESHOLD" ]; then
-		lower_cellular
-		echo primary >"$MODE_FILE"
-		log "wired uplink is back after $(read_int "$OK_FILE") checks — Ethernet wins again, cellular route demoted"
+		if lower_cellular; then
+			echo primary >"$MODE_FILE"
+			log "wired uplink is back after $(read_int "$OK_FILE") checks — Ethernet wins again, cellular route demoted"
+		fi
 	fi
 	exit 0
 fi
@@ -100,7 +141,11 @@ if ! cellular_has_default; then
 	exit 1
 fi
 
-raise_cellular
+if ! raise_cellular; then
+	# The route did not appear: keep the previous mode so the next pass retries
+	# instead of claiming a failover that is not in the routing table.
+	exit 1
+fi
 if [ "$mode" != "cellular" ]; then
 	echo cellular >"$MODE_FILE"
 	log "wired uplink is down after $(read_int "$FAIL_FILE") checks — cellular default raised to metric $FORCED_METRIC"

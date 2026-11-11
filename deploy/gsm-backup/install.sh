@@ -26,6 +26,7 @@ fi
 install -m 0644 "$here/warnflux-gsm.chat" /etc/ppp/warnflux-gsm.chat
 install -m 0644 "$here/warnflux-gsm-off.chat" /etc/ppp/warnflux-gsm-off.chat
 install -m 0644 "$here/warnflux-gsm.peers" /etc/ppp/peers/warnflux-gsm
+install -m 0755 "$here/warnflux-gsm-dns" /usr/local/sbin/warnflux-gsm-dns
 install -m 0755 "$here/90-warnflux-gsm" /etc/ppp/ip-up.d/90-warnflux-gsm
 install -m 0755 "$here/90-warnflux-gsm-down" /etc/ppp/ip-down.d/90-warnflux-gsm
 install -m 0644 "$here/warnflux-gsm-backup.service" /etc/systemd/system/warnflux-gsm-backup.service
@@ -50,4 +51,5 @@ fi
 echo
 echo "Installed. Verify with: sudo warnflux-gsm-status"
 echo "The station's SMS session is untouched: it owns the AT interface (if00)."
+echo "Both hooks act only for ipparam warnflux-gsm, so other PPP links are left alone."
 echo "The watchdog probes the wired uplink every 30 s and only then raises the cellular route."

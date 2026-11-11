@@ -1222,6 +1222,29 @@ CREATE TABLE station_heartbeat (
 );
 `,
 	},
+	{
+		// v72: messages an operator asked for while the radio was between
+		// sessions. A web direct message used to fail outright in that window
+		// and the text was lost; the row survives the reconnect and the
+		// dispatcher sends it as soon as the device is back. sent_ms NULL =
+		// still waiting, attempts/last_error = why the previous tries failed.
+		SQL: `
+CREATE TABLE mesh_outbox (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	kind TEXT NOT NULL,
+	target_id TEXT NOT NULL DEFAULT '',
+	label TEXT NOT NULL DEFAULT '',
+	channel_idx INTEGER NOT NULL DEFAULT 0,
+	text TEXT NOT NULL,
+	operator TEXT NOT NULL DEFAULT '',
+	created_ms INTEGER NOT NULL,
+	attempts INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
+	sent_ms INTEGER
+);
+CREATE INDEX mesh_outbox_pending ON mesh_outbox (sent_ms, id);
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

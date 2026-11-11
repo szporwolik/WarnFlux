@@ -1,15 +1,22 @@
 #!/bin/sh
 # WarnFlux: runs when the cellular backup link goes down (pppd ip-down.d).
 # Removes ONLY the block the ip-up script added; the wired resolvers stay.
+#
+# The ipparam check matters here even more than on the way up: ip-down.d is
+# global, and an unrelated PPP link going down must never strip the resolver of
+# a backup link that is still carrying traffic (WF-REV-06).
 set -u
-MARK="# warnflux-gsm-backup"
-[ -f /etc/resolv.conf ] || exit 0
-grep -qF "$MARK" /etc/resolv.conf 2>/dev/null || exit 0
-# Drop the marker line plus the nameserver lines that follow it.
-awk -v mark="$MARK" '
-	$0 == mark { skipping = 1; next }
-	skipping && $1 == "nameserver" { next }
-	{ skipping = 0; print }
-' /etc/resolv.conf >/etc/resolv.conf.warnflux-gsm.tmp &&
-	mv /etc/resolv.conf.warnflux-gsm.tmp /etc/resolv.conf
+
+PROFILE="warnflux-gsm"
+DNS_HELPER="${WARNFLUX_GSM_DNS:-/usr/local/sbin/warnflux-gsm-dns}"
+
+[ "${6:-}" = "$PROFILE" ] || exit 0
+IFACE="${1:-${PPP_IFACE:-}}"
+[ -n "$IFACE" ] || exit 0
+
+"$DNS_HELPER" remove "$IFACE" || true
+# Only this session's own record goes: the global /etc/ppp/resolv.conf belongs
+# to whichever profile is alive, not to us.
+STATE_DIR="${WARNFLUX_GSM_STATE_DIR:-/run/warnflux-gsm}"
+rm -f "$STATE_DIR/$IFACE.dns" 2>/dev/null || true
 exit 0

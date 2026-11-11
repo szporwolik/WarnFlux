@@ -1,6 +1,12 @@
 #!/bin/sh
 # WarnFlux: runs when the cellular backup link comes up (pppd ip-up.d).
 #
+# pppd calls this as: $1 iface, $2 tty, $3 speed, $4 local-IP, $5 remote-IP,
+# $6 ipparam. The ipparam check is not decoration: ip-up.d is GLOBAL, so without
+# it any other PPP link on the host (a VPN, a second modem) would have this
+# script rewrite the routing table and the resolver for a link it does not own
+# (WF-REV-06). Peer file: "ipparam warnflux-gsm".
+#
 # Two jobs, both idempotent:
 #   1. Make sure the backup default route exists with a metric ABOVE Ethernet,
 #      whatever pppd's own route handling decided.
@@ -8,22 +14,36 @@
 #      owns /etc/resolv.conf and names only the wired gateway; during an ISP
 #      outage that address stops answering, and a resolver list without a
 #      second entry leaves every domain lookup hanging — SMTP, Discord, KPD,
-#      every internet-backed source. The block is marked so ip-down can take
+#      every internet-backed source. The entry is marked so ip-down takes
 #      exactly it back out.
 set -u
 
-IFACE="${PPP_IFACE:-ppp0}"
-MARK="# warnflux-gsm-backup"
+PROFILE="warnflux-gsm"
+DNS_HELPER="${WARNFLUX_GSM_DNS:-/usr/local/sbin/warnflux-gsm-dns}"
+
+[ "${6:-}" = "$PROFILE" ] || exit 0
+IFACE="${1:-${PPP_IFACE:-}}"
+[ -n "$IFACE" ] || exit 0
 
 ip route replace default dev "$IFACE" metric 700 2>/dev/null || true
 
+# Our own record of what this session learned. The mirror of /etc/ppp/resolv.conf
+# is shared by every PPP profile on the host, so the watchdog cannot use it to
+# rebuild OUR fallback entry later (WF-R3-02). The file is per interface, which
+# also covers a reconnect that lands on ppp1.
+STATE_DIR="${WARNFLUX_GSM_STATE_DIR:-/run/warnflux-gsm}"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+{
+	printf '# warnflux-gsm session %s\n' "$IFACE"
+	[ -n "${DNS1:-}" ] && printf 'nameserver %s\n' "$DNS1"
+	[ -n "${DNS2:-}" ] && printf 'nameserver %s\n' "$DNS2"
+} >"$STATE_DIR/$IFACE.dns" 2>/dev/null || true
+
 if [ -n "${DNS1:-}" ]; then
-	if ! grep -qF "$MARK" /etc/resolv.conf 2>/dev/null; then
-		{
-			echo "$MARK"
-			echo "nameserver $DNS1"
-			[ -n "${DNS2:-}" ] && echo "nameserver $DNS2"
-		} >>/etc/resolv.conf
+	if [ -n "${DNS2:-}" ]; then
+		"$DNS_HELPER" add "$IFACE" "$DNS1" "$DNS2" || true
+	else
+		"$DNS_HELPER" add "$IFACE" "$DNS1" || true
 	fi
 fi
 exit 0

@@ -244,14 +244,26 @@ func checkPublication(doc *messageContainer) (*messageContainer, error) {
 // datexTimeLayout is the timestamp form KPD uses: local Polish time, no zone.
 const datexTimeLayout = "2006-01-02T15:04:05"
 
-// parseTime reads a DATEX timestamp as station-local time (the service writes
-// Polish local time without an offset).
+// datexZone is the zone KPD writes its timestamps in. Poland runs a single
+// zone, and the offset is left out of the payload, so the answer must come from
+// the provider's convention — never from the station's own time.Local, which a
+// container may well keep on UTC. Without a zoneinfo database the fallback is
+// plain CET: an hour off in summer beats a shifted alert window nobody notices.
+var datexZone = func() *time.Location {
+	if loc, err := time.LoadLocation("Europe/Warsaw"); err == nil {
+		return loc
+	}
+	return time.FixedZone("CET", 60*60)
+}()
+
+// parseTime reads a DATEX timestamp as Polish local time (the service writes
+// Polish local time without an offset); an explicit offset is respected.
 func parseTime(s string) (time.Time, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return time.Time{}, false
 	}
-	if t, err := time.ParseInLocation(datexTimeLayout, s, time.Local); err == nil {
+	if t, err := time.ParseInLocation(datexTimeLayout, s, datexZone); err == nil {
 		return t, true
 	}
 	if t, err := time.Parse(time.RFC3339, s); err == nil {

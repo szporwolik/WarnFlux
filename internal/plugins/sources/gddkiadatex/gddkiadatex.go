@@ -67,8 +67,11 @@ type Config struct {
 // Source polls the KPD snapshot-pull service. Each pull is a COMPLETE provider
 // snapshot, so disappearances are reconciled against the active state.
 type Source struct {
-	cfg       Config
-	client    *Client
+	cfg    Config
+	client *Client
+	// fetch is the one seam a test can replace: the snapshot body this poll
+	// works on. Production always uses the signed client above.
+	fetch     func(context.Context) ([]byte, error)
 	centerLat float64
 	centerLon float64
 	radiusKM  float64
@@ -139,9 +142,11 @@ func New(node *yaml.Node, hub *aprs.Hub) (plugin.SourcePlugin, error) {
 		return nil, fmt.Errorf("radius_km must be between 1 and 1000, got %v", radius)
 	}
 
+	client := NewClient(cfg.Endpoint, s, cfg.RequestTimeout)
 	return &Source{
 		cfg:       cfg,
-		client:    NewClient(cfg.Endpoint, s, cfg.RequestTimeout),
+		client:    client,
+		fetch:     client.Fetch,
 		centerLat: centerLat,
 		centerLon: centerLon,
 		radiusKM:  radius,
@@ -206,7 +211,7 @@ func (s *Source) Run(ctx context.Context, emit plugin.Emitter) error {
 // pollOnce pulls the snapshot, filters it to the configured area, emits the
 // survivors and reconciles the ones that disappeared.
 func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
-	body, err := s.client.Fetch(ctx)
+	body, err := s.fetch(ctx)
 	if err != nil {
 		return err
 	}
@@ -217,7 +222,13 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 
 	now := time.Now()
 	seen := make(map[string]core.HazardEvent)
-	filtered, total := 0, 0
+	// present is every active record the provider still lists, normalized or
+	// not. A record the parser cannot turn into an event (no point geometry,
+	// a shape this build does not know) has NOT disappeared: leaving it out of
+	// the reconciliation set would withdraw a live alert because of a local
+	// parsing gap (WF-R3-03). Its last good state simply stays as it was.
+	present := make(map[string]bool)
+	filtered, degraded, total := 0, 0, 0
 	for _, sit := range doc.Payload.Situations {
 		for _, rec := range sit.Records {
 			if ctx.Err() != nil {
@@ -227,8 +238,17 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 			if total > maxRecords {
 				return fmt.Errorf("publication carries more than %d records", maxRecords)
 			}
+			if key, ok := activeKey(rec); ok {
+				present[key] = true
+			}
 			ev, err := normalize(rec, s.cfg.Endpoint)
 			if err != nil {
+				if !isDeliberateSkip(err) {
+					degraded++
+					slog.Warn("gddkia-datex record could not be read; keeping its last state",
+						"record", rec.ID, "reason", err.Error())
+					continue
+				}
 				slog.Debug("gddkia-datex record skipped", "record", rec.ID, "reason", err.Error())
 				filtered++
 				continue
@@ -243,7 +263,16 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 		}
 	}
 
-	keys := make(map[string]bool, len(seen))
+	// keys is what the provider says EXISTS, which is not the same thing as
+	// what this poll managed to persist. A failed update must never remove the
+	// key: reconciliation reads that set as "the provider no longer lists it"
+	// and would cancel an alert that is still running — a local write hiccup
+	// turning into a false all-clear.
+	keys := make(map[string]bool, len(present)+len(seen))
+	for key := range present {
+		keys[key] = true
+	}
+	failed := 0
 	for key, ev := range seen {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -254,19 +283,39 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 				return ctx.Err()
 			}
 			slog.Warn("gddkia-datex emit failed; retrying on the next poll", "event_key", key, "error", err)
-			delete(keys, key)
+			failed++
 		}
 	}
-	if _, err := snapshotutil.Reconcile(ctx, emit, sourceName, keys, now); err != nil && ctx.Err() == nil {
-		slog.Warn("gddkia-datex reconciliation failed", "error", err)
+	if failed > 0 {
+		// Without a complete picture of what was written, a destructive pass is
+		// not safe: the next poll re-reads the same snapshot and retries both
+		// the writes and the disappearances.
+		slog.Info("gddkia-datex feed processed",
+			"records", total, "in_area", len(keys), "filtered", filtered, "emit_failed", failed, "reconciled", false)
+		return fmt.Errorf("%d of %d records could not be persisted", failed, len(keys))
+	}
+	if _, err := snapshotutil.Reconcile(ctx, emit, sourceName, keys, now); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// A reconciliation failure means the source's view and the station's
+		// may have diverged: report it instead of returning success.
+		slog.Info("gddkia-datex feed processed",
+			"records", total, "in_area", len(keys), "filtered", filtered, "reconciled", false)
+		return fmt.Errorf("reconcile disappearances: %w", err)
 	}
 	slog.Info("gddkia-datex feed processed",
-		"records", total, "in_area", len(keys), "filtered", filtered)
+		"records", total, "in_area", len(keys), "filtered", filtered, "unreadable", degraded)
 	if stats, ok := emit.(plugin.SourceStatsReporter); ok {
 		stats.ReportSourceStats(fmt.Sprintf("%d / %d in area", len(keys), total))
 	}
 	if fr, ok := emit.(plugin.SourceFilterReporter); ok {
 		fr.ReportSourceFiltered(filtered)
+	}
+	if degraded > 0 {
+		// The alerts are intact (their keys were kept), but this build is not
+		// reading every active record: say so instead of reporting a clean poll.
+		return fmt.Errorf("%d active records could not be read; their last state was kept", degraded)
 	}
 	return nil
 }

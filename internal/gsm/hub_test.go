@@ -20,6 +20,11 @@ import (
 type fakePort struct {
 	ch   chan byte
 	done chan struct{}
+	// vtime emulates the serial port's VTIME: a read with no data returns an
+	// empty read (io.EOF in Go) instead of blocking forever. Without it a
+	// context-aware reader could never notice a cancellation, which is the very
+	// behaviour WF-REV-04 is about.
+	vtime time.Duration
 
 	mu     sync.Mutex
 	writes bytes.Buffer
@@ -27,7 +32,7 @@ type fakePort struct {
 }
 
 func newFakePort() *fakePort {
-	return &fakePort{ch: make(chan byte, 8192), done: make(chan struct{})}
+	return &fakePort{ch: make(chan byte, 8192), done: make(chan struct{}), vtime: 20 * time.Millisecond}
 }
 
 // logBuffer is a slog sink safe for a goroutine under test and its reader.
@@ -64,6 +69,9 @@ func (f *fakePort) Read(p []byte) (int, error) {
 		p[0] = b
 		return 1, nil
 	case <-f.done:
+		return 0, io.EOF
+	case <-time.After(f.vtime):
+		// No data yet — the same "empty VTIME read" a real device produces.
 		return 0, io.EOF
 	}
 }

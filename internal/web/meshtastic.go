@@ -183,6 +183,13 @@ type meshtasticView struct {
 	// Send-form feedback (query flashes).
 	Error string
 	Sent  bool
+	// Queued is set when the message went into the outbox instead of the air.
+	Queued bool
+
+	// Outbox is the panel's queue list: what is waiting for the radio,
+	// what went out and what was abandoned.
+	Outbox        []meshOutboxView
+	OutboxWaiting int
 
 	// nodes tab
 	Snap     mesh.Snapshot
@@ -217,6 +224,7 @@ func (s *Server) handleMeshtasticPage(w http.ResponseWriter, r *http.Request) {
 		v.Tab = "msgs"
 	}
 	v.Sent = r.URL.Query().Get("sent") == "1"
+	v.Queued = r.URL.Query().Get("queued") == "1"
 	v.Error = r.URL.Query().Get("err")
 	w.Header().Set("Cache-Control", "no-store")
 
@@ -224,6 +232,7 @@ func (s *Server) handleMeshtasticPage(w http.ResponseWriter, r *http.Request) {
 	// (Tab only preselects the visible one, e.g. /meshtastic?tab=nodes).
 	s.fillMeshtasticNodes(r, &v)
 	s.fillMeshtasticMessages(r, &v)
+	s.fillMeshOutbox(r.Context(), &v)
 
 	// Map tab data: our own node position when the device reported one;
 	// without it the initial view falls back to the operational area
@@ -711,7 +720,8 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 	} else {
 		text = mesh.PlainText(text)
 	}
-	var err error
+	// Resolve the destination once: both the send and the queue entry need it.
+	item := storage.MeshOutboxItem{Text: text, Operator: sess.username}
 	if r.PostFormValue("target") == "contact" {
 		// The contact field accepts an 8-hex id, a node name or a short
 		// name (the directory resolves the latter two) — typing a name
@@ -725,16 +735,54 @@ func (s *Server) handleMeshtasticSend(w http.ResponseWriter, r *http.Request) {
 				i18n.T(s.langFor(r), "meshtastic.contact_not_found"), r.PostFormValue("contact"))), http.StatusSeeOther)
 			return
 		}
-		err = s.meshtastic.SendContactMessage(r.Context(), id, text, sess.username)
+		item.Kind = "dm"
+		item.TargetID = id
+		item.Label = s.meshOutboxLabel(id)
 	} else {
 		idx, ok := meshtasticChannelIndex(r.PostFormValue("channel_idx"))
 		if !ok {
 			http.Redirect(w, r, page("err", i18n.T(s.langFor(r), "meshtastic.bad_channel")), http.StatusSeeOther)
 			return
 		}
-		err = s.meshtastic.SendChannelText(r.Context(), idx, text, sess.username)
+		item.Kind = "channel"
+		item.ChannelIdx = idx
+		item.Label = s.meshtastic.ChannelLabel(idx)
+	}
+
+	// A radio that is not connected is known before the attempt: queue the
+	// message at once instead of making the operator wait out the send budget
+	// to be told the device is away.
+	if s.meshOutbox != nil && !s.meshtastic.Connected() {
+		if qerr := s.enqueueMeshOutbox(r.Context(), item); qerr == nil {
+			s.logger.Info("web: meshtastic send queued", "kind", item.Kind, "target", item.Label,
+				"reason", "device not connected")
+			http.Redirect(w, r, page("queued", "1"), http.StatusSeeOther)
+			return
+		} else {
+			s.logger.Warn("web: meshtastic queue write failed", "error", qerr)
+		}
+	}
+
+	var err error
+	if item.Kind == "channel" {
+		err = s.meshtastic.SendChannelText(r.Context(), item.ChannelIdx, text, sess.username)
+	} else {
+		err = s.meshtastic.SendContactMessage(r.Context(), item.TargetID, text, sess.username)
 	}
 	if err != nil {
+		// The link can also die between the check above and the write: the
+		// message has still not left the station, so it goes to the queue
+		// rather than being lost with an error flash.
+		if isTransientMeshSend(err) && s.meshOutbox != nil {
+			if qerr := s.enqueueMeshOutbox(r.Context(), item); qerr == nil {
+				s.logger.Info("web: meshtastic send queued", "kind", item.Kind, "target", item.Label,
+					"error", err)
+				http.Redirect(w, r, page("queued", "1"), http.StatusSeeOther)
+				return
+			} else {
+				s.logger.Warn("web: meshtastic queue write failed", "error", qerr)
+			}
+		}
 		s.logger.Warn("web: meshtastic send failed", "target", r.PostFormValue("target"), "error", err)
 		flash := fmt.Sprintf(i18n.T(s.langFor(r), "meshtastic.send_failed"), err)
 		http.Redirect(w, r, page("err", flash), http.StatusSeeOther)

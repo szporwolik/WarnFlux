@@ -1,9 +1,11 @@
 package meshtastic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kabili207/meshtastic-go/core"
 	pb "github.com/kabili207/meshtastic-go/core/proto"
 )
 
@@ -447,5 +450,154 @@ func TestMirrorTrafficFansOutToEveryChannelMirror(t *testing.T) {
 	club := clubSink.waitPosted(t, 1)
 	if len(club) != 1 || !strings.Contains(club[0], "z klubowego") {
 		t.Fatalf("club webhook got %v, want only the club-channel message", club)
+	}
+}
+
+// TestTrafficMirrorRedactsTheWebhookToken is WF-REV-02: a transport failure
+// arrives as a *url.Error that quotes the request URL, and a Discord webhook
+// URL is a credential. The log must keep the kind of failure, never the token.
+func TestTrafficMirrorRedactsTheWebhookToken(t *testing.T) {
+	const token = "REVIEW_SECRET_TOKEN_VALUE"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// A closed listener: the connection is refused, so http.Client.Do returns a
+	// *url.Error carrying the full webhook URL.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL + "/api/webhooks/123456789012345678/" + token
+	srv.Close()
+
+	m := newTrafficMirror(MirrorConfig{WebhookURL: url}, nil)
+	if m == nil {
+		t.Fatal("mirror = nil")
+	}
+	m.log = logger
+	m.post(mirrorMsg{direction: "rx", sender: "a1b2c3d4", channel: "SOSNA", text: "hej"})
+
+	if strings.Contains(logs.String(), token) {
+		t.Fatalf("webhook token leaked into the log: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "discord mirror post failed") {
+		t.Errorf("the failure was not reported at all: %s", logs.String())
+	}
+}
+
+// TestTrafficMirrorBlocksMentions is WF-REV-08: radio text is written by
+// whoever is on the channel, so a mirrored message must never be able to ping a
+// Discord user, role or @everyone — not through the text and not through a
+// sender name.
+func TestTrafficMirrorBlocksMentions(t *testing.T) {
+	sink := &mentionSink{}
+	srv := httptest.NewServer(sink.handler())
+	defer srv.Close()
+
+	m := newTrafficMirror(MirrorConfig{WebhookURL: srv.URL}, nil)
+	m.post(mirrorMsg{
+		direction: "rx", sender: "<@123456789012345678>",
+		senderName: "@everyone", channel: "SOSNA",
+		text: "hej <@123456789012345678> <@&987654321098765432> @here",
+	})
+	payload := sink.wait(t)
+	mentions, ok := payload["allowed_mentions"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload has no allowed_mentions: %v", payload)
+	}
+	parse, _ := mentions["parse"].([]any)
+	if len(parse) != 0 {
+		t.Fatalf("allowed_mentions.parse = %v, want an empty list", parse)
+	}
+	// The text itself stays readable: blocking the ping must not censor the
+	// message a human wants to read.
+	if content, _ := payload["content"].(string); !strings.Contains(content, "<@123456789012345678>") {
+		t.Errorf("content was mangled: %q", content)
+	}
+}
+
+// mentionSink captures the decoded JSON body of one webhook call.
+type mentionSink struct {
+	mu      sync.Mutex
+	payload map[string]any
+	got     chan struct{}
+}
+
+func (s *mentionSink) handler() http.Handler {
+	if s.got == nil {
+		s.got = make(chan struct{}, 1)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		s.mu.Lock()
+		s.payload = body
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		select {
+		case s.got <- struct{}{}:
+		default:
+		}
+	})
+}
+
+func (s *mentionSink) wait(t *testing.T) map[string]any {
+	t.Helper()
+	select {
+	case <-s.got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the webhook was never called")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.payload
+}
+
+// TestPrimaryMirrorNeverPublishesDirectMessages is WF-R2-01: a mirror on the
+// public PRIMARY channel must forward broadcasts only. A direct message carries
+// channel index 0 too, so the destination — not the channel number and not the
+// "dm" label — decides. The RX frame below is the one from the review: a private
+// message addressed to this station on channel 0.
+func TestPrimaryMirrorNeverPublishesDirectMessages(t *testing.T) {
+	sink := &webhookSink{}
+	srv := httptest.NewServer(sink.handler())
+	defer srv.Close()
+	h := hubMirror(t, srv.URL, 0, false) // 0 = the announcement channel (1)
+	h.mirrors[0].channel = 0
+
+	for _, includeSystem := range []bool{false, true} {
+		h.mirrors[0].includeSystem = includeSystem
+
+		// RX: a DM to our node, on channel 0 — the reported leak.
+		pkt := &pb.MeshPacket{
+			From:    0xabcdef01,
+			To:      core.BroadcastNodeID.Uint32(),
+			Channel: 0,
+			PayloadVariant: &pb.MeshPacket_Decoded{
+				Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("PRIVATE_DM_TEST")},
+			},
+		}
+		pkt.To = 0x12345678 // to the station itself, not a broadcast
+		h.receiveText(pkt, pkt.GetDecoded())
+
+		// TX: the station answering that operator privately.
+		h.mirrorTraffic("tx", "", "abcdef01", 0, "dm", "PRIVATE_REPLY", 0, time.Now(), "admin", 0, 0, false)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := sink.posted(); len(got) != 0 {
+		t.Fatalf("the primary mirror published private traffic (include_system toggled): %v", got)
+	}
+
+	// A broadcast on that same channel still reaches the chat — the guard must
+	// not switch the mirror off altogether.
+	bcast := &pb.MeshPacket{
+		From:    0xabcdef01,
+		To:      core.BroadcastNodeID.Uint32(),
+		Channel: 0,
+		PayloadVariant: &pb.MeshPacket_Decoded{
+			Decoded: &pb.Data{Portnum: pb.PortNum_TEXT_MESSAGE_APP, Payload: []byte("PUBLIC_BROADCAST")},
+		},
+	}
+	h.receiveText(bcast, bcast.GetDecoded())
+	got := sink.waitPosted(t, 1)
+	if len(got) != 1 || !strings.Contains(got[0], "PUBLIC_BROADCAST") {
+		t.Fatalf("posted %v, want the broadcast", got)
 	}
 }

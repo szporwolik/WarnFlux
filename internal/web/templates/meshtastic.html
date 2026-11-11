@@ -86,6 +86,7 @@
       <h2><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-broadcast-send"></use></svg>{{tr .Lang "meshtastic.tab_messages"}} <span class="count" id="mesh-msg-count">{{if .Total}}({{.Total}}){{end}}</span></h2>
       {{if .Error}}<div class="emcom-flash emcom-flash-err" role="alert"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-exclamation-triangle"></use></svg><span>{{.Error}}</span></div>{{end}}
       {{if .Sent}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-check-circle"></use></svg><span>{{tr .Lang "meshtastic.sent"}}</span></div>{{end}}
+      {{if .Queued}}<div class="emcom-flash" role="status"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-clock"></use></svg><span>{{tr .Lang "meshtastic.queued"}}</span></div>{{end}}
       <div class="mesh-toolbar">
       {{if eq .Role "admin"}}
         <form method="post" action="/meshtastic/send" class="mesh-send mesh-send-active">
@@ -119,6 +120,27 @@
         </form>      {{else}}
       <form class="wf-csrf-only" hidden><input type="hidden" name="csrf" value="{{.CSRF}}"></form>
       {{end}}      </div>
+      {{if .Outbox}}<details class="mesh-outbox"{{if .OutboxWaiting}} open{{end}}>
+        <summary>{{tr .Lang "meshtastic.outbox_title"}}{{if .OutboxWaiting}} <span class="badge muted">{{.OutboxWaiting}}</span>{{end}}</summary>
+        <p class="muted log-hint">{{tr .Lang "meshtastic.outbox_hint"}}</p>
+        <ul class="mesh-outbox-list">
+          {{range .Outbox}}<li class="mesh-outbox-item mesh-outbox-{{.State}}">
+            <span class="mesh-outbox-when">{{.Created}}</span>
+            <span class="mesh-outbox-target">{{if eq .Kind "channel"}}ch{{.ChannelIdx}}{{if ne .Label (printf "ch%d" .ChannelIdx)}} · {{.Label}}{{end}}{{else}}!{{.Label}}{{end}}</span>
+            <span class="mesh-outbox-text" title="{{.Text}}">{{.Preview}}</span>
+            <span class="mesh-outbox-state">{{outboxStatus $.Lang .State}}</span>
+            {{if .Sent}}<span class="muted">{{.SentAt}}</span>{{end}}
+            {{if .Error}}<span class="muted" title="{{.Error}}">{{trf $.Lang "meshtastic.outbox_attempts" .Attempts}}</span>{{end}}
+            {{if eq .State "waiting"}}
+            <form method="post" action="/meshtastic/outbox/cancel" class="mesh-outbox-cancel">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="id" value="{{.ID}}">
+              <button type="submit" class="btn-ghost btn-small">{{tr $.Lang "meshtastic.outbox_cancel"}}</button>
+            </form>
+            {{end}}
+          </li>{{end}}
+        </ul>
+      </details>{{end}}
       <p class="muted log-hint">{{tr .Lang "meshtastic.hint"}}</p>
       <p class="muted log-hint">{{tr .Lang "meshtastic.dm_key_hint"}}</p>
       {{/* The station channel comes first and is what the page opens on;

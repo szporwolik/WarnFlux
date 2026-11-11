@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -73,25 +74,56 @@ func (h *Hub) SendUSSD(ctx context.Context, code string) (string, error) {
 	// every new request is then refused with a bare ERROR — exactly what the
 	// E173 did on the bench after a couple of probes. Cancelling first is free
 	// and makes the feature work on the second try instead of never.
-	_, _ = h.exchangeLocked("AT+CUSD=2", "OK")
-	h.repairDirtyLocked()
+	//
+	// The cancel itself goes through the context-aware exchange: it repairs the
+	// session first, and that repair may reconnect and replace h.conn with nil
+	// (a modem unplugged between the lock and the write). The connection is
+	// therefore re-checked afterwards — writing into a repaired-away session is
+	// how this call used to panic on a nil file handle.
+	if _, err := h.exchangeCtxLocked(ctx, "AT+CUSD=2", "OK", atTimeout); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("gsm: ussd %s: %w", code, ctxErr)
+		}
+		if errors.Is(err, ErrNoModem) {
+			return "", ErrNoModem
+		}
+		// Anything else is a modem that may still be usable: fall through, the
+		// real request below reports the truth.
+		h.logger.Debug("gsm: ussd session reset refused", "error", err)
+	}
+	if h.conn == nil || !h.connected.Load() {
+		return "", ErrNoModem
+	}
 	if _, err := fmt.Fprintf(h.conn, "AT+CUSD=1,\"%s\",15\r", code); err != nil {
 		h.reconnectLocked()
 		return "", fmt.Errorf("gsm: ussd %s: %w", code, err)
 	}
 
 	deadline := h.now().Add(ussdWait)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
 	var answer string
 	for {
-		if h.now().After(deadline) {
-			return answer, ErrUSSDTimeout
-		}
 		if err := ctx.Err(); err != nil {
+			// The modem still owes us an answer: whatever arrives next would be
+			// read as the reply to the FOLLOWING command, so mark the session
+			// for repair instead of leaving that trap behind.
+			h.sendDirty = true
 			return answer, fmt.Errorf("gsm: ussd %s: %w", code, err)
 		}
-		line, err := h.readLine(deadline)
+		if h.now().After(deadline) {
+			h.sendDirty = true
+			return answer, ErrUSSDTimeout
+		}
+		line, err := h.readLineCtx(ctx, deadline)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				h.sendDirty = true
+				return answer, fmt.Errorf("gsm: ussd %s: %w", code, ctxErr)
+			}
 			if errors.Is(err, ErrTimeout) {
+				h.sendDirty = true
 				return answer, ErrUSSDTimeout
 			}
 			h.reconnectLocked()
@@ -102,15 +134,23 @@ func (h *Hub) SendUSSD(ctx context.Context, code string) (string, error) {
 		case line == "":
 			continue
 		case strings.HasPrefix(line, "+CUSD:"):
-			text, failure := parseCUSD(line)
+			text, status, failure := parseCUSD(line)
 			if failure {
-				return "", fmt.Errorf("%w (status %s)", ErrUSSDRejected, strings.TrimSpace(line))
+				if status == cusdStatusNotSupported {
+					// The network never took the code: nothing is owed, so the
+					// session is clean and the next command needs no repair.
+					return "", fmt.Errorf("%w (status %d)", ErrUSSDRejected, status)
+				}
+				h.sendDirty = true
+				return "", fmt.Errorf("%w (status %d)", ErrUSSDRejected, status)
 			}
-			answer = text
-			// A finished session (status 0) ends the wait; a menu (status 1)
-			// also comes back as text, and the operator can follow it up with
-			// another code.
-			return answer, nil
+			if status != cusdStatusFinished && status != cusdStatusMenu {
+				// An unrecognised status means the reply was not understood:
+				// never report it as a successful empty answer.
+				h.sendDirty = true
+				return "", fmt.Errorf("%w: unexpected +CUSD status %d", ErrUSSDRejected, status)
+			}
+			return text, nil
 		case line == "ERROR", strings.HasPrefix(line, "+CME ERROR"), strings.HasPrefix(line, "+CMS ERROR"):
 			return "", fmt.Errorf("%w: %s", ErrUSSDRejected, strings.TrimSpace(line))
 		case line == "OK":
@@ -120,44 +160,61 @@ func (h *Hub) SendUSSD(ctx context.Context, code string) (string, error) {
 	}
 }
 
-// parseCUSD reads one "+CUSD: <status>,"<text>",<dcs>" line. The text is
-// quoted; Huawei firmware answers it either as plain characters or as a hex
-// blob of the UCS2 (or GSM7) encoding, so both shapes are decoded. failure is
-// set when the status says the session ended badly.
-func parseCUSD(line string) (text string, failure bool) {
+// +CUSD status codes (3GPP TS 27.007): 0 nothing to report, 1 further
+// information via another request, 2 network terminated, 4 not supported,
+// 5 unexpected response.
+const (
+	cusdStatusFinished     = 0
+	cusdStatusMenu         = 1
+	cusdStatusNotSupported = 4
+)
+
+// parseCUSD reads one "+CUSD: <status>[,"<text>",<dcs>]" line.
+//
+// The status is the answer; the text is optional. A bare "+CUSD: 4" is the same
+// failure as "+CUSD: 4,\"\",15" — treating the short form as an empty success
+// reported a rejected code as if the network had answered nothing, so the status
+// is classified before the payload is even looked at.
+func parseCUSD(line string) (text string, status int, failure bool) {
 	rest := strings.TrimSpace(strings.TrimPrefix(line, "+CUSD:"))
-	status := ""
+	field := rest
 	if i := strings.IndexAny(rest, ","); i >= 0 {
-		status, rest = strings.TrimSpace(rest[:i]), rest[i+1:]
+		field = rest[:i]
+		rest = rest[i+1:]
 	} else {
-		return "", false
+		rest = ""
 	}
-	switch status {
-	case "0", "1": // 0 = no further action, 1 = a menu follows
-	case "2", "4", "5": // network cannot process / operation not supported / unexpected
-		return "", true
+	n, err := strconv.Atoi(strings.TrimSpace(field))
+	if err != nil {
+		// Neither a known status nor a shape this parser understands.
+		return "", -1, true
+	}
+	switch n {
+	case cusdStatusFinished, cusdStatusMenu:
+	case 2, cusdStatusNotSupported, 5:
+		return "", n, true
 	default:
-		return "", false
+		return "", n, true
 	}
 	rest = strings.TrimSpace(rest)
 	if !strings.HasPrefix(rest, "\"") {
-		return "", false
+		return "", n, false
 	}
 	rest = rest[1:]
 	if i := strings.LastIndex(rest, "\""); i >= 0 {
 		rest = rest[:i]
 	}
 	if rest == "" {
-		return "", false
+		return "", n, false
 	}
-	return decodeUSSDText(rest), false
+	return decodeUSSDText(rest), n, false
 }
 
 // decodeUSSDText turns the modem's payload into readable text. A hex blob
 // carries UTF-16BE (what a Polish network sends for "Stan konta: 12,34 zł") or
 // the 7-bit default alphabet; anything else is already plain text.
 func decodeUSSDText(payload string) string {
-	if len(payload)%4 != 0 || !isHex(payload) {
+	if len(payload) < ussdMinUCS2Hex || len(payload)%4 != 0 || !isHex(payload) {
 		return payload
 	}
 	raw, err := hex.DecodeString(payload)
@@ -169,10 +226,43 @@ func decodeUSSDText(payload string) string {
 		units = append(units, uint16(raw[i])<<8|uint16(raw[i+1]))
 	}
 	out := strings.TrimSpace(string(utf16.Decode(units)))
-	if out == "" || !looksLikeText(out) {
+	if out == "" || !looksLikeText(out) || !plausibleUSSDText(out) {
 		return payload
 	}
 	return out
+}
+
+// ussdMinUCS2Hex is the shortest payload read as hex-encoded UTF-16: two code
+// units. A network answer that is merely hexadecimal and short — a balance
+// "1234", a year "2026", a code "ABCD" — is plain text, and decoding it turns a
+// number into an Ethiopic syllable (WF-R2-04). Four hex digits are one code
+// unit, which no real menu answer is made of.
+const ussdMinUCS2Hex = 8
+
+// plausibleUSSDText keeps the decoder from inventing a script this station will
+// never see. A phone number like "12345678" is valid hex and decodes to Ethiopic
+// and CJK, so the decoded run must look like text a Polish network could send:
+// ASCII, Latin (including Polish diacritics), Greek, Cyrillic, punctuation,
+// currency and the usual symbols. The DCS byte does not settle it — Huawei
+// firmware reports UCS2 payloads with DCS 15, which is also plain 8-bit text —
+// so the shape and the result decide, and anything ambiguous stays raw.
+func plausibleUSSDText(s string) bool {
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+		case r >= 0x20 && r <= 0x7E: // ASCII
+		case r >= 0xA0 && r <= 0x24F: // Latin-1 supplement, Extended-A/B
+		case r >= 0x370 && r <= 0x4FF: // Greek, Cyrillic
+		case r >= 0x2000 && r <= 0x206F: // general punctuation
+		case r >= 0x20A0 && r <= 0x20BF: // currency
+		case r >= 0x2190 && r <= 0x21FF: // arrows
+		case r >= 0x2500 && r <= 0x27BF: // box drawing, symbols
+		case r >= 0x1F300 && r <= 0x1FAFF: // emoji
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // looksLikeText rejects a decoded run that is mostly control characters: a

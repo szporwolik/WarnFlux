@@ -1,0 +1,252 @@
+#!/bin/sh
+# WarnFlux: the backup link's resolver entries — in, out again, and in the right
+# order.
+#
+#   warnflux-gsm-dns add <iface> <dns> [<dns2>]     ip-up: wired resolvers first,
+#                                                  the operator's as a marked block
+#   warnflux-gsm-dns remove <iface>                 ip-down: take the block back out
+#   warnflux-gsm-dns prefer <iface> cellular|wired  failover: which one goes first
+#   warnflux-gsm-dns ensure <iface> cellular|wired  watchdog: re-assert it, so a
+#                                                  resolv.conf rewritten by
+#                                                  NetworkManager heals itself
+#
+# Two facts shape this file.
+#
+# 1. /etc/resolv.conf is not ours alone: NetworkManager or systemd-resolved
+#    writes it, and on most hosts it is a SYMLINK into a file the manager
+#    regenerates. Replacing the path with "mv" turned that symlink into a plain
+#    file, after which every later update from the manager landed in a file
+#    nobody read (WF-REV-05). So: ask the resolver daemon when there is one;
+#    when there is not, write THROUGH the path — ">" keeps the inode, so a
+#    symlink stays a symlink and the manager's own updates stay visible.
+#
+# 2. The operator's resolvers answer on the mobile network only (measured:
+#    194.204.159.1 replies over ppp0, silent over eth0). They are therefore a
+#    FALLBACK entry, never the primary one — and the order matters: a resolver
+#    that cannot be reached costs a timeout on every single lookup, so during a
+#    failover the reachable one has to be first.
+#
+# WARNFLUX_RESOLVCONF overrides the path. Tests only; the hooks never set it.
+set -u
+
+MARK="# warnflux-gsm-backup"
+END_MARK="# warnflux-gsm-backup-end"
+CONF="${WARNFLUX_RESOLVCONF:-/etc/resolv.conf}"
+
+action="${1:-}"
+iface="${2:-}"
+if [ -z "$action" ] || [ -z "$iface" ]; then
+	echo "usage: warnflux-gsm-dns add|remove|prefer <iface> [dns...]" >&2
+	exit 2
+fi
+
+# resolved_active is true only when the daemon answers: "resolvectl" on a host
+# without systemd-resolved is an installed-but-unusable binary.
+resolved_active() {
+	command -v resolvectl >/dev/null 2>&1 || return 1
+	resolvectl status >/dev/null 2>&1
+}
+
+# conf_is_ours is false for the stub file resolved regenerates itself: editing it
+# by hand is overwritten within the minute and hides the real configuration.
+conf_is_ours() {
+	case "$(readlink -f "$CONF" 2>/dev/null || echo "$CONF")" in
+	/run/systemd/resolve/*) return 1 ;;
+	esac
+	return 0
+}
+
+# The block is delimited on BOTH sides. A start-only marker swallowed whatever
+# resolver line followed it, so moving the block to the top for a failover made
+# the wired resolver part of it and the next reorder could not tell them apart.
+# A file written by the older single-marker version still parses: any line that
+# is not a resolver ends the block.
+
+# without_block prints the file minus the block this link added.
+without_block() {
+	awk -v start="$MARK" -v end="$END_MARK" '
+		$0 == start { inside = 1; next }
+		inside && $0 == end { inside = 0; next }
+		inside && $1 == "nameserver" { next }
+		inside { inside = 0 }
+		{ print }
+	' "$CONF"
+}
+
+# block_nameservers prints the resolvers inside the marked block.
+block_nameservers() {
+	awk -v start="$MARK" -v end="$END_MARK" '
+		$0 == start { inside = 1; next }
+		inside && $0 == end { inside = 0; next }
+		inside && $1 == "nameserver" { print $2; next }
+		inside { inside = 0 }
+	' "$CONF"
+}
+
+# plain_nameservers prints the resolvers outside the marked block.
+plain_nameservers() {
+	without_block | awk '$1 == "nameserver" { print $2 }'
+}
+
+# emit_group prints one resolver group, preceded by the marker when that group is
+# the operator block.
+emit_group() { # <file> [marked]
+	if [ "${2:-}" = "marked" ]; then
+		[ -s "$1" ] || return 0
+		printf '%s\n' "$MARK"
+	fi
+	while read -r ns; do
+		[ -n "$ns" ] && printf 'nameserver %s\n' "$ns"
+	done <"$1"
+	if [ "${2:-}" = "marked" ] && [ -s "$1" ]; then
+		printf '%s\n' "$END_MARK"
+	fi
+}
+
+# first_ns is the resolver the file tries first — the one that decides whether
+# every lookup waits out a timeout.
+first_ns() {
+	awk '$1 == "nameserver" { print $2; exit }' "$CONF"
+}
+
+# write_conf rebuilds the file: everything that is not a resolver, then the two
+# groups in the requested order.
+write_conf() { # <wired-file> <operator-file> <order>
+	work=$(mktemp) || return 1
+	{
+		without_block | grep -vE '^[[:space:]]*nameserver[[:space:]]'
+		if [ "$3" = "cellular" ]; then
+			emit_group "$2" marked
+			emit_group "$1"
+		else
+			emit_group "$1"
+			emit_group "$2" marked
+		fi
+	} >"$work"
+	cat "$work" >"$CONF"
+	rm -f "$work"
+}
+
+# do_add rebuilds the file: the wired resolvers first, the operator's as the
+# marked block.
+do_add() {
+	operator=$(mktemp) || return 0
+	wired=$(mktemp) || return 0
+	for ns in "$@"; do
+		printf '%s\n' "$ns" >>"$operator"
+	done
+	# The wired resolvers come from the FILE, not from history: NetworkManager
+	# rewrites it whenever DHCP hands out a new address, and a stale copy would
+	# put the previous router back in front of every lookup (WF-R3-01).
+	# pppd's own ip-up.d/0000usepeerdns rewrites the file with the PPP resolvers
+	# alone, so right after a connect the current file has nothing but the
+	# operator's addresses — only then does the pre-connect copy answer.
+	plain_nameservers | while read -r ns; do
+		grep -qxF "$ns" "$operator" || printf '%s\n' "$ns"
+	done >"$wired"
+	if [ ! -s "$wired" ] && [ -f "$CONF.pppd-backup.$iface" ]; then
+		awk '$1 == "nameserver" { print $2 }' "$CONF.pppd-backup.$iface" >"$wired"
+	fi
+	write_conf "$wired" "$operator" wired
+	rm -f "$wired" "$operator"
+}
+
+# do_prefer puts the group that can actually be reached first. It leaves the file
+# alone when the order is already right, so a caller may run it every 30 s.
+do_prefer() { # <cellular|wired>
+	want="$1"
+	if [ "$want" = "cellular" ]; then
+		target=$(block_nameservers | awk 'NR == 1 { print; exit }')
+	else
+		target=$(plain_nameservers | awk 'NR == 1 { print; exit }')
+	fi
+	[ -n "$target" ] || return 0
+	[ "$(first_ns)" = "$target" ] && return 0
+	operator=$(mktemp) || return 0
+	wired=$(mktemp) || return 0
+	block_nameservers >"$operator"
+	plain_nameservers >"$wired"
+	write_conf "$wired" "$operator" "$want"
+	rm -f "$wired" "$operator"
+}
+
+case "$action" in
+add)
+	shift 2
+	if resolved_active; then
+		resolvectl dns "$iface" "$@" >/dev/null 2>&1 || true
+		exit 0
+	fi
+	[ -f "$CONF" ] || exit 0
+	conf_is_ours || exit 0
+	do_add "$@"
+	;;
+remove)
+	if resolved_active; then
+		resolvectl revert "$iface" >/dev/null 2>&1 || true
+		exit 0
+	fi
+	[ -f "$CONF" ] || exit 0
+	grep -qF "$MARK" "$CONF" 2>/dev/null || exit 0
+	conf_is_ours || exit 0
+	empty=$(mktemp) || exit 0
+	wired=$(mktemp) || exit 0
+	plain_nameservers >"$wired"
+	write_conf "$wired" "$empty" wired
+	rm -f "$empty" "$wired"
+	;;
+prefer)
+	order="${3:-}"
+	case "$order" in
+	cellular | wired) ;;
+	*)
+		echo "warnflux-gsm-dns prefer <iface> cellular|wired" >&2
+		exit 2
+		;;
+	esac
+	if resolved_active; then
+		# The daemon orders the servers per link by itself.
+		exit 0
+	fi
+	[ -f "$CONF" ] || exit 0
+	grep -qF "$MARK" "$CONF" 2>/dev/null || exit 0
+	conf_is_ours || exit 0
+	do_prefer "$order"
+	;;
+ensure)
+	order="${3:-cellular}"
+	case "$order" in
+	cellular | wired) ;;
+	*)
+		echo "warnflux-gsm-dns ensure <iface> cellular|wired" >&2
+		exit 2
+		;;
+	esac
+	if resolved_active; then
+		exit 0
+	fi
+	[ -f "$CONF" ] || exit 0
+	conf_is_ours || exit 0
+	# NetworkManager regenerates resolv.conf whenever the wired network changes,
+	# and a regeneration drops the block the ip-up hook left behind: the station
+	# would then have no resolver reachable over the backup link. The addresses
+	# come from OUR hook's own record for this interface, never from pppd's
+	# shared /etc/ppp/resolv.conf — that file belongs to whichever PPP profile
+	# connected last, so a VPN or a second modem would hand its resolver to the
+	# backup link (WF-R3-02).
+	state_dir="${WARNFLUX_GSM_STATE_DIR:-/run/warnflux-gsm}"
+	state_file="$state_dir/$iface.dns"
+	learned=$(awk '$1 == "nameserver" { print $2 }' "$state_file" 2>/dev/null || true)
+	if ! grep -qF "$MARK" "$CONF" 2>/dev/null; then
+		[ -n "$learned" ] || exit 0
+		# shellcheck disable=SC2086 # the learned list is space-separated on purpose
+		do_add $learned
+	fi
+	do_prefer "$order"
+	;;
+*)
+	echo "warnflux-gsm-dns: unknown action $action" >&2
+	exit 2
+	;;
+esac
+exit 0

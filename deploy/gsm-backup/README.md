@@ -75,10 +75,44 @@ and the current state is readable in `/run/warnflux-net-watchdog/mode`.
 * While the wire is dead, the watchdog raises a second cellular default with
   **metric 50** (see "Failover is more than a route"); it is deleted as soon as
   the wire answers again, so the station never stays on the expensive link.
+  The routing table is the source of truth: the stored mode only says `primary`
+  once the forced route is really gone, and a failed add is never announced as a
+  failover — the next 30-second pass retries either way.
 * DNS: NetworkManager owns `/etc/resolv.conf` and names only the wired gateway.
   The `ip-up` script appends the operator's resolver as a **marked fallback
   block**, and `ip-down` removes exactly that block again. Without it a domain
   lookup during an outage would hang until the wired resolver timed out.
+  Both hooks call `/usr/local/sbin/warnflux-gsm-dns`, which never replaces
+  `/etc/resolv.conf`: when systemd-resolved is running it asks `resolvectl` for a
+  per-link server instead, and otherwise it rewrites the file **through** the
+  path, so a `resolv.conf` that is a symlink stays a symlink and keeps receiving
+  the manager's own updates. (`mv` over the path turned the symlink into a plain
+  file, and every later resolver update then landed in a file nobody read.)
+  The operator's resolvers answer on the mobile network only (measured:
+  `194.204.159.1` replies over `ppp0` and stays silent over `eth0`), so they are
+  a fallback entry and the wired resolver has to survive pppd's own
+  `ip-up.d/0000usepeerdns`, which rewrites the file with the PPP resolvers
+  alone. The wired entries are taken from the CURRENT file (so a new DHCP lease
+  is respected); pppd's pre-connect copy is used only when the current file has
+  nothing but the operator's own addresses, which is the state right after a
+  connect.
+* **Per-session DNS record.** The ip-up hook writes what the session learned to
+  `/run/warnflux-gsm/<iface>.dns` and ip-down removes exactly that file. pppd's
+  `/etc/ppp/resolv.conf` is shared by every PPP profile on the host (a VPN, a
+  second modem) and is never read when the fallback block is rebuilt.
+  Order follows the working link: while the wire is dead the resolvers that only
+  answer on-net must lead, because a first entry that cannot be reached costs a
+  timeout on every lookup; the recovery puts the wired one back on top.
+  The watchdog calls `warnflux-gsm-dns ensure <iface> <cellular|wired>` on every
+  30-second pass: NetworkManager regenerates `/etc/resolv.conf` whenever the
+  wired network changes and silently takes the block with it, so the entry is
+  rebuilt from the list pppd recorded in `/etc/ppp/resolv.conf`. `ensure` is a
+  no-op when the block is present and already in the right order.
+* **Only our own PPP profile is touched.** `ip-up.d`/`ip-down.d` are global, so
+  both hooks first require `ipparam warnflux-gsm` (sixth argument, set in the
+  peer file). A VPN or a second modem on `ppp1` therefore neither gets a route
+  pushed nor loses the backup link's resolver block, and the backup link keeps
+  working when it is assigned `ppp1` itself.
 
 ## Install
 
@@ -173,6 +207,15 @@ dialling:
 * Consequence: unattended operation needs a supervisor that power-cycles the
   modem before each dial attempt. `warnflux-gsm-backup.service` alone survives
   a dropped link, but not a modem that has latched into the `NO CARRIER` state.
+
+## Testing the hooks without touching the host
+
+`go test ./deploy/gsm-backup/` runs both hooks against a throwaway
+`resolv.conf`, a fake `ip` and a fake `resolvectl`. The hooks take two
+environment overrides used only there: `WARNFLUX_RESOLVCONF` (the file to edit)
+`WARNFLUX_GSM_DNS` (the helper to call) and `WARNFLUX_NET_STATE_DIR` /
+`WARNFLUX_GSM_STATE_DIR` (the watchdog's and the hooks' state). Neither is set in production — the
+installed hooks use `/etc/resolv.conf` and `/usr/local/sbin/warnflux-gsm-dns`.
 
 ## Risks worth knowing
 

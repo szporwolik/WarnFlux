@@ -108,6 +108,9 @@ type Server struct {
 	// aprsMsgs backs the admin APRS message history page; nil in minimal
 	// constructions (the page then shows an empty state).
 	aprsMsgs storage.APRSMessageStore
+	// meshOutbox holds messages the radio could not take yet; nil in minimal
+	// constructions (the send form then fails as it used to, without a queue).
+	meshOutbox storage.MeshOutboxStore
 	// meshtasticMsgs backs the admin Meshtastic message history page; nil in
 	// minimal constructions (the page then shows an empty state).
 	meshtasticMsgs storage.MeshtasticMessageStore
@@ -231,6 +234,11 @@ type Server struct {
 // every toggle is additionally written back to this YAML file so the
 // choice survives restarts. Empty disables persistence.
 func (s *Server) SetConfigFile(path string) { s.configPath = path }
+
+// SetMeshOutbox attaches the queue that holds messages the radio could not take
+// at the moment an operator sent them. Without it the send form keeps its old
+// behaviour: a hard error, no queue.
+func (s *Server) SetMeshOutbox(store storage.MeshOutboxStore) { s.meshOutbox = store }
 
 // SetRadioCLI hands the shared radio-command interpreter to the panel so
 // the Help manual can list the commands it really accepts.
@@ -526,6 +534,7 @@ func (s *Server) routes(static http.Handler) {
 	s.mux.Handle("GET /partials/meshtastic", s.requirePagePartial(s.handlePartialMeshtastic))
 	s.mux.Handle("GET /partials/messages", s.requirePagePartial(s.handlePartialMessages))
 	s.mux.Handle("POST /meshtastic/send", s.requireAdmin(s.handleMeshtasticSend))
+	s.mux.Handle("POST /meshtastic/outbox/cancel", s.requireAdmin(s.handleMeshOutboxCancel))
 	s.mux.Handle("POST /api/meshtastic/traceroute", s.requireAdmin(s.handleMeshtasticTraceroute))
 	s.mux.Handle("GET /api/meshtastic/traceroute/status", s.requireAdmin(s.handleMeshtasticTracerouteStatus))
 	s.mux.Handle("GET /api/mqtt/browse", s.requireAdmin(s.handleMQTTBrowse))
@@ -906,6 +915,8 @@ func (s *Server) templateFuncs() template.FuncMap {
 		"tr": func(lang, key string) string {
 			return i18n.T(lang, key)
 		},
+		// outboxStatus names a queued message's state in the page language.
+		"outboxStatus": meshOutboxStatusText,
 		// eventName renders a canonical event type (a machine identity
 		// shared with the broker and webhook consumers) in the page
 		// language, so an English type never reaches a Polish page.

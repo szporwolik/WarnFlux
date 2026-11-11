@@ -280,9 +280,14 @@ const linkSendWait = 10 * time.Second
 // connPollInterval is how often a waiting send re-checks the session.
 const connPollInterval = 100 * time.Millisecond
 
-// errDeviceNotConnected is the send-path error when no session is live.
-// The panel shows this wording verbatim.
-var errDeviceNotConnected = errors.New("meshtastic: device not connected")
+// ErrDeviceNotConnected is the send-path error when no session is live.
+// The panel shows this wording verbatim, and callers that can retry later
+// (the panel's outbox) test for it with errors.Is: it is the one send failure
+// that says "the message never left, try again when the radio is back".
+var ErrDeviceNotConnected = errors.New("meshtastic: device not connected")
+
+// errDeviceNotConnected keeps the internal spelling short.
+var errDeviceNotConnected = ErrDeviceNotConnected
 
 // errReconnectRequested ends the current session on purpose: the link is
 // known dead (a failed send or heartbeat), so the session goroutine
@@ -5192,6 +5197,12 @@ func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int,
 	for _, m := range targets {
 		m.offer(msg)
 	}
+}
+
+// NodeLabel is senderDisplayName for callers outside the radio path (the
+// panel's send queue shows what the operator picked, not an 8-hex id).
+func (h *Hub) NodeLabel(id string) string {
+	return h.senderDisplayName(normalizeMeshID(id))
 }
 
 // senderDisplayName resolves a node id onto the friendliest name this station

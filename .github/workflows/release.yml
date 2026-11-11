@@ -105,7 +105,7 @@ jobs:
         with:
           # Must mirror the `toolchain` directive in go.mod so the release
           # gate scans the same toolchain the build uses.
-          go-version-input: '1.27.3'
+          go-version-input: '1.27.4'
           go-package: ./...
 
       - name: Set up QEMU (multi-arch builds)

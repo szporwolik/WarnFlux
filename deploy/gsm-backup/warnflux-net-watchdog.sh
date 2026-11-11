@@ -69,17 +69,27 @@ cellular_has_default() {
 # before falling through to a server that answers.
 raise_cellular() {
 	ip route replace default dev "$CELLULAR_IFACE" metric "$FORCED_METRIC" 2>/dev/null || true
-	"$DNS_HELPER" prefer "$CELLULAR_IFACE" cellular 2>/dev/null || true
+	"$DNS_HELPER" ensure "$CELLULAR_IFACE" cellular 2>/dev/null || true
 }
 
 # Take back exactly the route this script added; pppd's own metric-700 route
 # stays, so the backup is still one probe away from being used.
 lower_cellular() {
 	ip route del default dev "$CELLULAR_IFACE" metric "$FORCED_METRIC" 2>/dev/null || true
-	"$DNS_HELPER" prefer "$CELLULAR_IFACE" wired 2>/dev/null || true
+	"$DNS_HELPER" ensure "$CELLULAR_IFACE" wired 2>/dev/null || true
 }
 
 mode=$(cat "$MODE_FILE" 2>/dev/null || echo primary)
+
+# Re-assert the fallback resolvers on every pass, not only on a transition:
+# NetworkManager rewrites /etc/resolv.conf whenever the wired network changes and
+# silently takes the operator's entry with it. ensure is a no-op when the block
+# is present and already in the right order.
+if cellular_has_default; then
+	dns_order=wired
+	[ "$mode" = "cellular" ] && dns_order=cellular
+	"$DNS_HELPER" ensure "$CELLULAR_IFACE" "$dns_order" 2>/dev/null || true
+fi
 
 if wired_answers; then
 	write_int 0 "$FAIL_FILE"

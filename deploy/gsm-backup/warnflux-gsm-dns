@@ -6,6 +6,9 @@
 #                                                  the operator's as a marked block
 #   warnflux-gsm-dns remove <iface>                 ip-down: take the block back out
 #   warnflux-gsm-dns prefer <iface> cellular|wired  failover: which one goes first
+#   warnflux-gsm-dns ensure <iface> cellular|wired  watchdog: re-assert it, so a
+#                                                  resolv.conf rewritten by
+#                                                  NetworkManager heals itself
 #
 # Two facts shape this file.
 #
@@ -100,6 +103,12 @@ emit_group() { # <file> [marked]
 	fi
 }
 
+# first_ns is the resolver the file tries first — the one that decides whether
+# every lookup waits out a timeout.
+first_ns() {
+	awk '$1 == "nameserver" { print $2; exit }' "$CONF"
+}
+
 # write_conf rebuilds the file: everything that is not a resolver, then the two
 # groups in the requested order.
 write_conf() { # <wired-file> <operator-file> <order>
@@ -118,18 +127,11 @@ write_conf() { # <wired-file> <operator-file> <order>
 	rm -f "$work"
 }
 
-case "$action" in
-add)
-	shift 2
-	if resolved_active; then
-		resolvectl dns "$iface" "$@" >/dev/null 2>&1 || true
-		exit 0
-	fi
-	[ -f "$CONF" ] || exit 0
-	conf_is_ours || exit 0
-
-	operator=$(mktemp) || exit 0
-	wired=$(mktemp) || exit 0
+# do_add rebuilds the file: the wired resolvers first, the operator's as the
+# marked block.
+do_add() {
+	operator=$(mktemp) || return 0
+	wired=$(mktemp) || return 0
 	for ns in "$@"; do
 		printf '%s\n' "$ns" >>"$operator"
 	done
@@ -144,6 +146,37 @@ add)
 	fi
 	write_conf "$wired" "$operator" wired
 	rm -f "$wired" "$operator"
+}
+
+# do_prefer puts the group that can actually be reached first. It leaves the file
+# alone when the order is already right, so a caller may run it every 30 s.
+do_prefer() { # <cellular|wired>
+	want="$1"
+	if [ "$want" = "cellular" ]; then
+		target=$(block_nameservers | awk 'NR == 1 { print; exit }')
+	else
+		target=$(plain_nameservers | awk 'NR == 1 { print; exit }')
+	fi
+	[ -n "$target" ] || return 0
+	[ "$(first_ns)" = "$target" ] && return 0
+	operator=$(mktemp) || return 0
+	wired=$(mktemp) || return 0
+	block_nameservers >"$operator"
+	plain_nameservers >"$wired"
+	write_conf "$wired" "$operator" "$want"
+	rm -f "$wired" "$operator"
+}
+
+case "$action" in
+add)
+	shift 2
+	if resolved_active; then
+		resolvectl dns "$iface" "$@" >/dev/null 2>&1 || true
+		exit 0
+	fi
+	[ -f "$CONF" ] || exit 0
+	conf_is_ours || exit 0
+	do_add "$@"
 	;;
 remove)
 	if resolved_active; then
@@ -175,12 +208,34 @@ prefer)
 	[ -f "$CONF" ] || exit 0
 	grep -qF "$MARK" "$CONF" 2>/dev/null || exit 0
 	conf_is_ours || exit 0
-	operator=$(mktemp) || exit 0
-	wired=$(mktemp) || exit 0
-	block_nameservers >"$operator"
-	plain_nameservers >"$wired"
-	write_conf "$wired" "$operator" "$order"
-	rm -f "$wired" "$operator"
+	do_prefer "$order"
+	;;
+ensure)
+	order="${3:-cellular}"
+	case "$order" in
+	cellular | wired) ;;
+	*)
+		echo "warnflux-gsm-dns ensure <iface> cellular|wired" >&2
+		exit 2
+		;;
+	esac
+	if resolved_active; then
+		exit 0
+	fi
+	[ -f "$CONF" ] || exit 0
+	conf_is_ours || exit 0
+	# NetworkManager regenerates resolv.conf whenever the wired network changes,
+	# and a regeneration drops the block the ip-up hook left behind: the station
+	# would then have no resolver reachable over the backup link. The operator's
+	# servers are recorded by pppd itself, so the block can be rebuilt from there.
+	ppp_conf="${WARNFLUX_PPP_RESOLVCONF:-/etc/ppp/resolv.conf}"
+	learned=$(awk '$1 == "nameserver" { print $2 }' "$ppp_conf" 2>/dev/null || true)
+	if ! grep -qF "$MARK" "$CONF" 2>/dev/null; then
+		[ -n "$learned" ] || exit 0
+		# shellcheck disable=SC2086 # the learned list is space-separated on purpose
+		do_add $learned
+	fi
+	do_prefer "$order"
 	;;
 *)
 	echo "warnflux-gsm-dns: unknown action $action" >&2

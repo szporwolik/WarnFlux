@@ -90,10 +90,14 @@ and the current state is readable in `/run/warnflux-net-watchdog/mode`.
   a fallback entry and the wired resolver has to survive pppd's own
   `ip-up.d/0000usepeerdns`, which rewrites the file with the PPP resolvers
   alone — the helper restores the wired entries from pppd's pre-connect copy.
-  Order follows the working link: while the wire is dead the watchdog calls
-  `warnflux-gsm-dns prefer ppp0 cellular`, because a first entry that cannot be
-  reached costs a timeout on every lookup; the recovery puts the wired one back
-  on top.
+  Order follows the working link: while the wire is dead the resolvers that only
+  answer on-net must lead, because a first entry that cannot be reached costs a
+  timeout on every lookup; the recovery puts the wired one back on top.
+  The watchdog calls `warnflux-gsm-dns ensure <iface> <cellular|wired>` on every
+  30-second pass: NetworkManager regenerates `/etc/resolv.conf` whenever the
+  wired network changes and silently takes the block with it, so the entry is
+  rebuilt from the list pppd recorded in `/etc/ppp/resolv.conf`. `ensure` is a
+  no-op when the block is present and already in the right order.
 * **Only our own PPP profile is touched.** `ip-up.d`/`ip-down.d` are global, so
   both hooks first require `ipparam warnflux-gsm` (sixth argument, set in the
   peer file). A VPN or a second modem on `ppp1` therefore neither gets a route

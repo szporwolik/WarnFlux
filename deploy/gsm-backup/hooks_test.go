@@ -330,6 +330,69 @@ func TestPreferFollowsTheActiveLink(t *testing.T) {
 	}
 }
 
+// TestEnsureHealsARegeneratedResolvConf is the gap the watchdog closes:
+// NetworkManager rewrites resolv.conf whenever the wired network changes and
+// silently drops the operator block, leaving the station with no resolver the
+// backup link can reach. The watchdog calls "ensure" every 30 s, which rebuilds
+// the block from the list pppd recorded — and does nothing while it is intact.
+func TestEnsureHealsARegeneratedResolvConf(t *testing.T) {
+	s := newStation(t)
+	s.recorder("ip")
+	conf := s.writeConf()
+	if err := os.WriteFile(conf+".pppd-backup.ppp0", []byte("nameserver 10.0.0.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pppResolv := filepath.Join(s.dir, "ppp-resolv.conf")
+	if err := os.WriteFile(pppResolv, []byte("nameserver 194.204.159.1\nnameserver 194.204.152.34\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"WARNFLUX_RESOLVCONF": conf, "WARNFLUX_PPP_RESOLVCONF": pppResolv}
+
+	// A regenerated file: no block at all.
+	if strings.Contains(read(t, conf), "warnflux-gsm-backup") {
+		t.Fatalf("the fixture already carries the block")
+	}
+	s.run(hookEnv{script: "warnflux-gsm-dns", args: []string{"ensure", "ppp0", "wired"}, env: env})
+	body := read(t, conf)
+	if !strings.Contains(body, "nameserver 194.204.159.1") || !strings.Contains(body, "warnflux-gsm-backup") {
+		t.Fatalf("the fallback block was not rebuilt:\n%s", body)
+	}
+	if !strings.Contains(body, "nameserver 10.0.0.1") {
+		t.Errorf("the wired resolver was lost:\n%s", body)
+	}
+
+	// A second pass must be a no-op, or every 30 s would rewrite the file.
+	s.run(hookEnv{script: "warnflux-gsm-dns", args: []string{"ensure", "ppp0", "wired"}, env: env})
+	if again := read(t, conf); again != body {
+		t.Errorf("a repeated ensure changed the file:\n%s\nwant:\n%s", again, body)
+	}
+
+	// In failover mode the reachable servers lead.
+	s.run(hookEnv{script: "warnflux-gsm-dns", args: []string{"ensure", "ppp0", "cellular"}, env: env})
+	for _, line := range strings.Split(read(t, conf), "\n") {
+		if strings.HasPrefix(line, "nameserver ") {
+			if got := strings.TrimSpace(strings.TrimPrefix(line, "nameserver ")); got != "194.204.159.1" {
+				t.Errorf("during failover the first resolver is %q, want the operator one", got)
+			}
+			break
+		}
+	}
+}
+
+// TestEnsureKeepsQuietWithoutLearnedResolvers covers a station where pppd never
+// learned a resolver (no usepeerdns answer): nothing is invented.
+func TestEnsureKeepsQuietWithoutLearnedResolvers(t *testing.T) {
+	s := newStation(t)
+	s.recorder("ip")
+	conf := s.writeConf()
+	before := read(t, conf)
+	s.run(hookEnv{script: "warnflux-gsm-dns", args: []string{"ensure", "ppp0", "cellular"},
+		env: map[string]string{"WARNFLUX_RESOLVCONF": conf, "WARNFLUX_PPP_RESOLVCONF": filepath.Join(s.dir, "missing")}})
+	if got := read(t, conf); got != before {
+		t.Errorf("ensure invented resolvers:\n%s", got)
+	}
+}
+
 // TestDownIsIdempotentAndSafeOnAPlainFile covers the ordinary host (a regular
 // resolv.conf) and a repeated ip-down: the second run must change nothing.
 func TestDownIsIdempotentAndSafeOnAPlainFile(t *testing.T) {

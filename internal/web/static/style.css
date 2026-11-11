@@ -1204,7 +1204,45 @@ tr.click-send:hover td { background: var(--surface-hi); }
   align-items: center;
   margin-bottom: 0.9rem;
 }
-.mesh-toolbar .mesh-send { flex: 0 1 36rem; margin-bottom: 0; }
+.mesh-toolbar /* Meshtastic send queue: messages an operator sent while the radio was between
+   sessions. Read as a list of facts — time, target, text, state — not as a
+   table that competes with the message history above it. */
+.mesh-outbox {
+  margin: 0.6rem 0 0.2rem;
+  font-size: 0.86rem;
+}
+.mesh-outbox summary {
+  cursor: pointer;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.mesh-outbox-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+}
+.mesh-outbox-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  border-top: 1px solid var(--border, #2a2f36);
+}
+.mesh-outbox-item:first-child { border-top: 0; }
+.mesh-outbox-when { font-variant-numeric: tabular-nums; opacity: 0.75; }
+.mesh-outbox-target { font-weight: 600; }
+.mesh-outbox-text { flex: 1 1 12rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mesh-outbox-state { text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }
+.mesh-outbox-waiting .mesh-outbox-state { color: var(--warn, #d9a441); }
+.mesh-outbox-sent .mesh-outbox-state { color: var(--ok, #4caf50); }
+.mesh-outbox-abandoned .mesh-outbox-state { color: var(--bad, #e05252); }
+.mesh-outbox-cancel { margin-left: auto; }
+.mesh-outbox-cancel button { padding: 0.1rem 0.5rem; }
+
+.mesh-send { flex: 0 1 36rem; margin-bottom: 0; }
 .mesh-toolbar .mesh-forms { margin-bottom: 0; }
 /* Same toolbar pattern on the APRS messages page: send form (left) and
    the manual beacon action (right). */

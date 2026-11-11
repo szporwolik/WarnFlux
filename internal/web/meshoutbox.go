@@ -27,17 +27,19 @@ const meshOutboxSendBudget = 15 * time.Second
 
 // meshOutboxView is one row of the panel's queue list.
 type meshOutboxView struct {
-	ID       int64
-	Kind     string
-	Label    string
-	Text     string
-	Preview  string
-	Operator string
-	Created  string
-	Attempts int
-	Error    string
-	Sent     bool
-	SentAt   string
+	ID    int64
+	Kind  string
+	Label string
+	// ChannelIdx identifies a broadcast's channel in the list.
+	ChannelIdx int
+	Text       string
+	Preview    string
+	Operator   string
+	Created    string
+	Attempts   int
+	Error      string
+	Sent       bool
+	SentAt     string
 	// Status is the localised state: "waiting", "sent" or "abandoned".
 	Status string
 	State  string
@@ -171,16 +173,17 @@ func (s *Server) fillMeshOutbox(ctx context.Context, v *meshtasticView) {
 			continue // abandoned and already swept by the prune
 		}
 		row := meshOutboxView{
-			ID:       item.ID,
-			Kind:     item.Kind,
-			Label:    item.Label,
-			Text:     item.Text,
-			Preview:  meshOutboxPreview(item.Text, 80),
-			Operator: item.Operator,
-			Created:  item.CreatedAt.In(loc).Format("02.01 15:04"),
-			Attempts: item.Attempts,
-			Error:    item.LastError,
-			Sent:     !item.SentAt.IsZero(),
+			ID:         item.ID,
+			Kind:       item.Kind,
+			Label:      item.Label,
+			ChannelIdx: item.ChannelIdx,
+			Text:       item.Text,
+			Preview:    meshOutboxPreview(item.Text, 80),
+			Operator:   item.Operator,
+			Created:    item.CreatedAt.In(loc).Format("02.01 15:04"),
+			Attempts:   item.Attempts,
+			Error:      item.LastError,
+			Sent:       !item.SentAt.IsZero(),
 		}
 		switch {
 		case !item.SentAt.IsZero():

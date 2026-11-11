@@ -126,7 +126,7 @@
         <ul class="mesh-outbox-list">
           {{range .Outbox}}<li class="mesh-outbox-item mesh-outbox-{{.State}}">
             <span class="mesh-outbox-when">{{.Created}}</span>
-            <span class="mesh-outbox-target">{{if eq .Kind "channel"}}ch{{.Label}}{{else}}!{{.Label}}{{end}}</span>
+            <span class="mesh-outbox-target">{{if eq .Kind "channel"}}ch{{.ChannelIdx}}{{if ne .Label (printf "ch%d" .ChannelIdx)}} · {{.Label}}{{end}}{{else}}!{{.Label}}{{end}}</span>
             <span class="mesh-outbox-text" title="{{.Text}}">{{.Preview}}</span>
             <span class="mesh-outbox-state">{{outboxStatus $.Lang .State}}</span>
             {{if .Sent}}<span class="muted">{{.SentAt}}</span>{{end}}

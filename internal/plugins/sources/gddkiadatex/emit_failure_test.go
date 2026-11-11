@@ -205,3 +205,25 @@ func stripPointGeometry(t *testing.T, body []byte) []byte {
 	}
 	return out
 }
+
+// TestRecordLeavingTheAreaStillCancels guards the boundary of WF-R3-03: keeping
+// unreadable records "present" must not keep everything present. A record that
+// reads fine but no longer lies inside the configured radius has left our area
+// and its alert must end — otherwise a moved obstruction would warn forever.
+func TestRecordLeavingTheAreaStillCancels(t *testing.T) {
+	src := fixtureSource(t)
+	inside := firstSnapshotEvent(t, src)
+	inside.Status = core.StatusActive
+
+	// The same snapshot, but the station's radius no longer covers it.
+	src.radiusKM = 1
+	emit := &fakeEmit{active: []core.HazardEvent{inside}}
+
+	if err := src.pollOnce(context.Background(), emit); err != nil {
+		t.Fatalf("pollOnce = %v", err)
+	}
+	got := emit.cancellations()
+	if len(got) != 1 || got[0].Key() != inside.Key() {
+		t.Errorf("cancellations = %v, want the record that left the area", keysOf(got))
+	}
+}

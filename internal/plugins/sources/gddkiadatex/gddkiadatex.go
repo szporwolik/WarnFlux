@@ -238,12 +238,14 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 			if total > maxRecords {
 				return fmt.Errorf("publication carries more than %d records", maxRecords)
 			}
-			if key, ok := activeKey(rec); ok {
-				present[key] = true
-			}
 			ev, err := normalize(rec, s.cfg.Endpoint)
 			if err != nil {
 				if !isDeliberateSkip(err) {
+					// Active, but unreadable: keep its identity so the
+					// reconciliation does not read this as a withdrawal.
+					if key, ok := activeKey(rec); ok {
+						present[key] = true
+					}
 					degraded++
 					slog.Warn("gddkia-datex record could not be read; keeping its last state",
 						"record", rec.ID, "reason", err.Error())
@@ -291,7 +293,7 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 		// not safe: the next poll re-reads the same snapshot and retries both
 		// the writes and the disappearances.
 		slog.Info("gddkia-datex feed processed",
-			"records", total, "in_area", len(keys), "filtered", filtered, "emit_failed", failed, "reconciled", false)
+			"records", total, "in_area", len(seen), "filtered", filtered, "emit_failed", failed, "reconciled", false)
 		return fmt.Errorf("%d of %d records could not be persisted", failed, len(keys))
 	}
 	if _, err := snapshotutil.Reconcile(ctx, emit, sourceName, keys, now); err != nil {
@@ -301,11 +303,11 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 		// A reconciliation failure means the source's view and the station's
 		// may have diverged: report it instead of returning success.
 		slog.Info("gddkia-datex feed processed",
-			"records", total, "in_area", len(keys), "filtered", filtered, "reconciled", false)
+			"records", total, "in_area", len(seen), "filtered", filtered, "reconciled", false)
 		return fmt.Errorf("reconcile disappearances: %w", err)
 	}
 	slog.Info("gddkia-datex feed processed",
-		"records", total, "in_area", len(keys), "filtered", filtered, "unreadable", degraded)
+		"records", total, "in_area", len(seen), "filtered", filtered, "unreadable", degraded)
 	if stats, ok := emit.(plugin.SourceStatsReporter); ok {
 		stats.ReportSourceStats(fmt.Sprintf("%d / %d in area", len(keys), total))
 	}

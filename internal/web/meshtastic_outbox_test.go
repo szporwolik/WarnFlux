@@ -29,8 +29,12 @@ func (o *outboxRecorder) PendingMeshOutbox(_ context.Context, limit int) ([]stor
 	return o.items, nil
 }
 
-func (o *outboxRecorder) RecentMeshOutbox(_ context.Context, limit int) ([]storage.MeshOutboxItem, error) {
-	return o.items, nil
+func (o *outboxRecorder) CountPendingMeshOutbox(_ context.Context) (int, error) {
+	return len(o.items), nil
+}
+
+func (o *outboxRecorder) RecentFinishedMeshOutbox(_ context.Context, limit int) ([]storage.MeshOutboxItem, error) {
+	return nil, nil
 }
 
 func (o *outboxRecorder) MarkMeshOutboxSent(_ context.Context, _ int64, _ time.Time) error {

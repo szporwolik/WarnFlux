@@ -1002,7 +1002,12 @@ type Hub struct {
 	eventSink  func(ctx context.Context, topic string, retained bool, payload []byte) error
 	cli        *radiocli.Bot
 
-	sendMu    sync.Mutex
+	sendMu sync.Mutex
+	// sendGate serializes whole transmissions. It is a channel, not the mutex
+	// above, because waiting for the radio must be abandonable: a cancelled or
+	// timed-out request used to queue behind another send and then transmit
+	// anyway (WF-R5-01).
+	sendGate  chan struct{}
 	pending   map[uint32]*pendingSend // by device-assigned packet id
 	echoQueue []*pendingSend          // sent but the echo (id) not seen yet
 
@@ -1228,6 +1233,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 			tombstones: make(map[string]*nodeTombstone),
 			feedQueue:  make(chan feedJob, stationFeedQueueLen),
 			pending:    make(map[uint32]*pendingSend), cmds: make(map[string]*cmdRecord),
+			sendGate:     make(chan struct{}, 1),
 			routeWaiters: make(map[uint32][]chan routeReply),
 			traces:       make(map[uint32]*TraceProgress),
 			bannerLast:   make(map[string]time.Time), replyLast: make(map[string]replyWindow),
@@ -1248,6 +1254,7 @@ func NewHub(cfg Config, logger *slog.Logger) (*Hub, error) {
 		tombstones:   make(map[string]*nodeTombstone),
 		feedQueue:    make(chan feedJob, stationFeedQueueLen),
 		pending:      make(map[uint32]*pendingSend),
+		sendGate:     make(chan struct{}, 1),
 		cmds:         make(map[string]*cmdRecord),
 		routeWaiters: make(map[uint32][]chan routeReply),
 		traces:       make(map[uint32]*TraceProgress),
@@ -5026,6 +5033,31 @@ func (h *Hub) requestReconnect() {
 	}
 }
 
+// acquireSend takes the transmission slot, giving up when ctx is done. The
+// caller must call releaseSend.
+func (h *Hub) acquireSend(ctx context.Context) error {
+	if h.sendGate == nil {
+		return nil
+	}
+	select {
+	case h.sendGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseSend hands the transmission slot back.
+func (h *Hub) releaseSend() {
+	if h.sendGate == nil {
+		return
+	}
+	select {
+	case <-h.sendGate:
+	default: // already returned
+	}
+}
+
 // awaitConn returns the live device session, waiting up to wait for one
 // to come back. The session goroutine rebuilds the link on its own after
 // a drop, so a send that lands inside that window only has to wait.
@@ -5038,14 +5070,16 @@ func (h *Hub) awaitConn(ctx context.Context, wait time.Duration, stale transport
 		deadline = dl
 	}
 	for {
+		// The request may already be over: an available link is not a licence to
+		// transmit on a cancelled or expired call.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		h.mu.Lock()
 		conn := h.conn
 		h.mu.Unlock()
 		if conn != nil && conn != stale && conn.IsConnected() {
 			return conn, nil
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
 		}
 		if !time.Now().Before(deadline) {
 			return nil, errDeviceNotConnected
@@ -5095,8 +5129,17 @@ func (h *Hub) retrySendOnAFreshLink(ctx context.Context, ps *pendingSend, msg *p
 // the device. prog attaches the durable action-progress identity when
 // the send comes from the meshtastic action.
 func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLabel, text, operator string, prog ProgressRef) error {
-	h.sendMu.Lock()
-	defer h.sendMu.Unlock()
+	// A request that is already over must not queue for the radio, and a
+	// cancelled one must not wait behind another send until the radio frees up
+	// (WF-R5-01). Both checks are before any history row exists, so nothing
+	// can look like a started transmission.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("meshtastic: send cancelled: %w", err)
+	}
+	if err := h.acquireSend(ctx); err != nil {
+		return fmt.Errorf("meshtastic: send cancelled: %w", err)
+	}
+	defer h.releaseSend()
 	conn, err := h.awaitConn(ctx, linkSendWait, nil)
 	if err != nil {
 		return err
@@ -5133,9 +5176,11 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		wantAck: wantAck,
 		prog:    prog,
 	}
-	// sendMu is held by the defer above; the echo must be queued before
-	// the frame goes out so a fast device echo can never miss its entry.
+	// The echo must be queued before the frame goes out so a fast device echo
+	// can never miss its entry.
+	h.sendMu.Lock()
 	h.echoQueue = append(h.echoQueue, ps)
+	h.sendMu.Unlock()
 	// The history row is written first so the device echo (which can race
 	// back immediately) always finds its row to stamp. Direct messages
 	// carry the recipient node id so the DM tab can pair the conversation.
@@ -5146,6 +5191,15 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 	h.recordMessage("tx", "", recipient, channelLabel, text, operator, 0, at)
 	h.mirrorTraffic("tx", "", recipient, channelIdx, channelLabel, text, 0, at, operator, 0, 0, false)
 
+	// Last point at which the frame is ours: after this it belongs to the
+	// transport and nothing here can take it back.
+	if err := ctx.Err(); err != nil {
+		h.sendMu.Lock()
+		h.dropPendingLocked(ps)
+		h.markStatusLocked(ps, TxFailed)
+		h.sendMu.Unlock()
+		return fmt.Errorf("meshtastic: send cancelled: %w", err)
+	}
 	if err := conn.SendToRadio(msg); err != nil {
 		// The link died under the frame: a socket the peer closed fails
 		// every write with "broken pipe", and without a rebuild this send
@@ -5154,8 +5208,10 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		// on the fresh link — a write that fails this early never reached
 		// the device, so the retry cannot duplicate it on the air.
 		if retryErr := h.retrySendOnAFreshLink(ctx, ps, msg, conn, err); retryErr != nil {
+			h.sendMu.Lock()
 			h.dropPendingLocked(ps)
 			h.markStatusLocked(ps, TxFailed)
+			h.sendMu.Unlock()
 			return fmt.Errorf("meshtastic: send failed: %w", retryErr)
 		}
 		return nil

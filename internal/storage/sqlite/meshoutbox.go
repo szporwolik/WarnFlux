@@ -37,15 +37,29 @@ func (s *Store) PendingMeshOutbox(ctx context.Context, limit int) ([]storage.Mes
 		ORDER BY id LIMIT ?`, storage.MeshOutboxMaxAttempts, limit)
 }
 
-// RecentMeshOutbox returns the newest rows for the panel, sent or not.
-func (s *Store) RecentMeshOutbox(ctx context.Context, limit int) ([]storage.MeshOutboxItem, error) {
+// CountPendingMeshOutbox counts the messages still owed a delivery.
+func (s *Store) CountPendingMeshOutbox(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM mesh_outbox
+		WHERE sent_ms IS NULL AND finished_ms IS NULL AND attempts < ?`,
+		storage.MeshOutboxMaxAttempts).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count mesh outbox: %w", err)
+	}
+	return n, nil
+}
+
+// RecentFinishedMeshOutbox returns the newest finished rows for the panel's
+// history. Pending rows are a separate query: a busy history must never push a
+// waiting message out of the view (WF-R5-02).
+func (s *Store) RecentFinishedMeshOutbox(ctx context.Context, limit int) ([]storage.MeshOutboxItem, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	return s.listMeshOutbox(ctx, `
 		SELECT id, kind, target_id, label, channel_idx, text, operator, created_ms, attempts, last_error,
 		       sent_ms, claimed_ms, finished_ms
-		FROM mesh_outbox ORDER BY id DESC LIMIT ?`, limit)
+		FROM mesh_outbox WHERE finished_ms IS NOT NULL ORDER BY id DESC LIMIT ?`, limit)
 }
 
 func (s *Store) listMeshOutbox(ctx context.Context, query string, args ...any) ([]storage.MeshOutboxItem, error) {

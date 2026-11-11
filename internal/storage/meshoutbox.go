@@ -67,8 +67,13 @@ type MeshOutboxStore interface {
 	EnqueueMeshOutbox(ctx context.Context, item MeshOutboxItem) (int64, error)
 	// PendingMeshOutbox returns the messages still to send, oldest first.
 	PendingMeshOutbox(ctx context.Context, limit int) ([]MeshOutboxItem, error)
-	// RecentMeshOutbox returns the newest rows, sent or not, for the panel.
-	RecentMeshOutbox(ctx context.Context, limit int) ([]MeshOutboxItem, error)
+	// CountPendingMeshOutbox counts every message still owed a delivery. The
+	// panel's counter must come from here, never from a limited page: history
+	// must not be able to hide the active queue (WF-R5-02).
+	CountPendingMeshOutbox(ctx context.Context) (int, error)
+	// RecentFinishedMeshOutbox returns the newest finished rows (delivered or
+	// abandoned) for the panel's history.
+	RecentFinishedMeshOutbox(ctx context.Context, limit int) ([]MeshOutboxItem, error)
 	// ClaimMeshOutbox takes one pending row for a single transmission and
 	// reports whether this caller won it. Losing means the operator cancelled
 	// it (or another pass claimed it): the message must not be sent.

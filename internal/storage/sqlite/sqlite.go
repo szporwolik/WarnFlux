@@ -1260,6 +1260,19 @@ UPDATE mesh_outbox SET finished_ms = sent_ms WHERE sent_ms IS NOT NULL;
 CREATE INDEX mesh_outbox_finished ON mesh_outbox (finished_ms);
 `,
 	},
+	{
+		// v74: rows that had already used every attempt when v73 ran are still
+		// unfinished there — v73 only backfilled the delivered ones. Such a row
+		// is never offered to the dispatcher (it exceeded the limit) and the new
+		// retention only removes finished rows, so it would have stayed in the
+		// database forever (WF-R5-03). The time the limit was hit was never
+		// recorded, so the migration time is used: the operator keeps a full
+		// retention window to look at the failure. Pending rows are untouched.
+		SQL: `
+UPDATE mesh_outbox SET finished_ms = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE sent_ms IS NULL AND finished_ms IS NULL AND attempts >= 10;
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

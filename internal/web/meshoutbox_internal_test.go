@@ -48,9 +48,22 @@ func (o *outboxStub) PendingMeshOutbox(_ context.Context, limit int) ([]storage.
 	return out, nil
 }
 
-func (o *outboxStub) RecentMeshOutbox(_ context.Context, limit int) ([]storage.MeshOutboxItem, error) {
+func (o *outboxStub) CountPendingMeshOutbox(_ context.Context) (int, error) {
+	n := 0
+	for _, item := range o.items {
+		if item.SentAt.IsZero() && item.FinishedAt.IsZero() && item.Attempts < storage.MeshOutboxMaxAttempts {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (o *outboxStub) RecentFinishedMeshOutbox(_ context.Context, limit int) ([]storage.MeshOutboxItem, error) {
 	var out []storage.MeshOutboxItem
 	for i := len(o.items) - 1; i >= 0 && len(out) < limit; i-- {
+		if o.items[i].FinishedAt.IsZero() {
+			continue
+		}
 		out = append(out, o.items[i])
 	}
 	return out, nil

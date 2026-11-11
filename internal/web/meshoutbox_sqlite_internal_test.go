@@ -60,7 +60,7 @@ func TestOldBacklogSurvivesTheFirstBatch(t *testing.T) {
 	if sender.sent != 6 {
 		t.Fatalf("sent %d messages in total, want 6", sender.sent)
 	}
-	recent, err := store.RecentMeshOutbox(ctx, 10)
+	recent, err := store.RecentFinishedMeshOutbox(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,3 +210,77 @@ func (c *countingSender) SendChannelText(_ context.Context, _ int, _, _ string) 
 }
 
 var _ = slog.New
+
+// TestPendingNotHiddenByHistory is WF-R5-02: one waiting message, twelve newer
+// finished ones. The panel used to fetch a single "newest 12" page, so the
+// queue looked empty and its counter said zero while a message was still owed a
+// delivery. Pending and history are separate queries now, and the counter is the
+// real queue size.
+func TestPendingNotHiddenByHistory(t *testing.T) {
+	store := outboxDB(t)
+	ctx := context.Background()
+	start := time.Now().Add(-time.Hour)
+
+	waitingID, err := store.EnqueueMeshOutbox(ctx, storage.MeshOutboxItem{
+		Kind: "dm", TargetID: "12345678", Label: "SP9MOA", Text: "czeka od godziny",
+		Operator: "admin", CreatedAt: start,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		id, err := store.EnqueueMeshOutbox(ctx, storage.MeshOutboxItem{
+			Kind: "dm", TargetID: "12345678", Text: "poszla", Operator: "admin",
+			CreatedAt: start.Add(time.Duration(i+1) * time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkMeshOutboxSent(ctx, id, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := quietServer()
+	srv.meshOutbox = store
+	var v meshtasticView
+	srv.fillMeshOutbox(ctx, &v)
+
+	if v.OutboxWaiting != 1 {
+		t.Errorf("waiting counter = %d, want the one pending message", v.OutboxWaiting)
+	}
+	found := false
+	for _, row := range v.Outbox {
+		if row.ID == waitingID {
+			found = true
+			if row.State != "waiting" {
+				t.Errorf("pending row state = %q, want waiting", row.State)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the pending message is not in the panel: %+v", v.Outbox)
+	}
+	// The active queue leads the list: it is what the operator has to act on.
+	if len(v.Outbox) == 0 || v.Outbox[0].ID != waitingID {
+		t.Errorf("the queue does not lead the list: %+v", v.Outbox)
+	}
+
+	// More pending than the page holds: the counter stays exact and the page
+	// says how many are left over.
+	for i := 0; i < meshOutboxPendingView+3; i++ {
+		if _, err := store.EnqueueMeshOutbox(ctx, storage.MeshOutboxItem{
+			Kind: "dm", TargetID: "12345678", Text: "kolejna", CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v = meshtasticView{}
+	srv.fillMeshOutbox(ctx, &v)
+	if want := meshOutboxPendingView + 4; v.OutboxWaiting != want {
+		t.Errorf("waiting counter = %d, want %d (the real queue size)", v.OutboxWaiting, want)
+	}
+	if v.OutboxMore != 4 {
+		t.Errorf("OutboxMore = %d, want 4 messages beyond the page", v.OutboxMore)
+	}
+}

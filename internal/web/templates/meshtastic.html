@@ -140,6 +140,7 @@
             {{end}}
           </li>{{end}}
         </ul>
+        {{if .OutboxMore}}<p class="muted log-hint">{{trf .Lang "meshtastic.outbox_more" .OutboxMore}}</p>{{end}}
       </details>{{end}}
       <p class="muted log-hint">{{tr .Lang "meshtastic.hint"}}</p>
       <p class="muted log-hint">{{tr .Lang "meshtastic.dm_key_hint"}}</p>

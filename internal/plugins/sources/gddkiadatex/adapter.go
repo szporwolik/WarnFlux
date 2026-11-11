@@ -1,6 +1,7 @@
 package gddkiadatex
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -79,21 +80,55 @@ var severities = map[string]string{
 	"highest": severity.Extreme,
 }
 
+// errRecordNotActive marks a record the provider itself finished or cancelled:
+// leaving it out of the poll is the intended answer, not a parsing failure.
+var errRecordNotActive = errors.New("record is not active")
+
+// errRecordNotReadable marks an active record this build could not turn into an
+// event (missing or unsupported geometry, a shape it does not know). The record
+// exists, so it must not be read as "the provider withdrew it".
+var errRecordNotReadable = errors.New("record cannot be read")
+
+// errRecordEmptyID marks a record with no identity at all: nothing can be
+// tracked, so it is skipped without any reconciliation consequence.
+var errRecordEmptyID = errors.New("record has no id")
+
+// isDeliberateSkip reports whether a normalize error is the provider's own
+// decision (an ended record, an empty id) rather than a gap in our reading of an
+// active one.
+func isDeliberateSkip(err error) bool {
+	return errors.Is(err, errRecordNotActive) || errors.Is(err, errRecordEmptyID)
+}
+
+// activeKey is the reconciliation identity of a record the provider still lists
+// as active, computed without requiring a successful normalize.
+func activeKey(rec record) (string, bool) {
+	id := strings.TrimSpace(rec.ID)
+	if id == "" {
+		return "", false
+	}
+	status := strings.ToLower(strings.TrimSpace(rec.Validity.Status))
+	if status != "" && status != "active" {
+		return "", false
+	}
+	return core.EventKey(sourceName, id), true
+}
+
 // normalize converts one situation record into a canonical hazard event. The
 // record id is stable across polls, so the same obstruction keeps one identity
 // (and one message number) for its whole life.
 func normalize(rec record, sourceURL string) (core.HazardEvent, error) {
 	id := strings.TrimSpace(rec.ID)
 	if id == "" {
-		return core.HazardEvent{}, fmt.Errorf("record has no id")
+		return core.HazardEvent{}, fmt.Errorf("%w: record has no id", errRecordEmptyID)
 	}
 	lat, lon, ok := rec.coordinates()
 	if !ok {
-		return core.HazardEvent{}, fmt.Errorf("record has no point geometry")
+		return core.HazardEvent{}, fmt.Errorf("%w: record has no point geometry", errRecordNotReadable)
 	}
 	status := strings.ToLower(strings.TrimSpace(rec.Validity.Status))
 	if status != "" && status != "active" {
-		return core.HazardEvent{}, fmt.Errorf("record is not active (%s)", status)
+		return core.HazardEvent{}, fmt.Errorf("%w (%s)", errRecordNotActive, status)
 	}
 
 	// xsi:type arrives with the document's namespace prefix ("ns5:MaintenanceWorks").

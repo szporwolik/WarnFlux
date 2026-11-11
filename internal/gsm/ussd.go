@@ -214,7 +214,7 @@ func parseCUSD(line string) (text string, status int, failure bool) {
 // carries UTF-16BE (what a Polish network sends for "Stan konta: 12,34 zł") or
 // the 7-bit default alphabet; anything else is already plain text.
 func decodeUSSDText(payload string) string {
-	if len(payload)%4 != 0 || !isHex(payload) {
+	if len(payload) < ussdMinUCS2Hex || len(payload)%4 != 0 || !isHex(payload) {
 		return payload
 	}
 	raw, err := hex.DecodeString(payload)
@@ -226,10 +226,43 @@ func decodeUSSDText(payload string) string {
 		units = append(units, uint16(raw[i])<<8|uint16(raw[i+1]))
 	}
 	out := strings.TrimSpace(string(utf16.Decode(units)))
-	if out == "" || !looksLikeText(out) {
+	if out == "" || !looksLikeText(out) || !plausibleUSSDText(out) {
 		return payload
 	}
 	return out
+}
+
+// ussdMinUCS2Hex is the shortest payload read as hex-encoded UTF-16: two code
+// units. A network answer that is merely hexadecimal and short — a balance
+// "1234", a year "2026", a code "ABCD" — is plain text, and decoding it turns a
+// number into an Ethiopic syllable (WF-R2-04). Four hex digits are one code
+// unit, which no real menu answer is made of.
+const ussdMinUCS2Hex = 8
+
+// plausibleUSSDText keeps the decoder from inventing a script this station will
+// never see. A phone number like "12345678" is valid hex and decodes to Ethiopic
+// and CJK, so the decoded run must look like text a Polish network could send:
+// ASCII, Latin (including Polish diacritics), Greek, Cyrillic, punctuation,
+// currency and the usual symbols. The DCS byte does not settle it — Huawei
+// firmware reports UCS2 payloads with DCS 15, which is also plain 8-bit text —
+// so the shape and the result decide, and anything ambiguous stays raw.
+func plausibleUSSDText(s string) bool {
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+		case r >= 0x20 && r <= 0x7E: // ASCII
+		case r >= 0xA0 && r <= 0x24F: // Latin-1 supplement, Extended-A/B
+		case r >= 0x370 && r <= 0x4FF: // Greek, Cyrillic
+		case r >= 0x2000 && r <= 0x206F: // general punctuation
+		case r >= 0x20A0 && r <= 0x20BF: // currency
+		case r >= 0x2190 && r <= 0x21FF: // arrows
+		case r >= 0x2500 && r <= 0x27BF: // box drawing, symbols
+		case r >= 0x1F300 && r <= 0x1FAFF: // emoji
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // looksLikeText rejects a decoded run that is mostly control characters: a

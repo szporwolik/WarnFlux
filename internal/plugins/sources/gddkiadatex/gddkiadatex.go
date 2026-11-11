@@ -222,7 +222,13 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 
 	now := time.Now()
 	seen := make(map[string]core.HazardEvent)
-	filtered, total := 0, 0
+	// present is every active record the provider still lists, normalized or
+	// not. A record the parser cannot turn into an event (no point geometry,
+	// a shape this build does not know) has NOT disappeared: leaving it out of
+	// the reconciliation set would withdraw a live alert because of a local
+	// parsing gap (WF-R3-03). Its last good state simply stays as it was.
+	present := make(map[string]bool)
+	filtered, degraded, total := 0, 0, 0
 	for _, sit := range doc.Payload.Situations {
 		for _, rec := range sit.Records {
 			if ctx.Err() != nil {
@@ -232,8 +238,17 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 			if total > maxRecords {
 				return fmt.Errorf("publication carries more than %d records", maxRecords)
 			}
+			if key, ok := activeKey(rec); ok {
+				present[key] = true
+			}
 			ev, err := normalize(rec, s.cfg.Endpoint)
 			if err != nil {
+				if !isDeliberateSkip(err) {
+					degraded++
+					slog.Warn("gddkia-datex record could not be read; keeping its last state",
+						"record", rec.ID, "reason", err.Error())
+					continue
+				}
 				slog.Debug("gddkia-datex record skipped", "record", rec.ID, "reason", err.Error())
 				filtered++
 				continue
@@ -253,7 +268,10 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 	// key: reconciliation reads that set as "the provider no longer lists it"
 	// and would cancel an alert that is still running — a local write hiccup
 	// turning into a false all-clear.
-	keys := make(map[string]bool, len(seen))
+	keys := make(map[string]bool, len(present)+len(seen))
+	for key := range present {
+		keys[key] = true
+	}
 	failed := 0
 	for key, ev := range seen {
 		if ctx.Err() != nil {
@@ -287,12 +305,17 @@ func (s *Source) pollOnce(ctx context.Context, emit plugin.Emitter) error {
 		return fmt.Errorf("reconcile disappearances: %w", err)
 	}
 	slog.Info("gddkia-datex feed processed",
-		"records", total, "in_area", len(keys), "filtered", filtered)
+		"records", total, "in_area", len(keys), "filtered", filtered, "unreadable", degraded)
 	if stats, ok := emit.(plugin.SourceStatsReporter); ok {
 		stats.ReportSourceStats(fmt.Sprintf("%d / %d in area", len(keys), total))
 	}
 	if fr, ok := emit.(plugin.SourceFilterReporter); ok {
 		fr.ReportSourceFiltered(filtered)
+	}
+	if degraded > 0 {
+		// The alerts are intact (their keys were kept), but this build is not
+		// reading every active record: say so instead of reporting a clean poll.
+		return fmt.Errorf("%d active records could not be read; their last state was kept", degraded)
 	}
 	return nil
 }

@@ -1,8 +1,10 @@
 package gddkiadatex
 
 import (
+	"bytes"
 	"context"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -161,3 +163,45 @@ func keysOf(evs []core.HazardEvent) []string {
 }
 
 var _ plugin.Emitter = (*fakeEmit)(nil)
+
+// TestMissingGeometryDoesNotWithdrawALiveAlert is WF-R3-03: the provider still
+// lists the record as active, but the next snapshot carries no point geometry
+// for it. That is a gap in OUR reading, not a withdrawal — the live alert must
+// stay, and the poll must say the feed is degraded instead of reporting a clean
+// run.
+func TestMissingGeometryDoesNotWithdrawALiveAlert(t *testing.T) {
+	src := fixtureSource(t)
+	live := firstSnapshotEvent(t, src)
+	live.Status = core.StatusActive
+
+	// The next snapshot repeats the same records and statuses but without any
+	// point geometry at all.
+	body, err := src.fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := stripPointGeometry(t, body)
+	src.fetch = func(context.Context) ([]byte, error) { return stripped, nil }
+
+	emit := &fakeEmit{active: []core.HazardEvent{live}}
+	err = src.pollOnce(context.Background(), emit)
+	if err == nil {
+		t.Errorf("pollOnce reported a clean poll although active records were unreadable")
+	}
+	if got := emit.cancellations(); len(got) != 0 {
+		t.Errorf("missing geometry cancelled a live alert: %v", keysOf(got))
+	}
+}
+
+// stripPointGeometry removes every pointByCoordinates element from a snapshot,
+// leaving ids, statuses and everything else intact — the provider shape the
+// review used. The fixture is a single-line document, so this works on the text.
+func stripPointGeometry(t *testing.T, body []byte) []byte {
+	t.Helper()
+	re := regexp.MustCompile(`(?s)<(?:[A-Za-z0-9]+:)?pointByCoordinates\b[^>]*>.*?</(?:[A-Za-z0-9]+:)?pointByCoordinates>`)
+	out := re.ReplaceAll(body, nil)
+	if bytes.Equal(out, body) {
+		t.Fatalf("the fixture carries no pointByCoordinates to strip")
+	}
+	return out
+}

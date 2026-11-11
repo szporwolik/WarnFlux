@@ -814,23 +814,38 @@ func (h *Hub) exchangeCtxLocked(ctx context.Context, cmd, expect string, timeout
 	if h.conn == nil {
 		return nil, ErrNoModem
 	}
+	wrote := false
 	if cmd != "" {
 		if _, err := io.WriteString(h.conn, cmd+"\r"); err != nil {
 			return nil, fmt.Errorf("gsm: write %q: %w", cmd, err)
 		}
+		wrote = true
+	}
+	var lines []string
+	// abandon ends the exchange before its final response arrived. The command
+	// is already on the wire, so its answer is still coming: the next command
+	// would read that answer as its own and confirm something the modem never
+	// agreed to (WF-R2-02). The session is marked for repair instead.
+	abandon := func(err error) ([]string, error) {
+		if wrote {
+			h.sendDirty = true
+		}
+		return lines, err
 	}
 	deadline := h.now().Add(timeout)
-	var lines []string
 	for {
 		if err := ctx.Err(); err != nil {
-			return lines, err
+			return abandon(err)
 		}
 		if h.now().After(deadline) {
-			return lines, ErrTimeout
+			return abandon(ErrTimeout)
 		}
 		line, err := h.readLineCtx(ctx, deadline)
 		if err != nil {
-			return lines, err
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return abandon(ctxErr)
+			}
+			return abandon(err)
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {

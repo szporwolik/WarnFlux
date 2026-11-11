@@ -206,3 +206,89 @@ func TestSendUSSDCancellationReleasesTheModem(t *testing.T) {
 		t.Error("a cancelled USSD did not mark the session for repair")
 	}
 }
+
+// TestCancelledPreparationLeavesTheSessionDirty is WF-R2-02: cancelling while
+// the preparation (AT+CUSD=2) is still unanswered used to free the modem and
+// leave the session "clean", so the late OK of that command could confirm the
+// NEXT command — here the TE charset pin, which would then report a modem
+// configuration the modem never acknowledged.
+func TestCancelledPreparationLeavesTheSessionDirty(t *testing.T) {
+	h, f, _ := newTestHub(t)
+	// The modem accepts the reset command but answers nothing.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.SendUSSD(ctx, "*100#")
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(f.written(), "AT+CUSD=2") {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("SendUSSD = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("cancelling the preparation left the modem locked")
+	}
+	if !h.sendDirty {
+		t.Fatalf("a cancelled preparation left the session clean")
+	}
+
+	// Only the stale OK of the cancelled command arrives. The repair consumes
+	// it; a command that follows must NOT be confirmed by that answer.
+	f.feed("OK\r\n")
+	h.mu.Lock()
+	_, err := h.exchangeCtxLocked(context.Background(), `AT+CSCS="IRA"`, "OK", 300*time.Millisecond)
+	h.mu.Unlock()
+	if err == nil {
+		t.Errorf("the next command was confirmed by the previous command's answer")
+	}
+
+	// And with the answer to BOTH commands available, it succeeds again: the
+	// mechanism separates stale answers, it does not break the session.
+	h.mu.Lock()
+	h.sendDirty = true
+	h.mu.Unlock()
+	f.feed("OK\r\nOK\r\n")
+	h.mu.Lock()
+	_, err = h.exchangeCtxLocked(context.Background(), `AT+CSCS="IRA"`, "OK", 2*time.Second)
+	h.mu.Unlock()
+	if err != nil {
+		t.Errorf("the session stayed broken after the repair: %v", err)
+	}
+}
+
+// TestPlainHexLookingUSSDTextStaysRaw is WF-R2-04: a network answer that happens
+// to be hexadecimal — a balance, a year, a short code — used to be decoded as
+// UTF-16, turning "1234" into U+1234 (an Ethiopic syllable). The rules, in
+// order: a payload shorter than two code units is text; a decode into a script
+// this station cannot receive is discarded; anything ambiguous stays raw.
+func TestPlainHexLookingUSSDTextStaysRaw(t *testing.T) {
+	for _, plain := range []string{"1234", "2026", "ABCD", "12345678", "12,34 zl", "0"} {
+		got, _, fail := parseCUSD(`+CUSD: 0,"` + plain + `",15`)
+		if fail {
+			t.Errorf("parseCUSD(%q) reported a failure", plain)
+			continue
+		}
+		if got != plain {
+			t.Errorf("parseCUSD(%q) = %q, want the text unchanged", plain, got)
+		}
+	}
+
+	// A real UCS2 answer still decodes — that is what the firmware sends for
+	// Polish diacritics.
+	ucs2 := `+CUSD: 0,"005300740061006E0020006B006F006E00740061003A002000310032002C003300340020007A0142",15`
+	if got, _, fail := parseCUSD(ucs2); fail || got != "Stan konta: 12,34 zł" {
+		t.Errorf("parseCUSD(ucs2) = %q (fail=%v), want the decoded text", got, fail)
+	}
+
+	// Pure ASCII encoded as UCS2 also decodes: eight hex digits is two code
+	// units, and the result is readable Polish-network text.
+	if got, _, _ := parseCUSD(`+CUSD: 0,"00310032",15`); got != "12" {
+		t.Errorf("parseCUSD(ucs2 digits) = %q, want \"12\"", got)
+	}
+}

@@ -75,6 +75,9 @@ and the current state is readable in `/run/warnflux-net-watchdog/mode`.
 * While the wire is dead, the watchdog raises a second cellular default with
   **metric 50** (see "Failover is more than a route"); it is deleted as soon as
   the wire answers again, so the station never stays on the expensive link.
+  The routing table is the source of truth: the stored mode only says `primary`
+  once the forced route is really gone, and a failed add is never announced as a
+  failover — the next 30-second pass retries either way.
 * DNS: NetworkManager owns `/etc/resolv.conf` and names only the wired gateway.
   The `ip-up` script appends the operator's resolver as a **marked fallback
   block**, and `ip-down` removes exactly that block again. Without it a domain
@@ -89,7 +92,14 @@ and the current state is readable in `/run/warnflux-net-watchdog/mode`.
   `194.204.159.1` replies over `ppp0` and stays silent over `eth0`), so they are
   a fallback entry and the wired resolver has to survive pppd's own
   `ip-up.d/0000usepeerdns`, which rewrites the file with the PPP resolvers
-  alone — the helper restores the wired entries from pppd's pre-connect copy.
+  alone. The wired entries are taken from the CURRENT file (so a new DHCP lease
+  is respected); pppd's pre-connect copy is used only when the current file has
+  nothing but the operator's own addresses, which is the state right after a
+  connect.
+* **Per-session DNS record.** The ip-up hook writes what the session learned to
+  `/run/warnflux-gsm/<iface>.dns` and ip-down removes exactly that file. pppd's
+  `/etc/ppp/resolv.conf` is shared by every PPP profile on the host (a VPN, a
+  second modem) and is never read when the fallback block is rebuilt.
   Order follows the working link: while the wire is dead the resolvers that only
   answer on-net must lead, because a first entry that cannot be reached costs a
   timeout on every lookup; the recovery puts the wired one back on top.
@@ -203,7 +213,8 @@ dialling:
 `go test ./deploy/gsm-backup/` runs both hooks against a throwaway
 `resolv.conf`, a fake `ip` and a fake `resolvectl`. The hooks take two
 environment overrides used only there: `WARNFLUX_RESOLVCONF` (the file to edit)
-and `WARNFLUX_GSM_DNS` (the helper to call). Neither is set in production — the
+`WARNFLUX_GSM_DNS` (the helper to call) and `WARNFLUX_NET_STATE_DIR` /
+`WARNFLUX_GSM_STATE_DIR` (the watchdog's and the hooks' state). Neither is set in production — the
 installed hooks use `/etc/resolv.conf` and `/usr/local/sbin/warnflux-gsm-dns`.
 
 ## Risks worth knowing

@@ -27,6 +27,18 @@ IFACE="${1:-${PPP_IFACE:-}}"
 
 ip route replace default dev "$IFACE" metric 700 2>/dev/null || true
 
+# Our own record of what this session learned. The mirror of /etc/ppp/resolv.conf
+# is shared by every PPP profile on the host, so the watchdog cannot use it to
+# rebuild OUR fallback entry later (WF-R3-02). The file is per interface, which
+# also covers a reconnect that lands on ppp1.
+STATE_DIR="${WARNFLUX_GSM_STATE_DIR:-/run/warnflux-gsm}"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+{
+	printf '# warnflux-gsm session %s\n' "$IFACE"
+	[ -n "${DNS1:-}" ] && printf 'nameserver %s\n' "$DNS1"
+	[ -n "${DNS2:-}" ] && printf 'nameserver %s\n' "$DNS2"
+} >"$STATE_DIR/$IFACE.dns" 2>/dev/null || true
+
 if [ -n "${DNS1:-}" ]; then
 	if [ -n "${DNS2:-}" ]; then
 		"$DNS_HELPER" add "$IFACE" "$DNS1" "$DNS2" || true

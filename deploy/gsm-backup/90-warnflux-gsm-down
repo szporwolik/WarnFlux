@@ -15,4 +15,8 @@ IFACE="${1:-${PPP_IFACE:-}}"
 [ -n "$IFACE" ] || exit 0
 
 "$DNS_HELPER" remove "$IFACE" || true
+# Only this session's own record goes: the global /etc/ppp/resolv.conf belongs
+# to whichever profile is alive, not to us.
+STATE_DIR="${WARNFLUX_GSM_STATE_DIR:-/run/warnflux-gsm}"
+rm -f "$STATE_DIR/$IFACE.dns" 2>/dev/null || true
 exit 0

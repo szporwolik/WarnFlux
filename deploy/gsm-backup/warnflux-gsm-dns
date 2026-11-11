@@ -135,14 +135,17 @@ do_add() {
 	for ns in "$@"; do
 		printf '%s\n' "$ns" >>"$operator"
 	done
+	# The wired resolvers come from the FILE, not from history: NetworkManager
+	# rewrites it whenever DHCP hands out a new address, and a stale copy would
+	# put the previous router back in front of every lookup (WF-R3-01).
 	# pppd's own ip-up.d/0000usepeerdns rewrites the file with the PPP resolvers
-	# alone; its pre-connect copy is the only remaining record of the wired side.
-	if [ -f "$CONF.pppd-backup.$iface" ]; then
+	# alone, so right after a connect the current file has nothing but the
+	# operator's addresses — only then does the pre-connect copy answer.
+	plain_nameservers | while read -r ns; do
+		grep -qxF "$ns" "$operator" || printf '%s\n' "$ns"
+	done >"$wired"
+	if [ ! -s "$wired" ] && [ -f "$CONF.pppd-backup.$iface" ]; then
 		awk '$1 == "nameserver" { print $2 }' "$CONF.pppd-backup.$iface" >"$wired"
-	else
-		plain_nameservers | while read -r ns; do
-			grep -qxF "$ns" "$operator" || printf '%s\n' "$ns"
-		done >"$wired"
 	fi
 	write_conf "$wired" "$operator" wired
 	rm -f "$wired" "$operator"
@@ -226,10 +229,14 @@ ensure)
 	conf_is_ours || exit 0
 	# NetworkManager regenerates resolv.conf whenever the wired network changes,
 	# and a regeneration drops the block the ip-up hook left behind: the station
-	# would then have no resolver reachable over the backup link. The operator's
-	# servers are recorded by pppd itself, so the block can be rebuilt from there.
-	ppp_conf="${WARNFLUX_PPP_RESOLVCONF:-/etc/ppp/resolv.conf}"
-	learned=$(awk '$1 == "nameserver" { print $2 }' "$ppp_conf" 2>/dev/null || true)
+	# would then have no resolver reachable over the backup link. The addresses
+	# come from OUR hook's own record for this interface, never from pppd's
+	# shared /etc/ppp/resolv.conf — that file belongs to whichever PPP profile
+	# connected last, so a VPN or a second modem would hand its resolver to the
+	# backup link (WF-R3-02).
+	state_dir="${WARNFLUX_GSM_STATE_DIR:-/run/warnflux-gsm}"
+	state_file="$state_dir/$iface.dns"
+	learned=$(awk '$1 == "nameserver" { print $2 }' "$state_file" 2>/dev/null || true)
 	if ! grep -qF "$MARK" "$CONF" 2>/dev/null; then
 		[ -n "$learned" ] || exit 0
 		# shellcheck disable=SC2086 # the learned list is space-separated on purpose

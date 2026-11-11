@@ -37,7 +37,7 @@ func (o *outboxStub) EnqueueMeshOutbox(_ context.Context, item storage.MeshOutbo
 func (o *outboxStub) PendingMeshOutbox(_ context.Context, limit int) ([]storage.MeshOutboxItem, error) {
 	var out []storage.MeshOutboxItem
 	for _, item := range o.items {
-		if !item.SentAt.IsZero() || item.Attempts >= storage.MeshOutboxMaxAttempts {
+		if !item.SentAt.IsZero() || !item.FinishedAt.IsZero() || item.Attempts >= storage.MeshOutboxMaxAttempts {
 			continue
 		}
 		out = append(out, item)
@@ -48,9 +48,22 @@ func (o *outboxStub) PendingMeshOutbox(_ context.Context, limit int) ([]storage.
 	return out, nil
 }
 
-func (o *outboxStub) RecentMeshOutbox(_ context.Context, limit int) ([]storage.MeshOutboxItem, error) {
+func (o *outboxStub) CountPendingMeshOutbox(_ context.Context) (int, error) {
+	n := 0
+	for _, item := range o.items {
+		if item.SentAt.IsZero() && item.FinishedAt.IsZero() && item.Attempts < storage.MeshOutboxMaxAttempts {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (o *outboxStub) RecentFinishedMeshOutbox(_ context.Context, limit int) ([]storage.MeshOutboxItem, error) {
 	var out []storage.MeshOutboxItem
 	for i := len(o.items) - 1; i >= 0 && len(out) < limit; i-- {
+		if o.items[i].FinishedAt.IsZero() {
+			continue
+		}
 		out = append(out, o.items[i])
 	}
 	return out, nil
@@ -65,39 +78,66 @@ func (o *outboxStub) item(id int64) storage.MeshOutboxItem {
 	return storage.MeshOutboxItem{}
 }
 
+func (o *outboxStub) ClaimMeshOutbox(_ context.Context, id int64, at, staleBefore time.Time) (bool, error) {
+	for i := range o.items {
+		item := &o.items[i]
+		if item.ID != id || !item.SentAt.IsZero() || !item.FinishedAt.IsZero() {
+			continue
+		}
+		if !item.ClaimedAt.IsZero() && !item.ClaimedAt.Before(staleBefore) {
+			return false, nil
+		}
+		item.ClaimedAt = at
+		return true, nil
+	}
+	return false, nil
+}
+
 func (o *outboxStub) MarkMeshOutboxSent(_ context.Context, id int64, at time.Time) error {
 	for i := range o.items {
 		if o.items[i].ID == id {
 			o.items[i].SentAt = at
+			o.items[i].FinishedAt = at
+			o.items[i].ClaimedAt = time.Time{}
 		}
 	}
 	return nil
 }
 
-func (o *outboxStub) MarkMeshOutboxAttempt(_ context.Context, id int64, errText string) error {
+func (o *outboxStub) MarkMeshOutboxAttempt(_ context.Context, id int64, errText string, at time.Time) error {
 	for i := range o.items {
-		if o.items[i].ID == id {
-			o.items[i].Attempts++
-			o.items[i].LastError = errText
+		if o.items[i].ID != id {
+			continue
+		}
+		o.items[i].Attempts++
+		o.items[i].LastError = errText
+		o.items[i].ClaimedAt = time.Time{}
+		if o.items[i].Attempts >= storage.MeshOutboxMaxAttempts {
+			o.items[i].FinishedAt = at
 		}
 	}
 	return nil
 }
 
-func (o *outboxStub) DeleteMeshOutbox(_ context.Context, id int64) error {
+func (o *outboxStub) DeletePendingMeshOutbox(_ context.Context, id int64) (bool, error) {
 	for i := range o.items {
-		if o.items[i].ID == id {
-			o.items = append(o.items[:i], o.items[i+1:]...)
-			return nil
+		item := o.items[i]
+		if item.ID != id {
+			continue
 		}
+		if !item.ClaimedAt.IsZero() || !item.FinishedAt.IsZero() {
+			return false, nil
+		}
+		o.items = append(o.items[:i], o.items[i+1:]...)
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 func (o *outboxStub) PruneMeshOutbox(_ context.Context, before time.Time) error {
 	kept := o.items[:0]
 	for _, item := range o.items {
-		if item.CreatedAt.After(before) {
+		if item.FinishedAt.IsZero() || item.FinishedAt.After(before) {
 			kept = append(kept, item)
 		}
 	}

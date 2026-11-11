@@ -190,6 +190,9 @@ type meshtasticView struct {
 	// what went out and what was abandoned.
 	Outbox        []meshOutboxView
 	OutboxWaiting int
+	// OutboxMore counts waiting messages beyond the page limit: the counter is
+	// exact even when the list is capped.
+	OutboxMore int
 
 	// nodes tab
 	Snap     mesh.Snapshot

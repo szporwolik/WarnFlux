@@ -1245,6 +1245,34 @@ CREATE TABLE mesh_outbox (
 CREATE INDEX mesh_outbox_pending ON mesh_outbox (sent_ms, id);
 `,
 	},
+	{
+		// v73: the queue needs to tell three states apart, not two. claimed_ms is
+		// held by the pass that is transmitting the message RIGHT NOW, so a
+		// cancel that arrives during the batch cannot silently be ignored;
+		// finished_ms is when the row reached its final state (delivered or
+		// abandoned), which is what retention counts from — pruning by creation
+		// time deleted messages that had waited out a long outage and had never
+		// been tried (WF-R4-01, WF-R4-02).
+		SQL: `
+ALTER TABLE mesh_outbox ADD COLUMN claimed_ms INTEGER;
+ALTER TABLE mesh_outbox ADD COLUMN finished_ms INTEGER;
+UPDATE mesh_outbox SET finished_ms = sent_ms WHERE sent_ms IS NOT NULL;
+CREATE INDEX mesh_outbox_finished ON mesh_outbox (finished_ms);
+`,
+	},
+	{
+		// v74: rows that had already used every attempt when v73 ran are still
+		// unfinished there — v73 only backfilled the delivered ones. Such a row
+		// is never offered to the dispatcher (it exceeded the limit) and the new
+		// retention only removes finished rows, so it would have stayed in the
+		// database forever (WF-R5-03). The time the limit was hit was never
+		// recorded, so the migration time is used: the operator keeps a full
+		// retention window to look at the failure. Pending rows are untouched.
+		SQL: `
+UPDATE mesh_outbox SET finished_ms = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE sent_ms IS NULL AND finished_ms IS NULL AND attempts >= 10;
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

@@ -112,9 +112,22 @@ func (s *Server) flushMeshOutboxWith(ctx context.Context, sender meshSender, sto
 		s.logger.Warn("mesh outbox: pending read failed", "error", err)
 		return
 	}
+	now := time.Now()
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return
+		}
+		// Take the row before touching the radio. The claim is the boundary a
+		// cancel has to beat: an operator who cancels while this batch runs may
+		// lose the race, but never silently — the next item is skipped here and
+		// the panel says so (WF-R4-02).
+		claimed, err := store.ClaimMeshOutbox(ctx, item.ID, now, now.Add(-storage.MeshOutboxClaimTTL))
+		if err != nil {
+			s.logger.Warn("mesh outbox: claim failed", "id", item.ID, "error", err)
+			continue
+		}
+		if !claimed {
+			continue // cancelled, or taken by another pass
 		}
 		sendCtx, cancel := context.WithTimeout(ctx, meshOutboxSendBudget)
 		var sendErr error
@@ -132,7 +145,7 @@ func (s *Server) flushMeshOutboxWith(ctx context.Context, sender meshSender, sto
 				"waiting", time.Since(item.CreatedAt).Truncate(time.Second).String())
 			continue
 		}
-		if err := store.MarkMeshOutboxAttempt(ctx, item.ID, sendErr.Error()); err != nil {
+		if err := store.MarkMeshOutboxAttempt(ctx, item.ID, sendErr.Error(), time.Now()); err != nil {
 			s.logger.Warn("mesh outbox: mark attempt failed", "id", item.ID, "error", err)
 		}
 		if isTransientMeshSend(sendErr) {
@@ -140,7 +153,9 @@ func (s *Server) flushMeshOutboxWith(ctx context.Context, sender meshSender, sto
 		}
 		s.logger.Warn("mesh outbox: queued message rejected", "id", item.ID, "target", item.Label, "error", sendErr)
 	}
-	// The queue is drained (or the link died): drop what nobody needs to see.
+	// Drop the history nobody needs any more. Only FINISHED rows age out: a
+	// message that is still waiting for the radio is owed an attempt, however
+	// long the outage lasted (WF-R4-01).
 	if err := store.PruneMeshOutbox(ctx, time.Now().Add(-storage.MeshOutboxRetention)); err != nil {
 		s.logger.Warn("mesh outbox: prune failed", "error", err)
 	}
@@ -156,23 +171,42 @@ func meshOutboxPreview(text string, max int) string {
 	return string([]rune(text)[:max]) + "…"
 }
 
-// fillMeshOutbox loads the queue for the panel, newest first.
+// meshOutboxPendingView is how many waiting messages the panel lists at once.
+// The counter is a separate COUNT query, so this cap only limits the page — it
+// can never make the queue look empty.
+const meshOutboxPendingView = 50
+
+// meshOutboxHistoryView is how many finished rows the panel keeps on the page.
+const meshOutboxHistoryView = 12
+
+// fillMeshOutbox loads the queue for the panel: the active messages first
+// (oldest at the top — that is the order they will be sent in), then the
+// finished history. Both come from their own query, so a long history cannot
+// hide a waiting message and the counter is the real queue size (WF-R5-02).
 func (s *Server) fillMeshOutbox(ctx context.Context, v *meshtasticView) {
 	if s.meshOutbox == nil {
 		return
 	}
-	items, err := s.meshOutbox.RecentMeshOutbox(ctx, 12)
+	pending, err := s.meshOutbox.PendingMeshOutbox(ctx, meshOutboxPendingView)
 	if err != nil {
 		s.logger.Warn("mesh outbox: panel read failed", "error", err)
 		return
 	}
+	waiting, err := s.meshOutbox.CountPendingMeshOutbox(ctx)
+	if err != nil {
+		s.logger.Warn("mesh outbox: count failed", "error", err)
+		waiting = len(pending)
+	}
+	finished, err := s.meshOutbox.RecentFinishedMeshOutbox(ctx, meshOutboxHistoryView)
+	_ = finished
+	if err != nil {
+		s.logger.Warn("mesh outbox: history read failed", "error", err)
+	}
+
 	loc := s.displayLoc()
-	out := make([]meshOutboxView, 0, len(items))
-	for _, item := range items {
-		if item.SentAt.IsZero() && item.Attempts >= storage.MeshOutboxMaxAttempts {
-			continue // abandoned and already swept by the prune
-		}
-		row := meshOutboxView{
+	out := make([]meshOutboxView, 0, len(pending)+len(finished))
+	row := func(item storage.MeshOutboxItem) meshOutboxView {
+		return meshOutboxView{
 			ID:         item.ID,
 			Kind:       item.Kind,
 			Label:      item.Label,
@@ -185,24 +219,34 @@ func (s *Server) fillMeshOutbox(ctx context.Context, v *meshtasticView) {
 			Error:      item.LastError,
 			Sent:       !item.SentAt.IsZero(),
 		}
+	}
+	sort.SliceStable(pending, func(i, j int) bool { return pending[i].ID < pending[j].ID })
+	for _, item := range pending {
+		v := row(item)
+		switch {
+		case !item.ClaimedAt.IsZero() && time.Since(item.ClaimedAt) < storage.MeshOutboxClaimTTL:
+			v.State = "sending"
+		default:
+			v.State = "waiting"
+		}
+		out = append(out, v)
+	}
+	for _, item := range finished {
+		v := row(item)
 		switch {
 		case !item.SentAt.IsZero():
-			row.State = "sent"
-			row.SentAt = item.SentAt.In(loc).Format("15:04")
-		case item.Attempts >= storage.MeshOutboxMaxAttempts:
-			row.State = "abandoned"
+			v.State = "sent"
+			v.SentAt = item.SentAt.In(loc).Format("15:04")
 		default:
-			row.State = "waiting"
+			v.State = "abandoned"
 		}
-		out = append(out, row)
+		out = append(out, v)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+
 	v.Outbox = out
-	v.OutboxWaiting = 0
-	for _, row := range out {
-		if row.State == "waiting" {
-			v.OutboxWaiting++
-		}
+	v.OutboxWaiting = waiting
+	if waiting > len(pending) {
+		v.OutboxMore = waiting - len(pending)
 	}
 }
 
@@ -211,6 +255,8 @@ func meshOutboxStatusText(lang, state string) string {
 	switch state {
 	case "sent":
 		return i18n.T(lang, "meshtastic.outbox_sent")
+	case "sending":
+		return i18n.T(lang, "meshtastic.outbox_sending")
 	case "abandoned":
 		return i18n.T(lang, "meshtastic.outbox_abandoned")
 	default:
@@ -231,11 +277,19 @@ func (s *Server) handleMeshOutboxCancel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if s.meshOutbox != nil {
-		if err := s.meshOutbox.DeleteMeshOutbox(r.Context(), id); err != nil {
+		removed, err := s.meshOutbox.DeletePendingMeshOutbox(r.Context(), id)
+		switch {
+		case err != nil:
 			s.logger.Warn("mesh outbox: delete failed", "id", id, "error", err)
-		} else {
-			s.audit(sess.username, "meshtastic-outbox-cancel", fmt.Sprintf("id=%d", id))
+			http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.outbox_cancel_failed")), http.StatusSeeOther)
+			return
+		case !removed:
+			// The dispatcher holds the row: the message may already be on its
+			// way, and saying "cancelled" would be a lie.
+			http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.outbox_cancel_too_late")), http.StatusSeeOther)
+			return
 		}
+		s.audit(sess.username, "meshtastic-outbox-cancel", fmt.Sprintf("id=%d", id))
 	}
 	http.Redirect(w, r, "/meshtastic?tab=msgs", http.StatusSeeOther)
 }

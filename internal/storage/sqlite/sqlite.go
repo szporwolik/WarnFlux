@@ -1245,6 +1245,21 @@ CREATE TABLE mesh_outbox (
 CREATE INDEX mesh_outbox_pending ON mesh_outbox (sent_ms, id);
 `,
 	},
+	{
+		// v73: the queue needs to tell three states apart, not two. claimed_ms is
+		// held by the pass that is transmitting the message RIGHT NOW, so a
+		// cancel that arrives during the batch cannot silently be ignored;
+		// finished_ms is when the row reached its final state (delivered or
+		// abandoned), which is what retention counts from — pruning by creation
+		// time deleted messages that had waited out a long outage and had never
+		// been tried (WF-R4-01, WF-R4-02).
+		SQL: `
+ALTER TABLE mesh_outbox ADD COLUMN claimed_ms INTEGER;
+ALTER TABLE mesh_outbox ADD COLUMN finished_ms INTEGER;
+UPDATE mesh_outbox SET finished_ms = sent_ms WHERE sent_ms IS NOT NULL;
+CREATE INDEX mesh_outbox_finished ON mesh_outbox (finished_ms);
+`,
+	},
 }
 
 // adoptLegacyComposeLifecycle hands the ledger rows of panel

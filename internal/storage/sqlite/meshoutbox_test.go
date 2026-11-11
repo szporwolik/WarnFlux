@@ -30,7 +30,7 @@ func TestMeshOutboxRoundTrip(t *testing.T) {
 		t.Errorf("pending row = %+v", pending[0])
 	}
 
-	if err := store.MarkMeshOutboxAttempt(ctx, id, "device not connected"); err != nil {
+	if err := store.MarkMeshOutboxAttempt(ctx, id, "device not connected", at); err != nil {
 		t.Fatalf("MarkMeshOutboxAttempt: %v", err)
 	}
 	pending, _ = store.PendingMeshOutbox(ctx, 10)
@@ -57,7 +57,7 @@ func TestMeshOutboxRoundTrip(t *testing.T) {
 		t.Fatalf("EnqueueMeshOutbox: %v", err)
 	}
 	for i := 0; i < storage.MeshOutboxMaxAttempts; i++ {
-		if err := store.MarkMeshOutboxAttempt(ctx, id2, "boom"); err != nil {
+		if err := store.MarkMeshOutboxAttempt(ctx, id2, "boom", at); err != nil {
 			t.Fatalf("MarkMeshOutboxAttempt: %v", err)
 		}
 	}
@@ -65,18 +65,26 @@ func TestMeshOutboxRoundTrip(t *testing.T) {
 		t.Errorf("an exhausted message is still pending: %+v", pending)
 	}
 
-	if err := store.DeleteMeshOutbox(ctx, id2); err != nil {
-		t.Fatalf("DeleteMeshOutbox: %v", err)
+	// A finished row is history: cancelling it is not a pending cancel.
+	if removed, err := store.DeletePendingMeshOutbox(ctx, id2); err != nil || removed {
+		t.Fatalf("DeletePendingMeshOutbox(finished) = %v, %v", removed, err)
 	}
-	if recent, _ = store.RecentMeshOutbox(ctx, 10); len(recent) != 1 {
-		t.Errorf("recent after delete = %d rows, want 1", len(recent))
+	if recent, _ = store.RecentMeshOutbox(ctx, 10); len(recent) != 2 {
+		t.Errorf("recent = %d rows, want the delivered row and the abandoned one", len(recent))
 	}
 
-	// Pruning drops rows older than the retention window.
-	if err := store.PruneMeshOutbox(ctx, at.Add(time.Hour)); err != nil {
+	// Retention counts from the finish time, so a row that waited a day and was
+	// delivered now still has its whole history window (WF-R4-01).
+	if err := store.PruneMeshOutbox(ctx, at); err != nil {
+		t.Fatalf("PruneMeshOutbox: %v", err)
+	}
+	if recent, _ = store.RecentMeshOutbox(ctx, 10); len(recent) != 2 {
+		t.Errorf("prune took a freshly finished row: %d rows left", len(recent))
+	}
+	if err := store.PruneMeshOutbox(ctx, at.Add(2*time.Hour)); err != nil {
 		t.Fatalf("PruneMeshOutbox: %v", err)
 	}
 	if recent, _ = store.RecentMeshOutbox(ctx, 10); len(recent) != 0 {
-		t.Errorf("prune left %d rows", len(recent))
+		t.Errorf("prune left %d rows past the window", len(recent))
 	}
 }

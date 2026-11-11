@@ -35,6 +35,15 @@ type MeshOutboxItem struct {
 	LastError string
 	// SentAt is zero while the message is still waiting.
 	SentAt time.Time
+	// ClaimedAt is when the dispatcher took this row for one transmission
+	// attempt. A row is claimed atomically, so a cancel that arrives after the
+	// claim cannot silently be ignored — and a claim left behind by a crash is
+	// reclaimable after MeshOutboxClaimTTL.
+	ClaimedAt time.Time
+	// FinishedAt is when the row reached its final state (delivered or
+	// abandoned). Retention counts from here, never from CreatedAt: a message
+	// that waited a day for the radio must not be swept away instead of sent.
+	FinishedAt time.Time
 }
 
 // MeshOutboxMaxAttempts bounds the retries of one queued message. A link that
@@ -42,9 +51,15 @@ type MeshOutboxItem struct {
 // and the operator sees the abandonment in the panel.
 const MeshOutboxMaxAttempts = 10
 
-// MeshOutboxRetention bounds how long a delivered or abandoned row is kept for
-// the panel's "recent" list.
+// MeshOutboxRetention bounds how long a FINISHED row (delivered or abandoned)
+// is kept for the panel's history. Pending rows are never pruned: a radio that
+// was away for two days must still deliver what the operators queued.
 const MeshOutboxRetention = 24 * time.Hour
+
+// MeshOutboxClaimTTL is how long a claim survives without progress. A crash
+// between "claim" and "send" must not strand a message forever, so an older
+// claim is up for grabs again.
+const MeshOutboxClaimTTL = 5 * time.Minute
 
 // MeshOutboxStore persists messages waiting for the Meshtastic device.
 type MeshOutboxStore interface {
@@ -54,12 +69,20 @@ type MeshOutboxStore interface {
 	PendingMeshOutbox(ctx context.Context, limit int) ([]MeshOutboxItem, error)
 	// RecentMeshOutbox returns the newest rows, sent or not, for the panel.
 	RecentMeshOutbox(ctx context.Context, limit int) ([]MeshOutboxItem, error)
-	// MarkMeshOutboxSent records a successful transmission.
+	// ClaimMeshOutbox takes one pending row for a single transmission and
+	// reports whether this caller won it. Losing means the operator cancelled
+	// it (or another pass claimed it): the message must not be sent.
+	ClaimMeshOutbox(ctx context.Context, id int64, at, staleBefore time.Time) (bool, error)
+	// MarkMeshOutboxSent records a successful transmission and releases the
+	// claim.
 	MarkMeshOutboxSent(ctx context.Context, id int64, at time.Time) error
-	// MarkMeshOutboxAttempt records a failed attempt and its reason.
-	MarkMeshOutboxAttempt(ctx context.Context, id int64, errText string) error
-	// DeleteMeshOutbox removes one row (the operator cancelled it).
-	DeleteMeshOutbox(ctx context.Context, id int64) error
-	// PruneMeshOutbox deletes rows created before the given time.
+	// MarkMeshOutboxAttempt records a failed attempt and its reason, releases
+	// the claim, and finishes the row once it has no attempts left.
+	MarkMeshOutboxAttempt(ctx context.Context, id int64, errText string, at time.Time) error
+	// DeletePendingMeshOutbox removes one row the operator cancelled and
+	// reports whether it was still waiting. False means the dispatcher was
+	// already sending it.
+	DeletePendingMeshOutbox(ctx context.Context, id int64) (bool, error)
+	// PruneMeshOutbox deletes FINISHED rows older than the given time.
 	PruneMeshOutbox(ctx context.Context, before time.Time) error
 }

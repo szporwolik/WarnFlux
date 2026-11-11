@@ -36,10 +36,18 @@ func (o *outboxRecorder) RecentMeshOutbox(_ context.Context, limit int) ([]stora
 func (o *outboxRecorder) MarkMeshOutboxSent(_ context.Context, _ int64, _ time.Time) error {
 	return nil
 }
-func (o *outboxRecorder) MarkMeshOutboxAttempt(_ context.Context, _ int64, _ string) error {
+func (o *outboxRecorder) ClaimMeshOutbox(_ context.Context, _ int64, _, _ time.Time) (bool, error) {
+	return true, nil
+}
+
+func (o *outboxRecorder) MarkMeshOutboxAttempt(_ context.Context, _ int64, _ string, _ time.Time) error {
 	return nil
 }
-func (o *outboxRecorder) DeleteMeshOutbox(_ context.Context, _ int64) error    { return nil }
+
+func (o *outboxRecorder) DeletePendingMeshOutbox(_ context.Context, _ int64) (bool, error) {
+	return true, nil
+}
+
 func (o *outboxRecorder) PruneMeshOutbox(_ context.Context, _ time.Time) error { return nil }
 
 // TestMeshtasticSendQueuesWhenTheRadioIsAway is the reported defect end to end:

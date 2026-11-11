@@ -112,9 +112,22 @@ func (s *Server) flushMeshOutboxWith(ctx context.Context, sender meshSender, sto
 		s.logger.Warn("mesh outbox: pending read failed", "error", err)
 		return
 	}
+	now := time.Now()
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return
+		}
+		// Take the row before touching the radio. The claim is the boundary a
+		// cancel has to beat: an operator who cancels while this batch runs may
+		// lose the race, but never silently — the next item is skipped here and
+		// the panel says so (WF-R4-02).
+		claimed, err := store.ClaimMeshOutbox(ctx, item.ID, now, now.Add(-storage.MeshOutboxClaimTTL))
+		if err != nil {
+			s.logger.Warn("mesh outbox: claim failed", "id", item.ID, "error", err)
+			continue
+		}
+		if !claimed {
+			continue // cancelled, or taken by another pass
 		}
 		sendCtx, cancel := context.WithTimeout(ctx, meshOutboxSendBudget)
 		var sendErr error
@@ -132,7 +145,7 @@ func (s *Server) flushMeshOutboxWith(ctx context.Context, sender meshSender, sto
 				"waiting", time.Since(item.CreatedAt).Truncate(time.Second).String())
 			continue
 		}
-		if err := store.MarkMeshOutboxAttempt(ctx, item.ID, sendErr.Error()); err != nil {
+		if err := store.MarkMeshOutboxAttempt(ctx, item.ID, sendErr.Error(), time.Now()); err != nil {
 			s.logger.Warn("mesh outbox: mark attempt failed", "id", item.ID, "error", err)
 		}
 		if isTransientMeshSend(sendErr) {
@@ -140,7 +153,9 @@ func (s *Server) flushMeshOutboxWith(ctx context.Context, sender meshSender, sto
 		}
 		s.logger.Warn("mesh outbox: queued message rejected", "id", item.ID, "target", item.Label, "error", sendErr)
 	}
-	// The queue is drained (or the link died): drop what nobody needs to see.
+	// Drop the history nobody needs any more. Only FINISHED rows age out: a
+	// message that is still waiting for the radio is owed an attempt, however
+	// long the outage lasted (WF-R4-01).
 	if err := store.PruneMeshOutbox(ctx, time.Now().Add(-storage.MeshOutboxRetention)); err != nil {
 		s.logger.Warn("mesh outbox: prune failed", "error", err)
 	}
@@ -169,9 +184,6 @@ func (s *Server) fillMeshOutbox(ctx context.Context, v *meshtasticView) {
 	loc := s.displayLoc()
 	out := make([]meshOutboxView, 0, len(items))
 	for _, item := range items {
-		if item.SentAt.IsZero() && item.Attempts >= storage.MeshOutboxMaxAttempts {
-			continue // abandoned and already swept by the prune
-		}
 		row := meshOutboxView{
 			ID:         item.ID,
 			Kind:       item.Kind,
@@ -231,11 +243,19 @@ func (s *Server) handleMeshOutboxCancel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if s.meshOutbox != nil {
-		if err := s.meshOutbox.DeleteMeshOutbox(r.Context(), id); err != nil {
+		removed, err := s.meshOutbox.DeletePendingMeshOutbox(r.Context(), id)
+		switch {
+		case err != nil:
 			s.logger.Warn("mesh outbox: delete failed", "id", id, "error", err)
-		} else {
-			s.audit(sess.username, "meshtastic-outbox-cancel", fmt.Sprintf("id=%d", id))
+			http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.outbox_cancel_failed")), http.StatusSeeOther)
+			return
+		case !removed:
+			// The dispatcher holds the row: the message may already be on its
+			// way, and saying "cancelled" would be a lie.
+			http.Redirect(w, r, "/meshtastic?tab=msgs&err="+url.QueryEscape(i18n.T(s.langFor(r), "meshtastic.outbox_cancel_too_late")), http.StatusSeeOther)
+			return
 		}
+		s.audit(sess.username, "meshtastic-outbox-cancel", fmt.Sprintf("id=%d", id))
 	}
 	http.Redirect(w, r, "/meshtastic?tab=msgs", http.StatusSeeOther)
 }

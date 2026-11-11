@@ -4488,7 +4488,14 @@ func (h *Hub) receiveText(pkt *pb.MeshPacket, decoded *pb.Data) {
 			"snr", pkt.GetRxSnr(), "rssi", pkt.GetRxRssi(), "via_mqtt", pkt.GetViaMqtt())
 	}
 	h.recordMessage("rx", id, "", channel, string(decoded.GetPayload()), "", hops, heardAt)
-	h.mirrorTraffic("rx", id, "", int(pkt.GetChannel()), channel, string(decoded.GetPayload()), hops, heardAt, "",
+	// A direct message carries channel index 0 as well, so the destination is
+	// the only reliable way to tell private traffic from a broadcast — and the
+	// mirror must never publish a conversation to a public channel.
+	mirrorRecipient := ""
+	if to := pkt.GetTo(); to != core.BroadcastNodeID.Uint32() {
+		mirrorRecipient = fmt.Sprintf("%08x", to)
+	}
+	h.mirrorTraffic("rx", id, mirrorRecipient, int(pkt.GetChannel()), channel, string(decoded.GetPayload()), hops, heardAt, "",
 		pkt.GetRxSnr(), pkt.GetRxRssi(), pkt.GetViaMqtt())
 
 	// Only messages addressed EXACTLY to our node route (broadcasts,
@@ -5162,6 +5169,14 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 // channel without a mirror, or a scheduled message on a mirror that leaves the
 // station's own traffic out, is simply not forwarded.
 func (h *Hub) mirrorTraffic(direction, sender, recipient string, channelIdx int, channelLabel, text string, hops int, at time.Time, operator string, snr float32, rssi int32, viaMQTT bool) {
+	if recipient != "" {
+		// Private traffic stays on the radio: a direct message — from the
+		// station or to it — carries a channel index, sometimes the very one a
+		// mirror watches, and forwarding it would publish a private
+		// conversation to everyone reading the Discord channel (WF-R2-01).
+		// Exporting direct messages would need its own explicit opt-in.
+		return
+	}
 	var targets []*trafficMirror
 	for _, m := range h.mirrors {
 		if m != nil && channelIdx == m.channel && (operator != "system" || m.includeSystem) {

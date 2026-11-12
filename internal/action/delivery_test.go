@@ -632,11 +632,19 @@ func TestInstanceDurableNotifyTransmittedWhenCurrent(t *testing.T) {
 	payload, _ := json.Marshal(ActionRequest{ID: "emcom:net/log", Event: ev})
 	enqueueOne(t, ms, payload)
 
-	waitForDelivery(t, func() bool {
-		return p.handled.Load() == 1
-	}, "current notify payload transmitted")
-	if got := ms.statusOf(1, "log", "c:1"); got != storage.DeliveryAccepted && got != storage.DeliveryConfirmed {
-		t.Errorf("job status = %s, want accepted/confirmed (transmitted)", got)
+	// The status is settled AFTER the plugin returns, so waiting only for the
+	// handler would race the settlement (it did: the -race build in CI read
+	// "saved" and failed). Wait for both facts, then assert them.
+	transmitted := func() bool {
+		switch ms.statusOf(1, "log", "c:1") {
+		case storage.DeliveryAccepted, storage.DeliveryConfirmed:
+			return p.handled.Load() == 1
+		}
+		return false
+	}
+	waitForDelivery(t, transmitted, "current notify payload transmitted and settled")
+	if got := p.handled.Load(); got != 1 {
+		t.Errorf("plugin invoked %d times, want 1", got)
 	}
 }
 

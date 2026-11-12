@@ -75,8 +75,12 @@ func TestLoginAndResetShareTheHashGate(t *testing.T) {
 
 	// Fire every request at once, so the expensive part overlaps as much as
 	// the gate allows.
+	type result struct {
+		kind   string
+		status int
+	}
 	start := make(chan struct{})
-	statuses := make(chan int, len(attempts))
+	results := make(chan result, len(attempts))
 	var wg sync.WaitGroup
 	for _, a := range attempts {
 		wg.Add(1)
@@ -85,38 +89,74 @@ func TestLoginAndResetShareTheHashGate(t *testing.T) {
 			<-start
 			resp, err := a.client.PostForm(env.srv.URL+a.path, a.form)
 			if err != nil {
-				statuses <- -1
+				results <- result{kind: a.path, status: -1}
 				return
 			}
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
-			statuses <- resp.StatusCode
+			results <- result{kind: a.path, status: resp.StatusCode}
 		}(a)
 	}
 	close(start)
 	wg.Wait()
-	close(statuses)
+	close(results)
 
-	accepted := 0
-	for status := range statuses {
-		switch status {
+	resetsAccepted := 0
+	loginsAccepted := 0
+	for r := range results {
+		switch r.status {
 		case http.StatusSeeOther:
-			accepted++
+			if r.kind == "/reset" {
+				resetsAccepted++
+			} else {
+				loginsAccepted++
+			}
 		case http.StatusTooManyRequests, http.StatusUnprocessableEntity:
-			// Shed by the gate, or the shared link was already spent.
+			// Shed by the gate, or the shared link was already spent by a
+			// reset that won the race.
 		case http.StatusUnauthorized:
 			// A login carrying the password the winning reset just replaced.
 		default:
-			t.Errorf("unexpected status %d, want 303, 429, 422 or 401", status)
+			t.Errorf("%s: unexpected status %d, want 303, 429, 422 or 401", r.kind, r.status)
 		}
 	}
 	if peak := fake.hashPeakObserved(); peak > maxHashBudget {
 		t.Fatalf("%d simultaneous password computations, want at most %d", peak, maxHashBudget)
 	}
-	// The gate sheds the excess, it does not stop the work: the link is
-	// spendable and the login succeeds.
-	if accepted == 0 {
+	if loginsAccepted+resetsAccepted == 0 {
 		t.Fatal("every parallel request was shed, want at least one to go through")
+	}
+
+	// The gate SHEDS the excess instead of queueing it, so a burst can shed
+	// every reset while the logins take the slots — that is the contract, not
+	// a failure of the link. What matters is that the link still works: either
+	// a reset got through, or the operator retries and the same link is
+	// still spendable.
+	if resetsAccepted == 0 {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+		page, err := client.Get(env.srv.URL + "/reset?token=" + url.QueryEscape(token))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(page.Body)
+		page.Body.Close()
+		resp, err := client.PostForm(env.srv.URL+"/reset", url.Values{
+			"csrf": {extractCSRF(t, string(body))}, "token": {token}, "password": {"replaced-password-2"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("the link was shed by the gate and then refused: %d, want 303", resp.StatusCode)
+		}
 	}
 	if _, err := env.users.Authenticate("member1", "replaced-password-2"); err != nil {
 		t.Fatalf("the reset link did not set the new password: %v", err)

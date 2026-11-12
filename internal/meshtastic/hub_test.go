@@ -182,6 +182,21 @@ func (r *testRadio) stopHub(t *testing.T) {
 }
 
 // waitConnected blocks until the hub reports a live session.
+// waitSnapshot blocks until the hub's snapshot satisfies cond: the handshake
+// details (identity, firmware, neighbours) land asynchronously after the
+// transport is up, so a test that only waits for "connected" races them.
+func (r *testRadio) waitSnapshot(t *testing.T, cond func(Snapshot) bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond(r.hub.Snapshot()) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
 func (r *testRadio) waitConnected(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -479,6 +494,13 @@ func TestDialReapsLateConnect(t *testing.T) {
 func TestHubConnect(t *testing.T) {
 	radio := newTestRadio(t, Config{Enabled: true, Device: "/dev/fake", NodeTTL: time.Hour})
 	radio.waitConnected(t)
+	// "Connected" means the transport is up; the identity, the firmware string
+	// and the node directory arrive with the config sync that follows, so a
+	// loaded machine (the -race build in CI did) can read an empty snapshot.
+	// Wait for the handshake to be complete, then assert.
+	radio.waitSnapshot(t, func(snap Snapshot) bool {
+		return snap.Connected && snap.Self.ID != "" && len(snap.Nodes) == 2
+	}, "handshake finished (identity, firmware, node directory)")
 
 	snap := radio.hub.Snapshot()
 	if !snap.Connected {

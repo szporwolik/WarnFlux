@@ -277,7 +277,9 @@ func (s *Server) handleMeshOutboxCancel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if s.meshOutbox != nil {
-		removed, err := s.meshOutbox.DeletePendingMeshOutbox(r.Context(), id)
+		// The window is the presenter's: a claim older than the TTL is shown as
+		// waiting, and a waiting message can be cancelled.
+		removed, err := s.meshOutbox.DeletePendingMeshOutbox(r.Context(), id, time.Now().Add(-storage.MeshOutboxClaimTTL))
 		switch {
 		case err != nil:
 			s.logger.Warn("mesh outbox: delete failed", "id", id, "error", err)

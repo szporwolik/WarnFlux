@@ -93,7 +93,7 @@ func TestCancelDuringTheBatchWins(t *testing.T) {
 	sender := &countingSender{connected: true}
 	sender.onFirstSend = func() {
 		// The operator cancels the message that is next in the batch.
-		if removed, err := store.DeletePendingMeshOutbox(ctx, 2); err != nil || !removed {
+		if removed, err := store.DeletePendingMeshOutbox(ctx, 2, time.Now().Add(-storage.MeshOutboxClaimTTL)); err != nil || !removed {
 			t.Errorf("cancel during the batch: removed=%v err=%v", removed, err)
 		}
 	}
@@ -114,7 +114,7 @@ func TestCancelDuringTheBatchWins(t *testing.T) {
 	if ok, err := store.ClaimMeshOutbox(ctx, id, time.Now(), time.Now().Add(-time.Minute)); err != nil || !ok {
 		t.Fatalf("claim = %v, %v", ok, err)
 	}
-	if removed, err := store.DeletePendingMeshOutbox(ctx, id); err != nil || removed {
+	if removed, err := store.DeletePendingMeshOutbox(ctx, id, time.Now().Add(-storage.MeshOutboxClaimTTL)); err != nil || removed {
 		t.Errorf("a claimed row was reported cancelled: removed=%v err=%v", removed, err)
 	}
 
@@ -282,5 +282,71 @@ func TestPendingNotHiddenByHistory(t *testing.T) {
 	}
 	if v.OutboxMore != 4 {
 		t.Errorf("OutboxMore = %d, want 4 messages beyond the page", v.OutboxMore)
+	}
+}
+
+// TestExpiredClaimStillCancellable is WF-R7-03: the process died between claim
+// and send, the radio stayed away past the claim TTL, and the panel shows the
+// message as waiting. That is what the operator sees, so cancelling it has to
+// work — the SQL used to refuse every claimed row, and the button reported "too
+// late" for a message the radio never sent. A FRESH claim still refuses: the
+// dispatcher is sending it right now.
+func TestExpiredClaimStillCancellable(t *testing.T) {
+	store := outboxDB(t)
+	ctx := context.Background()
+	id, err := store.EnqueueMeshOutbox(ctx, storage.MeshOutboxItem{
+		Kind: "channel", ChannelIdx: 1, Label: "ch1", Text: "nieaktualna prognoza",
+		Operator: "admin", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A pass claimed it ten minutes ago and took the process down with it.
+	if ok, err := store.ClaimMeshOutbox(ctx, id, time.Now().Add(-10*time.Minute), time.Now().Add(-time.Hour)); err != nil || !ok {
+		t.Fatalf("stale setup claim = %v, %v", ok, err)
+	}
+
+	srv := quietServer()
+	srv.meshOutbox = store
+	var v meshtasticView
+	srv.fillMeshOutbox(ctx, &v)
+	if len(v.Outbox) != 1 || v.Outbox[0].State != "waiting" {
+		t.Fatalf("panel rows = %+v, want the message shown as waiting", v.Outbox)
+	}
+
+	cutoff := time.Now().Add(-storage.MeshOutboxClaimTTL)
+	removed, err := store.DeletePendingMeshOutbox(ctx, id, cutoff)
+	if err != nil || !removed {
+		t.Fatalf("cancel of an expired claim = %v, %v; want it accepted", removed, err)
+	}
+
+	// The radio comes back: a message the operator stopped is never sent.
+	sender := &countingSender{connected: true}
+	srv.flushMeshOutboxWith(ctx, sender, store)
+	if sender.sent != 0 {
+		t.Errorf("sent %d messages, want the cancelled one to stay off the air", sender.sent)
+	}
+	if pending, err := store.PendingMeshOutbox(ctx, 10); err != nil || len(pending) != 0 {
+		t.Errorf("pending = %v, %v; want an empty queue", pending, err)
+	}
+
+	// A claim the dispatcher holds right now is not cancellable, and the panel
+	// says so.
+	freshID, err := store.EnqueueMeshOutbox(ctx, storage.MeshOutboxItem{
+		Kind: "channel", ChannelIdx: 1, Label: "ch1", Text: "wlasnie wysylana", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.ClaimMeshOutbox(ctx, freshID, time.Now(), cutoff); err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	if removed, err := store.DeletePendingMeshOutbox(ctx, freshID, time.Now().Add(-storage.MeshOutboxClaimTTL)); err != nil || removed {
+		t.Errorf("a fresh claim was cancelled: removed=%v err=%v", removed, err)
+	}
+	var fresh meshtasticView
+	srv.fillMeshOutbox(ctx, &fresh)
+	if len(fresh.Outbox) != 1 || fresh.Outbox[0].State != "sending" {
+		t.Fatalf("panel rows = %+v, want the claimed message shown as sending", fresh.Outbox)
 	}
 }

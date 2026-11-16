@@ -48,7 +48,7 @@ func (o *outboxRecorder) MarkMeshOutboxAttempt(_ context.Context, _ int64, _ str
 	return nil
 }
 
-func (o *outboxRecorder) DeletePendingMeshOutbox(_ context.Context, _ int64) (bool, error) {
+func (o *outboxRecorder) DeletePendingMeshOutbox(_ context.Context, _ int64, _ time.Time) (bool, error) {
 	return true, nil
 }
 

@@ -67,7 +67,7 @@ func TestMeshOutboxRoundTrip(t *testing.T) {
 	}
 
 	// A finished row is history: cancelling it is not a pending cancel.
-	if removed, err := store.DeletePendingMeshOutbox(ctx, id2); err != nil || removed {
+	if removed, err := store.DeletePendingMeshOutbox(ctx, id2, at.Add(-storage.MeshOutboxClaimTTL)); err != nil || removed {
 		t.Fatalf("DeletePendingMeshOutbox(finished) = %v, %v", removed, err)
 	}
 	if recent, _ = store.RecentFinishedMeshOutbox(ctx, 10); len(recent) != 2 {

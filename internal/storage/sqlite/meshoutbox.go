@@ -143,12 +143,17 @@ func (s *Store) MarkMeshOutboxAttempt(ctx context.Context, id int64, errText str
 	return nil
 }
 
-// DeletePendingMeshOutbox removes one waiting row. It refuses rows the
-// dispatcher has already claimed, so a cancel can never claim a success it did
-// not achieve.
-func (s *Store) DeletePendingMeshOutbox(ctx context.Context, id int64) (bool, error) {
+// DeletePendingMeshOutbox removes one waiting row. A claim the dispatcher still
+// holds refuses the delete, so a cancel can never claim a success it did not
+// achieve; an EXPIRED claim (its pass died, typically across a restart) does
+// not, or a message the radio never sent could not be cancelled at all
+// (WF-R7-03). The delete and the reclaim of an expired claim are both single
+// statements on the same row, so exactly one of them wins.
+func (s *Store) DeletePendingMeshOutbox(ctx context.Context, id int64, staleBefore time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM mesh_outbox WHERE id = ? AND claimed_ms IS NULL AND finished_ms IS NULL`, id)
+		`DELETE FROM mesh_outbox
+		 WHERE id = ? AND finished_ms IS NULL AND (claimed_ms IS NULL OR claimed_ms < ?)`,
+		id, staleBefore.UnixMilli())
 	if err != nil {
 		return false, fmt.Errorf("delete mesh outbox: %w", err)
 	}

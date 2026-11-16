@@ -119,13 +119,13 @@ func (o *outboxStub) MarkMeshOutboxAttempt(_ context.Context, id int64, errText 
 	return nil
 }
 
-func (o *outboxStub) DeletePendingMeshOutbox(_ context.Context, id int64) (bool, error) {
+func (o *outboxStub) DeletePendingMeshOutbox(_ context.Context, id int64, staleBefore time.Time) (bool, error) {
 	for i := range o.items {
 		item := o.items[i]
 		if item.ID != id {
 			continue
 		}
-		if !item.ClaimedAt.IsZero() || !item.FinishedAt.IsZero() {
+		if (!item.ClaimedAt.IsZero() && !item.ClaimedAt.Before(staleBefore)) || !item.FinishedAt.IsZero() {
 			return false, nil
 		}
 		o.items = append(o.items[:i], o.items[i+1:]...)

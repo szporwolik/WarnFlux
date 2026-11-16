@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kabili207/meshtastic-go/core"
 	pb "github.com/kabili207/meshtastic-go/core/proto"
@@ -280,6 +281,18 @@ const linkSendWait = 10 * time.Second
 // connPollInterval is how often a waiting send re-checks the session.
 const connPollInterval = 100 * time.Millisecond
 
+// sendSlotWait bounds how long a frame the station sends on its own account
+// (a retry, a favorite change, a NodeInfo or traceroute probe) waits for the
+// transmission slot. Those frames go out from the maintenance loop and from
+// the packet path, where a long wait would hold up unrelated work — and
+// standing down costs nothing: a frame that was never written is simply tried
+// again later.
+const sendSlotWait = 2 * time.Second
+
+// errSendSlotBusy is what a station-initiated frame reports when another
+// transmission still held the slot for the whole sendSlotWait window.
+var errSendSlotBusy = errors.New("meshtastic: the radio is busy with another transmission")
+
 // ErrDeviceNotConnected is the send-path error when no session is live.
 // The panel shows this wording verbatim, and callers that can retry later
 // (the panel's outbox) test for it with errors.Is: it is the one send failure
@@ -304,6 +317,12 @@ const nodeDirRetention = 30 * 24 * time.Hour
 // meshTextMaxRunes bounds one outbound channel text message (133 chars
 // per the Meshtastic spec).
 const meshTextMaxRunes = 133
+
+// meshTextMaxBytes is what one frame can actually CARRY: the protocol's
+// Data.payload length. The rune limit above is what the clients count; outside
+// ASCII a character costs two, three or four bytes, so 133 runes can be twice
+// the room there is (WF-R7-04). Both bounds have to hold.
+const meshTextMaxBytes = int(pb.Constants_DATA_PAYLOAD_LEN)
 
 // AlertMarker is the in-band alert character (ASCII BEL, 0x07) the
 // Meshtastic firmware scans every received payload for: a message
@@ -339,11 +358,43 @@ func AlertsAt(sev string) bool {
 // PlainText bounds one quiet outbound text to the channel limit, with no
 // alert marking (hazards below AlertMinSeverity).
 func PlainText(text string) string {
-	r := []rune(strings.TrimSpace(text))
-	if len(r) > meshTextMaxRunes {
-		r = r[:meshTextMaxRunes]
+	return trimMeshText(strings.TrimSpace(text), meshTextMaxRunes, meshTextMaxBytes)
+}
+
+// trimMeshText cuts text to at most maxRunes runes AND maxBytes bytes, always
+// between whole runes: a split character would reach the channel as invalid
+// UTF-8 and could not be decoded at all.
+func trimMeshText(text string, maxRunes, maxBytes int) string {
+	r := []rune(text)
+	if len(r) > maxRunes {
+		r = r[:maxRunes]
 	}
-	return string(r)
+	var b strings.Builder
+	used := 0
+	for _, ch := range r {
+		n := utf8.RuneLen(ch)
+		if n < 0 || used+n > maxBytes {
+			break
+		}
+		b.WriteRune(ch)
+		used += n
+	}
+	return b.String()
+}
+
+// boundMeshPayload is the last check before a text becomes a frame: a caller
+// that did not go through PlainText/AlertText must not be able to hand the
+// transport more than one frame can carry. The alert marker at the end is
+// framing, not text — it stays, whatever the message loses (WF-R7-04).
+func boundMeshPayload(text string) string {
+	if len(text) <= meshTextMaxBytes {
+		return text
+	}
+	_, suffix := alertFraming()
+	if rest, ok := strings.CutSuffix(text, suffix); ok {
+		return trimMeshText(rest, len([]rune(rest)), meshTextMaxBytes-len(suffix)) + suffix
+	}
+	return trimMeshText(text, len([]rune(text)), meshTextMaxBytes)
 }
 
 // alertFraming is the decoration AlertText wraps around a payload: the
@@ -367,11 +418,9 @@ func AlertFramingRunes() int {
 // alert flag.
 func AlertText(text string) string {
 	prefix, suffix := alertFraming()
-	r := []rune(strings.TrimSpace(text))
-	if limit := meshTextMaxRunes - AlertFramingRunes(); len(r) > limit {
-		r = r[:limit]
-	}
-	return prefix + string(r) + suffix
+	limit := meshTextMaxRunes - AlertFramingRunes()
+	budget := meshTextMaxBytes - len(prefix) - len(suffix)
+	return prefix + trimMeshText(strings.TrimSpace(text), limit, budget) + suffix
 }
 
 // cmdDedupWindow is how long a command identity stays remembered: the
@@ -1010,6 +1059,11 @@ type Hub struct {
 	sendGate  chan struct{}
 	pending   map[uint32]*pendingSend // by device-assigned packet id
 	echoQueue []*pendingSend          // sent but the echo (id) not seen yet
+	// retryLater holds sends that are due for a retry but did not get the
+	// transmission slot. They stay OUT of echoQueue on purpose: an entry there
+	// claims the next answer the device reports, and a send that never reached
+	// the radio has no answer of its own (WF-R7-01).
+	retryLater []*pendingSend
 
 	// nodeInfoAsked rate-limits the NodeInfo refresh per peer (the peer's
 	// firmware suppresses a reply to the same requester for hours). Nil
@@ -1820,10 +1874,7 @@ func (h *Hub) beaconTick() {
 	nodes := len(h.nodes)
 	up := now.Sub(h.startedAt).Round(time.Minute)
 	h.mu.Unlock()
-	text := fmt.Sprintf("%s | up %s | nodes %d", h.cfg.EmcomIdentity, up, nodes)
-	if r := []rune(text); len(r) > meshTextMaxRunes {
-		text = string(r[:meshTextMaxRunes])
-	}
+	text := trimMeshText(fmt.Sprintf("%s | up %s | nodes %d", h.cfg.EmcomIdentity, up, nodes), meshTextMaxRunes, meshTextMaxBytes)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := h.SendChannelText(ctx, h.cfg.EmcomChannel, text, "system"); err != nil && h.logger != nil {
@@ -1899,7 +1950,8 @@ func (h *Hub) hazardSummaryLine(sum HazardSummary) string {
 	if site := strings.TrimSpace(h.cfg.EmcomSite); site != "" {
 		line += " — " + site
 	}
-	if hint := " · " + hazardListHint; len([]rune(line))+len([]rune(hint)) <= meshTextMaxRunes {
+	if hint := " · " + hazardListHint; len([]rune(line))+len([]rune(hint)) <= meshTextMaxRunes &&
+		len(line)+len(hint) <= meshTextMaxBytes {
 		line += hint
 	}
 	return line
@@ -1923,11 +1975,7 @@ func hazardDigestLine(hz ActiveHazard) string {
 		b.WriteString(" — ")
 		b.WriteString(desc)
 	}
-	r := []rune(b.String())
-	if len(r) > meshTextMaxRunes {
-		return string(r[:meshTextMaxRunes])
-	}
-	return string(r)
+	return trimMeshText(b.String(), meshTextMaxRunes, meshTextMaxBytes)
 }
 
 // HazardDigestLine is the shared one-line formatter for active hazards:
@@ -2680,17 +2728,22 @@ func (h *Hub) setFavorite(id uint32, favorite bool) error {
 		wantAck: true, probe: true,
 		favorite: &favoriteChange{node: id, set: favorite},
 	}
-	h.sendMu.Lock()
-	h.echoQueue = append(h.echoQueue, ps)
-	h.sendMu.Unlock()
-	err = conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+	// Same rule as for a text message: the queue position and the write are
+	// one step, or the device's answer lands on another frame (WF-R6-01).
+	if !h.acquireSendWithin(context.Background(), sendSlotWait) {
+		return errSendSlotBusy
+	}
+	defer h.releaseSend()
+	err = h.transmit(ps, &pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
 		To:      uint32(selfNum),
 		WantAck: true,
 		PayloadVariant: &pb.MeshPacket_Decoded{
 			Decoded: &pb.Data{Portnum: pb.PortNum_ADMIN_APP, Payload: payload},
 		},
-	}}})
+	}}}, conn, at)
 	if err != nil {
+		// No frame on the air means no answer to wait for: the placeholder
+		// must not sit at the head of the queue and take someone else's.
 		h.dropPending(ps)
 		return fmt.Errorf("meshtastic: favorite request write failed: %w", err)
 	}
@@ -3420,19 +3473,30 @@ func (h *Hub) requestNodeInfo(to uint32) {
 		return
 	}
 	p := &pendingSend{to: to, at: now, lastTry: now, text: "\x00nodeinfo", wantAck: true, probe: true}
-	h.sendMu.Lock()
-	h.echoQueue = append(h.echoQueue, p)
-	h.sendMu.Unlock()
-	err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+	// The ask is a frame like any other: it takes the transmission slot so its
+	// answer pairs with IT and not with a text message (WF-R6-01). This runs
+	// in the packet path, so it waits only briefly — a slot that stays busy
+	// means the ask did not happen, and the cooldown mark must go with it or
+	// the next refusal would be swallowed and the message that needs the key
+	// would wait for nothing.
+	if !h.acquireSendWithin(context.Background(), sendSlotWait) {
+		h.forgetNodeInfoAsk(to)
+		return
+	}
+	err := h.transmit(p, &pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
 		To:      to,
 		WantAck: true,
 		PayloadVariant: &pb.MeshPacket_Decoded{Decoded: &pb.Data{
 			Portnum:      pb.PortNum_NODEINFO_APP,
 			WantResponse: true,
 		}},
-	}}})
+	}}}, conn, now)
+	h.releaseSend()
 	if err != nil {
+		// The ask never reached the radio: no answer will pair the
+		// placeholder, and the cooldown must not suppress the next ask.
 		h.dropPending(p)
+		h.forgetNodeInfoAsk(to)
 		if h.logger != nil {
 			h.logger.Warn("meshtastic: node info request failed", "to", fmt.Sprintf("%08x", to), "error", err)
 		}
@@ -3441,6 +3505,14 @@ func (h *Hub) requestNodeInfo(to uint32) {
 	if h.logger != nil {
 		h.logger.Info("meshtastic: requested node info to refresh the peer key", "to", fmt.Sprintf("%08x", to))
 	}
+}
+
+// forgetNodeInfoAsk drops the refresh cooldown of one peer after a request
+// that never reached the radio, so the failure does not suppress the next ask.
+func (h *Hub) forgetNodeInfoAsk(to uint32) {
+	h.mu.Lock()
+	delete(h.nodeInfoAsked, to)
+	h.mu.Unlock()
 }
 
 // pairByRoutingLocked recovers the send behind a ROUTING_APP frame whose
@@ -3616,8 +3688,15 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 	h.beginTrace(uint32(dest), idStr, timeout)
 	defer h.endTrace(uint32(dest))
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	// request is the caller's context: its cancellation means the operator or
+	// the client gave up, which is NOT the same as a probe that came back
+	// empty, and the API reports the two differently.
+	request := ctx
+	ctx, cancel := context.WithTimeout(request, timeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return TracerouteResult{}, err
+	}
 
 	probes := make([]*pendingSend, 0, 2)
 	defer func() {
@@ -3628,6 +3707,11 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 		h.sendMu.Unlock()
 	}()
 	send := func() error {
+		// A cancelled probe must not reach the radio: not the first one, not
+		// the re-sends (WF-R7-02).
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("meshtastic: traceroute cancelled: %w", err)
+		}
 		// The session goroutine swaps h.conn on reconnect: refetch it
 		// for every attempt so a retry rides the fresh TCP session.
 		h.mu.Lock()
@@ -3637,19 +3721,31 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 			return errDeviceNotConnected
 		}
 		// Each probe rides the send path as a placeholder so its ROUTING
-		// ack pairs up like any other send.
+		// ack pairs up like any other send — under the transmission slot, so
+		// the placeholder's queue position matches the write order like every
+		// other frame (WF-R6-01).
+		at := time.Now()
 		p := &pendingSend{
 			to:      uint32(dest),
-			at:      time.Now(),
-			lastTry: time.Now(),
+			at:      at,
+			lastTry: at,
 			text:    "\x00traceroute", // never matches a history row
 			wantAck: true,
 			probe:   true,
 		}
-		h.sendMu.Lock()
-		h.echoQueue = append(h.echoQueue, p)
-		h.sendMu.Unlock()
-		if err := c.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
+		// The slot wait follows the probe's own deadline: a busy radio must
+		// not keep a cancelled request waiting either.
+		if !h.acquireSendWithin(ctx, sendSlotWait) {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("meshtastic: traceroute cancelled: %w", err)
+			}
+			return errSendSlotBusy
+		}
+		if err := ctx.Err(); err != nil {
+			h.releaseSend()
+			return fmt.Errorf("meshtastic: traceroute cancelled: %w", err)
+		}
+		err := h.transmit(p, &pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: &pb.MeshPacket{
 			To:      uint32(dest),
 			WantAck: true,
 			// Reach multi-hop nodes: the device default (3) dies en route to
@@ -3658,7 +3754,13 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 			PayloadVariant: &pb.MeshPacket_Decoded{
 				Decoded: &pb.Data{Portnum: pb.PortNum_TRACEROUTE_APP, Payload: payload, WantResponse: true},
 			},
-		}}}); err != nil {
+		}}}, c, at)
+		h.releaseSend()
+		if err != nil {
+			// A probe that never went out would otherwise sit at the head of
+			// the queue until the pairing window expired, taking the answer of
+			// the next frame.
+			h.dropPending(p)
 			return fmt.Errorf("meshtastic: traceroute send failed: %w", err)
 		}
 		probes = append(probes, p)
@@ -3699,6 +3801,9 @@ func (h *Hub) Traceroute(ctx context.Context, addr string, timeout time.Duration
 		select {
 		case <-ctx.Done():
 			best.ElapsedMS = time.Since(started).Milliseconds()
+			if err := request.Err(); err != nil {
+				return best, err
+			}
 			return best, nil
 		case <-reprobe.C:
 			// Re-probe while silence persists (lossy mesh, busy
@@ -3910,12 +4015,18 @@ func (h *Hub) routeResult(rep routeReply) TracerouteResult {
 //     while the device is demonstrably alive: retrying into radio
 //     silence multiplies duplicates when the device was in fact
 //     transmitting (the session watchdog reconnects it instead).
+//
+// A retry only enters the echo queue when it actually gets the transmission
+// slot and its frame is written (see resend): that queue position is what pairs
+// the device's answers, so a send that is merely WAITING for a later attempt
+// must not hold one — the next message's queueStatus would land on it
+// (WF-R7-01). Such sends wait in retryLater, outside the pairing.
 func (h *Hub) retryPending(now time.Time) {
 	if now.Sub(time.Unix(0, h.lastRadio.Load())) > 30*time.Second {
 		return // device silent: the session watchdog will reconnect
 	}
 	h.sendMu.Lock()
-	var resend []*pendingSend
+	var due []*pendingSend
 	for id, ps := range h.pending {
 		if !ps.wantAck || ps.status != TxSent || now.Sub(ps.lastTry) < h.cfg.AckSettleTimeout {
 			continue
@@ -3973,24 +4084,65 @@ func (h *Hub) retryPending(now time.Time) {
 			h.markStatusLocked(q, TxFailed)
 			continue
 		}
-		q.retries++
-		resend = append(resend, q)
+		due = append(due, q)
+	}
+	// Sends left over from a pass that could not get the transmission slot
+	// come first: they have been waiting longer.
+	if len(h.retryLater) > 0 {
+		due = append(h.retryLater, due...)
+		h.retryLater = nil
 	}
 	h.sendMu.Unlock()
-	for _, ps := range resend {
-		h.resend(ps)
+	var later []*pendingSend
+	for _, ps := range due {
+		if h.resend(ps) == retryDeferred {
+			later = append(later, ps)
+		}
+	}
+	if len(later) > 0 {
+		h.sendMu.Lock()
+		if len(h.retryLater) == 0 {
+			h.retryLater = later
+		} else {
+			h.retryLater = append(later, h.retryLater...)
+		}
+		h.sendMu.Unlock()
 	}
 }
 
-// resend transmits one retry of a pending direct message.
-func (h *Hub) resend(ps *pendingSend) {
+// retryOutcome is what one retry attempt did: the frame was written, it has to
+// wait for the transmission slot, or the send is gone for good.
+type retryOutcome int
+
+const (
+	retrySent retryOutcome = iota
+	retryDeferred
+	retryDropped
+)
+
+// resend transmits one retry of a pending direct message. It takes the
+// transmission slot like every other frame whose answer pairs against the echo
+// queue: a retry that jumped ahead wrote its own frame first while keeping the
+// older transmission's queue position, so the device's queueStatus landed on
+// the wrong message (WF-R6-01).
+//
+// A slot that stays busy yields retryDeferred and the caller keeps the send for
+// the next pass — it must NOT go back into the echo queue, because it has no
+// frame on the air to be answered and would take the answer of the next message
+// (WF-R7-01). An attempt that never reached the radio does not spend the retry
+// budget either.
+func (h *Hub) resend(ps *pendingSend) retryOutcome {
 	h.mu.Lock()
 	conn := h.conn
 	h.mu.Unlock()
 	if conn == nil || !conn.IsConnected() {
 		h.dropPending(ps)
-		return
+		return retryDropped
 	}
+	if !h.acquireSendWithin(context.Background(), sendSlotWait) {
+		return retryDeferred
+	}
+	defer h.releaseSend()
 	pkt := &pb.MeshPacket{
 		To:      ps.to,
 		WantAck: true,
@@ -4001,13 +4153,16 @@ func (h *Hub) resend(ps *pendingSend) {
 			},
 		},
 	}
-	h.sendMu.Lock()
-	ps.lastTry = time.Now()
-	h.echoQueue = append(h.echoQueue, ps)
-	h.sendMu.Unlock()
-	if err := conn.SendToRadio(&pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: pkt}}); err != nil {
+	if err := h.transmit(ps, &pb.ToRadio{PayloadVariant: &pb.ToRadio_Packet{Packet: pkt}}, conn, time.Now()); err != nil {
+		// The frame did not reach the device and this retry is not re-written
+		// on another link: the entry has no answer to wait for.
 		h.dropPending(ps)
+		return retryDropped
 	}
+	h.sendMu.Lock()
+	ps.retries++
+	h.sendMu.Unlock()
+	return retrySent
 }
 
 // dropPending removes a never-transmitted send from the queues.
@@ -4025,6 +4180,12 @@ func (h *Hub) dropPendingLocked(ps *pendingSend) {
 	for i, q := range h.echoQueue {
 		if q == ps {
 			h.echoQueue = append(h.echoQueue[:i], h.echoQueue[i+1:]...)
+			break
+		}
+	}
+	for i, q := range h.retryLater {
+		if q == ps {
+			h.retryLater = append(h.retryLater[:i], h.retryLater[i+1:]...)
 			break
 		}
 	}
@@ -5058,6 +5219,33 @@ func (h *Hub) releaseSend() {
 	}
 }
 
+// acquireSendWithin takes the transmission slot for a frame the station sends
+// on its own account, giving up after wait. The caller must call releaseSend
+// when it got the slot.
+func (h *Hub) acquireSendWithin(ctx context.Context, wait time.Duration) bool {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	return h.acquireSend(ctx) == nil
+}
+
+// transmit queues one frame's echo entry and writes the frame; the caller must
+// hold the transmission slot across both. The device answers sends in the
+// order it receives them and pairQueueStatus assigns those answers by queue
+// position, so appending and writing must never interleave with another
+// transmission (WF-R6-01).
+//
+// A failure leaves the entry in the queue and the callers settle it: the send
+// path re-writes the very same frame on a rebuilt link and needs the entry to
+// keep its position for that answer, so dropping it here would lose the pairing
+// (or, worse, hand the answer to the frame behind it).
+func (h *Hub) transmit(ps *pendingSend, msg *pb.ToRadio, conn transportConn, at time.Time) error {
+	h.sendMu.Lock()
+	ps.lastTry = at
+	h.echoQueue = append(h.echoQueue, ps)
+	h.sendMu.Unlock()
+	return conn.SendToRadio(msg)
+}
+
 // awaitConn returns the live device session, waiting up to wait for one
 // to come back. The session goroutine rebuilds the link on its own after
 // a drop, so a send that lands inside that window only has to wait.
@@ -5116,8 +5304,12 @@ func (h *Hub) retrySendOnAFreshLink(ctx context.Context, ps *pendingSend, msg *p
 	}
 	// The echo (the device assigns the packet id) pairs by FIFO order and
 	// by age: refresh the stamp so a slow rebuild cannot age the entry out
-	// of the pairing window.
+	// of the pairing window. The maintenance loop reads and settles that
+	// stamp under the send lock, so it is written under it as well
+	// (WF-R6-02).
+	h.sendMu.Lock()
 	ps.lastTry = time.Now()
+	h.sendMu.Unlock()
 	if err := conn.SendToRadio(msg); err != nil {
 		return err
 	}
@@ -5161,6 +5353,12 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 	msg := &pb.ToRadio{
 		PayloadVariant: &pb.ToRadio_Packet{Packet: pkt},
 	}
+	// No frame may carry more than one payload's worth of text, whoever built
+	// it (WF-R7-04): the helpers bound their own output, this is the backstop.
+	// It has to happen before the bookkeeping below, which matches the device's
+	// echo by TEXT and must know exactly what went on the air.
+	text = boundMeshPayload(text)
+	pkt.GetDecoded().Payload = []byte(text)
 	// Track the delivery state: the device answers with a queueStatus (or,
 	// on older firmware, echoes the frame) carrying the assigned packet id,
 	// and direct messages additionally carry a ROUTING_APP acknowledgment
@@ -5177,10 +5375,9 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 		prog:    prog,
 	}
 	// The echo must be queued before the frame goes out so a fast device echo
-	// can never miss its entry.
-	h.sendMu.Lock()
-	h.echoQueue = append(h.echoQueue, ps)
-	h.sendMu.Unlock()
+	// can never miss its entry — transmit does both, with the slot held, so no
+	// other frame can slip between our queue position and our write.
+	//
 	// The history row is written first so the device echo (which can race
 	// back immediately) always finds its row to stamp. Direct messages
 	// carry the recipient node id so the DM tab can pair the conversation.
@@ -5194,13 +5391,10 @@ func (h *Hub) sendText(ctx context.Context, to uint32, channelIdx int, channelLa
 	// Last point at which the frame is ours: after this it belongs to the
 	// transport and nothing here can take it back.
 	if err := ctx.Err(); err != nil {
-		h.sendMu.Lock()
-		h.dropPendingLocked(ps)
-		h.markStatusLocked(ps, TxFailed)
-		h.sendMu.Unlock()
+		h.markStatus(ps, TxFailed)
 		return fmt.Errorf("meshtastic: send cancelled: %w", err)
 	}
-	if err := conn.SendToRadio(msg); err != nil {
+	if err := h.transmit(ps, msg, conn, at); err != nil {
 		// The link died under the frame: a socket the peer closed fails
 		// every write with "broken pipe", and without a rebuild this send
 		// would stay broken until the silence watchdog noticed (up to two

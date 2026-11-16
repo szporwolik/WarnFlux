@@ -86,8 +86,12 @@ type MeshOutboxStore interface {
 	MarkMeshOutboxAttempt(ctx context.Context, id int64, errText string, at time.Time) error
 	// DeletePendingMeshOutbox removes one row the operator cancelled and
 	// reports whether it was still waiting. False means the dispatcher was
-	// already sending it.
-	DeletePendingMeshOutbox(ctx context.Context, id int64) (bool, error)
+	// already sending it — a claim younger than staleBefore. An EXPIRED claim
+	// (a pass that died, typically across a restart) no longer protects the
+	// row: the operator may still cancel a message the radio never sent
+	// (WF-R7-03), and this delete competes with the reclaim of the very same
+	// row, so exactly one of them wins.
+	DeletePendingMeshOutbox(ctx context.Context, id int64, staleBefore time.Time) (bool, error)
 	// PruneMeshOutbox deletes FINISHED rows older than the given time.
 	PruneMeshOutbox(ctx context.Context, before time.Time) error
 }
